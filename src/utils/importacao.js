@@ -49,10 +49,12 @@ function buildTaxDescription(taxa = {}) {
   if (toNumber(taxa.tda)) partes.push(`TDA ${formatTaxValue(taxa.tda)}`);
   if (toNumber(taxa.tdr)) partes.push(`TDR ${formatTaxValue(taxa.tdr)}`);
   if (toNumber(taxa.trt)) partes.push(`TRT ${formatTaxValue(taxa.trt)}`);
-  if (toNumber(taxa.suframa)) partes.push(`SUFRAMA ${formatTaxValue(taxa.suframa)}`);
-  if (toNumber(taxa.outras)) partes.push(`OUTRAS ${formatTaxValue(taxa.outras)}`);
-  if (toNumber(taxa.gris)) partes.push(`GRIS ${formatPercentValue(taxa.gris)}`);
-  if (toNumber(taxa.adVal)) partes.push(`AD VAL ${formatPercentValue(taxa.adVal)}`);
+  if (toNumber(taxa.suframa)) partes.push(`SUFR ${formatTaxValue(taxa.suframa)}`);
+  if (toNumber(taxa.outras)) partes.push(`OUT ${formatTaxValue(taxa.outras)}`);
+  if (toNumber(taxa.gris)) partes.push(`GR ${formatPercentValue(taxa.gris)}`);
+  if (toNumber(taxa.grisMinimo)) partes.push(`GR MIN ${formatTaxValue(taxa.grisMinimo)}`);
+  if (toNumber(taxa.adVal)) partes.push(`ADV ${formatPercentValue(taxa.adVal)}`);
+  if (toNumber(taxa.adValMinimo)) partes.push(`ADV MIN ${formatTaxValue(taxa.adValMinimo)}`);
   return partes.join(' - ');
 }
 
@@ -71,7 +73,7 @@ function findTaxaForRota(origem, rota) {
 }
 
 function hasSpecialTax(taxa = {}) {
-  return ['tda', 'tdr', 'trt', 'suframa', 'outras', 'gris', 'adVal'].some(
+  return ['tda', 'tdr', 'trt', 'suframa', 'outras', 'gris', 'grisMinimo', 'adVal', 'adValMinimo'].some(
     (key) => toNumber(taxa?.[key])
   );
 }
@@ -157,10 +159,40 @@ export function gerarArquivosVerum(transportadora, origem = null) {
     ? `${transportadora?.nome || 'transportadora'}-${origem?.cidade || 'origem'}-verum`
     : `${transportadora?.nome || 'transportadora'}-verum`;
 
-  exportarSecao('rotas', rotasVerum, `${baseName}-rotas.xlsx`);
-  exportarSecao('cotacoes', cotacoesVerum, `${baseName}-fretes.xlsx`);
+  exportarSecaoVerum('rotas', rotasVerum, `${baseName}-rotas.xlsx`);
+  exportarSecaoVerum('cotacoes', cotacoesVerum, `${baseName}-fretes.xlsx`);
 
   return { rotas: rotasVerum, cotacoes: cotacoesVerum };
+}
+
+
+function sheetRowsForTipoVerum(tipo, rows = []) {
+  if (tipo === 'cotacoes') {
+    return rows.map((item) => ({
+      'Nome da transportadora': item.transportadora || '',
+      'Código da unidade':
+        item.codigoUnidade ||
+        (String(item.canal || '').toUpperCase() === 'B2C'
+          ? '0001 - B2C'
+          : '0001 - B2B'),
+      'Regra de cálculo': item.regraCalculo || 'Sem regra',
+      'Rota do frete': item.rota || '',
+      'Peso mínimo': item.pesoMin ?? '',
+      'Peso limite': item.pesoMax ?? '',
+      'Excesso de peso': item.excesso ?? '',
+      'Taxa aplicada': item.valorFixo ?? '',
+      'Frete percentual': item.percentual ?? '',
+      'Frete mínimo': item.freteMinimo ?? '',
+      'Início da vigência': item.inicioVigencia || '',
+      'Fim da vigência': item.fimVigencia || '',
+    }));
+  }
+
+  return sheetRowsForTipo(tipo, rows);
+}
+
+function exportarSecaoVerum(tipo, rows, fileName) {
+  downloadWorkbook({ tipo, rows: sheetRowsForTipoVerum(tipo, rows), fileName });
 }
 
 function isBlankRow(row) {
