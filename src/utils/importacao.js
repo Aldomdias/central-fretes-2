@@ -336,48 +336,105 @@ export function exportarSecao(tipo, rows, fileName) {
   downloadWorkbook({ tipo, rows: sheetRowsForTipo(tipo, rows), fileName });
 }
 
+function normalizeTabelaNome(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+export function analisarCoberturaOrigem(origem) {
+  const rotas = origem?.rotas || [];
+  const cotacoes = origem?.cotacoes || [];
+  const totalRotas = rotas.length;
+  const totalCotacoes = cotacoes.length;
+  const totalTaxas = (origem?.taxasEspeciais || []).length;
+  const possuiGeneralidades = !!origem?.generalidades;
+  const destinos = new Set(rotas.map((rota) => String(rota.ibgeDestino || '').trim()).filter(Boolean));
+
+  const rotasSet = new Set(
+    rotas
+      .map((rota) => normalizeTabelaNome(rota.cotacao || rota.nomeRota || rota.rota || rota.tabela))
+      .filter(Boolean),
+  );
+  const cotacoesSet = new Set(
+    cotacoes
+      .map((cotacao) => normalizeTabelaNome(cotacao.rota || cotacao.nomeRota || cotacao.cotacao || cotacao.tabela))
+      .filter(Boolean),
+  );
+
+  const rotasSemCotacao = Array.from(rotasSet).filter((item) => !cotacoesSet.has(item));
+  const cotacoesSemRota = Array.from(cotacoesSet).filter((item) => !rotasSet.has(item));
+  const paresIncompletos = rotasSemCotacao.length + cotacoesSemRota.length;
+
+  let cobertura = 'Completa';
+  if (totalRotas === 0) {
+    cobertura = 'Sem rotas';
+  } else if (totalCotacoes === 0) {
+    cobertura = 'Sem cotações';
+  } else if (paresIncompletos > 0) {
+    cobertura = 'Inconsistente';
+  } else if (!possuiGeneralidades) {
+    cobertura = 'Sem generalidades';
+  }
+
+  const severidade = cobertura === 'Completa'
+    ? 'ok'
+    : cobertura === 'Inconsistente'
+      ? 'error'
+      : 'warn';
+
+  return {
+    cobertura,
+    severidade,
+    totalRotas,
+    totalCotacoes,
+    totalTaxas,
+    destinos: destinos.size,
+    possuiGeneralidades,
+    rotasSemCotacao,
+    cotacoesSemRota,
+    paresIncompletos,
+  };
+}
+
 export function buildCoberturaReport(transportadoras) {
   const detalhes = [];
   transportadoras.forEach((transportadora) => {
     (transportadora.origens || []).forEach((origem) => {
-      const totalRotas = (origem.rotas || []).length;
-      const totalCotacoes = (origem.cotacoes || []).length;
-      const totalTaxas = (origem.taxasEspeciais || []).length;
-      const possuiGeneralidades = !!origem.generalidades;
-      const destinos = new Set((origem.rotas || []).map((rota) => String(rota.ibgeDestino || '').trim()).filter(Boolean));
-      const cobertura = totalRotas === 0
-        ? 'Sem rotas'
-        : totalCotacoes === 0
-          ? 'Sem cotações'
-          : !possuiGeneralidades
-            ? 'Sem generalidades'
-            : 'Completa';
+      const analise = analisarCoberturaOrigem(origem);
       detalhes.push({
         transportadora: transportadora.nome,
         origem: origem.cidade,
         canal: origem.canal,
-        cobertura,
-        totalRotas,
-        totalCotacoes,
-        totalTaxas,
-        destinos: destinos.size,
+        cobertura: analise.cobertura,
+        severidade: analise.severidade,
+        totalRotas: analise.totalRotas,
+        totalCotacoes: analise.totalCotacoes,
+        totalTaxas: analise.totalTaxas,
+        destinos: analise.destinos,
         status: origem.status,
+        paresIncompletos: analise.paresIncompletos,
+        rotasSemCotacao: analise.rotasSemCotacao.length,
+        cotacoesSemRota: analise.cotacoesSemRota.length,
       });
     });
   });
 
   const resumoTransportadora = Array.from(
     detalhes.reduce((acc, item) => {
-      const current = acc.get(item.transportadora) || { transportadora: item.transportadora, origens: 0, destinos: 0, rotas: 0, cotacoes: 0, pendencias: 0 };
+      const current = acc.get(item.transportadora) || { transportadora: item.transportadora, origens: 0, destinos: 0, rotas: 0, cotacoes: 0, pendencias: 0, inconsistencias: 0 };
       current.origens += 1;
       current.destinos += item.destinos;
       current.rotas += item.totalRotas;
       current.cotacoes += item.totalCotacoes;
       current.pendencias += item.cobertura === 'Completa' ? 0 : 1;
+      current.inconsistencias += item.cobertura === 'Inconsistente' ? 1 : 0;
       acc.set(item.transportadora, current);
       return acc;
     }, new Map()).values(),
-  ).sort((a, b) => b.pendencias - a.pendencias || a.transportadora.localeCompare(b.transportadora));
+  ).sort((a, b) => b.inconsistencias - a.inconsistencias || b.pendencias - a.pendencias || a.transportadora.localeCompare(b.transportadora));
 
   return {
     detalhes,
@@ -387,6 +444,7 @@ export function buildCoberturaReport(transportadoras) {
       completas: detalhes.filter((item) => item.cobertura === 'Completa').length,
       pendentes: detalhes.filter((item) => item.cobertura !== 'Completa').length,
       destinos: detalhes.reduce((acc, item) => acc + item.destinos, 0),
+      inconsistentes: detalhes.filter((item) => item.cobertura === 'Inconsistente').length,
     },
   };
 }

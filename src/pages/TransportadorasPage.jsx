@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { baixarModelo, buildImportPayload, exportarSecao, parseFileToRows } from '../utils/importacao';
+import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarSecao, parseFileToRows } from '../utils/importacao';
 
 function nextId(list) {
   return (Math.max(0, ...list.map((item) => Number(item.id) || 0)) + 1);
@@ -81,6 +81,35 @@ function LinhaModal({ open, title, fields, initialValue, onSave, onClose }) {
 }
 
 const DEFAULT_GENERALIDADES = { incideIcms: false, aliquotaIcms: 0, adValorem: 0, adValoremMinimo: 0, pedagio: 0, gris: 0, grisMinimo: 0, tas: 0, ctrc: 0, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: '' };
+
+function CoberturaBadge({ cobertura, severidade }) {
+  const className = severidade === 'error'
+    ? 'coverage-badge error'
+    : severidade === 'warn'
+      ? 'coverage-badge warn'
+      : 'coverage-badge ok';
+  return <span className={className}>{cobertura}</span>;
+}
+
+function buildResumoTransportadora(transportadora) {
+  const analises = (transportadora.origens || []).map((origem) => analisarCoberturaOrigem(origem));
+  const inconsistentes = analises.filter((item) => item.cobertura === 'Inconsistente').length;
+  const pendencias = analises.filter((item) => item.cobertura !== 'Completa').length;
+  const faltandoFrete = analises.reduce((acc, item) => acc + item.rotasSemCotacao.length, 0);
+  const faltandoRota = analises.reduce((acc, item) => acc + item.cotacoesSemRota.length, 0);
+
+  let cobertura = 'Completa';
+  let severidade = 'ok';
+  if (inconsistentes > 0) {
+    cobertura = 'Inconsistente';
+    severidade = 'error';
+  } else if (pendencias > 0) {
+    cobertura = 'Parcial';
+    severidade = 'warn';
+  }
+
+  return { cobertura, severidade, inconsistentes, pendencias, faltandoFrete, faltandoRota };
+}
 
 function GeneralidadesTab({ transportadoraId, origem, store }) {
   const [form, setForm] = useState({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) });
@@ -196,16 +225,25 @@ function TransportadorasList({ items, onOpen, store }) {
       </div>
       <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar transportadora..." />
       <div className="list-stack">
-        {filtrados.map((item) => (
-          <div key={item.id} className="list-card" onClick={() => onOpen(item.id)}>
-            <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div></div></div>
-            <div className="list-actions" onClick={(e) => e.stopPropagation()}>
-              <span className="status-pill dark">{item.status}</span>
-              <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
-              <ActionIcon danger onClick={() => store.removerTransportadora(item.id)}>🗑</ActionIcon>
+        {filtrados.map((item) => {
+          const resumo = buildResumoTransportadora(item);
+          const cardClass = resumo.severidade === 'error'
+            ? 'list-card alert-error'
+            : resumo.severidade === 'warn'
+              ? 'list-card alert-warn'
+              : 'list-card';
+          return (
+            <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-actions" onClick={(e) => e.stopPropagation()}>
+                <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
+                <span className="status-pill dark">{item.status}</span>
+                <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
+                <ActionIcon danger onClick={() => store.removerTransportadora(item.id)}>🗑</ActionIcon>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <TransportadoraModal open={modalOpen} initialValue={editing} onSave={saveTransportadora} onClose={() => { setModalOpen(false); setEditing(null); }} />
     </div>
@@ -231,16 +269,25 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
       <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cidade de origem..." />
       <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{transportadora.origens.length} origem(ns)</span></div></div>
       <div className="list-stack">
-        {origens.map((origem) => (
-          <div key={origem.id} className="list-card" onClick={() => onOpenOrigin(origem.id)}>
-            <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title">{origem.cidade} —</div><div className="list-subtitle">{origem.rotas.length} rota(s)</div></div></div>
-            <div className="list-actions" onClick={(e) => e.stopPropagation()}>
-              <span className="status-pill light">{origem.status}</span>
-              <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
-              <ActionIcon danger onClick={() => store.removerOrigem(transportadora.id, origem.id)}>🗑</ActionIcon>
+        {origens.map((origem) => {
+          const analise = analisarCoberturaOrigem(origem);
+          const cardClass = analise.severidade === 'error'
+            ? 'list-card alert-error'
+            : analise.severidade === 'warn'
+              ? 'list-card alert-warn'
+              : 'list-card';
+          return (
+            <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title">{origem.cidade} —</div><div className="list-subtitle">{origem.rotas.length} rota(s) · {origem.cotacoes.length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-actions" onClick={(e) => e.stopPropagation()}>
+                <CoberturaBadge cobertura={analise.cobertura} severidade={analise.severidade} />
+                <span className="status-pill light">{origem.status}</span>
+                <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
+                <ActionIcon danger onClick={() => store.removerOrigem(transportadora.id, origem.id)}>🗑</ActionIcon>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <div className="footer-note">{transportadora.origens.length} origem(ns) no total</div>
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
