@@ -170,6 +170,151 @@ function mapCommon(row, meta, overrides = {}) {
   };
 }
 
+
+function buildVerumTaxParts(taxa) {
+  if (!taxa || typeof taxa !== 'object') return [];
+
+  const fields = [
+    ['tda', 'TDA'],
+    ['tdr', 'TDR'],
+    ['trt', 'TRT'],
+    ['suframa', 'SUFRAMA'],
+    ['outras', 'OUTRAS'],
+  ];
+
+  const parts = [];
+  fields.forEach(([key, label]) => {
+    const value = taxa[key];
+    if (value !== null && value !== undefined && value !== '' && toNumber(value) !== 0) {
+      parts.push(`${label} ${String(value).trim()}`);
+    }
+  });
+
+  if (taxa.gris !== null && taxa.gris !== undefined && taxa.gris !== '' && toNumber(taxa.gris) !== 0) {
+    parts.push(`GRIS ${String(taxa.gris).trim()}%`);
+  }
+
+  if (taxa.grisMinimo !== null && taxa.grisMinimo !== undefined && taxa.grisMinimo !== '' && toNumber(taxa.grisMinimo) !== 0) {
+    parts.push(`GRIS MÍN ${String(taxa.grisMinimo).trim()}`);
+  }
+
+  if (taxa.adVal !== null && taxa.adVal !== undefined && taxa.adVal !== '' && toNumber(taxa.adVal) !== 0) {
+    parts.push(`AD VAL ${String(taxa.adVal).trim()}%`);
+  }
+
+  if (taxa.adValMinimo !== null && taxa.adValMinimo !== undefined && taxa.adValMinimo !== '' && toNumber(taxa.adValMinimo) !== 0) {
+    parts.push(`AD VAL MÍN ${String(taxa.adValMinimo).trim()}`);
+  }
+
+  return parts;
+}
+
+function buildVerumDescription(baseName, taxa) {
+  const cleanBase = String(baseName || '').trim();
+  const parts = buildVerumTaxParts(taxa);
+  if (!cleanBase || !parts.length) return cleanBase;
+  return `${cleanBase} - ${parts.join(' - ')}`;
+}
+
+function findCotacaoByRouteName(cotacoes, routeName) {
+  const normalizedRoute = normalizeRouteName(routeName);
+  return (cotacoes || []).find(
+    (item) => normalizeRouteName(item?.rota || item?.nomeRota || item?.cotacao) === normalizedRoute
+  );
+}
+
+function findTaxaEspecialByDestino(origem, ibgeDestino) {
+  return (origem?.taxasEspeciais || []).find(
+    (item) => String(item?.ibgeDestino || '').trim() === String(ibgeDestino || '').trim()
+  );
+}
+
+function buildVerumRowsForOrigem(transportadora, origem) {
+  const codigoUnidade = origem.canal === 'B2C' ? '0001 - B2C' : '0001 - B2B';
+  const rotasRows = [];
+  const cotacoesBase = (origem?.cotacoes || []).map((cotacao) => ({
+    ...cotacao,
+    transportadora: transportadora.nome,
+    origem: origem.cidade,
+    canal: origem.canal,
+    codigoUnidade,
+  }));
+  const cotacoesRows = [...cotacoesBase];
+  const createdVariants = new Set();
+
+  (origem?.rotas || []).forEach((rota) => {
+    const baseName = rota?.cotacao || rota?.nomeRota || '';
+    const taxa = findTaxaEspecialByDestino(origem, rota?.ibgeDestino);
+    const descricaoVerum = buildVerumDescription(baseName, taxa);
+
+    rotasRows.push({
+      ...rota,
+      nomeRota: descricaoVerum || baseName,
+      cotacao: descricaoVerum || baseName,
+      transportadora: transportadora.nome,
+      origem: origem.cidade,
+      canal: origem.canal,
+      codigoUnidade,
+    });
+
+    const variantKey = `${normalizeRouteName(baseName)}__${normalizeRouteName(descricaoVerum)}`;
+    if (descricaoVerum && descricaoVerum !== baseName && !createdVariants.has(variantKey)) {
+      const cotacaoBase = findCotacaoByRouteName(origem?.cotacoes || [], baseName);
+      if (cotacaoBase) {
+        cotacoesRows.push({
+          ...cotacaoBase,
+          rota: descricaoVerum,
+          transportadora: transportadora.nome,
+          origem: origem.cidade,
+          canal: origem.canal,
+          codigoUnidade,
+        });
+        createdVariants.add(variantKey);
+      }
+    }
+  });
+
+  return { rotasRows, cotacoesRows };
+}
+
+export function gerarArquivoVerum(transportadoras, options = {}) {
+  const scope = options?.scope || 'all';
+  const transportadoraId = options?.transportadoraId;
+  const origemId = options?.origemId;
+  const filePrefix = String(options?.filePrefix || 'verum').trim() || 'verum';
+
+  const selectedTransportadoras = (transportadoras || []).filter((transportadora) => {
+    if (scope === 'all') return true;
+    if (scope === 'transportadora') return String(transportadora.id) === String(transportadoraId);
+    if (scope === 'origem') return String(transportadora.id) === String(transportadoraId);
+    return false;
+  });
+
+  const rotas = [];
+  const cotacoes = [];
+
+  selectedTransportadoras.forEach((transportadora) => {
+    const selectedOrigens = (transportadora?.origens || []).filter((origem) => {
+      if (scope !== 'origem') return true;
+      return String(origem.id) === String(origemId);
+    });
+
+    selectedOrigens.forEach((origem) => {
+      const { rotasRows, cotacoesRows } = buildVerumRowsForOrigem(transportadora, origem);
+      rotas.push(...rotasRows);
+      cotacoes.push(...cotacoesRows);
+    });
+  });
+
+  exportarSecao('rotas', rotas, `${filePrefix}-rotas.xlsx`);
+  exportarSecao('cotacoes', cotacoes, `${filePrefix}-fretes.xlsx`);
+
+  return {
+    rotas: rotas.length,
+    cotacoes: cotacoes.length,
+  };
+}
+
 export function parseFileToRows(file, tipo) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -565,58 +710,6 @@ export function exportarSecao(tipo, rows, fileName) {
   downloadWorkbook({ tipo, rows: sheetRowsForTipo(tipo, rows), fileName });
 }
 
-export function exportarInconsistencias(rows = [], fileName = 'inconsistencias.xlsx') {
-  const wb = XLSX.utils.book_new();
-
-  const rotasSemFrete = rows
-    .filter((item) => item.tipo === 'rotasSemFrete')
-    .map((item) => ({
-      Transportadora: item.transportadora || '',
-      Origem: item.origem || '',
-      Canal: item.canal || '',
-      'Rota sem frete': item.item || '',
-    }));
-
-  const fretesSemRota = rows
-    .filter((item) => item.tipo === 'fretesSemRota')
-    .map((item) => ({
-      Transportadora: item.transportadora || '',
-      Origem: item.origem || '',
-      Canal: item.canal || '',
-      'Frete sem rota': item.item || '',
-    }));
-
-  const resumo = [
-    {
-      'Rotas sem frete': rotasSemFrete.length,
-      'Fretes sem rota': fretesSemRota.length,
-      Total: rotasSemFrete.length + fretesSemRota.length,
-    },
-  ];
-
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), 'Resumo');
-  XLSX.utils.book_append_sheet(
-    wb,
-    XLSX.utils.json_to_sheet(
-      rotasSemFrete.length
-        ? rotasSemFrete
-        : [{ Transportadora: '', Origem: '', Canal: '', 'Rota sem frete': '' }]
-    ),
-    'Rotas sem frete'
-  );
-  XLSX.utils.book_append_sheet(
-    wb,
-    XLSX.utils.json_to_sheet(
-      fretesSemRota.length
-        ? fretesSemRota
-        : [{ Transportadora: '', Origem: '', Canal: '', 'Frete sem rota': '' }]
-    ),
-    'Fretes sem rota'
-  );
-
-  XLSX.writeFile(wb, fileName);
-}
-
 export function analisarCoberturaOrigem(origem) {
   const rotas = Array.isArray(origem?.rotas) ? origem.rotas : [];
   const cotacoes = Array.isArray(origem?.cotacoes) ? origem.cotacoes : [];
@@ -657,10 +750,10 @@ export function analisarCoberturaOrigem(origem) {
     severidade,
     totalRotas: rotas.length,
     totalCotacoes: cotacoes.length,
-    rotasSemFrete: [...rotasSemFrete],
-    fretesSemRota: [...fretesSemRota],
-    rotasSemCotacao: [...rotasSemFrete],
-    cotacoesSemRota: [...fretesSemRota],
+    rotasSemFrete,
+    fretesSemRota,
+    rotasSemCotacao: rotasSemFrete,
+    cotacoesSemRota: fretesSemRota,
     possuiProblema: severidade !== 'ok',
   };
 }

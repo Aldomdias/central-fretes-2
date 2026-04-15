@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistencias, exportarSecao, parseFileToRows } from '../utils/importacao';
+import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarSecao, gerarArquivoVerum, parseFileToRows } from '../utils/importacao';
 
 function nextId(list) {
   return (Math.max(0, ...list.map((item) => Number(item.id) || 0)) + 1);
@@ -111,143 +111,9 @@ function buildResumoTransportadora(transportadora) {
   return { cobertura, severidade, inconsistentes, pendencias, faltandoFrete, faltandoRota };
 }
 
-function buildInconsistenciasTransportadora(transportadora) {
-  const linhas = [];
-
-  (transportadora?.origens || []).forEach((origem) => {
-    const analise = analisarCoberturaOrigem(origem);
-
-    analise.rotasSemCotacao.forEach((rota) => {
-      linhas.push({
-        tipo: 'rotasSemFrete',
-        transportadora: transportadora.nome,
-        origem: origem.cidade,
-        canal: origem.canal,
-        item: rota,
-      });
-    });
-
-    analise.cotacoesSemRota.forEach((frete) => {
-      linhas.push({
-        tipo: 'fretesSemRota',
-        transportadora: transportadora.nome,
-        origem: origem.cidade,
-        canal: origem.canal,
-        item: frete,
-      });
-    });
-  });
-
-  return linhas;
-}
-
-function buildInconsistenciasOrigem(transportadora, origem) {
-  const analise = analisarCoberturaOrigem(origem);
-  return [
-    ...analise.rotasSemCotacao.map((rota) => ({
-      tipo: 'rotasSemFrete',
-      transportadora: transportadora.nome,
-      origem: origem.cidade,
-      canal: origem.canal,
-      item: rota,
-    })),
-    ...analise.cotacoesSemRota.map((frete) => ({
-      tipo: 'fretesSemRota',
-      transportadora: transportadora.nome,
-      origem: origem.cidade,
-      canal: origem.canal,
-      item: frete,
-    })),
-  ];
-}
-
-function InconsistenciasModal({ open, title, rows, onClose, onExport }) {
-  const rotasSemFrete = rows.filter((item) => item.tipo === 'rotasSemFrete');
-  const fretesSemRota = rows.filter((item) => item.tipo === 'fretesSemRota');
-
-  return (
-    <Modal open={open} title={title} onClose={onClose}>
-      <div className="inconsistency-modal-body">
-        <div className="inconsistency-summary-strip">
-          <div className="summary-card compact">
-            <span>Rotas sem frete</span>
-            <strong>{rotasSemFrete.length}</strong>
-          </div>
-          <div className="summary-card compact">
-            <span>Fretes sem rota</span>
-            <strong>{fretesSemRota.length}</strong>
-          </div>
-        </div>
-
-        {rows.length ? (
-          <>
-            <div className="inconsistency-section">
-              <div className="inconsistency-section-header">
-                <h4>Rotas sem frete</h4>
-              </div>
-              <div className="table-card">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Transportadora</th>
-                      <th>Origem</th>
-                      <th>Canal</th>
-                      <th>Rota</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rotasSemFrete.length ? rotasSemFrete.map((item, index) => (
-                      <tr key={`rota-${index}-${item.item}`}>
-                        <td>{item.transportadora}</td>
-                        <td>{item.origem}</td>
-                        <td>{item.canal}</td>
-                        <td>{item.item}</td>
-                      </tr>
-                    )) : <tr><td colSpan={4} className="empty-cell">Nenhuma rota sem frete.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="inconsistency-section">
-              <div className="inconsistency-section-header">
-                <h4>Fretes sem rota</h4>
-              </div>
-              <div className="table-card">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Transportadora</th>
-                      <th>Origem</th>
-                      <th>Canal</th>
-                      <th>Frete</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fretesSemRota.length ? fretesSemRota.map((item, index) => (
-                      <tr key={`frete-${index}-${item.item}`}>
-                        <td>{item.transportadora}</td>
-                        <td>{item.origem}</td>
-                        <td>{item.canal}</td>
-                        <td>{item.item}</td>
-                      </tr>
-                    )) : <tr><td colSpan={4} className="empty-cell">Nenhum frete sem rota.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="hint-box">Nenhuma inconsistência encontrada.</div>
-        )}
-
-        <div className="actions-right gap-row top-space">
-          <button className="btn-secondary" onClick={onClose}>Fechar</button>
-          <button className="btn-primary" onClick={onExport} disabled={!rows.length}>Exportar Excel</button>
-        </div>
-      </div>
-    </Modal>
-  );
+function executarGeracaoVerum(transportadoras, options) {
+  const resultado = gerarArquivoVerum(transportadoras, options);
+  return `Arquivos Verum gerados com sucesso: ${resultado.rotas} rota(s) e ${resultado.cotacoes} frete(s).`;
 }
 
 function GeneralidadesTab({ transportadoraId, origem, store }) {
@@ -348,21 +214,12 @@ function TransportadorasList({ items, onOpen, store }) {
   const [busca, setBusca] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
-  const [inconsistenciasTitle, setInconsistenciasTitle] = useState('');
-  const [inconsistenciasRows, setInconsistenciasRows] = useState([]);
   const filtrados = items.filter((item) => item.nome.toLowerCase().includes(busca.toLowerCase()));
 
   const saveTransportadora = (form) => {
     store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
     setModalOpen(false);
     setEditing(null);
-  };
-
-  const abrirInconsistencias = (transportadora) => {
-    setInconsistenciasTitle(`Inconsistências · ${transportadora.nome}`);
-    setInconsistenciasRows(buildInconsistenciasTransportadora(transportadora));
-    setInconsistenciasOpen(true);
   };
 
   return (
@@ -383,10 +240,9 @@ function TransportadorasList({ items, onOpen, store }) {
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
               <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
-              <div className="list-actions wrap" onClick={(e) => e.stopPropagation()}>
+              <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
-                <button className="btn-secondary btn-sm" onClick={() => abrirInconsistencias(item)}>Ver inconsistências</button>
                 <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
                 <ActionIcon danger onClick={() => store.removerTransportadora(item.id)}>🗑</ActionIcon>
               </div>
@@ -395,13 +251,6 @@ function TransportadorasList({ items, onOpen, store }) {
         })}
       </div>
       <TransportadoraModal open={modalOpen} initialValue={editing} onSave={saveTransportadora} onClose={() => { setModalOpen(false); setEditing(null); }} />
-      <InconsistenciasModal
-        open={inconsistenciasOpen}
-        title={inconsistenciasTitle}
-        rows={inconsistenciasRows}
-        onClose={() => setInconsistenciasOpen(false)}
-        onExport={() => exportarInconsistencias(inconsistenciasRows, `inconsistencias-${inconsistenciasTitle.toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.xlsx`)}
-      />
     </div>
   );
 }
@@ -410,9 +259,6 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
   const [busca, setBusca] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
-  const [inconsistenciasRows, setInconsistenciasRows] = useState([]);
-  const [inconsistenciasTitle, setInconsistenciasTitle] = useState('');
   const origens = transportadora.origens.filter((origem) => origem.cidade.toLowerCase().includes(busca.toLowerCase()));
   const saveOrigem = (form) => {
     const origem = { ...editing, ...form, id: editing?.id ?? nextId(transportadora.origens) };
@@ -421,16 +267,10 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
     setEditing(null);
   };
 
-  const abrirInconsistencias = (origem) => {
-    setInconsistenciasTitle(`Inconsistências · ${transportadora.nome} · ${origem.cidade}`);
-    setInconsistenciasRows(buildInconsistenciasOrigem(transportadora, origem));
-    setInconsistenciasOpen(true);
-  };
-
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
-      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{transportadora.origens.length} origem(ns)</span></div></div><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div>
+      <div className="page-top between start-mobile"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{transportadora.origens.length} origem(ns)</span></div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => window.alert(executarGeracaoVerum([transportadora], { scope: 'transportadora', transportadoraId: transportadora.id, filePrefix: `${transportadora.nome.toLowerCase().replace(/\s+/g, '-')}-verum` }))}>Gerar arquivo Verum</button><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div></div>
       <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cidade de origem..." />
       <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{transportadora.origens.length} origem(ns)</span></div></div>
       <div className="list-stack">
@@ -444,10 +284,9 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
               <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title">{origem.cidade} —</div><div className="list-subtitle">{origem.rotas.length} rota(s) · {origem.cotacoes.length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
-              <div className="list-actions wrap" onClick={(e) => e.stopPropagation()}>
+              <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={analise.cobertura} severidade={analise.severidade} />
                 <span className="status-pill light">{origem.status}</span>
-                <button className="btn-secondary btn-sm" onClick={() => abrirInconsistencias(origem)}>Ver inconsistências</button>
                 <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
                 <ActionIcon danger onClick={() => store.removerOrigem(transportadora.id, origem.id)}>🗑</ActionIcon>
               </div>
@@ -457,13 +296,6 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
       </div>
       <div className="footer-note">{transportadora.origens.length} origem(ns) no total</div>
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
-      <InconsistenciasModal
-        open={inconsistenciasOpen}
-        title={inconsistenciasTitle}
-        rows={inconsistenciasRows}
-        onClose={() => setInconsistenciasOpen(false)}
-        onExport={() => exportarInconsistencias(inconsistenciasRows, `inconsistencias-${transportadora.nome.toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.xlsx`)}
-      />
     </div>
   );
 }
@@ -496,7 +328,7 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← {transportadora.nome}</button>
-      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{origem.canal}</strong> · {origem.rotas.length} rota(s)</div></div><span className="status-pill dark">{origem.status}</span></div>
+      <div className="page-top between align-start start-mobile"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{origem.canal}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => window.alert(executarGeracaoVerum([transportadora], { scope: 'origem', transportadoraId: transportadora.id, origemId: origem.id, filePrefix: `${transportadora.nome.toLowerCase().replace(/\s+/g, '-')}-${origem.cidade.toLowerCase().replace(/\s+/g, '-')}-verum` }))}>Gerar arquivo Verum</button><span className="status-pill dark">{origem.status}</span></div></div>
       <div className="tabs-row"><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
       {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
