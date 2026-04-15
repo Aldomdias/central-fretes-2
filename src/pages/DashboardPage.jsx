@@ -1,40 +1,31 @@
 import { buildDashboardStats } from '../data/mockData';
-import logoMdlog from '../assets/mdlog-logo.png';
 
 export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase }) {
   const stats = buildDashboardStats(transportadoras);
 
   return (
-    <div className="page-shell">
-      <section className="mdlog-hero">
-        <div className="mdlog-hero-content">
-          <span className="mdlog-chip">MDLog • Freight Platform</span>
-          <h1>Simulador de fretes com identidade MDLog</h1>
-          <p>
-            Layout renovado nas cores da marca para dar mais presença visual ao sistema,
-            sem alterar o fluxo que já está funcionando em importação, Verum e cadastros.
-          </p>
-          <div className="mdlog-hero-actions">
-            <button className="btn-primary" onClick={onAbrirSimulador}>Abrir simulador</button>
-            <button className="btn-secondary" onClick={onAbrirImportacao}>Abrir importação</button>
+    <div className="page-shell amd-dashboard-shell">
+      <div className="amd-hero-card">
+        <div>
+          <div className="amd-badge">AMD Log • Plataforma de Fretes</div>
+          <div className="page-top between start-mobile top-space">
+            <div className="page-header">
+              <h1>Simulador de fretes</h1>
+              <p>
+                Plataforma para importação, cadastro, simulação e geração do arquivo Verum,
+                com identidade visual AMD Log e foco operacional.
+              </p>
+            </div>
             <button className="btn-secondary" onClick={onResetarBase}>↺ Restaurar base exemplo</button>
           </div>
         </div>
 
-        <div className="mdlog-hero-side">
-          <img src={logoMdlog} alt="MDLog" className="mdlog-hero-logo" />
-          <div className="mdlog-hero-badges">
-            <div className="mdlog-mini-card">
-              <strong>{transportadoras.length}</strong>
-              <span>transportadoras ativas na base local</span>
-            </div>
-            <div className="mdlog-mini-card danger">
-              <strong>Verum pronto</strong>
-              <span>exportação alinhada ao layout operacional</span>
-            </div>
-          </div>
+        <div className="hero-actions-row">
+          <button className="btn-primary" onClick={onAbrirSimulador}>Abrir simulador</button>
+          <button className="btn-secondary" onClick={onAbrirImportacao}>Abrir importação</button>
+          <button className="btn-secondary" onClick={onAbrirTransportadoras}>Abrir transportadoras</button>
         </div>
-      </section>
+      </div>
 
       <div className="stats-grid">
         {stats.map((item) => (
@@ -48,54 +39,41 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
       </div>
 
       <div className="feature-grid three-cols">
-        <div className="panel-card accent-blue">
-          <div className="panel-title">🧾 Simular Frete em Massa</div>
+        <div className="panel-card amd-panel-card">
+          <div className="panel-title">🧾 Simulação operacional</div>
           <p>
-            Informe destino, peso e valor da nota fiscal. O sistema retorna as transportadoras
-            ordenadas do menor para o maior frete com a composição completa do cálculo.
+            Compare tabelas, avalie competitividade e visualize o cálculo completo do frete
+            com composição detalhada somente quando abrir os detalhes.
           </p>
-          <button className="btn-primary full" onClick={onAbrirSimulador}>Abrir Simulador</button>
+          <button className="btn-primary full" onClick={onAbrirSimulador}>Ir para simulação</button>
         </div>
 
-        <div className="panel-card accent-red">
-          <div className="panel-title">🏢 Cadastros e Verum</div>
+        <div className="panel-card amd-panel-card">
+          <div className="panel-title">🏢 Cadastro e base</div>
           <p>
-            Gerencie transportadoras, origens, inconsistências e geração do arquivo Verum no
-            mesmo fluxo operacional que você já validou.
+            Gerencie transportadoras, origens, generalidades, rotas e cotações.
+            A próxima fase conecta isso à base persistente para histórico e controle.
           </p>
-          <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Gerenciar Transportadoras</button>
+          <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
 
-        <div className="panel-card accent-outline">
-          <div className="panel-title">📥 Importação e Cobertura</div>
+        <div className="panel-card amd-panel-card">
+          <div className="panel-title">📦 Importação e Verum</div>
           <p>
-            Importe arquivos, acompanhe pendências de cobertura e prepare o sistema para a nova
-            fase com persistência e histórico de base.
+            Importe arquivos, acompanhe inconsistências e gere os arquivos de rotas e fretes
+            no layout correto da Verum.
           </p>
-          <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir Importação</button>
+          <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
         </div>
       </div>
 
-      <div className="feature-grid two-cols-equal">
-        <div className="info-card mdlog-info-card">
-          <div className="info-badge">⚙️</div>
-          <div>
-            <div className="info-title">Próxima fase da base</div>
-            <div className="info-text">
-              Persistir transportadoras, rotas e fretes no banco para parar de depender de
-              arquivo pesado no navegador e preparar simulações sobre realizado.
-            </div>
-          </div>
-        </div>
-
-        <div className="info-card mdlog-info-card red-side">
-          <div className="info-badge">📊</div>
-          <div>
-            <div className="info-title">Motor de cálculo e realizado</div>
-            <div className="info-text">
-              A próxima camada será aplicar tabela atual em uma base histórica de 3 meses para
-              medir aderência, custo e saving com visão operacional.
-            </div>
+      <div className="info-card amd-info-card">
+        <div className="info-badge">🚚</div>
+        <div>
+          <div className="info-title">Próxima fase recomendada</div>
+          <div className="info-text">
+            Persistir a base no Supabase, armazenar histórico de importações e preparar a simulação
+            sobre o realizado de 3 meses sem depender de arquivos grandes no navegador.
           </div>
         </div>
       </div>

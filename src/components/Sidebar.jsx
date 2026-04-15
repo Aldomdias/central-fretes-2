@@ -1,4 +1,4 @@
-import logoMdlog from '../assets/mdlog-logo.png';
+import logoAmd from '../assets/amd-log.png';
 
 const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
@@ -12,12 +12,12 @@ const menuCadastros = [
 
 export default function Sidebar({ paginaAtual, onMudarPagina }) {
   return (
-    <aside className="sidebar-app">
-      <div className="brand-box brand-box-mdlog">
-        <img src={logoMdlog} alt="MDLog" className="brand-logo-image" />
-        <div>
-          <div className="brand-title">MDLog Freight Suite</div>
-          <div className="brand-subtitle">Operação, importação e simulação de fretes</div>
+    <aside className="sidebar-app amd-sidebar">
+      <div className="brand-box amd-brand-box">
+        <img src={logoAmd} alt="AMD Log" className="brand-logo-amd" />
+        <div className="brand-copy">
+          <div className="brand-title">AMD Log</div>
+          <div className="brand-subtitle">Freight Platform</div>
         </div>
       </div>
 
@@ -50,7 +50,7 @@ export default function Sidebar({ paginaAtual, onMudarPagina }) {
       </div>
 
       <div className="sidebar-footer-note">
-        Tema visual MDLog aplicado para consolidar a identidade do sistema.
+        Identidade visual AMD Log aplicada sem alterar o fluxo operacional.
       </div>
     </aside>
   );
