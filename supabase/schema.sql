@@ -1,5 +1,15 @@
 create extension if not exists pgcrypto;
 
+create table if not exists cadastros_snapshot (
+  id uuid primary key default gen_random_uuid(),
+  chave text not null unique,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists cadastros_snapshot_chave_idx on cadastros_snapshot (chave);
+
 create table if not exists transportadoras (
   id uuid primary key default gen_random_uuid(),
   nome text not null,

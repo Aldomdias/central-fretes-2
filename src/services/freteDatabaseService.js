@@ -1,5 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
+const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
+
 function ensureClient() {
   const client = getSupabaseClient();
   if (!client) {
@@ -8,66 +10,51 @@ function ensureClient() {
   return client;
 }
 
-export async function listarTransportadorasDb() {
-  if (!isSupabaseConfigured()) return [];
-  const supabase = ensureClient();
-  const { data, error } = await supabase
-    .from('transportadoras')
-    .select('id, nome, status, created_at, updated_at')
-    .order('nome');
-
-  if (error) throw error;
-  return data || [];
+export function bancoConfigurado() {
+  return isSupabaseConfigured();
 }
 
-export async function criarImportacaoDb(payload) {
+export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
+  if (!isSupabaseConfigured()) return null;
+
   const supabase = ensureClient();
   const { data, error } = await supabase
-    .from('importacoes')
-    .insert(payload)
-    .select('id')
+    .from('cadastros_snapshot')
+    .select('payload, updated_at')
+    .eq('chave', chave)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+export async function salvarSnapshotFretesDb(transportadoras, chave = SNAPSHOT_CHAVE) {
+  const supabase = ensureClient();
+  const payload = {
+    chave,
+    payload: {
+      transportadoras,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+
+  const { data, error } = await supabase
+    .from('cadastros_snapshot')
+    .upsert(payload, { onConflict: 'chave' })
+    .select('id, updated_at')
     .single();
 
   if (error) throw error;
   return data;
 }
 
-export async function salvarArquivoImportadoDb(payload) {
+export async function testarConexaoFretesDb() {
+  if (!isSupabaseConfigured()) {
+    return { ok: false, mensagem: 'Supabase não configurado.' };
+  }
+
   const supabase = ensureClient();
-  const { data, error } = await supabase
-    .from('arquivos_importados')
-    .insert(payload)
-    .select('id')
-    .single();
-
+  const { error } = await supabase.from('cadastros_snapshot').select('id').limit(1);
   if (error) throw error;
-  return data;
-}
-
-export async function salvarRealizadoLoteDb(registros = []) {
-  if (!registros.length) return { inseridos: 0 };
-  const supabase = ensureClient();
-  const { error } = await supabase.from('realizado_cargas').insert(registros);
-  if (error) throw error;
-  return { inseridos: registros.length };
-}
-
-export async function salvarSimulacaoResumoDb(payload) {
-  const supabase = ensureClient();
-  const { data, error } = await supabase
-    .from('simulacoes')
-    .insert(payload)
-    .select('id')
-    .single();
-
-  if (error) throw error;
-  return data;
-}
-
-export async function salvarSimulacaoItensDb(itens = []) {
-  if (!itens.length) return { inseridos: 0 };
-  const supabase = ensureClient();
-  const { error } = await supabase.from('simulacao_itens').insert(itens);
-  if (error) throw error;
-  return { inseridos: itens.length };
+  return { ok: true, mensagem: 'Conexão com Supabase validada.' };
 }

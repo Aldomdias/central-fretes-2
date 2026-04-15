@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { initialTransportadoras } from './mockData';
+import { bancoConfigurado, carregarSnapshotFretesDb, salvarSnapshotFretesDb } from '../services/freteDatabaseService';
 
-const STORAGE_KEY = 'simulador-fretes-local-v5';
+const STORAGE_KEY = 'simulador-fretes-local-v6';
 
 const DEFAULT_GENERALIDADES = {
   incideIcms: false,
@@ -25,18 +26,26 @@ function mergeGeneralidades(value) {
 function normalizeOrigem(origem = {}) {
   return {
     ...origem,
+    id: origem.id ?? crypto.randomUUID(),
     canal: origem.canal || 'ATACADO',
     status: origem.status || 'Ativa',
     generalidades: mergeGeneralidades(origem.generalidades),
-    rotas: Array.isArray(origem.rotas) ? origem.rotas : [],
-    cotacoes: Array.isArray(origem.cotacoes) ? origem.cotacoes : [],
-    taxasEspeciais: Array.isArray(origem.taxasEspeciais) ? origem.taxasEspeciais : [],
+    rotas: Array.isArray(origem.rotas)
+      ? origem.rotas.map((item) => ({ ...item, id: item.id ?? crypto.randomUUID() }))
+      : [],
+    cotacoes: Array.isArray(origem.cotacoes)
+      ? origem.cotacoes.map((item) => ({ ...item, id: item.id ?? crypto.randomUUID() }))
+      : [],
+    taxasEspeciais: Array.isArray(origem.taxasEspeciais)
+      ? origem.taxasEspeciais.map((item) => ({ ...item, id: item.id ?? crypto.randomUUID() }))
+      : [],
   };
 }
 
 function normalizeTransportadora(transportadora = {}) {
   return {
     ...transportadora,
+    id: transportadora.id ?? crypto.randomUUID(),
     status: transportadora.status || 'Ativa',
     origens: Array.isArray(transportadora.origens)
       ? transportadora.origens.map(normalizeOrigem)
@@ -44,14 +53,12 @@ function normalizeTransportadora(transportadora = {}) {
   };
 }
 
-function nextId(list) {
-  return (
-    list.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) || 0
-  ) + 1;
-}
-
 function clone(obj) {
   return JSON.parse(JSON.stringify(obj));
+}
+
+function createInitialState() {
+  return clone(initialTransportadoras).map(normalizeTransportadora);
 }
 
 function sameOrigem(current, imported) {
@@ -75,7 +82,6 @@ function mergeImport(prev, payload, tipo) {
 
     if (!transportadora) {
       transportadora = normalizeTransportadora({
-        id: nextId(next),
         nome: item.nome,
         status: item.status || 'Ativa',
         origens: [],
@@ -89,7 +95,6 @@ function mergeImport(prev, payload, tipo) {
 
     if (!origem) {
       origem = normalizeOrigem({
-        id: nextId(transportadora.origens || []),
         cidade: item.origem.cidade,
         canal: item.origem.canal || 'ATACADO',
         status: item.origem.status || 'Ativa',
@@ -108,7 +113,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'rotas') {
       const enriched = (item.origem.rotas || []).map((row) => ({
         ...row,
-        id: nextId(origem.rotas || []) + Math.random(),
+        id: crypto.randomUUID(),
       }));
       origem.rotas = [...(origem.rotas || []), ...enriched];
     }
@@ -116,7 +121,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'cotacoes') {
       const enriched = (item.origem.cotacoes || []).map((row) => ({
         ...row,
-        id: nextId(origem.cotacoes || []) + Math.random(),
+        id: crypto.randomUUID(),
       }));
       origem.cotacoes = [...(origem.cotacoes || []), ...enriched];
     }
@@ -124,7 +129,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'taxas') {
       const enriched = (item.origem.taxasEspeciais || []).map((row) => ({
         ...row,
-        id: nextId(origem.taxasEspeciais || []) + Math.random(),
+        id: crypto.randomUUID(),
       }));
       origem.taxasEspeciais = [...(origem.taxasEspeciais || []), ...enriched];
     }
@@ -136,20 +141,122 @@ function mergeImport(prev, payload, tipo) {
 export function useFreteStore() {
   const [transportadoras, setTransportadoras] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved
-      ? JSON.parse(saved).map(normalizeTransportadora)
-      : clone(initialTransportadoras).map(normalizeTransportadora);
+    return saved ? JSON.parse(saved).map(normalizeTransportadora) : createInitialState();
   });
+  const [syncStatus, setSyncStatus] = useState({
+    modo: bancoConfigurado() ? 'supabase' : 'local',
+    carregando: false,
+    sincronizando: false,
+    erro: '',
+    ultimaSincronizacao: '',
+  });
+  const snapshotLoadedRef = useRef(false);
+  const skipNextSyncRef = useRef(false);
+  const syncTimeoutRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(transportadoras));
   }, [transportadoras]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function carregar() {
+      if (!bancoConfigurado() || snapshotLoadedRef.current) return;
+      setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
+      try {
+        const snapshot = await carregarSnapshotFretesDb();
+        if (cancelled) return;
+        if (snapshot?.payload?.transportadoras?.length) {
+          skipNextSyncRef.current = true;
+          setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
+        }
+        snapshotLoadedRef.current = true;
+        setSyncStatus((prev) => ({
+          ...prev,
+          carregando: false,
+          ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
+        }));
+      } catch (error) {
+        if (cancelled) return;
+        snapshotLoadedRef.current = true;
+        setSyncStatus((prev) => ({
+          ...prev,
+          carregando: false,
+          erro: error.message || 'Erro ao carregar snapshot do Supabase.',
+        }));
+      }
+    }
+
+    carregar();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!bancoConfigurado()) return;
+    if (!snapshotLoadedRef.current) return;
+
+    if (skipNextSyncRef.current) {
+      skipNextSyncRef.current = false;
+      return;
+    }
+
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+    }
+
+    syncTimeoutRef.current = setTimeout(async () => {
+      setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+      try {
+        const result = await salvarSnapshotFretesDb(transportadoras);
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+        }));
+      } catch (error) {
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          erro: error.message || 'Erro ao salvar snapshot no Supabase.',
+        }));
+      }
+    }, 700);
+
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    };
+  }, [transportadoras]);
+
   const api = useMemo(
     () => ({
       transportadoras,
+      syncStatus,
+      async sincronizarAgora() {
+        if (!bancoConfigurado()) return false;
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        try {
+          const result = await salvarSnapshotFretesDb(transportadoras);
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+          }));
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            erro: error.message || 'Erro ao sincronizar agora.',
+          }));
+          return false;
+        }
+      },
       resetarBase() {
-        setTransportadoras(clone(initialTransportadoras).map(normalizeTransportadora));
+        setTransportadoras(createInitialState());
       },
       salvarGeneralidades(transportadoraId, origemId, generalidades) {
         setTransportadoras((prev) =>
@@ -171,12 +278,11 @@ export function useFreteStore() {
         setTransportadoras((prev) =>
           prev.map((t) => {
             if (t.id !== transportadoraId) return t;
-            const exists = t.origens.some((o) => o.id === origem.id);
+            const normalized = normalizeOrigem(origem);
+            const exists = t.origens.some((o) => o.id === normalized.id);
             const origens = exists
-              ? t.origens.map((o) =>
-                  o.id === origem.id ? normalizeOrigem(origem) : o
-                )
-              : [...t.origens, normalizeOrigem(origem)];
+              ? t.origens.map((o) => (o.id === normalized.id ? normalized : o))
+              : [...t.origens, normalized];
             return { ...t, origens };
           })
         );
@@ -195,12 +301,10 @@ export function useFreteStore() {
       },
       salvarTransportadora(transportadora) {
         setTransportadoras((prev) => {
-          const exists = prev.some((item) => item.id === transportadora.id);
           const normalized = normalizeTransportadora(transportadora);
+          const exists = prev.some((item) => item.id === normalized.id);
           return exists
-            ? prev.map((item) =>
-                item.id === transportadora.id ? normalized : item
-              )
+            ? prev.map((item) => (item.id === normalized.id ? normalized : item))
             : [...prev, normalized];
         });
       },
@@ -217,14 +321,13 @@ export function useFreteStore() {
                   origens: t.origens.map((o) => {
                     if (o.id !== origemId) return o;
                     const lista = o[secao] ?? [];
-                    const exists = lista.some((item) => item.id === linha.id);
+                    const normalized = { ...linha, id: linha.id ?? crypto.randomUUID() };
+                    const exists = lista.some((item) => item.id === normalized.id);
                     return {
                       ...o,
                       [secao]: exists
-                        ? lista.map((item) =>
-                            item.id === linha.id ? linha : item
-                          )
-                        : [...lista, linha],
+                        ? lista.map((item) => (item.id === normalized.id ? normalized : item))
+                        : [...lista, normalized],
                     };
                   }),
                 }
@@ -243,9 +346,7 @@ export function useFreteStore() {
                       ? o
                       : {
                           ...o,
-                          [secao]: (o[secao] ?? []).filter(
-                            (item) => item.id !== linhaId
-                          ),
+                          [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
                         }
                   ),
                 }
@@ -270,7 +371,7 @@ export function useFreteStore() {
         );
       },
     }),
-    [transportadoras]
+    [transportadoras, syncStatus]
   );
 
   return api;
