@@ -565,6 +565,58 @@ export function exportarSecao(tipo, rows, fileName) {
   downloadWorkbook({ tipo, rows: sheetRowsForTipo(tipo, rows), fileName });
 }
 
+export function exportarInconsistencias(rows = [], fileName = 'inconsistencias.xlsx') {
+  const wb = XLSX.utils.book_new();
+
+  const rotasSemFrete = rows
+    .filter((item) => item.tipo === 'rotasSemFrete')
+    .map((item) => ({
+      Transportadora: item.transportadora || '',
+      Origem: item.origem || '',
+      Canal: item.canal || '',
+      'Rota sem frete': item.item || '',
+    }));
+
+  const fretesSemRota = rows
+    .filter((item) => item.tipo === 'fretesSemRota')
+    .map((item) => ({
+      Transportadora: item.transportadora || '',
+      Origem: item.origem || '',
+      Canal: item.canal || '',
+      'Frete sem rota': item.item || '',
+    }));
+
+  const resumo = [
+    {
+      'Rotas sem frete': rotasSemFrete.length,
+      'Fretes sem rota': fretesSemRota.length,
+      Total: rotasSemFrete.length + fretesSemRota.length,
+    },
+  ];
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), 'Resumo');
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      rotasSemFrete.length
+        ? rotasSemFrete
+        : [{ Transportadora: '', Origem: '', Canal: '', 'Rota sem frete': '' }]
+    ),
+    'Rotas sem frete'
+  );
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      fretesSemRota.length
+        ? fretesSemRota
+        : [{ Transportadora: '', Origem: '', Canal: '', 'Frete sem rota': '' }]
+    ),
+    'Fretes sem rota'
+  );
+
+  XLSX.writeFile(wb, fileName);
+}
+
 export function analisarCoberturaOrigem(origem) {
   const rotas = Array.isArray(origem?.rotas) ? origem.rotas : [];
   const cotacoes = Array.isArray(origem?.cotacoes) ? origem.cotacoes : [];
@@ -605,10 +657,10 @@ export function analisarCoberturaOrigem(origem) {
     severidade,
     totalRotas: rotas.length,
     totalCotacoes: cotacoes.length,
-    rotasSemFrete,
-    fretesSemRota,
-    rotasSemCotacao: rotasSemFrete,
-    cotacoesSemRota: fretesSemRota,
+    rotasSemFrete: [...rotasSemFrete],
+    fretesSemRota: [...fretesSemRota],
+    rotasSemCotacao: [...rotasSemFrete],
+    cotacoesSemRota: [...fretesSemRota],
     possuiProblema: severidade !== 'ok',
   };
 }
