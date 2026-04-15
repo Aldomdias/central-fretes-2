@@ -3,64 +3,100 @@ import { formatCurrency, formatPercent, simularFretes } from '../utils/calculoFr
 
 const defaultForm = {
   transportadoraId: '',
-  origemId: '',
-  destino: '',
+  origemBusca: '',
+  origemIbge: '',
+  destinoBusca: '',
+  destinoIbge: '',
   pesoKg: '',
   valorNf: '',
   canal: 'TODOS',
 };
 
-function BaseBreakdown({ item, valorNf }) {
-  return (
-    <div className="detail-column">
-      <h4>Como chegou no frete base</h4>
-      <div className="breakdown-grid compact">
-        <div><span>Tipo</span><strong>{item.tipoCalculo}</strong></div>
-        <div><span>Critério</span><strong>{item.criterio}</strong></div>
-        <div><span>Faixa</span><strong>{item.faixaSelecionada || '-'}</strong></div>
-        <div><span>Peso simulado</span><strong>{item.pesoKg ? `${item.pesoKg} kg` : '-'}</strong></div>
-        <div><span>NF simulada</span><strong>{formatCurrency(valorNf)}</strong></div>
-        <div><span>Mínimo da rota</span><strong>{formatCurrency(item.minimoRota)}</strong></div>
-        {item.tipoCalculo === 'FAIXA_DE_PESO' ? (
-          <>
-            <div><span>Valor da faixa</span><strong>{formatCurrency(item.valorFaixa)}</strong></div>
-            <div><span>Excedente</span><strong>{formatCurrency(item.valorExcedente)}</strong></div>
-            <div><span>Percentual sobre NF</span><strong>{formatCurrency(item.valorPercentual)}</strong></div>
-          </>
-        ) : (
-          <>
-            <div><span>Valor por kg</span><strong>{formatCurrency(item.valorPeso)}</strong></div>
-            <div><span>Percentual sobre NF</span><strong>{formatCurrency(item.valorPercentual)}</strong></div>
-            <div><span>Valor fixo</span><strong>{formatCurrency(item.valorFixo)}</strong></div>
-          </>
-        )}
-        <div className="highlight-cell"><span>Frete base vencedor</span><strong>{formatCurrency(item.valorBase)}</strong></div>
-      </div>
-    </div>
-  );
+function ExportButton({ resultados }) {
+  const exportarCsv = () => {
+    const cabecalho = [
+      'Transportadora', 'Origem', 'IBGE Origem', 'Destino/Rota', 'IBGE Destino', 'Prazo', 'Canal',
+      'Tipo de cálculo', 'Critério', 'Faixa aplicada', 'Base', 'Ad Valorem', 'GRIS', 'Pedágio', 'TAS',
+      'CTRC', 'TDA', 'TDR', 'TRT', 'SUFRAMA', 'Outras', 'ICMS', 'Total',
+      'Melhor trecho', 'Valor melhor trecho', 'Diferença para melhor', '% redução necessária',
+    ];
+
+    const linhas = resultados.map((item) => [
+      item.transportadora,
+      item.origem,
+      item.ibgeOrigem,
+      item.rota,
+      item.ibgeDestino,
+      item.prazo,
+      item.canal,
+      item.tipoCalculo,
+      item.criterio,
+      item.faixaAplicada,
+      item.valorBase,
+      item.adValorem,
+      item.gris,
+      item.pedagio,
+      item.tas,
+      item.ctrc,
+      item.tda,
+      item.tdr,
+      item.trt,
+      item.suframa,
+      item.outras,
+      item.icms,
+      item.total,
+      item.melhorTrecho,
+      item.melhorTrechoValor,
+      item.diferencaParaMelhor,
+      item.percentualReducaoNecessaria,
+    ]);
+
+    const csv = [cabecalho, ...linhas]
+      .map((linha) => linha.map((valor) => `"${String(valor ?? '').replace(/"/g, '""')}"`).join(';'))
+      .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'relatorio-simulacao-fretes.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return <button className="btn-secondary" onClick={exportarCsv}>Exportar relatório</button>;
 }
 
-function TotalBreakdown({ item }) {
+function DetailBreakdown({ item }) {
   return (
-    <div className="detail-column">
-      <h4>Composição final do frete</h4>
-      <div className="breakdown-grid compact">
-        <div><span>Frete base</span><strong>{formatCurrency(item.valorBase)}</strong></div>
-        <div><span>ADV</span><strong>{formatCurrency(item.adValorem)}</strong></div>
-        <div><span>GR</span><strong>{formatCurrency(item.gris)}</strong></div>
-        <div><span>Pedágio</span><strong>{formatCurrency(item.pedagio)}</strong></div>
-        <div><span>TAS</span><strong>{formatCurrency(item.tas)}</strong></div>
-        <div><span>CTRC</span><strong>{formatCurrency(item.ctrc)}</strong></div>
-        <div><span>TDA</span><strong>{formatCurrency(item.tda)}</strong></div>
-        <div><span>TDR</span><strong>{formatCurrency(item.tdr)}</strong></div>
-        <div><span>TRT</span><strong>{formatCurrency(item.trt)}</strong></div>
-        <div><span>SUFR</span><strong>{formatCurrency(item.suframa)}</strong></div>
-        <div><span>OUT</span><strong>{formatCurrency(item.outras)}</strong></div>
-        <div><span>Subtotal</span><strong>{formatCurrency(item.subtotal)}</strong></div>
-        <div><span>ICMS</span><strong>{formatCurrency(item.icms)}</strong></div>
-        <div><span>Alíquota ICMS</span><strong>{item.aliquotaIcmsAplicada ? formatPercent(item.aliquotaIcmsAplicada) : '0,00%'}</strong></div>
-        <div><span>Origem ICMS</span><strong>{item.origemIcmsLabel}</strong></div>
-        <div className="highlight-cell"><span>Total final</span><strong>{formatCurrency(item.total)}</strong></div>
+    <div className="sim-detail-grid">
+      <div className="detail-box">
+        <div className="detail-box-title">Como chegou no frete base</div>
+        <div className="detail-line"><span>Tipo de cálculo</span><strong>{item.tipoCalculo}</strong></div>
+        <div className="detail-line"><span>Critério aplicado</span><strong>{item.criterio}</strong></div>
+        <div className="detail-line"><span>Faixa aplicada</span><strong>{item.faixaAplicada}</strong></div>
+        <div className="detail-line"><span>Mínimo da rota</span><strong>{formatCurrency(item.minimoRota)}</strong></div>
+        <div className="detail-line"><span>Valor por peso</span><strong>{formatCurrency(item.valorPeso)}</strong></div>
+        <div className="detail-line"><span>Valor percentual</span><strong>{formatCurrency(item.valorPercentual)}</strong></div>
+        <div className="detail-line"><span>Valor da faixa</span><strong>{formatCurrency(item.valorFaixa)}</strong></div>
+        <div className="detail-line"><span>Excedente</span><strong>{formatCurrency(item.valorExcedente)}</strong></div>
+        <div className="detail-line total"><span>Frete base</span><strong>{formatCurrency(item.valorBase)}</strong></div>
+      </div>
+
+      <div className="detail-box">
+        <div className="detail-box-title">Composição final do frete</div>
+        <div className="detail-line"><span>Ad Valorem</span><strong>{formatCurrency(item.adValorem)}</strong></div>
+        <div className="detail-line"><span>GRIS</span><strong>{formatCurrency(item.gris)}</strong></div>
+        <div className="detail-line"><span>Pedágio</span><strong>{formatCurrency(item.pedagio)}</strong></div>
+        <div className="detail-line"><span>TAS</span><strong>{formatCurrency(item.tas)}</strong></div>
+        <div className="detail-line"><span>CTRC</span><strong>{formatCurrency(item.ctrc)}</strong></div>
+        <div className="detail-line"><span>TDA</span><strong>{formatCurrency(item.tda)}</strong></div>
+        <div className="detail-line"><span>TDR</span><strong>{formatCurrency(item.tdr)}</strong></div>
+        <div className="detail-line"><span>TRT</span><strong>{formatCurrency(item.trt)}</strong></div>
+        <div className="detail-line"><span>SUFRAMA</span><strong>{formatCurrency(item.suframa)}</strong></div>
+        <div className="detail-line"><span>Outras</span><strong>{formatCurrency(item.outras)}</strong></div>
+        <div className="detail-line"><span>ICMS</span><strong>{formatCurrency(item.icms)} {item.aliquotaIcmsAplicada ? `(${formatPercent(item.aliquotaIcmsAplicada)})` : ''}</strong></div>
+        <div className="detail-line total"><span>Total final</span><strong>{formatCurrency(item.total)}</strong></div>
       </div>
     </div>
   );
@@ -70,13 +106,7 @@ export default function SimuladorPage({ transportadoras, onAbrirTransportadoras 
   const [modo, setModo] = useState('destino');
   const [form, setForm] = useState(defaultForm);
   const [simulado, setSimulado] = useState(false);
-  const [detalheAberto, setDetalheAberto] = useState('');
-
-  const origensDisponiveis = useMemo(() => {
-    return transportadoras.flatMap((t) =>
-      (t.origens || []).map((o) => ({ id: o.id, label: `${t.nome} • ${o.cidade}`, transportadoraId: t.id })),
-    );
-  }, [transportadoras]);
+  const [detalhesAbertos, setDetalhesAbertos] = useState({});
 
   const resultados = useMemo(() => {
     if (!simulado) return [];
@@ -84,8 +114,10 @@ export default function SimuladorPage({ transportadoras, onAbrirTransportadoras 
       transportadoras,
       modo,
       transportadoraId: form.transportadoraId,
-      origemId: form.origemId,
-      destino: form.destino,
+      origemBusca: form.origemBusca,
+      origemIbge: form.origemIbge,
+      destinoBusca: form.destinoBusca,
+      destinoIbge: form.destinoIbge,
       pesoKg: form.pesoKg,
       valorNf: form.valorNf,
       canal: form.canal,
@@ -99,19 +131,35 @@ export default function SimuladorPage({ transportadoras, onAbrirTransportadoras 
     return {
       total: resultados.length,
       melhor,
-      economia: pior.total - melhor.total,
+      pior,
+      economia: Math.max(0, pior.total - melhor.total),
+      savingPercentual: pior.total > 0 ? ((pior.total - melhor.total) / pior.total) * 100 : 0,
     };
   }, [resultados]);
 
   const onChange = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
 
+  const toggleDetalhes = (key) => {
+    setDetalhesAbertos((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const limpar = () => {
+    setForm(defaultForm);
+    setSimulado(false);
+    setDetalhesAbertos({});
+  };
+
+  const ajudaDestino = modo === 'transportadora'
+    ? 'Deixe o destino em branco para simular todos os destinos da transportadora, ou preencha para restringir.'
+    : 'Informe pelo menos o destino por nome/rota ou pelo IBGE do destino.';
+
   return (
     <div className="page-shell">
       <div className="page-header">
-        <h1>Simulador de Fretes • AMD Log</h1>
+        <h1>Simulador de Fretes</h1>
         <p>
-          Simule fretes por destino com cálculo por percentual ou faixa, taxas especiais e ICMS.
-          O ICMS usa a alíquota cadastrada na transportadora e, quando ela estiver zerada, aplica a regra interestadual padrão por origem e destino.
+          Agora a simulação aceita origem por cidade ou IBGE, destino por rota ou IBGE,
+          simulação completa por transportadora e detalhamento recolhido para não poluir a leitura.
         </p>
       </div>
 
@@ -120,39 +168,41 @@ export default function SimuladorPage({ transportadoras, onAbrirTransportadoras 
 
         <div className="toggle-row">
           <button className={modo === 'destino' ? 'toggle-btn active' : 'toggle-btn'} onClick={() => setModo('destino')}>Origem x Destino</button>
-          <button className={modo === 'transportadora' ? 'toggle-btn active' : 'toggle-btn'} onClick={() => setModo('transportadora')}>Por Transportadora</button>
+          <button className={modo === 'transportadora' ? 'toggle-btn active' : 'toggle-btn'} onClick={() => setModo('transportadora')}>Por transportadora</button>
         </div>
 
         <div className="form-grid three">
           <div className="field">
-            <label>Transportadora {modo === 'transportadora' ? '' : '(opcional)'}</label>
+            <label>Transportadora</label>
             <select value={form.transportadoraId} onChange={(e) => onChange('transportadoraId', e.target.value)}>
               <option value="">Todas</option>
               {transportadoras.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
             </select>
           </div>
+
           <div className="field">
-            <label>Origem (opcional)</label>
-            <select value={form.origemId} onChange={(e) => onChange('origemId', e.target.value)}>
-              <option value="">Todas as origens</option>
-              {origensDisponiveis
-                .filter((item) => !form.transportadoraId || String(item.transportadoraId) === String(form.transportadoraId))
-                .map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-            </select>
+            <label>Origem por cidade</label>
+            <input value={form.origemBusca} onChange={(e) => onChange('origemBusca', e.target.value)} placeholder="Ex: Itajaí, Bauru, Barueri" />
+            <small>Busca a origem só pela cidade, sem depender da transportadora.</small>
           </div>
+
           <div className="field">
-            <label>Destino</label>
-            <input value={form.destino} onChange={(e) => onChange('destino', e.target.value)} placeholder="IBGE ou nome da rota" />
-            <small>Exemplos: 3550308, 3106200, CAPITAL - SP, GOIAS</small>
+            <label>Origem por IBGE</label>
+            <input value={form.origemIbge} onChange={(e) => onChange('origemIbge', e.target.value)} placeholder="Ex: 4218203" />
           </div>
+
           <div className="field">
-            <label>Peso (kg)</label>
-            <input value={form.pesoKg} onChange={(e) => onChange('pesoKg', e.target.value)} placeholder="Ex: 150" />
+            <label>Destino / nome da rota</label>
+            <input value={form.destinoBusca} onChange={(e) => onChange('destinoBusca', e.target.value)} placeholder="Ex: Bauru, CAPITAL - SP, GOIAS" />
+            <small>{ajudaDestino}</small>
           </div>
+
           <div className="field">
-            <label>Valor da NF (R$)</label>
-            <input value={form.valorNf} onChange={(e) => onChange('valorNf', e.target.value)} placeholder="Ex: 5000" />
+            <label>Destino por IBGE</label>
+            <input value={form.destinoIbge} onChange={(e) => onChange('destinoIbge', e.target.value)} placeholder="Ex: 3550308" />
+            <small>Essa busca agora é tratada separadamente para não falhar no IBGE.</small>
           </div>
+
           <div className="field small-width">
             <label>Canal</label>
             <select value={form.canal} onChange={(e) => onChange('canal', e.target.value)}>
@@ -161,65 +211,81 @@ export default function SimuladorPage({ transportadoras, onAbrirTransportadoras 
               <option value="B2C">B2C</option>
             </select>
           </div>
+
+          <div className="field">
+            <label>Peso (kg)</label>
+            <input value={form.pesoKg} onChange={(e) => onChange('pesoKg', e.target.value)} placeholder="Ex: 150" />
+          </div>
+
+          <div className="field">
+            <label>Valor da NF (R$)</label>
+            <input value={form.valorNf} onChange={(e) => onChange('valorNf', e.target.value)} placeholder="Ex: 5000" />
+          </div>
         </div>
 
         <div className="actions-right gap-row">
-          <button className="btn-secondary" onClick={() => { setForm(defaultForm); setSimulado(false); setDetalheAberto(''); }}>Limpar</button>
-          <button className="btn-primary" onClick={() => setSimulado(true)}>Simular Fretes</button>
+          <button className="btn-secondary" onClick={limpar}>Limpar</button>
+          <button className="btn-primary" onClick={() => setSimulado(true)}>Simular fretes</button>
         </div>
       </div>
 
       {simulado && !resultados.length && (
         <div className="hint-box">
-          Nenhuma rota encontrada com os parâmetros informados. Cadastre rotas, cotações ou ajuste o destino em <button className="btn-link inline-btn" onClick={onAbrirTransportadoras}>Transportadoras</button>.
+          Nenhuma rota encontrada com os parâmetros informados. Confira origem, destino, IBGE e faixas cadastradas em{' '}
+          <button className="btn-link inline-btn" onClick={onAbrirTransportadoras}>Transportadoras</button>.
         </div>
       )}
 
       {!!resultados.length && (
         <>
-          <div className="summary-strip">
+          <div className="summary-strip five-cols">
             <div className="summary-card"><span>Cenários</span><strong>{resumo.total}</strong></div>
             <div className="summary-card"><span>Melhor frete</span><strong>{formatCurrency(resumo.melhor.total)}</strong></div>
-            <div className="summary-card"><span>Transportadora líder</span><strong>{resumo.melhor.transportadora}</strong></div>
-            <div className="summary-card"><span>Economia vs pior cenário</span><strong>{formatCurrency(resumo.economia)}</strong></div>
+            <div className="summary-card"><span>Líder</span><strong>{resumo.melhor.transportadora}</strong></div>
+            <div className="summary-card"><span>Saving vs pior</span><strong>{formatCurrency(resumo.economia)}</strong></div>
+            <div className="summary-card"><span>Saving %</span><strong>{formatPercent(resumo.savingPercentual)}</strong></div>
+          </div>
+
+          <div className="actions-right gap-row no-top-margin">
+            <ExportButton resultados={resultados} />
           </div>
 
           <div className="list-stack">
             {resultados.map((item, index) => {
-              const detalheId = `${item.transportadoraId}-${item.origemId}-${item.rota}-${index}`;
-              const aberto = detalheAberto === detalheId;
+              const key = `${item.transportadoraId}-${item.origemId}-${item.ibgeDestino}-${index}`;
+              const aberto = !!detalhesAbertos[key];
               return (
-                <div className="result-card" key={detalheId}>
+                <div className="result-card" key={key}>
                   <div className="result-top">
                     <div>
-                      <div className="result-title">{index === 0 ? '🏆 ' : ''}{item.transportadora} • {item.origem}</div>
-                      <div className="list-subtitle">Rota {item.rota} • Destino {item.ibgeDestino} • Prazo {item.prazo} dia(s)</div>
+                      <div className="result-title">{index === 0 ? '🏆 ' : ''}{item.transportadora}</div>
+                      <div className="list-subtitle">Origem {item.origem} ({item.ibgeOrigem}) • Destino {item.rota} ({item.ibgeDestino}) • Prazo {item.prazo} dia(s)</div>
                     </div>
                     <div className="result-price">{formatCurrency(item.total)}</div>
                   </div>
 
-                  <div className="inline-meta wrap result-summary-row">
+                  <div className="inline-meta wrap sim-meta-grid">
                     <span className="status-pill light neutral">{item.canal}</span>
                     <span className="status-pill light neutral">{item.tipoCalculo}</span>
-                    <span>Critério: <strong>{item.criterio}</strong></span>
-                    <span>Base: <strong>{formatCurrency(item.valorBase)}</strong></span>
-                    {index > 0 && (
+                    <span>Frete base: <strong>{formatCurrency(item.valorBase)}</strong></span>
+                    <span>ICMS aplicado: <strong>{item.aliquotaIcmsAplicada ? formatPercent(item.aliquotaIcmsAplicada) : 'Não'}</strong></span>
+                    {item.perdeuTrecho ? (
                       <>
-                        <span>Diferença para líder: <strong>{formatCurrency(item.diferencaParaMelhor)}</strong></span>
-                        <span>Redução necessária: <strong>{formatPercent(item.reducaoPercentualNecessaria)}</strong></span>
+                        <span>Diferença para o líder: <strong>{formatCurrency(item.diferencaParaMelhor)}</strong></span>
+                        <span>Redução necessária: <strong>{formatPercent(item.percentualReducaoNecessaria)}</strong></span>
                       </>
+                    ) : (
+                      <span>Melhor cenário deste trecho</span>
                     )}
-                    <button className="btn-link detail-toggle-btn" onClick={() => setDetalheAberto(aberto ? '' : detalheId)}>
+                  </div>
+
+                  <div className="result-actions-row">
+                    <button className="btn-secondary btn-small" onClick={() => toggleDetalhes(key)}>
                       {aberto ? 'Ocultar detalhes' : 'Ver detalhes'}
                     </button>
                   </div>
 
-                  {aberto && (
-                    <div className="result-details-stack">
-                      <BaseBreakdown item={{ ...item, pesoKg: form.pesoKg }} valorNf={form.valorNf} />
-                      <TotalBreakdown item={item} />
-                    </div>
-                  )}
+                  {aberto && <DetailBreakdown item={item} />}
                 </div>
               );
             })}

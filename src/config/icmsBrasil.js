@@ -1,4 +1,4 @@
-const UF_BY_IBGE_PREFIX = {
+export const UF_POR_IBGE_PREFIXO = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
   '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
   '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
@@ -6,61 +6,16 @@ const UF_BY_IBGE_PREFIX = {
   '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
 };
 
-const GRUPO_SUL_SUDESTE_EXCETO_ES = new Set(['SP', 'RJ', 'MG', 'PR', 'SC', 'RS']);
-const GRUPO_N_NE_CO_E_ES = new Set(['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'RN', 'RO', 'RR', 'SE', 'TO']);
+export const REGIAO_POR_UF = {
+  RO: 'N', AC: 'N', AM: 'N', RR: 'N', PA: 'N', AP: 'N', TO: 'N',
+  MA: 'NE', PI: 'NE', CE: 'NE', RN: 'NE', PB: 'NE', PE: 'NE', AL: 'NE', SE: 'NE', BA: 'NE',
+  MG: 'SE', ES: 'SE', RJ: 'SE', SP: 'SE',
+  PR: 'S', SC: 'S', RS: 'S',
+  MS: 'CO', MT: 'CO', GO: 'CO', DF: 'CO',
+};
 
-const ALIQUOTA_INTERESTADUAL_PADRAO = 12;
-const ALIQUOTA_INTERESTADUAL_REDUZIDA = 7;
-const ALIQUOTA_IMPORTADO = 4;
-const ALIQUOTA_INTRAESTADUAL_FALLBACK = 12;
-
-export function getUfFromIbge(ibge) {
-  const digits = String(ibge || '').replace(/\D/g, '');
-  if (digits.length < 2) return '';
-  return UF_BY_IBGE_PREFIX[digits.slice(0, 2)] || '';
-}
-
-export function calcularAliquotaIcmsBrasil({ ibgeOrigem, ibgeDestino, ufOrigem, ufDestino, aliquotaCustomizada, origemImportada = false }) {
-  const custom = Number(aliquotaCustomizada || 0);
-  if (custom > 0) {
-    return { aliquota: custom, origem: 'configuracao_da_transportadora' };
-  }
-
-  const ufO = String(ufOrigem || getUfFromIbge(ibgeOrigem) || '').toUpperCase();
-  const ufD = String(ufDestino || getUfFromIbge(ibgeDestino) || '').toUpperCase();
-
-  if (!ufO || !ufD) {
-    return { aliquota: 0, origem: 'sem_uf' };
-  }
-
-  if (origemImportada) {
-    return { aliquota: ALIQUOTA_IMPORTADO, origem: 'resolucao_senado_13_2012' };
-  }
-
-  if (ufO === ufD) {
-    return { aliquota: ALIQUOTA_INTRAESTADUAL_FALLBACK, origem: 'fallback_interno_padrao' };
-  }
-
-  if (GRUPO_SUL_SUDESTE_EXCETO_ES.has(ufO) && GRUPO_N_NE_CO_E_ES.has(ufD)) {
-    return { aliquota: ALIQUOTA_INTERESTADUAL_REDUZIDA, origem: 'interestadual_7' };
-  }
-
-  return { aliquota: ALIQUOTA_INTERESTADUAL_PADRAO, origem: 'interestadual_12' };
-}
-
-export function descreverRegraIcms(codigoOrigem) {
-  switch (codigoOrigem) {
-    case 'configuracao_da_transportadora':
-      return 'Alíquota da transportadora';
-    case 'resolucao_senado_13_2012':
-      return 'Importado 4%';
-    case 'interestadual_7':
-      return 'Interestadual 7%';
-    case 'interestadual_12':
-      return 'Interestadual 12%';
-    case 'fallback_interno_padrao':
-      return 'Interno padrão';
-    default:
-      return 'Sem alíquota';
-  }
-}
+export const ALIQUOTA_INTERNA_PADRAO_UF = {
+  AC: 19, AL: 19, AM: 20, AP: 18, BA: 20.5, CE: 20, DF: 20, ES: 17, GO: 19, MA: 22,
+  MG: 18, MS: 17, MT: 17, PA: 19, PB: 20, PE: 20.5, PI: 21, PR: 19.5, RJ: 22, RN: 20,
+  RO: 19.5, RR: 20, RS: 17, SC: 17, SE: 19, SP: 18, TO: 20,
+};

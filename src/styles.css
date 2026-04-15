@@ -360,118 +360,50 @@ tbody td {
 .hint-box.compact { padding: 12px 14px; font-size: 14px; }
 @media (max-width: 900px) { .channel-picker { grid-template-columns: 1fr; } }
 
-
-/* AMD Log visual fix */
-.amd-sidebar {
-  background: linear-gradient(180deg, #07173a 0%, #04112c 55%, #030b1b 100%);
-}
-
-.amd-brand-box {
-  align-items: flex-start;
+.summary-strip.five-cols { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.no-top-margin { margin-top: 0; }
+.result-actions-row { margin-top: 14px; display: flex; justify-content: flex-end; }
+.btn-small { padding: 9px 14px; font-size: 14px; }
+.sim-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 14px;
-  padding: 8px 20px 20px;
+  margin-top: 14px;
 }
-
-.brand-logo-amd {
-  width: 168px;
-  max-width: 100%;
-  height: auto;
-  display: block;
-  object-fit: contain;
+.detail-box {
+  border: 1px solid #d8e0ea;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 16px;
 }
-
-.brand-copy {
+.detail-box-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: #081737;
+  margin-bottom: 12px;
+}
+.detail-line {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.brand-subtitle {
-  color: rgba(255,255,255,.72);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
-
-.sidebar-footer-note {
-  margin: 24px 18px 0;
-  padding: 14px 16px;
-  border: 1px solid rgba(255,255,255,.08);
-  background: rgba(255,255,255,.04);
-  border-radius: 14px;
-  color: rgba(255,255,255,.78);
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.amd-dashboard-shell {
-  gap: 22px;
-}
-
-.amd-hero-card {
-  background: linear-gradient(135deg, rgba(6,25,67,1) 0%, rgba(9,37,96,1) 60%, rgba(180,21,37,0.95) 100%);
-  color: #fff;
-  border-radius: 24px;
-  padding: 28px 30px;
-  box-shadow: 0 12px 28px rgba(6, 18, 44, .18);
-  border: 1px solid rgba(255,255,255,.12);
-}
-
-.amd-hero-card .page-header h1,
-.amd-hero-card .page-header p,
-.amd-hero-card .amd-badge {
-  color: #fff;
-}
-
-.amd-badge {
-  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(255,255,255,.12);
-  border: 1px solid rgba(255,255,255,.16);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.hero-actions-row {
-  display: flex;
-  flex-wrap: wrap;
+  justify-content: space-between;
   gap: 12px;
-  margin-top: 18px;
+  padding: 8px 0;
+  border-bottom: 1px solid #e4eaf2;
+  color: #5f7596;
 }
-
-.amd-panel-card {
-  border-top: 4px solid #c8192e;
+.detail-line strong { color: #081737; text-align: right; }
+.detail-line.total {
+  border-bottom: 0;
+  margin-top: 6px;
+  padding-top: 12px;
+  font-weight: 800;
 }
+.sim-meta-grid span { display: inline-flex; align-items: center; }
 
-.amd-info-card {
-  border-left: 5px solid #0d56b3;
-}
-
-.nav-item.active {
-  background: linear-gradient(90deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
-  border: 1px solid rgba(255,255,255,.08);
-}
-
-.nav-item:hover {
-  background: rgba(255,255,255,.06);
-}
-
-.btn-primary {
-  background: linear-gradient(135deg, #0b4da2 0%, #c5192d 100%);
-  color: #fff;
-  border: 0;
-}
-
-.btn-primary:hover {
-  filter: brightness(1.04);
+@media (max-width: 1200px) {
+  .summary-strip.five-cols { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 900px) {
-  .brand-logo-amd { width: 132px; }
-  .amd-hero-card { padding: 22px; }
-  .hero-actions-row { flex-direction: column; }
+  .sim-detail-grid, .summary-strip.five-cols { grid-template-columns: 1fr; }
 }
