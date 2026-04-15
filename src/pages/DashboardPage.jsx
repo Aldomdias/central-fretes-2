@@ -1,23 +1,31 @@
 import { buildDashboardStats } from '../data/mockData';
 
-export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase }) {
+export default function DashboardPage({
+  transportadoras,
+  onAbrirSimulador,
+  onAbrirTransportadoras,
+  onAbrirImportacao,
+  onResetarBase,
+}) {
   const stats = buildDashboardStats(transportadoras);
 
   return (
     <div className="page-shell amd-dashboard-shell">
-      <div className="amd-hero-card">
-        <div>
-          <div className="amd-badge">AMD Log • Plataforma de Fretes</div>
-          <div className="page-top between start-mobile top-space">
-            <div className="page-header">
-              <h1>Simulador de fretes</h1>
-              <p>
-                Plataforma para importação, cadastro, simulação e geração do arquivo Verum,
-                com identidade visual AMD Log e foco operacional.
-              </p>
-            </div>
-            <button className="btn-secondary" onClick={onResetarBase}>↺ Restaurar base exemplo</button>
+      <section className="amd-hero-card">
+        <div className="amd-hero-topline">AMD Log • Plataforma de Fretes</div>
+
+        <div className="page-top between start-mobile">
+          <div className="page-header slim">
+            <h1>Simulador de fretes</h1>
+            <p>
+              Plataforma para importação, cadastro, simulação e geração do arquivo Verum,
+              com foco operacional e visual mais limpo para o dia a dia.
+            </p>
           </div>
+
+          <button className="btn-secondary" onClick={onResetarBase}>
+            ↺ Restaurar base exemplo
+          </button>
         </div>
 
         <div className="hero-actions-row">
@@ -25,7 +33,7 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
           <button className="btn-secondary" onClick={onAbrirImportacao}>Abrir importação</button>
           <button className="btn-secondary" onClick={onAbrirTransportadoras}>Abrir transportadoras</button>
         </div>
-      </div>
+      </section>
 
       <div className="stats-grid">
         {stats.map((item) => (
@@ -43,7 +51,7 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
           <div className="panel-title">🧾 Simulação operacional</div>
           <p>
             Compare tabelas, avalie competitividade e visualize o cálculo completo do frete
-            com composição detalhada somente quando abrir os detalhes.
+            apenas quando abrir os detalhes.
           </p>
           <button className="btn-primary full" onClick={onAbrirSimulador}>Ir para simulação</button>
         </div>
@@ -52,7 +60,7 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A próxima fase conecta isso à base persistente para histórico e controle.
+            A próxima fase conecta isso à base persistente.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -60,8 +68,7 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
         <div className="panel-card amd-panel-card">
           <div className="panel-title">📦 Importação e Verum</div>
           <p>
-            Importe arquivos, acompanhe inconsistências e gere os arquivos de rotas e fretes
-            no layout correto da Verum.
+            Importe arquivos, acompanhe inconsistências e gere os arquivos no layout correto da Verum.
           </p>
           <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
         </div>
@@ -72,8 +79,7 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
         <div>
           <div className="info-title">Próxima fase recomendada</div>
           <div className="info-text">
-            Persistir a base no Supabase, armazenar histórico de importações e preparar a simulação
-            sobre o realizado de 3 meses sem depender de arquivos grandes no navegador.
+            Persistir a base, armazenar histórico de importações e preparar a simulação sobre o realizado.
           </div>
         </div>
       </div>

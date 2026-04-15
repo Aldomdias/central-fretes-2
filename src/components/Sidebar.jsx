@@ -14,10 +14,13 @@ export default function Sidebar({ paginaAtual, onMudarPagina }) {
   return (
     <aside className="sidebar-app amd-sidebar">
       <div className="brand-box amd-brand-box">
-        <img src={logoAmd} alt="AMD Log" className="brand-logo-amd" />
-        <div className="brand-copy">
+        <div className="amd-brand-mark">
+          <img src={logoAmd} alt="AMD Log" className="brand-logo-amd" />
+        </div>
+
+        <div className="brand-copy amd-brand-copy">
           <div className="brand-title">AMD Log</div>
-          <div className="brand-subtitle">Freight Platform</div>
+          <div className="brand-subtitle">Plataforma de Fretes</div>
         </div>
       </div>
 
@@ -50,7 +53,7 @@ export default function Sidebar({ paginaAtual, onMudarPagina }) {
       </div>
 
       <div className="sidebar-footer-note">
-        Identidade visual AMD Log aplicada sem alterar o fluxo operacional.
+        Visual AMD Log aplicado com foco em leitura e sem invadir o conteúdo.
       </div>
     </aside>
   );
