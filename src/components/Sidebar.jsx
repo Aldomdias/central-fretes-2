@@ -1,3 +1,5 @@
+import logoMdlog from '../assets/mdlog-logo.png';
+
 const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
@@ -11,9 +13,12 @@ const menuCadastros = [
 export default function Sidebar({ paginaAtual, onMudarPagina }) {
   return (
     <aside className="sidebar-app">
-      <div className="brand-box">
-        <div className="brand-icon">🚚</div>
-        <div className="brand-title">Simulador de Fretes</div>
+      <div className="brand-box brand-box-mdlog">
+        <img src={logoMdlog} alt="MDLog" className="brand-logo-image" />
+        <div>
+          <div className="brand-title">MDLog Freight Suite</div>
+          <div className="brand-subtitle">Operação, importação e simulação de fretes</div>
+        </div>
       </div>
 
       <div className="menu-section">
@@ -42,6 +47,10 @@ export default function Sidebar({ paginaAtual, onMudarPagina }) {
             <span>{item.label}</span>
           </button>
         ))}
+      </div>
+
+      <div className="sidebar-footer-note">
+        Tema visual MDLog aplicado para consolidar a identidade do sistema.
       </div>
     </aside>
   );
