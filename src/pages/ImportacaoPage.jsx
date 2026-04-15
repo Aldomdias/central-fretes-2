@@ -23,6 +23,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
   const [historico, setHistorico] = useState([]);
   const [filtro, setFiltro] = useState('');
   const [detalhe, setDetalhe] = useState(null);
+  const [canalImportacao, setCanalImportacao] = useState('ATACADO');
 
   const cobertura = useMemo(() => buildCoberturaReport(transportadoras), [transportadoras]);
   const pendencias = useMemo(() => cobertura.detalhes.filter((item) => (!filtro || item.transportadora.toLowerCase().includes(filtro.toLowerCase()) || item.origem.toLowerCase().includes(filtro.toLowerCase()))), [cobertura, filtro]);
@@ -31,7 +32,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     const rows = [];
     transportadoras.forEach((transportadora) => {
       (transportadora.origens || []).forEach((origem) => {
-        const base = { transportadora: transportadora.nome, origem: origem.cidade, codigoUnidade: origem.canal === 'B2C' ? '0001 - B2C' : '0001 - B2B' };
+        const base = { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal || 'ATACADO', codigoUnidade: origem.canal === 'B2C' ? '0001 - B2C' : '0001 - B2B' };
         if (tipo === 'rotas') rows.push(...(origem.rotas || []).map((item) => ({ ...base, ...item })));
         if (tipo === 'cotacoes') rows.push(...(origem.cotacoes || []).map((item) => ({ ...base, ...item })));
         if (tipo === 'taxas') rows.push(...(origem.taxasEspeciais || []).map((item) => ({ ...base, ...item })));
@@ -50,9 +51,9 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     for (const file of files) {
       try {
         const parsed = await parseFileToRows(file, tipo);
-        const payload = buildImportPayload(parsed, tipo);
+        const payload = buildImportPayload(parsed, tipo, { canal: canalImportacao });
         store.importarPayload(payload, tipo);
-        novasEntradas.push({ arquivo: file.name, tipo, inseridos: payload.inseridos, erros: payload.erros, meta: parsed.meta });
+        novasEntradas.push({ arquivo: file.name, tipo, canal: canalImportacao, inseridos: payload.inseridos, erros: payload.erros, meta: parsed.meta });
       } catch (error) {
         novasEntradas.push({ arquivo: file.name, tipo, inseridos: 0, erros: [{ linha: '-', coluna: 'arquivo', valor: '', mensagem: error.message || 'Erro ao ler arquivo.' }] });
       }
@@ -88,6 +89,18 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
             {TIPOS.map((item) => <button key={item.id} className={tipo === item.id ? 'toggle-btn active' : 'toggle-btn'} onClick={() => setTipo(item.id)}>{item.label}</button>)}
           </div>
           <p>Use os modelos para não errar o layout. O importador já tenta ler o cabeçalho real mesmo quando ele começa algumas linhas abaixo.</p>
+          <div className="channel-picker">
+            <div className="field small-width">
+              <label>Canal da importação</label>
+              <select value={canalImportacao} onChange={(e) => setCanalImportacao(e.target.value)}>
+                <option value="ATACADO">ATACADO</option>
+                <option value="B2C">B2C</option>
+              </select>
+            </div>
+            <div className="hint-box compact">
+              O canal escolhido será usado quando a planilha não trouxer a coluna <strong>Canal</strong> ou quando o código da unidade não indicar B2C.
+            </div>
+          </div>
           <div className="toolbar-wrap">
             <button className="btn-secondary" onClick={() => baixarModelo(tipo)}>Baixar Modelo</button>
             <button className="btn-secondary" onClick={exportarMassa}>Exportar Atual</button>
@@ -111,7 +124,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               <div className="list-card neutral process-card" key={`${item.arquivo}-${index}`} onClick={() => setDetalhe(item)}>
                 <div>
                   <div className="list-title small">{item.arquivo}</div>
-                  <div className="list-subtitle">Tipo: {item.tipo} · Inseridos: {item.inseridos}</div>
+                  <div className="list-subtitle">Tipo: {item.tipo} · Canal: {item.canal || '-'} · Inseridos: {item.inseridos}</div>
                   {!!item.erros.length && <div className="error-text">{item.erros.length} erro(s) encontrado(s)</div>}
                 </div>
               </div>
@@ -125,7 +138,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           <div className="tab-panel-header spaced">
             <div>
               <div className="panel-title no-margin">Detalhe do processamento</div>
-              <p>{detalhe.arquivo} · Inseridos: {detalhe.inseridos} · Cabeçalho encontrado na linha {detalhe.meta?.headerIndex || '-'}</p>
+              <p>{detalhe.arquivo} · Canal: {detalhe.canal || '-'} · Inseridos: {detalhe.inseridos} · Cabeçalho encontrado na linha {detalhe.meta?.headerIndex || '-'}</p>
             </div>
           </div>
           {detalhe.erros?.length ? (

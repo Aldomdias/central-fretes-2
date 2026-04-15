@@ -81,10 +81,13 @@ function mapCommon(row, meta, overrides = {}) {
   const transportadora = overrides.transportadora || String(firstFilled(row, ['nome da transportadora', 'transportadora', 'nome transportadora'])).trim() || meta.transportadora;
   const origem = overrides.origem || String(firstFilled(row, ['origem', 'cidade origem'])).trim() || meta.origem;
   const unidade = String(firstFilled(row, ['codigo da unidade', 'unidade', 'codigo unidade'])).trim();
+  const canalPlanilha = String(firstFilled(row, ['canal'])).trim().toUpperCase();
+  const canalInferido = canalFromUnit(unidade);
+  const canalFinal = canalPlanilha || (canalInferido !== 'ATACADO' ? canalInferido : '') || String(overrides.canal || '').trim().toUpperCase() || 'ATACADO';
   return {
     transportadora,
     origem,
-    canal: String(firstFilled(row, ['canal'])).trim().toUpperCase() || canalFromUnit(unidade),
+    canal: canalFinal,
     status: 'Ativa',
     unidade,
   };
@@ -187,6 +190,7 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
           valorFixo: toNumber(firstFilled(row, ['taxa aplicada', 'valor faixa', 'valor fixo'])),
           percentual: toNumber(firstFilled(row, ['frete percentual', 'percentual'])),
           freteMinimo: toNumber(firstFilled(row, ['frete minimo', 'minimo'])),
+          canal: common.canal,
           inicioVigencia: String(firstFilled(row, ['inicio da vigencia'])).trim(),
           fimVigencia: String(firstFilled(row, ['fim da vigencia', 'termino da vigencia'])).trim(),
         };
@@ -245,7 +249,8 @@ function sheetRowsForTipo(tipo, rows = []) {
   if (tipo === 'rotas') {
     return rows.map((item) => ({
       'Nome da transportadora': item.transportadora || '',
-      'Código da unidade': item.codigoUnidade || '0001 - B2B',
+      'Código da unidade': item.codigoUnidade || (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
+      'Canal': item.canal || '',
       'Cotação': item.nomeRota || item.cotacao || '',
       'Código IBGE Origem': item.ibgeOrigem || '',
       'Código IBGE Destino': item.ibgeDestino || '',
@@ -260,7 +265,8 @@ function sheetRowsForTipo(tipo, rows = []) {
   if (tipo === 'cotacoes') {
     return rows.map((item) => ({
       'Nome da transportadora': item.transportadora || '',
-      'Código da unidade': item.codigoUnidade || '0001 - B2B',
+      'Código da unidade': item.codigoUnidade || (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
+      'Canal': item.canal || '',
       'Regra de cálculo': item.regraCalculo || 'Sem regra',
       'Rota do frete': item.rota || '',
       'Peso mínimo': item.pesoMin ?? '',
@@ -289,6 +295,7 @@ function sheetRowsForTipo(tipo, rows = []) {
   return rows.map((item) => ({
     'Transportadora': item.transportadora || '',
     'Origem': item.origem || '',
+    'Canal': item.canal || '',
     'Incide ICMS': item.incideIcms ? 'Sim' : 'Não',
     'Alíquota ICMS %': item.aliquotaIcms ?? '',
     'Ad Valorem %': item.adValorem ?? '',
@@ -307,18 +314,18 @@ function sheetRowsForTipo(tipo, rows = []) {
 function prepModelRows(tipo) {
   if (tipo === 'rotas') {
     return sheetRowsForTipo(tipo, [{
-      transportadora: 'ALFA', codigoUnidade: '0001 - B2B', nomeRota: 'CAPITAL - SP', ibgeOrigem: '3505708', ibgeDestino: '3550308', cepInicial: '01000000', cepFinal: '05999999', metodoEnvio: 'Normal', prazoEntregaDias: 2, inicioVigencia: '2025-01-01', fimVigencia: '2025-12-31',
+      transportadora: 'ALFA', canal: 'ATACADO', codigoUnidade: '0001 - B2B', nomeRota: 'CAPITAL - SP', ibgeOrigem: '3505708', ibgeDestino: '3550308', cepInicial: '01000000', cepFinal: '05999999', metodoEnvio: 'Normal', prazoEntregaDias: 2, inicioVigencia: '2025-01-01', fimVigencia: '2025-12-31',
     }]);
   }
   if (tipo === 'cotacoes') {
     return sheetRowsForTipo(tipo, [{
-      transportadora: 'ALFA', codigoUnidade: '0001 - B2B', regraCalculo: 'Sem regra', rota: 'CAPITAL - SP', pesoMin: 0, pesoMax: 999999999, excesso: 0.62, valorFixo: 120, percentual: 1.95, freteMinimo: 38, inicioVigencia: '2025-01-01', fimVigencia: '2025-12-31',
+      transportadora: 'ALFA', canal: 'ATACADO', codigoUnidade: '0001 - B2B', regraCalculo: 'Sem regra', rota: 'CAPITAL - SP', pesoMin: 0, pesoMax: 999999999, excesso: 0.62, valorFixo: 120, percentual: 1.95, freteMinimo: 38, inicioVigencia: '2025-01-01', fimVigencia: '2025-12-31',
     }]);
   }
   if (tipo === 'taxas') {
     return sheetRowsForTipo(tipo, [{ ibgeDestino: '3106200', tda: 10, trt: 5, suframa: 0, outras: 0, gris: 0.35, grisMinimo: 2.5, adVal: 0.2, adValMinimo: 3 }]);
   }
-  return sheetRowsForTipo(tipo, [{ transportadora: 'ALFA', origem: 'Barueri', incideIcms: false, aliquotaIcms: 0, adValorem: 0.25, adValoremMinimo: 3, pedagio: 12, gris: 0.3, grisMinimo: 2, tas: 2.5, ctrc: 1.8, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: 'Modelo de generalidades' }]);
+  return sheetRowsForTipo(tipo, [{ transportadora: 'ALFA', origem: 'Barueri', canal: 'ATACADO', incideIcms: false, aliquotaIcms: 0, adValorem: 0.25, adValoremMinimo: 3, pedagio: 12, gris: 0.3, grisMinimo: 2, tas: 2.5, ctrc: 1.8, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: 'Modelo de generalidades' }]);
 }
 
 export function downloadWorkbook({ tipo, rows, fileName }) {
@@ -336,105 +343,48 @@ export function exportarSecao(tipo, rows, fileName) {
   downloadWorkbook({ tipo, rows: sheetRowsForTipo(tipo, rows), fileName });
 }
 
-function normalizeTabelaNome(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .trim()
-    .toLowerCase();
-}
-
-export function analisarCoberturaOrigem(origem) {
-  const rotas = origem?.rotas || [];
-  const cotacoes = origem?.cotacoes || [];
-  const totalRotas = rotas.length;
-  const totalCotacoes = cotacoes.length;
-  const totalTaxas = (origem?.taxasEspeciais || []).length;
-  const possuiGeneralidades = !!origem?.generalidades;
-  const destinos = new Set(rotas.map((rota) => String(rota.ibgeDestino || '').trim()).filter(Boolean));
-
-  const rotasSet = new Set(
-    rotas
-      .map((rota) => normalizeTabelaNome(rota.cotacao || rota.nomeRota || rota.rota || rota.tabela))
-      .filter(Boolean),
-  );
-  const cotacoesSet = new Set(
-    cotacoes
-      .map((cotacao) => normalizeTabelaNome(cotacao.rota || cotacao.nomeRota || cotacao.cotacao || cotacao.tabela))
-      .filter(Boolean),
-  );
-
-  const rotasSemCotacao = Array.from(rotasSet).filter((item) => !cotacoesSet.has(item));
-  const cotacoesSemRota = Array.from(cotacoesSet).filter((item) => !rotasSet.has(item));
-  const paresIncompletos = rotasSemCotacao.length + cotacoesSemRota.length;
-
-  let cobertura = 'Completa';
-  if (totalRotas === 0) {
-    cobertura = 'Sem rotas';
-  } else if (totalCotacoes === 0) {
-    cobertura = 'Sem cotações';
-  } else if (paresIncompletos > 0) {
-    cobertura = 'Inconsistente';
-  } else if (!possuiGeneralidades) {
-    cobertura = 'Sem generalidades';
-  }
-
-  const severidade = cobertura === 'Completa'
-    ? 'ok'
-    : cobertura === 'Inconsistente'
-      ? 'error'
-      : 'warn';
-
-  return {
-    cobertura,
-    severidade,
-    totalRotas,
-    totalCotacoes,
-    totalTaxas,
-    destinos: destinos.size,
-    possuiGeneralidades,
-    rotasSemCotacao,
-    cotacoesSemRota,
-    paresIncompletos,
-  };
-}
-
 export function buildCoberturaReport(transportadoras) {
   const detalhes = [];
   transportadoras.forEach((transportadora) => {
     (transportadora.origens || []).forEach((origem) => {
-      const analise = analisarCoberturaOrigem(origem);
+      const totalRotas = (origem.rotas || []).length;
+      const totalCotacoes = (origem.cotacoes || []).length;
+      const totalTaxas = (origem.taxasEspeciais || []).length;
+      const possuiGeneralidades = !!origem.generalidades;
+      const destinos = new Set((origem.rotas || []).map((rota) => String(rota.ibgeDestino || '').trim()).filter(Boolean));
+      const cobertura = totalRotas === 0
+        ? 'Sem rotas'
+        : totalCotacoes === 0
+          ? 'Sem cotações'
+          : !possuiGeneralidades
+            ? 'Sem generalidades'
+            : 'Completa';
       detalhes.push({
         transportadora: transportadora.nome,
         origem: origem.cidade,
         canal: origem.canal,
-        cobertura: analise.cobertura,
-        severidade: analise.severidade,
-        totalRotas: analise.totalRotas,
-        totalCotacoes: analise.totalCotacoes,
-        totalTaxas: analise.totalTaxas,
-        destinos: analise.destinos,
+        cobertura,
+        totalRotas,
+        totalCotacoes,
+        totalTaxas,
+        destinos: destinos.size,
         status: origem.status,
-        paresIncompletos: analise.paresIncompletos,
-        rotasSemCotacao: analise.rotasSemCotacao.length,
-        cotacoesSemRota: analise.cotacoesSemRota.length,
       });
     });
   });
 
   const resumoTransportadora = Array.from(
     detalhes.reduce((acc, item) => {
-      const current = acc.get(item.transportadora) || { transportadora: item.transportadora, origens: 0, destinos: 0, rotas: 0, cotacoes: 0, pendencias: 0, inconsistencias: 0 };
+      const current = acc.get(item.transportadora) || { transportadora: item.transportadora, origens: 0, destinos: 0, rotas: 0, cotacoes: 0, pendencias: 0 };
       current.origens += 1;
       current.destinos += item.destinos;
       current.rotas += item.totalRotas;
       current.cotacoes += item.totalCotacoes;
       current.pendencias += item.cobertura === 'Completa' ? 0 : 1;
-      current.inconsistencias += item.cobertura === 'Inconsistente' ? 1 : 0;
       acc.set(item.transportadora, current);
       return acc;
     }, new Map()).values(),
-  ).sort((a, b) => b.inconsistencias - a.inconsistencias || b.pendencias - a.pendencias || a.transportadora.localeCompare(b.transportadora));
+  ).sort((a, b) => b.pendencias - a.pendencias || a.transportadora.localeCompare(b.transportadora));
 
   return {
     detalhes,
@@ -444,7 +394,6 @@ export function buildCoberturaReport(transportadoras) {
       completas: detalhes.filter((item) => item.cobertura === 'Completa').length,
       pendentes: detalhes.filter((item) => item.cobertura !== 'Completa').length,
       destinos: detalhes.reduce((acc, item) => acc + item.destinos, 0),
-      inconsistentes: detalhes.filter((item) => item.cobertura === 'Inconsistente').length,
     },
   };
 }
