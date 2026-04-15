@@ -167,6 +167,26 @@ export function gerarArquivosVerum(transportadora, origem = null) {
 
 
 function sheetRowsForTipoVerum(tipo, rows = []) {
+  if (tipo === 'rotas') {
+    return rows.map((item) => ({
+      'Nome da transportadora': item.transportadora || '',
+      'Código da unidade':
+        item.codigoUnidade ||
+        (String(item.canal || '').toUpperCase() === 'B2C'
+          ? '0001 - B2C'
+          : '0001 - B2B'),
+      Cotação: item.nomeRota || item.cotacao || '',
+      'Código IBGE Origem': item.ibgeOrigem || '',
+      'Código IBGE Destino': item.ibgeDestino || '',
+      'CEP inicial': item.cepInicial || '',
+      'CEP final': item.cepFinal || '',
+      'Método de envio': item.metodoEnvio || 'Normal',
+      'Prazo de entrega': item.prazoEntregaDias || '',
+      'Início da vigência': item.inicioVigencia || '',
+      'Término da vigência': item.fimVigencia || '',
+    }));
+  }
+
   if (tipo === 'cotacoes') {
     return rows.map((item) => ({
       'Nome da transportadora': item.transportadora || '',
@@ -191,8 +211,35 @@ function sheetRowsForTipoVerum(tipo, rows = []) {
   return sheetRowsForTipo(tipo, rows);
 }
 
+function buildVerumWorksheet(tipo, rows) {
+  const titulo = tipo === 'cotacoes' ? 'Valores de frete' : 'Prazos de frete';
+  const headers = rows.length ? Object.keys(rows[0]) : Object.keys(sheetRowsForTipoVerum(tipo, [{}])[0] || {});
+  const aoa = [
+    [],
+    ['', '', titulo],
+    [],
+    ['', '', ...headers],
+    ...rows.map((row) => ['', '', ...headers.map((header) => row[header] ?? '')]),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [
+    { wch: 3 },
+    { wch: 3 },
+    ...headers.map((header) => ({ wch: Math.max(String(header).length + 2, 14) })),
+  ];
+  return ws;
+}
+
 function exportarSecaoVerum(tipo, rows, fileName) {
-  downloadWorkbook({ tipo, rows: sheetRowsForTipoVerum(tipo, rows), fileName });
+  const wb = XLSX.utils.book_new();
+  const normalizedRows = sheetRowsForTipoVerum(tipo, rows);
+  const ws = buildVerumWorksheet(tipo, normalizedRows);
+  XLSX.utils.book_append_sheet(
+    wb,
+    ws,
+    tipo === 'cotacoes' ? 'Valores de frete' : 'Prazos de frete'
+  );
+  XLSX.writeFile(wb, fileName);
 }
 
 function isBlankRow(row) {
