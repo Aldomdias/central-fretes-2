@@ -360,41 +360,86 @@ tbody td {
 .hint-box.compact { padding: 12px 14px; font-size: 14px; }
 @media (max-width: 900px) { .channel-picker { grid-template-columns: 1fr; } }
 
-.btn-sm {
-  padding: 8px 12px;
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 16, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1000;
+}
+
+.modal-card {
+  width: min(1100px, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 18px;
+  border: 1px solid #d8e0ea;
+  box-shadow: 0 20px 40px rgba(16,24,40,.18);
+  padding: 22px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.coverage-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 102px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 700;
   font-size: 14px;
 }
+.coverage-badge.ok { background: #e8f7ee; color: #18794e; }
+.coverage-badge.warn { background: #fff7db; color: #9a6700; }
+.coverage-badge.error { background: #feeceb; color: #c0342b; }
 
-.summary-card.compact {
-  padding: 14px 16px;
-}
+.alert-error { border-color: #f0b6b2; background: #fff8f8; }
+.alert-warn { border-color: #ead594; background: #fffdfa; }
+.list-warning-text { margin-top: 6px; color: #b45309; font-size: 13px; }
 
-.inconsistency-modal-body {
+.inconsistencias-modal {
   display: flex;
   flex-direction: column;
   gap: 18px;
 }
 
-.inconsistency-summary-strip {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.inconsistency-section {
+.inconsistencias-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
-.inconsistency-section-header h4 {
-  margin: 0;
-  font-size: 18px;
-  color: #0b1731;
+.inconsistencias-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.inconsistencia-title {
+  padding: 16px 16px 0;
+  font-weight: 800;
 }
 
 @media (max-width: 900px) {
-  .inconsistency-summary-strip {
+  .inconsistencias-grid {
     grid-template-columns: 1fr;
   }
 }

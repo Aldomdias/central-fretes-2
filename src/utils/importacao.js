@@ -31,6 +31,138 @@ function toNumber(value) {
   );
 }
 
+
+function formatTaxValue(value) {
+  const number = toNumber(value);
+  if (!number) return '';
+  return String(number).replace('.', ',');
+}
+
+function formatPercentValue(value) {
+  const number = toNumber(value);
+  if (!number) return '';
+  return `${String(number).replace('.', ',')}%`;
+}
+
+function buildTaxDescription(taxa = {}) {
+  const partes = [];
+  if (toNumber(taxa.tda)) partes.push(`TDA ${formatTaxValue(taxa.tda)}`);
+  if (toNumber(taxa.tdr)) partes.push(`TDR ${formatTaxValue(taxa.tdr)}`);
+  if (toNumber(taxa.trt)) partes.push(`TRT ${formatTaxValue(taxa.trt)}`);
+  if (toNumber(taxa.suframa)) partes.push(`SUFRAMA ${formatTaxValue(taxa.suframa)}`);
+  if (toNumber(taxa.outras)) partes.push(`OUTRAS ${formatTaxValue(taxa.outras)}`);
+  if (toNumber(taxa.gris)) partes.push(`GRIS ${formatPercentValue(taxa.gris)}`);
+  if (toNumber(taxa.adVal)) partes.push(`AD VAL ${formatPercentValue(taxa.adVal)}`);
+  return partes.join(' - ');
+}
+
+function buildVerumRouteName(baseName, taxa = {}) {
+  const nomeBase = String(baseName || '').trim();
+  const complemento = buildTaxDescription(taxa);
+  return complemento ? `${nomeBase} - ${complemento}` : nomeBase;
+}
+
+function findTaxaForRota(origem, rota) {
+  const ibgeDestino = String(rota?.ibgeDestino || '').trim();
+  if (!ibgeDestino) return null;
+  return (origem?.taxasEspeciais || []).find(
+    (item) => String(item?.ibgeDestino || '').trim() === ibgeDestino
+  ) || null;
+}
+
+function hasSpecialTax(taxa = {}) {
+  return ['tda', 'tdr', 'trt', 'suframa', 'outras', 'gris', 'adVal'].some(
+    (key) => toNumber(taxa?.[key])
+  );
+}
+
+export function exportarInconsistenciasExcel({
+  titulo = 'inconsistencias',
+  rotasSemFrete = [],
+  fretesSemRota = [],
+}) {
+  const wb = XLSX.utils.book_new();
+
+  const wsRotas = XLSX.utils.json_to_sheet(
+    rotasSemFrete.length ? rotasSemFrete : [{ aviso: 'Nenhuma rota sem frete encontrada.' }]
+  );
+  const wsFretes = XLSX.utils.json_to_sheet(
+    fretesSemRota.length ? fretesSemRota : [{ aviso: 'Nenhum frete sem rota encontrado.' }]
+  );
+
+  XLSX.utils.book_append_sheet(wb, wsRotas, 'Rotas sem frete');
+  XLSX.utils.book_append_sheet(wb, wsFretes, 'Fretes sem rota');
+  XLSX.writeFile(wb, `${titulo}.xlsx`);
+}
+
+export function gerarArquivosVerum(transportadora, origem = null) {
+  const origens = origem ? [origem] : transportadora?.origens || [];
+  const rotasVerum = [];
+  const cotacoesBase = [];
+  const cotacoesDerivadas = [];
+
+  origens.forEach((origemItem) => {
+    const rotas = Array.isArray(origemItem?.rotas) ? origemItem.rotas : [];
+    const cotacoes = Array.isArray(origemItem?.cotacoes) ? origemItem.cotacoes : [];
+
+    const cotacoesPorRota = cotacoes.reduce((acc, cotacao) => {
+      const chave = normalizeRouteName(cotacao?.rota || cotacao?.nomeRota || cotacao?.cotacao);
+      if (!chave) return acc;
+      if (!acc.has(chave)) acc.set(chave, []);
+      acc.get(chave).push(cotacao);
+      return acc;
+    }, new Map());
+
+    rotas.forEach((rota) => {
+      const nomeBase = String(rota?.cotacao || rota?.nomeRota || '').trim();
+      const taxa = findTaxaForRota(origemItem, rota);
+      const nomeVerum =
+        taxa && hasSpecialTax(taxa) ? buildVerumRouteName(nomeBase, taxa) : nomeBase;
+
+      rotasVerum.push({
+        ...rota,
+        transportadora: transportadora?.nome || '',
+        origem: origemItem?.cidade || '',
+        canal: rota?.canal || origemItem?.canal || '',
+        nomeRota: nomeVerum,
+        cotacao: nomeVerum,
+      });
+
+      if (taxa && hasSpecialTax(taxa)) {
+        const faixas = cotacoesPorRota.get(normalizeRouteName(nomeBase)) || [];
+        faixas.forEach((cotacao) => {
+          cotacoesDerivadas.push({
+            ...cotacao,
+            transportadora: transportadora?.nome || '',
+            origem: origemItem?.cidade || '',
+            canal: cotacao?.canal || origemItem?.canal || '',
+            rota: nomeVerum,
+          });
+        });
+      }
+    });
+
+    cotacoes.forEach((cotacao) => {
+      cotacoesBase.push({
+        ...cotacao,
+        transportadora: transportadora?.nome || '',
+        origem: origemItem?.cidade || '',
+        canal: cotacao?.canal || origemItem?.canal || '',
+      });
+    });
+  });
+
+  const cotacoesVerum = [...cotacoesBase, ...cotacoesDerivadas];
+  const baseName = origem
+    ? `${transportadora?.nome || 'transportadora'}-${origem?.cidade || 'origem'}-verum`
+    : `${transportadora?.nome || 'transportadora'}-verum`;
+
+  exportarSecao('rotas', rotasVerum, `${baseName}-rotas.xlsx`);
+  exportarSecao('cotacoes', cotacoesVerum, `${baseName}-fretes.xlsx`);
+
+  return { rotas: rotasVerum, cotacoes: cotacoesVerum };
+}
+
 function isBlankRow(row) {
   return !row.some((cell) => String(cell ?? '').trim());
 }
@@ -167,151 +299,6 @@ function mapCommon(row, meta, overrides = {}) {
     canal: canalFinal,
     status: 'Ativa',
     unidade,
-  };
-}
-
-
-function buildVerumTaxParts(taxa) {
-  if (!taxa || typeof taxa !== 'object') return [];
-
-  const fields = [
-    ['tda', 'TDA'],
-    ['tdr', 'TDR'],
-    ['trt', 'TRT'],
-    ['suframa', 'SUFRAMA'],
-    ['outras', 'OUTRAS'],
-  ];
-
-  const parts = [];
-  fields.forEach(([key, label]) => {
-    const value = taxa[key];
-    if (value !== null && value !== undefined && value !== '' && toNumber(value) !== 0) {
-      parts.push(`${label} ${String(value).trim()}`);
-    }
-  });
-
-  if (taxa.gris !== null && taxa.gris !== undefined && taxa.gris !== '' && toNumber(taxa.gris) !== 0) {
-    parts.push(`GRIS ${String(taxa.gris).trim()}%`);
-  }
-
-  if (taxa.grisMinimo !== null && taxa.grisMinimo !== undefined && taxa.grisMinimo !== '' && toNumber(taxa.grisMinimo) !== 0) {
-    parts.push(`GRIS MÍN ${String(taxa.grisMinimo).trim()}`);
-  }
-
-  if (taxa.adVal !== null && taxa.adVal !== undefined && taxa.adVal !== '' && toNumber(taxa.adVal) !== 0) {
-    parts.push(`AD VAL ${String(taxa.adVal).trim()}%`);
-  }
-
-  if (taxa.adValMinimo !== null && taxa.adValMinimo !== undefined && taxa.adValMinimo !== '' && toNumber(taxa.adValMinimo) !== 0) {
-    parts.push(`AD VAL MÍN ${String(taxa.adValMinimo).trim()}`);
-  }
-
-  return parts;
-}
-
-function buildVerumDescription(baseName, taxa) {
-  const cleanBase = String(baseName || '').trim();
-  const parts = buildVerumTaxParts(taxa);
-  if (!cleanBase || !parts.length) return cleanBase;
-  return `${cleanBase} - ${parts.join(' - ')}`;
-}
-
-function findCotacaoByRouteName(cotacoes, routeName) {
-  const normalizedRoute = normalizeRouteName(routeName);
-  return (cotacoes || []).find(
-    (item) => normalizeRouteName(item?.rota || item?.nomeRota || item?.cotacao) === normalizedRoute
-  );
-}
-
-function findTaxaEspecialByDestino(origem, ibgeDestino) {
-  return (origem?.taxasEspeciais || []).find(
-    (item) => String(item?.ibgeDestino || '').trim() === String(ibgeDestino || '').trim()
-  );
-}
-
-function buildVerumRowsForOrigem(transportadora, origem) {
-  const codigoUnidade = origem.canal === 'B2C' ? '0001 - B2C' : '0001 - B2B';
-  const rotasRows = [];
-  const cotacoesBase = (origem?.cotacoes || []).map((cotacao) => ({
-    ...cotacao,
-    transportadora: transportadora.nome,
-    origem: origem.cidade,
-    canal: origem.canal,
-    codigoUnidade,
-  }));
-  const cotacoesRows = [...cotacoesBase];
-  const createdVariants = new Set();
-
-  (origem?.rotas || []).forEach((rota) => {
-    const baseName = rota?.cotacao || rota?.nomeRota || '';
-    const taxa = findTaxaEspecialByDestino(origem, rota?.ibgeDestino);
-    const descricaoVerum = buildVerumDescription(baseName, taxa);
-
-    rotasRows.push({
-      ...rota,
-      nomeRota: descricaoVerum || baseName,
-      cotacao: descricaoVerum || baseName,
-      transportadora: transportadora.nome,
-      origem: origem.cidade,
-      canal: origem.canal,
-      codigoUnidade,
-    });
-
-    const variantKey = `${normalizeRouteName(baseName)}__${normalizeRouteName(descricaoVerum)}`;
-    if (descricaoVerum && descricaoVerum !== baseName && !createdVariants.has(variantKey)) {
-      const cotacaoBase = findCotacaoByRouteName(origem?.cotacoes || [], baseName);
-      if (cotacaoBase) {
-        cotacoesRows.push({
-          ...cotacaoBase,
-          rota: descricaoVerum,
-          transportadora: transportadora.nome,
-          origem: origem.cidade,
-          canal: origem.canal,
-          codigoUnidade,
-        });
-        createdVariants.add(variantKey);
-      }
-    }
-  });
-
-  return { rotasRows, cotacoesRows };
-}
-
-export function gerarArquivoVerum(transportadoras, options = {}) {
-  const scope = options?.scope || 'all';
-  const transportadoraId = options?.transportadoraId;
-  const origemId = options?.origemId;
-  const filePrefix = String(options?.filePrefix || 'verum').trim() || 'verum';
-
-  const selectedTransportadoras = (transportadoras || []).filter((transportadora) => {
-    if (scope === 'all') return true;
-    if (scope === 'transportadora') return String(transportadora.id) === String(transportadoraId);
-    if (scope === 'origem') return String(transportadora.id) === String(transportadoraId);
-    return false;
-  });
-
-  const rotas = [];
-  const cotacoes = [];
-
-  selectedTransportadoras.forEach((transportadora) => {
-    const selectedOrigens = (transportadora?.origens || []).filter((origem) => {
-      if (scope !== 'origem') return true;
-      return String(origem.id) === String(origemId);
-    });
-
-    selectedOrigens.forEach((origem) => {
-      const { rotasRows, cotacoesRows } = buildVerumRowsForOrigem(transportadora, origem);
-      rotas.push(...rotasRows);
-      cotacoes.push(...cotacoesRows);
-    });
-  });
-
-  exportarSecao('rotas', rotas, `${filePrefix}-rotas.xlsx`);
-  exportarSecao('cotacoes', cotacoes, `${filePrefix}-fretes.xlsx`);
-
-  return {
-    rotas: rotas.length,
-    cotacoes: cotacoes.length,
   };
 }
 
@@ -459,6 +446,7 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
         container.origem.taxasEspeciais.push({
           ibgeDestino,
           tda: toNumber(firstFilled(row, ['tda r$', 'tda'])),
+          tdr: toNumber(firstFilled(row, ['tdr r$', 'tdr'])),
           trt: toNumber(firstFilled(row, ['trt r$', 'trt'])),
           suframa: toNumber(firstFilled(row, ['suframa r$', 'suframa'])),
           outras: toNumber(firstFilled(row, ['outras r$', 'outras'])),
@@ -584,6 +572,7 @@ function sheetRowsForTipo(tipo, rows = []) {
     return rows.map((item) => ({
       'IBGE Destino': item.ibgeDestino || '',
       'TDA (R$)': item.tda ?? '',
+      'TDR (R$)': item.tdr ?? '',
       'TRT (R$)': item.trt ?? '',
       'SUFRAMA (R$)': item.suframa ?? '',
       'Outras (R$)': item.outras ?? '',
@@ -659,6 +648,7 @@ function prepModelRows(tipo) {
       {
         ibgeDestino: '3106200',
         tda: 10,
+        tdr: 0,
         trt: 5,
         suframa: 0,
         outras: 0,
