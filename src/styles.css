@@ -86,7 +86,7 @@
 .sim-form-grid select,
 .sim-lista-box textarea,
 .sim-grade-row input {
-  height: 48px;
+  min-height: 48px;
   border-radius: 14px;
   border: 1px solid #ccd7ea;
   padding: 0 14px;
@@ -104,6 +104,10 @@
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.sim-actions-left {
+  justify-content: flex-start;
 }
 
 .sim-inline-tools {
@@ -141,13 +145,22 @@
   flex-wrap: wrap;
 }
 
+.sim-resultado-acoes {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .sim-resultado-linha {
   color: #53668e;
   margin: 8px 0 12px;
 }
 
 .sim-resultado-grade div,
-.sim-analise-resumo div {
+.sim-analise-resumo div,
+.sim-detalhes-grid div,
+.sim-taxas-card {
   min-width: 150px;
   padding: 10px 12px;
   border: 1px solid #dde5f2;
@@ -156,11 +169,60 @@
 }
 
 .sim-resultado-grade span,
-.sim-analise-resumo span {
+.sim-analise-resumo span,
+.sim-detalhes-grid span,
+.sim-taxas-card span {
   display: block;
   color: #6e7fa4;
   font-size: 13px;
   margin-bottom: 6px;
+}
+
+.sim-ranking-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  background: #eef3ff;
+  color: #0d2458;
+}
+
+.sim-ranking-badge.winner {
+  background: #e7f9f1;
+  color: #12704f;
+}
+
+.sim-link-btn {
+  border: 0;
+  background: transparent;
+  color: #071b49;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.sim-detalhes-box {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #dde5f2;
+  display: grid;
+  gap: 12px;
+}
+
+.sim-detalhes-grid,
+.sim-taxas-lista {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sim-detalhes-observacao {
+  border-radius: 14px;
+  background: #eef3ff;
+  color: #314568;
+  padding: 12px;
 }
 
 .sim-parametros-box {
@@ -206,13 +268,64 @@
   padding: 12px;
   color: #314568;
   background: #fff;
+  display: grid;
+  gap: 4px;
+}
+
+.sim-missing-item.warning {
+  background: #fff8eb;
+  border-color: #ecd08e;
+}
+
+.sim-alert-box {
+  margin-top: 16px;
+  border: 1px solid #f0d3cf;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #fff5f3;
+  color: #8a4135;
+}
+
+.sim-analise-resumo-top {
+  margin-top: 18px;
+}
+
+.sim-table-wrap {
+  overflow: auto;
+  margin-top: 16px;
+  border: 1px solid #dde5f2;
+  border-radius: 18px;
+  background: #fff;
+}
+
+.sim-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sim-table th,
+.sim-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #ecf1f8;
+  text-align: left;
+  font-size: 14px;
+  vertical-align: top;
+}
+
+.sim-table th {
+  color: #415a8a;
+  background: #f7f9fd;
+}
+
+.sim-detalhe-row td {
+  background: #fbfcff;
 }
 
 .compact-top { margin-bottom: 16px; }
 
 @media (max-width: 1200px) {
   .sim-grid-5, .sim-grid-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .sim-missing-list, .sim-grade-config, .sim-grid-3 { grid-template-columns: 1fr; }
+  .sim-missing-list, .sim-grade-config, .sim-grid-3, .sim-detalhes-grid, .sim-taxas-lista { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 768px) {

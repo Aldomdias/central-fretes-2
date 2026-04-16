@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import './simulador-4telas.css';
 import {
   analisarCoberturaTabela,
   analisarTransportadoraPorGrade,
@@ -102,27 +101,30 @@ function ResultadoDetalhes({ item }) {
           ['Suframa', taxas.suframa],
           ['Outras', taxas.outras],
         ].map(([label, value]) => (
-          <div key={label} className="sim-taxa-item">
+          <div key={label} className="sim-taxas-card">
             <span>{label}</span>
             <strong>{moeda(value)}</strong>
           </div>
         ))}
       </div>
 
-      {detalhes.observacoes && <div className="sim-observacao">Observação da tabela: {detalhes.observacoes}</div>}
+      {detalhes.observacoes && <div className="sim-detalhes-observacao">Observação da tabela: {detalhes.observacoes}</div>}
     </div>
   );
 }
 
-function ResultadoCard({ item, destaque }) {
+function ResultadoCard({ item, aberto, onToggle }) {
   return (
     <div className="sim-resultado-card">
       <div className="sim-resultado-topo">
         <div>
           <strong>{item.transportadora}</strong>
-          <div className="sim-resultado-linha">{item.origem} → {item.destinoCidade || item.destinoCodigo}</div>
+          <div className="sim-resultado-linha">{item.origem} • {item.destinoCidade || item.destinoCodigo}</div>
         </div>
-        <span className={`sim-badge ${destaque || ''}`}>#{item.posicao} • {item.prazo} dia(s)</span>
+        <div className="sim-resultado-acoes">
+          <span className={`sim-ranking-badge ${item.posicao === 1 ? 'winner' : ''}`}>#{item.posicao} • {item.prazo} dia(s)</span>
+          <button className="sim-link-btn" onClick={onToggle}>{aberto ? 'Fechar detalhes' : 'Ver detalhes'}</button>
+        </div>
       </div>
 
       <div className="sim-resultado-grade">
@@ -144,13 +146,15 @@ function ResultadoCard({ item, destaque }) {
         </div>
       </div>
 
-      <ResultadoDetalhes item={item} />
+      {aberto && <ResultadoDetalhes item={item} />}
     </div>
   );
 }
 
 export default function SimuladorPage({ transportadoras = [] }) {
   const [aba, setAba] = useState('simples');
+  const [detalhesAbertos, setDetalhesAbertos] = useState({});
+
   const [origemSimples, setOrigemSimples] = useState('');
   const [destinoCodigo, setDestinoCodigo] = useState('');
   const [canalSimples, setCanalSimples] = useState('ATACADO');
@@ -185,11 +189,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const map = new Map(IBGE_BASE_PADRAO.map((item) => [String(item.codigo), item]));
     baseTransportadoras.forEach((t) => {
       (t.origens || []).forEach((origem) => {
-        map.set(String(origem.ibge || origem.ibgeOrigem || origem.codigo || origem.cidade), map.get(String(origem.ibge || origem.ibgeOrigem || origem.codigo || origem.cidade)) || {
-          codigo: String(origem.ibge || origem.ibgeOrigem || origem.codigo || origem.cidade),
-          cidade: origem.cidade,
-          uf: origem.uf || '',
-        });
         (origem.rotas || []).forEach((rota) => {
           if (!map.has(String(rota.ibgeDestino))) {
             map.set(String(rota.ibgeDestino), {
@@ -218,6 +217,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
     if (!transportadoraAnalise && nomesTransportadoras[0]) setTransportadoraAnalise(nomesTransportadoras[0]);
     if (!destinoCodigo && ibgeBase[0]) setDestinoCodigo(String(ibgeBase[0].codigo));
   }, [origensDisponiveis, nomesTransportadoras, ibgeBase, origemSimples, transportadora, transportadoraAnalise, destinoCodigo]);
+
+  const alternarDetalhe = (key) => {
+    setDetalhesAbertos((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const onSimularSimples = () => {
     setResultadoSimples(simularSimples({
@@ -318,8 +321,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-actions"><button className="primary" onClick={onSimularSimples}>Simular</button></div>
           <div className="sim-resultados">
-            {resultadoSimples.length === 0 && <div className="sim-empty">Nenhum resultado ainda.</div>}
-            {resultadoSimples.map((item) => <ResultadoCard key={`${item.transportadora}-${item.destinoCodigo}`} item={item} destaque={item.posicao === 1 ? 'winner' : ''} />)}
+            {resultadoSimples.map((item) => {
+              const key = `${item.transportadora}-${item.origem}-${item.destinoCodigo}-${item.posicao}`;
+              return <ResultadoCard key={key} item={item} aberto={!!detalhesAbertos[key]} onToggle={() => alternarDetalhe(key)} />;
+            })}
           </div>
         </section>
       )}
@@ -369,9 +374,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </div>
           )}
           <div className="sim-actions"><button className="primary" onClick={onSimularTransportadora}>Simular transportadora</button></div>
-          {resultadoTransportadora.erro && <div className="sim-alert">{resultadoTransportadora.erro}</div>}
+          {resultadoTransportadora.erro && <div className="sim-alert-box">{resultadoTransportadora.erro}</div>}
           <div className="sim-resultados">
-            {resultadoTransportadora.resultados.map((item) => <ResultadoCard key={`${item.transportadora}-${item.origem}-${item.destinoCodigo}`} item={item} destaque={item.posicao === 1 ? 'winner' : ''} />)}
+            {resultadoTransportadora.resultados.map((item) => {
+              const key = `${item.transportadora}-${item.origem}-${item.destinoCodigo}-${item.posicao}`;
+              return <ResultadoCard key={key} item={item} aberto={!!detalhesAbertos[key]} onToggle={() => alternarDetalhe(key)} />;
+            })}
           </div>
         </section>
       )}
@@ -392,7 +400,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
           </div>
-
           <div className="sim-parametros-box">
             <div className="sim-parametros-header">
               <div>
@@ -424,11 +431,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
               ))}
             </div>
           </div>
-
-          {resultadoAnalise?.erro && <div className="sim-alert">{resultadoAnalise.erro}</div>}
+          {resultadoAnalise?.erro && <div className="sim-alert-box">{resultadoAnalise.erro}</div>}
           {resultadoAnalise && (
             <>
-              <div className="sim-analise-resumo">
+              <div className="sim-analise-resumo sim-analise-resumo-top">
                 <div><span>Rotas avaliadas</span><strong>{resultadoAnalise.resumo.rotasAvaliadas}</strong></div>
                 <div><span>Vitórias</span><strong>{resultadoAnalise.resumo.vitorias}</strong></div>
                 <div><span>Perdas</span><strong>{resultadoAnalise.resumo.perdas}</strong></div>
@@ -436,8 +442,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Saving vs 2º</span><strong>{moeda(resultadoAnalise.resumo.saving)}</strong></div>
                 <div><span>Frete médio</span><strong>{moeda(resultadoAnalise.resumo.freteMedio)}</strong></div>
               </div>
-
-              <div className="sim-actions sim-actions-start">
+              <div className="sim-actions sim-actions-left">
                 <button
                   className="primary small"
                   onClick={() => exportarCsv('analise-transportadora.csv', resultadoAnalise.itens.map((item) => ({
@@ -461,7 +466,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   Exportar CSV
                 </button>
               </div>
-
               <div className="sim-table-wrap">
                 <table className="sim-table">
                   <thead>
@@ -498,7 +502,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             <td>{item.segundoColocado?.transportadora || '-'}</td>
                             <td>{percent(item.reducaoNecessariaPct)}</td>
                             <td>{item.prazo} dia(s)</td>
-                            <td><button className="link-btn" onClick={() => setDetalheAnaliseKey(aberto ? '' : rowKey)}>{aberto ? 'Fechar' : 'Detalhes'}</button></td>
+                            <td><button className="sim-link-btn" onClick={() => setDetalheAnaliseKey(aberto ? '' : rowKey)}>{aberto ? 'Fechar' : 'Detalhes'}</button></td>
                           </tr>
                           {aberto && (
                             <tr className="sim-detalhe-row">
@@ -548,7 +552,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Sem tabela</span><strong>{resultadoCobertura.faltantes}</strong></div>
                 <div><span>Cobertura</span><strong>{percent(resultadoCobertura.percentual)}</strong></div>
               </div>
-
               <div className="sim-table-wrap">
                 <table className="sim-table">
                   <thead>
@@ -573,7 +576,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   </tbody>
                 </table>
               </div>
-
               <div className="sim-missing-list">
                 {resultadoCobertura.listaFaltantes.map((item, idx) => (
                   <div key={`${item.origem}-${item.codigo}-${idx}`} className="sim-missing-item warning">
