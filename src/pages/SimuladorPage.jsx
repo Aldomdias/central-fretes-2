@@ -172,8 +172,7 @@ export default function SimuladorPage() {
   const [pesoTransportadora, setPesoTransportadora] = useState('150');
   const [nfTransportadora, setNfTransportadora] = useState('5000');
   const [modoLista, setModoLista] = useState(false);
-  const [listaCodigos, setListaCodigos] = useState('3506003
-4200606');
+  const [listaCodigos, setListaCodigos] = useState(`3506003\n4200606`);
   const [resultadoTransportadora, setResultadoTransportadora] = useState([]);
 
   const [transportadoraAnalise, setTransportadoraAnalise] = useState('ATUAL CARGAS');
