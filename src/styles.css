@@ -360,38 +360,142 @@ tbody td {
 .hint-box.compact { padding: 12px 14px; font-size: 14px; }
 @media (max-width: 900px) { .channel-picker { grid-template-columns: 1fr; } }
 
+.simulator-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 
-.form-grid.four-sim { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.toggle-row.compact-bottom { margin-top: -6px; margin-bottom: 20px; }
-.grade-hint-box {
-  background: #f8fafc;
+.simulator-summary-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.massa-box,
+.config-box {
   border: 1px solid #d8e0ea;
-  border-radius: 12px;
-  padding: 12px 14px;
+  background: #f8fafc;
+  border-radius: 16px;
+  padding: 18px;
+}
+
+.massa-box p,
+.config-box p,
+.config-box small {
+  margin: 6px 0 0;
   color: #5f7596;
 }
-.actions-right.align-left { justify-content: flex-start; margin-top: 10px; }
-.sim-breakdown-columns {
+
+.massa-box,
+.config-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.massa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.result-detail-box {
+  margin-top: 12px;
+}
+
+.result-detail-actions,
+.second-place-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.detail-loss-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: #5f7596;
+}
+
+.detail-two-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 16px;
   margin-top: 14px;
 }
-.breakdown-block {
-  background: #fbfcfe;
+
+.detail-column {
   border: 1px solid #e4eaf2;
   border-radius: 14px;
   padding: 14px;
+  background: #fbfcfe;
 }
-.breakdown-block-title {
-  font-size: 15px;
-  font-weight: 800;
-  margin-bottom: 12px;
+
+.detail-column h4,
+.grade-config-card h4 {
+  margin: 0 0 12px;
+  font-size: 16px;
 }
-.breakdown-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 0; }
+
+.breakdown-grid.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.second-place-bar {
+  margin-top: 12px;
+  border-top: 1px dashed #d8e0ea;
+  padding-top: 12px;
+  color: #5f7596;
+}
+
+.grade-config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.grade-config-card {
+  background: #fff;
+  border: 1px solid #d8e0ea;
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.grade-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.grade-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+}
+
 @media (max-width: 1200px) {
-  .form-grid.four-sim { grid-template-columns: 1fr 1fr; }
+  .simulator-grid,
+  .simulator-summary-strip,
+  .detail-two-columns,
+  .grade-config-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
+
 @media (max-width: 900px) {
-  .form-grid.four-sim, .sim-breakdown-columns, .breakdown-grid.compact { grid-template-columns: 1fr; }
+  .simulator-grid,
+  .simulator-summary-strip,
+  .detail-two-columns,
+  .grade-config-grid,
+  .breakdown-grid.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .massa-box,
+  .config-header,
+  .result-detail-actions,
+  .second-place-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
