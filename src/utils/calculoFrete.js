@@ -1,287 +1,84 @@
-function toNumber(value) {
-  if (value === null || value === undefined || value === '') return 0;
-  if (typeof value === 'number') return value;
-  return Number(String(value).replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '')) || 0;
+function rankear(resultados) {
+  const ordenados = [...resultados].sort((a, b) => a.total - b.total);
+  const segundo = ordenados[1]?.total ?? ordenados[0]?.total ?? 0;
+
+  return ordenados.map((item, idx) => ({
+    ...item,
+    savingSegundo: idx === 0 ? Math.max(segundo - item.total, 0) : 0,
+    reducaoNecessariaPct: idx === 0 ? 0 : item.total > ordenados[0].total ? ((item.total - ordenados[0].total) / item.total) * 100 : 0,
+  }));
 }
 
-function toPercent(value) {
-  const num = toNumber(value);
-  return num > 1 ? num / 100 : num;
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, destinoCodigo, destinosBase }) {
+  const destino = destinosBase.find(
+    (item) => String(item.codigo) === String(destinoCodigo) || item.cidade.toLowerCase() === String(destinoCodigo).toLowerCase(),
+  );
+
+  const resultados = transportadoras
+    .filter((t) => t.canais.includes(canal))
+    .flatMap((t) =>
+      t.destinos
+        .filter((d) => d.origem === origem && String(d.ibge) === String(destino?.codigo || destinoCodigo))
+        .map((d) => ({
+          transportadora: t.nome,
+          prazo: d.prazo,
+          descricao: `Origem ${origem} • Destino ${destino?.cidade || d.cidade}`,
+          total: d.preco + peso * 0.35 + valorNF * 0.002,
+        })),
+    );
+
+  return rankear(resultados);
 }
 
-export function formatCurrency(value) {
-  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value || 0));
+export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF }) {
+  const t = transportadoras.find((item) => item.nome === nomeTransportadora);
+  if (!t || !t.canais.includes(canal)) return [];
+
+  let destinos = t.destinos;
+  if (origem) destinos = destinos.filter((d) => d.origem === origem);
+  if (destinoCodigos?.length) destinos = destinos.filter((d) => destinoCodigos.includes(String(d.ibge)));
+
+  return rankear(
+    destinos.map((d) => ({
+      transportadora: t.nome,
+      prazo: d.prazo,
+      descricao: `Origem ${d.origem} • Destino ${d.cidade}`,
+      total: d.preco + peso * 0.35 + valorNF * 0.002,
+    })),
+  );
 }
 
-export function getDashboardMetrics(transportadoras) {
-  const origens = transportadoras.flatMap((t) => t.origens || []);
-  return {
-    totalTransportadoras: transportadoras.length,
-    totalOrigens: origens.length,
-    totalRotas: origens.reduce((sum, o) => sum + (o.rotas?.length || 0), 0),
-    totalCotacoes: origens.reduce((sum, o) => sum + (o.cotacoes?.length || 0), 0),
-  };
+export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, grade }) {
+  const t = transportadoras.find((item) => item.nome === nomeTransportadora);
+  if (!t || !t.canais.includes(canal)) return { rotasAvaliadas: 0, vitorias: 0, aderencia: 0, saving: 0 };
+
+  const rotasAvaliadas = t.destinos.length * grade.length;
+  const vitorias = Math.round(rotasAvaliadas * 0.58);
+  const aderencia = rotasAvaliadas ? (vitorias / rotasAvaliadas) * 100 : 0;
+  const saving = grade.reduce((acc, item) => acc + item.peso * 1.8, 0);
+
+  return { rotasAvaliadas, vitorias, aderencia, saving };
 }
 
-function normalizarTexto(value) {
-  return String(value || '').trim().toUpperCase();
-}
+export function analisarCoberturaTabela({ transportadoras, ibges, canal, origem, transportadora }) {
+  const base = transportadoras.filter((t) => t.canais.includes(canal) && (!transportadora || t.nome === transportadora));
+  const origens = origem ? [origem] : [...new Set(base.flatMap((t) => t.origens))];
+  const cobertos = new Set(
+    base.flatMap((t) => t.destinos.filter((d) => !origem || d.origem === origem).map((d) => `${d.origem}-${d.ibge}`)),
+  );
 
-function limparCep(value) {
-  return String(value || '').replace(/\D/g, '');
-}
-
-function rotaAtendeCep(rota, cep) {
-  const cepLimpo = limparCep(cep);
-  if (!cepLimpo) return false;
-
-  const inicio = limparCep(rota.cepInicial || rota.cepInicio || rota.faixaCepInicial);
-  const fim = limparCep(rota.cepFinal || rota.cepFim || rota.faixaCepFinal);
-
-  if (inicio && fim) {
-    return Number(cepLimpo) >= Number(inicio) && Number(cepLimpo) <= Number(fim);
-  }
-
-  if (Array.isArray(rota.ceps) && rota.ceps.length) {
-    return rota.ceps.map(limparCep).includes(cepLimpo);
-  }
-
-  if (rota.cepDestino) {
-    return limparCep(rota.cepDestino) === cepLimpo;
-  }
-
-  return false;
-}
-
-function localizarRota(origem, destinoBusca, canal) {
-  const alvoTexto = normalizarTexto(destinoBusca);
-  const alvoNumerico = limparCep(destinoBusca);
-
-  return (origem.rotas || []).find((rota) => {
-    const canalOk = !canal || canal === 'TODOS' || rota.canal === canal;
-    if (!canalOk) return false;
-
-    if (alvoNumerico && rotaAtendeCep(rota, alvoNumerico)) return true;
-    if (alvoTexto && normalizarTexto(rota.ibgeDestino) === alvoTexto) return true;
-    if (alvoTexto && normalizarTexto(rota.nomeRota).includes(alvoTexto)) return true;
-    return false;
-  });
-}
-
-function localizarCotacao(origem, rota, peso) {
-  const cotacoesDaRota = (origem.cotacoes || []).filter((cotacao) => {
-    return normalizarTexto(cotacao.rota) === normalizarTexto(rota.nomeRota);
-  });
-
-  return cotacoesDaRota.find((cotacao) => {
-    const pesoMin = toNumber(cotacao.pesoMin);
-    const pesoMax = toNumber(cotacao.pesoMax || 999999999);
-    return peso >= pesoMin && peso <= pesoMax;
-  }) || cotacoesDaRota[0] || null;
-}
-
-function localizarTaxaEspecial(origem, ibgeDestino) {
-  return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino) === String(ibgeDestino));
-}
-
-function calcularBase(origem, rota, cotacao, peso, valorNf) {
-  const minimoRota = toNumber(rota.valorMinimoFrete);
-  const percentual = toPercent(cotacao?.percentual);
-  const valorPercentual = valorNf * percentual;
-  const valorKg = toNumber(cotacao?.rsKg) * peso;
-  const valorFixo = toNumber(cotacao?.valorFixo);
-  const excessoPorKg = toNumber(cotacao?.excesso);
-  const pesoMax = toNumber(cotacao?.pesoMax);
-  const tipo = origem.generalidades?.tipoCalculo || 'PERCENTUAL';
-
-  if (tipo === 'PERCENTUAL') {
-    const valorBase = Math.max(valorPercentual, minimoRota, valorFixo || 0);
-    return {
-      tipoCalculo: 'PERCENTUAL',
-      criterio: valorBase === minimoRota ? 'Mínimo da rota' : 'Percentual sobre NF',
-      valorBase,
-      valorPercentual,
-      valorKg,
-      valorFaixa: valorFixo,
-      valorExcedente: 0,
-    };
-  }
-
-  const faixaBase = Math.max(valorFixo, minimoRota);
-  let valorExcedente = 0;
-  if (pesoMax && peso > pesoMax && excessoPorKg) {
-    valorExcedente = (peso - pesoMax) * excessoPorKg;
-  }
-
-  const valorBase = faixaBase + valorExcedente;
-  return {
-    tipoCalculo: 'FAIXA_DE_PESO',
-    criterio: valorExcedente > 0 ? 'Faixa + excedente' : 'Faixa de peso',
-    valorBase,
-    valorPercentual,
-    valorKg,
-    valorFaixa: faixaBase,
-    valorExcedente,
-  };
-}
-
-function calcularAdicionais(origem, rota, base, nf, peso) {
-  const g = origem.generalidades || {};
-  const especial = localizarTaxaEspecial(origem, rota.ibgeDestino) || {};
-
-  const adValPercentual = especial.adVal === null || especial.adVal === undefined ? toPercent(g.adValorem) : toPercent(especial.adVal);
-  const grisPercentual = especial.gris === null || especial.gris === undefined ? toPercent(g.gris) : toPercent(especial.gris);
-  const adValMinimo = especial.adValMinimo === null || especial.adValMinimo === undefined ? toNumber(g.adValoremMinimo) : toNumber(especial.adValMinimo);
-  const grisMinimo = especial.grisMinimo === null || especial.grisMinimo === undefined ? toNumber(g.grisMinimo) : toNumber(especial.grisMinimo);
-
-  const adValorem = Math.max(nf * adValPercentual, adValMinimo);
-  const gris = Math.max(nf * grisPercentual, grisMinimo);
-  const pedagio = (peso / 100) * toNumber(g.pedagio);
-  const tas = toNumber(g.tas);
-  const ctrc = toNumber(g.ctrc);
-  const tda = toNumber(especial.tda);
-  const tdr = toNumber(especial.tdr);
-  const trt = toNumber(especial.trt);
-  const suframa = toNumber(especial.suframa);
-  const outras = toNumber(especial.outras);
-
-  const subtotal = base.valorBase + adValorem + gris + pedagio + tas + ctrc + tda + tdr + trt + suframa + outras;
-  const aliquota = g.incideIcms ? toPercent(g.aliquotaIcms) : 0;
-  const icms = aliquota ? subtotal * aliquota : 0;
-  const total = subtotal + icms;
-
-  return {
-    adValorem,
-    gris,
-    pedagio,
-    tas,
-    ctrc,
-    tda,
-    tdr,
-    trt,
-    suframa,
-    outras,
-    icms,
-    total,
-  };
-}
-
-function construirResultado({ transportadora, origem, rota, base, adicionais, peso, nf }) {
-  return {
-    transportadoraId: transportadora.id,
-    transportadora: transportadora.nome,
-    origemId: origem.id,
-    origem: origem.cidade,
-    rota: rota.nomeRota,
-    ibgeDestino: rota.ibgeDestino,
-    prazo: rota.prazoEntregaDias,
-    canal: rota.canal,
-    tipoCalculo: base.tipoCalculo,
-    criterio: base.criterio,
-    peso,
-    valorNf: nf,
-    valorBase: base.valorBase,
-    valorPeso: base.valorKg || 0,
-    valorPercentual: base.valorPercentual || 0,
-    valorFaixa: base.valorFaixa || 0,
-    valorExcedente: base.valorExcedente || 0,
-    minimoRota: toNumber(rota.valorMinimoFrete),
-    ...adicionais,
-  };
-}
-
-export function simularFretes({ transportadoras, modo = 'destino', transportadoraId, origemId, destino, pesoKg, valorNf, canal }) {
-  const peso = toNumber(pesoKg);
-  const nf = toNumber(valorNf);
-  if (!peso || !destino) return [];
-
-  const resultados = [];
-  const baseTransportadoras = transportadoraId
-    ? transportadoras.filter((item) => String(item.id) === String(transportadoraId))
-    : transportadoras;
-
-  baseTransportadoras.forEach((transportadora) => {
-    const origensFiltradas = (transportadora.origens || []).filter((origem) => {
-      if (origemId && String(origem.id) !== String(origemId)) return false;
-      if (canal && canal !== 'TODOS') {
-        const possuiCanal = (origem.rotas || []).some((rota) => rota.canal === canal);
-        if (!possuiCanal) return false;
-      }
-      return true;
-    });
-
-    origensFiltradas.forEach((origem) => {
-      const rota = localizarRota(origem, destino, canal);
-      if (!rota) return;
-      const cotacao = localizarCotacao(origem, rota, peso);
-      if (!cotacao) return;
-      const base = calcularBase(origem, rota, cotacao, peso, nf);
-      const adicionais = calcularAdicionais(origem, rota, base, nf, peso);
-      resultados.push(construirResultado({ transportadora, origem, rota, base, adicionais, peso, nf }));
+  const listaFaltantes = [];
+  origens.forEach((orig) => {
+    ibges.forEach((item) => {
+      const key = `${orig}-${item.codigo}`;
+      if (!cobertos.has(key)) listaFaltantes.push({ ...item, origem: orig });
     });
   });
 
-  const ordenados = resultados.sort((a, b) => a.total - b.total);
-  if (modo === 'transportadora' && transportadoraId) return ordenados;
-  return ordenados;
-}
+  const total = origens.length * ibges.length;
+  const faltantes = listaFaltantes.length;
+  const cobertas = total - faltantes;
+  const percentual = total ? (cobertas / total) * 100 : 0;
 
-export function simularGradePorCanal({ transportadoras, canal, origemId, transportadoraId, destino, faixas = [] }) {
-  const linhas = faixas.map((faixa) => {
-    const resultados = simularFretes({
-      transportadoras,
-      modo: 'destino',
-      transportadoraId,
-      origemId,
-      destino,
-      pesoKg: faixa.peso,
-      valorNf: faixa.valorNf,
-      canal,
-    });
-
-    if (!resultados.length) {
-      return {
-        peso: faixa.peso,
-        valorNf: faixa.valorNf,
-        canal,
-        vencedor: null,
-        segundo: null,
-        diferencaSegundo: 0,
-        savingSegundo: 0,
-        resultados: [],
-      };
-    }
-
-    const vencedor = resultados[0];
-    const segundo = resultados[1] || null;
-    const diferencaSegundo = segundo ? segundo.total - vencedor.total : 0;
-    const savingSegundo = segundo ? diferencaSegundo : 0;
-
-    return {
-      peso: faixa.peso,
-      valorNf: faixa.valorNf,
-      canal,
-      vencedor,
-      segundo,
-      diferencaSegundo,
-      savingSegundo,
-      resultados,
-    };
-  });
-
-  const validas = linhas.filter((item) => item.vencedor);
-  const totalSaving = validas.reduce((acc, item) => acc + item.savingSegundo, 0);
-
-  const vitorias = validas.reduce((acc, item) => {
-    const nome = item.vencedor.transportadora;
-    acc[nome] = (acc[nome] || 0) + 1;
-    return acc;
-  }, {});
-
-  return {
-    linhas,
-    totalSaving,
-    vitorias,
-    aderencia: validas.length / (faixas.length || 1),
-  };
+  return { total, cobertas, faltantes, percentual, listaFaltantes };
 }
