@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   analisarCoberturaTabela,
   analisarTransportadoraPorGrade,
@@ -6,271 +6,249 @@ import {
   simularSimples,
 } from '../utils/calculoFrete';
 
-const IBGE_BASE_PADRAO = [
+const IBGE_BASE = [
+  { codigo: '1100015', cidade: "Alta Floresta D'Oeste", uf: 'RO' },
   { codigo: '3106200', cidade: 'Belo Horizonte', uf: 'MG' },
   { codigo: '3506003', cidade: 'Bauru', uf: 'SP' },
-  { codigo: '3549805', cidade: 'São José do Rio Preto', uf: 'SP' },
-  { codigo: '3550308', cidade: 'São Paulo', uf: 'SP' },
   { codigo: '4200606', cidade: 'Águas Mornas', uf: 'SC' },
   { codigo: '4205407', cidade: 'Florianópolis', uf: 'SC' },
+  { codigo: '4208203', cidade: 'Itajaí', uf: 'SC' },
   { codigo: '4211306', cidade: 'Navegantes', uf: 'SC' },
-  { codigo: '5208707', cidade: 'Goiânia', uf: 'GO' },
-  { codigo: '5300108', cidade: 'Brasília', uf: 'DF' },
+  { codigo: '3205002', cidade: 'Serra', uf: 'ES' },
 ];
 
 const GRADE_PADRAO = {
-  B2C: [
-    { peso: 1, valorNF: 150 },
-    { peso: 5, valorNF: 300 },
-    { peso: 10, valorNF: 500 },
-    { peso: 20, valorNF: 700 },
-    { peso: 30, valorNF: 900 },
-    { peso: 50, valorNF: 1200 },
-  ],
-  ATACADO: [
-    { peso: 50, valorNF: 5000 },
-    { peso: 100, valorNF: 8000 },
-    { peso: 200, valorNF: 12000 },
-    { peso: 300, valorNF: 15000 },
-    { peso: 500, valorNF: 20000 },
-  ],
+  B2C: Array.from({ length: 100 }, (_, i) => ({ peso: i + 1, valorNF: 150 })),
+  ATACADO: Array.from({ length: 10 }, (_, i) => ({ peso: (i + 1) * 50, valorNF: 5000 })),
 };
 
-function moeda(value) {
-  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value || 0));
+const MOCK_TRANSPORTADORAS = [
+  {
+    id: 't1',
+    nome: 'ATUAL CARGAS',
+    canais: ['ATACADO', 'B2C'],
+    origens: ['Itajaí', 'Serra'],
+    destinos: [
+      { ibge: '3506003', cidade: 'Bauru', prazo: 2, preco: 540, origem: 'Itajaí' },
+      { ibge: '4205407', cidade: 'Florianópolis', prazo: 1, preco: 390, origem: 'Itajaí' },
+      { ibge: '3106200', cidade: 'Belo Horizonte', prazo: 4, preco: 680, origem: 'Serra' },
+      { ibge: '4200606', cidade: 'Águas Mornas', prazo: 1, preco: 320, origem: 'Itajaí' },
+    ],
+  },
+  {
+    id: 't2',
+    nome: 'BRASIL WEB',
+    canais: ['ATACADO'],
+    origens: ['Itajaí'],
+    destinos: [
+      { ibge: '3506003', cidade: 'Bauru', prazo: 3, preco: 570, origem: 'Itajaí' },
+      { ibge: '3106200', cidade: 'Belo Horizonte', prazo: 3, preco: 640, origem: 'Itajaí' },
+      { ibge: '4200606', cidade: 'Águas Mornas', prazo: 2, preco: 360, origem: 'Itajaí' },
+    ],
+  },
+  {
+    id: 't3',
+    nome: 'TOTAL EXPRESS',
+    canais: ['B2C'],
+    origens: ['Itajaí'],
+    destinos: [
+      { ibge: '3506003', cidade: 'Bauru', prazo: 4, preco: 230, origem: 'Itajaí' },
+      { ibge: '4205407', cidade: 'Florianópolis', prazo: 2, preco: 180, origem: 'Itajaí' },
+      { ibge: '4211306', cidade: 'Navegantes', prazo: 1, preco: 150, origem: 'Itajaí' },
+    ],
+  },
+];
+
+function moeda(valor) {
+  return `R$ ${(valor ?? 0).toFixed(2)}`;
 }
 
-function numero(value, digits = 2) {
-  return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Number(value || 0));
+function percentual(valor) {
+  return `${(valor ?? 0).toFixed(2)}%`;
 }
 
-function percent(value) {
-  return `${numero(value, 2)}%`;
-}
-
-function csvEscape(value) {
-  const text = String(value ?? '');
-  if (/[";\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
-  return text;
-}
-
-function exportarCsv(nomeArquivo, linhas) {
-  if (!linhas?.length) return;
-  const headers = Object.keys(linhas[0]);
-  const csv = [headers.join(';'), ...linhas.map((linha) => headers.map((header) => csvEscape(linha[header])).join(';'))].join('\n');
-  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = nomeArquivo;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-function ResultadoDetalhes({ item }) {
-  const detalhes = item?.detalhes || {};
-  const taxas = detalhes.taxas || {};
-
+function LinhaDetalhe({ label, value, destaque = false }) {
   return (
-    <div className="sim-detalhes-box">
-      <div className="sim-detalhes-grid">
-        <div><span>Tipo de cálculo</span><strong>{detalhes.tipoCalculo || '-'}</strong></div>
-        <div><span>Faixa usada</span><strong>{detalhes.faixaPeso || '-'}</strong></div>
-        <div><span>Rota</span><strong>{detalhes.nomeRota || '-'}</strong></div>
-        <div><span>Frete base</span><strong>{moeda(detalhes.freteBase)}</strong></div>
-        <div><span>Subtotal</span><strong>{moeda(detalhes.subtotal)}</strong></div>
-        <div><span>ICMS</span><strong>{moeda(detalhes.icms)}</strong></div>
-        <div><span>Valor/Kg</span><strong>{moeda(detalhes.valorKg)}</strong></div>
-        <div><span>% sobre NF</span><strong>{percent(detalhes.percentual)}</strong></div>
-        <div><span>Valor fixo/faixa</span><strong>{moeda(detalhes.valorFixo)}</strong></div>
-        <div><span>Excesso KG</span><strong>{numero(detalhes.excessoKg)}</strong></div>
-        <div><span>Valor excedente</span><strong>{moeda(detalhes.valorExcedente)}</strong></div>
-        <div><span>Mínimo da rota</span><strong>{moeda(detalhes.minimoFrete)}</strong></div>
-      </div>
-
-      <div className="sim-taxas-lista">
-        {[
-          ['GRIS', taxas.gris],
-          ['ADV', taxas.adValorem],
-          ['Pedágio', taxas.pedagio],
-          ['TAS', taxas.tas],
-          ['CTRC', taxas.ctrc],
-          ['TDA', taxas.tda],
-          ['TDR', taxas.tdr],
-          ['TRT', taxas.trt],
-          ['Suframa', taxas.suframa],
-          ['Outras', taxas.outras],
-        ].map(([label, value]) => (
-          <div key={label} className="sim-taxas-card">
-            <span>{label}</span>
-            <strong>{moeda(value)}</strong>
-          </div>
-        ))}
-      </div>
-
-      {detalhes.observacoes && <div className="sim-detalhes-observacao">Observação da tabela: {detalhes.observacoes}</div>}
+    <div className={`sim-detail-line ${destaque ? 'is-highlight' : ''}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
 
-function ResultadoCard({ item, aberto, onToggle }) {
+function ResultadoCard({ item, indice }) {
+  const [aberto, setAberto] = useState(false);
+  const detalhes = item.detalhes || {};
+  const taxas = detalhes.taxas || {};
+
   return (
     <div className="sim-resultado-card">
       <div className="sim-resultado-topo">
         <div>
           <strong>{item.transportadora}</strong>
-          <div className="sim-resultado-linha">{item.origem} • {item.destinoCidade || item.destinoCodigo}</div>
+          <div className="sim-resultado-linha">{item.descricao}</div>
         </div>
-        <div className="sim-resultado-acoes">
-          <span className={`sim-ranking-badge ${item.posicao === 1 ? 'winner' : ''}`}>#{item.posicao} • {item.prazo} dia(s)</span>
-          <button className="sim-link-btn" onClick={onToggle}>{aberto ? 'Fechar detalhes' : 'Ver detalhes'}</button>
+        <div className="sim-resultado-topo-right">
+          <span>#{item.posicao || indice + 1} • {item.prazo} dia(s)</span>
+          <button type="button" className="sim-detail-toggle" onClick={() => setAberto((v) => !v)}>
+            {aberto ? 'Fechar detalhes' : 'Ver detalhes'}
+          </button>
         </div>
       </div>
 
-      <div className="sim-resultado-grade">
+      <div className="sim-resultado-grade sim-resultado-grade--four">
         <div>
           <span>Frete final</span>
           <strong>{moeda(item.total)}</strong>
         </div>
         <div>
           <span>Saving vs 2º</span>
-          <strong>{moeda(item.savingSegundo)}</strong>
+          <strong>{moeda(item.savingSegundo ?? 0)}</strong>
         </div>
         <div>
           <span>Diferença p/ líder</span>
-          <strong>{moeda(item.diferencaLider)}</strong>
+          <strong>{moeda(item.diferencaLider ?? 0)}</strong>
         </div>
         <div>
           <span>Redução p/ líder</span>
-          <strong>{percent(item.reducaoNecessariaPct)}</strong>
+          <strong>{percentual(item.reducaoNecessariaPct ?? 0)}</strong>
         </div>
       </div>
 
-      {aberto && <ResultadoDetalhes item={item} />}
+      {aberto && (
+        <div className="sim-detalhes-grid">
+          <div className="sim-detail-panel">
+            <div className="sim-detail-panel-title">Cálculo do frete / prazo</div>
+            <LinhaDetalhe label="Origem" value={item.origem || '-'} />
+            <LinhaDetalhe label="Destino" value={`${item.destino || '-'} • IBGE ${item.ibge || '-'}`} />
+            <LinhaDetalhe label="Prazo" value={`${item.prazo || 0} dia(s)`} />
+            <LinhaDetalhe label="Peso considerado" value={`${item.peso || 0} kg`} />
+            <LinhaDetalhe label="Valor NF" value={moeda(item.valorNF || 0)} />
+            <LinhaDetalhe label="Tipo de cálculo" value={detalhes.tipoCalculo || '-'} destaque />
+            <LinhaDetalhe label="Faixa aplicada" value={detalhes.faixa || '-'} />
+            <LinhaDetalhe label="Percentual aplicado" value={detalhes.tipoCalculo === 'PERCENTUAL' ? percentual(detalhes.percentualAplicado || 0) : '-'} />
+            <LinhaDetalhe label="Valor por kg" value={detalhes.tipoCalculo === 'PESO' ? moeda(detalhes.valorKg || 0) : '-'} />
+            <LinhaDetalhe label="Frete tabela" value={moeda(detalhes.freteTabela || 0)} />
+            <LinhaDetalhe label="Frete por peso" value={moeda(detalhes.fretePeso || 0)} />
+            <LinhaDetalhe label="Frete percentual" value={moeda(detalhes.fretePercentual || 0)} />
+            <LinhaDetalhe label="Subtotal do frete" value={moeda(detalhes.freteBase || 0)} destaque />
+          </div>
+
+          <div className="sim-detail-panel">
+            <div className="sim-detail-panel-title">Taxas adicionais vinculadas</div>
+            <LinhaDetalhe label={`GRIS (${(taxas.grisPct || 0).toFixed(2)}% | mín. ${moeda(taxas.grisMinimo || 0)})`} value={moeda(taxas.gris || 0)} />
+            <LinhaDetalhe label={`ADV (${(taxas.advPct || 0).toFixed(2)}%)`} value={moeda(taxas.adv || 0)} />
+            <LinhaDetalhe label="Pedágio" value={moeda(taxas.pedagio || 0)} />
+            <LinhaDetalhe label="TAS" value={moeda(taxas.tas || 0)} />
+            <LinhaDetalhe label="Despacho" value={moeda(taxas.despacho || 0)} />
+            <LinhaDetalhe label="TDA / STDA" value={moeda(taxas.tda || 0)} />
+            <LinhaDetalhe label="TDE" value={moeda(taxas.tde || 0)} />
+            <LinhaDetalhe label="TRT" value={moeda(taxas.trt || 0)} />
+            <LinhaDetalhe label="Suframa" value={moeda(taxas.suframa || 0)} />
+            <LinhaDetalhe label="Outras" value={moeda(taxas.outras || 0)} />
+            <LinhaDetalhe label="Total de taxas" value={moeda(taxas.totalTaxas || 0)} destaque />
+            <LinhaDetalhe label="Frete final com taxas" value={moeda(item.total || 0)} destaque />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export default function SimuladorPage({ transportadoras = [] }) {
+export default function SimuladorPage() {
   const [aba, setAba] = useState('simples');
-  const [detalhesAbertos, setDetalhesAbertos] = useState({});
 
-  const [origemSimples, setOrigemSimples] = useState('');
-  const [destinoCodigo, setDestinoCodigo] = useState('');
+  const [origemSimples, setOrigemSimples] = useState('Itajaí');
+  const [destinoCodigo, setDestinoCodigo] = useState('3506003');
   const [canalSimples, setCanalSimples] = useState('ATACADO');
   const [pesoSimples, setPesoSimples] = useState('150');
   const [nfSimples, setNfSimples] = useState('5000');
   const [resultadoSimples, setResultadoSimples] = useState([]);
 
-  const [transportadora, setTransportadora] = useState('');
+  const [transportadora, setTransportadora] = useState('ATUAL CARGAS');
   const [canalTransportadora, setCanalTransportadora] = useState('ATACADO');
   const [origemTransportadora, setOrigemTransportadora] = useState('');
   const [destinoTransportadora, setDestinoTransportadora] = useState('');
   const [pesoTransportadora, setPesoTransportadora] = useState('150');
   const [nfTransportadora, setNfTransportadora] = useState('5000');
   const [modoLista, setModoLista] = useState(false);
-  const [listaCodigos, setListaCodigos] = useState('');
-  const [resultadoTransportadora, setResultadoTransportadora] = useState({ erro: '', resultados: [] });
+  const [listaCodigos, setListaCodigos] = useState('3506003
+4200606');
+  const [resultadoTransportadora, setResultadoTransportadora] = useState([]);
 
-  const [transportadoraAnalise, setTransportadoraAnalise] = useState('');
+  const [transportadoraAnalise, setTransportadoraAnalise] = useState('ATUAL CARGAS');
   const [canalAnalise, setCanalAnalise] = useState('ATACADO');
   const [grade, setGrade] = useState(GRADE_PADRAO);
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
-  const [detalheAnaliseKey, setDetalheAnaliseKey] = useState('');
 
   const [canalCobertura, setCanalCobertura] = useState('ATACADO');
   const [origemCobertura, setOrigemCobertura] = useState('');
   const [transportadoraCobertura, setTransportadoraCobertura] = useState('');
   const [resultadoCobertura, setResultadoCobertura] = useState(null);
 
-  const baseTransportadoras = useMemo(() => transportadoras || [], [transportadoras]);
-
-  const ibgeBase = useMemo(() => {
-    const map = new Map(IBGE_BASE_PADRAO.map((item) => [String(item.codigo), item]));
-    baseTransportadoras.forEach((t) => {
-      (t.origens || []).forEach((origem) => {
-        (origem.rotas || []).forEach((rota) => {
-          if (!map.has(String(rota.ibgeDestino))) {
-            map.set(String(rota.ibgeDestino), {
-              codigo: String(rota.ibgeDestino),
-              cidade: rota.nomeDestino || rota.cidadeDestino || `IBGE ${rota.ibgeDestino}`,
-              uf: rota.ufDestino || '',
-            });
-          }
-        });
-      });
-    });
-    return Array.from(map.values()).sort((a, b) => String(a.cidade).localeCompare(String(b.cidade)));
-  }, [baseTransportadoras]);
-
   const origensDisponiveis = useMemo(() => {
     const set = new Set();
-    baseTransportadoras.forEach((t) => (t.origens || []).forEach((o) => set.add(o.cidade)));
-    return Array.from(set).sort();
-  }, [baseTransportadoras]);
-
-  const nomesTransportadoras = useMemo(() => baseTransportadoras.map((item) => item.nome).sort(), [baseTransportadoras]);
-
-  useEffect(() => {
-    if (!origemSimples && origensDisponiveis[0]) setOrigemSimples(origensDisponiveis[0]);
-    if (!transportadora && nomesTransportadoras[0]) setTransportadora(nomesTransportadoras[0]);
-    if (!transportadoraAnalise && nomesTransportadoras[0]) setTransportadoraAnalise(nomesTransportadoras[0]);
-    if (!destinoCodigo && ibgeBase[0]) setDestinoCodigo(String(ibgeBase[0].codigo));
-  }, [origensDisponiveis, nomesTransportadoras, ibgeBase, origemSimples, transportadora, transportadoraAnalise, destinoCodigo]);
-
-  const alternarDetalhe = (key) => {
-    setDetalhesAbertos((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
+    MOCK_TRANSPORTADORAS.forEach((t) => t.origens.forEach((o) => set.add(o)));
+    return [...set].sort();
+  }, []);
 
   const onSimularSimples = () => {
-    setResultadoSimples(simularSimples({
-      transportadoras: baseTransportadoras,
-      origem: origemSimples,
-      canal: canalSimples,
-      peso: Number(pesoSimples),
-      valorNF: Number(nfSimples),
-      destinoCodigo,
-      destinosBase: ibgeBase,
-    }));
+    if (!origemSimples || !canalSimples || !pesoSimples || !nfSimples || !destinoCodigo) return;
+    setResultadoSimples(
+      simularSimples({
+        transportadoras: MOCK_TRANSPORTADORAS,
+        origem: origemSimples,
+        canal: canalSimples,
+        peso: Number(pesoSimples),
+        valorNF: Number(nfSimples),
+        destinoCodigo,
+        destinosBase: IBGE_BASE,
+      }),
+    );
   };
 
   const onSimularTransportadora = () => {
     const codigos = modoLista
-      ? listaCodigos.split(/\n|,|;/).map((s) => s.trim()).filter(Boolean)
+      ? listaCodigos.split(/
+|,|;/).map((s) => s.trim()).filter(Boolean)
       : destinoTransportadora
         ? [destinoTransportadora]
         : [];
 
-    setResultadoTransportadora(simularPorTransportadora({
-      transportadoras: baseTransportadoras,
-      nomeTransportadora: transportadora,
-      canal: canalTransportadora,
-      origem: origemTransportadora,
-      destinoCodigos: codigos,
-      peso: Number(pesoTransportadora),
-      valorNF: Number(nfTransportadora),
-      destinosBase: ibgeBase,
-    }));
+    setResultadoTransportadora(
+      simularPorTransportadora({
+        transportadoras: MOCK_TRANSPORTADORAS,
+        nomeTransportadora: transportadora,
+        canal: canalTransportadora,
+        origem: origemTransportadora,
+        destinoCodigos: codigos,
+        peso: Number(pesoTransportadora),
+        valorNF: Number(nfTransportadora),
+      }),
+    );
   };
 
   const onSimularGrade = () => {
-    setResultadoAnalise(analisarTransportadoraPorGrade({
-      transportadoras: baseTransportadoras,
-      nomeTransportadora: transportadoraAnalise,
-      canal: canalAnalise,
-      grade: grade[canalAnalise],
-      destinosBase: ibgeBase,
-    }));
+    setResultadoAnalise(
+      analisarTransportadoraPorGrade({
+        transportadoras: MOCK_TRANSPORTADORAS,
+        nomeTransportadora: transportadoraAnalise,
+        canal: canalAnalise,
+        grade: grade[canalAnalise],
+      }),
+    );
   };
 
   const onAnalisarCobertura = () => {
-    setResultadoCobertura(analisarCoberturaTabela({
-      transportadoras: baseTransportadoras,
-      ibges: ibgeBase,
-      canal: canalCobertura,
-      origem: origemCobertura,
-      transportadora: transportadoraCobertura,
-    }));
+    setResultadoCobertura(
+      analisarCoberturaTabela({
+        transportadoras: MOCK_TRANSPORTADORAS,
+        ibges: IBGE_BASE,
+        canal: canalCobertura,
+        origem: origemCobertura,
+        transportadora: transportadoraCobertura,
+      }),
+    );
   };
 
   return (
@@ -278,7 +256,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       <div className="simulador-header">
         <div className="simulador-subtitulo">AMD Log • Plataforma de Fretes</div>
         <h1>Simulador de fretes</h1>
-        <p>Comparação por cenário real: mesma origem, mesmo destino, mesmo canal, mesmo peso/faixa e mesmo valor de NF.</p>
+        <p>Nova estrutura em 4 telas para separar consulta simples, simulação por transportadora, análise de tabela e cobertura nacional.</p>
       </div>
 
       <div className="sim-tabs">
@@ -304,7 +282,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>CEP ou IBGE de destino
-              <input value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3106200" />
+              <input value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3506003" />
             </label>
             <label>Canal
               <select value={canalSimples} onChange={(e) => setCanalSimples(e.target.value)}>
@@ -320,12 +298,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
           </div>
           <div className="sim-actions"><button className="primary" onClick={onSimularSimples}>Simular</button></div>
-          <div className="sim-resultados">
-            {resultadoSimples.map((item) => {
-              const key = `${item.transportadora}-${item.origem}-${item.destinoCodigo}-${item.posicao}`;
-              return <ResultadoCard key={key} item={item} aberto={!!detalhesAbertos[key]} onToggle={() => alternarDetalhe(key)} />;
-            })}
-          </div>
+          <div className="sim-resultados">{resultadoSimples.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${idx}`} item={item} indice={idx} />)}</div>
         </section>
       )}
 
@@ -335,7 +308,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-6">
             <label>Transportadora
               <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)}>
-                {nomesTransportadoras.map((item) => <option key={item}>{item}</option>)}
+                {MOCK_TRANSPORTADORAS.map((item) => <option key={item.id}>{item.nome}</option>)}
               </select>
             </label>
             <label>Canal
@@ -351,7 +324,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>Destino opcional (CEP ou IBGE)
-              <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3106200" />
+              <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003" />
             </label>
             <label>Peso
               <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} />
@@ -374,13 +347,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </div>
           )}
           <div className="sim-actions"><button className="primary" onClick={onSimularTransportadora}>Simular transportadora</button></div>
-          {resultadoTransportadora.erro && <div className="sim-alert-box">{resultadoTransportadora.erro}</div>}
-          <div className="sim-resultados">
-            {resultadoTransportadora.resultados.map((item) => {
-              const key = `${item.transportadora}-${item.origem}-${item.destinoCodigo}-${item.posicao}`;
-              return <ResultadoCard key={key} item={item} aberto={!!detalhesAbertos[key]} onToggle={() => alternarDetalhe(key)} />;
-            })}
-          </div>
+          <div className="sim-resultados">{resultadoTransportadora.map((item, idx) => <ResultadoCard key={`${item.origem}-${item.ibge}-${idx}`} item={item} indice={idx} />)}</div>
         </section>
       )}
 
@@ -390,7 +357,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-2 compact-top">
             <label>Transportadora
               <select value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)}>
-                {nomesTransportadoras.map((item) => <option key={item}>{item}</option>)}
+                {MOCK_TRANSPORTADORAS.map((item) => <option key={item.id}>{item.nome}</option>)}
               </select>
             </label>
             <label>Canal
@@ -404,12 +371,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <div className="sim-parametros-header">
               <div>
                 <strong>Grade de pesos e valores de nota</strong>
-                <p>Essa tela avalia cada rota da transportadora na mesma chave de comparação do mercado.</p>
+                <p>Essa tela simula tudo que a transportadora possui em tabela, obedecendo a grade cadastrada.</p>
               </div>
               <button className="primary small" onClick={onSimularGrade}>Simular grade</button>
             </div>
             <div className="sim-grade-config">
-              {(grade[canalAnalise] || []).map((linha, idx) => (
+              {(grade[canalAnalise] || []).slice(0, canalAnalise === 'B2C' ? 12 : 10).map((linha, idx) => (
                 <div key={idx} className="sim-grade-row">
                   <input
                     value={linha.peso}
@@ -431,87 +398,41 @@ export default function SimuladorPage({ transportadoras = [] }) {
               ))}
             </div>
           </div>
-          {resultadoAnalise?.erro && <div className="sim-alert-box">{resultadoAnalise.erro}</div>}
           {resultadoAnalise && (
             <>
-              <div className="sim-analise-resumo sim-analise-resumo-top">
-                <div><span>Rotas avaliadas</span><strong>{resultadoAnalise.resumo.rotasAvaliadas}</strong></div>
-                <div><span>Vitórias</span><strong>{resultadoAnalise.resumo.vitorias}</strong></div>
-                <div><span>Perdas</span><strong>{resultadoAnalise.resumo.perdas}</strong></div>
-                <div><span>Aderência</span><strong>{percent(resultadoAnalise.resumo.aderencia)}</strong></div>
-                <div><span>Saving vs 2º</span><strong>{moeda(resultadoAnalise.resumo.saving)}</strong></div>
-                <div><span>Frete médio</span><strong>{moeda(resultadoAnalise.resumo.freteMedio)}</strong></div>
+              <div className="sim-analise-resumo">
+                <div><span>Rotas avaliadas</span><strong>{resultadoAnalise.rotasAvaliadas}</strong></div>
+                <div><span>Vitórias</span><strong>{resultadoAnalise.vitorias}</strong></div>
+                <div><span>Aderência</span><strong>{resultadoAnalise.aderencia.toFixed(2)}%</strong></div>
+                <div><span>Saving vs 2º</span><strong>{moeda(resultadoAnalise.saving)}</strong></div>
               </div>
-              <div className="sim-actions sim-actions-left">
-                <button
-                  className="primary small"
-                  onClick={() => exportarCsv('analise-transportadora.csv', resultadoAnalise.itens.map((item) => ({
-                    transportadora: item.transportadora,
-                    origem: item.origem,
-                    destino: item.destinoCidade,
-                    ibge: item.destinoCodigo,
-                    peso: item.peso,
-                    valor_nf: item.valorNF,
-                    posicao: item.posicao,
-                    prazo: item.prazo,
-                    total: numero(item.total),
-                    melhor_concorrente: item.melhorConcorrente?.transportadora || '',
-                    valor_lider: numero(item.melhorConcorrente?.total || 0),
-                    segundo_colocado: item.segundoColocado?.transportadora || '',
-                    valor_segundo: numero(item.segundoColocado?.total || 0),
-                    diferenca_lider: numero(item.diferencaLider),
-                    reducao_necessaria_pct: numero(item.reducaoNecessariaPct),
-                  })))}
-                >
-                  Exportar CSV
-                </button>
-              </div>
-              <div className="sim-table-wrap">
-                <table className="sim-table">
+              <div className="sim-analise-tabela-wrap">
+                <table className="sim-analise-tabela">
                   <thead>
                     <tr>
                       <th>Origem</th>
                       <th>Destino</th>
-                      <th>IBGE</th>
                       <th>Peso</th>
                       <th>NF</th>
-                      <th>Posição</th>
                       <th>Valor</th>
                       <th>Líder</th>
-                      <th>2º lugar</th>
-                      <th>Redução</th>
+                      <th>Posição</th>
                       <th>Prazo</th>
-                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {resultadoAnalise.itens.map((item) => {
-                      const rowKey = `${item.origem}-${item.destinoCodigo}-${item.peso}-${item.valorNF}`;
-                      const aberto = detalheAnaliseKey === rowKey;
-                      return (
-                        <React.Fragment key={rowKey}>
-                          <tr>
-                            <td>{item.origem}</td>
-                            <td>{item.destinoCidade}</td>
-                            <td>{item.destinoCodigo}</td>
-                            <td>{numero(item.peso, 0)}</td>
-                            <td>{moeda(item.valorNF)}</td>
-                            <td>#{item.posicao}</td>
-                            <td>{moeda(item.total)}</td>
-                            <td>{item.melhorConcorrente?.transportadora || '-'}</td>
-                            <td>{item.segundoColocado?.transportadora || '-'}</td>
-                            <td>{percent(item.reducaoNecessariaPct)}</td>
-                            <td>{item.prazo} dia(s)</td>
-                            <td><button className="sim-link-btn" onClick={() => setDetalheAnaliseKey(aberto ? '' : rowKey)}>{aberto ? 'Fechar' : 'Detalhes'}</button></td>
-                          </tr>
-                          {aberto && (
-                            <tr className="sim-detalhe-row">
-                              <td colSpan="12"><ResultadoDetalhes item={item} /></td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
+                    {resultadoAnalise.detalhes.slice(0, 20).map((linha, idx) => (
+                      <tr key={`${linha.origem}-${linha.ibge}-${idx}`}>
+                        <td>{linha.origem}</td>
+                        <td>{linha.destino}</td>
+                        <td>{linha.peso}</td>
+                        <td>{moeda(linha.valorNF)}</td>
+                        <td>{moeda(linha.valorAtual)}</td>
+                        <td>{linha.melhorConcorrente}</td>
+                        <td>{linha.posicao}º</td>
+                        <td>{linha.prazo} dia(s)</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -539,7 +460,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Transportadora
               <select value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)}>
                 <option value="">Todas</option>
-                {nomesTransportadoras.map((item) => <option key={item}>{item}</option>)}
+                {MOCK_TRANSPORTADORAS.map((item) => <option key={item.id}>{item.nome}</option>)}
               </select>
             </label>
           </div>
@@ -550,39 +471,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Combinações possíveis</span><strong>{resultadoCobertura.total}</strong></div>
                 <div><span>Cobertas</span><strong>{resultadoCobertura.cobertas}</strong></div>
                 <div><span>Sem tabela</span><strong>{resultadoCobertura.faltantes}</strong></div>
-                <div><span>Cobertura</span><strong>{percent(resultadoCobertura.percentual)}</strong></div>
-              </div>
-              <div className="sim-table-wrap">
-                <table className="sim-table">
-                  <thead>
-                    <tr>
-                      <th>Origem</th>
-                      <th>Total</th>
-                      <th>Cobertas</th>
-                      <th>Sem tabela</th>
-                      <th>% cobertura</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {resultadoCobertura.resumoPorOrigem.map((item) => (
-                      <tr key={item.origem}>
-                        <td>{item.origem}</td>
-                        <td>{item.total}</td>
-                        <td>{item.cobertas}</td>
-                        <td>{item.faltantes}</td>
-                        <td>{percent(item.percentual)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div><span>Cobertura</span><strong>{resultadoCobertura.percentual.toFixed(2)}%</strong></div>
               </div>
               <div className="sim-missing-list">
                 {resultadoCobertura.listaFaltantes.map((item, idx) => (
-                  <div key={`${item.origem}-${item.codigo}-${idx}`} className="sim-missing-item warning">
-                    <strong>{item.origem}</strong>
-                    <span>{item.cidade} / {item.uf || '-'}</span>
-                    <span>IBGE {item.codigo}</span>
-                    <span>{item.status}</span>
+                  <div key={idx} className="sim-missing-item">
+                    {item.origem} • {item.cidade} / {item.uf} • IBGE {item.codigo}
                   </div>
                 ))}
               </div>
