@@ -1,181 +1,71 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   analisarCoberturaTabela,
   analisarTransportadoraPorGrade,
+  extrairBaseReal,
   simularPorTransportadora,
   simularSimples,
 } from '../utils/calculoFrete';
 
-const IBGE_BASE = [
-  { codigo: '1100015', cidade: "Alta Floresta D'Oeste", uf: 'RO' },
-  { codigo: '3106200', cidade: 'Belo Horizonte', uf: 'MG' },
-  { codigo: '3506003', cidade: 'Bauru', uf: 'SP' },
-  { codigo: '4200606', cidade: 'Águas Mornas', uf: 'SC' },
-  { codigo: '4205407', cidade: 'Florianópolis', uf: 'SC' },
-  { codigo: '4208203', cidade: 'Itajaí', uf: 'SC' },
-  { codigo: '4211306', cidade: 'Navegantes', uf: 'SC' },
-  { codigo: '3205002', cidade: 'Serra', uf: 'ES' },
-];
-
 const GRADE_PADRAO = {
-  B2C: Array.from({ length: 100 }, (_, i) => ({ peso: i + 1, valorNF: 150 })),
+  B2C: Array.from({ length: 12 }, (_, i) => ({ peso: i + 1, valorNF: 150 })),
   ATACADO: Array.from({ length: 10 }, (_, i) => ({ peso: (i + 1) * 50, valorNF: 5000 })),
 };
 
-const MOCK_TRANSPORTADORAS = [
-  {
-    id: 't1',
-    nome: 'ATUAL CARGAS',
-    canais: ['ATACADO', 'B2C'],
-    origens: ['Itajaí', 'Serra'],
-    destinos: [
-      { ibge: '3506003', cidade: 'Bauru', prazo: 2, preco: 540, origem: 'Itajaí' },
-      { ibge: '4205407', cidade: 'Florianópolis', prazo: 1, preco: 390, origem: 'Itajaí' },
-      { ibge: '3106200', cidade: 'Belo Horizonte', prazo: 4, preco: 680, origem: 'Serra' },
-      { ibge: '4200606', cidade: 'Águas Mornas', prazo: 1, preco: 320, origem: 'Itajaí' },
-    ],
-  },
-  {
-    id: 't2',
-    nome: 'BRASIL WEB',
-    canais: ['ATACADO'],
-    origens: ['Itajaí'],
-    destinos: [
-      { ibge: '3506003', cidade: 'Bauru', prazo: 3, preco: 570, origem: 'Itajaí' },
-      { ibge: '3106200', cidade: 'Belo Horizonte', prazo: 3, preco: 640, origem: 'Itajaí' },
-      { ibge: '4200606', cidade: 'Águas Mornas', prazo: 2, preco: 360, origem: 'Itajaí' },
-    ],
-  },
-  {
-    id: 't3',
-    nome: 'TOTAL EXPRESS',
-    canais: ['B2C'],
-    origens: ['Itajaí'],
-    destinos: [
-      { ibge: '3506003', cidade: 'Bauru', prazo: 4, preco: 230, origem: 'Itajaí' },
-      { ibge: '4205407', cidade: 'Florianópolis', prazo: 2, preco: 180, origem: 'Itajaí' },
-      { ibge: '4211306', cidade: 'Navegantes', prazo: 1, preco: 150, origem: 'Itajaí' },
-    ],
-  },
-];
-
-function moeda(valor) {
-  return `R$ ${(valor ?? 0).toFixed(2)}`;
+function formatMoney(value) {
+  return `R$ ${Number(value || 0).toFixed(2)}`;
 }
 
-function percentual(valor) {
-  return `${(valor ?? 0).toFixed(2)}%`;
-}
-
-function LinhaDetalhe({ label, value, destaque = false }) {
-  return (
-    <div className={`sim-detail-line ${destaque ? 'is-highlight' : ''}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ResultadoCard({ item, indice }) {
-  const [aberto, setAberto] = useState(false);
-  const detalhes = item.detalhes || {};
-  const taxas = detalhes.taxas || {};
-
+function ResultadoCard({ item }) {
   return (
     <div className="sim-resultado-card">
       <div className="sim-resultado-topo">
-        <div>
-          <strong>{item.transportadora}</strong>
-          <div className="sim-resultado-linha">{item.descricao}</div>
-        </div>
-        <div className="sim-resultado-topo-right">
-          <span>#{item.posicao || indice + 1} • {item.prazo} dia(s)</span>
-          <button type="button" className="sim-detail-toggle" onClick={() => setAberto((v) => !v)}>
-            {aberto ? 'Fechar detalhes' : 'Ver detalhes'}
-          </button>
-        </div>
+        <strong>{item.transportadora}</strong>
+        <span>#{item.posicao || '-'} • {item.prazo} dia(s)</span>
       </div>
-
-      <div className="sim-resultado-grade sim-resultado-grade--four">
+      <div className="sim-resultado-linha">Origem {item.origem} • Destino IBGE {item.destinoCodigo}</div>
+      <div className="sim-resultado-grade">
         <div>
           <span>Frete final</span>
-          <strong>{moeda(item.total)}</strong>
+          <strong>{formatMoney(item.total)}</strong>
         </div>
         <div>
           <span>Saving vs 2º</span>
-          <strong>{moeda(item.savingSegundo ?? 0)}</strong>
+          <strong>{formatMoney(item.savingSegundo)}</strong>
         </div>
         <div>
           <span>Diferença p/ líder</span>
-          <strong>{moeda(item.diferencaLider ?? 0)}</strong>
+          <strong>{formatMoney(item.diferencaLider)}</strong>
         </div>
         <div>
           <span>Redução p/ líder</span>
-          <strong>{percentual(item.reducaoNecessariaPct ?? 0)}</strong>
+          <strong>{Number(item.reducaoNecessariaPct || 0).toFixed(2)}%</strong>
         </div>
       </div>
-
-      {aberto && (
-        <div className="sim-detalhes-grid">
-          <div className="sim-detail-panel">
-            <div className="sim-detail-panel-title">Cálculo do frete / prazo</div>
-            <LinhaDetalhe label="Origem" value={item.origem || '-'} />
-            <LinhaDetalhe label="Destino" value={`${item.destino || '-'} • IBGE ${item.ibge || '-'}`} />
-            <LinhaDetalhe label="Prazo" value={`${item.prazo || 0} dia(s)`} />
-            <LinhaDetalhe label="Peso considerado" value={`${item.peso || 0} kg`} />
-            <LinhaDetalhe label="Valor NF" value={moeda(item.valorNF || 0)} />
-            <LinhaDetalhe label="Tipo de cálculo" value={detalhes.tipoCalculo || '-'} destaque />
-            <LinhaDetalhe label="Faixa aplicada" value={detalhes.faixa || '-'} />
-            <LinhaDetalhe label="Percentual aplicado" value={detalhes.tipoCalculo === 'PERCENTUAL' ? percentual(detalhes.percentualAplicado || 0) : '-'} />
-            <LinhaDetalhe label="Valor por kg" value={detalhes.tipoCalculo === 'PESO' ? moeda(detalhes.valorKg || 0) : '-'} />
-            <LinhaDetalhe label="Frete tabela" value={moeda(detalhes.freteTabela || 0)} />
-            <LinhaDetalhe label="Frete por peso" value={moeda(detalhes.fretePeso || 0)} />
-            <LinhaDetalhe label="Frete percentual" value={moeda(detalhes.fretePercentual || 0)} />
-            <LinhaDetalhe label="Subtotal do frete" value={moeda(detalhes.freteBase || 0)} destaque />
-          </div>
-
-          <div className="sim-detail-panel">
-            <div className="sim-detail-panel-title">Taxas adicionais vinculadas</div>
-            <LinhaDetalhe label={`GRIS (${(taxas.grisPct || 0).toFixed(2)}% | mín. ${moeda(taxas.grisMinimo || 0)})`} value={moeda(taxas.gris || 0)} />
-            <LinhaDetalhe label={`ADV (${(taxas.advPct || 0).toFixed(2)}%)`} value={moeda(taxas.adv || 0)} />
-            <LinhaDetalhe label="Pedágio" value={moeda(taxas.pedagio || 0)} />
-            <LinhaDetalhe label="TAS" value={moeda(taxas.tas || 0)} />
-            <LinhaDetalhe label="Despacho" value={moeda(taxas.despacho || 0)} />
-            <LinhaDetalhe label="TDA / STDA" value={moeda(taxas.tda || 0)} />
-            <LinhaDetalhe label="TDE" value={moeda(taxas.tde || 0)} />
-            <LinhaDetalhe label="TRT" value={moeda(taxas.trt || 0)} />
-            <LinhaDetalhe label="Suframa" value={moeda(taxas.suframa || 0)} />
-            <LinhaDetalhe label="Outras" value={moeda(taxas.outras || 0)} />
-            <LinhaDetalhe label="Total de taxas" value={moeda(taxas.totalTaxas || 0)} destaque />
-            <LinhaDetalhe label="Frete final com taxas" value={moeda(item.total || 0)} destaque />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-export default function SimuladorPage() {
+export default function SimuladorPage({ transportadoras = [] }) {
   const [aba, setAba] = useState('simples');
-
-  const [origemSimples, setOrigemSimples] = useState('Itajaí');
-  const [destinoCodigo, setDestinoCodigo] = useState('3506003');
+  const [origemSimples, setOrigemSimples] = useState('');
+  const [destinoCodigo, setDestinoCodigo] = useState('');
   const [canalSimples, setCanalSimples] = useState('ATACADO');
   const [pesoSimples, setPesoSimples] = useState('150');
   const [nfSimples, setNfSimples] = useState('5000');
   const [resultadoSimples, setResultadoSimples] = useState([]);
 
-  const [transportadora, setTransportadora] = useState('ATUAL CARGAS');
+  const [transportadora, setTransportadora] = useState('');
   const [canalTransportadora, setCanalTransportadora] = useState('ATACADO');
   const [origemTransportadora, setOrigemTransportadora] = useState('');
   const [destinoTransportadora, setDestinoTransportadora] = useState('');
   const [pesoTransportadora, setPesoTransportadora] = useState('150');
   const [nfTransportadora, setNfTransportadora] = useState('5000');
   const [modoLista, setModoLista] = useState(false);
-  const [listaCodigos, setListaCodigos] = useState(`3506003\n4200606`);
+  const [listaCodigos, setListaCodigos] = useState('');
   const [resultadoTransportadora, setResultadoTransportadora] = useState([]);
 
-  const [transportadoraAnalise, setTransportadoraAnalise] = useState('ATUAL CARGAS');
+  const [transportadoraAnalise, setTransportadoraAnalise] = useState('');
   const [canalAnalise, setCanalAnalise] = useState('ATACADO');
   const [grade, setGrade] = useState(GRADE_PADRAO);
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
@@ -185,25 +75,103 @@ export default function SimuladorPage() {
   const [transportadoraCobertura, setTransportadoraCobertura] = useState('');
   const [resultadoCobertura, setResultadoCobertura] = useState(null);
 
-  const origensDisponiveis = useMemo(() => {
-    const set = new Set();
-    MOCK_TRANSPORTADORAS.forEach((t) => t.origens.forEach((o) => set.add(o)));
-    return [...set].sort();
-  }, []);
+  const baseReal = useMemo(() => extrairBaseReal(transportadoras), [transportadoras]);
+
+  const nomesTransportadoras = useMemo(
+    () => [...new Set((transportadoras || []).map((item) => item.nome).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [transportadoras],
+  );
+
+  const canaisDisponiveis = useMemo(
+    () => [...new Set(baseReal.map((item) => item.canal).filter(Boolean))],
+    [baseReal],
+  );
+
+  const origensDisponiveis = useMemo(
+    () => [...new Set(baseReal.filter((item) => item.canal === canalSimples).map((item) => item.origemCidade).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [baseReal, canalSimples],
+  );
+
+  const transportadoraSelecionada = useMemo(
+    () => (transportadoras || []).find((item) => item.nome === transportadora) || null,
+    [transportadoras, transportadora],
+  );
+
+  const canaisTransportadora = useMemo(
+    () => [...new Set((transportadoraSelecionada?.origens || []).map((item) => String(item.canal || 'ATACADO').toUpperCase()))],
+    [transportadoraSelecionada],
+  );
+
+  const origensTransportadoraDisponiveis = useMemo(() => {
+    if (!transportadoraSelecionada) return [];
+    return [...new Set(
+      (transportadoraSelecionada.origens || [])
+        .filter((item) => String(item.canal || 'ATACADO').toUpperCase() === canalTransportadora)
+        .map((item) => item.cidade)
+        .filter(Boolean),
+    )].sort((a, b) => a.localeCompare(b));
+  }, [transportadoraSelecionada, canalTransportadora]);
+
+  const transportadoraAnaliseSelecionada = useMemo(
+    () => (transportadoras || []).find((item) => item.nome === transportadoraAnalise) || null,
+    [transportadoras, transportadoraAnalise],
+  );
+
+  const canaisAnalise = useMemo(
+    () => [...new Set((transportadoraAnaliseSelecionada?.origens || []).map((item) => String(item.canal || 'ATACADO').toUpperCase()))],
+    [transportadoraAnaliseSelecionada],
+  );
+
+  const origensCoberturaDisponiveis = useMemo(
+    () => [...new Set(baseReal.filter((item) => item.canal === canalCobertura).map((item) => item.origemCidade).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [baseReal, canalCobertura],
+  );
+
+  useEffect(() => {
+    if (!transportadora && nomesTransportadoras.length) setTransportadora(nomesTransportadoras[0]);
+    if (!transportadoraAnalise && nomesTransportadoras.length) setTransportadoraAnalise(nomesTransportadoras[0]);
+  }, [nomesTransportadoras, transportadora, transportadoraAnalise]);
+
+  useEffect(() => {
+    if (!origemSimples && origensDisponiveis.length) setOrigemSimples(origensDisponiveis[0]);
+  }, [origensDisponiveis, origemSimples]);
+
+  useEffect(() => {
+    if (canaisTransportadora.length && !canaisTransportadora.includes(canalTransportadora)) {
+      setCanalTransportadora(canaisTransportadora[0]);
+    }
+  }, [canaisTransportadora, canalTransportadora]);
+
+  useEffect(() => {
+    if (origemTransportadora && !origensTransportadoraDisponiveis.includes(origemTransportadora)) {
+      setOrigemTransportadora('');
+    }
+  }, [origensTransportadoraDisponiveis, origemTransportadora]);
+
+  useEffect(() => {
+    if (canaisAnalise.length && !canaisAnalise.includes(canalAnalise)) {
+      setCanalAnalise(canaisAnalise[0]);
+    }
+  }, [canaisAnalise, canalAnalise]);
+
+  useEffect(() => {
+    if (canaisDisponiveis.length && !canaisDisponiveis.includes(canalSimples)) {
+      setCanalSimples(canaisDisponiveis[0]);
+    }
+    if (canaisDisponiveis.length && !canaisDisponiveis.includes(canalCobertura)) {
+      setCanalCobertura(canaisDisponiveis[0]);
+    }
+  }, [canaisDisponiveis, canalSimples, canalCobertura]);
 
   const onSimularSimples = () => {
-    if (!origemSimples || !canalSimples || !pesoSimples || !nfSimples || !destinoCodigo) return;
-    setResultadoSimples(
-      simularSimples({
-        transportadoras: MOCK_TRANSPORTADORAS,
-        origem: origemSimples,
-        canal: canalSimples,
-        peso: Number(pesoSimples),
-        valorNF: Number(nfSimples),
-        destinoCodigo,
-        destinosBase: IBGE_BASE,
-      }),
-    );
+    setResultadoSimples(simularSimples({
+      transportadoras,
+      origem: origemSimples,
+      canal: canalSimples,
+      peso: Number(pesoSimples),
+      valorNF: Number(nfSimples),
+      destinoCodigo,
+    }));
   };
 
   const onSimularTransportadora = () => {
@@ -213,40 +181,33 @@ export default function SimuladorPage() {
         ? [destinoTransportadora]
         : [];
 
-    setResultadoTransportadora(
-      simularPorTransportadora({
-        transportadoras: MOCK_TRANSPORTADORAS,
-        nomeTransportadora: transportadora,
-        canal: canalTransportadora,
-        origem: origemTransportadora,
-        destinoCodigos: codigos,
-        peso: Number(pesoTransportadora),
-        valorNF: Number(nfTransportadora),
-      }),
-    );
+    setResultadoTransportadora(simularPorTransportadora({
+      transportadoras,
+      nomeTransportadora: transportadora,
+      canal: canalTransportadora,
+      origem: origemTransportadora,
+      destinoCodigos: codigos,
+      peso: Number(pesoTransportadora),
+      valorNF: Number(nfTransportadora),
+    }));
   };
 
   const onSimularGrade = () => {
-    setResultadoAnalise(
-      analisarTransportadoraPorGrade({
-        transportadoras: MOCK_TRANSPORTADORAS,
-        nomeTransportadora: transportadoraAnalise,
-        canal: canalAnalise,
-        grade: grade[canalAnalise],
-      }),
-    );
+    setResultadoAnalise(analisarTransportadoraPorGrade({
+      transportadoras,
+      nomeTransportadora: transportadoraAnalise,
+      canal: canalAnalise,
+      grade: grade[canalAnalise] || [],
+    }));
   };
 
   const onAnalisarCobertura = () => {
-    setResultadoCobertura(
-      analisarCoberturaTabela({
-        transportadoras: MOCK_TRANSPORTADORAS,
-        ibges: IBGE_BASE,
-        canal: canalCobertura,
-        origem: origemCobertura,
-        transportadora: transportadoraCobertura,
-      }),
-    );
+    setResultadoCobertura(analisarCoberturaTabela({
+      transportadoras,
+      canal: canalCobertura,
+      origem: origemCobertura,
+      transportadora: transportadoraCobertura,
+    }));
   };
 
   return (
@@ -254,7 +215,7 @@ export default function SimuladorPage() {
       <div className="simulador-header">
         <div className="simulador-subtitulo">AMD Log • Plataforma de Fretes</div>
         <h1>Simulador de fretes</h1>
-        <p>Nova estrutura em 4 telas para separar consulta simples, simulação por transportadora, análise de tabela e cobertura nacional.</p>
+        <p>Simulação com base nas tabelas reais importadas por transportadora, origem, rota, cotação e taxas especiais.</p>
       </div>
 
       <div className="sim-tabs">
@@ -279,13 +240,12 @@ export default function SimuladorPage() {
                 {origensDisponiveis.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
-            <label>CEP ou IBGE de destino
+            <label>Destino (CEP ou IBGE)
               <input value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3506003" />
             </label>
             <label>Canal
               <select value={canalSimples} onChange={(e) => setCanalSimples(e.target.value)}>
-                <option>ATACADO</option>
-                <option>B2C</option>
+                {canaisDisponiveis.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Peso
@@ -296,7 +256,7 @@ export default function SimuladorPage() {
             </label>
           </div>
           <div className="sim-actions"><button className="primary" onClick={onSimularSimples}>Simular</button></div>
-          <div className="sim-resultados">{resultadoSimples.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${idx}`} item={item} indice={idx} />)}</div>
+          <div className="sim-resultados">{resultadoSimples.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${idx}`} item={item} />)}</div>
         </section>
       )}
 
@@ -306,19 +266,18 @@ export default function SimuladorPage() {
           <div className="sim-form-grid sim-grid-6">
             <label>Transportadora
               <select value={transportadora} onChange={(e) => setTransportadora(e.target.value)}>
-                {MOCK_TRANSPORTADORAS.map((item) => <option key={item.id}>{item.nome}</option>)}
+                {nomesTransportadoras.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Canal
               <select value={canalTransportadora} onChange={(e) => setCanalTransportadora(e.target.value)}>
-                <option>ATACADO</option>
-                <option>B2C</option>
+                {canaisTransportadora.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Origem (opcional)
               <select value={origemTransportadora} onChange={(e) => setOrigemTransportadora(e.target.value)}>
                 <option value="">Todas</option>
-                {origensDisponiveis.map((item) => <option key={item}>{item}</option>)}
+                {origensTransportadoraDisponiveis.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Destino opcional (CEP ou IBGE)
@@ -345,7 +304,7 @@ export default function SimuladorPage() {
             </div>
           )}
           <div className="sim-actions"><button className="primary" onClick={onSimularTransportadora}>Simular transportadora</button></div>
-          <div className="sim-resultados">{resultadoTransportadora.map((item, idx) => <ResultadoCard key={`${item.origem}-${item.ibge}-${idx}`} item={item} indice={idx} />)}</div>
+          <div className="sim-resultados">{resultadoTransportadora.map((item, idx) => <ResultadoCard key={`${item.origem}-${item.destinoCodigo}-${idx}`} item={item} />)}</div>
         </section>
       )}
 
@@ -355,13 +314,12 @@ export default function SimuladorPage() {
           <div className="sim-form-grid sim-grid-2 compact-top">
             <label>Transportadora
               <select value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)}>
-                {MOCK_TRANSPORTADORAS.map((item) => <option key={item.id}>{item.nome}</option>)}
+                {nomesTransportadoras.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Canal
               <select value={canalAnalise} onChange={(e) => setCanalAnalise(e.target.value)}>
-                <option>ATACADO</option>
-                <option>B2C</option>
+                {canaisAnalise.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
           </div>
@@ -369,12 +327,12 @@ export default function SimuladorPage() {
             <div className="sim-parametros-header">
               <div>
                 <strong>Grade de pesos e valores de nota</strong>
-                <p>Essa tela simula tudo que a transportadora possui em tabela, obedecendo a grade cadastrada.</p>
+                <p>Essa tela simula todas as rotas reais da transportadora no canal selecionado.</p>
               </div>
               <button className="primary small" onClick={onSimularGrade}>Simular grade</button>
             </div>
             <div className="sim-grade-config">
-              {(grade[canalAnalise] || []).slice(0, canalAnalise === 'B2C' ? 12 : 10).map((linha, idx) => (
+              {(grade[canalAnalise] || []).map((linha, idx) => (
                 <div key={idx} className="sim-grade-row">
                   <input
                     value={linha.peso}
@@ -397,44 +355,17 @@ export default function SimuladorPage() {
             </div>
           </div>
           {resultadoAnalise && (
-            <>
+            <div className="sim-cobertura-box">
               <div className="sim-analise-resumo">
                 <div><span>Rotas avaliadas</span><strong>{resultadoAnalise.rotasAvaliadas}</strong></div>
                 <div><span>Vitórias</span><strong>{resultadoAnalise.vitorias}</strong></div>
-                <div><span>Aderência</span><strong>{resultadoAnalise.aderencia.toFixed(2)}%</strong></div>
-                <div><span>Saving vs 2º</span><strong>{moeda(resultadoAnalise.saving)}</strong></div>
+                <div><span>Aderência</span><strong>{Number(resultadoAnalise.aderencia || 0).toFixed(2)}%</strong></div>
+                <div><span>Saving vs 2º</span><strong>{formatMoney(resultadoAnalise.saving)}</strong></div>
               </div>
-              <div className="sim-analise-tabela-wrap">
-                <table className="sim-analise-tabela">
-                  <thead>
-                    <tr>
-                      <th>Origem</th>
-                      <th>Destino</th>
-                      <th>Peso</th>
-                      <th>NF</th>
-                      <th>Valor</th>
-                      <th>Líder</th>
-                      <th>Posição</th>
-                      <th>Prazo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {resultadoAnalise.detalhes.slice(0, 20).map((linha, idx) => (
-                      <tr key={`${linha.origem}-${linha.ibge}-${idx}`}>
-                        <td>{linha.origem}</td>
-                        <td>{linha.destino}</td>
-                        <td>{linha.peso}</td>
-                        <td>{moeda(linha.valorNF)}</td>
-                        <td>{moeda(linha.valorAtual)}</td>
-                        <td>{linha.melhorConcorrente}</td>
-                        <td>{linha.posicao}º</td>
-                        <td>{linha.prazo} dia(s)</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="sim-resultados">
+                {resultadoAnalise.linhas.slice(0, 20).map((item, idx) => <ResultadoCard key={`${item.origem}-${item.destinoCodigo}-${idx}`} item={item} />)}
               </div>
-            </>
+            </div>
           )}
         </section>
       )}
@@ -445,20 +376,19 @@ export default function SimuladorPage() {
           <div className="sim-form-grid sim-grid-3 compact-top">
             <label>Canal
               <select value={canalCobertura} onChange={(e) => setCanalCobertura(e.target.value)}>
-                <option>ATACADO</option>
-                <option>B2C</option>
+                {canaisDisponiveis.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Origem
               <select value={origemCobertura} onChange={(e) => setOrigemCobertura(e.target.value)}>
                 <option value="">Todas</option>
-                {origensDisponiveis.map((item) => <option key={item}>{item}</option>)}
+                {origensCoberturaDisponiveis.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Transportadora
               <select value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)}>
                 <option value="">Todas</option>
-                {MOCK_TRANSPORTADORAS.map((item) => <option key={item.id}>{item.nome}</option>)}
+                {nomesTransportadoras.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
           </div>
@@ -469,12 +399,12 @@ export default function SimuladorPage() {
                 <div><span>Combinações possíveis</span><strong>{resultadoCobertura.total}</strong></div>
                 <div><span>Cobertas</span><strong>{resultadoCobertura.cobertas}</strong></div>
                 <div><span>Sem tabela</span><strong>{resultadoCobertura.faltantes}</strong></div>
-                <div><span>Cobertura</span><strong>{resultadoCobertura.percentual.toFixed(2)}%</strong></div>
+                <div><span>Cobertura</span><strong>{Number(resultadoCobertura.percentual || 0).toFixed(2)}%</strong></div>
               </div>
               <div className="sim-missing-list">
                 {resultadoCobertura.listaFaltantes.map((item, idx) => (
-                  <div key={idx} className="sim-missing-item">
-                    {item.origem} • {item.cidade} / {item.uf} • IBGE {item.codigo}
+                  <div key={`${item.origem}-${item.codigo}-${idx}`} className="sim-missing-item">
+                    {item.origem} • {item.cidade} • IBGE {item.codigo}
                   </div>
                 ))}
               </div>
