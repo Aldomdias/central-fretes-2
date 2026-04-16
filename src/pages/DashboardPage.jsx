@@ -1,39 +1,26 @@
 import { buildDashboardStats } from '../data/mockData';
 
-export default function DashboardPage({
-  transportadoras,
-  onAbrirSimulador,
-  onAbrirTransportadoras,
-  onAbrirImportacao,
-  onResetarBase,
-}) {
+export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase }) {
   const stats = buildDashboardStats(transportadoras);
 
   return (
     <div className="page-shell amd-dashboard-shell">
-      <section className="amd-hero-card">
-        <div className="amd-hero-topline">AMD Log • Plataforma de Fretes</div>
-
-        <div className="page-top between start-mobile">
-          <div className="page-header slim">
-            <h1>Simulador de fretes</h1>
-            <p>
-              Plataforma para importação, cadastro, simulação e geração do arquivo Verum,
-              com foco operacional e visual mais limpo para o dia a dia.
-            </p>
+      <div className="page-top between start-mobile">
+        <div className="page-header amd-dashboard-header">
+          <div className="amd-mini-brand">AMD Log • Plataforma de Fretes</div>
+          <h1>Simulador de fretes</h1>
+          <p>
+            Plataforma para importação, cadastro, simulação e geração do arquivo Verum,
+            com foco operacional e visual mais limpo para o dia a dia.
+          </p>
+          <div className="amd-quick-actions">
+            <button className="btn-primary" onClick={onAbrirSimulador}>Abrir simulador</button>
+            <button className="btn-secondary" onClick={onAbrirImportacao}>Abrir importação</button>
+            <button className="btn-secondary" onClick={onAbrirTransportadoras}>Abrir transportadoras</button>
           </div>
-
-          <button className="btn-secondary" onClick={onResetarBase}>
-            ↺ Restaurar base exemplo
-          </button>
         </div>
-
-        <div className="hero-actions-row">
-          <button className="btn-primary" onClick={onAbrirSimulador}>Abrir simulador</button>
-          <button className="btn-secondary" onClick={onAbrirImportacao}>Abrir importação</button>
-          <button className="btn-secondary" onClick={onAbrirTransportadoras}>Abrir transportadoras</button>
-        </div>
-      </section>
+        <button className="btn-secondary" onClick={onResetarBase}>↺ Restaurar base exemplo</button>
+      </div>
 
       <div className="stats-grid">
         {stats.map((item) => (
@@ -47,8 +34,8 @@ export default function DashboardPage({
       </div>
 
       <div className="feature-grid three-cols">
-        <div className="panel-card amd-panel-card">
-          <div className="panel-title">🧾 Simulação operacional</div>
+        <div className="panel-card">
+          <div className="panel-title">📄 Simulação operacional</div>
           <p>
             Compare tabelas, avalie competitividade e visualize o cálculo completo do frete
             apenas quando abrir os detalhes.
@@ -56,7 +43,7 @@ export default function DashboardPage({
           <button className="btn-primary full" onClick={onAbrirSimulador}>Ir para simulação</button>
         </div>
 
-        <div className="panel-card amd-panel-card">
+        <div className="panel-card">
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
@@ -65,16 +52,17 @@ export default function DashboardPage({
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
 
-        <div className="panel-card amd-panel-card">
+        <div className="panel-card">
           <div className="panel-title">📦 Importação e Verum</div>
           <p>
-            Importe arquivos, acompanhe inconsistências e gere os arquivos no layout correto da Verum.
+            Importe arquivos, acompanhe inconsistências e gere os arquivos no layout
+            correto da Verum.
           </p>
           <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
         </div>
       </div>
 
-      <div className="info-card amd-info-card">
+      <div className="info-card amd-next-phase-card">
         <div className="info-badge">🚚</div>
         <div>
           <div className="info-title">Próxima fase recomendada</div>

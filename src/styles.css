@@ -360,142 +360,165 @@ tbody td {
 .hint-box.compact { padding: 12px 14px; font-size: 14px; }
 @media (max-width: 900px) { .channel-picker { grid-template-columns: 1fr; } }
 
-.simulator-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+/* AMD Log visual cleanup */
+.app-layout {
+  grid-template-columns: 274px 1fr;
+  overflow-x: hidden;
 }
 
-.simulator-summary-strip {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.massa-box,
-.config-box {
-  border: 1px solid #d8e0ea;
-  background: #f8fafc;
-  border-radius: 16px;
-  padding: 18px;
-}
-
-.massa-box p,
-.config-box p,
-.config-box small {
-  margin: 6px 0 0;
-  color: #5f7596;
-}
-
-.massa-box,
-.config-header {
+.sidebar-app {
+  position: sticky;
+  top: 0;
+  min-height: 100vh;
+  overflow: hidden;
   display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
+  flex-direction: column;
+  padding: 0;
+  background: linear-gradient(180deg, #04122d 0%, #071a45 100%);
 }
 
-.massa-actions {
+.amd-brand-box {
+  display: block;
+  padding: 20px 18px 18px;
+  overflow: hidden;
+}
+
+.amd-brand-logo-wrap {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px 8px 2px;
+}
+
+.amd-brand-logo {
+  width: 170px;
+  max-width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+}
+
+.amd-brand-meta {
+  text-align: center;
+  margin-top: 8px;
+}
+
+.amd-brand-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.amd-brand-subtitle {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.menu-section {
+  padding-top: 18px;
+}
+
+.menu-section-title {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  padding: 0 18px 10px;
+}
+
+.nav-item {
+  width: calc(100% - 16px);
+  margin: 0 8px 8px;
+  border-radius: 14px;
+  padding: 13px 14px;
+}
+
+.nav-item.active {
+  background: rgba(255,255,255,.1);
+}
+
+.sidebar-footer-note {
+  margin-top: auto;
+  padding: 18px 18px 22px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255,255,255,.8);
+  border-top: 1px solid rgba(255,255,255,.08);
+}
+
+.app-content {
+  padding: 24px 28px 28px;
+  overflow-x: hidden;
+}
+
+.amd-dashboard-shell {
+  gap: 20px;
+}
+
+.amd-dashboard-header h1 {
+  font-size: 32px;
+  line-height: 1.1;
+}
+
+.amd-mini-brand {
+  font-size: 14px;
+  color: #2f4670;
+  margin-bottom: 8px;
+}
+
+.amd-quick-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-}
-
-.result-detail-box {
-  margin-top: 12px;
-}
-
-.result-detail-actions,
-.second-place-bar {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
-}
-
-.detail-loss-meta {
-  display: flex;
   gap: 12px;
-  flex-wrap: wrap;
-  color: #5f7596;
-}
-
-.detail-two-columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
   margin-top: 14px;
 }
 
-.detail-column {
-  border: 1px solid #e4eaf2;
-  border-radius: 14px;
-  padding: 14px;
-  background: #fbfcfe;
+.stats-grid {
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
 }
 
-.detail-column h4,
-.grade-config-card h4 {
-  margin: 0 0 12px;
-  font-size: 16px;
+.stat-card, .panel-card, .info-card {
+  overflow: hidden;
 }
 
-.breakdown-grid.compact {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.feature-grid.three-cols {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.second-place-bar {
-  margin-top: 12px;
-  border-top: 1px dashed #d8e0ea;
-  padding-top: 12px;
-  color: #5f7596;
+.panel-card {
+  padding: 26px 28px;
 }
 
-.grade-config-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-top: 16px;
-}
-
-.grade-config-card {
-  background: #fff;
-  border: 1px solid #d8e0ea;
-  border-radius: 16px;
-  padding: 16px;
-}
-
-.grade-config-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.grade-row {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 10px;
+.amd-next-phase-card {
+  align-items: flex-start;
 }
 
 @media (max-width: 1200px) {
-  .simulator-grid,
-  .simulator-summary-strip,
-  .detail-two-columns,
-  .grade-config-grid {
-    grid-template-columns: 1fr 1fr;
+  .feature-grid.three-cols,
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 900px) {
-  .simulator-grid,
-  .simulator-summary-strip,
-  .detail-two-columns,
-  .grade-config-grid,
-  .breakdown-grid.compact {
+  .app-layout {
     grid-template-columns: 1fr;
   }
 
-  .massa-box,
-  .config-header,
-  .result-detail-actions,
-  .second-place-bar {
-    flex-direction: column;
-    align-items: flex-start;
+  .sidebar-app {
+    position: relative;
+    min-height: auto;
+  }
+
+  .amd-brand-logo {
+    width: 140px;
+  }
+
+  .feature-grid.three-cols,
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .app-content {
+    padding: 18px;
   }
 }

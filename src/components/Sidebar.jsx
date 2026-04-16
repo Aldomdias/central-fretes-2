@@ -12,15 +12,14 @@ const menuCadastros = [
 
 export default function Sidebar({ paginaAtual, onMudarPagina }) {
   return (
-    <aside className="sidebar-app amd-sidebar">
+    <aside className="sidebar-app">
       <div className="brand-box amd-brand-box">
-        <div className="amd-brand-mark">
-          <img src={logoAmd} alt="AMD Log" className="brand-logo-amd" />
+        <div className="amd-brand-logo-wrap">
+          <img src={logoAmd} alt="AMD Log" className="amd-brand-logo" />
         </div>
-
-        <div className="brand-copy amd-brand-copy">
-          <div className="brand-title">AMD Log</div>
-          <div className="brand-subtitle">Plataforma de Fretes</div>
+        <div className="amd-brand-meta">
+          <div className="amd-brand-title">AMD Log</div>
+          <div className="amd-brand-subtitle">Plataforma de Fretes</div>
         </div>
       </div>
 
@@ -53,7 +52,7 @@ export default function Sidebar({ paginaAtual, onMudarPagina }) {
       </div>
 
       <div className="sidebar-footer-note">
-        Visual AMD Log aplicado com foco em leitura e sem invadir o conteúdo.
+        Visual AMD Log com foco em leitura e sem invadir o conteúdo.
       </div>
     </aside>
   );
