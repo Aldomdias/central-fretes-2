@@ -11,23 +11,10 @@ import {
   simularSimples,
 } from '../utils/calculoFrete';
 
-const GRADE_PADRAO = {
-  B2C: [
-    { peso: 1, valorNF: 150 },
-    { peso: 5, valorNF: 250 },
-    { peso: 10, valorNF: 400 },
-    { peso: 20, valorNF: 800 },
-  ],
-  ATACADO: [
-    { peso: 50, valorNF: 2000 },
-    { peso: 100, valorNF: 3000 },
-    { peso: 150, valorNF: 5000 },
-    { peso: 250, valorNF: 8000 },
-  ],
-};
+const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
+const GRADE_PADRAO = {"B2C": [{"peso": 1.0, "valorNF": 51.21686274509804, "cubagem": 0.007333333333333336}, {"peso": 2.0, "valorNF": 51.21686274509804, "cubagem": 0.007333333333333336}, {"peso": 3.0, "valorNF": 259.9127430555556, "cubagem": 0.029368055555555495}, {"peso": 4.0, "valorNF": 259.9127430555556, "cubagem": 0.029368055555555495}, {"peso": 5.0, "valorNF": 259.9127430555556, "cubagem": 0.029368055555555495}, {"peso": 6.0, "valorNF": 490.403956639566, "cubagem": 0.06804065040650403}, {"peso": 7.0, "valorNF": 490.403956639566, "cubagem": 0.06804065040650403}, {"peso": 8.0, "valorNF": 490.403956639566, "cubagem": 0.06804065040650403}, {"peso": 9.0, "valorNF": 490.403956639566, "cubagem": 0.06804065040650403}, {"peso": 10.0, "valorNF": 490.403956639566, "cubagem": 0.06804065040650403}, {"peso": 11.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 12.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 13.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 14.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 15.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 16.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 17.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 18.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 19.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 20.0, "valorNF": 845.6943108504394, "cubagem": 0.11434134897360602}, {"peso": 21.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 22.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 23.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 24.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 25.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 26.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 27.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 28.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 29.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 30.0, "valorNF": 1342.6932385466023, "cubagem": 0.1826532385466017}, {"peso": 31.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 32.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 33.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 34.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 35.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 36.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 37.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 38.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 39.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 40.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 41.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 42.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 43.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 44.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 45.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 46.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 47.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 48.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 49.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 50.0, "valorNF": 1954.3065982203975, "cubagem": 0.27272758384667856}, {"peso": 51.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 52.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 53.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 54.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 55.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 56.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 57.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 58.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 59.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 60.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 61.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 62.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 63.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 64.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 65.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 66.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 67.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 68.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 69.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 70.0, "valorNF": 3020.162869565216, "cubagem": 0.43490434782608706}, {"peso": 71.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 72.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 73.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 74.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 75.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 76.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 77.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 78.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 79.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 80.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 81.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 82.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 83.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 84.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 85.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 86.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 87.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 88.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 89.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 90.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 91.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 92.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 93.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 94.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 95.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 96.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 97.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 98.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 99.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 100.0, "valorNF": 3789.0325974026, "cubagem": 0.6591298701298703}, {"peso": 101.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 102.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 103.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 104.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 105.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 106.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 107.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 108.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 109.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 110.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 111.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 112.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 113.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 114.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 115.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 116.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 117.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 118.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 119.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 120.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 121.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 122.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 123.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 124.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 125.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 126.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 127.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 128.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 129.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 130.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 131.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 132.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 133.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 134.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 135.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 136.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 137.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 138.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 139.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 140.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 141.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 142.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 143.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 144.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 145.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 146.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 147.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 148.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 149.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}, {"peso": 150.0, "valorNF": 4350.890322580644, "cubagem": 1.1308709677419357}], "ATACADO": [{"peso": 10.0, "valorNF": 446.9, "cubagem": 0.018}, {"peso": 20.0, "valorNF": 825.6850000000001, "cubagem": 0.10092857142857145}, {"peso": 30.0, "valorNF": 1847.7061904761902, "cubagem": 0.2565714285714286}, {"peso": 40.0, "valorNF": 1847.7061904761902, "cubagem": 0.2565714285714286}, {"peso": 50.0, "valorNF": 1847.7061904761902, "cubagem": 0.2565714285714286}, {"peso": 60.0, "valorNF": 3112.103454545454, "cubagem": 0.5039454545454545}, {"peso": 70.0, "valorNF": 3112.103454545454, "cubagem": 0.5039454545454545}, {"peso": 80.0, "valorNF": 3112.103454545454, "cubagem": 0.5039454545454545}, {"peso": 90.0, "valorNF": 3112.103454545454, "cubagem": 0.5039454545454545}, {"peso": 100.0, "valorNF": 3112.103454545454, "cubagem": 0.5039454545454545}, {"peso": 110.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 120.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 130.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 140.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 150.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 160.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 170.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 180.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 190.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 200.0, "valorNF": 4955.245222222223, "cubagem": 0.6981777777777773}, {"peso": 210.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 220.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 230.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 240.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 250.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 260.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 270.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 280.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 290.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 300.0, "valorNF": 7982.178269230771, "cubagem": 1.6954807692307683}, {"peso": 310.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 320.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 330.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 340.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 350.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 360.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 370.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 380.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 390.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 400.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 410.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 420.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 430.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 440.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 450.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 460.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 470.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 480.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 490.0, "valorNF": 15367.294375, "cubagem": 2.7144375}, {"peso": 500.0, "valorNF": 15367.294375, "cubagem": 2.7144375}]};
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
-const GRADE_STORAGE_KEY = 'simulador-grade-analise-v1';
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -48,54 +35,94 @@ function downloadCsv(nomeArquivo, csv) {
   URL.revokeObjectURL(link.href);
 }
 
-function normalizarGradeImportada(linhas = []) {
-  const agrupado = { B2C: [], ATACADO: [] };
 
-  linhas.forEach((linha, index) => {
-    const canalBruto = String(linha.canal ?? linha.Canal ?? linha.CANAL ?? '').trim().toUpperCase();
-    const canal = canalBruto === 'B2B' ? 'ATACADO' : canalBruto;
-    if (!['B2C', 'ATACADO'].includes(canal)) return;
+function normalizeGradeMap(value = {}) {
+  const normalizarLista = (lista) => (Array.isArray(lista) ? lista : [])
+    .map((item) => ({
+      peso: Number(item?.peso || 0),
+      valorNF: Number(item?.valorNF || 0),
+      cubagem: Number(item?.cubagem || 0),
+    }))
+    .filter((item) => item.peso > 0)
+    .sort((a, b) => a.peso - b.peso);
 
-    const faixa = Number(linha.faixa ?? linha.Faixa ?? linha.FAIXA ?? index + 1) || index + 1;
-    const peso = Number(linha.peso ?? linha.Peso ?? linha.PESO ?? 0);
-    const valorNF = Number(linha.valorNF ?? linha['Valor NF'] ?? linha.valor_nota ?? linha.nota ?? linha.NF ?? 0);
-    if (!peso && !valorNF) return;
-
-    agrupado[canal].push({
-      faixa,
-      peso,
-      valorNF,
-      descricao: String(linha.descricao ?? linha.Descricao ?? linha.DESCRICAO ?? '').trim(),
-    });
-  });
-
-  Object.keys(agrupado).forEach((canal) => {
-    agrupado[canal] = agrupado[canal]
-      .sort((a, b) => a.faixa - b.faixa || a.peso - b.peso || a.valorNF - b.valorNF)
-      .map((item, idx) => ({ ...item, faixa: idx + 1 }));
-  });
-
-  return agrupado;
+  return {
+    B2C: normalizarLista(value.B2C),
+    ATACADO: normalizarLista(value.ATACADO),
+  };
 }
 
-function exportarModeloGrade(grade = GRADE_PADRAO) {
-  const linhas = ['ATACADO', 'B2C'].flatMap((canal) =>
-    (grade[canal] || []).map((item, idx) => ({
-      canal,
-      faixa: item.faixa || idx + 1,
-      peso: item.peso,
-      valorNF: item.valorNF,
-      descricao: item.descricao || '',
-    }))
-  );
+function loadGradeInicial() {
+  try {
+    const salvo = localStorage.getItem(GRADE_STORAGE_KEY);
+    if (!salvo) return normalizeGradeMap(GRADE_PADRAO);
+    return normalizeGradeMap(JSON.parse(salvo));
+  } catch (error) {
+    return normalizeGradeMap(GRADE_PADRAO);
+  }
+}
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet(linhas.length ? linhas : [
-    { canal: 'ATACADO', faixa: 1, peso: 50, valorNF: 2000, descricao: '' },
-    { canal: 'B2C', faixa: 1, peso: 1, valorNF: 150, descricao: '' },
-  ]);
-  XLSX.utils.book_append_sheet(wb, ws, 'Grade');
-  XLSX.writeFile(wb, 'modelo-grade-analise.xlsx');
+function salvarGradeNoStorage(grade) {
+  localStorage.setItem(GRADE_STORAGE_KEY, JSON.stringify(normalizeGradeMap(grade)));
+}
+
+function baixarArquivo(blob, nomeArquivo) {
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.setAttribute('download', nomeArquivo);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
+
+function exportarGradeWorkbook(grade) {
+  const workbook = XLSX.utils.book_new();
+  ['B2C', 'ATACADO'].forEach((aba) => {
+    const rows = (grade?.[aba] || []).map((item) => ({
+      Peso: Number(item.peso || 0),
+      'Valor NF': Number(item.valorNF || 0),
+      Cubagem: Number(item.cubagem || 0),
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, aba);
+  });
+  const arrayBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  baixarArquivo(new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'Grade Peso.xlsx');
+}
+
+function parseGradeWorkbook(arrayBuffer) {
+  const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+  const sheetNameMap = Object.fromEntries(
+    workbook.SheetNames.map((name) => [String(name || '').trim().toUpperCase(), name]),
+  );
+  const b2cSheet = sheetNameMap.B2C;
+  const atacadoSheet = sheetNameMap.ATACADO;
+  if (!b2cSheet || !atacadoSheet) {
+    throw new Error('O arquivo precisa ter as abas B2C e ATACADO.');
+  }
+
+  const parseSheet = (sheetName) => {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+    return rows.map((row) => ({
+      peso: Number(row.Peso || row.peso || row.PESO || 0),
+      valorNF: Number(row['Valor NF'] || row.valorNF || row['ValorNF'] || row['VALOR NF'] || 0),
+      cubagem: Number(row.Cubagem || row.cubagem || row.CUBAGEM || 0),
+    })).filter((item) => item.peso > 0);
+  };
+
+  return normalizeGradeMap({
+    B2C: parseSheet(b2cSheet),
+    ATACADO: parseSheet(atacadoSheet),
+  });
+}
+
+function formatPeso(value) {
+  return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+}
+
+function getCanalGrade(canal) {
+  return canal === 'B2C' ? 'B2C' : 'ATACADO';
 }
 
 function buildDestinoLabel(item) {
@@ -153,10 +180,17 @@ function ResultadoCard({ item }) {
               <div>Tipo de cálculo: <strong>{item.detalhes.frete.tipoCalculo}</strong></div>
               <div>Prazo: <strong>{item.detalhes.prazo} dia(s)</strong></div>
               <div>Faixa aplicada: <strong>{item.detalhes.frete.faixaPeso}</strong></div>
+              <div>Peso informado: <strong>{formatPeso(item.detalhes.frete.pesoInformado)} kg</strong></div>
+              <div>Peso da grade: <strong>{formatPeso(item.detalhes.frete.pesoGrade)} kg</strong></div>
+              <div>Cubagem da grade: <strong>{Number(item.detalhes.frete.cubagemGrade || 0).toFixed(6)} m³</strong></div>
+              <div>Fator cubagem: <strong>{formatPeso(item.detalhes.frete.fatorCubagem)} kg/m³</strong></div>
+              <div>Peso cubado: <strong>{formatPeso(item.detalhes.frete.pesoCubado)} kg</strong></div>
+              <div>Peso considerado: <strong>{formatPeso(item.detalhes.frete.pesoConsiderado)} kg</strong></div>
               <div>R$/kg: <strong>{item.detalhes.frete.rsKgAplicado.toFixed(4)}</strong></div>
               <div>% aplicado: <strong>{formatPercent(item.detalhes.frete.percentualAplicado)}</strong></div>
               <div>Valor fixo/faixa: <strong>{formatMoney(item.detalhes.frete.valorFixoAplicado)}</strong></div>
               <div>Mínimo da rota: <strong>{formatMoney(item.detalhes.frete.minimoRota)}</strong></div>
+              <div>Valor NF utilizado: <strong>{formatMoney(item.detalhes.frete.valorNFInformado)}</strong></div>
               <div>Valor base: <strong>{formatMoney(item.detalhes.frete.valorBase)}</strong></div>
               <div>Subtotal antes do ICMS: <strong>{formatMoney(item.detalhes.frete.subtotal)}</strong></div>
               <div>ICMS: <strong>{formatMoney(item.detalhes.frete.icms)}</strong></div>
@@ -194,12 +228,13 @@ function ResultadoCard({ item }) {
 
 function GraficoUf({ itens }) {
   if (!itens?.length) return null;
-  const max = Math.max(...itens.map((item) => item.total || item.faltantes || 1), 1);
+  const maxFaltantes = Math.max(...itens.map((item) => item.faltantes || 0), 1);
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       {itens.slice(0, 8).map((item) => {
-        const valor = item.total || item.faltantes || 0;
-        const largura = `${(valor / max) * 100}%`;
+        const largura = item.aderencia !== undefined
+          ? `${Math.max(Math.min(Number(item.aderencia || 0), 100), 0)}%`
+          : `${((item.faltantes || 0) / maxFaltantes) * 100}%`;
         return (
           <div key={item.uf}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -245,17 +280,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [transportadoraAnalise, setTransportadoraAnalise] = useState(transportadoras[0]?.nome || '');
   const [canalAnalise, setCanalAnalise] = useState(canais[0] || 'ATACADO');
-  const [grade, setGrade] = useState(() => {
-    try {
-      const saved = localStorage.getItem(GRADE_STORAGE_KEY);
-      if (!saved) return GRADE_PADRAO;
-      return { ...GRADE_PADRAO, ...JSON.parse(saved) };
-    } catch {
-      return GRADE_PADRAO;
-    }
-  });
-  const gradeInputRef = useRef(null);
+  const [grade, setGrade] = useState(() => loadGradeInicial());
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
+  const importGradeRef = useRef(null);
 
   const [canalCobertura, setCanalCobertura] = useState(canais[0] || 'ATACADO');
   const [origemCobertura, setOrigemCobertura] = useState('');
@@ -266,8 +293,21 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const transportadorasDisponiveis = useMemo(() => transportadoras.map((item) => item.nome).sort(), [transportadoras]);
 
   useEffect(() => {
-    localStorage.setItem(GRADE_STORAGE_KEY, JSON.stringify(grade));
+    salvarGradeNoStorage(grade);
   }, [grade]);
+
+  useEffect(() => {
+    if (!transportadora && transportadorasDisponiveis.length) setTransportadora(transportadorasDisponiveis[0]);
+    if (!transportadoraAnalise && transportadorasDisponiveis.length) setTransportadoraAnalise(transportadorasDisponiveis[0]);
+    if (!origemSimples && todasOrigens.length) setOrigemSimples(todasOrigens[0]);
+    if (!destinoCodigo && destinosDisponiveis.length) setDestinoCodigo(destinosDisponiveis[0]);
+  }, [transportadora, transportadoraAnalise, origemSimples, destinoCodigo, transportadorasDisponiveis, todasOrigens, destinosDisponiveis]);
+
+  const quantidadeLinhasGrade = useMemo(() => ({
+    B2C: grade.B2C?.length || 0,
+    ATACADO: grade.ATACADO?.length || 0,
+  }), [grade]);
+
 
   const origensTransportadora = useMemo(() => {
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
@@ -281,6 +321,37 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return [...new Set((selecionada.origens || []).map((item) => item.canal).filter(Boolean))];
   }, [transportadoras, transportadora, canais]);
 
+
+  const exportarModeloGrade = () => {
+    exportarGradeWorkbook(grade);
+  };
+
+  const restaurarGradePadrao = () => {
+    const base = normalizeGradeMap(GRADE_PADRAO);
+    setGrade(base);
+    setResultadoAnalise(null);
+  };
+
+  const abrirImportacaoGrade = () => {
+    importGradeRef.current?.click();
+  };
+
+  const onImportarGrade = async (event) => {
+    const arquivo = event.target.files?.[0];
+    if (!arquivo) return;
+    try {
+      const arrayBuffer = await arquivo.arrayBuffer();
+      const gradeImportada = parseGradeWorkbook(arrayBuffer);
+      setGrade(gradeImportada);
+      setResultadoAnalise(null);
+      window.alert('Grade importada com sucesso.');
+    } catch (error) {
+      window.alert(error?.message || 'Não foi possível importar a grade.');
+    } finally {
+      event.target.value = '';
+    }
+  };
+
   const onSimularSimples = () => {
     setResultadoSimples(simularSimples({
       transportadoras,
@@ -290,6 +361,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       valorNF: Number(nfSimples),
       destinoCodigo,
       cidadePorIbge,
+      gradeCanal: grade[getCanalGrade(canalSimples)] || [],
     }));
   };
 
@@ -309,19 +381,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
       peso: Number(pesoTransportadora),
       valorNF: Number(nfTransportadora),
       cidadePorIbge,
+      gradeCanal: grade[getCanalGrade(canalTransportadora)] || [],
     }));
   };
 
   const exportarSimulacaoTransportadora = () => {
     if (!resultadoTransportadora.length) return;
     const { nomeArquivo, csv } = exportarLinhasCsv(`simulacao-${transportadora.toLowerCase().replace(/\s+/g, '-')}.csv`, [
-      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Prazo', 'Frete Final', 'Saving vs 2º', 'Diferença Líder', 'Redução % Líder'],
+      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Peso informado', 'Peso cubado', 'Peso considerado', 'Prazo', 'Frete Final', 'Saving vs 2º', 'Diferença Líder', 'Redução % Líder'],
       ...resultadoTransportadora.map((item) => [
         item.transportadora,
         item.origem,
         item.cidadeDestino || `IBGE ${item.ibgeDestino}`,
         item.ufDestino,
         item.ibgeDestino,
+        item.detalhes?.frete?.pesoInformado ?? '',
+        item.detalhes?.frete?.pesoCubado ?? '',
+        item.detalhes?.frete?.pesoConsiderado ?? '',
         item.prazo,
         item.total.toFixed(2),
         item.savingSegundo.toFixed(2),
@@ -332,46 +408,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
     downloadCsv(nomeArquivo, csv);
   };
 
-
-  const onImportarGradeClick = () => gradeInputRef.current?.click();
-
-  const onImportarGradeArquivo = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-
-    try {
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      const importada = normalizarGradeImportada(rows);
-      const temLinhas = (importada.ATACADO?.length || 0) + (importada.B2C?.length || 0);
-      if (!temLinhas) {
-        window.alert('Arquivo sem linhas válidas. Use as colunas: canal, faixa, peso, valorNF e descrição.');
-        return;
-      }
-      setGrade({
-        ATACADO: importada.ATACADO?.length ? importada.ATACADO : GRADE_PADRAO.ATACADO,
-        B2C: importada.B2C?.length ? importada.B2C : GRADE_PADRAO.B2C,
-      });
-      setResultadoAnalise(null);
-    } catch (error) {
-      window.alert(`Não foi possível importar a grade: ${error?.message || 'erro desconhecido'}`);
-    }
-  };
-
-  const onResetarGrade = () => {
-    setGrade(GRADE_PADRAO);
-    setResultadoAnalise(null);
-  };
-
   const onSimularGrade = () => {
     setResultadoAnalise(analisarTransportadoraPorGrade({
       transportadoras,
       nomeTransportadora: transportadoraAnalise,
       canal: canalAnalise,
-      grade: grade[canalAnalise] || grade.ATACADO,
+      grade: grade[getCanalGrade(canalAnalise)] || grade.ATACADO,
       cidadePorIbge,
     }));
   };
@@ -379,7 +421,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const exportarAnalise = () => {
     if (!resultadoAnalise?.detalhes?.length) return;
     const { nomeArquivo, csv } = exportarLinhasCsv(`analise-${transportadoraAnalise.toLowerCase().replace(/\s+/g, '-')}.csv`, [
-      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Peso', 'Valor NF', 'Prazo', 'Ranking', 'Frete Final', 'Saving 2º'],
+      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Peso grade', 'Cubagem grade', 'Peso cubado', 'Peso considerado', 'Valor NF', 'Prazo', 'Ranking', 'Frete Final', 'Saving 2º'],
       ...resultadoAnalise.detalhes.map((item) => [
         item.transportadora,
         item.origem,
@@ -387,6 +429,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
         item.ufDestino,
         item.ibgeDestino,
         item.gradePeso,
+        item.gradeCubagem,
+        item.pesoCubado,
+        item.pesoConsiderado,
         item.gradeValorNF,
         item.prazo,
         item.ranking,
@@ -531,16 +576,37 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       {aba === 'analise' && (
         <section className="sim-card">
+          <input
+            ref={importGradeRef}
+            type="file"
+            accept=".xlsx,.xls"
+            style={{ display: 'none' }}
+            onChange={onImportarGrade}
+          />
           <div className="sim-resultado-topo compact-top">
             <h2 style={{ margin: 0 }}>Análise de transportadora</h2>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <input ref={gradeInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={onImportarGradeArquivo} />
-              <button className="sim-tab" type="button" onClick={() => exportarModeloGrade(grade)}>Exportar modelo da grade</button>
-              <button className="sim-tab" type="button" onClick={onImportarGradeClick}>Importar grade</button>
-              <button className="sim-tab" type="button" onClick={onResetarGrade}>Restaurar grade padrão</button>
+              <button className="sim-tab" type="button" onClick={exportarModeloGrade}>Exportar grade</button>
+              <button className="sim-tab" type="button" onClick={abrirImportacaoGrade}>Importar grade</button>
+              <button className="sim-tab" type="button" onClick={restaurarGradePadrao}>Restaurar padrão</button>
               <button className="sim-tab" type="button" onClick={exportarAnalise}>Exportar relatório</button>
             </div>
           </div>
+
+          <div className="sim-parametros-box" style={{ marginBottom: 16 }}>
+            <div className="sim-parametros-header">
+              <div>
+                <strong>Grade ativa da análise</strong>
+                <p>Esta grade já usa seu modelo com Peso, Valor NF e Cubagem. A cubagem entra em todas as simulações para calcular o peso considerado por transportadora.</p>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+              <div>Linhas B2C: <strong>{quantidadeLinhasGrade.B2C}</strong></div>
+              <div>Linhas ATACADO: <strong>{quantidadeLinhasGrade.ATACADO}</strong></div>
+              <div>Regra aplicada: <strong>peso considerado = maior entre peso informado e cubagem da grade × fator de cubagem da transportadora</strong></div>
+            </div>
+          </div>
+
           <div className="sim-form-grid sim-grid-3">
             <label>Transportadora
               <select value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)}>
@@ -554,21 +620,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             <div className="sim-actions" style={{ alignItems: 'flex-end' }}>
               <button className="primary" onClick={onSimularGrade}>Gerar relatório</button>
-            </div>
-          </div>
-
-          <div className="sim-parametros-box" style={{ marginTop: 16 }}>
-            <div className="sim-parametros-header">
-              <div>
-                <strong>Grade usada na análise</strong>
-                <p>Importe sua planilha com canal, faixa, peso e valorNF. Toda a avaliação geral passa a usar essa grade.</p>
-              </div>
-            </div>
-            <div className="sim-analise-resumo" style={{ marginTop: 12 }}>
-              <div><span>Linhas B2B/Atacado</span><strong>{(grade.ATACADO || []).length}</strong></div>
-              <div><span>Linhas B2C</span><strong>{(grade.B2C || []).length}</strong></div>
-              <div><span>Canal em uso</span><strong>{canalAnalise}</strong></div>
-              <div><span>Cenários do canal</span><strong>{(grade[canalAnalise] || []).length}</strong></div>
             </div>
           </div>
 
