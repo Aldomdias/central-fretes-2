@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { initialTransportadoras } from './mockData';
 import { bancoConfigurado, carregarSnapshotFretesDb, salvarSnapshotFretesDb } from '../services/freteDatabaseService';
 
-const STORAGE_KEY = 'simulador-fretes-local-v6';
+const STORAGE_KEY = 'simulador-fretes-local-v7';
 
 const DEFAULT_GENERALIDADES = {
   incideIcms: false,
@@ -58,7 +57,7 @@ function clone(obj) {
 }
 
 function createInitialState() {
-  return clone(initialTransportadoras).map(normalizeTransportadora);
+  return [];
 }
 
 function sameOrigem(current, imported) {
@@ -153,6 +152,10 @@ export function useFreteStore() {
   const snapshotLoadedRef = useRef(false);
 
   useEffect(() => {
+    localStorage.removeItem('simulador-fretes-local-v6');
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(transportadoras));
   }, [transportadoras]);
 
@@ -165,7 +168,7 @@ export function useFreteStore() {
       try {
         const snapshot = await carregarSnapshotFretesDb();
         if (cancelled) return;
-        if (snapshot?.payload?.transportadoras?.length) {
+        if (Array.isArray(snapshot?.payload?.transportadoras)) {
           setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
         }
         snapshotLoadedRef.current = true;
@@ -221,7 +224,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
           const snapshot = await carregarSnapshotFretesDb();
-          if (snapshot?.payload?.transportadoras?.length) {
+          if (Array.isArray(snapshot?.payload?.transportadoras)) {
             setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
           }
           setSyncStatus((prev) => ({
@@ -239,8 +242,35 @@ export function useFreteStore() {
           return false;
         }
       },
-      resetarBase() {
-        setTransportadoras(createInitialState());
+      async zerarBaseAgora() {
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        try {
+          const baseVazia = [];
+          setTransportadoras(baseVazia);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(baseVazia));
+          if (bancoConfigurado()) {
+            const result = await salvarSnapshotFretesDb(baseVazia);
+            setSyncStatus((prev) => ({
+              ...prev,
+              sincronizando: false,
+              ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+            }));
+          } else {
+            setSyncStatus((prev) => ({
+              ...prev,
+              sincronizando: false,
+              ultimaSincronizacao: new Date().toISOString(),
+            }));
+          }
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            erro: error.message || 'Erro ao zerar a base.',
+          }));
+          return false;
+        }
       },
       salvarGeneralidades(transportadoraId, origemId, generalidades) {
         setTransportadoras((prev) =>

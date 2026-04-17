@@ -54,10 +54,10 @@ export default function App() {
         onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
-        onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
         onSincronizarAgora={store.sincronizarAgora}
         onCarregarDoBanco={store.recarregarDoBanco}
+        onZerarBase={store.zerarBaseAgora}
       />
     );
   }

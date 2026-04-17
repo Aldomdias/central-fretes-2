@@ -14,10 +14,10 @@ export default function DashboardPage({
   onAbrirSimulador,
   onAbrirTransportadoras,
   onAbrirImportacao,
-  onResetarBase,
   syncStatus,
   onSincronizarAgora,
   onCarregarDoBanco,
+  onZerarBase,
 }) {
   const stats = buildDashboardStats(transportadoras);
 
@@ -37,7 +37,6 @@ export default function DashboardPage({
             <button className="btn-secondary" onClick={onAbrirTransportadoras}>Abrir transportadoras</button>
           </div>
         </div>
-        <button className="btn-secondary" onClick={onResetarBase}>↺ Restaurar base exemplo</button>
       </div>
 
       <div className="stats-grid">
@@ -65,7 +64,7 @@ export default function DashboardPage({
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A base oficial agora fica no Supabase e pode ser recarregada aqui.
+            A base oficial agora fica no Supabase. A base exemplo foi removida para evitar voltar dados de teste.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -89,6 +88,7 @@ export default function DashboardPage({
         <div className="inline-actions">
           <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Sincronizar agora</button>
           <button className="btn-secondary full" onClick={onCarregarDoBanco} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Carregar do banco</button>
+          <button className="btn-secondary full" onClick={onZerarBase} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Zerar base atual</button>
         </div>
       </div>
 
