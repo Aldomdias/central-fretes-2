@@ -1,20 +1,45 @@
-# Configuração do banco no Supabase
+# Setup Supabase - passo a passo
 
-1. Crie um projeto no Supabase.
-2. Abra **SQL Editor** e execute o arquivo `supabase/schema.sql`.
-3. Em **Project Settings > API**, copie:
-   - `Project URL`
-   - `anon public key`
-4. Crie um arquivo `.env` na raiz do projeto com base no `.env.example`.
-5. Rode o projeto novamente.
+## 1) Rodar o schema
+No Supabase, abra **SQL Editor** e rode o arquivo:
 
-## O que já passa a gravar
+- `supabase/schema.sql`
 
-- Snapshot completo dos cadastros: `cadastros_snapshot`
-- Histórico de importações: `frete_importacoes`
+## 2) Criar o arquivo `.env`
+Na raiz do projeto, no mesmo nível do `package.json`, crie um arquivo chamado:
 
-## Como confirmar que está funcionando
+- `.env`
 
-- no dashboard, o card de persistência deve mostrar **Modo: Supabase**
-- ao importar arquivos, a importação passa a ser registrada no banco
-- ao alterar cadastros/origens/rotas/generalidades, a base sincroniza automaticamente
+Cole exatamente isto dentro dele:
+
+```env
+VITE_SUPABASE_URL=https://kvzclgsifzklxexysktw.supabase.co
+VITE_SUPABASE_ANON_KEY=sb_publishable_H2ppjz1T0oVDBm14cOA5aw_HZrQcoqM
+```
+
+## 3) Se estiver usando Vercel
+No projeto da Vercel, adicione em **Settings > Environment Variables**:
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+
+Com os mesmos valores acima.
+
+## 4) Arquivos deste pacote
+Substitua/adicione estes arquivos no projeto:
+
+- `src/lib/supabaseClient.js`
+- `src/services/freteDatabaseService.js`
+- `src/data/store.js`
+- `src/pages/DashboardPage.jsx`
+- `src/pages/ImportacaoPage.jsx`
+- `supabase/schema.sql`
+- `.env.example`
+
+## 5) Depois disso
+Rode/deploye novamente o projeto.
+
+Com isso, o sistema já fica pronto para:
+- salvar snapshot dos cadastros
+- registrar importações
+- sincronizar com o Supabase

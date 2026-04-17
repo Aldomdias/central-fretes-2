@@ -1,25 +1,7 @@
 import { buildDashboardStats } from '../data/mockData';
 
-function formatSyncDate(value) {
-  if (!value) return 'Ainda não sincronizado';
-  try {
-    return new Date(value).toLocaleString('pt-BR');
-  } catch {
-    return value;
-  }
-}
-
-export default function DashboardPage({
-  transportadoras,
-  onAbrirSimulador,
-  onAbrirTransportadoras,
-  onAbrirImportacao,
-  onResetarBase,
-  syncStatus,
-  onSincronizarAgora,
-}) {
+export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase }) {
   const stats = buildDashboardStats(transportadoras);
-  const usandoBanco = syncStatus?.modo === 'supabase';
 
   return (
     <div className="page-shell amd-dashboard-shell">
@@ -65,7 +47,7 @@ export default function DashboardPage({
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            Agora a base já pode ser persistida no Supabase.
+            A próxima fase conecta isso à base persistente.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -80,31 +62,12 @@ export default function DashboardPage({
         </div>
       </div>
 
-      <div className="info-card amd-next-phase-card dashboard-db-card">
-        <div className="info-badge">🗄️</div>
-        <div className="dashboard-db-content">
-          <div className="info-title">Persistência da base</div>
+      <div className="info-card amd-next-phase-card">
+        <div className="info-badge">🚚</div>
+        <div>
+          <div className="info-title">Próxima fase recomendada</div>
           <div className="info-text">
-            {usandoBanco
-              ? 'Supabase configurado. Toda alteração na base será sincronizada com o banco.'
-              : 'Supabase ainda não configurado. Enquanto isso, o sistema continua salvando só no navegador.'}
-          </div>
-          <div className="dashboard-db-meta">
-            <span><strong>Modo:</strong> {usandoBanco ? 'Supabase' : 'Local navegador'}</span>
-            <span><strong>Última sincronização:</strong> {formatSyncDate(syncStatus?.ultimaSincronizacao)}</span>
-            {syncStatus?.erro ? <span className="db-sync-error"><strong>Erro:</strong> {syncStatus.erro}</span> : null}
-          </div>
-          <div className="amd-quick-actions top-space">
-            <button
-              className="btn-primary"
-              onClick={onSincronizarAgora}
-              disabled={!usandoBanco || syncStatus?.sincronizando || syncStatus?.carregando}
-            >
-              {syncStatus?.sincronizando ? 'Sincronizando...' : 'Sincronizar agora'}
-            </button>
-            {!usandoBanco ? (
-              <button className="btn-secondary" onClick={onAbrirImportacao}>Configurar e continuar importando</button>
-            ) : null}
+            Persistir a base, armazenar histórico de importações e preparar a simulação sobre o realizado.
           </div>
         </div>
       </div>

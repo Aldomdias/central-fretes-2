@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { registrarImportacao } from '../services/freteDatabaseService';
 import {
   baixarModelo,
   buildCoberturaReport,
@@ -37,7 +36,6 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
   const [filtro, setFiltro] = useState('');
   const [detalhe, setDetalhe] = useState(null);
   const [canalImportacao, setCanalImportacao] = useState('ATACADO');
-  const [statusImportacaoDb, setStatusImportacaoDb] = useState('');
 
   const cobertura = useMemo(
     () => buildCoberturaReport(transportadoras),
@@ -107,26 +105,14 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
 
         store.importarPayload(payload, tipo);
 
-        const registro = {
+        novasEntradas.push({
           arquivo: file.name,
           tipo,
           canal: canalImportacao,
           inseridos: payload.inseridos,
           erros: payload.erros,
           meta: parsed.meta,
-          criado_em: new Date().toISOString(),
-        };
-
-        await registrarImportacao({
-          arquivo: registro.arquivo,
-          tipo: registro.tipo,
-          canal: registro.canal,
-          inseridos: registro.inseridos,
-          erros: registro.erros,
-          metadata: registro.meta,
         });
-
-        novasEntradas.push(registro);
       } catch (error) {
         novasEntradas.push({
           arquivo: file.name,
@@ -141,14 +127,12 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               mensagem: error.message || 'Erro ao ler arquivo.',
             },
           ],
-          criado_em: new Date().toISOString(),
         });
       }
     }
 
     setHistorico((prev) => [...novasEntradas, ...prev].slice(0, 15));
     setDetalhe(novasEntradas[0] || null);
-    setStatusImportacaoDb('Importação registrada e base atualizada.');
     setProcessando(false);
     event.target.value = '';
   };
@@ -252,16 +236,6 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               />
             </label>
           </div>
-
-          {statusImportacaoDb ? (
-            <div className="info-card top-space compact-db-info">
-              <div className="info-badge">💾</div>
-              <div>
-                <div className="info-title">Banco e histórico</div>
-                <div className="info-text">{statusImportacaoDb}</div>
-              </div>
-            </div>
-          ) : null}
 
           <div className="hint-box top-space">
             <strong>Observações:</strong>
