@@ -58,7 +58,9 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
 export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades = {}, taxaDestino = {}, pesoKg = 0, valorNf = 0 }) {
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
-  const pesoLimite = toNumber(cotacao.pesoMax || cotacao.pesoLimite);
+  const pesoMin = toNumber(cotacao.pesoMin);
+  const pesoLimiteInformado = toNumber(cotacao.pesoMax || cotacao.pesoLimite);
+  const pesoLimite = !pesoLimiteInformado || pesoLimiteInformado >= 999999 ? pesoMin : pesoLimiteInformado;
   const excessoPorKg = toNumber(cotacao.excesso || cotacao.excessoPeso);
   const valorFaixa = toNumber(cotacao.valorFixo || cotacao.taxaAplicada);
   const valorPercentual = nf * toPercent(cotacao.percentual || cotacao.fretePercentual);
@@ -78,6 +80,8 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     icms,
     total: subtotal + icms,
     valorExcedente,
+    excedenteKg,
+    pesoLimiteExcedente: pesoLimite,
     taxas,
   };
 }

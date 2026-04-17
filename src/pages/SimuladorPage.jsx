@@ -190,7 +190,10 @@ function ResultadoCard({ item }) {
               <div>% aplicado: <strong>{formatPercent(item.detalhes.frete.percentualAplicado)}</strong></div>
               <div>Valor fixo/faixa: <strong>{formatMoney(item.detalhes.frete.valorFixoAplicado)}</strong></div>
               <div>Mínimo da rota: <strong>{formatMoney(item.detalhes.frete.minimoRota)}</strong></div>
-              <div>Valor NF utilizado: <strong>{formatMoney(item.detalhes.frete.valorNFInformado)}</strong></div>
+              <div>Valor NF utilizado: <strong>{formatMoney(item.detalhes.frete.valorNFInformado)}</strong> <span style={{ color: '#6b7aa5' }}>({item.detalhes.frete.valorNFOrigem === 'grade' ? 'grade padrão' : 'informado manualmente'})</span></div>
+              <div>Limite para excedente: <strong>{formatPeso(item.detalhes.frete.pesoLimiteExcedente)} kg</strong></div>
+              <div>Peso excedente: <strong>{formatPeso(item.detalhes.frete.pesoExcedente)} kg</strong></div>
+              <div>Valor do excedente: <strong>{formatMoney(item.detalhes.frete.valorExcedente)}</strong></div>
               <div>Valor base: <strong>{formatMoney(item.detalhes.frete.valorBase)}</strong></div>
               <div>Subtotal antes do ICMS: <strong>{formatMoney(item.detalhes.frete.subtotal)}</strong></div>
               <div>ICMS: <strong>{formatMoney(item.detalhes.frete.icms)}</strong></div>
@@ -265,7 +268,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [destinoCodigo, setDestinoCodigo] = useState(destinosDisponiveis[0] || '');
   const [canalSimples, setCanalSimples] = useState(canais[0] || 'ATACADO');
   const [pesoSimples, setPesoSimples] = useState('150');
-  const [nfSimples, setNfSimples] = useState('5000');
+  const [nfSimples, setNfSimples] = useState('');
   const [resultadoSimples, setResultadoSimples] = useState([]);
 
   const [transportadora, setTransportadora] = useState(transportadoras[0]?.nome || '');
@@ -273,7 +276,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [origemTransportadora, setOrigemTransportadora] = useState('');
   const [destinoTransportadora, setDestinoTransportadora] = useState('');
   const [pesoTransportadora, setPesoTransportadora] = useState('150');
-  const [nfTransportadora, setNfTransportadora] = useState('5000');
+  const [nfTransportadora, setNfTransportadora] = useState('');
   const [modoLista, setModoLista] = useState(false);
   const [listaCodigos, setListaCodigos] = useState('4206405\n4202156\n4205001\n4200804');
   const [resultadoTransportadora, setResultadoTransportadora] = useState([]);
@@ -358,7 +361,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       origem: origemSimples,
       canal: canalSimples,
       peso: Number(pesoSimples),
-      valorNF: Number(nfSimples),
+      valorNF: Number(nfSimples || 0),
       destinoCodigo,
       cidadePorIbge,
       gradeCanal: grade[getCanalGrade(canalSimples)] || [],
@@ -379,7 +382,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       origem: origemTransportadora,
       destinoCodigos: codigos,
       peso: Number(pesoTransportadora),
-      valorNF: Number(nfTransportadora),
+      valorNF: Number(nfTransportadora || 0),
       cidadePorIbge,
       gradeCanal: grade[getCanalGrade(canalTransportadora)] || [],
     }));
@@ -506,8 +509,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Peso
               <input value={pesoSimples} onChange={(e) => setPesoSimples(e.target.value)} />
             </label>
-            <label>Valor NF
-              <input value={nfSimples} onChange={(e) => setNfSimples(e.target.value)} />
+            <label>Valor NF (opcional)
+              <input value={nfSimples} onChange={(e) => setNfSimples(e.target.value)} placeholder="Se vazio, usa a grade" />
+              <small>Se não informar, o simulador usa o Valor NF da grade para este peso.</small>
             </label>
           </div>
           <div className="sim-actions"><button className="primary" onClick={onSimularSimples}>Simular</button></div>
@@ -552,8 +556,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Peso
               <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} />
             </label>
-            <label>Valor NF
-              <input value={nfTransportadora} onChange={(e) => setNfTransportadora(e.target.value)} />
+            <label>Valor NF (opcional)
+              <input value={nfTransportadora} onChange={(e) => setNfTransportadora(e.target.value)} placeholder="Se vazio, usa a grade" />
+              <small>Se não informar, usa a grade do canal para todos os cenários.</small>
             </label>
           </div>
           <div className="sim-inline-tools">

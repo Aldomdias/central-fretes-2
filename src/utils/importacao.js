@@ -494,10 +494,11 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
 
         if (!rota) throw new Error('Rota do frete não informada.');
 
+        const tipoCalculoCotacao = inferTipoCalculoCotacao(row);
         container.origem.cotacoes.push({
           rota,
           regraCalculo: String(firstFilled(row, ['regra de calculo'])).trim(),
-          tipoCalculo: inferTipoCalculoCotacao(row),
+          tipoCalculo: tipoCalculoCotacao,
           pesoMin: toNumber(firstFilled(row, ['peso minimo', 'peso min'])),
           pesoMax: toNumber(
             firstFilled(row, ['peso limite', 'peso maximo', 'peso max'])
@@ -515,6 +516,13 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
             firstFilled(row, ['fim da vigencia', 'termino da vigencia'])
           ).trim(),
         });
+        container.origem.generalidades = {
+          ...(container.origem.generalidades || {}),
+          tipoCalculo:
+            tipoCalculoCotacao === 'FAIXA_DE_PESO'
+              ? 'FAIXA_DE_PESO'
+              : container.origem.generalidades?.tipoCalculo || 'PERCENTUAL',
+        };
         inseridos += 1;
       }
 

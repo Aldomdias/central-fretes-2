@@ -134,7 +134,7 @@ function calcularPesosComCubagem({ pesoInformado, gradeLinha, fatorCubagem }) {
   };
 }
 
-function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calculo, gradeLinha, fatorCubagem, pesosAplicados }) {
+function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem }) {
   const percentual = toNumber(cotacao?.percentual || cotacao?.fretePercentual || 0);
   const rsKg = toNumber(cotacao?.rsKg || 0);
   const valorFixo = toNumber(cotacao?.valorFixo || cotacao?.taxaAplicada || 0);
@@ -162,6 +162,11 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       pesoCubado: pesosAplicados?.pesoCubado || 0,
       pesoConsiderado: pesosAplicados?.pesoConsiderado || peso,
       valorNFInformado: valorNF,
+      valorNFManualInformado: toNumber(valorNFManualInformado),
+      valorNFOrigem: valorNFOrigem || 'manual',
+      pesoLimiteExcedente: toNumber(calculo.pesoLimiteExcedente),
+      pesoExcedente: toNumber(calculo.excedenteKg),
+      valorExcedente: toNumber(calculo.valorExcedente),
       minimoRota: toNumber(rota?.valorMinimoFrete),
       valorBase: calculo.valorBase,
       subtotal: calculo.subtotal,
@@ -207,9 +212,13 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIb
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado);
   if (!cotacao) return null;
 
+  const valorNFManualInformado = toNumber(valorNF);
+  const valorNFUtilizado = valorNFManualInformado > 0 ? valorNFManualInformado : toNumber(gradeLinha?.valorNF);
+  const valorNFOrigem = valorNFManualInformado > 0 ? 'manual' : 'grade';
+
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
-  const engineInput = { rota, cotacao, generalidades: origem.generalidades, taxaDestino, pesoKg: pesosAplicados.pesoConsiderado, valorNf: valorNF };
+  const engineInput = { rota, cotacao, generalidades: origem.generalidades, taxaDestino, pesoKg: pesosAplicados.pesoConsiderado, valorNf: valorNFUtilizado };
   const calculo = tipoCalculo === 'FAIXA_DE_PESO'
     ? calcularFreteFaixaPeso(engineInput)
     : calcularFretePercentual(engineInput);
@@ -232,7 +241,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIb
     subtotal: calculo.subtotal,
     valorBase: calculo.valorBase,
     descricao: `Origem ${origem.cidade} • Destino ${cidadeDestino || `IBGE ${rota.ibgeDestino}`}`,
-    detalhes: buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calculo, gradeLinha, fatorCubagem, pesosAplicados }),
+    detalhes: buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF: valorNFUtilizado, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem }),
   };
 }
 

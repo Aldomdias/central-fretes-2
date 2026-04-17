@@ -124,6 +124,12 @@ function mergeImport(prev, payload, tipo) {
         id: crypto.randomUUID(),
       }));
       origem.cotacoes = [...(origem.cotacoes || []), ...enriched];
+      if (item.origem.generalidades?.tipoCalculo) {
+        origem.generalidades = mergeGeneralidades({
+          ...origem.generalidades,
+          tipoCalculo: item.origem.generalidades.tipoCalculo,
+        });
+      }
     }
 
     if (tipo === 'taxas') {
