@@ -177,6 +177,25 @@ export function useFreteStore() {
           carregando: false,
           ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
         }));
+
+        if (!snapshot?.payload?.transportadoras?.length) {
+          try {
+            const result = await salvarSnapshotFretesDb(transportadoras);
+            if (!cancelled) {
+              setSyncStatus((prev) => ({
+                ...prev,
+                ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+              }));
+            }
+          } catch (saveError) {
+            if (!cancelled) {
+              setSyncStatus((prev) => ({
+                ...prev,
+                erro: saveError.message || 'Erro ao criar snapshot inicial no Supabase.',
+              }));
+            }
+          }
+        }
       } catch (error) {
         if (cancelled) return;
         snapshotLoadedRef.current = true;

@@ -6,6 +6,7 @@ import {
   exportarSecao,
   parseFileToRows,
 } from '../utils/importacao';
+import { registrarImportacao } from '../services/freteDatabaseService';
 
 const TIPOS = [
   { id: 'rotas', label: 'Rotas' },
@@ -105,14 +106,30 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
 
         store.importarPayload(payload, tipo);
 
-        novasEntradas.push({
+        const registro = {
           arquivo: file.name,
           tipo,
           canal: canalImportacao,
           inseridos: payload.inseridos,
           erros: payload.erros,
           meta: parsed.meta,
-        });
+        };
+
+        novasEntradas.push(registro);
+
+        try {
+          await registrarImportacao({
+            arquivo: file.name,
+            tipo,
+            canal: canalImportacao,
+            inseridos: payload.inseridos,
+            erros: payload.erros?.length || 0,
+            observacoes: parsed.meta?.cabecalhoEncontrado ? 'Cabeçalho identificado' : 'Importado',
+            payload: { meta: parsed.meta, linhas: parsed.rows?.length || 0 },
+          });
+        } catch (dbError) {
+          console.error('Erro ao registrar importação no banco:', dbError);
+        }
       } catch (error) {
         novasEntradas.push({
           arquivo: file.name,
