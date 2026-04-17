@@ -1,22 +1,23 @@
 import { buildDashboardStats } from '../data/mockData';
 
-function formatarData(value) {
-  if (!value) return 'Ainda não sincronizado';
+function formatarData(valor) {
+  if (!valor) return 'Ainda não sincronizado';
   try {
-    return new Date(value).toLocaleString('pt-BR');
+    return new Date(valor).toLocaleString('pt-BR');
   } catch {
-    return value;
+    return valor;
   }
 }
 
 export default function DashboardPage({
   transportadoras,
-  syncStatus,
-  onSincronizarAgora,
   onAbrirSimulador,
   onAbrirTransportadoras,
   onAbrirImportacao,
   onResetarBase,
+  syncStatus,
+  onSincronizarAgora,
+  onCarregarDoBanco,
 }) {
   const stats = buildDashboardStats(transportadoras);
 
@@ -64,7 +65,7 @@ export default function DashboardPage({
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            Agora já com opção de sincronizar o snapshot da base no Supabase.
+            A base oficial agora fica no Supabase e pode ser recarregada aqui.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -79,16 +80,15 @@ export default function DashboardPage({
         </div>
       </div>
 
-      <div className="feature-grid three-cols">
-        <div className="panel-card">
-          <div className="panel-title">☁️ Banco de dados</div>
-          <p><strong>Modo:</strong> {syncStatus?.modo === 'supabase' ? 'Supabase' : 'Local'}</p>
-          <p><strong>Última sincronização:</strong> {formatarData(syncStatus?.ultimaSincronizacao)}</p>
-          <p><strong>Status:</strong> {syncStatus?.sincronizando ? 'Sincronizando...' : syncStatus?.carregando ? 'Carregando...' : 'Pronto'}</p>
-          {syncStatus?.erro ? <div className="hint-box top-space">Erro: {syncStatus.erro}</div> : null}
-          <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando || syncStatus?.carregando || syncStatus?.modo !== 'supabase'}>
-            {syncStatus?.sincronizando ? 'Sincronizando...' : 'Sincronizar agora'}
-          </button>
+      <div className="panel-card" style={{ maxWidth: 520 }}>
+        <div className="panel-title">☁️ Banco de dados</div>
+        <p><strong>Modo:</strong> {syncStatus?.modo === 'supabase' ? 'Supabase' : 'Local'}</p>
+        <p><strong>Última sincronização:</strong> {formatarData(syncStatus?.ultimaSincronizacao)}</p>
+        <p><strong>Status:</strong> {syncStatus?.sincronizando ? 'Sincronizando...' : syncStatus?.carregando ? 'Carregando...' : 'Pronto'}</p>
+        {syncStatus?.erro ? <div className="error-text">{syncStatus.erro}</div> : null}
+        <div className="inline-actions">
+          <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Sincronizar agora</button>
+          <button className="btn-secondary full" onClick={onCarregarDoBanco} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Carregar do banco</button>
         </div>
       </div>
 
