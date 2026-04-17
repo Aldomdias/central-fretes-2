@@ -1,14 +1,5 @@
 import { buildDashboardStats } from '../data/mockData';
 
-function formatarData(valor) {
-  if (!valor) return 'Ainda não sincronizado';
-  try {
-    return new Date(valor).toLocaleString('pt-BR');
-  } catch {
-    return valor;
-  }
-}
-
 export default function DashboardPage({
   transportadoras,
   onAbrirSimulador,
@@ -17,7 +8,6 @@ export default function DashboardPage({
   syncStatus,
   onSincronizarAgora,
   onCarregarDoBanco,
-  onZerarBase,
 }) {
   const stats = buildDashboardStats(transportadoras);
 
@@ -64,7 +54,7 @@ export default function DashboardPage({
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A base oficial agora fica no Supabase. A base exemplo foi removida para evitar voltar dados de teste.
+            Agora a base principal é gravada em tabelas reais no Supabase.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -79,25 +69,27 @@ export default function DashboardPage({
         </div>
       </div>
 
-      <div className="panel-card" style={{ maxWidth: 520 }}>
-        <div className="panel-title">☁️ Banco de dados</div>
-        <p><strong>Modo:</strong> {syncStatus?.modo === 'supabase' ? 'Supabase' : 'Local'}</p>
-        <p><strong>Última sincronização:</strong> {formatarData(syncStatus?.ultimaSincronizacao)}</p>
-        <p><strong>Status:</strong> {syncStatus?.sincronizando ? 'Sincronizando...' : syncStatus?.carregando ? 'Carregando...' : 'Pronto'}</p>
-        {syncStatus?.erro ? <div className="error-text">{syncStatus.erro}</div> : null}
-        <div className="inline-actions">
-          <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Sincronizar agora</button>
-          <button className="btn-secondary full" onClick={onCarregarDoBanco} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Carregar do banco</button>
-          <button className="btn-secondary full" onClick={onZerarBase} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Zerar base atual</button>
+      <div className="feature-grid two-cols">
+        <div className="panel-card">
+          <div className="panel-title">🗄️ Banco de dados</div>
+          <p><strong>Modo:</strong> {syncStatus?.modo === 'supabase' ? 'Supabase' : 'Local'}</p>
+          <p><strong>Última sincronização:</strong> {syncStatus?.ultimaSincronizacao || 'Ainda não sincronizado'}</p>
+          <p><strong>Status:</strong> {syncStatus?.carregando ? 'Carregando' : syncStatus?.sincronizando ? 'Sincronizando' : 'Pronto'}</p>
+          {syncStatus?.erro ? <div className="hint-box top-space">{syncStatus.erro}</div> : null}
+          <div className="toolbar-wrap top-space">
+            <button className="btn-primary" onClick={onSincronizarAgora}>Sincronizar agora</button>
+            <button className="btn-secondary" onClick={onCarregarDoBanco}>Carregar do banco</button>
+          </div>
         </div>
-      </div>
 
-      <div className="info-card amd-next-phase-card">
-        <div className="info-badge">🚚</div>
-        <div>
-          <div className="info-title">Próxima fase recomendada</div>
-          <div className="info-text">
-            Persistir a base, armazenar histórico de importações e preparar a simulação sobre o realizado.
+        <div className="info-card amd-next-phase-card">
+          <div className="info-badge">🚚</div>
+          <div>
+            <div className="info-title">Base real no Supabase</div>
+            <div className="info-text">
+              Transportadoras, origens, rotas, cotações, taxas especiais e generalidades
+              agora podem ser salvas como tabelas reais no banco.
+            </div>
           </div>
         </div>
       </div>

@@ -1,11 +1,51 @@
-create extension if not exists pgcrypto;
+create extension if not exists "pgcrypto";
 
-create table if not exists public.cadastros_snapshot (
-  id uuid primary key default gen_random_uuid(),
-  chave text not null unique,
-  payload jsonb not null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+create table if not exists public.transportadoras (
+  id uuid primary key,
+  nome text not null unique,
+  status text default 'Ativa',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create table if not exists public.origens (
+  id uuid primary key,
+  transportadora_id uuid not null references public.transportadoras(id) on delete cascade,
+  cidade text not null,
+  canal text default 'ATACADO',
+  status text default 'Ativa',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create unique index if not exists origens_unique_transportadora_cidade_canal
+  on public.origens (transportadora_id, cidade, canal);
+
+create table if not exists public.generalidades (
+  origem_id uuid primary key references public.origens(id) on delete cascade,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz default now()
+);
+
+create table if not exists public.rotas (
+  id uuid primary key,
+  origem_id uuid not null references public.origens(id) on delete cascade,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz default now()
+);
+
+create table if not exists public.cotacoes (
+  id uuid primary key,
+  origem_id uuid not null references public.origens(id) on delete cascade,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz default now()
+);
+
+create table if not exists public.taxas_especiais (
+  id uuid primary key,
+  origem_id uuid not null references public.origens(id) on delete cascade,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz default now()
 );
 
 create table if not exists public.frete_importacoes (
@@ -13,70 +53,37 @@ create table if not exists public.frete_importacoes (
   arquivo text not null,
   tipo text not null,
   canal text,
-  inseridos integer not null default 0,
-  erros jsonb not null default '[]'::jsonb,
-  meta jsonb,
-  created_at timestamptz not null default now()
+  inseridos int4 default 0,
+  erros jsonb default '[]'::jsonb,
+  meta jsonb default '{}'::jsonb,
+  created_at timestamptz default now()
 );
 
-alter table public.cadastros_snapshot
-  add column if not exists created_at timestamptz not null default now();
-alter table public.cadastros_snapshot
-  add column if not exists updated_at timestamptz not null default now();
-alter table public.cadastros_snapshot
-  add column if not exists payload jsonb not null default '{}'::jsonb;
-alter table public.cadastros_snapshot
-  add column if not exists chave text;
-create unique index if not exists cadastros_snapshot_chave_idx on public.cadastros_snapshot(chave);
-
-alter table public.frete_importacoes
-  add column if not exists arquivo text;
-alter table public.frete_importacoes
-  add column if not exists tipo text;
-alter table public.frete_importacoes
-  add column if not exists canal text;
-alter table public.frete_importacoes
-  add column if not exists inseridos integer not null default 0;
-alter table public.frete_importacoes
-  add column if not exists erros jsonb not null default '[]'::jsonb;
-alter table public.frete_importacoes
-  add column if not exists meta jsonb;
-alter table public.frete_importacoes
-  add column if not exists created_at timestamptz not null default now();
-
-drop trigger if exists set_cadastros_snapshot_updated_at on public.cadastros_snapshot;
-drop function if exists public.set_updated_at_timestamp();
-create function public.set_updated_at_timestamp()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
-
-create trigger set_cadastros_snapshot_updated_at
-before update on public.cadastros_snapshot
-for each row
-execute function public.set_updated_at_timestamp();
-
-alter table public.cadastros_snapshot enable row level security;
+alter table public.transportadoras enable row level security;
+alter table public.origens enable row level security;
+alter table public.generalidades enable row level security;
+alter table public.rotas enable row level security;
+alter table public.cotacoes enable row level security;
+alter table public.taxas_especiais enable row level security;
 alter table public.frete_importacoes enable row level security;
 
-drop policy if exists "cadastros_snapshot_select" on public.cadastros_snapshot;
-drop policy if exists "cadastros_snapshot_insert" on public.cadastros_snapshot;
-drop policy if exists "cadastros_snapshot_update" on public.cadastros_snapshot;
-create policy "cadastros_snapshot_select" on public.cadastros_snapshot
-for select to anon, authenticated using (true);
-create policy "cadastros_snapshot_insert" on public.cadastros_snapshot
-for insert to anon, authenticated with check (true);
-create policy "cadastros_snapshot_update" on public.cadastros_snapshot
-for update to anon, authenticated using (true) with check (true);
+drop policy if exists "transportadoras_all" on public.transportadoras;
+create policy "transportadoras_all" on public.transportadoras for all to anon, authenticated using (true) with check (true);
 
-drop policy if exists "frete_importacoes_select" on public.frete_importacoes;
-drop policy if exists "frete_importacoes_insert" on public.frete_importacoes;
-create policy "frete_importacoes_select" on public.frete_importacoes
-for select to anon, authenticated using (true);
-create policy "frete_importacoes_insert" on public.frete_importacoes
-for insert to anon, authenticated with check (true);
+drop policy if exists "origens_all" on public.origens;
+create policy "origens_all" on public.origens for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "generalidades_all" on public.generalidades;
+create policy "generalidades_all" on public.generalidades for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "rotas_all" on public.rotas;
+create policy "rotas_all" on public.rotas for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "cotacoes_all" on public.cotacoes;
+create policy "cotacoes_all" on public.cotacoes for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "taxas_especiais_all" on public.taxas_especiais;
+create policy "taxas_especiais_all" on public.taxas_especiais for all to anon, authenticated using (true) with check (true);
+
+drop policy if exists "frete_importacoes_all" on public.frete_importacoes;
+create policy "frete_importacoes_all" on public.frete_importacoes for all to anon, authenticated using (true) with check (true);

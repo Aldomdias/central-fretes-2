@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { bancoConfigurado, carregarSnapshotFretesDb, salvarSnapshotFretesDb } from '../services/freteDatabaseService';
+import {
+  bancoConfigurado,
+  carregarBaseFretesDb,
+  registrarImportacao,
+  salvarBaseFretesDb,
+} from '../services/freteDatabaseService';
 
 const STORAGE_KEY = 'simulador-fretes-local-v7';
 
@@ -62,10 +67,8 @@ function createInitialState() {
 
 function sameOrigem(current, imported) {
   return (
-    String(current.cidade || '').toLowerCase() ===
-      String(imported.cidade || '').toLowerCase() &&
-    String(current.canal || 'ATACADO').toUpperCase() ===
-      String(imported.canal || 'ATACADO').toUpperCase()
+    String(current.cidade || '').toLowerCase() === String(imported.cidade || '').toLowerCase() &&
+    String(current.canal || 'ATACADO').toUpperCase() === String(imported.canal || 'ATACADO').toUpperCase()
   );
 }
 
@@ -74,9 +77,7 @@ function mergeImport(prev, payload, tipo) {
 
   payload.transportadoras.forEach((item) => {
     let transportadora = next.find(
-      (current) =>
-        String(current.nome || '').toLowerCase() ===
-        String(item.nome || '').toLowerCase()
+      (current) => String(current.nome || '').toLowerCase() === String(item.nome || '').toLowerCase()
     );
 
     if (!transportadora) {
@@ -88,9 +89,7 @@ function mergeImport(prev, payload, tipo) {
       next.push(transportadora);
     }
 
-    let origem = (transportadora.origens || []).find((current) =>
-      sameOrigem(current, item.origem)
-    );
+    let origem = (transportadora.origens || []).find((current) => sameOrigem(current, item.origem));
 
     if (!origem) {
       origem = normalizeOrigem({
@@ -110,26 +109,17 @@ function mergeImport(prev, payload, tipo) {
     }
 
     if (tipo === 'rotas') {
-      const enriched = (item.origem.rotas || []).map((row) => ({
-        ...row,
-        id: crypto.randomUUID(),
-      }));
+      const enriched = (item.origem.rotas || []).map((row) => ({ ...row, id: crypto.randomUUID() }));
       origem.rotas = [...(origem.rotas || []), ...enriched];
     }
 
     if (tipo === 'cotacoes') {
-      const enriched = (item.origem.cotacoes || []).map((row) => ({
-        ...row,
-        id: crypto.randomUUID(),
-      }));
+      const enriched = (item.origem.cotacoes || []).map((row) => ({ ...row, id: crypto.randomUUID() }));
       origem.cotacoes = [...(origem.cotacoes || []), ...enriched];
     }
 
     if (tipo === 'taxas') {
-      const enriched = (item.origem.taxasEspeciais || []).map((row) => ({
-        ...row,
-        id: crypto.randomUUID(),
-      }));
+      const enriched = (item.origem.taxasEspeciais || []).map((row) => ({ ...row, id: crypto.randomUUID() }));
       origem.taxasEspeciais = [...(origem.taxasEspeciais || []), ...enriched];
     }
   });
@@ -149,11 +139,9 @@ export function useFreteStore() {
     erro: '',
     ultimaSincronizacao: '',
   });
-  const snapshotLoadedRef = useRef(false);
-
-  useEffect(() => {
-    localStorage.removeItem('simulador-fretes-local-v6');
-  }, []);
+  const dataLoadedRef = useRef(false);
+  const skipNextSyncRef = useRef(false);
+  const syncTimeoutRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(transportadoras));
@@ -163,51 +151,82 @@ export function useFreteStore() {
     let cancelled = false;
 
     async function carregar() {
-      if (!bancoConfigurado() || snapshotLoadedRef.current) return;
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
-        const snapshot = await carregarSnapshotFretesDb();
+        const base = await carregarBaseFretesDb();
         if (cancelled) return;
-        if (Array.isArray(snapshot?.payload?.transportadoras)) {
-          setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
-        }
-        snapshotLoadedRef.current = true;
+        skipNextSyncRef.current = true;
+        setTransportadoras((base || []).map(normalizeTransportadora));
+        dataLoadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
+          ultimaSincronizacao: new Date().toISOString(),
         }));
       } catch (error) {
         if (cancelled) return;
-        snapshotLoadedRef.current = true;
+        dataLoadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          erro: error.message || 'Erro ao carregar snapshot do Supabase.',
+          erro: error.message || 'Erro ao carregar base do banco.',
         }));
       }
     }
 
     carregar();
-
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!dataLoadedRef.current) return;
+
+    if (skipNextSyncRef.current) {
+      skipNextSyncRef.current = false;
+      return;
+    }
+
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+
+    syncTimeoutRef.current = setTimeout(async () => {
+      setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+      try {
+        const result = await salvarBaseFretesDb(transportadoras);
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+          modo: result?.modo || prev.modo,
+        }));
+      } catch (error) {
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          erro: error.message || 'Erro ao salvar base no banco.',
+        }));
+      }
+    }, 900);
+
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    };
+  }, [transportadoras]);
 
   const api = useMemo(
     () => ({
       transportadoras,
       syncStatus,
       async sincronizarAgora() {
-        if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
-          const result = await salvarSnapshotFretesDb(transportadoras);
+          const result = await salvarBaseFretesDb(transportadoras);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+            modo: result?.modo || prev.modo,
           }));
           return true;
         } catch (error) {
@@ -219,57 +238,33 @@ export function useFreteStore() {
           return false;
         }
       },
-      async recarregarDoBanco() {
-        if (!bancoConfigurado()) return false;
+      async carregarDoBanco() {
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          const snapshot = await carregarSnapshotFretesDb();
-          if (Array.isArray(snapshot?.payload?.transportadoras)) {
-            setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
-          }
+          const base = await carregarBaseFretesDb();
+          skipNextSyncRef.current = true;
+          setTransportadoras((base || []).map(normalizeTransportadora));
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
-            ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || prev.ultimaSincronizacao,
+            ultimaSincronizacao: new Date().toISOString(),
           }));
           return true;
         } catch (error) {
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
-            erro: error.message || 'Erro ao carregar a base do banco.',
+            erro: error.message || 'Erro ao carregar base do banco.',
           }));
           return false;
         }
       },
-      async zerarBaseAgora() {
-        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+      async registrarImportacao(payload) {
         try {
-          const baseVazia = [];
-          setTransportadoras(baseVazia);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(baseVazia));
-          if (bancoConfigurado()) {
-            const result = await salvarSnapshotFretesDb(baseVazia);
-            setSyncStatus((prev) => ({
-              ...prev,
-              sincronizando: false,
-              ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-            }));
-          } else {
-            setSyncStatus((prev) => ({
-              ...prev,
-              sincronizando: false,
-              ultimaSincronizacao: new Date().toISOString(),
-            }));
-          }
-          return true;
+          return await registrarImportacao(payload);
         } catch (error) {
-          setSyncStatus((prev) => ({
-            ...prev,
-            sincronizando: false,
-            erro: error.message || 'Erro ao zerar a base.',
-          }));
-          return false;
+          setSyncStatus((prev) => ({ ...prev, erro: error.message || 'Erro ao registrar importação.' }));
+          return { ok: false, error };
         }
       },
       salvarGeneralidades(transportadoraId, origemId, generalidades) {
@@ -280,9 +275,7 @@ export function useFreteStore() {
               : {
                   ...t,
                   origens: t.origens.map((o) =>
-                    o.id !== origemId
-                      ? o
-                      : { ...o, generalidades: mergeGeneralidades(generalidades) }
+                    o.id !== origemId ? o : { ...o, generalidades: mergeGeneralidades(generalidades) }
                   ),
                 }
           )
@@ -304,12 +297,7 @@ export function useFreteStore() {
       removerOrigem(transportadoraId, origemId) {
         setTransportadoras((prev) =>
           prev.map((t) =>
-            t.id !== transportadoraId
-              ? t
-              : {
-                  ...t,
-                  origens: t.origens.filter((o) => o.id !== origemId),
-                }
+            t.id !== transportadoraId ? t : { ...t, origens: t.origens.filter((o) => o.id !== origemId) }
           )
         );
       },
@@ -356,12 +344,7 @@ export function useFreteStore() {
               : {
                   ...t,
                   origens: t.origens.map((o) =>
-                    o.id !== origemId
-                      ? o
-                      : {
-                          ...o,
-                          [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
-                        }
+                    o.id !== origemId ? o : { ...o, [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId) }
                   ),
                 }
           )
@@ -377,9 +360,7 @@ export function useFreteStore() {
               ? t
               : {
                   ...t,
-                  origens: t.origens.map((o) =>
-                    o.id !== origemId ? o : { ...o, [secao]: [] }
-                  ),
+                  origens: t.origens.map((o) => (o.id !== origemId ? o : { ...o, [secao]: [] })),
                 }
           )
         );
