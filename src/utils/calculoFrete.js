@@ -85,6 +85,64 @@ export function getCidadeByIbge(ibge, cidadePorIbge) {
   return cidadePorIbge?.get(codigo) || CIDADES_CONHECIDAS[codigo] || '';
 }
 
+function getUfOrigem(origem, cidadePorIbge) {
+  const ibgeOrigem = String(origem?.rotas?.[0]?.ibgeOrigem || '').trim();
+  return getUfByIbge(ibgeOrigem) || getUfByIbge([...cidadePorIbge?.entries?.() || []].find(([, cidade]) => normalizeText(cidade) === normalizeText(origem?.cidade))?.[0]);
+}
+
+function inferirAliquotaIcms(origem, rota, cidadePorIbge) {
+  const manual = toNumber(origem?.generalidades?.aliquotaIcms);
+  if (manual > 0) return manual;
+
+  const ufOrigem = getUfOrigem(origem, cidadePorIbge);
+  const ufDestino = getUfByIbge(rota?.ibgeDestino);
+  if (!ufOrigem || !ufDestino) return 12;
+  if (ufOrigem === ufDestino) return 17;
+
+  const sulSudeste = new Set(['PR', 'SC', 'RS', 'SP', 'RJ', 'MG']);
+  const norteNordesteCentroOesteES = new Set(['AC','AL','AM','AP','BA','CE','DF','ES','GO','MA','MT','MS','PA','PB','PE','PI','RN','RO','RR','SE','TO']);
+  if (sulSudeste.has(ufOrigem) && norteNordesteCentroOesteES.has(ufDestino)) {
+    return 7;
+  }
+  return 12;
+}
+
+function cepDentroDaFaixa(rota, cepInformado) {
+  const cep = String(cepInformado || '').replace(/\D/g, '');
+  if (!cep) return false;
+  const ini = String(rota?.cepInicial || '').replace(/\D/g, '');
+  const fim = String(rota?.cepFinal || '').replace(/\D/g, '');
+  if (!ini || !fim) return false;
+  return cep >= ini && cep <= fim;
+}
+
+function resolverDestinoInformado(destinoCodigo, cidadePorIbge, transportadoras = [], canal = '', origem = '') {
+  const raw = String(destinoCodigo || '').trim();
+  const normalized = normalizeText(raw);
+  const numeric = raw.replace(/\D/g, '');
+  const ibges = new Set();
+
+  if (!raw) return { raw, normalized, numeric, ibges };
+
+  if (numeric.length == 7) ibges.add(numeric);
+
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora.origens || [])
+      .filter((origemItem) => (!canal || origemItem.canal === canal) && (!origem || origemItem.cidade === origem))
+      .forEach((origemItem) => {
+        (origemItem.rotas || []).forEach((rota) => {
+          const ibgeDestino = String(rota?.ibgeDestino || '').trim();
+          if (!ibgeDestino) return;
+          const cidade = normalizeText(getCidadeByIbge(ibgeDestino, cidadePorIbge));
+          if (cidade && cidade === normalized) ibges.add(ibgeDestino);
+          if (numeric.length >= 8 && cepDentroDaFaixa(rota, numeric)) ibges.add(ibgeDestino);
+        });
+      });
+  });
+
+  return { raw, normalized, numeric, ibges };
+}
+
 function getTaxaDestino(origem, ibgeDestino) {
   return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino) === String(ibgeDestino)) || {};
 }
@@ -163,7 +221,11 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
 function calcularItem({ transportadora, origem, rota, cotacao, peso, valorNF, cidadePorIbge }) {
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
-  const engineInput = { rota, cotacao, generalidades: origem.generalidades, taxaDestino, pesoKg: peso, valorNf: valorNF };
+  const generalidadesCalculadas = {
+    ...(origem.generalidades || {}),
+    aliquotaIcms: inferirAliquotaIcms(origem, rota, cidadePorIbge),
+  };
+  const engineInput = { rota, cotacao, generalidades: generalidadesCalculadas, taxaDestino, pesoKg: peso, valorNf: valorNF };
   const calculo = tipoCalculo === 'FAIXA_DE_PESO'
     ? calcularFreteFaixaPeso(engineInput)
     : calcularFretePercentual(engineInput);
@@ -221,43 +283,46 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
     (transportadora.origens || [])
       .filter((origem) => !filtros.canal || origem.canal === filtros.canal)
       .filter((origem) => !filtros.origem || origem.cidade === filtros.origem)
-      .flatMap((origem) =>
-        (origem.rotas || [])
+      .flatMap((origem) => {
+        const destinoInfo = resolverDestinoInformado(filtros.destinoCodigo, cidadePorIbge, transportadoras, filtros.canal, filtros.origem || origem.cidade);
+        return (origem.rotas || [])
           .filter((rota) => {
             if (!destinoNormalizado) return true;
             const cidade = normalizeText(getCidadeByIbge(rota.ibgeDestino, cidadePorIbge));
-            return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
+            const ibge = String(rota.ibgeDestino);
+            return destinoInfo.ibges.has(ibge) || cidade === destinoNormalizado || ibge === String(filtros.destinoCodigo || '').trim();
           })
           .map((rota) => {
             const cotacao = getCotacaoPorRota(origem, rota.nomeRota, peso);
             if (!cotacao) return null;
             return calcularItem({ transportadora, origem, rota, cotacao, peso, valorNF, cidadePorIbge });
           })
-          .filter(Boolean),
-      ),
+          .filter(Boolean);
+      }),
   );
 }
 
 export function simularSimples({ transportadoras, origem, canal, peso, valorNF, destinoCodigo, cidadePorIbge }) {
+  const destinoInfo = resolverDestinoInformado(destinoCodigo, cidadePorIbge, transportadoras, canal, origem);
   const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, destinoCodigo }, cidadePorIbge);
   return rankearPorChave(resultados)
-    .filter((item) => item.origem === origem && String(item.ibgeDestino) === String(destinoCodigo))
+    .filter((item) => item.origem === origem && (!destinoInfo.ibges.size || destinoInfo.ibges.has(String(item.ibgeDestino))))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
 export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cidadePorIbge }) {
-  const base = (transportadoras || []).filter((item) => item.nome === nomeTransportadora);
-  const resultados = listarCenarios(base, {
+  const normalizados = new Set((destinoCodigos || []).map((item) => normalizeText(item)).filter(Boolean));
+  const resultados = listarCenarios(transportadoras, {
     origem,
     canal,
     peso,
     valorNF,
     destinoCodigo: '',
-  }, cidadePorIbge).filter((item) => !destinoCodigos?.length || destinoCodigos.includes(String(item.ibgeDestino)) || destinoCodigos.includes(normalizeText(item.cidadeDestino)));
+  }, cidadePorIbge).filter((item) => !normalizados.size || normalizados.has(String(item.ibgeDestino)) || normalizados.has(normalizeText(item.cidadeDestino)));
 
   return rankearPorChave(resultados)
     .filter((item) => item.transportadora === nomeTransportadora)
-    .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
+    .sort((a, b) => a.ranking - b.ranking || a.total - b.total || a.prazo - b.prazo);
 }
 
 export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, grade, cidadePorIbge }) {

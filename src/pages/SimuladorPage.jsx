@@ -51,6 +51,40 @@ function buildDestinoLabel(item) {
   return `IBGE ${item.ibgeDestino}`;
 }
 
+function normalizarDestinoDigitado(valor, transportadoras, cidadePorIbge, canal = '', origem = '') {
+  const raw = String(valor || '').trim();
+  const numero = raw.replace(/\D/g, '');
+  if (!raw) return null;
+
+  const porIbge = getCidadeByIbge(numero, cidadePorIbge);
+  if (numero.length === 7 && porIbge) {
+    return { ibge: numero, cidade: porIbge, uf: getUfByIbge(numero), tipo: 'IBGE' };
+  }
+
+  const nomeNormalizado = raw.toLowerCase();
+  for (const transportadora of transportadoras || []) {
+    for (const origemItem of transportadora.origens || []) {
+      if (canal && origemItem.canal !== canal) continue;
+      if (origem && origemItem.cidade !== origem) continue;
+      for (const rota of origemItem.rotas || []) {
+        const ibge = String(rota.ibgeDestino || '').trim();
+        const cidade = getCidadeByIbge(ibge, cidadePorIbge);
+        if (cidade && cidade.toLowerCase() === nomeNormalizado) {
+          return { ibge, cidade, uf: getUfByIbge(ibge), tipo: 'Cidade' };
+        }
+        const cep = numero;
+        const ini = String(rota?.cepInicial || '').replace(/\D/g, '');
+        const fim = String(rota?.cepFinal || '').replace(/\D/g, '');
+        if (cep.length >= 8 && ini && fim && cep >= ini && cep <= fim) {
+          return { ibge, cidade, uf: getUfByIbge(ibge), tipo: 'CEP' };
+        }
+      }
+    }
+  }
+
+  return numero.length === 7 ? { ibge: numero, cidade: '', uf: getUfByIbge(numero), tipo: 'IBGE' } : null;
+}
+
 function ResultadoCard({ item }) {
   const [aberto, setAberto] = useState(false);
 
@@ -204,6 +238,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const transportadorasDisponiveis = useMemo(() => transportadoras.map((item) => item.nome).sort(), [transportadoras]);
 
+  const destinoSimplesResolvido = useMemo(() => normalizarDestinoDigitado(destinoCodigo, transportadoras, cidadePorIbge, canalSimples, origemSimples), [destinoCodigo, transportadoras, cidadePorIbge, canalSimples, origemSimples]);
+  const destinoTransportadoraResolvido = useMemo(() => normalizarDestinoDigitado(destinoTransportadora, transportadoras, cidadePorIbge, canalTransportadora, origemTransportadora), [destinoTransportadora, transportadoras, cidadePorIbge, canalTransportadora, origemTransportadora]);
+
   const origensTransportadora = useMemo(() => {
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
     if (!selecionada) return [];
@@ -349,10 +386,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>Destino (CEP ou IBGE)
-              <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3506003" />
+              <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3506003 ou 88345000" />
               <datalist id="destinos-lista">
                 {todosDestinosComCidade.map((item) => <option key={item.ibge} value={item.ibge}>{item.cidade ? `${item.cidade}/${item.uf}` : item.ibge}</option>)}
               </datalist>
+              {destinoSimplesResolvido ? <small className="sim-destino-preview">{destinoSimplesResolvido.tipo}: {destinoSimplesResolvido.cidade || 'Cidade não mapeada'}{destinoSimplesResolvido.uf ? `/${destinoSimplesResolvido.uf}` : ''} • IBGE {destinoSimplesResolvido.ibge}</small> : <small className="sim-destino-preview">Digite IBGE, CEP ou nome da cidade.</small>}
             </label>
             <label>Canal
               <select value={canalSimples} onChange={(e) => setCanalSimples(e.target.value)}>
@@ -403,7 +441,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>Destino opcional (CEP ou IBGE)
-              <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003" />
+              <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003 ou 88345000" />
+              {!modoLista ? (destinoTransportadoraResolvido ? <small className="sim-destino-preview">{destinoTransportadoraResolvido.tipo}: {destinoTransportadoraResolvido.cidade || 'Cidade não mapeada'}{destinoTransportadoraResolvido.uf ? `/${destinoTransportadoraResolvido.uf}` : ''} • IBGE {destinoTransportadoraResolvido.ibge}</small> : <small className="sim-destino-preview">Digite um CEP, IBGE ou nome da cidade.</small>) : null}
             </label>
             <label>Peso
               <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} />
@@ -475,6 +514,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     <div>Vitórias na grade: <strong>{resultadoAnalise.vitorias}</strong></div>
                     <div>Rotas fora do 1º lugar: <strong>{resultadoAnalise.rotasAvaliadas - resultadoAnalise.vitorias}</strong></div>
                     <div>Melhor uso: <strong>comparar aderência, prazo e necessidade de redução.</strong></div>
+                    <div>Critério: <strong>mesma origem, destino, canal, peso e NF.</strong></div>
                   </div>
                 </div>
               </div>
@@ -549,7 +589,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
                     <div>Use o filtro de <strong>origem</strong> para analisar um polo específico.</div>
                     <div>Use <strong>UF destino</strong> para focar em um estado.</div>
-                    <div>A lista abaixo mostra exatamente quais cidades/IBGEs faltam.</div>
+                    <div>Combinações possíveis = origem selecionada × todos os destinos já existentes na malha filtrada.</div>
+                    <div>Sem tabela = destinos que ainda não têm rota cadastrada para a origem filtrada.</div>
                   </div>
                 </div>
               </div>
@@ -560,7 +601,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div className="sim-missing-list">
                     {resultadoCobertura.faltantes.slice(0, 60).map((item) => (
                       <div className="sim-missing-item" key={`${item.origem}-${item.ibge}`}>
-                        <strong>{item.origem}</strong> • {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • IBGE {item.ibge}
+                        <strong>{item.origem}</strong> • Destino {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • IBGE {item.ibge}
                       </div>
                     ))}
                   </div>
@@ -570,7 +611,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div className="sim-missing-list">
                     {resultadoCobertura.cobertas.slice(0, 60).map((item) => (
                       <div className="sim-missing-item" key={`${item.origem}-${item.ibge}`}>
-                        <strong>{item.origem}</strong> • {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • {item.rota}
+                        <strong>{item.origem}</strong> • Destino {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • {item.rota}
                       </div>
                     ))}
                   </div>

@@ -369,6 +369,45 @@ button { cursor: pointer; }
   color: var(--text);
 }
 
+
+input[type='checkbox'] {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  border-radius: 6px;
+  padding: 0;
+  accent-color: var(--primary);
+}
+
+.checkbox-line,
+.sim-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tab-btn {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  padding: 10px 16px;
+  font-weight: 700;
+}
+
+.tab-btn.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.sim-destino-preview {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 input,
 select,
 textarea,
