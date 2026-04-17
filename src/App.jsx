@@ -54,9 +54,10 @@ export default function App() {
         onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
+        onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
         onSincronizarAgora={store.sincronizarAgora}
-        onCarregarDoBanco={store.carregarDoBanco}
+        onCarregarDoBanco={store.recarregarDoBanco}
       />
     );
   }
@@ -85,16 +86,13 @@ export default function App() {
 
   return (
     <div className="app-layout">
-      <Sidebar
-        paginaAtual={paginaAtual}
-        onMudarPagina={(pagina) => {
-          setPaginaAtual(pagina);
-          if (pagina !== 'transportadoras') {
-            setTransportadoraSelecionadaId(null);
-            setOrigemSelecionadaId(null);
-          }
-        }}
-      />
+      <Sidebar paginaAtual={paginaAtual} onMudarPagina={(pagina) => {
+        setPaginaAtual(pagina);
+        if (pagina !== 'transportadoras') {
+          setTransportadoraSelecionadaId(null);
+          setOrigemSelecionadaId(null);
+        }
+      }} />
       <main className="app-content">{content}</main>
     </div>
   );
