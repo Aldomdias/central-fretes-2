@@ -246,6 +246,18 @@ button { cursor: pointer; }
 .table-card,
 .list-card,
 .process-card,
+.sim-resultado-topo-vencedor {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #eefbf3;
+  border: 1px solid #b9e3c7;
+}
+
+.destino-hint {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
 .sim-card {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -367,45 +379,6 @@ button { cursor: pointer; }
 .sim-flag {
   font-weight: 700;
   color: var(--text);
-}
-
-
-input[type='checkbox'] {
-  width: 20px;
-  min-width: 20px;
-  height: 20px;
-  min-height: 20px;
-  border-radius: 6px;
-  padding: 0;
-  accent-color: var(--primary);
-}
-
-.checkbox-line,
-.sim-flag {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.tab-btn {
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--text);
-  padding: 10px 16px;
-  font-weight: 700;
-}
-
-.tab-btn.active {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
-}
-
-.sim-destino-preview {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.35;
 }
 
 input,
