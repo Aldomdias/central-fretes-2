@@ -130,6 +130,13 @@ function buildDestinoLabel(item) {
   return `IBGE ${item.ibgeDestino}`;
 }
 
+function buildPerdeuLabel(item) {
+  if (item.ranking === 1) {
+    return item.substitutaSeBloquear ? `Se bloquear, assume ${item.substitutaSeBloquear}` : 'Sem substituta';
+  }
+  return item.perdeuPara ? `Perdeu para ${item.perdeuPara}` : 'Sem comparativo';
+}
+
 
 function DetalheTabela({ linhas }) {
   return (
@@ -146,34 +153,37 @@ function DetalheTabela({ linhas }) {
 
 function ResultadoCard({ item }) {
   const [aberto, setAberto] = useState(false);
+  const destaqueClasse = item.ranking === 1 ? ' sim-resultado-card--winner' : item.existeSubstituta === false ? ' sim-resultado-card--warning' : '';
 
   return (
-    <div className="sim-resultado-card">
+    <div className={`sim-resultado-card${destaqueClasse}`}>
       <div className="sim-resultado-topo compact-top">
         <div>
           <strong>{item.transportadora}</strong>
           <div className="sim-resultado-linha">Origem {item.origem} • Destino {buildDestinoLabel(item)}</div>
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="sim-resultado-topo-right">
+          {item.ranking === 1 && <span className="sim-badge sim-badge--winner">1º lugar</span>}
+          {item.existeSubstituta === false && <span className="sim-badge sim-badge--danger">Sem substituta</span>}
           <span>#{item.ranking || 1} • {item.prazo} dia(s)</span>
-          <button className="sim-tab" type="button" onClick={() => setAberto((v) => !v)}>
+          <button className="sim-detail-toggle" type="button" onClick={() => setAberto((v) => !v)}>
             {aberto ? 'Fechar detalhes' : 'Ver detalhes'}
           </button>
         </div>
       </div>
 
-      <div className="sim-resultado-grade">
+      <div className="sim-resultado-grade sim-resultado-grade--four">
         <div>
           <span>Frete final</span>
           <strong>{formatMoney(item.total)}</strong>
         </div>
         <div>
-          <span>Saving vs 2º</span>
-          <strong>{formatMoney(item.savingSegundo)}</strong>
+          <span>% sobre NF</span>
+          <strong>{formatPercent(item.percentualSobreNF)}</strong>
         </div>
         <div>
-          <span>Diferença p/ líder</span>
-          <strong>{formatMoney(item.diferencaLider)}</strong>
+          <span>{item.ranking === 1 ? 'Próxima se bloquear' : 'Perdeu para'}</span>
+          <strong>{item.ranking === 1 ? (item.substitutaSeBloquear || 'Sem substituta') : (item.perdeuPara || '-')}</strong>
         </div>
         <div>
           <span>Redução p/ líder</span>
@@ -182,31 +192,27 @@ function ResultadoCard({ item }) {
       </div>
 
       {aberto && (
-        <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}>
-          <div className="sim-parametros-box">
-            <div className="sim-parametros-header">
-              <div>
-                <strong>Formação do frete e prazo</strong>
-                <p>Como o valor base foi encontrado.</p>
-              </div>
-            </div>
+        <div className="sim-detalhes-grid">
+          <div className="sim-detail-panel">
+            <div className="sim-detail-panel-title">Formação do frete e prazo</div>
             <DetalheTabela
               linhas={[
                 { label: 'Tipo de cálculo', value: item.detalhes.frete.tipoCalculo },
                 { label: 'Prazo', value: `${item.detalhes.prazo} dia(s)` },
                 { label: 'Faixa aplicada', value: item.detalhes.frete.faixaPeso },
-                { label: 'Peso informado', value: `${Number(item.detalhes.frete.pesoInformado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
-                { label: 'Peso da grade', value: `${Number(item.detalhes.frete.pesoGrade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: 'Peso informado', value: `${formatPeso(item.detalhes.frete.pesoInformado)} kg` },
+                { label: 'Peso da grade', value: `${formatPeso(item.detalhes.frete.pesoGrade)} kg` },
                 { label: 'Cubagem da grade', value: `${Number(item.detalhes.frete.cubagemGrade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 6 })} m³` },
-                { label: 'Fator cubagem', value: `${Number(item.detalhes.frete.fatorCubagem || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg/m³` },
-                { label: 'Peso cubado', value: `${Number(item.detalhes.frete.pesoCubado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
-                { label: 'Peso considerado', value: `${Number(item.detalhes.frete.pesoConsiderado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
-                { label: 'R$/kg', value: item.detalhes.frete.rsKgAplicado.toFixed(4) },
+                { label: 'Fator cubagem', value: `${formatPeso(item.detalhes.frete.fatorCubagem)} kg/m³` },
+                { label: 'Peso cubado', value: `${formatPeso(item.detalhes.frete.pesoCubado)} kg` },
+                { label: 'Peso considerado', value: `${formatPeso(item.detalhes.frete.pesoConsiderado)} kg` },
+                { label: 'R$/kg', value: Number(item.detalhes.frete.rsKgAplicado || 0).toFixed(4) },
                 { label: '% aplicado', value: formatPercent(item.detalhes.frete.percentualAplicado) },
                 { label: 'Valor fixo/faixa', value: formatMoney(item.detalhes.frete.valorFixoAplicado) },
                 { label: 'Valor NF utilizado', value: `${formatMoney(item.detalhes.frete.valorNFInformado)}${item.detalhes.frete.valorNFOrigem === 'grade' ? ' (grade padrão)' : ' (manual)'}` },
-                { label: 'Limite para excedente', value: `${Number(item.detalhes.frete.pesoLimiteExcedente || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
-                { label: 'Peso excedente', value: `${Number(item.detalhes.frete.pesoExcedente || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: '% do frete sobre NF', value: formatPercent(item.percentualSobreNF) },
+                { label: 'Limite para excedente', value: `${formatPeso(item.detalhes.frete.pesoLimiteExcedente)} kg` },
+                { label: 'Peso excedente', value: `${formatPeso(item.detalhes.frete.pesoExcedente)} kg` },
                 { label: 'Valor do excedente', value: formatMoney(item.detalhes.frete.valorExcedente) },
                 { label: 'Mínimo da rota', value: formatMoney(item.detalhes.frete.minimoRota) },
                 { label: 'Valor base', value: formatMoney(item.detalhes.frete.valorBase) },
@@ -216,13 +222,8 @@ function ResultadoCard({ item }) {
             />
           </div>
 
-          <div className="sim-parametros-box">
-            <div className="sim-parametros-header">
-              <div>
-                <strong>Taxas adicionais vinculadas</strong>
-                <p>Taxas gerais e específicas do destino.</p>
-              </div>
-            </div>
+          <div className="sim-detail-panel">
+            <div className="sim-detail-panel-title">Taxas adicionais e comparativo</div>
             <DetalheTabela
               linhas={[
                 { label: 'Ad Valorem', value: `${formatMoney(item.detalhes.taxas.adValorem)} (${formatPercent(item.detalhes.taxas.adValPct)} • mín. ${formatMoney(item.detalhes.taxas.adValMin)})` },
@@ -237,6 +238,9 @@ function ResultadoCard({ item }) {
                 { label: 'Suframa', value: formatMoney(item.detalhes.taxas.suframa) },
                 { label: 'Outras', value: formatMoney(item.detalhes.taxas.outras) },
                 { label: 'Total de taxas', value: formatMoney(item.detalhes.taxas.totalTaxas) },
+                { label: item.ranking === 1 ? 'Próxima se bloquear' : 'Perdeu para', value: buildPerdeuLabel(item) },
+                { label: item.ranking === 1 ? 'Frete da substituta' : 'Frete do líder', value: item.existeSubstituta ? formatMoney(item.freteSubstitutaSeBloquear) : '-' },
+                { label: 'Saving vs 2º', value: formatMoney(item.savingSegundo) },
                 { label: 'Frete final', value: formatMoney(item.detalhes.frete.total) },
               ]}
             />
@@ -282,18 +286,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const todasOrigens = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade)).filter(Boolean))].sort(), [transportadoras]);
   const todosDestinosComCidade = useMemo(() => destinosDisponiveis.map((ibge) => ({ ibge, cidade: getCidadeByIbge(ibge, cidadePorIbge), uf: getUfByIbge(ibge) })), [destinosDisponiveis, cidadePorIbge]);
 
-  const [origemSimples, setOrigemSimples] = useState(todasOrigens[0] || '');
-  const [destinoCodigo, setDestinoCodigo] = useState(destinosDisponiveis[0] || '');
-  const [canalSimples, setCanalSimples] = useState(canais[0] || 'ATACADO');
-  const [pesoSimples, setPesoSimples] = useState('150');
+  const [origemSimples, setOrigemSimples] = useState('');
+  const [destinoCodigo, setDestinoCodigo] = useState('');
+  const [canalSimples, setCanalSimples] = useState('');
+  const [pesoSimples, setPesoSimples] = useState('');
   const [nfSimples, setNfSimples] = useState('');
   const [resultadoSimples, setResultadoSimples] = useState([]);
 
   const [transportadora, setTransportadora] = useState(transportadoras[0]?.nome || '');
-  const [canalTransportadora, setCanalTransportadora] = useState(canais[0] || 'ATACADO');
+  const [canalTransportadora, setCanalTransportadora] = useState('');
   const [origemTransportadora, setOrigemTransportadora] = useState('');
   const [destinoTransportadora, setDestinoTransportadora] = useState('');
-  const [pesoTransportadora, setPesoTransportadora] = useState('150');
+  const [pesoTransportadora, setPesoTransportadora] = useState('');
   const [nfTransportadora, setNfTransportadora] = useState('');
   const [modoLista, setModoLista] = useState(false);
   const [listaCodigos, setListaCodigos] = useState('4206405\n4202156\n4205001\n4200804');
@@ -320,9 +324,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   useEffect(() => {
     if (!transportadora && transportadorasDisponiveis.length) setTransportadora(transportadorasDisponiveis[0]);
     if (!transportadoraAnalise && transportadorasDisponiveis.length) setTransportadoraAnalise(transportadorasDisponiveis[0]);
-    if (!origemSimples && todasOrigens.length) setOrigemSimples(todasOrigens[0]);
-    if (!destinoCodigo && destinosDisponiveis.length) setDestinoCodigo(destinosDisponiveis[0]);
-  }, [transportadora, transportadoraAnalise, origemSimples, destinoCodigo, transportadorasDisponiveis, todasOrigens, destinosDisponiveis]);
+  }, [transportadora, transportadoraAnalise, transportadorasDisponiveis]);
 
   const quantidadeLinhasGrade = useMemo(() => ({
     B2C: grade.B2C?.length || 0,
@@ -421,6 +423,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
         item.detalhes?.frete?.pesoConsiderado ?? '',
         item.prazo,
         item.total.toFixed(2),
+        item.percentualSobreNF.toFixed(2),
+        item.perdeuPara || '',
+        item.substitutaSeBloquear || '',
+        item.freteSubstitutaSeBloquear ? item.freteSubstitutaSeBloquear.toFixed(2) : '',
         item.savingSegundo.toFixed(2),
         item.diferencaLider.toFixed(2),
         item.reducaoNecessariaPct.toFixed(2),
@@ -457,6 +463,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
         item.prazo,
         item.ranking,
         item.total.toFixed(2),
+        item.percentualSobreNF.toFixed(2),
+        item.perdeuPara || '',
+        item.substitutaSeBloquear || '',
+        item.freteSubstitutaSeBloquear ? item.freteSubstitutaSeBloquear.toFixed(2) : '',
         item.savingSegundo.toFixed(2),
       ]),
     ]);
@@ -510,6 +520,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-5">
             <label>Origem
               <select value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)}>
+                <option value="">Selecione</option>
                 {todasOrigens.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
@@ -518,14 +529,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <datalist id="destinos-lista">
                 {todosDestinosComCidade.map((item) => <option key={item.ibge} value={item.ibge}>{item.cidade ? `${item.cidade}/${item.uf}` : item.ibge}</option>)}
               </datalist>
+              {destinoCodigo && <small className="sim-help-text">{getCidadeByIbge(destinoCodigo, cidadePorIbge) ? `Destino identificado: ${getCidadeByIbge(destinoCodigo, cidadePorIbge)}/${getUfByIbge(destinoCodigo)}` : 'Destino não mapeado na base de IBGE carregada.'}</small>}
             </label>
             <label>Canal
               <select value={canalSimples} onChange={(e) => setCanalSimples(e.target.value)}>
+                <option value="">Selecione</option>
                 {canais.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Peso
-              <input value={pesoSimples} onChange={(e) => setPesoSimples(e.target.value)} />
+              <input value={pesoSimples} onChange={(e) => setPesoSimples(e.target.value)} placeholder="Ex: 150" />
             </label>
             <label>Valor NF (opcional)
               <input value={nfSimples} onChange={(e) => setNfSimples(e.target.value)} placeholder="Se vazio, usa a grade" />
@@ -559,6 +572,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             <label>Canal
               <select value={canalTransportadora} onChange={(e) => setCanalTransportadora(e.target.value)}>
+                <option value="">Selecione</option>
                 {canaisTransportadora.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
@@ -570,9 +584,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             <label>Destino opcional (CEP ou IBGE)
               <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003" />
+              {!modoLista && destinoTransportadora && <small className="sim-help-text">{getCidadeByIbge(destinoTransportadora, cidadePorIbge) ? `Destino identificado: ${getCidadeByIbge(destinoTransportadora, cidadePorIbge)}/${getUfByIbge(destinoTransportadora)}` : 'Destino não mapeado na base de IBGE carregada.'}</small>}
             </label>
             <label>Peso
-              <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} />
+              <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} placeholder="Ex: 150" />
             </label>
             <label>Valor NF (opcional)
               <input value={nfTransportadora} onChange={(e) => setNfTransportadora(e.target.value)} placeholder="Se vazio, usa a grade" />
@@ -655,6 +670,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Saving potencial</span><strong>{formatMoney(resultadoAnalise.saving)}</strong></div>
                 <div><span>Prazo médio</span><strong>{resultadoAnalise.prazoMedio.toFixed(1)} dia(s)</strong></div>
                 <div><span>Frete médio</span><strong>{formatMoney(resultadoAnalise.freteMedio)}</strong></div>
+                <div><span>% médio sobre NF</span><strong>{formatPercent(resultadoAnalise.percentualMedioNF)}</strong></div>
               </div>
 
               <div className="sim-grid-2" style={{ display: 'grid', gap: 16 }}>
@@ -668,7 +684,37 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     <div>Total de linhas geradas: <strong>{resultadoAnalise.detalhes.length}</strong></div>
                     <div>Vitórias na grade: <strong>{resultadoAnalise.vitorias}</strong></div>
                     <div>Rotas fora do 1º lugar: <strong>{resultadoAnalise.rotasAvaliadas - resultadoAnalise.vitorias}</strong></div>
-                    <div>Melhor uso: <strong>comparar aderência, prazo e necessidade de redução.</strong></div>
+                    <div>% médio do frete sobre NF: <strong>{formatPercent(resultadoAnalise.percentualMedioNF)}</strong></div>
+                    <div>Melhor uso: <strong>comparar aderência, prazo, faixa e necessidade de redução.</strong></div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="sim-grid-2" style={{ display: 'grid', gap: 16 }}>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Desempenho por faixa</strong><p>Onde ganha e perde conforme a grade.</p></div></div>
+                  <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                    <table className="sim-analise-tabela">
+                      <thead><tr><th>Faixa</th><th>Rotas</th><th>Vitórias</th><th>Aderência</th></tr></thead>
+                      <tbody>
+                        {resultadoAnalise.porFaixa.slice(0, 20).map((item) => (
+                          <tr key={item.faixa}><td>{item.faixa} kg</td><td>{item.total}</td><td>{item.vitorias}</td><td>{formatPercent(item.aderencia)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Perdeu para quem</strong><p>Principais substitutas e líderes por cenário.</p></div></div>
+                  <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                    <table className="sim-analise-tabela">
+                      <thead><tr><th>Origem</th><th>Destino</th><th>Ranking</th><th>Perdeu para</th><th>Substituta</th></tr></thead>
+                      <tbody>
+                        {resultadoAnalise.detalhes.slice(0, 20).map((item, idx) => (
+                          <tr key={`${item.origem}-${item.ibgeDestino}-${idx}`}><td>{item.origem}</td><td>{buildDestinoLabel(item)}</td><td>{item.ranking}</td><td>{item.perdeuPara || '-'}</td><td>{item.substitutaSeBloquear || '-'}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
