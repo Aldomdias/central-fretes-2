@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import {
   analisarCoberturaTabela,
   analisarTransportadoraPorGrade,
@@ -26,6 +27,7 @@ const GRADE_PADRAO = {
 };
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
+const GRADE_STORAGE_KEY = 'simulador-grade-analise-v1';
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -46,43 +48,59 @@ function downloadCsv(nomeArquivo, csv) {
   URL.revokeObjectURL(link.href);
 }
 
+function normalizarGradeImportada(linhas = []) {
+  const agrupado = { B2C: [], ATACADO: [] };
+
+  linhas.forEach((linha, index) => {
+    const canalBruto = String(linha.canal ?? linha.Canal ?? linha.CANAL ?? '').trim().toUpperCase();
+    const canal = canalBruto === 'B2B' ? 'ATACADO' : canalBruto;
+    if (!['B2C', 'ATACADO'].includes(canal)) return;
+
+    const faixa = Number(linha.faixa ?? linha.Faixa ?? linha.FAIXA ?? index + 1) || index + 1;
+    const peso = Number(linha.peso ?? linha.Peso ?? linha.PESO ?? 0);
+    const valorNF = Number(linha.valorNF ?? linha['Valor NF'] ?? linha.valor_nota ?? linha.nota ?? linha.NF ?? 0);
+    if (!peso && !valorNF) return;
+
+    agrupado[canal].push({
+      faixa,
+      peso,
+      valorNF,
+      descricao: String(linha.descricao ?? linha.Descricao ?? linha.DESCRICAO ?? '').trim(),
+    });
+  });
+
+  Object.keys(agrupado).forEach((canal) => {
+    agrupado[canal] = agrupado[canal]
+      .sort((a, b) => a.faixa - b.faixa || a.peso - b.peso || a.valorNF - b.valorNF)
+      .map((item, idx) => ({ ...item, faixa: idx + 1 }));
+  });
+
+  return agrupado;
+}
+
+function exportarModeloGrade(grade = GRADE_PADRAO) {
+  const linhas = ['ATACADO', 'B2C'].flatMap((canal) =>
+    (grade[canal] || []).map((item, idx) => ({
+      canal,
+      faixa: item.faixa || idx + 1,
+      peso: item.peso,
+      valorNF: item.valorNF,
+      descricao: item.descricao || '',
+    }))
+  );
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(linhas.length ? linhas : [
+    { canal: 'ATACADO', faixa: 1, peso: 50, valorNF: 2000, descricao: '' },
+    { canal: 'B2C', faixa: 1, peso: 1, valorNF: 150, descricao: '' },
+  ]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Grade');
+  XLSX.writeFile(wb, 'modelo-grade-analise.xlsx');
+}
+
 function buildDestinoLabel(item) {
   if (item.cidadeDestino) return `${item.cidadeDestino}${item.ufDestino ? `/${item.ufDestino}` : ''}`;
   return `IBGE ${item.ibgeDestino}`;
-}
-
-function normalizarDestinoDigitado(valor, transportadoras, cidadePorIbge, canal = '', origem = '') {
-  const raw = String(valor || '').trim();
-  const numero = raw.replace(/\D/g, '');
-  if (!raw) return null;
-
-  const porIbge = getCidadeByIbge(numero, cidadePorIbge);
-  if (numero.length === 7 && porIbge) {
-    return { ibge: numero, cidade: porIbge, uf: getUfByIbge(numero), tipo: 'IBGE' };
-  }
-
-  const nomeNormalizado = raw.toLowerCase();
-  for (const transportadora of transportadoras || []) {
-    for (const origemItem of transportadora.origens || []) {
-      if (canal && origemItem.canal !== canal) continue;
-      if (origem && origemItem.cidade !== origem) continue;
-      for (const rota of origemItem.rotas || []) {
-        const ibge = String(rota.ibgeDestino || '').trim();
-        const cidade = getCidadeByIbge(ibge, cidadePorIbge);
-        if (cidade && cidade.toLowerCase() === nomeNormalizado) {
-          return { ibge, cidade, uf: getUfByIbge(ibge), tipo: 'Cidade' };
-        }
-        const cep = numero;
-        const ini = String(rota?.cepInicial || '').replace(/\D/g, '');
-        const fim = String(rota?.cepFinal || '').replace(/\D/g, '');
-        if (cep.length >= 8 && ini && fim && cep >= ini && cep <= fim) {
-          return { ibge, cidade, uf: getUfByIbge(ibge), tipo: 'CEP' };
-        }
-      }
-    }
-  }
-
-  return numero.length === 7 ? { ibge: numero, cidade: '', uf: getUfByIbge(numero), tipo: 'IBGE' } : null;
 }
 
 function ResultadoCard({ item }) {
@@ -227,7 +245,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [transportadoraAnalise, setTransportadoraAnalise] = useState(transportadoras[0]?.nome || '');
   const [canalAnalise, setCanalAnalise] = useState(canais[0] || 'ATACADO');
-  const [grade] = useState(GRADE_PADRAO);
+  const [grade, setGrade] = useState(() => {
+    try {
+      const saved = localStorage.getItem(GRADE_STORAGE_KEY);
+      if (!saved) return GRADE_PADRAO;
+      return { ...GRADE_PADRAO, ...JSON.parse(saved) };
+    } catch {
+      return GRADE_PADRAO;
+    }
+  });
+  const gradeInputRef = useRef(null);
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
 
   const [canalCobertura, setCanalCobertura] = useState(canais[0] || 'ATACADO');
@@ -238,8 +265,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const transportadorasDisponiveis = useMemo(() => transportadoras.map((item) => item.nome).sort(), [transportadoras]);
 
-  const destinoSimplesResolvido = useMemo(() => normalizarDestinoDigitado(destinoCodigo, transportadoras, cidadePorIbge, canalSimples, origemSimples), [destinoCodigo, transportadoras, cidadePorIbge, canalSimples, origemSimples]);
-  const destinoTransportadoraResolvido = useMemo(() => normalizarDestinoDigitado(destinoTransportadora, transportadoras, cidadePorIbge, canalTransportadora, origemTransportadora), [destinoTransportadora, transportadoras, cidadePorIbge, canalTransportadora, origemTransportadora]);
+  useEffect(() => {
+    localStorage.setItem(GRADE_STORAGE_KEY, JSON.stringify(grade));
+  }, [grade]);
 
   const origensTransportadora = useMemo(() => {
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
@@ -302,6 +330,40 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ]),
     ]);
     downloadCsv(nomeArquivo, csv);
+  };
+
+
+  const onImportarGradeClick = () => gradeInputRef.current?.click();
+
+  const onImportarGradeArquivo = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const importada = normalizarGradeImportada(rows);
+      const temLinhas = (importada.ATACADO?.length || 0) + (importada.B2C?.length || 0);
+      if (!temLinhas) {
+        window.alert('Arquivo sem linhas válidas. Use as colunas: canal, faixa, peso, valorNF e descrição.');
+        return;
+      }
+      setGrade({
+        ATACADO: importada.ATACADO?.length ? importada.ATACADO : GRADE_PADRAO.ATACADO,
+        B2C: importada.B2C?.length ? importada.B2C : GRADE_PADRAO.B2C,
+      });
+      setResultadoAnalise(null);
+    } catch (error) {
+      window.alert(`Não foi possível importar a grade: ${error?.message || 'erro desconhecido'}`);
+    }
+  };
+
+  const onResetarGrade = () => {
+    setGrade(GRADE_PADRAO);
+    setResultadoAnalise(null);
   };
 
   const onSimularGrade = () => {
@@ -386,11 +448,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>Destino (CEP ou IBGE)
-              <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3506003 ou 88345000" />
+              <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3506003" />
               <datalist id="destinos-lista">
                 {todosDestinosComCidade.map((item) => <option key={item.ibge} value={item.ibge}>{item.cidade ? `${item.cidade}/${item.uf}` : item.ibge}</option>)}
               </datalist>
-              {destinoSimplesResolvido ? <small className="sim-destino-preview">{destinoSimplesResolvido.tipo}: {destinoSimplesResolvido.cidade || 'Cidade não mapeada'}{destinoSimplesResolvido.uf ? `/${destinoSimplesResolvido.uf}` : ''} • IBGE {destinoSimplesResolvido.ibge}</small> : <small className="sim-destino-preview">Digite IBGE, CEP ou nome da cidade.</small>}
             </label>
             <label>Canal
               <select value={canalSimples} onChange={(e) => setCanalSimples(e.target.value)}>
@@ -441,8 +502,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>Destino opcional (CEP ou IBGE)
-              <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003 ou 88345000" />
-              {!modoLista ? (destinoTransportadoraResolvido ? <small className="sim-destino-preview">{destinoTransportadoraResolvido.tipo}: {destinoTransportadoraResolvido.cidade || 'Cidade não mapeada'}{destinoTransportadoraResolvido.uf ? `/${destinoTransportadoraResolvido.uf}` : ''} • IBGE {destinoTransportadoraResolvido.ibge}</small> : <small className="sim-destino-preview">Digite um CEP, IBGE ou nome da cidade.</small>) : null}
+              <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003" />
             </label>
             <label>Peso
               <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} />
@@ -473,7 +533,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
         <section className="sim-card">
           <div className="sim-resultado-topo compact-top">
             <h2 style={{ margin: 0 }}>Análise de transportadora</h2>
-            <button className="sim-tab" type="button" onClick={exportarAnalise}>Exportar relatório</button>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <input ref={gradeInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={onImportarGradeArquivo} />
+              <button className="sim-tab" type="button" onClick={() => exportarModeloGrade(grade)}>Exportar modelo da grade</button>
+              <button className="sim-tab" type="button" onClick={onImportarGradeClick}>Importar grade</button>
+              <button className="sim-tab" type="button" onClick={onResetarGrade}>Restaurar grade padrão</button>
+              <button className="sim-tab" type="button" onClick={exportarAnalise}>Exportar relatório</button>
+            </div>
           </div>
           <div className="sim-form-grid sim-grid-3">
             <label>Transportadora
@@ -488,6 +554,21 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             <div className="sim-actions" style={{ alignItems: 'flex-end' }}>
               <button className="primary" onClick={onSimularGrade}>Gerar relatório</button>
+            </div>
+          </div>
+
+          <div className="sim-parametros-box" style={{ marginTop: 16 }}>
+            <div className="sim-parametros-header">
+              <div>
+                <strong>Grade usada na análise</strong>
+                <p>Importe sua planilha com canal, faixa, peso e valorNF. Toda a avaliação geral passa a usar essa grade.</p>
+              </div>
+            </div>
+            <div className="sim-analise-resumo" style={{ marginTop: 12 }}>
+              <div><span>Linhas B2B/Atacado</span><strong>{(grade.ATACADO || []).length}</strong></div>
+              <div><span>Linhas B2C</span><strong>{(grade.B2C || []).length}</strong></div>
+              <div><span>Canal em uso</span><strong>{canalAnalise}</strong></div>
+              <div><span>Cenários do canal</span><strong>{(grade[canalAnalise] || []).length}</strong></div>
             </div>
           </div>
 
@@ -514,7 +595,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     <div>Vitórias na grade: <strong>{resultadoAnalise.vitorias}</strong></div>
                     <div>Rotas fora do 1º lugar: <strong>{resultadoAnalise.rotasAvaliadas - resultadoAnalise.vitorias}</strong></div>
                     <div>Melhor uso: <strong>comparar aderência, prazo e necessidade de redução.</strong></div>
-                    <div>Critério: <strong>mesma origem, destino, canal, peso e NF.</strong></div>
                   </div>
                 </div>
               </div>
@@ -589,8 +669,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
                     <div>Use o filtro de <strong>origem</strong> para analisar um polo específico.</div>
                     <div>Use <strong>UF destino</strong> para focar em um estado.</div>
-                    <div>Combinações possíveis = origem selecionada × todos os destinos já existentes na malha filtrada.</div>
-                    <div>Sem tabela = destinos que ainda não têm rota cadastrada para a origem filtrada.</div>
+                    <div>A lista abaixo mostra exatamente quais cidades/IBGEs faltam.</div>
                   </div>
                 </div>
               </div>
@@ -601,7 +680,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div className="sim-missing-list">
                     {resultadoCobertura.faltantes.slice(0, 60).map((item) => (
                       <div className="sim-missing-item" key={`${item.origem}-${item.ibge}`}>
-                        <strong>{item.origem}</strong> • Destino {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • IBGE {item.ibge}
+                        <strong>{item.origem}</strong> • {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • IBGE {item.ibge}
                       </div>
                     ))}
                   </div>
@@ -611,7 +690,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div className="sim-missing-list">
                     {resultadoCobertura.cobertas.slice(0, 60).map((item) => (
                       <div className="sim-missing-item" key={`${item.origem}-${item.ibge}`}>
-                        <strong>{item.origem}</strong> • Destino {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • {item.rota}
+                        <strong>{item.origem}</strong> • {item.cidade || `IBGE ${item.ibge}`} {item.uf ? `- ${item.uf}` : ''} • {item.rota}
                       </div>
                     ))}
                   </div>
