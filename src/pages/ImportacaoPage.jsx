@@ -1,3 +1,4 @@
+import { registrarImportacao } from '../services/freteDatabaseService';
 import { useMemo, useState } from 'react';
 import {
   baixarModelo,
@@ -6,7 +7,6 @@ import {
   exportarSecao,
   parseFileToRows,
 } from '../utils/importacao';
-import { registrarImportacao } from '../services/freteDatabaseService';
 
 const TIPOS = [
   { id: 'rotas', label: 'Rotas' },
@@ -105,31 +105,26 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         });
 
         store.importarPayload(payload, tipo);
-
-        const registro = {
-          arquivo: file.name,
-          tipo,
-          canal: canalImportacao,
-          inseridos: payload.inseridos,
-          erros: payload.erros,
-          meta: parsed.meta,
-        };
-
-        novasEntradas.push(registro);
-
         try {
           await registrarImportacao({
             arquivo: file.name,
             tipo,
             canal: canalImportacao,
             inseridos: payload.inseridos,
-            erros: payload.erros?.length || 0,
-            observacoes: parsed.meta?.cabecalhoEncontrado ? 'Cabeçalho identificado' : 'Importado',
-            payload: { meta: parsed.meta, linhas: parsed.rows?.length || 0 },
+            payload: { meta: parsed.meta, erros: payload.erros },
           });
         } catch (dbError) {
-          console.error('Erro ao registrar importação no banco:', dbError);
+          console.error('Falha ao registrar importação no banco', dbError);
         }
+
+        novasEntradas.push({
+          arquivo: file.name,
+          tipo,
+          canal: canalImportacao,
+          inseridos: payload.inseridos,
+          erros: payload.erros,
+          meta: parsed.meta,
+        });
       } catch (error) {
         novasEntradas.push({
           arquivo: file.name,
@@ -148,6 +143,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       }
     }
 
+    await store.sincronizarAgora();
     setHistorico((prev) => [...novasEntradas, ...prev].slice(0, 15));
     setDetalhe(novasEntradas[0] || null);
     setProcessando(false);

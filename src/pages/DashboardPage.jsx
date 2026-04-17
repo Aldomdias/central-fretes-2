@@ -1,28 +1,6 @@
 import { buildDashboardStats } from '../data/mockData';
 
-function SyncCard({ syncStatus, onSincronizarAgora }) {
-  const modo = syncStatus?.modo === 'supabase' ? 'Supabase' : 'Local';
-  const ultima = syncStatus?.ultimaSincronizacao
-    ? new Date(syncStatus.ultimaSincronizacao).toLocaleString('pt-BR')
-    : 'Ainda não sincronizado';
-
-  return (
-    <div className="panel-card">
-      <div className="panel-title">☁️ Banco de dados</div>
-      <p>Conexão e gravação da base no Supabase.</p>
-      <div className="list-stack compact-list">
-        <div><strong>Modo:</strong> {modo}</div>
-        <div><strong>Última sincronização:</strong> {ultima}</div>
-        {syncStatus?.erro ? <div style={{ color: '#b42318' }}><strong>Erro:</strong> {syncStatus.erro}</div> : null}
-      </div>
-      <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando}>
-        {syncStatus?.sincronizando ? 'Sincronizando...' : 'Sincronizar agora'}
-      </button>
-    </div>
-  );
-}
-
-export default function DashboardPage({ transportadoras, syncStatus, onSincronizarAgora, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase }) {
+export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase, syncStatus, onSincronizarAgora }) {
   const stats = buildDashboardStats(transportadoras);
 
   return (
@@ -57,6 +35,23 @@ export default function DashboardPage({ transportadoras, syncStatus, onSincroniz
 
       <div className="feature-grid three-cols">
         <div className="panel-card">
+          <div className="panel-title">☁️ Banco de dados</div>
+          <p>
+            Modo: <strong>{syncStatus?.modo || 'local'}</strong><br />
+            Última sincronização:{' '}
+            <strong>
+              {syncStatus?.ultimaSincronizacao
+                ? new Date(syncStatus.ultimaSincronizacao).toLocaleString('pt-BR')
+                : 'ainda não sincronizado'}
+            </strong>
+          </p>
+          {syncStatus?.erro ? <div className="hint-box compact">Erro: {syncStatus.erro}</div> : null}
+          <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando}>
+            {syncStatus?.sincronizando ? 'Sincronizando...' : 'Sincronizar agora'}
+          </button>
+        </div>
+
+        <div className="panel-card">
           <div className="panel-title">📄 Simulação operacional</div>
           <p>
             Compare tabelas, avalie competitividade e visualize o cálculo completo do frete
@@ -69,20 +64,27 @@ export default function DashboardPage({ transportadoras, syncStatus, onSincroniz
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            Agora com sincronização manual no banco.
+            A próxima fase conecta isso à base persistente.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
 
-        <SyncCard syncStatus={syncStatus} onSincronizarAgora={onSincronizarAgora} />
+        <div className="panel-card">
+          <div className="panel-title">📦 Importação e Verum</div>
+          <p>
+            Importe arquivos, acompanhe inconsistências e gere os arquivos no layout
+            correto da Verum.
+          </p>
+          <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
+        </div>
       </div>
 
       <div className="info-card amd-next-phase-card">
         <div className="info-badge">🚚</div>
         <div>
-          <div className="info-title">Snapshot da base</div>
+          <div className="info-title">Próxima fase recomendada</div>
           <div className="info-text">
-            O botão sincroniza o cadastro atual das transportadoras no Supabase e facilita os testes com base persistida.
+            Persistir a base, armazenar histórico de importações e preparar a simulação sobre o realizado.
           </div>
         </div>
       </div>

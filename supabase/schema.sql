@@ -8,30 +8,26 @@ create table if not exists public.cadastros_snapshot (
   updated_at timestamptz not null default now()
 );
 
-create or replace function public.touch_updated_at()
-returns trigger
-language plpgsql
-as $$
+create or replace function public.set_updated_at()
+returns trigger as $$
 begin
   new.updated_at = now();
   return new;
 end;
-$$;
+$$ language plpgsql;
 
 drop trigger if exists trg_cadastros_snapshot_updated_at on public.cadastros_snapshot;
 create trigger trg_cadastros_snapshot_updated_at
 before update on public.cadastros_snapshot
-for each row execute function public.touch_updated_at();
+for each row execute function public.set_updated_at();
 
 create table if not exists public.frete_importacoes (
   id uuid primary key default gen_random_uuid(),
   arquivo text not null,
   tipo text not null,
   canal text,
-  inseridos integer not null default 0,
-  erros integer not null default 0,
-  observacoes text,
-  payload jsonb,
+  inseridos integer default 0,
+  payload jsonb default '{}'::jsonb,
   criado_em timestamptz not null default now()
 );
 
