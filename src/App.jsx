@@ -55,6 +55,8 @@ export default function App() {
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
         onResetarBase={store.resetarBase}
+        syncStatus={store.syncStatus}
+        onSincronizarAgora={store.sincronizarAgora}
       />
     );
   }
