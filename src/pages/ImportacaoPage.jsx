@@ -1,4 +1,3 @@
-import { registrarImportacao } from '../services/freteDatabaseService';
 import { useMemo, useState } from 'react';
 import {
   baixarModelo,
@@ -105,26 +104,38 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         });
 
         store.importarPayload(payload, tipo);
-        try {
-          await registrarImportacao({
-            arquivo: file.name,
-            tipo,
-            canal: canalImportacao,
-            inseridos: payload.inseridos,
-            payload: { meta: parsed.meta, erros: payload.erros },
-          });
-        } catch (dbError) {
-          console.error('Falha ao registrar importação no banco', dbError);
-        }
 
-        novasEntradas.push({
+        const registro = {
           arquivo: file.name,
           tipo,
           canal: canalImportacao,
           inseridos: payload.inseridos,
           erros: payload.erros,
-          meta: parsed.meta,
-        });
+          meta: parsed.meta || {},
+        };
+
+        try {
+          await registrarImportacao({
+            arquivo: registro.arquivo,
+            tipo: registro.tipo,
+            canal: registro.canal,
+            inseridos: registro.inseridos,
+            erros: registro.erros,
+            meta: registro.meta,
+          });
+        } catch (dbError) {
+          registro.erros = [
+            ...(registro.erros || []),
+            {
+              linha: '-',
+              coluna: 'supabase',
+              valor: '',
+              mensagem: dbError.message || 'Falha ao registrar importação no banco.',
+            },
+          ];
+        }
+
+        novasEntradas.push(registro);
       } catch (error) {
         novasEntradas.push({
           arquivo: file.name,
@@ -143,7 +154,6 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       }
     }
 
-    await store.sincronizarAgora();
     setHistorico((prev) => [...novasEntradas, ...prev].slice(0, 15));
     setDetalhe(novasEntradas[0] || null);
     setProcessando(false);

@@ -51,12 +51,12 @@ export default function App() {
     content = (
       <DashboardPage
         transportadoras={transportadorasMemo}
+        syncStatus={store.syncStatus}
+        onSincronizarAgora={store.sincronizarAgora}
         onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
         onResetarBase={store.resetarBase}
-        syncStatus={store.syncStatus}
-        onSincronizarAgora={store.sincronizarAgora}
       />
     );
   }

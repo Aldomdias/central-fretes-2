@@ -1,6 +1,23 @@
 import { buildDashboardStats } from '../data/mockData';
 
-export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase, syncStatus, onSincronizarAgora }) {
+function formatarData(value) {
+  if (!value) return 'Ainda não sincronizado';
+  try {
+    return new Date(value).toLocaleString('pt-BR');
+  } catch {
+    return value;
+  }
+}
+
+export default function DashboardPage({
+  transportadoras,
+  syncStatus,
+  onSincronizarAgora,
+  onAbrirSimulador,
+  onAbrirTransportadoras,
+  onAbrirImportacao,
+  onResetarBase,
+}) {
   const stats = buildDashboardStats(transportadoras);
 
   return (
@@ -35,23 +52,6 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
 
       <div className="feature-grid three-cols">
         <div className="panel-card">
-          <div className="panel-title">☁️ Banco de dados</div>
-          <p>
-            Modo: <strong>{syncStatus?.modo || 'local'}</strong><br />
-            Última sincronização:{' '}
-            <strong>
-              {syncStatus?.ultimaSincronizacao
-                ? new Date(syncStatus.ultimaSincronizacao).toLocaleString('pt-BR')
-                : 'ainda não sincronizado'}
-            </strong>
-          </p>
-          {syncStatus?.erro ? <div className="hint-box compact">Erro: {syncStatus.erro}</div> : null}
-          <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando}>
-            {syncStatus?.sincronizando ? 'Sincronizando...' : 'Sincronizar agora'}
-          </button>
-        </div>
-
-        <div className="panel-card">
           <div className="panel-title">📄 Simulação operacional</div>
           <p>
             Compare tabelas, avalie competitividade e visualize o cálculo completo do frete
@@ -64,7 +64,7 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A próxima fase conecta isso à base persistente.
+            Agora já com opção de sincronizar o snapshot da base no Supabase.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -76,6 +76,19 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
             correto da Verum.
           </p>
           <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
+        </div>
+      </div>
+
+      <div className="feature-grid three-cols">
+        <div className="panel-card">
+          <div className="panel-title">☁️ Banco de dados</div>
+          <p><strong>Modo:</strong> {syncStatus?.modo === 'supabase' ? 'Supabase' : 'Local'}</p>
+          <p><strong>Última sincronização:</strong> {formatarData(syncStatus?.ultimaSincronizacao)}</p>
+          <p><strong>Status:</strong> {syncStatus?.sincronizando ? 'Sincronizando...' : syncStatus?.carregando ? 'Carregando...' : 'Pronto'}</p>
+          {syncStatus?.erro ? <div className="hint-box top-space">Erro: {syncStatus.erro}</div> : null}
+          <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando || syncStatus?.carregando || syncStatus?.modo !== 'supabase'}>
+            {syncStatus?.sincronizando ? 'Sincronizando...' : 'Sincronizar agora'}
+          </button>
         </div>
       </div>
 
