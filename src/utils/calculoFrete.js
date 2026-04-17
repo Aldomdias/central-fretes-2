@@ -85,6 +85,30 @@ export function getCidadeByIbge(ibge, cidadePorIbge) {
   return cidadePorIbge?.get(codigo) || CIDADES_CONHECIDAS[codigo] || '';
 }
 
+function getUfOrigem(origem, cidadePorIbge) {
+  const ibgeOrigem = String(origem?.rotas?.[0]?.ibgeOrigem || '').trim();
+  if (ibgeOrigem) return getUfByIbge(ibgeOrigem);
+  const entry = [...(cidadePorIbge?.entries?.() || [])].find(([, cidade]) => normalizeText(cidade) === normalizeText(origem?.cidade));
+  return entry ? getUfByIbge(entry[0]) : '';
+}
+
+function inferirAliquotaIcms(origem, rota, cidadePorIbge) {
+  const manual = toNumber(origem?.generalidades?.aliquotaIcms);
+  if (manual > 0) return { aliquota: manual, origem: 'manual' };
+
+  const ufOrigem = getUfOrigem(origem, cidadePorIbge);
+  const ufDestino = getUfByIbge(rota?.ibgeDestino);
+  if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao' };
+  if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao' };
+
+  const sulSudesteSemES = new Set(['PR', 'SC', 'RS', 'SP', 'RJ', 'MG']);
+  const norteNordesteCentroOesteMaisES = new Set(['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'PA', 'PB', 'PE', 'PI', 'RN', 'RO', 'RR', 'SE', 'TO']);
+  if (sulSudesteSemES.has(ufOrigem) && norteNordesteCentroOesteMaisES.has(ufDestino)) {
+    return { aliquota: 7, origem: 'legislacao' };
+  }
+  return { aliquota: 12, origem: 'legislacao' };
+}
+
 function getTaxaDestino(origem, ibgeDestino) {
   return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino) === String(ibgeDestino)) || {};
 }
@@ -134,7 +158,7 @@ function calcularPesosComCubagem({ pesoInformado, gradeLinha, fatorCubagem }) {
   };
 }
 
-function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem }) {
+function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem, icmsInfo }) {
   const percentual = toNumber(cotacao?.percentual || cotacao?.fretePercentual || 0);
   const rsKg = toNumber(cotacao?.rsKg || 0);
   const valorFixo = toNumber(cotacao?.valorFixo || cotacao?.taxaAplicada || 0);
@@ -172,6 +196,10 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       subtotal: calculo.subtotal,
       icms: calculo.icms,
       total: calculo.total,
+      aliquotaIcms: toNumber(icmsInfo?.aliquota),
+      origemAliquotaIcms: icmsInfo?.origem || (toNumber(origem?.generalidades?.aliquotaIcms) > 0 ? 'manual' : 'legislacao'),
+      ufOrigem: icmsInfo?.ufOrigem || getUfOrigem(origem, null),
+      ufDestino: icmsInfo?.ufDestino || getUfByIbge(rota?.ibgeDestino),
     },
     taxas: {
       adValPct,
@@ -218,7 +246,12 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIb
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
-  const engineInput = { rota, cotacao, generalidades: origem.generalidades, taxaDestino, pesoKg: pesosAplicados.pesoConsiderado, valorNf: valorNFUtilizado };
+  const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge);
+  const generalidadesCalculadas = {
+    ...(origem.generalidades || {}),
+    aliquotaIcms: icmsInfo.aliquota,
+  };
+  const engineInput = { rota, cotacao, generalidades: generalidadesCalculadas, taxaDestino, pesoKg: pesosAplicados.pesoConsiderado, valorNf: valorNFUtilizado };
   const calculo = tipoCalculo === 'FAIXA_DE_PESO'
     ? calcularFreteFaixaPeso(engineInput)
     : calcularFretePercentual(engineInput);
@@ -241,7 +274,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIb
     subtotal: calculo.subtotal,
     valorBase: calculo.valorBase,
     descricao: `Origem ${origem.cidade} • Destino ${cidadeDestino || `IBGE ${rota.ibgeDestino}`}`,
-    detalhes: buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF: valorNFUtilizado, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem }),
+    detalhes: buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF: valorNFUtilizado, calculo, gradeLinha, fatorCubagem, pesosAplicados, valorNFManualInformado, valorNFOrigem, icmsInfo: { ...icmsInfo, ufOrigem: getUfOrigem(origem, cidadePorIbge), ufDestino } }),
   };
 }
 

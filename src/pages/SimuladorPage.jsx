@@ -130,6 +130,20 @@ function buildDestinoLabel(item) {
   return `IBGE ${item.ibgeDestino}`;
 }
 
+
+function DetalheTabela({ linhas }) {
+  return (
+    <div style={{ display: 'grid', gap: 6, marginTop: 12 }}>
+      {linhas.map((linha) => (
+        <div key={linha.label} style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, padding: '6px 0', borderBottom: '1px solid #e8edf7' }}>
+          <span style={{ color: '#48608b' }}>{linha.label}</span>
+          <strong style={{ textAlign: 'right' }}>{linha.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ResultadoCard({ item }) {
   const [aberto, setAberto] = useState(false);
 
@@ -176,28 +190,30 @@ function ResultadoCard({ item }) {
                 <p>Como o valor base foi encontrado.</p>
               </div>
             </div>
-            <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-              <div>Tipo de cálculo: <strong>{item.detalhes.frete.tipoCalculo}</strong></div>
-              <div>Prazo: <strong>{item.detalhes.prazo} dia(s)</strong></div>
-              <div>Faixa aplicada: <strong>{item.detalhes.frete.faixaPeso}</strong></div>
-              <div>Peso informado: <strong>{formatPeso(item.detalhes.frete.pesoInformado)} kg</strong></div>
-              <div>Peso da grade: <strong>{formatPeso(item.detalhes.frete.pesoGrade)} kg</strong></div>
-              <div>Cubagem da grade: <strong>{Number(item.detalhes.frete.cubagemGrade || 0).toFixed(6)} m³</strong></div>
-              <div>Fator cubagem: <strong>{formatPeso(item.detalhes.frete.fatorCubagem)} kg/m³</strong></div>
-              <div>Peso cubado: <strong>{formatPeso(item.detalhes.frete.pesoCubado)} kg</strong></div>
-              <div>Peso considerado: <strong>{formatPeso(item.detalhes.frete.pesoConsiderado)} kg</strong></div>
-              <div>R$/kg: <strong>{item.detalhes.frete.rsKgAplicado.toFixed(4)}</strong></div>
-              <div>% aplicado: <strong>{formatPercent(item.detalhes.frete.percentualAplicado)}</strong></div>
-              <div>Valor fixo/faixa: <strong>{formatMoney(item.detalhes.frete.valorFixoAplicado)}</strong></div>
-              <div>Mínimo da rota: <strong>{formatMoney(item.detalhes.frete.minimoRota)}</strong></div>
-              <div>Valor NF utilizado: <strong>{formatMoney(item.detalhes.frete.valorNFInformado)}</strong> <span style={{ color: '#6b7aa5' }}>({item.detalhes.frete.valorNFOrigem === 'grade' ? 'grade padrão' : 'informado manualmente'})</span></div>
-              <div>Limite para excedente: <strong>{formatPeso(item.detalhes.frete.pesoLimiteExcedente)} kg</strong></div>
-              <div>Peso excedente: <strong>{formatPeso(item.detalhes.frete.pesoExcedente)} kg</strong></div>
-              <div>Valor do excedente: <strong>{formatMoney(item.detalhes.frete.valorExcedente)}</strong></div>
-              <div>Valor base: <strong>{formatMoney(item.detalhes.frete.valorBase)}</strong></div>
-              <div>Subtotal antes do ICMS: <strong>{formatMoney(item.detalhes.frete.subtotal)}</strong></div>
-              <div>ICMS: <strong>{formatMoney(item.detalhes.frete.icms)}</strong></div>
-            </div>
+            <DetalheTabela
+              linhas={[
+                { label: 'Tipo de cálculo', value: item.detalhes.frete.tipoCalculo },
+                { label: 'Prazo', value: `${item.detalhes.prazo} dia(s)` },
+                { label: 'Faixa aplicada', value: item.detalhes.frete.faixaPeso },
+                { label: 'Peso informado', value: `${Number(item.detalhes.frete.pesoInformado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: 'Peso da grade', value: `${Number(item.detalhes.frete.pesoGrade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: 'Cubagem da grade', value: `${Number(item.detalhes.frete.cubagemGrade || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 6 })} m³` },
+                { label: 'Fator cubagem', value: `${Number(item.detalhes.frete.fatorCubagem || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg/m³` },
+                { label: 'Peso cubado', value: `${Number(item.detalhes.frete.pesoCubado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: 'Peso considerado', value: `${Number(item.detalhes.frete.pesoConsiderado || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: 'R$/kg', value: item.detalhes.frete.rsKgAplicado.toFixed(4) },
+                { label: '% aplicado', value: formatPercent(item.detalhes.frete.percentualAplicado) },
+                { label: 'Valor fixo/faixa', value: formatMoney(item.detalhes.frete.valorFixoAplicado) },
+                { label: 'Valor NF utilizado', value: `${formatMoney(item.detalhes.frete.valorNFInformado)}${item.detalhes.frete.valorNFOrigem === 'grade' ? ' (grade padrão)' : ' (manual)'}` },
+                { label: 'Limite para excedente', value: `${Number(item.detalhes.frete.pesoLimiteExcedente || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: 'Peso excedente', value: `${Number(item.detalhes.frete.pesoExcedente || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kg` },
+                { label: 'Valor do excedente', value: formatMoney(item.detalhes.frete.valorExcedente) },
+                { label: 'Mínimo da rota', value: formatMoney(item.detalhes.frete.minimoRota) },
+                { label: 'Valor base', value: formatMoney(item.detalhes.frete.valorBase) },
+                { label: 'Subtotal antes do ICMS', value: formatMoney(item.detalhes.frete.subtotal) },
+                { label: `ICMS (${formatPercent(item.detalhes.frete.aliquotaIcms)})`, value: `${formatMoney(item.detalhes.frete.icms)}${item.detalhes.frete.origemAliquotaIcms === 'legislacao' ? ' • automático' : ' • manual'}` },
+              ]}
+            />
           </div>
 
           <div className="sim-parametros-box">
@@ -207,21 +223,23 @@ function ResultadoCard({ item }) {
                 <p>Taxas gerais e específicas do destino.</p>
               </div>
             </div>
-            <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-              <div>Ad Valorem: <strong>{formatMoney(item.detalhes.taxas.adValorem)}</strong> ({formatPercent(item.detalhes.taxas.adValPct)} • mín. {formatMoney(item.detalhes.taxas.adValMin)})</div>
-              <div>GRIS: <strong>{formatMoney(item.detalhes.taxas.gris)}</strong> ({formatPercent(item.detalhes.taxas.grisPct)} • mín. {formatMoney(item.detalhes.taxas.grisMin)})</div>
-              <div>Pedágio: <strong>{formatMoney(item.detalhes.taxas.pedagio)}</strong></div>
-              <div>TAS: <strong>{formatMoney(item.detalhes.taxas.tas)}</strong></div>
-              <div>CTRC: <strong>{formatMoney(item.detalhes.taxas.ctrc)}</strong></div>
-              <div>TDA/STDA: <strong>{formatMoney(item.detalhes.taxas.tda)}</strong></div>
-              <div>TDE: <strong>{formatMoney(item.detalhes.taxas.tde)}</strong></div>
-              <div>TDR: <strong>{formatMoney(item.detalhes.taxas.tdr)}</strong></div>
-              <div>TRT: <strong>{formatMoney(item.detalhes.taxas.trt)}</strong></div>
-              <div>Suframa: <strong>{formatMoney(item.detalhes.taxas.suframa)}</strong></div>
-              <div>Outras: <strong>{formatMoney(item.detalhes.taxas.outras)}</strong></div>
-              <div>Total de taxas: <strong>{formatMoney(item.detalhes.taxas.totalTaxas)}</strong></div>
-              <div>Frete final: <strong>{formatMoney(item.detalhes.frete.total)}</strong></div>
-            </div>
+            <DetalheTabela
+              linhas={[
+                { label: 'Ad Valorem', value: `${formatMoney(item.detalhes.taxas.adValorem)} (${formatPercent(item.detalhes.taxas.adValPct)} • mín. ${formatMoney(item.detalhes.taxas.adValMin)})` },
+                { label: 'GRIS', value: `${formatMoney(item.detalhes.taxas.gris)} (${formatPercent(item.detalhes.taxas.grisPct)} • mín. ${formatMoney(item.detalhes.taxas.grisMin)})` },
+                { label: 'Pedágio', value: formatMoney(item.detalhes.taxas.pedagio) },
+                { label: 'TAS', value: formatMoney(item.detalhes.taxas.tas) },
+                { label: 'CTRC', value: formatMoney(item.detalhes.taxas.ctrc) },
+                { label: 'TDA/STDA', value: formatMoney(item.detalhes.taxas.tda) },
+                { label: 'TDE', value: formatMoney(item.detalhes.taxas.tde) },
+                { label: 'TDR', value: formatMoney(item.detalhes.taxas.tdr) },
+                { label: 'TRT', value: formatMoney(item.detalhes.taxas.trt) },
+                { label: 'Suframa', value: formatMoney(item.detalhes.taxas.suframa) },
+                { label: 'Outras', value: formatMoney(item.detalhes.taxas.outras) },
+                { label: 'Total de taxas', value: formatMoney(item.detalhes.taxas.totalTaxas) },
+                { label: 'Frete final', value: formatMoney(item.detalhes.frete.total) },
+              ]}
+            />
           </div>
         </div>
       )}
