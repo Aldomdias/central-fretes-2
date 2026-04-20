@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   bancoConfigurado,
-  carregarBaseCompletaDb,
+  carregarBaseCompletaDbDetalhada,
   carregarSnapshotFretesDb,
   salvarBaseCompletaDb,
 } from '../services/freteDatabaseService';
@@ -210,26 +210,59 @@ export function useFreteStore() {
       if (!bancoConfigurado() || snapshotLoadedRef.current) return;
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
-        const base = await carregarBaseCompletaDb();
+        const result = await carregarBaseCompletaDbDetalhada();
         if (cancelled) return;
 
-        const normalized = (base || []).map(normalizeTransportadora);
+        const normalized = (result?.transportadoras || []).map(normalizeTransportadora);
+
         skipNextSyncRef.current = true;
         setTransportadoras(normalized);
+        snapshotLoadedRef.current = true;
 
         let ultimaSincronizacao = '';
         try {
-          const snapshot = await carregarSnapshotFretesDb();
+          const snapshot = result?.snapshot || (await carregarSnapshotFretesDb());
           ultimaSincronizacao = snapshot?.updated_at || snapshot?.payload?.updatedAt || '';
         } catch {}
 
-        snapshotLoadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
           ultimaSincronizacao,
-          fonte: 'supabase-relacional',
+          fonte:
+            result?.origemDados === 'snapshot'
+              ? 'snapshot-migrando-para-supabase'
+              : 'supabase-relacional',
         }));
+
+        if (result?.origemDados === 'snapshot' && normalized.length) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: true,
+            erro: '',
+            fonte: 'snapshot-migrando-para-supabase',
+          }));
+
+          try {
+            const saveResult = await salvarBaseCompletaDb(normalized);
+            if (cancelled) return;
+
+            setSyncStatus((prev) => ({
+              ...prev,
+              sincronizando: false,
+              ultimaSincronizacao: saveResult?.updated_at || ultimaSincronizacao || new Date().toISOString(),
+              fonte: 'supabase-relacional',
+            }));
+          } catch (migrationError) {
+            if (cancelled) return;
+            setSyncStatus((prev) => ({
+              ...prev,
+              sincronizando: false,
+              erro: migrationError.message || 'Erro ao migrar snapshot para a base relacional.',
+              fonte: 'snapshot-carregado-mas-nao-migrado',
+            }));
+          }
+        }
       } catch (error) {
         if (cancelled) return;
         snapshotLoadedRef.current = true;
@@ -312,10 +345,24 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          const base = await carregarBaseCompletaDb();
+          const result = await carregarBaseCompletaDbDetalhada();
+          const normalized = (result?.transportadoras || []).map(normalizeTransportadora);
+
           skipNextSyncRef.current = true;
-          setTransportadoras((base || []).map(normalizeTransportadora));
-          const snapshot = await carregarSnapshotFretesDb();
+          setTransportadoras(normalized);
+
+          if (result?.origemDados === 'snapshot' && normalized.length) {
+            const saveResult = await salvarBaseCompletaDb(normalized);
+            setSyncStatus((prev) => ({
+              ...prev,
+              carregando: false,
+              ultimaSincronizacao: saveResult?.updated_at || new Date().toISOString(),
+              fonte: 'supabase-relacional',
+            }));
+            return true;
+          }
+
+          const snapshot = result?.snapshot || (await carregarSnapshotFretesDb());
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,

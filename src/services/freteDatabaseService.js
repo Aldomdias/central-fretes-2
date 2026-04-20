@@ -106,63 +106,7 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
   };
 }
 
-export function bancoConfigurado() {
-  return isSupabaseConfigured();
-}
-
-export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
-  if (!isSupabaseConfigured()) {
-    const raw = localStorage.getItem(FALLBACK_KEY);
-    return raw ? JSON.parse(raw) : null;
-  }
-
-  const supabase = ensureClient();
-  const { data, error } = await supabase
-    .from('cadastros_snapshot')
-    .select('id, chave, payload, updated_at, created_at')
-    .eq('chave', chave)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
-}
-
-export async function carregarBaseCompletaDb() {
-  if (!isSupabaseConfigured()) {
-    const raw = localStorage.getItem(FALLBACK_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
-  }
-
-  const supabase = ensureClient();
-
-  const [transportadorasRes, origensRes, generalidadesRes, rotasRes, cotacoesRes, taxasRes] =
-    await Promise.all([
-      supabase.from('transportadoras').select('*').order('nome', { ascending: true }),
-      supabase.from('origens').select('*').order('cidade', { ascending: true }),
-      supabase.from('generalidades').select('*'),
-      supabase.from('rotas').select('*'),
-      supabase.from('cotacoes').select('*'),
-      supabase.from('taxas_especiais').select('*'),
-    ]);
-
-  const responses = [transportadorasRes, origensRes, generalidadesRes, rotasRes, cotacoesRes, taxasRes];
-  const firstError = responses.find((item) => item.error)?.error;
-  if (firstError) throw firstError;
-
-  const transportadoras = transportadorasRes.data || [];
-  const origens = origensRes.data || [];
-  const generalidades = generalidadesRes.data || [];
-  const rotas = rotasRes.data || [];
-  const cotacoes = cotacoesRes.data || [];
-  const taxas = taxasRes.data || [];
-
-  if (!transportadoras.length && !origens.length) {
-    const snapshot = await carregarSnapshotFretesDb();
-    return snapshot?.payload?.transportadoras || [];
-  }
-
+function montarBaseRelacional(transportadoras, origens, generalidades, rotas, cotacoes, taxas) {
   const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = new Map();
   const cotacoesByOrigem = new Map();
@@ -212,6 +156,126 @@ export async function carregarBaseCompletaDb() {
     status: transportadora.status || 'Ativa',
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
+}
+
+export function bancoConfigurado() {
+  return isSupabaseConfigured();
+}
+
+export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('cadastros_snapshot')
+    .select('id, chave, payload, updated_at, created_at')
+    .eq('chave', chave)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+export async function carregarBaseCompletaDbDetalhada() {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) {
+      return {
+        transportadoras: [],
+        origemDados: 'local-vazio',
+        snapshot: null,
+        contagens: {
+          transportadoras: 0,
+          origens: 0,
+          generalidades: 0,
+          rotas: 0,
+          cotacoes: 0,
+          taxasEspeciais: 0,
+        },
+      };
+    }
+
+    const parsed = JSON.parse(raw);
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+
+    return {
+      transportadoras,
+      origemDados: 'local',
+      snapshot: null,
+      contagens: {
+        transportadoras: transportadoras.length,
+        origens: 0,
+        generalidades: 0,
+        rotas: 0,
+        cotacoes: 0,
+        taxasEspeciais: 0,
+      },
+    };
+  }
+
+  const supabase = ensureClient();
+
+  const [transportadorasRes, origensRes, generalidadesRes, rotasRes, cotacoesRes, taxasRes] =
+    await Promise.all([
+      supabase.from('transportadoras').select('*').order('nome', { ascending: true }),
+      supabase.from('origens').select('*').order('cidade', { ascending: true }),
+      supabase.from('generalidades').select('*'),
+      supabase.from('rotas').select('*'),
+      supabase.from('cotacoes').select('*'),
+      supabase.from('taxas_especiais').select('*'),
+    ]);
+
+  const responses = [transportadorasRes, origensRes, generalidadesRes, rotasRes, cotacoesRes, taxasRes];
+  const firstError = responses.find((item) => item.error)?.error;
+  if (firstError) throw firstError;
+
+  const transportadoras = transportadorasRes.data || [];
+  const origens = origensRes.data || [];
+  const generalidades = generalidadesRes.data || [];
+  const rotas = rotasRes.data || [];
+  const cotacoes = cotacoesRes.data || [];
+  const taxas = taxasRes.data || [];
+
+  if (transportadoras.length || origens.length || generalidades.length || rotas.length || cotacoes.length || taxas.length) {
+    return {
+      transportadoras: montarBaseRelacional(transportadoras, origens, generalidades, rotas, cotacoes, taxas),
+      origemDados: 'relacional',
+      snapshot: null,
+      contagens: {
+        transportadoras: transportadoras.length,
+        origens: origens.length,
+        generalidades: generalidades.length,
+        rotas: rotas.length,
+        cotacoes: cotacoes.length,
+        taxasEspeciais: taxas.length,
+      },
+    };
+  }
+
+  const snapshot = await carregarSnapshotFretesDb();
+  const transportadorasSnapshot = snapshot?.payload?.transportadoras || [];
+
+  return {
+    transportadoras: transportadorasSnapshot,
+    origemDados: transportadorasSnapshot.length ? 'snapshot' : 'vazio',
+    snapshot,
+    contagens: {
+      transportadoras: 0,
+      origens: 0,
+      generalidades: 0,
+      rotas: 0,
+      cotacoes: 0,
+      taxasEspeciais: 0,
+    },
+  };
+}
+
+export async function carregarBaseCompletaDb() {
+  const result = await carregarBaseCompletaDbDetalhada();
+  return result.transportadoras || [];
 }
 
 async function replaceTable(supabase, table, rows) {
@@ -422,6 +486,43 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
       cotacoes: cotacoesRows.length,
       taxasEspeciais: taxasRows.length,
     },
+  };
+}
+
+export async function migrarSnapshotParaBaseRealDb(chave = SNAPSHOT_CHAVE) {
+  const result = await carregarBaseCompletaDbDetalhada();
+
+  if (result.origemDados === 'relacional') {
+    return {
+      ok: true,
+      migrado: false,
+      origem: 'relacional',
+      transportadoras: result.transportadoras,
+      contagens: result.contagens,
+    };
+  }
+
+  const transportadoras = result.transportadoras || [];
+
+  if (!transportadoras.length) {
+    return {
+      ok: true,
+      migrado: false,
+      origem: result.origemDados,
+      transportadoras: [],
+      contagens: result.contagens,
+    };
+  }
+
+  const saveResult = await salvarBaseCompletaDb(transportadoras, chave);
+
+  return {
+    ok: true,
+    migrado: true,
+    origem: result.origemDados,
+    transportadoras,
+    contagens: saveResult?.contagens || result.contagens,
+    updated_at: saveResult?.updated_at || '',
   };
 }
 
