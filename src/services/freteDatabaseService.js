@@ -106,7 +106,35 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
   };
 }
 
-function montarBaseRelacional(transportadoras, origens, generalidades, rotas, cotacoes, taxas) {
+export function bancoConfigurado() {
+  return isSupabaseConfigured();
+}
+
+export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('cadastros_snapshot')
+    .select('id, chave, payload, updated_at, created_at')
+    .eq('chave', chave)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+function mapDbRowsToTransportadoras({
+  transportadoras = [],
+  origens = [],
+  generalidades = [],
+  rotas = [],
+  cotacoes = [],
+  taxas = [],
+}) {
   const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = new Map();
   const cotacoesByOrigem = new Map();
@@ -158,61 +186,16 @@ function montarBaseRelacional(transportadoras, origens, generalidades, rotas, co
   }));
 }
 
-export function bancoConfigurado() {
-  return isSupabaseConfigured();
-}
-
-export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
-  if (!isSupabaseConfigured()) {
-    const raw = localStorage.getItem(FALLBACK_KEY);
-    return raw ? JSON.parse(raw) : null;
-  }
-
-  const supabase = ensureClient();
-  const { data, error } = await supabase
-    .from('cadastros_snapshot')
-    .select('id, chave, payload, updated_at, created_at')
-    .eq('chave', chave)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
-}
-
-export async function carregarBaseCompletaDbDetalhada() {
+export async function carregarBaseCompletaDetalhadaDb() {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
     if (!raw) {
-      return {
-        transportadoras: [],
-        origemDados: 'local-vazio',
-        snapshot: null,
-        contagens: {
-          transportadoras: 0,
-          origens: 0,
-          generalidades: 0,
-          rotas: 0,
-          cotacoes: 0,
-          taxasEspeciais: 0,
-        },
-      };
+      return { fonte: 'local-vazio', transportadoras: [] };
     }
-
     const parsed = JSON.parse(raw);
-    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
-
     return {
-      transportadoras,
-      origemDados: 'local',
-      snapshot: null,
-      contagens: {
-        transportadoras: transportadoras.length,
-        origens: 0,
-        generalidades: 0,
-        rotas: 0,
-        cotacoes: 0,
-        taxasEspeciais: 0,
-      },
+      fonte: 'local',
+      transportadoras: Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [],
     };
   }
 
@@ -239,42 +222,30 @@ export async function carregarBaseCompletaDbDetalhada() {
   const cotacoes = cotacoesRes.data || [];
   const taxas = taxasRes.data || [];
 
-  if (transportadoras.length || origens.length || generalidades.length || rotas.length || cotacoes.length || taxas.length) {
+  if (!transportadoras.length && !origens.length) {
+    const snapshot = await carregarSnapshotFretesDb();
     return {
-      transportadoras: montarBaseRelacional(transportadoras, origens, generalidades, rotas, cotacoes, taxas),
-      origemDados: 'relacional',
-      snapshot: null,
-      contagens: {
-        transportadoras: transportadoras.length,
-        origens: origens.length,
-        generalidades: generalidades.length,
-        rotas: rotas.length,
-        cotacoes: cotacoes.length,
-        taxasEspeciais: taxas.length,
-      },
+      fonte: snapshot?.payload?.transportadoras?.length ? 'snapshot' : 'relacional-vazio',
+      transportadoras: snapshot?.payload?.transportadoras || [],
+      snapshot,
     };
   }
 
-  const snapshot = await carregarSnapshotFretesDb();
-  const transportadorasSnapshot = snapshot?.payload?.transportadoras || [];
-
   return {
-    transportadoras: transportadorasSnapshot,
-    origemDados: transportadorasSnapshot.length ? 'snapshot' : 'vazio',
-    snapshot,
-    contagens: {
-      transportadoras: 0,
-      origens: 0,
-      generalidades: 0,
-      rotas: 0,
-      cotacoes: 0,
-      taxasEspeciais: 0,
-    },
+    fonte: 'relacional',
+    transportadoras: mapDbRowsToTransportadoras({
+      transportadoras,
+      origens,
+      generalidades,
+      rotas,
+      cotacoes,
+      taxas,
+    }),
   };
 }
 
 export async function carregarBaseCompletaDb() {
-  const result = await carregarBaseCompletaDbDetalhada();
+  const result = await carregarBaseCompletaDetalhadaDb();
   return result.transportadoras || [];
 }
 
@@ -489,43 +460,6 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
   };
 }
 
-export async function migrarSnapshotParaBaseRealDb(chave = SNAPSHOT_CHAVE) {
-  const result = await carregarBaseCompletaDbDetalhada();
-
-  if (result.origemDados === 'relacional') {
-    return {
-      ok: true,
-      migrado: false,
-      origem: 'relacional',
-      transportadoras: result.transportadoras,
-      contagens: result.contagens,
-    };
-  }
-
-  const transportadoras = result.transportadoras || [];
-
-  if (!transportadoras.length) {
-    return {
-      ok: true,
-      migrado: false,
-      origem: result.origemDados,
-      transportadoras: [],
-      contagens: result.contagens,
-    };
-  }
-
-  const saveResult = await salvarBaseCompletaDb(transportadoras, chave);
-
-  return {
-    ok: true,
-    migrado: true,
-    origem: result.origemDados,
-    transportadoras,
-    contagens: saveResult?.contagens || result.contagens,
-    updated_at: saveResult?.updated_at || '',
-  };
-}
-
 export async function salvarSnapshotFretesDb(transportadoras, chave = SNAPSHOT_CHAVE) {
   return salvarBaseCompletaDb(transportadoras, chave);
 }
@@ -553,7 +487,7 @@ export async function buscarUltimoSnapshot() {
 
 export async function registrarImportacao(payload) {
   if (!isSupabaseConfigured()) {
-    return { ok: true, mode: 'local', payload };
+    return { ok: true, mode: 'local', payload }; 
   }
 
   const supabase = ensureClient();
