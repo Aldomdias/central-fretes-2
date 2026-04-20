@@ -1,0 +1,13 @@
+Projeto completo com patch relacional já aplicado.
+
+Arquivos já substituídos:
+- src/services/freteDatabaseService.js
+- src/data/store.js
+
+Próximo passo:
+1. excluir/substituir o projeto atual no ambiente onde você publica
+2. subir ESTE zip completo
+3. publicar de novo
+4. testar inclusão de transportadora e atualizar a página
+
+Se continuar voltando para 3, o problema não estará mais no código desses 2 arquivos, e sim no ambiente/publicação/cache.
