@@ -3,6 +3,7 @@ import {
   bancoConfigurado,
   carregarBaseCompletaDetalhadaDb,
   carregarSnapshotFretesDb,
+  migrarSnapshotParaBaseRelacional,
   salvarBaseCompletaDb,
 } from '../services/freteDatabaseService';
 
@@ -209,35 +210,35 @@ export function useFreteStore() {
     async function carregar() {
       if (!bancoConfigurado() || snapshotLoadedRef.current) return;
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
-
       try {
-        const result = await carregarBaseCompletaDetalhadaDb();
+        const carregamento = await carregarBaseCompletaDetalhadaDb();
         if (cancelled) return;
 
-        const normalized = (result?.transportadoras || []).map(normalizeTransportadora);
+        const normalized = (carregamento?.transportadoras || []).map(normalizeTransportadora);
         setTransportadoras(normalized);
 
         let ultimaSincronizacao = '';
         try {
-          const snapshot = result?.snapshot || (await carregarSnapshotFretesDb());
+          const snapshot = await carregarSnapshotFretesDb();
           ultimaSincronizacao = snapshot?.updated_at || snapshot?.payload?.updatedAt || '';
         } catch {}
 
-        if (result?.fonte === 'snapshot' && normalized.length > 0) {
-          const migrateResult = await salvarBaseCompletaDb(normalized);
+        if (carregamento?.fonte === 'snapshot' && normalized.length > 0) {
+          const result = await migrarSnapshotParaBaseRelacional();
           if (cancelled) return;
-          ultimaSincronizacao =
-            migrateResult?.updated_at || ultimaSincronizacao || new Date().toISOString();
+          ultimaSincronizacao = result?.updated_at || ultimaSincronizacao || new Date().toISOString();
         }
 
         snapshotLoadedRef.current = true;
         skipNextSyncRef.current = true;
-
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
           ultimaSincronizacao,
-          fonte: result?.fonte === 'snapshot' ? 'supabase-migrado-do-snapshot' : 'supabase-relacional',
+          fonte:
+            carregamento?.fonte === 'snapshot' && normalized.length > 0
+              ? 'supabase-migrado-do-snapshot'
+              : 'supabase-relacional',
         }));
       } catch (error) {
         if (cancelled) return;
@@ -321,16 +322,15 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          const result = await carregarBaseCompletaDetalhadaDb();
-          const base = result?.transportadoras || [];
+          const base = await carregarBaseCompletaDetalhadaDb();
           skipNextSyncRef.current = true;
-          setTransportadoras(base.map(normalizeTransportadora));
-          const snapshot = result?.snapshot || (await carregarSnapshotFretesDb());
+          setTransportadoras((base?.transportadoras || []).map(normalizeTransportadora));
+          const snapshot = await carregarSnapshotFretesDb();
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
-            fonte: result?.fonte === 'snapshot' ? 'supabase-migrado-do-snapshot' : 'supabase-relacional',
+            fonte: base?.fonte === 'snapshot' ? 'supabase-snapshot' : 'supabase-relacional',
           }));
           return true;
         } catch (error) {
