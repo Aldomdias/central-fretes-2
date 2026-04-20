@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { bancoConfigurado, carregarSnapshotFretesDb, salvarSnapshotFretesDb } from '../services/freteDatabaseService';
+import {
+  bancoConfigurado,
+  carregarBaseCompletaDb,
+  carregarSnapshotFretesDb,
+  salvarBaseCompletaDb,
+} from '../services/freteDatabaseService';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
 
@@ -149,7 +154,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'rotas') {
       const enriched = (item.origem.rotas || []).map((row) => ({
         ...row,
-        id: safeRandomId(),
+        id: row.id ?? safeRandomId(),
       }));
       origem.rotas = [...(origem.rotas || []), ...enriched];
     }
@@ -157,7 +162,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'cotacoes') {
       const enriched = (item.origem.cotacoes || []).map((row) => ({
         ...row,
-        id: safeRandomId(),
+        id: row.id ?? safeRandomId(),
       }));
       origem.cotacoes = [...(origem.cotacoes || []), ...enriched];
     }
@@ -165,7 +170,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'taxas') {
       const enriched = (item.origem.taxasEspeciais || []).map((row) => ({
         ...row,
-        id: safeRandomId(),
+        id: row.id ?? safeRandomId(),
       }));
       origem.taxasEspeciais = [...(origem.taxasEspeciais || []), ...enriched];
     }
@@ -182,6 +187,7 @@ export function useFreteStore() {
     sincronizando: false,
     erro: '',
     ultimaSincronizacao: '',
+    fonte: bancoConfigurado() ? 'supabase-relacional' : 'local',
   });
   const snapshotLoadedRef = useRef(false);
   const skipNextSyncRef = useRef(false);
@@ -192,7 +198,7 @@ export function useFreteStore() {
     if (!persisted) {
       setSyncStatus((prev) => ({
         ...prev,
-        erro: prev.erro || 'Base local excedeu o limite do navegador. Use o Supabase e sincronize.',
+        erro: prev.erro || 'Cache local excedeu o limite do navegador. A base oficial segue no Supabase.',
       }));
     }
   }, [transportadoras]);
@@ -204,18 +210,25 @@ export function useFreteStore() {
       if (!bancoConfigurado() || snapshotLoadedRef.current) return;
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
-        const snapshot = await carregarSnapshotFretesDb();
+        const base = await carregarBaseCompletaDb();
         if (cancelled) return;
-        const fromDb = extractTransportadoras(snapshot?.payload);
-        if (fromDb) {
-          skipNextSyncRef.current = true;
-          setTransportadoras(fromDb.map(normalizeTransportadora));
-        }
+
+        const normalized = (base || []).map(normalizeTransportadora);
+        skipNextSyncRef.current = true;
+        setTransportadoras(normalized);
+
+        let ultimaSincronizacao = '';
+        try {
+          const snapshot = await carregarSnapshotFretesDb();
+          ultimaSincronizacao = snapshot?.updated_at || snapshot?.payload?.updatedAt || '';
+        } catch {}
+
         snapshotLoadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
+          ultimaSincronizacao,
+          fonte: 'supabase-relacional',
         }));
       } catch (error) {
         if (cancelled) return;
@@ -223,7 +236,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          erro: error.message || 'Erro ao carregar snapshot do Supabase.',
+          erro: error.message || 'Erro ao carregar base do Supabase.',
         }));
       }
     }
@@ -244,24 +257,23 @@ export function useFreteStore() {
       return;
     }
 
-    if (syncTimeoutRef.current) {
-      clearTimeout(syncTimeoutRef.current);
-    }
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
 
     syncTimeoutRef.current = setTimeout(async () => {
       setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
       try {
-        const result = await salvarSnapshotFretesDb(transportadoras);
+        const result = await salvarBaseCompletaDb(transportadoras);
         setSyncStatus((prev) => ({
           ...prev,
           sincronizando: false,
           ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+          fonte: 'supabase-relacional',
         }));
       } catch (error) {
         setSyncStatus((prev) => ({
           ...prev,
           sincronizando: false,
-          erro: error.message || 'Erro ao salvar snapshot no Supabase.',
+          erro: error.message || 'Erro ao salvar base completa no Supabase.',
         }));
       }
     }, 700);
@@ -279,11 +291,12 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
-          const result = await salvarSnapshotFretesDb(transportadoras);
+          const result = await salvarBaseCompletaDb(transportadoras);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+            fonte: 'supabase-relacional',
           }));
           return true;
         } catch (error) {
@@ -299,14 +312,15 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          const snapshot = await carregarSnapshotFretesDb();
-          const fromDb = extractTransportadoras(snapshot?.payload);
+          const base = await carregarBaseCompletaDb();
           skipNextSyncRef.current = true;
-          setTransportadoras(fromDb ? fromDb.map(normalizeTransportadora) : []);
+          setTransportadoras((base || []).map(normalizeTransportadora));
+          const snapshot = await carregarSnapshotFretesDb();
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
+            fonte: 'supabase-relacional',
           }));
           return true;
         } catch (error) {
