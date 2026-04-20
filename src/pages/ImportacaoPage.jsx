@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   baixarModelo,
   buildCoberturaReport,
@@ -6,7 +6,6 @@ import {
   exportarSecao,
   parseFileToRows,
 } from '../utils/importacao';
-import { listarImportacoesDb, registrarImportacao } from '../services/freteDatabaseService';
 
 const TIPOS = [
   { id: 'rotas', label: 'Rotas' },
@@ -30,8 +29,6 @@ function CoberturaBadge({ value }) {
   return <span className={cls}>{value}</span>;
 }
 
-const waitForNextPaint = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 export default function ImportacaoPage({ store, transportadoras, onAbrirTransportadoras }) {
   const [tipo, setTipo] = useState('rotas');
   const [processando, setProcessando] = useState(false);
@@ -39,37 +36,6 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
   const [filtro, setFiltro] = useState('');
   const [detalhe, setDetalhe] = useState(null);
   const [canalImportacao, setCanalImportacao] = useState('ATACADO');
-  const [progresso, setProgresso] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function carregarHistorico() {
-      try {
-        const registros = await listarImportacoesDb(15);
-        if (!cancelled && registros.length) {
-          setHistorico(
-            registros.map((item) => ({
-              arquivo: item.arquivo,
-              tipo: item.tipo,
-              canal: item.canal,
-              inseridos: item.inseridos,
-              erros: item.erros || [],
-              meta: item.meta || null,
-              created_at: item.created_at,
-            }))
-          );
-        }
-      } catch {
-        // mantém histórico local se o banco falhar.
-      }
-    }
-
-    carregarHistorico();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const cobertura = useMemo(
     () => buildCoberturaReport(transportadoras),
@@ -128,14 +94,9 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     if (!files.length) return;
 
     setProcessando(true);
-    setProgresso('Preparando importação...');
     const novasEntradas = [];
 
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      setProgresso(`Processando ${index + 1} de ${files.length}: ${file.name}`);
-      await waitForNextPaint();
-
+    for (const file of files) {
       try {
         const parsed = await parseFileToRows(file, tipo);
         const payload = buildImportPayload(parsed, tipo, {
@@ -143,20 +104,15 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         });
 
         store.importarPayload(payload, tipo);
-        await waitForNextPaint();
 
-        const registro = {
+        novasEntradas.push({
           arquivo: file.name,
           tipo,
           canal: canalImportacao,
           inseridos: payload.inseridos,
           erros: payload.erros,
           meta: parsed.meta,
-        };
-
-        await registrarImportacao(registro);
-
-        novasEntradas.push(registro);
+        });
       } catch (error) {
         novasEntradas.push({
           arquivo: file.name,
@@ -173,14 +129,11 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           ],
         });
       }
-
-      setHistorico((prev) => [...novasEntradas.slice(-1), ...prev].slice(0, 15));
-      await waitForNextPaint();
     }
 
-    setDetalhe(novasEntradas[novasEntradas.length - 1] || null);
+    setHistorico((prev) => [...novasEntradas, ...prev].slice(0, 15));
+    setDetalhe(novasEntradas[0] || null);
     setProcessando(false);
-    setProgresso('');
     event.target.value = '';
   };
 
@@ -225,30 +178,28 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
 
       <div className="feature-grid import-grid">
         <div className="panel-card">
-          <div className="tab-panel-header spaced">
-            <div>
-              <div className="panel-title no-margin">⬆️ Importar em massa</div>
-              <p>Escolha o tipo, o canal e envie um ou mais arquivos.</p>
-            </div>
-            <button className="btn-secondary" onClick={() => baixarModelo(tipo)}>
-              Baixar modelo
-            </button>
+          <div className="panel-title">⬆️ Importação em massa</div>
+
+          <div className="toggle-row wrap">
+            {TIPOS.map((item) => (
+              <button
+                key={item.id}
+                className={tipo === item.id ? 'toggle-btn active' : 'toggle-btn'}
+                onClick={() => setTipo(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
 
-          <div className="field-grid cols-3 compact">
-            <label className="field-label">
-              Tipo do arquivo
-              <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
-                {TIPOS.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <p>
+            Use os modelos para não errar o layout. O importador já tenta ler o
+            cabeçalho real mesmo quando ele começa algumas linhas abaixo.
+          </p>
 
-            <label className="field-label">
-              Canal da importação
+          <div className="channel-picker">
+            <div className="field small-width">
+              <label>Canal da importação</label>
               <select
                 value={canalImportacao}
                 onChange={(e) => setCanalImportacao(e.target.value)}
@@ -256,34 +207,47 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                 <option value="ATACADO">ATACADO</option>
                 <option value="B2C">B2C</option>
               </select>
-            </label>
+            </div>
 
-            <div className="field-label upload-box">
-              Arquivos
-              <label className="btn-primary upload-trigger">
-                <input
-                  type="file"
-                  multiple
-                  accept=".xlsx,.xls,.csv"
-                  onChange={handleFiles}
-                  disabled={processando}
-                />
-                {processando ? 'Processando...' : 'Importar arquivos'}
-              </label>
+            <div className="hint-box compact">
+              O canal escolhido será usado quando a planilha não trouxer a
+              coluna <strong>Canal</strong> ou quando o código da unidade não
+              indicar B2C.
             </div>
           </div>
 
-          {progresso ? <div className="mini-feedback neutral">{progresso}</div> : null}
-
-          <div className="inline-actions">
-            <button className="btn-secondary" onClick={exportarMassa}>
-              Exportar base atual deste tipo
+          <div className="toolbar-wrap">
+            <button className="btn-secondary" onClick={() => baixarModelo(tipo)}>
+              Baixar Modelo
             </button>
+
+            <button className="btn-secondary" onClick={exportarMassa}>
+              Exportar Atual
+            </button>
+
+            <label className="btn-primary inline-upload">
+              {processando ? 'Processando...' : 'Importar arquivos'}
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                multiple
+                onChange={handleFiles}
+                hidden
+              />
+            </label>
           </div>
 
-          <div className="mini-feedback neutral">
-            Regras: o sistema localiza a linha de cabeçalho automaticamente.
-            Quando houver <strong>GRIS</strong> e <strong>Ad Valorem</strong> por IBGE têm prioridade sobre as
+          <div className="hint-box top-space">
+            <strong>Observações:</strong>
+            <br />
+            • Rotas e fretes foram adequados ao padrão dos seus arquivos reais.
+            <br />
+            • Dentro de cada origem também existe <strong>Exportar</strong>,{' '}
+            <strong>Baixar Modelo</strong>, <strong>Importar</strong> e{' '}
+            <strong>Excluir Tudo</strong>.
+            <br />
+            • Em taxas especiais, <strong>GRIS</strong> e{' '}
+            <strong>Ad Valorem</strong> por IBGE têm prioridade sobre as
             generalidades.
           </div>
         </div>
@@ -296,7 +260,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               historico.map((item, index) => (
                 <div
                   className="list-card neutral process-card"
-                  key={`${item.arquivo}-${index}-${item.created_at || ''}`}
+                  key={`${item.arquivo}-${index}`}
                   onClick={() => setDetalhe(item)}
                 >
                   <div>
@@ -305,7 +269,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                       Tipo: {item.tipo} · Canal: {item.canal || '-'} · Inseridos:{' '}
                       {item.inseridos}
                     </div>
-                    {!!item.erros?.length && (
+                    {!!item.erros.length && (
                       <div className="error-text">
                         {item.erros.length} erro(s) encontrado(s)
                       </div>

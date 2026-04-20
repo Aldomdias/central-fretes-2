@@ -151,6 +151,8 @@ export function useFreteStore() {
     ultimaSincronizacao: '',
   });
   const snapshotLoadedRef = useRef(false);
+  const skipNextSyncRef = useRef(false);
+  const syncTimeoutRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(transportadoras));
@@ -166,6 +168,7 @@ export function useFreteStore() {
         const snapshot = await carregarSnapshotFretesDb();
         if (cancelled) return;
         if (snapshot?.payload?.transportadoras?.length) {
+          skipNextSyncRef.current = true;
           setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
         }
         snapshotLoadedRef.current = true;
@@ -192,6 +195,42 @@ export function useFreteStore() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!bancoConfigurado()) return;
+    if (!snapshotLoadedRef.current) return;
+
+    if (skipNextSyncRef.current) {
+      skipNextSyncRef.current = false;
+      return;
+    }
+
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+    }
+
+    syncTimeoutRef.current = setTimeout(async () => {
+      setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+      try {
+        const result = await salvarSnapshotFretesDb(transportadoras);
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+        }));
+      } catch (error) {
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          erro: error.message || 'Erro ao salvar snapshot no Supabase.',
+        }));
+      }
+    }, 700);
+
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    };
+  }, [transportadoras]);
+
   const api = useMemo(
     () => ({
       transportadoras,
@@ -212,29 +251,6 @@ export function useFreteStore() {
             ...prev,
             sincronizando: false,
             erro: error.message || 'Erro ao sincronizar agora.',
-          }));
-          return false;
-        }
-      },
-      async recarregarDoBanco() {
-        if (!bancoConfigurado()) return false;
-        setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
-        try {
-          const snapshot = await carregarSnapshotFretesDb();
-          if (snapshot?.payload?.transportadoras?.length) {
-            setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
-          }
-          setSyncStatus((prev) => ({
-            ...prev,
-            carregando: false,
-            ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || prev.ultimaSincronizacao,
-          }));
-          return true;
-        } catch (error) {
-          setSyncStatus((prev) => ({
-            ...prev,
-            carregando: false,
-            erro: error.message || 'Erro ao carregar a base do banco.',
           }));
           return false;
         }

@@ -183,7 +183,6 @@ function calcularItem({ transportadora, origem, rota, cotacao, peso, valorNF, ci
     ufDestino,
     prazo: toNumber(rota.prazoEntregaDias),
     total: calculo.total,
-    percentualSobreNF: valorNF > 0 ? (calculo.total / valorNF) * 100 : 0,
     subtotal: calculo.subtotal,
     valorBase: calculo.valorBase,
     descricao: `Origem ${origem.cidade} • Destino ${cidadeDestino || `IBGE ${rota.ibgeDestino}`}`,
@@ -202,15 +201,10 @@ function rankearPorChave(resultados = []) {
   return [...grupos.values()].flatMap((grupo) => {
     const ordenados = [...grupo].sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
     const lider = ordenados[0]?.total || 0;
-    const segundoItem = ordenados[1] || null;
-    const segundo = segundoItem?.total || lider;
+    const segundo = ordenados[1]?.total || lider;
     return ordenados.map((item, idx) => ({
       ...item,
       ranking: idx + 1,
-      liderTransportadora: ordenados[0]?.transportadora || '',
-      perdeuPara: idx > 0 ? (ordenados[0]?.transportadora || '') : '',
-      proximaSeBloquear: idx === 0 ? (segundoItem?.transportadora || '') : '',
-      freteSubstituta: idx === 0 ? (segundoItem?.total || 0) : 0,
       savingSegundo: idx === 1 ? 0 : idx === 0 ? Math.max(segundo - item.total, 0) : 0,
       diferencaLider: Math.max(item.total - lider, 0),
       reducaoNecessariaPct: item.total > lider ? ((item.total - lider) / item.total) * 100 : 0,
@@ -252,7 +246,8 @@ export function simularSimples({ transportadoras, origem, canal, peso, valorNF, 
 }
 
 export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cidadePorIbge }) {
-  const resultados = listarCenarios(transportadoras, {
+  const base = (transportadoras || []).filter((item) => item.nome === nomeTransportadora);
+  const resultados = listarCenarios(base, {
     origem,
     canal,
     peso,
@@ -262,7 +257,7 @@ export function simularPorTransportadora({ transportadoras, nomeTransportadora, 
 
   return rankearPorChave(resultados)
     .filter((item) => item.transportadora === nomeTransportadora)
-    .sort((a, b) => a.ranking - b.ranking || a.total - b.total || a.prazo - b.prazo);
+    .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
 export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, grade, cidadePorIbge }) {

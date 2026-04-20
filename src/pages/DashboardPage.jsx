@@ -1,24 +1,6 @@
 import { buildDashboardStats } from '../data/mockData';
 
-function formatarData(valor) {
-  if (!valor) return 'Ainda não sincronizado';
-  try {
-    return new Date(valor).toLocaleString('pt-BR');
-  } catch {
-    return valor;
-  }
-}
-
-export default function DashboardPage({
-  transportadoras,
-  onAbrirSimulador,
-  onAbrirTransportadoras,
-  onAbrirImportacao,
-  onResetarBase,
-  syncStatus,
-  onSincronizarAgora,
-  onCarregarDoBanco,
-}) {
+export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase }) {
   const stats = buildDashboardStats(transportadoras);
 
   return (
@@ -65,7 +47,7 @@ export default function DashboardPage({
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A base oficial agora fica no Supabase e pode ser recarregada aqui.
+            A próxima fase conecta isso à base persistente.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -77,18 +59,6 @@ export default function DashboardPage({
             correto da Verum.
           </p>
           <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
-        </div>
-      </div>
-
-      <div className="panel-card" style={{ maxWidth: 520 }}>
-        <div className="panel-title">☁️ Banco de dados</div>
-        <p><strong>Modo:</strong> {syncStatus?.modo === 'supabase' ? 'Supabase' : 'Local'}</p>
-        <p><strong>Última sincronização:</strong> {formatarData(syncStatus?.ultimaSincronizacao)}</p>
-        <p><strong>Status:</strong> {syncStatus?.sincronizando ? 'Sincronizando...' : syncStatus?.carregando ? 'Carregando...' : 'Pronto'}</p>
-        {syncStatus?.erro ? <div className="error-text">{syncStatus.erro}</div> : null}
-        <div className="inline-actions">
-          <button className="btn-primary full" onClick={onSincronizarAgora} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Sincronizar agora</button>
-          <button className="btn-secondary full" onClick={onCarregarDoBanco} disabled={syncStatus?.sincronizando || syncStatus?.carregando}>Carregar do banco</button>
         </div>
       </div>
 

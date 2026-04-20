@@ -51,35 +51,18 @@ function buildDestinoLabel(item) {
   return `IBGE ${item.ibgeDestino}`;
 }
 
-function getValorNfPadrao(grade, canal, peso) {
-  const linhas = grade?.[canal] || grade?.ATACADO || [];
-  const pesoNum = Number(peso || 0);
-  if (!linhas.length) return 0;
-  const ordenadas = [...linhas].sort((a, b) => Number(a.peso) - Number(b.peso));
-  let melhor = ordenadas[0];
-  let menorDiff = Math.abs(Number(melhor.peso || 0) - pesoNum);
-  ordenadas.forEach((linha) => {
-    const diff = Math.abs(Number(linha.peso || 0) - pesoNum);
-    if (diff < menorDiff || (diff === menorDiff && Number(linha.peso || 0) > Number(melhor.peso || 0))) {
-      melhor = linha;
-      menorDiff = diff;
-    }
-  });
-  return Number(melhor?.valorNF || 0);
-}
-
 function ResultadoCard({ item }) {
   const [aberto, setAberto] = useState(false);
 
   return (
     <div className="sim-resultado-card">
-      <div className={`sim-resultado-topo compact-top ${item.ranking === 1 ? 'sim-resultado-topo-vencedor' : ''}`}>
+      <div className="sim-resultado-topo compact-top">
         <div>
-          <strong>{item.ranking === 1 ? '🏆 ' : item.ranking === 2 ? '🥈 ' : item.ranking === 3 ? '🥉 ' : ''}{item.transportadora}</strong>
+          <strong>{item.transportadora}</strong>
           <div className="sim-resultado-linha">Origem {item.origem} • Destino {buildDestinoLabel(item)}</div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span>{item.ranking === 1 ? '1º lugar' : `#${item.ranking || 1}`} • {item.prazo} dia(s)</span>
+          <span>#{item.ranking || 1} • {item.prazo} dia(s)</span>
           <button className="sim-tab" type="button" onClick={() => setAberto((v) => !v)}>
             {aberto ? 'Fechar detalhes' : 'Ver detalhes'}
           </button>
@@ -92,12 +75,12 @@ function ResultadoCard({ item }) {
           <strong>{formatMoney(item.total)}</strong>
         </div>
         <div>
-          <span>% sobre NF</span>
-          <strong>{formatPercent(item.percentualSobreNF)}</strong>
+          <span>Saving vs 2º</span>
+          <strong>{formatMoney(item.savingSegundo)}</strong>
         </div>
         <div>
-          <span>{item.ranking === 1 ? 'Próxima se bloquear' : 'Perdeu para'}</span>
-          <strong>{item.ranking === 1 ? (item.proximaSeBloquear || 'Sem substituta') : (item.perdeuPara || '-')}</strong>
+          <span>Diferença p/ líder</span>
+          <strong>{formatMoney(item.diferencaLider)}</strong>
         </div>
         <div>
           <span>Redução p/ líder</span>
@@ -191,11 +174,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const todasOrigens = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade)).filter(Boolean))].sort(), [transportadoras]);
   const todosDestinosComCidade = useMemo(() => destinosDisponiveis.map((ibge) => ({ ibge, cidade: getCidadeByIbge(ibge, cidadePorIbge), uf: getUfByIbge(ibge) })), [destinosDisponiveis, cidadePorIbge]);
 
-  const [origemSimples, setOrigemSimples] = useState('');
-  const [destinoCodigo, setDestinoCodigo] = useState('');
-  const [canalSimples, setCanalSimples] = useState('');
-  const [pesoSimples, setPesoSimples] = useState('');
-  const [nfSimples, setNfSimples] = useState('');
+  const [origemSimples, setOrigemSimples] = useState(todasOrigens[0] || '');
+  const [destinoCodigo, setDestinoCodigo] = useState(destinosDisponiveis[0] || '');
+  const [canalSimples, setCanalSimples] = useState(canais[0] || 'ATACADO');
+  const [pesoSimples, setPesoSimples] = useState('150');
+  const [nfSimples, setNfSimples] = useState('5000');
   const [resultadoSimples, setResultadoSimples] = useState([]);
 
   const [transportadora, setTransportadora] = useState(transportadoras[0]?.nome || '');
@@ -234,13 +217,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
   }, [transportadoras, transportadora, canais]);
 
   const onSimularSimples = () => {
-    const valorNFCalculado = nfSimples !== '' ? Number(nfSimples) : getValorNfPadrao(GRADE_PADRAO, canalSimples, pesoSimples);
     setResultadoSimples(simularSimples({
       transportadoras,
       origem: origemSimples,
       canal: canalSimples,
       peso: Number(pesoSimples),
-      valorNF: valorNFCalculado,
+      valorNF: Number(nfSimples),
       destinoCodigo,
       cidadePorIbge,
     }));
@@ -252,7 +234,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
       : destinoTransportadora
         ? [destinoTransportadora]
         : [];
-    const valorNFCalculado = nfTransportadora !== '' ? Number(nfTransportadora) : getValorNfPadrao(GRADE_PADRAO, canalTransportadora, pesoTransportadora);
 
     setResultadoTransportadora(simularPorTransportadora({
       transportadoras,
@@ -261,7 +242,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       origem: origemTransportadora,
       destinoCodigos: codigos,
       peso: Number(pesoTransportadora),
-      valorNF: valorNFCalculado,
+      valorNF: Number(nfTransportadora),
       cidadePorIbge,
     }));
   };
@@ -269,7 +250,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const exportarSimulacaoTransportadora = () => {
     if (!resultadoTransportadora.length) return;
     const { nomeArquivo, csv } = exportarLinhasCsv(`simulacao-${transportadora.toLowerCase().replace(/\s+/g, '-')}.csv`, [
-      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Prazo', 'Frete Final', '% sobre NF', 'Perdeu para', 'Substituta se bloquear', 'Saving vs 2º', 'Diferença Líder', 'Redução % Líder'],
+      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Prazo', 'Frete Final', 'Saving vs 2º', 'Diferença Líder', 'Redução % Líder'],
       ...resultadoTransportadora.map((item) => [
         item.transportadora,
         item.origem,
@@ -278,9 +259,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
         item.ibgeDestino,
         item.prazo,
         item.total.toFixed(2),
-        item.percentualSobreNF.toFixed(2),
-        item.perdeuPara || '',
-        item.proximaSeBloquear || '',
         item.savingSegundo.toFixed(2),
         item.diferencaLider.toFixed(2),
         item.reducaoNecessariaPct.toFixed(2),
@@ -302,7 +280,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const exportarAnalise = () => {
     if (!resultadoAnalise?.detalhes?.length) return;
     const { nomeArquivo, csv } = exportarLinhasCsv(`analise-${transportadoraAnalise.toLowerCase().replace(/\s+/g, '-')}.csv`, [
-      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Peso', 'Valor NF', 'Prazo', 'Ranking', 'Frete Final', '% sobre NF', 'Perdeu para', 'Substituta se bloquear', 'Saving 2º'],
+      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Peso', 'Valor NF', 'Prazo', 'Ranking', 'Frete Final', 'Saving 2º'],
       ...resultadoAnalise.detalhes.map((item) => [
         item.transportadora,
         item.origem,
@@ -314,9 +292,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
         item.prazo,
         item.ranking,
         item.total.toFixed(2),
-        item.percentualSobreNF.toFixed(2),
-        item.perdeuPara || '',
-        item.proximaSeBloquear || '',
         item.savingSegundo.toFixed(2),
       ]),
     ]);
@@ -370,7 +345,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-5">
             <label>Origem
               <select value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)}>
-                <option value="">Selecione</option>
                 {todasOrigens.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
@@ -379,19 +353,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <datalist id="destinos-lista">
                 {todosDestinosComCidade.map((item) => <option key={item.ibge} value={item.ibge}>{item.cidade ? `${item.cidade}/${item.uf}` : item.ibge}</option>)}
               </datalist>
-              {destinoCodigo && <small className="destino-hint">Destino identificado: {getCidadeByIbge(destinoCodigo, cidadePorIbge) ? `${getCidadeByIbge(destinoCodigo, cidadePorIbge)}/${getUfByIbge(destinoCodigo)}` : 'não localizado na base atual'}</small>}
             </label>
             <label>Canal
               <select value={canalSimples} onChange={(e) => setCanalSimples(e.target.value)}>
-                <option value="">Selecione</option>
                 {canais.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label>Peso
-              <input value={pesoSimples} onChange={(e) => setPesoSimples(e.target.value)} placeholder="Ex: 150" />
+              <input value={pesoSimples} onChange={(e) => setPesoSimples(e.target.value)} />
             </label>
             <label>Valor NF
-              <input value={nfSimples} onChange={(e) => setNfSimples(e.target.value)} placeholder="Se vazio, usa a grade" />
+              <input value={nfSimples} onChange={(e) => setNfSimples(e.target.value)} />
             </label>
           </div>
           <div className="sim-actions"><button className="primary" onClick={onSimularSimples}>Simular</button></div>
@@ -434,10 +406,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003" />
             </label>
             <label>Peso
-              <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} placeholder="Ex: 150" />
+              <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} />
             </label>
             <label>Valor NF
-              <input value={nfTransportadora} onChange={(e) => setNfTransportadora(e.target.value)} placeholder="Se vazio, usa a grade" />
+              <input value={nfTransportadora} onChange={(e) => setNfTransportadora(e.target.value)} />
             </label>
           </div>
           <div className="sim-inline-tools">

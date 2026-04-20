@@ -246,18 +246,6 @@ button { cursor: pointer; }
 .table-card,
 .list-card,
 .process-card,
-.sim-resultado-topo-vencedor {
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: #eefbf3;
-  border: 1px solid #b9e3c7;
-}
-
-.destino-hint {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-}
 .sim-card {
   background: var(--panel);
   border: 1px solid var(--border);

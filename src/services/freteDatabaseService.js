@@ -30,7 +30,7 @@ export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
   const supabase = ensureClient();
   const { data, error } = await supabase
     .from('cadastros_snapshot')
-    .select('id, chave, payload, updated_at, created_at')
+    .select('id, chave, payload, updated_at')
     .eq('chave', chave)
     .maybeSingle();
 
@@ -56,7 +56,7 @@ export async function salvarSnapshotFretesDb(transportadoras, chave = SNAPSHOT_C
   const { data, error } = await supabase
     .from('cadastros_snapshot')
     .upsert(payload, { onConflict: 'chave' })
-    .select('id, updated_at, created_at')
+    .select('id, updated_at')
     .single();
 
   if (error) throw error;
@@ -78,22 +78,6 @@ export async function testarConexaoFretesDb() {
   return { ok: true, mensagem: 'Conexão com Supabase validada.' };
 }
 
-export async function listarImportacoesDb(limit = 20) {
-  if (!isSupabaseConfigured()) {
-    return [];
-  }
-
-  const supabase = ensureClient();
-  const { data, error } = await supabase
-    .from('frete_importacoes')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (error) throw error;
-  return data || [];
-}
-
 // Aliases para compatibilidade com versões anteriores do projeto.
 export async function salvarSnapshotBase(payload, metadata = {}) {
   const transportadoras = Array.isArray(payload) ? payload : payload?.transportadoras || [];
@@ -110,19 +94,10 @@ export async function registrarImportacao(payload) {
   }
 
   const supabase = ensureClient();
-  const row = {
-    arquivo: payload.arquivo || 'arquivo',
-    tipo: payload.tipo || 'desconhecido',
-    canal: payload.canal || null,
-    inseridos: Number(payload.inseridos || 0),
-    erros: Array.isArray(payload.erros) ? payload.erros : [],
-    meta: payload.meta || null,
-  };
-
   const { data, error } = await supabase
     .from('frete_importacoes')
-    .insert(row)
-    .select('*')
+    .insert(payload)
+    .select('id, tipo, criado_em')
     .single();
 
   if (error) throw error;
