@@ -271,6 +271,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIb
     ufDestino,
     prazo: toNumber(rota.prazoEntregaDias),
     total: calculo.total,
+    percentualSobreNF: valorNFUtilizado > 0 ? (calculo.total / valorNFUtilizado) * 100 : 0,
     subtotal: calculo.subtotal,
     valorBase: calculo.valorBase,
     descricao: `Origem ${origem.cidade} • Destino ${cidadeDestino || `IBGE ${rota.ibgeDestino}`}`,
@@ -289,10 +290,15 @@ function rankearPorChave(resultados = []) {
   return [...grupos.values()].flatMap((grupo) => {
     const ordenados = [...grupo].sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
     const lider = ordenados[0]?.total || 0;
-    const segundo = ordenados[1]?.total || lider;
+    const segundoItem = ordenados[1] || null;
+    const segundo = segundoItem?.total || lider;
     return ordenados.map((item, idx) => ({
       ...item,
       ranking: idx + 1,
+      liderTransportadora: ordenados[0]?.transportadora || '',
+      perdeuPara: idx > 0 ? (ordenados[0]?.transportadora || '') : '',
+      proximaSeBloquear: idx === 0 ? (segundoItem?.transportadora || '') : (ordenados[idx - 1]?.transportadora || ordenados[0]?.transportadora || ''),
+      freteSubstituta: idx === 0 ? (segundoItem?.total || 0) : (ordenados[idx - 1]?.total || lider),
       savingSegundo: idx === 1 ? 0 : idx === 0 ? Math.max(segundo - item.total, 0) : 0,
       diferencaLider: Math.max(item.total - lider, 0),
       reducaoNecessariaPct: item.total > lider ? ((item.total - lider) / item.total) * 100 : 0,
@@ -377,6 +383,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
   const saving = todosResultados.filter((item) => item.ranking === 1).reduce((acc, item) => acc + item.savingSegundo, 0);
   const prazoMedio = rotasAvaliadas ? todosResultados.reduce((acc, item) => acc + item.prazo, 0) / rotasAvaliadas : 0;
   const freteMedio = rotasAvaliadas ? todosResultados.reduce((acc, item) => acc + item.total, 0) / rotasAvaliadas : 0;
+  const percentualMedioSobreNF = rotasAvaliadas ? todosResultados.reduce((acc, item) => acc + (item.percentualSobreNF || 0), 0) / rotasAvaliadas : 0;
 
   const porUfMap = new Map();
   todosResultados.forEach((item) => {
@@ -399,6 +406,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
     saving,
     prazoMedio,
     freteMedio,
+    percentualMedioSobreNF,
     detalhes: todosResultados.sort((a, b) => a.ranking - b.ranking || a.total - b.total),
     porUf,
   };
