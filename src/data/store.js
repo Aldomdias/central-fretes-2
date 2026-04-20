@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { initialTransportadoras } from './mockData';
 import { bancoConfigurado, carregarSnapshotFretesDb, salvarSnapshotFretesDb } from '../services/freteDatabaseService';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
@@ -23,21 +22,26 @@ function mergeGeneralidades(value) {
   return { ...DEFAULT_GENERALIDADES, ...(value || {}) };
 }
 
+function safeRandomId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function normalizeOrigem(origem = {}) {
   return {
     ...origem,
-    id: origem.id ?? crypto.randomUUID(),
+    id: origem.id ?? safeRandomId(),
     canal: origem.canal || 'ATACADO',
     status: origem.status || 'Ativa',
     generalidades: mergeGeneralidades(origem.generalidades),
     rotas: Array.isArray(origem.rotas)
-      ? origem.rotas.map((item) => ({ ...item, id: item.id ?? crypto.randomUUID() }))
+      ? origem.rotas.map((item) => ({ ...item, id: item.id ?? safeRandomId() }))
       : [],
     cotacoes: Array.isArray(origem.cotacoes)
-      ? origem.cotacoes.map((item) => ({ ...item, id: item.id ?? crypto.randomUUID() }))
+      ? origem.cotacoes.map((item) => ({ ...item, id: item.id ?? safeRandomId() }))
       : [],
     taxasEspeciais: Array.isArray(origem.taxasEspeciais)
-      ? origem.taxasEspeciais.map((item) => ({ ...item, id: item.id ?? crypto.randomUUID() }))
+      ? origem.taxasEspeciais.map((item) => ({ ...item, id: item.id ?? safeRandomId() }))
       : [],
   };
 }
@@ -45,7 +49,7 @@ function normalizeOrigem(origem = {}) {
 function normalizeTransportadora(transportadora = {}) {
   return {
     ...transportadora,
-    id: transportadora.id ?? crypto.randomUUID(),
+    id: transportadora.id ?? safeRandomId(),
     status: transportadora.status || 'Ativa',
     origens: Array.isArray(transportadora.origens)
       ? transportadora.origens.map(normalizeOrigem)
@@ -58,7 +62,42 @@ function clone(obj) {
 }
 
 function createInitialState() {
-  return clone(initialTransportadoras).map(normalizeTransportadora);
+  return [];
+}
+
+function extractTransportadoras(saved) {
+  if (!saved) return null;
+
+  if (Array.isArray(saved)) return saved;
+  if (Array.isArray(saved.transportadoras)) return saved.transportadoras;
+  if (saved.payload && Array.isArray(saved.payload.transportadoras)) {
+    return saved.payload.transportadoras;
+  }
+  return null;
+}
+
+function loadLocalState() {
+  try {
+    const savedRaw = localStorage.getItem(STORAGE_KEY);
+    if (!savedRaw) return createInitialState();
+    const parsed = JSON.parse(savedRaw);
+    const transportadoras = extractTransportadoras(parsed);
+    return transportadoras ? transportadoras.map(normalizeTransportadora) : createInitialState();
+  } catch {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {}
+    return createInitialState();
+  }
+}
+
+function persistLocalState(transportadoras) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(transportadoras));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sameOrigem(current, imported) {
@@ -76,8 +115,7 @@ function mergeImport(prev, payload, tipo) {
   payload.transportadoras.forEach((item) => {
     let transportadora = next.find(
       (current) =>
-        String(current.nome || '').toLowerCase() ===
-        String(item.nome || '').toLowerCase()
+        String(current.nome || '').toLowerCase() === String(item.nome || '').toLowerCase()
     );
 
     if (!transportadora) {
@@ -89,9 +127,7 @@ function mergeImport(prev, payload, tipo) {
       next.push(transportadora);
     }
 
-    let origem = (transportadora.origens || []).find((current) =>
-      sameOrigem(current, item.origem)
-    );
+    let origem = (transportadora.origens || []).find((current) => sameOrigem(current, item.origem));
 
     if (!origem) {
       origem = normalizeOrigem({
@@ -113,7 +149,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'rotas') {
       const enriched = (item.origem.rotas || []).map((row) => ({
         ...row,
-        id: crypto.randomUUID(),
+        id: safeRandomId(),
       }));
       origem.rotas = [...(origem.rotas || []), ...enriched];
     }
@@ -121,7 +157,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'cotacoes') {
       const enriched = (item.origem.cotacoes || []).map((row) => ({
         ...row,
-        id: crypto.randomUUID(),
+        id: safeRandomId(),
       }));
       origem.cotacoes = [...(origem.cotacoes || []), ...enriched];
     }
@@ -129,7 +165,7 @@ function mergeImport(prev, payload, tipo) {
     if (tipo === 'taxas') {
       const enriched = (item.origem.taxasEspeciais || []).map((row) => ({
         ...row,
-        id: crypto.randomUUID(),
+        id: safeRandomId(),
       }));
       origem.taxasEspeciais = [...(origem.taxasEspeciais || []), ...enriched];
     }
@@ -139,10 +175,7 @@ function mergeImport(prev, payload, tipo) {
 }
 
 export function useFreteStore() {
-  const [transportadoras, setTransportadoras] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved).map(normalizeTransportadora) : createInitialState();
-  });
+  const [transportadoras, setTransportadoras] = useState(loadLocalState);
   const [syncStatus, setSyncStatus] = useState({
     modo: bancoConfigurado() ? 'supabase' : 'local',
     carregando: false,
@@ -155,7 +188,13 @@ export function useFreteStore() {
   const syncTimeoutRef = useRef(null);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(transportadoras));
+    const persisted = persistLocalState(transportadoras);
+    if (!persisted) {
+      setSyncStatus((prev) => ({
+        ...prev,
+        erro: prev.erro || 'Base local excedeu o limite do navegador. Use o Supabase e sincronize.',
+      }));
+    }
   }, [transportadoras]);
 
   useEffect(() => {
@@ -167,9 +206,10 @@ export function useFreteStore() {
       try {
         const snapshot = await carregarSnapshotFretesDb();
         if (cancelled) return;
-        if (snapshot?.payload?.transportadoras?.length) {
+        const fromDb = extractTransportadoras(snapshot?.payload);
+        if (fromDb) {
           skipNextSyncRef.current = true;
-          setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
+          setTransportadoras(fromDb.map(normalizeTransportadora));
         }
         snapshotLoadedRef.current = true;
         setSyncStatus((prev) => ({
@@ -255,8 +295,31 @@ export function useFreteStore() {
           return false;
         }
       },
+      async carregarDoBanco() {
+        if (!bancoConfigurado()) return false;
+        setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
+        try {
+          const snapshot = await carregarSnapshotFretesDb();
+          const fromDb = extractTransportadoras(snapshot?.payload);
+          skipNextSyncRef.current = true;
+          setTransportadoras(fromDb ? fromDb.map(normalizeTransportadora) : []);
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
+          }));
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            erro: error.message || 'Erro ao carregar base do banco.',
+          }));
+          return false;
+        }
+      },
       resetarBase() {
-        setTransportadoras(createInitialState());
+        setTransportadoras([]);
       },
       salvarGeneralidades(transportadoraId, origemId, generalidades) {
         setTransportadoras((prev) =>
@@ -266,9 +329,7 @@ export function useFreteStore() {
               : {
                   ...t,
                   origens: t.origens.map((o) =>
-                    o.id !== origemId
-                      ? o
-                      : { ...o, generalidades: mergeGeneralidades(generalidades) }
+                    o.id !== origemId ? o : { ...o, generalidades: mergeGeneralidades(generalidades) }
                   ),
                 }
           )
@@ -321,7 +382,7 @@ export function useFreteStore() {
                   origens: t.origens.map((o) => {
                     if (o.id !== origemId) return o;
                     const lista = o[secao] ?? [];
-                    const normalized = { ...linha, id: linha.id ?? crypto.randomUUID() };
+                    const normalized = { ...linha, id: linha.id ?? safeRandomId() };
                     const exists = lista.some((item) => item.id === normalized.id);
                     return {
                       ...o,
