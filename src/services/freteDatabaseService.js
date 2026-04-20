@@ -106,14 +106,6 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
   };
 }
 
-function extractTransportadorasFromSnapshot(snapshot) {
-  if (!snapshot) return [];
-  if (Array.isArray(snapshot)) return snapshot;
-  if (Array.isArray(snapshot.transportadoras)) return snapshot.transportadoras;
-  if (Array.isArray(snapshot?.payload?.transportadoras)) return snapshot.payload.transportadoras;
-  return [];
-}
-
 export function bancoConfigurado() {
   return isSupabaseConfigured();
 }
@@ -135,7 +127,14 @@ export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
   return data || null;
 }
 
-async function carregarTabelasRelacionais() {
+export async function carregarBaseCompletaDb() {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+  }
+
   const supabase = ensureClient();
 
   const [transportadorasRes, origensRes, generalidadesRes, rotasRes, cotacoesRes, taxasRes] =
@@ -158,6 +157,11 @@ async function carregarTabelasRelacionais() {
   const rotas = rotasRes.data || [];
   const cotacoes = cotacoesRes.data || [];
   const taxas = taxasRes.data || [];
+
+  if (!transportadoras.length && !origens.length) {
+    const snapshot = await carregarSnapshotFretesDb();
+    return snapshot?.payload?.transportadoras || [];
+  }
 
   const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = new Map();
@@ -202,64 +206,12 @@ async function carregarTabelasRelacionais() {
     origensByTransportadora.set(key, list);
   });
 
-  return {
-    transportadorasCount: transportadoras.length,
-    origensCount: origens.length,
-    base: transportadoras.map((transportadora) => ({
-      id: transportadora.id,
-      nome: transportadora.nome || '',
-      status: transportadora.status || 'Ativa',
-      origens: origensByTransportadora.get(String(transportadora.id)) || [],
-    })),
-  };
-}
-
-export async function carregarBaseCompletaDb() {
-  if (!isSupabaseConfigured()) {
-    const raw = localStorage.getItem(FALLBACK_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
-  }
-
-  const relacional = await carregarTabelasRelacionais();
-  if (relacional.transportadorasCount > 0 || relacional.origensCount > 0) {
-    return relacional.base;
-  }
-
-  const snapshot = await carregarSnapshotFretesDb();
-  return extractTransportadorasFromSnapshot(snapshot);
-}
-
-export async function carregarBaseCompletaDetalhadaDb() {
-  if (!isSupabaseConfigured()) {
-    const raw = localStorage.getItem(FALLBACK_KEY);
-    if (!raw) return { fonte: 'local', transportadoras: [] };
-    const parsed = JSON.parse(raw);
-    return {
-      fonte: 'local',
-      transportadoras: Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [],
-    };
-  }
-
-  const relacional = await carregarTabelasRelacionais();
-  if (relacional.transportadorasCount > 0 || relacional.origensCount > 0) {
-    return {
-      fonte: 'relacional',
-      transportadoras: relacional.base,
-      contagens: {
-        transportadoras: relacional.transportadorasCount,
-        origens: relacional.origensCount,
-      },
-    };
-  }
-
-  const snapshot = await carregarSnapshotFretesDb();
-  return {
-    fonte: 'snapshot',
-    transportadoras: extractTransportadorasFromSnapshot(snapshot),
-    snapshot,
-  };
+  return transportadoras.map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  }));
 }
 
 async function replaceTable(supabase, table, rows) {
@@ -358,7 +310,8 @@ function mapBaseToTables(transportadoras) {
       });
 
       (origem.cotacoes || []).forEach((item) => {
-        const { id, rota, pesoMin, pesoMax, rsKg, excesso, percentual, valorFixo, ...extra } = item || {};
+        const { id, rota, pesoMin, pesoMax, rsKg, excesso, percentual, valorFixo, ...extra } =
+          item || {};
 
         cotacoesRows.push({
           id: String(id),
@@ -469,32 +422,6 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
       cotacoes: cotacoesRows.length,
       taxasEspeciais: taxasRows.length,
     },
-  };
-}
-
-export async function migrarSnapshotParaBaseRelacional(chave = SNAPSHOT_CHAVE) {
-  const snapshot = await carregarSnapshotFretesDb(chave);
-  const transportadoras = extractTransportadorasFromSnapshot(snapshot);
-  if (!transportadoras.length) {
-    return {
-      ok: false,
-      motivo: 'snapshot_vazio',
-      contagens: {
-        transportadoras: 0,
-        origens: 0,
-        generalidades: 0,
-        rotas: 0,
-        cotacoes: 0,
-        taxasEspeciais: 0,
-      },
-    };
-  }
-
-  const result = await salvarBaseCompletaDb(transportadoras, chave);
-  return {
-    ok: true,
-    origem: 'snapshot',
-    ...result,
   };
 }
 

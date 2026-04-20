@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   bancoConfigurado,
-  carregarBaseCompletaDetalhadaDb,
+  carregarBaseCompletaDb,
   carregarSnapshotFretesDb,
-  migrarSnapshotParaBaseRelacional,
   salvarBaseCompletaDb,
 } from '../services/freteDatabaseService';
 
@@ -211,10 +210,11 @@ export function useFreteStore() {
       if (!bancoConfigurado() || snapshotLoadedRef.current) return;
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
-        const carregamento = await carregarBaseCompletaDetalhadaDb();
+        const base = await carregarBaseCompletaDb();
         if (cancelled) return;
 
-        const normalized = (carregamento?.transportadoras || []).map(normalizeTransportadora);
+        const normalized = (base || []).map(normalizeTransportadora);
+        skipNextSyncRef.current = true;
         setTransportadoras(normalized);
 
         let ultimaSincronizacao = '';
@@ -223,22 +223,12 @@ export function useFreteStore() {
           ultimaSincronizacao = snapshot?.updated_at || snapshot?.payload?.updatedAt || '';
         } catch {}
 
-        if (carregamento?.fonte === 'snapshot' && normalized.length > 0) {
-          const result = await migrarSnapshotParaBaseRelacional();
-          if (cancelled) return;
-          ultimaSincronizacao = result?.updated_at || ultimaSincronizacao || new Date().toISOString();
-        }
-
         snapshotLoadedRef.current = true;
-        skipNextSyncRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
           ultimaSincronizacao,
-          fonte:
-            carregamento?.fonte === 'snapshot' && normalized.length > 0
-              ? 'supabase-migrado-do-snapshot'
-              : 'supabase-relacional',
+          fonte: 'supabase-relacional',
         }));
       } catch (error) {
         if (cancelled) return;
@@ -322,15 +312,15 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          const base = await carregarBaseCompletaDetalhadaDb();
+          const base = await carregarBaseCompletaDb();
           skipNextSyncRef.current = true;
-          setTransportadoras((base?.transportadoras || []).map(normalizeTransportadora));
+          setTransportadoras((base || []).map(normalizeTransportadora));
           const snapshot = await carregarSnapshotFretesDb();
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
-            fonte: base?.fonte === 'snapshot' ? 'supabase-snapshot' : 'supabase-relacional',
+            fonte: 'supabase-relacional',
           }));
           return true;
         } catch (error) {
