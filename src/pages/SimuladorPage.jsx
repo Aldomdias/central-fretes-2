@@ -149,13 +149,13 @@ function ResultadoCard({ item }) {
 
   return (
     <div className="sim-resultado-card">
-      <div className="sim-resultado-topo compact-top">
+      <div className="sim-resultado-topo compact-top" style={item.ranking === 1 ? { border: '1px solid #ccebd9', background: '#f2fbf5' } : undefined}>
         <div>
-          <strong>{item.transportadora}</strong>
+          <strong>{item.ranking === 1 ? '🏆 ' : item.ranking === 2 ? '🥈 ' : item.ranking === 3 ? '🥉 ' : ''}{item.transportadora}</strong>
           <div className="sim-resultado-linha">Origem {item.origem} • Destino {buildDestinoLabel(item)}</div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span>#{item.ranking || 1} • {item.prazo} dia(s)</span>
+          <span>{item.ranking === 1 ? '1º lugar' : `#${item.ranking || 1}`} • {item.prazo} dia(s)</span>
           <button className="sim-tab" type="button" onClick={() => setAberto((v) => !v)}>
             {aberto ? 'Fechar detalhes' : 'Ver detalhes'}
           </button>
@@ -168,12 +168,12 @@ function ResultadoCard({ item }) {
           <strong>{formatMoney(item.total)}</strong>
         </div>
         <div>
-          <span>Saving vs 2º</span>
-          <strong>{formatMoney(item.savingSegundo)}</strong>
+          <span>% sobre NF</span>
+          <strong>{formatPercent(item.percentualSobreNF)}</strong>
         </div>
         <div>
-          <span>Diferença p/ líder</span>
-          <strong>{formatMoney(item.diferencaLider)}</strong>
+          <span>{item.ranking === 1 ? 'Próxima se bloquear' : 'Perdeu para'}</span>
+          <strong>{item.ranking === 1 ? (item.proximaSeBloquear || 'Sem substituta') : (item.perdeuPara || '-')}</strong>
         </div>
         <div>
           <span>Redução p/ líder</span>
@@ -539,7 +539,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       {aba === 'transportadora' && (
         <section className="sim-card">
-          <div className="sim-resultado-topo compact-top">
+          <div className="sim-resultado-topo compact-top" style={item.ranking === 1 ? { border: '1px solid #ccebd9', background: '#f2fbf5' } : undefined}>
             <h2 style={{ margin: 0 }}>Simulação por transportadora</h2>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <button className="sim-tab" type="button" onClick={exportarSimulacaoTransportadora}>Exportar relatório</button>
@@ -606,7 +606,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             style={{ display: 'none' }}
             onChange={onImportarGrade}
           />
-          <div className="sim-resultado-topo compact-top">
+          <div className="sim-resultado-topo compact-top" style={item.ranking === 1 ? { border: '1px solid #ccebd9', background: '#f2fbf5' } : undefined}>
             <h2 style={{ margin: 0 }}>Análise de transportadora</h2>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <button className="sim-tab" type="button" onClick={exportarModeloGrade}>Exportar grade</button>
@@ -655,6 +655,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Saving potencial</span><strong>{formatMoney(resultadoAnalise.saving)}</strong></div>
                 <div><span>Prazo médio</span><strong>{resultadoAnalise.prazoMedio.toFixed(1)} dia(s)</strong></div>
                 <div><span>Frete médio</span><strong>{formatMoney(resultadoAnalise.freteMedio)}</strong></div>
+                <div><span>% médio sobre NF</span><strong>{formatPercent(resultadoAnalise.percentualMedioSobreNF)}</strong></div>
               </div>
 
               <div className="sim-grid-2" style={{ display: 'grid', gap: 16 }}>
@@ -666,6 +667,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div className="sim-parametros-header"><div><strong>Leitura do relatório</strong><p>Base para devolutiva, reunião ou negociação.</p></div></div>
                   <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
                     <div>Total de linhas geradas: <strong>{resultadoAnalise.detalhes.length}</strong></div>
+                    <div>Substituição quando bloqueada: <strong>cada linha mostra quem assume a carga.</strong></div>
                     <div>Vitórias na grade: <strong>{resultadoAnalise.vitorias}</strong></div>
                     <div>Rotas fora do 1º lugar: <strong>{resultadoAnalise.rotasAvaliadas - resultadoAnalise.vitorias}</strong></div>
                     <div>Melhor uso: <strong>comparar aderência, prazo e necessidade de redução.</strong></div>
@@ -683,7 +685,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       {aba === 'cobertura' && (
         <section className="sim-card">
-          <div className="sim-resultado-topo compact-top">
+          <div className="sim-resultado-topo compact-top" style={item.ranking === 1 ? { border: '1px solid #ccebd9', background: '#f2fbf5' } : undefined}>
             <h2 style={{ margin: 0 }}>Cobertura de tabela</h2>
             <button className="sim-tab" type="button" onClick={exportarCobertura}>Exportar faltantes</button>
           </div>
