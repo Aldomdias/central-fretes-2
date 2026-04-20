@@ -1,0 +1,14 @@
+Substitua estes 2 arquivos:
+
+- src/services/freteDatabaseService.js
+- src/data/store.js
+
+Essa versão faz 2 mudanças principais:
+1. A base oficial no carregamento passa a ser só a relacional quando o Supabase está configurado.
+2. Toda alteração em transportadoras/origens/rotas/cotações é salva direto no Supabase, sem pular a primeira sincronização.
+
+Depois de publicar, faça o teste:
+- incluir 1 transportadora
+- salvar
+- atualizar a página
+- conferir se o número continua alterado

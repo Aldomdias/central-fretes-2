@@ -61,6 +61,8 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       cubagem: generalidade?.cubagem ?? 300,
       tipoCalculo: generalidade?.tipo_calculo || 'PERCENTUAL',
       observacoes: generalidade?.observacoes || '',
+      freteMinimo: generalidade?.frete_minimo ?? 0,
+      regraCalculo: generalidade?.regra_calculo || '',
     },
     rotas: rotas.map((item) => ({
       id: item.id,
@@ -157,11 +159,6 @@ export async function carregarBaseCompletaDb() {
   const rotas = rotasRes.data || [];
   const cotacoes = cotacoesRes.data || [];
   const taxas = taxasRes.data || [];
-
-  if (!transportadoras.length && !origens.length) {
-    const snapshot = await carregarSnapshotFretesDb();
-    return snapshot?.payload?.transportadoras || [];
-  }
 
   const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = new Map();
@@ -270,6 +267,8 @@ function mapBaseToTables(transportadoras) {
         cubagem: toNumberOrNull(generalidades.cubagem),
         tipo_calculo: generalidades.tipoCalculo || 'PERCENTUAL',
         observacoes: generalidades.observacoes || '',
+        frete_minimo: toNumberOrNull(generalidades.freteMinimo),
+        regra_calculo: generalidades.regraCalculo || '',
       });
 
       (origem.rotas || []).forEach((item) => {
