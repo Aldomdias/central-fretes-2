@@ -6,7 +6,7 @@ import {
   exportarSecao,
   parseFileToRows,
 } from '../utils/importacao';
-import { registrarImportacao } from '../services/freteDatabaseService';
+import { registrarImportacao, salvarSecaoDb } from '../services/freteDatabaseService';
 
 const TIPOS = [
   { id: 'rotas', label: 'Rotas' },
@@ -116,6 +116,9 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         };
 
         try {
+          const baseAtual = store.transportadoras || [];
+          const proximoEstado = baseAtual;
+          await salvarSecaoDb(proximoEstado, tipo);
           await registrarImportacao(entrada);
         } catch (registroError) {
           entrada.erros = [
@@ -154,9 +157,9 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       }
     }
 
-    if (store.sincronizarAgora) {
+    if (store.carregarDoBanco) {
       try {
-        await store.sincronizarAgora();
+        await store.carregarDoBanco();
       } catch {}
     }
 
@@ -267,17 +270,15 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           </div>
 
           <div className="hint-box top-space">
-            <strong>Observações:</strong>
+            <strong>Modo seguro ativo:</strong>
             <br />
-            • Rotas e fretes foram adequados ao padrão dos seus arquivos reais.
+            • Rotas atualizam só <strong>rotas</strong>.
             <br />
-            • Dentro de cada origem também existe <strong>Exportar</strong>,{' '}
-            <strong>Baixar Modelo</strong>, <strong>Importar</strong> e{' '}
-            <strong>Excluir Tudo</strong>.
+            • Fretes/Cotações atualizam só <strong>cotações</strong>.
             <br />
-            • Em taxas especiais, <strong>GRIS</strong> e{' '}
-            <strong>Ad Valorem</strong> por IBGE têm prioridade sobre as
-            generalidades.
+            • Taxas atualizam só <strong>taxas especiais</strong>.
+            <br />
+            • Generalidades atualizam só <strong>generalidades</strong>.
           </div>
         </div>
 
