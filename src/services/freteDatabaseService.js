@@ -3,6 +3,8 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
 const NEVER_UUID = '00000000-0000-0000-0000-000000000000';
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function ensureClient() {
   const client = getSupabaseClient();
@@ -16,6 +18,27 @@ function ensureClient() {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function generateUuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const hex = () => Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `${hex()}${hex()}-${hex()}-4${hex().slice(1)}-a${hex().slice(1)}-${hex()}${hex()}${hex()}`;
+}
+
+function safeUuid(value, usedIds) {
+  const raw = String(value || '').trim();
+  if (UUID_REGEX.test(raw) && !usedIds.has(raw)) {
+    usedIds.add(raw);
+    return raw;
+  }
+
+  let generated = generateUuid();
+  while (usedIds.has(generated)) {
+    generated = generateUuid();
+  }
+  usedIds.add(generated);
+  return generated;
 }
 
 function toNumberOrNull(value) {
@@ -107,16 +130,6 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       ...(item.extra || {}),
     })),
   };
-}
-
-function dedupeRowsById(rows) {
-  const map = new Map();
-  for (const row of rows || []) {
-    const key = String(row?.id || '');
-    if (!key) continue;
-    map.set(key, row);
-  }
-  return Array.from(map.values());
 }
 
 export function bancoConfigurado() {
@@ -228,15 +241,17 @@ async function replaceTable(supabase, table, rows) {
     throw new Error(`Erro ao limpar tabela ${table}: ${deleteError.message || deleteError.details || 'erro desconhecido'}`);
   }
 
-  const uniqueRows = dedupeRowsById(rows);
-  if (!uniqueRows.length) return;
+  if (!rows.length) return;
 
   const chunkSize = 500;
-  for (let index = 0; index < uniqueRows.length; index += chunkSize) {
-    const chunk = uniqueRows.slice(index, index + chunkSize);
-    const { error } = await supabase.from(table).insert(chunk);
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    const { error } = await supabase
+      .from(table)
+      .upsert(chunk, { onConflict: 'id' });
+
     if (error) {
-      throw new Error(`Erro ao inserir em ${table}: ${error.message || error.details || 'erro desconhecido'}`);
+      throw new Error(`Erro ao gravar em ${table}: ${error.message || error.details || 'erro desconhecido'}`);
     }
   }
 }
@@ -249,8 +264,16 @@ function mapBaseToTables(transportadoras) {
   const cotacoesRows = [];
   const taxasRows = [];
 
+  const usedTransportadoras = new Set();
+  const usedOrigens = new Set();
+  const usedGeneralidades = new Set();
+  const usedRotas = new Set();
+  const usedCotacoes = new Set();
+  const usedTaxas = new Set();
+
   (transportadoras || []).forEach((transportadora) => {
-    const transportadoraId = String(transportadora.id);
+    const transportadoraId = safeUuid(transportadora.id, usedTransportadoras);
+
     transportadorasRows.push({
       id: transportadoraId,
       nome: transportadora.nome || '',
@@ -258,7 +281,7 @@ function mapBaseToTables(transportadoras) {
     });
 
     (transportadora.origens || []).forEach((origem) => {
-      const origemId = String(origem.id);
+      const origemId = safeUuid(origem.id, usedOrigens);
       const generalidades = origem.generalidades || {};
 
       origensRows.push({
@@ -270,7 +293,7 @@ function mapBaseToTables(transportadoras) {
       });
 
       generalidadesRows.push({
-        id: origemId,
+        id: safeUuid(origemId, usedGeneralidades),
         origem_id: origemId,
         incide_icms: toBoolean(generalidades.incideIcms),
         aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
@@ -307,7 +330,7 @@ function mapBaseToTables(transportadoras) {
         } = item || {};
 
         rotasRows.push({
-          id: String(id),
+          id: safeUuid(id, usedRotas),
           origem_id: origemId,
           nome_rota: nomeRota || '',
           ibge_origem: ibgeOrigem || '',
@@ -330,7 +353,7 @@ function mapBaseToTables(transportadoras) {
           item || {};
 
         cotacoesRows.push({
-          id: String(id),
+          id: safeUuid(id, usedCotacoes),
           origem_id: origemId,
           rota: rota || '',
           peso_min: toNumberOrNull(pesoMin),
@@ -360,7 +383,7 @@ function mapBaseToTables(transportadoras) {
         } = item || {};
 
         taxasRows.push({
-          id: String(id),
+          id: safeUuid(id, usedTaxas),
           origem_id: origemId,
           ibge_destino: ibgeDestino || '',
           tda: toNumberOrNull(tda),
@@ -379,12 +402,12 @@ function mapBaseToTables(transportadoras) {
   });
 
   return {
-    transportadorasRows: dedupeRowsById(transportadorasRows),
-    origensRows: dedupeRowsById(origensRows),
-    generalidadesRows: dedupeRowsById(generalidadesRows),
-    rotasRows: dedupeRowsById(rotasRows),
-    cotacoesRows: dedupeRowsById(cotacoesRows),
-    taxasRows: dedupeRowsById(taxasRows),
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
   };
 }
 

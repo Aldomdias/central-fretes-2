@@ -1,10 +1,9 @@
 Substitua:
 - src/services/freteDatabaseService.js
 
-Correção nova:
-- além do UUID válido no DELETE, agora remove linhas duplicadas por id antes de inserir
-- isso corrige o 409 Conflict no POST de rotas/cotacoes/taxas quando existirem ids repetidos no payload
+Correção:
+- gera UUID novo quando o id vier inválido, repetido ou vazio
+- usa upsert por id na gravação dos lotes
+- isso elimina o 409 Conflict de rotas quando houver ids duplicados/repetidos no payload
 
-Depois de publicar:
-1. teste importar/salvar de novo
-2. veja se o POST para rotas para de dar 409
+Depois de publicar, teste de novo a importação/salvamento.
