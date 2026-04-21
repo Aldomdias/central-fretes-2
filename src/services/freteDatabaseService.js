@@ -109,6 +109,16 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
   };
 }
 
+function dedupeRowsById(rows) {
+  const map = new Map();
+  for (const row of rows || []) {
+    const key = String(row?.id || '');
+    if (!key) continue;
+    map.set(key, row);
+  }
+  return Array.from(map.values());
+}
+
 export function bancoConfigurado() {
   return isSupabaseConfigured();
 }
@@ -218,11 +228,12 @@ async function replaceTable(supabase, table, rows) {
     throw new Error(`Erro ao limpar tabela ${table}: ${deleteError.message || deleteError.details || 'erro desconhecido'}`);
   }
 
-  if (!rows.length) return;
+  const uniqueRows = dedupeRowsById(rows);
+  if (!uniqueRows.length) return;
 
   const chunkSize = 500;
-  for (let index = 0; index < rows.length; index += chunkSize) {
-    const chunk = rows.slice(index, index + chunkSize);
+  for (let index = 0; index < uniqueRows.length; index += chunkSize) {
+    const chunk = uniqueRows.slice(index, index + chunkSize);
     const { error } = await supabase.from(table).insert(chunk);
     if (error) {
       throw new Error(`Erro ao inserir em ${table}: ${error.message || error.details || 'erro desconhecido'}`);
@@ -259,6 +270,7 @@ function mapBaseToTables(transportadoras) {
       });
 
       generalidadesRows.push({
+        id: origemId,
         origem_id: origemId,
         incide_icms: toBoolean(generalidades.incideIcms),
         aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
@@ -367,12 +379,12 @@ function mapBaseToTables(transportadoras) {
   });
 
   return {
-    transportadorasRows,
-    origensRows,
-    generalidadesRows,
-    rotasRows,
-    cotacoesRows,
-    taxasRows,
+    transportadorasRows: dedupeRowsById(transportadorasRows),
+    origensRows: dedupeRowsById(origensRows),
+    generalidadesRows: dedupeRowsById(generalidadesRows),
+    rotasRows: dedupeRowsById(rotasRows),
+    cotacoesRows: dedupeRowsById(cotacoesRows),
+    taxasRows: dedupeRowsById(taxasRows),
   };
 }
 

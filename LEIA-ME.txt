@@ -1,9 +1,10 @@
 Substitua:
 - src/services/freteDatabaseService.js
 
-Correção:
-- remove o DELETE com UUID inválido '__nunca__'
-- usa um UUID válido impossível: 00000000-0000-0000-0000-000000000000
+Correção nova:
+- além do UUID válido no DELETE, agora remove linhas duplicadas por id antes de inserir
+- isso corrige o 409 Conflict no POST de rotas/cotacoes/taxas quando existirem ids repetidos no payload
 
-Isso corrige o 400 Bad Request que aparecia em taxas_especiais e travava toda a gravação.
-Depois de publicar, teste salvar/importar novamente.
+Depois de publicar:
+1. teste importar/salvar de novo
+2. veja se o POST para rotas para de dar 409
