@@ -4,6 +4,7 @@ import {
   carregarBaseCompletaDb,
   carregarSnapshotFretesDb,
   salvarBaseCompletaDb,
+  salvarSecaoDb,
 } from '../services/freteDatabaseService';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
@@ -159,20 +160,12 @@ export function useFreteStore() {
     sincronizando: false,
     erro: '',
     ultimaSincronizacao: '',
-    fonte: bancoConfigurado() ? 'supabase-relacional-fixo' : 'local',
+    fonte: bancoConfigurado() ? 'supabase-seguro' : 'local',
   });
-  const snapshotLoadedRef = useRef(false);
-  const hydratingRef = useRef(true);
-  const syncInFlightRef = useRef(false);
+  const loadedRef = useRef(false);
 
   useEffect(() => {
-    const persisted = persistLocalState(transportadoras);
-    if (!persisted) {
-      setSyncStatus((prev) => ({
-        ...prev,
-        erro: prev.erro || 'Cache local excedeu o limite do navegador. A base oficial segue no Supabase.',
-      }));
-    }
+    persistLocalState(transportadoras);
   }, [transportadoras]);
 
   useEffect(() => {
@@ -190,6 +183,7 @@ export function useFreteStore() {
         }
 
         if (cancelled) return;
+
         setTransportadoras((base || []).map(normalizeTransportadora));
 
         let ultimaSincronizacao = '';
@@ -198,19 +192,16 @@ export function useFreteStore() {
           ultimaSincronizacao = snapshot?.updated_at || snapshot?.payload?.updatedAt || '';
         } catch {}
 
-        snapshotLoadedRef.current = true;
-        hydratingRef.current = false;
-
+        loadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
           ultimaSincronizacao,
-          fonte: bancoConfigurado() ? 'supabase-relacional-fixo' : 'local',
+          fonte: bancoConfigurado() ? 'supabase-seguro' : 'local',
         }));
       } catch (error) {
         if (cancelled) return;
-        hydratingRef.current = false;
-        snapshotLoadedRef.current = true;
+        loadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
@@ -225,37 +216,6 @@ export function useFreteStore() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!snapshotLoadedRef.current) return;
-    if (hydratingRef.current) return;
-    if (syncInFlightRef.current) return;
-
-    if (!bancoConfigurado()) return;
-
-    syncInFlightRef.current = true;
-    setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
-
-    (async () => {
-      try {
-        const result = await salvarBaseCompletaDb(transportadoras);
-        setSyncStatus((prev) => ({
-          ...prev,
-          sincronizando: false,
-          ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-          fonte: 'supabase-relacional-fixo',
-        }));
-      } catch (error) {
-        setSyncStatus((prev) => ({
-          ...prev,
-          sincronizando: false,
-          erro: error.message || 'Erro ao salvar base completa no Supabase.',
-        }));
-      } finally {
-        syncInFlightRef.current = false;
-      }
-    })();
-  }, [transportadoras]);
-
   const api = useMemo(
     () => ({
       transportadoras,
@@ -269,7 +229,7 @@ export function useFreteStore() {
             ...prev,
             sincronizando: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-            fonte: 'supabase-relacional-fixo',
+            fonte: 'supabase-seguro',
           }));
           return true;
         } catch (error) {
@@ -285,26 +245,47 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          hydratingRef.current = true;
           const base = await carregarBaseCompletaDb();
           setTransportadoras((base || []).map(normalizeTransportadora));
           const snapshot = await carregarSnapshotFretesDb();
-          hydratingRef.current = false;
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
-            fonte: 'supabase-relacional-fixo',
+            fonte: 'supabase-seguro',
           }));
           return true;
         } catch (error) {
-          hydratingRef.current = false;
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             erro: error.message || 'Erro ao carregar base do banco.',
           }));
           return false;
+        }
+      },
+      async importarESalvar(payload, tipo) {
+        const next = mergeImport(transportadoras, payload, tipo);
+        setTransportadoras(next);
+        if (!bancoConfigurado()) return { ok: true, modo: 'local' };
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        try {
+          const result = await salvarSecaoDb(next, tipo);
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+            fonte: 'supabase-seguro',
+          }));
+          return { ok: true };
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            erro: error.message || 'Erro ao salvar seção.',
+          }));
+          return { ok: false, erro: error };
         }
       },
       resetarBase() {

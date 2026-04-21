@@ -1,8 +1,10 @@
 Substitua:
 - src/services/freteDatabaseService.js
+- src/data/store.js
 - src/pages/ImportacaoPage.jsx
 
-Objetivo:
-- impedir que uma importação apague outra seção
-- leitura paginada acima de 1000
-- gravação por seção: rotas, cotacoes, taxas, generalidades
+Correção crítica:
+- remove a sincronização automática que zerava a base ao subir o deploy
+- importação passa a salvar por seção, sem apagar outras tabelas
+- leitura continua paginada, acima de 1000 registros
+- a simulação continua lendo do Supabase

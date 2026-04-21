@@ -6,7 +6,7 @@ import {
   exportarSecao,
   parseFileToRows,
 } from '../utils/importacao';
-import { registrarImportacao, salvarSecaoDb } from '../services/freteDatabaseService';
+import { registrarImportacao } from '../services/freteDatabaseService';
 
 const TIPOS = [
   { id: 'rotas', label: 'Rotas' },
@@ -104,7 +104,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           canal: canalImportacao,
         });
 
-        store.importarPayload(payload, tipo);
+        const resultado = await store.importarESalvar(payload, tipo);
 
         const entrada = {
           arquivo: file.name,
@@ -116,9 +116,6 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         };
 
         try {
-          const baseAtual = store.transportadoras || [];
-          const proximoEstado = baseAtual;
-          await salvarSecaoDb(proximoEstado, tipo);
           await registrarImportacao(entrada);
         } catch (registroError) {
           entrada.erros = [
@@ -128,6 +125,18 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               coluna: 'registro',
               valor: '',
               mensagem: `Importado, mas não foi possível registrar histórico: ${registroError.message || 'erro desconhecido'}`,
+            },
+          ];
+        }
+
+        if (resultado?.ok === false) {
+          entrada.erros = [
+            ...(entrada.erros || []),
+            {
+              linha: '-',
+              coluna: 'supabase',
+              valor: '',
+              mensagem: resultado?.erro?.message || 'Falha ao salvar no Supabase.',
             },
           ];
         }
@@ -394,7 +403,9 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                 <td>{item.rotas}</td>
                 <td>{item.cotacoes}</td>
                 <td>
-                  <CoberturaBadge value={item.status} />
+                  <span className={item.status === 'Completa' ? 'coverage-badge ok' : 'coverage-badge warn'}>
+                    {item.status}
+                  </span>
                 </td>
               </tr>
             ))}

@@ -76,7 +76,6 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true) {
 
     const rows = data || [];
     allRows.push(...rows);
-
     if (rows.length < PAGE_SIZE) break;
     from += PAGE_SIZE;
   }
@@ -279,6 +278,18 @@ function mapBaseToTables(transportadoras) {
   };
 }
 
+async function upsertRows(supabase, table, rows, conflictField) {
+  if (!rows.length) return;
+  const chunkSize = 500;
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    const { error } = await supabase.from(table).upsert(chunk, { onConflict: conflictField });
+    if (error) {
+      throw new Error(`Erro ao gravar ${table}: ${error.message || error.details || 'erro desconhecido'}`);
+    }
+  }
+}
+
 export function bancoConfigurado() {
   return isSupabaseConfigured();
 }
@@ -371,32 +382,11 @@ export async function carregarBaseCompletaDb() {
   }));
 }
 
-async function replaceSection(supabase, table, keyField, rows, conflictField = keyField) {
-  if (!rows.length) return;
-
-  const ids = [...new Set(rows.map((r) => r[keyField]).filter(Boolean))];
-  if (ids.length) {
-    const { error: deleteError } = await supabase.from(table).delete().in(keyField, ids);
-    if (deleteError) {
-      throw new Error(`Erro ao limpar seção ${table}: ${deleteError.message || deleteError.details || 'erro desconhecido'}`);
-    }
-  }
-
-  const chunkSize = 500;
-  for (let index = 0; index < rows.length; index += chunkSize) {
-    const chunk = rows.slice(index, index + chunkSize);
-    const { error } = await supabase.from(table).upsert(chunk, { onConflict: conflictField });
-    if (error) {
-      throw new Error(`Erro ao gravar seção ${table}: ${error.message || error.details || 'erro desconhecido'}`);
-    }
-  }
-}
-
 export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHAVE) {
   if (!isSupabaseConfigured()) {
     const payload = buildSnapshotPayload(transportadoras, chave);
     localStorage.setItem(FALLBACK_KEY, JSON.stringify(payload));
-    return { modo: 'local', secao };
+    return { modo: 'local', secao, updated_at: payload.payload.updatedAt };
   }
 
   const supabase = ensureClient();
@@ -409,40 +399,20 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
     taxasRows,
   } = mapBaseToTables(transportadoras);
 
+  await upsertRows(supabase, 'transportadoras', transportadorasRows, 'id');
+  await upsertRows(supabase, 'origens', origensRows, 'id');
+
   if (secao === 'generalidades') {
-    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
-    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
-    await replaceSection(supabase, 'generalidades', 'origem_id', generalidadesRows, 'origem_id');
+    await upsertRows(supabase, 'generalidades', generalidadesRows, 'origem_id');
   }
-
   if (secao === 'rotas') {
-    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
-    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
-    await replaceSection(supabase, 'rotas', 'id', rotasRows, 'id');
+    await upsertRows(supabase, 'rotas', rotasRows, 'id');
   }
-
   if (secao === 'cotacoes') {
-    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
-    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
-    await replaceSection(supabase, 'cotacoes', 'id', cotacoesRows, 'id');
+    await upsertRows(supabase, 'cotacoes', cotacoesRows, 'id');
   }
-
   if (secao === 'taxas') {
-    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
-    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
-    await replaceSection(supabase, 'taxas_especiais', 'id', taxasRows, 'id');
-  }
-
-  if (secao === 'base_completa') {
-    const payload = buildSnapshotPayload(transportadoras, chave);
-    const { data, error } = await supabase
-      .from('cadastros_snapshot')
-      .upsert(payload, { onConflict: 'chave' })
-      .select('id, updated_at')
-      .single();
-
-    if (error) throw error;
-    return { modo: 'supabase', secao, updated_at: data?.updated_at };
+    await upsertRows(supabase, 'taxas_especiais', taxasRows, 'id');
   }
 
   const payload = buildSnapshotPayload(transportadoras, chave);
@@ -453,12 +423,26 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
     .single();
 
   if (error) throw error;
-
   return { modo: 'supabase', secao, updated_at: data?.updated_at };
 }
 
 export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHAVE) {
-  return salvarSecaoDb(transportadoras, 'base_completa', chave);
+  if (!isSupabaseConfigured()) {
+    const payload = buildSnapshotPayload(transportadoras, chave);
+    localStorage.setItem(FALLBACK_KEY, JSON.stringify(payload));
+    return { modo: 'local', updated_at: payload.payload.updatedAt };
+  }
+
+  const supabase = ensureClient();
+  const payload = buildSnapshotPayload(transportadoras, chave);
+  const { data, error } = await supabase
+    .from('cadastros_snapshot')
+    .upsert(payload, { onConflict: 'chave' })
+    .select('id, updated_at')
+    .single();
+
+  if (error) throw error;
+  return { modo: 'supabase', updated_at: data?.updated_at };
 }
 
 export async function salvarSnapshotFretesDb(transportadoras, chave = SNAPSHOT_CHAVE) {
@@ -472,7 +456,6 @@ export async function testarConexaoFretesDb() {
 
   const supabase = ensureClient();
   const { error } = await supabase.from('transportadoras').select('id').limit(1);
-
   if (error) throw error;
   return { ok: true, mensagem: 'Conexão com Supabase validada.' };
 }
