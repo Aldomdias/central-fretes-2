@@ -2,28 +2,9 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
-const NEVER_UUID = '00000000-0000-0000-0000-000000000000';
 const PAGE_SIZE = 1000;
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const TABLE_KEY_FIELD = {
-  transportadoras: 'id',
-  origens: 'id',
-  generalidades: 'origem_id',
-  rotas: 'id',
-  cotacoes: 'id',
-  taxas_especiais: 'id',
-};
-
-const TABLE_CONFLICT_FIELD = {
-  transportadoras: 'id',
-  origens: 'id',
-  generalidades: 'origem_id',
-  rotas: 'id',
-  cotacoes: 'id',
-  taxas_especiais: 'id',
-};
 
 function ensureClient() {
   const client = getSupabaseClient();
@@ -51,11 +32,8 @@ function safeUuid(value, usedIds) {
     usedIds.add(raw);
     return raw;
   }
-
   let generated = generateUuid();
-  while (usedIds.has(generated)) {
-    generated = generateUuid();
-  }
+  while (usedIds.has(generated)) generated = generateUuid();
   usedIds.add(generated);
   return generated;
 }
@@ -90,14 +68,8 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true) {
   let from = 0;
 
   while (true) {
-    let query = supabase
-      .from(table)
-      .select('*')
-      .range(from, from + PAGE_SIZE - 1);
-
-    if (orderBy) {
-      query = query.order(orderBy, { ascending });
-    }
+    let query = supabase.from(table).select('*').range(from, from + PAGE_SIZE - 1);
+    if (orderBy) query = query.order(orderBy, { ascending });
 
     const { data, error } = await query;
     if (error) throw error;
@@ -175,6 +147,135 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       adValMinimo: item.ad_val_minimo,
       ...(item.extra || {}),
     })),
+  };
+}
+
+function mapBaseToTables(transportadoras) {
+  const transportadorasRows = [];
+  const origensRows = [];
+  const generalidadesRows = [];
+  const rotasRows = [];
+  const cotacoesRows = [];
+  const taxasRows = [];
+
+  const usedTransportadoras = new Set();
+  const usedOrigens = new Set();
+  const usedRotas = new Set();
+  const usedCotacoes = new Set();
+  const usedTaxas = new Set();
+
+  (transportadoras || []).forEach((transportadora) => {
+    const transportadoraId = safeUuid(transportadora.id, usedTransportadoras);
+
+    transportadorasRows.push({
+      id: transportadoraId,
+      nome: transportadora.nome || '',
+      status: transportadora.status || 'Ativa',
+    });
+
+    (transportadora.origens || []).forEach((origem) => {
+      const origemId = safeUuid(origem.id, usedOrigens);
+      const generalidades = origem.generalidades || {};
+
+      origensRows.push({
+        id: origemId,
+        transportadora_id: transportadoraId,
+        cidade: origem.cidade || '',
+        canal: origem.canal || 'ATACADO',
+        status: origem.status || 'Ativa',
+      });
+
+      generalidadesRows.push({
+        origem_id: origemId,
+        incide_icms: toBoolean(generalidades.incideIcms),
+        aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
+        ad_valorem: toNumberOrNull(generalidades.adValorem),
+        ad_valorem_minimo: toNumberOrNull(generalidades.adValoremMinimo),
+        pedagio: toNumberOrNull(generalidades.pedagio),
+        gris: toNumberOrNull(generalidades.gris),
+        gris_minimo: toNumberOrNull(generalidades.grisMinimo),
+        tas: toNumberOrNull(generalidades.tas),
+        ctrc: toNumberOrNull(generalidades.ctrc),
+        cubagem: toNumberOrNull(generalidades.cubagem),
+        tipo_calculo: generalidades.tipoCalculo || 'PERCENTUAL',
+        observacoes: generalidades.observacoes || '',
+        frete_minimo: toNumberOrNull(generalidades.freteMinimo),
+        regra_calculo: generalidades.regraCalculo || '',
+      });
+
+      (origem.rotas || []).forEach((item) => {
+        const {
+          id, nomeRota, ibgeOrigem, ibgeDestino, canal, prazoEntregaDias,
+          valorMinimoFrete, codigoUnidade, cepInicial, cepFinal, metodoEnvio,
+          inicioVigencia, fimVigencia, ...extra
+        } = item || {};
+
+        rotasRows.push({
+          id: safeUuid(id, usedRotas),
+          origem_id: origemId,
+          nome_rota: nomeRota || '',
+          ibge_origem: ibgeOrigem || '',
+          ibge_destino: ibgeDestino || '',
+          canal: canal || origem.canal || 'ATACADO',
+          prazo_entrega_dias: toNumberOrNull(prazoEntregaDias),
+          valor_minimo_frete: toNumberOrNull(valorMinimoFrete),
+          codigo_unidade: codigoUnidade || '',
+          cep_inicial: cepInicial || '',
+          cep_final: cepFinal || '',
+          metodo_envio: metodoEnvio || '',
+          inicio_vigencia: inicioVigencia || '',
+          fim_vigencia: fimVigencia || '',
+          extra,
+        });
+      });
+
+      (origem.cotacoes || []).forEach((item) => {
+        const { id, rota, pesoMin, pesoMax, rsKg, excesso, percentual, valorFixo, ...extra } =
+          item || {};
+
+        cotacoesRows.push({
+          id: safeUuid(id, usedCotacoes),
+          origem_id: origemId,
+          rota: rota || '',
+          peso_min: toNumberOrNull(pesoMin),
+          peso_max: toNumberOrNull(pesoMax),
+          rs_kg: toNumberOrNull(rsKg),
+          excesso: toNumberOrNull(excesso),
+          percentual: toNumberOrNull(percentual),
+          valor_fixo: toNumberOrNull(valorFixo),
+          extra,
+        });
+      });
+
+      (origem.taxasEspeciais || []).forEach((item) => {
+        const { id, ibgeDestino, tda, tdr, trt, suframa, outras, gris, grisMinimo, adVal, adValMinimo, ...extra } = item || {};
+
+        taxasRows.push({
+          id: safeUuid(id, usedTaxas),
+          origem_id: origemId,
+          ibge_destino: ibgeDestino || '',
+          tda: toNumberOrNull(tda),
+          tdr: toNumberOrNull(tdr),
+          trt: toNumberOrNull(trt),
+          suframa: toNumberOrNull(suframa),
+          outras: toNumberOrNull(outras),
+          gris: toNumberOrNull(gris),
+          gris_minimo: toNumberOrNull(grisMinimo),
+          ad_val: toNumberOrNull(adVal),
+          ad_val_minimo: toNumberOrNull(adValMinimo),
+          extra,
+        });
+      });
+    });
+  });
+
+  return {
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
   };
 }
 
@@ -270,195 +371,32 @@ export async function carregarBaseCompletaDb() {
   }));
 }
 
-async function replaceTable(supabase, table, rows) {
-  const keyField = TABLE_KEY_FIELD[table] || 'id';
-  const conflictField = TABLE_CONFLICT_FIELD[table] || 'id';
-
-  const { error: deleteError } = await supabase.from(table).delete().neq(keyField, NEVER_UUID);
-  if (deleteError) {
-    throw new Error(`Erro ao limpar tabela ${table}: ${deleteError.message || deleteError.details || 'erro desconhecido'}`);
-  }
-
+async function replaceSection(supabase, table, keyField, rows, conflictField = keyField) {
   if (!rows.length) return;
+
+  const ids = [...new Set(rows.map((r) => r[keyField]).filter(Boolean))];
+  if (ids.length) {
+    const { error: deleteError } = await supabase.from(table).delete().in(keyField, ids);
+    if (deleteError) {
+      throw new Error(`Erro ao limpar seção ${table}: ${deleteError.message || deleteError.details || 'erro desconhecido'}`);
+    }
+  }
 
   const chunkSize = 500;
   for (let index = 0; index < rows.length; index += chunkSize) {
     const chunk = rows.slice(index, index + chunkSize);
-    const { error } = await supabase
-      .from(table)
-      .upsert(chunk, { onConflict: conflictField });
-
+    const { error } = await supabase.from(table).upsert(chunk, { onConflict: conflictField });
     if (error) {
-      throw new Error(`Erro ao gravar em ${table}: ${error.message || error.details || 'erro desconhecido'}`);
+      throw new Error(`Erro ao gravar seção ${table}: ${error.message || error.details || 'erro desconhecido'}`);
     }
   }
 }
 
-function mapBaseToTables(transportadoras) {
-  const transportadorasRows = [];
-  const origensRows = [];
-  const generalidadesRows = [];
-  const rotasRows = [];
-  const cotacoesRows = [];
-  const taxasRows = [];
-
-  const usedTransportadoras = new Set();
-  const usedOrigens = new Set();
-  const usedRotas = new Set();
-  const usedCotacoes = new Set();
-  const usedTaxas = new Set();
-
-  (transportadoras || []).forEach((transportadora) => {
-    const transportadoraId = safeUuid(transportadora.id, usedTransportadoras);
-
-    transportadorasRows.push({
-      id: transportadoraId,
-      nome: transportadora.nome || '',
-      status: transportadora.status || 'Ativa',
-    });
-
-    (transportadora.origens || []).forEach((origem) => {
-      const origemId = safeUuid(origem.id, usedOrigens);
-      const generalidades = origem.generalidades || {};
-
-      origensRows.push({
-        id: origemId,
-        transportadora_id: transportadoraId,
-        cidade: origem.cidade || '',
-        canal: origem.canal || 'ATACADO',
-        status: origem.status || 'Ativa',
-      });
-
-      generalidadesRows.push({
-        origem_id: origemId,
-        incide_icms: toBoolean(generalidades.incideIcms),
-        aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
-        ad_valorem: toNumberOrNull(generalidades.adValorem),
-        ad_valorem_minimo: toNumberOrNull(generalidades.adValoremMinimo),
-        pedagio: toNumberOrNull(generalidades.pedagio),
-        gris: toNumberOrNull(generalidades.gris),
-        gris_minimo: toNumberOrNull(generalidades.grisMinimo),
-        tas: toNumberOrNull(generalidades.tas),
-        ctrc: toNumberOrNull(generalidades.ctrc),
-        cubagem: toNumberOrNull(generalidades.cubagem),
-        tipo_calculo: generalidades.tipoCalculo || 'PERCENTUAL',
-        observacoes: generalidades.observacoes || '',
-        frete_minimo: toNumberOrNull(generalidades.freteMinimo),
-        regra_calculo: generalidades.regraCalculo || '',
-      });
-
-      (origem.rotas || []).forEach((item) => {
-        const {
-          id,
-          nomeRota,
-          ibgeOrigem,
-          ibgeDestino,
-          canal,
-          prazoEntregaDias,
-          valorMinimoFrete,
-          codigoUnidade,
-          cepInicial,
-          cepFinal,
-          metodoEnvio,
-          inicioVigencia,
-          fimVigencia,
-          ...extra
-        } = item || {};
-
-        rotasRows.push({
-          id: safeUuid(id, usedRotas),
-          origem_id: origemId,
-          nome_rota: nomeRota || '',
-          ibge_origem: ibgeOrigem || '',
-          ibge_destino: ibgeDestino || '',
-          canal: canal || origem.canal || 'ATACADO',
-          prazo_entrega_dias: toNumberOrNull(prazoEntregaDias),
-          valor_minimo_frete: toNumberOrNull(valorMinimoFrete),
-          codigo_unidade: codigoUnidade || '',
-          cep_inicial: cepInicial || '',
-          cep_final: cepFinal || '',
-          metodo_envio: metodoEnvio || '',
-          inicio_vigencia: inicioVigencia || '',
-          fim_vigencia: fimVigencia || '',
-          extra,
-        });
-      });
-
-      (origem.cotacoes || []).forEach((item) => {
-        const { id, rota, pesoMin, pesoMax, rsKg, excesso, percentual, valorFixo, ...extra } =
-          item || {};
-
-        cotacoesRows.push({
-          id: safeUuid(id, usedCotacoes),
-          origem_id: origemId,
-          rota: rota || '',
-          peso_min: toNumberOrNull(pesoMin),
-          peso_max: toNumberOrNull(pesoMax),
-          rs_kg: toNumberOrNull(rsKg),
-          excesso: toNumberOrNull(excesso),
-          percentual: toNumberOrNull(percentual),
-          valor_fixo: toNumberOrNull(valorFixo),
-          extra,
-        });
-      });
-
-      (origem.taxasEspeciais || []).forEach((item) => {
-        const {
-          id,
-          ibgeDestino,
-          tda,
-          tdr,
-          trt,
-          suframa,
-          outras,
-          gris,
-          grisMinimo,
-          adVal,
-          adValMinimo,
-          ...extra
-        } = item || {};
-
-        taxasRows.push({
-          id: safeUuid(id, usedTaxas),
-          origem_id: origemId,
-          ibge_destino: ibgeDestino || '',
-          tda: toNumberOrNull(tda),
-          tdr: toNumberOrNull(tdr),
-          trt: toNumberOrNull(trt),
-          suframa: toNumberOrNull(suframa),
-          outras: toNumberOrNull(outras),
-          gris: toNumberOrNull(gris),
-          gris_minimo: toNumberOrNull(grisMinimo),
-          ad_val: toNumberOrNull(adVal),
-          ad_val_minimo: toNumberOrNull(adValMinimo),
-          extra,
-        });
-      });
-    });
-  });
-
-  return {
-    transportadorasRows,
-    origensRows,
-    generalidadesRows,
-    rotasRows,
-    cotacoesRows,
-    taxasRows,
-  };
-}
-
-export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHAVE) {
-  const payload = buildSnapshotPayload(transportadoras, chave);
-
+export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHAVE) {
   if (!isSupabaseConfigured()) {
+    const payload = buildSnapshotPayload(transportadoras, chave);
     localStorage.setItem(FALLBACK_KEY, JSON.stringify(payload));
-    return {
-      modo: 'local',
-      updated_at: payload.payload.updatedAt,
-      contagens: {
-        transportadoras: transportadoras?.length || 0,
-      },
-    };
+    return { modo: 'local', secao };
   }
 
   const supabase = ensureClient();
@@ -471,13 +409,43 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
     taxasRows,
   } = mapBaseToTables(transportadoras);
 
-  await replaceTable(supabase, 'transportadoras', transportadorasRows);
-  await replaceTable(supabase, 'origens', origensRows);
-  await replaceTable(supabase, 'generalidades', generalidadesRows);
-  await replaceTable(supabase, 'rotas', rotasRows);
-  await replaceTable(supabase, 'cotacoes', cotacoesRows);
-  await replaceTable(supabase, 'taxas_especiais', taxasRows);
+  if (secao === 'generalidades') {
+    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
+    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
+    await replaceSection(supabase, 'generalidades', 'origem_id', generalidadesRows, 'origem_id');
+  }
 
+  if (secao === 'rotas') {
+    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
+    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
+    await replaceSection(supabase, 'rotas', 'id', rotasRows, 'id');
+  }
+
+  if (secao === 'cotacoes') {
+    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
+    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
+    await replaceSection(supabase, 'cotacoes', 'id', cotacoesRows, 'id');
+  }
+
+  if (secao === 'taxas') {
+    await replaceSection(supabase, 'transportadoras', 'id', transportadorasRows, 'id');
+    await replaceSection(supabase, 'origens', 'id', origensRows, 'id');
+    await replaceSection(supabase, 'taxas_especiais', 'id', taxasRows, 'id');
+  }
+
+  if (secao === 'base_completa') {
+    const payload = buildSnapshotPayload(transportadoras, chave);
+    const { data, error } = await supabase
+      .from('cadastros_snapshot')
+      .upsert(payload, { onConflict: 'chave' })
+      .select('id, updated_at')
+      .single();
+
+    if (error) throw error;
+    return { modo: 'supabase', secao, updated_at: data?.updated_at };
+  }
+
+  const payload = buildSnapshotPayload(transportadoras, chave);
   const { data, error } = await supabase
     .from('cadastros_snapshot')
     .upsert(payload, { onConflict: 'chave' })
@@ -486,18 +454,11 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
 
   if (error) throw error;
 
-  return {
-    ...data,
-    modo: 'supabase',
-    contagens: {
-      transportadoras: transportadorasRows.length,
-      origens: origensRows.length,
-      generalidades: generalidadesRows.length,
-      rotas: rotasRows.length,
-      cotacoes: cotacoesRows.length,
-      taxasEspeciais: taxasRows.length,
-    },
-  };
+  return { modo: 'supabase', secao, updated_at: data?.updated_at };
+}
+
+export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHAVE) {
+  return salvarSecaoDb(transportadoras, 'base_completa', chave);
 }
 
 export async function salvarSnapshotFretesDb(transportadoras, chave = SNAPSHOT_CHAVE) {

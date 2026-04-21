@@ -1,8 +1,8 @@
-Substitua estes arquivos:
-- src/pages/DashboardPage.jsx
+Substitua:
+- src/services/freteDatabaseService.js
 - src/pages/ImportacaoPage.jsx
-- src/App.jsx
 
-Melhorias:
-1. Registro de importação agora chama registrarImportacao no Supabase.
-2. Dashboard mostra status da base, última atualização e botões Atualizar base / Sincronizar agora.
+Objetivo:
+- impedir que uma importação apague outra seção
+- leitura paginada acima de 1000
+- gravação por seção: rotas, cotacoes, taxas, generalidades
