@@ -1,7 +1,42 @@
 import { buildDashboardStats } from '../data/mockData';
 
-export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbrirTransportadoras, onAbrirImportacao, onResetarBase }) {
+function formatarDataHora(valor) {
+  if (!valor) return 'Ainda não sincronizado';
+  try {
+    return new Date(valor).toLocaleString('pt-BR');
+  } catch {
+    return String(valor);
+  }
+}
+
+function getStatus(syncStatus) {
+  if (syncStatus?.carregando) {
+    return { titulo: 'Carregando base', detalhe: 'Buscando dados mais recentes do banco.', classe: 'dark' };
+  }
+  if (syncStatus?.sincronizando) {
+    return { titulo: 'Sincronizando', detalhe: 'Salvando alterações no Supabase.', classe: 'dark' };
+  }
+  if (syncStatus?.erro) {
+    return { titulo: 'Erro na sincronização', detalhe: syncStatus.erro, classe: 'warn' };
+  }
+  if (syncStatus?.modo === 'local') {
+    return { titulo: 'Modo local', detalhe: 'Base local do navegador em uso.', classe: 'warn' };
+  }
+  return { titulo: 'Base atualizada', detalhe: 'Leitura e gravação conectadas ao Supabase.', classe: 'ok' };
+}
+
+export default function DashboardPage({
+  transportadoras,
+  onAbrirSimulador,
+  onAbrirTransportadoras,
+  onAbrirImportacao,
+  onResetarBase,
+  syncStatus,
+  onAtualizarBase,
+  onSincronizarAgora,
+}) {
   const stats = buildDashboardStats(transportadoras);
+  const status = getStatus(syncStatus);
 
   return (
     <div className="page-shell amd-dashboard-shell">
@@ -20,6 +55,24 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
           </div>
         </div>
         <button className="btn-secondary" onClick={onResetarBase}>↺ Restaurar base exemplo</button>
+      </div>
+
+      <div className="info-card amd-next-phase-card">
+        <div className="info-badge">🔄</div>
+        <div style={{ flex: 1 }}>
+          <div className="info-title">Status da base</div>
+          <div className="info-text" style={{ marginBottom: 8 }}>
+            <strong>{status.titulo}</strong> — {status.detalhe}
+          </div>
+          <div className="info-text">
+            <strong>Modo:</strong> {syncStatus?.modo === 'local' ? 'Local' : 'Supabase'} ·{' '}
+            <strong>Última atualização:</strong> {formatarDataHora(syncStatus?.ultimaSincronizacao)}
+          </div>
+        </div>
+        <div className="actions-right">
+          <button className="btn-secondary" onClick={onAtualizarBase}>Atualizar base</button>
+          <button className="btn-primary" onClick={onSincronizarAgora}>Sincronizar agora</button>
+        </div>
       </div>
 
       <div className="stats-grid">
@@ -47,7 +100,7 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A próxima fase conecta isso à base persistente.
+            A base agora pode ser conferida e atualizada direto pelo dashboard.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>
@@ -59,16 +112,6 @@ export default function DashboardPage({ transportadoras, onAbrirSimulador, onAbr
             correto da Verum.
           </p>
           <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
-        </div>
-      </div>
-
-      <div className="info-card amd-next-phase-card">
-        <div className="info-badge">🚚</div>
-        <div>
-          <div className="info-title">Próxima fase recomendada</div>
-          <div className="info-text">
-            Persistir a base, armazenar histórico de importações e preparar a simulação sobre o realizado.
-          </div>
         </div>
       </div>
     </div>

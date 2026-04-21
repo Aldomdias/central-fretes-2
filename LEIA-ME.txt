@@ -1,14 +1,8 @@
-Substitua:
-- src/services/freteDatabaseService.js
+Substitua estes arquivos:
+- src/pages/DashboardPage.jsx
+- src/pages/ImportacaoPage.jsx
+- src/App.jsx
 
-Causa do erro atual:
-- o proxy-status mostrou PostgREST error=23503
-- isso é violação de chave estrangeira
-- a ordem de gravação estava errada: tentava gravar rotas antes de origens/transportadoras
-
-Correção:
-- agora salva na ordem certa:
-  transportadoras -> origens -> generalidades -> rotas -> cotacoes -> taxas_especiais
-- mantém as correções anteriores de UUID e upsert
-
-Depois de publicar, teste a importação de novo.
+Melhorias:
+1. Registro de importação agora chama registrarImportacao no Supabase.
+2. Dashboard mostra status da base, última atualização e botões Atualizar base / Sincronizar agora.

@@ -6,6 +6,7 @@ import {
   exportarSecao,
   parseFileToRows,
 } from '../utils/importacao';
+import { registrarImportacao } from '../services/freteDatabaseService';
 
 const TIPOS = [
   { id: 'rotas', label: 'Rotas' },
@@ -105,16 +106,32 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
 
         store.importarPayload(payload, tipo);
 
-        novasEntradas.push({
+        const entrada = {
           arquivo: file.name,
           tipo,
           canal: canalImportacao,
           inseridos: payload.inseridos,
           erros: payload.erros,
           meta: parsed.meta,
-        });
+        };
+
+        try {
+          await registrarImportacao(entrada);
+        } catch (registroError) {
+          entrada.erros = [
+            ...(entrada.erros || []),
+            {
+              linha: '-',
+              coluna: 'registro',
+              valor: '',
+              mensagem: `Importado, mas não foi possível registrar histórico: ${registroError.message || 'erro desconhecido'}`,
+            },
+          ];
+        }
+
+        novasEntradas.push(entrada);
       } catch (error) {
-        novasEntradas.push({
+        const entradaErro = {
           arquivo: file.name,
           tipo,
           canal: canalImportacao,
@@ -127,8 +144,20 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               mensagem: error.message || 'Erro ao ler arquivo.',
             },
           ],
-        });
+        };
+
+        try {
+          await registrarImportacao(entradaErro);
+        } catch {}
+
+        novasEntradas.push(entradaErro);
       }
+    }
+
+    if (store.sincronizarAgora) {
+      try {
+        await store.sincronizarAgora();
+      } catch {}
     }
 
     setHistorico((prev) => [...novasEntradas, ...prev].slice(0, 15));
@@ -259,133 +288,117 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
             {historico.length ? (
               historico.map((item, index) => (
                 <div
-                  className="list-card neutral process-card"
+                  className="process-card"
                   key={`${item.arquivo}-${index}`}
                   onClick={() => setDetalhe(item)}
                 >
-                  <div>
-                    <div className="list-title small">{item.arquivo}</div>
-                    <div className="list-subtitle">
-                      Tipo: {item.tipo} · Canal: {item.canal || '-'} · Inseridos:{' '}
-                      {item.inseridos}
-                    </div>
-                    {!!item.erros.length && (
-                      <div className="error-text">
-                        {item.erros.length} erro(s) encontrado(s)
-                      </div>
-                    )}
+                  <div className="detail-title">{item.arquivo}</div>
+                  <div className="detail-subtitle">
+                    Tipo: {item.tipo} · Canal: {item.canal} · Inseridos:{' '}
+                    {item.inseridos}
+                  </div>
+                  <div className="detail-subtitle">
+                    {item.erros?.length
+                      ? `${item.erros.length} inconsistência(s)`
+                      : 'Sem inconsistências'}
                   </div>
                 </div>
               ))
             ) : (
               <div className="empty-note">
-                Nenhum arquivo importado nesta sessão.
+                Ainda não houve importações nesta sessão.
               </div>
             )}
           </div>
+
+          {detalhe && (
+            <div className="detail-box">
+              <div className="detail-title">{detalhe.arquivo}</div>
+              <div className="detail-subtitle">
+                Tipo: {detalhe.tipo} · Inseridos: {detalhe.inseridos}
+              </div>
+
+              {detalhe.erros?.length ? (
+                <div className="table-card slim-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Linha</th>
+                        <th>Coluna</th>
+                        <th>Valor</th>
+                        <th>Mensagem</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detalhe.erros.map((erro, idx) => (
+                        <tr key={`${erro.linha}-${idx}`}>
+                          <td>{erro.linha}</td>
+                          <td>{erro.coluna}</td>
+                          <td>{erro.valor}</td>
+                          <td>{erro.mensagem}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="hint-box compact">
+                  Arquivo processado sem inconsistências.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      {detalhe && (
-        <div className="panel-card">
-          <div className="tab-panel-header spaced">
-            <div>
-              <div className="panel-title no-margin">Detalhe do processamento</div>
-              <p>
-                {detalhe.arquivo} · Canal: {detalhe.canal || '-'} · Inseridos:{' '}
-                {detalhe.inseridos} · Cabeçalho encontrado na linha{' '}
-                {detalhe.meta?.headerIndex || '-'}
-              </p>
-            </div>
-          </div>
-
-          {detalhe.erros?.length ? (
-            <div className="table-card">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Linha</th>
-                    <th>Coluna</th>
-                    <th>Mensagem</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {detalhe.erros.slice(0, 50).map((erro, idx) => (
-                    <tr key={idx}>
-                      <td>{erro.linha}</td>
-                      <td>{erro.coluna || 'layout'}</td>
-                      <td>{erro.mensagem}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="mini-feedback ok">Arquivo processado sem erros.</div>
-          )}
-        </div>
-      )}
-
-      <div className="panel-card">
-        <div className="tab-panel-header spaced">
+      <div className="table-card">
+        <div className="card-topo">
           <div>
-            <div className="panel-title no-margin">
-              📍 Cobertura por transportadora e origem
+            <div className="list-title">Cobertura por origem</div>
+            <div className="list-subtitle">
+              Use este painel para saber onde ainda falta rota, frete ou
+              generalidades.
             </div>
-            <p>
-              Use este painel para enxergar rápido o que ainda está sem frete
-              importado.
-            </p>
           </div>
 
-          <input
-            className="search-input small-width"
-            placeholder="Filtrar por transportadora ou origem"
-            value={filtro}
-            onChange={(e) => setFiltro(e.target.value)}
-          />
+          <div className="field small-width">
+            <label>Buscar origem / transportadora</label>
+            <input
+              value={filtro}
+              onChange={(e) => setFiltro(e.target.value)}
+              placeholder="Ex.: Alta Floresta ou Gercadi"
+            />
+          </div>
         </div>
 
-        <div className="table-card">
-          <table>
-            <thead>
-              <tr>
-                <th>Transportadora</th>
-                <th>Origem</th>
-                <th>Canal</th>
-                <th>Cobertura</th>
-                <th>Rotas</th>
-                <th>Cotações</th>
-                <th>Taxas</th>
-                <th>Destinos</th>
+        <table>
+          <thead>
+            <tr>
+              <th>Transportadora</th>
+              <th>Origem</th>
+              <th>Canal</th>
+              <th>Generalidades</th>
+              <th>Rotas</th>
+              <th>Fretes</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pendencias.map((item) => (
+              <tr key={`${item.transportadora}-${item.origem}-${item.canal}`}>
+                <td>{item.transportadora}</td>
+                <td>{item.origem}</td>
+                <td>{item.canal}</td>
+                <td>{item.generalidades ? 'OK' : 'Pendente'}</td>
+                <td>{item.rotas}</td>
+                <td>{item.cotacoes}</td>
+                <td>
+                  <CoberturaBadge value={item.status} />
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {pendencias.length ? (
-                pendencias.map((item, idx) => (
-                  <tr key={`${item.transportadora}-${item.origem}-${idx}`}>
-                    <td>{item.transportadora}</td>
-                    <td>{item.origem}</td>
-                    <td>{item.canal}</td>
-                    <td>
-                      <CoberturaBadge value={item.cobertura} />
-                    </td>
-                    <td>{item.totalRotas}</td>
-                    <td>{item.totalCotacoes}</td>
-                    <td>{item.totalTaxas}</td>
-                    <td>{item.destinos}</td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan="8" className="empty-cell">
-                    Nenhum resultado encontrado.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
