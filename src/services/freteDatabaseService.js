@@ -6,6 +6,24 @@ const NEVER_UUID = '00000000-0000-0000-0000-000000000000';
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const TABLE_KEY_FIELD = {
+  transportadoras: 'id',
+  origens: 'id',
+  generalidades: 'origem_id',
+  rotas: 'id',
+  cotacoes: 'id',
+  taxas_especiais: 'id',
+};
+
+const TABLE_CONFLICT_FIELD = {
+  transportadoras: 'id',
+  origens: 'id',
+  generalidades: 'origem_id',
+  rotas: 'id',
+  cotacoes: 'id',
+  taxas_especiais: 'id',
+};
+
 function ensureClient() {
   const client = getSupabaseClient();
   if (!client) {
@@ -236,7 +254,10 @@ export async function carregarBaseCompletaDb() {
 }
 
 async function replaceTable(supabase, table, rows) {
-  const { error: deleteError } = await supabase.from(table).delete().neq('id', NEVER_UUID);
+  const keyField = TABLE_KEY_FIELD[table] || 'id';
+  const conflictField = TABLE_CONFLICT_FIELD[table] || 'id';
+
+  const { error: deleteError } = await supabase.from(table).delete().neq(keyField, NEVER_UUID);
   if (deleteError) {
     throw new Error(`Erro ao limpar tabela ${table}: ${deleteError.message || deleteError.details || 'erro desconhecido'}`);
   }
@@ -248,7 +269,7 @@ async function replaceTable(supabase, table, rows) {
     const chunk = rows.slice(index, index + chunkSize);
     const { error } = await supabase
       .from(table)
-      .upsert(chunk, { onConflict: 'id' });
+      .upsert(chunk, { onConflict: conflictField });
 
     if (error) {
       throw new Error(`Erro ao gravar em ${table}: ${error.message || error.details || 'erro desconhecido'}`);
@@ -266,7 +287,6 @@ function mapBaseToTables(transportadoras) {
 
   const usedTransportadoras = new Set();
   const usedOrigens = new Set();
-  const usedGeneralidades = new Set();
   const usedRotas = new Set();
   const usedCotacoes = new Set();
   const usedTaxas = new Set();
@@ -293,7 +313,6 @@ function mapBaseToTables(transportadoras) {
       });
 
       generalidadesRows.push({
-        id: safeUuid(origemId, usedGeneralidades),
         origem_id: origemId,
         incide_icms: toBoolean(generalidades.incideIcms),
         aliquota_icms: toNumberOrNull(generalidades.aliquotaIcms),
@@ -435,9 +454,6 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
     taxasRows,
   } = mapBaseToTables(transportadoras);
 
-  // Ordem correta para respeitar FKs:
-  // 1) pais
-  // 2) filhos
   await replaceTable(supabase, 'transportadoras', transportadorasRows);
   await replaceTable(supabase, 'origens', origensRows);
   await replaceTable(supabase, 'generalidades', generalidadesRows);
