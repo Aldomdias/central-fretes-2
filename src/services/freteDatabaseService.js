@@ -3,6 +3,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
 const NEVER_UUID = '00000000-0000-0000-0000-000000000000';
+const PAGE_SIZE = 1000;
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -82,6 +83,33 @@ function buildSnapshotPayload(transportadoras, chave = SNAPSHOT_CHAVE) {
       updatedAt: new Date().toISOString(),
     },
   };
+}
+
+async function fetchAllRows(supabase, table, orderBy = null, ascending = true) {
+  const allRows = [];
+  let from = 0;
+
+  while (true) {
+    let query = supabase
+      .from(table)
+      .select('*')
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (orderBy) {
+      query = query.order(orderBy, { ascending });
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const rows = data || [];
+    allRows.push(...rows);
+
+    if (rows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return allRows;
 }
 
 function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspeciais) {
@@ -181,26 +209,15 @@ export async function carregarBaseCompletaDb() {
 
   const supabase = ensureClient();
 
-  const [transportadorasRes, origensRes, generalidadesRes, rotasRes, cotacoesRes, taxasRes] =
+  const [transportadoras, origens, generalidades, rotas, cotacoes, taxas] =
     await Promise.all([
-      supabase.from('transportadoras').select('*').order('nome', { ascending: true }),
-      supabase.from('origens').select('*').order('cidade', { ascending: true }),
-      supabase.from('generalidades').select('*'),
-      supabase.from('rotas').select('*'),
-      supabase.from('cotacoes').select('*'),
-      supabase.from('taxas_especiais').select('*'),
+      fetchAllRows(supabase, 'transportadoras', 'nome', true),
+      fetchAllRows(supabase, 'origens', 'cidade', true),
+      fetchAllRows(supabase, 'generalidades'),
+      fetchAllRows(supabase, 'rotas'),
+      fetchAllRows(supabase, 'cotacoes'),
+      fetchAllRows(supabase, 'taxas_especiais'),
     ]);
-
-  const responses = [transportadorasRes, origensRes, generalidadesRes, rotasRes, cotacoesRes, taxasRes];
-  const firstError = responses.find((item) => item.error)?.error;
-  if (firstError) throw firstError;
-
-  const transportadoras = transportadorasRes.data || [];
-  const origens = origensRes.data || [];
-  const generalidades = generalidadesRes.data || [];
-  const rotas = rotasRes.data || [];
-  const cotacoes = cotacoesRes.data || [];
-  const taxas = taxasRes.data || [];
 
   const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = new Map();
