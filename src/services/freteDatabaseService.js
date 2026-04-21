@@ -2,6 +2,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
+const NEVER_UUID = '00000000-0000-0000-0000-000000000000';
 
 function ensureClient() {
   const client = getSupabaseClient();
@@ -212,8 +213,10 @@ export async function carregarBaseCompletaDb() {
 }
 
 async function replaceTable(supabase, table, rows) {
-  const { error: deleteError } = await supabase.from(table).delete().neq('id', '__nunca__');
-  if (deleteError) throw deleteError;
+  const { error: deleteError } = await supabase.from(table).delete().neq('id', NEVER_UUID);
+  if (deleteError) {
+    throw new Error(`Erro ao limpar tabela ${table}: ${deleteError.message || deleteError.details || 'erro desconhecido'}`);
+  }
 
   if (!rows.length) return;
 
@@ -221,7 +224,9 @@ async function replaceTable(supabase, table, rows) {
   for (let index = 0; index < rows.length; index += chunkSize) {
     const chunk = rows.slice(index, index + chunkSize);
     const { error } = await supabase.from(table).insert(chunk);
-    if (error) throw error;
+    if (error) {
+      throw new Error(`Erro ao inserir em ${table}: ${error.message || error.details || 'erro desconhecido'}`);
+    }
   }
 }
 
