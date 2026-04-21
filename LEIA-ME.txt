@@ -1,9 +1,14 @@
 Substitua:
 - src/services/freteDatabaseService.js
 
-Correção:
-- gera UUID novo quando o id vier inválido, repetido ou vazio
-- usa upsert por id na gravação dos lotes
-- isso elimina o 409 Conflict de rotas quando houver ids duplicados/repetidos no payload
+Causa do erro atual:
+- o proxy-status mostrou PostgREST error=23503
+- isso é violação de chave estrangeira
+- a ordem de gravação estava errada: tentava gravar rotas antes de origens/transportadoras
 
-Depois de publicar, teste de novo a importação/salvamento.
+Correção:
+- agora salva na ordem certa:
+  transportadoras -> origens -> generalidades -> rotas -> cotacoes -> taxas_especiais
+- mantém as correções anteriores de UUID e upsert
+
+Depois de publicar, teste a importação de novo.

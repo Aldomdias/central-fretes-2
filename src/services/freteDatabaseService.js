@@ -435,12 +435,15 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
     taxasRows,
   } = mapBaseToTables(transportadoras);
 
-  await replaceTable(supabase, 'taxas_especiais', taxasRows);
-  await replaceTable(supabase, 'cotacoes', cotacoesRows);
-  await replaceTable(supabase, 'rotas', rotasRows);
-  await replaceTable(supabase, 'generalidades', generalidadesRows);
-  await replaceTable(supabase, 'origens', origensRows);
+  // Ordem correta para respeitar FKs:
+  // 1) pais
+  // 2) filhos
   await replaceTable(supabase, 'transportadoras', transportadorasRows);
+  await replaceTable(supabase, 'origens', origensRows);
+  await replaceTable(supabase, 'generalidades', generalidadesRows);
+  await replaceTable(supabase, 'rotas', rotasRows);
+  await replaceTable(supabase, 'cotacoes', cotacoesRows);
+  await replaceTable(supabase, 'taxas_especiais', taxasRows);
 
   const { data, error } = await supabase
     .from('cadastros_snapshot')
