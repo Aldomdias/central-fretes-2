@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   baixarModelo,
   buildCoberturaReport,
@@ -6,7 +6,10 @@ import {
   exportarSecao,
   parseFileToRows,
 } from '../utils/importacao';
-import { registrarImportacao } from '../services/freteDatabaseService';
+import {
+  listarImportacoes,
+  registrarImportacao,
+} from '../services/freteDatabaseService';
 
 const TIPOS = [
   { id: 'rotas', label: 'Rotas' },
@@ -14,6 +17,10 @@ const TIPOS = [
   { id: 'taxas', label: 'Taxas Especiais' },
   { id: 'generalidades', label: 'Generalidades' },
 ];
+
+const HISTORICO_KEY = 'simulador-fretes-importacoes-v1';
+const LIMITE_HISTORICO = 15;
+const LIMITE_SUGERIDO_ARQUIVOS = 15;
 
 function SummaryCard({ title, value, subtitle }) {
   return (
@@ -25,18 +32,129 @@ function SummaryCard({ title, value, subtitle }) {
   );
 }
 
-function CoberturaBadge({ value }) {
-  const cls = value === 'Completa' ? 'coverage-badge ok' : 'coverage-badge warn';
-  return <span className={cls}>{value}</span>;
+function formatarDuracao(ms) {
+  if (!ms) return '0s';
+  const segundos = Math.max(1, Math.round(ms / 1000));
+  if (segundos < 60) return `${segundos}s`;
+  const minutos = Math.floor(segundos / 60);
+  const resto = segundos % 60;
+  return resto ? `${minutos}min ${resto}s` : `${minutos}min`;
+}
+
+function formatarDataHora(value) {
+  if (!value) return '—';
+  const data = new Date(value);
+  if (Number.isNaN(data.getTime())) return '—';
+  return data.toLocaleString('pt-BR');
+}
+
+function persistirHistoricoLocal(historico) {
+  try {
+    localStorage.setItem(HISTORICO_KEY, JSON.stringify(historico.slice(0, LIMITE_HISTORICO)));
+  } catch {}
+}
+
+function carregarHistoricoLocal() {
+  try {
+    const raw = localStorage.getItem(HISTORICO_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function consolidarHistorico(entradas = []) {
+  const vistos = new Set();
+  return entradas
+    .filter(Boolean)
+    .filter((item) => {
+      const chave = [
+        item.arquivo,
+        item.tipo,
+        item.canal,
+        item.criadoEm || item.finalizadoEm || '',
+      ].join('|');
+      if (vistos.has(chave)) return false;
+      vistos.add(chave);
+      return true;
+    })
+    .sort((a, b) => {
+      const dataA = new Date(a.criadoEm || a.finalizadoEm || 0).getTime();
+      const dataB = new Date(b.criadoEm || b.finalizadoEm || 0).getTime();
+      return dataB - dataA;
+    })
+    .slice(0, LIMITE_HISTORICO);
+}
+
+function mapImportacaoRemota(item) {
+  return {
+    arquivo: item.arquivo || 'Arquivo sem nome',
+    tipo: item.tipo || '',
+    canal: item.canal || 'ATACADO',
+    inseridos: item.inseridos || 0,
+    erros: Array.isArray(item.erros) ? item.erros : [],
+    meta: item.meta || {},
+    duracaoMs: item.duracaoMs || item.duracao_ms || 0,
+    status: item.status || (item.erros?.length ? 'concluido-com-erros' : 'concluido'),
+    criadoEm: item.criadoEm || item.criado_em || item.finalizadoEm || item.finalizado_em || '',
+    finalizadoEm: item.finalizadoEm || item.finalizado_em || item.criadoEm || item.criado_em || '',
+    etapaAtual: item.etapaAtual || item.etapa_atual || '',
+  };
 }
 
 export default function ImportacaoPage({ store, transportadoras, onAbrirTransportadoras }) {
   const [tipo, setTipo] = useState('rotas');
   const [processando, setProcessando] = useState(false);
-  const [historico, setHistorico] = useState([]);
+  const [historico, setHistorico] = useState(() => carregarHistoricoLocal());
   const [filtro, setFiltro] = useState('');
   const [detalhe, setDetalhe] = useState(null);
   const [canalImportacao, setCanalImportacao] = useState('ATACADO');
+  const [statusImportacao, setStatusImportacao] = useState({
+    totalArquivos: 0,
+    arquivoAtual: '',
+    arquivoIndex: 0,
+    etapa: 'Aguardando importação',
+    sucessos: 0,
+    falhas: 0,
+    totalInseridos: 0,
+    totalErros: 0,
+    iniciadoEm: '',
+    finalizadoEm: '',
+    duracaoMs: 0,
+    concluido: false,
+  });
+
+  useEffect(() => {
+    let ativo = true;
+
+    async function carregarHistorico() {
+      try {
+        const remoto = await listarImportacoes(LIMITE_HISTORICO);
+        if (!ativo || !remoto?.length) return;
+        const combinado = consolidarHistorico([
+          ...remoto.map(mapImportacaoRemota),
+          ...carregarHistoricoLocal(),
+        ]);
+        setHistorico(combinado);
+        if (!detalhe && combinado[0]) setDetalhe(combinado[0]);
+        persistirHistoricoLocal(combinado);
+      } catch {
+        const local = carregarHistoricoLocal();
+        if (!ativo) return;
+        setHistorico(local);
+        if (!detalhe && local[0]) setDetalhe(local[0]);
+      }
+    }
+
+    carregarHistorico();
+    return () => {
+      ativo = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    persistirHistoricoLocal(historico);
+  }, [historico]);
 
   const cobertura = useMemo(
     () => buildCoberturaReport(transportadoras),
@@ -94,25 +212,73 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
 
+    const inicioLote = Date.now();
     setProcessando(true);
-    const novasEntradas = [];
+    setDetalhe(null);
+    setStatusImportacao({
+      totalArquivos: files.length,
+      arquivoAtual: files[0]?.name || '',
+      arquivoIndex: 0,
+      etapa: 'Preparando importação',
+      sucessos: 0,
+      falhas: 0,
+      totalInseridos: 0,
+      totalErros: 0,
+      iniciadoEm: new Date(inicioLote).toISOString(),
+      finalizadoEm: '',
+      duracaoMs: 0,
+      concluido: false,
+    });
 
-    for (const file of files) {
+    const novasEntradas = [];
+    let sucessos = 0;
+    let falhas = 0;
+    let totalInseridos = 0;
+    let totalErros = 0;
+
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const inicioArquivo = Date.now();
+
+      setStatusImportacao((prev) => ({
+        ...prev,
+        arquivoAtual: file.name,
+        arquivoIndex: index + 1,
+        etapa: 'Lendo arquivo',
+      }));
+
       try {
         const parsed = await parseFileToRows(file, tipo);
+
+        setStatusImportacao((prev) => ({
+          ...prev,
+          etapa: 'Montando payload',
+        }));
+
         const payload = buildImportPayload(parsed, tipo, {
           canal: canalImportacao,
         });
 
+        setStatusImportacao((prev) => ({
+          ...prev,
+          etapa: 'Salvando na base',
+        }));
+
         const resultado = await store.importarESalvar(payload, tipo);
+        const erros = [...(payload.erros || [])];
 
         const entrada = {
           arquivo: file.name,
           tipo,
           canal: canalImportacao,
           inseridos: payload.inseridos,
-          erros: payload.erros,
+          erros,
           meta: parsed.meta,
+          duracaoMs: Date.now() - inicioArquivo,
+          status: erros.length ? 'concluido-com-erros' : 'concluido',
+          criadoEm: new Date(inicioArquivo).toISOString(),
+          finalizadoEm: new Date().toISOString(),
+          etapaAtual: 'Finalizado',
         };
 
         try {
@@ -127,6 +293,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               mensagem: `Importado, mas não foi possível registrar histórico: ${registroError.message || 'erro desconhecido'}`,
             },
           ];
+          entrada.status = 'concluido-com-erros';
         }
 
         if (resultado?.ok === false) {
@@ -139,8 +306,17 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               mensagem: resultado?.erro?.message || 'Falha ao salvar no Supabase.',
             },
           ];
+          entrada.status = 'erro';
         }
 
+        if (entrada.status === 'erro') {
+          falhas += 1;
+        } else {
+          sucessos += 1;
+        }
+
+        totalInseridos += entrada.inseridos || 0;
+        totalErros += entrada.erros?.length || 0;
         novasEntradas.push(entrada);
       } catch (error) {
         const entradaErro = {
@@ -156,27 +332,60 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               mensagem: error.message || 'Erro ao ler arquivo.',
             },
           ],
+          duracaoMs: Date.now() - inicioArquivo,
+          status: 'erro',
+          criadoEm: new Date(inicioArquivo).toISOString(),
+          finalizadoEm: new Date().toISOString(),
+          etapaAtual: 'Falha ao processar arquivo',
         };
 
         try {
           await registrarImportacao(entradaErro);
         } catch {}
 
+        falhas += 1;
+        totalErros += entradaErro.erros.length;
         novasEntradas.push(entradaErro);
       }
+
+      setStatusImportacao((prev) => ({
+        ...prev,
+        sucessos,
+        falhas,
+        totalInseridos,
+        totalErros,
+        etapa: index + 1 < files.length ? 'Preparando próximo arquivo' : 'Finalizando lote',
+      }));
     }
 
-    if (store.carregarDoBanco) {
-      try {
-        await store.carregarDoBanco();
-      } catch {}
-    }
+    const finalizadoEm = new Date().toISOString();
+    const duracaoMs = Date.now() - inicioLote;
+    const historicoAtualizado = consolidarHistorico([...novasEntradas, ...historico]);
 
-    setHistorico((prev) => [...novasEntradas, ...prev].slice(0, 15));
-    setDetalhe(novasEntradas[0] || null);
+    setHistorico(historicoAtualizado);
+    setDetalhe(novasEntradas[0] || historicoAtualizado[0] || null);
+    setStatusImportacao((prev) => ({
+      ...prev,
+      etapa: falhas ? 'Concluído com alertas' : 'Concluído com sucesso',
+      finalizadoEm,
+      duracaoMs,
+      concluido: true,
+      arquivoAtual: novasEntradas[novasEntradas.length - 1]?.arquivo || prev.arquivoAtual,
+      arquivoIndex: files.length,
+      sucessos,
+      falhas,
+      totalInseridos,
+      totalErros,
+    }));
     setProcessando(false);
     event.target.value = '';
   };
+
+  const progressoPercentual = statusImportacao.totalArquivos
+    ? Math.round((statusImportacao.arquivoIndex / statusImportacao.totalArquivos) * 100)
+    : 0;
+
+  const ultimoProcessamento = historico[0] || detalhe;
 
   return (
     <div className="page-shell">
@@ -227,6 +436,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                 key={item.id}
                 className={tipo === item.id ? 'toggle-btn active' : 'toggle-btn'}
                 onClick={() => setTipo(item.id)}
+                disabled={processando}
               >
                 {item.label}
               </button>
@@ -244,6 +454,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               <select
                 value={canalImportacao}
                 onChange={(e) => setCanalImportacao(e.target.value)}
+                disabled={processando}
               >
                 <option value="ATACADO">ATACADO</option>
                 <option value="B2C">B2C</option>
@@ -258,22 +469,23 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           </div>
 
           <div className="toolbar-wrap">
-            <button className="btn-secondary" onClick={() => baixarModelo(tipo)}>
+            <button className="btn-secondary" onClick={() => baixarModelo(tipo)} disabled={processando}>
               Baixar Modelo
             </button>
 
-            <button className="btn-secondary" onClick={exportarMassa}>
+            <button className="btn-secondary" onClick={exportarMassa} disabled={processando}>
               Exportar Atual
             </button>
 
-            <label className="btn-primary inline-upload">
-              {processando ? 'Processando...' : 'Importar arquivos'}
+            <label className={`btn-primary inline-upload ${processando ? 'disabled-like' : ''}`}>
+              {processando ? 'Importando arquivos...' : 'Importar arquivos'}
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv"
                 multiple
                 onChange={handleFiles}
                 hidden
+                disabled={processando}
               />
             </label>
           </div>
@@ -288,6 +500,64 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
             • Taxas atualizam só <strong>taxas especiais</strong>.
             <br />
             • Generalidades atualizam só <strong>generalidades</strong>.
+            <br />
+            • Recomendado: subir até <strong>{LIMITE_SUGERIDO_ARQUIVOS} arquivos por lote</strong> para acompanhar melhor o processamento.
+          </div>
+
+          <div className="import-status-box">
+            <div className="card-topo">
+              <div>
+                <div className="list-title">Status da importação</div>
+                <div className="detail-subtitle">
+                  {processando
+                    ? `Processando ${statusImportacao.arquivoIndex} de ${statusImportacao.totalArquivos}`
+                    : statusImportacao.concluido
+                      ? 'Último lote finalizado'
+                      : 'Aguardando novo lote'}
+                </div>
+              </div>
+              <span className={`coverage-badge ${statusImportacao.falhas ? 'warn' : 'ok'}`}>
+                {statusImportacao.etapa}
+              </span>
+            </div>
+
+            <div className="import-progress-track">
+              <div
+                className="import-progress-fill"
+                style={{ width: `${progressoPercentual}%` }}
+              />
+            </div>
+
+            <div className="summary-strip import-mini-summary">
+              <SummaryCard
+                title="Progresso"
+                value={`${progressoPercentual}%`}
+                subtitle={statusImportacao.totalArquivos ? `${statusImportacao.arquivoIndex}/${statusImportacao.totalArquivos} arquivo(s)` : 'nenhum lote ativo'}
+              />
+              <SummaryCard
+                title="Inseridos"
+                value={statusImportacao.totalInseridos}
+                subtitle="registros aceitos no lote"
+              />
+              <SummaryCard
+                title="Alertas / erros"
+                value={statusImportacao.totalErros}
+                subtitle={`${statusImportacao.falhas} arquivo(s) com falha`}
+              />
+              <SummaryCard
+                title="Duração"
+                value={formatarDuracao(statusImportacao.duracaoMs || (processando && statusImportacao.iniciadoEm ? Date.now() - new Date(statusImportacao.iniciadoEm).getTime() : 0))}
+                subtitle={statusImportacao.iniciadoEm ? `iniciado em ${formatarDataHora(statusImportacao.iniciadoEm)}` : 'sem processamento recente'}
+              />
+            </div>
+
+            <div className="hint-box compact">
+              <strong>Arquivo atual:</strong> {statusImportacao.arquivoAtual || '—'}
+              <br />
+              <strong>Etapa:</strong> {statusImportacao.etapa}
+              <br />
+              <strong>Finalizado em:</strong> {formatarDataHora(statusImportacao.finalizadoEm)}
+            </div>
           </div>
         </div>
 
@@ -299,33 +569,61 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               historico.map((item, index) => (
                 <div
                   className="process-card"
-                  key={`${item.arquivo}-${index}`}
+                  key={`${item.arquivo}-${item.criadoEm || index}`}
                   onClick={() => setDetalhe(item)}
                 >
-                  <div className="detail-title">{item.arquivo}</div>
-                  <div className="detail-subtitle">
-                    Tipo: {item.tipo} · Canal: {item.canal} · Inseridos:{' '}
-                    {item.inseridos}
+                  <div className="card-topo">
+                    <div>
+                      <div className="detail-title">{item.arquivo}</div>
+                      <div className="detail-subtitle">
+                        Tipo: {item.tipo} · Canal: {item.canal} · Inseridos: {item.inseridos}
+                      </div>
+                    </div>
+                    <span className={`coverage-badge ${item.status === 'erro' ? 'warn' : 'ok'}`}>
+                      {item.status === 'erro'
+                        ? 'Erro'
+                        : item.erros?.length
+                          ? 'Com alertas'
+                          : 'OK'}
+                    </span>
                   </div>
                   <div className="detail-subtitle">
                     {item.erros?.length
                       ? `${item.erros.length} inconsistência(s)`
                       : 'Sem inconsistências'}
                   </div>
+                  <div className="detail-subtitle">
+                    {formatarDataHora(item.finalizadoEm || item.criadoEm)} · {formatarDuracao(item.duracaoMs)}
+                  </div>
                 </div>
               ))
             ) : (
               <div className="empty-note">
-                Ainda não houve importações nesta sessão.
+                Ainda não houve importações registradas.
               </div>
             )}
           </div>
 
           {detalhe && (
             <div className="detail-box">
-              <div className="detail-title">{detalhe.arquivo}</div>
+              <div className="card-topo">
+                <div>
+                  <div className="detail-title">{detalhe.arquivo}</div>
+                  <div className="detail-subtitle">
+                    Tipo: {detalhe.tipo} · Inseridos: {detalhe.inseridos}
+                  </div>
+                </div>
+                <span className={`coverage-badge ${detalhe.status === 'erro' ? 'warn' : 'ok'}`}>
+                  {detalhe.status === 'erro'
+                    ? 'Erro'
+                    : detalhe.erros?.length
+                      ? 'Concluído com alertas'
+                      : 'Concluído'}
+                </span>
+              </div>
+
               <div className="detail-subtitle">
-                Tipo: {detalhe.tipo} · Inseridos: {detalhe.inseridos}
+                Canal: {detalhe.canal} · Processado em {formatarDataHora(detalhe.finalizadoEm || detalhe.criadoEm)} · Duração {formatarDuracao(detalhe.duracaoMs)}
               </div>
 
               {detalhe.erros?.length ? (
@@ -356,6 +654,12 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                   Arquivo processado sem inconsistências.
                 </div>
               )}
+            </div>
+          )}
+
+          {!detalhe && ultimoProcessamento && (
+            <div className="hint-box compact">
+              Último processamento: <strong>{ultimoProcessamento.arquivo}</strong>
             </div>
           )}
         </div>

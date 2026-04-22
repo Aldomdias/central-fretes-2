@@ -469,6 +469,24 @@ export async function buscarUltimoSnapshot() {
   return carregarSnapshotFretesDb();
 }
 
+
+export async function listarImportacoes(limit = 15) {
+  if (!isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('frete_importacoes')
+    .select('*')
+    .order('criado_em', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw error;
+  }
+
+  return data || [];
+}
+
 export async function registrarImportacao(payload) {
   if (!isSupabaseConfigured()) {
     return { ok: true, mode: 'local', payload };
