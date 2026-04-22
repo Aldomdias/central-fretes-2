@@ -33,8 +33,8 @@ export default function App() {
     setOrigemSelecionadaId(null);
   };
 
-  const abrirFormatacaoTabelas = () => {
-    setPaginaAtual('formatacao-tabelas');
+  const abrirFormatacao = () => {
+    setPaginaAtual('formatacao');
     setTransportadoraSelecionadaId(null);
     setOrigemSelecionadaId(null);
   };
@@ -61,7 +61,6 @@ export default function App() {
         onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
-        onAbrirFormatacaoTabelas={abrirFormatacaoTabelas}
         onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
         onAtualizarBase={store.carregarDoBanco}
@@ -78,7 +77,8 @@ export default function App() {
     content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
   }
 
-  if (paginaAtual === 'formatacao-tabelas') {
+
+  if (paginaAtual === 'formatacao') {
     content = <FormatacaoTabelasPage />;
   }
 
