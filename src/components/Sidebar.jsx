@@ -4,6 +4,7 @@ const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
+  { chave: 'formatacao-tabelas', label: 'Formatação de Tabelas', icon: '🧩' },
 ];
 
 const menuCadastros = [

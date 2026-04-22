@@ -4,6 +4,7 @@ import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
 import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
+import FormatacaoTabelasPage from './pages/FormatacaoTabelasPage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -32,6 +33,12 @@ export default function App() {
     setOrigemSelecionadaId(null);
   };
 
+  const abrirFormatacaoTabelas = () => {
+    setPaginaAtual('formatacao-tabelas');
+    setTransportadoraSelecionadaId(null);
+    setOrigemSelecionadaId(null);
+  };
+
   const abrirTransportadora = (id) => {
     setPaginaAtual('transportadoras');
     setTransportadoraSelecionadaId(id);
@@ -54,6 +61,7 @@ export default function App() {
         onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
+        onAbrirFormatacaoTabelas={abrirFormatacaoTabelas}
         onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
         onAtualizarBase={store.carregarDoBanco}
@@ -68,6 +76,10 @@ export default function App() {
 
   if (paginaAtual === 'importacao') {
     content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
+  }
+
+  if (paginaAtual === 'formatacao-tabelas') {
+    content = <FormatacaoTabelasPage />;
   }
 
   if (paginaAtual === 'transportadoras') {
