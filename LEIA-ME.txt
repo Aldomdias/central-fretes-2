@@ -1,10 +1,10 @@
-Substitua:
-- src/services/freteDatabaseService.js
-- src/data/store.js
-- src/pages/ImportacaoPage.jsx
+Pacote de correção do pacote 1
 
-Correção crítica:
-- remove a sincronização automática que zerava a base ao subir o deploy
-- importação passa a salvar por seção, sem apagar outras tabelas
-- leitura continua paginada, acima de 1000 registros
-- a simulação continua lendo do Supabase
+Correções incluídas:
+1. Evita erro ao registrar histórico em frete_importacoes por campos incompatíveis (ex.: criadoEm / criado_em).
+2. Sanitiza o payload do histórico antes de gravar no Supabase.
+3. Evita erro de chave única em transportadoras quando o nome já existe e a importação de fretes/cotações tenta recriar a transportadora.
+4. Reaproveita o ID existente da transportadora no banco pelo nome antes de salvar origens/cotações.
+
+Arquivo alterado:
+- src/services/freteDatabaseService.js
