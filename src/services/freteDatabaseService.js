@@ -570,6 +570,37 @@ export async function buscarUltimoSnapshot() {
   return carregarSnapshotFretesDb();
 }
 
+
+
+export async function listarImportacoes(limit = 15) {
+  if (!isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+
+  let query = supabase
+    .from('frete_importacoes')
+    .select('*')
+    .limit(limit);
+
+  // Tenta primeiro pela coluna mais comum do schema atual.
+  let response = await query.order('criado_em', { ascending: false });
+
+  // Fallback para bases antigas que possam estar usando camelCase.
+  if (response.error) {
+    response = await supabase
+      .from('frete_importacoes')
+      .select('*')
+      .order('criadoEm', { ascending: false })
+      .limit(limit);
+  }
+
+  if (response.error) {
+    throw response.error;
+  }
+
+  return response.data || [];
+}
+
 export async function registrarImportacao(payload) {
   const sanitized = sanitizeImportacaoPayload(payload);
 
