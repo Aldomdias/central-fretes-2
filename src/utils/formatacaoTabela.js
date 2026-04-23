@@ -245,10 +245,20 @@ export function gerarFretesAutomaticos(form) {
   const rotas = form.rotas || [];
   if (!rotas.length) return [];
 
+  const cotacoesUnicas = Array.from(
+    new Set(
+      rotas
+        .map((rota) => String(rota.cotacao || '').trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (!cotacoesUnicas.length) return [];
+
   if (String(form.tipoCalculo).toUpperCase() === 'PERCENTUAL') {
-    return rotas.map((rota) => ({
+    return cotacoesUnicas.map((cotacao) => ({
       id: gerarId(),
-      rotaFrete: rota.cotacao,
+      rotaFrete: cotacao,
       faixaNome: '',
       pesoMinimo: 0,
       pesoLimite: 999999999,
@@ -261,11 +271,11 @@ export function gerarFretesAutomaticos(form) {
 
   const modelo = form.modelosFaixa?.[form.canal] || FAIXAS_PADRAO.ATACADO;
   const linhas = [];
-  rotas.forEach((rota) => {
+  cotacoesUnicas.forEach((cotacao) => {
     modelo.forEach((faixa) => {
       linhas.push({
         id: gerarId(),
-        rotaFrete: rota.cotacao,
+        rotaFrete: cotacao,
         faixaNome: faixa.nome,
         pesoMinimo: faixa.pesoMinimo,
         pesoLimite: faixa.pesoLimite,
@@ -322,12 +332,35 @@ export function exportarModeloFretes(form) {
   return baixarWorkbook('modelo-fretes.xlsx', 'Valores de frete', dados);
 }
 
-export function exportarPacoteCompleto(form) {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(montarLinhasRotasExportacao(form)), 'Prazos de frete');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(montarLinhasQuebrasExportacao(form)), 'Quebra de Faixas');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(montarLinhasFreteExportacao(form, false)), 'Valores de frete');
-  XLSX.writeFile(wb, `${slug(montarNomeAutomatico(form) || 'formatacao')}-pacote.xlsx`);
+export async function exportarPacoteCompleto(form) {
+  const baseNome = slug(montarNomeAutomatico(form) || 'formatacao');
+  const arquivoRotas = `${baseNome}-rotas.xlsx`;
+  const arquivoFretes = `${baseNome}-fretes.xlsx`;
+
+  const rotasArray = gerarWorkbookArray([
+    {
+      nomeAba: 'Prazos de frete',
+      dados: montarLinhasRotasExportacao(form),
+    },
+    {
+      nomeAba: 'Quebra de Faixas',
+      dados: montarLinhasQuebrasExportacao(form),
+    },
+  ]);
+
+  const fretesArray = gerarWorkbookArray([
+    {
+      nomeAba: 'Valores de frete',
+      dados: montarLinhasFreteExportacao(form, false),
+    },
+  ]);
+
+  const zipBlob = criarZipSimples([
+    { nome: arquivoRotas, bytes: new Uint8Array(rotasArray) },
+    { nome: arquivoFretes, bytes: new Uint8Array(fretesArray) },
+  ]);
+
+  baixarBlob(zipBlob, `${baseNome}-pacote-completo.zip`);
 }
 
 export function montarLinhasRotasExportacao(form) {
@@ -409,4 +442,113 @@ function numeroOuTexto(valor) {
 
 function slug(valor) {
   return normalizarTexto(valor).toLowerCase().replace(/\s+/g, '-');
+}
+
+
+function gerarWorkbookArray(abAs = []) {
+  const wb = XLSX.utils.book_new();
+  abAs.forEach(({ nomeAba, dados }) => {
+    const linhas = Array.isArray(dados) && dados.length ? dados : [{}];
+    const ws = XLSX.utils.json_to_sheet(linhas);
+    XLSX.utils.book_append_sheet(wb, ws, nomeAba);
+  });
+  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+}
+
+function baixarBlob(blob, nomeArquivo) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = nomeArquivo;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function criarZipSimples(arquivos) {
+  const encoder = new TextEncoder();
+  const arquivosValidos = (arquivos || []).filter((item) => item?.nome && item?.bytes);
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  arquivosValidos.forEach((arquivo) => {
+    const nomeBytes = encoder.encode(arquivo.nome);
+    const data = arquivo.bytes instanceof Uint8Array ? arquivo.bytes : new Uint8Array(arquivo.bytes);
+    const crc = crc32(data);
+    const localHeader = new Uint8Array(30 + nomeBytes.length);
+    const localView = new DataView(localHeader.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, 0, true);
+    localView.setUint16(12, 0, true);
+    localView.setUint32(14, crc, true);
+    localView.setUint32(18, data.length, true);
+    localView.setUint32(22, data.length, true);
+    localView.setUint16(26, nomeBytes.length, true);
+    localView.setUint16(28, 0, true);
+    localHeader.set(nomeBytes, 30);
+    localParts.push(localHeader, data);
+
+    const centralHeader = new Uint8Array(46 + nomeBytes.length);
+    const centralView = new DataView(centralHeader.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, 0, true);
+    centralView.setUint16(14, 0, true);
+    centralView.setUint32(16, crc, true);
+    centralView.setUint32(20, data.length, true);
+    centralView.setUint32(24, data.length, true);
+    centralView.setUint16(28, nomeBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    centralHeader.set(nomeBytes, 46);
+    centralParts.push(centralHeader);
+
+    offset += localHeader.length + data.length;
+  });
+
+  const centralSize = centralParts.reduce((total, part) => total + part.length, 0);
+  const endHeader = new Uint8Array(22);
+  const endView = new DataView(endHeader.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(4, 0, true);
+  endView.setUint16(6, 0, true);
+  endView.setUint16(8, arquivosValidos.length, true);
+  endView.setUint16(10, arquivosValidos.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  endView.setUint16(20, 0, true);
+
+  return new Blob([...localParts, ...centralParts, endHeader], { type: 'application/zip' });
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let j = 0; j < 8; j += 1) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) {
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
