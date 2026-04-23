@@ -1,16 +1,13 @@
 Extraia este ZIP na raiz do projeto.
 
 Arquivos incluídos:
-- central-fretes-2-Melhoria-importa-o/src/App.jsx
-- central-fretes-2-Melhoria-importa-o/src/components/Sidebar.jsx
 - central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.jsx
 - central-fretes-2-Melhoria-importa-o/src/utils/formatacaoTabela.js
 - central-fretes-2-Melhoria-importa-o/src/utils/templatePrecificacao.js
-- central-fretes-2-Melhoria-importa-o/src/styles.css
 
-Esta versão consolida:
-- menu Formatação de Tabelas
-- seleção e alteração de modelo de faixa de peso
-- geração de fretes por Cotação x Faixa sem repetição
-- opção visível para importar template de precificação
-- correção de build no formatacaoTabela.js
+Ajustes desta versão:
+- base IBGE fixa novamente no sistema
+- IBGE de origem automático pela origem digitada/selecionada
+- cotação final com UF destino: Origem - UF - Cotação
+- importação do template padrão com abas Rotas e Fretes
+- quando houver CEP no modelo de Rotas, ele entra em Quebra de Faixas

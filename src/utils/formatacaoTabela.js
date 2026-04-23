@@ -5,19 +5,38 @@ export const STORAGE_KEYS = {
   faixas: 'formatacao_tabelas_faixas_v1',
 };
 
+const UF_POR_CODIGO = {
+  '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
+  '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
+  '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
+  '41': 'PR', '42': 'SC', '43': 'RS',
+  '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
+};
+
+const MUNICIPIOS_FIXOS = [
+  { codigo_municipio_completo: '4208203', nome_municipio: 'Itajaí', nome_municipio_sem_acento: 'Itajai', uf: 'SC' },
+  { codigo_municipio_completo: '4211306', nome_municipio: 'Navegantes', nome_municipio_sem_acento: 'Navegantes', uf: 'SC' },
+  { codigo_municipio_completo: '3505708', nome_municipio: 'Barueri', nome_municipio_sem_acento: 'Barueri', uf: 'SP' },
+  { codigo_municipio_completo: '3506003', nome_municipio: 'Bauru', nome_municipio_sem_acento: 'Bauru', uf: 'SP' },
+  { codigo_municipio_completo: '3550308', nome_municipio: 'São Paulo', nome_municipio_sem_acento: 'Sao Paulo', uf: 'SP' },
+  { codigo_municipio_completo: '3106200', nome_municipio: 'Belo Horizonte', nome_municipio_sem_acento: 'Belo Horizonte', uf: 'MG' },
+  { codigo_municipio_completo: '3205002', nome_municipio: 'Serra', nome_municipio_sem_acento: 'Serra', uf: 'ES' },
+  { codigo_municipio_completo: '5300108', nome_municipio: 'Brasília', nome_municipio_sem_acento: 'Brasilia', uf: 'DF' },
+];
+
 function uid(prefix = 'id') {
   if (globalThis.crypto?.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function limparTexto(valor = '') {
-  return String(valor ?? '').trim().replace(/\s+/g, ' ');
+  return String(valor ?? '').trim().replace(/\\s+/g, ' ');
 }
 
 export function normalizarChave(valor = '') {
   return limparTexto(valor)
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\\u0300-\\u036f]/g, '')
     .toUpperCase();
 }
 
@@ -133,7 +152,7 @@ export function encontrarOrigemExistente(cadastros, idOuNome) {
 
 export function proximoCodigoOrigem(cadastros) {
   const numeros = (cadastros?.origens || [])
-    .map((item) => String(item.codigo || '').match(/(\d+)/))
+    .map((item) => String(item.codigo || '').match(/(\\d+)/))
     .filter(Boolean)
     .map((match) => Number(match[1]))
     .filter(Number.isFinite);
@@ -194,21 +213,63 @@ export function atualizarModeloFaixa(modelos = [], modeloAtualizado) {
 }
 
 export function carregarBaseIbge() {
+  let baseSalva = [];
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEYS.ibge) || '[]');
-  } catch {
-    return [];
-  }
+    const lido = JSON.parse(localStorage.getItem(STORAGE_KEYS.ibge) || '[]');
+    if (Array.isArray(lido)) baseSalva = lido;
+  } catch {}
+  const mapa = new Map();
+  [...MUNICIPIOS_FIXOS, ...baseSalva].forEach((item) => {
+    const codigo = String(
+      item?.codigo_municipio_completo ??
+      item?.codigoMunicipioCompleto ??
+      item?.codigo ??
+      item?.ibge ??
+      item?.municipio_ibge ??
+      ''
+    ).replace(/\\D/g, '');
+    if (!codigo) return;
+    mapa.set(codigo, {
+      ...item,
+      codigo_municipio_completo: codigo,
+      uf: limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(codigo)).toUpperCase(),
+    });
+  });
+  return Array.from(mapa.values());
 }
 
 export function salvarBaseIbge(base = []) {
-  localStorage.setItem(STORAGE_KEYS.ibge, JSON.stringify(base));
+  const consolidada = carregarBaseIbge();
+  const mapa = new Map();
+  [...consolidada, ...(Array.isArray(base) ? base : [])].forEach((item) => {
+    const codigo = String(
+      item?.codigo_municipio_completo ??
+      item?.codigoMunicipioCompleto ??
+      item?.codigo ??
+      item?.ibge ??
+      item?.municipio_ibge ??
+      ''
+    ).replace(/\\D/g, '');
+    if (!codigo) return;
+    mapa.set(codigo, {
+      ...item,
+      codigo_municipio_completo: codigo,
+      uf: limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(codigo)).toUpperCase(),
+    });
+  });
+  localStorage.setItem(STORAGE_KEYS.ibge, JSON.stringify(Array.from(mapa.values())));
+}
+
+export function obterUfPorCodigoIbge(ibge = '') {
+  const codigo = String(ibge || '').replace(/\\D/g, '').slice(0, 2);
+  return UF_POR_CODIGO[codigo] || '';
 }
 
 export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
-  const chave = String(ibgeDestino || '').replace(/\D/g, '');
+  const chave = String(ibgeDestino || '').replace(/\\D/g, '');
   if (!chave) return '';
-  const item = (baseIbge || []).find((registro) => {
+  const lista = baseIbge?.length ? baseIbge : MUNICIPIOS_FIXOS;
+  const item = lista.find((registro) => {
     const codigo = String(
       registro.codigo_municipio_completo ??
       registro.codigoMunicipioCompleto ??
@@ -216,19 +277,27 @@ export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
       registro.ibge ??
       registro.municipio_ibge ??
       ''
-    ).replace(/\D/g, '');
+    ).replace(/\\D/g, '');
     return codigo === chave;
   });
-  return limparTexto(item?.uf || item?.sigla_uf || item?.UF || '').toUpperCase();
+  return limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(chave)).toUpperCase();
 }
 
 export function encontrarMunicipioPorNome(baseIbge = [], nome = '') {
   const chave = normalizarChave(nome);
   if (!chave) return null;
-  return (baseIbge || []).find((item) => {
-    return [item.nome_municipio, item.municipio, item.nome, item.nome_municipio_sem_acento]
+  const lista = baseIbge?.length ? baseIbge : carregarBaseIbge();
+  return lista.find((item) => {
+    const candidatos = [
+      item.nome_municipio,
+      item.municipio,
+      item.nome,
+      item.nome_municipio_sem_acento,
+      item.cidade,
+    ]
       .filter(Boolean)
-      .some((valor) => normalizarChave(valor) === chave);
+      .map((valor) => normalizarChave(valor));
+    return candidatos.some((valor) => valor === chave || valor.includes(chave) || chave.includes(valor));
   }) || null;
 }
 
@@ -241,9 +310,11 @@ export function montarCotacaoPadrao({ origem, ufDestino, cotacaoBase }) {
 export function aplicarCotacaoPadraoNasRotas(rotas = [], dadosGerais = {}, baseIbge = []) {
   const origem = dadosGerais.origemNome || dadosGerais.origem || '';
   return (rotas || []).map((rota) => {
-    const ufDestino = obterUfDoDestino(rota.ibgeDestino, baseIbge);
-    const cotacao = montarCotacaoPadrao({ origem, ufDestino, cotacaoBase: rota.cotacaoBase || rota.cotacao || '' });
-    return { ...rota, cotacao, cotacaoFinal: cotacao };
+    const ufExplícita = limparTexto(rota.ufDestino || rota.uf_destino || rota.UF_DESTINO || '').toUpperCase();
+    const ufDestino = ufExplícita || obterUfDoDestino(rota.ibgeDestino || rota.ibge_destino, baseIbge);
+    const cotacaoBase = rota.cotacaoBase || rota.cotacao_base || rota.cotacao || '';
+    const cotacao = montarCotacaoPadrao({ origem, ufDestino, cotacaoBase });
+    return { ...rota, ufDestino, cotacaoBase, cotacao, cotacaoFinal: cotacao };
   });
 }
 
@@ -298,10 +369,12 @@ export function validarModeloFaixa(modelo) {
       erros.push(`Linha ${index + 1}: peso final deve ser maior que o inicial.`);
     }
   });
-  const ordenados = itens.filter((i) => Number.isFinite(i.pesoInicial) && Number.isFinite(i.pesoFinal)).sort((a,b)=>a.pesoInicial-b.pesoInicial);
-  for (let i=1;i<ordenados.length;i++) {
-    if (ordenados[i].pesoInicial < ordenados[i-1].pesoFinal) {
-      erros.push(`Há sobreposição entre ${ordenados[i-1].pesoInicial}-${ordenados[i-1].pesoFinal} e ${ordenados[i].pesoInicial}-${ordenados[i].pesoFinal}.`);
+  const ordenados = itens
+    .filter((i) => Number.isFinite(i.pesoInicial) && Number.isFinite(i.pesoFinal))
+    .sort((a, b) => a.pesoInicial - b.pesoInicial);
+  for (let i = 1; i < ordenados.length; i += 1) {
+    if (ordenados[i].pesoInicial < ordenados[i - 1].pesoFinal) {
+      erros.push(`Há sobreposição entre ${ordenados[i - 1].pesoInicial}-${ordenados[i - 1].pesoFinal} e ${ordenados[i].pesoInicial}-${ordenados[i].pesoFinal}.`);
       break;
     }
   }
