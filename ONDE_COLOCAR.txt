@@ -1,0 +1,10 @@
+EXTRAIA ESTE ZIP NA RAIZ DO PROJETO.
+
+Os caminhos já estão corretos:
+- central-fretes-2-Melhoria-importa-o/src/utils/templatePrecificacao.js
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.TEMPLATE_PRECIFICACAO_PATCH.txt
+
+Esta melhoria adiciona a base técnica para:
+- manter o modelo atual de fretes
+- incluir a opção de importar template de precificação
+- converter automaticamente o template em linhas internas de frete
