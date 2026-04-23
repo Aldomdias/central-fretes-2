@@ -1,662 +1,662 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import {
-  METODOS_ENVIO,
-  REGRAS_CALCULO,
-  TIPOS_CALCULO,
-  buscarIbgePorOrigem,
+  adicionarModeloFaixa,
+  aplicarCotacaoPadraoNasRotas,
+  atualizarModeloFaixa,
+  baixarArquivoTexto,
   carregarBaseIbge,
+  carregarModelosFaixa,
   carregarRascunhos,
   construirCadastroBase,
   criarFormularioInicial,
+  criarQuebraFaixaInicial,
+  criarRotaInicial,
+  encontrarMunicipioPorNome,
   encontrarOrigemExistente,
   encontrarTransportadoraExistente,
-  exportarModeloFretes,
-  exportarModeloQuebras,
-  exportarModeloRotas,
-  exportarPacoteCompleto,
-  gerarFretesAutomaticos,
-  importarBaseIbge,
-  importarFretes,
-  importarQuebras,
-  importarRotas,
-  montarNomeAutomatico,
+  exportarLinhasParaXlsx,
+  gerarFretesPorCotacaoFaixa,
   proximoCodigoOrigem,
+  salvarBaseIbge,
+  salvarModelosFaixa,
   salvarRascunhos,
-  validarFormacao,
+  validarModeloFaixa,
 } from '../utils/formatacaoTabela';
+import { converterTemplatePrecificacaoParaFretes } from '../utils/templatePrecificacao';
 
-const ETAPAS = ['Dados gerais', 'Rotas', 'Quebra de Faixas', 'Fretes', 'Revisão'];
-const MODOS_CADASTRO = [
-  { value: 'existente', label: 'Usar cadastro existente' },
-  { value: 'novo', label: 'Novo cadastro' },
-];
-const CANAIS = ['ATACADO', 'B2C'];
+const COTACOES_BASE = ['Capital', 'Interior 1', 'Interior 2', 'Metropolitana'];
+
+function lerPlanilhaComoMatriz(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = event.target.result;
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        resolve(rows);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function lerPlanilhaComoObjetos(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = event.target.result;
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        resolve(rows);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function tituloArquivo(form) {
+  const partes = [form.transportadoraNome, form.origemNome, form.canal].filter(Boolean);
+  return partes.join('-').replace(/\s+/g, '_') || 'formatacao';
+}
 
 export default function FormatacaoTabelasPage({ transportadoras = [] }) {
-  const [etapaAtual, setEtapaAtual] = useState(0);
+  const cadastros = useMemo(() => construirCadastroBase(transportadoras), [transportadoras]);
   const [form, setForm] = useState(criarFormularioInicial());
-  const [rascunhos, setRascunhos] = useState([]);
-  const [baseIbge, setBaseIbge] = useState(null);
+  const [rotas, setRotas] = useState([criarRotaInicial()]);
+  const [quebras, setQuebras] = useState([criarQuebraFaixaInicial()]);
+  const [fretes, setFretes] = useState([]);
+  const [rascunhos, setRascunhos] = useState(() => carregarRascunhos());
+  const [baseIbge, setBaseIbge] = useState(() => carregarBaseIbge());
+  const [modelosFaixa, setModelosFaixa] = useState(() => carregarModelosFaixa());
+  const [faixaEditando, setFaixaEditando] = useState(null);
   const [mensagem, setMensagem] = useState('');
-  const [erro, setErro] = useState('');
-  const inputRotasRef = useRef(null);
-  const inputQuebrasRef = useRef(null);
-  const inputFretesRef = useRef(null);
-  const inputIbgeRef = useRef(null);
+
+  const rotasPadronizadas = useMemo(() => aplicarCotacaoPadraoNasRotas(rotas, form, baseIbge), [rotas, form, baseIbge]);
+  const modeloFaixaSelecionado = useMemo(() => modelosFaixa.find((item) => item.id === form.modeloFaixaId) || null, [modelosFaixa, form.modeloFaixaId]);
 
   useEffect(() => {
-    setRascunhos(carregarRascunhos());
-    setBaseIbge(carregarBaseIbge());
-  }, []);
-
-  const cadastroBase = useMemo(() => construirCadastroBase(transportadoras), [transportadoras]);
-
-  const opcoesOrigem = useMemo(() => {
-    const todas = cadastroBase.origens || [];
-    if (form.transportadoraModo !== 'existente' || !form.transportadoraExistente) return todas;
-    const filtradas = todas.filter((item) => item.transportadoras.includes(form.transportadoraExistente));
-    return filtradas.length ? filtradas : todas;
-  }, [cadastroBase, form.transportadoraModo, form.transportadoraExistente]);
-
-  const transportadoraDuplicada = useMemo(
-    () => form.transportadoraModo === 'novo' && !!encontrarTransportadoraExistente(cadastroBase, form.transportadora),
-    [cadastroBase, form.transportadora, form.transportadoraModo],
-  );
-
-  const origemDuplicada = useMemo(
-    () => form.origemModo === 'novo' && !!encontrarOrigemExistente(cadastroBase, form.origemNome, form.canal),
-    [cadastroBase, form.canal, form.origemModo, form.origemNome],
-  );
-
-  useEffect(() => {
-    if (form.transportadoraModo === 'existente') {
-      setForm((atual) => {
-        const proximoNome = atual.transportadoraExistente || '';
-        if (atual.transportadora === proximoNome) return atual;
-        return {
-          ...atual,
-          transportadora: proximoNome,
-        };
-      });
-      return;
-    }
-    setForm((atual) => (atual.transportadoraExistente ? { ...atual, transportadoraExistente: '' } : atual));
-  }, [form.transportadoraModo, form.transportadoraExistente]);
-
-  useEffect(() => {
-    if (form.origemModo === 'existente') {
-      const selecionada = opcoesOrigem.find((item) => item.key === form.origemExistenteKey) || null;
-      if (!selecionada) {
-        setForm((atual) => {
-          if (!atual.origemNome && !atual.codigoUnidade && !atual.origemIbge) return atual;
-          return {
-            ...atual,
-            origemNome: '',
-            codigoUnidade: '',
-            origemIbge: '',
-          };
-        });
-        return;
+    if (form.origemNome && !form.origemIbge && baseIbge.length) {
+      const municipio = encontrarMunicipioPorNome(baseIbge, form.origemNome);
+      if (municipio) {
+        setForm((prev) => ({
+          ...prev,
+          origemIbge: municipio.codigo_municipio_completo || municipio.codigo || municipio.ibge || '',
+        }));
       }
-      setForm((atual) => {
-        if (atual.origemNome === selecionada.nome && atual.codigoUnidade === selecionada.codigo && atual.canal === selecionada.canal) return atual;
-        return {
-          ...atual,
-          origemNome: selecionada.nome,
-          codigoUnidade: selecionada.codigo,
-          canal: selecionada.canal,
-        };
-      });
-      return;
     }
-    setForm((atual) => {
-      const proximoCodigo = atual.codigoUnidade || proximoCodigoOrigem(cadastroBase);
-      if (!atual.origemExistenteKey && atual.codigoUnidade === proximoCodigo) return atual;
-      return {
-        ...atual,
-        origemExistenteKey: '',
-        codigoUnidade: proximoCodigo,
-      };
-    });
-  }, [cadastroBase, form.origemModo, form.origemExistenteKey, opcoesOrigem]);
+  }, [form.origemNome, form.origemIbge, baseIbge]);
 
-  useEffect(() => {
-    if (form.origemModo !== 'novo') return;
-    setForm((atual) => {
-      const proximoCodigo = proximoCodigoOrigem(cadastroBase);
-      if (atual.codigoUnidade === proximoCodigo) return atual;
-      return {
-        ...atual,
-        codigoUnidade: proximoCodigo,
-      };
-    });
-  }, [cadastroBase, form.origemModo, form.origemNome, form.canal]);
+  function atualizarCampo(campo, valor) {
+    setForm((prev) => ({ ...prev, [campo]: valor }));
+  }
 
-  useEffect(() => {
-    if (!form.nomeFormatacao?.trim()) {
-      setForm((atual) => {
-        const nomeAuto = montarNomeAutomatico(atual);
-        if (atual.nomeFormatacao === nomeAuto) return atual;
-        return { ...atual, nomeFormatacao: nomeAuto };
-      });
-    }
-  }, [form.transportadora, form.origemNome, form.canal]);
-
-  useEffect(() => {
-    if (!baseIbge || !form.origemNome) return;
-    const encontrado = buscarIbgePorOrigem(baseIbge, form.origemNome);
-    setForm((atual) => {
-      const proximoIbge = encontrado?.codigoMunicipioCompleto || atual.origemIbge || '';
-      const mesmoResumo = JSON.stringify(atual.baseIbgeResumo || null) === JSON.stringify(baseIbge.resumo || null);
-      if (atual.origemIbge === proximoIbge && mesmoResumo) return atual;
-      return {
-        ...atual,
-        origemIbge: proximoIbge,
-        baseIbgeResumo: baseIbge.resumo,
-      };
-    });
-  }, [baseIbge, form.origemNome]);
-
-  const validacaoBase = useMemo(() => validarFormacao(form), [form]);
-  const validacao = useMemo(() => {
-    const erros = [...validacaoBase.erros];
-    const alertas = [...validacaoBase.alertas];
-    if (transportadoraDuplicada) {
-      erros.push('A transportadora digitada já existe no cadastro. Use a lista suspensa para evitar duplicidade.');
-    }
-    if (origemDuplicada) {
-      erros.push('A origem digitada já existe para esse canal. Use a origem existente para reaproveitar o código já cadastrado.');
-    }
-    return { erros, alertas };
-  }, [origemDuplicada, transportadoraDuplicada, validacaoBase]);
-
-  const atualizarCampo = (campo, valor) => {
-    setForm((atual) => ({ ...atual, [campo]: valor }));
-  };
-
-  const salvarRascunhoAtual = () => {
-    const atualizado = { ...form, atualizadoEm: new Date().toISOString() };
-    const proximos = [atualizado, ...rascunhos.filter((item) => item.id !== atualizado.id)];
-    setRascunhos(proximos);
-    salvarRascunhos(proximos);
-    setMensagem('Rascunho salvo com sucesso.');
-    setErro('');
-  };
-
-  const carregarRascunho = (id) => {
-    const item = rascunhos.find((draft) => draft.id === id);
-    if (!item) return;
-    setForm(item);
-    setMensagem('Rascunho carregado.');
-    setErro('');
-  };
-
-  const novoRascunho = () => {
-    setForm(criarFormularioInicial());
-    setEtapaAtual(0);
-    setMensagem('Nova formatação iniciada.');
-    setErro('');
-  };
-
-  const duplicarRascunho = () => {
-    setForm((atual) => ({
-      ...atual,
-      id: `dup_${Date.now()}`,
-      nomeFormatacao: `${atual.nomeFormatacao || montarNomeAutomatico(atual)} (cópia)`,
+  function selecionarTransportadora(id) {
+    const existente = encontrarTransportadoraExistente(cadastros, id);
+    setForm((prev) => ({
+      ...prev,
+      transportadoraId: existente?.id || '',
+      transportadoraNome: existente?.nome || '',
+      origemModo: 'existente',
     }));
-    setMensagem('Rascunho duplicado.');
-    setErro('');
-  };
+  }
 
-  const adicionarRota = () => {
-    setForm((atual) => ({
-      ...atual,
-      rotas: [...atual.rotas, { id: `rota_${Date.now()}`, cotacao: '', ibgeDestino: '', prazo: '' }],
+  function selecionarOrigem(id) {
+    const origem = encontrarOrigemExistente(cadastros, id);
+    if (!origem) return;
+    setForm((prev) => ({
+      ...prev,
+      origemId: origem.id,
+      origemNome: origem.nome,
+      codigoOrigem: origem.codigo,
+      origemIbge: origem.ibge,
+      canal: origem.canal || prev.canal,
     }));
-  };
+  }
 
-  const adicionarQuebra = () => {
-    setForm((atual) => ({
-      ...atual,
-      quebrasFaixa: [...atual.quebrasFaixa, { id: `qf_${Date.now()}`, cotacao: '', ibgeDestino: '', cepInicial: '', cepFinal: '', prazo: '' }],
-    }));
-  };
+  function adicionarRota() {
+    setRotas((prev) => [...prev, criarRotaInicial()]);
+  }
 
-  const atualizarRota = (id, campo, valor) => {
-    setForm((atual) => ({ ...atual, rotas: atual.rotas.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)) }));
-  };
+  function atualizarRota(id, campo, valor) {
+    setRotas((prev) => prev.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)));
+  }
 
-  const atualizarQuebra = (id, campo, valor) => {
-    setForm((atual) => ({ ...atual, quebrasFaixa: atual.quebrasFaixa.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)) }));
-  };
+  function removerRota(id) {
+    setRotas((prev) => (prev.length === 1 ? prev : prev.filter((item) => item.id !== id)));
+  }
 
-  const atualizarFrete = (id, campo, valor) => {
-    setForm((atual) => ({ ...atual, fretes: atual.fretes.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)) }));
-  };
+  function adicionarQuebra() {
+    setQuebras((prev) => [...prev, criarQuebraFaixaInicial()]);
+  }
 
-  const excluirLinha = (grupo, id) => {
-    setForm((atual) => ({ ...atual, [grupo]: atual[grupo].filter((item) => item.id !== id) }));
-  };
+  function atualizarQuebra(id, campo, valor) {
+    setQuebras((prev) => prev.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)));
+  }
 
-  const importarArquivo = async (evento, tipo) => {
-    const file = evento.target.files?.[0];
+  function removerQuebra(id) {
+    setQuebras((prev) => (prev.length === 1 ? prev : prev.filter((item) => item.id !== id)));
+  }
+
+  function gerarFretes() {
+    const linhas = gerarFretesPorCotacaoFaixa({
+      rotas,
+      dadosGerais: form,
+      baseIbge,
+      tipoCalculo: form.tipoCalculo,
+      modeloFaixa: modeloFaixaSelecionado,
+    });
+    setFretes(linhas);
+    setMensagem(`Fretes gerados: ${linhas.length} linha(s).`);
+  }
+
+  function atualizarFrete(index, campo, valor) {
+    setFretes((prev) => prev.map((item, idx) => (idx === index ? { ...item, [campo]: valueOrBlank(valor) } : item)));
+  }
+
+  function valueOrBlank(valor) {
+    return valor ?? '';
+  }
+
+  function aplicarEmMassa(campo, valor, filtroCotacao = '') {
+    setFretes((prev) => prev.map((item) => (!filtroCotacao || item.cotacao === filtroCotacao ? { ...item, [campo]: valor } : item)));
+  }
+
+  async function importarBaseIbge(event) {
+    const file = event.target.files?.[0];
     if (!file) return;
-    try {
-      setErro('');
-      if (tipo === 'ibge') {
-        const base = await importarBaseIbge(file);
-        setBaseIbge(base);
-        setMensagem(`Base IBGE importada: ${base.resumo.totalMunicipios} municípios e ${base.resumo.totalFaixas} faixas.`);
-      }
-      if (tipo === 'rotas') {
-        const rotas = await importarRotas(file);
-        setForm((atual) => ({ ...atual, rotas }));
-        setMensagem(`Rotas importadas: ${rotas.length} linha(s).`);
-      }
-      if (tipo === 'quebras') {
-        const itens = await importarQuebras(file);
-        setForm((atual) => ({ ...atual, quebrasFaixa: itens }));
-        setMensagem(`Quebras importadas: ${itens.length} linha(s).`);
-      }
-      if (tipo === 'fretes') {
-        const itens = await importarFretes(file);
-        setForm((atual) => ({ ...atual, fretes: itens }));
-        setMensagem(`Fretes importados: ${itens.length} linha(s).`);
-      }
-    } catch (e) {
-      setErro(`Erro ao importar arquivo: ${e.message || e}`);
-      setMensagem('');
-    } finally {
-      evento.target.value = '';
-    }
-  };
+    const rows = await lerPlanilhaComoObjetos(file);
+    const baseNormalizada = rows.map((row) => ({
+      codigo_municipio_completo: row['Código Município Completo'] || row['codigo_municipio_completo'] || row['Código Município'] || row['Município'] || row['codigo'],
+      nome_municipio: row['Nome_Município'] || row['Município'] || row['nome_municipio'] || row['nome'],
+      nome_municipio_sem_acento: row['Nome_Município Sem acento'] || row['nome_municipio_sem_acento'] || '',
+      uf: row.UF || row['Sigla UF'] || row.sigla_uf || '',
+    })).filter((item) => item.codigo_municipio_completo && item.uf);
+    setBaseIbge(baseNormalizada);
+    salvarBaseIbge(baseNormalizada);
+    setMensagem(`Base IBGE carregada com ${baseNormalizada.length} município(s).`);
+  }
 
-  const gerarFretes = () => {
-    const fretes = gerarFretesAutomaticos(form);
-    setForm((atual) => ({ ...atual, fretes }));
-    setMensagem(`Fretes automáticos gerados: ${fretes.length} linha(s).`);
-    setErro('');
-  };
+  async function importarRotas(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const rows = await lerPlanilhaComoObjetos(file);
+    const novasRotas = rows.map((row) => ({
+      ...criarRotaInicial(),
+      ibgeDestino: row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || '',
+      prazo: row['PRAZO'] || row['prazo'] || '',
+      cotacaoBase: row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'] || 'Interior 1',
+    })).filter((item) => item.ibgeDestino || item.prazo || item.cotacaoBase);
+    if (novasRotas.length) setRotas(novasRotas);
+    setMensagem(`Rotas importadas: ${novasRotas.length}.`);
+  }
+
+  async function importarQuebras(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const rows = await lerPlanilhaComoObjetos(file);
+    const novas = rows.map((row) => ({
+      ...criarQuebraFaixaInicial(),
+      ibgeDestino: row['IBGE DESTINO'] || '',
+      prazo: row['PRAZO'] || '',
+      cotacaoBase: row['COTAÇÃO'] || 'Interior 1',
+      cepInicial: row['CEP INICIAL'] || '',
+      cepFinal: row['CEP FINAL'] || '',
+    })).filter((item) => item.ibgeDestino || item.cepInicial || item.cepFinal);
+    if (novas.length) setQuebras(novas);
+    setMensagem(`Quebras importadas: ${novas.length}.`);
+  }
+
+  async function importarTemplatePrecificacao(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const linhas = await lerPlanilhaComoMatriz(file);
+    const convertidos = converterTemplatePrecificacaoParaFretes({ linhas, dadosGerais: form });
+    setFretes(convertidos);
+    setMensagem(`Template importado: ${convertidos.length} linha(s) de frete.`);
+  }
+
+  function exportarModeloRotas() {
+    exportarLinhasParaXlsx(XLSX, [{ 'IBGE DESTINO': '', PRAZO: '', 'COTAÇÃO': '' }], `${tituloArquivo(form)}-modelo-rotas.xlsx`, 'Rotas');
+  }
+
+  function exportarModeloQuebras() {
+    exportarLinhasParaXlsx(XLSX, [{ 'IBGE DESTINO': '', PRAZO: '', 'COTAÇÃO': '', 'CEP INICIAL': '', 'CEP FINAL': '' }], `${tituloArquivo(form)}-modelo-quebra-faixas.xlsx`, 'Quebras');
+  }
+
+  function exportarModeloFretes() {
+    const linhas = form.tipoCalculo === 'PERCENTUAL'
+      ? [{ COTAÇÃO: '', 'FRETE %': '', 'FRETE MÍNIMO': '', 'TAXA APLICADA': '', EXCEDENTE: '' }]
+      : [{ COTAÇÃO: '', FAIXA: '', 'PESO INICIAL': '', 'PESO FINAL': '', 'FRETE VALOR': '', 'AD VALOREM %': '', 'FRETE MÍNIMO': '', 'TAXA APLICADA': '', EXCEDENTE: '' }];
+    exportarLinhasParaXlsx(XLSX, linhas, `${tituloArquivo(form)}-modelo-fretes.xlsx`, 'Fretes');
+  }
+
+  function exportarRotas() {
+    const linhas = rotasPadronizadas.map((item) => ({
+      'NOME TRANSPORTADORA': form.transportadoraNome,
+      'CÓDIGO UNIDADE': form.codigoOrigem,
+      CANAL: form.canal,
+      COTAÇÃO: item.cotacaoFinal,
+      'IBGE ORIGEM': form.origemIbge,
+      'IBGE DESTINO': item.ibgeDestino,
+      PRAZO: item.prazo,
+      'DATA INÍCIO': form.vigenciaInicial,
+      'DATA FIM': form.vigenciaFinal,
+    }));
+    exportarLinhasParaXlsx(XLSX, linhas, `${tituloArquivo(form)}-rotas.xlsx`, 'Prazos de frete');
+  }
+
+  function exportarFretes() {
+    const linhas = fretes.map((item) => ({
+      'NOME TRANSPORTADORA': form.transportadoraNome,
+      'CÓDIGO UNIDADE': form.codigoOrigem,
+      CANAL: form.canal,
+      'REGRA DE CÁLCULO': form.regraCalculo,
+      'TIPO DE CÁLCULO': form.tipoCalculo,
+      'ROTA DO FRETE': item.cotacao,
+      'PESO INICIAL': item.pesoInicial,
+      'PESO FINAL': item.pesoFinal,
+      'FRETE VALOR': item.freteValor,
+      'AD VALOREM %': item.fretePercentual,
+      'FRETE MÍNIMO': item.freteMinimo,
+      'TAXA APLICADA': item.taxaAplicada,
+      EXCEDENTE: item.excedente,
+      'DATA INÍCIO': form.vigenciaInicial,
+      'DATA FIM': form.vigenciaFinal,
+    }));
+    exportarLinhasParaXlsx(XLSX, linhas, `${tituloArquivo(form)}-fretes.xlsx`, 'Valores de frete');
+  }
+
+  function gerarPacoteCompleto() {
+    exportarRotas();
+    setTimeout(() => exportarFretes(), 400);
+    setMensagem('Arquivos de rotas e fretes gerados separadamente.');
+  }
+
+  function salvarRascunhoAtual() {
+    const registro = { form, rotas, quebras, fretes };
+    const novaLista = [registro, ...rascunhos.filter((item) => item.form.id !== form.id)];
+    setRascunhos(novaLista);
+    salvarRascunhos(novaLista);
+    setMensagem('Rascunho salvo com sucesso.');
+  }
+
+  function carregarRascunho(item) {
+    setForm(item.form);
+    setRotas(item.rotas?.length ? item.rotas : [criarRotaInicial()]);
+    setQuebras(item.quebras?.length ? item.quebras : [criarQuebraFaixaInicial()]);
+    setFretes(item.fretes || []);
+    setMensagem(`Rascunho carregado: ${item.form.nomeFormatacao || item.form.transportadoraNome}.`);
+  }
+
+  function iniciarNovaFaixa() {
+    setFaixaEditando({ id: '', nome: '', canal: form.canal, itens: [{ id: `tmp-${Date.now()}`, pesoInicial: 0, pesoFinal: 0 }] });
+  }
+
+  function editarFaixaExistente(id) {
+    const modelo = modelosFaixa.find((item) => item.id === id);
+    if (modelo) setFaixaEditando(JSON.parse(JSON.stringify(modelo)));
+  }
+
+  function salvarFaixaEditada() {
+    const erros = validarModeloFaixa(faixaEditando);
+    if (erros.length) {
+      setMensagem(erros[0]);
+      return;
+    }
+    let proximos = modelosFaixa;
+    if (faixaEditando.id) {
+      proximos = atualizarModeloFaixa(modelosFaixa, faixaEditando);
+    } else {
+      proximos = adicionarModeloFaixa(modelosFaixa, faixaEditando);
+    }
+    setModelosFaixa(proximos);
+    salvarModelosFaixa(proximos);
+    setForm((prev) => ({ ...prev, modeloFaixaId: (faixaEditando.id || proximos[proximos.length - 1].id) }));
+    setFaixaEditando(null);
+    setMensagem('Modelo de faixa salvo.');
+  }
+
+  function atualizarItemFaixa(index, campo, valor) {
+    setFaixaEditando((prev) => ({
+      ...prev,
+      itens: prev.itens.map((item, idx) => (idx === index ? { ...item, [campo]: valor } : item)),
+    }));
+  }
+
+  function adicionarItemFaixa() {
+    setFaixaEditando((prev) => ({ ...prev, itens: [...prev.itens, { id: `tmp-${Date.now()}-${prev.itens.length}`, pesoInicial: '', pesoFinal: '' }] }));
+  }
+
+  function preencherOrigemNova() {
+    setForm((prev) => ({ ...prev, codigoOrigem: proximoCodigoOrigem(cadastros) }));
+  }
+
+  const acoesMassaRef = useRef({ campo: 'freteValor', valor: '', cotacao: '' });
 
   return (
-    <div className="page-shell">
+    <div className="page-shell formatacao-shell">
       <div className="page-top between">
         <div className="page-header">
-          <div className="amd-mini-brand">Cadastros avançados</div>
+          <div className="amd-mini-brand">Cadastro guiado</div>
           <h1>Formatação de Tabelas</h1>
-          <p>
-            Módulo isolado para montar tabelas de rotas e fretes sem alterar o que já funciona no simulador.
-            O vínculo com a base principal só fica para uma etapa futura de publicação.
-          </p>
+          <p>Monte rotas e fretes sem mexer no simulador principal. Agora com seleção de faixa de peso e importação de template já precificado.</p>
         </div>
-        <div className="amd-quick-actions">
-          <button className="btn-secondary" onClick={novoRascunho}>Novo rascunho</button>
-          <button className="btn-secondary" onClick={duplicarRascunho}>Duplicar</button>
-          <button className="btn-primary" onClick={salvarRascunhoAtual}>Salvar rascunho</button>
+        <div className="formatacao-actions-top">
+          <button className="btn-secondary" onClick={salvarRascunhoAtual}>Salvar rascunho</button>
+          <button className="btn-primary" onClick={gerarPacoteCompleto}>Gerar rotas + fretes</button>
         </div>
       </div>
 
-      {mensagem ? <div className="fmt-alert success">{mensagem}</div> : null}
-      {erro ? <div className="fmt-alert error">{erro}</div> : null}
+      {mensagem ? <div className="formatacao-alert">{mensagem}</div> : null}
 
-      <div className="fmt-layout">
-        <aside className="fmt-sidebar-card">
-          <h3>Etapas</h3>
-          <div className="fmt-steps">
-            {ETAPAS.map((etapa, index) => (
-              <button
-                key={etapa}
-                type="button"
-                className={etapaAtual === index ? 'fmt-step active' : 'fmt-step'}
-                onClick={() => setEtapaAtual(index)}
-              >
-                <span className="fmt-step-number">{index + 1}</span>
-                <span>{etapa}</span>
-              </button>
-            ))}
-          </div>
+      <section className="panel-card formatacao-section">
+        <div className="section-header-inline">
+          <h3>Dados gerais</h3>
+          <div className="hint-line">IBGE de origem automático pela cidade + base IBGE.</div>
+        </div>
+        <div className="formatacao-grid three">
+          <label className="field-block">
+            <span>Transportadora</span>
+            <select value={form.transportadoraModo} onChange={(e) => atualizarCampo('transportadoraModo', e.target.value)}>
+              <option value="existente">Existente</option>
+              <option value="novo">Novo cadastro</option>
+            </select>
+          </label>
+          {form.transportadoraModo === 'existente' ? (
+            <label className="field-block">
+              <span>Lista de transportadoras</span>
+              <select value={form.transportadoraId} onChange={(e) => selecionarTransportadora(e.target.value)}>
+                <option value="">Selecione</option>
+                {cadastros.transportadoras.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+              </select>
+            </label>
+          ) : (
+            <label className="field-block">
+              <span>Nova transportadora</span>
+              <input value={form.transportadoraNome} onChange={(e) => atualizarCampo('transportadoraNome', e.target.value)} />
+            </label>
+          )}
+          <label className="field-block">
+            <span>Nome da formatação</span>
+            <input value={form.nomeFormatacao} onChange={(e) => atualizarCampo('nomeFormatacao', e.target.value)} placeholder="Ex.: Itajaí | Atacado" />
+          </label>
 
-          <div className="fmt-sidebar-section">
-            <h4>Base IBGE</h4>
-            <p>Importe a base mestre para preencher o IBGE de origem automaticamente e preparar o uso de CEP por município.</p>
-            <button className="btn-secondary full" onClick={() => inputIbgeRef.current?.click()}>Importar base IBGE</button>
-            <input ref={inputIbgeRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'ibge')} />
-            {baseIbge?.resumo ? (
-              <div className="fmt-kpi-box">
-                <strong>{baseIbge.resumo.totalMunicipios}</strong>
-                <span>municípios</span>
-                <strong>{baseIbge.resumo.totalFaixas}</strong>
-                <span>faixas de CEP</span>
-              </div>
-            ) : null}
-          </div>
+          <label className="field-block">
+            <span>Origem</span>
+            <select value={form.origemModo} onChange={(e) => {
+              atualizarCampo('origemModo', e.target.value);
+              if (e.target.value === 'novo') preencherOrigemNova();
+            }}>
+              <option value="existente">Existente</option>
+              <option value="novo">Nova origem</option>
+            </select>
+          </label>
+          {form.origemModo === 'existente' ? (
+            <label className="field-block">
+              <span>Lista de origens</span>
+              <select value={form.origemId} onChange={(e) => selecionarOrigem(e.target.value)}>
+                <option value="">Selecione</option>
+                {cadastros.origens.map((item) => <option key={item.id} value={item.id}>{item.nome} - {item.canal}</option>)}
+              </select>
+            </label>
+          ) : (
+            <label className="field-block">
+              <span>Nova origem</span>
+              <input value={form.origemNome} onChange={(e) => atualizarCampo('origemNome', e.target.value)} placeholder="Ex.: Itajaí" />
+            </label>
+          )}
+          <label className="field-block readonly-field">
+            <span>Código unidade</span>
+            <input value={form.codigoOrigem} readOnly />
+          </label>
 
-          <div className="fmt-sidebar-section">
-            <h4>Rascunhos</h4>
-            <div className="fmt-drafts">
-              {rascunhos.length ? rascunhos.map((item) => (
-                <button key={item.id} className="fmt-draft-item" type="button" onClick={() => carregarRascunho(item.id)}>
-                  <strong>{item.nomeFormatacao || montarNomeAutomatico(item) || 'Sem nome'}</strong>
-                  <span>{item.transportadora || 'Sem transportadora'}</span>
-                </button>
-              )) : <div className="fmt-empty">Nenhum rascunho salvo ainda.</div>}
-            </div>
-          </div>
-        </aside>
-
-        <section className="fmt-main-card">
-          {etapaAtual === 0 && (
-            <div className="fmt-section">
-              <h2>Dados gerais</h2>
-              <div className="fmt-grid two-cols">
-                <Campo label="Nome da formatação" value={form.nomeFormatacao} onChange={(v) => atualizarCampo('nomeFormatacao', v)} />
-
-                <ModoCadastroCard
-                  titulo="Transportadora"
-                  modo={form.transportadoraModo}
-                  onChangeModo={(valor) => atualizarCampo('transportadoraModo', valor)}
-                >
-                  {form.transportadoraModo === 'existente' ? (
-                    <CampoSelect
-                      label="Selecionar transportadora"
-                      value={form.transportadoraExistente}
-                      onChange={(v) => atualizarCampo('transportadoraExistente', v)}
-                      options={cadastroBase.transportadoras}
-                      placeholder="Selecione..."
-                    />
-                  ) : (
-                    <Campo label="Nova transportadora" value={form.transportadora} onChange={(v) => atualizarCampo('transportadora', v)} />
-                  )}
-                  {transportadoraDuplicada ? <AvisoCadastro texto="Essa transportadora já existe. Use a lista para evitar duplicidade." /> : null}
-                </ModoCadastroCard>
-
-                <ModoCadastroCard
-                  titulo="Origem"
-                  modo={form.origemModo}
-                  onChangeModo={(valor) => atualizarCampo('origemModo', valor)}
-                >
-                  {form.origemModo === 'existente' ? (
-                    <CampoSelect
-                      label="Selecionar origem"
-                      value={form.origemExistenteKey}
-                      onChange={(v) => atualizarCampo('origemExistenteKey', v)}
-                      options={opcoesOrigem.map((item) => ({ value: item.key, label: `${item.nome} · ${item.canal} · ${item.codigo}` }))}
-                      placeholder="Selecione..."
-                    />
-                  ) : (
-                    <Campo label="Nova origem" value={form.origemNome} onChange={(v) => atualizarCampo('origemNome', v)} />
-                  )}
-                  {origemDuplicada ? <AvisoCadastro texto="Essa origem já existe para esse canal. Reaproveite a origem cadastrada para manter o mesmo código." /> : null}
-                </ModoCadastroCard>
-
-                <Campo label="Código da unidade / origem" value={form.codigoUnidade} onChange={() => {}} readOnly helper="Gerado automaticamente conforme os cadastros existentes." />
-                <CampoSelect label="Canal" value={form.canal} onChange={(v) => atualizarCampo('canal', v)} options={CANAIS} disabled={form.origemModo === 'existente'} />
-                <CampoSelect label="Método de envio" value={form.metodoEnvio} onChange={(v) => atualizarCampo('metodoEnvio', v)} options={METODOS_ENVIO} />
-                <CampoSelect label="Regra de cálculo" value={form.regraCalculo} onChange={(v) => atualizarCampo('regraCalculo', v)} options={REGRAS_CALCULO} />
-                <CampoSelect label="Tipo de cálculo" value={form.tipoCalculo} onChange={(v) => atualizarCampo('tipoCalculo', v)} options={TIPOS_CALCULO} />
-                <Campo label="IBGE origem (automático)" value={form.origemIbge} onChange={() => {}} readOnly />
-                <Campo label="Vigência inicial" type="date" value={form.vigenciaInicial} onChange={(v) => atualizarCampo('vigenciaInicial', v)} />
-                <Campo label="Vigência final" type="date" value={form.vigenciaFinal} onChange={(v) => atualizarCampo('vigenciaFinal', v)} />
-              </div>
-              <div className="fmt-inline-note">
-                <strong>Como funciona:</strong> transportadora e origem podem vir do cadastro já existente. Quando for uma origem nova, o sistema gera o próximo código disponível automaticamente.
-              </div>
-              <label className="fmt-field full">
-                <span>Observações</span>
-                <textarea value={form.observacoes} onChange={(e) => atualizarCampo('observacoes', e.target.value)} rows={4} />
+          <label className="field-block readonly-field">
+            <span>IBGE origem</span>
+            <input value={form.origemIbge} readOnly />
+          </label>
+          <label className="field-block">
+            <span>Canal</span>
+            <select value={form.canal} onChange={(e) => atualizarCampo('canal', e.target.value)}>
+              <option value="ATACADO">ATACADO</option>
+              <option value="B2C">B2C</option>
+              <option value="INTERCOMPANY">INTERCOMPANY</option>
+            </select>
+          </label>
+          <label className="field-block">
+            <span>Método de envio</span>
+            <select value={form.metodoEnvio} onChange={(e) => atualizarCampo('metodoEnvio', e.target.value)}>
+              <option>Normal</option>
+              <option>Expresso</option>
+            </select>
+          </label>
+          <label className="field-block">
+            <span>Regra de cálculo</span>
+            <select value={form.regraCalculo} onChange={(e) => atualizarCampo('regraCalculo', e.target.value)}>
+              <option>Sem regra</option>
+              <option>Maior valor</option>
+              <option>Menor valor</option>
+            </select>
+          </label>
+          <label className="field-block">
+            <span>Tipo de cálculo</span>
+            <select value={form.tipoCalculo} onChange={(e) => atualizarCampo('tipoCalculo', e.target.value)}>
+              <option value="FAIXA_PESO">Faixa de peso</option>
+              <option value="PERCENTUAL">Percentual</option>
+            </select>
+          </label>
+          {form.tipoCalculo === 'FAIXA_PESO' ? (
+            <>
+              <label className="field-block">
+                <span>Modelo de faixa</span>
+                <select value={form.modeloFaixaId} onChange={(e) => atualizarCampo('modeloFaixaId', e.target.value)}>
+                  {modelosFaixa.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+                </select>
               </label>
-            </div>
-          )}
-
-          {etapaAtual === 1 && (
-            <div className="fmt-section">
-              <div className="fmt-section-header">
-                <div>
-                  <h2>Rotas</h2>
-                  <p>Cadastro simples: apenas IBGE destino, prazo e cotação. O IBGE de origem é preenchido automaticamente pela origem dos dados gerais.</p>
-                </div>
-                <div className="fmt-actions-inline">
-                  <button className="btn-secondary" onClick={() => exportarModeloRotas()}>Exportar modelo</button>
-                  <button className="btn-secondary" onClick={() => inputRotasRef.current?.click()}>Importar rotas</button>
-                  <button className="btn-primary" onClick={adicionarRota}>Adicionar rota</button>
-                  <input ref={inputRotasRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'rotas')} />
+              <div className="field-block button-stack">
+                <span>Ações da faixa</span>
+                <div className="inline-actions-wrap">
+                  <button className="btn-secondary" onClick={iniciarNovaFaixa}>Nova faixa</button>
+                  <button className="btn-secondary" onClick={() => editarFaixaExistente(form.modeloFaixaId)}>Alterar faixa</button>
                 </div>
               </div>
-              <TabelaRotas itens={form.rotas} onChange={atualizarRota} onDelete={(id) => excluirLinha('rotas', id)} />
-            </div>
-          )}
+            </>
+          ) : null}
+          <label className="field-block">
+            <span>Vigência inicial</span>
+            <input type="date" value={form.vigenciaInicial} onChange={(e) => atualizarCampo('vigenciaInicial', e.target.value)} />
+          </label>
+          <label className="field-block">
+            <span>Vigência final</span>
+            <input type="date" value={form.vigenciaFinal} onChange={(e) => atualizarCampo('vigenciaFinal', e.target.value)} />
+          </label>
+          <div className="field-block button-stack">
+            <span>Base IBGE</span>
+            <input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={importarBaseIbge} />
+          </div>
+        </div>
+      </section>
 
-          {etapaAtual === 2 && (
-            <div className="fmt-section">
-              <div className="fmt-section-header">
-                <div>
-                  <h2>Quebra de Faixas</h2>
-                  <p>Use esta etapa apenas quando os CEPs precisarem sobrescrever a cobertura padrão da base IBGE.</p>
-                </div>
-                <div className="fmt-actions-inline">
-                  <button className="btn-secondary" onClick={() => exportarModeloQuebras()}>Exportar modelo</button>
-                  <button className="btn-secondary" onClick={() => inputQuebrasRef.current?.click()}>Importar quebra</button>
-                  <button className="btn-primary" onClick={adicionarQuebra}>Adicionar quebra</button>
-                  <input ref={inputQuebrasRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'quebras')} />
-                </div>
-              </div>
-              <TabelaQuebras itens={form.quebrasFaixa} onChange={atualizarQuebra} onDelete={(id) => excluirLinha('quebrasFaixa', id)} />
-            </div>
-          )}
-
-          {etapaAtual === 3 && (
-            <div className="fmt-section">
-              <div className="fmt-section-header">
-                <div>
-                  <h2>Fretes</h2>
-                  <p>Gere automaticamente pela estrutura das rotas ou importe o preenchimento no modelo padrão.</p>
-                </div>
-                <div className="fmt-actions-inline">
-                  <button className="btn-secondary" onClick={() => exportarModeloFretes(form)}>Exportar modelo</button>
-                  <button className="btn-secondary" onClick={() => inputFretesRef.current?.click()}>Importar fretes</button>
-                  <button className="btn-primary" onClick={gerarFretes}>Gerar linhas automáticas</button>
-                  <input ref={inputFretesRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'fretes')} />
-                </div>
-              </div>
-              <TabelaFretes itens={form.fretes} onChange={atualizarFrete} onDelete={(id) => excluirLinha('fretes', id)} />
-            </div>
-          )}
-
-          {etapaAtual === 4 && (
-            <div className="fmt-section">
-              <div className="fmt-section-header">
-                <div>
-                  <h2>Revisão</h2>
-                  <p>Confira os principais pontos antes de exportar o pacote final.</p>
-                </div>
-                <div className="fmt-actions-inline">
-                  <button className="btn-secondary" onClick={salvarRascunhoAtual}>Salvar rascunho</button>
-                  <button className="btn-primary" onClick={() => exportarPacoteCompleto(form)}>Exportar pacote completo</button>
-                </div>
-              </div>
-
-              <div className="fmt-review-grid">
-                <ResumoCard label="Transportadora" value={form.transportadora || '-'} />
-                <ResumoCard label="Origem" value={`${form.origemNome || '-'} ${form.origemIbge ? `(${form.origemIbge})` : ''}`} />
-                <ResumoCard label="Código" value={form.codigoUnidade || '-'} />
-                <ResumoCard label="Rotas" value={String(form.rotas.length)} />
-                <ResumoCard label="Quebras" value={String(form.quebrasFaixa.length)} />
-                <ResumoCard label="Fretes" value={String(form.fretes.length)} />
-              </div>
-
-              <div className="fmt-validation-panels">
-                <div className="fmt-validation-panel">
-                  <h4>Erros</h4>
-                  {validacao.erros.length ? <ul>{validacao.erros.map((item) => <li key={item}>{item}</li>)}</ul> : <p>Nenhum erro encontrado.</p>}
-                </div>
-                <div className="fmt-validation-panel">
-                  <h4>Alertas</h4>
-                  {validacao.alertas.length ? <ul>{validacao.alertas.map((item) => <li key={item}>{item}</li>)}</ul> : <p>Nenhum alerta encontrado.</p>}
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="fmt-footer-actions">
-            <button className="btn-secondary" disabled={etapaAtual === 0} onClick={() => setEtapaAtual((atual) => Math.max(0, atual - 1))}>Voltar</button>
-            <button className="btn-primary" disabled={etapaAtual === ETAPAS.length - 1} onClick={() => setEtapaAtual((atual) => Math.min(ETAPAS.length - 1, atual + 1))}>Avançar</button>
+      {faixaEditando ? (
+        <section className="panel-card formatacao-section">
+          <div className="section-header-inline">
+            <h3>Cadastro de faixa de peso</h3>
+            <button className="btn-link" onClick={() => setFaixaEditando(null)}>Fechar</button>
+          </div>
+          <div className="formatacao-grid three">
+            <label className="field-block"><span>Nome do modelo</span><input value={faixaEditando.nome} onChange={(e) => setFaixaEditando((prev) => ({ ...prev, nome: e.target.value }))} /></label>
+            <label className="field-block"><span>Canal</span><select value={faixaEditando.canal} onChange={(e) => setFaixaEditando((prev) => ({ ...prev, canal: e.target.value }))}><option value="ATACADO">ATACADO</option><option value="B2C">B2C</option></select></label>
+            <div className="field-block button-stack"><span>Ações</span><div className="inline-actions-wrap"><button className="btn-secondary" onClick={adicionarItemFaixa}>Adicionar linha</button><button className="btn-primary" onClick={salvarFaixaEditada}>Salvar faixa</button></div></div>
+          </div>
+          <div className="table-card compact-card">
+            <table className="basic-table compact-table">
+              <thead><tr><th>Peso inicial</th><th>Peso final</th></tr></thead>
+              <tbody>
+                {faixaEditando.itens.map((item, index) => (
+                  <tr key={item.id}>
+                    <td><input value={item.pesoInicial} onChange={(e) => atualizarItemFaixa(index, 'pesoInicial', e.target.value)} /></td>
+                    <td><input value={item.pesoFinal} onChange={(e) => atualizarItemFaixa(index, 'pesoFinal', e.target.value)} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
-      </div>
-    </div>
-  );
-}
+      ) : null}
 
-function Campo({ label, value, onChange, readOnly = false, type = 'text', helper = '' }) {
-  return (
-    <label className="fmt-field">
-      <span>{label}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} readOnly={readOnly} />
-      {helper ? <small>{helper}</small> : null}
-    </label>
-  );
-}
-
-function CampoSelect({ label, value, onChange, options, placeholder = '', disabled = false }) {
-  const itens = options.map((item) => (typeof item === 'string' ? { value: item, label: item } : item));
-  return (
-    <label className="fmt-field">
-      <span>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
-        {placeholder ? <option value="">{placeholder}</option> : null}
-        {itens.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-      </select>
-    </label>
-  );
-}
-
-function ModoCadastroCard({ titulo, modo, onChangeModo, children }) {
-  return (
-    <div className="fmt-mode-card">
-      <div className="fmt-mode-card-head">
-        <span>{titulo}</span>
-        <div className="fmt-choice-row">
-          {MODOS_CADASTRO.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              className={modo === item.value ? 'fmt-choice active' : 'fmt-choice'}
-              onClick={() => onChangeModo(item.value)}
-            >
-              {item.label}
-            </button>
-          ))}
+      <section className="panel-card formatacao-section">
+        <div className="section-header-inline">
+          <h3>Rotas</h3>
+          <div className="inline-actions-wrap">
+            <button className="btn-secondary" onClick={exportarModeloRotas}>Exportar modelo</button>
+            <label className="btn-secondary file-button"><input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={importarRotas} />Importar rotas</label>
+            <button className="btn-secondary" onClick={adicionarRota}>Adicionar rota</button>
+          </div>
         </div>
-      </div>
-      {children}
-    </div>
-  );
-}
+        <div className="table-card compact-card">
+          <table className="basic-table compact-table">
+            <thead><tr><th>IBGE destino</th><th>Prazo</th><th>Cotação base</th><th>Cotação final</th><th /></tr></thead>
+            <tbody>
+              {rotasPadronizadas.map((item) => (
+                <tr key={item.id}>
+                  <td><input value={item.ibgeDestino} onChange={(e) => atualizarRota(item.id, 'ibgeDestino', e.target.value)} /></td>
+                  <td><input value={item.prazo} onChange={(e) => atualizarRota(item.id, 'prazo', e.target.value)} /></td>
+                  <td>
+                    <select value={item.cotacaoBase} onChange={(e) => atualizarRota(item.id, 'cotacaoBase', e.target.value)}>
+                      {COTACOES_BASE.map((op) => <option key={op}>{op}</option>)}
+                    </select>
+                  </td>
+                  <td>{item.cotacaoFinal}</td>
+                  <td><button className="btn-link" onClick={() => removerRota(item.id)}>Remover</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-function AvisoCadastro({ texto }) {
-  return <div className="fmt-inline-warning">{texto}</div>;
-}
+      <section className="panel-card formatacao-section">
+        <div className="section-header-inline">
+          <h3>Quebra de faixas</h3>
+          <div className="inline-actions-wrap">
+            <button className="btn-secondary" onClick={exportarModeloQuebras}>Exportar modelo</button>
+            <label className="btn-secondary file-button"><input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={importarQuebras} />Importar quebra</label>
+            <button className="btn-secondary" onClick={adicionarQuebra}>Adicionar linha</button>
+          </div>
+        </div>
+        <div className="table-card compact-card">
+          <table className="basic-table compact-table">
+            <thead><tr><th>IBGE destino</th><th>Prazo</th><th>Cotação base</th><th>CEP inicial</th><th>CEP final</th><th /></tr></thead>
+            <tbody>
+              {quebras.map((item) => (
+                <tr key={item.id}>
+                  <td><input value={item.ibgeDestino} onChange={(e) => atualizarQuebra(item.id, 'ibgeDestino', e.target.value)} /></td>
+                  <td><input value={item.prazo} onChange={(e) => atualizarQuebra(item.id, 'prazo', e.target.value)} /></td>
+                  <td><select value={item.cotacaoBase} onChange={(e) => atualizarQuebra(item.id, 'cotacaoBase', e.target.value)}>{COTACOES_BASE.map((op) => <option key={op}>{op}</option>)}</select></td>
+                  <td><input value={item.cepInicial} onChange={(e) => atualizarQuebra(item.id, 'cepInicial', e.target.value)} /></td>
+                  <td><input value={item.cepFinal} onChange={(e) => atualizarQuebra(item.id, 'cepFinal', e.target.value)} /></td>
+                  <td><button className="btn-link" onClick={() => removerQuebra(item.id)}>Remover</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-function TabelaRotas({ itens, onChange, onDelete }) {
-  return (
-    <div className="fmt-table-wrap">
-      <table className="fmt-table">
-        <thead>
-          <tr>
-            <th>Cotação</th>
-            <th>IBGE destino</th>
-            <th>Prazo</th>
-            <th>Ações</th>
-          </tr>
-        </thead>
-        <tbody>
-          {itens.length ? itens.map((item) => (
-            <tr key={item.id}>
-              <td><input value={item.cotacao} onChange={(e) => onChange(item.id, 'cotacao', e.target.value)} /></td>
-              <td><input value={item.ibgeDestino} onChange={(e) => onChange(item.id, 'ibgeDestino', e.target.value)} /></td>
-              <td><input value={item.prazo} onChange={(e) => onChange(item.id, 'prazo', e.target.value)} /></td>
-              <td><button className="inline-btn" onClick={() => onDelete(item.id)}>Excluir</button></td>
-            </tr>
-          )) : <tr><td colSpan="4" className="fmt-empty-row">Nenhuma rota cadastrada.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+      <section className="panel-card formatacao-section">
+        <div className="section-header-inline">
+          <h3>Fretes</h3>
+          <div className="inline-actions-wrap">
+            <button className="btn-primary" onClick={gerarFretes}>Aplicar faixas e gerar fretes</button>
+            <button className="btn-secondary" onClick={exportarModeloFretes}>Exportar modelo</button>
+            <label className="btn-secondary file-button"><input type="file" accept=".xlsx,.xls,.xlsb,.ods,.csv" onChange={importarTemplatePrecificacao} />Importar template de precificação</label>
+          </div>
+        </div>
 
-function TabelaQuebras({ itens, onChange, onDelete }) {
-  return (
-    <div className="fmt-table-wrap">
-      <table className="fmt-table">
-        <thead>
-          <tr>
-            <th>Cotação</th>
-            <th>IBGE destino</th>
-            <th>CEP inicial</th>
-            <th>CEP final</th>
-            <th>Prazo</th>
-            <th>Ações</th>
-          </tr>
-        </thead>
-        <tbody>
-          {itens.length ? itens.map((item) => (
-            <tr key={item.id}>
-              <td><input value={item.cotacao} onChange={(e) => onChange(item.id, 'cotacao', e.target.value)} /></td>
-              <td><input value={item.ibgeDestino} onChange={(e) => onChange(item.id, 'ibgeDestino', e.target.value)} /></td>
-              <td><input value={item.cepInicial} onChange={(e) => onChange(item.id, 'cepInicial', e.target.value)} /></td>
-              <td><input value={item.cepFinal} onChange={(e) => onChange(item.id, 'cepFinal', e.target.value)} /></td>
-              <td><input value={item.prazo} onChange={(e) => onChange(item.id, 'prazo', e.target.value)} /></td>
-              <td><button className="inline-btn" onClick={() => onDelete(item.id)}>Excluir</button></td>
-            </tr>
-          )) : <tr><td colSpan="6" className="fmt-empty-row">Nenhuma quebra cadastrada.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+        <div className="feature-grid three-cols">
+          <div className="info-card compact-info-card">
+            <strong>Modelo atual</strong>
+            <p>Continue exportando o modelo padrão para preenchimento manual.</p>
+          </div>
+          <div className="info-card compact-info-card">
+            <strong>Faixa aplicada</strong>
+            <p>{form.tipoCalculo === 'FAIXA_PESO' ? (modeloFaixaSelecionado?.nome || 'Nenhuma') : 'Não se aplica para percentual'}</p>
+          </div>
+          <div className="info-card compact-info-card">
+            <strong>Template pronto</strong>
+            <p>Importe a planilha já precificada para autoformatar os fretes.</p>
+          </div>
+        </div>
 
-function TabelaFretes({ itens, onChange, onDelete }) {
-  return (
-    <div className="fmt-table-wrap">
-      <table className="fmt-table">
-        <thead>
-          <tr>
-            <th>Rota do frete</th>
-            <th>Faixa</th>
-            <th>Peso mínimo</th>
-            <th>Peso limite</th>
-            <th>Excesso</th>
-            <th>Taxa aplicada</th>
-            <th>Frete %</th>
-            <th>Frete mínimo</th>
-            <th>Ações</th>
-          </tr>
-        </thead>
-        <tbody>
-          {itens.length ? itens.map((item) => (
-            <tr key={item.id}>
-              <td><input value={item.rotaFrete} onChange={(e) => onChange(item.id, 'rotaFrete', e.target.value)} /></td>
-              <td><input value={item.faixaNome} onChange={(e) => onChange(item.id, 'faixaNome', e.target.value)} /></td>
-              <td><input value={item.pesoMinimo} onChange={(e) => onChange(item.id, 'pesoMinimo', e.target.value)} /></td>
-              <td><input value={item.pesoLimite} onChange={(e) => onChange(item.id, 'pesoLimite', e.target.value)} /></td>
-              <td><input value={item.excessoPeso} onChange={(e) => onChange(item.id, 'excessoPeso', e.target.value)} /></td>
-              <td><input value={item.taxaAplicada} onChange={(e) => onChange(item.id, 'taxaAplicada', e.target.value)} /></td>
-              <td><input value={item.fretePercentual} onChange={(e) => onChange(item.id, 'fretePercentual', e.target.value)} /></td>
-              <td><input value={item.freteMinimo} onChange={(e) => onChange(item.id, 'freteMinimo', e.target.value)} /></td>
-              <td><button className="inline-btn" onClick={() => onDelete(item.id)}>Excluir</button></td>
-            </tr>
-          )) : <tr><td colSpan="9" className="fmt-empty-row">Nenhum frete cadastrado.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+        <div className="massa-box">
+          <strong>Preenchimento em massa</strong>
+          <div className="formatacao-grid four compact-top-gap">
+            <select defaultValue="freteValor" onChange={(e) => { acoesMassaRef.current.campo = e.target.value; }}>
+              <option value="freteValor">Frete valor</option>
+              <option value="fretePercentual">Ad valorem %</option>
+              <option value="freteMinimo">Frete mínimo</option>
+              <option value="taxaAplicada">Taxa aplicada</option>
+              <option value="excedente">Excedente</option>
+            </select>
+            <input placeholder="Valor" onChange={(e) => { acoesMassaRef.current.valor = e.target.value; }} />
+            <select defaultValue="" onChange={(e) => { acoesMassaRef.current.cotacao = e.target.value; }}>
+              <option value="">Todas as cotações</option>
+              {Array.from(new Set(fretes.map((item) => item.cotacao).filter(Boolean))).map((item) => <option key={item}>{item}</option>)}
+            </select>
+            <button className="btn-secondary" onClick={() => aplicarEmMassa(acoesMassaRef.current.campo, acoesMassaRef.current.valor, acoesMassaRef.current.cotacao)}>Aplicar</button>
+          </div>
+        </div>
 
-function ResumoCard({ label, value }) {
-  return (
-    <div className="fmt-summary-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
+        <div className="table-card compact-card">
+          <table className="basic-table compact-table fretes-table">
+            <thead>
+              <tr>
+                <th>Cotação</th><th>Faixa</th><th>Peso inicial</th><th>Peso final</th><th>Frete valor</th><th>Ad valorem %</th><th>Frete mínimo</th><th>Taxa aplicada</th><th>Excedente</th><th>Origem</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fretes.map((item, index) => (
+                <tr key={`${item.cotacao}-${index}`}>
+                  <td>{item.cotacao}</td>
+                  <td>{item.faixaNome}</td>
+                  <td>{item.pesoInicial}</td>
+                  <td>{item.pesoFinal}</td>
+                  <td><input value={item.freteValor} onChange={(e) => atualizarFrete(index, 'freteValor', e.target.value)} /></td>
+                  <td><input value={item.fretePercentual} onChange={(e) => atualizarFrete(index, 'fretePercentual', e.target.value)} /></td>
+                  <td><input value={item.freteMinimo} onChange={(e) => atualizarFrete(index, 'freteMinimo', e.target.value)} /></td>
+                  <td><input value={item.taxaAplicada} onChange={(e) => atualizarFrete(index, 'taxaAplicada', e.target.value)} /></td>
+                  <td><input value={item.excedente} onChange={(e) => atualizarFrete(index, 'excedente', e.target.value)} /></td>
+                  <td>{item.origemImportacao}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel-card formatacao-section">
+        <div className="section-header-inline">
+          <h3>Rascunhos salvos</h3>
+        </div>
+        <div className="list-card compact-list-card">
+          {(rascunhos || []).length ? rascunhos.map((item, index) => (
+            <button key={`${item.form.id}-${index}`} className="draft-item" onClick={() => carregarRascunho(item)}>
+              <strong>{item.form.nomeFormatacao || `${item.form.transportadoraNome} - ${item.form.origemNome}`}</strong>
+              <span>{item.form.canal} | {item.form.tipoCalculo}</span>
+            </button>
+          )) : <div className="empty-note">Nenhum rascunho salvo ainda.</div>}
+        </div>
+      </section>
     </div>
   );
 }

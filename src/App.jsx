@@ -33,6 +33,12 @@ export default function App() {
     setOrigemSelecionadaId(null);
   };
 
+  const abrirFormatacao = () => {
+    setPaginaAtual('formatacao');
+    setTransportadoraSelecionadaId(null);
+    setOrigemSelecionadaId(null);
+  };
+
   const abrirTransportadora = (id) => {
     setPaginaAtual('transportadoras');
     setTransportadoraSelecionadaId(id);
@@ -71,7 +77,8 @@ export default function App() {
     content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
   }
 
-  if (paginaAtual === 'formatacao-tabelas') {
+
+  if (paginaAtual === 'formatacao') {
     content = <FormatacaoTabelasPage transportadoras={transportadorasMemo} />;
   }
 
