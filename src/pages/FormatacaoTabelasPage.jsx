@@ -3,10 +3,13 @@ import {
   METODOS_ENVIO,
   REGRAS_CALCULO,
   TIPOS_CALCULO,
+  buscarIbgePorOrigem,
   carregarBaseIbge,
   carregarRascunhos,
+  construirCadastroBase,
   criarFormularioInicial,
-  buscarIbgePorOrigem,
+  encontrarOrigemExistente,
+  encontrarTransportadoraExistente,
   exportarModeloFretes,
   exportarModeloQuebras,
   exportarModeloRotas,
@@ -17,13 +20,19 @@ import {
   importarQuebras,
   importarRotas,
   montarNomeAutomatico,
+  proximoCodigoOrigem,
   salvarRascunhos,
   validarFormacao,
 } from '../utils/formatacaoTabela';
 
 const ETAPAS = ['Dados gerais', 'Rotas', 'Quebra de Faixas', 'Fretes', 'Revisão'];
+const MODOS_CADASTRO = [
+  { value: 'existente', label: 'Usar cadastro existente' },
+  { value: 'novo', label: 'Novo cadastro' },
+];
+const CANAIS = ['ATACADO', 'B2C'];
 
-export default function FormatacaoTabelasPage() {
+export default function FormatacaoTabelasPage({ transportadoras = [] }) {
   const [etapaAtual, setEtapaAtual] = useState(0);
   const [form, setForm] = useState(criarFormularioInicial());
   const [rascunhos, setRascunhos] = useState([]);
@@ -40,23 +49,126 @@ export default function FormatacaoTabelasPage() {
     setBaseIbge(carregarBaseIbge());
   }, []);
 
+  const cadastroBase = useMemo(() => construirCadastroBase(transportadoras), [transportadoras]);
+
+  const opcoesOrigem = useMemo(() => {
+    const todas = cadastroBase.origens || [];
+    if (form.transportadoraModo !== 'existente' || !form.transportadoraExistente) return todas;
+    const filtradas = todas.filter((item) => item.transportadoras.includes(form.transportadoraExistente));
+    return filtradas.length ? filtradas : todas;
+  }, [cadastroBase, form.transportadoraModo, form.transportadoraExistente]);
+
+  const transportadoraDuplicada = useMemo(
+    () => form.transportadoraModo === 'novo' && !!encontrarTransportadoraExistente(cadastroBase, form.transportadora),
+    [cadastroBase, form.transportadora, form.transportadoraModo],
+  );
+
+  const origemDuplicada = useMemo(
+    () => form.origemModo === 'novo' && !!encontrarOrigemExistente(cadastroBase, form.origemNome, form.canal),
+    [cadastroBase, form.canal, form.origemModo, form.origemNome],
+  );
+
+  useEffect(() => {
+    if (form.transportadoraModo === 'existente') {
+      setForm((atual) => {
+        const proximoNome = atual.transportadoraExistente || '';
+        if (atual.transportadora === proximoNome) return atual;
+        return {
+          ...atual,
+          transportadora: proximoNome,
+        };
+      });
+      return;
+    }
+    setForm((atual) => (atual.transportadoraExistente ? { ...atual, transportadoraExistente: '' } : atual));
+  }, [form.transportadoraModo, form.transportadoraExistente]);
+
+  useEffect(() => {
+    if (form.origemModo === 'existente') {
+      const selecionada = opcoesOrigem.find((item) => item.key === form.origemExistenteKey) || null;
+      if (!selecionada) {
+        setForm((atual) => {
+          if (!atual.origemNome && !atual.codigoUnidade && !atual.origemIbge) return atual;
+          return {
+            ...atual,
+            origemNome: '',
+            codigoUnidade: '',
+            origemIbge: '',
+          };
+        });
+        return;
+      }
+      setForm((atual) => {
+        if (atual.origemNome === selecionada.nome && atual.codigoUnidade === selecionada.codigo && atual.canal === selecionada.canal) return atual;
+        return {
+          ...atual,
+          origemNome: selecionada.nome,
+          codigoUnidade: selecionada.codigo,
+          canal: selecionada.canal,
+        };
+      });
+      return;
+    }
+    setForm((atual) => {
+      const proximoCodigo = atual.codigoUnidade || proximoCodigoOrigem(cadastroBase);
+      if (!atual.origemExistenteKey && atual.codigoUnidade === proximoCodigo) return atual;
+      return {
+        ...atual,
+        origemExistenteKey: '',
+        codigoUnidade: proximoCodigo,
+      };
+    });
+  }, [cadastroBase, form.origemModo, form.origemExistenteKey, opcoesOrigem]);
+
+  useEffect(() => {
+    if (form.origemModo !== 'novo') return;
+    setForm((atual) => {
+      const proximoCodigo = proximoCodigoOrigem(cadastroBase);
+      if (atual.codigoUnidade === proximoCodigo) return atual;
+      return {
+        ...atual,
+        codigoUnidade: proximoCodigo,
+      };
+    });
+  }, [cadastroBase, form.origemModo, form.origemNome, form.canal]);
+
   useEffect(() => {
     if (!form.nomeFormatacao?.trim()) {
-      setForm((atual) => ({ ...atual, nomeFormatacao: montarNomeAutomatico(atual) }));
+      setForm((atual) => {
+        const nomeAuto = montarNomeAutomatico(atual);
+        if (atual.nomeFormatacao === nomeAuto) return atual;
+        return { ...atual, nomeFormatacao: nomeAuto };
+      });
     }
   }, [form.transportadora, form.origemNome, form.canal]);
 
   useEffect(() => {
     if (!baseIbge || !form.origemNome) return;
     const encontrado = buscarIbgePorOrigem(baseIbge, form.origemNome);
-    setForm((atual) => ({
-      ...atual,
-      origemIbge: encontrado?.codigoMunicipioCompleto || atual.origemIbge || '',
-      baseIbgeResumo: baseIbge.resumo,
-    }));
+    setForm((atual) => {
+      const proximoIbge = encontrado?.codigoMunicipioCompleto || atual.origemIbge || '';
+      const mesmoResumo = JSON.stringify(atual.baseIbgeResumo || null) === JSON.stringify(baseIbge.resumo || null);
+      if (atual.origemIbge === proximoIbge && mesmoResumo) return atual;
+      return {
+        ...atual,
+        origemIbge: proximoIbge,
+        baseIbgeResumo: baseIbge.resumo,
+      };
+    });
   }, [baseIbge, form.origemNome]);
 
-  const validacao = useMemo(() => validarFormacao(form), [form]);
+  const validacaoBase = useMemo(() => validarFormacao(form), [form]);
+  const validacao = useMemo(() => {
+    const erros = [...validacaoBase.erros];
+    const alertas = [...validacaoBase.alertas];
+    if (transportadoraDuplicada) {
+      erros.push('A transportadora digitada já existe no cadastro. Use a lista suspensa para evitar duplicidade.');
+    }
+    if (origemDuplicada) {
+      erros.push('A origem digitada já existe para esse canal. Use a origem existente para reaproveitar o código já cadastrado.');
+    }
+    return { erros, alertas };
+  }, [origemDuplicada, transportadoraDuplicada, validacaoBase]);
 
   const atualizarCampo = (campo, valor) => {
     setForm((atual) => ({ ...atual, [campo]: valor }));
@@ -87,7 +199,11 @@ export default function FormatacaoTabelasPage() {
   };
 
   const duplicarRascunho = () => {
-    setForm((atual) => ({ ...atual, id: `dup_${Date.now()}`, nomeFormatacao: `${atual.nomeFormatacao || montarNomeAutomatico(atual)} (cópia)` }));
+    setForm((atual) => ({
+      ...atual,
+      id: `dup_${Date.now()}`,
+      nomeFormatacao: `${atual.nomeFormatacao || montarNomeAutomatico(atual)} (cópia)`,
+    }));
     setMensagem('Rascunho duplicado.');
     setErro('');
   };
@@ -234,16 +350,56 @@ export default function FormatacaoTabelasPage() {
               <h2>Dados gerais</h2>
               <div className="fmt-grid two-cols">
                 <Campo label="Nome da formatação" value={form.nomeFormatacao} onChange={(v) => atualizarCampo('nomeFormatacao', v)} />
-                <Campo label="Transportadora" value={form.transportadora} onChange={(v) => atualizarCampo('transportadora', v)} />
-                <Campo label="Código da unidade / origem" value={form.codigoUnidade} onChange={(v) => atualizarCampo('codigoUnidade', v)} />
-                <Campo label="Origem" value={form.origemNome} onChange={(v) => atualizarCampo('origemNome', v)} />
-                <Campo label="Canal" value={form.canal} onChange={(v) => atualizarCampo('canal', v)} />
+
+                <ModoCadastroCard
+                  titulo="Transportadora"
+                  modo={form.transportadoraModo}
+                  onChangeModo={(valor) => atualizarCampo('transportadoraModo', valor)}
+                >
+                  {form.transportadoraModo === 'existente' ? (
+                    <CampoSelect
+                      label="Selecionar transportadora"
+                      value={form.transportadoraExistente}
+                      onChange={(v) => atualizarCampo('transportadoraExistente', v)}
+                      options={cadastroBase.transportadoras}
+                      placeholder="Selecione..."
+                    />
+                  ) : (
+                    <Campo label="Nova transportadora" value={form.transportadora} onChange={(v) => atualizarCampo('transportadora', v)} />
+                  )}
+                  {transportadoraDuplicada ? <AvisoCadastro texto="Essa transportadora já existe. Use a lista para evitar duplicidade." /> : null}
+                </ModoCadastroCard>
+
+                <ModoCadastroCard
+                  titulo="Origem"
+                  modo={form.origemModo}
+                  onChangeModo={(valor) => atualizarCampo('origemModo', valor)}
+                >
+                  {form.origemModo === 'existente' ? (
+                    <CampoSelect
+                      label="Selecionar origem"
+                      value={form.origemExistenteKey}
+                      onChange={(v) => atualizarCampo('origemExistenteKey', v)}
+                      options={opcoesOrigem.map((item) => ({ value: item.key, label: `${item.nome} · ${item.canal} · ${item.codigo}` }))}
+                      placeholder="Selecione..."
+                    />
+                  ) : (
+                    <Campo label="Nova origem" value={form.origemNome} onChange={(v) => atualizarCampo('origemNome', v)} />
+                  )}
+                  {origemDuplicada ? <AvisoCadastro texto="Essa origem já existe para esse canal. Reaproveite a origem cadastrada para manter o mesmo código." /> : null}
+                </ModoCadastroCard>
+
+                <Campo label="Código da unidade / origem" value={form.codigoUnidade} onChange={() => {}} readOnly helper="Gerado automaticamente conforme os cadastros existentes." />
+                <CampoSelect label="Canal" value={form.canal} onChange={(v) => atualizarCampo('canal', v)} options={CANAIS} disabled={form.origemModo === 'existente'} />
                 <CampoSelect label="Método de envio" value={form.metodoEnvio} onChange={(v) => atualizarCampo('metodoEnvio', v)} options={METODOS_ENVIO} />
                 <CampoSelect label="Regra de cálculo" value={form.regraCalculo} onChange={(v) => atualizarCampo('regraCalculo', v)} options={REGRAS_CALCULO} />
                 <CampoSelect label="Tipo de cálculo" value={form.tipoCalculo} onChange={(v) => atualizarCampo('tipoCalculo', v)} options={TIPOS_CALCULO} />
                 <Campo label="IBGE origem (automático)" value={form.origemIbge} onChange={() => {}} readOnly />
                 <Campo label="Vigência inicial" type="date" value={form.vigenciaInicial} onChange={(v) => atualizarCampo('vigenciaInicial', v)} />
                 <Campo label="Vigência final" type="date" value={form.vigenciaFinal} onChange={(v) => atualizarCampo('vigenciaFinal', v)} />
+              </div>
+              <div className="fmt-inline-note">
+                <strong>Como funciona:</strong> transportadora e origem podem vir do cadastro já existente. Quando for uma origem nova, o sistema gera o próximo código disponível automaticamente.
               </div>
               <label className="fmt-field full">
                 <span>Observações</span>
@@ -266,7 +422,6 @@ export default function FormatacaoTabelasPage() {
                   <input ref={inputRotasRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'rotas')} />
                 </div>
               </div>
-
               <TabelaRotas itens={form.rotas} onChange={atualizarRota} onDelete={(id) => excluirLinha('rotas', id)} />
             </div>
           )}
@@ -285,7 +440,6 @@ export default function FormatacaoTabelasPage() {
                   <input ref={inputQuebrasRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'quebras')} />
                 </div>
               </div>
-
               <TabelaQuebras itens={form.quebrasFaixa} onChange={atualizarQuebra} onDelete={(id) => excluirLinha('quebrasFaixa', id)} />
             </div>
           )}
@@ -304,7 +458,6 @@ export default function FormatacaoTabelasPage() {
                   <input ref={inputFretesRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'fretes')} />
                 </div>
               </div>
-
               <TabelaFretes itens={form.fretes} onChange={atualizarFrete} onDelete={(id) => excluirLinha('fretes', id)} />
             </div>
           )}
@@ -325,10 +478,10 @@ export default function FormatacaoTabelasPage() {
               <div className="fmt-review-grid">
                 <ResumoCard label="Transportadora" value={form.transportadora || '-'} />
                 <ResumoCard label="Origem" value={`${form.origemNome || '-'} ${form.origemIbge ? `(${form.origemIbge})` : ''}`} />
+                <ResumoCard label="Código" value={form.codigoUnidade || '-'} />
                 <ResumoCard label="Rotas" value={String(form.rotas.length)} />
                 <ResumoCard label="Quebras" value={String(form.quebrasFaixa.length)} />
                 <ResumoCard label="Fretes" value={String(form.fretes.length)} />
-                <ResumoCard label="Tipo" value={form.tipoCalculo} />
               </div>
 
               <div className="fmt-validation-panels">
@@ -354,24 +507,54 @@ export default function FormatacaoTabelasPage() {
   );
 }
 
-function Campo({ label, value, onChange, readOnly = false, type = 'text' }) {
+function Campo({ label, value, onChange, readOnly = false, type = 'text', helper = '' }) {
   return (
     <label className="fmt-field">
       <span>{label}</span>
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)} readOnly={readOnly} />
+      {helper ? <small>{helper}</small> : null}
     </label>
   );
 }
 
-function CampoSelect({ label, value, onChange, options }) {
+function CampoSelect({ label, value, onChange, options, placeholder = '', disabled = false }) {
+  const itens = options.map((item) => (typeof item === 'string' ? { value: item, label: item } : item));
   return (
     <label className="fmt-field">
       <span>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {options.map((item) => <option key={item} value={item}>{item}</option>)}
+      <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
+        {placeholder ? <option value="">{placeholder}</option> : null}
+        {itens.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
       </select>
     </label>
   );
+}
+
+function ModoCadastroCard({ titulo, modo, onChangeModo, children }) {
+  return (
+    <div className="fmt-mode-card">
+      <div className="fmt-mode-card-head">
+        <span>{titulo}</span>
+        <div className="fmt-choice-row">
+          {MODOS_CADASTRO.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              className={modo === item.value ? 'fmt-choice active' : 'fmt-choice'}
+              onClick={() => onChangeModo(item.value)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function AvisoCadastro({ texto }) {
+  return <div className="fmt-inline-warning">{texto}</div>;
 }
 
 function TabelaRotas({ itens, onChange, onDelete }) {

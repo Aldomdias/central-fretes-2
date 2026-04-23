@@ -72,7 +72,7 @@ export default function App() {
   }
 
   if (paginaAtual === 'formatacao-tabelas') {
-    content = <FormatacaoTabelasPage />;
+    content = <FormatacaoTabelasPage transportadoras={transportadorasMemo} />;
   }
 
   if (paginaAtual === 'transportadoras') {

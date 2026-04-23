@@ -1180,3 +1180,73 @@ textarea,
     font-size: 38px;
   }
 }
+
+
+.fmt-mode-card {
+  border: 1px solid var(--border-color, #d5def0);
+  border-radius: 20px;
+  padding: 16px;
+  background: #f8faff;
+}
+
+.fmt-mode-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-weight: 700;
+  color: #0b2a68;
+}
+
+.fmt-choice-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fmt-choice {
+  border: 1px solid #c9d5ea;
+  background: #fff;
+  color: #0b2a68;
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.fmt-choice.active {
+  background: #0b2a68;
+  color: #fff;
+  border-color: #0b2a68;
+}
+
+.fmt-inline-warning {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff4da;
+  color: #7b5b00;
+  font-size: 13px;
+}
+
+.fmt-inline-note {
+  margin: 16px 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #eef4ff;
+  color: #25427b;
+}
+
+.fmt-field small {
+  margin-top: 6px;
+  color: #5f6f91;
+  font-size: 12px;
+}
+
+@media (max-width: 980px) {
+  .fmt-mode-card-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

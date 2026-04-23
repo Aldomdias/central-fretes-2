@@ -31,8 +31,12 @@ export function criarFormularioInicial() {
     id: gerarId(),
     nomeFormatacao: '',
     transportadora: '',
+    transportadoraModo: 'existente',
+    transportadoraExistente: '',
     codigoUnidade: '',
     origemNome: '',
+    origemModo: 'existente',
+    origemExistenteKey: '',
     origemIbge: '',
     canal: 'ATACADO',
     metodoEnvio: 'Normal',
@@ -531,6 +535,66 @@ function criarZipSimples(arquivos) {
   endView.setUint16(20, 0, true);
 
   return new Blob([...localParts, ...centralParts, endHeader], { type: 'application/zip' });
+}
+
+
+export function construirCadastroBase(transportadoras = []) {
+  const nomesTransportadoras = Array.from(
+    new Set(
+      (transportadoras || [])
+        .map((item) => String(item?.nome || '').trim())
+        .filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  const origemMap = new Map();
+  (transportadoras || []).forEach((transportadora) => {
+    const nomeTransportadora = String(transportadora?.nome || '').trim();
+    (transportadora?.origens || []).forEach((origem) => {
+      const nome = String(origem?.cidade || '').trim();
+      const canal = String(origem?.canal || 'ATACADO').trim().toUpperCase();
+      if (!nome) return;
+      const key = `${normalizarTexto(nome)}|${canal}`;
+      if (!origemMap.has(key)) {
+        origemMap.set(key, {
+          key,
+          nome,
+          canal,
+          transportadoras: nomeTransportadora ? [nomeTransportadora] : [],
+        });
+      } else if (nomeTransportadora) {
+        const atual = origemMap.get(key);
+        if (!atual.transportadoras.includes(nomeTransportadora)) {
+          atual.transportadoras.push(nomeTransportadora);
+        }
+      }
+    });
+  });
+
+  const origens = Array.from(origemMap.values())
+    .sort((a, b) => `${a.nome}|${a.canal}`.localeCompare(`${b.nome}|${b.canal}`, 'pt-BR'))
+    .map((item, index) => ({
+      ...item,
+      transportadoras: [...item.transportadoras].sort((a, b) => a.localeCompare(b, 'pt-BR')),
+      codigo: `UND${String(index + 1).padStart(3, '0')}`,
+    }));
+
+  return { transportadoras: nomesTransportadoras, origens };
+}
+
+export function proximoCodigoOrigem(cadastroBase, incremento = 0) {
+  const total = Array.isArray(cadastroBase?.origens) ? cadastroBase.origens.length : 0;
+  return `UND${String(total + 1 + incremento).padStart(3, '0')}`;
+}
+
+export function encontrarTransportadoraExistente(cadastroBase, nome) {
+  const alvo = normalizarTexto(nome);
+  return (cadastroBase?.transportadoras || []).find((item) => normalizarTexto(item) === alvo) || '';
+}
+
+export function encontrarOrigemExistente(cadastroBase, nome, canal) {
+  const chave = `${normalizarTexto(nome)}|${String(canal || 'ATACADO').trim().toUpperCase()}`;
+  return (cadastroBase?.origens || []).find((item) => item.key === chave) || null;
 }
 
 const CRC_TABLE = (() => {
