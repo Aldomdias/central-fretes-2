@@ -30,13 +30,13 @@ function uid(prefix = 'id') {
 }
 
 export function limparTexto(valor = '') {
-  return String(valor ?? '').trim().replace(/\s+/g, ' ');
+  return String(valor ?? '').trim().replace(/\\s+/g, ' ');
 }
 
 export function normalizarChave(valor = '') {
   return limparTexto(valor)
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\\u0300-\\u036f]/g, '')
     .toUpperCase();
 }
 
@@ -152,7 +152,7 @@ export function encontrarOrigemExistente(cadastros, idOuNome) {
 
 export function proximoCodigoOrigem(cadastros) {
   const numeros = (cadastros?.origens || [])
-    .map((item) => String(item.codigo || '').match(/(\d+)/))
+    .map((item) => String(item.codigo || '').match(/(\\d+)/))
     .filter(Boolean)
     .map((match) => Number(match[1]))
     .filter(Number.isFinite);
@@ -213,24 +213,60 @@ export function atualizarModeloFaixa(modelos = [], modeloAtualizado) {
 }
 
 export function carregarBaseIbge() {
+  let baseSalva = [];
   try {
-    const base = JSON.parse(localStorage.getItem(STORAGE_KEYS.ibge) || '[]');
-    if (Array.isArray(base) && base.length) return base;
+    const lido = JSON.parse(localStorage.getItem(STORAGE_KEYS.ibge) || '[]');
+    if (Array.isArray(lido)) baseSalva = lido;
   } catch {}
-  return MUNICIPIOS_FIXOS;
+  const mapa = new Map();
+  [...MUNICIPIOS_FIXOS, ...baseSalva].forEach((item) => {
+    const codigo = String(
+      item?.codigo_municipio_completo ??
+      item?.codigoMunicipioCompleto ??
+      item?.codigo ??
+      item?.ibge ??
+      item?.municipio_ibge ??
+      ''
+    ).replace(/\\D/g, '');
+    if (!codigo) return;
+    mapa.set(codigo, {
+      ...item,
+      codigo_municipio_completo: codigo,
+      uf: limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(codigo)).toUpperCase(),
+    });
+  });
+  return Array.from(mapa.values());
 }
 
 export function salvarBaseIbge(base = []) {
-  localStorage.setItem(STORAGE_KEYS.ibge, JSON.stringify(base));
+  const consolidada = carregarBaseIbge();
+  const mapa = new Map();
+  [...consolidada, ...(Array.isArray(base) ? base : [])].forEach((item) => {
+    const codigo = String(
+      item?.codigo_municipio_completo ??
+      item?.codigoMunicipioCompleto ??
+      item?.codigo ??
+      item?.ibge ??
+      item?.municipio_ibge ??
+      ''
+    ).replace(/\\D/g, '');
+    if (!codigo) return;
+    mapa.set(codigo, {
+      ...item,
+      codigo_municipio_completo: codigo,
+      uf: limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(codigo)).toUpperCase(),
+    });
+  });
+  localStorage.setItem(STORAGE_KEYS.ibge, JSON.stringify(Array.from(mapa.values())));
 }
 
 export function obterUfPorCodigoIbge(ibge = '') {
-  const codigo = String(ibge || '').replace(/\D/g, '').slice(0, 2);
+  const codigo = String(ibge || '').replace(/\\D/g, '').slice(0, 2);
   return UF_POR_CODIGO[codigo] || '';
 }
 
 export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
-  const chave = String(ibgeDestino || '').replace(/\D/g, '');
+  const chave = String(ibgeDestino || '').replace(/\\D/g, '');
   if (!chave) return '';
   const lista = baseIbge?.length ? baseIbge : MUNICIPIOS_FIXOS;
   const item = lista.find((registro) => {
@@ -241,7 +277,7 @@ export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
       registro.ibge ??
       registro.municipio_ibge ??
       ''
-    ).replace(/\D/g, '');
+    ).replace(/\\D/g, '');
     return codigo === chave;
   });
   return limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(chave)).toUpperCase();
@@ -250,9 +286,15 @@ export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
 export function encontrarMunicipioPorNome(baseIbge = [], nome = '') {
   const chave = normalizarChave(nome);
   if (!chave) return null;
-  const lista = baseIbge?.length ? baseIbge : MUNICIPIOS_FIXOS;
+  const lista = baseIbge?.length ? baseIbge : carregarBaseIbge();
   return lista.find((item) => {
-    const candidatos = [item.nome_municipio, item.municipio, item.nome, item.nome_municipio_sem_acento]
+    const candidatos = [
+      item.nome_municipio,
+      item.municipio,
+      item.nome,
+      item.nome_municipio_sem_acento,
+      item.cidade,
+    ]
       .filter(Boolean)
       .map((valor) => normalizarChave(valor));
     return candidatos.some((valor) => valor === chave || valor.includes(chave) || chave.includes(valor));
@@ -268,9 +310,11 @@ export function montarCotacaoPadrao({ origem, ufDestino, cotacaoBase }) {
 export function aplicarCotacaoPadraoNasRotas(rotas = [], dadosGerais = {}, baseIbge = []) {
   const origem = dadosGerais.origemNome || dadosGerais.origem || '';
   return (rotas || []).map((rota) => {
-    const ufDestino = obterUfDoDestino(rota.ibgeDestino, baseIbge);
-    const cotacao = montarCotacaoPadrao({ origem, ufDestino, cotacaoBase: rota.cotacaoBase || rota.cotacao || '' });
-    return { ...rota, cotacao, cotacaoFinal: cotacao };
+    const ufExplícita = limparTexto(rota.ufDestino || rota.uf_destino || rota.UF_DESTINO || '').toUpperCase();
+    const ufDestino = ufExplícita || obterUfDoDestino(rota.ibgeDestino || rota.ibge_destino, baseIbge);
+    const cotacaoBase = rota.cotacaoBase || rota.cotacao_base || rota.cotacao || '';
+    const cotacao = montarCotacaoPadrao({ origem, ufDestino, cotacaoBase });
+    return { ...rota, ufDestino, cotacaoBase, cotacao, cotacaoFinal: cotacao };
   });
 }
 

@@ -1,8 +1,7 @@
 Extraia este ZIP na raiz do projeto.
 
-Correções desta versão:
-- Importar rotas passa a usar a coluna REGIÃO/REGIAO/COTAÇÃO como cotação base
-- Importar template lê as abas Rotas e Fretes do arquivo padrão
-- Exportar modelo de fretes leva as cotações/faixas já geradas, pronto para preencher
-- Novo botão Limpar tudo
-- Base IBGE permanece fixa; atualização é opcional
+Arquivos:
+- central-fretes-2-Melhoria-importa-o/src/utils/importadorTabelaPronta.js
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.IMPORTADOR_MODELO_PATCH.txt
+
+Este pacote é focado apenas no importador do modelo padrão com abas Rotas e Fretes.
