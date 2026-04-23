@@ -1,396 +1,412 @@
 import * as XLSX from 'xlsx';
 
-export const CANAL_OPTIONS = ['ATACADO', 'B2C', 'B2B'];
-export const METODO_ENVIO_OPTIONS = ['Normal', 'Expresso'];
-export const REGRA_CALCULO_OPTIONS = ['Maior valor', 'Menor valor', 'Sem regra'];
-export const TIPO_CALCULO_OPTIONS = [
-  { value: 'percentual', label: 'Percentual' },
-  { value: 'faixa', label: 'Faixa de peso' },
-];
+export const STORAGE_KEYS = {
+  drafts: 'formatacao_tabelas_rascunhos_v3',
+  ibge: 'formatacao_tabelas_ibge_base_v1',
+};
+
+export const TIPOS_CALCULO = ['PERCENTUAL', 'FAIXA DE PESO'];
+export const METODOS_ENVIO = ['Normal', 'Expresso'];
+export const REGRAS_CALCULO = ['Maior valor', 'Menor valor', 'Sem regra'];
 
 export const FAIXAS_PADRAO = {
-  ATACADO: [
-    { id: 'ata-1', pesoMinimo: 0, pesoLimite: 20 },
-    { id: 'ata-2', pesoMinimo: 20, pesoLimite: 30 },
-    { id: 'ata-3', pesoMinimo: 30, pesoLimite: 50 },
-    { id: 'ata-4', pesoMinimo: 50, pesoLimite: 70 },
-    { id: 'ata-5', pesoMinimo: 70, pesoLimite: 100 },
-  ],
-  B2B: [
-    { id: 'b2b-1', pesoMinimo: 0, pesoLimite: 20 },
-    { id: 'b2b-2', pesoMinimo: 20, pesoLimite: 35 },
-    { id: 'b2b-3', pesoMinimo: 35, pesoLimite: 50 },
-    { id: 'b2b-4', pesoMinimo: 50, pesoLimite: 70 },
-    { id: 'b2b-5', pesoMinimo: 70, pesoLimite: 100 },
-  ],
   B2C: [
-    { id: 'b2c-1', pesoMinimo: 0, pesoLimite: 2 },
-    { id: 'b2c-2', pesoMinimo: 2, pesoLimite: 5 },
-    { id: 'b2c-3', pesoMinimo: 5, pesoLimite: 10 },
-    { id: 'b2c-4', pesoMinimo: 10, pesoLimite: 20 },
-    { id: 'b2c-5', pesoMinimo: 20, pesoLimite: 30 },
+    { nome: '0 a 10', pesoMinimo: 0, pesoLimite: 10 },
+    { nome: '10 a 20', pesoMinimo: 10.001, pesoLimite: 20 },
+    { nome: '20 a 30', pesoMinimo: 20.001, pesoLimite: 30 },
+    { nome: '30 a 50', pesoMinimo: 30.001, pesoLimite: 50 },
+  ],
+  ATACADO: [
+    { nome: '0 a 20', pesoMinimo: 0, pesoLimite: 20 },
+    { nome: '20 a 50', pesoMinimo: 20.001, pesoLimite: 50 },
+    { nome: '50 a 100', pesoMinimo: 50.001, pesoLimite: 100 },
+    { nome: '100 a 200', pesoMinimo: 100.001, pesoLimite: 200 },
   ],
 };
 
-const ROTAS_HEADERS = [
-  'Nome da transportadora',
-  'Código da unidade',
-  'Canal',
-  'Cotação',
-  'Código IBGE Origem',
-  'Código IBGE Destino',
-  'CEP inicial',
-  'CEP final',
-  'Método de envio',
-  'Prazo de entrega',
-  'Início da vigência',
-  'Término da vigência',
-];
-
-const FRETES_HEADERS = [
-  'Nome da transportadora',
-  'Código da unidade',
-  'Canal',
-  'Regra de cálculo',
-  'Tipo de cálculo',
-  'Rota do frete',
-  'Peso mínimo',
-  'Peso limite',
-  'Excesso de peso',
-  'Taxa aplicada',
-  'Frete percentual',
-  'Frete mínimo',
-  'Início da vigência',
-  'Fim da vigência',
-];
-
-function makeId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function criarRascunhoVazio() {
+export function criarFormularioInicial() {
+  const hoje = new Date();
+  const final = new Date(hoje.getFullYear() + 3, 11, 31);
   return {
-    id: makeId('fmt'),
-    criadoEm: new Date().toISOString(),
-    atualizadoEm: new Date().toISOString(),
-    dadosGerais: {
-      nomeFormatacao: '',
-      transportadora: '',
-      origem: '',
-      codigoUnidade: '',
-      ibgeOrigem: '',
-      canal: 'ATACADO',
-      metodoEnvio: 'Normal',
-      regraCalculo: 'Maior valor',
-      tipoCalculo: 'percentual',
-      vigenciaInicial: '',
-      vigenciaFinal: '',
-      observacoes: '',
-    },
+    id: gerarId(),
+    nomeFormatacao: '',
+    transportadora: '',
+    codigoUnidade: '',
+    origemNome: '',
+    origemIbge: '',
+    canal: 'ATACADO',
+    metodoEnvio: 'Normal',
+    regraCalculo: 'Maior valor',
+    tipoCalculo: 'PERCENTUAL',
+    vigenciaInicial: formatarDataInput(hoje),
+    vigenciaFinal: formatarDataInput(final),
+    observacoes: '',
     rotas: [],
+    quebrasFaixa: [],
     fretes: [],
-    modeloFaixas: 'padrao-canal',
-    faixasCustomizadas: [],
+    modelosFaixa: FAIXAS_PADRAO,
+    baseIbgeResumo: null,
+    atualizadoEm: new Date().toISOString(),
   };
 }
 
-export function gerarNomeFormatacao(dadosGerais) {
-  const partes = [dadosGerais.transportadora, dadosGerais.origem, dadosGerais.canal].filter(Boolean);
+export function gerarId() {
+  return `fmt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatarDataInput(data) {
+  return data.toISOString().slice(0, 10);
+}
+
+export function normalizarTexto(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+export function montarNomeAutomatico(form) {
+  const partes = [form.transportadora, form.origemNome || form.codigoUnidade, form.canal].filter(Boolean);
   return partes.join(' | ');
 }
 
-function normalizarTexto(valor) {
-  return String(valor ?? '').trim();
+export function salvarRascunhos(rascunhos) {
+  localStorage.setItem(STORAGE_KEYS.drafts, JSON.stringify(rascunhos));
 }
 
-function toIsoDate(valor) {
-  if (!valor) return '';
-  if (typeof valor === 'number') {
-    const date = XLSX.SSF.parse_date_code(valor);
-    if (!date) return '';
-    const d = new Date(Date.UTC(date.y, date.m - 1, date.d));
-    return d.toISOString().slice(0, 10);
+export function carregarRascunhos() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.drafts) || '[]');
+  } catch {
+    return [];
   }
-  if (valor instanceof Date && !Number.isNaN(valor.getTime())) {
-    return valor.toISOString().slice(0, 10);
+}
+
+export function salvarBaseIbge(base) {
+  localStorage.setItem(STORAGE_KEYS.ibge, JSON.stringify(base));
+}
+
+export function carregarBaseIbge() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.ibge) || 'null');
+  } catch {
+    return null;
   }
-  const texto = String(valor).trim();
-  if (!texto) return '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) return texto;
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(texto)) {
-    const [dia, mes, ano] = texto.split('/');
-    return `${ano}-${mes.padStart(2, '0')}-${dia.padStart(2, '0')}`;
-  }
-  const parsed = new Date(texto);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-  return texto;
 }
 
-function normalizarNumero(valor) {
-  if (valor === null || valor === undefined || valor === '') return '';
-  if (typeof valor === 'number') return valor;
-  const texto = String(valor).replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
-  const numero = Number(texto);
-  return Number.isFinite(numero) ? numero : valor;
-}
-
-function criarSheetComLarguras(linhas, headers, larguras = []) {
-  const worksheet = XLSX.utils.json_to_sheet(linhas, { header: headers });
-  worksheet['!cols'] = larguras.length ? larguras.map((wch) => ({ wch })) : headers.map((header) => ({ wch: Math.max(16, header.length + 2) }));
-  return worksheet;
-}
-
-function baixarWorkbook(workbook, nome) {
-  XLSX.writeFile(workbook, nome);
-}
-
-function slug(valor) {
-  return String(valor || 'arquivo')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
-}
-
-function obterValor(normalizado, ...keys) {
-  for (const key of keys) {
-    const valor = normalizado[key.toLowerCase()];
-    if (valor !== undefined && valor !== null && String(valor).trim() !== '') return valor;
-  }
-  return '';
-}
-
-export function mapearLinhaRota(row) {
-  const normalizado = Object.fromEntries(Object.entries(row).map(([key, value]) => [normalizarTexto(key).toLowerCase(), value]));
-  return {
-    cotacao: normalizarTexto(obterValor(normalizado, 'cotação', 'cotacao', 'rota', 'rota do frete')),
-    ibgeDestino: normalizarTexto(obterValor(normalizado, 'código ibge destino', 'codigo ibge destino', 'ibge destino')),
-    cepInicial: normalizarTexto(obterValor(normalizado, 'cep inicial', 'faixa cep inicial')),
-    cepFinal: normalizarTexto(obterValor(normalizado, 'cep final', 'faixa cep final')),
-    prazo: normalizarTexto(obterValor(normalizado, 'prazo de entrega', 'prazo')),
-  };
-}
-
-export function mapearLinhaFrete(row) {
-  const normalizado = Object.fromEntries(Object.entries(row).map(([key, value]) => [normalizarTexto(key).toLowerCase(), value]));
-  return {
-    rotaFrete: normalizarTexto(obterValor(normalizado, 'rota do frete', 'cotação', 'cotacao', 'rota')),
-    pesoMinimo: normalizarNumero(obterValor(normalizado, 'peso mínimo', 'peso minimo')),
-    pesoLimite: normalizarNumero(obterValor(normalizado, 'peso limite')),
-    excessoPeso: normalizarNumero(obterValor(normalizado, 'excesso de peso')),
-    taxaAplicada: normalizarNumero(obterValor(normalizado, 'taxa aplicada')),
-    fretePercentual: normalizarNumero(obterValor(normalizado, 'frete percentual')),
-    freteMinimo: normalizarNumero(obterValor(normalizado, 'frete mínimo', 'frete minimo')),
-  };
-}
-
-function lerPrimeiraAba(file) {
+export function lerArquivoComoArrayBuffer(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = new Uint8Array(event.target.result);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        resolve(rows);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo.'));
+    reader.onload = (event) => resolve(event.target?.result);
+    reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
 }
 
-export async function importarRotasDeArquivo(file) {
-  const rows = await lerPrimeiraAba(file);
+export async function importarBaseIbge(file) {
+  const buffer = await lerArquivoComoArrayBuffer(file);
+  const workbook = XLSX.read(buffer, { type: 'array' });
+  const primeiraAba = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[primeiraAba];
+  const linhas = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+  let headerIndex = linhas.findIndex((row) => String(row[0] || '').trim() === 'UF' && String(row[10] || '').trim() === 'Município');
+  if (headerIndex < 0) headerIndex = 0;
+
+  const headers = linhas[headerIndex].map((h) => String(h || '').trim());
+  const data = linhas.slice(headerIndex + 1).filter((row) => row.some((cell) => String(cell || '').trim() !== ''));
+
+  const idx = Object.fromEntries(headers.map((h, i) => [h, i]));
+  const municipios = [];
+  const faixasCep = [];
+
+  data.forEach((row, index) => {
+    const codigo = somenteDigitos(row[idx['Código Município Completo']]);
+    const nomeMunicipio = String(row[idx['Nome_Município']] || '').trim();
+    const uf = String(row[idx['Nome_UF']] || row[idx['UF']] || '').trim();
+    if (!codigo || !nomeMunicipio) return;
+
+    const municipio = {
+      id: `${codigo}-${index}`,
+      codigoMunicipioCompleto: codigo,
+      municipioIbge: somenteDigitos(row[idx['Município']]),
+      uf,
+      siglaUf: String(row[idx['Nome_UF']] || '').trim() || String(row[idx['UF']] || '').trim(),
+      nomeMunicipio,
+      nomeMunicipioSemAcento: String(row[idx['Nome_Município Sem acento']] || '').trim(),
+      nomeBusca: normalizarTexto(`${nomeMunicipio} ${uf}`),
+      concat: String(row[idx['CONCATENAR']] || '').trim(),
+    };
+    municipios.push(municipio);
+
+    [['INICIAL', 'FINAL'], ['INICIAL.1', 'FINAL.1'], ['INICIAL.2', 'FINAL.2']].forEach((par, ordem) => {
+      const ini = somenteDigitos(row[idx[par[0]]]);
+      const fim = somenteDigitos(row[idx[par[1]]]);
+      if (!ini || !fim) return;
+      faixasCep.push({
+        id: `${codigo}-${ordem + 1}`,
+        codigoMunicipioCompleto: codigo,
+        municipioIbge: municipio.municipioIbge,
+        nomeMunicipio,
+        uf,
+        cepInicial: ini,
+        cepFinal: fim,
+        ordemFaixa: ordem + 1,
+        origemDado: 'IMPORTACAO_XLSB',
+      });
+    });
+  });
+
+  const base = {
+    importadoEm: new Date().toISOString(),
+    origemArquivo: file.name,
+    municipios,
+    faixasCep,
+    resumo: {
+      totalMunicipios: municipios.length,
+      totalFaixas: faixasCep.length,
+    },
+  };
+
+  salvarBaseIbge(base);
+  return base;
+}
+
+export function buscarIbgePorOrigem(baseIbge, origemNome) {
+  if (!baseIbge || !origemNome) return null;
+  const alvo = normalizarTexto(origemNome);
+  const exato = baseIbge.municipios.find((item) => item.nomeBusca === alvo || normalizarTexto(item.nomeMunicipio) === alvo);
+  if (exato) return exato;
+  return baseIbge.municipios.find((item) => item.nomeBusca.includes(alvo) || alvo.includes(normalizarTexto(item.nomeMunicipio)));
+}
+
+export async function importarRotas(file) {
+  const buffer = await lerArquivoComoArrayBuffer(file);
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
   return rows
-    .map((row, index) => ({ id: makeId(`rota-${index}`), ...mapearLinhaRota(row) }))
+    .map((row, index) => ({
+      id: gerarId(),
+      cotacao: String(row['Cotação'] || row['COTACAO'] || row['Rota do frete'] || '').trim(),
+      ibgeDestino: somenteDigitos(row['Código IBGE Destino'] || row['IBGE destino'] || row['IBGE Destino'] || row['Codigo IBGE Destino']),
+      prazo: numeroOuTexto(row['Prazo de entrega'] || row['Prazo'] || row['PRAZO']),
+      ordem: index + 1,
+    }))
+    .filter((item) => item.cotacao || item.ibgeDestino || item.prazo);
+}
+
+export async function importarQuebras(file) {
+  const buffer = await lerArquivoComoArrayBuffer(file);
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+  return rows
+    .map((row, index) => ({
+      id: gerarId(),
+      cotacao: String(row['Cotação'] || row['COTACAO'] || '').trim(),
+      ibgeDestino: somenteDigitos(row['Código IBGE Destino'] || row['IBGE destino'] || row['IBGE Destino']),
+      cepInicial: somenteDigitos(row['CEP inicial'] || row['CEP Inicial']),
+      cepFinal: somenteDigitos(row['CEP final'] || row['CEP Final']),
+      prazo: numeroOuTexto(row['Prazo de entrega'] || row['Prazo']),
+      ordem: index + 1,
+    }))
     .filter((item) => item.cotacao || item.ibgeDestino || item.cepInicial || item.cepFinal || item.prazo);
 }
 
-export async function importarFretesDeArquivo(file) {
-  const rows = await lerPrimeiraAba(file);
+export async function importarFretes(file) {
+  const buffer = await lerArquivoComoArrayBuffer(file);
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
   return rows
-    .map((row, index) => ({ id: makeId(`frete-${index}`), rotaId: '', ...mapearLinhaFrete(row) }))
-    .filter((item) => item.rotaFrete || item.pesoMinimo !== '' || item.pesoLimite !== '' || item.fretePercentual !== '' || item.freteMinimo !== '');
+    .map((row, index) => ({
+      id: gerarId(),
+      rotaFrete: String(row['Rota do frete'] || '').trim(),
+      pesoMinimo: numero(row['Peso mínimo']),
+      pesoLimite: numero(row['Peso limite']),
+      excessoPeso: numero(row['Excesso de peso']),
+      taxaAplicada: numero(row['Taxa aplicada']),
+      fretePercentual: numero(row['Frete percentual']),
+      freteMinimo: numero(row['Frete mínimo']),
+      faixaNome: String(row['Faixa'] || row['Faixa de peso'] || '').trim(),
+      ordem: index + 1,
+    }))
+    .filter((item) => item.rotaFrete || item.faixaNome || item.fretePercentual || item.freteMinimo);
 }
 
-export function obterFaixasAtivas(canal, modeloFaixas, faixasCustomizadas = []) {
-  if (modeloFaixas === 'customizado' && faixasCustomizadas.length) return faixasCustomizadas;
-  return FAIXAS_PADRAO[canal] || FAIXAS_PADRAO.ATACADO;
-}
+export function gerarFretesAutomaticos(form) {
+  const rotas = form.rotas || [];
+  if (!rotas.length) return [];
 
-export function gerarFretesDoRascunho(rascunho) {
-  const { dadosGerais, rotas, modeloFaixas, faixasCustomizadas } = rascunho;
-  if (dadosGerais.tipoCalculo === 'percentual') {
+  if (String(form.tipoCalculo).toUpperCase() === 'PERCENTUAL') {
     return rotas.map((rota) => ({
-      id: makeId('frete'),
-      rotaId: rota.id,
+      id: gerarId(),
       rotaFrete: rota.cotacao,
+      faixaNome: '',
       pesoMinimo: 0,
       pesoLimite: 999999999,
-      excessoPeso: '',
-      taxaAplicada: '',
-      fretePercentual: '',
-      freteMinimo: '',
+      excessoPeso: 0,
+      taxaAplicada: 0,
+      fretePercentual: 0,
+      freteMinimo: 0,
     }));
   }
 
-  const faixas = obterFaixasAtivas(dadosGerais.canal, modeloFaixas, faixasCustomizadas);
-  return rotas.flatMap((rota) =>
-    faixas.map((faixa) => ({
-      id: makeId('frete'),
-      rotaId: rota.id,
-      rotaFrete: rota.cotacao,
-      pesoMinimo: faixa.pesoMinimo,
-      pesoLimite: faixa.pesoLimite,
-      excessoPeso: '',
-      taxaAplicada: '',
-      fretePercentual: '',
-      freteMinimo: '',
-    })),
-  );
+  const modelo = form.modelosFaixa?.[form.canal] || FAIXAS_PADRAO.ATACADO;
+  const linhas = [];
+  rotas.forEach((rota) => {
+    modelo.forEach((faixa) => {
+      linhas.push({
+        id: gerarId(),
+        rotaFrete: rota.cotacao,
+        faixaNome: faixa.nome,
+        pesoMinimo: faixa.pesoMinimo,
+        pesoLimite: faixa.pesoLimite,
+        excessoPeso: 0,
+        taxaAplicada: 0,
+        fretePercentual: 0,
+        freteMinimo: 0,
+      });
+    });
+  });
+  return linhas;
 }
 
-export function validarRascunho(rascunho) {
+export function validarFormacao(form) {
   const erros = [];
   const alertas = [];
-  const { dadosGerais, rotas, fretes } = rascunho;
 
-  if (!dadosGerais.transportadora) erros.push('Informe a transportadora.');
-  if (!dadosGerais.origem && !dadosGerais.codigoUnidade) erros.push('Informe a origem ou o código da unidade.');
-  if (!dadosGerais.vigenciaInicial) erros.push('Informe a vigência inicial.');
-  if (!dadosGerais.vigenciaFinal) erros.push('Informe a vigência final.');
-  if (!rotas.length) erros.push('Adicione pelo menos uma rota.');
-  if (!fretes.length) erros.push('Gere ou importe os fretes antes de revisar.');
+  if (!form.transportadora) erros.push('Preencha a transportadora.');
+  if (!form.codigoUnidade) erros.push('Preencha o código da unidade / origem.');
+  if (!form.origemNome) erros.push('Preencha a origem.');
+  if (!form.origemIbge) alertas.push('IBGE de origem ainda não foi identificado automaticamente.');
+  if (!form.rotas.length) erros.push('Inclua ao menos uma rota padrão.');
+  if (!form.fretes.length) alertas.push('Ainda não existem fretes preenchidos/importados.');
 
-  const rotasSemPrazo = rotas.filter((rota) => !rota.prazo);
-  if (rotasSemPrazo.length) alertas.push(`${rotasSemPrazo.length} rota(s) sem prazo de entrega.`);
-
-  const rotasSemIbge = rotas.filter((rota) => !rota.ibgeDestino);
-  if (rotasSemIbge.length) alertas.push(`${rotasSemIbge.length} rota(s) sem IBGE de destino.`);
-
-  const rotasSemCep = rotas.filter((rota) => !rota.cepInicial && !rota.cepFinal);
-  if (rotasSemCep.length) alertas.push(`${rotasSemCep.length} rota(s) usarão a base de IBGEs por não terem faixa de CEP.`);
-
-  const duplicadas = new Set();
-  rotas.forEach((rota) => {
-    const chave = [rota.cotacao, rota.ibgeDestino, rota.cepInicial, rota.cepFinal].join('|');
-    if (duplicadas.has(chave)) alertas.push(`Rota duplicada detectada para a cotação ${rota.cotacao || '(sem nome)'}.`);
-    duplicadas.add(chave);
+  form.rotas.forEach((rota, index) => {
+    if (!rota.cotacao) erros.push(`Rota ${index + 1}: informe a cotação.`);
+    if (!rota.ibgeDestino) erros.push(`Rota ${index + 1}: informe o IBGE destino.`);
+    if (rota.prazo === '' || rota.prazo === null || rota.prazo === undefined) erros.push(`Rota ${index + 1}: informe o prazo.`);
   });
 
-  const fretesSemRota = fretes.filter((frete) => !frete.rotaFrete);
-  if (fretesSemRota.length) erros.push('Existem fretes sem rota do frete.');
+  form.quebrasFaixa.forEach((item, index) => {
+    if (!item.cotacao || !item.ibgeDestino || !item.cepInicial || !item.cepFinal) {
+      erros.push(`Quebra ${index + 1}: preencha cotação, IBGE destino e faixa CEP completa.`);
+    }
+  });
+
+  if (form.quebrasFaixa.length) alertas.push('Existem quebras de faixas cadastradas. Elas devem prevalecer sobre a base padrão de IBGE.');
 
   return { erros, alertas };
 }
 
-export function montarLinhasRotas(rascunho) {
-  const { dadosGerais, rotas } = rascunho;
-  return rotas.map((rota) => ({
-    'Nome da transportadora': dadosGerais.transportadora,
-    'Código da unidade': dadosGerais.codigoUnidade || dadosGerais.origem,
-    'Canal': dadosGerais.canal,
-    'Cotação': rota.cotacao,
-    'Código IBGE Origem': dadosGerais.ibgeOrigem || '',
-    'Código IBGE Destino': rota.ibgeDestino || '',
-    'CEP inicial': rota.cepInicial || '',
-    'CEP final': rota.cepFinal || '',
-    'Método de envio': dadosGerais.metodoEnvio,
-    'Prazo de entrega': normalizarNumero(rota.prazo),
-    'Início da vigência': toIsoDate(dadosGerais.vigenciaInicial),
-    'Término da vigência': toIsoDate(dadosGerais.vigenciaFinal),
-  }));
+export function exportarModeloRotas() {
+  const dados = [{ Cotação: '', 'Código IBGE Destino': '', 'Prazo de entrega': '' }];
+  return baixarWorkbook('modelo-rotas-simples.xlsx', 'Rotas', dados);
 }
 
-export function montarLinhasFretes(rascunho) {
-  const { dadosGerais, fretes } = rascunho;
-  return fretes.map((frete) => ({
-    'Nome da transportadora': dadosGerais.transportadora,
-    'Código da unidade': dadosGerais.codigoUnidade || dadosGerais.origem,
-    'Canal': dadosGerais.canal,
-    'Regra de cálculo': dadosGerais.regraCalculo,
-    'Tipo de cálculo': dadosGerais.tipoCalculo === 'percentual' ? 'PERCENTUAL' : 'FAIXA DE PESO',
-    'Rota do frete': frete.rotaFrete,
-    'Peso mínimo': normalizarNumero(frete.pesoMinimo),
-    'Peso limite': normalizarNumero(frete.pesoLimite),
-    'Excesso de peso': normalizarNumero(frete.excessoPeso),
-    'Taxa aplicada': normalizarNumero(frete.taxaAplicada),
-    'Frete percentual': normalizarNumero(frete.fretePercentual),
-    'Frete mínimo': normalizarNumero(frete.freteMinimo),
-    'Início da vigência': toIsoDate(dadosGerais.vigenciaInicial),
-    'Fim da vigência': toIsoDate(dadosGerais.vigenciaFinal),
-  }));
+export function exportarModeloQuebras() {
+  const dados = [{ Cotação: '', 'Código IBGE Destino': '', 'CEP inicial': '', 'CEP final': '', 'Prazo de entrega': '' }];
+  return baixarWorkbook('modelo-quebra-faixas.xlsx', 'Quebra de Faixas', dados);
 }
 
-export function exportarModeloRotas(rascunho) {
-  const workbook = XLSX.utils.book_new();
-  const linhaModelo = {
-    'Nome da transportadora': rascunho.dadosGerais.transportadora || '',
-    'Código da unidade': rascunho.dadosGerais.codigoUnidade || rascunho.dadosGerais.origem || '',
-    'Canal': rascunho.dadosGerais.canal || '',
-    'Cotação': '',
-    'Código IBGE Origem': rascunho.dadosGerais.ibgeOrigem || '',
-    'Código IBGE Destino': '',
+export function exportarModeloFretes(form) {
+  const dados = montarLinhasFreteExportacao(form, true);
+  return baixarWorkbook('modelo-fretes.xlsx', 'Valores de frete', dados);
+}
+
+export function exportarPacoteCompleto(form) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(montarLinhasRotasExportacao(form)), 'Prazos de frete');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(montarLinhasQuebrasExportacao(form)), 'Quebra de Faixas');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(montarLinhasFreteExportacao(form, false)), 'Valores de frete');
+  XLSX.writeFile(wb, `${slug(montarNomeAutomatico(form) || 'formatacao')}-pacote.xlsx`);
+}
+
+export function montarLinhasRotasExportacao(form) {
+  return (form.rotas || []).map((rota) => ({
+    'Nome da transportadora': form.transportadora,
+    'Código da unidade': form.codigoUnidade,
+    Canal: form.canal,
+    Cotação: rota.cotacao,
+    'Código IBGE Origem': form.origemIbge || '',
+    'Código IBGE Destino': rota.ibgeDestino,
     'CEP inicial': '',
     'CEP final': '',
-    'Método de envio': rascunho.dadosGerais.metodoEnvio || '',
-    'Prazo de entrega': '',
-    'Início da vigência': toIsoDate(rascunho.dadosGerais.vigenciaInicial),
-    'Término da vigência': toIsoDate(rascunho.dadosGerais.vigenciaFinal),
-  };
-  const worksheet = criarSheetComLarguras([linhaModelo], ROTAS_HEADERS, [24, 24, 12, 34, 18, 18, 14, 14, 16, 16, 16, 16]);
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Prazos de frete');
-  baixarWorkbook(workbook, `modelo-rotas-${slug(gerarNomeFormatacao(rascunho.dadosGerais) || 'tabela')}.xlsx`);
+    'Método de envio': form.metodoEnvio,
+    'Prazo de entrega': rota.prazo,
+    'Início da vigência': form.vigenciaInicial,
+    'Término da vigência': form.vigenciaFinal,
+  }));
 }
 
-export function exportarModeloFretes(rascunho) {
-  const workbook = XLSX.utils.book_new();
-  const linhas = montarLinhasFretes({ ...rascunho, fretes: rascunho.fretes.length ? rascunho.fretes : gerarFretesDoRascunho(rascunho) });
-  const base = linhas.length
-    ? linhas
-    : [{
-        'Nome da transportadora': rascunho.dadosGerais.transportadora || '',
-        'Código da unidade': rascunho.dadosGerais.codigoUnidade || rascunho.dadosGerais.origem || '',
-        'Canal': rascunho.dadosGerais.canal || '',
-        'Regra de cálculo': rascunho.dadosGerais.regraCalculo || '',
-        'Tipo de cálculo': rascunho.dadosGerais.tipoCalculo === 'percentual' ? 'PERCENTUAL' : 'FAIXA DE PESO',
-        'Rota do frete': '',
-        'Peso mínimo': '',
-        'Peso limite': '',
-        'Excesso de peso': '',
-        'Taxa aplicada': '',
-        'Frete percentual': '',
-        'Frete mínimo': '',
-        'Início da vigência': toIsoDate(rascunho.dadosGerais.vigenciaInicial),
-        'Fim da vigência': toIsoDate(rascunho.dadosGerais.vigenciaFinal),
-      }];
-  const worksheet = criarSheetComLarguras(base, FRETES_HEADERS, [24, 24, 12, 18, 18, 34, 12, 12, 14, 14, 16, 14, 16, 16]);
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Valores de frete');
-  baixarWorkbook(workbook, `modelo-fretes-${slug(gerarNomeFormatacao(rascunho.dadosGerais) || 'tabela')}.xlsx`);
+export function montarLinhasQuebrasExportacao(form) {
+  return (form.quebrasFaixa || []).map((rota) => ({
+    'Nome da transportadora': form.transportadora,
+    'Código da unidade': form.codigoUnidade,
+    Canal: form.canal,
+    Cotação: rota.cotacao,
+    'Código IBGE Origem': form.origemIbge || '',
+    'Código IBGE Destino': rota.ibgeDestino,
+    'CEP inicial': rota.cepInicial,
+    'CEP final': rota.cepFinal,
+    'Método de envio': form.metodoEnvio,
+    'Prazo de entrega': rota.prazo,
+    'Início da vigência': form.vigenciaInicial,
+    'Término da vigência': form.vigenciaFinal,
+  }));
 }
 
-export function exportarRotasExcel(rascunho) {
-  const workbook = XLSX.utils.book_new();
-  const worksheet = criarSheetComLarguras(montarLinhasRotas(rascunho), ROTAS_HEADERS, [24, 24, 12, 34, 18, 18, 14, 14, 16, 16, 16, 16]);
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Prazos de frete');
-  baixarWorkbook(workbook, `rotas-${slug(gerarNomeFormatacao(rascunho.dadosGerais) || 'tabela')}.xlsx`);
+export function montarLinhasFreteExportacao(form, vazio = false) {
+  const base = vazio && !form.fretes.length ? gerarFretesAutomaticos(form) : form.fretes;
+  return (base || []).map((item) => ({
+    'Nome da transportadora': form.transportadora,
+    'Código da unidade': form.codigoUnidade,
+    Canal: form.canal,
+    'Regra de cálculo': form.regraCalculo,
+    'Tipo de cálculo': form.tipoCalculo,
+    'Rota do frete': item.rotaFrete,
+    'Peso mínimo': item.pesoMinimo,
+    'Peso limite': item.pesoLimite,
+    'Excesso de peso': item.excessoPeso,
+    'Taxa aplicada': item.taxaAplicada,
+    'Frete percentual': item.fretePercentual,
+    'Frete mínimo': item.freteMinimo,
+    'Início da vigência': form.vigenciaInicial,
+    'Fim da vigência': form.vigenciaFinal,
+  }));
 }
 
-export function exportarFretesExcel(rascunho) {
-  const workbook = XLSX.utils.book_new();
-  const worksheet = criarSheetComLarguras(montarLinhasFretes(rascunho), FRETES_HEADERS, [24, 24, 12, 18, 18, 34, 12, 12, 14, 14, 16, 14, 16, 16]);
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Valores de frete');
-  baixarWorkbook(workbook, `cotacoes-${slug(gerarNomeFormatacao(rascunho.dadosGerais) || 'tabela')}.xlsx`);
+function baixarWorkbook(nomeArquivo, nomeAba, dados) {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(dados);
+  XLSX.utils.book_append_sheet(wb, ws, nomeAba);
+  XLSX.writeFile(wb, nomeArquivo);
 }
 
-export function exportarPacoteExcel(rascunho) {
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, criarSheetComLarguras(montarLinhasRotas(rascunho), ROTAS_HEADERS, [24, 24, 12, 34, 18, 18, 14, 14, 16, 16, 16, 16]), 'Prazos de frete');
-  XLSX.utils.book_append_sheet(workbook, criarSheetComLarguras(montarLinhasFretes(rascunho), FRETES_HEADERS, [24, 24, 12, 18, 18, 34, 12, 12, 14, 14, 16, 14, 16, 16]), 'Valores de frete');
-  baixarWorkbook(workbook, `formatacao-${slug(gerarNomeFormatacao(rascunho.dadosGerais) || 'tabela')}.xlsx`);
+function somenteDigitos(valor) {
+  return String(valor ?? '').replace(/\D/g, '');
+}
+
+function numero(valor) {
+  if (valor === '' || valor === null || valor === undefined) return 0;
+  const convertido = Number(String(valor).replace(',', '.'));
+  return Number.isFinite(convertido) ? convertido : 0;
+}
+
+function numeroOuTexto(valor) {
+  if (valor === '' || valor === null || valor === undefined) return '';
+  const convertido = Number(valor);
+  return Number.isFinite(convertido) ? convertido : String(valor).trim();
+}
+
+function slug(valor) {
+  return normalizarTexto(valor).toLowerCase().replace(/\s+/g, '-');
 }

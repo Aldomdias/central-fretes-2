@@ -1,510 +1,479 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CANAL_OPTIONS,
-  FAIXAS_PADRAO,
-  METODO_ENVIO_OPTIONS,
-  REGRA_CALCULO_OPTIONS,
-  TIPO_CALCULO_OPTIONS,
-  criarRascunhoVazio,
-  exportarFretesExcel,
+  METODOS_ENVIO,
+  REGRAS_CALCULO,
+  TIPOS_CALCULO,
+  carregarBaseIbge,
+  carregarRascunhos,
+  criarFormularioInicial,
+  buscarIbgePorOrigem,
   exportarModeloFretes,
+  exportarModeloQuebras,
   exportarModeloRotas,
-  exportarPacoteExcel,
-  exportarRotasExcel,
-  gerarFretesDoRascunho,
-  gerarNomeFormatacao,
-  importarFretesDeArquivo,
-  importarRotasDeArquivo,
-  obterFaixasAtivas,
-  validarRascunho,
+  exportarPacoteCompleto,
+  gerarFretesAutomaticos,
+  importarBaseIbge,
+  importarFretes,
+  importarQuebras,
+  importarRotas,
+  montarNomeAutomatico,
+  salvarRascunhos,
+  validarFormacao,
 } from '../utils/formatacaoTabela';
 
-const STORAGE_KEY = 'amdlog-formatacao-tabelas-v2';
-const ETAPAS = ['Dados gerais', 'Rotas', 'Estrutura', 'Fretes', 'Revisão'];
-
-function loadDrafts() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveDrafts(drafts) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts));
-}
-
-function stepClass(active, index) {
-  if (index === active) return 'active';
-  if (index < active) return 'done';
-  return '';
-}
-
-function makeId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function resumoDraft(item) {
-  return item.dadosGerais.nomeFormatacao || gerarNomeFormatacao(item.dadosGerais) || 'Sem nome';
-}
+const ETAPAS = ['Dados gerais', 'Rotas', 'Quebra de Faixas', 'Fretes', 'Revisão'];
 
 export default function FormatacaoTabelasPage() {
-  const draftsLoaded = loadDrafts();
-  const [drafts, setDrafts] = useState(draftsLoaded);
-  const [draft, setDraft] = useState(draftsLoaded[0] || criarRascunhoVazio());
   const [etapaAtual, setEtapaAtual] = useState(0);
+  const [form, setForm] = useState(criarFormularioInicial());
+  const [rascunhos, setRascunhos] = useState([]);
+  const [baseIbge, setBaseIbge] = useState(null);
   const [mensagem, setMensagem] = useState('');
-  const [importandoRotas, setImportandoRotas] = useState(false);
-  const [importandoFretes, setImportandoFretes] = useState(false);
+  const [erro, setErro] = useState('');
+  const inputRotasRef = useRef(null);
+  const inputQuebrasRef = useRef(null);
+  const inputFretesRef = useRef(null);
+  const inputIbgeRef = useRef(null);
 
-  useEffect(() => saveDrafts(drafts), [drafts]);
+  useEffect(() => {
+    setRascunhos(carregarRascunhos());
+    setBaseIbge(carregarBaseIbge());
+  }, []);
 
-  const nomeAutomatico = useMemo(() => gerarNomeFormatacao(draft.dadosGerais), [draft.dadosGerais]);
-  const faixasAtivas = useMemo(
-    () => obterFaixasAtivas(draft.dadosGerais.canal, draft.modeloFaixas, draft.faixasCustomizadas),
-    [draft.dadosGerais.canal, draft.modeloFaixas, draft.faixasCustomizadas],
-  );
-  const validacao = useMemo(() => validarRascunho(draft), [draft]);
+  useEffect(() => {
+    if (!form.nomeFormatacao?.trim()) {
+      setForm((atual) => ({ ...atual, nomeFormatacao: montarNomeAutomatico(atual) }));
+    }
+  }, [form.transportadora, form.origemNome, form.canal]);
 
-  const updateDraft = (updater) => {
-    setDraft((current) => {
-      const next = typeof updater === 'function' ? updater(current) : updater;
-      return { ...next, atualizadoEm: new Date().toISOString() };
-    });
-  };
-
-  const persistCurrentDraft = (nextDraft = draft, success = 'Rascunho salvo no navegador.') => {
-    const updated = { ...nextDraft, atualizadoEm: new Date().toISOString() };
-    setDraft(updated);
-    setDrafts((current) => {
-      const semAtual = current.filter((item) => item.id !== updated.id);
-      return [updated, ...semAtual].slice(0, 20);
-    });
-    setMensagem(success);
-  };
-
-  const onCampoGeral = (campo, valor) => {
-    updateDraft((current) => ({
-      ...current,
-      dadosGerais: {
-        ...current.dadosGerais,
-        [campo]: valor,
-        nomeFormatacao:
-          campo === 'nomeFormatacao'
-            ? valor
-            : current.dadosGerais.nomeFormatacao,
-      },
+  useEffect(() => {
+    if (!baseIbge || !form.origemNome) return;
+    const encontrado = buscarIbgePorOrigem(baseIbge, form.origemNome);
+    setForm((atual) => ({
+      ...atual,
+      origemIbge: encontrado?.codigoMunicipioCompleto || atual.origemIbge || '',
+      baseIbgeResumo: baseIbge.resumo,
     }));
+  }, [baseIbge, form.origemNome]);
+
+  const validacao = useMemo(() => validarFormacao(form), [form]);
+
+  const atualizarCampo = (campo, valor) => {
+    setForm((atual) => ({ ...atual, [campo]: valor }));
+  };
+
+  const salvarRascunhoAtual = () => {
+    const atualizado = { ...form, atualizadoEm: new Date().toISOString() };
+    const proximos = [atualizado, ...rascunhos.filter((item) => item.id !== atualizado.id)];
+    setRascunhos(proximos);
+    salvarRascunhos(proximos);
+    setMensagem('Rascunho salvo com sucesso.');
+    setErro('');
+  };
+
+  const carregarRascunho = (id) => {
+    const item = rascunhos.find((draft) => draft.id === id);
+    if (!item) return;
+    setForm(item);
+    setMensagem('Rascunho carregado.');
+    setErro('');
+  };
+
+  const novoRascunho = () => {
+    setForm(criarFormularioInicial());
+    setEtapaAtual(0);
+    setMensagem('Nova formatação iniciada.');
+    setErro('');
+  };
+
+  const duplicarRascunho = () => {
+    setForm((atual) => ({ ...atual, id: `dup_${Date.now()}`, nomeFormatacao: `${atual.nomeFormatacao || montarNomeAutomatico(atual)} (cópia)` }));
+    setMensagem('Rascunho duplicado.');
+    setErro('');
   };
 
   const adicionarRota = () => {
-    updateDraft((current) => ({
-      ...current,
-      rotas: [...current.rotas, { id: makeId('rota'), cotacao: '', ibgeDestino: '', cepInicial: '', cepFinal: '', prazo: '' }],
+    setForm((atual) => ({
+      ...atual,
+      rotas: [...atual.rotas, { id: `rota_${Date.now()}`, cotacao: '', ibgeDestino: '', prazo: '' }],
+    }));
+  };
+
+  const adicionarQuebra = () => {
+    setForm((atual) => ({
+      ...atual,
+      quebrasFaixa: [...atual.quebrasFaixa, { id: `qf_${Date.now()}`, cotacao: '', ibgeDestino: '', cepInicial: '', cepFinal: '', prazo: '' }],
     }));
   };
 
   const atualizarRota = (id, campo, valor) => {
-    updateDraft((current) => ({
-      ...current,
-      rotas: current.rotas.map((rota) => (rota.id === id ? { ...rota, [campo]: valor } : rota)),
-    }));
+    setForm((atual) => ({ ...atual, rotas: atual.rotas.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)) }));
   };
 
-  const removerRota = (id) => {
-    updateDraft((current) => ({
-      ...current,
-      rotas: current.rotas.filter((rota) => rota.id !== id),
-      fretes: current.fretes.filter((frete) => frete.rotaId !== id && frete.rotaFrete !== current.rotas.find((rota) => rota.id === id)?.cotacao),
-    }));
-  };
-
-  const gerarEstruturaFretes = () => {
-    updateDraft((current) => ({ ...current, fretes: gerarFretesDoRascunho(current) }));
-    setMensagem('Estrutura de fretes gerada com base nas rotas e no tipo de cálculo.');
+  const atualizarQuebra = (id, campo, valor) => {
+    setForm((atual) => ({ ...atual, quebrasFaixa: atual.quebrasFaixa.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)) }));
   };
 
   const atualizarFrete = (id, campo, valor) => {
-    updateDraft((current) => ({
-      ...current,
-      fretes: current.fretes.map((frete) => (frete.id === id ? { ...frete, [campo]: valor } : frete)),
-    }));
+    setForm((atual) => ({ ...atual, fretes: atual.fretes.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)) }));
   };
 
-  const adicionarFaixa = () => {
-    updateDraft((current) => ({
-      ...current,
-      modeloFaixas: 'customizado',
-      faixasCustomizadas: [...current.faixasCustomizadas, { id: makeId('faixa'), pesoMinimo: '', pesoLimite: '' }],
-    }));
+  const excluirLinha = (grupo, id) => {
+    setForm((atual) => ({ ...atual, [grupo]: atual[grupo].filter((item) => item.id !== id) }));
   };
 
-  const atualizarFaixa = (id, campo, valor) => {
-    updateDraft((current) => ({
-      ...current,
-      modeloFaixas: 'customizado',
-      faixasCustomizadas: current.faixasCustomizadas.map((faixa) => (faixa.id === id ? { ...faixa, [campo]: valor } : faixa)),
-    }));
-  };
-
-  const removerFaixa = (id) => {
-    updateDraft((current) => ({
-      ...current,
-      faixasCustomizadas: current.faixasCustomizadas.filter((faixa) => faixa.id !== id),
-    }));
-  };
-
-  const importarRotas = async (event) => {
-    const file = event.target.files?.[0];
+  const importarArquivo = async (evento, tipo) => {
+    const file = evento.target.files?.[0];
     if (!file) return;
-    setImportandoRotas(true);
     try {
-      const rotas = await importarRotasDeArquivo(file);
-      updateDraft((current) => ({ ...current, rotas }));
-      setMensagem(`${rotas.length} rota(s) importadas.`);
-    } catch (error) {
-      setMensagem(`Falha ao importar rotas: ${error.message}`);
+      setErro('');
+      if (tipo === 'ibge') {
+        const base = await importarBaseIbge(file);
+        setBaseIbge(base);
+        setMensagem(`Base IBGE importada: ${base.resumo.totalMunicipios} municípios e ${base.resumo.totalFaixas} faixas.`);
+      }
+      if (tipo === 'rotas') {
+        const rotas = await importarRotas(file);
+        setForm((atual) => ({ ...atual, rotas }));
+        setMensagem(`Rotas importadas: ${rotas.length} linha(s).`);
+      }
+      if (tipo === 'quebras') {
+        const itens = await importarQuebras(file);
+        setForm((atual) => ({ ...atual, quebrasFaixa: itens }));
+        setMensagem(`Quebras importadas: ${itens.length} linha(s).`);
+      }
+      if (tipo === 'fretes') {
+        const itens = await importarFretes(file);
+        setForm((atual) => ({ ...atual, fretes: itens }));
+        setMensagem(`Fretes importados: ${itens.length} linha(s).`);
+      }
+    } catch (e) {
+      setErro(`Erro ao importar arquivo: ${e.message || e}`);
+      setMensagem('');
     } finally {
-      setImportandoRotas(false);
-      event.target.value = '';
+      evento.target.value = '';
     }
   };
 
-  const importarFretes = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setImportandoFretes(true);
-    try {
-      const fretes = await importarFretesDeArquivo(file);
-      updateDraft((current) => ({ ...current, fretes }));
-      setMensagem(`${fretes.length} frete(s) importados.`);
-    } catch (error) {
-      setMensagem(`Falha ao importar fretes: ${error.message}`);
-    } finally {
-      setImportandoFretes(false);
-      event.target.value = '';
-    }
-  };
-
-  const novoRascunho = () => {
-    setDraft(criarRascunhoVazio());
-    setEtapaAtual(0);
-    setMensagem('Novo rascunho iniciado.');
-  };
-
-  const carregarRascunho = (id) => {
-    const selected = drafts.find((item) => item.id === id);
-    if (!selected) return;
-    setDraft(selected);
-    setEtapaAtual(0);
-    setMensagem(`Rascunho carregado: ${resumoDraft(selected)}.`);
-  };
-
-  const duplicarRascunho = () => {
-    const clone = {
-      ...draft,
-      id: makeId('fmt'),
-      criadoEm: new Date().toISOString(),
-      atualizadoEm: new Date().toISOString(),
-      dadosGerais: {
-        ...draft.dadosGerais,
-        nomeFormatacao: `${resumoDraft(draft)} (cópia)`,
-      },
-    };
-    persistCurrentDraft(clone, 'Rascunho duplicado com sucesso.');
+  const gerarFretes = () => {
+    const fretes = gerarFretesAutomaticos(form);
+    setForm((atual) => ({ ...atual, fretes }));
+    setMensagem(`Fretes automáticos gerados: ${fretes.length} linha(s).`);
+    setErro('');
   };
 
   return (
     <div className="page-shell">
-      <div className="page-top between start-mobile">
+      <div className="page-top between">
         <div className="page-header">
-          <div className="amd-mini-brand">Módulo isolado • sem alterar o simulador atual</div>
+          <div className="amd-mini-brand">Cadastros avançados</div>
           <h1>Formatação de Tabelas</h1>
           <p>
-            Monte as rotas e os fretes em um ambiente separado. Aqui você gera modelo, importa planilhas e exporta no padrão atual sem mexer no que já funciona.
+            Módulo isolado para montar tabelas de rotas e fretes sem alterar o que já funciona no simulador.
+            O vínculo com a base principal só fica para uma etapa futura de publicação.
           </p>
         </div>
-        <div className="actions-right wrap-actions">
+        <div className="amd-quick-actions">
           <button className="btn-secondary" onClick={novoRascunho}>Novo rascunho</button>
           <button className="btn-secondary" onClick={duplicarRascunho}>Duplicar</button>
-          <button className="btn-primary" onClick={() => persistCurrentDraft()}>Salvar rascunho</button>
+          <button className="btn-primary" onClick={salvarRascunhoAtual}>Salvar rascunho</button>
         </div>
       </div>
 
-      {mensagem ? <div className="info-card"><div className="info-text">{mensagem}</div></div> : null}
+      {mensagem ? <div className="fmt-alert success">{mensagem}</div> : null}
+      {erro ? <div className="fmt-alert error">{erro}</div> : null}
 
-      <div className="formatacao-layout">
-        <aside className="panel-card formatacao-sidebar">
-          <div className="panel-title">Etapas</div>
-          <div className="wizard-steps">
+      <div className="fmt-layout">
+        <aside className="fmt-sidebar-card">
+          <h3>Etapas</h3>
+          <div className="fmt-steps">
             {ETAPAS.map((etapa, index) => (
-              <button key={etapa} type="button" className={`wizard-step ${stepClass(etapaAtual, index)}`.trim()} onClick={() => setEtapaAtual(index)}>
-                <span className="wizard-step-index">{index + 1}</span>
+              <button
+                key={etapa}
+                type="button"
+                className={etapaAtual === index ? 'fmt-step active' : 'fmt-step'}
+                onClick={() => setEtapaAtual(index)}
+              >
+                <span className="fmt-step-number">{index + 1}</span>
                 <span>{etapa}</span>
               </button>
             ))}
           </div>
 
-          <div className="panel-title top-gap">Rascunhos</div>
-          <div className="draft-list">
-            {!drafts.length ? <div className="muted-box">Nenhum rascunho salvo.</div> : null}
-            {drafts.map((item) => (
-              <button key={item.id} type="button" className={`draft-item ${item.id === draft.id ? 'active' : ''}`} onClick={() => carregarRascunho(item.id)}>
-                <strong>{resumoDraft(item)}</strong>
-                <span>{item.dadosGerais.metodoEnvio || 'Sem método'}</span>
-                <span>{new Date(item.atualizadoEm || item.criadoEm).toLocaleString('pt-BR')}</span>
-              </button>
-            ))}
+          <div className="fmt-sidebar-section">
+            <h4>Base IBGE</h4>
+            <p>Importe a base mestre para preencher o IBGE de origem automaticamente e preparar o uso de CEP por município.</p>
+            <button className="btn-secondary full" onClick={() => inputIbgeRef.current?.click()}>Importar base IBGE</button>
+            <input ref={inputIbgeRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'ibge')} />
+            {baseIbge?.resumo ? (
+              <div className="fmt-kpi-box">
+                <strong>{baseIbge.resumo.totalMunicipios}</strong>
+                <span>municípios</span>
+                <strong>{baseIbge.resumo.totalFaixas}</strong>
+                <span>faixas de CEP</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="fmt-sidebar-section">
+            <h4>Rascunhos</h4>
+            <div className="fmt-drafts">
+              {rascunhos.length ? rascunhos.map((item) => (
+                <button key={item.id} className="fmt-draft-item" type="button" onClick={() => carregarRascunho(item.id)}>
+                  <strong>{item.nomeFormatacao || montarNomeAutomatico(item) || 'Sem nome'}</strong>
+                  <span>{item.transportadora || 'Sem transportadora'}</span>
+                </button>
+              )) : <div className="fmt-empty">Nenhum rascunho salvo ainda.</div>}
+            </div>
           </div>
         </aside>
 
-        <section className="panel-card formatacao-main">
+        <section className="fmt-main-card">
           {etapaAtual === 0 && (
-            <div className="step-grid">
-              <div className="panel-title">Dados gerais</div>
-              <div className="grid-2">
-                <Field label="Nome da formatação">
-                  <input value={draft.dadosGerais.nomeFormatacao} onChange={(e) => onCampoGeral('nomeFormatacao', e.target.value)} placeholder={nomeAutomatico || 'Será gerado automaticamente'} />
-                </Field>
-                <Field label="Transportadora">
-                  <input value={draft.dadosGerais.transportadora} onChange={(e) => onCampoGeral('transportadora', e.target.value)} />
-                </Field>
-                <Field label="Origem / unidade">
-                  <input value={draft.dadosGerais.origem} onChange={(e) => onCampoGeral('origem', e.target.value)} placeholder="Ex.: Itajaí" />
-                </Field>
-                <Field label="Código da unidade">
-                  <input value={draft.dadosGerais.codigoUnidade} onChange={(e) => onCampoGeral('codigoUnidade', e.target.value)} placeholder="Ex.: 0001 - B2B" />
-                </Field>
-                <Field label="Canal">
-                  <select value={draft.dadosGerais.canal} onChange={(e) => onCampoGeral('canal', e.target.value)}>
-                    {CANAL_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
-                  </select>
-                </Field>
-                <Field label="Método de envio">
-                  <select value={draft.dadosGerais.metodoEnvio} onChange={(e) => onCampoGeral('metodoEnvio', e.target.value)}>
-                    {METODO_ENVIO_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
-                  </select>
-                </Field>
-                <Field label="Regra de cálculo">
-                  <select value={draft.dadosGerais.regraCalculo} onChange={(e) => onCampoGeral('regraCalculo', e.target.value)}>
-                    {REGRA_CALCULO_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
-                  </select>
-                </Field>
-                <Field label="Tipo de cálculo">
-                  <select value={draft.dadosGerais.tipoCalculo} onChange={(e) => onCampoGeral('tipoCalculo', e.target.value)}>
-                    {TIPO_CALCULO_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </Field>
-                <Field label="Vigência inicial">
-                  <input type="date" value={draft.dadosGerais.vigenciaInicial} onChange={(e) => onCampoGeral('vigenciaInicial', e.target.value)} />
-                </Field>
-                <Field label="Vigência final">
-                  <input type="date" value={draft.dadosGerais.vigenciaFinal} onChange={(e) => onCampoGeral('vigenciaFinal', e.target.value)} />
-                </Field>
-                <Field label="IBGE origem (opcional)">
-                  <input value={draft.dadosGerais.ibgeOrigem} onChange={(e) => onCampoGeral('ibgeOrigem', e.target.value)} placeholder="Pode ficar em branco por enquanto" />
-                </Field>
-                <Field label="Nome automático">
-                  <div className="readonly-box">{nomeAutomatico || 'Preencha transportadora, origem e canal.'}</div>
-                </Field>
+            <div className="fmt-section">
+              <h2>Dados gerais</h2>
+              <div className="fmt-grid two-cols">
+                <Campo label="Nome da formatação" value={form.nomeFormatacao} onChange={(v) => atualizarCampo('nomeFormatacao', v)} />
+                <Campo label="Transportadora" value={form.transportadora} onChange={(v) => atualizarCampo('transportadora', v)} />
+                <Campo label="Código da unidade / origem" value={form.codigoUnidade} onChange={(v) => atualizarCampo('codigoUnidade', v)} />
+                <Campo label="Origem" value={form.origemNome} onChange={(v) => atualizarCampo('origemNome', v)} />
+                <Campo label="Canal" value={form.canal} onChange={(v) => atualizarCampo('canal', v)} />
+                <CampoSelect label="Método de envio" value={form.metodoEnvio} onChange={(v) => atualizarCampo('metodoEnvio', v)} options={METODOS_ENVIO} />
+                <CampoSelect label="Regra de cálculo" value={form.regraCalculo} onChange={(v) => atualizarCampo('regraCalculo', v)} options={REGRAS_CALCULO} />
+                <CampoSelect label="Tipo de cálculo" value={form.tipoCalculo} onChange={(v) => atualizarCampo('tipoCalculo', v)} options={TIPOS_CALCULO} />
+                <Campo label="IBGE origem (automático)" value={form.origemIbge} onChange={() => {}} readOnly />
+                <Campo label="Vigência inicial" type="date" value={form.vigenciaInicial} onChange={(v) => atualizarCampo('vigenciaInicial', v)} />
+                <Campo label="Vigência final" type="date" value={form.vigenciaFinal} onChange={(v) => atualizarCampo('vigenciaFinal', v)} />
               </div>
-              <Field label="Observações">
-                <textarea rows={5} value={draft.dadosGerais.observacoes} onChange={(e) => onCampoGeral('observacoes', e.target.value)} />
-              </Field>
-              <WizardNav etapaAtual={etapaAtual} onVoltar={() => setEtapaAtual((v) => Math.max(v - 1, 0))} onAvancar={() => setEtapaAtual((v) => Math.min(v + 1, ETAPAS.length - 1))} />
+              <label className="fmt-field full">
+                <span>Observações</span>
+                <textarea value={form.observacoes} onChange={(e) => atualizarCampo('observacoes', e.target.value)} rows={4} />
+              </label>
             </div>
           )}
 
           {etapaAtual === 1 && (
-            <div className="step-grid">
-              <div className="step-header-row">
+            <div className="fmt-section">
+              <div className="fmt-section-header">
                 <div>
-                  <div className="panel-title">Rotas</div>
-                  <div className="helper-text">Se não preencher CEP inicial e final, a rota ficará preparada para considerar a base de IBGEs.</div>
+                  <h2>Rotas</h2>
+                  <p>Cadastro simples: apenas IBGE destino, prazo e cotação. O IBGE de origem é preenchido automaticamente pela origem dos dados gerais.</p>
                 </div>
-                <div className="step-actions wrap-actions compact-actions">
-                  <button className="btn-secondary" type="button" onClick={() => exportarModeloRotas(draft)}>Exportar modelo</button>
-                  <label className="btn-secondary file-btn">
-                    Importar rotas
-                    <input type="file" accept=".xlsx,.xls" onChange={importarRotas} hidden />
-                  </label>
-                  <button className="btn-primary" type="button" onClick={adicionarRota}>Adicionar rota</button>
+                <div className="fmt-actions-inline">
+                  <button className="btn-secondary" onClick={() => exportarModeloRotas()}>Exportar modelo</button>
+                  <button className="btn-secondary" onClick={() => inputRotasRef.current?.click()}>Importar rotas</button>
+                  <button className="btn-primary" onClick={adicionarRota}>Adicionar rota</button>
+                  <input ref={inputRotasRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'rotas')} />
                 </div>
               </div>
 
-              {importandoRotas ? <div className="muted-box">Importando rotas...</div> : null}
-              <div className="grid-table-wrap">
-                <div className="grid-table grid-rotas">
-                  <div className="grid-head">Cotação</div>
-                  <div className="grid-head">IBGE destino</div>
-                  <div className="grid-head">CEP inicial</div>
-                  <div className="grid-head">CEP final</div>
-                  <div className="grid-head">Prazo</div>
-                  <div className="grid-head">Ações</div>
-                  {draft.rotas.map((rota) => (
-                    <>
-                      <input key={`${rota.id}-c`} value={rota.cotacao} onChange={(e) => atualizarRota(rota.id, 'cotacao', e.target.value)} />
-                      <input key={`${rota.id}-i`} value={rota.ibgeDestino} onChange={(e) => atualizarRota(rota.id, 'ibgeDestino', e.target.value)} />
-                      <input key={`${rota.id}-ci`} value={rota.cepInicial} onChange={(e) => atualizarRota(rota.id, 'cepInicial', e.target.value)} placeholder="Opcional" />
-                      <input key={`${rota.id}-cf`} value={rota.cepFinal} onChange={(e) => atualizarRota(rota.id, 'cepFinal', e.target.value)} placeholder="Opcional" />
-                      <input key={`${rota.id}-p`} value={rota.prazo} onChange={(e) => atualizarRota(rota.id, 'prazo', e.target.value)} />
-                      <button key={`${rota.id}-r`} className="table-mini-btn danger" type="button" onClick={() => removerRota(rota.id)}>Excluir</button>
-                    </>
-                  ))}
-                  {!draft.rotas.length ? <div className="empty-grid">Nenhuma rota adicionada ainda.</div> : null}
-                </div>
-              </div>
-              <WizardNav etapaAtual={etapaAtual} onVoltar={() => setEtapaAtual((v) => Math.max(v - 1, 0))} onAvancar={() => setEtapaAtual((v) => Math.min(v + 1, ETAPAS.length - 1))} />
+              <TabelaRotas itens={form.rotas} onChange={atualizarRota} onDelete={(id) => excluirLinha('rotas', id)} />
             </div>
           )}
 
           {etapaAtual === 2 && (
-            <div className="step-grid">
-              <div className="step-header-row">
+            <div className="fmt-section">
+              <div className="fmt-section-header">
                 <div>
-                  <div className="panel-title">Estrutura</div>
-                  <div className="helper-text">Defina o tipo de cálculo e gere a estrutura base dos fretes.</div>
+                  <h2>Quebra de Faixas</h2>
+                  <p>Use esta etapa apenas quando os CEPs precisarem sobrescrever a cobertura padrão da base IBGE.</p>
                 </div>
-                <div className="step-actions wrap-actions compact-actions">
-                  <button className="btn-primary" type="button" onClick={gerarEstruturaFretes}>Gerar estrutura de fretes</button>
-                </div>
-              </div>
-
-              <div className="structure-boxes">
-                <div className="soft-box">
-                  <div className="soft-box-title">Tipo atual</div>
-                  <div className="soft-box-value">{draft.dadosGerais.tipoCalculo === 'percentual' ? 'Percentual' : 'Faixa de peso'}</div>
-                </div>
-                <div className="soft-box">
-                  <div className="soft-box-title">Modelo de faixas</div>
-                  <select value={draft.modeloFaixas} onChange={(e) => updateDraft((current) => ({ ...current, modeloFaixas: e.target.value }))}>
-                    <option value="padrao-canal">Faixa padrão do canal</option>
-                    <option value="customizado">Faixas customizadas</option>
-                  </select>
+                <div className="fmt-actions-inline">
+                  <button className="btn-secondary" onClick={() => exportarModeloQuebras()}>Exportar modelo</button>
+                  <button className="btn-secondary" onClick={() => inputQuebrasRef.current?.click()}>Importar quebra</button>
+                  <button className="btn-primary" onClick={adicionarQuebra}>Adicionar quebra</button>
+                  <input ref={inputQuebrasRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'quebras')} />
                 </div>
               </div>
 
-              {draft.dadosGerais.tipoCalculo === 'faixa' && (
-                <div className="faixas-box">
-                  <div className="panel-title">Faixas de peso</div>
-                  <div className="helper-text">Você pode usar o padrão do canal ou montar faixas customizadas.</div>
-                  <div className="grid-table grid-faixas">
-                    <div className="grid-head">Peso mínimo</div>
-                    <div className="grid-head">Peso limite</div>
-                    <div className="grid-head">Ações</div>
-                    {(draft.modeloFaixas === 'customizado' ? draft.faixasCustomizadas : faixasAtivas).map((faixa) => (
-                      <>
-                        <input key={`${faixa.id}-min`} value={faixa.pesoMinimo} onChange={(e) => atualizarFaixa(faixa.id, 'pesoMinimo', e.target.value)} disabled={draft.modeloFaixas !== 'customizado'} />
-                        <input key={`${faixa.id}-max`} value={faixa.pesoLimite} onChange={(e) => atualizarFaixa(faixa.id, 'pesoLimite', e.target.value)} disabled={draft.modeloFaixas !== 'customizado'} />
-                        {draft.modeloFaixas === 'customizado'
-                          ? <button key={`${faixa.id}-del`} className="table-mini-btn danger" type="button" onClick={() => removerFaixa(faixa.id)}>Excluir</button>
-                          : <div key={`${faixa.id}-tag`} className="muted-chip">Padrão</div>}
-                      </>
-                    ))}
-                  </div>
-                  {draft.modeloFaixas === 'customizado' ? <button className="btn-secondary top-gap-small" type="button" onClick={adicionarFaixa}>Adicionar faixa</button> : null}
-                  <div className="helper-text top-gap-small">Padrões carregados para {draft.dadosGerais.canal}: {(FAIXAS_PADRAO[draft.dadosGerais.canal] || []).length} faixa(s).</div>
-                </div>
-              )}
-              <WizardNav etapaAtual={etapaAtual} onVoltar={() => setEtapaAtual((v) => Math.max(v - 1, 0))} onAvancar={() => setEtapaAtual((v) => Math.min(v + 1, ETAPAS.length - 1))} />
+              <TabelaQuebras itens={form.quebrasFaixa} onChange={atualizarQuebra} onDelete={(id) => excluirLinha('quebrasFaixa', id)} />
             </div>
           )}
 
           {etapaAtual === 3 && (
-            <div className="step-grid">
-              <div className="step-header-row">
+            <div className="fmt-section">
+              <div className="fmt-section-header">
                 <div>
-                  <div className="panel-title">Fretes</div>
-                  <div className="helper-text">Você pode exportar o modelo para preencher fora do sistema ou importar a planilha pronta.</div>
+                  <h2>Fretes</h2>
+                  <p>Gere automaticamente pela estrutura das rotas ou importe o preenchimento no modelo padrão.</p>
                 </div>
-                <div className="step-actions wrap-actions compact-actions">
-                  <button className="btn-secondary" type="button" onClick={() => exportarModeloFretes(draft)}>Exportar modelo</button>
-                  <label className="btn-secondary file-btn">
-                    Importar fretes
-                    <input type="file" accept=".xlsx,.xls" onChange={importarFretes} hidden />
-                  </label>
-                  <button className="btn-primary" type="button" onClick={gerarEstruturaFretes}>Gerar linhas automáticas</button>
+                <div className="fmt-actions-inline">
+                  <button className="btn-secondary" onClick={() => exportarModeloFretes(form)}>Exportar modelo</button>
+                  <button className="btn-secondary" onClick={() => inputFretesRef.current?.click()}>Importar fretes</button>
+                  <button className="btn-primary" onClick={gerarFretes}>Gerar linhas automáticas</button>
+                  <input ref={inputFretesRef} type="file" accept=".xlsx,.xls,.xlsb" hidden onChange={(e) => importarArquivo(e, 'fretes')} />
                 </div>
               </div>
 
-              {importandoFretes ? <div className="muted-box">Importando fretes...</div> : null}
-              <div className="grid-table-wrap">
-                <div className="grid-table grid-fretes">
-                  <div className="grid-head">Rota do frete</div>
-                  <div className="grid-head">Peso mínimo</div>
-                  <div className="grid-head">Peso limite</div>
-                  <div className="grid-head">Excesso de peso</div>
-                  <div className="grid-head">Taxa aplicada</div>
-                  <div className="grid-head">Frete percentual</div>
-                  <div className="grid-head">Frete mínimo</div>
-                  {draft.fretes.map((frete) => (
-                    <>
-                      <input key={`${frete.id}-rota`} value={frete.rotaFrete} onChange={(e) => atualizarFrete(frete.id, 'rotaFrete', e.target.value)} />
-                      <input key={`${frete.id}-pmin`} value={frete.pesoMinimo} onChange={(e) => atualizarFrete(frete.id, 'pesoMinimo', e.target.value)} />
-                      <input key={`${frete.id}-plim`} value={frete.pesoLimite} onChange={(e) => atualizarFrete(frete.id, 'pesoLimite', e.target.value)} />
-                      <input key={`${frete.id}-exc`} value={frete.excessoPeso} onChange={(e) => atualizarFrete(frete.id, 'excessoPeso', e.target.value)} />
-                      <input key={`${frete.id}-taxa`} value={frete.taxaAplicada} onChange={(e) => atualizarFrete(frete.id, 'taxaAplicada', e.target.value)} />
-                      <input key={`${frete.id}-perc`} value={frete.fretePercentual} onChange={(e) => atualizarFrete(frete.id, 'fretePercentual', e.target.value)} />
-                      <input key={`${frete.id}-min`} value={frete.freteMinimo} onChange={(e) => atualizarFrete(frete.id, 'freteMinimo', e.target.value)} />
-                    </>
-                  ))}
-                  {!draft.fretes.length ? <div className="empty-grid">Nenhum frete gerado ou importado ainda.</div> : null}
-                </div>
-              </div>
-              <WizardNav etapaAtual={etapaAtual} onVoltar={() => setEtapaAtual((v) => Math.max(v - 1, 0))} onAvancar={() => setEtapaAtual((v) => Math.min(v + 1, ETAPAS.length - 1))} />
+              <TabelaFretes itens={form.fretes} onChange={atualizarFrete} onDelete={(id) => excluirLinha('fretes', id)} />
             </div>
           )}
 
           {etapaAtual === 4 && (
-            <div className="step-grid">
-              <div className="panel-title">Revisão</div>
-              <div className="review-grid">
-                <div className="review-card review-ok">
-                  <div className="review-title">Resumo</div>
-                  <div className="review-line"><strong>Formatação:</strong> {resumoDraft(draft)}</div>
-                  <div className="review-line"><strong>Rotas:</strong> {draft.rotas.length}</div>
-                  <div className="review-line"><strong>Fretes:</strong> {draft.fretes.length}</div>
-                  <div className="review-line"><strong>Tipo:</strong> {draft.dadosGerais.tipoCalculo === 'percentual' ? 'Percentual' : 'Faixa de peso'}</div>
+            <div className="fmt-section">
+              <div className="fmt-section-header">
+                <div>
+                  <h2>Revisão</h2>
+                  <p>Confira os principais pontos antes de exportar o pacote final.</p>
                 </div>
-                <div className="review-card review-alert">
-                  <div className="review-title">Erros</div>
-                  {validacao.erros.length ? validacao.erros.map((erro) => <div key={erro} className="review-line">• {erro}</div>) : <div className="review-line">Nenhum erro crítico.</div>}
-                </div>
-                <div className="review-card review-warn">
-                  <div className="review-title">Alertas</div>
-                  {validacao.alertas.length ? validacao.alertas.map((alerta) => <div key={alerta} className="review-line">• {alerta}</div>) : <div className="review-line">Nenhum alerta.</div>}
+                <div className="fmt-actions-inline">
+                  <button className="btn-secondary" onClick={salvarRascunhoAtual}>Salvar rascunho</button>
+                  <button className="btn-primary" onClick={() => exportarPacoteCompleto(form)}>Exportar pacote completo</button>
                 </div>
               </div>
 
-              <div className="step-actions wrap-actions top-gap-small">
-                <button className="btn-secondary" type="button" onClick={() => exportarRotasExcel(draft)}>Exportar rotas</button>
-                <button className="btn-secondary" type="button" onClick={() => exportarFretesExcel(draft)}>Exportar fretes</button>
-                <button className="btn-primary" type="button" onClick={() => exportarPacoteExcel(draft)}>Exportar pacote completo</button>
+              <div className="fmt-review-grid">
+                <ResumoCard label="Transportadora" value={form.transportadora || '-'} />
+                <ResumoCard label="Origem" value={`${form.origemNome || '-'} ${form.origemIbge ? `(${form.origemIbge})` : ''}`} />
+                <ResumoCard label="Rotas" value={String(form.rotas.length)} />
+                <ResumoCard label="Quebras" value={String(form.quebrasFaixa.length)} />
+                <ResumoCard label="Fretes" value={String(form.fretes.length)} />
+                <ResumoCard label="Tipo" value={form.tipoCalculo} />
               </div>
-              <WizardNav etapaAtual={etapaAtual} onVoltar={() => setEtapaAtual((v) => Math.max(v - 1, 0))} onAvancar={() => setEtapaAtual((v) => Math.min(v + 1, ETAPAS.length - 1))} disableNext />
+
+              <div className="fmt-validation-panels">
+                <div className="fmt-validation-panel">
+                  <h4>Erros</h4>
+                  {validacao.erros.length ? <ul>{validacao.erros.map((item) => <li key={item}>{item}</li>)}</ul> : <p>Nenhum erro encontrado.</p>}
+                </div>
+                <div className="fmt-validation-panel">
+                  <h4>Alertas</h4>
+                  {validacao.alertas.length ? <ul>{validacao.alertas.map((item) => <li key={item}>{item}</li>)}</ul> : <p>Nenhum alerta encontrado.</p>}
+                </div>
+              </div>
             </div>
           )}
+
+          <div className="fmt-footer-actions">
+            <button className="btn-secondary" disabled={etapaAtual === 0} onClick={() => setEtapaAtual((atual) => Math.max(0, atual - 1))}>Voltar</button>
+            <button className="btn-primary" disabled={etapaAtual === ETAPAS.length - 1} onClick={() => setEtapaAtual((atual) => Math.min(ETAPAS.length - 1, atual + 1))}>Avançar</button>
+          </div>
         </section>
       </div>
     </div>
   );
 }
 
-function Field({ label, children }) {
+function Campo({ label, value, onChange, readOnly = false, type = 'text' }) {
   return (
-    <label className="field-block">
-      <span className="field-label">{label}</span>
-      {children}
+    <label className="fmt-field">
+      <span>{label}</span>
+      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} readOnly={readOnly} />
     </label>
   );
 }
 
-function WizardNav({ etapaAtual, onVoltar, onAvancar, disableNext = false }) {
+function CampoSelect({ label, value, onChange, options }) {
   return (
-    <div className="wizard-nav">
-      <button className="btn-secondary" type="button" onClick={onVoltar} disabled={etapaAtual === 0}>Voltar</button>
-      <button className="btn-primary" type="button" onClick={onAvancar} disabled={disableNext}>Avançar</button>
+    <label className="fmt-field">
+      <span>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((item) => <option key={item} value={item}>{item}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function TabelaRotas({ itens, onChange, onDelete }) {
+  return (
+    <div className="fmt-table-wrap">
+      <table className="fmt-table">
+        <thead>
+          <tr>
+            <th>Cotação</th>
+            <th>IBGE destino</th>
+            <th>Prazo</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {itens.length ? itens.map((item) => (
+            <tr key={item.id}>
+              <td><input value={item.cotacao} onChange={(e) => onChange(item.id, 'cotacao', e.target.value)} /></td>
+              <td><input value={item.ibgeDestino} onChange={(e) => onChange(item.id, 'ibgeDestino', e.target.value)} /></td>
+              <td><input value={item.prazo} onChange={(e) => onChange(item.id, 'prazo', e.target.value)} /></td>
+              <td><button className="inline-btn" onClick={() => onDelete(item.id)}>Excluir</button></td>
+            </tr>
+          )) : <tr><td colSpan="4" className="fmt-empty-row">Nenhuma rota cadastrada.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TabelaQuebras({ itens, onChange, onDelete }) {
+  return (
+    <div className="fmt-table-wrap">
+      <table className="fmt-table">
+        <thead>
+          <tr>
+            <th>Cotação</th>
+            <th>IBGE destino</th>
+            <th>CEP inicial</th>
+            <th>CEP final</th>
+            <th>Prazo</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {itens.length ? itens.map((item) => (
+            <tr key={item.id}>
+              <td><input value={item.cotacao} onChange={(e) => onChange(item.id, 'cotacao', e.target.value)} /></td>
+              <td><input value={item.ibgeDestino} onChange={(e) => onChange(item.id, 'ibgeDestino', e.target.value)} /></td>
+              <td><input value={item.cepInicial} onChange={(e) => onChange(item.id, 'cepInicial', e.target.value)} /></td>
+              <td><input value={item.cepFinal} onChange={(e) => onChange(item.id, 'cepFinal', e.target.value)} /></td>
+              <td><input value={item.prazo} onChange={(e) => onChange(item.id, 'prazo', e.target.value)} /></td>
+              <td><button className="inline-btn" onClick={() => onDelete(item.id)}>Excluir</button></td>
+            </tr>
+          )) : <tr><td colSpan="6" className="fmt-empty-row">Nenhuma quebra cadastrada.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TabelaFretes({ itens, onChange, onDelete }) {
+  return (
+    <div className="fmt-table-wrap">
+      <table className="fmt-table">
+        <thead>
+          <tr>
+            <th>Rota do frete</th>
+            <th>Faixa</th>
+            <th>Peso mínimo</th>
+            <th>Peso limite</th>
+            <th>Excesso</th>
+            <th>Taxa aplicada</th>
+            <th>Frete %</th>
+            <th>Frete mínimo</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {itens.length ? itens.map((item) => (
+            <tr key={item.id}>
+              <td><input value={item.rotaFrete} onChange={(e) => onChange(item.id, 'rotaFrete', e.target.value)} /></td>
+              <td><input value={item.faixaNome} onChange={(e) => onChange(item.id, 'faixaNome', e.target.value)} /></td>
+              <td><input value={item.pesoMinimo} onChange={(e) => onChange(item.id, 'pesoMinimo', e.target.value)} /></td>
+              <td><input value={item.pesoLimite} onChange={(e) => onChange(item.id, 'pesoLimite', e.target.value)} /></td>
+              <td><input value={item.excessoPeso} onChange={(e) => onChange(item.id, 'excessoPeso', e.target.value)} /></td>
+              <td><input value={item.taxaAplicada} onChange={(e) => onChange(item.id, 'taxaAplicada', e.target.value)} /></td>
+              <td><input value={item.fretePercentual} onChange={(e) => onChange(item.id, 'fretePercentual', e.target.value)} /></td>
+              <td><input value={item.freteMinimo} onChange={(e) => onChange(item.id, 'freteMinimo', e.target.value)} /></td>
+              <td><button className="inline-btn" onClick={() => onDelete(item.id)}>Excluir</button></td>
+            </tr>
+          )) : <tr><td colSpan="9" className="fmt-empty-row">Nenhum frete cadastrado.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ResumoCard({ label, value }) {
+  return (
+    <div className="fmt-summary-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
