@@ -1,13 +1,8 @@
 Extraia este ZIP na raiz do projeto.
 
-Arquivos incluídos:
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.jsx
-- central-fretes-2-Melhoria-importa-o/src/utils/formatacaoTabela.js
-- central-fretes-2-Melhoria-importa-o/src/utils/templatePrecificacao.js
-
-Ajustes desta versão:
-- base IBGE fixa novamente no sistema
-- IBGE de origem automático pela origem digitada/selecionada
-- cotação final com UF destino: Origem - UF - Cotação
-- importação do template padrão com abas Rotas e Fretes
-- quando houver CEP no modelo de Rotas, ele entra em Quebra de Faixas
+Correções desta versão:
+- Importar rotas passa a usar a coluna REGIÃO/REGIAO/COTAÇÃO como cotação base
+- Importar template lê as abas Rotas e Fretes do arquivo padrão
+- Exportar modelo de fretes leva as cotações/faixas já geradas, pronto para preencher
+- Novo botão Limpar tudo
+- Base IBGE permanece fixa; atualização é opcional

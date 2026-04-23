@@ -23,9 +23,53 @@ import {
   salvarRascunhos,
   validarModeloFaixa,
 } from '../utils/formatacaoTabela';
-import { converterTemplatePrecificacaoParaFretes, converterWorkbookTemplateParaEstrutura } from '../utils/templatePrecificacao';
+import { converterTemplatePrecificacaoParaFretes } from '../utils/templatePrecificacao';
 
-const COTACOES_BASE = ['Capital', 'Interior 1', 'Interior 2', 'Metropolitana'];
+const COTACOES_BASE = ['Capital', 'Interior 1', 'Interior 2', 'Interior 3', 'Interior 4', 'Interior 5', 'Interior 6', 'Interior 7', 'Interior 8', 'Interior 9', 'Metropolitana'];
+
+function padronizarCotacaoBase(valor = '') {
+  const texto = String(valor || '').trim().toUpperCase();
+  if (!texto) return 'Interior 1';
+  if (texto.includes('CAPITAL')) return 'Capital';
+  const match = texto.match(/INTERIOR\s*(\d+)/i);
+  if (match) return `Interior ${match[1]}`;
+  if (texto.includes('METROPOLIT')) return 'Metropolitana';
+  return String(valor || '').trim();
+}
+
+function localizarColuna(row = {}, possibilidades = []) {
+  const entries = Object.entries(row || {});
+  for (const nome of possibilidades) {
+    const achou = entries.find(([k]) => k && k.toString().toUpperCase().includes(nome.toUpperCase()));
+    if (achou) return achou[1];
+  }
+  return '';
+}
+
+function lerWorkbook(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = event.target.result;
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheets = {};
+        workbook.SheetNames.forEach((name) => {
+          const sheet = workbook.Sheets[name];
+          sheets[name] = {
+            matriz: XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }),
+            objetos: XLSX.utils.sheet_to_json(sheet, { defval: '' }),
+          };
+        });
+        resolve({ workbook, sheets });
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
 
 function lerPlanilhaComoMatriz(file) {
   return new Promise((resolve, reject) => {
@@ -37,24 +81,6 @@ function lerPlanilhaComoMatriz(file) {
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
         resolve(rows);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-
-function lerWorkbook(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = event.target.result;
-        const workbook = XLSX.read(data, { type: 'array' });
-        resolve(workbook);
       } catch (error) {
         reject(error);
       }
@@ -85,7 +111,7 @@ function lerPlanilhaComoObjetos(file) {
 
 function tituloArquivo(form) {
   const partes = [form.transportadoraNome, form.origemNome, form.canal].filter(Boolean);
-  return partes.join('-').replace(/\\s+/g, '_') || 'formatacao';
+  return partes.join('-').replace(/\s+/g, '_') || 'formatacao';
 }
 
 export default function FormatacaoTabelasPage({ transportadoras = [] }) {
@@ -104,24 +130,19 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
   const modeloFaixaSelecionado = useMemo(() => modelosFaixa.find((item) => item.id === form.modeloFaixaId) || null, [modelosFaixa, form.modeloFaixaId]);
 
   useEffect(() => {
-    if (!baseIbge.length) return;
-    const municipio = form.origemNome ? encontrarMunicipioPorNome(baseIbge, form.origemNome) : null;
-    setForm((prev) => {
-      const novoIbge = municipio?.codigo_municipio_completo || municipio?.codigo || municipio?.ibge || '';
-      if (prev.origemIbge === novoIbge) return prev;
-      return { ...prev, origemIbge: novoIbge };
-    });
-  }, [form.origemNome, baseIbge]);
+    if (form.origemNome && !form.origemIbge && baseIbge.length) {
+      const municipio = encontrarMunicipioPorNome(baseIbge, form.origemNome);
+      if (municipio) {
+        setForm((prev) => ({
+          ...prev,
+          origemIbge: municipio.codigo_municipio_completo || municipio.codigo || municipio.ibge || '',
+        }));
+      }
+    }
+  }, [form.origemNome, form.origemIbge, baseIbge]);
 
   function atualizarCampo(campo, valor) {
-    setForm((prev) => {
-      const proximo = { ...prev, [campo]: valor };
-      if (campo === 'origemNome') {
-        const municipio = valor ? encontrarMunicipioPorNome(baseIbge, valor) : null;
-        proximo.origemIbge = municipio?.codigo_municipio_completo || municipio?.codigo || municipio?.ibge || '';
-      }
-      return proximo;
-    });
+    setForm((prev) => ({ ...prev, [campo]: valor }));
   }
 
   function selecionarTransportadora(id) {
@@ -210,15 +231,18 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     setMensagem(`Base IBGE carregada com ${baseNormalizada.length} município(s).`);
   }
 
-  async function importarRotas(event) {
+  
+async function importarRotas(event) {
     const file = event.target.files?.[0];
     if (!file) return;
     const rows = await lerPlanilhaComoObjetos(file);
     const novasRotas = rows.map((row) => ({
       ...criarRotaInicial(),
-      ibgeDestino: row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || '',
-      prazo: row['PRAZO'] || row['prazo'] || '',
-      cotacaoBase: row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'] || 'Interior 1',
+      ibgeDestino: localizarColuna(row, ['IBGE DESTINO']) || row['ibgeDestino'] || row['IBGE'] || '',
+      prazo: localizarColuna(row, ['PRAZO']) || row['prazo'] || '',
+      cotacaoBase: padronizarCotacaoBase(
+        localizarColuna(row, ['REGIÃO', 'REGIAO', 'COTAÇÃO', 'COTACAO']) || row['cotacaoBase'] || 'Interior 1'
+      ),
     })).filter((item) => item.ibgeDestino || item.prazo || item.cotacaoBase);
     if (novasRotas.length) setRotas(novasRotas);
     setMensagem(`Rotas importadas: ${novasRotas.length}.`);
@@ -240,43 +264,40 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     setMensagem(`Quebras importadas: ${novas.length}.`);
   }
 
-  async function importarTemplatePrecificacao(event) {
+  
+async function importarTemplatePrecificacao(event) {
     const file = event.target.files?.[0];
     if (!file) return;
+    const { sheets } = await lerWorkbook(file);
 
-    const workbook = await lerWorkbook(file);
-    const possuiRotas = (workbook.SheetNames || []).some((nome) => nome.toUpperCase() === 'ROTAS');
-    const possuiFretes = (workbook.SheetNames || []).some((nome) => nome.toUpperCase() === 'FRETES');
+    const sheetRotas = sheets['Rotas'] || sheets['ROTAS'] || Object.values(sheets)[0];
+    const sheetFretes = sheets['Fretes'] || sheets['FRETES'] || Object.values(sheets)[1];
 
-    if (possuiRotas || possuiFretes) {
-      const convertido = converterWorkbookTemplateParaEstrutura({
-        XLSX,
-        workbook,
-        dadosGerais: form,
-      });
+    let totalRotas = 0;
+    let totalFretes = 0;
 
-      if (convertido.dadosGeraisPatch?.origemNome || convertido.dadosGeraisPatch?.origemIbge) {
-        setForm((prev) => ({
-          ...prev,
-          origemNome: convertido.dadosGeraisPatch?.origemNome || prev.origemNome,
-          origemIbge: convertido.dadosGeraisPatch?.origemIbge || prev.origemIbge,
-        }));
+    if (sheetRotas?.objetos?.length) {
+      const novasRotas = sheetRotas.objetos.map((row) => ({
+        ...criarRotaInicial(),
+        ibgeDestino: localizarColuna(row, ['IBGE DESTINO']) || '',
+        prazo: localizarColuna(row, ['PRAZO']) || '',
+        cotacaoBase: padronizarCotacaoBase(localizarColuna(row, ['REGIÃO', 'REGIAO', 'COTAÇÃO', 'COTACAO']) || 'Interior 1'),
+      })).filter((item) => item.ibgeDestino || item.prazo || item.cotacaoBase);
+      if (novasRotas.length) {
+        setRotas(novasRotas);
+        totalRotas = novasRotas.length;
       }
-
-      if (convertido.rotas.length) setRotas(convertido.rotas);
-      if (convertido.quebras.length) setQuebras(convertido.quebras);
-      if (convertido.fretes.length) setFretes(convertido.fretes);
-
-      setMensagem(`Template importado com sucesso: ${convertido.rotas.length} rota(s), ${convertido.quebras.length} quebra(s) e ${convertido.fretes.length} frete(s).`);
-      event.target.value = '';
-      return;
     }
 
-    const linhas = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
-    const convertidos = converterTemplatePrecificacaoParaFretes({ linhas, dadosGerais: form });
-    setFretes(convertidos);
-    setMensagem(`Template importado: ${convertidos.length} linha(s) de frete.`);
-    event.target.value = '';
+    if (sheetFretes?.matriz?.length) {
+      const convertidos = converterTemplatePrecificacaoParaFretes({ linhas: sheetFretes.matriz, dadosGerais: form });
+      if (convertidos.length) {
+        setFretes(convertidos);
+        totalFretes = convertidos.length;
+      }
+    }
+
+    setMensagem(`Template importado: ${totalRotas} rota(s) e ${totalFretes} frete(s).`);
   }
 
   function exportarModeloRotas() {
@@ -287,10 +308,37 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     exportarLinhasParaXlsx(XLSX, [{ 'IBGE DESTINO': '', PRAZO: '', 'COTAÇÃO': '', 'CEP INICIAL': '', 'CEP FINAL': '' }], `${tituloArquivo(form)}-modelo-quebra-faixas.xlsx`, 'Quebras');
   }
 
-  function exportarModeloFretes() {
+  
+function exportarModeloFretes() {
+    const base = fretes.length
+      ? fretes
+      : gerarFretesPorCotacaoFaixa({
+          rotas,
+          dadosGerais: form,
+          baseIbge,
+          tipoCalculo: form.tipoCalculo,
+          modeloFaixa: modeloFaixaSelecionado,
+        });
+
     const linhas = form.tipoCalculo === 'PERCENTUAL'
-      ? [{ COTAÇÃO: '', 'FRETE %': '', 'FRETE MÍNIMO': '', 'TAXA APLICADA': '', EXCEDENTE: '' }]
-      : [{ COTAÇÃO: '', FAIXA: '', 'PESO INICIAL': '', 'PESO FINAL': '', 'FRETE VALOR': '', 'AD VALOREM %': '', 'FRETE MÍNIMO': '', 'TAXA APLICADA': '', EXCEDENTE: '' }];
+      ? base.map((item) => ({
+          COTAÇÃO: item.cotacao || '',
+          'FRETE %': '',
+          'FRETE MÍNIMO': '',
+          'TAXA APLICADA': '',
+          EXCEDENTE: '',
+        }))
+      : base.map((item) => ({
+          COTAÇÃO: item.cotacao || '',
+          FAIXA: item.faixaNome || `${item.pesoInicial} a ${item.pesoFinal}`,
+          'PESO INICIAL': item.pesoInicial ?? '',
+          'PESO FINAL': item.pesoFinal ?? '',
+          'FRETE VALOR': '',
+          'AD VALOREM %': '',
+          'FRETE MÍNIMO': '',
+          'TAXA APLICADA': '',
+          EXCEDENTE: '',
+        }));
     exportarLinhasParaXlsx(XLSX, linhas, `${tituloArquivo(form)}-modelo-fretes.xlsx`, 'Fretes');
   }
 
@@ -352,6 +400,15 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     setMensagem(`Rascunho carregado: ${item.form.nomeFormatacao || item.form.transportadoraNome}.`);
   }
 
+  
+function limparTudo() {
+    setForm(criarFormularioInicial());
+    setRotas([criarRotaInicial()]);
+    setQuebras([criarQuebraFaixaInicial()]);
+    setFretes([]);
+    setMensagem('Tela limpa para começar novamente.');
+  }
+
   function iniciarNovaFaixa() {
     setFaixaEditando({ id: '', nome: '', canal: form.canal, itens: [{ id: `tmp-${Date.now()}`, pesoInicial: 0, pesoFinal: 0 }] });
   }
@@ -403,11 +460,12 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
         <div className="page-header">
           <div className="amd-mini-brand">Cadastro guiado</div>
           <h1>Formatação de Tabelas</h1>
-          <p>Monte rotas e fretes sem mexer no simulador principal. Agora com faixa de peso, cotação com UF destino e importação do template padrão com Rotas + Fretes.</p>
+          <p>Monte rotas e fretes sem mexer no simulador principal. Agora com seleção de faixa de peso e importação de template já precificado.</p>
         </div>
         <div className="formatacao-actions-top">
           <button className="btn-secondary" onClick={salvarRascunhoAtual}>Salvar rascunho</button>
-          <button className="btn-primary" onClick={gerarPacoteCompleto}>Gerar pacote completo</button>
+          <button className="btn-secondary" onClick={limparTudo}>Limpar tudo</button>
+          <button className="btn-primary" onClick={gerarPacoteCompleto}>Gerar rotas + fretes</button>
         </div>
       </div>
 
@@ -416,7 +474,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
       <section className="panel-card formatacao-section">
         <div className="section-header-inline">
           <h3>Dados gerais</h3>
-          <div className="hint-line">IBGE de origem automático pela cidade usando a base IBGE fixa do sistema.</div>
+          <div className="hint-line">IBGE de origem automático pela cidade + base IBGE.</div>
         </div>
         <div className="formatacao-grid three">
           <label className="field-block">
@@ -534,7 +592,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
             <input type="date" value={form.vigenciaFinal} onChange={(e) => atualizarCampo('vigenciaFinal', e.target.value)} />
           </label>
           <div className="field-block button-stack">
-            <span>Base IBGE</span>
+            <span>Atualizar base IBGE (opcional)</span>
             <input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={importarBaseIbge} />
           </div>
         </div>
