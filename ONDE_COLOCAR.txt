@@ -1,10 +1,4 @@
-EXTRAIA ESTE ZIP NA RAIZ DO PROJETO.
+Substitua este arquivo no projeto:
+central-fretes-2-Melhoria-importa-o/src/utils/formatacaoTabela.js
 
-Os caminhos já estão corretos:
-- central-fretes-2-Melhoria-importa-o/src/utils/templatePrecificacao.js
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.TEMPLATE_PRECIFICACAO_PATCH.txt
-
-Esta melhoria adiciona a base técnica para:
-- manter o modelo atual de fretes
-- incluir a opção de importar template de precificação
-- converter automaticamente o template em linhas internas de frete
+Este ajuste restaura os exports originais do módulo e adiciona os helpers da padronização de cotação, corrigindo o erro de build do Vercel.
