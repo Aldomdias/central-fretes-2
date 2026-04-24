@@ -4,12 +4,10 @@ const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
-  { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '≣' },
+  { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
 ];
 
-const menuCadastros = [
-  { chave: 'transportadoras', label: 'Transportadoras', icon: '🏢' },
-];
+const menuCadastros = [{ chave: 'transportadoras', label: 'Transportadoras', icon: '🏢' }];
 
 export default function Sidebar({ paginaAtual, onMudarPagina }) {
   return (

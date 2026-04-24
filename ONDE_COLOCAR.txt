@@ -1,11 +1,15 @@
 Extraia este ZIP na raiz do projeto.
 
 Arquivos incluídos:
-- central-fretes-2-Melhoria-importa-o/src/utils/formatacaoCorrecoes.js
-- central-fretes-2-Melhoria-importa-o/src/components/formatacao/EntradaFormatacaoTemplate.jsx
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.CORRECOES_ENTRADA_PATCH.txt
+- central-fretes-2-Melhoria-importa-o/src/App.jsx
+- central-fretes-2-Melhoria-importa-o/src/components/Sidebar.jsx
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
+- central-fretes-2-Melhoria-importa-o/src/styles.css
 
-Esse pacote é focado em:
-- corrigir cotação base x cotação final
-- adicionar botão Limpar tudo
-- criar a tela inicial com 2 opções
+Esta versão corrige em cima do projeto real:
+- adiciona menu Formatação de Tabelas
+- cria tela inicial com 2 opções (template padrão ou modelo criado)
+- aceita Rotas.xlsx e fretes.xlsx separados
+- corrige cotação base x cotação final
+- adiciona botão Limpar tudo
+- exporta modelo de fretes com as linhas geradas

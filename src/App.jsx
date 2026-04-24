@@ -4,7 +4,7 @@ import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
 import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
-import FormatacaoTabelasPage from './pages/FormatacaoTabelasPage';
+import FormatacaoPage from './pages/FormatacaoPage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -77,9 +77,8 @@ export default function App() {
     content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
   }
 
-
   if (paginaAtual === 'formatacao') {
-    content = <FormatacaoTabelasPage transportadoras={transportadorasMemo} />;
+    content = <FormatacaoPage transportadoras={transportadorasMemo} />;
   }
 
   if (paginaAtual === 'transportadoras') {
@@ -98,13 +97,16 @@ export default function App() {
 
   return (
     <div className="app-layout">
-      <Sidebar paginaAtual={paginaAtual} onMudarPagina={(pagina) => {
-        setPaginaAtual(pagina);
-        if (pagina !== 'transportadoras') {
-          setTransportadoraSelecionadaId(null);
-          setOrigemSelecionadaId(null);
-        }
-      }} />
+      <Sidebar
+        paginaAtual={paginaAtual}
+        onMudarPagina={(pagina) => {
+          setPaginaAtual(pagina);
+          if (pagina !== 'transportadoras') {
+            setTransportadoraSelecionadaId(null);
+            setOrigemSelecionadaId(null);
+          }
+        }}
+      />
       <main className="app-content">{content}</main>
     </div>
   );
