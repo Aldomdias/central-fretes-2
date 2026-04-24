@@ -1,12 +1,11 @@
-Extraia este ZIP na raiz do projeto.
+Substitua estes arquivos no projeto:
+- src/App.jsx
+- src/components/Sidebar.jsx
+- src/pages/FormatacaoPage.jsx
 
-Arquivo incluído:
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
-
-Esta versão separa corretamente os dois fluxos:
-1. Importar template preenchido
-2. Preencher manualmente pela plataforma
-
-E mantém, nos dois fluxos:
-- Gerar os 2 arquivos
-- Incluir na transportadora
+Ajustes:
+- faixas voltam a ser puxadas no template e na exportação final
+- nova ou existente transportadora nos dois fluxos
+- fluxo manual separado do template
+- modelos de faixa voltam no manual
+- incluir na transportadora usa salvarTransportadora/salvarOrigem quando disponíveis

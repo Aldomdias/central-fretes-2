@@ -13,7 +13,7 @@ const ORIGENS_FIXAS = {
 const COTACOES = ['CAPITAL', 'INTERIOR 1', 'INTERIOR 2', 'INTERIOR 3', 'INTERIOR 4', 'INTERIOR 5', 'INTERIOR 6', 'INTERIOR 7', 'INTERIOR 8', 'INTERIOR 9'];
 
 const FAIXAS_PADRAO = {
-  ATACADO: [
+  B2B: [
     { faixaPeso: '0 a 20 kg', pesoInicial: 0, pesoFinal: 20 },
     { faixaPeso: '20 a 30 kg', pesoInicial: 20, pesoFinal: 30 },
     { faixaPeso: '30 a 50 kg', pesoInicial: 30, pesoFinal: 50 },
@@ -79,10 +79,10 @@ function baixarWorkbook(nome, sheets) {
 function ufPorIbge(ibge) {
   const c = String(ibge || '').replace(/\D/g, '').slice(0, 2);
   const mapa = {
-    '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
-    '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
-    '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP', '41': 'PR', '42': 'SC', '43': 'RS',
-    '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
+    '11':'RO','12':'AC','13':'AM','14':'RR','15':'PA','16':'AP','17':'TO',
+    '21':'MA','22':'PI','23':'CE','24':'RN','25':'PB','26':'PE','27':'AL','28':'SE','29':'BA',
+    '31':'MG','32':'ES','33':'RJ','35':'SP','41':'PR','42':'SC','43':'RS',
+    '50':'MS','51':'MT','52':'GO','53':'DF',
   };
   return mapa[c] || '';
 }
@@ -131,14 +131,13 @@ function linhaModeloFrete(uf, faixa, valor, adVal) {
   return row;
 }
 
-function baixarModeloTemplateFretes(canal = 'ATACADO') {
-  const excedente = canal === 'B2C' ? 'Acima de 100 kg (KG excedente)' : 'Acima de 300 kg (KG excedente)';
-  const primeira = canal === 'B2C' ? '0 a 2 kg' : '0 a 20 kg';
+function baixarModeloTemplateFretes() {
   baixarWorkbook('Fretes-modelo-template.xlsx', [{
     name: 'Fretes',
     rows: [
-      linhaModeloFrete('ES', primeira, 80, 0.03),
-      linhaModeloFrete('ES', excedente, 0.95, 0.03),
+      linhaModeloFrete('ES', '0 a 20 kg', 80, 0.03),
+      linhaModeloFrete('ES', '20 a 30 kg', 81.7, 0.03),
+      linhaModeloFrete('ES', 'Acima de 300 kg (KG excedente)', 0.95, 0.03),
     ],
   }]);
 }
@@ -147,7 +146,11 @@ function exportarModeloManualRotas(rotas) {
   baixarWorkbook('modelo-rotas.xlsx', [{
     name: 'Rotas',
     rows: rotas.length
-      ? rotas.map((r) => ({ 'IBGE DESTINO': r.ibgeDestino || '', PRAZO: r.prazo || '', 'COTAÇÃO BASE': r.cotacaoBase || '' }))
+      ? rotas.map((r) => ({
+          'IBGE DESTINO': r.ibgeDestino || '',
+          PRAZO: r.prazo || '',
+          'COTAÇÃO BASE': r.cotacaoBase || '',
+        }))
       : [{ 'IBGE DESTINO': '', PRAZO: '', 'COTAÇÃO BASE': '' }],
   }]);
 }
@@ -217,24 +220,6 @@ function exportarArquivoFretesFinal(dadosGerais, fretes) {
   baixarWorkbook('Fretes-para-subir.xlsx', [{ name: 'Valores de frete', rows }]);
 }
 
-function buildOriginPayload(dadosGerais, rotas, fretes, existingOrigin) {
-  return {
-    ...(existingOrigin || {}),
-    id: existingOrigin?.id,
-    cidade: dadosGerais.origemNome,
-    canal: dadosGerais.canal,
-    status: 'Ativa',
-    generalidades: {
-      ...(existingOrigin?.generalidades || {}),
-      tipoCalculo: 'FAIXA',
-      regraCalculo: dadosGerais.regraCalculo || 'Maior valor',
-    },
-    rotas: rotas.map((r) => ({ ...r, id: r.id })),
-    cotacoes: fretes.map((f) => ({ ...f, id: f.id })),
-    taxasEspeciais: existingOrigin?.taxasEspeciais || [],
-  };
-}
-
 export default function FormatacaoPage({ transportadoras = [], store }) {
   const inputRotasManual = useRef(null);
   const inputFretesManual = useRef(null);
@@ -260,7 +245,7 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
   });
 
   const [modelosFaixa, setModelosFaixa] = useState([
-    { nome: 'B2B padrão', canal: 'ATACADO', itens: FAIXAS_PADRAO.ATACADO },
+    { nome: 'B2B padrão', canal: 'ATACADO', itens: FAIXAS_PADRAO.B2B },
     { nome: 'B2C padrão', canal: 'B2C', itens: FAIXAS_PADRAO.B2C },
   ]);
   const [modeloFaixaSelecionado, setModeloFaixaSelecionado] = useState('B2B padrão');
@@ -271,20 +256,25 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
 
   const faixasAtuais = useMemo(() => {
     const encontrado = modelosFaixa.find((m) => m.nome === modeloFaixaSelecionado);
-    return encontrado?.itens || (dadosGerais.canal === 'B2C' ? FAIXAS_PADRAO.B2C : FAIXAS_PADRAO.ATACADO);
+    return encontrado?.itens || (dadosGerais.canal === 'B2C' ? FAIXAS_PADRAO.B2C : FAIXAS_PADRAO.B2B);
   }, [modelosFaixa, modeloFaixaSelecionado, dadosGerais.canal]);
 
   const nomeTransportadoraFinal = usarNovaTransportadora ? limpar(novaTransportadora) : limpar(dadosGerais.transportadora);
 
   function atualizarOrigem(valor) {
     const fixa = ORIGENS_FIXAS[normalizar(valor)];
-    setDadosGerais((prev) => ({ ...prev, origemNome: valor, ufOrigem: fixa?.uf || '', ibgeOrigem: fixa?.ibge || '' }));
+    setDadosGerais((prev) => ({
+      ...prev,
+      origemNome: valor,
+      ufOrigem: fixa?.uf || '',
+      ibgeOrigem: fixa?.ibge || '',
+    }));
     setRotas((prev) => prev.map((r) => ({ ...r, cotacaoFinal: montarCotacaoFinal(valor, r.ibgeDestino, r.cotacaoBase) })));
   }
 
   function criarModeloFaixaNovo() {
     if (!limpar(novoModeloNome)) return;
-    const base = dadosGerais.canal === 'B2C' ? FAIXAS_PADRAO.B2C : FAIXAS_PADRAO.ATACADO;
+    const base = dadosGerais.canal === 'B2C' ? FAIXAS_PADRAO.B2C : FAIXAS_PADRAO.B2B;
     const novo = { nome: limpar(novoModeloNome), canal: dadosGerais.canal, itens: JSON.parse(JSON.stringify(base)) };
     setModelosFaixa((prev) => [...prev, novo]);
     setModeloFaixaSelecionado(novo.nome);
@@ -308,11 +298,19 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
   }
 
   function adicionarFaixa() {
-    setModelosFaixa((prev) => prev.map((m) => (m.nome !== modeloFaixaSelecionado ? m : { ...m, itens: [...m.itens, { faixaPeso: '', pesoInicial: '', pesoFinal: '' }] })));
+    setModelosFaixa((prev) =>
+      prev.map((m) =>
+        m.nome !== modeloFaixaSelecionado ? m : { ...m, itens: [...m.itens, { faixaPeso: '', pesoInicial: '', pesoFinal: '' }] }
+      )
+    );
   }
 
   function removerFaixa(index) {
-    setModelosFaixa((prev) => prev.map((m) => (m.nome !== modeloFaixaSelecionado ? m : { ...m, itens: m.itens.filter((_, idx) => idx !== index) })));
+    setModelosFaixa((prev) =>
+      prev.map((m) =>
+        m.nome !== modeloFaixaSelecionado ? m : { ...m, itens: m.itens.filter((_, idx) => idx !== index) }
+      )
+    );
   }
 
   function resetEscolha() {
@@ -365,6 +363,7 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
       const hFrete = parseHeader(rowsFretes);
       const idxUfDestino = hFrete.findIndex((h) => h === 'UF DESTINO');
       const idxFaixa = hFrete.findIndex((h) => h === 'FAIXA PESO');
+
       const blocos = [];
       (rowsFretes[0] || []).forEach((cell, c) => {
         const nome = limpar(cell);
@@ -381,6 +380,7 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
         const ufDestino = limpar(row[idxUfDestino]);
         const faixa = extrairFaixa(row[idxFaixa]);
         if (!ufDestino || !faixa.faixaPeso) continue;
+
         blocos.forEach((b) => {
           const freteKg = numero(row[b.freteCol]);
           const adVal = numero(row[b.adValCol]);
@@ -432,14 +432,18 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
   }
 
   function adicionarRota() {
-    setRotas((prev) => [...prev, { id: `r-${Date.now()}`, ibgeDestino: '', prazo: '', cotacaoBase: 'CAPITAL', cotacaoFinal: '' }]);
+    setRotas((prev) => [
+      ...prev,
+      { id: `r-${Date.now()}`, ibgeDestino: '', prazo: '', cotacaoBase: 'CAPITAL', cotacaoFinal: '' },
+    ]);
   }
 
   function atualizarRota(id, campo, valor) {
     setRotas((prev) =>
       prev.map((r) => {
         if (r.id !== id) return r;
-        const next = { ...r, [campo]: String(valor ?? '') };
+        const next = { ...r, [campo]: String(value ?? value) };
+        next[campo] = String(valor ?? '');
         next.cotacaoFinal = montarCotacaoFinal(dadosGerais.origemNome, next.ibgeDestino, next.cotacaoBase);
         return next;
       })
@@ -541,36 +545,12 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
   }
 
   function incluirNaTransportadora() {
-    if (!store || typeof store.salvarOrigem !== 'function' || typeof store.salvarTransportadora !== 'function') {
-      setMensagem('Funções de salvar transportadora/origem não estão conectadas.');
+    if (!store || typeof store.salvarOrigem !== 'function') {
+      setMensagem('Função de incluir na transportadora não está conectada ao store ainda.');
       return;
     }
-
-    const nome = nomeTransportadoraFinal;
-    if (!nome) {
-      setMensagem('Informe a transportadora.');
-      return;
-    }
-
-    let targetTransportadora = transportadoras.find((t) => normalizar(t.nome) === normalizar(nome));
-    let transportadoraId = targetTransportadora?.id;
-
-    if (!targetTransportadora) {
-      transportadoraId = `fmt-${Date.now()}`;
-      store.salvarTransportadora({ id: transportadoraId, nome, status: 'Ativa', origens: [] });
-      targetTransportadora = { id: transportadoraId, nome, origens: [] };
-    }
-
-    const origemExistente = (targetTransportadora.origens || []).find(
-      (o) => normalizar(o.cidade) === normalizar(dadosGerais.origemNome) && normalizar(o.canal || 'ATACADO') === normalizar(dadosGerais.canal)
-    );
-
-    store.salvarOrigem(transportadoraId, buildOriginPayload({ ...dadosGerais, nomeTransportadoraFinal }, rotas, fretes, origemExistente));
-    setMensagem(`Tabela incluída na transportadora ${nome}.`);
+    setMensagem('Ação de incluir na transportadora acionada. Ligue à rotina final do cadastro/origem específica.');
   }
-
-  const tableStyle = { width: '100%', borderCollapse: 'collapse' };
-  const thtd = { borderBottom: '1px solid var(--border-soft)', padding: '10px 8px', verticalAlign: 'top' };
 
   return (
     <div className="page-shell">
@@ -661,7 +641,7 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
             <p>Preencha origem, transportadora e canal aqui na tela. Depois anexe Rotas e Fretes do template.</p>
             <div className="toggle-row">
               <button className="botao-secundario" type="button" onClick={baixarModeloTemplateRotas}>Baixar modelo de Rotas</button>
-              <button className="botao-secundario" type="button" onClick={() => baixarModeloTemplateFretes(dadosGerais.canal)}>Baixar modelo de Fretes</button>
+              <button className="botao-secundario" type="button" onClick={baixarModeloTemplateFretes}>Baixar modelo de Fretes</button>
             </div>
             <div className="form-grid">
               <label>
@@ -709,19 +689,19 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
                     <button className="botao-secundario" type="button" onClick={adicionarFaixa}>Adicionar faixa</button>
                   </div>
                 </div>
-                <table style={tableStyle}>
-                  <thead><tr><th style={thtd}>Faixa</th><th style={thtd}>Peso mínimo</th><th style={thtd}>Peso limite</th><th style={thtd}>Ação</th></tr></thead>
-                  <tbody>
-                    {faixasAtuais.map((item, idx) => (
-                      <tr key={`${modeloFaixaSelecionado}-${idx}`}>
-                        <td style={thtd}><input value={item.faixaPeso} onChange={(e) => atualizarItemFaixa(idx, 'faixaPeso', e.target.value)} /></td>
-                        <td style={thtd}><input value={item.pesoInicial} onChange={(e) => atualizarItemFaixa(idx, 'pesoInicial', e.target.value)} /></td>
-                        <td style={thtd}><input value={item.pesoFinal} onChange={(e) => atualizarItemFaixa(idx, 'pesoFinal', e.target.value)} /></td>
-                        <td style={thtd}><button className="botao-secundario" type="button" onClick={() => removerFaixa(idx)}>Remover</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="sim-table">
+                  <div className="sim-table-head">
+                    <span>Faixa</span><span>Peso mínimo</span><span>Peso limite</span><span>Ação</span>
+                  </div>
+                  {faixasAtuais.map((item, idx) => (
+                    <div key={`${modeloFaixaSelecionado}-${idx}`} className="sim-table-row">
+                      <input value={item.faixaPeso} onChange={(e) => atualizarItemFaixa(idx, 'faixaPeso', e.target.value)} />
+                      <input value={item.pesoInicial} onChange={(e) => atualizarItemFaixa(idx, 'pesoInicial', e.target.value)} />
+                      <input value={item.pesoFinal} onChange={(e) => atualizarItemFaixa(idx, 'pesoFinal', e.target.value)} />
+                      <button className="botao-secundario" type="button" onClick={() => removerFaixa(idx)}>Remover</button>
+                    </div>
+                  ))}
+                </div>
               </section>
 
               <section className="card-padrao panel-card">
@@ -734,20 +714,22 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
                     <button className="botao-secundario" type="button" onClick={adicionarRota}>Adicionar rota</button>
                   </div>
                 </div>
-                <table style={tableStyle}>
-                  <thead><tr><th style={thtd}>IBGE destino</th><th style={thtd}>Prazo</th><th style={thtd}>Cotação base</th><th style={thtd}>Cotação final</th><th style={thtd}>Ação</th></tr></thead>
-                  <tbody>
-                    {rotas.map((r) => (
-                      <tr key={r.id}>
-                        <td style={thtd}><input value={r.ibgeDestino} onChange={(e) => atualizarRota(r.id, 'ibgeDestino', e.target.value)} /></td>
-                        <td style={thtd}><input value={r.prazo} onChange={(e) => atualizarRota(r.id, 'prazo', e.target.value)} /></td>
-                        <td style={thtd}><select value={r.cotacaoBase} onChange={(e) => atualizarRota(r.id, 'cotacaoBase', e.target.value)}>{COTACOES.map((c) => <option key={c} value={c}>{c}</option>)}</select></td>
-                        <td style={thtd}><input value={r.cotacaoFinal} readOnly /></td>
-                        <td style={thtd}><button className="botao-secundario" type="button" onClick={() => removerRota(r.id)}>Remover</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="sim-table">
+                  <div className="sim-table-head">
+                    <span>IBGE destino</span><span>Prazo</span><span>Cotação base</span><span>Cotação final</span><span>Ação</span>
+                  </div>
+                  {rotas.map((r) => (
+                    <div key={r.id} className="sim-table-row">
+                      <input value={r.ibgeDestino} onChange={(e) => atualizarRota(r.id, 'ibgeDestino', e.target.value)} />
+                      <input value={r.prazo} onChange={(e) => atualizarRota(r.id, 'prazo', e.target.value)} />
+                      <select value={r.cotacaoBase} onChange={(e) => atualizarRota(r.id, 'cotacaoBase', e.target.value)}>
+                        {COTACOES.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <input value={r.cotacaoFinal} readOnly />
+                      <button className="botao-secundario" type="button" onClick={() => removerRota(r.id)}>Remover</button>
+                    </div>
+                  ))}
+                </div>
               </section>
 
               <section className="card-padrao panel-card">
@@ -760,22 +742,22 @@ export default function FormatacaoPage({ transportadoras = [], store }) {
                     <button className="botao-secundario" type="button" onClick={() => inputFretesManual.current?.click()}>Importar fretes</button>
                   </div>
                 </div>
-                <table style={tableStyle}>
-                  <thead><tr><th style={thtd}>Rota</th><th style={thtd}>Faixa</th><th style={thtd}>Peso mín.</th><th style={thtd}>Peso limite</th><th style={thtd}>Excesso</th><th style={thtd}>Taxa</th><th style={thtd}>% Frete</th></tr></thead>
-                  <tbody>
-                    {fretes.map((f) => (
-                      <tr key={f.id}>
-                        <td style={thtd}><input value={f.cotacaoFinal} readOnly /></td>
-                        <td style={thtd}><input value={f.faixaPeso} readOnly /></td>
-                        <td style={thtd}><input value={f.pesoInicial} readOnly /></td>
-                        <td style={thtd}><input value={f.pesoFinal} readOnly /></td>
-                        <td style={thtd}><input value={f.excessoPeso} onChange={(e) => atualizarFrete(f.id, 'excessoPeso', e.target.value)} /></td>
-                        <td style={thtd}><input value={f.taxaAplicada} onChange={(e) => atualizarFrete(f.id, 'taxaAplicada', e.target.value)} /></td>
-                        <td style={thtd}><input value={f.fretePercentual} onChange={(e) => atualizarFrete(f.id, 'fretePercentual', e.target.value)} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="sim-table">
+                  <div className="sim-table-head">
+                    <span>Rota</span><span>Faixa</span><span>Peso mín.</span><span>Peso limite</span><span>Excesso</span><span>Taxa</span><span>% Frete</span>
+                  </div>
+                  {fretes.map((f) => (
+                    <div key={f.id} className="sim-table-row">
+                      <input value={f.cotacaoFinal} readOnly />
+                      <input value={f.faixaPeso} readOnly />
+                      <input value={f.pesoInicial} readOnly />
+                      <input value={f.pesoFinal} readOnly />
+                      <input value={f.excessoPeso} onChange={(e) => atualizarFrete(f.id, 'excessoPeso', e.target.value)} />
+                      <input value={f.taxaAplicada} onChange={(e) => atualizarFrete(f.id, 'taxaAplicada', e.target.value)} />
+                      <input value={f.fretePercentual} onChange={(e) => atualizarFrete(f.id, 'fretePercentual', e.target.value)} />
+                    </div>
+                  ))}
+                </div>
               </section>
             </>
           ) : (

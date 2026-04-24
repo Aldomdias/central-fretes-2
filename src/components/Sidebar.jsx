@@ -7,7 +7,9 @@ const menuPrincipal = [
   { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
 ];
 
-const menuCadastros = [{ chave: 'transportadoras', label: 'Transportadoras', icon: '🏢' }];
+const menuCadastros = [
+  { chave: 'transportadoras', label: 'Transportadoras', icon: '🏢' },
+];
 
 export default function Sidebar({ paginaAtual, onMudarPagina }) {
   return (
@@ -48,6 +50,10 @@ export default function Sidebar({ paginaAtual, onMudarPagina }) {
             <span>{item.label}</span>
           </button>
         ))}
+      </div>
+
+      <div className="sidebar-footer-note">
+        Visual AMD Log com foco em leitura e sem invadir o conteúdo.
       </div>
     </aside>
   );
