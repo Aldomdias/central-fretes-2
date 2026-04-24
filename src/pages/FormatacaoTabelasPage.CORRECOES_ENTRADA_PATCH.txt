@@ -1,0 +1,91 @@
+CORREÇÕES SOLICITADAS NA TELA DE FORMATAÇÃO
+
+Este pacote corrige 3 pontos:
+1) Cotação base diferente da cotação final
+2) Falta do botão "Limpar tudo"
+3) Falta da tela inicial com 2 opções:
+   - Enviar template padrão
+   - Usar modelo criado na ferramenta
+
+ARQUIVOS:
+- src/utils/formatacaoCorrecoes.js
+- src/components/formatacao/EntradaFormatacaoTemplate.jsx
+
+APLICAÇÃO NA FormatacaoTabelasPage.jsx
+
+1) IMPORTS
+Adicionar:
+import EntradaFormatacaoTemplate from "../components/formatacao/EntradaFormatacaoTemplate";
+import { sincronizarCotacoesRotas, criarEstadoLimpoFormatacao } from "../utils/formatacaoCorrecoes";
+import { importarTemplatePadraoSeparado } from "../utils/importadorTemplatePadrao";
+
+2) ESTADOS
+Garanta estes estados:
+const [modoEntrada, setModoEntrada] = useState("escolha");
+const [importandoTemplate, setImportandoTemplate] = useState(false);
+
+3) TELA INICIAL
+ANTES do retorno do fluxo manual, adicionar:
+if (modoEntrada === "escolha") {
+  return (
+    <EntradaFormatacaoTemplate
+      carregando={importandoTemplate}
+      onAbrirModeloManual={() => setModoEntrada("manual")}
+      onImportarTemplatePadrao={async ({ arquivoRotas, arquivoFretes }) => {
+        try {
+          setImportandoTemplate(true);
+          const resultado = await importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes });
+          setRotas(sincronizarCotacoesRotas(resultado.rotas));
+          setQuebrasFaixa(resultado.quebrasFaixa || []);
+          setFretes(resultado.fretes || []);
+          setModoEntrada("manual");
+        } finally {
+          setImportandoTemplate(false);
+        }
+      }}
+    />
+  );
+}
+
+4) CORRIGIR A GRADE DE ROTAS
+Sempre que importar, adicionar ou editar rota, recalcular com:
+const novasRotas = sincronizarCotacoesRotas(rotasAtualizadas);
+setRotas(novasRotas);
+
+IMPORTANTE:
+- a coluna "Cotação base" deve mostrar rota.cotacaoBase
+- a coluna "Cotação final" deve mostrar rota.cotacaoFinal
+- não reutilizar rota.cotacaoFinal para preencher o select da cotação base
+
+5) BOTÃO LIMPAR TUDO
+No bloco onde hoje estão:
+- Exportar modelo
+- Importar rotas
+- Adicionar rota
+
+Adicionar também:
+<button
+  type="button"
+  className="formatacao-secondary-btn"
+  onClick={() => {
+    const estadoLimpo = criarEstadoLimpoFormatacao();
+    setRotas(estadoLimpo.rotas);
+    setQuebrasFaixa(estadoLimpo.quebrasFaixa);
+    setFretes(estadoLimpo.fretes);
+    setEtapaAtual(estadoLimpo.etapaAtual);
+    setModoEntrada("manual");
+  }}
+>
+  Limpar tudo
+</button>
+
+6) OPÇÃO EXTRA
+Se quiser que o limpar volte para a escolha inicial, troque:
+setModoEntrada("manual");
+por:
+setModoEntrada("escolha");
+
+RESULTADO ESPERADO
+- cotação base e cotação final ficam consistentes
+- o usuário passa primeiro por uma tela com 2 opções
+- existe um botão para limpar tudo e começar de novo

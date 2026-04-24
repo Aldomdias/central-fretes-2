@@ -1,4 +1,3 @@
-
 import React, { useState } from "react";
 
 export default function EntradaFormatacaoTemplate({
@@ -11,22 +10,17 @@ export default function EntradaFormatacaoTemplate({
 
   const podeImportar = arquivoRotas && arquivoFretes && !carregando;
 
-  async function handleImportar() {
-    if (!podeImportar) return;
-    await onImportarTemplatePadrao({ arquivoRotas, arquivoFretes });
-  }
-
   return (
     <div className="formatacao-entrada-grid">
       <div className="formatacao-card-opcao">
         <h3>Enviar template padrão</h3>
         <p>
-          Use este modo quando você já tiver os arquivos no modelo padrão:
-          <strong> Rotas.xlsx </strong> e <strong> fretes.xlsx</strong>.
+          Anexe os dois arquivos do modelo padrão para formatar automaticamente:
+          <strong> Rotas </strong> e <strong> Fretes</strong>.
         </p>
 
         <label className="formatacao-upload-box">
-          <span>Selecionar arquivo de Rotas</span>
+          <span>Arquivo de Rotas</span>
           <input
             type="file"
             accept=".xlsx,.xls,.ods"
@@ -36,7 +30,7 @@ export default function EntradaFormatacaoTemplate({
         </label>
 
         <label className="formatacao-upload-box">
-          <span>Selecionar arquivo de Fretes</span>
+          <span>Arquivo de Fretes</span>
           <input
             type="file"
             accept=".xlsx,.xls,.ods"
@@ -49,7 +43,7 @@ export default function EntradaFormatacaoTemplate({
           type="button"
           className="formatacao-primary-btn"
           disabled={!podeImportar}
-          onClick={handleImportar}
+          onClick={() => onImportarTemplatePadrao({ arquivoRotas, arquivoFretes })}
         >
           {carregando ? "Importando..." : "Importar e formatar automaticamente"}
         </button>
@@ -58,8 +52,8 @@ export default function EntradaFormatacaoTemplate({
       <div className="formatacao-card-opcao">
         <h3>Usar modelo criado na ferramenta</h3>
         <p>
-          Use este modo para seguir pelo preenchimento manual, aplicação de faixas,
-          geração de fretes e exportação para preenchimento.
+          Entre no fluxo manual para cadastrar rotas, aplicar faixas,
+          gerar fretes e exportar modelo para preenchimento.
         </p>
 
         <button

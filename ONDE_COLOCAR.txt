@@ -1,10 +1,11 @@
 Extraia este ZIP na raiz do projeto.
 
-Arquivos:
-- central-fretes-2-Melhoria-importa-o/src/utils/importadorTemplatePadrao.js
+Arquivos incluídos:
+- central-fretes-2-Melhoria-importa-o/src/utils/formatacaoCorrecoes.js
 - central-fretes-2-Melhoria-importa-o/src/components/formatacao/EntradaFormatacaoTemplate.jsx
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.NOVA_ENTRADA_PATCH.txt
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.CORRECOES_ENTRADA_PATCH.txt
 
-Este pacote muda a entrada da tela de Formatação para 2 opções:
-1. Enviar template padrão
-2. Usar modelo criado na ferramenta
+Esse pacote é focado em:
+- corrigir cotação base x cotação final
+- adicionar botão Limpar tudo
+- criar a tela inicial com 2 opções
