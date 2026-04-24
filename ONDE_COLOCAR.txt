@@ -1,6 +1,9 @@
 Extraia este ZIP na raiz do projeto.
 
-Este pacote é de EMERGÊNCIA para restaurar o visual geral da aplicação sem mexer no restante.
+Arquivos incluídos:
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
 
-Arquivo incluído:
-- central-fretes-2-Melhoria-importa-o/src/styles.css
+Ajuste desta versão:
+- em tabela por faixa de peso, Frete mínimo não é preenchido nem exportado
+- na grade, o campo Frete mín. deixa de ser editável nesse cenário
+- ao importar template ou importar modelo de fretes, Frete mínimo fica vazio
