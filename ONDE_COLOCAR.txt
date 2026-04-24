@@ -6,10 +6,12 @@ Arquivos incluídos:
 - central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
 - central-fretes-2-Melhoria-importa-o/src/styles.css
 
-Nesta versão:
-- faixa 'Acima de 300 kg (KG excedente)' exporta como 300 a 999999999
-- exportação de Rotas e Fretes no modelo exato para subir na transportadora
-- seções com abrir/fechar para facilitar a navegação
-- botão para gerar os 2 arquivos separados
-- opção de publicar direto na transportadora existente e preservar histórico anterior
-- entrada inicial com template padrão ou modelo criado
+Ajustes desta versão:
+- taxa aplicada passa a vir do “Frete kg (R$)” do template
+- faixa excedente (acima de 300/100) usa o último frete fixo como taxa/frete mínimo e o valor da linha como excesso de peso
+- opção de nova transportadora no fluxo
+- datas padrão: hoje e +2 anos
+- botão voltar à escolha inicial
+- mudança de origem atualiza IBGE quando a origem for conhecida
+- exportar/importar modelo simples de rotas e fretes
+- gerar 2 arquivos finais separados para subir na transportadora

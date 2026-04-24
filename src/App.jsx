@@ -15,52 +15,14 @@ export default function App() {
 
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
 
-  const abrirTransportadoras = () => {
-    setPaginaAtual('transportadoras');
-    setTransportadoraSelecionadaId(null);
-    setOrigemSelecionadaId(null);
-  };
-
-  const abrirSimulador = () => {
-    setPaginaAtual('simulador');
-    setTransportadoraSelecionadaId(null);
-    setOrigemSelecionadaId(null);
-  };
-
-  const abrirImportacao = () => {
-    setPaginaAtual('importacao');
-    setTransportadoraSelecionadaId(null);
-    setOrigemSelecionadaId(null);
-  };
-
-  const abrirFormatacao = () => {
-    setPaginaAtual('formatacao');
-    setTransportadoraSelecionadaId(null);
-    setOrigemSelecionadaId(null);
-  };
-
-  const abrirTransportadora = (id) => {
-    setPaginaAtual('transportadoras');
-    setTransportadoraSelecionadaId(id);
-    setOrigemSelecionadaId(null);
-  };
-
-  const abrirOrigem = (id) => setOrigemSelecionadaId(id);
-
-  const voltarTransportadoras = () => {
-    if (origemSelecionadaId) return setOrigemSelecionadaId(null);
-    if (transportadoraSelecionadaId) return setTransportadoraSelecionadaId(null);
-    setPaginaAtual('dashboard');
-  };
-
   let content = null;
   if (paginaAtual === 'dashboard') {
     content = (
       <DashboardPage
         transportadoras={transportadorasMemo}
-        onAbrirSimulador={abrirSimulador}
-        onAbrirTransportadoras={abrirTransportadoras}
-        onAbrirImportacao={abrirImportacao}
+        onAbrirSimulador={() => setPaginaAtual('simulador')}
+        onAbrirTransportadoras={() => setPaginaAtual('transportadoras')}
+        onAbrirImportacao={() => setPaginaAtual('importacao')}
         onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
         onAtualizarBase={store.carregarDoBanco}
@@ -68,28 +30,18 @@ export default function App() {
       />
     );
   }
-
-  if (paginaAtual === 'simulador') {
-    content = <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
-  }
-
-  if (paginaAtual === 'importacao') {
-    content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
-  }
-
-  if (paginaAtual === 'formatacao') {
-    content = <FormatacaoPage store={store} transportadoras={transportadorasMemo} />;
-  }
-
+  if (paginaAtual === 'simulador') content = <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={() => setPaginaAtual('transportadoras')} />;
+  if (paginaAtual === 'importacao') content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={() => setPaginaAtual('transportadoras')} />;
+  if (paginaAtual === 'formatacao') content = <FormatacaoPage store={store} transportadoras={transportadorasMemo} />;
   if (paginaAtual === 'transportadoras') {
     content = (
       <TransportadorasPage
         transportadoras={transportadorasMemo}
         transportadoraSelecionadaId={transportadoraSelecionadaId}
         origemSelecionadaId={origemSelecionadaId}
-        onOpenTransportadora={abrirTransportadora}
-        onOpenOrigem={abrirOrigem}
-        onVoltar={voltarTransportadoras}
+        onOpenTransportadora={setTransportadoraSelecionadaId}
+        onOpenOrigem={setOrigemSelecionadaId}
+        onVoltar={() => setPaginaAtual('dashboard')}
         store={store}
       />
     );
@@ -97,16 +49,7 @@ export default function App() {
 
   return (
     <div className="app-layout">
-      <Sidebar
-        paginaAtual={paginaAtual}
-        onMudarPagina={(pagina) => {
-          setPaginaAtual(pagina);
-          if (pagina !== 'transportadoras') {
-            setTransportadoraSelecionadaId(null);
-            setOrigemSelecionadaId(null);
-          }
-        }}
-      />
+      <Sidebar paginaAtual={paginaAtual} onMudarPagina={setPaginaAtual} />
       <main className="app-content">{content}</main>
     </div>
   );
