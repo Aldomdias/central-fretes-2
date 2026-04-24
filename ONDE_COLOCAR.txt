@@ -3,9 +3,10 @@ Extraia este ZIP na raiz do projeto.
 Arquivo incluído:
 - central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
 
-Correções desta versão:
-- botão 'Importar e formatar automaticamente' agora sai da tela inicial
-- botão 'Usar modelo criado na ferramenta' agora sai da tela inicial
-- mantém origem antes do template
-- mantém botão para baixar modelo de Rotas e Fretes
-- mantém modelo de Fretes com CAPITAL + INTERIOR 1 até INTERIOR 9
+Esta versão separa corretamente os dois fluxos:
+1. Importar template preenchido
+2. Preencher manualmente pela plataforma
+
+E mantém, nos dois fluxos:
+- Gerar os 2 arquivos
+- Incluir na transportadora
