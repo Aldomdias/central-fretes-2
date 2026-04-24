@@ -1,7 +1,10 @@
 Extraia este ZIP na raiz do projeto.
 
 Arquivos:
-- central-fretes-2-Melhoria-importa-o/src/utils/importadorTabelaPronta.js
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.IMPORTADOR_MODELO_PATCH.txt
+- central-fretes-2-Melhoria-importa-o/src/utils/importadorTemplatePadrao.js
+- central-fretes-2-Melhoria-importa-o/src/components/formatacao/EntradaFormatacaoTemplate.jsx
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoTabelasPage.NOVA_ENTRADA_PATCH.txt
 
-Este pacote é focado apenas no importador do modelo padrão com abas Rotas e Fretes.
+Este pacote muda a entrada da tela de Formatação para 2 opções:
+1. Enviar template padrão
+2. Usar modelo criado na ferramenta
