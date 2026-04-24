@@ -2,10 +2,9 @@ Extraia este ZIP na raiz do projeto.
 
 Arquivos:
 - central-fretes-2-Melhoria-importa-o/src/utils/ibgeBase.js
-- central-fretes-2-Melhoria-importa-o/supabase/ibge_schema.sql
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.IBGE_PATCH.txt
+- central-fretes-2-Melhoria-importa-o/src/utils/modelosTemplateFormatacao.js
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.IBGE_E_MODELO_PATCH.txt
 
-Este pacote:
-- restaura a base IBGE
-- corrige o caso da cidade Serra
-- reabilita a alimentação automática de UF e IBGE por cidade
+Este pacote resolve junto:
+- IBGE automático pela cidade de origem
+- botões para baixar o modelo exato do template
