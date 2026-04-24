@@ -1,12 +1,10 @@
 Extraia este ZIP na raiz do projeto.
 
-Arquivos:
-- central-fretes-2-Melhoria-importa-o/src/App.jsx
-- central-fretes-2-Melhoria-importa-o/src/components/Sidebar.jsx
+Arquivo incluído:
 - central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
 
-Este pacote força no arquivo real:
-- botão para baixar modelo de Rotas
-- botão para baixar modelo de Fretes
-- preenchimento automático de UF e IBGE da origem
-- caso Serra -> ES -> 3205002
+Ajustes desta versão:
+- origem vem antes do template padrão
+- UF e IBGE da origem são preenchidos automaticamente
+- botões para baixar modelo de Rotas e Fretes
+- modelos do template saem sem origem, pois a origem vem da tela
