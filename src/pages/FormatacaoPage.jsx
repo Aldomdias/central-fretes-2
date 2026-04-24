@@ -37,12 +37,39 @@ function baixarModeloTemplateRotasSemOrigem() {
   }]);
 }
 
+function linhaFreteModelo(ufDestino, faixaPeso, valor, adValorem) {
+  return {
+    'UF DESTINO': ufDestino,
+    'FAIXA PESO': faixaPeso,
+    'CAPITAL Frete kg (R$)': valor,
+    'CAPITAL Ad Valorem(%)': adValorem,
+    'INTERIOR 1 Frete kg (R$)': valor,
+    'INTERIOR 1 Ad Valorem(%)': adValorem,
+    'INTERIOR 2 Frete kg (R$)': '',
+    'INTERIOR 2 Ad Valorem(%)': '',
+    'INTERIOR 3 Frete kg (R$)': '',
+    'INTERIOR 3 Ad Valorem(%)': '',
+    'INTERIOR 4 Frete kg (R$)': '',
+    'INTERIOR 4 Ad Valorem(%)': '',
+    'INTERIOR 5 Frete kg (R$)': '',
+    'INTERIOR 5 Ad Valorem(%)': '',
+    'INTERIOR 6 Frete kg (R$)': '',
+    'INTERIOR 6 Ad Valorem(%)': '',
+    'INTERIOR 7 Frete kg (R$)': '',
+    'INTERIOR 7 Ad Valorem(%)': '',
+    'INTERIOR 8 Frete kg (R$)': '',
+    'INTERIOR 8 Ad Valorem(%)': '',
+    'INTERIOR 9 Frete kg (R$)': '',
+    'INTERIOR 9 Ad Valorem(%)': '',
+  };
+}
+
 function baixarModeloTemplateFretesSemOrigem() {
   baixarWorkbook('Fretes-modelo-template.xlsx', [{
     name: 'Fretes',
     rows: [
-      { 'UF DESTINO': 'PR', 'FAIXA PESO': '0 a 10 kg', 'CAPITAL Frete kg (R$)': 80, 'CAPITAL Ad Valorem(%)': 0.03, 'INTERIOR 1 Frete kg (R$)': 80, 'INTERIOR 1 Ad Valorem(%)': 0.03 },
-      { 'UF DESTINO': 'PR', 'FAIXA PESO': 'Acima de 300 kg (KG excedente)', 'CAPITAL Frete kg (R$)': 0.95, 'CAPITAL Ad Valorem(%)': 0.03, 'INTERIOR 1 Frete kg (R$)': 0.95, 'INTERIOR 1 Ad Valorem(%)': 0.03 },
+      linhaFreteModelo('PR', '0 a 10 kg', 80, 0.03),
+      linhaFreteModelo('PR', 'Acima de 300 kg (KG excedente)', 0.95, 0.03),
     ],
   }]);
 }

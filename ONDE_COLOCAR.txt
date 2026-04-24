@@ -3,8 +3,6 @@ Extraia este ZIP na raiz do projeto.
 Arquivo incluído:
 - central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
 
-Ajustes desta versão:
-- origem vem antes do template padrão
-- UF e IBGE da origem são preenchidos automaticamente
-- botões para baixar modelo de Rotas e Fretes
-- modelos do template saem sem origem, pois a origem vem da tela
+Ajuste desta versão:
+- modelo de Fretes agora vem com colunas até INTERIOR 9
+- fica fácil colar em cima quando a tabela usar essas opções
