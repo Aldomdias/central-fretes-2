@@ -15,13 +15,19 @@ export default function App() {
 
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
 
+  const abrirTransportadoras = () => {
+    setPaginaAtual('transportadoras');
+    setTransportadoraSelecionadaId(null);
+    setOrigemSelecionadaId(null);
+  };
+
   let content = null;
   if (paginaAtual === 'dashboard') {
     content = (
       <DashboardPage
         transportadoras={transportadorasMemo}
         onAbrirSimulador={() => setPaginaAtual('simulador')}
-        onAbrirTransportadoras={() => setPaginaAtual('transportadoras')}
+        onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={() => setPaginaAtual('importacao')}
         onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
@@ -30,9 +36,19 @@ export default function App() {
       />
     );
   }
-  if (paginaAtual === 'simulador') content = <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={() => setPaginaAtual('transportadoras')} />;
-  if (paginaAtual === 'importacao') content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={() => setPaginaAtual('transportadoras')} />;
-  if (paginaAtual === 'formatacao') content = <FormatacaoPage store={store} transportadoras={transportadorasMemo} />;
+
+  if (paginaAtual === 'simulador') {
+    content = <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
+  }
+
+  if (paginaAtual === 'importacao') {
+    content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
+  }
+
+  if (paginaAtual === 'formatacao') {
+    content = <FormatacaoPage store={store} transportadoras={transportadorasMemo} />;
+  }
+
   if (paginaAtual === 'transportadoras') {
     content = (
       <TransportadorasPage
@@ -49,7 +65,16 @@ export default function App() {
 
   return (
     <div className="app-layout">
-      <Sidebar paginaAtual={paginaAtual} onMudarPagina={setPaginaAtual} />
+      <Sidebar
+        paginaAtual={paginaAtual}
+        onMudarPagina={(pagina) => {
+          setPaginaAtual(pagina);
+          if (pagina !== 'transportadoras') {
+            setTransportadoraSelecionadaId(null);
+            setOrigemSelecionadaId(null);
+          }
+        }}
+      />
       <main className="app-content">{content}</main>
     </div>
   );

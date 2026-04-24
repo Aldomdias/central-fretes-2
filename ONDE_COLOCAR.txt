@@ -1,10 +1,12 @@
 Extraia este ZIP na raiz do projeto.
 
 Arquivos:
-- central-fretes-2-Melhoria-importa-o/src/utils/ibgeBase.js
-- central-fretes-2-Melhoria-importa-o/src/utils/modelosTemplateFormatacao.js
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.IBGE_E_MODELO_PATCH.txt
+- central-fretes-2-Melhoria-importa-o/src/App.jsx
+- central-fretes-2-Melhoria-importa-o/src/components/Sidebar.jsx
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
 
-Este pacote resolve junto:
-- IBGE automático pela cidade de origem
-- botões para baixar o modelo exato do template
+Este pacote força no arquivo real:
+- botão para baixar modelo de Rotas
+- botão para baixar modelo de Fretes
+- preenchimento automático de UF e IBGE da origem
+- caso Serra -> ES -> 3205002

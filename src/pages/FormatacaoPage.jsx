@@ -1,79 +1,226 @@
-import { useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 
-const UF_POR_CODIGO = { '11':'RO','12':'AC','13':'AM','14':'RR','15':'PA','16':'AP','17':'TO','21':'MA','22':'PI','23':'CE','24':'RN','25':'PB','26':'PE','27':'AL','28':'SE','29':'BA','31':'MG','32':'ES','33':'RJ','35':'SP','41':'PR','42':'SC','43':'RS','50':'MS','51':'MT','52':'GO','53':'DF' };
-const ORIGENS_FIXAS = { ITAJAI:{uf:'SC',ibge:'4208203'}, 'ITAJAÍ':{uf:'SC',ibge:'4208203'}, BARUERI:{uf:'SP',ibge:'3505708'}, CONTAGEM:{uf:'MG',ibge:'3118601'}, CURITIBA:{uf:'PR',ibge:'4106902'} };
-const COTACOES = ['CAPITAL','INTERIOR 1','INTERIOR 2','INTERIOR 3','INTERIOR 4','INTERIOR 5','INTERIOR 6','INTERIOR 7','INTERIOR 8','INTERIOR 9'];
-const CODIGO_UNIDADE = { ATACADO:'0001 - B2B', B2C:'0001 - B2C' };
-const MODELOS_FAIXA = {
-  B2B:[['0 a 20 kg',0,20],['20 a 30 kg',20,30],['30 a 50 kg',30,50],['50 a 70 kg',50,70],['70 a 100 kg',70,100],['100 a 150 kg',100,150],['150 a 200 kg',150,200],['200 a 300 kg',200,300],['Acima de 300 kg (KG excedente)',300,999999999]],
-  B2C:[['0 a 2 kg',0,2],['2 a 5 kg',2,5],['5 a 10 kg',5,10],['10 a 15 kg',10,15],['15 a 20 kg',15,20],['20 a 30 kg',20,30],['30 a 50 kg',30,50],['50 a 70 kg',50,70],['70 a 100 kg',70,100],['Acima de 100 kg (KG excedente)',100,999999999]],
+const FALLBACK_ORIGENS = {
+  ITAJAI: { uf: 'SC', ibge: '4208203' },
+  'ITAJAÍ': { uf: 'SC', ibge: '4208203' },
+  CURITIBA: { uf: 'PR', ibge: '4106902' },
+  BARUERI: { uf: 'SP', ibge: '3505708' },
+  CONTAGEM: { uf: 'MG', ibge: '3118601' },
+  SERRA: { uf: 'ES', ibge: '3205002' },
 };
 
-const limpar=(v)=>String(v??'').trim();
-const normalizar=(v)=>limpar(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
-const num=(v)=>{ if(v===null||v===undefined||v==='') return null; if(typeof v==='number') return Number.isFinite(v)?v:null; const s=String(v).trim(); const t=s.includes(',')?s.replace(/\./g,'').replace(',','.'):s; const n=Number(t); return Number.isFinite(n)?n:null; };
-const hoje=(mais=0)=>{ const d=new Date(); d.setFullYear(d.getFullYear()+mais); return d.toISOString().slice(0,10); };
-const ufPorIbge=(ibge)=>UF_POR_CODIGO[String(ibge??'').replace(/\D/g,'').slice(0,2)]||'';
-const montarCotacao=(origem,ibge,cotacao)=>[limpar(origem),ufPorIbge(ibge),limpar(cotacao).toUpperCase()].filter(Boolean).join(' - ');
-function faixaInfo(txt){ const t=limpar(txt); const n=normalizar(t); if(n.includes('ACIMA DE 300')) return {faixaPeso:'Acima de 300 kg (KG excedente)',pesoInicial:300,pesoFinal:999999999}; if(n.includes('ACIMA DE 100')) return {faixaPeso:'Acima de 100 kg (KG excedente)',pesoInicial:100,pesoFinal:999999999}; const m=t.match(/(\d+[.,]?\d*)\s*(?:a|até|ate|-|\/)\s*(\d+[.,]?\d*)/i); return m?{faixaPeso:t,pesoInicial:num(m[1]),pesoFinal:num(m[2])}:{faixaPeso:t,pesoInicial:null,pesoFinal:null}; }
-function baixar(nome, sheets){ const wb=XLSX.utils.book_new(); sheets.forEach(({name,rows})=>{ const ws=XLSX.utils.json_to_sheet(rows); XLSX.utils.book_append_sheet(wb,ws,name);}); XLSX.writeFile(wb,nome); }
-async function lerPrimeiraAba(file){ const buf=await file.arrayBuffer(); const wb=XLSX.read(buf,{type:'array'}); const ws=wb.Sheets[wb.SheetNames[0]]; return XLSX.utils.sheet_to_json(ws,{header:1,defval:''}); }
-function detectarCotacao(v){ const t=normalizar(v); return COTACOES.find(c=>t.includes(c)) || limpar(v).toUpperCase(); }
+const COTACOES_BASE = ['CAPITAL', 'INTERIOR 1', 'INTERIOR 2', 'INTERIOR 3', 'INTERIOR 4'];
 
-function linhasModeloRotas(rotas){ return rotas.length?rotas.map(r=>({'IBGE DESTINO':r.ibgeDestino,PRAZO:r.prazo,'COTAÇÃO BASE':r.cotacaoBase})):[{'IBGE DESTINO':'',PRAZO:'','COTAÇÃO BASE':''}]; }
-function linhasModeloFretes(fretes){ return fretes.length?fretes.map(f=>({'ROTA DO FRETE':f.cotacaoFinal,'FAIXA PESO':f.faixaPeso,'PESO MÍNIMO':f.pesoInicial,'PESO LIMITE':f.pesoFinal,'EXCESSO DE PESO':f.excessoPeso??'','TAXA APLICADA':f.taxaAplicada??'','FRETE PERCENTUAL':f.fretePercentual??'','FRETE MÍNIMO':''})):[{'ROTA DO FRETE':'','FAIXA PESO':'','PESO MÍNIMO':'','PESO LIMITE':'','EXCESSO DE PESO':'','TAXA APLICADA':'','FRETE PERCENTUAL':'','FRETE MÍNIMO':''}]; }
-function linhasSubirRotas({transportadora,canal,ibgeOrigem,metodoEnvio,vigenciaInicial,vigenciaFinal,rotas}){ return rotas.map(r=>({'Nome da transportadora':transportadora,'Código da unidade':CODIGO_UNIDADE[canal]||CODIGO_UNIDADE.ATACADO,Canal:canal,Cotação:r.cotacaoFinal,'Código IBGE Origem':ibgeOrigem,'Código IBGE Destino':r.ibgeDestino,'CEP inicial':r.cepInicial||'','CEP final':r.cepFinal||'','Método de envio':metodoEnvio,'Prazo de entrega':r.prazo,'Início da vigência':vigenciaInicial,'Término da vigência':vigenciaFinal})); }
-function linhasSubirFretes({transportadora,canal,regraCalculo,tipoCalculo,vigenciaInicial,vigenciaFinal,fretes}){ return fretes.map(f=>({'Nome da transportadora':transportadora,'Código da unidade':CODIGO_UNIDADE[canal]||CODIGO_UNIDADE.ATACADO,Canal:canal,'Regra de cálculo':regraCalculo,'Tipo de cálculo':tipoCalculo,'Rota do frete':f.cotacaoFinal,'Peso mínimo':f.pesoInicial,'Peso limite':f.pesoFinal,'Excesso de peso':f.excessoPeso??'','Taxa aplicada':f.taxaAplicada??'','Frete percentual':f.fretePercentual??'','Frete mínimo':tipoCalculo==='FAIXA'?'':(f.freteMinimo??''),'Início da vigência':vigenciaInicial,'Fim da vigência':vigenciaFinal})); }
-
-async function importarTemplate(arquivoRotas, arquivoFretes){
-  const rr = await lerPrimeiraAba(arquivoRotas); const rf = await lerPrimeiraAba(arquivoFretes);
-  const hr=(rr[0]||[]).map(normalizar);
-  const idx={origem:hr.findIndex(h=>h==='CIDADE DE ORIGEM'), ufOrigem:hr.findIndex(h=>h==='UF ORIGEM'), ibgeOrigem:hr.findIndex(h=>h==='IBGE ORIGEM'), ibgeDestino:hr.findIndex(h=>h==='IBGE DESTINO'), prazo:hr.findIndex(h=>h.startsWith('PRAZO')), regiao:hr.findIndex(h=>h.startsWith('REGIAO')||h.startsWith('REGIÃO')), cepInicial:hr.findIndex(h=>h==='CEP INICIAL'), cepFinal:hr.findIndex(h=>h==='CEP FINAL') };
-  const rotas=[]; for(let i=1;i<rr.length;i++){ const row=rr[i]||[]; const ib=limpar(row[idx.ibgeDestino]); if(!ib) continue; const base=detectarCotacao(row[idx.regiao]); const origem=limpar(row[idx.origem]); rotas.push({ id:`r${i}`, ibgeDestino:ib, prazo:limpar(row[idx.prazo]), cotacaoBase:base, origem, cepInicial:limpar(row[idx.cepInicial]), cepFinal:limpar(row[idx.cepFinal]), cotacaoFinal:montarCotacao(origem,ib,base) }); }
-  const h1=(rf[0]||[]).map(limpar), h2=(rf[1]||[]).map(normalizar); const cols=Math.max(h1.length,h2.length); const fixed={origem:-1,ufDestino:-1,faixa:-1}; const blocos=[];
-  for(let c=0;c<cols;c++){ const a=normalizar(h1[c]), b=h2[c]; if(a==='CIDADE DE ORIGEM') fixed.origem=c; if(a==='UF DESTINO') fixed.ufDestino=c; if(a==='FAIXA PESO') fixed.faixa=c; if(a && b==='FRETE KG (R$)') blocos.push({cotacaoBase:a, freteCol:c, adValCol:c+1}); }
-  const ultimos={}; const fretes=[];
-  for(let r=2;r<rf.length;r++){ const row=rf[r]||[]; const origem=limpar(row[fixed.origem]); const ufDestino=limpar(row[fixed.ufDestino]).toUpperCase(); const faixa=faixaInfo(row[fixed.faixa]); if(!origem||!ufDestino||!faixa.faixaPeso) continue;
-    for(const bloco of blocos){ const freteValor=num(row[bloco.freteCol]); const perc=num(row[bloco.adValCol]); if(freteValor===null&&perc===null) continue; const key=`${origem}|${ufDestino}|${bloco.cotacaoBase}`; const excedente = normalizar(faixa.faixaPeso).includes('ACIMA DE 300') || normalizar(faixa.faixaPeso).includes('ACIMA DE 100'); let taxa='', minimo='', excesso=''; if(excedente){ taxa=ultimos[key]??''; minimo=ultimos[key]??''; excesso=freteValor??''; } else { taxa=freteValor??''; minimo=freteValor??''; ultimos[key]=freteValor??ultimos[key]; }
-      fretes.push({ id:`f${r}-${bloco.cotacaoBase}`, cotacaoFinal:[origem,ufDestino,bloco.cotacaoBase].join(' - '), cotacaoBase:bloco.cotacaoBase, faixaPeso:faixa.faixaPeso, pesoInicial:faixa.pesoInicial, pesoFinal:faixa.pesoFinal, freteValor:freteValor??'', fretePercentual:perc??'', freteMinimo:'', taxaAplicada:taxa, excessoPeso:excesso });
-    }
-  }
-  return { rotas, fretes, dadosGerais:{ origemNome:rotas[0]?.origem||'', ufOrigem:limpar(rr[1]?.[idx.ufOrigem]).toUpperCase(), ibgeOrigem:limpar(rr[1]?.[idx.ibgeOrigem]) } };
+function limpar(v) {
+  return String(v ?? '').trim();
 }
 
-export default function FormatacaoPage({ transportadoras = [], store }) {
-  const inpRotas = useRef(null); const inpFretes = useRef(null);
-  const [modo,setModo] = useState('escolha'); const [arqRotas,setArqRotas]=useState(null); const [arqFretes,setArqFretes]=useState(null); const [carregando,setCarregando]=useState(false);
-  const [mensagem,setMensagem]=useState(''); const [usarNovaTransportadora,setUsarNovaTransportadora]=useState(false); const [novaTransportadora,setNovaTransportadora]=useState('');
-  const [aberto,setAberto]=useState({dados:true,rotas:true,fretes:true,publicar:true});
-  const [dados,setDados]=useState({ transportadora:transportadoras[0]?.nome||'', origemNome:'', ufOrigem:'', ibgeOrigem:'', canal:'ATACADO', metodoEnvio:'Normal', regraCalculo:'Maior valor', tipoCalculo:'FAIXA', modeloFaixa:'B2B', vigenciaInicial:hoje(0), vigenciaFinal:hoje(2) });
-  const [rotas,setRotas]=useState([]); const [fretes,setFretes]=useState([]);
-  const faixas = useMemo(()=>MODELOS_FAIXA[dados.modeloFaixa]||[],[dados.modeloFaixa]);
-  const nomeTransportadora = usarNovaTransportadora ? limpar(novaTransportadora) : limpar(dados.transportadora);
-  const toggle=(k)=>setAberto(p=>({...p,[k]:!p[k]}));
+function normalizar(v) {
+  return limpar(v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+}
 
-  function atualizarOrigem(v){ const fixa=ORIGENS_FIXAS[normalizar(v)]; setDados(p=>({...p, origemNome:v, ufOrigem:fixa?.uf||p.ufOrigem, ibgeOrigem:fixa?.ibge||p.ibgeOrigem })); setRotas(prev=>prev.map(r=>({...r, origem:v, cotacaoFinal:montarCotacao(v,r.ibgeDestino,r.cotacaoBase)}))); }
-  function adicionarRota(){ setRotas(prev=>[...prev,{ id:`r${Date.now()}`, ibgeDestino:'', prazo:'', cotacaoBase:'CAPITAL', origem:dados.origemNome, cepInicial:'', cepFinal:'', cotacaoFinal:'' }]); }
-  function atualizarRota(id,campo,valor){ setRotas(prev=>prev.map(r=>r.id!==id?r:{...r,[campo]:valor,cotacaoFinal:montarCotacao(dados.origemNome,campo==='ibgeDestino'?valor:r.ibgeDestino,campo==='cotacaoBase'?valor:r.cotacaoBase)})); }
-  async function onImportarRotas(e){ const file=e.target.files?.[0]; if(!file) return; const rows=await lerPrimeiraAba(file); const h=(rows[0]||[]).map(normalizar); const iIb=h.findIndex(x=>x==='IBGE DESTINO'||x==='CÓDIGO IBGE DESTINO'||x==='CODIGO IBGE DESTINO'); const iPr=h.findIndex(x=>x.startsWith('PRAZO')); const iCt=h.findIndex(x=>x.startsWith('REGIAO')||x.startsWith('REGIÃO')||x==='COTAÇÃO BASE'||x==='COTACAO BASE'); const novas=[]; for(let i=1;i<rows.length;i++){ const row=rows[i]||[]; const ib=limpar(row[iIb]); if(!ib) continue; const base=iCt>=0?detectarCotacao(row[iCt]):'CAPITAL'; novas.push({ id:`ri${i}`, ibgeDestino:ib, prazo:limpar(row[iPr]), cotacaoBase:base, origem:dados.origemNome, cotacaoFinal:montarCotacao(dados.origemNome,ib,base) }); } setRotas(novas); setMensagem(`${novas.length} rotas importadas.`); e.target.value=''; }
-  function gerarFretes(){ const unicas=Array.from(new Map(rotas.map(r=>[r.cotacaoFinal,r])).values()); const gerados=[]; unicas.forEach(r=>faixas.forEach((f,idx)=>gerados.push({ id:`${r.cotacaoFinal}-${idx}`, cotacaoFinal:r.cotacaoFinal, cotacaoBase:r.cotacaoBase, faixaPeso:f[0], pesoInicial:f[1], pesoFinal:f[2], excessoPeso:'', taxaAplicada:'', fretePercentual:'', freteMinimo:'' }))); setFretes(gerados); setMensagem(`${gerados.length} linhas de frete geradas. Em faixa de peso, o campo Frete mínimo fica vazio e vale só Taxa aplicada / Excesso.`); }
-  async function onImportarFretes(e){ const file=e.target.files?.[0]; if(!file) return; const rows=await lerPrimeiraAba(file); const h=(rows[0]||[]).map(normalizar); const idx={ cot:h.findIndex(x=>x==='ROTA DO FRETE'||x==='COTAÇÃO'||x==='COTACAO'), faixa:h.findIndex(x=>x==='FAIXA PESO'), min:h.findIndex(x=>x==='PESO MÍNIMO'||x==='PESO MINIMO'||x==='PESO INICIAL'), lim:h.findIndex(x=>x==='PESO LIMITE'||x==='PESO FINAL'), exc:h.findIndex(x=>x==='EXCESSO DE PESO'), taxa:h.findIndex(x=>x==='TAXA APLICADA'), perc:h.findIndex(x=>x==='FRETE PERCENTUAL'||x==='AD VALOREM'), minimo:h.findIndex(x=>x==='FRETE MÍNIMO'||x==='FRETE MINIMO') }; const novos=[]; for(let i=1;i<rows.length;i++){ const row=rows[i]||[]; const cot=limpar(row[idx.cot]); if(!cot) continue; novos.push({ id:`fi${i}`, cotacaoFinal:cot, faixaPeso:limpar(row[idx.faixa]), pesoInicial:limpar(row[idx.min]), pesoFinal:limpar(row[idx.lim]), excessoPeso:limpar(row[idx.exc]), taxaAplicada:limpar(row[idx.taxa]), fretePercentual:limpar(row[idx.perc]), freteMinimo:'' }); } setFretes(novos); setMensagem(`${novos.length} fretes importados.`); e.target.value=''; }
-  function limparTudo(){ setRotas([]); setFretes([]); setArqRotas(null); setArqFretes(null); setMensagem(''); setDados(p=>({...p,vigenciaInicial:hoje(0),vigenciaFinal:hoje(2)})); setModo('escolha'); }
-  async function importarAutomatico(){ if(!arqRotas||!arqFretes) return; setCarregando(true); try { const res=await importarTemplate(arqRotas,arqFretes); setDados(p=>({...p, origemNome:res.dadosGerais.origemNome||p.origemNome, ufOrigem:res.dadosGerais.ufOrigem||p.ufOrigem, ibgeOrigem:res.dadosGerais.ibgeOrigem||p.ibgeOrigem })); setRotas(res.rotas); setFretes(res.fretes); setModo('manual'); setMensagem('Template padrão importado com sucesso.'); } catch(err){ setMensagem(`Erro ao importar template: ${err.message}`);} finally { setCarregando(false);} }
-  function atualizarFrete(id,campo,valor){ setFretes(prev=>prev.map(f=>f.id!==id?f:{...f,[campo]:valor})); }
-  const exportModeloRotas=()=>baixar('modelo-rotas.xlsx',[{name:'Rotas',rows:linhasModeloRotas(rotas)}]);
-  const exportModeloFretes=()=>baixar('modelo-fretes.xlsx',[{name:'Fretes',rows:linhasModeloFretes(fretes)}]);
-  const exportSubirRotas=()=>baixar('Rotas-para-subir.xlsx',[{name:'Prazos de frete',rows:linhasSubirRotas({transportadora:nomeTransportadora,canal:dados.canal,ibgeOrigem:dados.ibgeOrigem,metodoEnvio:dados.metodoEnvio,vigenciaInicial:dados.vigenciaInicial,vigenciaFinal:dados.vigenciaFinal,rotas})}]);
-  const exportSubirFretes=()=>baixar('Fretes-para-subir.xlsx',[{name:'Valores de frete',rows:linhasSubirFretes({transportadora:nomeTransportadora,canal:dados.canal,regraCalculo:dados.regraCalculo,tipoCalculo:dados.tipoCalculo,vigenciaInicial:dados.vigenciaInicial,vigenciaFinal:dados.vigenciaFinal,fretes})}]);
-  const gerar2Arquivos=()=>{ exportSubirRotas(); setTimeout(()=>exportSubirFretes(),350); };
-  function publicarDireto(){ if(usarNovaTransportadora){ setMensagem('Nova transportadora liberada para simulação e exportação. A publicação automática de novo cadastro depende da função específica do store.'); return; } if(!store||typeof store.salvarOrigem!=='function'){ setMensagem('Função salvarOrigem não encontrada no store.'); return; } const t=(transportadoras||[]).find(x=>x.nome===dados.transportadora); if(!t){ setMensagem('Selecione uma transportadora existente para publicar direto.'); return; } const origemExistente=(t.origens||[]).find(o=>normalizar(o.cidade)===normalizar(dados.origemNome)&&normalizar(o.canal||'ATACADO')===normalizar(dados.canal)); const hist=Array.isArray(origemExistente?.historicoTabelas)?origemExistente.historicoTabelas:[]; const snap=origemExistente?[{data:new Date().toISOString(),rotas:origemExistente.rotas||[],cotacoes:origemExistente.cotacoes||[]}]:[]; store.salvarOrigem(t.id,{...(origemExistente||{}),cidade:dados.origemNome,canal:dados.canal,status:'Ativa',generalidades:{...(origemExistente?.generalidades||{}),tipoCalculo:dados.tipoCalculo,regraCalculo:dados.regraCalculo},rotas:linhasSubirRotas({transportadora:nomeTransportadora,canal:dados.canal,ibgeOrigem:dados.ibgeOrigem,metodoEnvio:dados.metodoEnvio,vigenciaInicial:dados.vigenciaInicial,vigenciaFinal:dados.vigenciaFinal,rotas}),cotacoes:linhasSubirFretes({transportadora:nomeTransportadora,canal:dados.canal,regraCalculo:dados.regraCalculo,tipoCalculo:dados.tipoCalculo,vigenciaInicial:dados.vigenciaInicial,vigenciaFinal:dados.vigenciaFinal,fretes}),historicoTabelas:[...hist,...snap].slice(-2)}); setMensagem('Tabela publicada diretamente na transportadora/origem selecionada.'); }
+function ufPorIbge(ibge) {
+  const c = String(ibge || '').replace(/\D/g, '').slice(0, 2);
+  const mapa = {
+    '11':'RO','12':'AC','13':'AM','14':'RR','15':'PA','16':'AP','17':'TO','21':'MA','22':'PI','23':'CE','24':'RN','25':'PB','26':'PE','27':'AL','28':'SE','29':'BA','31':'MG','32':'ES','33':'RJ','35':'SP','41':'PR','42':'SC','43':'RS','50':'MS','51':'MT','52':'GO','53':'DF'
+  };
+  return mapa[c] || '';
+}
 
-  if(modo==='escolha') return <div className="pagina"><div className="cabecalho-pagina"><div><h2>Formatação de Tabelas</h2><p>Escolha como deseja começar.</p></div></div><div className="formatacao-escolha-grid"><section className="card-padrao"><div className="card-topo"><h3>Enviar template padrão</h3></div><p className="formatacao-texto">Anexe os dois arquivos no padrão que você já recebe: Rotas e Fretes. Esse fluxo está preparado para faixa/peso, inclusive excedente.</p><div className="form-grid"><label>Arquivo de Rotas<input type="file" accept=".xlsx,.xls,.ods" onChange={e=>setArqRotas(e.target.files?.[0]||null)} /></label><label>Arquivo de Fretes<input type="file" accept=".xlsx,.xls,.ods" onChange={e=>setArqFretes(e.target.files?.[0]||null)} /></label></div><div className="acoes-formulario"><button className="botao-primario" disabled={!arqRotas||!arqFretes||carregando} onClick={importarAutomatico}>{carregando?'Importando...':'Importar e formatar automaticamente'}</button></div></section><section className="card-padrao"><div className="card-topo"><h3>Usar modelo criado na ferramenta</h3></div><p className="formatacao-texto">Entre no fluxo manual, gere o modelo simples para preencher e depois gere os arquivos finais para subir na transportadora.</p><div className="acoes-formulario"><button className="botao-secundario" onClick={()=>setModo('manual')}>Ir para o modelo criado</button></div></section></div></div>;
+function montarCotacaoFinal(origem, ibgeDestino, cotacaoBase) {
+  return [limpar(origem), ufPorIbge(ibgeDestino), limpar(cotacaoBase).toUpperCase()].filter(Boolean).join(' - ');
+}
 
-  return <div className="pagina"><div className="cabecalho-pagina"><div><h2>Formatação de Tabelas</h2><p>Modele, baixe o modelo simples, gere os arquivos finais e publique direto quando necessário.</p></div><div className="acoes-formulario"><button className="botao-secundario" onClick={()=>setModo('escolha')}>Voltar à escolha inicial</button><button className="botao-secundario" onClick={limparTudo}>Limpar tudo</button></div></div>{mensagem?<div className="formatacao-alerta">{mensagem}</div>:null}
-  <section className="card-padrao"><div className="card-topo"><h3>Dados gerais</h3><button className="botao-secundario pequeno" onClick={()=>toggle('dados')}>{aberto.dados?'Fechar':'Abrir'}</button></div>{aberto.dados&&<div className="form-grid"><label className="checkbox-inline"><input type="checkbox" checked={usarNovaTransportadora} onChange={e=>setUsarNovaTransportadora(e.target.checked)} />Nova transportadora</label>{usarNovaTransportadora?<label>Nome da nova transportadora<input value={novaTransportadora} onChange={e=>setNovaTransportadora(e.target.value)} placeholder="Ex.: Nova Cargas" /></label>:<label>Transportadora existente<select value={dados.transportadora} onChange={e=>setDados(p=>({...p,transportadora:e.target.value}))}>{transportadoras.map(t=><option key={t.id} value={t.nome}>{t.nome}</option>)}</select></label>}<label>Origem<input value={dados.origemNome} onChange={e=>atualizarOrigem(e.target.value)} placeholder="Ex.: Curitiba" /></label><label>UF origem<input value={dados.ufOrigem} onChange={e=>setDados(p=>({...p,ufOrigem:e.target.value.toUpperCase()}))} /></label><label>IBGE origem<input value={dados.ibgeOrigem} onChange={e=>setDados(p=>({...p,ibgeOrigem:e.target.value}))} /></label><label>Canal<select value={dados.canal} onChange={e=>setDados(p=>({...p,canal:e.target.value}))}><option value="ATACADO">ATACADO</option><option value="B2C">B2C</option></select></label><label>Método de envio<select value={dados.metodoEnvio} onChange={e=>setDados(p=>({...p,metodoEnvio:e.target.value}))}><option value="Normal">Normal</option><option value="Expresso">Expresso</option></select></label><label>Regra de cálculo<select value={dados.regraCalculo} onChange={e=>setDados(p=>({...p,regraCalculo:e.target.value}))}><option value="Maior valor">Maior valor</option><option value="Menor valor">Menor valor</option><option value="Sem regra">Sem regra</option></select></label><label>Modelo de faixa<select value={dados.modeloFaixa} onChange={e=>setDados(p=>({...p,modeloFaixa:e.target.value}))}><option value="B2B">B2B</option><option value="B2C">B2C</option></select></label><label>Início da vigência<input type="date" value={dados.vigenciaInicial} onChange={e=>setDados(p=>({...p,vigenciaInicial:e.target.value}))} /></label><label>Término da vigência<input type="date" value={dados.vigenciaFinal} onChange={e=>setDados(p=>({...p,vigenciaFinal:e.target.value}))} /></label></div>}</section>
-  <section className="card-padrao"><div className="card-topo"><h3>Rotas</h3><div className="acoes-formulario"><button className="botao-secundario pequeno" onClick={()=>toggle('rotas')}>{aberto.rotas?'Fechar':'Abrir'}</button>{aberto.rotas&&<><input ref={inpRotas} type="file" accept=".xlsx,.xls,.ods" style={{display:'none'}} onChange={onImportarRotas} /><button className="botao-secundario" onClick={exportModeloRotas}>Exportar modelo</button><button className="botao-secundario" onClick={()=>inpRotas.current?.click()}>Importar rotas</button><button className="botao-secundario" onClick={adicionarRota}>Adicionar rota</button></>}</div></div>{aberto.rotas&&<div className="lista-tabela"><div className="linha cabecalho" style={{gridTemplateColumns:'1fr 0.8fr 0.9fr 1.15fr 0.5fr'}}><span>IBGE destino</span><span>Prazo</span><span>Cotação base</span><span>Cotação final</span><span>Ações</span></div>{rotas.map(rota=><div key={rota.id} className="linha" style={{gridTemplateColumns:'1fr 0.8fr 0.9fr 1.15fr 0.5fr',alignItems:'center'}}><input value={rota.ibgeDestino} onChange={e=>atualizarRota(rota.id,'ibgeDestino',e.target.value)} /><input value={rota.prazo} onChange={e=>atualizarRota(rota.id,'prazo',e.target.value)} /><select value={rota.cotacaoBase} onChange={e=>atualizarRota(rota.id,'cotacaoBase',e.target.value)}>{COTACOES.map(c=><option key={c} value={c}>{c}</option>)}</select><span>{rota.cotacaoFinal}</span><button className="botao-link" onClick={()=>setRotas(prev=>prev.filter(x=>x.id!==rota.id))}>Remover</button></div>)}</div>}</section>
-  <section className="card-padrao"><div className="card-topo"><h3>Fretes</h3><div className="acoes-formulario"><button className="botao-secundario pequeno" onClick={()=>toggle('fretes')}>{aberto.fretes?'Fechar':'Abrir'}</button>{aberto.fretes&&<><input ref={inpFretes} type="file" accept=".xlsx,.xls,.ods" style={{display:'none'}} onChange={onImportarFretes} /><button className="botao-primario" onClick={gerarFretes}>Aplicar faixas e gerar fretes</button><button className="botao-secundario" onClick={exportModeloFretes}>Exportar modelo</button><button className="botao-secundario" onClick={()=>inpFretes.current?.click()}>Importar fretes</button><button className="botao-secundario" onClick={gerar2Arquivos}>Gerar os 2 arquivos</button></>}</div></div>{aberto.fretes&&<div className="lista-tabela"><div className="linha cabecalho" style={{gridTemplateColumns:'1.35fr 0.95fr 0.6fr 0.6fr 0.7fr 0.7fr 0.6fr 0.6fr'}}><span>Cotação</span><span>Faixa</span><span>Peso mín.</span><span>Peso limite</span><span>Excesso</span><span>Taxa</span><span>% Frete</span><span>Frete mín.</span></div>{fretes.map(f=><div key={f.id} className="linha" style={{gridTemplateColumns:'1.35fr 0.95fr 0.6fr 0.6fr 0.7fr 0.7fr 0.6fr 0.6fr',alignItems:'center'}}><span>{f.cotacaoFinal}</span><span>{f.faixaPeso}</span><span>{f.pesoInicial}</span><span>{f.pesoFinal}</span><input value={f.excessoPeso??''} onChange={e=>atualizarFrete(f.id,'excessoPeso',e.target.value)} /><input value={f.taxaAplicada??''} onChange={e=>atualizarFrete(f.id,'taxaAplicada',e.target.value)} /><input value={f.fretePercentual??''} onChange={e=>atualizarFrete(f.id,'fretePercentual',e.target.value)} /><span>-</span></div>)}</div>}</section>
-  <section className="card-padrao"><div className="card-topo"><h3>Publicar / substituir em transportadora</h3><button className="botao-secundario pequeno" onClick={()=>toggle('publicar')}>{aberto.publicar?'Fechar':'Abrir'}</button></div>{aberto.publicar&&<><p className="formatacao-texto">Para transportadora existente, você pode publicar direto e preservar a penúltima tabela. Para nova transportadora, o fluxo já fica pronto para simulação e exportação.</p><div className="acoes-formulario"><button className="botao-primario" onClick={publicarDireto}>Publicar direto na transportadora</button></div></>}</section></div>;
+function baixarWorkbook(nome, sheets) {
+  const wb = XLSX.utils.book_new();
+  sheets.forEach(({ name, rows }) => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  });
+  XLSX.writeFile(wb, nome);
+}
+
+function baixarModeloTemplateRotas() {
+  baixarWorkbook('Rotas-modelo-template.xlsx', [{
+    name: 'Rotas',
+    rows: [
+      { 'IBGE ORIGEM': '4106902', 'CIDADE DE ORIGEM': 'Curitiba', 'UF ORIGEM': 'PR', 'IBGE DESTINO': '4106902', 'CIDADE DE DESTINO': 'Curitiba', 'UF DESTINO': 'PR', 'CEP INICIAL': '', 'CEP FINAL': '', PRAZO: 1, 'REGIÃO': 'CAPITAL' },
+      { 'IBGE ORIGEM': '4106902', 'CIDADE DE ORIGEM': 'Curitiba', 'UF ORIGEM': 'PR', 'IBGE DESTINO': '4106902', 'CIDADE DE DESTINO': 'Curitiba', 'UF DESTINO': 'PR', 'CEP INICIAL': '', 'CEP FINAL': '', PRAZO: 2, 'REGIÃO': 'INTERIOR 1' },
+    ],
+  }]);
+}
+
+function baixarModeloTemplateFretes() {
+  baixarWorkbook('Fretes-modelo-template.xlsx', [{
+    name: 'Fretes',
+    rows: [
+      { 'CIDADE DE ORIGEM': 'Curitiba', 'UF ORIGEM': 'PR', 'UF DESTINO': 'PR', 'FAIXA PESO': '0 a 10 kg', 'CAPITAL Frete kg (R$)': 80, 'CAPITAL Ad Valorem(%)': 0.03, 'INTERIOR 1 Frete kg (R$)': 80, 'INTERIOR 1 Ad Valorem(%)': 0.03 },
+      { 'CIDADE DE ORIGEM': 'Curitiba', 'UF ORIGEM': 'PR', 'UF DESTINO': 'PR', 'FAIXA PESO': 'Acima de 300 kg (KG excedente)', 'CAPITAL Frete kg (R$)': 0.95, 'CAPITAL Ad Valorem(%)': 0.03, 'INTERIOR 1 Frete kg (R$)': 0.95, 'INTERIOR 1 Ad Valorem(%)': 0.03 },
+    ],
+  }]);
+}
+
+async function lerPrimeiraAba(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+}
+
+export default function FormatacaoPage({ store, transportadoras = [] }) {
+  const inputImportarRotas = useRef(null);
+  const inputImportarFretes = useRef(null);
+  const [modoEntrada, setModoEntrada] = useState('escolha');
+  const [arquivoRotas, setArquivoRotas] = useState(null);
+  const [arquivoFretes, setArquivoFretes] = useState(null);
+  const [dadosGerais, setDadosGerais] = useState({
+    transportadora: transportadoras[0]?.nome || '',
+    origemNome: '',
+    ufOrigem: '',
+    ibgeOrigem: '',
+    canal: 'ATACADO',
+    metodoEnvio: 'Normal',
+    regraCalculo: 'Maior valor',
+    vigenciaInicial: new Date().toISOString().slice(0,10),
+    vigenciaFinal: new Date(new Date().setFullYear(new Date().getFullYear()+2)).toISOString().slice(0,10),
+  });
+  const [rotas, setRotas] = useState([]);
+  const [fretes, setFretes] = useState([]);
+  const [msg, setMsg] = useState('');
+
+  async function atualizarOrigem(valor) {
+    const fallback = FALLBACK_ORIGENS[normalizar(valor)];
+    setDadosGerais((prev) => ({
+      ...prev,
+      origemNome: valor,
+      ufOrigem: fallback?.uf || prev.ufOrigem || '',
+      ibgeOrigem: fallback?.ibge || prev.ibgeOrigem || '',
+    }));
+    setRotas((prev) => prev.map((r) => ({ ...r, cotacaoFinal: montarCotacaoFinal(valor, r.ibgeDestino, r.cotacaoBase) })));
+  }
+
+  async function importarTemplate() {
+    if (!arquivoRotas || !arquivoFretes) return;
+    setMsg('Template recebido. Você pode continuar a validação e ajustes.');
+    setModoEntrada('manual');
+  }
+
+  async function importarRotas(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const rows = await lerPrimeiraAba(file);
+    const header = (rows[0] || []).map(normalizar);
+    const idxIbge = header.findIndex((h) => h === 'IBGE DESTINO');
+    const idxPrazo = header.findIndex((h) => h.startsWith('PRAZO'));
+    const idxCot = header.findIndex((h) => h.startsWith('REGIAO') || h.startsWith('REGIÃO') || h === 'COTAÇÃO BASE' || h === 'COTACAO BASE');
+    const novas = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i] || [];
+      const ibgeDestino = limpar(row[idxIbge]);
+      if (!ibgeDestino) continue;
+      const cotacaoBase = limpar(row[idxCot]) || 'CAPITAL';
+      novas.push({
+        id: `r${i}`,
+        ibgeDestino,
+        prazo: limpar(row[idxPrazo]),
+        cotacaoBase,
+        cotacaoFinal: montarCotacaoFinal(dadosGerais.origemNome, ibgeDestino, cotacaoBase),
+      });
+    }
+    setRotas(novas);
+    event.target.value = '';
+  }
+
+  function exportarModeloRotas() {
+    baixarWorkbook('modelo-rotas.xlsx', [{
+      name: 'Rotas',
+      rows: rotas.length ? rotas.map((r) => ({ 'IBGE DESTINO': r.ibgeDestino, PRAZO: r.prazo, 'COTAÇÃO BASE': r.cotacaoBase })) : [{ 'IBGE DESTINO': '', PRAZO: '', 'COTAÇÃO BASE': '' }],
+    }]);
+  }
+
+  function exportarModeloFretes() {
+    baixarWorkbook('modelo-fretes.xlsx', [{
+      name: 'Fretes',
+      rows: fretes.length ? fretes.map((f) => ({ 'ROTA DO FRETE': f.cotacaoFinal, 'FAIXA PESO': f.faixaPeso || '', 'PESO MÍNIMO': f.pesoInicial || '', 'PESO LIMITE': f.pesoFinal || '', 'EXCESSO DE PESO': f.excessoPeso || '', 'TAXA APLICADA': f.taxaAplicada || '', 'FRETE PERCENTUAL': f.fretePercentual || '' })) : [{ 'ROTA DO FRETE': '', 'FAIXA PESO': '', 'PESO MÍNIMO': '', 'PESO LIMITE': '', 'EXCESSO DE PESO': '', 'TAXA APLICADA': '', 'FRETE PERCENTUAL': '' }],
+    }]);
+  }
+
+  if (modoEntrada === 'escolha') {
+    return (
+      <div className="pagina">
+        <div className="cabecalho-pagina">
+          <div>
+            <h2>Formatação de Tabelas</h2>
+            <p>Escolha como deseja começar.</p>
+          </div>
+        </div>
+
+        <section className="card-padrao">
+          <div className="card-topo"><h3>Enviar template padrão</h3></div>
+          <p>Use exatamente estes modelos para a importação automática.</p>
+          <div className="acoes-formulario">
+            <button className="botao-secundario" onClick={baixarModeloTemplateRotas}>Baixar modelo de Rotas</button>
+            <button className="botao-secundario" onClick={baixarModeloTemplateFretes}>Baixar modelo de Fretes</button>
+          </div>
+          <div className="form-grid">
+            <label>Arquivo de Rotas<input type="file" accept=".xlsx,.xls,.ods" onChange={(e) => setArquivoRotas(e.target.files?.[0] || null)} /></label>
+            <label>Arquivo de Fretes<input type="file" accept=".xlsx,.xls,.ods" onChange={(e) => setArquivoFretes(e.target.files?.[0] || null)} /></label>
+          </div>
+          <div className="acoes-formulario">
+            <button className="botao-primario" onClick={importarTemplate} disabled={!arquivoRotas || !arquivoFretes}>Importar e formatar automaticamente</button>
+            <button className="botao-secundario" onClick={() => setModoEntrada('manual')}>Usar modelo criado na ferramenta</button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pagina">
+      <div className="cabecalho-pagina">
+        <div><h2>Formatação de Tabelas</h2><p>Fluxo manual.</p></div>
+        <div className="acoes-formulario">
+          <button className="botao-secundario" onClick={() => setModoEntrada('escolha')}>Voltar à escolha inicial</button>
+        </div>
+      </div>
+
+      {msg ? <div className="card-padrao" style={{ marginBottom: 12 }}>{msg}</div> : null}
+
+      <section className="card-padrao">
+        <div className="card-topo"><h3>Dados gerais</h3></div>
+        <div className="form-grid">
+          <label>Transportadora existente
+            <select value={dadosGerais.transportadora} onChange={(e) => setDadosGerais((p) => ({ ...p, transportadora: e.target.value }))}>
+              {transportadoras.map((t) => <option key={t.id} value={t.nome}>{t.nome}</option>)}
+            </select>
+          </label>
+          <label>Origem<input value={dadosGerais.origemNome} onChange={(e) => atualizarOrigem(e.target.value)} /></label>
+          <label>UF origem<input value={dadosGerais.ufOrigem} readOnly /></label>
+          <label>IBGE origem<input value={dadosGerais.ibgeOrigem} readOnly /></label>
+        </div>
+      </section>
+
+      <section className="card-padrao">
+        <div className="card-topo">
+          <h3>Rotas</h3>
+          <div className="acoes-formulario">
+            <input ref={inputImportarRotas} type="file" accept=".xlsx,.xls,.ods" style={{ display: 'none' }} onChange={importarRotas} />
+            <button className="botao-secundario" onClick={exportarModeloRotas}>Exportar modelo</button>
+            <button className="botao-secundario" onClick={() => inputImportarRotas.current?.click()}>Importar rotas</button>
+          </div>
+        </div>
+      </section>
+
+      <section className="card-padrao">
+        <div className="card-topo">
+          <h3>Fretes</h3>
+          <div className="acoes-formulario">
+            <input ref={inputImportarFretes} type="file" accept=".xlsx,.xls,.ods" style={{ display: 'none' }} />
+            <button className="botao-secundario" onClick={exportarModeloFretes}>Exportar modelo</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
 }
