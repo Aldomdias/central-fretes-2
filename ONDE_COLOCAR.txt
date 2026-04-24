@@ -1,9 +1,11 @@
 Extraia este ZIP na raiz do projeto.
 
-Arquivos incluídos:
-- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
+Arquivos:
+- central-fretes-2-Melhoria-importa-o/src/utils/ibgeBase.js
+- central-fretes-2-Melhoria-importa-o/supabase/ibge_schema.sql
+- central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.IBGE_PATCH.txt
 
-Ajuste desta versão:
-- em tabela por faixa de peso, Frete mínimo não é preenchido nem exportado
-- na grade, o campo Frete mín. deixa de ser editável nesse cenário
-- ao importar template ou importar modelo de fretes, Frete mínimo fica vazio
+Este pacote:
+- restaura a base IBGE
+- corrige o caso da cidade Serra
+- reabilita a alimentação automática de UF e IBGE por cidade
