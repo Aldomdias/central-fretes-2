@@ -871,13 +871,11 @@ textarea,
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
 }
-
 .formatacao-texto {
-  margin: 0 0 18px;
-  color: #31415f;
+  margin: 0 0 16px;
+  color: #42506b;
   line-height: 1.5;
 }
-
 .botao-link {
   border: none;
   background: transparent;
@@ -885,7 +883,17 @@ textarea,
   cursor: pointer;
   font-weight: 700;
 }
-
+.botao-secundario.pequeno {
+  padding: 8px 12px;
+}
+.formatacao-alerta {
+  margin-bottom: 16px;
+  background: #eef5ff;
+  border: 1px solid #c7d9ff;
+  color: #193c84;
+  padding: 12px 14px;
+  border-radius: 12px;
+}
 @media (max-width: 920px) {
   .formatacao-escolha-grid {
     grid-template-columns: 1fr;

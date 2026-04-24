@@ -49,10 +49,6 @@ export default function Sidebar({ paginaAtual, onMudarPagina }) {
           </button>
         ))}
       </div>
-
-      <div className="sidebar-footer-note">
-        Visual AMD Log com foco em leitura e sem invadir o conteúdo.
-      </div>
     </aside>
   );
 }

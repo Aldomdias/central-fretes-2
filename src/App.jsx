@@ -78,7 +78,7 @@ export default function App() {
   }
 
   if (paginaAtual === 'formatacao') {
-    content = <FormatacaoPage transportadoras={transportadorasMemo} />;
+    content = <FormatacaoPage store={store} transportadoras={transportadorasMemo} />;
   }
 
   if (paginaAtual === 'transportadoras') {

@@ -6,10 +6,10 @@ Arquivos incluídos:
 - central-fretes-2-Melhoria-importa-o/src/pages/FormatacaoPage.jsx
 - central-fretes-2-Melhoria-importa-o/src/styles.css
 
-Esta versão corrige em cima do projeto real:
-- adiciona menu Formatação de Tabelas
-- cria tela inicial com 2 opções (template padrão ou modelo criado)
-- aceita Rotas.xlsx e fretes.xlsx separados
-- corrige cotação base x cotação final
-- adiciona botão Limpar tudo
-- exporta modelo de fretes com as linhas geradas
+Nesta versão:
+- faixa 'Acima de 300 kg (KG excedente)' exporta como 300 a 999999999
+- exportação de Rotas e Fretes no modelo exato para subir na transportadora
+- seções com abrir/fechar para facilitar a navegação
+- botão para gerar os 2 arquivos separados
+- opção de publicar direto na transportadora existente e preservar histórico anterior
+- entrada inicial com template padrão ou modelo criado
