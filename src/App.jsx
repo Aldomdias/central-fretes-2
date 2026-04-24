@@ -21,14 +21,40 @@ export default function App() {
     setOrigemSelecionadaId(null);
   };
 
+  const abrirSimulador = () => {
+    setPaginaAtual('simulador');
+    setTransportadoraSelecionadaId(null);
+    setOrigemSelecionadaId(null);
+  };
+
+  const abrirImportacao = () => {
+    setPaginaAtual('importacao');
+    setTransportadoraSelecionadaId(null);
+    setOrigemSelecionadaId(null);
+  };
+
+  const abrirTransportadora = (id) => {
+    setPaginaAtual('transportadoras');
+    setTransportadoraSelecionadaId(id);
+    setOrigemSelecionadaId(null);
+  };
+
+  const abrirOrigem = (id) => setOrigemSelecionadaId(id);
+
+  const voltarTransportadoras = () => {
+    if (origemSelecionadaId) return setOrigemSelecionadaId(null);
+    if (transportadoraSelecionadaId) return setTransportadoraSelecionadaId(null);
+    setPaginaAtual('dashboard');
+  };
+
   let content = null;
   if (paginaAtual === 'dashboard') {
     content = (
       <DashboardPage
         transportadoras={transportadorasMemo}
-        onAbrirSimulador={() => setPaginaAtual('simulador')}
+        onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
-        onAbrirImportacao={() => setPaginaAtual('importacao')}
+        onAbrirImportacao={abrirImportacao}
         onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
         onAtualizarBase={store.carregarDoBanco}
@@ -55,9 +81,9 @@ export default function App() {
         transportadoras={transportadorasMemo}
         transportadoraSelecionadaId={transportadoraSelecionadaId}
         origemSelecionadaId={origemSelecionadaId}
-        onOpenTransportadora={setTransportadoraSelecionadaId}
-        onOpenOrigem={setOrigemSelecionadaId}
-        onVoltar={() => setPaginaAtual('dashboard')}
+        onOpenTransportadora={abrirTransportadora}
+        onOpenOrigem={abrirOrigem}
+        onVoltar={voltarTransportadoras}
         store={store}
       />
     );
