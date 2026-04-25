@@ -24,6 +24,7 @@ import {
   validarModeloFaixa,
 } from '../utils/formatacaoTabela';
 import { converterTemplatePrecificacaoParaFretes, converterWorkbookTemplateParaEstrutura } from '../utils/templatePrecificacao';
+import { importarTemplatePadraoSeparado } from '../utils/importadorTemplatePadrao';
 
 const COTACOES_BASE = [
   'Capital',
@@ -97,7 +98,7 @@ function lerPlanilhaComoObjetos(file) {
 
 function tituloArquivo(form) {
   const partes = [form.transportadoraNome, form.origemNome, form.canal].filter(Boolean);
-  return partes.join('-').replace(/\\s+/g, '_') || 'formatacao';
+  return partes.join('-').replace(/\s+/g, '_') || 'formatacao';
 }
 
 export default function FormatacaoTabelasPage({ transportadoras = [] }) {
@@ -111,6 +112,8 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
   const [modelosFaixa, setModelosFaixa] = useState(() => carregarModelosFaixa());
   const [faixaEditando, setFaixaEditando] = useState(null);
   const [mensagem, setMensagem] = useState('');
+  const [arquivoRotasTemplate, setArquivoRotasTemplate] = useState(null);
+  const [arquivoFretesTemplate, setArquivoFretesTemplate] = useState(null);
 
   const rotasPadronizadas = useMemo(() => aplicarCotacaoPadraoNasRotas(rotas, form, baseIbge), [rotas, form, baseIbge]);
   const modeloFaixaSelecionado = useMemo(() => modelosFaixa.find((item) => item.id === form.modeloFaixaId) || null, [modelosFaixa, form.modeloFaixaId]);
@@ -153,7 +156,6 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
       ...prev,
       transportadoraId: existente?.id || '',
       transportadoraNome: existente?.nome || '',
-      origemModo: 'existente',
     }));
   }
 
@@ -264,6 +266,39 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     })).filter((item) => item.ibgeDestino || item.cepInicial || item.cepFinal);
     if (novas.length) setQuebras(novas);
     setMensagem(`Quebras importadas: ${novas.length}.`);
+  }
+
+
+  async function importarTemplateSeparado() {
+    try {
+      if (!arquivoRotasTemplate || !arquivoFretesTemplate) {
+        setMensagem('Selecione o arquivo de Rotas e o arquivo de Fretes do template.');
+        return;
+      }
+
+      const convertido = await importarTemplatePadraoSeparado({
+        arquivoRotas: arquivoRotasTemplate,
+        arquivoFretes: arquivoFretesTemplate,
+        dadosGerais: form,
+      });
+
+      if (convertido.dadosGeraisPatch?.origemNome || convertido.dadosGeraisPatch?.origemIbge) {
+        setForm((prev) => ({
+          ...prev,
+          origemModo: prev.origemModo || 'novo',
+          origemNome: convertido.dadosGeraisPatch?.origemNome || prev.origemNome,
+          origemIbge: convertido.dadosGeraisPatch?.origemIbge || prev.origemIbge,
+        }));
+      }
+
+      if (convertido.rotas.length) setRotas(convertido.rotas);
+      if (convertido.quebrasFaixa.length) setQuebras(convertido.quebrasFaixa);
+      if (convertido.fretes.length) setFretes(convertido.fretes);
+
+      setMensagem(`Template separado importado: ${convertido.rotas.length} rota(s), ${convertido.quebrasFaixa.length} quebra(s) e ${convertido.fretes.length} frete(s).`);
+    } catch (error) {
+      setMensagem(error?.message || 'Erro ao importar template separado.');
+    }
   }
 
   async function importarTemplatePrecificacao(event) {
@@ -453,7 +488,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
         <div className="formatacao-grid three">
           <label className="field-block">
             <span>Transportadora</span>
-            <select value={form.transportadoraModo} onChange={(e) => atualizarCampo('transportadoraModo', e.target.value)}>
+            <select value={form.transportadoraModo} onChange={(e) => { atualizarCampo('transportadoraModo', e.target.value); if (e.target.value === 'novo') atualizarCampo('transportadoraId', ''); }}>
               <option value="existente">Existente</option>
               <option value="novo">Novo cadastro</option>
             </select>
@@ -598,6 +633,38 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
           </div>
         </section>
       ) : null}
+
+      <section className="panel-card formatacao-section">
+        <div className="section-header-inline">
+          <h3>1. Importar template recebido</h3>
+          <div className="hint-line">Fluxo separado para o modelo enviado ao transportador: selecione Rotas + Fretes e o sistema monta as linhas sem misturar com o cadastro passo a passo.</div>
+        </div>
+        <div className="feature-grid three-cols">
+          <div className="info-card compact-info-card">
+            <strong>Arquivo de Rotas</strong>
+            <p>Planilha preenchida com IBGE destino, UF destino, prazo, região/cotação e CEP quando existir.</p>
+            <label className="btn-secondary file-button">
+              <input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={(e) => setArquivoRotasTemplate(e.target.files?.[0] || null)} />
+              Selecionar Rotas
+            </label>
+            <small>{arquivoRotasTemplate?.name || 'Nenhum arquivo selecionado'}</small>
+          </div>
+          <div className="info-card compact-info-card">
+            <strong>Arquivo de Fretes</strong>
+            <p>Planilha de precificação com faixas, frete kg/taxa aplicada, ad valorem e excedente.</p>
+            <label className="btn-secondary file-button">
+              <input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={(e) => setArquivoFretesTemplate(e.target.files?.[0] || null)} />
+              Selecionar Fretes
+            </label>
+            <small>{arquivoFretesTemplate?.name || 'Nenhum arquivo selecionado'}</small>
+          </div>
+          <div className="info-card compact-info-card">
+            <strong>Resultado</strong>
+            <p>Depois de importar, revise as rotas e fretes abaixo e gere o pacote final Verum.</p>
+            <button className="btn-primary" onClick={importarTemplateSeparado}>Importar Rotas + Fretes</button>
+          </div>
+        </div>
+      </section>
 
       <section className="panel-card formatacao-section">
         <div className="section-header-inline">
