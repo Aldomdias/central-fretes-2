@@ -168,11 +168,15 @@ export function modelosFaixaPadrao() {
       nome: 'B2C padrão',
       canal: 'B2C',
       itens: [
-        { id: uid('fx'), pesoInicial: 0, pesoFinal: 2 },
-        { id: uid('fx'), pesoInicial: 2, pesoFinal: 5 },
-        { id: uid('fx'), pesoInicial: 5, pesoFinal: 10 },
-        { id: uid('fx'), pesoInicial: 10, pesoFinal: 15 },
-        { id: uid('fx'), pesoInicial: 15, pesoFinal: 20 },
+        { id: 'b2c-0-2', pesoInicial: 0, pesoFinal: 2 },
+        { id: 'b2c-2-5', pesoInicial: 2, pesoFinal: 5 },
+        { id: 'b2c-5-10', pesoInicial: 5, pesoFinal: 10 },
+        { id: 'b2c-10-20', pesoInicial: 10, pesoFinal: 20 },
+        { id: 'b2c-20-30', pesoInicial: 20, pesoFinal: 30 },
+        { id: 'b2c-30-50', pesoInicial: 30, pesoFinal: 50 },
+        { id: 'b2c-50-70', pesoInicial: 50, pesoFinal: 70 },
+        { id: 'b2c-70-100', pesoInicial: 70, pesoFinal: 100 },
+        { id: 'b2c-100-exc', pesoInicial: 100, pesoFinal: 999999999 },
       ],
     },
     {
@@ -180,24 +184,44 @@ export function modelosFaixaPadrao() {
       nome: 'B2B padrão',
       canal: 'ATACADO',
       itens: [
-        { id: uid('fx'), pesoInicial: 0, pesoFinal: 20 },
-        { id: uid('fx'), pesoInicial: 20, pesoFinal: 30 },
-        { id: uid('fx'), pesoInicial: 30, pesoFinal: 50 },
-        { id: uid('fx'), pesoInicial: 50, pesoFinal: 70 },
-        { id: uid('fx'), pesoInicial: 70, pesoFinal: 100 },
+        { id: 'b2b-0-20', pesoInicial: 0, pesoFinal: 20 },
+        { id: 'b2b-20-30', pesoInicial: 20, pesoFinal: 30 },
+        { id: 'b2b-30-50', pesoInicial: 30, pesoFinal: 50 },
+        { id: 'b2b-50-70', pesoInicial: 50, pesoFinal: 70 },
+        { id: 'b2b-70-100', pesoInicial: 70, pesoFinal: 100 },
+        { id: 'b2b-100-exc', pesoInicial: 100, pesoFinal: 999999999 },
       ],
     },
   ];
 }
 
-export function carregarModelosFaixa() {
-  try {
-    const salvos = JSON.parse(localStorage.getItem(STORAGE_KEYS.faixas) || 'null');
-    if (Array.isArray(salvos) && salvos.length) return salvos;
-  } catch {}
+function mesclarModelosPadraoComSalvos(salvos = []) {
   const padrao = modelosFaixaPadrao();
-  localStorage.setItem(STORAGE_KEYS.faixas, JSON.stringify(padrao));
-  return padrao;
+  const mapa = new Map();
+
+  padrao.forEach((modelo) => mapa.set(modelo.id, modelo));
+
+  (Array.isArray(salvos) ? salvos : []).forEach((modelo) => {
+    if (!modelo?.id) return;
+    // Mantém modelos criados manualmente, mas força os modelos padrão para a versão correta.
+    // Isso corrige navegadores que já tinham o B2C antigo salvo no localStorage.
+    if (modelo.id === 'b2c-padrao' || modelo.id === 'b2b-padrao') return;
+    mapa.set(modelo.id, modelo);
+  });
+
+  return Array.from(mapa.values());
+}
+
+export function carregarModelosFaixa() {
+  let salvos = [];
+  try {
+    const lido = JSON.parse(localStorage.getItem(STORAGE_KEYS.faixas) || 'null');
+    if (Array.isArray(lido)) salvos = lido;
+  } catch {}
+
+  const consolidados = mesclarModelosPadraoComSalvos(salvos);
+  localStorage.setItem(STORAGE_KEYS.faixas, JSON.stringify(consolidados));
+  return consolidados;
 }
 
 export function salvarModelosFaixa(modelos = []) {

@@ -91,10 +91,12 @@ export function converterTemplatePrecificacaoParaFretes({ linhas = [], dadosGera
         faixaNome: faixaLabel,
         pesoInicial,
         pesoFinal,
-        freteValor: freteValor ?? '',
+        // Para tabela por faixa, o valor do template é a taxa da faixa.
+        // Não deve virar frete mínimo, pois isso quebra a geração final Verum.
+        freteValor: '',
         fretePercentual: fretePercentual ?? '',
         freteMinimo: '',
-        taxaAplicada: '',
+        taxaAplicada: freteValor ?? '',
         excedente: '',
         origemImportacao: 'template_precificacao',
       });

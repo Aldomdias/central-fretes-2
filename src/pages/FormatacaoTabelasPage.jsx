@@ -25,7 +25,19 @@ import {
 } from '../utils/formatacaoTabela';
 import { converterTemplatePrecificacaoParaFretes, converterWorkbookTemplateParaEstrutura } from '../utils/templatePrecificacao';
 
-const COTACOES_BASE = ['Capital', 'Interior 1', 'Interior 2', 'Metropolitana'];
+const COTACOES_BASE = [
+  'Capital',
+  'Metropolitana',
+  'Interior 1',
+  'Interior 2',
+  'Interior 3',
+  'Interior 4',
+  'Interior 5',
+  'Interior 6',
+  'Interior 7',
+  'Interior 8',
+  'Interior 9',
+];
 
 function lerPlanilhaComoMatriz(file) {
   return new Promise((resolve, reject) => {
@@ -120,6 +132,17 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
         const municipio = valor ? encontrarMunicipioPorNome(baseIbge, valor) : null;
         proximo.origemIbge = municipio?.codigo_municipio_completo || municipio?.codigo || municipio?.ibge || '';
       }
+
+      if (campo === 'canal') {
+        const canal = String(valor || '').toUpperCase();
+        const modeloAtual = modelosFaixa.find((item) => item.id === prev.modeloFaixaId);
+        const modeloAtualNaoCombina = modeloAtual?.canal && String(modeloAtual.canal).toUpperCase() !== canal;
+        if (modeloAtualNaoCombina || !prev.modeloFaixaId) {
+          const modeloDoCanal = modelosFaixa.find((item) => String(item.canal || '').toUpperCase() === canal);
+          if (modeloDoCanal) proximo.modeloFaixaId = modeloDoCanal.id;
+        }
+      }
+
       return proximo;
     });
   }
@@ -214,12 +237,15 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     const file = event.target.files?.[0];
     if (!file) return;
     const rows = await lerPlanilhaComoObjetos(file);
-    const novasRotas = rows.map((row) => ({
-      ...criarRotaInicial(),
-      ibgeDestino: row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || '',
-      prazo: row['PRAZO'] || row['prazo'] || '',
-      cotacaoBase: row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'] || 'Interior 1',
-    })).filter((item) => item.ibgeDestino || item.prazo || item.cotacaoBase);
+    const novasRotas = rows
+      .filter((row) => row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || row['PRAZO'] || row['prazo'] || row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'])
+      .map((row) => ({
+        ...criarRotaInicial(),
+        ibgeDestino: row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || '',
+        prazo: row['PRAZO'] || row['prazo'] || '',
+        cotacaoBase: row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'] || 'Interior 1',
+      }))
+      .filter((item) => item.ibgeDestino || item.prazo);
     if (novasRotas.length) setRotas(novasRotas);
     setMensagem(`Rotas importadas: ${novasRotas.length}.`);
   }
@@ -230,11 +256,11 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     const rows = await lerPlanilhaComoObjetos(file);
     const novas = rows.map((row) => ({
       ...criarQuebraFaixaInicial(),
-      ibgeDestino: row['IBGE DESTINO'] || '',
-      prazo: row['PRAZO'] || '',
-      cotacaoBase: row['COTAÇÃO'] || 'Interior 1',
-      cepInicial: row['CEP INICIAL'] || '',
-      cepFinal: row['CEP FINAL'] || '',
+      ibgeDestino: row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || '',
+      prazo: row['PRAZO'] || row['prazo'] || '',
+      cotacaoBase: row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'] || 'Interior 1',
+      cepInicial: row['CEP INICIAL'] || row['cepInicial'] || row['cep_inicial'] || '',
+      cepFinal: row['CEP FINAL'] || row['cepFinal'] || row['cep_final'] || '',
     })).filter((item) => item.ibgeDestino || item.cepInicial || item.cepFinal);
     if (novas.length) setQuebras(novas);
     setMensagem(`Quebras importadas: ${novas.length}.`);
@@ -310,23 +336,29 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
   }
 
   function exportarFretes() {
-    const linhas = fretes.map((item) => ({
-      'NOME TRANSPORTADORA': form.transportadoraNome,
-      'CÓDIGO UNIDADE': form.codigoOrigem,
-      CANAL: form.canal,
-      'REGRA DE CÁLCULO': form.regraCalculo,
-      'TIPO DE CÁLCULO': form.tipoCalculo,
-      'ROTA DO FRETE': item.cotacao,
-      'PESO INICIAL': item.pesoInicial,
-      'PESO FINAL': item.pesoFinal,
-      'FRETE VALOR': item.freteValor,
-      'AD VALOREM %': item.fretePercentual,
-      'FRETE MÍNIMO': item.freteMinimo,
-      'TAXA APLICADA': item.taxaAplicada,
-      EXCEDENTE: item.excedente,
-      'DATA INÍCIO': form.vigenciaInicial,
-      'DATA FIM': form.vigenciaFinal,
-    }));
+    const isFaixa = form.tipoCalculo === 'FAIXA_PESO';
+    const linhas = fretes.map((item) => {
+      const taxaFaixa = item.taxaAplicada || item.freteValor || '';
+      return {
+        'NOME TRANSPORTADORA': form.transportadoraNome,
+        'CÓDIGO UNIDADE': form.codigoOrigem,
+        CANAL: form.canal,
+        'REGRA DE CÁLCULO': form.regraCalculo,
+        'TIPO DE CÁLCULO': form.tipoCalculo,
+        'ROTA DO FRETE': item.cotacao,
+        'PESO INICIAL': item.pesoInicial,
+        'PESO FINAL': item.pesoFinal,
+        // Na tabela por faixa, o valor da faixa precisa sair em TAXA APLICADA.
+        // FRETE VALOR e FRETE MÍNIMO ficam vazios para não confundir a importação Verum.
+        'FRETE VALOR': isFaixa ? '' : item.freteValor,
+        'AD VALOREM %': item.fretePercentual,
+        'FRETE MÍNIMO': isFaixa ? '' : item.freteMinimo,
+        'TAXA APLICADA': isFaixa ? taxaFaixa : item.taxaAplicada,
+        EXCEDENTE: item.excedente,
+        'DATA INÍCIO': form.vigenciaInicial,
+        'DATA FIM': form.vigenciaFinal,
+      };
+    });
     exportarLinhasParaXlsx(XLSX, linhas, `${tituloArquivo(form)}-fretes.xlsx`, 'Valores de frete');
   }
 
@@ -586,7 +618,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
                   <td><input value={item.prazo} onChange={(e) => atualizarRota(item.id, 'prazo', e.target.value)} /></td>
                   <td>
                     <select value={item.cotacaoBase} onChange={(e) => atualizarRota(item.id, 'cotacaoBase', e.target.value)}>
-                      {COTACOES_BASE.map((op) => <option key={op}>{op}</option>)}
+                      {Array.from(new Set([item.cotacaoBase, ...COTACOES_BASE].filter(Boolean))).map((op) => <option key={op}>{op}</option>)}
                     </select>
                   </td>
                   <td>{item.cotacaoFinal}</td>
@@ -615,7 +647,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
                 <tr key={item.id}>
                   <td><input value={item.ibgeDestino} onChange={(e) => atualizarQuebra(item.id, 'ibgeDestino', e.target.value)} /></td>
                   <td><input value={item.prazo} onChange={(e) => atualizarQuebra(item.id, 'prazo', e.target.value)} /></td>
-                  <td><select value={item.cotacaoBase} onChange={(e) => atualizarQuebra(item.id, 'cotacaoBase', e.target.value)}>{COTACOES_BASE.map((op) => <option key={op}>{op}</option>)}</select></td>
+                  <td><select value={item.cotacaoBase} onChange={(e) => atualizarQuebra(item.id, 'cotacaoBase', e.target.value)}>{Array.from(new Set([item.cotacaoBase, ...COTACOES_BASE].filter(Boolean))).map((op) => <option key={op}>{op}</option>)}</select></td>
                   <td><input value={item.cepInicial} onChange={(e) => atualizarQuebra(item.id, 'cepInicial', e.target.value)} /></td>
                   <td><input value={item.cepFinal} onChange={(e) => atualizarQuebra(item.id, 'cepFinal', e.target.value)} /></td>
                   <td><button className="btn-link" onClick={() => removerQuebra(item.id)}>Remover</button></td>
