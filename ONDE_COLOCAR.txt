@@ -1,10 +1,10 @@
 Extraia este ZIP na raiz do projeto.
 
-Arquivo incluído:
+Arquivos incluídos:
 - central-fretes-2-formatar-tabela/src/pages/FormatacaoPage.jsx
+- central-fretes-2-formatar-tabela/ONDE_COLOCAR.txt
 
-Correções:
-- exportação final de fretes leva Peso mínimo e Peso limite
-- nova transportadora ou existente
-- edição/criação de faixas no manual
-- dois fluxos separados
+Melhoria desta versão:
+- corrigidas as faixas padrão B2C para conversar com o cadastro real:
+  0-2, 2-5, 5-10, 10-20, 20-30, 30-50, 50-70, 70-100, 100-999999999
+- mantém o excedente B2C iniciando em 100
