@@ -1,2 +1,11 @@
-Aplicar este arquivo por cima da versão atual.
-Corrige o build restaurando a exportação listarImportacoes sem perder a correção de importação de fretes.
+PATCH - Separar Formatação de Tabelas e Importar Template
+
+Substitua os arquivos seguindo a estrutura das pastas.
+
+O que foi alterado:
+- Formatação de Tabelas fica somente para cadastro/manual guiado.
+- Nova tela no menu: Importar Template.
+- Importar Template aceita os dois arquivos preenchidos pelo transportador: Rotas + Fretes.
+- Nos dois fluxos é possível usar transportadora existente ou nova transportadora digitada na hora.
+- Adicionado fallback IBGE para Curitiba e Contagem.
+

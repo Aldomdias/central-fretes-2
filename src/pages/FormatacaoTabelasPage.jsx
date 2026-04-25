@@ -23,8 +23,6 @@ import {
   salvarRascunhos,
   validarModeloFaixa,
 } from '../utils/formatacaoTabela';
-import { converterTemplatePrecificacaoParaFretes, converterWorkbookTemplateParaEstrutura } from '../utils/templatePrecificacao';
-import { importarTemplatePadraoSeparado } from '../utils/importadorTemplatePadrao';
 
 const COTACOES_BASE = [
   'Capital',
@@ -98,7 +96,7 @@ function lerPlanilhaComoObjetos(file) {
 
 function tituloArquivo(form) {
   const partes = [form.transportadoraNome, form.origemNome, form.canal].filter(Boolean);
-  return partes.join('-').replace(/\s+/g, '_') || 'formatacao';
+  return partes.join('-').replace(/\\s+/g, '_') || 'formatacao';
 }
 
 export default function FormatacaoTabelasPage({ transportadoras = [] }) {
@@ -112,8 +110,6 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
   const [modelosFaixa, setModelosFaixa] = useState(() => carregarModelosFaixa());
   const [faixaEditando, setFaixaEditando] = useState(null);
   const [mensagem, setMensagem] = useState('');
-  const [arquivoRotasTemplate, setArquivoRotasTemplate] = useState(null);
-  const [arquivoFretesTemplate, setArquivoFretesTemplate] = useState(null);
 
   const rotasPadronizadas = useMemo(() => aplicarCotacaoPadraoNasRotas(rotas, form, baseIbge), [rotas, form, baseIbge]);
   const modeloFaixaSelecionado = useMemo(() => modelosFaixa.find((item) => item.id === form.modeloFaixaId) || null, [modelosFaixa, form.modeloFaixaId]);
@@ -156,6 +152,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
       ...prev,
       transportadoraId: existente?.id || '',
       transportadoraNome: existente?.nome || '',
+      origemModo: 'existente',
     }));
   }
 
@@ -266,78 +263,6 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     })).filter((item) => item.ibgeDestino || item.cepInicial || item.cepFinal);
     if (novas.length) setQuebras(novas);
     setMensagem(`Quebras importadas: ${novas.length}.`);
-  }
-
-
-  async function importarTemplateSeparado() {
-    try {
-      if (!arquivoRotasTemplate || !arquivoFretesTemplate) {
-        setMensagem('Selecione o arquivo de Rotas e o arquivo de Fretes do template.');
-        return;
-      }
-
-      const convertido = await importarTemplatePadraoSeparado({
-        arquivoRotas: arquivoRotasTemplate,
-        arquivoFretes: arquivoFretesTemplate,
-        dadosGerais: form,
-      });
-
-      if (convertido.dadosGeraisPatch?.origemNome || convertido.dadosGeraisPatch?.origemIbge) {
-        setForm((prev) => ({
-          ...prev,
-          origemModo: prev.origemModo || 'novo',
-          origemNome: convertido.dadosGeraisPatch?.origemNome || prev.origemNome,
-          origemIbge: convertido.dadosGeraisPatch?.origemIbge || prev.origemIbge,
-        }));
-      }
-
-      if (convertido.rotas.length) setRotas(convertido.rotas);
-      if (convertido.quebrasFaixa.length) setQuebras(convertido.quebrasFaixa);
-      if (convertido.fretes.length) setFretes(convertido.fretes);
-
-      setMensagem(`Template separado importado: ${convertido.rotas.length} rota(s), ${convertido.quebrasFaixa.length} quebra(s) e ${convertido.fretes.length} frete(s).`);
-    } catch (error) {
-      setMensagem(error?.message || 'Erro ao importar template separado.');
-    }
-  }
-
-  async function importarTemplatePrecificacao(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const workbook = await lerWorkbook(file);
-    const possuiRotas = (workbook.SheetNames || []).some((nome) => nome.toUpperCase() === 'ROTAS');
-    const possuiFretes = (workbook.SheetNames || []).some((nome) => nome.toUpperCase() === 'FRETES');
-
-    if (possuiRotas || possuiFretes) {
-      const convertido = converterWorkbookTemplateParaEstrutura({
-        XLSX,
-        workbook,
-        dadosGerais: form,
-      });
-
-      if (convertido.dadosGeraisPatch?.origemNome || convertido.dadosGeraisPatch?.origemIbge) {
-        setForm((prev) => ({
-          ...prev,
-          origemNome: convertido.dadosGeraisPatch?.origemNome || prev.origemNome,
-          origemIbge: convertido.dadosGeraisPatch?.origemIbge || prev.origemIbge,
-        }));
-      }
-
-      if (convertido.rotas.length) setRotas(convertido.rotas);
-      if (convertido.quebras.length) setQuebras(convertido.quebras);
-      if (convertido.fretes.length) setFretes(convertido.fretes);
-
-      setMensagem(`Template importado com sucesso: ${convertido.rotas.length} rota(s), ${convertido.quebras.length} quebra(s) e ${convertido.fretes.length} frete(s).`);
-      event.target.value = '';
-      return;
-    }
-
-    const linhas = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
-    const convertidos = converterTemplatePrecificacaoParaFretes({ linhas, dadosGerais: form });
-    setFretes(convertidos);
-    setMensagem(`Template importado: ${convertidos.length} linha(s) de frete.`);
-    event.target.value = '';
   }
 
   function exportarModeloRotas() {
@@ -470,7 +395,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
         <div className="page-header">
           <div className="amd-mini-brand">Cadastro guiado</div>
           <h1>Formatação de Tabelas</h1>
-          <p>Monte rotas e fretes sem mexer no simulador principal. Agora com faixa de peso, cotação com UF destino e importação do template padrão com Rotas + Fretes.</p>
+          <p>Monte rotas e fretes sem mexer no simulador principal. Ferramenta manual para montar a tabela no padrão do sistema. Aqui não entra template preenchido.</p>
         </div>
         <div className="formatacao-actions-top">
           <button className="btn-secondary" onClick={salvarRascunhoAtual}>Salvar rascunho</button>
@@ -488,7 +413,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
         <div className="formatacao-grid three">
           <label className="field-block">
             <span>Transportadora</span>
-            <select value={form.transportadoraModo} onChange={(e) => { atualizarCampo('transportadoraModo', e.target.value); if (e.target.value === 'novo') atualizarCampo('transportadoraId', ''); }}>
+            <select value={form.transportadoraModo} onChange={(e) => atualizarCampo('transportadoraModo', e.target.value)}>
               <option value="existente">Existente</option>
               <option value="novo">Novo cadastro</option>
             </select>
@@ -636,38 +561,6 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
 
       <section className="panel-card formatacao-section">
         <div className="section-header-inline">
-          <h3>1. Importar template recebido</h3>
-          <div className="hint-line">Fluxo separado para o modelo enviado ao transportador: selecione Rotas + Fretes e o sistema monta as linhas sem misturar com o cadastro passo a passo.</div>
-        </div>
-        <div className="feature-grid three-cols">
-          <div className="info-card compact-info-card">
-            <strong>Arquivo de Rotas</strong>
-            <p>Planilha preenchida com IBGE destino, UF destino, prazo, região/cotação e CEP quando existir.</p>
-            <label className="btn-secondary file-button">
-              <input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={(e) => setArquivoRotasTemplate(e.target.files?.[0] || null)} />
-              Selecionar Rotas
-            </label>
-            <small>{arquivoRotasTemplate?.name || 'Nenhum arquivo selecionado'}</small>
-          </div>
-          <div className="info-card compact-info-card">
-            <strong>Arquivo de Fretes</strong>
-            <p>Planilha de precificação com faixas, frete kg/taxa aplicada, ad valorem e excedente.</p>
-            <label className="btn-secondary file-button">
-              <input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={(e) => setArquivoFretesTemplate(e.target.files?.[0] || null)} />
-              Selecionar Fretes
-            </label>
-            <small>{arquivoFretesTemplate?.name || 'Nenhum arquivo selecionado'}</small>
-          </div>
-          <div className="info-card compact-info-card">
-            <strong>Resultado</strong>
-            <p>Depois de importar, revise as rotas e fretes abaixo e gere o pacote final Verum.</p>
-            <button className="btn-primary" onClick={importarTemplateSeparado}>Importar Rotas + Fretes</button>
-          </div>
-        </div>
-      </section>
-
-      <section className="panel-card formatacao-section">
-        <div className="section-header-inline">
           <h3>Rotas</h3>
           <div className="inline-actions-wrap">
             <button className="btn-secondary" onClick={exportarModeloRotas}>Exportar modelo</button>
@@ -731,7 +624,6 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
           <div className="inline-actions-wrap">
             <button className="btn-primary" onClick={gerarFretes}>Aplicar faixas e gerar fretes</button>
             <button className="btn-secondary" onClick={exportarModeloFretes}>Exportar modelo</button>
-            <label className="btn-secondary file-button"><input type="file" accept=".xlsx,.xls,.xlsb,.ods,.csv" onChange={importarTemplatePrecificacao} />Importar template de precificação</label>
           </div>
         </div>
 
@@ -745,8 +637,8 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
             <p>{form.tipoCalculo === 'FAIXA_PESO' ? (modeloFaixaSelecionado?.nome || 'Nenhuma') : 'Não se aplica para percentual'}</p>
           </div>
           <div className="info-card compact-info-card">
-            <strong>Template pronto</strong>
-            <p>Importe a planilha já precificada para autoformatar os fretes.</p>
+            <strong>Sem template aqui</strong>
+            <p>Template preenchido fica na opção Importar Template, separada no menu.</p>
           </div>
         </div>
 

@@ -16,6 +16,8 @@ const UF_POR_CODIGO = {
 const MUNICIPIOS_FIXOS = [
   { codigo_municipio_completo: '4208203', nome_municipio: 'Itajaí', nome_municipio_sem_acento: 'Itajai', uf: 'SC' },
   { codigo_municipio_completo: '4211306', nome_municipio: 'Navegantes', nome_municipio_sem_acento: 'Navegantes', uf: 'SC' },
+  { codigo_municipio_completo: '4106902', nome_municipio: 'Curitiba', nome_municipio_sem_acento: 'Curitiba', uf: 'PR' },
+  { codigo_municipio_completo: '3118601', nome_municipio: 'Contagem', nome_municipio_sem_acento: 'Contagem', uf: 'MG' },
   { codigo_municipio_completo: '3505708', nome_municipio: 'Barueri', nome_municipio_sem_acento: 'Barueri', uf: 'SP' },
   { codigo_municipio_completo: '3506003', nome_municipio: 'Bauru', nome_municipio_sem_acento: 'Bauru', uf: 'SP' },
   { codigo_municipio_completo: '3550308', nome_municipio: 'São Paulo', nome_municipio_sem_acento: 'Sao Paulo', uf: 'SP' },
@@ -30,13 +32,13 @@ function uid(prefix = 'id') {
 }
 
 export function limparTexto(valor = '') {
-  return String(valor ?? '').trim().replace(/\s+/g, ' ');
+  return String(valor ?? '').trim().replace(/\\s+/g, ' ');
 }
 
 export function normalizarChave(valor = '') {
   return limparTexto(valor)
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\\u0300-\\u036f]/g, '')
     .toUpperCase();
 }
 
@@ -152,7 +154,7 @@ export function encontrarOrigemExistente(cadastros, idOuNome) {
 
 export function proximoCodigoOrigem(cadastros) {
   const numeros = (cadastros?.origens || [])
-    .map((item) => String(item.codigo || '').match(/(\d+)/))
+    .map((item) => String(item.codigo || '').match(/(\\d+)/))
     .filter(Boolean)
     .map((match) => Number(match[1]))
     .filter(Number.isFinite);
@@ -251,7 +253,7 @@ export function carregarBaseIbge() {
       item?.ibge ??
       item?.municipio_ibge ??
       ''
-    ).replace(/\D/g, '');
+    ).replace(/\\D/g, '');
     if (!codigo) return;
     mapa.set(codigo, {
       ...item,
@@ -273,7 +275,7 @@ export function salvarBaseIbge(base = []) {
       item?.ibge ??
       item?.municipio_ibge ??
       ''
-    ).replace(/\D/g, '');
+    ).replace(/\\D/g, '');
     if (!codigo) return;
     mapa.set(codigo, {
       ...item,
@@ -285,12 +287,12 @@ export function salvarBaseIbge(base = []) {
 }
 
 export function obterUfPorCodigoIbge(ibge = '') {
-  const codigo = String(ibge || '').replace(/\D/g, '').slice(0, 2);
+  const codigo = String(ibge || '').replace(/\\D/g, '').slice(0, 2);
   return UF_POR_CODIGO[codigo] || '';
 }
 
 export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
-  const chave = String(ibgeDestino || '').replace(/\D/g, '');
+  const chave = String(ibgeDestino || '').replace(/\\D/g, '');
   if (!chave) return '';
   const lista = baseIbge?.length ? baseIbge : MUNICIPIOS_FIXOS;
   const item = lista.find((registro) => {
@@ -301,7 +303,7 @@ export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
       registro.ibge ??
       registro.municipio_ibge ??
       ''
-    ).replace(/\D/g, '');
+    ).replace(/\\D/g, '');
     return codigo === chave;
   });
   return limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(chave)).toUpperCase();

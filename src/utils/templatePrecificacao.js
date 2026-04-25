@@ -9,10 +9,10 @@ function paraNumero(valor) {
   if (valor === null || valor === undefined || valor === '') return null;
   if (typeof valor === 'number') return Number.isFinite(valor) ? valor : null;
   const texto = String(valor)
-    .replace(/R\$/gi, '')
+    .replace(/R\\$/gi, '')
     .replace(/%/g, '')
     .trim()
-    .replace(/\./g, '')
+    .replace(/\\./g, '')
     .replace(',', '.');
   const numero = Number(texto);
   return Number.isFinite(numero) ? numero : null;
@@ -20,7 +20,7 @@ function paraNumero(valor) {
 
 function extrairFaixa(textoFaixa) {
   const texto = limpar(textoFaixa);
-  const match = texto.match(/(\d+[.,]?\d*)\s*(?:a|até|-).*?(\d+[.,]?\d*)/i);
+  const match = texto.match(/(\\d+[.,]?\\d*)\\s*(?:a|até|-).*?(\\d+[.,]?\\d*)/i);
   if (!match) return { pesoInicial: null, pesoFinal: null, faixaLabel: texto };
   return {
     pesoInicial: paraNumero(match[1]),
@@ -54,7 +54,7 @@ function detectarBlocos(linha1 = [], linha2 = []) {
     const tipoFrete = limpar(linha2[i]);
     const tipoAdValorem = limpar(linha2[i + 1]);
     if (!cotacaoBase) continue;
-    if (/frete\s*kg/i.test(tipoFrete) && /ad\s*valorem/i.test(tipoAdValorem)) {
+    if (/frete\\s*kg/i.test(tipoFrete) && /ad\\s*valorem/i.test(tipoAdValorem)) {
       blocos.push({ cotacaoBase, colunaFrete: i, colunaAdValorem: i + 1 });
     }
   }

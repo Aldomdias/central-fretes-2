@@ -5,6 +5,7 @@ import SimuladorPage from './pages/SimuladorPage';
 import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
 import FormatacaoPage from './pages/FormatacaoPage';
+import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -73,6 +74,10 @@ export default function App() {
 
   if (paginaAtual === 'formatacao') {
     content = <FormatacaoPage store={store} transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'importar-template') {
+    content = <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />;
   }
 
   if (paginaAtual === 'transportadoras') {

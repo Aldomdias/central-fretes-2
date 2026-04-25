@@ -70,16 +70,7 @@ function primeiraAba(workbook) {
   return nome ? workbook.Sheets[nome] : null;
 }
 
-function indicePorAliases(header = [], aliases = []) {
-  const normalizados = aliases.map((alias) => normalizar(alias));
-  return header.findIndex((h) => normalizados.some((alias) => h === alias || h.includes(alias)));
-}
-
-function valorDaLinha(row = [], idx = -1) {
-  return idx >= 0 ? row[idx] : '';
-}
-
-export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes, dadosGerais = {} }) {
+export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes }) {
   if (!arquivoRotas || !arquivoFretes) {
     throw new Error("Selecione os arquivos de Rotas e Fretes.");
   }
@@ -100,16 +91,16 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
   const headerRotas = (rowsRotas[0] || []).map((v) => normalizar(v));
 
   const idx = {
-    ibgeOrigem: indicePorAliases(headerRotas, ["IBGE ORIGEM", "CODIGO IBGE ORIGEM"]),
-    cidadeOrigem: indicePorAliases(headerRotas, ["CIDADE DE ORIGEM", "ORIGEM"]),
-    ufOrigem: indicePorAliases(headerRotas, ["UF ORIGEM"]),
-    ibgeDestino: indicePorAliases(headerRotas, ["IBGE DESTINO", "CODIGO IBGE DESTINO", "IBGE"]),
-    cidadeDestino: indicePorAliases(headerRotas, ["CIDADE DE DESTINO", "DESTINO"]),
-    ufDestino: indicePorAliases(headerRotas, ["UF DESTINO"]),
-    cepInicial: indicePorAliases(headerRotas, ["CEP INICIAL"]),
-    cepFinal: indicePorAliases(headerRotas, ["CEP FINAL"]),
-    prazo: indicePorAliases(headerRotas, ["PRAZO"]),
-    regiao: indicePorAliases(headerRotas, ["REGIAO", "REGIÃO", "COTACAO", "COTAÇÃO"]),
+    ibgeOrigem: headerRotas.findIndex((h) => h === "IBGE ORIGEM"),
+    cidadeOrigem: headerRotas.findIndex((h) => h === "CIDADE DE ORIGEM"),
+    ufOrigem: headerRotas.findIndex((h) => h === "UF ORIGEM"),
+    ibgeDestino: headerRotas.findIndex((h) => h === "IBGE DESTINO"),
+    cidadeDestino: headerRotas.findIndex((h) => h === "CIDADE DE DESTINO"),
+    ufDestino: headerRotas.findIndex((h) => h === "UF DESTINO"),
+    cepInicial: headerRotas.findIndex((h) => h === "CEP INICIAL"),
+    cepFinal: headerRotas.findIndex((h) => h === "CEP FINAL"),
+    prazo: headerRotas.findIndex((h) => h.startsWith("PRAZO")),
+    regiao: headerRotas.findIndex((h) => h.startsWith("REGIAO") || h.startsWith("REGIÃO")),
   };
 
   const rotas = [];
@@ -117,17 +108,17 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
 
   for (let i = 1; i < rowsRotas.length; i++) {
     const row = rowsRotas[i] || [];
-    const origem = limpar(valorDaLinha(row, idx.cidadeOrigem));
-    const ufDestino = limpar(valorDaLinha(row, idx.ufDestino)).toUpperCase();
-    const cotacaoBase = detectarCotacaoBase(valorDaLinha(row, idx.regiao));
+    const origem = limpar(row[idx.cidadeOrigem]);
+    const ufDestino = limpar(row[idx.ufDestino]).toUpperCase();
+    const cotacaoBase = detectarCotacaoBase(row[idx.regiao]);
     const registro = {
-      ibgeOrigem: limpar(valorDaLinha(row, idx.ibgeOrigem)),
+      ibgeOrigem: limpar(row[idx.ibgeOrigem]),
       origem,
-      ufOrigem: limpar(valorDaLinha(row, idx.ufOrigem)).toUpperCase(),
-      ibgeDestino: limpar(valorDaLinha(row, idx.ibgeDestino)),
-      cidadeDestino: limpar(valorDaLinha(row, idx.cidadeDestino)),
+      ufOrigem: limpar(row[idx.ufOrigem]).toUpperCase(),
+      ibgeDestino: limpar(row[idx.ibgeDestino]),
+      cidadeDestino: limpar(row[idx.cidadeDestino]),
       ufDestino,
-      prazo: limpar(valorDaLinha(row, idx.prazo)),
+      prazo: limpar(row[idx.prazo]),
       cotacaoBase,
       cotacao: montarCotacaoFinal({ origem, ufDestino, cotacaoBase }),
       cotacaoFinal: montarCotacaoFinal({ origem, ufDestino, cotacaoBase }),
@@ -136,8 +127,8 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     if (!registro.ibgeDestino && !registro.cotacaoBase && !registro.prazo) continue;
     rotas.push(registro);
 
-    const cepInicial = limpar(valorDaLinha(row, idx.cepInicial));
-    const cepFinal = limpar(valorDaLinha(row, idx.cepFinal));
+    const cepInicial = limpar(row[idx.cepInicial]);
+    const cepFinal = limpar(row[idx.cepFinal]);
     if (cepInicial || cepFinal) {
       quebrasFaixa.push({ ...registro, cepInicial, cepFinal });
     }
@@ -159,12 +150,12 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     const h1 = normalizar(header1[c]);
     const h2 = normalizar(header2[c]);
 
-    if (h1.includes("CIDADE") && h1.includes("ORIGEM")) fixed.cidadeOrigem = c;
-    if (h1.includes("UF") && h1.includes("ORIGEM")) fixed.ufOrigem = c;
-    if (h1.includes("UF") && h1.includes("DESTINO")) fixed.ufDestino = c;
-    if (h1.includes("FAIXA") && h1.includes("PESO")) fixed.faixaPeso = c;
+    if (h1 === "CIDADE DE ORIGEM") fixed.cidadeOrigem = c;
+    if (h1 === "UF ORIGEM") fixed.ufOrigem = c;
+    if (h1 === "UF DESTINO") fixed.ufDestino = c;
+    if (h1 === "FAIXA PESO") fixed.faixaPeso = c;
 
-    if (h1 && h2.includes("FRETE") && (h2.includes("KG") || h2.includes("TAXA"))) {
+    if (h1 && h2 === "FRETE KG (R$)") {
       blocos.push({
         cotacaoBase: limpar(header1[c]).toUpperCase(),
         freteCol: c,
@@ -177,16 +168,16 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
 
   for (let r = 2; r < rowsFretes.length; r++) {
     const row = rowsFretes[r] || [];
-    const origem = limpar(valorDaLinha(row, fixed.cidadeOrigem));
-    const ufOrigem = limpar(valorDaLinha(row, fixed.ufOrigem)).toUpperCase();
-    const ufDestino = limpar(valorDaLinha(row, fixed.ufDestino)).toUpperCase();
-    const faixa = extrairFaixa(valorDaLinha(row, fixed.faixaPeso));
+    const origem = limpar(row[fixed.cidadeOrigem]);
+    const ufOrigem = limpar(row[fixed.ufOrigem]).toUpperCase();
+    const ufDestino = limpar(row[fixed.ufDestino]).toUpperCase();
+    const faixa = extrairFaixa(row[fixed.faixaPeso]);
 
     if (!origem && !ufDestino && !faixa.faixaPeso) continue;
 
     for (const bloco of blocos) {
-      const freteValor = paraNumero(valorDaLinha(row, bloco.freteCol));
-      const fretePercentual = paraNumero(valorDaLinha(row, bloco.adValoremCol));
+      const freteValor = paraNumero(row[bloco.freteCol]);
+      const fretePercentual = paraNumero(row[bloco.adValoremCol]);
       if (freteValor === null && fretePercentual === null) continue;
 
       const cotacaoFinal = montarCotacaoFinal({
@@ -202,31 +193,18 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
         cotacaoBase: bloco.cotacaoBase,
         cotacao: cotacaoFinal,
         cotacaoFinal,
-        faixaNome: faixa.faixaPeso,
         faixaPeso: faixa.faixaPeso,
-        pesoInicial: faixa.pesoInicial ?? '',
-        pesoFinal: faixa.pesoFinal ?? '',
-        // No padrão por faixa, o valor da faixa deve sair como TAXA APLICADA.
-        // Isso evita exportar frete mínimo ou frete valor errado para o Verum.
-        freteValor: '',
-        fretePercentual: fretePercentual ?? '',
-        freteMinimo: '',
-        taxaAplicada: freteValor ?? '',
-        excedente: faixa.pesoFinal >= 999999999 ? (freteValor ?? '') : '', 
+        pesoInicial: faixa.pesoInicial,
+        pesoFinal: faixa.pesoFinal,
+        freteValor,
+        fretePercentual,
+        freteMinimo: null,
+        taxaAplicada: null,
+        excedente: null,
         origemImportacao: "template_padrao_separado",
       });
     }
   }
 
-  const primeiraRotaComOrigem = rotas.find((rota) => rota.origem || rota.ibgeOrigem) || {};
-
-  return {
-    rotas: rotas.map((rota, index) => ({ ...rota, id: rota.id || `rota-template-${index + 1}` })),
-    quebrasFaixa: quebrasFaixa.map((quebra, index) => ({ ...quebra, id: quebra.id || `qf-template-${index + 1}` })),
-    fretes: fretes.map((frete, index) => ({ ...frete, id: frete.id || `frete-template-${index + 1}` })),
-    dadosGeraisPatch: {
-      origemNome: primeiraRotaComOrigem.origem || dadosGerais.origemNome || '',
-      origemIbge: primeiraRotaComOrigem.ibgeOrigem || dadosGerais.origemIbge || '',
-    },
-  };
+  return { rotas, quebrasFaixa, fretes };
 }
