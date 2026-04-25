@@ -1,11 +1,10 @@
-Substitua estes arquivos no projeto:
-- src/App.jsx
-- src/components/Sidebar.jsx
-- src/pages/FormatacaoPage.jsx
+Extraia este ZIP na raiz do projeto.
 
-Ajustes:
-- faixas voltam a ser puxadas no template e na exportação final
-- nova ou existente transportadora nos dois fluxos
-- fluxo manual separado do template
-- modelos de faixa voltam no manual
-- incluir na transportadora usa salvarTransportadora/salvarOrigem quando disponíveis
+Arquivo incluído:
+- central-fretes-2-formatar-tabela/src/pages/FormatacaoPage.jsx
+
+Correções:
+- exportação final de fretes leva Peso mínimo e Peso limite
+- nova transportadora ou existente
+- edição/criação de faixas no manual
+- dois fluxos separados
