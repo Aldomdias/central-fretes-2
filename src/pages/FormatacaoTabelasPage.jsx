@@ -23,6 +23,7 @@ import {
   salvarRascunhos,
   validarModeloFaixa,
 } from '../utils/formatacaoTabela';
+import { converterTemplatePrecificacaoParaFretes, converterWorkbookTemplateParaEstrutura } from '../utils/templatePrecificacao';
 
 const COTACOES_BASE = [
   'Capital',
@@ -110,6 +111,9 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
   const [modelosFaixa, setModelosFaixa] = useState(() => carregarModelosFaixa());
   const [faixaEditando, setFaixaEditando] = useState(null);
   const [mensagem, setMensagem] = useState('');
+  const [mostrarRotas, setMostrarRotas] = useState(false);
+  const [mostrarQuebras, setMostrarQuebras] = useState(false);
+  const [mostrarFretes, setMostrarFretes] = useState(true);
 
   const rotasPadronizadas = useMemo(() => aplicarCotacaoPadraoNasRotas(rotas, form, baseIbge), [rotas, form, baseIbge]);
   const modeloFaixaSelecionado = useMemo(() => modelosFaixa.find((item) => item.id === form.modeloFaixaId) || null, [modelosFaixa, form.modeloFaixaId]);
@@ -202,7 +206,8 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
       modeloFaixa: modeloFaixaSelecionado,
     });
     setFretes(linhas);
-    setMensagem(`Fretes gerados: ${linhas.length} linha(s).`);
+    setMostrarFretes(true);
+    setMensagem(`Fretes gerados: ${linhas.length} linha(s). Se quiser preencher em Excel, clique em Baixar planilha para preenchimento.`);
   }
 
   function atualizarFrete(index, campo, valor) {
@@ -265,6 +270,45 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     setMensagem(`Quebras importadas: ${novas.length}.`);
   }
 
+  async function importarTemplatePrecificacao(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const workbook = await lerWorkbook(file);
+    const possuiRotas = (workbook.SheetNames || []).some((nome) => nome.toUpperCase() === 'ROTAS');
+    const possuiFretes = (workbook.SheetNames || []).some((nome) => nome.toUpperCase() === 'FRETES');
+
+    if (possuiRotas || possuiFretes) {
+      const convertido = converterWorkbookTemplateParaEstrutura({
+        XLSX,
+        workbook,
+        dadosGerais: form,
+      });
+
+      if (convertido.dadosGeraisPatch?.origemNome || convertido.dadosGeraisPatch?.origemIbge) {
+        setForm((prev) => ({
+          ...prev,
+          origemNome: convertido.dadosGeraisPatch?.origemNome || prev.origemNome,
+          origemIbge: convertido.dadosGeraisPatch?.origemIbge || prev.origemIbge,
+        }));
+      }
+
+      if (convertido.rotas.length) setRotas(convertido.rotas);
+      if (convertido.quebras.length) setQuebras(convertido.quebras);
+      if (convertido.fretes.length) setFretes(convertido.fretes);
+
+      setMensagem(`Template importado com sucesso: ${convertido.rotas.length} rota(s), ${convertido.quebras.length} quebra(s) e ${convertido.fretes.length} frete(s).`);
+      event.target.value = '';
+      return;
+    }
+
+    const linhas = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
+    const convertidos = converterTemplatePrecificacaoParaFretes({ linhas, dadosGerais: form });
+    setFretes(convertidos);
+    setMensagem(`Template importado: ${convertidos.length} linha(s) de frete.`);
+    event.target.value = '';
+  }
+
   function exportarModeloRotas() {
     exportarLinhasParaXlsx(XLSX, [{ 'IBGE DESTINO': '', PRAZO: '', 'COTAÇÃO': '' }], `${tituloArquivo(form)}-modelo-rotas.xlsx`, 'Rotas');
   }
@@ -273,6 +317,42 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     exportarLinhasParaXlsx(XLSX, [{ 'IBGE DESTINO': '', PRAZO: '', 'COTAÇÃO': '', 'CEP INICIAL': '', 'CEP FINAL': '' }], `${tituloArquivo(form)}-modelo-quebra-faixas.xlsx`, 'Quebras');
   }
 
+  function exportarFretesParaPreenchimento() {
+    const linhasBase = fretes.length
+      ? fretes
+      : gerarFretesPorCotacaoFaixa({
+          rotas,
+          dadosGerais: form,
+          baseIbge,
+          tipoCalculo: form.tipoCalculo,
+          modeloFaixa: modeloFaixaSelecionado,
+        });
+
+    if (!linhasBase.length) {
+      setMensagem('Antes de baixar, importe ou cadastre as rotas e aplique as faixas.');
+      return;
+    }
+
+    const linhas = linhasBase.map((item) => ({
+      'NOME TRANSPORTADORA': form.transportadoraNome,
+      'CÓDIGO UNIDADE': form.codigoOrigem,
+      CANAL: form.canal,
+      'ROTA DO FRETE': item.cotacao,
+      'UF DESTINO': item.ufDestino || '',
+      'IBGE DESTINO': item.ibgeDestino || '',
+      FAIXA: item.faixaNome,
+      'PESO INICIAL': item.pesoInicial,
+      'PESO FINAL': item.pesoFinal,
+      'TAXA APLICADA': item.taxaAplicada || '',
+      'AD VALOREM %': item.fretePercentual || '',
+      EXCEDENTE: item.excedente || '',
+      'DATA INÍCIO': form.vigenciaInicial,
+      'DATA FIM': form.vigenciaFinal,
+    }));
+
+    exportarLinhasParaXlsx(XLSX, linhas, `${tituloArquivo(form)}-preencher-fretes.xlsx`, 'Fretes para preencher');
+    setMensagem(`Planilha gerada com ${linhas.length} linha(s) para preenchimento.`);
+  }
   function exportarModeloFretes() {
     const linhas = form.tipoCalculo === 'PERCENTUAL'
       ? [{ COTAÇÃO: '', 'FRETE %': '', 'FRETE MÍNIMO': '', 'TAXA APLICADA': '', EXCEDENTE: '' }]
@@ -565,9 +645,11 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
           <div className="inline-actions-wrap">
             <button className="btn-secondary" onClick={exportarModeloRotas}>Exportar modelo</button>
             <label className="btn-secondary file-button"><input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={importarRotas} />Importar rotas</label>
+            <button className="btn-secondary" onClick={() => setMostrarRotas((prev) => !prev)}>{mostrarRotas ? 'Recolher rotas' : `Mostrar rotas (${rotasPadronizadas.length})`}</button>
             <button className="btn-secondary" onClick={adicionarRota}>Adicionar rota</button>
           </div>
         </div>
+        {mostrarRotas ? (
         <div className="table-card compact-card">
           <table className="basic-table compact-table">
             <thead><tr><th>IBGE destino</th><th>Prazo</th><th>Cotação base</th><th>Cotação final</th><th /></tr></thead>
@@ -588,6 +670,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
             </tbody>
           </table>
         </div>
+        ) : <div className="empty-note">Rotas recolhidas. Total: {rotasPadronizadas.length} rota(s).</div>}
       </section>
 
       <section className="panel-card formatacao-section">
@@ -596,9 +679,11 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
           <div className="inline-actions-wrap">
             <button className="btn-secondary" onClick={exportarModeloQuebras}>Exportar modelo</button>
             <label className="btn-secondary file-button"><input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={importarQuebras} />Importar quebra</label>
+            <button className="btn-secondary" onClick={() => setMostrarQuebras((prev) => !prev)}>{mostrarQuebras ? 'Recolher quebras' : `Mostrar quebras (${quebras.length})`}</button>
             <button className="btn-secondary" onClick={adicionarQuebra}>Adicionar linha</button>
           </div>
         </div>
+        {mostrarQuebras ? (
         <div className="table-card compact-card">
           <table className="basic-table compact-table">
             <thead><tr><th>IBGE destino</th><th>Prazo</th><th>Cotação base</th><th>CEP inicial</th><th>CEP final</th><th /></tr></thead>
@@ -616,6 +701,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
             </tbody>
           </table>
         </div>
+        ) : <div className="empty-note">Quebras recolhidas. Total: {quebras.length} linha(s).</div>}
       </section>
 
       <section className="panel-card formatacao-section">
@@ -623,7 +709,10 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
           <h3>Fretes</h3>
           <div className="inline-actions-wrap">
             <button className="btn-primary" onClick={gerarFretes}>Aplicar faixas e gerar fretes</button>
-            <button className="btn-secondary" onClick={exportarModeloFretes}>Exportar modelo</button>
+            <button className="btn-secondary" onClick={exportarFretesParaPreenchimento}>Baixar planilha para preenchimento</button>
+            <button className="btn-secondary" onClick={exportarModeloFretes}>Exportar modelo vazio</button>
+            <button className="btn-secondary" onClick={() => setMostrarFretes((prev) => !prev)}>{mostrarFretes ? 'Recolher fretes' : `Mostrar fretes (${fretes.length})`}</button>
+            <label className="btn-secondary file-button"><input type="file" accept=".xlsx,.xls,.xlsb,.ods,.csv" onChange={importarTemplatePrecificacao} />Importar template de precificação</label>
           </div>
         </div>
 
@@ -637,8 +726,8 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
             <p>{form.tipoCalculo === 'FAIXA_PESO' ? (modeloFaixaSelecionado?.nome || 'Nenhuma') : 'Não se aplica para percentual'}</p>
           </div>
           <div className="info-card compact-info-card">
-            <strong>Sem template aqui</strong>
-            <p>Template preenchido fica na opção Importar Template, separada no menu.</p>
+            <strong>Template pronto</strong>
+            <p>Importe a planilha já precificada para autoformatar os fretes.</p>
           </div>
         </div>
 
@@ -661,6 +750,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
           </div>
         </div>
 
+        {mostrarFretes ? (
         <div className="table-card compact-card">
           <table className="basic-table compact-table fretes-table">
             <thead>
@@ -686,6 +776,7 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
             </tbody>
           </table>
         </div>
+        ) : <div className="empty-note">Fretes recolhidos. Total: {fretes.length} linha(s).</div>}
       </section>
 
       <section className="panel-card formatacao-section">

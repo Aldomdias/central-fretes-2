@@ -1,0 +1,22 @@
+SUBSTITUIR ESTES ARQUIVOS NO PROJETO:
+
+1) src/App.jsx
+2) src/components/Sidebar.jsx
+3) src/pages/FormatacaoTabelasPage.jsx
+4) src/pages/ImportarTemplatePage.jsx  (arquivo novo)
+5) src/utils/formatacaoTabela.js
+6) src/utils/importadorTemplatePadrao.js
+7) src/utils/modelosTemplateFormatacao.js
+
+O QUE FOI AJUSTADO:
+- Menu separado: Formatação de Tabelas e Importar Template.
+- Formatação de Tabelas ficou apenas para ferramenta manual/guiada.
+- Importar Template ficou separado para Rotas + Fretes recebidos/preenchidos.
+- Vigência inicial vem como data atual.
+- Vigência final vem com data atual + 3 anos.
+- Rotas, quebras e fretes podem ser recolhidos/expandidos para não poluir a tela.
+- Fretes ganhou botão: Baixar planilha para preenchimento.
+- Geração de fretes reforçada para criar todas as faixas por cotação/rota final.
+- IBGE fixo reforçado com Itajaí, Curitiba e Contagem.
+- Importar Template ganhou botões para baixar modelo oficial de Rotas e Fretes.
+- Leitor de Fretes aceita modelo em formato flat: CAPITAL Frete kg, CAPITAL Ad Valorem, INTERIOR 1 Frete kg etc.

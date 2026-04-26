@@ -60,6 +60,16 @@ function detectarCotacaoBase(valorRegiao) {
   return limpar(valorRegiao).toUpperCase();
 }
 
+function detectarBlocoFreteFlat(cabecalho) {
+  const texto = normalizar(cabecalho);
+  const regioes = ["CAPITAL", "METROPOLITANA", "INTERIOR 1", "INTERIOR 2", "INTERIOR 3", "INTERIOR 4", "INTERIOR 5", "INTERIOR 6", "INTERIOR 7", "INTERIOR 8", "INTERIOR 9"];
+  const cotacaoBase = regioes.find((regiao) => texto.includes(regiao));
+  if (!cotacaoBase) return null;
+  if (texto.includes("FRETE") || texto.includes("TAXA")) return { cotacaoBase, tipo: "frete" };
+  if (texto.includes("AD VALOREM")) return { cotacaoBase, tipo: "adValorem" };
+  return null;
+}
+
 async function lerArquivoExcel(file) {
   const buffer = await file.arrayBuffer();
   return XLSX.read(buffer, { type: "array" });
@@ -162,11 +172,26 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
         adValoremCol: c + 1,
       });
     }
+
+    const flat = detectarBlocoFreteFlat(header1[c]);
+    if (flat?.tipo === "frete") {
+      const adValoremCol = header1.findIndex((cab) => {
+        const bloco = detectarBlocoFreteFlat(cab);
+        return bloco?.tipo === "adValorem" && bloco.cotacaoBase === flat.cotacaoBase;
+      });
+      blocos.push({
+        cotacaoBase: flat.cotacaoBase,
+        freteCol: c,
+        adValoremCol: adValoremCol >= 0 ? adValoremCol : c + 1,
+      });
+    }
   }
 
   const fretes = [];
 
-  for (let r = 2; r < rowsFretes.length; r++) {
+  const linhaInicialFretes = (rowsFretes[1] || []).some((v) => limpar(v)) ? 2 : 1;
+
+  for (let r = linhaInicialFretes; r < rowsFretes.length; r++) {
     const row = rowsFretes[r] || [];
     const origem = limpar(row[fixed.cidadeOrigem]);
     const ufOrigem = limpar(row[fixed.ufOrigem]).toUpperCase();

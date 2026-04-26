@@ -16,14 +16,14 @@ const UF_POR_CODIGO = {
 const MUNICIPIOS_FIXOS = [
   { codigo_municipio_completo: '4208203', nome_municipio: 'Itajaí', nome_municipio_sem_acento: 'Itajai', uf: 'SC' },
   { codigo_municipio_completo: '4211306', nome_municipio: 'Navegantes', nome_municipio_sem_acento: 'Navegantes', uf: 'SC' },
-  { codigo_municipio_completo: '4106902', nome_municipio: 'Curitiba', nome_municipio_sem_acento: 'Curitiba', uf: 'PR' },
-  { codigo_municipio_completo: '3118601', nome_municipio: 'Contagem', nome_municipio_sem_acento: 'Contagem', uf: 'MG' },
   { codigo_municipio_completo: '3505708', nome_municipio: 'Barueri', nome_municipio_sem_acento: 'Barueri', uf: 'SP' },
   { codigo_municipio_completo: '3506003', nome_municipio: 'Bauru', nome_municipio_sem_acento: 'Bauru', uf: 'SP' },
   { codigo_municipio_completo: '3550308', nome_municipio: 'São Paulo', nome_municipio_sem_acento: 'Sao Paulo', uf: 'SP' },
   { codigo_municipio_completo: '3106200', nome_municipio: 'Belo Horizonte', nome_municipio_sem_acento: 'Belo Horizonte', uf: 'MG' },
   { codigo_municipio_completo: '3205002', nome_municipio: 'Serra', nome_municipio_sem_acento: 'Serra', uf: 'ES' },
   { codigo_municipio_completo: '5300108', nome_municipio: 'Brasília', nome_municipio_sem_acento: 'Brasilia', uf: 'DF' },
+  { codigo_municipio_completo: '4106902', nome_municipio: 'Curitiba', nome_municipio_sem_acento: 'Curitiba', uf: 'PR' },
+  { codigo_municipio_completo: '3118601', nome_municipio: 'Contagem', nome_municipio_sem_acento: 'Contagem', uf: 'MG' },
 ];
 
 function uid(prefix = 'id') {
@@ -43,6 +43,7 @@ export function normalizarChave(valor = '') {
 }
 
 export function criarFormularioInicial() {
+  const vigencia = criarVigenciaPadrao();
   return {
     id: uid('fmt'),
     nomeFormatacao: '',
@@ -59,8 +60,8 @@ export function criarFormularioInicial() {
     regraCalculo: 'Sem regra',
     tipoCalculo: 'FAIXA_PESO',
     modeloFaixaId: 'b2b-padrao',
-    vigenciaInicial: '',
-    vigenciaFinal: '',
+    vigenciaInicial: vigencia.vigenciaInicial,
+    vigenciaFinal: vigencia.vigenciaFinal,
   };
 }
 
@@ -354,29 +355,60 @@ export function obterCotacoesUnicasDasRotas(rotas = [], dadosGerais = {}, baseIb
 }
 
 export function gerarFretesPorCotacaoFaixa({ rotas = [], dadosGerais = {}, baseIbge = [], tipoCalculo = 'FAIXA_PESO', modeloFaixa = null }) {
-  const cotacoes = obterCotacoesUnicasDasRotas(rotas, dadosGerais, baseIbge);
-  if (tipoCalculo === 'PERCENTUAL') {
-    return cotacoes.map((cotacao) => ({
-      ...criarFreteInicial(),
+  const rotasPadronizadas = aplicarCotacaoPadraoNasRotas(rotas, dadosGerais, baseIbge)
+    .filter((rota) => rota.cotacaoFinal || rota.cotacao || rota.ibgeDestino || rota.ufDestino);
+
+  const cotacoes = [];
+  const vistos = new Set();
+  rotasPadronizadas.forEach((rota) => {
+    const cotacao = rota.cotacaoFinal || rota.cotacao || montarCotacaoPadrao({
+      origem: dadosGerais.origemNome || dadosGerais.origem || '',
+      ufDestino: rota.ufDestino || obterUfDoDestino(rota.ibgeDestino, baseIbge),
+      cotacaoBase: rota.cotacaoBase || 'Interior 1',
+    });
+    const chave = normalizarChave(cotacao);
+    if (!chave || vistos.has(chave)) return;
+    vistos.add(chave);
+    cotacoes.push({
       cotacao,
+      cotacaoBase: rota.cotacaoBase || '',
+      ufDestino: rota.ufDestino || obterUfDoDestino(rota.ibgeDestino, baseIbge),
+      ibgeDestino: rota.ibgeDestino || '',
+    });
+  });
+
+  if (tipoCalculo === 'PERCENTUAL') {
+    return cotacoes.map((item) => ({
+      ...criarFreteInicial(),
+      cotacao: item.cotacao,
+      cotacaoBase: item.cotacaoBase,
+      ufDestino: item.ufDestino,
+      ibgeDestino: item.ibgeDestino,
       origemImportacao: 'gerado',
     }));
   }
 
-  const itens = modeloFaixa?.itens || [];
+  const itens = modeloFaixa?.itens?.length ? modeloFaixa.itens : modelosFaixaPadrao()[0].itens;
   const linhas = [];
-  cotacoes.forEach((cotacao) => {
+
+  cotacoes.forEach((item) => {
     itens.forEach((faixa) => {
+      const pesoInicial = faixa.pesoInicial ?? '';
+      const pesoFinal = faixa.pesoFinal ?? '';
       linhas.push({
         ...criarFreteInicial(),
-        cotacao,
-        faixaNome: `${faixa.pesoInicial} a ${faixa.pesoFinal}`,
-        pesoInicial: faixa.pesoInicial,
-        pesoFinal: faixa.pesoFinal,
+        cotacao: item.cotacao,
+        cotacaoBase: item.cotacaoBase,
+        ufDestino: item.ufDestino,
+        ibgeDestino: item.ibgeDestino,
+        faixaNome: `${pesoInicial} a ${pesoFinal}`,
+        pesoInicial,
+        pesoFinal,
         origemImportacao: 'gerado',
       });
     });
   });
+
   return linhas;
 }
 
