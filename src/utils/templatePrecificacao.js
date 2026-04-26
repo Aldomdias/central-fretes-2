@@ -141,7 +141,7 @@ function converterPlanilhaPreenchimentoSistema({ linhas = [], dadosGerais = {} }
   return resultado;
 }
 
-export function converterTemplatePrecificacaoParaFretes({
+export function converterTemplatePrecificacaoParaFretes({ linhas = [], dadosGerais = {} }) {
   if (!Array.isArray(linhas) || linhas.length < 2) return [];
 
   const preenchimentoSistema = converterPlanilhaPreenchimentoSistema({ linhas, dadosGerais });
