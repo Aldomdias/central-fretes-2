@@ -1,22 +1,14 @@
-SUBSTITUIR ESTES ARQUIVOS NO PROJETO:
+CORREÇÃO TELA BRANCA - FORMATAÇÃO DE TABELAS
 
-1) src/App.jsx
-2) src/components/Sidebar.jsx
-3) src/pages/FormatacaoTabelasPage.jsx
-4) src/pages/ImportarTemplatePage.jsx  (arquivo novo)
-5) src/utils/formatacaoTabela.js
-6) src/utils/importadorTemplatePadrao.js
-7) src/utils/modelosTemplateFormatacao.js
+Substituir o arquivo:
+src/utils/formatacaoTabela.js
 
-O QUE FOI AJUSTADO:
-- Menu separado: Formatação de Tabelas e Importar Template.
-- Formatação de Tabelas ficou apenas para ferramenta manual/guiada.
-- Importar Template ficou separado para Rotas + Fretes recebidos/preenchidos.
-- Vigência inicial vem como data atual.
-- Vigência final vem com data atual + 3 anos.
-- Rotas, quebras e fretes podem ser recolhidos/expandidos para não poluir a tela.
-- Fretes ganhou botão: Baixar planilha para preenchimento.
-- Geração de fretes reforçada para criar todas as faixas por cotação/rota final.
-- IBGE fixo reforçado com Itajaí, Curitiba e Contagem.
-- Importar Template ganhou botões para baixar modelo oficial de Rotas e Fretes.
-- Leitor de Fretes aceita modelo em formato flat: CAPITAL Frete kg, CAPITAL Ad Valorem, INTERIOR 1 Frete kg etc.
+Motivo:
+A tela ficou em branco porque o formulário inicial chama criarVigenciaPadrao(), mas essa função não estava declarada no arquivo. Isso quebra a renderização da tela de Formatação de Tabelas.
+
+Depois de substituir:
+1. Salve o arquivo.
+2. Rode o projeto novamente.
+3. Entre em Formatação de Tabelas.
+
+Não precisa mexer em App.jsx, Sidebar.jsx ou nas páginas agora.
