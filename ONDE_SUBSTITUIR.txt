@@ -1,14 +1,40 @@
-CORREÇÃO TELA BRANCA - FORMATAÇÃO DE TABELAS
+PATCH ÚNICO - FORMATAÇÃO DE TABELAS + IMPORTAR TEMPLATE
 
-Substituir o arquivo:
-src/utils/formatacaoTabela.js
+Substituir/copiar os arquivos abaixo no projeto, mantendo os caminhos:
 
-Motivo:
-A tela ficou em branco porque o formulário inicial chama criarVigenciaPadrao(), mas essa função não estava declarada no arquivo. Isso quebra a renderização da tela de Formatação de Tabelas.
+1) src/App.jsx
+2) src/components/Sidebar.jsx
+3) src/pages/FormatacaoTabelasPage.jsx
+4) src/pages/ImportarTemplatePage.jsx
+5) src/utils/formatacaoTabela.js
+6) src/utils/importadorTemplatePadrao.js
+7) src/utils/modelosTemplateFormatacao.js
+8) src/utils/templatePrecificacao.js
+
+O QUE ESSE PATCH COBRE:
+
+A) As telas continuam separadas:
+- Formatação de Tabelas = cadastro/manual guiado
+- Importar Template = upload de template preenchido pelo transportador
+
+B) Formatação de Tabelas:
+- Vigência automática: início = hoje e fim = +3 anos
+- Mantém transportadora nova ou cadastrada
+- Geração de fretes por rota + região + todas as faixas
+- Exportação de planilha para preenchimento
+- Reimportação da planilha preenchida
+- Listas mais controladas para não poluir a tela
+
+C) Importar Template:
+- Leitura de Rotas + Fretes separados
+- Botões para baixar modelos oficiais
+- Leitura de cotações por CAPITAL / INTERIOR 1 / INTERIOR 2 / INTERIOR 3
+- Correção para não pegar apenas parte de SP
+- Conversão do template para o modelo flat do sistema
 
 Depois de substituir:
-1. Salve o arquivo.
-2. Rode o projeto novamente.
-3. Entre em Formatação de Tabelas.
-
-Não precisa mexer em App.jsx, Sidebar.jsx ou nas páginas agora.
+- parar o servidor
+- rodar npm install, se necessário
+- rodar npm run dev ou pnpm dev
+- testar primeiro Importar Template
+- depois testar Formatação de Tabelas

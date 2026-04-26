@@ -42,24 +42,6 @@ export function normalizarChave(valor = '') {
     .toUpperCase();
 }
 
-export function criarVigenciaPadrao() {
-  const hoje = new Date();
-  const fim = new Date();
-  fim.setFullYear(hoje.getFullYear() + 3);
-
-  const formatarData = (data) => {
-    const ano = data.getFullYear();
-    const mes = String(data.getMonth() + 1).padStart(2, '0');
-    const dia = String(data.getDate()).padStart(2, '0');
-    return `${ano}-${mes}-${dia}`;
-  };
-
-  return {
-    vigenciaInicial: formatarData(hoje),
-    vigenciaFinal: formatarData(fim),
-  };
-}
-
 export function criarFormularioInicial() {
   const vigencia = criarVigenciaPadrao();
   return {

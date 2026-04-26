@@ -100,6 +100,31 @@ function tituloArquivo(form) {
   return partes.join('-').replace(/\\s+/g, '_') || 'formatacao';
 }
 
+
+function pegarCampoLinha(row = {}, aliases = []) {
+  for (const alias of aliases) {
+    const valor = row[alias];
+    if (valor !== undefined && valor !== null && String(valor).trim() !== '') return valor;
+  }
+  const mapa = new Map(Object.keys(row || {}).map((key) => [String(key).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toUpperCase(), key]));
+  for (const alias of aliases) {
+    const chave = String(alias).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
+    const keyReal = mapa.get(chave);
+    if (keyReal) {
+      const valor = row[keyReal];
+      if (valor !== undefined && valor !== null && String(valor).trim() !== '') return valor;
+    }
+  }
+  return '';
+}
+
+function extrairCotacaoBaseDaRota(valor = '') {
+  const texto = String(valor || '').trim();
+  if (!texto) return '';
+  const partes = texto.split('-').map((parte) => parte.trim()).filter(Boolean);
+  return partes.length >= 3 ? partes[partes.length - 1] : texto;
+}
+
 export default function FormatacaoTabelasPage({ transportadoras = [] }) {
   const cadastros = useMemo(() => construirCadastroBase(transportadoras), [transportadoras]);
   const [form, setForm] = useState(criarFormularioInicial());
@@ -242,16 +267,47 @@ export default function FormatacaoTabelasPage({ transportadoras = [] }) {
     if (!file) return;
     const rows = await lerPlanilhaComoObjetos(file);
     const novasRotas = rows
-      .filter((row) => row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || row['PRAZO'] || row['prazo'] || row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'])
-      .map((row) => ({
-        ...criarRotaInicial(),
-        ibgeDestino: row['IBGE DESTINO'] || row['ibgeDestino'] || row['IBGE'] || '',
-        prazo: row['PRAZO'] || row['prazo'] || '',
-        cotacaoBase: row['COTAÇÃO'] || row['Cotação'] || row['cotacaoBase'] || 'Interior 1',
-      }))
-      .filter((item) => item.ibgeDestino || item.prazo);
+      .map((row, index) => {
+        const rotaDoFrete = pegarCampoLinha(row, ['ROTA DO FRETE', 'ROTA FRETE', 'COTAÇÃO FINAL']);
+        const cotacaoLida = pegarCampoLinha(row, [
+          'REGIÃO                     (Conforme TABELA B2B)',
+          'REGIÃO',
+          'REGIAO',
+          'COTAÇÃO',
+          'Cotação',
+          'cotacaoBase',
+          'REGIÃO BASE',
+        ]);
+        const cotacaoBase = cotacaoLida || extrairCotacaoBaseDaRota(rotaDoFrete) || 'Interior 1';
+        const ufDestino = pegarCampoLinha(row, ['UF DESTINO', 'UF Destino', 'ufDestino', 'uf_destino']);
+        return {
+          ...criarRotaInicial(),
+          id: `rota-import-${index + 1}`,
+          ibgeDestino: String(pegarCampoLinha(row, ['IBGE DESTINO', 'IBGE Destino', 'ibgeDestino', 'IBGE', 'ibge_destino']) || '').trim(),
+          cidadeDestino: String(pegarCampoLinha(row, ['CIDADE DE DESTINO', 'Cidade Destino', 'cidadeDestino']) || '').trim(),
+          ufDestino: String(ufDestino || '').trim().toUpperCase(),
+          prazo: String(pegarCampoLinha(row, ['PRAZO       (Somente nº)', 'PRAZO', 'Prazo', 'prazo']) || '').trim(),
+          cotacaoBase: String(cotacaoBase || '').trim(),
+        };
+      })
+      .filter((item) => item.ibgeDestino || item.ufDestino || item.prazo || item.cotacaoBase);
+
+    const primeiraOrigem = rows.find((row) => pegarCampoLinha(row, ['CIDADE DE ORIGEM', 'Cidade Origem', 'cidadeOrigem']));
+    if (primeiraOrigem) {
+      const origemNome = pegarCampoLinha(primeiraOrigem, ['CIDADE DE ORIGEM', 'Cidade Origem', 'cidadeOrigem']);
+      const origemIbge = pegarCampoLinha(primeiraOrigem, ['IBGE ORIGEM', 'IBGE Origem', 'ibgeOrigem']);
+      const ufOrigem = pegarCampoLinha(primeiraOrigem, ['UF ORIGEM', 'UF Origem', 'ufOrigem']);
+      setForm((prev) => ({
+        ...prev,
+        origemNome: origemNome || prev.origemNome,
+        origemIbge: origemIbge || prev.origemIbge,
+        ufOrigem: ufOrigem || prev.ufOrigem,
+      }));
+    }
+
     if (novasRotas.length) setRotas(novasRotas);
-    setMensagem(`Rotas importadas: ${novasRotas.length}.`);
+    setMensagem(`Rotas importadas: ${novasRotas.length}. Agora clique em Aplicar faixas e gerar fretes para criar todas as cotações.`);
+    event.target.value = '';
   }
 
   async function importarQuebras(event) {

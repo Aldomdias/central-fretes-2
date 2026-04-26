@@ -61,8 +61,94 @@ function detectarBlocos(linha1 = [], linha2 = []) {
   return blocos;
 }
 
-export function converterTemplatePrecificacaoParaFretes({ linhas = [], dadosGerais = {} }) {
-  if (!Array.isArray(linhas) || linhas.length < 3) return [];
+
+function normalizarHeader(valor = '') {
+  return normalizarChave(valor).replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+
+function indexHeader(headers = [], aliases = []) {
+  const normalizados = headers.map((h) => normalizarHeader(h));
+  for (const alias of aliases) {
+    const alvo = normalizarHeader(alias);
+    const idx = normalizados.findIndex((h) => h === alvo || h.includes(alvo) || alvo.includes(h));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function valorLinha(linha = [], idx = -1) {
+  return idx >= 0 ? linha[idx] : '';
+}
+
+function converterPlanilhaPreenchimentoSistema({ linhas = [], dadosGerais = {} }) {
+  if (!Array.isArray(linhas) || linhas.length < 2) return [];
+  const headerIndex = linhas.findIndex((linha) => {
+    const normalizados = (linha || []).map((h) => normalizarHeader(h));
+    return normalizados.some((h) => h === 'ROTA DO FRETE') && normalizados.some((h) => h.includes('TAXA APLICADA'));
+  });
+  if (headerIndex < 0) return [];
+
+  const headers = linhas[headerIndex] || [];
+  const idx = {
+    rota: indexHeader(headers, ['ROTA DO FRETE', 'COTAÇÃO', 'COTACAO']),
+    ufDestino: indexHeader(headers, ['UF DESTINO']),
+    ibgeDestino: indexHeader(headers, ['IBGE DESTINO']),
+    faixa: indexHeader(headers, ['FAIXA', 'FAIXA PESO']),
+    pesoInicial: indexHeader(headers, ['PESO INICIAL']),
+    pesoFinal: indexHeader(headers, ['PESO FINAL']),
+    taxaAplicada: indexHeader(headers, ['TAXA APLICADA']),
+    adValorem: indexHeader(headers, ['AD VALOREM %', 'AD VALOREM']),
+    excedente: indexHeader(headers, ['EXCEDENTE']),
+    dataInicio: indexHeader(headers, ['DATA INÍCIO', 'DATA INICIO']),
+    dataFim: indexHeader(headers, ['DATA FIM']),
+  };
+
+  const resultado = [];
+  for (let i = headerIndex + 1; i < linhas.length; i += 1) {
+    const linha = linhas[i] || [];
+    const cotacao = limpar(valorLinha(linha, idx.rota));
+    const faixaLabel = limpar(valorLinha(linha, idx.faixa));
+    const taxaAplicada = paraNumero(valorLinha(linha, idx.taxaAplicada));
+    const adValorem = paraNumero(valorLinha(linha, idx.adValorem));
+    const excedente = paraNumero(valorLinha(linha, idx.excedente));
+    const pesoInicial = paraNumero(valorLinha(linha, idx.pesoInicial));
+    const pesoFinal = paraNumero(valorLinha(linha, idx.pesoFinal));
+
+    if (!cotacao && !faixaLabel && taxaAplicada === null && adValorem === null) continue;
+
+    const partes = cotacao.split('-').map((p) => p.trim()).filter(Boolean);
+    const cotacaoBase = partes.length >= 3 ? partes[partes.length - 1] : '';
+    const ufDestino = limpar(valorLinha(linha, idx.ufDestino)) || (partes.length >= 2 ? partes[1] : '');
+
+    resultado.push({
+      cotacao,
+      cotacaoBase,
+      ufDestino,
+      ibgeDestino: limpar(valorLinha(linha, idx.ibgeDestino)),
+      faixaNome: faixaLabel || `${pesoInicial ?? ''} a ${pesoFinal ?? ''}`,
+      pesoInicial: pesoInicial ?? '',
+      pesoFinal: pesoFinal ?? '',
+      freteValor: '',
+      fretePercentual: adValorem ?? '',
+      freteMinimo: '',
+      taxaAplicada: taxaAplicada ?? '',
+      excedente: excedente ?? '',
+      dataInicio: limpar(valorLinha(linha, idx.dataInicio)) || dadosGerais.vigenciaInicial || '',
+      dataFim: limpar(valorLinha(linha, idx.dataFim)) || dadosGerais.vigenciaFinal || '',
+      origemImportacao: 'preenchimento_sistema',
+    });
+  }
+  return resultado;
+}
+
+export function converterTemplatePrecificacaoParaFretes({
+  if (!Array.isArray(linhas) || linhas.length < 2) return [];
+
+  const preenchimentoSistema = converterPlanilhaPreenchimentoSistema({ linhas, dadosGerais });
+  if (preenchimentoSistema.length) return preenchimentoSistema;
+
+  if (linhas.length < 3) return [];
+
 
   const linha1 = linhas[0] || [];
   const linha2 = linhas[1] || [];
