@@ -19,55 +19,54 @@ function paraNumero(valor) {
   const texto = String(valor).trim();
   if (!texto) return null;
 
-  const limpo = texto
+  const somenteNumero = texto
     .replace(/R\$/gi, "")
     .replace(/%/g, "")
     .replace(/kg/gi, "")
     .trim();
 
-  const temVirgula = limpo.includes(",");
-  let preparado = limpo.replace(/\s/g, "");
+  const temVirgula = somenteNumero.includes(",");
+  let preparado = somenteNumero.replace(/\s/g, "");
+  if (temVirgula) preparado = preparado.replace(/\./g, "").replace(",", ".");
 
-  if (temVirgula) {
-    preparado = preparado.replace(/\./g, "").replace(",", ".");
-  }
-
-  const numero = Number(preparado);
-  return Number.isFinite(numero) ? numero : null;
+  const n = Number(preparado);
+  return Number.isFinite(n) ? n : null;
 }
 
 function extrairFaixa(texto) {
   const bruto = limpar(texto);
-
   if (!bruto) {
-    return {
-      faixaPeso: "",
-      pesoInicial: null,
-      pesoFinal: null,
-      excedente: null,
-    };
+    return { faixaPeso: "", pesoInicial: null, pesoFinal: null, excedente: null };
   }
 
-  const acimaDe = bruto.match(/(?:acima\s+de|maior\s+que|>\s*)(\d+[.,]?\d*)/i);
+  const textoNormalizado = bruto
+    .replace(/\s+/g, " ")
+    .replace(/kgs?/gi, "kg")
+    .trim();
+
+  const acimaDe = textoNormalizado.match(/(?:acima\s+de|maior\s+que|>\s*)\s*(\d+(?:[.,]\d+)?)/i);
   if (acimaDe) {
-    const pesoInicial = paraNumero(acimaDe[1]);
-
+    const inicio = paraNumero(acimaDe[1]);
     return {
       faixaPeso: bruto,
-      pesoInicial,
+      pesoInicial: inicio,
       pesoFinal: 999999999,
-      excedente: pesoInicial,
+      excedente: inicio,
     };
   }
 
-  const match = bruto.match(/(\d+[.,]?\d*)\s*(?:a|até|ate|-|\/)\s*(\d+[.,]?\d*)/i);
+  // Aceita formatos como:
+  // 0 a 2
+  // 0 kg a 2 kg
+  // 0 kG A 2 kg
+  // 2kg-5kg
+  // 5 até 10 kg
+  const match = textoNormalizado.match(
+    /(\d+(?:[.,]\d+)?)\s*(?:kg)?\s*(?:a|ate|até|-|\/)\s*(\d+(?:[.,]\d+)?)\s*(?:kg)?/i
+  );
+
   if (!match) {
-    return {
-      faixaPeso: bruto,
-      pesoInicial: null,
-      pesoFinal: null,
-      excedente: null,
-    };
+    return { faixaPeso: bruto, pesoInicial: null, pesoFinal: null, excedente: null };
   }
 
   return {
@@ -86,10 +85,8 @@ function montarCotacaoFinal({ origem, ufDestino, cotacaoBase }) {
 
 function detectarCotacaoBase(valorRegiao) {
   const texto = normalizar(valorRegiao);
-
   if (!texto) return "";
   if (texto.includes("CAPITAL")) return "CAPITAL";
-  if (texto.includes("METROPOLITANA") || texto.includes("METROP")) return "METROPOLITANA";
   if (texto.includes("INTERIOR 1")) return "INTERIOR 1";
   if (texto.includes("INTERIOR 2")) return "INTERIOR 2";
   if (texto.includes("INTERIOR 3")) return "INTERIOR 3";
@@ -99,13 +96,12 @@ function detectarCotacaoBase(valorRegiao) {
   if (texto.includes("INTERIOR 7")) return "INTERIOR 7";
   if (texto.includes("INTERIOR 8")) return "INTERIOR 8";
   if (texto.includes("INTERIOR 9")) return "INTERIOR 9";
-
+  if (texto.includes("METROP")) return "METROPOLITANA";
   return limpar(valorRegiao).toUpperCase();
 }
 
 function detectarBlocoFreteFlat(cabecalho) {
   const texto = normalizar(cabecalho);
-
   const regioes = [
     "METROPOLITANA",
     "CAPITAL",
@@ -146,10 +142,7 @@ function primeiraAba(workbook) {
 
 function procurarIndice(header, nomes) {
   const opcoes = nomes.map((nome) => normalizar(nome));
-
-  return header.findIndex((h) =>
-    opcoes.some((opcao) => h === opcao || h.includes(opcao))
-  );
+  return header.findIndex((h) => opcoes.some((opcao) => h === opcao || h.includes(opcao)));
 }
 
 export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes }) {
@@ -196,7 +189,6 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
 
   for (let i = 1; i < rowsRotas.length; i++) {
     const row = rowsRotas[i] || [];
-
     const origem = limpar(row[idx.cidadeOrigem]);
     const ufDestino = limpar(row[idx.ufDestino]).toUpperCase();
     const cotacaoBase = detectarCotacaoBase(row[idx.regiao]);
@@ -215,12 +207,10 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     };
 
     if (!registro.origem && !registro.ufDestino && !registro.cotacaoBase) continue;
-
     rotas.push(registro);
 
     const cepInicial = idx.cepInicial >= 0 ? limpar(row[idx.cepInicial]) : "";
     const cepFinal = idx.cepFinal >= 0 ? limpar(row[idx.cepFinal]) : "";
-
     if (cepInicial || cepFinal) {
       quebrasFaixa.push({ ...registro, cepInicial, cepFinal });
     }
@@ -230,7 +220,6 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
   const header2 = (rowsFretes[1] || []).map((v) => limpar(v));
   const header1Norm = header1.map((v) => normalizar(v));
   const header2Norm = header2.map((v) => normalizar(v));
-
   const cols = Math.max(header1.length, header2.length);
 
   const fixed = {
@@ -247,73 +236,45 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
   }
 
   const blocos = [];
-  const blocosMapeados = new Set();
-
+  const cotacoesJaMapeadas = new Set();
   const temSegundoCabecalho = header2Norm.some(
-    (h) =>
-      h.includes("FRETE") ||
-      h.includes("TAXA") ||
-      h.includes("VALOR") ||
-      h.includes("AD VALOREM") ||
-      h.includes("ADVALOREM")
+    (h) => h.includes("FRETE") || h.includes("AD VALOREM") || h.includes("ADVALOREM")
   );
 
   for (let c = 0; c < cols; c++) {
     const h1 = normalizar(header1[c]);
     const h2 = normalizar(header2[c]);
 
-    // Modelo com duas linhas de cabeçalho:
-    // Linha 1 = CAPITAL / INTERIOR 1...
-    // Linha 2 = FRETE KG / AD VALOREM...
-    if (
-      h1 &&
-      h2 &&
-      (h2.includes("FRETE") || h2.includes("TAXA") || h2.includes("VALOR"))
-    ) {
+    if (h1 && h2 && (h2.includes("FRETE") || h2.includes("TAXA") || h2.includes("VALOR"))) {
       const cotacaoBase = detectarCotacaoBase(header1[c]);
-
       if (cotacaoBase) {
-        const chave = `${cotacaoBase}|${c}|duplo`;
-
-        if (!blocosMapeados.has(chave)) {
-          const adValoremCol = header2Norm.findIndex(
-            (cab, indice) =>
-              indice > c &&
-              normalizar(header1[indice]) === normalizar(header1[c]) &&
-              (cab.includes("AD VALOREM") || cab.includes("ADVALOREM"))
-          );
-
+        const chave = `${cotacaoBase}|${c}`;
+        if (!cotacoesJaMapeadas.has(chave)) {
           blocos.push({
             cotacaoBase,
             freteCol: c,
-            adValoremCol: adValoremCol >= 0 ? adValoremCol : -1,
+            adValoremCol: c + 1,
           });
-
-          blocosMapeados.add(chave);
+          cotacoesJaMapeadas.add(chave);
         }
       }
     }
 
-    // Modelo com uma linha de cabeçalho:
-    // CAPITAL Frete kg (R$), CAPITAL Ad Valorem(%)
     const flat = detectarBlocoFreteFlat(header1[c]);
-
     if (flat?.tipo === "frete") {
       const adValoremCol = header1.findIndex((cab) => {
         const bloco = detectarBlocoFreteFlat(cab);
         return bloco?.tipo === "adValorem" && bloco.cotacaoBase === flat.cotacaoBase;
       });
 
-      const chave = `${flat.cotacaoBase}|${c}|flat`;
-
-      if (!blocosMapeados.has(chave)) {
+      const chave = `${flat.cotacaoBase}|${c}`;
+      if (!cotacoesJaMapeadas.has(chave)) {
         blocos.push({
           cotacaoBase: flat.cotacaoBase,
           freteCol: c,
           adValoremCol: adValoremCol >= 0 ? adValoremCol : -1,
         });
-
-        blocosMapeados.add(chave);
+        cotacoesJaMapeadas.add(chave);
       }
     }
   }
@@ -329,7 +290,6 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
 
   for (let r = linhaInicialFretes; r < rowsFretes.length; r++) {
     const row = rowsFretes[r] || [];
-
     const origem = limpar(row[fixed.cidadeOrigem]);
     const ufOrigem = fixed.ufOrigem >= 0 ? limpar(row[fixed.ufOrigem]).toUpperCase() : "";
     const ufDestino = limpar(row[fixed.ufDestino]).toUpperCase();
@@ -340,7 +300,6 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     for (const bloco of blocos) {
       const freteValor = paraNumero(row[bloco.freteCol]);
       const fretePercentual = bloco.adValoremCol >= 0 ? paraNumero(row[bloco.adValoremCol]) : null;
-
       if (freteValor === null && fretePercentual === null) continue;
 
       const cotacaoFinal = montarCotacaoFinal({
@@ -369,9 +328,5 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     }
   }
 
-  return {
-    rotas,
-    quebrasFaixa,
-    fretes,
-  };
+  return { rotas, quebrasFaixa, fretes };
 }
