@@ -84,23 +84,22 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
     fimVigencia,
   }));
 
+  // Cabeçalho EXATO que o importador/cadastro de fretes do sistema lê.
   const linhasExportacao = cotacoes.map((item) => ({
-    'NOME TRANSPORTADORA': nomeTransportadora,
-    'CANAL': canalFinal,
-    'ROTA DO FRETE': item.rota,
-    'ORIGEM': item.origem,
-    'UF ORIGEM': item.ufOrigem,
-    'UF DESTINO': item.ufDestino,
-    'COTAÇÃO': item.cotacaoBase,
-    'FAIXA': item.faixaPeso,
-    'PESO INICIAL': numeroOuVazio(item.pesoMin),
-    'PESO FINAL': numeroOuVazio(item.pesoMax),
-    'TAXA APLICADA': numeroOuVazio(item.valorFixo),
-    'EXCEDENTE': numeroOuVazio(item.excesso),
-    'AD VALOREM / % FRETE': numeroOuVazio(item.percentual),
-    'FRETE MÍNIMO': numeroOuVazio(item.freteMinimo),
-    'DATA INÍCIO': inicioVigencia,
-    'DATA FIM': fimVigencia,
+    'Nome da transportadora': nomeTransportadora,
+    'Código da unidade': item.origem || '',
+    'Canal': canalFinal,
+    'Regra de cálculo': item.regraCalculo,
+    'Tipo de cálculo': item.tipoCalculo,
+    'Rota do frete': item.rota,
+    'Peso mínimo': numeroOuVazio(item.pesoMin),
+    'Peso limite': numeroOuVazio(item.pesoMax),
+    'Excesso de peso': numeroOuVazio(item.excesso),
+    'Taxa aplicada': numeroOuVazio(item.taxaAplicada),
+    'Frete percentual': numeroOuVazio(item.percentual),
+    'Frete mínimo': numeroOuVazio(item.freteMinimo),
+    'Início da vigência': inicioVigencia,
+    'Fim da vigência': fimVigencia,
   }));
 
   const linhasRotas = rotas.map((item) => ({
@@ -388,7 +387,7 @@ export default function ImportarTemplatePage({ store, transportadoras = [] }) {
           <div className="section-header-inline"><h3>Revisão da tabela formatada</h3><span>{formatado.cotacoes.length} cotação(ões)</span></div>
           <div className="table-scroll">
             <table className="basic-table compact-table fretes-table">
-              <thead><tr><th>Rota</th><th>Faixa</th><th>Peso inicial</th><th>Peso final</th><th>Taxa aplicada</th><th>% Frete / Ad Valorem</th><th>Vigência</th></tr></thead>
+              <thead><tr><th>Rota do frete</th><th>Faixa</th><th>Peso mínimo</th><th>Peso limite</th><th>Taxa aplicada</th><th>Frete percentual</th><th>Vigência</th></tr></thead>
               <tbody>
                 {formatado.cotacoes.slice(0, 100).map((item) => (
                   <tr key={item.id}>
@@ -396,7 +395,7 @@ export default function ImportarTemplatePage({ store, transportadoras = [] }) {
                     <td>{item.faixaPeso}</td>
                     <td>{numeroOuVazio(item.pesoMin)}</td>
                     <td>{numeroOuVazio(item.pesoMax)}</td>
-                    <td>{numeroOuVazio(item.valorFixo)}</td>
+                    <td>{numeroOuVazio(item.taxaAplicada)}</td>
                     <td>{numeroOuVazio(item.percentual)}</td>
                     <td>{inicioVigencia} até {fimVigencia}</td>
                   </tr>
