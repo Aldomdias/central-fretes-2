@@ -1,7 +1,21 @@
-Substituir o arquivo abaixo no projeto:
+PATCH: Importar Template com continuidade do fluxo
 
-src/utils/templatePrecificacao.js
+Substituir este arquivo no projeto:
 
-Correção aplicada:
-- Corrigido erro de sintaxe na função converterTemplatePrecificacaoParaFretes.
-- O erro quebrava o build da Vercel com: Failed to parse source for import analysis.
+1) src/pages/ImportarTemplatePage.jsx
+
+O que foi incluído:
+- Campos para escolher transportadora nova ou transportadora já cadastrada.
+- Canal da tabela.
+- Vigência automática: início = data atual, fim = +3 anos, ambos editáveis.
+- Após Ler template, aparecem ações para:
+  - Formatar no padrão do sistema.
+  - Visualizar tabela formatada.
+  - Baixar rotas formatadas.
+  - Baixar fretes formatados.
+  - Salvar/Incluir na transportadora.
+- Preview real das cotações formatadas, mostrando até 100 linhas para não pesar a tela.
+
+Importante:
+- A tela Formatação de Tabelas continua separada.
+- A tela Importar Template continua apenas para modelo preenchido pelo transportador.
