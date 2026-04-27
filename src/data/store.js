@@ -152,6 +152,13 @@ function mergeImport(prev, payload, tipo) {
   return next.map(normalizeTransportadora);
 }
 
+function mergeImportMany(prev, payloads = [], tipo) {
+  return (payloads || []).reduce(
+    (acc, payload) => mergeImport(acc, payload, tipo),
+    clone(prev).map(normalizeTransportadora)
+  );
+}
+
 export function useFreteStore() {
   const [transportadoras, setTransportadoras] = useState([]);
   const [syncStatus, setSyncStatus] = useState({
@@ -265,7 +272,13 @@ export function useFreteStore() {
         }
       },
       async importarESalvar(payload, tipo) {
-        const next = mergeImport(transportadoras, payload, tipo);
+        return this.importarLoteESalvar([payload], tipo);
+      },
+      async importarLoteESalvar(payloads, tipo) {
+        const payloadsValidos = (payloads || []).filter(Boolean);
+        if (!payloadsValidos.length) return { ok: true, modo: 'sem-alteracao' };
+
+        const next = mergeImportMany(transportadoras, payloadsValidos, tipo);
         setTransportadoras(next);
         if (!bancoConfigurado()) return { ok: true, modo: 'local' };
 
@@ -278,12 +291,12 @@ export function useFreteStore() {
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
             fonte: 'supabase-seguro',
           }));
-          return { ok: true };
+          return { ok: true, salvos: payloadsValidos.length };
         } catch (error) {
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
-            erro: error.message || 'Erro ao salvar seção.',
+            erro: error.message || 'Erro ao salvar lote.',
           }));
           return { ok: false, erro: error };
         }

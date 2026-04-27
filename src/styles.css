@@ -874,3 +874,64 @@ textarea,
 .formatacao-alerta{margin-bottom:16px;background:#eef5ff;border:1px solid #c7d9ff;color:#193c84;padding:12px 14px;border-radius:12px;}
 .checkbox-inline{display:flex;align-items:center;gap:8px;font-weight:700;}
 @media (max-width:920px){.formatacao-escolha-grid{grid-template-columns:1fr;}}
+
+.folder-control-box {
+  display: grid;
+  gap: 14px;
+  padding: 16px 18px;
+  margin-top: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  background: #f8fbff;
+}
+
+.compact-actions {
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.folder-file-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.folder-file-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.folder-file-item input {
+  width: 16px;
+  height: 16px;
+}
+
+.folder-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .folder-file-item {
+    grid-template-columns: auto 1fr;
+  }
+
+  .folder-file-item .coverage-badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
