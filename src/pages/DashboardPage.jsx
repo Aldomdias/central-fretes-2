@@ -15,8 +15,22 @@ function getStatus(syncStatus, hasData) {
       titulo: 'Carregando base',
       detalhe: hasData
         ? 'Exibindo o último cache enquanto busca os dados mais recentes.'
-        : 'Buscando dados mais recentes do banco.',
+        : 'Buscando snapshot da base.',
       classe: 'dark',
+    };
+  }
+  if (syncStatus?.carregandoSegundoPlano) {
+    return {
+      titulo: 'Base pesada em segundo plano',
+      detalhe: 'A tela já está liberada. O sistema está tentando montar o snapshot sem travar a importação.',
+      classe: 'dark',
+    };
+  }
+  if (syncStatus?.fonte === 'sem-snapshot') {
+    return {
+      titulo: 'Snapshot ainda vazio',
+      detalhe: 'Você já pode importar. A próxima gravação deve criar o snapshot automaticamente.',
+      classe: 'warn',
     };
   }
   if (syncStatus?.sincronizando) {

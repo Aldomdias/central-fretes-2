@@ -1,18 +1,30 @@
-PATCH - Importação por lote em cima do arquivo central-fretes-2-main (12).zip
+PATCH - Importação e carregamento sem travar | Base 12
 
-Arquivos alterados:
+Feito em cima do arquivo enviado: central-fretes-2-main (12).zip
+
+Arquivos:
 - src/data/store.js
 - src/pages/ImportacaoPage.jsx
+- src/pages/DashboardPage.jsx
 
-Correções:
-1) Mantém o recurso de Mapear pasta já existente nessa versão.
-2) Corrige a função que a tela de importação já chamava: store.importarLoteESalvar.
-   Antes a tela chamava essa função, mas ela não existia no store, podendo deixar a importação travada/pensando.
-3) Grava o lote inteiro em uma única chamada ao Supabase, em vez de salvar arquivo por arquivo.
-4) Se o store estiver em versão antiga, a tela tem fallback seguro e não fica travada.
-5) Corrige o cache local para não sobrescrever a base com [] antes de terminar a primeira carga.
-6) Se não existir snapshot, depois da leitura relacional ele tenta criar o snapshot automaticamente para acelerar o próximo acesso.
+Correções principais:
+1) A tela não fica presa carregando a base pesada.
+   - Primeiro busca snapshot.
+   - Se snapshot estiver vazio, libera a tela.
+   - A leitura relacional pesada roda em segundo plano.
+
+2) A importação por "Mapear pasta" continua funcionando mesmo com snapshot vazio.
+
+3) Corrige a função store.importarLoteESalvar, que a tela chamava mas não existia.
+
+4) Evita o problema mais provável:
+   - usuário importa arquivos enquanto a base relacional ainda está baixando;
+   - quando o download termina, ele sobrescrevia a tela com a base antiga.
+   Agora, se houve importação/cadastro, a carga em segundo plano não sobrescreve.
+
+5) A importação salva o lote inteiro em uma única chamada ao Supabase.
+   Essa gravação também atualiza/cria o cadastros_snapshot.
 
 Como aplicar:
-Copie a pasta src de dentro deste patch para a raiz do projeto, mesclando com a pasta src existente.
-Não suba a pasta PATCH_IMPORTACAO_LOTE_BASE_12 para dentro do GitHub.
+Copie a pasta src de dentro do patch para a raiz do projeto.
+Não suba a pasta PATCH_IMPORTACAO_BASE12_V2_NAO_TRAVA para dentro do GitHub.
