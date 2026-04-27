@@ -189,6 +189,21 @@ function InconsistenciasModal({ open, title, transportadora, origem = null, onCl
 }
 
 function buildResumoTransportadora(transportadora) {
+  // Quando a tela vem do resumo do Supabase, as origens chegam sem as listas completas
+  // de rotas/cotações. Não podemos calcular cobertura nessa fase, senão tudo aparece
+  // como parcial ou sem frete mesmo existindo no banco.
+  if (!transportadora?.detalheCarregado) {
+    return {
+      cobertura: 'Resumo',
+      severidade: 'ok',
+      inconsistentes: 0,
+      pendencias: 0,
+      faltandoFrete: 0,
+      faltandoRota: 0,
+      resumo: true,
+    };
+  }
+
   const analises = (transportadora.origens || []).map((origem) => analisarCoberturaOrigem(origem));
   const inconsistentes = analises.filter((item) => item.cobertura === 'Inconsistente').length;
   const pendencias = analises.filter((item) => item.cobertura !== 'Completa').length;
@@ -205,7 +220,7 @@ function buildResumoTransportadora(transportadora) {
     severidade = 'warn';
   }
 
-  return { cobertura, severidade, inconsistentes, pendencias, faltandoFrete, faltandoRota };
+  return { cobertura, severidade, inconsistentes, pendencias, faltandoFrete, faltandoRota, resumo: false };
 }
 
 function GeneralidadesTab({ transportadoraId, origem, store }) {
@@ -389,7 +404,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.resumo ? <div className="list-meta-text">Resumo carregado. Clique para buscar rotas e fretes no Supabase.</div> : null}{!resumo.resumo && resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
@@ -450,7 +465,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title">{origem.cidade} —</div><div className="list-subtitle">{origem.rotas.length} rota(s) · {origem.cotacoes.length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title">{origem.cidade} —</div><div className="list-subtitle">{transportadora.detalheCarregado ? `${origem.rotas.length} rota(s) · ${origem.cotacoes.length} frete(s)` : 'Carregando rotas e fretes desta transportadora...'}</div>{transportadora.detalheCarregado && analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={analise.cobertura} severidade={analise.severidade} />
                 <button className="btn-link inline-btn" onClick={() => setInconsistenciasOpen(origem.id)}>Ver inconsistências</button>
