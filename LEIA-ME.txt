@@ -1,30 +1,31 @@
-PATCH - Importação e carregamento sem travar | Base 12
+PATCH - Corrigir erros de importação | Base 12
 
-Feito em cima do arquivo enviado: central-fretes-2-main (12).zip
+Arquivo alterado:
+- src/services/freteDatabaseService.js
 
-Arquivos:
-- src/data/store.js
-- src/pages/ImportacaoPage.jsx
-- src/pages/DashboardPage.jsx
+Erros corrigidos:
 
-Correções principais:
-1) A tela não fica presa carregando a base pesada.
-   - Primeiro busca snapshot.
-   - Se snapshot estiver vazio, libera a tela.
-   - A leitura relacional pesada roda em segundo plano.
+1) Erro:
+duplicate key value violates unique constraint "origens_unique_transportadora_cidade_canal"
 
-2) A importação por "Mapear pasta" continua funcionando mesmo com snapshot vazio.
+Causa:
+Ao importar fretes/cotações para uma origem já existente, o sistema criava um novo id de origem
+e tentava inserir outra origem com a mesma transportadora + cidade + canal.
 
-3) Corrige a função store.importarLoteESalvar, que a tela chamava mas não existia.
+Correção:
+Antes de gravar, o sistema procura a origem já existente por:
+transportadora_id + cidade + canal
+e reaproveita o id correto. Assim, os fretes/cotações entram na origem existente.
 
-4) Evita o problema mais provável:
-   - usuário importa arquivos enquanto a base relacional ainda está baixando;
-   - quando o download termina, ele sobrescrevia a tela com a base antiga.
-   Agora, se houve importação/cadastro, a carga em segundo plano não sobrescreve.
+2) Erro:
+Could not find the 'duracao_ms' column of 'frete_importacoes' in the schema cache
 
-5) A importação salva o lote inteiro em uma única chamada ao Supabase.
-   Essa gravação também atualiza/cria o cadastros_snapshot.
+Causa:
+A tabela frete_importacoes no Supabase não tem a coluna duracao_ms, mas o sistema tentava gravar esse campo no histórico.
+
+Correção:
+Se o Supabase reclamar da coluna duracao_ms, o sistema tenta registrar o histórico novamente sem esse campo.
 
 Como aplicar:
-Copie a pasta src de dentro do patch para a raiz do projeto.
-Não suba a pasta PATCH_IMPORTACAO_BASE12_V2_NAO_TRAVA para dentro do GitHub.
+Copie a pasta src de dentro deste patch para a raiz do projeto.
+Não suba a pasta PATCH_CORRIGIR_ERROS_IMPORTACAO_BASE12 para dentro do GitHub.

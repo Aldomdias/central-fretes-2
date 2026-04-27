@@ -340,6 +340,70 @@ function applyExistingTransportadoraIds(mapped, existentes = []) {
   };
 }
 
+function origemKey(row = {}) {
+  return [
+    String(row.transportadora_id || '').trim(),
+    String(row.cidade || '').trim().toLowerCase(),
+    String(row.canal || 'ATACADO').trim().toUpperCase(),
+  ].join('__');
+}
+
+async function fetchOrigensExistentes(supabase, origensRows = []) {
+  const transportadoraIds = Array.from(
+    new Set((origensRows || []).map((row) => row.transportadora_id).filter(Boolean))
+  );
+
+  if (!transportadoraIds.length) return [];
+
+  const rows = [];
+  const chunkSize = 200;
+
+  for (let index = 0; index < transportadoraIds.length; index += chunkSize) {
+    const chunk = transportadoraIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('origens')
+      .select('id, transportadora_id, cidade, canal')
+      .in('transportadora_id', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const wanted = new Set((origensRows || []).map(origemKey));
+  return rows.filter((row) => wanted.has(origemKey(row)));
+}
+
+function applyExistingOrigemIds(mapped, existentes = []) {
+  const byKey = new Map((existentes || []).map((item) => [origemKey(item), item.id]));
+  if (!byKey.size) return mapped;
+
+  const origemIdMap = new Map();
+  const origensRows = (mapped.origensRows || []).map((row) => {
+    const existingId = byKey.get(origemKey(row));
+    if (existingId && row.id !== existingId) {
+      origemIdMap.set(row.id, existingId);
+      return { ...row, id: existingId };
+    }
+    return row;
+  });
+
+  if (!origemIdMap.size) return { ...mapped, origensRows };
+
+  const remapOrigemId = (row) => ({
+    ...row,
+    origem_id: origemIdMap.get(row.origem_id) || row.origem_id,
+  });
+
+  return {
+    ...mapped,
+    origensRows,
+    generalidadesRows: (mapped.generalidadesRows || []).map(remapOrigemId),
+    rotasRows: (mapped.rotasRows || []).map(remapOrigemId),
+    cotacoesRows: (mapped.cotacoesRows || []).map(remapOrigemId),
+    taxasRows: (mapped.taxasRows || []).map(remapOrigemId),
+  };
+}
+
 function sanitizeImportacaoPayload(payload = {}) {
   const tipo = String(payload.tipo || '').trim();
   const canal = String(payload.canal || '').trim();
@@ -500,6 +564,20 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
     transportadorasExistentes
   ));
 
+  const origensExistentes = await fetchOrigensExistentes(supabase, origensRows);
+
+  ({
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
+  } = applyExistingOrigemIds(
+    { transportadorasRows, origensRows, generalidadesRows, rotasRows, cotacoesRows, taxasRows },
+    origensExistentes
+  ));
+
   await upsertRows(supabase, 'transportadoras', transportadorasRows, 'id');
   await upsertRows(supabase, 'origens', origensRows, 'id');
 
@@ -609,9 +687,17 @@ export async function registrarImportacao(payload) {
   }
 
   const supabase = ensureClient();
-  const { error } = await supabase
+  let { error } = await supabase
     .from('frete_importacoes')
     .insert(sanitized);
+
+  if (error && String(error.message || '').includes("'duracao_ms' column")) {
+    const { duracao_ms, ...fallbackPayload } = sanitized;
+    const retry = await supabase
+      .from('frete_importacoes')
+      .insert(fallbackPayload);
+    error = retry.error;
+  }
 
   if (error) throw error;
   return { ok: true, mode: 'remote' };
