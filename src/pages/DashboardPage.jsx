@@ -30,6 +30,7 @@ export default function DashboardPage({
   onAbrirSimulador,
   onAbrirTransportadoras,
   onAbrirImportacao,
+  onAbrirFormatacaoTabelas,
   onResetarBase,
   syncStatus,
   onAtualizarBase,
@@ -52,6 +53,7 @@ export default function DashboardPage({
             <button className="btn-primary" onClick={onAbrirSimulador}>Abrir simulador</button>
             <button className="btn-secondary" onClick={onAbrirImportacao}>Abrir importação</button>
             <button className="btn-secondary" onClick={onAbrirTransportadoras}>Abrir transportadoras</button>
+            <button className="btn-secondary" onClick={onAbrirFormatacaoTabelas}>Formatação de tabelas</button>
           </div>
         </div>
         <button className="btn-secondary" onClick={onResetarBase}>↺ Restaurar base exemplo</button>
@@ -86,7 +88,7 @@ export default function DashboardPage({
         ))}
       </div>
 
-      <div className="feature-grid three-cols">
+      <div className="feature-grid three-cols four-cols-dashboard">
         <div className="panel-card">
           <div className="panel-title">📄 Simulação operacional</div>
           <p>
@@ -112,6 +114,15 @@ export default function DashboardPage({
             correto da Verum.
           </p>
           <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
+        </div>
+
+        <div className="panel-card">
+          <div className="panel-title">🧩 Formatação de tabelas</div>
+          <p>
+            Monte rotas e cotações em um ambiente isolado, gere os arquivos padrão e
+            só decida no final se quer incluir no sistema principal.
+          </p>
+          <button className="btn-secondary full" onClick={onAbrirFormatacaoTabelas}>Abrir módulo</button>
         </div>
       </div>
     </div>

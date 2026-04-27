@@ -1,10 +1,11 @@
-Substitua:
-- src/services/freteDatabaseService.js
-- src/data/store.js
-- src/pages/ImportacaoPage.jsx
+PATCH - Separar Formatação de Tabelas e Importar Template
 
-Correção crítica:
-- remove a sincronização automática que zerava a base ao subir o deploy
-- importação passa a salvar por seção, sem apagar outras tabelas
-- leitura continua paginada, acima de 1000 registros
-- a simulação continua lendo do Supabase
+Substitua os arquivos seguindo a estrutura das pastas.
+
+O que foi alterado:
+- Formatação de Tabelas fica somente para cadastro/manual guiado.
+- Nova tela no menu: Importar Template.
+- Importar Template aceita os dois arquivos preenchidos pelo transportador: Rotas + Fretes.
+- Nos dois fluxos é possível usar transportadora existente ou nova transportadora digitada na hora.
+- Adicionado fallback IBGE para Curitiba e Contagem.
+

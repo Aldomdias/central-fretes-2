@@ -4,6 +4,8 @@ const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
+  { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
+  { chave: 'importar-template', label: 'Importar Template', icon: '⇩' },
 ];
 
 const menuCadastros = [

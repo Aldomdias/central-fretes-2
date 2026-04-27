@@ -1,0 +1,30 @@
+diff --git a/src/utils/formatacaoTabela.js b/src/utils/formatacaoTabela.js
+--- a/src/utils/formatacaoTabela.js
++++ b/src/utils/formatacaoTabela.js
+@@
+ function uid(prefix = 'id') {
+   if (globalThis.crypto?.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
+   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+ }
++
++export function criarVigenciaPadrao() {
++  const hoje = new Date();
++  const fim = new Date();
++  fim.setFullYear(fim.getFullYear() + 3);
++
++  const formatarData = (data) => {
++    const ano = data.getFullYear();
++    const mes = String(data.getMonth() + 1).padStart(2, '0');
++    const dia = String(data.getDate()).padStart(2, '0');
++    return `${ano}-${mes}-${dia}`;
++  };
++
++  return {
++    vigenciaInicial: formatarData(hoje),
++    vigenciaFinal: formatarData(fim),
++  };
++}
+ 
+ export function limparTexto(valor = '') {
+   return String(valor ?? '').trim().replace(/\\s+/g, ' ');
+ }

@@ -1,0 +1,15 @@
+Extraia este ZIP na raiz do projeto.
+
+Arquivo incluído:
+- central-fretes-2-formatar-tabela/src/pages/FormatacaoPage.jsx
+- central-fretes-2-formatar-tabela/ONDE_COLOCAR.txt
+
+Este ajuste para de usar a tela simplificada/remendada e volta a usar a tela nativa do sistema:
+- src/pages/FormatacaoTabelasPage.jsx
+
+Com isso a rota/menu "Formatação de Tabelas" volta a conversar com:
+- base IBGE do sistema
+- modelos/faixas cadastrados no sistema
+- importador de template de precificação
+- fluxo manual já existente
+- opção de nova transportadora já prevista nessa tela

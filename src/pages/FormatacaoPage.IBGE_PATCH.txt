@@ -1,0 +1,39 @@
+RESTAURAR BASE IBGE NO SISTEMA
+
+Arquivos incluídos:
+- src/utils/ibgeBase.js
+- supabase/ibge_schema.sql
+
+O que este pacote faz:
+1) Recupera a estrutura da base IBGE no banco.
+2) Reintroduz a busca automática de cidade -> UF + IBGE.
+3) Inclui fallback imediato para cidades principais, incluindo:
+   - Serra -> ES -> 3205002
+
+COMO LIGAR NA FormatacaoPage.jsx
+
+1) Importar:
+import { preencherOrigemAutomaticamente } from "../utils/ibgeBase";
+
+2) No ponto onde hoje muda a origem manualmente, trocar a função por algo assim:
+async function atualizarOrigem(valor) {
+  await preencherOrigemAutomaticamente({
+    supabase: store?.supabase,
+    nomeCidade: valor,
+    setDadosGerais,
+  });
+
+  setRotas((prev) =>
+    prev.map((r) => ({
+      ...r,
+      origem: valor,
+      cotacaoFinal: montarCotacaoFinal(valor, r.ibgeDestino, r.cotacaoBase),
+    }))
+  );
+}
+
+3) Se o store não expõe supabase diretamente, usar o client atual do projeto no lugar de store?.supabase.
+
+OBSERVAÇÃO IMPORTANTE
+Este pacote restaura a base técnica da integração IBGE.
+A melhoria visual da tela ainda precisa ser aplicada no componente da página.

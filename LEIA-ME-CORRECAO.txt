@@ -1,0 +1,21 @@
+Correção - Formatação de Tabelas
+
+Arquivos alterados:
+- src/pages/FormatacaoTabelasPage.jsx
+- src/utils/importadorTemplatePadrao.js
+- src/utils/templatePrecificacao.js
+- src/utils/formatacaoTabela.js
+
+O que foi separado:
+1) Importar template recebido:
+   - Upload separado de Rotas + Fretes.
+   - Importa o modelo enviado ao transportador sem misturar com o cadastro guiado.
+   - Mantém as faixas no campo Taxa Aplicada para tabela por faixa de peso.
+
+2) Cadastro passo a passo:
+   - Continua com inclusão manual de rotas, regra de cálculo, tipo de tabela, cotações e fretes.
+   - Usa a base IBGE para compor UF destino e cotação final.
+
+Regra fixa aplicada:
+- Permite transportadora existente ou nova transportadora digitada na hora.
+- Ao usar nova transportadora, o sistema não exige cadastro prévio.

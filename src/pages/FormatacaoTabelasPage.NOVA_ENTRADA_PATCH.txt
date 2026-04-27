@@ -1,0 +1,47 @@
+
+NOVA ENTRADA DA TELA DE FORMATAÇÃO
+
+Objetivo:
+Ao entrar em Formatação de Tabelas, mostrar 2 opções logo no começo:
+
+1) Enviar template padrão
+   - anexar Rotas.xlsx
+   - anexar fretes.xlsx
+   - importar e formatar automaticamente
+
+2) Usar modelo criado na ferramenta
+   - leva para o fluxo manual já existente
+
+Arquivos deste pacote:
+- src/utils/importadorTemplatePadrao.js
+- src/components/formatacao/EntradaFormatacaoTemplate.jsx
+
+Como ligar na tela:
+1) Importar:
+   import EntradaFormatacaoTemplate from "../components/formatacao/EntradaFormatacaoTemplate";
+   import { importarTemplatePadraoSeparado } from "../utils/importadorTemplatePadrao";
+
+2) Criar um estado inicial de escolha de modo:
+   const [modoEntrada, setModoEntrada] = useState("escolha");
+
+3) No início da página, antes do fluxo manual:
+   if (modoEntrada === "escolha") {
+     return (
+       <EntradaFormatacaoTemplate
+         carregando={importandoTemplate}
+         onAbrirModeloManual={() => setModoEntrada("manual")}
+         onImportarTemplatePadrao={async ({ arquivoRotas, arquivoFretes }) => {
+           const resultado = await importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes });
+           setRotas(resultado.rotas);
+           setQuebrasFaixa(resultado.quebrasFaixa);
+           setFretes(resultado.fretes);
+           setModoEntrada("manual");
+         }}
+       />
+     );
+   }
+
+Comportamento esperado:
+- o template padrão usa 2 arquivos separados
+- a importação transforma automaticamente em rotas, quebras e fretes
+- o modo manual continua existindo

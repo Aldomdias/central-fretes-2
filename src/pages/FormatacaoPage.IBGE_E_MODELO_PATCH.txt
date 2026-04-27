@@ -1,0 +1,54 @@
+PACOTE COM 2 AJUSTES
+
+1) IBGE da origem automático pela cidade
+2) Botões para baixar o modelo exato aceito no template padrão
+
+ARQUIVOS:
+- src/utils/ibgeBase.js
+- src/utils/modelosTemplateFormatacao.js
+
+COMO LIGAR NA FormatacaoPage.jsx
+
+A) IBGE DA ORIGEM
+1. Importar:
+import { preencherOrigemAutomaticamente } from "../utils/ibgeBase";
+
+2. Trocar a função atualizarOrigem por:
+async function atualizarOrigem(valor) {
+  await preencherOrigemAutomaticamente({
+    supabase: store?.supabase,
+    nomeCidade: valor,
+    setDadosGerais,
+  });
+
+  setRotas((prev) =>
+    prev.map((r) => ({
+      ...r,
+      origem: valor,
+      cotacaoFinal: montarCotacaoFinal(valor, r.ibgeDestino, r.cotacaoBase),
+    }))
+  );
+}
+
+B) BAIXAR MODELO DO TEMPLATE
+1. Importar:
+import {
+  baixarModeloTemplateRotas,
+  baixarModeloTemplateFretes,
+} from "../utils/modelosTemplateFormatacao";
+
+2. Na tela inicial "Enviar template padrão", adicionar dois botões:
+<button type="button" className="botao-secundario" onClick={baixarModeloTemplateRotas}>
+  Baixar modelo de Rotas
+</button>
+
+<button type="button" className="botao-secundario" onClick={baixarModeloTemplateFretes}>
+  Baixar modelo de Fretes
+</button>
+
+3. Texto recomendado:
+"Use exatamente estes modelos para a importação automática."
+
+RESULTADO
+- SERRA passa a preencher ES / 3205002
+- o usuário consegue baixar os dois modelos aceitos antes de importar

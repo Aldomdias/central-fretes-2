@@ -278,6 +278,90 @@ function mapBaseToTables(transportadoras) {
   };
 }
 
+
+async function fetchTransportadorasByNome(supabase, nomes = []) {
+  const normalized = Array.from(
+    new Set(
+      (nomes || [])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalized.length) return [];
+
+  const rows = [];
+  const chunkSize = 200;
+  for (let index = 0; index < normalized.length; index += chunkSize) {
+    const chunk = normalized.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('transportadoras')
+      .select('id, nome')
+      .in('nome', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  return rows;
+}
+
+function applyExistingTransportadoraIds(mapped, existentes = []) {
+  const byNome = new Map(
+    (existentes || []).map((item) => [String(item.nome || '').trim().toLowerCase(), item.id])
+  );
+
+  if (!byNome.size) return mapped;
+
+  const transportadoraIdMap = new Map();
+  const transportadorasRows = (mapped.transportadorasRows || []).map((row) => {
+    const nomeKey = String(row.nome || '').trim().toLowerCase();
+    const existingId = byNome.get(nomeKey);
+    if (existingId && row.id !== existingId) {
+      transportadoraIdMap.set(row.id, existingId);
+      return { ...row, id: existingId };
+    }
+    return row;
+  });
+
+  if (!transportadoraIdMap.size) {
+    return { ...mapped, transportadorasRows };
+  }
+
+  const remapOrigem = (row) => ({
+    ...row,
+    transportadora_id: transportadoraIdMap.get(row.transportadora_id) || row.transportadora_id,
+  });
+
+  return {
+    ...mapped,
+    transportadorasRows,
+    origensRows: (mapped.origensRows || []).map(remapOrigem),
+  };
+}
+
+function sanitizeImportacaoPayload(payload = {}) {
+  const tipo = String(payload.tipo || '').trim();
+  const canal = String(payload.canal || '').trim();
+  const arquivo = String(payload.arquivo || '').trim();
+  const inseridos = Number(payload.inseridos || 0) || 0;
+  const erros = Array.isArray(payload.erros) ? payload.erros : [];
+  const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : null;
+  const duracaoMs = Number(payload.duracaoMs || payload.duracao_ms || 0) || 0;
+  const status = erros.length ? (inseridos > 0 ? 'parcial' : 'erro') : 'sucesso';
+
+  return {
+    arquivo,
+    tipo,
+    canal,
+    inseridos,
+    erros,
+    meta,
+    duracao_ms: duracaoMs || null,
+    status,
+  };
+}
+
 async function upsertRows(supabase, table, rows, conflictField) {
   if (!rows.length) return;
   const chunkSize = 500;
@@ -390,7 +474,7 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
   }
 
   const supabase = ensureClient();
-  const {
+  let {
     transportadorasRows,
     origensRows,
     generalidadesRows,
@@ -398,6 +482,23 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
     cotacoesRows,
     taxasRows,
   } = mapBaseToTables(transportadoras);
+
+  const transportadorasExistentes = await fetchTransportadorasByNome(
+    supabase,
+    transportadorasRows.map((item) => item.nome)
+  );
+
+  ({
+    transportadorasRows,
+    origensRows,
+    generalidadesRows,
+    rotasRows,
+    cotacoesRows,
+    taxasRows,
+  } = applyExistingTransportadoraIds(
+    { transportadorasRows, origensRows, generalidadesRows, rotasRows, cotacoesRows, taxasRows },
+    transportadorasExistentes
+  ));
 
   await upsertRows(supabase, 'transportadoras', transportadorasRows, 'id');
   await upsertRows(supabase, 'origens', origensRows, 'id');
@@ -469,18 +570,49 @@ export async function buscarUltimoSnapshot() {
   return carregarSnapshotFretesDb();
 }
 
+
+
+export async function listarImportacoes(limit = 15) {
+  if (!isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+
+  let query = supabase
+    .from('frete_importacoes')
+    .select('*')
+    .limit(limit);
+
+  // Tenta primeiro pela coluna mais comum do schema atual.
+  let response = await query.order('criado_em', { ascending: false });
+
+  // Fallback para bases antigas que possam estar usando camelCase.
+  if (response.error) {
+    response = await supabase
+      .from('frete_importacoes')
+      .select('*')
+      .order('criadoEm', { ascending: false })
+      .limit(limit);
+  }
+
+  if (response.error) {
+    throw response.error;
+  }
+
+  return response.data || [];
+}
+
 export async function registrarImportacao(payload) {
+  const sanitized = sanitizeImportacaoPayload(payload);
+
   if (!isSupabaseConfigured()) {
-    return { ok: true, mode: 'local', payload };
+    return { ok: true, mode: 'local', payload: sanitized };
   }
 
   const supabase = ensureClient();
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from('frete_importacoes')
-    .insert(payload)
-    .select('id, tipo, criado_em')
-    .single();
+    .insert(sanitized);
 
   if (error) throw error;
-  return { ok: true, mode: 'remote', data };
+  return { ok: true, mode: 'remote' };
 }
