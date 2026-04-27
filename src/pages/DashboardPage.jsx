@@ -9,12 +9,18 @@ function formatarDataHora(valor) {
   }
 }
 
-function getStatus(syncStatus) {
+function getStatus(syncStatus, hasData) {
   if (syncStatus?.carregando) {
-    return { titulo: 'Carregando base', detalhe: 'Buscando dados mais recentes do banco.', classe: 'dark' };
+    return {
+      titulo: 'Carregando base',
+      detalhe: hasData
+        ? 'Exibindo o último cache enquanto busca os dados mais recentes.'
+        : 'Buscando dados mais recentes do banco.',
+      classe: 'dark',
+    };
   }
   if (syncStatus?.sincronizando) {
-    return { titulo: 'Sincronizando', detalhe: 'Salvando alterações no Supabase.', classe: 'dark' };
+    return { titulo: 'Salvando automaticamente', detalhe: 'Gravando alterações no Supabase.', classe: 'dark' };
   }
   if (syncStatus?.erro) {
     return { titulo: 'Erro na sincronização', detalhe: syncStatus.erro, classe: 'warn' };
@@ -31,11 +37,12 @@ export default function DashboardPage({
   onAbrirTransportadoras,
   onAbrirImportacao,
   onAbrirFormatacaoTabelas,
-  onResetarBase,
   syncStatus,
 }) {
   const stats = buildDashboardStats(transportadoras);
-  const status = getStatus(syncStatus);
+  const hasData = transportadoras.length > 0;
+  const status = getStatus(syncStatus, hasData);
+  const carregandoInicial = syncStatus?.carregando && !hasData;
 
   return (
     <div className="page-shell amd-dashboard-shell">
@@ -54,7 +61,6 @@ export default function DashboardPage({
             <button className="btn-secondary" onClick={onAbrirFormatacaoTabelas}>Formatação de tabelas</button>
           </div>
         </div>
-        <button className="btn-secondary" onClick={onResetarBase}>↺ Restaurar base exemplo</button>
       </div>
 
       <div className="info-card amd-next-phase-card">
@@ -66,6 +72,7 @@ export default function DashboardPage({
           </div>
           <div className="info-text">
             <strong>Modo:</strong> {syncStatus?.modo === 'local' ? 'Local' : 'Supabase'} ·{' '}
+            <strong>Fonte:</strong> {syncStatus?.fonte || '—'} ·{' '}
             <strong>Última atualização:</strong> {formatarDataHora(syncStatus?.ultimaSincronizacao)}
           </div>
         </div>
@@ -74,16 +81,28 @@ export default function DashboardPage({
         </div>
       </div>
 
-      <div className="stats-grid">
-        {stats.map((item) => (
-          <div className="stat-card" key={item.id}>
-            <div className="stat-icon">{item.icon}</div>
-            <div className="stat-title">{item.titulo}</div>
-            <div className="stat-value">{item.valor}</div>
-            <div className="stat-desc">{item.descricao}</div>
+      {carregandoInicial ? (
+        <div className="loading-state-card">
+          <div className="loading-spinner" />
+          <div>
+            <div className="loading-title">Carregando base...</div>
+            <div className="loading-text">
+              Aguarde um instante enquanto os dados são buscados no banco.
+            </div>
           </div>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className="stats-grid">
+          {stats.map((item) => (
+            <div className="stat-card" key={item.id}>
+              <div className="stat-icon">{item.icon}</div>
+              <div className="stat-title">{item.titulo}</div>
+              <div className="stat-value">{item.valor}</div>
+              <div className="stat-desc">{item.descricao}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="feature-grid three-cols four-cols-dashboard">
         <div className="panel-card">
@@ -99,7 +118,7 @@ export default function DashboardPage({
           <div className="panel-title">🏢 Cadastro e base</div>
           <p>
             Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A base agora pode ser conferida e atualizada direto pelo dashboard.
+            A base agora salva automaticamente após cada alteração.
           </p>
           <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
         </div>

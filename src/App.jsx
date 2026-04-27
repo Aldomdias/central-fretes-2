@@ -56,7 +56,7 @@ export default function App() {
         onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
-        onResetarBase={store.resetarBase}
+        onAbrirFormatacaoTabelas={() => setPaginaAtual('formatacao')}
         syncStatus={store.syncStatus}
       />
     );

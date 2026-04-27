@@ -78,6 +78,17 @@ function persistLocalState(transportadoras) {
   }
 }
 
+function readLocalState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function sameOrigem(current, imported) {
   return (
     String(current.cidade || '').toLowerCase() ===
@@ -174,6 +185,15 @@ export function useFreteStore() {
     async function carregar() {
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
+        const cacheLocal = readLocalState();
+        if (!cancelled && cacheLocal.length) {
+          setTransportadoras(cacheLocal.map(normalizeTransportadora));
+          setSyncStatus((prev) => ({
+            ...prev,
+            fonte: bancoConfigurado() ? 'cache-local' : 'local',
+          }));
+        }
+
         let base = [];
         let ultimaSincronizacao = '';
 
@@ -182,11 +202,11 @@ export function useFreteStore() {
           base = snapshot.payload.transportadoras;
           ultimaSincronizacao = snapshot.updated_at || snapshot.payload.updatedAt || '';
         } else if (bancoConfigurado()) {
-          // Fallback apenas quando ainda não existe snapshot.
-          // A leitura das tabelas relacionais é mais pesada e deixa a tela lenta.
+          // Fallback apenas quando ainda não existe snapshot salvo.
+          // O snapshot é mais rápido do que ler todas as tabelas relacionais.
           base = await carregarBaseCompletaDb();
         } else {
-          base = [];
+          base = cacheLocal;
         }
 
         if (cancelled) return;
@@ -241,8 +261,8 @@ export function useFreteStore() {
   }
 
   const aplicarAlteracao = (updater, acao = 'alteração') => {
-    const base = Array.isArray(transportadoras) ? transportadoras : [];
-    const next = typeof updater === 'function' ? updater(base) : updater;
+    const baseAtual = Array.isArray(transportadoras) ? transportadoras : [];
+    const next = typeof updater === 'function' ? updater(baseAtual) : updater;
     const normalized = (next || []).map(normalizeTransportadora);
 
     setTransportadoras(normalized);
@@ -278,14 +298,14 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          const base = await carregarBaseCompletaDb();
-          setTransportadoras((base || []).map(normalizeTransportadora));
           const snapshot = await carregarSnapshotFretesDb();
+          const base = snapshot?.payload?.transportadoras || [];
+          setTransportadoras((base || []).map(normalizeTransportadora));
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
-            fonte: 'supabase-seguro',
+            fonte: 'supabase-snapshot',
           }));
           return true;
         } catch (error) {
@@ -322,7 +342,6 @@ export function useFreteStore() {
         }
       },
       resetarBase() {
-        // Mantido apenas localmente para evitar apagar o que já está salvo no Supabase.
         setTransportadoras([]);
       },
       salvarGeneralidades(transportadoraId, origemId, generalidades) {
