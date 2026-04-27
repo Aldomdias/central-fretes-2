@@ -5,6 +5,20 @@ function nextId(list) {
   return (Math.max(0, ...list.map((item) => Number(item.id) || 0)) + 1);
 }
 
+function normalizeText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function uniqueCities(items) {
+  return Array.from(new Set(
+    items.flatMap((item) => (item.origens || []).map((origem) => origem.cidade).filter(Boolean))
+  )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
 function ActionIcon({ children, onClick, danger = false }) {
   return <button className={danger ? 'icon-btn danger' : 'icon-btn'} onClick={onClick}>{children}</button>;
 }
@@ -285,15 +299,35 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
 
 function TransportadorasList({ items, onOpen, store }) {
   const [busca, setBusca] = useState('');
+  const [cidadeFiltro, setCidadeFiltro] = useState('');
+  const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
-  const filtrados = items.filter((item) => item.nome.toLowerCase().includes(busca.toLowerCase()));
+  const cidades = useMemo(() => uniqueCities(items), [items]);
+
+  const filtrados = useMemo(() => {
+    const termoBusca = normalizeText(busca);
+    const cidadeNormalizada = normalizeText(cidadeFiltro);
+
+    return items.filter((item) => {
+      const resumo = buildResumoTransportadora(item);
+      const nomeMatch = !termoBusca || normalizeText(item.nome).includes(termoBusca);
+      const cidadeMatch = !cidadeNormalizada || (item.origens || []).some((origem) => normalizeText(origem.cidade) === cidadeNormalizada);
+      const coberturaMatch = !coberturaFiltro || resumo.cobertura === coberturaFiltro;
+      return nomeMatch && cidadeMatch && coberturaMatch;
+    });
+  }, [items, busca, cidadeFiltro, coberturaFiltro]);
 
   const saveTransportadora = (form) => {
     store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
     setModalOpen(false);
     setEditing(null);
+  };
+
+  const limparFiltros = () => {
+    setBusca('');
+    setCidadeFiltro('');
+    setCoberturaFiltro('');
   };
 
   return (
@@ -302,10 +336,46 @@ function TransportadorasList({ items, onOpen, store }) {
         <div className="page-header slim"><h1>Transportadoras</h1><p>Gerencie as transportadoras e suas configurações de origem</p></div>
         <div className="toolbar-wrap"><button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button></div>
       </div>
-      <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar transportadora..." />
+
+      <div className="table-card filters-card">
+        <div className="filters-header">
+          <div>
+            <strong>Filtros</strong>
+            <p>Filtre por transportadora, cidade de origem e status de cobertura.</p>
+          </div>
+          <div className="inline-meta">
+            <span><strong>{filtrados.length}</strong> transportadora(s)</span>
+            {(busca || cidadeFiltro || coberturaFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
+          </div>
+        </div>
+        <div className="form-grid three filters-grid">
+          <div className="field">
+            <label>Buscar transportadora</label>
+            <input className="search-input search-input-full" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Digite o nome da transportadora..." />
+          </div>
+          <div className="field">
+            <label>Cidade de origem</label>
+            <select value={cidadeFiltro} onChange={(e) => setCidadeFiltro(e.target.value)}>
+              <option value="">Todas as cidades</option>
+              {cidades.map((cidade) => <option key={cidade} value={cidade}>{cidade}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Status da cobertura</label>
+            <select value={coberturaFiltro} onChange={(e) => setCoberturaFiltro(e.target.value)}>
+              <option value="">Todos</option>
+              <option value="Completa">Completa</option>
+              <option value="Parcial">Parcial</option>
+              <option value="Inconsistente">Inconsistente</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <div className="list-stack">
-        {filtrados.map((item) => {
+        {filtrados.length ? filtrados.map((item) => {
           const resumo = buildResumoTransportadora(item);
+          const cidadesDaTransportadora = Array.from(new Set((item.origens || []).map((origem) => origem.cidade).filter(Boolean)));
           const cardClass = resumo.severidade === 'error'
             ? 'list-card alert-error'
             : resumo.severidade === 'warn'
@@ -313,7 +383,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
@@ -322,7 +392,12 @@ function TransportadorasList({ items, onOpen, store }) {
               </div>
             </div>
           );
-        })}
+        }) : (
+          <div className="table-card empty-filter-card">
+            <strong>Nenhuma transportadora encontrada</strong>
+            <p>Tente ajustar os filtros de cidade, status ou o nome pesquisado.</p>
+          </div>
+        )}
       </div>
       <TransportadoraModal open={modalOpen} initialValue={editing} onSave={saveTransportadora} onClose={() => { setModalOpen(false); setEditing(null); }} />
     </div>
