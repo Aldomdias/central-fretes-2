@@ -1,13 +1,17 @@
-PATCH - Corrigir export buscarBaseSimulacaoDb
+PATCH - Corrigir exports do serviço completo
 
-Erro do Vercel:
-"buscarBaseSimulacaoDb" is not exported by "src/services/freteDatabaseService.js"
+Erro:
+"carregarTransportadoraCompletaDb" is not exported by src/services/freteDatabaseService.js
 
 Causa:
-O SimuladorPage.jsx foi atualizado, mas o arquivo src/services/freteDatabaseService.js do patch anterior não entrou no projeto ou foi sobrescrito.
+O service foi substituído por uma versão que tinha buscarBaseSimulacaoDb, mas não tinha carregarTransportadoraCompletaDb.
 
 Correção:
-Substitua o arquivo:
+Este arquivo une as duas funções necessárias:
+- buscarBaseSimulacaoDb
+- carregarTransportadoraCompletaDb
+
+Substitua:
 src/services/freteDatabaseService.js
 
 Depois faça commit e deploy novamente.

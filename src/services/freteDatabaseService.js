@@ -855,6 +855,59 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   });
 }
 
+
+export async function carregarTransportadoraCompletaDb(transportadoraId) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+    return transportadoras.find((item) => String(item.id) === String(transportadoraId)) || null;
+  }
+
+  const supabase = ensureClient();
+
+  const { data: transportadora, error: transportadoraError } = await supabase
+    .from('transportadoras')
+    .select('id, nome, status')
+    .eq('id', transportadoraId)
+    .single();
+
+  if (transportadoraError) throw transportadoraError;
+
+  const { data: origens, error: origensError } = await supabase
+    .from('origens')
+    .select('*')
+    .eq('transportadora_id', transportadoraId)
+    .order('cidade', { ascending: true });
+
+  if (origensError) throw origensError;
+
+  const origemIds = (origens || []).map((item) => item.id);
+
+  const [generalidades, rotas, cotacoes, taxas] = await Promise.all([
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
+    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
+    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
+    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  return transportadorasFromDbRows({
+    transportadoras: [transportadora],
+    origens: origens || [],
+    generalidades,
+    rotas,
+    cotacoes,
+    taxas,
+  })[0] || {
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    detalheCarregado: true,
+    origens: [],
+  };
+}
+
 export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '' } = {}) {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
