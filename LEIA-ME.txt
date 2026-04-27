@@ -1,15 +1,13 @@
-PATCH - Ajustar lista de transportadoras em modo resumo
+PATCH - Corrigir export buscarBaseSimulacaoDb
 
-Problema:
-Depois que o dashboard passou a carregar só o resumo do Supabase, a lista de transportadoras
-calculava cobertura usando dados incompletos. Por isso aparecia como Parcial, sem frete ou com
-pendência, mesmo os fretes existindo no Supabase.
+Erro do Vercel:
+"buscarBaseSimulacaoDb" is not exported by "src/services/freteDatabaseService.js"
+
+Causa:
+O SimuladorPage.jsx foi atualizado, mas o arquivo src/services/freteDatabaseService.js do patch anterior não entrou no projeto ou foi sobrescrito.
 
 Correção:
-- Na lista principal, transportadoras ainda não detalhadas aparecem como "Resumo".
-- Mostra a mensagem: "Clique para buscar rotas e fretes no Supabase".
-- Ao abrir a transportadora, continua chamando o carregamento dos detalhes.
-- Só calcula Completa/Parcial/Inconsistente depois que os detalhes da transportadora forem carregados.
+Substitua o arquivo:
+src/services/freteDatabaseService.js
 
-Arquivo alterado:
-- src/pages/TransportadorasPage.jsx
+Depois faça commit e deploy novamente.

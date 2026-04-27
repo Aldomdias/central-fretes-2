@@ -530,116 +530,6 @@ export async function carregarBaseCompletaDb() {
   }));
 }
 
-
-async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
-  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
-  if (!ids.length) return [];
-
-  const rows = [];
-  const chunkSize = 100;
-
-  for (let chunkIndex = 0; chunkIndex < ids.length; chunkIndex += chunkSize) {
-    const chunk = ids.slice(chunkIndex, chunkIndex + chunkSize);
-    let from = 0;
-
-    while (true) {
-      const { data, error } = await supabase
-        .from(table)
-        .select('*')
-        .in('origem_id', chunk)
-        .range(from, from + PAGE_SIZE - 1);
-
-      if (error) throw error;
-
-      const pageRows = data || [];
-      rows.push(...pageRows);
-      if (pageRows.length < PAGE_SIZE) break;
-      from += PAGE_SIZE;
-    }
-  }
-
-  return rows;
-}
-
-export async function carregarTransportadoraCompletaDb(transportadoraId) {
-  if (!isSupabaseConfigured()) {
-    const raw = localStorage.getItem(FALLBACK_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
-    return transportadoras.find((item) => String(item.id) === String(transportadoraId)) || null;
-  }
-
-  const supabase = ensureClient();
-
-  const { data: transportadora, error: transportadoraError } = await supabase
-    .from('transportadoras')
-    .select('id, nome, status')
-    .eq('id', transportadoraId)
-    .single();
-
-  if (transportadoraError) throw transportadoraError;
-
-  const { data: origens, error: origensError } = await supabase
-    .from('origens')
-    .select('*')
-    .eq('transportadora_id', transportadoraId)
-    .order('cidade', { ascending: true });
-
-  if (origensError) throw origensError;
-
-  const origemIds = (origens || []).map((item) => item.id);
-
-  const [generalidades, rotas, cotacoes, taxas] = await Promise.all([
-    fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
-    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
-    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
-    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
-  ]);
-
-  const generalidadeByOrigem = new Map((generalidades || []).map((item) => [String(item.origem_id), item]));
-  const rotasByOrigem = new Map();
-  const cotacoesByOrigem = new Map();
-  const taxasByOrigem = new Map();
-
-  (rotas || []).forEach((item) => {
-    const key = String(item.origem_id);
-    const list = rotasByOrigem.get(key) || [];
-    list.push(item);
-    rotasByOrigem.set(key, list);
-  });
-
-  (cotacoes || []).forEach((item) => {
-    const key = String(item.origem_id);
-    const list = cotacoesByOrigem.get(key) || [];
-    list.push(item);
-    cotacoesByOrigem.set(key, list);
-  });
-
-  (taxas || []).forEach((item) => {
-    const key = String(item.origem_id);
-    const list = taxasByOrigem.get(key) || [];
-    list.push(item);
-    taxasByOrigem.set(key, list);
-  });
-
-  return {
-    id: transportadora.id,
-    nome: transportadora.nome || '',
-    status: transportadora.status || 'Ativa',
-    detalheCarregado: true,
-    origens: (origens || []).map((origem) =>
-      normalizeOrigemFromDb(
-        origem,
-        generalidadeByOrigem.get(String(origem.id)),
-        rotasByOrigem.get(String(origem.id)) || [],
-        cotacoesByOrigem.get(String(origem.id)) || [],
-        taxasByOrigem.get(String(origem.id)) || []
-      )
-    ),
-  };
-}
-
 export async function carregarResumoBaseDb() {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
@@ -835,6 +725,192 @@ export async function buscarUltimoSnapshot() {
 }
 
 
+
+
+async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+
+  for (let index = 0; index < ids.length; index += chunkSize) {
+    const chunk = ids.slice(index, index + chunkSize);
+    let from = 0;
+
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .in('origem_id', chunk)
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+
+      const page = data || [];
+      rows.push(...page);
+      if (page.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
+
+  return rows;
+}
+
+function groupByOrigemId(rows = []) {
+  const map = new Map();
+  rows.forEach((row) => {
+    const key = String(row.origem_id);
+    const list = map.get(key) || [];
+    list.push(row);
+    map.set(key, list);
+  });
+  return map;
+}
+
+function transportadorasFromDbRows({ transportadoras = [], origens = [], generalidades = [], rotas = [], cotacoes = [], taxas = [] }) {
+  const generalidadeByOrigem = new Map((generalidades || []).map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = groupByOrigemId(rotas);
+  const cotacoesByOrigem = groupByOrigemId(cotacoes);
+  const taxasByOrigem = groupByOrigemId(taxas);
+
+  const origensByTransportadora = new Map();
+  (origens || []).forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(normalizeOrigemFromDb(
+      origem,
+      generalidadeByOrigem.get(String(origem.id)),
+      rotasByOrigem.get(String(origem.id)) || [],
+      cotacoesByOrigem.get(String(origem.id)) || [],
+      taxasByOrigem.get(String(origem.id)) || []
+    ));
+    origensByTransportadora.set(key, list);
+  });
+
+  return (transportadoras || []).map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    detalheCarregado: true,
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  })).filter((item) => item.origens.length);
+}
+
+async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [] }) {
+  const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
+
+  let origensQuery = supabase
+    .from('origens')
+    .select('id, transportadora_id, cidade, canal, status');
+
+  if (origem) origensQuery = origensQuery.ilike('cidade', origem);
+  if (canal) origensQuery = origensQuery.eq('canal', canal);
+
+  const { data: origensBase, error: origensError } = await origensQuery;
+  if (origensError) throw origensError;
+
+  const origemIdsBase = (origensBase || []).map((item) => item.id);
+  if (!origemIdsBase.length) return [];
+
+  let rotasQuery = supabase
+    .from('rotas')
+    .select('*')
+    .in('origem_id', origemIdsBase);
+
+  if (destinosNormalizados.length) {
+    rotasQuery = rotasQuery.in('ibge_destino', destinosNormalizados);
+  }
+
+  const { data: rotas, error: rotasError } = await rotasQuery;
+  if (rotasError) throw rotasError;
+
+  const origemIdsComRota = Array.from(new Set((rotas || []).map((item) => item.origem_id)));
+  if (!origemIdsComRota.length) return [];
+
+  const origens = (origensBase || []).filter((item) => origemIdsComRota.includes(item.id));
+  const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
+
+  const [
+    transportadorasResponse,
+    generalidades,
+    cotacoes,
+    taxas,
+  ] = await Promise.all([
+    supabase.from('transportadoras').select('id, nome, status').in('id', transportadoraIds),
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
+    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIdsComRota),
+    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIdsComRota),
+  ]);
+
+  if (transportadorasResponse.error) throw transportadorasResponse.error;
+
+  return transportadorasFromDbRows({
+    transportadoras: transportadorasResponse.data || [],
+    origens,
+    generalidades,
+    rotas: rotas || [],
+    cotacoes,
+    taxas,
+  });
+}
+
+export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '' } = {}) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+  }
+
+  const supabase = ensureClient();
+  const destinos = Array.from(new Set([
+    ...(Array.isArray(destinoCodigos) ? destinoCodigos : []),
+    destinoCodigo,
+  ].map((item) => String(item || '').trim()).filter(Boolean)));
+
+  // Caso principal: simulação simples ou lista com destino informado.
+  // Busca todos os concorrentes da mesma origem/canal/destino.
+  if (origem || destinos.length) {
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos });
+  }
+
+  // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora
+  // selecionada e depois monta a base concorrente para os mesmos destinos/origens.
+  if (nomeTransportadora) {
+    const { data: transportadorasAlvo, error: transportadoraError } = await supabase
+      .from('transportadoras')
+      .select('id, nome, status')
+      .ilike('nome', nomeTransportadora);
+
+    if (transportadoraError) throw transportadoraError;
+    const alvoIds = (transportadorasAlvo || []).map((item) => item.id);
+    if (!alvoIds.length) return [];
+
+    const { data: origensAlvo, error: origensAlvoError } = await supabase
+      .from('origens')
+      .select('id, cidade, canal')
+      .in('transportadora_id', alvoIds);
+
+    if (origensAlvoError) throw origensAlvoError;
+
+    const pares = (origensAlvo || [])
+      .filter((item) => !canal || item.canal === canal)
+      .map((item) => ({ origem: item.cidade, canal: item.canal }));
+
+    const bases = [];
+    for (const par of pares.slice(0, 25)) {
+      const parcial = await buscarBasePorOrigemDestino({ supabase, origem: par.origem, canal: par.canal, destinos: [] });
+      bases.push(...parcial);
+    }
+
+    const byId = new Map();
+    bases.forEach((item) => byId.set(String(item.id), item));
+    return [...byId.values()];
+  }
+
+  return [];
+}
 
 export async function listarImportacoes(limit = 15) {
   if (!isSupabaseConfigured()) return [];
