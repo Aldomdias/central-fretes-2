@@ -387,7 +387,8 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: transportadoraId, erro: '' }));
 
         try {
-          const completa = await carregarTransportadoraCompletaDb(transportadoraId);
+          const atual = (transportadoras || []).find((item) => String(item.id) === String(transportadoraId));
+          const completa = await carregarTransportadoraCompletaDb(transportadoraId, atual?.nome || '');
           if (!completa) {
             setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: null }));
             return false;
@@ -395,7 +396,10 @@ export function useFreteStore() {
 
           setTransportadoras((prev) =>
             (prev || []).map((item) =>
-              String(item.id) === String(transportadoraId) ? normalizeTransportadora(completa) : item
+              String(item.id) === String(transportadoraId) ||
+              String(item.nome || '').trim().toLowerCase() === String(completa.nome || '').trim().toLowerCase()
+                ? normalizeTransportadora(completa)
+                : item
             )
           );
 

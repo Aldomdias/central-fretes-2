@@ -856,29 +856,54 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
 }
 
 
-export async function carregarTransportadoraCompletaDb(transportadoraId) {
+export async function carregarTransportadoraCompletaDb(transportadoraId, transportadoraNome = '') {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
-    return transportadoras.find((item) => String(item.id) === String(transportadoraId)) || null;
+    return transportadoras.find((item) =>
+      String(item.id) === String(transportadoraId) ||
+      String(item.nome || '').trim().toLowerCase() === String(transportadoraNome || '').trim().toLowerCase()
+    ) || null;
   }
 
   const supabase = ensureClient();
 
-  const { data: transportadora, error: transportadoraError } = await supabase
-    .from('transportadoras')
-    .select('id, nome, status')
-    .eq('id', transportadoraId)
-    .single();
+  let transportadora = null;
+  let transportadoraError = null;
+
+  if (transportadoraId) {
+    const response = await supabase
+      .from('transportadoras')
+      .select('id, nome, status')
+      .eq('id', transportadoraId)
+      .maybeSingle();
+
+    transportadora = response.data;
+    transportadoraError = response.error;
+  }
+
+  if (!transportadora && transportadoraNome) {
+    const response = await supabase
+      .from('transportadoras')
+      .select('id, nome, status')
+      .ilike('nome', transportadoraNome)
+      .maybeSingle();
+
+    transportadora = response.data;
+    transportadoraError = response.error;
+  }
 
   if (transportadoraError) throw transportadoraError;
+  if (!transportadora) {
+    throw new Error(`Transportadora não encontrada no Supabase: ${transportadoraNome || transportadoraId}`);
+  }
 
   const { data: origens, error: origensError } = await supabase
     .from('origens')
     .select('*')
-    .eq('transportadora_id', transportadoraId)
+    .eq('transportadora_id', transportadora.id)
     .order('cidade', { ascending: true });
 
   if (origensError) throw origensError;

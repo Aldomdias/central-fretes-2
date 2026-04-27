@@ -1,17 +1,12 @@
-PATCH - Corrigir exports do serviço completo
+PATCH - Transportadoras lendo detalhes no Supabase
 
-Erro:
-"carregarTransportadoraCompletaDb" is not exported by src/services/freteDatabaseService.js
+Arquivos:
+- src/services/freteDatabaseService.js
+- src/data/store.js
+- src/pages/TransportadorasPage.jsx
 
-Causa:
-O service foi substituído por uma versão que tinha buscarBaseSimulacaoDb, mas não tinha carregarTransportadoraCompletaDb.
-
-Correção:
-Este arquivo une as duas funções necessárias:
-- buscarBaseSimulacaoDb
-- carregarTransportadoraCompletaDb
-
-Substitua:
-src/services/freteDatabaseService.js
-
-Depois faça commit e deploy novamente.
+Correções:
+- carrega detalhes da transportadora por ID e, se necessário, por nome;
+- substitui a transportadora na tela por ID ou por nome;
+- mostra erro real na tela com botão para tentar carregar novamente;
+- mantém a função buscarBaseSimulacaoDb para o simulador online.
