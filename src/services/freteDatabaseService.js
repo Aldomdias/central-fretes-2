@@ -755,26 +755,41 @@ export async function listarImportacoes(limit = 15) {
   return response.data || [];
 }
 
+function removerCampo(payload, campo) {
+  const { [campo]: _removido, ...restante } = payload;
+  return restante;
+}
+
+function extrairColunaInexistente(error) {
+  const mensagem = String(error?.message || '');
+  const match = mensagem.match(/Could not find the '([^']+)' column/i);
+  return match?.[1] || '';
+}
+
 export async function registrarImportacao(payload) {
-  const sanitized = sanitizeImportacaoPayload(payload);
+  let sanitized = sanitizeImportacaoPayload(payload);
 
   if (!isSupabaseConfigured()) {
     return { ok: true, mode: 'local', payload: sanitized };
   }
 
   const supabase = ensureClient();
-  let { error } = await supabase
-    .from('frete_importacoes')
-    .insert(sanitized);
 
-  if (error && String(error.message || '').includes("'duracao_ms' column")) {
-    const { duracao_ms, ...fallbackPayload } = sanitized;
-    const retry = await supabase
+  for (let tentativa = 0; tentativa < 8; tentativa += 1) {
+    const { error } = await supabase
       .from('frete_importacoes')
-      .insert(fallbackPayload);
-    error = retry.error;
+      .insert(sanitized);
+
+    if (!error) return { ok: true, mode: 'remote' };
+
+    const colunaInexistente = extrairColunaInexistente(error);
+    if (colunaInexistente && Object.prototype.hasOwnProperty.call(sanitized, colunaInexistente)) {
+      sanitized = removerCampo(sanitized, colunaInexistente);
+      continue;
+    }
+
+    throw error;
   }
 
-  if (error) throw error;
-  return { ok: true, mode: 'remote' };
+  throw new Error('Não foi possível registrar histórico de importação por incompatibilidade de colunas.');
 }
