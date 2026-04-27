@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   analisarCoberturaTabela,
   analisarTransportadoraPorGrade,
@@ -10,6 +10,7 @@ import {
   simularPorTransportadora,
   simularSimples,
 } from '../utils/calculoFrete';
+import { buscarBaseSimulacaoDb } from '../services/freteDatabaseService';
 
 const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
 const GRADE_PADRAO = {
@@ -230,6 +231,39 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [ufCobertura, setUfCobertura] = useState('');
   const [resultadoCobertura, setResultadoCobertura] = useState(null);
 
+  const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
+  const [erroSimulacao, setErroSimulacao] = useState('');
+
+  const carregarBaseOnline = async (filtros) => {
+    setCarregandoSimulacao(true);
+    setErroSimulacao('');
+    try {
+      const base = await buscarBaseSimulacaoDb(filtros);
+      return Array.isArray(base) ? base : [];
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao buscar base online do Supabase.');
+      return [];
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!origemSimples && todasOrigens[0]) setOrigemSimples(todasOrigens[0]);
+  }, [origemSimples, todasOrigens]);
+
+  useEffect(() => {
+    if (!transportadora && transportadoras[0]?.nome) setTransportadora(transportadoras[0].nome);
+    if (!transportadoraAnalise && transportadoras[0]?.nome) setTransportadoraAnalise(transportadoras[0].nome);
+  }, [transportadora, transportadoraAnalise, transportadoras]);
+
+  useEffect(() => {
+    if (!canalSimples && canais[0]) setCanalSimples(canais[0]);
+    if (!canalTransportadora && canais[0]) setCanalTransportadora(canais[0]);
+    if (!canalAnalise && canais[0]) setCanalAnalise(canais[0]);
+    if (!canalCobertura && canais[0]) setCanalCobertura(canais[0]);
+  }, [canalSimples, canalTransportadora, canalAnalise, canalCobertura, canais]);
+
   const transportadorasDisponiveis = useMemo(() => transportadoras.map((item) => item.nome).sort(), [transportadoras]);
   const origensTransportadora = useMemo(() => {
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
@@ -250,9 +284,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return cidade ? `${cidade}${uf ? `/${uf}` : ''}` : '';
   }, [destinoCodigo, cidadePorIbge]);
 
-  const onSimularSimples = () => {
+  const onSimularSimples = async () => {
+    const baseOnline = await carregarBaseOnline({
+      origem: origemSimples,
+      canal: canalSimples,
+      destinoCodigo,
+    });
+
     setResultadoSimples(simularSimples({
-      transportadoras,
+      transportadoras: baseOnline,
       origem: origemSimples,
       canal: canalSimples,
       peso: Number(pesoSimples || 0),
@@ -262,13 +302,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
       gradeCanal: grade[canalSimples] || grade.ATACADO || [],
     }));
   };
-  const onSimularTransportadora = () => {
+  const onSimularTransportadora = async () => {
     const codigos = modoLista
       ? listaCodigos.split(/\n|,|;/).map((item) => item.trim()).filter(Boolean)
       : destinoTransportadora ? [destinoTransportadora.trim()] : [];
 
+    const baseOnline = await carregarBaseOnline({
+      origem: origemTransportadora,
+      canal: canalTransportadora,
+      destinoCodigos: codigos,
+      nomeTransportadora: transportadora,
+    });
+
     setResultadoTransportadora(simularPorTransportadora({
-      transportadoras,
+      transportadoras: baseOnline,
       nomeTransportadora: transportadora,
       canal: canalTransportadora,
       origem: origemTransportadora,
@@ -302,9 +349,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
     ]);
     downloadCsv(nomeArquivo, csv);
   };
-  const onSimularGrade = () => {
+  const onSimularGrade = async () => {
+    const baseOnline = await carregarBaseOnline({
+      canal: canalAnalise,
+      nomeTransportadora: transportadoraAnalise,
+    });
+
     setResultadoAnalise(analisarTransportadoraPorGrade({
-      transportadoras,
+      transportadoras: baseOnline,
       nomeTransportadora: transportadoraAnalise,
       canal: canalAnalise,
       grade: grade[canalAnalise] || grade.ATACADO || [],
@@ -374,6 +426,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ))}
       </div>
 
+      {carregandoSimulacao ? (
+        <div className="sim-alert info">Buscando concorrentes no Supabase para esta simulação...</div>
+      ) : null}
+      {erroSimulacao ? (
+        <div className="sim-alert error">{erroSimulacao}</div>
+      ) : null}
+
       {aba === 'simples' && (
         <section className="sim-card">
           <h2>Simulação simples</h2>
@@ -397,7 +456,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <small style={{ color: '#64748b' }}>Se não informar, o simulador usa o Valor NF da grade.</small>
             </label>
           </div>
-          <div className="sim-actions"><button className="primary" onClick={onSimularSimples}>Simular</button></div>
+          <div className="sim-actions"><button className="primary" onClick={onSimularSimples} disabled={carregandoSimulacao}>{carregandoSimulacao ? "Simulando..." : "Simular"}</button></div>
           <div className="sim-resultados">{resultadoSimples.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${idx}`} item={item} />)}</div>
         </section>
       )}
@@ -448,7 +507,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </div>
             )}
           </div>
-          <div className="sim-actions"><button className="primary" onClick={onSimularTransportadora}>Simular transportadora</button></div>
+          <div className="sim-actions"><button className="primary" onClick={onSimularTransportadora} disabled={carregandoSimulacao}>{carregandoSimulacao ? "Simulando..." : "Simular transportadora"}</button></div>
           <div className="sim-resultados">{resultadoTransportadora.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${item.ibgeDestino}-${idx}`} item={item} />)}</div>
         </section>
       )}
