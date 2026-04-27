@@ -31,14 +31,32 @@ function uid(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+export function criarVigenciaPadrao() {
+  const hoje = new Date();
+  const fim = new Date();
+  fim.setFullYear(fim.getFullYear() + 3);
+
+  const formatarData = (data) => {
+    const ano = data.getFullYear();
+    const mes = String(data.getMonth() + 1).padStart(2, '0');
+    const dia = String(data.getDate()).padStart(2, '0');
+    return `${ano}-${mes}-${dia}`;
+  };
+
+  return {
+    vigenciaInicial: formatarData(hoje),
+    vigenciaFinal: formatarData(fim),
+  };
+}
+
 export function limparTexto(valor = '') {
-  return String(valor ?? '').trim().replace(/\\s+/g, ' ');
+  return String(valor ?? '').trim().replace(/\s+/g, ' ');
 }
 
 export function normalizarChave(valor = '') {
   return limparTexto(valor)
     .normalize('NFD')
-    .replace(/[\\u0300-\\u036f]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase();
 }
 
@@ -155,7 +173,7 @@ export function encontrarOrigemExistente(cadastros, idOuNome) {
 
 export function proximoCodigoOrigem(cadastros) {
   const numeros = (cadastros?.origens || [])
-    .map((item) => String(item.codigo || '').match(/(\\d+)/))
+    .map((item) => String(item.codigo || '').match(/(\d+)/))
     .filter(Boolean)
     .map((match) => Number(match[1]))
     .filter(Number.isFinite);
@@ -206,8 +224,6 @@ function mesclarModelosPadraoComSalvos(salvos = []) {
 
   (Array.isArray(salvos) ? salvos : []).forEach((modelo) => {
     if (!modelo?.id) return;
-    // Mantém modelos criados manualmente, mas força os modelos padrão para a versão correta.
-    // Isso corrige navegadores que já tinham o B2C antigo salvo no localStorage.
     if (modelo.id === 'b2c-padrao' || modelo.id === 'b2b-padrao') return;
     mapa.set(modelo.id, modelo);
   });
@@ -254,7 +270,7 @@ export function carregarBaseIbge() {
       item?.ibge ??
       item?.municipio_ibge ??
       ''
-    ).replace(/\\D/g, '');
+    ).replace(/\D/g, '');
     if (!codigo) return;
     mapa.set(codigo, {
       ...item,
@@ -276,7 +292,7 @@ export function salvarBaseIbge(base = []) {
       item?.ibge ??
       item?.municipio_ibge ??
       ''
-    ).replace(/\\D/g, '');
+    ).replace(/\D/g, '');
     if (!codigo) return;
     mapa.set(codigo, {
       ...item,
@@ -288,12 +304,12 @@ export function salvarBaseIbge(base = []) {
 }
 
 export function obterUfPorCodigoIbge(ibge = '') {
-  const codigo = String(ibge || '').replace(/\\D/g, '').slice(0, 2);
+  const codigo = String(ibge || '').replace(/\D/g, '').slice(0, 2);
   return UF_POR_CODIGO[codigo] || '';
 }
 
 export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
-  const chave = String(ibgeDestino || '').replace(/\\D/g, '');
+  const chave = String(ibgeDestino || '').replace(/\D/g, '');
   if (!chave) return '';
   const lista = baseIbge?.length ? baseIbge : MUNICIPIOS_FIXOS;
   const item = lista.find((registro) => {
@@ -304,7 +320,7 @@ export function obterUfDoDestino(ibgeDestino, baseIbge = []) {
       registro.ibge ??
       registro.municipio_ibge ??
       ''
-    ).replace(/\\D/g, '');
+    ).replace(/\D/g, '');
     return codigo === chave;
   });
   return limparTexto(item?.uf || item?.sigla_uf || item?.UF || obterUfPorCodigoIbge(chave)).toUpperCase();
