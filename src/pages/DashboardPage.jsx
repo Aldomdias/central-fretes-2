@@ -12,25 +12,23 @@ function formatarDataHora(valor) {
 function getStatus(syncStatus, hasData) {
   if (syncStatus?.carregando) {
     return {
-      titulo: 'Carregando base',
-      detalhe: hasData
-        ? 'Exibindo o último cache enquanto busca os dados mais recentes.'
-        : 'Buscando snapshot da base.',
+      titulo: 'Conectando ao Supabase',
+      detalhe: 'Buscando resumo da base para abrir a tela sem travar.',
       classe: 'dark',
+    };
+  }
+  if (syncStatus?.fonte === 'supabase-resumo') {
+    return {
+      titulo: 'Conectado ao Supabase',
+      detalhe: 'Resumo da base carregado. Rotas e cotações completas podem carregar em segundo plano.',
+      classe: 'ok',
     };
   }
   if (syncStatus?.carregandoSegundoPlano) {
     return {
-      titulo: 'Base pesada em segundo plano',
-      detalhe: 'A tela já está liberada. O sistema está tentando montar o snapshot sem travar a importação.',
+      titulo: 'Base completa em segundo plano',
+      detalhe: 'A tela já está liberada. O sistema está tentando carregar detalhes sem travar a importação.',
       classe: 'dark',
-    };
-  }
-  if (syncStatus?.fonte === 'sem-snapshot') {
-    return {
-      titulo: 'Snapshot ainda vazio',
-      detalhe: 'Você já pode importar. A próxima gravação deve criar o snapshot automaticamente.',
-      classe: 'warn',
     };
   }
   if (syncStatus?.sincronizando) {
@@ -53,8 +51,16 @@ export default function DashboardPage({
   onAbrirFormatacaoTabelas,
   syncStatus,
 }) {
-  const stats = buildDashboardStats(transportadoras);
-  const hasData = transportadoras.length > 0;
+  const statsBase = buildDashboardStats(transportadoras);
+  const resumo = syncStatus?.resumoBase;
+  const stats = resumo ? statsBase.map((item) => {
+    if (item.id === 1) return { ...item, valor: resumo.transportadoras ?? item.valor };
+    if (item.id === 2) return { ...item, valor: resumo.origens ?? item.valor };
+    if (item.id === 3) return { ...item, valor: resumo.rotas ?? item.valor };
+    if (item.id === 4) return { ...item, valor: resumo.cotacoes ?? item.valor };
+    return item;
+  }) : statsBase;
+  const hasData = transportadoras.length > 0 || Boolean(resumo);
   const status = getStatus(syncStatus, hasData);
   const carregandoInicial = syncStatus?.carregando && !hasData;
 

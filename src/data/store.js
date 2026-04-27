@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   bancoConfigurado,
   carregarBaseCompletaDb,
+  carregarResumoBaseDb,
   carregarSnapshotFretesDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
@@ -176,12 +177,13 @@ export function useFreteStore() {
     erro: '',
     ultimaSincronizacao: '',
     fonte: bancoConfigurado() ? 'supabase-seguro' : 'local',
+    resumoBase: null,
   });
   const loadedRef = useRef(false);
+  const baseCompletaRef = useRef(false);
   const dirtyRef = useRef(false);
 
   useEffect(() => {
-    // Evita sobrescrever o cache local com base vazia antes da primeira carga terminar.
     if (loadedRef.current) {
       persistLocalState(transportadoras);
     }
@@ -190,93 +192,92 @@ export function useFreteStore() {
   useEffect(() => {
     let cancelled = false;
 
-    async function carregarRelacionalEmSegundoPlano(cacheLocal = []) {
+    async function carregarBaseCompletaEmSegundoPlano() {
       if (!bancoConfigurado()) return;
 
-      setSyncStatus((prev) => ({
-        ...prev,
-        carregandoSegundoPlano: true,
-        fonte: cacheLocal.length ? 'cache-local' : 'sem-snapshot',
-      }));
+      setSyncStatus((prev) => ({ ...prev, carregandoSegundoPlano: true }));
 
       try {
-        const baseRelacional = await carregarBaseCompletaDb();
+        const baseCompleta = await carregarBaseCompletaDb();
 
-        if ((baseRelacional || []).length) {
-          // Cria o snapshot para os próximos acessos não dependerem da leitura pesada.
-          salvarBaseCompletaDb(baseRelacional).catch((error) => {
+        if ((baseCompleta || []).length) {
+          salvarBaseCompletaDb(baseCompleta).catch((error) => {
             console.warn('Não foi possível criar o snapshot automático:', error);
           });
         }
 
-        if (cancelled) return;
-
-        // Se o usuário importou/cadastrou algo enquanto a base relacional baixava,
-        // não sobrescreve a tela com dados antigos.
-        if (!dirtyRef.current) {
-          setTransportadoras((baseRelacional || []).map(normalizeTransportadora));
+        if (cancelled || dirtyRef.current) {
+          setSyncStatus((prev) => ({ ...prev, carregandoSegundoPlano: false }));
+          return;
         }
 
+        baseCompletaRef.current = true;
+        setTransportadoras((baseCompleta || []).map(normalizeTransportadora));
         setSyncStatus((prev) => ({
           ...prev,
           carregandoSegundoPlano: false,
-          fonte: dirtyRef.current ? 'alteracoes-locais' : 'supabase-relacional',
-          ultimaSincronizacao: prev.ultimaSincronizacao,
+          fonte: 'supabase-relacional-completa',
         }));
       } catch (error) {
         if (cancelled) return;
         setSyncStatus((prev) => ({
           ...prev,
           carregandoSegundoPlano: false,
-          erro: error.message || 'Erro ao carregar base relacional em segundo plano.',
+          erro: error.message || 'Erro ao carregar base completa em segundo plano.',
         }));
       }
     }
 
     async function carregar() {
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
-
       try {
-        const cacheLocal = readLocalState();
-
-        if (!cancelled && cacheLocal.length) {
-          setTransportadoras(cacheLocal.map(normalizeTransportadora));
-          loadedRef.current = true;
-          setSyncStatus((prev) => ({
-            ...prev,
-            carregando: false,
-            fonte: bancoConfigurado() ? 'cache-local' : 'local',
-          }));
-        }
-
         const snapshot = await carregarSnapshotFretesDb();
 
         if (snapshot?.payload?.transportadoras?.length) {
           if (cancelled) return;
-          if (!dirtyRef.current) {
-            setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
-          }
+          baseCompletaRef.current = true;
+          setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
           loadedRef.current = true;
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             ultimaSincronizacao: snapshot.updated_at || snapshot.payload.updatedAt || '',
             fonte: 'supabase-snapshot',
+            resumoBase: null,
           }));
           return;
         }
 
-        // Snapshot vazio: libera a tela e carrega a base pesada em segundo plano.
-        // Assim a importação por pasta continua utilizável e não fica "pensando" na abertura.
+        if (bancoConfigurado()) {
+          const resumo = await carregarResumoBaseDb();
+          if (cancelled) return;
+
+          baseCompletaRef.current = false;
+          setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
+          loadedRef.current = true;
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            fonte: 'supabase-resumo',
+            resumoBase: resumo.resumo,
+          }));
+
+          // Deixa a tela conectada e responsiva. A base completa tenta carregar depois,
+          // mas não bloqueia o dashboard nem a importação.
+          carregarBaseCompletaEmSegundoPlano();
+          return;
+        }
+
+        const cacheLocal = readLocalState();
         if (cancelled) return;
+        baseCompletaRef.current = true;
+        setTransportadoras((cacheLocal || []).map(normalizeTransportadora));
         loadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          fonte: bancoConfigurado() ? 'sem-snapshot' : 'local',
+          fonte: 'local',
         }));
-
-        carregarRelacionalEmSegundoPlano(cacheLocal);
       } catch (error) {
         if (cancelled) return;
         loadedRef.current = true;
@@ -297,6 +298,14 @@ export function useFreteStore() {
   function salvarAutomaticamente(next, acao = 'alteração') {
     dirtyRef.current = true;
     if (!loadedRef.current || !bancoConfigurado()) return;
+
+    if (!baseCompletaRef.current) {
+      setSyncStatus((prev) => ({
+        ...prev,
+        erro: 'Base completa ainda não carregada. Para alterações manuais, aguarde a carga completa. A importação por lote pode ser usada normalmente.',
+      }));
+      return;
+    }
 
     setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
 
@@ -384,12 +393,19 @@ export function useFreteStore() {
 
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
-          const result = await salvarSecaoDb(normalized, tipo);
+          const result = await salvarSecaoDb(
+            normalized,
+            tipo,
+            undefined,
+            { atualizarSnapshot: baseCompletaRef.current }
+          );
+          const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-            fonte: 'supabase-seguro',
+            fonte: baseCompletaRef.current ? 'supabase-snapshot' : 'supabase-resumo',
+            resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
           return { ok: true };
         } catch (error) {
@@ -416,15 +432,19 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
 
         try {
-          // Grava o lote inteiro em uma única chamada, evitando salvar arquivo por arquivo.
-          // Essa gravação também atualiza o cadastros_snapshot.
-          const result = await salvarSecaoDb(normalized, tipo);
+          const result = await salvarSecaoDb(
+            normalized,
+            tipo,
+            undefined,
+            { atualizarSnapshot: baseCompletaRef.current }
+          );
+          const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
-            carregandoSegundoPlano: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-            fonte: 'supabase-snapshot',
+            fonte: baseCompletaRef.current ? 'supabase-snapshot' : 'supabase-resumo',
+            resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
           return { ok: true };
         } catch (error) {

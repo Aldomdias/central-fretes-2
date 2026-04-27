@@ -370,7 +370,6 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         if (typeof store.importarLoteESalvar === 'function') {
           resultado = await store.importarLoteESalvar(payloadsValidos, tipo);
         } else {
-          // Fallback para versões antigas do store.
           for (const payload of payloadsValidos) {
             const parcial = await store.importarESalvar(payload, tipo);
             if (parcial?.ok === false) {

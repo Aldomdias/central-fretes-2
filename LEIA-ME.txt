@@ -1,31 +1,31 @@
-PATCH - Corrigir erros de importação | Base 12
+PATCH - Conectar ao Supabase por resumo + corrigir importação | Base 12
 
-Arquivo alterado:
+Feito em cima do arquivo: central-fretes-2-main (12).zip
+
+Arquivos alterados:
 - src/services/freteDatabaseService.js
+- src/data/store.js
+- src/pages/DashboardPage.jsx
+- src/pages/ImportacaoPage.jsx
 
-Erros corrigidos:
+O que corrige:
+1) A tela inicial não fica presa no cache local.
+   Agora busca primeiro o resumo direto do Supabase:
+   - total de transportadoras
+   - total de origens
+   - total de rotas
+   - total de cotações
 
-1) Erro:
-duplicate key value violates unique constraint "origens_unique_transportadora_cidade_canal"
+2) Evita tentar baixar as 312 mil rotas para abrir o dashboard.
+   Isso estava deixando a tela lenta e com aparência de desconectada.
 
-Causa:
-Ao importar fretes/cotações para uma origem já existente, o sistema criava um novo id de origem
-e tentava inserir outra origem com a mesma transportadora + cidade + canal.
+3) Corrige o erro de origem duplicada:
+   duplicate key value violates unique constraint "origens_unique_transportadora_cidade_canal"
 
-Correção:
-Antes de gravar, o sistema procura a origem já existente por:
-transportadora_id + cidade + canal
-e reaproveita o id correto. Assim, os fretes/cotações entram na origem existente.
+4) Corrige o histórico de importação quando não existe a coluna duracao_ms.
 
-2) Erro:
-Could not find the 'duracao_ms' column of 'frete_importacoes' in the schema cache
+5) Mantém o Mapear pasta e cria store.importarLoteESalvar.
 
-Causa:
-A tabela frete_importacoes no Supabase não tem a coluna duracao_ms, mas o sistema tentava gravar esse campo no histórico.
-
-Correção:
-Se o Supabase reclamar da coluna duracao_ms, o sistema tenta registrar o histórico novamente sem esse campo.
-
-Como aplicar:
-Copie a pasta src de dentro deste patch para a raiz do projeto.
-Não suba a pasta PATCH_CORRIGIR_ERROS_IMPORTACAO_BASE12 para dentro do GitHub.
+Observação importante:
+Com uma base de 312 mil rotas, não é recomendado carregar tudo no dashboard.
+O dashboard deve carregar por resumo. A tela de simulação pode ter uma carga específica depois.

@@ -530,7 +530,79 @@ export async function carregarBaseCompletaDb() {
   }));
 }
 
-export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHAVE) {
+export async function carregarResumoBaseDb() {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return { transportadoras: [], resumo: { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0 } };
+    const parsed = JSON.parse(raw);
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+    const origens = transportadoras.flatMap((item) => item.origens || []);
+    return {
+      transportadoras,
+      resumo: {
+        transportadoras: transportadoras.length,
+        origens: origens.length,
+        rotas: origens.reduce((acc, origem) => acc + (origem.rotas?.length || 0), 0),
+        cotacoes: origens.reduce((acc, origem) => acc + (origem.cotacoes?.length || 0), 0),
+      },
+    };
+  }
+
+  const supabase = ensureClient();
+
+  const [
+    transportadorasResponse,
+    origensResponse,
+    rotasCountResponse,
+    cotacoesCountResponse,
+  ] = await Promise.all([
+    supabase.from('transportadoras').select('id, nome, status').order('nome', { ascending: true }),
+    supabase.from('origens').select('id, transportadora_id, cidade, canal, status').order('cidade', { ascending: true }),
+    supabase.from('rotas').select('id', { count: 'exact', head: true }),
+    supabase.from('cotacoes').select('id', { count: 'exact', head: true }),
+  ]);
+
+  if (transportadorasResponse.error) throw transportadorasResponse.error;
+  if (origensResponse.error) throw origensResponse.error;
+  if (rotasCountResponse.error) throw rotasCountResponse.error;
+  if (cotacoesCountResponse.error) throw cotacoesCountResponse.error;
+
+  const origensByTransportadora = new Map();
+  (origensResponse.data || []).forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const lista = origensByTransportadora.get(key) || [];
+    lista.push({
+      id: origem.id,
+      cidade: origem.cidade || '',
+      canal: origem.canal || 'ATACADO',
+      status: origem.status || 'Ativa',
+      generalidades: {},
+      rotas: [],
+      cotacoes: [],
+      taxasEspeciais: [],
+    });
+    origensByTransportadora.set(key, lista);
+  });
+
+  const transportadoras = (transportadorasResponse.data || []).map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  }));
+
+  return {
+    transportadoras,
+    resumo: {
+      transportadoras: transportadoras.length,
+      origens: (origensResponse.data || []).length,
+      rotas: rotasCountResponse.count || 0,
+      cotacoes: cotacoesCountResponse.count || 0,
+    },
+  };
+}
+
+export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHAVE, options = {}) {
   if (!isSupabaseConfigured()) {
     const payload = buildSnapshotPayload(transportadoras, chave);
     localStorage.setItem(FALLBACK_KEY, JSON.stringify(payload));
@@ -592,6 +664,10 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
   }
   if (secao === 'taxas') {
     await upsertRows(supabase, 'taxas_especiais', taxasRows, 'id');
+  }
+
+  if (options.atualizarSnapshot === false) {
+    return { modo: 'supabase', secao, updated_at: new Date().toISOString(), snapshot: 'ignorado' };
   }
 
   const payload = buildSnapshotPayload(transportadoras, chave);
