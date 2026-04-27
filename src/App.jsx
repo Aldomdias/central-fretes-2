@@ -58,8 +58,6 @@ export default function App() {
         onAbrirImportacao={abrirImportacao}
         onResetarBase={store.resetarBase}
         syncStatus={store.syncStatus}
-        onAtualizarBase={store.carregarDoBanco}
-        onSincronizarAgora={store.sincronizarAgora}
       />
     );
   }

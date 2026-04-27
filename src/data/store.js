@@ -152,13 +152,6 @@ function mergeImport(prev, payload, tipo) {
   return next.map(normalizeTransportadora);
 }
 
-function mergeImportMany(prev, payloads = [], tipo) {
-  return (payloads || []).reduce(
-    (acc, payload) => mergeImport(acc, payload, tipo),
-    clone(prev).map(normalizeTransportadora)
-  );
-}
-
 export function useFreteStore() {
   const [transportadoras, setTransportadoras] = useState([]);
   const [syncStatus, setSyncStatus] = useState({
@@ -182,29 +175,30 @@ export function useFreteStore() {
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
         let base = [];
-        if (bancoConfigurado()) {
+        let ultimaSincronizacao = '';
+
+        const snapshot = await carregarSnapshotFretesDb();
+        if (snapshot?.payload?.transportadoras) {
+          base = snapshot.payload.transportadoras;
+          ultimaSincronizacao = snapshot.updated_at || snapshot.payload.updatedAt || '';
+        } else if (bancoConfigurado()) {
+          // Fallback apenas quando ainda não existe snapshot.
+          // A leitura das tabelas relacionais é mais pesada e deixa a tela lenta.
           base = await carregarBaseCompletaDb();
         } else {
-          const snapshot = await carregarSnapshotFretesDb();
-          base = snapshot?.payload?.transportadoras || [];
+          base = [];
         }
 
         if (cancelled) return;
 
         setTransportadoras((base || []).map(normalizeTransportadora));
 
-        let ultimaSincronizacao = '';
-        try {
-          const snapshot = await carregarSnapshotFretesDb();
-          ultimaSincronizacao = snapshot?.updated_at || snapshot?.payload?.updatedAt || '';
-        } catch {}
-
         loadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
           ultimaSincronizacao,
-          fonte: bancoConfigurado() ? 'supabase-seguro' : 'local',
+          fonte: bancoConfigurado() ? 'supabase-snapshot' : 'local',
         }));
       } catch (error) {
         if (cancelled) return;
@@ -222,6 +216,38 @@ export function useFreteStore() {
       cancelled = true;
     };
   }, []);
+
+  function salvarAutomaticamente(next, acao = 'alteração') {
+    if (!loadedRef.current || !bancoConfigurado()) return;
+
+    setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+
+    salvarBaseCompletaDb(next)
+      .then((result) => {
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+          fonte: 'supabase-snapshot',
+        }));
+      })
+      .catch((error) => {
+        setSyncStatus((prev) => ({
+          ...prev,
+          sincronizando: false,
+          erro: error.message || `Erro ao salvar ${acao}.`,
+        }));
+      });
+  }
+
+  const aplicarAlteracao = (updater, acao = 'alteração') => {
+    const base = Array.isArray(transportadoras) ? transportadoras : [];
+    const next = typeof updater === 'function' ? updater(base) : updater;
+    const normalized = (next || []).map(normalizeTransportadora);
+
+    setTransportadoras(normalized);
+    salvarAutomaticamente(normalized, acao);
+  };
 
   const api = useMemo(
     () => ({
@@ -272,13 +298,7 @@ export function useFreteStore() {
         }
       },
       async importarESalvar(payload, tipo) {
-        return this.importarLoteESalvar([payload], tipo);
-      },
-      async importarLoteESalvar(payloads, tipo) {
-        const payloadsValidos = (payloads || []).filter(Boolean);
-        if (!payloadsValidos.length) return { ok: true, modo: 'sem-alteracao' };
-
-        const next = mergeImportMany(transportadoras, payloadsValidos, tipo);
+        const next = mergeImport(transportadoras, payload, tipo);
         setTransportadoras(next);
         if (!bancoConfigurado()) return { ok: true, modo: 'local' };
 
@@ -291,127 +311,143 @@ export function useFreteStore() {
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
             fonte: 'supabase-seguro',
           }));
-          return { ok: true, salvos: payloadsValidos.length };
+          return { ok: true };
         } catch (error) {
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
-            erro: error.message || 'Erro ao salvar lote.',
+            erro: error.message || 'Erro ao salvar seção.',
           }));
           return { ok: false, erro: error };
         }
       },
       resetarBase() {
+        // Mantido apenas localmente para evitar apagar o que já está salvo no Supabase.
         setTransportadoras([]);
       },
       salvarGeneralidades(transportadoraId, origemId, generalidades) {
-        setTransportadoras((prev) =>
-          prev.map((t) =>
-            t.id !== transportadoraId
-              ? t
-              : {
-                  ...t,
-                  origens: t.origens.map((o) =>
-                    o.id !== origemId ? o : { ...o, generalidades: mergeGeneralidades(generalidades) }
-                  ),
-                }
-          )
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) =>
+              t.id !== transportadoraId
+                ? t
+                : {
+                    ...t,
+                    origens: t.origens.map((o) =>
+                      o.id !== origemId ? o : { ...o, generalidades: mergeGeneralidades(generalidades) }
+                    ),
+                  }
+            ),
+          'generalidades'
         );
       },
       salvarOrigem(transportadoraId, origem) {
-        setTransportadoras((prev) =>
-          prev.map((t) => {
-            if (t.id !== transportadoraId) return t;
-            const normalized = normalizeOrigem(origem);
-            const exists = t.origens.some((o) => o.id === normalized.id);
-            const origens = exists
-              ? t.origens.map((o) => (o.id === normalized.id ? normalized : o))
-              : [...t.origens, normalized];
-            return { ...t, origens };
-          })
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) => {
+              if (t.id !== transportadoraId) return t;
+              const normalized = normalizeOrigem(origem);
+              const exists = t.origens.some((o) => o.id === normalized.id);
+              const origens = exists
+                ? t.origens.map((o) => (o.id === normalized.id ? normalized : o))
+                : [...t.origens, normalized];
+              return { ...t, origens };
+            }),
+          'origem'
         );
       },
       removerOrigem(transportadoraId, origemId) {
-        setTransportadoras((prev) =>
-          prev.map((t) =>
-            t.id !== transportadoraId
-              ? t
-              : {
-                  ...t,
-                  origens: t.origens.filter((o) => o.id !== origemId),
-                }
-          )
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) =>
+              t.id !== transportadoraId
+                ? t
+                : {
+                    ...t,
+                    origens: t.origens.filter((o) => o.id !== origemId),
+                  }
+            ),
+          'remoção de origem'
         );
       },
       salvarTransportadora(transportadora) {
-        setTransportadoras((prev) => {
-          const normalized = normalizeTransportadora(transportadora);
-          const exists = prev.some((item) => item.id === normalized.id);
-          return exists
-            ? prev.map((item) => (item.id === normalized.id ? normalized : item))
-            : [...prev, normalized];
-        });
+        aplicarAlteracao(
+          (prev) => {
+            const normalized = normalizeTransportadora(transportadora);
+            const exists = prev.some((item) => item.id === normalized.id);
+            return exists
+              ? prev.map((item) => (item.id === normalized.id ? normalized : item))
+              : [...prev, normalized];
+          },
+          'transportadora'
+        );
       },
       removerTransportadora(id) {
-        setTransportadoras((prev) => prev.filter((item) => item.id !== id));
+        aplicarAlteracao((prev) => prev.filter((item) => item.id !== id), 'remoção de transportadora');
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
-        setTransportadoras((prev) =>
-          prev.map((t) =>
-            t.id !== transportadoraId
-              ? t
-              : {
-                  ...t,
-                  origens: t.origens.map((o) => {
-                    if (o.id !== origemId) return o;
-                    const lista = o[secao] ?? [];
-                    const normalized = { ...linha, id: linha.id ?? safeRandomId() };
-                    const exists = lista.some((item) => item.id === normalized.id);
-                    return {
-                      ...o,
-                      [secao]: exists
-                        ? lista.map((item) => (item.id === normalized.id ? normalized : item))
-                        : [...lista, normalized],
-                    };
-                  }),
-                }
-          )
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) =>
+              t.id !== transportadoraId
+                ? t
+                : {
+                    ...t,
+                    origens: t.origens.map((o) => {
+                      if (o.id !== origemId) return o;
+                      const lista = o[secao] ?? [];
+                      const normalized = { ...linha, id: linha.id ?? safeRandomId() };
+                      const exists = lista.some((item) => item.id === normalized.id);
+                      return {
+                        ...o,
+                        [secao]: exists
+                          ? lista.map((item) => (item.id === normalized.id ? normalized : item))
+                          : [...lista, normalized],
+                      };
+                    }),
+                  }
+            ),
+          secao
         );
       },
       removerLinha(transportadoraId, origemId, secao, linhaId) {
-        setTransportadoras((prev) =>
-          prev.map((t) =>
-            t.id !== transportadoraId
-              ? t
-              : {
-                  ...t,
-                  origens: t.origens.map((o) =>
-                    o.id !== origemId
-                      ? o
-                      : {
-                          ...o,
-                          [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
-                        }
-                  ),
-                }
-          )
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) =>
+              t.id !== transportadoraId
+                ? t
+                : {
+                    ...t,
+                    origens: t.origens.map((o) =>
+                      o.id !== origemId
+                        ? o
+                        : {
+                            ...o,
+                            [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
+                          }
+                    ),
+                  }
+            ),
+          `remoção de ${secao}`
         );
       },
       importarPayload(payload, tipo) {
-        setTransportadoras((prev) => mergeImport(prev, payload, tipo));
+        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo);
       },
       limparSecaoOrigem(transportadoraId, origemId, secao) {
-        setTransportadoras((prev) =>
-          prev.map((t) =>
-            t.id !== transportadoraId
-              ? t
-              : {
-                  ...t,
-                  origens: t.origens.map((o) =>
-                    o.id !== origemId ? o : { ...o, [secao]: [] }
-                  ),
-                }
-          )
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) =>
+              t.id !== transportadoraId
+                ? t
+                : {
+                    ...t,
+                    origens: t.origens.map((o) =>
+                      o.id !== origemId ? o : { ...o, [secao]: [] }
+                    ),
+                  }
+            ),
+          `limpeza de ${secao}`
         );
       },
     }),

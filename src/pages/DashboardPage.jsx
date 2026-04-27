@@ -22,7 +22,7 @@ function getStatus(syncStatus) {
   if (syncStatus?.modo === 'local') {
     return { titulo: 'Modo local', detalhe: 'Base local do navegador em uso.', classe: 'warn' };
   }
-  return { titulo: 'Base atualizada', detalhe: 'Leitura e gravação conectadas ao Supabase.', classe: 'ok' };
+  return { titulo: 'Base atualizada', detalhe: 'As alterações são salvas automaticamente após cada ação.', classe: 'ok' };
 }
 
 export default function DashboardPage({
@@ -33,8 +33,6 @@ export default function DashboardPage({
   onAbrirFormatacaoTabelas,
   onResetarBase,
   syncStatus,
-  onAtualizarBase,
-  onSincronizarAgora,
 }) {
   const stats = buildDashboardStats(transportadoras);
   const status = getStatus(syncStatus);
@@ -72,8 +70,7 @@ export default function DashboardPage({
           </div>
         </div>
         <div className="actions-right">
-          <button className="btn-secondary" onClick={onAtualizarBase}>Atualizar base</button>
-          <button className="btn-primary" onClick={onSincronizarAgora}>Sincronizar agora</button>
+          <span className="status-pill dark">Salvamento automático</span>
         </div>
       </div>
 

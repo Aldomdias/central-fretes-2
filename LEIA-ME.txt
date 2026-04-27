@@ -1,13 +1,14 @@
-PATCH - Filtro na tela Transportadoras
+PATCH - Sincronização automática e carregamento rápido da base
 
-Copie os arquivos para o seu projeto respeitando os caminhos:
+Copie os arquivos para o projeto respeitando os caminhos:
 
-1) src/pages/TransportadorasPage.jsx
-2) src/styles.css
+1) src/data/store.js
+2) src/pages/DashboardPage.jsx
+3) src/App.jsx
 
-Melhorias:
-- filtro por cidade de origem
-- filtro por status de cobertura: Completa, Parcial e Inconsistente
-- busca por nome da transportadora
-- botão limpar filtros
-- mensagem quando não houver resultado
+O que muda:
+- remove o botão Sincronizar agora do Dashboard;
+- remove o botão Atualizar base do bloco de status;
+- a base passa a carregar pelo snapshot, que é mais rápido do que buscar todas as tabelas relacionais;
+- ao cadastrar/editar/remover transportadora, origem, generalidades, rotas, cotações ou taxas, salva automaticamente no Supabase;
+- o botão Restaurar base exemplo fica apenas local para evitar apagar a base salva no Supabase.
