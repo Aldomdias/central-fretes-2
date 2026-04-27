@@ -83,7 +83,7 @@ function readLocalState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
   } catch {
     return [];
   }
@@ -163,6 +163,10 @@ function mergeImport(prev, payload, tipo) {
   return next.map(normalizeTransportadora);
 }
 
+function mergeImportBatch(prev, payloads = [], tipo) {
+  return (payloads || []).reduce((acc, payload) => mergeImport(acc, payload, tipo), prev);
+}
+
 export function useFreteStore() {
   const [transportadoras, setTransportadoras] = useState([]);
   const [syncStatus, setSyncStatus] = useState({
@@ -176,7 +180,10 @@ export function useFreteStore() {
   const loadedRef = useRef(false);
 
   useEffect(() => {
-    persistLocalState(transportadoras);
+    // Não sobrescreve o cache local com base vazia antes da primeira carga terminar.
+    if (loadedRef.current) {
+      persistLocalState(transportadoras);
+    }
   }, [transportadoras]);
 
   useEffect(() => {
@@ -205,6 +212,14 @@ export function useFreteStore() {
           // Fallback apenas quando ainda não existe snapshot salvo.
           // O snapshot é mais rápido do que ler todas as tabelas relacionais.
           base = await carregarBaseCompletaDb();
+
+          // Cria o snapshot automaticamente para o próximo acesso não precisar
+          // baixar todas as tabelas novamente.
+          if ((base || []).length) {
+            salvarBaseCompletaDb(base).catch((error) => {
+              console.warn('Não foi possível criar o snapshot automático:', error);
+            });
+          }
         } else {
           base = cacheLocal;
         }
@@ -319,12 +334,13 @@ export function useFreteStore() {
       },
       async importarESalvar(payload, tipo) {
         const next = mergeImport(transportadoras, payload, tipo);
-        setTransportadoras(next);
+        const normalized = (next || []).map(normalizeTransportadora);
+        setTransportadoras(normalized);
         if (!bancoConfigurado()) return { ok: true, modo: 'local' };
 
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
-          const result = await salvarSecaoDb(next, tipo);
+          const result = await salvarSecaoDb(normalized, tipo);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
@@ -337,6 +353,36 @@ export function useFreteStore() {
             ...prev,
             sincronizando: false,
             erro: error.message || 'Erro ao salvar seção.',
+          }));
+          return { ok: false, erro: error };
+        }
+      },
+      async importarLoteESalvar(payloads, tipo) {
+        const listaPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
+        if (!listaPayloads.length) return { ok: true, modo: bancoConfigurado() ? 'supabase' : 'local' };
+
+        const next = mergeImportBatch(transportadoras, listaPayloads, tipo);
+        const normalized = (next || []).map(normalizeTransportadora);
+        setTransportadoras(normalized);
+
+        if (!bancoConfigurado()) return { ok: true, modo: 'local' };
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        try {
+          // Grava o lote inteiro em uma única chamada, evitando salvar arquivo por arquivo.
+          const result = await salvarSecaoDb(normalized, tipo);
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+            fonte: 'supabase-seguro',
+          }));
+          return { ok: true };
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            erro: error.message || 'Erro ao salvar lote.',
           }));
           return { ok: false, erro: error };
         }

@@ -1,16 +1,18 @@
-PATCH - Carregamento visível + sincronização automática
+PATCH - Importação por lote em cima do arquivo central-fretes-2-main (12).zip
 
 Arquivos alterados:
-1) src/data/store.js
-2) src/pages/DashboardPage.jsx
-3) src/App.jsx
-4) src/styles.css
+- src/data/store.js
+- src/pages/ImportacaoPage.jsx
 
-O que foi ajustado:
-- remove o botão "Restaurar base exemplo";
-- remove os botões de sincronização manual do dashboard;
-- mostra claramente quando a base está carregando;
-- evita exibir a tela inicial zerada enquanto não carrega os dados;
-- tenta mostrar o último cache local imediatamente para reduzir a sensação de demora;
-- continua buscando o snapshot mais recente do Supabase;
-- mantém salvamento automático após cada ação.
+Correções:
+1) Mantém o recurso de Mapear pasta já existente nessa versão.
+2) Corrige a função que a tela de importação já chamava: store.importarLoteESalvar.
+   Antes a tela chamava essa função, mas ela não existia no store, podendo deixar a importação travada/pensando.
+3) Grava o lote inteiro em uma única chamada ao Supabase, em vez de salvar arquivo por arquivo.
+4) Se o store estiver em versão antiga, a tela tem fallback seguro e não fica travada.
+5) Corrige o cache local para não sobrescrever a base com [] antes de terminar a primeira carga.
+6) Se não existir snapshot, depois da leitura relacional ele tenta criar o snapshot automaticamente para acelerar o próximo acesso.
+
+Como aplicar:
+Copie a pasta src de dentro deste patch para a raiz do projeto, mesclando com a pasta src existente.
+Não suba a pasta PATCH_IMPORTACAO_LOTE_BASE_12 para dentro do GitHub.
