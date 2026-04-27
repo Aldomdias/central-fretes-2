@@ -887,3 +887,35 @@ export function buildCoberturaReport(transportadoras) {
     },
   };
 }
+
+export function exportarControlePasta(rows = [], fileName = 'controle-pasta-importacao.xlsx') {
+  const normalizedRows = (rows || []).map((item) => ({
+    Arquivo: item.arquivo || '',
+    Caminho: item.caminho || '',
+    Tipo: item.tipo || '',
+    Status: item.status || '',
+    Selecionado: item.selecionado ? 'Sim' : 'Não',
+    'Tamanho KB': item.tamanhoKb ?? '',
+    'Modificado em': item.modificadoEm || '',
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(
+    normalizedRows.length
+      ? normalizedRows
+      : [{ Arquivo: '', Caminho: '', Tipo: '', Status: 'Nenhum arquivo mapeado' }]
+  );
+
+  ws['!cols'] = [
+    { wch: 36 },
+    { wch: 60 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 22 },
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Controle da pasta');
+  XLSX.writeFile(wb, fileName);
+}

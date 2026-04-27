@@ -1,11 +1,13 @@
-PATCH - Separar Formatação de Tabelas e Importar Template
+PATCH - Filtro na tela Transportadoras
 
-Substitua os arquivos seguindo a estrutura das pastas.
+Copie os arquivos para o seu projeto respeitando os caminhos:
 
-O que foi alterado:
-- Formatação de Tabelas fica somente para cadastro/manual guiado.
-- Nova tela no menu: Importar Template.
-- Importar Template aceita os dois arquivos preenchidos pelo transportador: Rotas + Fretes.
-- Nos dois fluxos é possível usar transportadora existente ou nova transportadora digitada na hora.
-- Adicionado fallback IBGE para Curitiba e Contagem.
+1) src/pages/TransportadorasPage.jsx
+2) src/styles.css
 
+Melhorias:
+- filtro por cidade de origem
+- filtro por status de cobertura: Completa, Parcial e Inconsistente
+- busca por nome da transportadora
+- botão limpar filtros
+- mensagem quando não houver resultado

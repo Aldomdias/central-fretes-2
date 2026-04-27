@@ -1,0 +1,29 @@
+PATCH - Importação por lote + controle de pasta
+
+Arquivos alterados:
+- src/pages/ImportacaoPage.jsx
+- src/data/store.js
+- src/utils/importacao.js
+- src/styles.css
+
+O que mudou:
+1. Importação em lote ficou mais leve:
+   - Antes cada arquivo era salvo na base individualmente.
+   - Agora o sistema lê todos os arquivos, monta os payloads e salva o lote uma única vez.
+   - Isso reduz bastante a demora quando subir 10, 15 ou mais arquivos.
+
+2. Correção de risco de perda/contagem inconsistente:
+   - A importação agora acumula todos os payloads antes de gravar.
+   - Evita usar o estado antigo de transportadoras a cada arquivo do mesmo lote.
+
+3. Novo botão "Mapear pasta":
+   - Permite escolher uma pasta inteira do computador.
+   - Lista os arquivos .xlsx, .xls e .csv encontrados.
+   - Mostra o que já foi importado e o que está pendente.
+   - Permite importar apenas os pendentes selecionados.
+
+4. Exportação do controle:
+   - Novo botão "Exportar controle" gera um Excel com arquivo, caminho, tipo, status, selecionado, tamanho e data de modificação.
+
+Observação:
+- Por segurança do navegador, o sistema não consegue monitorar uma pasta automaticamente em tempo real sem o usuário selecionar a pasta. O botão "Mapear pasta" resolve isso dentro do que o navegador permite.
