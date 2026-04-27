@@ -666,7 +666,7 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
     await upsertRows(supabase, 'taxas_especiais', taxasRows, 'id');
   }
 
-  if (options.atualizarSnapshot === false) {
+  if (options.atualizarSnapshot !== true) {
     return { modo: 'supabase', secao, updated_at: new Date().toISOString(), snapshot: 'ignorado' };
   }
 

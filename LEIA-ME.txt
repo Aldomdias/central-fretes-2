@@ -1,31 +1,22 @@
-PATCH - Conectar ao Supabase por resumo + corrigir importação | Base 12
+PATCH - Parar carga pesada no Supabase | Base 12
 
-Feito em cima do arquivo: central-fretes-2-main (12).zip
+Motivo:
+Com 312 mil rotas, o sistema não deve tentar carregar a base completa nem montar snapshot gigante na abertura.
+Isso pode deixar o Supabase/Table Editor lento ou travado.
 
-Arquivos alterados:
+Este patch:
+1) Remove a carga completa em segundo plano.
+2) Não grava mais cadastros_snapshot automaticamente.
+3) Dashboard carrega apenas o resumo direto do Supabase:
+   transportadoras, origens, rotas e cotações.
+4) Importação por Mapear pasta salva direto nas tabelas relacionais.
+5) Corrige origem duplicada por transportadora + cidade + canal.
+6) Corrige histórico quando frete_importacoes não tem duracao_ms.
+7) Inclui SQL para limpar cadastros_snapshot se ele ficou pesado.
+
+Arquivos:
 - src/services/freteDatabaseService.js
 - src/data/store.js
 - src/pages/DashboardPage.jsx
 - src/pages/ImportacaoPage.jsx
-
-O que corrige:
-1) A tela inicial não fica presa no cache local.
-   Agora busca primeiro o resumo direto do Supabase:
-   - total de transportadoras
-   - total de origens
-   - total de rotas
-   - total de cotações
-
-2) Evita tentar baixar as 312 mil rotas para abrir o dashboard.
-   Isso estava deixando a tela lenta e com aparência de desconectada.
-
-3) Corrige o erro de origem duplicada:
-   duplicate key value violates unique constraint "origens_unique_transportadora_cidade_canal"
-
-4) Corrige o histórico de importação quando não existe a coluna duracao_ms.
-
-5) Mantém o Mapear pasta e cria store.importarLoteESalvar.
-
-Observação importante:
-Com uma base de 312 mil rotas, não é recomendado carregar tudo no dashboard.
-O dashboard deve carregar por resumo. A tela de simulação pode ter uma carga específica depois.
+- supabase/RECUPERAR_SUPABASE_SNAPSHOT.sql

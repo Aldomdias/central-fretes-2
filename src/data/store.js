@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   bancoConfigurado,
-  carregarBaseCompletaDb,
   carregarResumoBaseDb,
   carregarSnapshotFretesDb,
   salvarBaseCompletaDb,
@@ -180,8 +179,6 @@ export function useFreteStore() {
     resumoBase: null,
   });
   const loadedRef = useRef(false);
-  const baseCompletaRef = useRef(false);
-  const dirtyRef = useRef(false);
 
   useEffect(() => {
     if (loadedRef.current) {
@@ -192,67 +189,13 @@ export function useFreteStore() {
   useEffect(() => {
     let cancelled = false;
 
-    async function carregarBaseCompletaEmSegundoPlano() {
-      if (!bancoConfigurado()) return;
-
-      setSyncStatus((prev) => ({ ...prev, carregandoSegundoPlano: true }));
-
-      try {
-        const baseCompleta = await carregarBaseCompletaDb();
-
-        if ((baseCompleta || []).length) {
-          salvarBaseCompletaDb(baseCompleta).catch((error) => {
-            console.warn('Não foi possível criar o snapshot automático:', error);
-          });
-        }
-
-        if (cancelled || dirtyRef.current) {
-          setSyncStatus((prev) => ({ ...prev, carregandoSegundoPlano: false }));
-          return;
-        }
-
-        baseCompletaRef.current = true;
-        setTransportadoras((baseCompleta || []).map(normalizeTransportadora));
-        setSyncStatus((prev) => ({
-          ...prev,
-          carregandoSegundoPlano: false,
-          fonte: 'supabase-relacional-completa',
-        }));
-      } catch (error) {
-        if (cancelled) return;
-        setSyncStatus((prev) => ({
-          ...prev,
-          carregandoSegundoPlano: false,
-          erro: error.message || 'Erro ao carregar base completa em segundo plano.',
-        }));
-      }
-    }
-
     async function carregar() {
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
-        const snapshot = await carregarSnapshotFretesDb();
-
-        if (snapshot?.payload?.transportadoras?.length) {
-          if (cancelled) return;
-          baseCompletaRef.current = true;
-          setTransportadoras(snapshot.payload.transportadoras.map(normalizeTransportadora));
-          loadedRef.current = true;
-          setSyncStatus((prev) => ({
-            ...prev,
-            carregando: false,
-            ultimaSincronizacao: snapshot.updated_at || snapshot.payload.updatedAt || '',
-            fonte: 'supabase-snapshot',
-            resumoBase: null,
-          }));
-          return;
-        }
-
         if (bancoConfigurado()) {
           const resumo = await carregarResumoBaseDb();
           if (cancelled) return;
 
-          baseCompletaRef.current = false;
           setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
           loadedRef.current = true;
           setSyncStatus((prev) => ({
@@ -261,16 +204,12 @@ export function useFreteStore() {
             fonte: 'supabase-resumo',
             resumoBase: resumo.resumo,
           }));
-
-          // Deixa a tela conectada e responsiva. A base completa tenta carregar depois,
-          // mas não bloqueia o dashboard nem a importação.
-          carregarBaseCompletaEmSegundoPlano();
           return;
         }
 
         const cacheLocal = readLocalState();
         if (cancelled) return;
-        baseCompletaRef.current = true;
+
         setTransportadoras((cacheLocal || []).map(normalizeTransportadora));
         loadedRef.current = true;
         setSyncStatus((prev) => ({
@@ -284,7 +223,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          erro: error.message || 'Erro ao carregar base.',
+          erro: error.message || 'Erro ao carregar resumo da base.',
         }));
       }
     }
@@ -296,18 +235,14 @@ export function useFreteStore() {
   }, []);
 
   function salvarAutomaticamente(next, acao = 'alteração') {
-    dirtyRef.current = true;
     if (!loadedRef.current || !bancoConfigurado()) return;
 
-    if (!baseCompletaRef.current) {
-      setSyncStatus((prev) => ({
-        ...prev,
-        erro: 'Base completa ainda não carregada. Para alterações manuais, aguarde a carga completa. A importação por lote pode ser usada normalmente.',
-      }));
-      return;
-    }
+    setSyncStatus((prev) => ({
+      ...prev,
+      erro: 'Alteração manual bloqueada temporariamente no modo resumo para evitar sobrescrever a base completa. Use a importação por lote.',
+    }));
 
-    setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+    return;
 
     salvarBaseCompletaDb(next)
       .then((result) => {
@@ -387,24 +322,18 @@ export function useFreteStore() {
       async importarESalvar(payload, tipo) {
         const next = mergeImport(transportadoras, payload, tipo);
         const normalized = (next || []).map(normalizeTransportadora);
-        dirtyRef.current = true;
         setTransportadoras(normalized);
         if (!bancoConfigurado()) return { ok: true, modo: 'local' };
 
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
-          const result = await salvarSecaoDb(
-            normalized,
-            tipo,
-            undefined,
-            { atualizarSnapshot: baseCompletaRef.current }
-          );
+          const result = await salvarSecaoDb(normalized, tipo, undefined, { atualizarSnapshot: false });
           const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-            fonte: baseCompletaRef.current ? 'supabase-snapshot' : 'supabase-resumo',
+            fonte: 'supabase-resumo',
             resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
           return { ok: true };
@@ -424,7 +353,6 @@ export function useFreteStore() {
         const next = mergeImportBatch(transportadoras, listaPayloads, tipo);
         const normalized = (next || []).map(normalizeTransportadora);
 
-        dirtyRef.current = true;
         setTransportadoras(normalized);
 
         if (!bancoConfigurado()) return { ok: true, modo: 'local' };
@@ -432,18 +360,13 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
 
         try {
-          const result = await salvarSecaoDb(
-            normalized,
-            tipo,
-            undefined,
-            { atualizarSnapshot: baseCompletaRef.current }
-          );
+          const result = await salvarSecaoDb(normalized, tipo, undefined, { atualizarSnapshot: false });
           const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-            fonte: baseCompletaRef.current ? 'supabase-snapshot' : 'supabase-resumo',
+            fonte: 'supabase-resumo',
             resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
           return { ok: true };

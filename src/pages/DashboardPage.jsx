@@ -13,22 +13,15 @@ function getStatus(syncStatus, hasData) {
   if (syncStatus?.carregando) {
     return {
       titulo: 'Conectando ao Supabase',
-      detalhe: 'Buscando resumo da base para abrir a tela sem travar.',
+      detalhe: 'Buscando apenas o resumo da base para não travar com milhares de rotas.',
       classe: 'dark',
     };
   }
   if (syncStatus?.fonte === 'supabase-resumo') {
     return {
       titulo: 'Conectado ao Supabase',
-      detalhe: 'Resumo da base carregado. Rotas e cotações completas podem carregar em segundo plano.',
+      detalhe: 'Resumo da base carregado. A importação salva direto nas tabelas do banco.',
       classe: 'ok',
-    };
-  }
-  if (syncStatus?.carregandoSegundoPlano) {
-    return {
-      titulo: 'Base completa em segundo plano',
-      detalhe: 'A tela já está liberada. O sistema está tentando carregar detalhes sem travar a importação.',
-      classe: 'dark',
     };
   }
   if (syncStatus?.sincronizando) {
