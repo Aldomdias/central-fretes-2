@@ -1,22 +1,19 @@
-PATCH - Parar carga pesada no Supabase | Base 12
+PATCH - Carregar detalhes da transportadora sob demanda | Base 12
 
-Motivo:
-Com 312 mil rotas, o sistema não deve tentar carregar a base completa nem montar snapshot gigante na abertura.
-Isso pode deixar o Supabase/Table Editor lento ou travado.
+Problema:
+O dashboard agora carrega corretamente o resumo do Supabase, mas a tela Transportadoras
+ficava com a versão resumida, sem rotas/cotações completas. Por isso aparecia como se
+os fretes importados não tivessem voltado para o sistema.
 
-Este patch:
-1) Remove a carga completa em segundo plano.
-2) Não grava mais cadastros_snapshot automaticamente.
-3) Dashboard carrega apenas o resumo direto do Supabase:
-   transportadoras, origens, rotas e cotações.
-4) Importação por Mapear pasta salva direto nas tabelas relacionais.
-5) Corrige origem duplicada por transportadora + cidade + canal.
-6) Corrige histórico quando frete_importacoes não tem duracao_ms.
-7) Inclui SQL para limpar cadastros_snapshot se ele ficou pesado.
+Correção:
+- O dashboard continua leve, buscando apenas resumo.
+- Ao abrir uma transportadora, o sistema busca os detalhes dela no Supabase:
+  origens, generalidades, rotas, cotações e taxas especiais.
+- Não carrega as 312 mil rotas na abertura.
+- Carrega somente a transportadora selecionada.
+- Inclui mensagem de "Carregando detalhes da transportadora...".
 
 Arquivos:
 - src/services/freteDatabaseService.js
 - src/data/store.js
-- src/pages/DashboardPage.jsx
-- src/pages/ImportacaoPage.jsx
-- supabase/RECUPERAR_SUPABASE_SNAPSHOT.sql
+- src/pages/TransportadorasPage.jsx

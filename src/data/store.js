@@ -3,6 +3,7 @@ import {
   bancoConfigurado,
   carregarResumoBaseDb,
   carregarSnapshotFretesDb,
+  carregarTransportadoraCompletaDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
 } from '../services/freteDatabaseService';
@@ -177,6 +178,7 @@ export function useFreteStore() {
     ultimaSincronizacao: '',
     fonte: bancoConfigurado() ? 'supabase-seguro' : 'local',
     resumoBase: null,
+    carregandoDetalheId: null,
   });
   const loadedRef = useRef(false);
 
@@ -377,6 +379,40 @@ export function useFreteStore() {
             erro: error.message || 'Erro ao salvar lote.',
           }));
           return { ok: false, erro: error };
+        }
+      },
+      async carregarTransportadoraCompleta(transportadoraId) {
+        if (!transportadoraId || !bancoConfigurado()) return false;
+
+        setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: transportadoraId, erro: '' }));
+
+        try {
+          const completa = await carregarTransportadoraCompletaDb(transportadoraId);
+          if (!completa) {
+            setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: null }));
+            return false;
+          }
+
+          setTransportadoras((prev) =>
+            (prev || []).map((item) =>
+              String(item.id) === String(transportadoraId) ? normalizeTransportadora(completa) : item
+            )
+          );
+
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregandoDetalheId: null,
+            fonte: 'supabase-detalhe',
+          }));
+
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregandoDetalheId: null,
+            erro: error.message || 'Erro ao carregar detalhes da transportadora.',
+          }));
+          return false;
         }
       },
       resetarBase() {

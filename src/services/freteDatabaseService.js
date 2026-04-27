@@ -530,6 +530,116 @@ export async function carregarBaseCompletaDb() {
   }));
 }
 
+
+async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  if (!ids.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+
+  for (let chunkIndex = 0; chunkIndex < ids.length; chunkIndex += chunkSize) {
+    const chunk = ids.slice(chunkIndex, chunkIndex + chunkSize);
+    let from = 0;
+
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .in('origem_id', chunk)
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+
+      const pageRows = data || [];
+      rows.push(...pageRows);
+      if (pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
+
+  return rows;
+}
+
+export async function carregarTransportadoraCompletaDb(transportadoraId) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+    return transportadoras.find((item) => String(item.id) === String(transportadoraId)) || null;
+  }
+
+  const supabase = ensureClient();
+
+  const { data: transportadora, error: transportadoraError } = await supabase
+    .from('transportadoras')
+    .select('id, nome, status')
+    .eq('id', transportadoraId)
+    .single();
+
+  if (transportadoraError) throw transportadoraError;
+
+  const { data: origens, error: origensError } = await supabase
+    .from('origens')
+    .select('*')
+    .eq('transportadora_id', transportadoraId)
+    .order('cidade', { ascending: true });
+
+  if (origensError) throw origensError;
+
+  const origemIds = (origens || []).map((item) => item.id);
+
+  const [generalidades, rotas, cotacoes, taxas] = await Promise.all([
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
+    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
+    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
+    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  const generalidadeByOrigem = new Map((generalidades || []).map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = new Map();
+  const cotacoesByOrigem = new Map();
+  const taxasByOrigem = new Map();
+
+  (rotas || []).forEach((item) => {
+    const key = String(item.origem_id);
+    const list = rotasByOrigem.get(key) || [];
+    list.push(item);
+    rotasByOrigem.set(key, list);
+  });
+
+  (cotacoes || []).forEach((item) => {
+    const key = String(item.origem_id);
+    const list = cotacoesByOrigem.get(key) || [];
+    list.push(item);
+    cotacoesByOrigem.set(key, list);
+  });
+
+  (taxas || []).forEach((item) => {
+    const key = String(item.origem_id);
+    const list = taxasByOrigem.get(key) || [];
+    list.push(item);
+    taxasByOrigem.set(key, list);
+  });
+
+  return {
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    detalheCarregado: true,
+    origens: (origens || []).map((origem) =>
+      normalizeOrigemFromDb(
+        origem,
+        generalidadeByOrigem.get(String(origem.id)),
+        rotasByOrigem.get(String(origem.id)) || [],
+        cotacoesByOrigem.get(String(origem.id)) || [],
+        taxasByOrigem.get(String(origem.id)) || []
+      )
+    ),
+  };
+}
+
 export async function carregarResumoBaseDb() {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
