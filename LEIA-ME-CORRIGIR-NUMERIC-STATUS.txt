@@ -1,0 +1,14 @@
+PATCH - Corrigir numeric field overflow e histórico de importação
+
+1) Rode primeiro no Supabase:
+   supabase/CORRIGIR_NUMERIC_OVERFLOW.sql
+
+Isso aumenta a precisão dos campos numéricos, principalmente em cotacoes.peso_max,
+para aceitar faixas como 100 a 999999999.
+
+2) Depois copie este arquivo para o projeto:
+   src/services/freteDatabaseService.js
+
+Correção no código:
+- O histórico de importação agora remove automaticamente campos que não existem
+  na tabela frete_importacoes, como status ou duracao_ms.

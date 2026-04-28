@@ -19,6 +19,12 @@ function uniqueCities(items) {
   )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
+function precisaCarregarDetalhes(transportadora) {
+  if (!transportadora) return false;
+  if (transportadora.detalheCarregado) return false;
+  return true;
+}
+
 function ActionIcon({ children, onClick, danger = false }) {
   return <button className={danger ? 'icon-btn danger' : 'icon-btn'} onClick={onClick}>{children}</button>;
 }
@@ -183,6 +189,9 @@ function InconsistenciasModal({ open, title, transportadora, origem = null, onCl
 }
 
 function buildResumoTransportadora(transportadora) {
+  if (transportadora?.resumoCobertura) {
+    return transportadora.resumoCobertura;
+  }
   const analises = (transportadora.origens || []).map((origem) => analisarCoberturaOrigem(origem));
   const inconsistentes = analises.filter((item) => item.cobertura === 'Inconsistente').length;
   const pendencias = analises.filter((item) => item.cobertura !== 'Completa').length;
@@ -421,6 +430,25 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
       <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{transportadora.origens.length} origem(ns)</span></div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div></div>
+      {store.syncStatus?.carregandoDetalheId === transportadora.id ? (
+        <div className="hint-box top-space">
+          <strong>Carregando detalhes da transportadora...</strong><br />
+          Buscando rotas, cotações, taxas e generalidades direto do Supabase.
+        </div>
+      ) : !transportadora.detalheCarregado ? (
+        <div className="hint-box top-space">
+          <strong>Resumo carregado.</strong><br />
+          Abrindo os detalhes desta transportadora para buscar fretes e cotações no Supabase.
+        </div>
+      ) : null}
+      {store.syncStatus?.erro ? (
+        <div className="mini-feedback error top-space">
+          {store.syncStatus.erro}
+          <button className="btn-link inline-btn" onClick={() => store.carregarTransportadoraCompleta?.(transportadora.id)}>
+            Tentar carregar novamente
+          </button>
+        </div>
+      ) : null}
       <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cidade de origem..." />
       <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{transportadora.origens.length} origem(ns)</span></div></div>
       <div className="list-stack">
@@ -435,7 +463,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
               <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title">{origem.cidade} —</div><div className="list-subtitle">{origem.rotas.length} rota(s) · {origem.cotacoes.length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
-                <CoberturaBadge cobertura={analise.cobertura} severidade={analise.severidade} />
+                <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
                 <button className="btn-link inline-btn" onClick={() => setInconsistenciasOpen(origem.id)}>Ver inconsistências</button>
                 <button className="btn-link inline-btn" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar Verum</button>
                 <span className="status-pill light">{origem.status}</span>
@@ -494,8 +522,16 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
 }
 
 export default function TransportadorasPage({ transportadoras, transportadoraSelecionadaId, origemSelecionadaId, onOpenTransportadora, onOpenOrigem, onVoltar, store }) {
-  const transportadora = useMemo(() => transportadoras.find((item) => item.id === transportadoraSelecionadaId), [transportadoras, transportadoraSelecionadaId]);
-  const origem = useMemo(() => transportadora?.origens.find((item) => item.id === origemSelecionadaId), [transportadora, origemSelecionadaId]);
+  const transportadora = useMemo(() => transportadoras.find((item) => String(item.id) === String(transportadoraSelecionadaId)), [transportadoras, transportadoraSelecionadaId]);
+  const origem = useMemo(() => transportadora?.origens.find((item) => String(item.id) === String(origemSelecionadaId)), [transportadora, origemSelecionadaId]);
+
+  React.useEffect(() => {
+    if (!transportadoraSelecionadaId || !transportadora || !store?.carregarTransportadoraCompleta) return;
+    if (!precisaCarregarDetalhes(transportadora)) return;
+    if (String(store.syncStatus?.carregandoDetalheId || '') === String(transportadoraSelecionadaId)) return;
+
+    store.carregarTransportadoraCompleta(transportadoraSelecionadaId);
+  }, [transportadoraSelecionadaId, transportadora, store]);
 
   if (!transportadora) return <TransportadorasList items={transportadoras} onOpen={onOpenTransportadora} store={store} />;
   if (!origem) return <OrigensList transportadora={transportadora} onBack={onVoltar} onOpenOrigin={onOpenOrigem} store={store} />;

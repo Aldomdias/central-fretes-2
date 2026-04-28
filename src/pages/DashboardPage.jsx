@@ -12,11 +12,16 @@ function formatarDataHora(valor) {
 function getStatus(syncStatus, hasData) {
   if (syncStatus?.carregando) {
     return {
-      titulo: 'Carregando base',
-      detalhe: hasData
-        ? 'Exibindo o último cache enquanto busca os dados mais recentes.'
-        : 'Buscando dados mais recentes do banco.',
+      titulo: 'Conectando ao Supabase',
+      detalhe: 'Buscando apenas o resumo da base para não travar com milhares de rotas.',
       classe: 'dark',
+    };
+  }
+  if (syncStatus?.fonte === 'supabase-resumo') {
+    return {
+      titulo: 'Conectado ao Supabase',
+      detalhe: 'Resumo da base carregado. A importação salva direto nas tabelas do banco.',
+      classe: 'ok',
     };
   }
   if (syncStatus?.sincronizando) {
@@ -39,8 +44,16 @@ export default function DashboardPage({
   onAbrirFormatacaoTabelas,
   syncStatus,
 }) {
-  const stats = buildDashboardStats(transportadoras);
-  const hasData = transportadoras.length > 0;
+  const statsBase = buildDashboardStats(transportadoras);
+  const resumo = syncStatus?.resumoBase;
+  const stats = resumo ? statsBase.map((item) => {
+    if (item.id === 1) return { ...item, valor: resumo.transportadoras ?? item.valor };
+    if (item.id === 2) return { ...item, valor: resumo.origens ?? item.valor };
+    if (item.id === 3) return { ...item, valor: resumo.rotas ?? item.valor };
+    if (item.id === 4) return { ...item, valor: resumo.cotacoes ?? item.valor };
+    return item;
+  }) : statsBase;
+  const hasData = transportadoras.length > 0 || Boolean(resumo);
   const status = getStatus(syncStatus, hasData);
   const carregandoInicial = syncStatus?.carregando && !hasData;
 

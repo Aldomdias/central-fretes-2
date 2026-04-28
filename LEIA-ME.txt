@@ -1,16 +1,13 @@
-PATCH - Carregamento visível + sincronização automática
+PATCH - Qualquer alteração dentro da transportadora salva no Supabase
 
-Arquivos alterados:
-1) src/data/store.js
-2) src/pages/DashboardPage.jsx
-3) src/App.jsx
-4) src/styles.css
+Corrige:
+- Excluir transportadora remove do Supabase.
+- Excluir origem remove origem e dados vinculados do Supabase.
+- Excluir linha de rotas/cotações/taxas remove do Supabase.
+- Excluir tudo em uma seção remove do Supabase.
+- Inclusões e edições continuam salvando direto nas tabelas relacionais.
+- Não grava snapshot gigante.
 
-O que foi ajustado:
-- remove o botão "Restaurar base exemplo";
-- remove os botões de sincronização manual do dashboard;
-- mostra claramente quando a base está carregando;
-- evita exibir a tela inicial zerada enquanto não carrega os dados;
-- tenta mostrar o último cache local imediatamente para reduzir a sensação de demora;
-- continua buscando o snapshot mais recente do Supabase;
-- mantém salvamento automático após cada ação.
+Arquivos:
+- src/services/freteDatabaseService.js
+- src/data/store.js

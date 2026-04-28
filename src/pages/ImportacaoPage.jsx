@@ -366,7 +366,21 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     let resultado = { ok: true };
     if (payloadsValidos.length) {
       setStatusImportacao((prev) => ({ ...prev, etapa: 'Gravando lote na base' }));
-      resultado = await store.importarLoteESalvar(payloadsValidos, tipo);
+      try {
+        if (typeof store.importarLoteESalvar === 'function') {
+          resultado = await store.importarLoteESalvar(payloadsValidos, tipo);
+        } else {
+          for (const payload of payloadsValidos) {
+            const parcial = await store.importarESalvar(payload, tipo);
+            if (parcial?.ok === false) {
+              resultado = parcial;
+              break;
+            }
+          }
+        }
+      } catch (error) {
+        resultado = { ok: false, erro: error };
+      }
     }
 
     if (resultado?.ok === false) {

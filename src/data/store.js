@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   bancoConfigurado,
-  carregarBaseCompletaDb,
+  carregarResumoBaseDb,
   carregarSnapshotFretesDb,
+  carregarTransportadoraCompletaDb,
+  excluirLinhaSecaoDb,
+  excluirOrigemDb,
+  excluirTransportadoraDb,
+  limparSecaoOrigemDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
 } from '../services/freteDatabaseService';
@@ -83,7 +88,7 @@ function readLocalState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
   } catch {
     return [];
   }
@@ -163,6 +168,10 @@ function mergeImport(prev, payload, tipo) {
   return next.map(normalizeTransportadora);
 }
 
+function mergeImportBatch(prev, payloads = [], tipo) {
+  return (payloads || []).reduce((acc, payload) => mergeImport(acc, payload, tipo), prev);
+}
+
 export function useFreteStore() {
   const [transportadoras, setTransportadoras] = useState([]);
   const [syncStatus, setSyncStatus] = useState({
@@ -172,11 +181,15 @@ export function useFreteStore() {
     erro: '',
     ultimaSincronizacao: '',
     fonte: bancoConfigurado() ? 'supabase-seguro' : 'local',
+    resumoBase: null,
+    carregandoDetalheId: null,
   });
   const loadedRef = useRef(false);
 
   useEffect(() => {
-    persistLocalState(transportadoras);
+    if (loadedRef.current) {
+      persistLocalState(transportadoras);
+    }
   }, [transportadoras]);
 
   useEffect(() => {
@@ -185,40 +198,30 @@ export function useFreteStore() {
     async function carregar() {
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
-        const cacheLocal = readLocalState();
-        if (!cancelled && cacheLocal.length) {
-          setTransportadoras(cacheLocal.map(normalizeTransportadora));
+        if (bancoConfigurado()) {
+          const resumo = await carregarResumoBaseDb();
+          if (cancelled) return;
+
+          setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
+          loadedRef.current = true;
           setSyncStatus((prev) => ({
             ...prev,
-            fonte: bancoConfigurado() ? 'cache-local' : 'local',
+            carregando: false,
+            fonte: 'supabase-resumo',
+            resumoBase: resumo.resumo,
           }));
+          return;
         }
 
-        let base = [];
-        let ultimaSincronizacao = '';
-
-        const snapshot = await carregarSnapshotFretesDb();
-        if (snapshot?.payload?.transportadoras) {
-          base = snapshot.payload.transportadoras;
-          ultimaSincronizacao = snapshot.updated_at || snapshot.payload.updatedAt || '';
-        } else if (bancoConfigurado()) {
-          // Fallback apenas quando ainda não existe snapshot salvo.
-          // O snapshot é mais rápido do que ler todas as tabelas relacionais.
-          base = await carregarBaseCompletaDb();
-        } else {
-          base = cacheLocal;
-        }
-
+        const cacheLocal = readLocalState();
         if (cancelled) return;
 
-        setTransportadoras((base || []).map(normalizeTransportadora));
-
+        setTransportadoras((cacheLocal || []).map(normalizeTransportadora));
         loadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          ultimaSincronizacao,
-          fonte: bancoConfigurado() ? 'supabase-snapshot' : 'local',
+          fonte: 'local',
         }));
       } catch (error) {
         if (cancelled) return;
@@ -226,7 +229,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          erro: error.message || 'Erro ao carregar base.',
+          erro: error.message || 'Erro ao carregar resumo da base.',
         }));
       }
     }
@@ -237,18 +240,32 @@ export function useFreteStore() {
     };
   }, []);
 
-  function salvarAutomaticamente(next, acao = 'alteração') {
+  function salvarAutomaticamente(next, acao = 'alteração', secao = 'cadastros') {
     if (!loadedRef.current || !bancoConfigurado()) return;
+
+    const tipoSecao = {
+      rotas: 'rotas',
+      cotacoes: 'cotacoes',
+      taxasEspeciais: 'taxas',
+      taxas: 'taxas',
+      generalidades: 'generalidades',
+      transportadora: 'cadastros',
+      origem: 'cadastros',
+      cadastros: 'cadastros',
+    }[secao] || 'cadastros';
 
     setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
 
-    salvarBaseCompletaDb(next)
-      .then((result) => {
+    salvarSecaoDb(next, tipoSecao, undefined, { atualizarSnapshot: false })
+      .then(async (result) => {
+        const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
+
         setSyncStatus((prev) => ({
           ...prev,
           sincronizando: false,
           ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-          fonte: 'supabase-snapshot',
+          fonte: 'supabase-resumo',
+          resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
         }));
       })
       .catch((error) => {
@@ -260,13 +277,32 @@ export function useFreteStore() {
       });
   }
 
-  const aplicarAlteracao = (updater, acao = 'alteração') => {
+  const aplicarAlteracao = (updater, acao = 'alteração', secao = 'cadastros') => {
     const baseAtual = Array.isArray(transportadoras) ? transportadoras : [];
     const next = typeof updater === 'function' ? updater(baseAtual) : updater;
     const normalized = (next || []).map(normalizeTransportadora);
 
     setTransportadoras(normalized);
-    salvarAutomaticamente(normalized, acao);
+    salvarAutomaticamente(normalized, acao, secao);
+  };
+
+  const finalizarExclusao = async () => {
+    const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
+    setSyncStatus((prev) => ({
+      ...prev,
+      sincronizando: false,
+      fonte: 'supabase-resumo',
+      ultimaSincronizacao: new Date().toISOString(),
+      resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
+    }));
+  };
+
+  const erroExclusao = (error, mensagem) => {
+    setSyncStatus((prev) => ({
+      ...prev,
+      sincronizando: false,
+      erro: error.message || mensagem,
+    }));
   };
 
   const api = useMemo(
@@ -319,17 +355,20 @@ export function useFreteStore() {
       },
       async importarESalvar(payload, tipo) {
         const next = mergeImport(transportadoras, payload, tipo);
-        setTransportadoras(next);
+        const normalized = (next || []).map(normalizeTransportadora);
+        setTransportadoras(normalized);
         if (!bancoConfigurado()) return { ok: true, modo: 'local' };
 
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         try {
-          const result = await salvarSecaoDb(next, tipo);
+          const result = await salvarSecaoDb(normalized, tipo, undefined, { atualizarSnapshot: false });
+          const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
           setSyncStatus((prev) => ({
             ...prev,
             sincronizando: false,
             ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-            fonte: 'supabase-seguro',
+            fonte: 'supabase-resumo',
+            resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
           return { ok: true };
         } catch (error) {
@@ -339,6 +378,77 @@ export function useFreteStore() {
             erro: error.message || 'Erro ao salvar seção.',
           }));
           return { ok: false, erro: error };
+        }
+      },
+      async importarLoteESalvar(payloads, tipo) {
+        const listaPayloads = Array.isArray(payloads) ? payloads.filter(Boolean) : [];
+        if (!listaPayloads.length) return { ok: true, modo: bancoConfigurado() ? 'supabase' : 'local' };
+
+        const next = mergeImportBatch(transportadoras, listaPayloads, tipo);
+        const normalized = (next || []).map(normalizeTransportadora);
+
+        setTransportadoras(normalized);
+
+        if (!bancoConfigurado()) return { ok: true, modo: 'local' };
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+
+        try {
+          const result = await salvarSecaoDb(normalized, tipo, undefined, { atualizarSnapshot: false });
+          const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
+            fonte: 'supabase-resumo',
+            resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
+          }));
+          return { ok: true };
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            erro: error.message || 'Erro ao salvar lote.',
+          }));
+          return { ok: false, erro: error };
+        }
+      },
+      async carregarTransportadoraCompleta(transportadoraId) {
+        if (!transportadoraId || !bancoConfigurado()) return false;
+
+        setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: transportadoraId, erro: '' }));
+
+        try {
+          const atual = (transportadoras || []).find((item) => String(item.id) === String(transportadoraId));
+          const completa = await carregarTransportadoraCompletaDb(transportadoraId, atual?.nome || '');
+          if (!completa) {
+            setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: null }));
+            return false;
+          }
+
+          setTransportadoras((prev) =>
+            (prev || []).map((item) =>
+              String(item.id) === String(transportadoraId) ||
+              String(item.nome || '').trim().toLowerCase() === String(completa.nome || '').trim().toLowerCase()
+                ? normalizeTransportadora(completa)
+                : item
+            )
+          );
+
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregandoDetalheId: null,
+            fonte: 'supabase-detalhe',
+          }));
+
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregandoDetalheId: null,
+            erro: error.message || 'Erro ao carregar detalhes da transportadora.',
+          }));
+          return false;
         }
       },
       resetarBase() {
@@ -357,6 +467,7 @@ export function useFreteStore() {
                     ),
                   }
             ),
+          'generalidades',
           'generalidades'
         );
       },
@@ -372,22 +483,28 @@ export function useFreteStore() {
                 : [...t.origens, normalized];
               return { ...t, origens };
             }),
+          'origem',
           'origem'
         );
       },
       removerOrigem(transportadoraId, origemId) {
-        aplicarAlteracao(
-          (prev) =>
-            prev.map((t) =>
-              t.id !== transportadoraId
-                ? t
-                : {
-                    ...t,
-                    origens: t.origens.filter((o) => o.id !== origemId),
-                  }
-            ),
-          'remoção de origem'
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.filter((o) => o.id !== origemId),
+                }
+          )
         );
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        excluirOrigemDb(origemId)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, 'Erro ao excluir origem no Supabase.'));
       },
       salvarTransportadora(transportadora) {
         aplicarAlteracao(
@@ -398,11 +515,19 @@ export function useFreteStore() {
               ? prev.map((item) => (item.id === normalized.id ? normalized : item))
               : [...prev, normalized];
           },
+          'transportadora',
           'transportadora'
         );
       },
       removerTransportadora(id) {
-        aplicarAlteracao((prev) => prev.filter((item) => item.id !== id), 'remoção de transportadora');
+        setTransportadoras((prev) => (prev || []).filter((item) => item.id !== id));
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        excluirTransportadoraDb(id)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, 'Erro ao excluir transportadora no Supabase.'));
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
         aplicarAlteracao(
@@ -426,48 +551,59 @@ export function useFreteStore() {
                     }),
                   }
             ),
+          secao,
           secao
         );
       },
       removerLinha(transportadoraId, origemId, secao, linhaId) {
-        aplicarAlteracao(
-          (prev) =>
-            prev.map((t) =>
-              t.id !== transportadoraId
-                ? t
-                : {
-                    ...t,
-                    origens: t.origens.map((o) =>
-                      o.id !== origemId
-                        ? o
-                        : {
-                            ...o,
-                            [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
-                          }
-                    ),
-                  }
-            ),
-          `remoção de ${secao}`
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.map((o) =>
+                    o.id !== origemId
+                      ? o
+                      : {
+                          ...o,
+                          [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
+                        }
+                  ),
+                }
+          )
         );
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        excluirLinhaSecaoDb(secao, linhaId)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, `Erro ao excluir ${secao} no Supabase.`));
       },
       importarPayload(payload, tipo) {
-        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo);
+        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo, tipo);
       },
       limparSecaoOrigem(transportadoraId, origemId, secao) {
-        aplicarAlteracao(
-          (prev) =>
-            prev.map((t) =>
-              t.id !== transportadoraId
-                ? t
-                : {
-                    ...t,
-                    origens: t.origens.map((o) =>
-                      o.id !== origemId ? o : { ...o, [secao]: [] }
-                    ),
-                  }
-            ),
-          `limpeza de ${secao}`
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.map((o) =>
+                    o.id !== origemId ? o : { ...o, [secao]: [] }
+                  ),
+                }
+          )
         );
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        limparSecaoOrigemDb(origemId, secao)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, `Erro ao limpar ${secao} no Supabase.`));
       },
     }),
     [transportadoras, syncStatus]
