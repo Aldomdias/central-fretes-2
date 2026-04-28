@@ -1,18 +1,13 @@
-HOTFIX - Simulador em branco + base IBGE
+PATCH - Busca digitável no Simulador
 
-Problema:
-O patch anterior deixou o Simulador em branco porque o componente usava variáveis/funções de IBGE sem estarem conectadas corretamente.
-
-Correção:
-- Restaura a base do Simulador que estava funcionando.
-- Mantém o filtro de transportadoras por canal.
-- Conecta corretamente:
-  - carregarMunicipiosIbgeDb
-  - resolverDestinoIbgeDb
-  - municipiosDisponiveis
-  - cidadePorIbgeCompleto
-- Destino aceita cidade, IBGE ou CEP.
-- Resultado prioriza cidade/UF da base IBGE.
+Correções:
+- Destino por cidade ficou mais flexível:
+  - remove "/UF" e "· IBGE" antes de buscar;
+  - tenta busca exata e depois busca parcial na tabela ibge_municipios.
+- Campo Origem da Simulação Simples virou input com sugestões.
+- Campo Transportadora da Simulação por Transportadora virou input com sugestões.
+- Campo Origem opcional da Simulação por Transportadora virou input com sugestões.
+- Também deixa digitável transportadora na Análise e filtros da Cobertura.
 
 Arquivos:
 - src/pages/SimuladorPage.jsx

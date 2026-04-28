@@ -1082,7 +1082,11 @@ export async function resolverDestinoIbgeDb(valor) {
     if (porCep?.ibge) return porCep;
   }
 
-  const termoCidade = texto.replace(/\s*\/\s*[A-Z]{2}$/i, '').trim();
+  const termoCidade = texto
+    .replace(/\s*·\s*\d+$/i, '')
+    .replace(/\s*\/\s*[A-Z]{2}$/i, '')
+    .trim();
+
   if (!termoCidade || !isSupabaseConfigured()) return null;
 
   const supabase = ensureClient();
@@ -1094,6 +1098,23 @@ export async function resolverDestinoIbgeDb(valor) {
         .from('ibge_municipios')
         .select('*')
         .ilike(coluna, termoCidade)
+        .limit(1);
+
+      if (!error && data?.[0]) {
+        const municipio = normalizeMunicipioIbgeRow(data[0]);
+        if (municipio) return municipio;
+      }
+    } catch {
+      // tenta próxima coluna
+    }
+  }
+
+  for (const coluna of colunas) {
+    try {
+      const { data, error } = await supabase
+        .from('ibge_municipios')
+        .select('*')
+        .ilike(coluna, `%${termoCidade}%`)
         .limit(1);
 
       if (!error && data?.[0]) {

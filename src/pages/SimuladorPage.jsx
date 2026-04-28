@@ -54,7 +54,7 @@ function normalizeBuscaIbge(texto) {
 }
 
 function limparCidadeDigitada(texto) {
-  return String(texto || '').replace(/\s*\/\s*[A-Z]{2}$/i, '').trim();
+  return String(texto || '').replace(/\s*·\s*\d+$/i, '').replace(/\s*\/\s*[A-Z]{2}$/i, '').trim();
 }
 
 function montarLabelMunicipio(item) {
@@ -686,7 +686,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <h2>Simulação simples</h2>
           <div className="sim-form-grid sim-grid-5">
             <label>Origem
-              <select value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)}>{todasOrigens.map((item) => <option key={item}>{item}</option>)}</select>
+              <input list="origens-simples-lista" value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)} placeholder="Digite a origem" />
+              <datalist id="origens-simples-lista">
+                {todasOrigens.map((item) => <option key={item} value={item} />)}
+              </datalist>
             </label>
             <label>Destino (CEP ou IBGE)
               <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
@@ -723,19 +726,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-form-grid sim-grid-6">
             <label>Transportadora
-              <select value={transportadora} onChange={(e) => {
-                const nome = e.target.value;
-                setTransportadora(nome);
-                setOrigemTransportadora('');
-                const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canais[0] || 'ATACADO';
-                setCanalTransportadora(primeiroCanal);
-              }}>{transportadorasPorCanalTransportadora.map((item) => <option key={item}>{item}</option>)}</select>
+              <input
+                list="transportadoras-canal-lista"
+                value={transportadora}
+                onChange={(e) => {
+                  const nome = e.target.value;
+                  setTransportadora(nome);
+                  setOrigemTransportadora('');
+                  const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canalTransportadora || canais[0] || 'ATACADO';
+                  if (opcoesOnline.canaisPorTransportadora?.[nome]?.length && !opcoesOnline.canaisPorTransportadora[nome].includes(canalTransportadora)) {
+                    setCanalTransportadora(primeiroCanal);
+                  }
+                }}
+                placeholder="Digite a transportadora"
+              />
+              <datalist id="transportadoras-canal-lista">
+                {transportadorasPorCanalTransportadora.map((item) => <option key={item} value={item} />)}
+              </datalist>
             </label>
             <label>Canal
               <select value={canalTransportadora} onChange={(e) => { setCanalTransportadora(e.target.value); setOrigemTransportadora(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Origem (opcional)
-              <select value={origemTransportadora} onChange={(e) => setOrigemTransportadora(e.target.value)}><option value="">Todas</option>{origensTransportadora.map((item) => <option key={item}>{item}</option>)}</select>
+              <input list="origens-transportadora-lista" value={origemTransportadora} onChange={(e) => setOrigemTransportadora(e.target.value)} placeholder="Todas ou digite a origem" />
+              <datalist id="origens-transportadora-lista">
+                {origensTransportadora.map((item) => <option key={item} value={item} />)}
+              </datalist>
             </label>
             <label>Destino opcional (cidade, CEP ou IBGE)
               <input disabled={modoLista} list="destinos-lista-transportadora" value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
@@ -781,9 +797,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-form-grid sim-grid-3">
             <label>Transportadora
-              <select value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)}>
-                {transportadorasPorCanalAnalise.map((item) => <option key={item}>{item}</option>)}
-              </select>
+              <input list="transportadoras-analise-lista" value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)} placeholder="Digite a transportadora" />
+              <datalist id="transportadoras-analise-lista">
+                {transportadorasPorCanalAnalise.map((item) => <option key={item} value={item} />)}
+              </datalist>
               {!transportadorasPorCanalAnalise.length ? <small>Nenhuma transportadora cadastrada neste canal.</small> : null}
             </label>
             <label>Canal
@@ -816,8 +833,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-resultado-topo compact-top"><h2 style={{ margin: 0 }}>Cobertura de tabela</h2><button className="sim-tab" type="button" onClick={exportarCobertura}>Exportar faltantes</button></div>
           <div className="sim-form-grid sim-grid-4" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
             <label>Canal<select value={canalCobertura} onChange={(e) => setCanalCobertura(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select></label>
-            <label>Origem<select value={origemCobertura} onChange={(e) => setOrigemCobertura(e.target.value)}><option value="">Todas</option>{todasOrigens.map((item) => <option key={item}>{item}</option>)}</select></label>
-            <label>Transportadora<select value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)}><option value="">Todas</option>{transportadorasPorCanalCobertura.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label>Origem<input list="origens-cobertura-lista" value={origemCobertura} onChange={(e) => setOrigemCobertura(e.target.value)} placeholder="Todas ou digite a origem" /><datalist id="origens-cobertura-lista">{todasOrigens.map((item) => <option key={item} value={item} />)}</datalist></label>
+            <label>Transportadora<input list="transportadoras-cobertura-lista" value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)} placeholder="Todas ou digite a transportadora" /><datalist id="transportadoras-cobertura-lista">{transportadorasPorCanalCobertura.map((item) => <option key={item} value={item} />)}</datalist></label>
             <label>UF destino<select value={ufCobertura} onChange={(e) => setUfCobertura(e.target.value)}>{UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}</select></label>
           </div>
           <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura}>Analisar cobertura</button></div>
