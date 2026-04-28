@@ -1,18 +1,16 @@
-PATCH - Simulador campos digitáveis v2
+HOTFIX - Simulador em branco após campos digitáveis v2
 
-Correções:
-- Origem não vem mais preenchida automaticamente.
-- Se apagar a origem, ela não volta sozinha.
-- Origem da simulação simples mostra sugestões filtradas pelo canal selecionado.
-- Transportadora também não volta sozinha ao apagar.
-- Campos Origem/Transportadora seguem digitáveis com sugestões.
-- Destino por cidade ficou mais robusto:
-  - aceita cidade sem acento, exemplo: itajai;
-  - remove "/UF" e "· IBGE" antes de resolver;
-  - tenta resolver pela tabela ibge_municipios;
-  - se não achar, tenta fallback por nome_rota em rotas.
-- Opções do destino aparecem como Cidade/UF · IBGE.
+Causa:
+O arquivo SimuladorPage.jsx estava calculando origensPorCanalSimples antes do useState de canalSimples.
+Isso gera erro de execução no React e deixa a tela do Simulador em branco.
 
-Arquivos:
+Correção:
+- Move origensPorCanalSimples para depois da declaração de canalSimples.
+- Mantém:
+  - Origem em branco;
+  - Origem digitável com sugestões;
+  - Transportadora digitável;
+  - Destino por cidade/CEP/IBGE.
+
+Arquivo:
 - src/pages/SimuladorPage.jsx
-- src/services/freteDatabaseService.js

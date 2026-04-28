@@ -285,19 +285,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const canais = useMemo(() => (opcoesOnline.canais?.length ? opcoesOnline.canais : canaisLocal.length ? canaisLocal : ['ATACADO']), [opcoesOnline.canais, canaisLocal]);
   const todasOrigens = useMemo(() => (opcoesOnline.origens?.length ? opcoesOnline.origens : origensLocal), [opcoesOnline.origens, origensLocal]);
 
-  const origensPorCanalSimples = useMemo(() => {
-    const online = opcoesOnline.origensPorCanal?.[canalSimples];
-    if (online?.length) return online;
-
-    const locais = transportadoras.flatMap((item) =>
-      (item.origens || [])
-        .filter((origem) => !canalSimples || (origem.canal || 'ATACADO') === canalSimples)
-        .map((origem) => origem.cidade)
-        .filter(Boolean)
-    );
-
-    return [...new Set(locais.length ? locais : todasOrigens)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  }, [opcoesOnline.origensPorCanal, canalSimples, transportadoras, todasOrigens]);
   const todosDestinosComCidade = useMemo(() => {
     const porIbge = new Map();
 
@@ -345,6 +332,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
+
+  const origensPorCanalSimples = useMemo(() => {
+    const online = opcoesOnline.origensPorCanal?.[canalSimples];
+    if (online?.length) return online;
+
+    const locais = transportadoras.flatMap((item) =>
+      (item.origens || [])
+        .filter((origem) => !canalSimples || (origem.canal || 'ATACADO') === canalSimples)
+        .map((origem) => origem.cidade)
+        .filter(Boolean)
+    );
+
+    return [...new Set(locais.length ? locais : todasOrigens)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [opcoesOnline.origensPorCanal, canalSimples, transportadoras, todasOrigens]);
   const atualizarOpcoesSimulador = async () => {
     setCarregandoOpcoes(true);
     setErroOpcoes('');
