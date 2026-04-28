@@ -1,13 +1,17 @@
-PATCH - Busca digitável no Simulador
+PATCH - Simulador campos digitáveis v2
 
 Correções:
-- Destino por cidade ficou mais flexível:
-  - remove "/UF" e "· IBGE" antes de buscar;
-  - tenta busca exata e depois busca parcial na tabela ibge_municipios.
-- Campo Origem da Simulação Simples virou input com sugestões.
-- Campo Transportadora da Simulação por Transportadora virou input com sugestões.
-- Campo Origem opcional da Simulação por Transportadora virou input com sugestões.
-- Também deixa digitável transportadora na Análise e filtros da Cobertura.
+- Origem não vem mais preenchida automaticamente.
+- Se apagar a origem, ela não volta sozinha.
+- Origem da simulação simples mostra sugestões filtradas pelo canal selecionado.
+- Transportadora também não volta sozinha ao apagar.
+- Campos Origem/Transportadora seguem digitáveis com sugestões.
+- Destino por cidade ficou mais robusto:
+  - aceita cidade sem acento, exemplo: itajai;
+  - remove "/UF" e "· IBGE" antes de resolver;
+  - tenta resolver pela tabela ibge_municipios;
+  - se não achar, tenta fallback por nome_rota em rotas.
+- Opções do destino aparecem como Cidade/UF · IBGE.
 
 Arquivos:
 - src/pages/SimuladorPage.jsx

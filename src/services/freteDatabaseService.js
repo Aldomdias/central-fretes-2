@@ -978,8 +978,16 @@ function pickIbgeValue(row, keys = []) {
   return '';
 }
 
+function normalizeBuscaDb(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 function normalizeMunicipioIbgeRow(row = {}) {
-  const ibge = pickIbgeValue(row, [
+  let ibge = pickIbgeValue(row, [
     'ibge',
     'codigo_ibge',
     'cod_ibge',
@@ -988,22 +996,45 @@ function normalizeMunicipioIbgeRow(row = {}) {
     'cod_municipio',
     'cod_mun',
     'id_municipio',
+    'codigo_municipio_completo',
   ]).replace(/\D/g, '');
 
-  const cidade = pickIbgeValue(row, [
+  let cidade = pickIbgeValue(row, [
     'cidade',
     'municipio',
     'nome_municipio',
     'nome',
     'descricao',
+    'nome_mun',
+    'nm_municipio',
   ]);
 
-  const uf = pickIbgeValue(row, [
+  let uf = pickIbgeValue(row, [
     'uf',
     'sigla_uf',
     'estado',
     'uf_sigla',
+    'sg_uf',
   ]).toUpperCase().slice(0, 2);
+
+  // Fallback para bases IBGE com nomes de colunas diferentes.
+  Object.entries(row || {}).forEach(([key, value]) => {
+    const chave = String(key || '').toLowerCase();
+    const texto = String(value ?? '').trim();
+
+    if (!ibge && /ibge|cod|codigo/.test(chave)) {
+      const digitos = texto.replace(/\D/g, '');
+      if (digitos.length >= 7) ibge = digitos.slice(0, 7);
+    }
+
+    if (!cidade && /cidade|municip|munic|nome/.test(chave) && texto && !/^\d+$/.test(texto)) {
+      cidade = texto;
+    }
+
+    if (!uf && /uf|sigla|estado/.test(chave) && /^[A-Za-z]{2}$/.test(texto)) {
+      uf = texto.toUpperCase();
+    }
+  });
 
   if (!ibge || !cidade) return null;
   return { ibge, cidade, uf };
@@ -1089,6 +1120,18 @@ export async function resolverDestinoIbgeDb(valor) {
 
   if (!termoCidade || !isSupabaseConfigured()) return null;
 
+  const municipios = await carregarMunicipiosIbgeDb();
+  const termoNormalizado = normalizeBuscaDb(termoCidade);
+
+  const exatoLocal = municipios.find((item) =>
+    normalizeBuscaDb(item.cidade) === termoNormalizado ||
+    normalizeBuscaDb(`${item.cidade}/${item.uf}`) === termoNormalizado
+  );
+  if (exatoLocal) return exatoLocal;
+
+  const parcialLocal = municipios.find((item) => normalizeBuscaDb(item.cidade).includes(termoNormalizado));
+  if (parcialLocal) return parcialLocal;
+
   const supabase = ensureClient();
   const colunas = ['cidade', 'municipio', 'nome_municipio', 'nome'];
 
@@ -1126,6 +1169,25 @@ export async function resolverDestinoIbgeDb(valor) {
     }
   }
 
+  // Último fallback: tenta encontrar uma rota já cadastrada cujo nome contenha a cidade digitada.
+  try {
+    const { data, error } = await supabase
+      .from('rotas')
+      .select('ibge_destino, nome_rota')
+      .ilike('nome_rota', `%${termoCidade}%`)
+      .limit(1);
+
+    if (!error && data?.[0]?.ibge_destino) {
+      return {
+        ibge: String(data[0].ibge_destino).replace(/\D/g, ''),
+        cidade: data[0].nome_rota || termoCidade,
+        uf: '',
+      };
+    }
+  } catch {
+    // sem fallback
+  }
+
   return null;
 }
 
@@ -1142,14 +1204,26 @@ export async function carregarOpcoesSimuladorDb() {
 
     const origensPorTransportadora = {};
     const canaisPorTransportadora = {};
+    const origensPorCanal = {};
     transportadoras.forEach((transportadora) => {
       const nome = transportadora.nome || '';
       if (!nome) return;
       origensPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.cidade).filter(Boolean))].sort();
       canaisPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))].sort();
+      (transportadora.origens || []).forEach((origem) => {
+        const canalOrigem = origem.canal || 'ATACADO';
+        if (!origensPorCanal[canalOrigem]) origensPorCanal[canalOrigem] = [];
+        if (origem.cidade && !origensPorCanal[canalOrigem].includes(origem.cidade)) {
+          origensPorCanal[canalOrigem].push(origem.cidade);
+        }
+      });
     });
 
-    return { transportadoras: nomes, origens, canais, origensPorTransportadora, canaisPorTransportadora, municipiosIbge: [], fonte: 'local' };
+    Object.keys(origensPorCanal).forEach((canal) => {
+      origensPorCanal[canal].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    });
+
+    return { transportadoras: nomes, origens, canais, origensPorTransportadora, canaisPorTransportadora, origensPorCanal, municipiosIbge: [], fonte: 'local' };
   }
 
   const supabase = ensureClient();
@@ -1169,6 +1243,7 @@ export async function carregarOpcoesSimuladorDb() {
 
   const origensPorTransportadora = {};
   const canaisPorTransportadora = {};
+  const origensPorCanal = {};
 
   (origensResponse.data || []).forEach((origem) => {
     const nome = nomePorId.get(String(origem.transportadora_id));
@@ -1185,6 +1260,15 @@ export async function carregarOpcoesSimuladorDb() {
     if (!canaisPorTransportadora[nome].includes(canal)) {
       canaisPorTransportadora[nome].push(canal);
     }
+
+    if (!origensPorCanal[canal]) origensPorCanal[canal] = [];
+    if (origem.cidade && !origensPorCanal[canal].includes(origem.cidade)) {
+      origensPorCanal[canal].push(origem.cidade);
+    }
+  });
+
+  Object.keys(origensPorCanal).forEach((canal) => {
+    origensPorCanal[canal].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   });
 
   Object.keys(origensPorTransportadora).forEach((nome) => {
@@ -1203,6 +1287,7 @@ export async function carregarOpcoesSimuladorDb() {
     canais: canais.length ? canais : ['ATACADO'],
     origensPorTransportadora,
     canaisPorTransportadora,
+    origensPorCanal,
     municipiosIbge,
     fonte: 'supabase',
     atualizadoEm: new Date().toISOString(),

@@ -234,6 +234,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     canais: [],
     origensPorTransportadora: {},
     canaisPorTransportadora: {},
+    origensPorCanal: {},
     municipiosIbge: [],
     fonte: '',
     atualizadoEm: '',
@@ -283,6 +284,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const origensLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade)).filter(Boolean))].sort(), [transportadoras]);
   const canais = useMemo(() => (opcoesOnline.canais?.length ? opcoesOnline.canais : canaisLocal.length ? canaisLocal : ['ATACADO']), [opcoesOnline.canais, canaisLocal]);
   const todasOrigens = useMemo(() => (opcoesOnline.origens?.length ? opcoesOnline.origens : origensLocal), [opcoesOnline.origens, origensLocal]);
+
+  const origensPorCanalSimples = useMemo(() => {
+    const online = opcoesOnline.origensPorCanal?.[canalSimples];
+    if (online?.length) return online;
+
+    const locais = transportadoras.flatMap((item) =>
+      (item.origens || [])
+        .filter((origem) => !canalSimples || (origem.canal || 'ATACADO') === canalSimples)
+        .map((origem) => origem.cidade)
+        .filter(Boolean)
+    );
+
+    return [...new Set(locais.length ? locais : todasOrigens)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [opcoesOnline.origensPorCanal, canalSimples, transportadoras, todasOrigens]);
   const todosDestinosComCidade = useMemo(() => {
     const porIbge = new Map();
 
@@ -301,14 +316,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return [...porIbge.values()].sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
   }, [destinosDisponiveis, cidadePorIbgeCompleto, municipiosDisponiveis]);
 
-  const [origemSimples, setOrigemSimples] = useState(todasOrigens[0] || '');
+  const [origemSimples, setOrigemSimples] = useState('');
   const [destinoCodigo, setDestinoCodigo] = useState('');
   const [canalSimples, setCanalSimples] = useState(canais[0] || 'ATACADO');
   const [pesoSimples, setPesoSimples] = useState('');
   const [nfSimples, setNfSimples] = useState('');
   const [resultadoSimples, setResultadoSimples] = useState([]);
 
-  const [transportadora, setTransportadora] = useState(transportadoras[0]?.nome || '');
+  const [transportadora, setTransportadora] = useState('');
   const [canalTransportadora, setCanalTransportadora] = useState(canais[0] || 'ATACADO');
   const [origemTransportadora, setOrigemTransportadora] = useState('');
   const [destinoTransportadora, setDestinoTransportadora] = useState('');
@@ -318,7 +333,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [listaCodigos, setListaCodigos] = useState('');
   const [resultadoTransportadora, setResultadoTransportadora] = useState([]);
 
-  const [transportadoraAnalise, setTransportadoraAnalise] = useState(transportadoras[0]?.nome || '');
+  const [transportadoraAnalise, setTransportadoraAnalise] = useState('');
   const [canalAnalise, setCanalAnalise] = useState(canais[0] || 'ATACADO');
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
 
@@ -371,16 +386,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
   };
 
   useEffect(() => {
-    if (!origemSimples && todasOrigens[0]) setOrigemSimples(todasOrigens[0]);
-  }, [origemSimples, todasOrigens]);
-
-  useEffect(() => {
-    const primeiraTransportadora = (opcoesOnline.transportadoras || [])[0] || transportadoras[0]?.nome || '';
-    if (!transportadora && primeiraTransportadora) setTransportadora(primeiraTransportadora);
-    if (!transportadoraAnalise && primeiraTransportadora) setTransportadoraAnalise(primeiraTransportadora);
-  }, [transportadora, transportadoraAnalise, transportadoras, opcoesOnline.transportadoras]);
-
-  useEffect(() => {
     if (!canalSimples && canais[0]) setCanalSimples(canais[0]);
     if (!canalTransportadora && canais[0]) setCanalTransportadora(canais[0]);
     if (!canalAnalise && canais[0]) setCanalAnalise(canais[0]);
@@ -409,15 +414,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
   );
 
   useEffect(() => {
-    if (transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
-      setTransportadora(transportadorasPorCanalTransportadora[0]);
+    if (transportadora && transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
+      setTransportadora('');
       setOrigemTransportadora('');
     }
   }, [transportadorasPorCanalTransportadora, transportadora]);
 
   useEffect(() => {
-    if (transportadorasPorCanalAnalise.length && !transportadorasPorCanalAnalise.includes(transportadoraAnalise)) {
-      setTransportadoraAnalise(transportadorasPorCanalAnalise[0]);
+    if (transportadoraAnalise && transportadorasPorCanalAnalise.length && !transportadorasPorCanalAnalise.includes(transportadoraAnalise)) {
+      setTransportadoraAnalise('');
     }
   }, [transportadorasPorCanalAnalise, transportadoraAnalise]);
 
@@ -686,16 +691,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <h2>Simulação simples</h2>
           <div className="sim-form-grid sim-grid-5">
             <label>Origem
-              <input list="origens-simples-lista" value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)} placeholder="Digite a origem" />
+              <input list="origens-simples-lista" value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)} placeholder="Clique ou digite a origem" />
               <datalist id="origens-simples-lista">
-                {todasOrigens.map((item) => <option key={item} value={item} />)}
+                {origensPorCanalSimples.map((item) => <option key={item} value={item} />)}
               </datalist>
             </label>
             <label>Destino (CEP ou IBGE)
               <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
               <datalist id="destinos-lista">
                 {todosDestinosComCidade.map((item) => (
-                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf}` : item.ibge}>
+                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf} · ${item.ibge}` : item.ibge}>
                     {item.ibge}
                   </option>
                 ))}
@@ -703,7 +708,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {destinoIdentificado && <small style={{ color: '#64748b' }}>Destino identificado: {destinoIdentificado}</small>}
             </label>
             <label>Canal
-              <select value={canalSimples} onChange={(e) => setCanalSimples(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={canalSimples} onChange={(e) => { setCanalSimples(e.target.value); setOrigemSimples(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Peso
               <input value={pesoSimples} onChange={(e) => setPesoSimples(e.target.value)} placeholder="Ex: 150" />
@@ -757,7 +762,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <input disabled={modoLista} list="destinos-lista-transportadora" value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
               <datalist id="destinos-lista-transportadora">
                 {todosDestinosComCidade.map((item) => (
-                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf}` : item.ibge}>
+                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf} · ${item.ibge}` : item.ibge}>
                     {item.ibge}
                   </option>
                 ))}
