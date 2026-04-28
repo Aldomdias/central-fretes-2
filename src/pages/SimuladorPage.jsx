@@ -10,7 +10,7 @@ import {
   simularPorTransportadora,
   simularSimples,
 } from '../utils/calculoFrete';
-import { buscarBaseSimulacaoDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, carregarOpcoesSimuladorDb } from '../services/freteDatabaseService';
 
 const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
 const GRADE_PADRAO = {
@@ -197,11 +197,25 @@ function GraficoUf({ itens }) {
 export default function SimuladorPage({ transportadoras = [] }) {
   const [aba, setAba] = useState('simples');
   const [grade] = useState(getGradeInicial());
+  const [opcoesOnline, setOpcoesOnline] = useState({
+    transportadoras: [],
+    origens: [],
+    canais: [],
+    origensPorTransportadora: {},
+    canaisPorTransportadora: {},
+    fonte: '',
+    atualizadoEm: '',
+  });
+  const [carregandoOpcoes, setCarregandoOpcoes] = useState(false);
+  const [erroOpcoes, setErroOpcoes] = useState('');
+
   const lookup = useMemo(() => buildLookupTables(transportadoras), [transportadoras]);
   const { cidadePorIbge, destinosDisponiveis } = lookup;
 
-  const canais = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.canal)).filter(Boolean))], [transportadoras]);
-  const todasOrigens = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade)).filter(Boolean))].sort(), [transportadoras]);
+  const canaisLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.canal)).filter(Boolean))], [transportadoras]);
+  const origensLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade)).filter(Boolean))].sort(), [transportadoras]);
+  const canais = useMemo(() => (opcoesOnline.canais?.length ? opcoesOnline.canais : canaisLocal.length ? canaisLocal : ['ATACADO']), [opcoesOnline.canais, canaisLocal]);
+  const todasOrigens = useMemo(() => (opcoesOnline.origens?.length ? opcoesOnline.origens : origensLocal), [opcoesOnline.origens, origensLocal]);
   const todosDestinosComCidade = useMemo(() => destinosDisponiveis.map((ibge) => ({ ibge, cidade: getCidadeByIbge(ibge, cidadePorIbge), uf: getUfByIbge(ibge) })), [destinosDisponiveis, cidadePorIbge]);
 
   const [origemSimples, setOrigemSimples] = useState(todasOrigens[0] || '');
@@ -233,6 +247,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
+  const atualizarOpcoesSimulador = async () => {
+    setCarregandoOpcoes(true);
+    setErroOpcoes('');
+    try {
+      const opcoes = await carregarOpcoesSimuladorDb();
+      setOpcoesOnline(opcoes || {});
+      return opcoes;
+    } catch (error) {
+      setErroOpcoes(error.message || 'Erro ao carregar opções do simulador no Supabase.');
+      return null;
+    } finally {
+      setCarregandoOpcoes(false);
+    }
+  };
+
+  useEffect(() => {
+    atualizarOpcoesSimulador();
+  }, []);
+
 
   const carregarBaseOnline = async (filtros) => {
     setCarregandoSimulacao(true);
@@ -253,9 +286,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
   }, [origemSimples, todasOrigens]);
 
   useEffect(() => {
-    if (!transportadora && transportadoras[0]?.nome) setTransportadora(transportadoras[0].nome);
-    if (!transportadoraAnalise && transportadoras[0]?.nome) setTransportadoraAnalise(transportadoras[0].nome);
-  }, [transportadora, transportadoraAnalise, transportadoras]);
+    const primeiraTransportadora = (opcoesOnline.transportadoras || [])[0] || transportadoras[0]?.nome || '';
+    if (!transportadora && primeiraTransportadora) setTransportadora(primeiraTransportadora);
+    if (!transportadoraAnalise && primeiraTransportadora) setTransportadoraAnalise(primeiraTransportadora);
+  }, [transportadora, transportadoraAnalise, transportadoras, opcoesOnline.transportadoras]);
 
   useEffect(() => {
     if (!canalSimples && canais[0]) setCanalSimples(canais[0]);
@@ -264,17 +298,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     if (!canalCobertura && canais[0]) setCanalCobertura(canais[0]);
   }, [canalSimples, canalTransportadora, canalAnalise, canalCobertura, canais]);
 
-  const transportadorasDisponiveis = useMemo(() => transportadoras.map((item) => item.nome).sort(), [transportadoras]);
+  const transportadorasDisponiveis = useMemo(() => (
+    opcoesOnline.transportadoras?.length ? opcoesOnline.transportadoras : transportadoras.map((item) => item.nome).sort()
+  ), [opcoesOnline.transportadoras, transportadoras]);
+
   const origensTransportadora = useMemo(() => {
+    const online = opcoesOnline.origensPorTransportadora?.[transportadora];
+    if (online?.length) return online;
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
     if (!selecionada) return [];
     return [...new Set((selecionada.origens || []).filter((item) => !canalTransportadora || item.canal === canalTransportadora).map((item) => item.cidade))].sort();
-  }, [transportadoras, transportadora, canalTransportadora]);
+  }, [transportadoras, transportadora, canalTransportadora, opcoesOnline.origensPorTransportadora]);
+
   const canaisTransportadora = useMemo(() => {
+    const online = opcoesOnline.canaisPorTransportadora?.[transportadora];
+    if (online?.length) return online;
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
     if (!selecionada) return canais;
     return [...new Set((selecionada.origens || []).map((item) => item.canal).filter(Boolean))];
-  }, [transportadoras, transportadora, canais]);
+  }, [transportadoras, transportadora, canais, opcoesOnline.canaisPorTransportadora]);
 
   const destinoIdentificado = useMemo(() => {
     const raw = (destinoCodigo || '').trim();
@@ -291,6 +333,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       destinoCodigo,
     });
 
+    const lookupOnline = buildLookupTables(baseOnline);
     setResultadoSimples(simularSimples({
       transportadoras: baseOnline,
       origem: origemSimples,
@@ -298,7 +341,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       peso: Number(pesoSimples || 0),
       valorNF: Number(nfSimples || 0),
       destinoCodigo,
-      cidadePorIbge,
+      cidadePorIbge: lookupOnline.cidadePorIbge || cidadePorIbge,
       gradeCanal: grade[canalSimples] || grade.ATACADO || [],
     }));
   };
@@ -314,6 +357,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       nomeTransportadora: transportadora,
     });
 
+    const lookupOnline = buildLookupTables(baseOnline);
     setResultadoTransportadora(simularPorTransportadora({
       transportadoras: baseOnline,
       nomeTransportadora: transportadora,
@@ -322,7 +366,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       destinoCodigos: codigos,
       peso: Number(pesoTransportadora || 0),
       valorNF: Number(nfTransportadora || 0),
-      cidadePorIbge,
+      cidadePorIbge: lookupOnline.cidadePorIbge || cidadePorIbge,
       gradeCanal: grade[canalTransportadora] || grade.ATACADO || [],
     }));
   };
@@ -355,12 +399,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       nomeTransportadora: transportadoraAnalise,
     });
 
+    const lookupOnline = buildLookupTables(baseOnline);
     setResultadoAnalise(analisarTransportadoraPorGrade({
       transportadoras: baseOnline,
       nomeTransportadora: transportadoraAnalise,
       canal: canalAnalise,
       grade: grade[canalAnalise] || grade.ATACADO || [],
-      cidadePorIbge,
+      cidadePorIbge: lookupOnline.cidadePorIbge || cidadePorIbge,
     }));
   };
   const exportarAnalise = () => {
@@ -426,6 +471,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ))}
       </div>
 
+      <div className="sim-alert info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span>
+          Base do simulador: <strong>{opcoesOnline.fonte === 'supabase' ? 'Supabase online' : 'carregando opções'}</strong>
+          {opcoesOnline.transportadoras?.length ? ` · ${opcoesOnline.transportadoras.length} transportadoras` : ''}
+          {opcoesOnline.origens?.length ? ` · ${opcoesOnline.origens.length} origens` : ''}
+        </span>
+        <button className="sim-tab" type="button" onClick={atualizarOpcoesSimulador} disabled={carregandoOpcoes}>
+          {carregandoOpcoes ? 'Atualizando opções...' : 'Atualizar opções'}
+        </button>
+      </div>
+      {erroOpcoes ? <div className="sim-alert error">{erroOpcoes}</div> : null}
+
       {carregandoSimulacao ? (
         <div className="sim-alert info">Buscando concorrentes no Supabase para esta simulação...</div>
       ) : null}
@@ -473,8 +530,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 const nome = e.target.value;
                 setTransportadora(nome);
                 setOrigemTransportadora('');
-                const nova = transportadoras.find((item) => item.nome === nome);
-                const primeiroCanal = [...new Set((nova?.origens || []).map((item) => item.canal).filter(Boolean))][0] || canais[0] || 'ATACADO';
+                const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canais[0] || 'ATACADO';
                 setCanalTransportadora(primeiroCanal);
               }}>{transportadorasDisponiveis.map((item) => <option key={item}>{item}</option>)}</select>
             </label>

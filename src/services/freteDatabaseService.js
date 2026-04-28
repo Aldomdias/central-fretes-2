@@ -622,17 +622,7 @@ export async function carregarResumoBaseDb() {
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
-    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || {
-      cobertura: 'Sem validação',
-      severidade: 'warn',
-      inconsistentes: 0,
-      pendencias: 0,
-      faltandoFrete: 0,
-      faltandoRota: 0,
-      totalRotas: 0,
-      totalCotacoes: 0,
-      resumo: true,
-    },
+    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || null,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 
@@ -975,6 +965,83 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     status: transportadora.status || 'Ativa',
     detalheCarregado: true,
     origens: [],
+  };
+}
+
+
+export async function carregarOpcoesSimuladorDb() {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+
+    const nomes = [...new Set(transportadoras.map((item) => item.nome).filter(Boolean))].sort();
+    const origens = [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade).filter(Boolean)))].sort();
+    const canais = [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean)))].sort();
+
+    const origensPorTransportadora = {};
+    const canaisPorTransportadora = {};
+    transportadoras.forEach((transportadora) => {
+      const nome = transportadora.nome || '';
+      if (!nome) return;
+      origensPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.cidade).filter(Boolean))].sort();
+      canaisPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))].sort();
+    });
+
+    return { transportadoras: nomes, origens, canais, origensPorTransportadora, canaisPorTransportadora, fonte: 'local' };
+  }
+
+  const supabase = ensureClient();
+
+  const [transportadorasResponse, origensResponse] = await Promise.all([
+    supabase.from('transportadoras').select('id, nome, status').order('nome', { ascending: true }),
+    supabase.from('origens').select('id, transportadora_id, cidade, canal').order('cidade', { ascending: true }),
+  ]);
+
+  if (transportadorasResponse.error) throw transportadorasResponse.error;
+  if (origensResponse.error) throw origensResponse.error;
+
+  const nomePorId = new Map((transportadorasResponse.data || []).map((item) => [String(item.id), item.nome || '']));
+  const transportadoras = [...new Set((transportadorasResponse.data || []).map((item) => item.nome).filter(Boolean))].sort();
+  const origens = [...new Set((origensResponse.data || []).map((item) => item.cidade).filter(Boolean))].sort();
+  const canais = [...new Set((origensResponse.data || []).map((item) => item.canal || 'ATACADO').filter(Boolean))].sort();
+
+  const origensPorTransportadora = {};
+  const canaisPorTransportadora = {};
+
+  (origensResponse.data || []).forEach((origem) => {
+    const nome = nomePorId.get(String(origem.transportadora_id));
+    if (!nome) return;
+
+    if (!origensPorTransportadora[nome]) origensPorTransportadora[nome] = [];
+    if (!canaisPorTransportadora[nome]) canaisPorTransportadora[nome] = [];
+
+    if (origem.cidade && !origensPorTransportadora[nome].includes(origem.cidade)) {
+      origensPorTransportadora[nome].push(origem.cidade);
+    }
+
+    const canal = origem.canal || 'ATACADO';
+    if (!canaisPorTransportadora[nome].includes(canal)) {
+      canaisPorTransportadora[nome].push(canal);
+    }
+  });
+
+  Object.keys(origensPorTransportadora).forEach((nome) => {
+    origensPorTransportadora[nome].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  });
+
+  Object.keys(canaisPorTransportadora).forEach((nome) => {
+    canaisPorTransportadora[nome].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  });
+
+  return {
+    transportadoras,
+    origens,
+    canais: canais.length ? canais : ['ATACADO'],
+    origensPorTransportadora,
+    canaisPorTransportadora,
+    fonte: 'supabase',
+    atualizadoEm: new Date().toISOString(),
   };
 }
 

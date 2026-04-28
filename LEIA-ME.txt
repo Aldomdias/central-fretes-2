@@ -1,14 +1,15 @@
-PATCH - Revisar filtros da tela Transportadoras
+PATCH - Simulador independente da tela Transportadoras
 
-Corrige:
-- Recoloca filtro Canal.
-- Filtro Status da cobertura passa a comparar de forma normalizada.
-- Inclui opção Sem validação.
-- Limpar filtros limpa também Canal.
-- Card mostra totais de rotas/fretes quando vierem da view do Supabase.
+Objetivo:
+O simulador não deve depender da tela Transportadoras estar atualizada ou de abrir transportadora por transportadora.
 
-Arquivo:
-- src/pages/TransportadorasPage.jsx
+Correções:
+- O Simulador carrega opções de transportadoras, origens e canais direto do Supabase ao abrir.
+- Adiciona botão "Atualizar opções" dentro do Simulador.
+- Simulação continua consultando o Supabase na hora do cálculo.
+- Cidade/destino dos resultados passa a usar o lookup da base online retornada na simulação.
+- A tela Transportadoras pode estar visualmente defasada, mas a simulação usa o banco.
 
-Observação:
-O status depende da view vw_cobertura_transportadoras. Depois do deploy, clique em Atualizar base.
+Arquivos:
+- src/services/freteDatabaseService.js
+- src/pages/SimuladorPage.jsx
