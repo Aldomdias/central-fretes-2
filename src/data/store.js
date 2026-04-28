@@ -313,6 +313,74 @@ export function useFreteStore() {
     () => ({
       transportadoras,
       syncStatus,
+      async atualizarResumo() {
+        if (!bancoConfigurado()) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            erro: 'Supabase não configurado. Não foi possível atualizar a base.',
+          }));
+          return false;
+        }
+
+        setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
+
+        try {
+          const resumo = await carregarResumoBaseDb();
+          const conferencia = await carregarConferenciaBaseDb().catch(() => null);
+
+          setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
+
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            fonte: 'supabase-resumo',
+            resumoBase: resumo.resumo,
+            conferenciaBase: conferencia || prev.conferenciaBase,
+            ultimaSincronizacao: new Date().toISOString(),
+          }));
+
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            erro: error.message || 'Erro ao atualizar base pelo Supabase.',
+          }));
+          return false;
+        }
+      },
+      async conferirBase() {
+        if (!bancoConfigurado()) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            erro: 'Supabase não configurado. Não foi possível conferir a base.',
+          }));
+          return null;
+        }
+
+        setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
+
+        try {
+          const conferencia = await carregarConferenciaBaseDb();
+
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            fonte: 'supabase-resumo',
+            conferenciaBase: conferencia,
+            ultimaSincronizacao: new Date().toISOString(),
+          }));
+
+          return conferencia;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            erro: error.message || 'Erro ao conferir base pelo Supabase.',
+          }));
+          return null;
+        }
+      },
       async sincronizarAgora() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));

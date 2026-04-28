@@ -1,16 +1,16 @@
-PATCH - Feedback visual para Atualizar base e Conferir base
+PATCH - Botões Atualizar/Conferir funcionando de verdade
 
 Problema:
-Ao clicar em Atualizar base ou Conferir base, a tela parecia não fazer nada.
+O Dashboard já tinha feedback visual, mas os botões não chamavam nada porque o store não exportava:
+- atualizarResumo
+- conferirBase
 
 Correção:
-- Botão Atualizar base muda para "Atualizando...".
-- Botão Conferir base muda para "Conferindo...".
-- Mostra mensagem abaixo dos cards:
-  - atualizando resumo;
-  - conferindo totais;
-  - ação concluída.
-- Desabilita os botões enquanto a ação está em andamento.
+- Adiciona store.atualizarResumo()
+- Adiciona store.conferirBase()
+- Dashboard não fica mais silencioso se a função não estiver conectada.
+- Mensagem de processamento fica mais visível.
 
-Arquivo:
+Arquivos:
+- src/data/store.js
 - src/pages/DashboardPage.jsx

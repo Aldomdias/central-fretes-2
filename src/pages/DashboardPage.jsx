@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { buildDashboardStats } from '../data/mockData';
 
 function formatarDataHora(valor) {
@@ -61,33 +60,6 @@ export default function DashboardPage({
   const hasData = transportadoras.length > 0 || Boolean(resumo);
   const status = getStatus(syncStatus, hasData);
   const carregandoInicial = syncStatus?.carregando && !hasData;
-  const [acaoEmAndamento, setAcaoEmAndamento] = useState('');
-  const [mensagemAcao, setMensagemAcao] = useState('');
-
-  const executarAcao = async (tipo, callback) => {
-    if (!callback || acaoEmAndamento) return;
-
-    const textoInicio = tipo === 'atualizar'
-      ? 'Atualizando resumo da base no Supabase...'
-      : 'Conferindo totais e validação da base no Supabase...';
-
-    const textoFim = tipo === 'atualizar'
-      ? 'Base atualizada com os totais mais recentes do Supabase.'
-      : 'Conferência concluída com os totais atuais do Supabase.';
-
-    setAcaoEmAndamento(tipo);
-    setMensagemAcao(textoInicio);
-
-    try {
-      await callback();
-      setMensagemAcao(textoFim);
-    } catch (error) {
-      setMensagemAcao(error?.message || 'Não foi possível concluir a ação.');
-    } finally {
-      setAcaoEmAndamento('');
-      setTimeout(() => setMensagemAcao(''), 5000);
-    }
-  };
 
   return (
     <div className="page-shell amd-dashboard-shell">
@@ -124,11 +96,11 @@ export default function DashboardPage({
         <div className="actions-right gap-row">
           <button
             className="btn-secondary"
-            onClick={() => executarAcao('atualizar', onAtualizarBase)}
-            disabled={!!acaoEmAndamento || syncStatus?.carregando || syncStatus?.sincronizando}
+            onClick={onAtualizarBase}
+            disabled={syncStatus?.carregando || syncStatus?.sincronizando}
             title="Atualizar resumo da base pelo Supabase"
           >
-            {acaoEmAndamento === 'atualizar' || syncStatus?.carregando ? 'Atualizando...' : 'Atualizar base'}
+            {syncStatus?.carregando ? 'Atualizando...' : 'Atualizar base'}
           </button>
           <span className="status-pill dark">Salvamento automático</span>
         </div>
@@ -160,22 +132,11 @@ export default function DashboardPage({
           </div>
         </div>
         <div className="actions-right gap-row">
-          <button
-            className="btn-secondary"
-            onClick={() => executarAcao('conferir', onConferirBase)}
-            disabled={!!acaoEmAndamento || syncStatus?.carregando || syncStatus?.sincronizando}
-          >
-            {acaoEmAndamento === 'conferir' ? 'Conferindo...' : 'Conferir base'}
+          <button className="btn-secondary" onClick={onConferirBase} disabled={syncStatus?.carregando || syncStatus?.sincronizando}>
+            Conferir base
           </button>
         </div>
       </div>
-
-      {mensagemAcao ? (
-        <div className={`mini-feedback ${acaoEmAndamento ? 'warn' : 'ok'} top-space`}>
-          {acaoEmAndamento ? <span className="loading-spinner tiny" /> : null}
-          {mensagemAcao}
-        </div>
-      ) : null}
 
       {carregandoInicial ? (
         <div className="loading-state-card">
