@@ -350,31 +350,92 @@ export function simularPorTransportadora({ transportadoras, nomeTransportadora, 
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
-export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, grade, cidadePorIbge }) {
+export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, origem = '', ufDestino = '', grade, cidadePorIbge }) {
   const pesoValorPairs = Array.isArray(grade) ? grade : [];
   const todosResultados = [];
 
-  pesoValorPairs.forEach((linha) => {
-    const resultados = simularPorTransportadora({
-      transportadoras,
-      nomeTransportadora,
-      canal,
-      origem: '',
-      destinoCodigos: [],
-      peso: toNumber(linha.peso),
-      valorNF: toNumber(linha.valorNF),
-      cidadePorIbge,
-    });
-    resultados.forEach((item) => {
-      todosResultados.push({
-        ...item,
-        gradePeso: toNumber(linha.peso),
-        gradeValorNF: toNumber(linha.valorNF),
-        gradeCubagem: toNumber(linha.cubagem),
-        pesoCubado: toNumber(item?.detalhes?.frete?.pesoCubado),
-        pesoConsiderado: toNumber(item?.detalhes?.frete?.pesoConsiderado),
+  const origemFiltro = String(origem || '').trim();
+  const ufFiltro = String(ufDestino || '').trim().toUpperCase();
+
+  // Otimização importante:
+  // Antes a análise calculava TODOS os destinos e só depois filtrava a transportadora.
+  // Agora primeiro descobrimos quais destinos a transportadora analisada atende
+  // na origem/canal selecionados. Depois calculamos concorrência apenas nesses destinos.
+  const destinosDaTransportadora = new Set();
+
+  (transportadoras || []).forEach((transportadora) => {
+    if (transportadora.nome !== nomeTransportadora) return;
+
+    (transportadora.origens || [])
+      .filter((origemItem) => !canal || origemItem.canal === canal)
+      .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+      .forEach((origemItem) => {
+        (origemItem.rotas || []).forEach((rota) => {
+          const ibge = String(rota.ibgeDestino || '');
+          if (!ibge) return;
+          if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+          destinosDaTransportadora.add(`${origemItem.cidade}|${ibge}`);
+        });
       });
+  });
+
+  if (!destinosDaTransportadora.size) {
+    return {
+      rotasAvaliadas: 0,
+      vitorias: 0,
+      aderencia: 0,
+      saving: 0,
+      prazoMedio: 0,
+      freteMedio: 0,
+      percentualMedioSobreNF: 0,
+      detalhes: [],
+      porUf: [],
+    };
+  }
+
+  pesoValorPairs.forEach((linha) => {
+    const peso = toNumber(linha.peso);
+    const valorNF = toNumber(linha.valorNF);
+    const resultados = [];
+
+    (transportadoras || []).forEach((transportadora) => {
+      (transportadora.origens || [])
+        .filter((origemItem) => !canal || origemItem.canal === canal)
+        .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+        .forEach((origemItem) => {
+          (origemItem.rotas || []).forEach((rota) => {
+            const ibge = String(rota.ibgeDestino || '');
+            if (!ibge) return;
+            if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+            if (!destinosDaTransportadora.has(`${origemItem.cidade}|${ibge}`)) return;
+
+            const item = calcularItem({
+              transportadora,
+              origem: origemItem,
+              rota,
+              peso,
+              valorNF,
+              cidadePorIbge,
+              gradeCanal: [],
+            });
+
+            if (item) resultados.push(item);
+          });
+        });
     });
+
+    rankearPorChave(resultados)
+      .filter((item) => item.transportadora === nomeTransportadora)
+      .forEach((item) => {
+        todosResultados.push({
+          ...item,
+          gradePeso: peso,
+          gradeValorNF: valorNF,
+          gradeCubagem: toNumber(linha.cubagem),
+          pesoCubado: toNumber(item?.detalhes?.frete?.pesoCubado),
+          pesoConsiderado: toNumber(item?.detalhes?.frete?.pesoConsiderado),
+        });
+      });
   });
 
   const rotasAvaliadas = todosResultados.length;
@@ -396,7 +457,11 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
   });
 
   const porUf = [...porUfMap.values()]
-    .map((item) => ({ ...item, aderencia: item.total ? (item.vitorias / item.total) * 100 : 0, freteMedio: item.total ? item.valor / item.total : 0 }))
+    .map((item) => ({
+      ...item,
+      aderencia: item.total ? (item.vitorias / item.total) * 100 : 0,
+      freteMedio: item.total ? item.valor / item.total : 0,
+    }))
     .sort((a, b) => b.total - a.total || a.uf.localeCompare(b.uf));
 
   return {

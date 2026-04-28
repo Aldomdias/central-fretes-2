@@ -726,12 +726,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
     iniciarProcessamentoUi('Análise de transportadora', `Preparando análise de ${transportadoraAnalise} em ${origemAnalise}...`, 8);
 
     try {
-      atualizarProcessamentoUi('Consultando concorrentes no Supabase para esta origem...', 28);
+      atualizarProcessamentoUi('Buscando apenas destinos da transportadora nesta origem/UF...', 28);
 
       const baseOnline = await carregarBaseOnline({
         canal: canalAnalise,
         origem: origemAnalise,
         nomeTransportadora: transportadoraAnalise,
+        ufDestino: ufAnalise,
       });
 
       if (!baseOnline.length) {
@@ -753,6 +754,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadoras: baseOnline,
         nomeTransportadora: transportadoraAnalise,
         canal: canalAnalise,
+        origem: origemAnalise,
+        ufDestino: ufAnalise,
         grade: grade[canalAnalise] || grade.ATACADO || [],
         cidadePorIbge: mapaCidades,
       });
