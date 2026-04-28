@@ -622,7 +622,17 @@ export async function carregarResumoBaseDb() {
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
-    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || null,
+    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || {
+      cobertura: 'Sem validação',
+      severidade: 'warn',
+      inconsistentes: 0,
+      pendencias: 0,
+      faltandoFrete: 0,
+      faltandoRota: 0,
+      totalRotas: 0,
+      totalCotacoes: 0,
+      resumo: true,
+    },
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 

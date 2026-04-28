@@ -189,40 +189,24 @@ function InconsistenciasModal({ open, title, transportadora, origem = null, onCl
 }
 
 function buildResumoTransportadora(transportadora) {
+  // A lista principal precisa ser 100% baseada no Supabase.
+  // Não calcula cobertura pela memória local, porque isso pode misturar resumo
+  // com detalhes carregados manualmente e distorcer o status.
   if (transportadora?.resumoCobertura) {
     return transportadora.resumoCobertura;
   }
-  if (!transportadora?.detalheCarregado) {
-    return {
-      cobertura: 'Sem validação',
-      severidade: 'warn',
-      inconsistentes: 0,
-      pendencias: 0,
-      faltandoFrete: 0,
-      faltandoRota: 0,
-      resumo: true,
-    };
-  }
-  if (transportadora?.resumoCobertura) {
-    return transportadora.resumoCobertura;
-  }
-  const analises = (transportadora.origens || []).map((origem) => analisarCoberturaOrigem(origem));
-  const inconsistentes = analises.filter((item) => item.cobertura === 'Inconsistente').length;
-  const pendencias = analises.filter((item) => item.cobertura !== 'Completa').length;
-  const faltandoFrete = analises.reduce((acc, item) => acc + item.rotasSemCotacao.length, 0);
-  const faltandoRota = analises.reduce((acc, item) => acc + item.cotacoesSemRota.length, 0);
 
-  let cobertura = 'Completa';
-  let severidade = 'ok';
-  if (inconsistentes > 0) {
-    cobertura = 'Inconsistente';
-    severidade = 'error';
-  } else if (pendencias > 0) {
-    cobertura = 'Parcial';
-    severidade = 'warn';
-  }
-
-  return { cobertura, severidade, inconsistentes, pendencias, faltandoFrete, faltandoRota };
+  return {
+    cobertura: 'Sem validação',
+    severidade: 'warn',
+    inconsistentes: 0,
+    pendencias: 0,
+    faltandoFrete: 0,
+    faltandoRota: 0,
+    totalRotas: 0,
+    totalCotacoes: 0,
+    resumo: true,
+  };
 }
 
 function GeneralidadesTab({ transportadoraId, origem, store }) {

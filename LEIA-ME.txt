@@ -1,24 +1,20 @@
-PATCH - Confiabilidade da base e simulador
+PATCH - Forçar cobertura da lista pelo Supabase
 
-Objetivo:
-- Não depender de entrar em transportadora para confiar na base.
-- Dashboard mostra totais do Supabase.
-- Tela Transportadoras usa a view vw_cobertura_transportadoras para status Completa/Parcial/Inconsistente.
-- Se a view não existir, mostra Sem validação em vez de calcular com dados incompletos.
-- Adiciona botão Conferir base no Dashboard.
-- Mantém o simulador consultando Supabase na hora da simulação.
+Problema:
+Algumas transportadoras ainda atualizavam o status só depois de entrar nelas.
+Isso acontecia porque a lista ainda podia calcular cobertura usando memória local/detalhes carregados manualmente.
 
-Passos obrigatórios:
-1) Rode no Supabase:
-   supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
-2) Copie a pasta src para o projeto.
-3) Deploy.
-4) Clique em Atualizar base e depois Conferir base.
+Correção:
+- A lista Transportadoras passa a usar somente resumoCobertura vindo do Supabase.
+- Se a view não trouxer cobertura, mostra "Sem validação".
+- Não calcula Completa/Parcial/Inconsistente pela memória local na lista.
+- Ao entrar na transportadora, os detalhes continuam carregando para cadastro/visualização.
+
+Importante:
+Rode/garanta a view:
+supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
+Depois clique em Atualizar base.
 
 Arquivos:
-- src/services/freteDatabaseService.js
-- src/data/store.js
 - src/pages/TransportadorasPage.jsx
-- src/pages/DashboardPage.jsx
-- src/App.jsx
-- supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
+- src/services/freteDatabaseService.js
