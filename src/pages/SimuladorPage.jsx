@@ -10,7 +10,7 @@ import {
   simularPorTransportadora,
   simularSimples,
 } from '../utils/calculoFrete';
-import { buscarBaseSimulacaoDb, carregarOpcoesSimuladorDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 
 const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
 const GRADE_PADRAO = {
@@ -43,6 +43,23 @@ function canaisDaTransportadora(nome, opcoesOnline, transportadoras) {
 function filtrarTransportadorasPorCanal(nomes = [], canal, opcoesOnline, transportadoras) {
   if (!canal) return nomes;
   return (nomes || []).filter((nome) => canaisDaTransportadora(nome, opcoesOnline, transportadoras).includes(canal));
+}
+
+function normalizeBuscaIbge(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function limparCidadeDigitada(texto) {
+  return String(texto || '').replace(/\s*\/\s*[A-Z]{2}$/i, '').trim();
+}
+
+function montarLabelMunicipio(item) {
+  if (!item) return '';
+  return `${item.cidade || 'IBGE'}${item.uf ? `/${item.uf}` : ''} · ${item.ibge}`;
 }
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
@@ -217,20 +234,72 @@ export default function SimuladorPage({ transportadoras = [] }) {
     canais: [],
     origensPorTransportadora: {},
     canaisPorTransportadora: {},
+    municipiosIbge: [],
     fonte: '',
     atualizadoEm: '',
   });
   const [carregandoOpcoes, setCarregandoOpcoes] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
+  const [municipiosIbge, setMunicipiosIbge] = useState([]);
 
   const lookup = useMemo(() => buildLookupTables(transportadoras), [transportadoras]);
   const { cidadePorIbge, destinosDisponiveis } = lookup;
+
+  const municipiosDisponiveis = useMemo(() => {
+    const fonte = municipiosIbge.length ? municipiosIbge : opcoesOnline.municipiosIbge || [];
+    const porIbge = new Map();
+    (fonte || []).forEach((item) => {
+      if (item?.ibge && item?.cidade) porIbge.set(String(item.ibge), item);
+    });
+    return [...porIbge.values()].sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
+  }, [municipiosIbge, opcoesOnline.municipiosIbge]);
+
+  const cidadePorIbgeCompleto = useMemo(() => {
+    const mapa = new Map(cidadePorIbge || []);
+    municipiosDisponiveis.forEach((item) => {
+      if (item.ibge && item.cidade) mapa.set(String(item.ibge), item.uf ? `${item.cidade}/${item.uf}` : item.cidade);
+    });
+    return mapa;
+  }, [cidadePorIbge, municipiosDisponiveis]);
+
+  const municipioPorIbge = useMemo(() => {
+    const mapa = new Map();
+    municipiosDisponiveis.forEach((item) => mapa.set(String(item.ibge), item));
+    return mapa;
+  }, [municipiosDisponiveis]);
+
+  const municipioPorCidade = useMemo(() => {
+    const mapa = new Map();
+    municipiosDisponiveis.forEach((item) => {
+      const cidade = normalizeBuscaIbge(item.cidade);
+      const cidadeUf = normalizeBuscaIbge(`${item.cidade}/${item.uf}`);
+      if (cidade && !mapa.has(cidade)) mapa.set(cidade, item);
+      if (cidadeUf && !mapa.has(cidadeUf)) mapa.set(cidadeUf, item);
+    });
+    return mapa;
+  }, [municipiosDisponiveis]);
 
   const canaisLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.canal)).filter(Boolean))], [transportadoras]);
   const origensLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade)).filter(Boolean))].sort(), [transportadoras]);
   const canais = useMemo(() => (opcoesOnline.canais?.length ? opcoesOnline.canais : canaisLocal.length ? canaisLocal : ['ATACADO']), [opcoesOnline.canais, canaisLocal]);
   const todasOrigens = useMemo(() => (opcoesOnline.origens?.length ? opcoesOnline.origens : origensLocal), [opcoesOnline.origens, origensLocal]);
-  const todosDestinosComCidade = useMemo(() => destinosDisponiveis.map((ibge) => ({ ibge, cidade: getCidadeByIbge(ibge, cidadePorIbge), uf: getUfByIbge(ibge) })), [destinosDisponiveis, cidadePorIbge]);
+  const todosDestinosComCidade = useMemo(() => {
+    const porIbge = new Map();
+
+    destinosDisponiveis.forEach((ibge) => {
+      porIbge.set(String(ibge), {
+        ibge: String(ibge),
+        cidade: getCidadeByIbge(ibge, cidadePorIbgeCompleto),
+        uf: getUfByIbge(ibge),
+      });
+    });
+
+    municipiosDisponiveis.forEach((item) => {
+      if (!porIbge.has(String(item.ibge))) porIbge.set(String(item.ibge), item);
+    });
+
+    return [...porIbge.values()].sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
+  }, [destinosDisponiveis, cidadePorIbgeCompleto, municipiosDisponiveis]);
 
   const [origemSimples, setOrigemSimples] = useState(todasOrigens[0] || '');
   const [destinoCodigo, setDestinoCodigo] = useState('');
@@ -597,8 +666,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         <span>
           Base do simulador: <strong>{opcoesOnline.fonte === 'supabase' ? 'Supabase online' : 'carregando opções'}</strong>
           {opcoesOnline.transportadoras?.length ? ` · ${opcoesOnline.transportadoras.length} transportadoras` : ''}
-          {opcoesOnline.origens?.length ? ` · ${opcoesOnline.origens.length} origens` : ''}
-          {municipiosDisponiveis.length ? ` · ${municipiosDisponiveis.length} municípios IBGE` : ''}
+          {opcoesOnline.origens?.length ? ` · ${opcoesOnline.origens.length} origens` : ''}{municipiosDisponiveis.length ? ` · ${municipiosDisponiveis.length} municípios IBGE` : ''}
         </span>
         <button className="sim-tab" type="button" onClick={atualizarOpcoesSimulador} disabled={carregandoOpcoes}>
           {carregandoOpcoes ? 'Atualizando opções...' : 'Atualizar opções'}

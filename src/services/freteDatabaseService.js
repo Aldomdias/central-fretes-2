@@ -970,18 +970,16 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
 
 
 
-function pickFirst(row, keys = []) {
+function pickIbgeValue(row, keys = []) {
   for (const key of keys) {
     const value = row?.[key];
-    if (value !== undefined && value !== null && String(value).trim() !== '') {
-      return String(value).trim();
-    }
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
   }
   return '';
 }
 
 function normalizeMunicipioIbgeRow(row = {}) {
-  const ibge = pickFirst(row, [
+  const ibge = pickIbgeValue(row, [
     'ibge',
     'codigo_ibge',
     'cod_ibge',
@@ -992,7 +990,7 @@ function normalizeMunicipioIbgeRow(row = {}) {
     'id_municipio',
   ]).replace(/\D/g, '');
 
-  const cidade = pickFirst(row, [
+  const cidade = pickIbgeValue(row, [
     'cidade',
     'municipio',
     'nome_municipio',
@@ -1000,7 +998,7 @@ function normalizeMunicipioIbgeRow(row = {}) {
     'descricao',
   ]);
 
-  const uf = pickFirst(row, [
+  const uf = pickIbgeValue(row, [
     'uf',
     'sigla_uf',
     'estado',
@@ -1057,11 +1055,11 @@ async function resolverCepEmFaixasDb(cepLimpo) {
         const municipio = normalizeMunicipioIbgeRow(data[0]);
         if (municipio) return municipio;
 
-        const ibge = pickFirst(data[0], ['ibge', 'codigo_ibge', 'cod_ibge', 'codigo_municipio']).replace(/\D/g, '');
+        const ibge = pickIbgeValue(data[0], ['ibge', 'codigo_ibge', 'cod_ibge', 'codigo_municipio']).replace(/\D/g, '');
         if (ibge) return { ibge, cidade: '', uf: '' };
       }
     } catch {
-      // tenta a próxima combinação de colunas
+      // tenta próxima combinação
     }
   }
 
@@ -1085,31 +1083,26 @@ export async function resolverDestinoIbgeDb(valor) {
   }
 
   const termoCidade = texto.replace(/\s*\/\s*[A-Z]{2}$/i, '').trim();
+  if (!termoCidade || !isSupabaseConfigured()) return null;
 
-  if (!termoCidade) return null;
+  const supabase = ensureClient();
+  const colunas = ['cidade', 'municipio', 'nome_municipio', 'nome'];
 
-  try {
-    const supabase = ensureClient();
-    const tentativas = ['cidade', 'municipio', 'nome_municipio', 'nome'];
+  for (const coluna of colunas) {
+    try {
+      const { data, error } = await supabase
+        .from('ibge_municipios')
+        .select('*')
+        .ilike(coluna, termoCidade)
+        .limit(1);
 
-    for (const coluna of tentativas) {
-      try {
-        const { data, error } = await supabase
-          .from('ibge_municipios')
-          .select('*')
-          .ilike(coluna, termoCidade)
-          .limit(1);
-
-        if (!error && data?.[0]) {
-          const municipio = normalizeMunicipioIbgeRow(data[0]);
-          if (municipio) return municipio;
-        }
-      } catch {
-        // tenta próxima coluna
+      if (!error && data?.[0]) {
+        const municipio = normalizeMunicipioIbgeRow(data[0]);
+        if (municipio) return municipio;
       }
+    } catch {
+      // tenta próxima coluna
     }
-  } catch {
-    return null;
   }
 
   return null;

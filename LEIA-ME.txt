@@ -1,22 +1,19 @@
-PATCH - Simulador usando base IBGE/CEP
+HOTFIX - Simulador em branco + base IBGE
 
-Objetivo:
-- Usar a base IBGE já cadastrada para todas as simulações.
-- Permitir digitar cidade, IBGE ou CEP no destino.
-- Mostrar sugestões de cidade/UF/IBGE.
-- Sempre que o resultado sair, priorizar nome da cidade do IBGE.
+Problema:
+O patch anterior deixou o Simulador em branco porque o componente usava variáveis/funções de IBGE sem estarem conectadas corretamente.
 
-Inclui:
-1) Carrega municípios da tabela public.ibge_municipios.
-2) Na simulação simples, destino aceita cidade, IBGE ou CEP.
-3) Na simulação por transportadora, destino aceita cidade, IBGE ou CEP.
-4) Na simulação em massa, a lista aceita cidades, CEPs ou IBGEs.
-5) Resultado usa mapa completo de cidades IBGE.
-6) Se informar CEP, tenta resolver pela tabela public.ibge_faixas_cep, quando existir.
+Correção:
+- Restaura a base do Simulador que estava funcionando.
+- Mantém o filtro de transportadoras por canal.
+- Conecta corretamente:
+  - carregarMunicipiosIbgeDb
+  - resolverDestinoIbgeDb
+  - municipiosDisponiveis
+  - cidadePorIbgeCompleto
+- Destino aceita cidade, IBGE ou CEP.
+- Resultado prioriza cidade/UF da base IBGE.
 
 Arquivos:
 - src/pages/SimuladorPage.jsx
 - src/services/freteDatabaseService.js
-
-Observação:
-O suporte a CEP depende da tabela public.ibge_faixas_cep ter colunas de faixa compatíveis, como cep_inicial/cep_final ou cep_inicio/cep_fim.
