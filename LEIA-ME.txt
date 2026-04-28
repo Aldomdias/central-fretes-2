@@ -1,14 +1,16 @@
-PATCH - Corrigir busca da base no Simulador
+PATCH - Feedback visual de processamento no Simulador
 
-Problema provável:
-A busca de rotas do Simulador usava select direto no Supabase sem paginação. O Supabase pode devolver só a primeira página/limite padrão, deixando transportadoras ou rotas fora da simulação. Isso faz o simulador parecer incompleto.
+Melhoria:
+- Adiciona indicador visual de processamento para análises mais pesadas.
+- Mostra card com:
+  - ícone ⏳
+  - etapa atual
+  - percentual estimado
+  - barra de progresso
+- Aplicado em:
+  - Simulação por transportadora
+  - Análise de transportadora
+- Botões passam a mostrar "Processando..." enquanto a análise roda.
 
-Correções:
-- Busca de rotas agora é paginada por origem.
-- Quando há destino informado, filtra por IBGE destino sem perder páginas.
-- Remove limite artificial de 25 origens na análise por transportadora.
-- Se a origem não encontrar por busca exata, tenta busca parcial.
-- Simulador continua usando Supabase como fonte da verdade.
-
-Arquivo:
-- src/services/freteDatabaseService.js
+Observação:
+O percentual é estimado por etapas e progresso visual da análise. Não é contagem exata de registros do Supabase, mas ajuda o usuário a entender que o sistema está processando.

@@ -1,5 +1,5 @@
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   analisarCoberturaTabela,
   analisarTransportadoraPorGrade,
@@ -332,6 +332,86 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
+  const timerProcessamentoRef = useRef(null);
+  const hideProcessamentoRef = useRef(null);
+  const [processamentoUi, setProcessamentoUi] = useState({
+    ativo: false,
+    titulo: '',
+    mensagem: '',
+    percentual: 0,
+  });
+
+  const limparTimersProcessamento = () => {
+    if (timerProcessamentoRef.current) {
+      clearInterval(timerProcessamentoRef.current);
+      timerProcessamentoRef.current = null;
+    }
+    if (hideProcessamentoRef.current) {
+      clearTimeout(hideProcessamentoRef.current);
+      hideProcessamentoRef.current = null;
+    }
+  };
+
+  const iniciarProcessamentoUi = (titulo, mensagem, percentualInicial = 8) => {
+    limparTimersProcessamento();
+    setProcessamentoUi({
+      ativo: true,
+      titulo,
+      mensagem,
+      percentual: percentualInicial,
+    });
+
+    timerProcessamentoRef.current = setInterval(() => {
+      setProcessamentoUi((prev) => {
+        if (!prev.ativo) return prev;
+        const incremento = prev.percentual < 45 ? 6 : prev.percentual < 75 ? 3 : 1;
+        return {
+          ...prev,
+          percentual: Math.min(prev.percentual + incremento, 92),
+        };
+      });
+    }, 400);
+  };
+
+  const atualizarProcessamentoUi = (mensagem, percentual = null) => {
+    setProcessamentoUi((prev) => ({
+      ...prev,
+      ativo: true,
+      mensagem: mensagem || prev.mensagem,
+      percentual: percentual === null ? prev.percentual : percentual,
+    }));
+  };
+
+  const finalizarProcessamentoUi = (tituloFinal = 'Processamento concluído', mensagemFinal = 'Resultado carregado.', percentualFinal = 100) => {
+    limparTimersProcessamento();
+    setProcessamentoUi((prev) => ({
+      ...prev,
+      ativo: true,
+      titulo: tituloFinal,
+      mensagem: mensagemFinal,
+      percentual: percentualFinal,
+    }));
+
+    hideProcessamentoRef.current = setTimeout(() => {
+      setProcessamentoUi({
+        ativo: false,
+        titulo: '',
+        mensagem: '',
+        percentual: 0,
+      });
+      hideProcessamentoRef.current = null;
+    }, 900);
+  };
+
+  const limparProcessamentoUi = () => {
+    limparTimersProcessamento();
+    setProcessamentoUi({
+      ativo: false,
+      titulo: '',
+      mensagem: '',
+      percentual: 0,
+    });
+  };
 
   const origensPorCanalSimples = useMemo(() => {
     const online = opcoesOnline.origensPorCanal?.[canalSimples];
@@ -385,6 +465,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
       setCarregandoSimulacao(false);
     }
   };
+
+  useEffect(() => () => {
+    limparTimersProcessamento();
+  }, []);
 
   useEffect(() => {
     if (!canalSimples && canais[0]) setCanalSimples(canais[0]);
@@ -539,12 +623,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
+    iniciarProcessamentoUi('Simulação por transportadora', 'Validando destinos e preparando consulta...', 12);
+
+    atualizarProcessamentoUi('Buscando concorrentes no Supabase...', 36);
+
     const baseOnline = await carregarBaseOnline({
       origem: origemTransportadora,
       canal: canalTransportadora,
       destinoCodigos: codigos,
       nomeTransportadora: transportadora,
     });
+
+    atualizarProcessamentoUi('Montando base da análise...', 72);
 
     const lookupOnline = buildLookupTables(baseOnline);
     const mapaCidades = new Map(cidadePorIbgeCompleto);
@@ -554,6 +644,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
         mapaCidades.set(destino.ibge, destino.uf ? `${destino.cidade}/${destino.uf}` : destino.cidade);
       }
     });
+
+    atualizarProcessamentoUi('Calculando cenário competitivo...', 88);
 
     setResultadoTransportadora(simularPorTransportadora({
       transportadoras: baseOnline,
@@ -566,6 +658,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
       cidadePorIbge: mapaCidades,
       gradeCanal: grade[canalTransportadora] || grade.ATACADO || [],
     }));
+
+    finalizarProcessamentoUi('Simulação concluída', 'A comparação entre transportadoras foi carregada.', 100);
   };
   const exportarSimulacaoTransportadora = () => {
     if (!resultadoTransportadora.length) return;
@@ -591,12 +685,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
     downloadCsv(nomeArquivo, csv);
   };
   const onSimularGrade = async () => {
+    iniciarProcessamentoUi('Análise de transportadora', 'Buscando base completa da transportadora e concorrentes...', 10);
+    atualizarProcessamentoUi('Consultando concorrentes no Supabase...', 34);
+
     const baseOnline = await carregarBaseOnline({
       canal: canalAnalise,
       nomeTransportadora: transportadoraAnalise,
     });
 
+    atualizarProcessamentoUi('Organizando rotas, destinos e faixas...', 70);
+
     const lookupOnline = buildLookupTables(baseOnline);
+    atualizarProcessamentoUi('Calculando aderência, saving e ranking...', 88);
+
     setResultadoAnalise(analisarTransportadoraPorGrade({
       transportadoras: baseOnline,
       nomeTransportadora: transportadoraAnalise,
@@ -604,6 +705,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
       grade: grade[canalAnalise] || grade.ATACADO || [],
       cidadePorIbge: (() => { const mapa = new Map(cidadePorIbgeCompleto); (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapa.set(ibge, cidade)); return mapa; })(),
     }));
+
+    finalizarProcessamentoUi('Análise concluída', 'O relatório de aderência foi gerado com sucesso.', 100);
   };
   const exportarAnalise = () => {
     if (!resultadoAnalise?.detalhes?.length) return;
@@ -682,6 +785,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       {carregandoSimulacao ? (
         <div className="sim-alert info">Buscando concorrentes no Supabase para esta simulação...</div>
+      ) : null}
+      {processamentoUi.ativo ? (
+        <div className="sim-alert info" style={{ display: 'grid', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ fontSize: 22, lineHeight: 1 }}>⏳</div>
+            <div style={{ flex: 1 }}>
+              <strong>{processamentoUi.titulo}</strong>
+              <div style={{ fontSize: 13, opacity: 0.9 }}>{processamentoUi.mensagem}</div>
+            </div>
+            <strong>{processamentoUi.percentual}%</strong>
+          </div>
+          <div style={{ background: '#e7eefb', borderRadius: 999, height: 12, overflow: 'hidden' }}>
+            <div
+              style={{
+                width: `${Math.max(6, Math.min(processamentoUi.percentual, 100))}%`,
+                height: '100%',
+                borderRadius: 999,
+                background: 'linear-gradient(90deg, #04C7A4, #9153F0)',
+                transition: 'width 0.35s ease',
+              }}
+            />
+          </div>
+          <small>
+            Essa análise pode levar mais tempo quando houver muitas rotas, destinos e concorrentes no canal selecionado.
+          </small>
+        </div>
       ) : null}
       {erroSimulacao ? (
         <div className="sim-alert error">{erroSimulacao}</div>
@@ -812,7 +941,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Canal
               <select value={canalAnalise} onChange={(e) => setCanalAnalise(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
-            <div className="sim-actions" style={{ alignItems: 'flex-end' }}><button className="primary" onClick={onSimularGrade}>Gerar relatório</button></div>
+            <div className="sim-actions" style={{ alignItems: 'flex-end' }}><button className="primary" onClick={onSimularGrade} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Processando..." : "Gerar relatório"}</button></div>
           </div>
           {resultadoAnalise && (
             <div className="sim-cobertura-box">
