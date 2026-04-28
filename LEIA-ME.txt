@@ -1,20 +1,16 @@
-PATCH - Forçar cobertura da lista pelo Supabase
+PATCH - Feedback visual para Atualizar base e Conferir base
 
 Problema:
-Algumas transportadoras ainda atualizavam o status só depois de entrar nelas.
-Isso acontecia porque a lista ainda podia calcular cobertura usando memória local/detalhes carregados manualmente.
+Ao clicar em Atualizar base ou Conferir base, a tela parecia não fazer nada.
 
 Correção:
-- A lista Transportadoras passa a usar somente resumoCobertura vindo do Supabase.
-- Se a view não trouxer cobertura, mostra "Sem validação".
-- Não calcula Completa/Parcial/Inconsistente pela memória local na lista.
-- Ao entrar na transportadora, os detalhes continuam carregando para cadastro/visualização.
+- Botão Atualizar base muda para "Atualizando...".
+- Botão Conferir base muda para "Conferindo...".
+- Mostra mensagem abaixo dos cards:
+  - atualizando resumo;
+  - conferindo totais;
+  - ação concluída.
+- Desabilita os botões enquanto a ação está em andamento.
 
-Importante:
-Rode/garanta a view:
-supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
-Depois clique em Atualizar base.
-
-Arquivos:
-- src/pages/TransportadorasPage.jsx
-- src/services/freteDatabaseService.js
+Arquivo:
+- src/pages/DashboardPage.jsx
