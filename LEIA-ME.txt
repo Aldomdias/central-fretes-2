@@ -1,14 +1,15 @@
-PATCH - Botões para parar e limpar importação
+PATCH - Reset forçado da tela de importação
 
-Resolve:
-- Adiciona botão "Limpar fila".
-- Durante importação, mostra botão "Parar processamento".
-- Limpar fila libera a tela para uma nova importação.
-- Parar processamento cancela o lote entre etapas/arquivos e evita gravar o restante no Supabase.
-- Adiciona botão "Limpar histórico local" para limpar a lista exibida na tela.
+Corrige o caso em que o botão parecia não fazer nada.
 
-Importante:
-Se o sistema já estiver exatamente no momento de gravação de um lote no Supabase, não é possível abortar a requisição já enviada. Nesse caso, aguarde alguns segundos e clique em Atualizar base.
+Mudanças:
+- Limpar/Parar agora incrementa um ID interno e invalida qualquer processamento antigo.
+- Mesmo que uma Promise antiga termine depois, ela não deve mais travar a tela.
+- Botões ficam sempre visíveis:
+  - Limpar fila / liberar tela
+  - Parar processamento
+- Também existem botões dentro do card Status da importação.
+- Reseta os inputs de arquivo/pasta com key, permitindo escolher novos arquivos imediatamente.
 
 Arquivo:
 - src/pages/ImportacaoPage.jsx

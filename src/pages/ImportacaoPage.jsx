@@ -164,6 +164,8 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
   const [tipo, setTipo] = useState('rotas');
   const [processando, setProcessando] = useState(false);
   const cancelarProcessamentoRef = useRef(false);
+  const processamentoIdRef = useRef(0);
+  const [inputResetKey, setInputResetKey] = useState(0);
   const [historico, setHistorico] = useState(() => carregarHistoricoLocal());
   const [filtro, setFiltro] = useState('');
   const [detalhe, setDetalhe] = useState(null);
@@ -255,31 +257,28 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     exportarSecao(tipo, rows, `exportacao-${tipo}.xlsx`);
   };
 
-  const limparProcessamento = () => {
+  const resetarTelaImportacao = (etapa = 'Fila limpa') => {
+    processamentoIdRef.current += 1;
     cancelarProcessamentoRef.current = true;
     setProcessando(false);
     setDetalhe(null);
     setPastaArquivos([]);
+    setInputResetKey((prev) => prev + 1);
     setStatusImportacao({
       ...STATUS_IMPORTACAO_INICIAL,
-      etapa: 'Fila limpa',
+      etapa,
       finalizadoEm: new Date().toISOString(),
       concluido: true,
       cancelado: true,
     });
   };
 
+  const limparProcessamento = () => {
+    resetarTelaImportacao('Fila limpa');
+  };
+
   const pararProcessamento = () => {
-    cancelarProcessamentoRef.current = true;
-    setProcessando(false);
-    setStatusImportacao((prev) => ({
-      ...prev,
-      etapa: 'Cancelado pelo usuário',
-      finalizadoEm: new Date().toISOString(),
-      duracaoMs: prev.iniciadoEm ? Date.now() - new Date(prev.iniciadoEm).getTime() : prev.duracaoMs,
-      concluido: true,
-      cancelado: true,
-    }));
+    resetarTelaImportacao('Cancelado pelo usuário');
   };
 
   const limparHistoricoLocal = () => {
@@ -293,7 +292,13 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     if (!files.length) return;
 
     const inicioLote = Date.now();
+    const processamentoId = processamentoIdRef.current + 1;
+    processamentoIdRef.current = processamentoId;
     cancelarProcessamentoRef.current = false;
+
+    const processoCancelado = () =>
+      cancelarProcessamentoRef.current || processamentoIdRef.current !== processamentoId;
+
     setProcessando(true);
     setDetalhe(null);
     setStatusImportacao({
@@ -312,6 +317,8 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       cancelado: false,
     });
 
+    if (processoCancelado()) return;
+
     const novasEntradas = [];
     const payloadsValidos = [];
     let sucessos = 0;
@@ -320,7 +327,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     let totalErros = 0;
 
     for (let index = 0; index < files.length; index += 1) {
-      if (cancelarProcessamentoRef.current) break;
+      if (processoCancelado()) break;
 
       const file = files[index];
       const inicioArquivo = Date.now();
@@ -337,7 +344,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       try {
         const parsed = await parseFileToRows(file, tipo);
 
-        if (cancelarProcessamentoRef.current) break;
+        if (processoCancelado()) break;
 
         setStatusImportacao((prev) => ({
           ...prev,
@@ -350,7 +357,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         });
         const erros = [...(payload.erros || [])];
 
-        if (cancelarProcessamentoRef.current) break;
+        if (processoCancelado()) break;
 
         payloadsValidos.push(payload);
 
@@ -409,7 +416,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       }));
     }
 
-    if (cancelarProcessamentoRef.current) {
+    if (processoCancelado()) {
       const finalizadoEm = new Date().toISOString();
       const duracaoMs = Date.now() - inicioLote;
       setStatusImportacao((prev) => ({
@@ -424,6 +431,11 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         totalInseridos,
         totalErros,
       }));
+      setProcessando(false);
+      return;
+    }
+
+    if (processoCancelado()) {
       setProcessando(false);
       return;
     }
@@ -473,7 +485,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       });
     }
 
-    if (cancelarProcessamentoRef.current) {
+    if (processoCancelado()) {
       const finalizadoEm = new Date().toISOString();
       const duracaoMs = Date.now() - inicioLote;
       setStatusImportacao((prev) => ({
@@ -511,6 +523,11 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       })
     );
 
+    if (processoCancelado()) {
+      setProcessando(false);
+      return;
+    }
+
     const finalizadoEm = new Date().toISOString();
     const duracaoMs = Date.now() - inicioLote;
     const historicoAtualizado = consolidarHistorico([...novasEntradas, ...historico]);
@@ -544,14 +561,20 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
 
   const handleFiles = async (event) => {
     const files = Array.from(event.target.files || []);
+    cancelarProcessamentoRef.current = true;
+    setProcessando(false);
     await processarArquivos(files);
     event.target.value = '';
+    setInputResetKey((prev) => prev + 1);
   };
 
   const handleFolder = async (event) => {
     const files = Array.from(event.target.files || []);
+    cancelarProcessamentoRef.current = true;
+    setProcessando(false);
     setPastaArquivos(calcularControlePasta(files, historico, tipo));
     event.target.value = '';
+    setInputResetKey((prev) => prev + 1);
   };
 
   const arquivosPendentesPasta = pastaArquivos.filter((item) => item.selecionado && item.status === 'Pendente');
@@ -684,22 +707,21 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               type="button"
               onClick={limparProcessamento}
             >
-              Limpar fila
+              Limpar fila / liberar tela
             </button>
 
-            {processando ? (
-              <button
-                className="btn-danger"
-                type="button"
-                onClick={pararProcessamento}
-              >
-                Parar processamento
-              </button>
-            ) : null}
+            <button
+              className="btn-danger"
+              type="button"
+              onClick={pararProcessamento}
+            >
+              Parar processamento
+            </button>
 
             <label className={`btn-primary inline-upload ${processando ? 'disabled-like' : ''}`}>
               {processando ? 'Importando arquivos...' : 'Importar arquivos'}
               <input
+                key={`arquivos-${inputResetKey}`}
                 type="file"
                 accept=".xlsx,.xls,.csv"
                 multiple
@@ -712,6 +734,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
             <label className={`btn-secondary inline-upload ${processando ? 'disabled-like' : ''}`}>
               Mapear pasta
               <input
+                key={`pasta-${inputResetKey}`}
                 type="file"
                 accept=".xlsx,.xls,.csv"
                 multiple
@@ -833,6 +856,15 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                 value={formatarDuracao(statusImportacao.duracaoMs || (processando && statusImportacao.iniciadoEm ? Date.now() - new Date(statusImportacao.iniciadoEm).getTime() : 0))}
                 subtitle={statusImportacao.iniciadoEm ? `iniciado em ${formatarDataHora(statusImportacao.iniciadoEm)}` : 'sem processamento recente'}
               />
+            </div>
+
+            <div className="toolbar-wrap compact-actions top-space">
+              <button className="btn-secondary" type="button" onClick={limparProcessamento}>
+                Limpar e liberar nova importação
+              </button>
+              <button className="btn-danger" type="button" onClick={pararProcessamento}>
+                Parar agora
+              </button>
             </div>
 
             <div className="hint-box compact">
