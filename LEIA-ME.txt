@@ -1,21 +1,18 @@
-PATCH - Análise de transportadora com filtros de origem e UF
+HOTFIX - Restaurar tela Simulador
 
 Objetivo:
-Evitar que análises B2C muito grandes travem ou fiquem presas em 92%.
+- Corrigir tela Simulador em branco imediatamente.
+- Restaura a última versão funcional com feedback de processamento.
+- Mantém:
+  - Simulação simples
+  - Simulação por transportadora
+  - Análise de transportadora
+  - Cobertura de tabela
+  - Indicador/barra de processamento
+- Remove temporariamente o último ajuste de filtros Origem/UF da análise, pois ele causou tela em branco.
 
-Melhorias:
-- Adiciona filtro Origem na aba Análise de transportadora.
-- Adiciona filtro UF destino.
-- A consulta no Supabase passa a receber origem quando preenchida.
-- Permite quebrar a análise por origem, exemplo:
-  - MID / B2C / Itajaí
-  - MID / B2C / Itupeva
-- Mantém opção de análise geral se Origem ficar em branco.
-- Melhora mensagens do processamento.
-- Dá tempo para a barra atualizar antes da etapa pesada de cálculo.
+Próximo passo:
+Depois de confirmar que a tela voltou, aplicar os filtros Origem/UF em um patch menor e mais seguro.
 
 Arquivo:
 - src/pages/SimuladorPage.jsx
-
-Observação:
-Para bases B2C muito grandes, a recomendação operacional é filtrar por origem. A análise geral continua possível, mas pode demorar mais.
