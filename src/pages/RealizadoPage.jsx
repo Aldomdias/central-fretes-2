@@ -159,10 +159,12 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [simulando, setSimulando] = useState(false);
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [importMeta, setImportMeta] = useState(null);
   const [resultado, setResultado] = useState(null);
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [inputKey, setInputKey] = useState(fileInputKey());
   const ibgeCacheRef = useRef(new Map());
+  const fileInputRef = useRef(null);
 
   async function carregarBase(filtrosCarga = filtros) {
     setCarregando(true);
@@ -244,24 +246,46 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
     setImportando(true);
     setErro('');
-    setFeedback(`Lendo arquivo ${file.name}...`);
+    setResultado(null);
+    setImportMeta(null);
+    setFeedback(`Arquivo selecionado: ${file.name} (${(file.size / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB). Lendo a planilha...`);
 
     try {
       const { registros, meta } = await parseRealizadoCtesFile(file);
+      setImportMeta(meta);
+
       if (!registros.length) {
-        setErro('Nenhum CT-e válido encontrado. Confira se a planilha tem a aba Registros e a coluna Chave CTE.');
+        setErro(
+          `Nenhum CT-e válido encontrado na aba ${meta.aba || 'selecionada'}. Linhas lidas: ${Number(meta.linhasOriginais || 0).toLocaleString('pt-BR')}. Confira se existem as colunas Chave CTE, Valor CTE, Valor NF e as cidades/UFs.`
+        );
         return;
       }
 
-      setFeedback(`Arquivo lido: ${meta.registrosValidos.toLocaleString('pt-BR')} CT-e(s). Salvando na base...`);
-      const save = await salvarRealizadoCtes(registros);
-      setFeedback(`Importação concluída: ${save.inseridos.toLocaleString('pt-BR')} CT-e(s) salvos de ${file.name}.`);
+      const avisoRef = meta.refFoiCorrigida
+        ? ` A referência interna da aba veio como ${meta.refOriginal || 'vazia'} e foi corrigida para ${meta.refCorrigida}.`
+        : '';
+
+      setFeedback(
+        `Arquivo lido na aba ${meta.aba}: ${meta.registrosValidos.toLocaleString('pt-BR')} CT-e(s) válidos de ${meta.linhasOriginais.toLocaleString('pt-BR')} linha(s).${avisoRef} Salvando no Supabase...`
+      );
+
+      const save = await salvarRealizadoCtes(registros, {
+        chunkSize: 250,
+        onProgress: ({ salvos, total, modo }) => {
+          setFeedback(
+            `Salvando realizado ${modo === 'local' ? 'local' : 'no Supabase'}: ${Number(salvos || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s)...`
+          );
+        },
+      });
+
+      setFeedback(`Importação concluída: ${save.inseridos.toLocaleString('pt-BR')} CT-e(s) salvos de ${file.name}. Atualizando a tela...`);
       setInputKey(fileInputKey());
       await carregarBase(DEFAULT_FILTROS);
     } catch (error) {
       setErro(error.message || 'Erro ao importar realizado.');
     } finally {
       setImportando(false);
+      if (event.target) event.target.value = '';
     }
   }
 
@@ -415,10 +439,16 @@ export default function RealizadoPage({ transportadoras = [] }) {
             <div className="panel-title">1. Importar realizado</div>
             <p>Modelo esperado: planilha com aba Registros e colunas como Transportadora, Emissão, Chave CTE, Valor CTE, Peso, Valor NF, CEP/Cidade origem e destino.</p>
           </div>
-          <input key={inputKey} type="file" accept=".xlsx,.xls,.csv" onChange={onImportarArquivo} disabled={importando || simulando} />
-          <button className="btn-primary" onClick={() => document.querySelector('input[type=file]')?.click()} disabled={importando || simulando}>
+          <input key={inputKey} ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={onImportarArquivo} disabled={importando || simulando} />
+          <button className="btn-primary" onClick={() => fileInputRef.current?.click()} disabled={importando || simulando}>
             {importando ? 'Importando...' : 'Selecionar arquivo realizado'}
           </button>
+          {importMeta ? (
+            <div className="import-meta-box">
+              <strong>Última leitura:</strong> aba {importMeta.aba || '—'} • {Number(importMeta.registrosValidos || 0).toLocaleString('pt-BR')} CT-e(s) válidos
+              {importMeta.refFoiCorrigida ? <span> • intervalo corrigido de {importMeta.refOriginal || 'vazio'} para {importMeta.refCorrigida}</span> : null}
+            </div>
+          ) : null}
         </section>
 
         <section className="panel-card">

@@ -1,29 +1,36 @@
-MELHORIA - BASE REALIZADA CT-e
+PATCH REALIZADO CT-e - CORREÇÃO IMPORTAÇÃO
 
-Arquivos alterados/adicionados:
-- src/App.jsx
-- src/components/Sidebar.jsx
+O que foi corrigido nesta versão:
+1. Leitura de planilhas em que a aba Registros vem com intervalo interno quebrado como A1.
+   - O importador agora recalcula o intervalo real da aba antes de converter as linhas.
+   - Esse era o comportamento identificado no arquivo 1_Jan_01.xlsx.
+
+2. Importação com progresso real:
+   - Mostra arquivo selecionado e tamanho.
+   - Mostra aba lida, linhas lidas e CT-e(s) válidos.
+   - Mostra progresso de gravação no Supabase em lotes.
+   - Se não encontrar CT-e válido, exibe quantidade de linhas lidas e orientação do que conferir.
+
+3. Upload mais leve para o Supabase:
+   - A coluna raw não envia mais a linha inteira da planilha em cada CT-e.
+   - Isso reduz muito o peso da gravação e evita travamento em arquivos maiores.
+
+4. Botão de arquivo mais seguro:
+   - A tela agora usa referência direta do input de arquivo, sem depender de document.querySelector.
+
+Arquivos do patch:
 - src/pages/RealizadoPage.jsx
 - src/utils/realizadoCtes.js
-- src/utils/calculoFrete.js
 - src/services/freteDatabaseService.js
+- src/utils/calculoFrete.js
+- src/App.jsx
+- src/components/Sidebar.jsx
 - src/styles.css
 - supabase/realizado_ctes_schema.sql
 
-O que foi criado:
-1. Nova tela no menu: Realizado CT-e.
-2. Importação de planilha de CT-e emitidos, usando a aba Registros.
-3. Persistência no Supabase na tabela realizado_ctes, com fallback local limitado.
-4. Simulação de uma transportadora sobre o realizado filtrado por período, canal, origem e UF destino.
-5. Métricas principais:
-   - CT-e(s) avaliados;
-   - CT-e(s) que a transportadora ganharia;
-   - aderência no realizado;
-   - faturamento simulado se vencedora;
-   - economia se vencedora;
-   - impacto líquido usando a transportadora em todas as rotas em que ela participa;
-   - % frete realizado x % frete simulado;
-   - CT-e(s) fora da malha.
+Importante:
+Antes de testar, rode no Supabase:
+supabase/realizado_ctes_schema.sql
 
-Antes de usar com Supabase:
-- Rode o script supabase/realizado_ctes_schema.sql no SQL Editor do Supabase.
+Depois, suba o arquivo pela tela Realizado CT-e.
+Se o arquivo for grande, a tela deve mostrar exatamente em qual etapa está: lendo planilha, salvando no Supabase e quantos CT-e(s) já foram salvos.

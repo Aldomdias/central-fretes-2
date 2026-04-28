@@ -224,6 +224,50 @@ function deduplicateRows(rows = []) {
   });
 }
 
+
+function calcularRefRealDaAba(sheet) {
+  if (!sheet || typeof sheet !== 'object') return '';
+  const refs = Object.keys(sheet).filter((key) => key && key[0] !== '!' && /^[A-Z]+\d+$/i.test(key));
+  if (!refs.length) return sheet['!ref'] || '';
+
+  let minR = Infinity;
+  let minC = Infinity;
+  let maxR = -1;
+  let maxC = -1;
+
+  refs.forEach((ref) => {
+    const cell = XLSX.utils.decode_cell(ref);
+    if (cell.r < minR) minR = cell.r;
+    if (cell.c < minC) minC = cell.c;
+    if (cell.r > maxR) maxR = cell.r;
+    if (cell.c > maxC) maxC = cell.c;
+  });
+
+  if (!Number.isFinite(minR) || maxR < 0 || maxC < 0) return sheet['!ref'] || '';
+  return XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } });
+}
+
+function corrigirRefDaAba(sheet) {
+  if (!sheet) return { sheet, refOriginal: '', refCorrigida: '', corrigida: false };
+  const refOriginal = sheet['!ref'] || '';
+  const refCorrigida = calcularRefRealDaAba(sheet);
+  if (refCorrigida && refCorrigida !== refOriginal) {
+    sheet['!ref'] = refCorrigida;
+    return { sheet, refOriginal, refCorrigida, corrigida: true };
+  }
+  return { sheet, refOriginal, refCorrigida: refOriginal, corrigida: false };
+}
+
+function contarLinhasPelaRef(ref = '') {
+  if (!ref) return 0;
+  try {
+    const range = XLSX.utils.decode_range(ref);
+    return Math.max(0, range.e.r - range.s.r + 1);
+  } catch {
+    return 0;
+  }
+}
+
 export async function parseRealizadoCtesFile(file) {
   if (!file) return { registros: [], meta: { arquivo: '', linhasOriginais: 0 } };
 
@@ -231,7 +275,13 @@ export async function parseRealizadoCtesFile(file) {
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, raw: false });
   const sheetName = workbook.SheetNames.find((name) => normalizeHeaderRealizado(name) === 'registros') || workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+
+  if (!sheet) {
+    throw new Error('Não encontrei nenhuma aba válida no arquivo enviado.');
+  }
+
+  const refInfo = corrigirRefDaAba(sheet);
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false, blankrows: false });
 
   const registros = deduplicateRows(
     rows
@@ -244,7 +294,12 @@ export async function parseRealizadoCtesFile(file) {
     registros,
     meta: {
       arquivo: file.name || '',
+      tamanhoBytes: file.size || 0,
       aba: sheetName,
+      refOriginal: refInfo.refOriginal,
+      refCorrigida: refInfo.refCorrigida,
+      refFoiCorrigida: refInfo.corrigida,
+      linhasEstimadas: contarLinhasPelaRef(refInfo.refCorrigida),
       linhasOriginais: rows.length,
       registrosValidos: registros.length,
     },

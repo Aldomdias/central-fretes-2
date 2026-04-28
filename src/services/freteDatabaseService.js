@@ -1798,7 +1798,7 @@ function sanitizeRealizadoDbRow(row = {}) {
     cidade_destino: row.cidadeDestino || row.cidade_destino || '',
     transportadora_contratada: row.transportadoraContratada || row.transportadora_contratada || '',
     prazo_entrega_cliente: toNumberOrNull(row.prazoEntregaCliente ?? row.prazo_entrega_cliente),
-    raw: row.raw || {},
+    raw: {},
   };
 }
 
@@ -1847,7 +1847,26 @@ export async function listarRealizadoCtes(filtros = {}) {
   return (data || []).map(normalizeRealizadoDbRow);
 }
 
-export async function salvarRealizadoCtes(rows = []) {
+function aguardar(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function executarComTimeout(promise, ms, mensagem) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(mensagem)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function salvarRealizadoCtes(rows = [], options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const normalized = (rows || []).map(normalizeRealizadoDbRow).filter((row) => row.chaveCte || row.numeroCte);
   if (!normalized.length) return { ok: true, inseridos: 0 };
 
@@ -1856,18 +1875,32 @@ export async function salvarRealizadoCtes(rows = []) {
     const byKey = new Map(atual.map((row) => [row.chaveCte || `${row.numeroCte}|${row.emissao}`, row]));
     normalized.forEach((row) => byKey.set(row.chaveCte || `${row.numeroCte}|${row.emissao}`, row));
     writeRealizadoLocal([...byKey.values()].sort((a, b) => String(b.emissao).localeCompare(String(a.emissao))));
+    onProgress?.({ salvos: normalized.length, total: normalized.length, modo: 'local' });
     return { ok: true, inseridos: normalized.length, modo: 'local' };
   }
 
   const supabase = ensureClient();
   const payload = normalized.map(sanitizeRealizadoDbRow).filter((row) => row.chave_cte);
-  const chunkSize = 500;
+  const chunkSize = Number(options.chunkSize || 250) || 250;
+
   for (let index = 0; index < payload.length; index += chunkSize) {
     const chunk = payload.slice(index, index + chunkSize);
-    const { error } = await supabase.from('realizado_ctes').upsert(chunk, { onConflict: 'chave_cte' });
-    if (error) {
-      throw new Error(`Erro ao salvar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql. Detalhe: ${error.message}`);
+    const resposta = await executarComTimeout(
+      supabase.from('realizado_ctes').upsert(chunk, { onConflict: 'chave_cte' }),
+      90000,
+      'A gravação no Supabase demorou demais e foi interrompida. Verifique a conexão e tente novamente com um período menor.'
+    );
+
+    if (resposta?.error) {
+      throw new Error(`Erro ao salvar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql. Detalhe: ${resposta.error.message}`);
     }
+
+    onProgress?.({
+      salvos: Math.min(index + chunk.length, payload.length),
+      total: payload.length,
+      modo: 'supabase',
+    });
+    await aguardar(0);
   }
 
   return { ok: true, inseridos: payload.length, modo: 'supabase' };
