@@ -622,7 +622,17 @@ export async function carregarResumoBaseDb() {
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
-    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || null,
+    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || {
+      cobertura: 'Sem validação',
+      severidade: 'warn',
+      inconsistentes: 0,
+      pendencias: 0,
+      faltandoFrete: 0,
+      faltandoRota: 0,
+      totalRotas: 0,
+      totalCotacoes: 0,
+      resumo: true,
+    },
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 
@@ -827,6 +837,69 @@ async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = []) {
   }
 
   return rows;
+}
+
+function ufFromIbgeLike(value) {
+  const ibge = String(value || '').replace(/\D/g, '');
+  if (!ibge) return '';
+  const prefix = ibge.slice(0, 2);
+  const map = {
+    '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
+    '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
+    '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
+    '41': 'PR', '42': 'SC', '43': 'RS',
+    '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
+  };
+  return map[prefix] || '';
+}
+
+async function buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino = '' }) {
+  const { data: transportadorasAlvo, error: transportadoraError } = await supabase
+    .from('transportadoras')
+    .select('id, nome, status')
+    .ilike('nome', nomeTransportadora);
+
+  if (transportadoraError) throw transportadoraError;
+  const alvoIds = (transportadorasAlvo || []).map((item) => item.id);
+  if (!alvoIds.length) return [];
+
+  let origensQuery = supabase
+    .from('origens')
+    .select('id, cidade, canal, transportadora_id')
+    .in('transportadora_id', alvoIds);
+
+  if (canal) origensQuery = origensQuery.eq('canal', canal);
+  if (origem) origensQuery = origensQuery.ilike('cidade', origem);
+
+  let { data: origensAlvo, error: origensAlvoError } = await origensQuery;
+  if (origensAlvoError) throw origensAlvoError;
+
+  if (origem && !(origensAlvo || []).length) {
+    let fallbackQuery = supabase
+      .from('origens')
+      .select('id, cidade, canal, transportadora_id')
+      .in('transportadora_id', alvoIds)
+      .ilike('cidade', `%${origem}%`);
+
+    if (canal) fallbackQuery = fallbackQuery.eq('canal', canal);
+
+    const fallback = await fallbackQuery;
+    if (fallback.error) throw fallback.error;
+    origensAlvo = fallback.data || [];
+  }
+
+  const origemIds = (origensAlvo || []).map((item) => item.id);
+  if (!origemIds.length) return [];
+
+  const rotasAlvo = await fetchRotasByOrigemIds(supabase, origemIds, []);
+  const uf = String(ufDestino || '').trim().toUpperCase();
+
+  return Array.from(new Set(
+    (rotasAlvo || [])
+      .map((rota) => String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, ''))
+      .filter(Boolean)
+      .filter((ibge) => !uf || ufFromIbgeLike(ibge) === uf)
+  ));
 }
 
 function groupByOrigemId(rows = []) {
@@ -1334,7 +1407,7 @@ export async function carregarOpcoesSimuladorDb() {
   };
 }
 
-export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '' } = {}) {
+export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '' } = {}) {
   // Fonte da verdade do simulador: Supabase.
   // Não depende da tela Transportadoras estar aberta ou atualizada.
 
@@ -1350,6 +1423,19 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
     ...(Array.isArray(destinoCodigos) ? destinoCodigos : []),
     destinoCodigo,
   ].map((item) => String(item || '').trim()).filter(Boolean)));
+
+  // Caso análise de transportadora por origem:
+  // Primeiro busca somente os destinos atendidos pela transportadora analisada.
+  // Depois busca concorrentes apenas nesses destinos. Isso evita carregar a origem inteira.
+  if (nomeTransportadora && origem) {
+    const destinosAlvo = destinos.length
+      ? destinos
+      : await buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino });
+
+    if (!destinosAlvo.length) return [];
+
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo });
+  }
 
   // Caso principal: simulação simples ou lista com destino informado.
   // Busca todos os concorrentes da mesma origem/canal/destino.

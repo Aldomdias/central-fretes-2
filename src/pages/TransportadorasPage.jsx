@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 
 function nextId(list) {
@@ -27,6 +27,55 @@ function uniqueCanals(items) {
 
 function normalizeFiltroStatus(value) {
   return normalizeText(value).replace(/\s+/g, ' ');
+}
+
+function pickIbgeFromRecord(record) {
+  const value = record?.ibgeDestino ?? record?.ibge_destino ?? record?.Destino ?? record?.destino ?? record?.['IBGE Destino'] ?? record?.ibge;
+  return String(value || '').replace(/\D/g, '');
+}
+
+function calcularResumoCoberturaDetalhada(transportadora) {
+  const origens = transportadora?.origens || [];
+  let totalRotas = 0;
+  let totalCotacoes = 0;
+  let faltandoFrete = 0;
+  let faltandoRota = 0;
+  let origensPendentes = 0;
+
+  origens.forEach((origem) => {
+    const rotas = origem.rotas || [];
+    const cotacoes = origem.cotacoes || [];
+    totalRotas += rotas.length;
+    totalCotacoes += cotacoes.length;
+
+    const rotasSet = new Set(rotas.map(pickIbgeFromRecord).filter(Boolean));
+    const cotacoesSet = new Set(cotacoes.map(pickIbgeFromRecord).filter(Boolean));
+
+    const semFreteOrigem = [...rotasSet].filter((ibge) => !cotacoesSet.has(ibge)).length;
+    const semRotaOrigem = [...cotacoesSet].filter((ibge) => !rotasSet.has(ibge)).length;
+
+    faltandoFrete += semFreteOrigem;
+    faltandoRota += semRotaOrigem;
+
+    if (semFreteOrigem || semRotaOrigem || (!rotas.length && !cotacoes.length)) {
+      origensPendentes += 1;
+    }
+  });
+
+  const inconsistentes = faltandoFrete + faltandoRota;
+  const cobertura = inconsistentes ? 'Inconsistente' : origensPendentes ? 'Parcial' : 'Completa';
+
+  return {
+    cobertura,
+    severidade: cobertura === 'Inconsistente' ? 'error' : cobertura === 'Parcial' ? 'warn' : 'ok',
+    inconsistentes,
+    pendencias: origensPendentes,
+    faltandoFrete,
+    faltandoRota,
+    totalRotas,
+    totalCotacoes,
+    resumo: false,
+  };
 }
 
 function precisaCarregarDetalhes(transportadora) {
@@ -199,9 +248,10 @@ function InconsistenciasModal({ open, title, transportadora, origem = null, onCl
 }
 
 function buildResumoTransportadora(transportadora) {
-  // A lista principal precisa ser 100% baseada no Supabase.
-  // Não calcula cobertura pela memória local, porque isso pode misturar resumo
-  // com detalhes carregados manualmente e distorcer o status.
+  if (transportadora?.detalheCarregado) {
+    return calcularResumoCoberturaDetalhada(transportadora);
+  }
+
   if (transportadora?.resumoCobertura) {
     return transportadora.resumoCobertura;
   }
@@ -321,6 +371,9 @@ function TransportadorasList({ items, onOpen, store }) {
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [pagina, setPagina] = useState(1);
+  const [autoAtualizando, setAutoAtualizando] = useState(false);
+  const PAGE_SIZE = 20;
   const cidades = useMemo(() => uniqueCities(items), [items]);
   const canais = useMemo(() => uniqueCanals(items), [items]);
 
@@ -340,6 +393,43 @@ function TransportadorasList({ items, onOpen, store }) {
     });
   }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
 
+  const totalPaginas = Math.max(1, Math.ceil(filtrados.length / PAGE_SIZE));
+  const paginaAtual = Math.min(pagina, totalPaginas);
+  const inicioPagina = (paginaAtual - 1) * PAGE_SIZE;
+  const visiveis = filtrados.slice(inicioPagina, inicioPagina + PAGE_SIZE);
+
+  useEffect(() => {
+    setPagina(1);
+  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
+
+  useEffect(() => {
+    if (!store?.carregarTransportadoraCompleta) return;
+
+    let cancelado = false;
+    const candidatos = visiveis.filter((item) => {
+      const resumo = buildResumoTransportadora(item);
+      return !item.detalheCarregado && (resumo.resumo || resumo.cobertura === 'Sem validação');
+    }).slice(0, 5);
+
+    if (!candidatos.length) return;
+
+    const carregarVisiveis = async () => {
+      setAutoAtualizando(true);
+      for (const item of candidatos) {
+        if (cancelado) break;
+        if (String(store.syncStatus?.carregandoDetalheId || '') === String(item.id)) continue;
+        await store.carregarTransportadoraCompleta(item.id);
+      }
+      if (!cancelado) setAutoAtualizando(false);
+    };
+
+    carregarVisiveis();
+
+    return () => {
+      cancelado = true;
+    };
+  }, [visiveis, store]);
+
   const saveTransportadora = (form) => {
     store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
     setModalOpen(false);
@@ -357,7 +447,13 @@ function TransportadorasList({ items, onOpen, store }) {
     <div className="page-shell">
       <div className="page-top between start-mobile">
         <div className="page-header slim"><h1>Transportadoras</h1><p>Gerencie as transportadoras e suas configurações de origem</p></div>
-        <div className="toolbar-wrap"><button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button></div>
+        <div className="toolbar-wrap">
+          {autoAtualizando ? <span className="status-pill">Atualizando visíveis...</span> : null}
+          <button className="btn-secondary" onClick={() => {
+            visiveis.forEach((item) => store?.carregarTransportadoraCompleta?.(item.id));
+          }}>Atualizar visíveis</button>
+          <button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button>
+        </div>
       </div>
 
       <div className="table-card filters-card">
@@ -368,6 +464,7 @@ function TransportadorasList({ items, onOpen, store }) {
           </div>
           <div className="inline-meta">
             <span><strong>{filtrados.length}</strong> transportadora(s)</span>
+            <span>Mostrando {visiveis.length ? inicioPagina + 1 : 0}-{Math.min(inicioPagina + PAGE_SIZE, filtrados.length)} de {filtrados.length}</span>
             {(busca || cidadeFiltro || canalFiltro || coberturaFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
           </div>
         </div>
@@ -404,7 +501,7 @@ function TransportadorasList({ items, onOpen, store }) {
       </div>
 
       <div className="list-stack">
-        {filtrados.length ? filtrados.map((item) => {
+        {visiveis.length ? visiveis.map((item) => {
           const resumo = buildResumoTransportadora(item);
           const cidadesDaTransportadora = Array.from(new Set((item.origens || []).map((origem) => origem.cidade).filter(Boolean)));
           const cardClass = resumo.severidade === 'error'
@@ -430,6 +527,14 @@ function TransportadorasList({ items, onOpen, store }) {
           </div>
         )}
       </div>
+
+      {filtrados.length > PAGE_SIZE ? (
+        <div className="toolbar-wrap top-space" style={{ justifyContent: 'center' }}>
+          <button className="btn-secondary" disabled={paginaAtual <= 1} onClick={() => setPagina((prev) => Math.max(1, prev - 1))}>Anterior</button>
+          <span className="status-pill">Página {paginaAtual} de {totalPaginas}</span>
+          <button className="btn-secondary" disabled={paginaAtual >= totalPaginas} onClick={() => setPagina((prev) => Math.min(totalPaginas, prev + 1))}>Próxima</button>
+        </div>
+      ) : null}
       <TransportadoraModal open={modalOpen} initialValue={editing} onSave={saveTransportadora} onClose={() => { setModalOpen(false); setEditing(null); }} />
     </div>
   );
