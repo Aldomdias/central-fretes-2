@@ -1,12 +1,19 @@
-PATCH - Transportadoras lendo detalhes no Supabase
+PATCH - Cobertura rápida na lista Transportadoras
+
+Resolve:
+- A tela Transportadoras não precisa mais abrir cada transportadora para mostrar Completa/Parcial/Inconsistente.
+- O status vem da view no Supabase: vw_cobertura_transportadoras.
+- A lista continua leve, sem baixar as 312 mil rotas.
+- Ao entrar na transportadora, os detalhes continuam carregando sob demanda.
+
+Passos:
+1) Rode no Supabase:
+   supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
+
+2) Copie a pasta src para o projeto.
 
 Arquivos:
 - src/services/freteDatabaseService.js
-- src/data/store.js
 - src/pages/TransportadorasPage.jsx
-
-Correções:
-- carrega detalhes da transportadora por ID e, se necessário, por nome;
-- substitui a transportadora na tela por ID ou por nome;
-- mostra erro real na tela com botão para tentar carregar novamente;
-- mantém a função buscarBaseSimulacaoDb para o simulador online.
+- src/data/store.js
+- supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql

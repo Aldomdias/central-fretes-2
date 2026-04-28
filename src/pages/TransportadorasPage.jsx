@@ -189,6 +189,9 @@ function InconsistenciasModal({ open, title, transportadora, origem = null, onCl
 }
 
 function buildResumoTransportadora(transportadora) {
+  if (transportadora?.resumoCobertura) {
+    return transportadora.resumoCobertura;
+  }
   const analises = (transportadora.origens || []).map((origem) => analisarCoberturaOrigem(origem));
   const inconsistentes = analises.filter((item) => item.cobertura === 'Inconsistente').length;
   const pendencias = analises.filter((item) => item.cobertura !== 'Completa').length;

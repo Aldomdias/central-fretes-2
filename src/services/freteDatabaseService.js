@@ -584,10 +584,45 @@ export async function carregarResumoBaseDb() {
     origensByTransportadora.set(key, lista);
   });
 
+  let coberturaPorTransportadora = new Map();
+
+  try {
+    const { data: coberturaRows, error: coberturaError } = await supabase
+      .from('vw_cobertura_transportadoras')
+      .select('*');
+
+    if (!coberturaError) {
+      coberturaPorTransportadora = new Map(
+        (coberturaRows || []).map((row) => [
+          String(row.transportadora_id),
+          {
+            cobertura: row.status_cobertura || 'Resumo',
+            severidade:
+              row.status_cobertura === 'Inconsistente'
+                ? 'error'
+                : row.status_cobertura === 'Parcial'
+                  ? 'warn'
+                  : 'ok',
+            inconsistentes: Number(row.origens_inconsistentes || 0),
+            pendencias: Number(row.origens_pendentes || 0),
+            faltandoFrete: Number(row.rotas_sem_frete || 0),
+            faltandoRota: Number(row.fretes_sem_rota || 0),
+            totalRotas: Number(row.total_rotas || 0),
+            totalCotacoes: Number(row.total_cotacoes || 0),
+            resumo: false,
+          },
+        ])
+      );
+    }
+  } catch {
+    coberturaPorTransportadora = new Map();
+  }
+
   const transportadoras = (transportadorasResponse.data || []).map((transportadora) => ({
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || null,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 
