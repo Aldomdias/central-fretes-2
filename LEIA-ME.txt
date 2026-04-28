@@ -1,16 +1,14 @@
-PATCH - Botões Atualizar/Conferir funcionando de verdade
+PATCH - Revisar filtros da tela Transportadoras
 
-Problema:
-O Dashboard já tinha feedback visual, mas os botões não chamavam nada porque o store não exportava:
-- atualizarResumo
-- conferirBase
+Corrige:
+- Recoloca filtro Canal.
+- Filtro Status da cobertura passa a comparar de forma normalizada.
+- Inclui opção Sem validação.
+- Limpar filtros limpa também Canal.
+- Card mostra totais de rotas/fretes quando vierem da view do Supabase.
 
-Correção:
-- Adiciona store.atualizarResumo()
-- Adiciona store.conferirBase()
-- Dashboard não fica mais silencioso se a função não estiver conectada.
-- Mensagem de processamento fica mais visível.
+Arquivo:
+- src/pages/TransportadorasPage.jsx
 
-Arquivos:
-- src/data/store.js
-- src/pages/DashboardPage.jsx
+Observação:
+O status depende da view vw_cobertura_transportadoras. Depois do deploy, clique em Atualizar base.

@@ -19,6 +19,16 @@ function uniqueCities(items) {
   )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
+function uniqueCanals(items) {
+  return Array.from(new Set(
+    items.flatMap((item) => (item.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))
+  )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function normalizeFiltroStatus(value) {
+  return normalizeText(value).replace(/\s+/g, ' ');
+}
+
 function precisaCarregarDetalhes(transportadora) {
   if (!transportadora) return false;
   if (transportadora.detalheCarregado) return false;
@@ -307,23 +317,28 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
 function TransportadorasList({ items, onOpen, store }) {
   const [busca, setBusca] = useState('');
   const [cidadeFiltro, setCidadeFiltro] = useState('');
+  const [canalFiltro, setCanalFiltro] = useState('');
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const cidades = useMemo(() => uniqueCities(items), [items]);
+  const canais = useMemo(() => uniqueCanals(items), [items]);
 
   const filtrados = useMemo(() => {
     const termoBusca = normalizeText(busca);
     const cidadeNormalizada = normalizeText(cidadeFiltro);
+    const canalNormalizado = normalizeText(canalFiltro);
+    const coberturaNormalizada = normalizeFiltroStatus(coberturaFiltro);
 
     return items.filter((item) => {
       const resumo = buildResumoTransportadora(item);
       const nomeMatch = !termoBusca || normalizeText(item.nome).includes(termoBusca);
       const cidadeMatch = !cidadeNormalizada || (item.origens || []).some((origem) => normalizeText(origem.cidade) === cidadeNormalizada);
-      const coberturaMatch = !coberturaFiltro || resumo.cobertura === coberturaFiltro;
-      return nomeMatch && cidadeMatch && coberturaMatch;
+      const canalMatch = !canalNormalizado || (item.origens || []).some((origem) => normalizeText(origem.canal || 'ATACADO') === canalNormalizado);
+      const coberturaMatch = !coberturaNormalizada || normalizeFiltroStatus(resumo.cobertura) === coberturaNormalizada;
+      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch;
     });
-  }, [items, busca, cidadeFiltro, coberturaFiltro]);
+  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
 
   const saveTransportadora = (form) => {
     store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
@@ -334,6 +349,7 @@ function TransportadorasList({ items, onOpen, store }) {
   const limparFiltros = () => {
     setBusca('');
     setCidadeFiltro('');
+    setCanalFiltro('');
     setCoberturaFiltro('');
   };
 
@@ -348,14 +364,14 @@ function TransportadorasList({ items, onOpen, store }) {
         <div className="filters-header">
           <div>
             <strong>Filtros</strong>
-            <p>Filtre por transportadora, cidade de origem e status de cobertura.</p>
+            <p>Filtre por transportadora, cidade de origem, canal e status de cobertura.</p>
           </div>
           <div className="inline-meta">
             <span><strong>{filtrados.length}</strong> transportadora(s)</span>
-            {(busca || cidadeFiltro || coberturaFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
+            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
           </div>
         </div>
-        <div className="form-grid three filters-grid">
+        <div className="form-grid four filters-grid">
           <div className="field">
             <label>Buscar transportadora</label>
             <input className="search-input search-input-full" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Digite o nome da transportadora..." />
@@ -368,12 +384,20 @@ function TransportadorasList({ items, onOpen, store }) {
             </select>
           </div>
           <div className="field">
+            <label>Canal</label>
+            <select value={canalFiltro} onChange={(e) => setCanalFiltro(e.target.value)}>
+              <option value="">Todos os canais</option>
+              {canais.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
+            </select>
+          </div>
+          <div className="field">
             <label>Status da cobertura</label>
             <select value={coberturaFiltro} onChange={(e) => setCoberturaFiltro(e.target.value)}>
               <option value="">Todos</option>
               <option value="Completa">Completa</option>
               <option value="Parcial">Parcial</option>
               <option value="Inconsistente">Inconsistente</option>
+              <option value="Sem validação">Sem validação</option>
             </select>
           </div>
         </div>
@@ -390,7 +414,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
