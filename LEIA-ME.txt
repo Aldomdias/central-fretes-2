@@ -1,16 +1,21 @@
-PATCH - Feedback visual de processamento no Simulador
+PATCH - Análise de transportadora com filtros de origem e UF
 
-Melhoria:
-- Adiciona indicador visual de processamento para análises mais pesadas.
-- Mostra card com:
-  - ícone ⏳
-  - etapa atual
-  - percentual estimado
-  - barra de progresso
-- Aplicado em:
-  - Simulação por transportadora
-  - Análise de transportadora
-- Botões passam a mostrar "Processando..." enquanto a análise roda.
+Objetivo:
+Evitar que análises B2C muito grandes travem ou fiquem presas em 92%.
+
+Melhorias:
+- Adiciona filtro Origem na aba Análise de transportadora.
+- Adiciona filtro UF destino.
+- A consulta no Supabase passa a receber origem quando preenchida.
+- Permite quebrar a análise por origem, exemplo:
+  - MID / B2C / Itajaí
+  - MID / B2C / Itupeva
+- Mantém opção de análise geral se Origem ficar em branco.
+- Melhora mensagens do processamento.
+- Dá tempo para a barra atualizar antes da etapa pesada de cálculo.
+
+Arquivo:
+- src/pages/SimuladorPage.jsx
 
 Observação:
-O percentual é estimado por etapas e progresso visual da análise. Não é contagem exata de registros do Supabase, mas ajuda o usuário a entender que o sistema está processando.
+Para bases B2C muito grandes, a recomendação operacional é filtrar por origem. A análise geral continua possível, mas pode demorar mais.
