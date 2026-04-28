@@ -1,16 +1,14 @@
-HOTFIX - Simulador em branco após campos digitáveis v2
+PATCH - Botões para parar e limpar importação
 
-Causa:
-O arquivo SimuladorPage.jsx estava calculando origensPorCanalSimples antes do useState de canalSimples.
-Isso gera erro de execução no React e deixa a tela do Simulador em branco.
+Resolve:
+- Adiciona botão "Limpar fila".
+- Durante importação, mostra botão "Parar processamento".
+- Limpar fila libera a tela para uma nova importação.
+- Parar processamento cancela o lote entre etapas/arquivos e evita gravar o restante no Supabase.
+- Adiciona botão "Limpar histórico local" para limpar a lista exibida na tela.
 
-Correção:
-- Move origensPorCanalSimples para depois da declaração de canalSimples.
-- Mantém:
-  - Origem em branco;
-  - Origem digitável com sugestões;
-  - Transportadora digitável;
-  - Destino por cidade/CEP/IBGE.
+Importante:
+Se o sistema já estiver exatamente no momento de gravação de um lote no Supabase, não é possível abortar a requisição já enviada. Nesse caso, aguarde alguns segundos e clique em Atualizar base.
 
 Arquivo:
-- src/pages/SimuladorPage.jsx
+- src/pages/ImportacaoPage.jsx

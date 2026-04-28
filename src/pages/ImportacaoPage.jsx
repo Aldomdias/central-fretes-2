@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   baixarModelo,
   buildCoberturaReport,
@@ -22,6 +22,23 @@ const TIPOS = [
 const HISTORICO_KEY = 'simulador-fretes-importacoes-v1';
 const LIMITE_HISTORICO = 15;
 const LIMITE_SUGERIDO_ARQUIVOS = 15;
+
+const STATUS_IMPORTACAO_INICIAL = {
+  totalArquivos: 0,
+  arquivoAtual: '',
+  arquivoIndex: 0,
+  etapa: 'Aguardando importação',
+  sucessos: 0,
+  falhas: 0,
+  totalInseridos: 0,
+  totalErros: 0,
+  iniciadoEm: '',
+  finalizadoEm: '',
+  duracaoMs: 0,
+  concluido: false,
+  cancelado: false,
+};
+
 
 function SummaryCard({ title, value, subtitle }) {
   return (
@@ -146,25 +163,13 @@ function mapImportacaoRemota(item) {
 export default function ImportacaoPage({ store, transportadoras, onAbrirTransportadoras }) {
   const [tipo, setTipo] = useState('rotas');
   const [processando, setProcessando] = useState(false);
+  const cancelarProcessamentoRef = useRef(false);
   const [historico, setHistorico] = useState(() => carregarHistoricoLocal());
   const [filtro, setFiltro] = useState('');
   const [detalhe, setDetalhe] = useState(null);
   const [canalImportacao, setCanalImportacao] = useState('ATACADO');
   const [pastaArquivos, setPastaArquivos] = useState([]);
-  const [statusImportacao, setStatusImportacao] = useState({
-    totalArquivos: 0,
-    arquivoAtual: '',
-    arquivoIndex: 0,
-    etapa: 'Aguardando importação',
-    sucessos: 0,
-    falhas: 0,
-    totalInseridos: 0,
-    totalErros: 0,
-    iniciadoEm: '',
-    finalizadoEm: '',
-    duracaoMs: 0,
-    concluido: false,
-  });
+  const [statusImportacao, setStatusImportacao] = useState(STATUS_IMPORTACAO_INICIAL);
 
   useEffect(() => {
     let ativo = true;
@@ -250,11 +255,45 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     exportarSecao(tipo, rows, `exportacao-${tipo}.xlsx`);
   };
 
+  const limparProcessamento = () => {
+    cancelarProcessamentoRef.current = true;
+    setProcessando(false);
+    setDetalhe(null);
+    setPastaArquivos([]);
+    setStatusImportacao({
+      ...STATUS_IMPORTACAO_INICIAL,
+      etapa: 'Fila limpa',
+      finalizadoEm: new Date().toISOString(),
+      concluido: true,
+      cancelado: true,
+    });
+  };
+
+  const pararProcessamento = () => {
+    cancelarProcessamentoRef.current = true;
+    setProcessando(false);
+    setStatusImportacao((prev) => ({
+      ...prev,
+      etapa: 'Cancelado pelo usuário',
+      finalizadoEm: new Date().toISOString(),
+      duracaoMs: prev.iniciadoEm ? Date.now() - new Date(prev.iniciadoEm).getTime() : prev.duracaoMs,
+      concluido: true,
+      cancelado: true,
+    }));
+  };
+
+  const limparHistoricoLocal = () => {
+    setHistorico([]);
+    setDetalhe(null);
+    persistirHistoricoLocal([]);
+  };
+
   const processarArquivos = async (filesOriginais) => {
     const files = Array.from(filesOriginais || []).filter((file) => /\.(xlsx|xls|csv)$/i.test(file.name || ''));
     if (!files.length) return;
 
     const inicioLote = Date.now();
+    cancelarProcessamentoRef.current = false;
     setProcessando(true);
     setDetalhe(null);
     setStatusImportacao({
@@ -270,6 +309,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       finalizadoEm: '',
       duracaoMs: 0,
       concluido: false,
+      cancelado: false,
     });
 
     const novasEntradas = [];
@@ -280,6 +320,8 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     let totalErros = 0;
 
     for (let index = 0; index < files.length; index += 1) {
+      if (cancelarProcessamentoRef.current) break;
+
       const file = files[index];
       const inicioArquivo = Date.now();
       const nomeArquivo = getFilePath(file) || file.name;
@@ -295,6 +337,8 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       try {
         const parsed = await parseFileToRows(file, tipo);
 
+        if (cancelarProcessamentoRef.current) break;
+
         setStatusImportacao((prev) => ({
           ...prev,
           etapa: 'Montando payload',
@@ -305,6 +349,8 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           canal: canalImportacao,
         });
         const erros = [...(payload.erros || [])];
+
+        if (cancelarProcessamentoRef.current) break;
 
         payloadsValidos.push(payload);
 
@@ -363,6 +409,25 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       }));
     }
 
+    if (cancelarProcessamentoRef.current) {
+      const finalizadoEm = new Date().toISOString();
+      const duracaoMs = Date.now() - inicioLote;
+      setStatusImportacao((prev) => ({
+        ...prev,
+        etapa: 'Cancelado pelo usuário',
+        finalizadoEm,
+        duracaoMs,
+        concluido: true,
+        cancelado: true,
+        sucessos,
+        falhas,
+        totalInseridos,
+        totalErros,
+      }));
+      setProcessando(false);
+      return;
+    }
+
     let resultado = { ok: true };
     if (payloadsValidos.length) {
       setStatusImportacao((prev) => ({ ...prev, etapa: 'Gravando lote na base' }));
@@ -370,6 +435,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
         if (typeof store.importarLoteESalvar === 'function') {
           resultado = await store.importarLoteESalvar(payloadsValidos, tipo);
         } else {
+          // Fallback para versões antigas do store.
           for (const payload of payloadsValidos) {
             const parcial = await store.importarESalvar(payload, tipo);
             if (parcial?.ok === false) {
@@ -405,6 +471,25 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       novasEntradas.forEach((entrada) => {
         if (entrada.status !== 'erro') entrada.etapaAtual = 'Finalizado';
       });
+    }
+
+    if (cancelarProcessamentoRef.current) {
+      const finalizadoEm = new Date().toISOString();
+      const duracaoMs = Date.now() - inicioLote;
+      setStatusImportacao((prev) => ({
+        ...prev,
+        etapa: 'Cancelado pelo usuário',
+        finalizadoEm,
+        duracaoMs,
+        concluido: true,
+        cancelado: true,
+        sucessos,
+        falhas,
+        totalInseridos,
+        totalErros,
+      }));
+      setProcessando(false);
+      return;
     }
 
     await Promise.all(
@@ -452,6 +537,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       falhas,
       totalInseridos,
       totalErros,
+      cancelado: false,
     }));
     setProcessando(false);
   };
@@ -593,6 +679,24 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               Exportar Atual
             </button>
 
+            <button
+              className="btn-secondary"
+              type="button"
+              onClick={limparProcessamento}
+            >
+              Limpar fila
+            </button>
+
+            {processando ? (
+              <button
+                className="btn-danger"
+                type="button"
+                onClick={pararProcessamento}
+              >
+                Parar processamento
+              </button>
+            ) : null}
+
             <label className={`btn-primary inline-upload ${processando ? 'disabled-like' : ''}`}>
               {processando ? 'Importando arquivos...' : 'Importar arquivos'}
               <input
@@ -696,7 +800,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                       : 'Aguardando novo lote'}
                 </div>
               </div>
-              <span className={`coverage-badge ${statusImportacao.falhas ? 'warn' : 'ok'}`}>
+              <span className={`coverage-badge ${statusImportacao.cancelado || statusImportacao.falhas ? 'warn' : 'ok'}`}>
                 {statusImportacao.etapa}
               </span>
             </div>
@@ -737,12 +841,23 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               <strong>Etapa:</strong> {statusImportacao.etapa}
               <br />
               <strong>Finalizado em:</strong> {formatarDataHora(statusImportacao.finalizadoEm)}
+              {statusImportacao.cancelado ? (
+                <>
+                  <br />
+                  <strong>Observação:</strong> processamento cancelado/limpo na tela. Se algum arquivo já estava gravando no Supabase, aguarde alguns segundos e clique em Atualizar base.
+                </>
+              ) : null}
             </div>
           </div>
         </div>
 
         <div className="panel-card">
-          <div className="panel-title">🧠 Últimos processamentos</div>
+          <div className="card-topo">
+            <div className="panel-title">🧠 Últimos processamentos</div>
+            <button className="btn-secondary" type="button" onClick={limparHistoricoLocal}>
+              Limpar histórico local
+            </button>
+          </div>
 
           <div className="list-stack compact-list">
             {historico.length ? (
