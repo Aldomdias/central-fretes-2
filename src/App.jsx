@@ -58,6 +58,7 @@ export default function App() {
         onAbrirImportacao={abrirImportacao}
         onAbrirFormatacaoTabelas={() => setPaginaAtual('formatacao')}
         onAtualizarBase={store.atualizarResumo}
+        onConferirBase={store.conferirBase}
         syncStatus={store.syncStatus}
       />
     );

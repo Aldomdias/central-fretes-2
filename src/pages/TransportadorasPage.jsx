@@ -19,16 +19,6 @@ function uniqueCities(items) {
   )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
-function uniqueCanals(items) {
-  return Array.from(new Set(
-    items.flatMap((item) => (item.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))
-  )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-}
-
-function confirmarExclusao(mensagem) {
-  return window.confirm(mensagem || 'Confirma a exclusão? Essa ação será salva no Supabase.');
-}
-
 function precisaCarregarDetalhes(transportadora) {
   if (!transportadora) return false;
   if (transportadora.detalheCarregado) return false;
@@ -202,6 +192,20 @@ function buildResumoTransportadora(transportadora) {
   if (transportadora?.resumoCobertura) {
     return transportadora.resumoCobertura;
   }
+  if (!transportadora?.detalheCarregado) {
+    return {
+      cobertura: 'Sem validação',
+      severidade: 'warn',
+      inconsistentes: 0,
+      pendencias: 0,
+      faltandoFrete: 0,
+      faltandoRota: 0,
+      resumo: true,
+    };
+  }
+  if (transportadora?.resumoCobertura) {
+    return transportadora.resumoCobertura;
+  }
   const analises = (transportadora.origens || []).map((origem) => analisarCoberturaOrigem(origem));
   const inconsistentes = analises.filter((item) => item.cobertura === 'Inconsistente').length;
   const pendencias = analises.filter((item) => item.cobertura !== 'Completa').length;
@@ -288,11 +292,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
           <button className="btn-secondary" onClick={() => exportarSecao(tipoImportacao, exportRows, `${origem.cidade}-${tipoImportacao}.xlsx`)}>Exportar</button>
           <button className="btn-secondary" onClick={() => baixarModelo(tipoImportacao)}>Baixar Modelo</button>
           <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button>
-          <button className="btn-danger" onClick={() => {
-            if (confirmarExclusao(`Excluir todos os registros de ${title.toLowerCase()} desta origem?`)) {
-              store.limparSecaoOrigem(transportadora.id, origem.id, secao);
-            }
-          }}>Excluir Tudo</button>
+          <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, secao)}>Excluir Tudo</button>
           <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Novo</button>
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
         </div>
@@ -308,11 +308,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
                 {columns.map((c) => <td key={c.key}>{row[c.key] ?? '—'}</td>)}
                 <td className="row-actions">
                   <ActionIcon onClick={() => { setEditing(row); setModalOpen(true); }}>✎</ActionIcon>
-                  <ActionIcon danger onClick={() => {
-                    if (confirmarExclusao(`Excluir este registro de ${title.toLowerCase()}?`)) {
-                      store.removerLinha(transportadora.id, origem.id, secao, row.id);
-                    }
-                  }}>🗑</ActionIcon>
+                  <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, secao, row.id)}>🗑</ActionIcon>
                 </td>
               </tr>
             )) : <tr><td colSpan={columns.length + 1} className="empty-cell">Nenhum registro cadastrado.</td></tr>}
@@ -327,27 +323,23 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
 function TransportadorasList({ items, onOpen, store }) {
   const [busca, setBusca] = useState('');
   const [cidadeFiltro, setCidadeFiltro] = useState('');
-  const [canalFiltro, setCanalFiltro] = useState('');
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const cidades = useMemo(() => uniqueCities(items), [items]);
-  const canais = useMemo(() => uniqueCanals(items), [items]);
 
   const filtrados = useMemo(() => {
     const termoBusca = normalizeText(busca);
     const cidadeNormalizada = normalizeText(cidadeFiltro);
-    const canalNormalizado = normalizeText(canalFiltro);
 
     return items.filter((item) => {
       const resumo = buildResumoTransportadora(item);
       const nomeMatch = !termoBusca || normalizeText(item.nome).includes(termoBusca);
       const cidadeMatch = !cidadeNormalizada || (item.origens || []).some((origem) => normalizeText(origem.cidade) === cidadeNormalizada);
-      const canalMatch = !canalNormalizado || (item.origens || []).some((origem) => normalizeText(origem.canal || 'ATACADO') === canalNormalizado);
       const coberturaMatch = !coberturaFiltro || resumo.cobertura === coberturaFiltro;
-      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch;
+      return nomeMatch && cidadeMatch && coberturaMatch;
     });
-  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
+  }, [items, busca, cidadeFiltro, coberturaFiltro]);
 
   const saveTransportadora = (form) => {
     store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
@@ -358,7 +350,6 @@ function TransportadorasList({ items, onOpen, store }) {
   const limparFiltros = () => {
     setBusca('');
     setCidadeFiltro('');
-    setCanalFiltro('');
     setCoberturaFiltro('');
   };
 
@@ -377,10 +368,10 @@ function TransportadorasList({ items, onOpen, store }) {
           </div>
           <div className="inline-meta">
             <span><strong>{filtrados.length}</strong> transportadora(s)</span>
-            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
+            {(busca || cidadeFiltro || coberturaFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
           </div>
         </div>
-        <div className="form-grid four filters-grid">
+        <div className="form-grid three filters-grid">
           <div className="field">
             <label>Buscar transportadora</label>
             <input className="search-input search-input-full" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Digite o nome da transportadora..." />
@@ -390,13 +381,6 @@ function TransportadorasList({ items, onOpen, store }) {
             <select value={cidadeFiltro} onChange={(e) => setCidadeFiltro(e.target.value)}>
               <option value="">Todas as cidades</option>
               {cidades.map((cidade) => <option key={cidade} value={cidade}>{cidade}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>Canal</label>
-            <select value={canalFiltro} onChange={(e) => setCanalFiltro(e.target.value)}>
-              <option value="">Todos os canais</option>
-              {canais.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
             </select>
           </div>
           <div className="field">
@@ -427,11 +411,7 @@ function TransportadorasList({ items, onOpen, store }) {
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
                 <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
-                <ActionIcon danger onClick={() => {
-                  if (confirmarExclusao(`Excluir a transportadora ${item.nome}? Isso removerá também origens, rotas, fretes e taxas vinculadas.`)) {
-                    store.removerTransportadora(item.id);
-                  }
-                }}>🗑</ActionIcon>
+                <ActionIcon danger onClick={() => store.removerTransportadora(item.id)}>🗑</ActionIcon>
               </div>
             </div>
           );
@@ -502,11 +482,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
                 <button className="btn-link inline-btn" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar Verum</button>
                 <span className="status-pill light">{origem.status}</span>
                 <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
-                <ActionIcon danger onClick={() => {
-                  if (confirmarExclusao(`Excluir a origem ${origem.cidade}? Isso removerá rotas, fretes e taxas vinculadas.`)) {
-                    store.removerOrigem(transportadora.id, origem.id);
-                  }
-                }}>🗑</ActionIcon>
+                <ActionIcon danger onClick={() => store.removerOrigem(transportadora.id, origem.id)}>🗑</ActionIcon>
               </div>
             </div>
           );

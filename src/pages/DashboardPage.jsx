@@ -45,6 +45,7 @@ export default function DashboardPage({
   onAbrirImportacao,
   onAbrirFormatacaoTabelas,
   onAtualizarBase,
+  onConferirBase,
   syncStatus,
 }) {
   const statsBase = buildDashboardStats(transportadoras);
@@ -102,6 +103,38 @@ export default function DashboardPage({
             {syncStatus?.carregando ? 'Atualizando...' : 'Atualizar base'}
           </button>
           <span className="status-pill dark">Salvamento automático</span>
+        </div>
+      </div>
+
+      <div className="info-card amd-next-phase-card">
+        <div className="info-badge">✅</div>
+        <div style={{ flex: 1 }}>
+          <div className="info-title">Conferência da base</div>
+          <div className="info-text">
+            {syncStatus?.conferenciaBase ? (
+              <>
+                <strong>{syncStatus.conferenciaBase.transportadoras}</strong> transportadoras ·{' '}
+                <strong>{syncStatus.conferenciaBase.origens}</strong> origens ·{' '}
+                <strong>{syncStatus.conferenciaBase.rotas}</strong> rotas ·{' '}
+                <strong>{syncStatus.conferenciaBase.cotacoes}</strong> cotações
+                {syncStatus.conferenciaBase.semValidacao ? (
+                  <> · <strong>cobertura sem validação</strong></>
+                ) : (
+                  <> · <strong>{syncStatus.conferenciaBase.validadas}</strong> transportadoras validadas</>
+                )}
+              </>
+            ) : (
+              <>Clique em <strong>Conferir base</strong> para validar os totais direto no Supabase.</>
+            )}
+          </div>
+          <div className="info-text">
+            O simulador consulta o Supabase na hora da simulação. A tela de Transportadoras usa a view de cobertura para não depender de abrir transportadora por transportadora.
+          </div>
+        </div>
+        <div className="actions-right gap-row">
+          <button className="btn-secondary" onClick={onConferirBase} disabled={syncStatus?.carregando || syncStatus?.sincronizando}>
+            Conferir base
+          </button>
         </div>
       </div>
 

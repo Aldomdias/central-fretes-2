@@ -1,12 +1,24 @@
-PATCH - Corrigir números do Dashboard
+PATCH - Confiabilidade da base e simulador
 
-Problema:
-O patch anterior colocou o botão Atualizar base, mas o Dashboard voltou a calcular Rotas/Cotações pela lista resumida de transportadoras carregada na tela. Como essa lista não traz as 312 mil rotas, aparecia 0.
+Objetivo:
+- Não depender de entrar em transportadora para confiar na base.
+- Dashboard mostra totais do Supabase.
+- Tela Transportadoras usa a view vw_cobertura_transportadoras para status Completa/Parcial/Inconsistente.
+- Se a view não existir, mostra Sem validação em vez de calcular com dados incompletos.
+- Adiciona botão Conferir base no Dashboard.
+- Mantém o simulador consultando Supabase na hora da simulação.
 
-Correção:
-- Dashboard volta a usar syncStatus.resumoBase para Transportadoras, Origens, Rotas e Cotações.
-- Mantém o botão Atualizar base.
-- Não carrega base pesada no navegador.
+Passos obrigatórios:
+1) Rode no Supabase:
+   supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
+2) Copie a pasta src para o projeto.
+3) Deploy.
+4) Clique em Atualizar base e depois Conferir base.
 
-Arquivo:
+Arquivos:
+- src/services/freteDatabaseService.js
+- src/data/store.js
+- src/pages/TransportadorasPage.jsx
 - src/pages/DashboardPage.jsx
+- src/App.jsx
+- supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql

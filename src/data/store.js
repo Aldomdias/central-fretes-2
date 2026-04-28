@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   bancoConfigurado,
+  carregarConferenciaBaseDb,
   carregarResumoBaseDb,
   carregarSnapshotFretesDb,
   carregarTransportadoraCompletaDb,
@@ -182,6 +183,7 @@ export function useFreteStore() {
     ultimaSincronizacao: '',
     fonte: bancoConfigurado() ? 'supabase-seguro' : 'local',
     resumoBase: null,
+    conferenciaBase: null,
     carregandoDetalheId: null,
   });
   const loadedRef = useRef(false);
@@ -200,6 +202,7 @@ export function useFreteStore() {
       try {
         if (bancoConfigurado()) {
           const resumo = await carregarResumoBaseDb();
+          const conferencia = await carregarConferenciaBaseDb().catch(() => null);
           if (cancelled) return;
 
           setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
@@ -209,6 +212,7 @@ export function useFreteStore() {
             carregando: false,
             fonte: 'supabase-resumo',
             resumoBase: resumo.resumo,
+            conferenciaBase: conferencia,
           }));
           return;
         }
@@ -309,29 +313,6 @@ export function useFreteStore() {
     () => ({
       transportadoras,
       syncStatus,
-      async atualizarResumo() {
-        if (!bancoConfigurado()) return false;
-        setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
-        try {
-          const resumo = await carregarResumoBaseDb();
-          setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
-          setSyncStatus((prev) => ({
-            ...prev,
-            carregando: false,
-            fonte: 'supabase-resumo',
-            resumoBase: resumo.resumo,
-            ultimaSincronizacao: new Date().toISOString(),
-          }));
-          return true;
-        } catch (error) {
-          setSyncStatus((prev) => ({
-            ...prev,
-            carregando: false,
-            erro: error.message || 'Erro ao atualizar resumo da base.',
-          }));
-          return false;
-        }
-      },
       async sincronizarAgora() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));

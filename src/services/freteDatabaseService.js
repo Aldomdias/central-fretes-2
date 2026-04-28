@@ -1025,6 +1025,69 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   return [];
 }
 
+
+export async function carregarConferenciaBaseDb() {
+  if (!isSupabaseConfigured()) {
+    return {
+      conectado: false,
+      transportadoras: 0,
+      origens: 0,
+      rotas: 0,
+      cotacoes: 0,
+      validadas: 0,
+      completas: 0,
+      parciais: 0,
+      inconsistentes: 0,
+      semValidacao: true,
+    };
+  }
+
+  const supabase = ensureClient();
+
+  const [transportadoras, origens, rotas, cotacoes] = await Promise.all([
+    supabase.from('transportadoras').select('id', { count: 'exact', head: true }),
+    supabase.from('origens').select('id', { count: 'exact', head: true }),
+    supabase.from('rotas').select('id', { count: 'exact', head: true }),
+    supabase.from('cotacoes').select('id', { count: 'exact', head: true }),
+  ]);
+
+  if (transportadoras.error) throw transportadoras.error;
+  if (origens.error) throw origens.error;
+  if (rotas.error) throw rotas.error;
+  if (cotacoes.error) throw cotacoes.error;
+
+  let cobertura = [];
+  let semValidacao = false;
+
+  try {
+    const { data, error } = await supabase
+      .from('vw_cobertura_transportadoras')
+      .select('status_cobertura');
+
+    if (error) {
+      semValidacao = true;
+    } else {
+      cobertura = data || [];
+    }
+  } catch {
+    semValidacao = true;
+  }
+
+  return {
+    conectado: true,
+    transportadoras: transportadoras.count || 0,
+    origens: origens.count || 0,
+    rotas: rotas.count || 0,
+    cotacoes: cotacoes.count || 0,
+    validadas: cobertura.length,
+    completas: cobertura.filter((item) => item.status_cobertura === 'Completa').length,
+    parciais: cobertura.filter((item) => item.status_cobertura === 'Parcial').length,
+    inconsistentes: cobertura.filter((item) => item.status_cobertura === 'Inconsistente').length,
+    semValidacao,
+  };
+}
+
+
 export async function listarImportacoes(limit = 15) {
   if (!isSupabaseConfigured()) return [];
 

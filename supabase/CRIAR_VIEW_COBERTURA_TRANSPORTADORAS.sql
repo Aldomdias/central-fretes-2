@@ -1,7 +1,7 @@
--- RESUMO DE COBERTURA PARA A TELA TRANSPORTADORAS
+-- VIEW DE COBERTURA PARA CONFIABILIDADE DA BASE
 -- Rode no Supabase > SQL Editor.
--- A tela Transportadoras passa a ler esta view para mostrar Completa/Parcial/Inconsistente
--- sem precisar abrir transportadora por transportadora.
+-- Essa view permite que a tela Transportadoras mostre Completa/Parcial/Inconsistente
+-- sem abrir cada transportadora e sem baixar as 312 mil rotas no navegador.
 
 create index if not exists idx_rotas_origem_nome_rota_lower
 on public.rotas (origem_id, lower(trim(coalesce(nome_rota, ''))));
@@ -81,7 +81,6 @@ from public.transportadoras t
 left join cobertura_origem co on co.transportadora_id = t.id
 group by t.id, t.nome;
 
--- Teste:
 select *
 from public.vw_cobertura_transportadoras
 order by transportadora_nome
