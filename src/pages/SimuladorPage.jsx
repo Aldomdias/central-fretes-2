@@ -31,6 +31,20 @@ const GRADE_PADRAO = {
     { peso: 500, valorNF: 12000, cubagem: 0 },
   ],
 };
+
+function canaisDaTransportadora(nome, opcoesOnline, transportadoras) {
+  const online = opcoesOnline.canaisPorTransportadora?.[nome];
+  if (online?.length) return online;
+
+  const local = transportadoras.find((item) => item.nome === nome);
+  return [...new Set((local?.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))].sort();
+}
+
+function filtrarTransportadorasPorCanal(nomes = [], canal, opcoesOnline, transportadoras) {
+  if (!canal) return nomes;
+  return (nomes || []).filter((nome) => canaisDaTransportadora(nome, opcoesOnline, transportadoras).includes(canal));
+}
+
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 
 function formatMoney(value) {
@@ -298,9 +312,46 @@ export default function SimuladorPage({ transportadoras = [] }) {
     if (!canalCobertura && canais[0]) setCanalCobertura(canais[0]);
   }, [canalSimples, canalTransportadora, canalAnalise, canalCobertura, canais]);
 
-  const transportadorasDisponiveis = useMemo(() => (
+  const todasTransportadorasDisponiveis = useMemo(() => (
     opcoesOnline.transportadoras?.length ? opcoesOnline.transportadoras : transportadoras.map((item) => item.nome).sort()
   ), [opcoesOnline.transportadoras, transportadoras]);
+
+  const transportadorasDisponiveis = todasTransportadorasDisponiveis;
+
+  const transportadorasPorCanalTransportadora = useMemo(
+    () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalTransportadora, opcoesOnline, transportadoras),
+    [todasTransportadorasDisponiveis, canalTransportadora, opcoesOnline, transportadoras]
+  );
+
+  const transportadorasPorCanalAnalise = useMemo(
+    () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalAnalise, opcoesOnline, transportadoras),
+    [todasTransportadorasDisponiveis, canalAnalise, opcoesOnline, transportadoras]
+  );
+
+  const transportadorasPorCanalCobertura = useMemo(
+    () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras),
+    [todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras]
+  );
+
+  useEffect(() => {
+    if (transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
+      setTransportadora(transportadorasPorCanalTransportadora[0]);
+      setOrigemTransportadora('');
+    }
+  }, [transportadorasPorCanalTransportadora, transportadora]);
+
+  useEffect(() => {
+    if (transportadorasPorCanalAnalise.length && !transportadorasPorCanalAnalise.includes(transportadoraAnalise)) {
+      setTransportadoraAnalise(transportadorasPorCanalAnalise[0]);
+    }
+  }, [transportadorasPorCanalAnalise, transportadoraAnalise]);
+
+  useEffect(() => {
+    if (transportadoraCobertura && !transportadorasPorCanalCobertura.includes(transportadoraCobertura)) {
+      setTransportadoraCobertura('');
+    }
+  }, [transportadorasPorCanalCobertura, transportadoraCobertura]);
+
 
   const origensTransportadora = useMemo(() => {
     const online = opcoesOnline.origensPorTransportadora?.[transportadora];
@@ -532,10 +583,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 setOrigemTransportadora('');
                 const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canais[0] || 'ATACADO';
                 setCanalTransportadora(primeiroCanal);
-              }}>{transportadorasDisponiveis.map((item) => <option key={item}>{item}</option>)}</select>
+              }}>{transportadorasPorCanalTransportadora.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Canal
-              <select value={canalTransportadora} onChange={(e) => setCanalTransportadora(e.target.value)}>{canaisTransportadora.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={canalTransportadora} onChange={(e) => { setCanalTransportadora(e.target.value); setOrigemTransportadora(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Origem (opcional)
               <select value={origemTransportadora} onChange={(e) => setOrigemTransportadora(e.target.value)}><option value="">Todas</option>{origensTransportadora.map((item) => <option key={item}>{item}</option>)}</select>
@@ -576,7 +627,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-form-grid sim-grid-3">
             <label>Transportadora
-              <select value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)}>{transportadorasDisponiveis.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)}>
+                {transportadorasPorCanalAnalise.map((item) => <option key={item}>{item}</option>)}
+              </select>
+              {!transportadorasPorCanalAnalise.length ? <small>Nenhuma transportadora cadastrada neste canal.</small> : null}
             </label>
             <label>Canal
               <select value={canalAnalise} onChange={(e) => setCanalAnalise(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
@@ -609,7 +663,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-4" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
             <label>Canal<select value={canalCobertura} onChange={(e) => setCanalCobertura(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Origem<select value={origemCobertura} onChange={(e) => setOrigemCobertura(e.target.value)}><option value="">Todas</option>{todasOrigens.map((item) => <option key={item}>{item}</option>)}</select></label>
-            <label>Transportadora<select value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)}><option value="">Todas</option>{transportadorasDisponiveis.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label>Transportadora<select value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)}><option value="">Todas</option>{transportadorasPorCanalCobertura.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>UF destino<select value={ufCobertura} onChange={(e) => setUfCobertura(e.target.value)}>{UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}</select></label>
           </div>
           <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura}>Analisar cobertura</button></div>
