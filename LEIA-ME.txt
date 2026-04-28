@@ -1,24 +1,12 @@
-PATCH - Melhorias operacionais 01
+PATCH - Corrigir números do Dashboard
 
-Inclui:
-1) Botão "Atualizar base" no topo/status do dashboard.
-2) Atualização busca o resumo direto do Supabase, sem baixar a base pesada.
-3) Exclusões pedem confirmação antes de remover:
-   - transportadora
-   - origem
-   - linha de rota/frete/taxa
-   - excluir tudo da seção
-4) Filtro Canal na tela Transportadoras.
-5) Modelo de Taxas Especiais agora tem Transportadora, Origem e Canal para importação em massa.
+Problema:
+O patch anterior colocou o botão Atualizar base, mas o Dashboard voltou a calcular Rotas/Cotações pela lista resumida de transportadoras carregada na tela. Como essa lista não traz as 312 mil rotas, aparecia 0.
 
-Arquivos:
-- src/data/store.js
+Correção:
+- Dashboard volta a usar syncStatus.resumoBase para Transportadoras, Origens, Rotas e Cotações.
+- Mantém o botão Atualizar base.
+- Não carrega base pesada no navegador.
+
+Arquivo:
 - src/pages/DashboardPage.jsx
-- src/App.jsx
-- src/pages/TransportadorasPage.jsx
-- src/utils/importacao.js
-
-Não inclui ainda:
-- análise por origem no simulador;
-- bloqueio de transportadora com impacto de % frete.
-Esses ficam para o próximo patch porque precisam de uma tela/consulta própria.

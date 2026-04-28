@@ -12,10 +12,10 @@ function formatarDataHora(valor) {
 function getStatus(syncStatus, hasData) {
   if (syncStatus?.carregando) {
     return {
-      titulo: 'Carregando base',
+      titulo: 'Conectando ao Supabase',
       detalhe: hasData
-        ? 'Exibindo o último cache enquanto busca os dados mais recentes.'
-        : 'Buscando dados mais recentes do banco.',
+        ? 'Atualizando o resumo da base sem carregar a base pesada.'
+        : 'Buscando resumo da base no banco.',
       classe: 'dark',
     };
   }
@@ -24,6 +24,13 @@ function getStatus(syncStatus, hasData) {
   }
   if (syncStatus?.erro) {
     return { titulo: 'Erro na sincronização', detalhe: syncStatus.erro, classe: 'warn' };
+  }
+  if (syncStatus?.fonte === 'supabase-resumo') {
+    return {
+      titulo: 'Conectado ao Supabase',
+      detalhe: 'Resumo da base carregado. A importação e a simulação usam as tabelas do banco.',
+      classe: 'ok',
+    };
   }
   if (syncStatus?.modo === 'local') {
     return { titulo: 'Modo local', detalhe: 'Base local do navegador em uso.', classe: 'warn' };
@@ -40,8 +47,16 @@ export default function DashboardPage({
   onAtualizarBase,
   syncStatus,
 }) {
-  const stats = buildDashboardStats(transportadoras);
-  const hasData = transportadoras.length > 0;
+  const statsBase = buildDashboardStats(transportadoras);
+  const resumo = syncStatus?.resumoBase;
+  const stats = resumo ? statsBase.map((item) => {
+    if (item.id === 1) return { ...item, valor: resumo.transportadoras ?? item.valor };
+    if (item.id === 2) return { ...item, valor: resumo.origens ?? item.valor };
+    if (item.id === 3) return { ...item, valor: resumo.rotas ?? item.valor };
+    if (item.id === 4) return { ...item, valor: resumo.cotacoes ?? item.valor };
+    return item;
+  }) : statsBase;
+  const hasData = transportadoras.length > 0 || Boolean(resumo);
   const status = getStatus(syncStatus, hasData);
   const carregandoInicial = syncStatus?.carregando && !hasData;
 
