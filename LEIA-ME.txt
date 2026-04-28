@@ -1,19 +1,18 @@
-PATCH - Cobertura rápida na lista Transportadoras
+PATCH - Salvar inclusão manual em Transportadoras
 
-Resolve:
-- A tela Transportadoras não precisa mais abrir cada transportadora para mostrar Completa/Parcial/Inconsistente.
-- O status vem da view no Supabase: vw_cobertura_transportadoras.
-- A lista continua leve, sem baixar as 312 mil rotas.
-- Ao entrar na transportadora, os detalhes continuam carregando sob demanda.
+Problema:
+A tela estava em modo resumo e as alterações manuais foram bloqueadas para evitar sobrescrever a base completa/snapshot.
 
-Passos:
-1) Rode no Supabase:
-   supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
+Correção:
+- Inclusão/edição manual passa a salvar direto nas tabelas relacionais do Supabase.
+- Não grava snapshot gigante.
+- Salva por seção:
+  - transportadora/origem -> cadastros
+  - generalidades -> generalidades
+  - rotas -> rotas
+  - cotações -> cotacoes
+  - taxas especiais -> taxas
+- Atualiza o resumo do dashboard após salvar.
 
-2) Copie a pasta src para o projeto.
-
-Arquivos:
-- src/services/freteDatabaseService.js
-- src/pages/TransportadorasPage.jsx
+Arquivo alterado:
 - src/data/store.js
-- supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql

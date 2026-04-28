@@ -236,23 +236,32 @@ export function useFreteStore() {
     };
   }, []);
 
-  function salvarAutomaticamente(next, acao = 'alteração') {
+  function salvarAutomaticamente(next, acao = 'alteração', secao = 'cadastros') {
     if (!loadedRef.current || !bancoConfigurado()) return;
 
-    setSyncStatus((prev) => ({
-      ...prev,
-      erro: 'Alteração manual bloqueada temporariamente no modo resumo para evitar sobrescrever a base completa. Use a importação por lote.',
-    }));
+    const tipoSecao = {
+      rotas: 'rotas',
+      cotacoes: 'cotacoes',
+      taxasEspeciais: 'taxas',
+      taxas: 'taxas',
+      generalidades: 'generalidades',
+      transportadora: 'cadastros',
+      origem: 'cadastros',
+      cadastros: 'cadastros',
+    }[secao] || 'cadastros';
 
-    return;
+    setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
 
-    salvarBaseCompletaDb(next)
-      .then((result) => {
+    salvarSecaoDb(next, tipoSecao, undefined, { atualizarSnapshot: false })
+      .then(async (result) => {
+        const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
+
         setSyncStatus((prev) => ({
           ...prev,
           sincronizando: false,
           ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-          fonte: 'supabase-snapshot',
+          fonte: 'supabase-resumo',
+          resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
         }));
       })
       .catch((error) => {
@@ -264,13 +273,13 @@ export function useFreteStore() {
       });
   }
 
-  const aplicarAlteracao = (updater, acao = 'alteração') => {
+  const aplicarAlteracao = (updater, acao = 'alteração', secao = 'cadastros') => {
     const baseAtual = Array.isArray(transportadoras) ? transportadoras : [];
     const next = typeof updater === 'function' ? updater(baseAtual) : updater;
     const normalized = (next || []).map(normalizeTransportadora);
 
     setTransportadoras(normalized);
-    salvarAutomaticamente(normalized, acao);
+    salvarAutomaticamente(normalized, acao, secao);
   };
 
   const api = useMemo(
@@ -435,6 +444,7 @@ export function useFreteStore() {
                     ),
                   }
             ),
+          'generalidades',
           'generalidades'
         );
       },
@@ -450,6 +460,7 @@ export function useFreteStore() {
                 : [...t.origens, normalized];
               return { ...t, origens };
             }),
+          'origem',
           'origem'
         );
       },
@@ -464,7 +475,8 @@ export function useFreteStore() {
                     origens: t.origens.filter((o) => o.id !== origemId),
                   }
             ),
-          'remoção de origem'
+          'remoção de origem',
+          'origem'
         );
       },
       salvarTransportadora(transportadora) {
@@ -476,11 +488,12 @@ export function useFreteStore() {
               ? prev.map((item) => (item.id === normalized.id ? normalized : item))
               : [...prev, normalized];
           },
+          'transportadora',
           'transportadora'
         );
       },
       removerTransportadora(id) {
-        aplicarAlteracao((prev) => prev.filter((item) => item.id !== id), 'remoção de transportadora');
+        aplicarAlteracao((prev) => prev.filter((item) => item.id !== id), 'remoção de transportadora', 'transportadora');
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
         aplicarAlteracao(
@@ -504,6 +517,7 @@ export function useFreteStore() {
                     }),
                   }
             ),
+          secao,
           secao
         );
       },
@@ -525,11 +539,12 @@ export function useFreteStore() {
                     ),
                   }
             ),
-          `remoção de ${secao}`
+          `remoção de ${secao}`,
+          secao
         );
       },
       importarPayload(payload, tipo) {
-        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo);
+        aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo, tipo);
       },
       limparSecaoOrigem(transportadoraId, origemId, secao) {
         aplicarAlteracao(
@@ -544,7 +559,8 @@ export function useFreteStore() {
                     ),
                   }
             ),
-          `limpeza de ${secao}`
+          `limpeza de ${secao}`,
+          secao
         );
       },
     }),
