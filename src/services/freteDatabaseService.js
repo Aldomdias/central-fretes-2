@@ -792,6 +792,43 @@ async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
   return rows;
 }
 
+async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
+
+  if (!ids.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+
+  for (let index = 0; index < ids.length; index += chunkSize) {
+    const chunk = ids.slice(index, index + chunkSize);
+    let from = 0;
+
+    while (true) {
+      let query = supabase
+        .from('rotas')
+        .select('*')
+        .in('origem_id', chunk);
+
+      if (destinosNormalizados.length) {
+        query = query.in('ibge_destino', destinosNormalizados);
+      }
+
+      const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+
+      const page = data || [];
+      rows.push(...page);
+      if (page.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
+
+  return rows;
+}
+
 function groupByOrigemId(rows = []) {
   const map = new Map();
   rows.forEach((row) => {
@@ -842,23 +879,26 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   if (origem) origensQuery = origensQuery.ilike('cidade', origem);
   if (canal) origensQuery = origensQuery.eq('canal', canal);
 
-  const { data: origensBase, error: origensError } = await origensQuery;
+  let { data: origensBase, error: origensError } = await origensQuery;
   if (origensError) throw origensError;
+
+  if (origem && !(origensBase || []).length) {
+    let fallbackQuery = supabase
+      .from('origens')
+      .select('id, transportadora_id, cidade, canal, status')
+      .ilike('cidade', `%${origem}%`);
+
+    if (canal) fallbackQuery = fallbackQuery.eq('canal', canal);
+
+    const fallback = await fallbackQuery;
+    if (fallback.error) throw fallback.error;
+    origensBase = fallback.data || [];
+  }
 
   const origemIdsBase = (origensBase || []).map((item) => item.id);
   if (!origemIdsBase.length) return [];
 
-  let rotasQuery = supabase
-    .from('rotas')
-    .select('*')
-    .in('origem_id', origemIdsBase);
-
-  if (destinosNormalizados.length) {
-    rotasQuery = rotasQuery.in('ibge_destino', destinosNormalizados);
-  }
-
-  const { data: rotas, error: rotasError } = await rotasQuery;
-  if (rotasError) throw rotasError;
+  const rotas = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados);
 
   const origemIdsComRota = Array.from(new Set((rotas || []).map((item) => item.origem_id)));
   if (!origemIdsComRota.length) return [];
@@ -1295,6 +1335,9 @@ export async function carregarOpcoesSimuladorDb() {
 }
 
 export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '' } = {}) {
+  // Fonte da verdade do simulador: Supabase.
+  // Não depende da tela Transportadoras estar aberta ou atualizada.
+
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
     if (!raw) return [];
@@ -1338,7 +1381,11 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
       .map((item) => ({ origem: item.cidade, canal: item.canal }));
 
     const bases = [];
-    for (const par of pares.slice(0, 25)) {
+    const paresUnicos = Array.from(
+      new Map(pares.map((par) => [`${par.origem}||${par.canal}`, par])).values()
+    );
+
+    for (const par of paresUnicos) {
       const parcial = await buscarBasePorOrigemDestino({ supabase, origem: par.origem, canal: par.canal, destinos: [] });
       bases.push(...parcial);
     }

@@ -1,15 +1,14 @@
-PATCH - Reset forçado da tela de importação
+PATCH - Corrigir busca da base no Simulador
 
-Corrige o caso em que o botão parecia não fazer nada.
+Problema provável:
+A busca de rotas do Simulador usava select direto no Supabase sem paginação. O Supabase pode devolver só a primeira página/limite padrão, deixando transportadoras ou rotas fora da simulação. Isso faz o simulador parecer incompleto.
 
-Mudanças:
-- Limpar/Parar agora incrementa um ID interno e invalida qualquer processamento antigo.
-- Mesmo que uma Promise antiga termine depois, ela não deve mais travar a tela.
-- Botões ficam sempre visíveis:
-  - Limpar fila / liberar tela
-  - Parar processamento
-- Também existem botões dentro do card Status da importação.
-- Reseta os inputs de arquivo/pasta com key, permitindo escolher novos arquivos imediatamente.
+Correções:
+- Busca de rotas agora é paginada por origem.
+- Quando há destino informado, filtra por IBGE destino sem perder páginas.
+- Remove limite artificial de 25 origens na análise por transportadora.
+- Se a origem não encontrar por busca exata, tenta busca parcial.
+- Simulador continua usando Supabase como fonte da verdade.
 
 Arquivo:
-- src/pages/ImportacaoPage.jsx
+- src/services/freteDatabaseService.js
