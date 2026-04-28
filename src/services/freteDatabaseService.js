@@ -969,6 +969,153 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
 }
 
 
+
+function pickFirst(row, keys = []) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+  return '';
+}
+
+function normalizeMunicipioIbgeRow(row = {}) {
+  const ibge = pickFirst(row, [
+    'ibge',
+    'codigo_ibge',
+    'cod_ibge',
+    'codigo',
+    'codigo_municipio',
+    'cod_municipio',
+    'cod_mun',
+    'id_municipio',
+  ]).replace(/\D/g, '');
+
+  const cidade = pickFirst(row, [
+    'cidade',
+    'municipio',
+    'nome_municipio',
+    'nome',
+    'descricao',
+  ]);
+
+  const uf = pickFirst(row, [
+    'uf',
+    'sigla_uf',
+    'estado',
+    'uf_sigla',
+  ]).toUpperCase().slice(0, 2);
+
+  if (!ibge || !cidade) return null;
+  return { ibge, cidade, uf };
+}
+
+export async function carregarMunicipiosIbgeDb() {
+  if (!isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+
+  try {
+    const { data, error } = await supabase
+      .from('ibge_municipios')
+      .select('*')
+      .limit(7000);
+
+    if (error) return [];
+
+    return (data || [])
+      .map(normalizeMunicipioIbgeRow)
+      .filter(Boolean)
+      .sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
+  } catch {
+    return [];
+  }
+}
+
+async function resolverCepEmFaixasDb(cepLimpo) {
+  if (!isSupabaseConfigured() || !cepLimpo) return null;
+
+  const supabase = ensureClient();
+  const colunas = [
+    { inicio: 'cep_inicial', fim: 'cep_final' },
+    { inicio: 'cep_inicio', fim: 'cep_fim' },
+    { inicio: 'cep_ini', fim: 'cep_fim' },
+    { inicio: 'faixa_inicial', fim: 'faixa_final' },
+  ];
+
+  for (const col of colunas) {
+    try {
+      const { data, error } = await supabase
+        .from('ibge_faixas_cep')
+        .select('*')
+        .lte(col.inicio, cepLimpo)
+        .gte(col.fim, cepLimpo)
+        .limit(1);
+
+      if (!error && data?.[0]) {
+        const municipio = normalizeMunicipioIbgeRow(data[0]);
+        if (municipio) return municipio;
+
+        const ibge = pickFirst(data[0], ['ibge', 'codigo_ibge', 'cod_ibge', 'codigo_municipio']).replace(/\D/g, '');
+        if (ibge) return { ibge, cidade: '', uf: '' };
+      }
+    } catch {
+      // tenta a próxima combinação de colunas
+    }
+  }
+
+  return null;
+}
+
+export async function resolverDestinoIbgeDb(valor) {
+  const texto = String(valor || '').trim();
+  if (!texto) return null;
+
+  const somenteDigitos = texto.replace(/\D/g, '');
+
+  if (somenteDigitos.length === 7) {
+    const municipios = await carregarMunicipiosIbgeDb();
+    return municipios.find((item) => item.ibge === somenteDigitos) || { ibge: somenteDigitos, cidade: '', uf: '' };
+  }
+
+  if (somenteDigitos.length === 8) {
+    const porCep = await resolverCepEmFaixasDb(somenteDigitos);
+    if (porCep?.ibge) return porCep;
+  }
+
+  const termoCidade = texto.replace(/\s*\/\s*[A-Z]{2}$/i, '').trim();
+
+  if (!termoCidade) return null;
+
+  try {
+    const supabase = ensureClient();
+    const tentativas = ['cidade', 'municipio', 'nome_municipio', 'nome'];
+
+    for (const coluna of tentativas) {
+      try {
+        const { data, error } = await supabase
+          .from('ibge_municipios')
+          .select('*')
+          .ilike(coluna, termoCidade)
+          .limit(1);
+
+        if (!error && data?.[0]) {
+          const municipio = normalizeMunicipioIbgeRow(data[0]);
+          if (municipio) return municipio;
+        }
+      } catch {
+        // tenta próxima coluna
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+
 export async function carregarOpcoesSimuladorDb() {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
@@ -988,7 +1135,7 @@ export async function carregarOpcoesSimuladorDb() {
       canaisPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))].sort();
     });
 
-    return { transportadoras: nomes, origens, canais, origensPorTransportadora, canaisPorTransportadora, fonte: 'local' };
+    return { transportadoras: nomes, origens, canais, origensPorTransportadora, canaisPorTransportadora, municipiosIbge: [], fonte: 'local' };
   }
 
   const supabase = ensureClient();
@@ -1034,12 +1181,15 @@ export async function carregarOpcoesSimuladorDb() {
     canaisPorTransportadora[nome].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   });
 
+  const municipiosIbge = await carregarMunicipiosIbgeDb();
+
   return {
     transportadoras,
     origens,
     canais: canais.length ? canais : ['ATACADO'],
     origensPorTransportadora,
     canaisPorTransportadora,
+    municipiosIbge,
     fonte: 'supabase',
     atualizadoEm: new Date().toISOString(),
   };

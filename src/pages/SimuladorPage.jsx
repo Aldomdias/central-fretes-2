@@ -267,6 +267,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
     try {
       const opcoes = await carregarOpcoesSimuladorDb();
       setOpcoesOnline(opcoes || {});
+      if (opcoes?.municipiosIbge?.length) {
+        setMunicipiosIbge(opcoes.municipiosIbge);
+      } else {
+        const municipios = await carregarMunicipiosIbgeDb();
+        setMunicipiosIbge(municipios || []);
+      }
       return opcoes;
     } catch (error) {
       setErroOpcoes(error.message || 'Erro ao carregar opções do simulador no Supabase.');
@@ -369,37 +375,94 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return [...new Set((selecionada.origens || []).map((item) => item.canal).filter(Boolean))];
   }, [transportadoras, transportadora, canais, opcoesOnline.canaisPorTransportadora]);
 
+  const identificarDestinoLocal = (valor) => {
+    const raw = String(valor || '').trim();
+    if (!raw) return null;
+
+    const digitos = raw.replace(/\D/g, '');
+    if (digitos.length === 7 && municipioPorIbge.has(digitos)) return municipioPorIbge.get(digitos);
+
+    const cidadeLimpa = limparCidadeDigitada(raw);
+    const chaveCidade = normalizeBuscaIbge(cidadeLimpa);
+    if (municipioPorCidade.has(chaveCidade)) return municipioPorCidade.get(chaveCidade);
+
+    if (digitos.length === 7) {
+      const cidade = getCidadeByIbge(digitos, cidadePorIbgeCompleto);
+      return cidade ? { ibge: digitos, cidade, uf: getUfByIbge(digitos) } : { ibge: digitos, cidade: '', uf: getUfByIbge(digitos) };
+    }
+
+    return null;
+  };
+
+  const resolverDestinoInput = async (valor) => {
+    const local = identificarDestinoLocal(valor);
+    if (local?.ibge) return local;
+
+    const remoto = await resolverDestinoIbgeDb(valor);
+    if (remoto?.ibge) return remoto;
+
+    return null;
+  };
+
   const destinoIdentificado = useMemo(() => {
-    const raw = (destinoCodigo || '').trim();
-    if (!raw) return '';
-    const cidade = getCidadeByIbge(raw, cidadePorIbge);
-    const uf = getUfByIbge(raw);
-    return cidade ? `${cidade}${uf ? `/${uf}` : ''}` : '';
-  }, [destinoCodigo, cidadePorIbge]);
+    const destino = identificarDestinoLocal(destinoCodigo);
+    return destino ? montarLabelMunicipio(destino) : '';
+  }, [destinoCodigo, municipioPorIbge, municipioPorCidade, cidadePorIbgeCompleto]);
+
+  const destinoTransportadoraIdentificado = useMemo(() => {
+    const destino = identificarDestinoLocal(destinoTransportadora);
+    return destino ? montarLabelMunicipio(destino) : '';
+  }, [destinoTransportadora, municipioPorIbge, municipioPorCidade, cidadePorIbgeCompleto]);
 
   const onSimularSimples = async () => {
+    const destinoResolvido = await resolverDestinoInput(destinoCodigo);
+    const destinoFinal = destinoResolvido?.ibge || destinoCodigo;
+
+    if (destinoCodigo && !destinoResolvido?.ibge) {
+      setErroSimulacao('Não foi possível identificar o destino informado na base IBGE/CEP. Use cidade, IBGE ou CEP válido.');
+      return;
+    }
+
     const baseOnline = await carregarBaseOnline({
       origem: origemSimples,
       canal: canalSimples,
-      destinoCodigo,
+      destinoCodigo: destinoFinal,
     });
 
     const lookupOnline = buildLookupTables(baseOnline);
+    const mapaCidades = new Map(cidadePorIbgeCompleto);
+    (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
+    if (destinoResolvido?.ibge && destinoResolvido?.cidade) {
+      mapaCidades.set(destinoResolvido.ibge, destinoResolvido.uf ? `${destinoResolvido.cidade}/${destinoResolvido.uf}` : destinoResolvido.cidade);
+    }
+
     setResultadoSimples(simularSimples({
       transportadoras: baseOnline,
       origem: origemSimples,
       canal: canalSimples,
       peso: Number(pesoSimples || 0),
       valorNF: Number(nfSimples || 0),
-      destinoCodigo,
-      cidadePorIbge: lookupOnline.cidadePorIbge || cidadePorIbge,
+      destinoCodigo: destinoFinal,
+      cidadePorIbge: mapaCidades,
       gradeCanal: grade[canalSimples] || grade.ATACADO || [],
     }));
   };
   const onSimularTransportadora = async () => {
-    const codigos = modoLista
+    const entradas = modoLista
       ? listaCodigos.split(/\n|,|;/).map((item) => item.trim()).filter(Boolean)
       : destinoTransportadora ? [destinoTransportadora.trim()] : [];
+
+    const resolvidos = await Promise.all(entradas.map(async (entrada) => {
+      const destino = await resolverDestinoInput(entrada);
+      return destino?.ibge ? destino : { ibge: entrada, cidade: '', uf: '' };
+    }));
+
+    const codigos = resolvidos.map((item) => item.ibge).filter(Boolean);
+
+    if (entradas.length && !codigos.length) {
+      setErroSimulacao('Não foi possível identificar os destinos informados na base IBGE/CEP.');
+      return;
+    }
 
     const baseOnline = await carregarBaseOnline({
       origem: origemTransportadora,
@@ -409,6 +472,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
     });
 
     const lookupOnline = buildLookupTables(baseOnline);
+    const mapaCidades = new Map(cidadePorIbgeCompleto);
+    (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
+    resolvidos.forEach((destino) => {
+      if (destino?.ibge && destino?.cidade) {
+        mapaCidades.set(destino.ibge, destino.uf ? `${destino.cidade}/${destino.uf}` : destino.cidade);
+      }
+    });
+
     setResultadoTransportadora(simularPorTransportadora({
       transportadoras: baseOnline,
       nomeTransportadora: transportadora,
@@ -417,7 +488,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       destinoCodigos: codigos,
       peso: Number(pesoTransportadora || 0),
       valorNF: Number(nfTransportadora || 0),
-      cidadePorIbge: lookupOnline.cidadePorIbge || cidadePorIbge,
+      cidadePorIbge: mapaCidades,
       gradeCanal: grade[canalTransportadora] || grade.ATACADO || [],
     }));
   };
@@ -456,7 +527,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       nomeTransportadora: transportadoraAnalise,
       canal: canalAnalise,
       grade: grade[canalAnalise] || grade.ATACADO || [],
-      cidadePorIbge: lookupOnline.cidadePorIbge || cidadePorIbge,
+      cidadePorIbge: (() => { const mapa = new Map(cidadePorIbgeCompleto); (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapa.set(ibge, cidade)); return mapa; })(),
     }));
   };
   const exportarAnalise = () => {
@@ -489,7 +560,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       origem: origemCobertura,
       transportadora: transportadoraCobertura,
       ufDestino: ufCobertura,
-      cidadePorIbge,
+      cidadePorIbge: cidadePorIbgeCompleto,
     }));
   };
   const exportarCobertura = () => {
@@ -527,6 +598,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           Base do simulador: <strong>{opcoesOnline.fonte === 'supabase' ? 'Supabase online' : 'carregando opções'}</strong>
           {opcoesOnline.transportadoras?.length ? ` · ${opcoesOnline.transportadoras.length} transportadoras` : ''}
           {opcoesOnline.origens?.length ? ` · ${opcoesOnline.origens.length} origens` : ''}
+          {municipiosDisponiveis.length ? ` · ${municipiosDisponiveis.length} municípios IBGE` : ''}
         </span>
         <button className="sim-tab" type="button" onClick={atualizarOpcoesSimulador} disabled={carregandoOpcoes}>
           {carregandoOpcoes ? 'Atualizando opções...' : 'Atualizar opções'}
@@ -549,8 +621,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <select value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)}>{todasOrigens.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Destino (CEP ou IBGE)
-              <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Ex: 3506003" />
-              <datalist id="destinos-lista">{todosDestinosComCidade.map((item) => <option key={item.ibge} value={item.ibge}>{item.cidade ? `${item.cidade}/${item.uf}` : item.ibge}</option>)}</datalist>
+              <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
+              <datalist id="destinos-lista">
+                {todosDestinosComCidade.map((item) => (
+                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf}` : item.ibge}>
+                    {item.ibge}
+                  </option>
+                ))}
+              </datalist>
               {destinoIdentificado && <small style={{ color: '#64748b' }}>Destino identificado: {destinoIdentificado}</small>}
             </label>
             <label>Canal
@@ -591,8 +669,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem (opcional)
               <select value={origemTransportadora} onChange={(e) => setOrigemTransportadora(e.target.value)}><option value="">Todas</option>{origensTransportadora.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
-            <label>Destino opcional (CEP ou IBGE)
-              <input disabled={modoLista} value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Ex: 3506003" />
+            <label>Destino opcional (cidade, CEP ou IBGE)
+              <input disabled={modoLista} list="destinos-lista-transportadora" value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
+              <datalist id="destinos-lista-transportadora">
+                {todosDestinosComCidade.map((item) => (
+                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf}` : item.ibge}>
+                    {item.ibge}
+                  </option>
+                ))}
+              </datalist>
+              {destinoTransportadoraIdentificado && <small style={{ color: '#64748b' }}>Destino identificado: {destinoTransportadoraIdentificado}</small>}
             </label>
             <label>Peso
               <input value={pesoTransportadora} onChange={(e) => setPesoTransportadora(e.target.value)} placeholder="Ex: 150" />
@@ -608,8 +694,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             {modoLista && (
               <div className="sim-lista-box" style={{ marginTop: 12 }}>
-                <label>Lista de CEPs ou IBGEs
-                  <textarea value={listaCodigos} onChange={(e) => setListaCodigos(e.target.value)} />
+                <label>Lista de cidades, CEPs ou IBGEs
+                  <textarea value={listaCodigos} onChange={(e) => setListaCodigos(e.target.value)} placeholder={"São Paulo/SP\n3506003\n88300000"} />
                 </label>
               </div>
             )}

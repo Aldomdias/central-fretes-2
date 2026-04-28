@@ -1,13 +1,22 @@
-PATCH - Filtrar transportadoras por canal no Simulador
+PATCH - Simulador usando base IBGE/CEP
 
-Mudança:
-- No Simulador, os campos de transportadora passam a mostrar apenas transportadoras que possuem cadastro no canal selecionado.
-- Aplica em:
-  - Simulação por transportadora
-  - Análise de transportadora
-  - Cobertura de tabela
-- Ao trocar o canal, se a transportadora atual não atender o canal, o sistema seleciona automaticamente a primeira válida.
-- Evita escolher transportador que não atende o canal.
+Objetivo:
+- Usar a base IBGE já cadastrada para todas as simulações.
+- Permitir digitar cidade, IBGE ou CEP no destino.
+- Mostrar sugestões de cidade/UF/IBGE.
+- Sempre que o resultado sair, priorizar nome da cidade do IBGE.
 
-Arquivo:
+Inclui:
+1) Carrega municípios da tabela public.ibge_municipios.
+2) Na simulação simples, destino aceita cidade, IBGE ou CEP.
+3) Na simulação por transportadora, destino aceita cidade, IBGE ou CEP.
+4) Na simulação em massa, a lista aceita cidades, CEPs ou IBGEs.
+5) Resultado usa mapa completo de cidades IBGE.
+6) Se informar CEP, tenta resolver pela tabela public.ibge_faixas_cep, quando existir.
+
+Arquivos:
 - src/pages/SimuladorPage.jsx
+- src/services/freteDatabaseService.js
+
+Observação:
+O suporte a CEP depende da tabela public.ibge_faixas_cep ter colunas de faixa compatíveis, como cep_inicial/cep_final ou cep_inicio/cep_fim.
