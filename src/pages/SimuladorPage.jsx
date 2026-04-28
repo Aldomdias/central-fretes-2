@@ -322,6 +322,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [transportadoraAnalise, setTransportadoraAnalise] = useState('');
   const [canalAnalise, setCanalAnalise] = useState(canais[0] || 'ATACADO');
+  const [origemAnalise, setOrigemAnalise] = useState('');
+  const [ufAnalise, setUfAnalise] = useState('');
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
 
   const [canalCobertura, setCanalCobertura] = useState(canais[0] || 'ATACADO');
@@ -452,11 +454,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
   }, []);
 
 
+  const executarComTimeout = (promise, ms = 120000) => Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Tempo limite atingido ao buscar a base. Tente filtrar por origem para reduzir a análise.')), ms);
+    }),
+  ]);
+
   const carregarBaseOnline = async (filtros) => {
     setCarregandoSimulacao(true);
     setErroSimulacao('');
     try {
-      const base = await buscarBaseSimulacaoDb(filtros);
+      const base = await executarComTimeout(buscarBaseSimulacaoDb(filtros), 120000);
       return Array.isArray(base) ? base : [];
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao buscar base online do Supabase.');
@@ -497,6 +506,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras),
     [todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras]
   );
+
+  const origensAnaliseDisponiveis = useMemo(() => {
+    const porTransportadora = opcoesOnline.origensPorTransportadora?.[transportadoraAnalise];
+    if (porTransportadora?.length) return porTransportadora;
+
+    const porCanal = opcoesOnline.origensPorCanal?.[canalAnalise];
+    if (porCanal?.length) return porCanal;
+
+    const selecionada = transportadoras.find((item) => item.nome === transportadoraAnalise);
+    if (selecionada) {
+      return [...new Set((selecionada.origens || [])
+        .filter((origem) => !canalAnalise || (origem.canal || 'ATACADO') === canalAnalise)
+        .map((origem) => origem.cidade)
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    }
+
+    return todasOrigens;
+  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraAnalise, canalAnalise, transportadoras, todasOrigens]);
 
   useEffect(() => {
     if (transportadora && transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
@@ -685,28 +713,72 @@ export default function SimuladorPage({ transportadoras = [] }) {
     downloadCsv(nomeArquivo, csv);
   };
   const onSimularGrade = async () => {
-    iniciarProcessamentoUi('Análise de transportadora', 'Buscando base completa da transportadora e concorrentes...', 10);
-    atualizarProcessamentoUi('Consultando concorrentes no Supabase...', 34);
+    if (!transportadoraAnalise) {
+      setErroSimulacao('Informe a transportadora para gerar a análise.');
+      return;
+    }
 
-    const baseOnline = await carregarBaseOnline({
-      canal: canalAnalise,
-      nomeTransportadora: transportadoraAnalise,
-    });
+    if (!origemAnalise) {
+      setErroSimulacao('Para evitar travamento em bases B2C grandes, selecione uma Origem para quebrar a análise. Depois você pode repetir para Itajaí, Itupeva, Campo Grande etc.');
+      return;
+    }
 
-    atualizarProcessamentoUi('Organizando rotas, destinos e faixas...', 70);
+    iniciarProcessamentoUi('Análise de transportadora', `Preparando análise de ${transportadoraAnalise} em ${origemAnalise}...`, 8);
 
-    const lookupOnline = buildLookupTables(baseOnline);
-    atualizarProcessamentoUi('Calculando aderência, saving e ranking...', 88);
+    try {
+      atualizarProcessamentoUi('Consultando concorrentes no Supabase para esta origem...', 28);
 
-    setResultadoAnalise(analisarTransportadoraPorGrade({
-      transportadoras: baseOnline,
-      nomeTransportadora: transportadoraAnalise,
-      canal: canalAnalise,
-      grade: grade[canalAnalise] || grade.ATACADO || [],
-      cidadePorIbge: (() => { const mapa = new Map(cidadePorIbgeCompleto); (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapa.set(ibge, cidade)); return mapa; })(),
-    }));
+      const baseOnline = await carregarBaseOnline({
+        canal: canalAnalise,
+        origem: origemAnalise,
+        nomeTransportadora: transportadoraAnalise,
+      });
 
-    finalizarProcessamentoUi('Análise concluída', 'O relatório de aderência foi gerado com sucesso.', 100);
+      if (!baseOnline.length) {
+        setResultadoAnalise(null);
+        finalizarProcessamentoUi('Sem dados para analisar', 'Não foram encontradas rotas/cotações para essa transportadora, origem e canal.', 100);
+        return;
+      }
+
+      atualizarProcessamentoUi('Organizando rotas, destinos e faixas...', 62);
+
+      const lookupOnline = buildLookupTables(baseOnline);
+      const mapaCidades = new Map(cidadePorIbgeCompleto);
+      (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
+
+      atualizarProcessamentoUi('Calculando aderência, saving e ranking da origem...', 84);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const resultado = analisarTransportadoraPorGrade({
+        transportadoras: baseOnline,
+        nomeTransportadora: transportadoraAnalise,
+        canal: canalAnalise,
+        grade: grade[canalAnalise] || grade.ATACADO || [],
+        cidadePorIbge: mapaCidades,
+      });
+
+      const detalhes = ufAnalise
+        ? (resultado.detalhes || []).filter((item) => String(item.ufDestino || '').toUpperCase() === ufAnalise)
+        : resultado.detalhes || [];
+
+      const resultadoFinal = ufAnalise ? {
+        ...resultado,
+        detalhes,
+        rotasAvaliadas: detalhes.length,
+        vitorias: detalhes.filter((item) => Number(item.ranking) === 1).length,
+        aderencia: detalhes.length ? (detalhes.filter((item) => Number(item.ranking) === 1).length / detalhes.length) * 100 : 0,
+        saving: detalhes.reduce((acc, item) => acc + Number(item.savingSegundo || 0), 0),
+        freteMedio: detalhes.length ? detalhes.reduce((acc, item) => acc + Number(item.total || 0), 0) / detalhes.length : 0,
+        prazoMedio: detalhes.length ? detalhes.reduce((acc, item) => acc + Number(item.prazo || 0), 0) / detalhes.length : 0,
+      } : resultado;
+
+      setResultadoAnalise(resultadoFinal);
+
+      finalizarProcessamentoUi('Análise concluída', `Relatório gerado para ${transportadoraAnalise} em ${origemAnalise}.`, 100);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao gerar análise. Tente uma origem menor ou atualize as opções.');
+      finalizarProcessamentoUi('Erro na análise', 'A análise foi interrompida. Tente filtrar outra origem.', 100);
+    }
   };
   const exportarAnalise = () => {
     if (!resultadoAnalise?.detalhes?.length) return;
@@ -930,21 +1002,36 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <h2 style={{ margin: 0 }}>Análise de transportadora</h2>
             <button className="sim-tab" type="button" onClick={exportarAnalise}>Exportar relatório</button>
           </div>
-          <div className="sim-form-grid sim-grid-3">
+          <div className="sim-form-grid sim-grid-5">
             <label>Transportadora
-              <input list="transportadoras-analise-lista" value={transportadoraAnalise} onChange={(e) => setTransportadoraAnalise(e.target.value)} placeholder="Digite a transportadora" />
+              <input list="transportadoras-analise-lista" value={transportadoraAnalise} onChange={(e) => { setTransportadoraAnalise(e.target.value); setOrigemAnalise(''); }} placeholder="Digite a transportadora" />
               <datalist id="transportadoras-analise-lista">
                 {transportadorasPorCanalAnalise.map((item) => <option key={item} value={item} />)}
               </datalist>
               {!transportadorasPorCanalAnalise.length ? <small>Nenhuma transportadora cadastrada neste canal.</small> : null}
             </label>
             <label>Canal
-              <select value={canalAnalise} onChange={(e) => setCanalAnalise(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={canalAnalise} onChange={(e) => { setCanalAnalise(e.target.value); setOrigemAnalise(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
+            </label>
+            <label>Origem
+              <input list="origens-analise-lista" value={origemAnalise} onChange={(e) => setOrigemAnalise(e.target.value)} placeholder="Obrigatório para B2C grande" />
+              <datalist id="origens-analise-lista">
+                {origensAnaliseDisponiveis.map((item) => <option key={item} value={item} />)}
+              </datalist>
+              <small style={{ color: '#64748b' }}>Quebre por origem: Itajaí, Itupeva, Campo Grande...</small>
+            </label>
+            <label>UF destino
+              <select value={ufAnalise} onChange={(e) => setUfAnalise(e.target.value)}>
+                {UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}
+              </select>
             </label>
             <div className="sim-actions" style={{ alignItems: 'flex-end' }}><button className="primary" onClick={onSimularGrade} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Processando..." : "Gerar relatório"}</button></div>
           </div>
           {resultadoAnalise && (
             <div className="sim-cobertura-box">
+              <div className="sim-alert info">
+                Filtros aplicados: <strong>{transportadoraAnalise}</strong> · Canal: <strong>{canalAnalise}</strong> · Origem: <strong>{origemAnalise}</strong>{ufAnalise ? ` · UF destino: ${ufAnalise}` : ''}
+              </div>
               <div className="sim-analise-resumo">
                 <div><span>Rotas avaliadas</span><strong>{resultadoAnalise.rotasAvaliadas}</strong></div>
                 <div><span>Vitórias</span><strong>{resultadoAnalise.vitorias}</strong></div>

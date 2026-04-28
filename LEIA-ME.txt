@@ -1,18 +1,15 @@
-HOTFIX - Restaurar tela Simulador
+PATCH - Análise de transportadora segura por origem V2
 
 Objetivo:
-- Corrigir tela Simulador em branco imediatamente.
-- Restaura a última versão funcional com feedback de processamento.
-- Mantém:
-  - Simulação simples
-  - Simulação por transportadora
-  - Análise de transportadora
-  - Cobertura de tabela
-  - Indicador/barra de processamento
-- Remove temporariamente o último ajuste de filtros Origem/UF da análise, pois ele causou tela em branco.
+Evitar travar em 92% em análises B2C muito grandes.
 
-Próximo passo:
-Depois de confirmar que a tela voltou, aplicar os filtros Origem/UF em um patch menor e mais seguro.
+Mudanças:
+- Aba Análise de transportadora ganhou filtro obrigatório de Origem.
+- Ganhou filtro UF destino.
+- A consulta ao Supabase passa a ser feita já pela origem selecionada.
+- Se deixar Origem em branco, o sistema orienta a quebrar a análise por origem.
+- Adiciona timeout de 120s para evitar ficar processando indefinidamente.
+- Mantém barra de processamento.
 
 Arquivo:
 - src/pages/SimuladorPage.jsx
