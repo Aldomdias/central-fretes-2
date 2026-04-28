@@ -1701,3 +1701,204 @@ export async function registrarImportacao(payload) {
 
   throw new Error('Não foi possível registrar histórico de importação por incompatibilidade de colunas.');
 }
+
+const REALIZADO_LOCAL_KEY = 'amd-realizado-ctes-v1';
+const REALIZADO_LOCAL_LIMIT = 3000;
+
+function readRealizadoLocal() {
+  try {
+    const raw = localStorage.getItem(REALIZADO_LOCAL_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRealizadoLocal(rows = []) {
+  try {
+    localStorage.setItem(REALIZADO_LOCAL_KEY, JSON.stringify((rows || []).slice(0, REALIZADO_LOCAL_LIMIT)));
+  } catch {
+    // localStorage pode não suportar bases grandes; Supabase é a fonte recomendada.
+  }
+}
+
+function normalizeRealizadoDbRow(row = {}) {
+  return {
+    id: row.id || row.chave_cte || row.chaveCte || '',
+    arquivoOrigem: row.arquivo_origem || row.arquivoOrigem || '',
+    competencia: row.competencia || '',
+    transportadora: row.transportadora || '',
+    cnpjTransportadora: row.cnpj_transportadora || row.cnpjTransportadora || '',
+    emissao: row.emissao || '',
+    chaveCte: row.chave_cte || row.chaveCte || '',
+    numeroCte: row.numero_cte || row.numeroCte || '',
+    serieCte: row.serie_cte || row.serieCte || '',
+    valorCte: row.valor_cte ?? row.valorCte ?? 0,
+    valorCalculado: row.valor_calculado ?? row.valorCalculado ?? 0,
+    diferenca: row.diferenca ?? 0,
+    situacao: row.situacao || '',
+    status: row.status || '',
+    statusConciliacao: row.status_conciliacao || row.statusConciliacao || '',
+    statusErp: row.status_erp || row.statusErp || '',
+    ufOrigem: row.uf_origem || row.ufOrigem || '',
+    ufDestino: row.uf_destino || row.ufDestino || '',
+    pesoDeclarado: row.peso_declarado ?? row.pesoDeclarado ?? 0,
+    pesoCubado: row.peso_cubado ?? row.pesoCubado ?? 0,
+    metrosCubicos: row.metros_cubicos ?? row.metrosCubicos ?? 0,
+    volume: row.volume ?? 0,
+    canais: row.canais || '',
+    canal: row.canal || '',
+    canalVendas: row.canal_vendas || row.canalVendas || '',
+    valorNF: row.valor_nf ?? row.valorNF ?? 0,
+    percentualFrete: row.percentual_frete ?? row.percentualFrete ?? 0,
+    cepDestino: row.cep_destino || row.cepDestino || '',
+    cepOrigem: row.cep_origem || row.cepOrigem || '',
+    cidadeOrigem: row.cidade_origem || row.cidadeOrigem || '',
+    cidadeDestino: row.cidade_destino || row.cidadeDestino || '',
+    transportadoraContratada: row.transportadora_contratada || row.transportadoraContratada || '',
+    prazoEntregaCliente: row.prazo_entrega_cliente ?? row.prazoEntregaCliente ?? 0,
+    raw: row.raw || {},
+    criadoEm: row.criado_em || row.criadoEm || '',
+  };
+}
+
+function sanitizeRealizadoDbRow(row = {}) {
+  const chave = String(row.chaveCte || row.chave_cte || '').trim();
+  return {
+    arquivo_origem: row.arquivoOrigem || row.arquivo_origem || '',
+    competencia: row.competencia || '',
+    transportadora: row.transportadora || '',
+    cnpj_transportadora: row.cnpjTransportadora || row.cnpj_transportadora || '',
+    emissao: row.emissao || null,
+    chave_cte: chave || null,
+    numero_cte: row.numeroCte || row.numero_cte || '',
+    serie_cte: row.serieCte || row.serie_cte || '',
+    valor_cte: toNumberOrNull(row.valorCte ?? row.valor_cte),
+    valor_calculado: toNumberOrNull(row.valorCalculado ?? row.valor_calculado),
+    diferenca: toNumberOrNull(row.diferenca),
+    situacao: row.situacao || '',
+    status: row.status || '',
+    status_conciliacao: row.statusConciliacao || row.status_conciliacao || '',
+    status_erp: row.statusErp || row.status_erp || '',
+    uf_origem: row.ufOrigem || row.uf_origem || '',
+    uf_destino: row.ufDestino || row.uf_destino || '',
+    peso_declarado: toNumberOrNull(row.pesoDeclarado ?? row.peso_declarado),
+    peso_cubado: toNumberOrNull(row.pesoCubado ?? row.peso_cubado),
+    metros_cubicos: toNumberOrNull(row.metrosCubicos ?? row.metros_cubicos),
+    volume: toNumberOrNull(row.volume),
+    canais: row.canais || '',
+    canal: row.canal || '',
+    canal_vendas: row.canalVendas || row.canal_vendas || '',
+    valor_nf: toNumberOrNull(row.valorNF ?? row.valor_nf),
+    percentual_frete: toNumberOrNull(row.percentualFrete ?? row.percentual_frete),
+    cep_destino: row.cepDestino || row.cep_destino || '',
+    cep_origem: row.cepOrigem || row.cep_origem || '',
+    cidade_origem: row.cidadeOrigem || row.cidade_origem || '',
+    cidade_destino: row.cidadeDestino || row.cidade_destino || '',
+    transportadora_contratada: row.transportadoraContratada || row.transportadora_contratada || '',
+    prazo_entrega_cliente: toNumberOrNull(row.prazoEntregaCliente ?? row.prazo_entrega_cliente),
+    raw: row.raw || {},
+  };
+}
+
+function filtrarRealizadoLocal(rows = [], filtros = {}) {
+  const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
+  const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
+  const canal = String(filtros.canal || '').toUpperCase();
+  const origem = String(filtros.origem || '').trim().toLowerCase();
+  const ufDestino = String(filtros.ufDestino || '').trim().toUpperCase();
+
+  return (rows || []).filter((row) => {
+    const emissao = row.emissao ? new Date(row.emissao) : null;
+    if (inicio && (!emissao || emissao < inicio)) return false;
+    if (fim && (!emissao || emissao > fim)) return false;
+    if (canal && String(row.canal || '').toUpperCase() !== canal) return false;
+    if (origem && String(row.cidadeOrigem || '').trim().toLowerCase() !== origem) return false;
+    if (ufDestino && String(row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
+    return true;
+  });
+}
+
+export async function listarRealizadoCtes(filtros = {}) {
+  if (!isSupabaseConfigured()) {
+    return filtrarRealizadoLocal(readRealizadoLocal(), filtros).slice(0, filtros.limit || REALIZADO_LOCAL_LIMIT);
+  }
+
+  const supabase = ensureClient();
+  const limit = Number(filtros.limit || 10000) || 10000;
+  let query = supabase
+    .from('realizado_ctes')
+    .select('*')
+    .order('emissao', { ascending: false })
+    .limit(limit);
+
+  if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.canal) query = query.eq('canal', filtros.canal);
+  if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem);
+  if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
+
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(`Erro ao carregar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql. Detalhe: ${error.message}`);
+  }
+
+  return (data || []).map(normalizeRealizadoDbRow);
+}
+
+export async function salvarRealizadoCtes(rows = []) {
+  const normalized = (rows || []).map(normalizeRealizadoDbRow).filter((row) => row.chaveCte || row.numeroCte);
+  if (!normalized.length) return { ok: true, inseridos: 0 };
+
+  if (!isSupabaseConfigured()) {
+    const atual = readRealizadoLocal();
+    const byKey = new Map(atual.map((row) => [row.chaveCte || `${row.numeroCte}|${row.emissao}`, row]));
+    normalized.forEach((row) => byKey.set(row.chaveCte || `${row.numeroCte}|${row.emissao}`, row));
+    writeRealizadoLocal([...byKey.values()].sort((a, b) => String(b.emissao).localeCompare(String(a.emissao))));
+    return { ok: true, inseridos: normalized.length, modo: 'local' };
+  }
+
+  const supabase = ensureClient();
+  const payload = normalized.map(sanitizeRealizadoDbRow).filter((row) => row.chave_cte);
+  const chunkSize = 500;
+  for (let index = 0; index < payload.length; index += chunkSize) {
+    const chunk = payload.slice(index, index + chunkSize);
+    const { error } = await supabase.from('realizado_ctes').upsert(chunk, { onConflict: 'chave_cte' });
+    if (error) {
+      throw new Error(`Erro ao salvar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql. Detalhe: ${error.message}`);
+    }
+  }
+
+  return { ok: true, inseridos: payload.length, modo: 'supabase' };
+}
+
+export async function excluirRealizadoCtes(filtros = {}) {
+  if (!isSupabaseConfigured()) {
+    const atual = readRealizadoLocal();
+    if (!filtros.inicio && !filtros.fim && !filtros.arquivoOrigem) {
+      writeRealizadoLocal([]);
+      return { ok: true, removidos: atual.length, modo: 'local' };
+    }
+
+    const remover = new Set(filtrarRealizadoLocal(atual, filtros).map((row) => row.chaveCte || `${row.numeroCte}|${row.emissao}`));
+    const restantes = atual.filter((row) => !remover.has(row.chaveCte || `${row.numeroCte}|${row.emissao}`));
+    writeRealizadoLocal(restantes);
+    return { ok: true, removidos: atual.length - restantes.length, modo: 'local' };
+  }
+
+  const supabase = ensureClient();
+  let query = supabase.from('realizado_ctes').delete();
+
+  if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.arquivoOrigem) query = query.eq('arquivo_origem', filtros.arquivoOrigem);
+
+  if (!filtros.inicio && !filtros.fim && !filtros.arquivoOrigem) {
+    query = query.neq('chave_cte', '__nunca__');
+  }
+
+  const { error } = await query;
+  if (error) throw error;
+  return { ok: true, modo: 'supabase' };
+}

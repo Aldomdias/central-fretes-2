@@ -912,3 +912,38 @@ textarea,
   to { transform: rotate(360deg); }
 }
 
+
+.realizado-page .panel-card {
+  align-content: start;
+}
+
+.realizado-page .panel-card input[type="file"] {
+  border: 1px dashed var(--border);
+  background: var(--panel-soft);
+}
+
+.sim-alert.info {
+  background: #eef6ff;
+  color: #23466c;
+  border-color: #c9def8;
+}
+
+.sim-table td.positivo {
+  color: #0f7a58;
+  font-weight: 800;
+}
+
+.sim-table td.negativo {
+  color: #b42318;
+  font-weight: 800;
+}
+
+.realizado-page .status-pill {
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .feature-grid.three {
+    grid-template-columns: 1fr;
+  }
+}
