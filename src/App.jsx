@@ -57,6 +57,7 @@ export default function App() {
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
         onAbrirFormatacaoTabelas={() => setPaginaAtual('formatacao')}
+        onAtualizarBase={store.atualizarResumo}
         syncStatus={store.syncStatus}
       />
     );

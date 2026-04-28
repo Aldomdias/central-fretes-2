@@ -309,6 +309,29 @@ export function useFreteStore() {
     () => ({
       transportadoras,
       syncStatus,
+      async atualizarResumo() {
+        if (!bancoConfigurado()) return false;
+        setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
+        try {
+          const resumo = await carregarResumoBaseDb();
+          setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            fonte: 'supabase-resumo',
+            resumoBase: resumo.resumo,
+            ultimaSincronizacao: new Date().toISOString(),
+          }));
+          return true;
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            carregando: false,
+            erro: error.message || 'Erro ao atualizar resumo da base.',
+          }));
+          return false;
+        }
+      },
       async sincronizarAgora() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));

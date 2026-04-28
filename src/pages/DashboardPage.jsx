@@ -12,16 +12,11 @@ function formatarDataHora(valor) {
 function getStatus(syncStatus, hasData) {
   if (syncStatus?.carregando) {
     return {
-      titulo: 'Conectando ao Supabase',
-      detalhe: 'Buscando apenas o resumo da base para não travar com milhares de rotas.',
+      titulo: 'Carregando base',
+      detalhe: hasData
+        ? 'Exibindo o último cache enquanto busca os dados mais recentes.'
+        : 'Buscando dados mais recentes do banco.',
       classe: 'dark',
-    };
-  }
-  if (syncStatus?.fonte === 'supabase-resumo') {
-    return {
-      titulo: 'Conectado ao Supabase',
-      detalhe: 'Resumo da base carregado. A importação salva direto nas tabelas do banco.',
-      classe: 'ok',
     };
   }
   if (syncStatus?.sincronizando) {
@@ -42,18 +37,11 @@ export default function DashboardPage({
   onAbrirTransportadoras,
   onAbrirImportacao,
   onAbrirFormatacaoTabelas,
+  onAtualizarBase,
   syncStatus,
 }) {
-  const statsBase = buildDashboardStats(transportadoras);
-  const resumo = syncStatus?.resumoBase;
-  const stats = resumo ? statsBase.map((item) => {
-    if (item.id === 1) return { ...item, valor: resumo.transportadoras ?? item.valor };
-    if (item.id === 2) return { ...item, valor: resumo.origens ?? item.valor };
-    if (item.id === 3) return { ...item, valor: resumo.rotas ?? item.valor };
-    if (item.id === 4) return { ...item, valor: resumo.cotacoes ?? item.valor };
-    return item;
-  }) : statsBase;
-  const hasData = transportadoras.length > 0 || Boolean(resumo);
+  const stats = buildDashboardStats(transportadoras);
+  const hasData = transportadoras.length > 0;
   const status = getStatus(syncStatus, hasData);
   const carregandoInicial = syncStatus?.carregando && !hasData;
 
@@ -89,7 +77,15 @@ export default function DashboardPage({
             <strong>Última atualização:</strong> {formatarDataHora(syncStatus?.ultimaSincronizacao)}
           </div>
         </div>
-        <div className="actions-right">
+        <div className="actions-right gap-row">
+          <button
+            className="btn-secondary"
+            onClick={onAtualizarBase}
+            disabled={syncStatus?.carregando || syncStatus?.sincronizando}
+            title="Atualizar resumo da base pelo Supabase"
+          >
+            {syncStatus?.carregando ? 'Atualizando...' : 'Atualizar base'}
+          </button>
           <span className="status-pill dark">Salvamento automático</span>
         </div>
       </div>
