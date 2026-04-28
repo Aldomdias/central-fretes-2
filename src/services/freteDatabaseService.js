@@ -1054,6 +1054,93 @@ export async function listarImportacoes(limit = 15) {
   return response.data || [];
 }
 
+
+function tabelaPorSecao(secao) {
+  if (secao === 'rotas') return 'rotas';
+  if (secao === 'cotacoes') return 'cotacoes';
+  if (secao === 'taxas' || secao === 'taxasEspeciais') return 'taxas_especiais';
+  if (secao === 'generalidades') return 'generalidades';
+  return '';
+}
+
+export async function excluirLinhaSecaoDb(secao, linhaId) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+
+  const table = tabelaPorSecao(secao);
+  if (!table || !linhaId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+  const campo = table === 'generalidades' ? 'origem_id' : 'id';
+
+  const { error } = await supabase.from(table).delete().eq(campo, linhaId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function limparSecaoOrigemDb(origemId, secao) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+
+  const table = tabelaPorSecao(secao);
+  if (!table || !origemId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+
+  const { error } = await supabase.from(table).delete().eq('origem_id', origemId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function excluirOrigemDb(origemId) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!origemId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+
+  for (const table of ['taxas_especiais', 'cotacoes', 'rotas', 'generalidades']) {
+    const { error } = await supabase.from(table).delete().eq('origem_id', origemId);
+    if (error) throw error;
+  }
+
+  const { error } = await supabase.from('origens').delete().eq('id', origemId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function excluirTransportadoraDb(transportadoraId) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!transportadoraId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+
+  const { data: origens, error: origensError } = await supabase
+    .from('origens')
+    .select('id')
+    .eq('transportadora_id', transportadoraId);
+
+  if (origensError) throw origensError;
+
+  const origemIds = (origens || []).map((item) => item.id);
+
+  if (origemIds.length) {
+    for (const table of ['taxas_especiais', 'cotacoes', 'rotas', 'generalidades']) {
+      const { error } = await supabase.from(table).delete().in('origem_id', origemIds);
+      if (error) throw error;
+    }
+
+    const { error: origemDeleteError } = await supabase.from('origens').delete().in('id', origemIds);
+    if (origemDeleteError) throw origemDeleteError;
+  }
+
+  const { error } = await supabase.from('transportadoras').delete().eq('id', transportadoraId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+
 function removerCampo(payload, campo) {
   const { [campo]: _removido, ...restante } = payload;
   return restante;

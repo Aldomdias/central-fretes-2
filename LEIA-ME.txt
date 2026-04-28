@@ -1,18 +1,13 @@
-PATCH - Salvar inclusão manual em Transportadoras
+PATCH - Qualquer alteração dentro da transportadora salva no Supabase
 
-Problema:
-A tela estava em modo resumo e as alterações manuais foram bloqueadas para evitar sobrescrever a base completa/snapshot.
-
-Correção:
-- Inclusão/edição manual passa a salvar direto nas tabelas relacionais do Supabase.
+Corrige:
+- Excluir transportadora remove do Supabase.
+- Excluir origem remove origem e dados vinculados do Supabase.
+- Excluir linha de rotas/cotações/taxas remove do Supabase.
+- Excluir tudo em uma seção remove do Supabase.
+- Inclusões e edições continuam salvando direto nas tabelas relacionais.
 - Não grava snapshot gigante.
-- Salva por seção:
-  - transportadora/origem -> cadastros
-  - generalidades -> generalidades
-  - rotas -> rotas
-  - cotações -> cotacoes
-  - taxas especiais -> taxas
-- Atualiza o resumo do dashboard após salvar.
 
-Arquivo alterado:
+Arquivos:
+- src/services/freteDatabaseService.js
 - src/data/store.js

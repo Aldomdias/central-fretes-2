@@ -4,6 +4,10 @@ import {
   carregarResumoBaseDb,
   carregarSnapshotFretesDb,
   carregarTransportadoraCompletaDb,
+  excluirLinhaSecaoDb,
+  excluirOrigemDb,
+  excluirTransportadoraDb,
+  limparSecaoOrigemDb,
   salvarBaseCompletaDb,
   salvarSecaoDb,
 } from '../services/freteDatabaseService';
@@ -282,6 +286,25 @@ export function useFreteStore() {
     salvarAutomaticamente(normalized, acao, secao);
   };
 
+  const finalizarExclusao = async () => {
+    const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
+    setSyncStatus((prev) => ({
+      ...prev,
+      sincronizando: false,
+      fonte: 'supabase-resumo',
+      ultimaSincronizacao: new Date().toISOString(),
+      resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
+    }));
+  };
+
+  const erroExclusao = (error, mensagem) => {
+    setSyncStatus((prev) => ({
+      ...prev,
+      sincronizando: false,
+      erro: error.message || mensagem,
+    }));
+  };
+
   const api = useMemo(
     () => ({
       transportadoras,
@@ -465,19 +488,23 @@ export function useFreteStore() {
         );
       },
       removerOrigem(transportadoraId, origemId) {
-        aplicarAlteracao(
-          (prev) =>
-            prev.map((t) =>
-              t.id !== transportadoraId
-                ? t
-                : {
-                    ...t,
-                    origens: t.origens.filter((o) => o.id !== origemId),
-                  }
-            ),
-          'remoção de origem',
-          'origem'
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.filter((o) => o.id !== origemId),
+                }
+          )
         );
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        excluirOrigemDb(origemId)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, 'Erro ao excluir origem no Supabase.'));
       },
       salvarTransportadora(transportadora) {
         aplicarAlteracao(
@@ -493,7 +520,14 @@ export function useFreteStore() {
         );
       },
       removerTransportadora(id) {
-        aplicarAlteracao((prev) => prev.filter((item) => item.id !== id), 'remoção de transportadora', 'transportadora');
+        setTransportadoras((prev) => (prev || []).filter((item) => item.id !== id));
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        excluirTransportadoraDb(id)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, 'Erro ao excluir transportadora no Supabase.'));
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
         aplicarAlteracao(
@@ -522,46 +556,54 @@ export function useFreteStore() {
         );
       },
       removerLinha(transportadoraId, origemId, secao, linhaId) {
-        aplicarAlteracao(
-          (prev) =>
-            prev.map((t) =>
-              t.id !== transportadoraId
-                ? t
-                : {
-                    ...t,
-                    origens: t.origens.map((o) =>
-                      o.id !== origemId
-                        ? o
-                        : {
-                            ...o,
-                            [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
-                          }
-                    ),
-                  }
-            ),
-          `remoção de ${secao}`,
-          secao
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.map((o) =>
+                    o.id !== origemId
+                      ? o
+                      : {
+                          ...o,
+                          [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
+                        }
+                  ),
+                }
+          )
         );
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        excluirLinhaSecaoDb(secao, linhaId)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, `Erro ao excluir ${secao} no Supabase.`));
       },
       importarPayload(payload, tipo) {
         aplicarAlteracao((prev) => mergeImport(prev, payload, tipo), tipo, tipo);
       },
       limparSecaoOrigem(transportadoraId, origemId, secao) {
-        aplicarAlteracao(
-          (prev) =>
-            prev.map((t) =>
-              t.id !== transportadoraId
-                ? t
-                : {
-                    ...t,
-                    origens: t.origens.map((o) =>
-                      o.id !== origemId ? o : { ...o, [secao]: [] }
-                    ),
-                  }
-            ),
-          `limpeza de ${secao}`,
-          secao
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.map((o) =>
+                    o.id !== origemId ? o : { ...o, [secao]: [] }
+                  ),
+                }
+          )
         );
+
+        if (!bancoConfigurado()) return;
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+        limparSecaoOrigemDb(origemId, secao)
+          .then(finalizarExclusao)
+          .catch((error) => erroExclusao(error, `Erro ao limpar ${secao} no Supabase.`));
       },
     }),
     [transportadoras, syncStatus]
