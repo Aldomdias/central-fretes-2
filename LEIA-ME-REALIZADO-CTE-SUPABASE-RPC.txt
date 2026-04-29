@@ -1,0 +1,29 @@
+CORREÇÃO - Realizado CT-e não subia para Supabase
+
+Sintoma:
+- A tela lia o arquivo e mostrava os CT-e(s), mas a tabela public.realizado_ctes continuava vazia no Supabase.
+
+Correção aplicada:
+1. A importação agora exige Supabase confirmado. Se o front estiver só em localStorage, a importação será bloqueada com erro claro.
+2. Foi criado diagnóstico na tela: botão "Diagnosticar Supabase" mostra projeto, tabela, total de registros e função RPC.
+3. Foi adicionada a função RPC public.importar_realizado_ctes(p_rows jsonb), que grava os lotes diretamente no Supabase e retorna a quantidade confirmada.
+4. Após importar, a tela confirma se as chaves realmente existem na tabela. Se não existirem, ela não mostra sucesso.
+5. O card de confirmação mostra método usado: rpc ou upsert, e o host do projeto Supabase.
+
+IMPORTANTE:
+Antes de testar, rode o script completo:
+  supabase/realizado_ctes_schema.sql
+
+Depois publique o front novamente e clique em:
+  Realizado CT-e > Diagnosticar Supabase
+
+O diagnóstico esperado é:
+  tabela: OK • RPC: OK
+
+Se aparecer "RPC pendente", o script SQL atualizado ainda não foi rodado no Supabase certo.
+
+Arquivos alterados/adicionados:
+- src/pages/RealizadoPage.jsx
+- src/services/freteDatabaseService.js
+- src/lib/supabaseClient.js
+- supabase/realizado_ctes_schema.sql

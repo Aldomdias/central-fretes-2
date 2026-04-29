@@ -3,6 +3,7 @@ import {
   buscarBaseSimulacaoDb,
   carregarMunicipiosIbgeDb,
   carregarOpcoesSimuladorDb,
+  diagnosticarRealizadoSupabaseDb,
   excluirRealizadoCtes,
   listarRealizadoCtes,
   resolverDestinoIbgeDb,
@@ -161,6 +162,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [feedback, setFeedback] = useState('');
   const [importMeta, setImportMeta] = useState(null);
   const [saveMeta, setSaveMeta] = useState(null);
+  const [supabaseDiag, setSupabaseDiag] = useState(null);
   const [resultado, setResultado] = useState(null);
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [inputKey, setInputKey] = useState(fileInputKey());
@@ -241,6 +243,27 @@ export default function RealizadoPage({ transportadoras = [] }) {
     if (resultado) setResultado(null);
   }
 
+  async function diagnosticarSupabase() {
+    setErro('');
+    setFeedback('Conferindo conexão com o Supabase e tabela realizado_ctes...');
+    try {
+      const status = await diagnosticarRealizadoSupabaseDb();
+      setSupabaseDiag(status);
+      if (!status.ok) {
+        setErro(status.erro || 'Não foi possível confirmar o Supabase.');
+        return status;
+      }
+      setFeedback(
+        `Supabase conectado: ${status.host || 'projeto não identificado'} • tabela realizado_ctes com ${Number(status.total || 0).toLocaleString('pt-BR')} registro(s)${status.rpcOk ? ' • função RPC OK' : ' • função RPC pendente'}.`);
+      return status;
+    } catch (error) {
+      const status = { ok: false, erro: error.message || 'Erro ao diagnosticar Supabase.' };
+      setSupabaseDiag(status);
+      setErro(status.erro);
+      return status;
+    }
+  }
+
   async function onImportarArquivo(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -273,11 +296,16 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
       setRows(registros);
 
+      const diagnostico = await diagnosticarSupabase();
+      if (!diagnostico?.ok) {
+        throw new Error(diagnostico?.erro || 'Supabase não confirmado. A importação foi bloqueada para não ficar só local.');
+      }
+
       const save = await salvarRealizadoCtes(registros, {
         chunkSize: 250,
         requireSupabase: true,
-        onProgress: ({ salvos, confirmados, total, modo }) => {
-          const modoTexto = modo === 'local' ? 'local' : 'no Supabase';
+        onProgress: ({ salvos, confirmados, total, modo, metodo }) => {
+          const modoTexto = modo === 'local' ? 'local' : `no Supabase${metodo ? ` via ${metodo}` : ''}`;
           const confirmacaoTexto = confirmados ? ` • confirmados: ${Number(confirmados).toLocaleString('pt-BR')}` : '';
           setFeedback(
             `Salvando realizado ${modoTexto}: ${Number(salvos || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s)${confirmacaoTexto}...`
@@ -291,7 +319,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
       }
 
       setFeedback(
-        `Importação concluída no Supabase: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados de ${file.name}. Atualizando a tela...`
+        `Importação concluída no Supabase: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados de ${file.name}. Projeto: ${save.projeto || diagnostico?.host || '—'} • método: ${save.metodo || '—'}. Atualizando a tela...`
       );
       setInputKey(fileInputKey());
 
@@ -299,7 +327,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
       if (dataAtualizada.length) {
         setRows(dataAtualizada);
         setFeedback(
-          `Base realizada carregada do Supabase com ${dataAtualizada.length.toLocaleString('pt-BR')} CT-e(s). Última importação confirmada: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s).`
+          `Base realizada carregada do Supabase com ${dataAtualizada.length.toLocaleString('pt-BR')} CT-e(s). Última importação confirmada: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s). Projeto: ${save.projeto || diagnostico?.host || '—'} • método: ${save.metodo || '—'}.`
         );
       } else {
         throw new Error('O Supabase confirmou a gravação, mas a consulta da base voltou vazia. Isso indica política de leitura/RLS ou o front apontando para outra base. Rode o script atualizado e confira o projeto do Supabase usado no Vercel.');
@@ -437,6 +465,9 @@ export default function RealizadoPage({ transportadoras = [] }) {
           </p>
         </div>
         <div className="actions-right wrap">
+          <button className="btn-secondary" onClick={diagnosticarSupabase} disabled={carregando || importando || simulando}>
+            Diagnosticar Supabase
+          </button>
           <button className="btn-secondary" onClick={() => carregarBase(filtros)} disabled={carregando || importando || simulando}>
             {carregando ? 'Atualizando...' : 'Atualizar base'}
           </button>
@@ -448,6 +479,13 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
+
+      {supabaseDiag ? (
+        <div className={supabaseDiag.ok ? 'sim-alert success' : 'sim-alert'}>
+          <strong>Diagnóstico Supabase:</strong> {supabaseDiag.host || 'sem projeto'} • tabela: {supabaseDiag.tabelaOk ? 'OK' : 'não confirmada'} • registros: {Number(supabaseDiag.total || 0).toLocaleString('pt-BR')} • RPC: {supabaseDiag.rpcOk ? 'OK' : 'pendente'}
+          {supabaseDiag.erro ? <span> • {supabaseDiag.erro}</span> : null}
+        </div>
+      ) : null}
 
       <div className="summary-strip">
         <SummaryCard title="CT-e(s) no filtro" value={stats.ctes.toLocaleString('pt-BR')} subtitle={`${formatDateBr(stats.periodoInicio)} até ${formatDateBr(stats.periodoFim)}`} />
@@ -474,7 +512,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
           ) : null}
           {saveMeta ? (
             <div className="import-meta-box success">
-              <strong>Supabase:</strong> {String(saveMeta.modo || '').toUpperCase()} • {Number(saveMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados
+              <strong>Supabase:</strong> {String(saveMeta.modo || '').toUpperCase()} • {Number(saveMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados • método: {saveMeta.metodo || '—'} • projeto: {saveMeta.projeto || '—'}
             </div>
           ) : null}
         </section>

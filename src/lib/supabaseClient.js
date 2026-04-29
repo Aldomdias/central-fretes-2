@@ -9,6 +9,24 @@ export function isSupabaseConfigured() {
   return Boolean(supabaseUrl && supabaseAnonKey);
 }
 
+export function getSupabaseInfo() {
+  let host = '';
+  try {
+    host = supabaseUrl ? new URL(supabaseUrl).host : '';
+  } catch {
+    host = String(supabaseUrl || '').replace(/^https?:\/\//, '').split('/')[0];
+  }
+
+  return {
+    configured: isSupabaseConfigured(),
+    url: supabaseUrl || '',
+    host,
+    hasUrl: Boolean(supabaseUrl),
+    hasAnonKey: Boolean(supabaseAnonKey),
+    anonKeyPrefix: supabaseAnonKey ? `${String(supabaseAnonKey).slice(0, 8)}...` : '',
+  };
+}
+
 export function getSupabaseClient() {
   if (!isSupabaseConfigured()) {
     return null;

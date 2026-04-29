@@ -1,4 +1,4 @@
-import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
@@ -1922,35 +1922,44 @@ async function contarChavesRealizadoNoSupabase(supabase, chaves = []) {
   return confirmados;
 }
 
-export async function salvarRealizadoCtes(rows = [], options = {}) {
+function isRpcMissingError(error) {
+  const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+  const code = String(error?.code || '');
+  return code === 'PGRST202' || message.includes('function') || message.includes('rpc') || message.includes('not found') || message.includes('could not find');
+}
+
+async function salvarRealizadoCtesViaRpc(supabase, payload = [], options = {}) {
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-  const requireSupabase = options.requireSupabase === true;
-  const normalized = (rows || []).map(normalizeRealizadoDbRow).filter((row) => row.chaveCte || row.numeroCte);
-  if (!normalized.length) return { ok: true, inseridos: 0, confirmados: 0 };
+  const chunkSize = Number(options.chunkSize || 250) || 250;
+  let confirmados = 0;
 
-  if (!isSupabaseConfigured()) {
-    if (requireSupabase) {
-      throw new Error(
-        'Supabase não configurado no front. A importação não será salva na base online. Confira as variáveis VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel/GitHub e publique novamente.'
-      );
-    }
+  for (let index = 0; index < payload.length; index += chunkSize) {
+    const chunk = payload.slice(index, index + chunkSize);
+    const resposta = await executarComTimeout(
+      supabase.rpc('importar_realizado_ctes', { p_rows: chunk }),
+      90000,
+      'A gravação via função do Supabase demorou demais e foi interrompida. Tente novamente com um período menor.'
+    );
 
-    const atual = readRealizadoLocal();
-    const byKey = new Map(atual.map((row) => [row.chaveCte || `${row.numeroCte}|${row.emissao}`, row]));
-    normalized.forEach((row) => byKey.set(row.chaveCte || `${row.numeroCte}|${row.emissao}`, row));
-    writeRealizadoLocal([...byKey.values()].sort((a, b) => String(b.emissao).localeCompare(String(a.emissao))));
-    onProgress?.({ salvos: normalized.length, confirmados: normalized.length, total: normalized.length, modo: 'local' });
-    return { ok: true, inseridos: normalized.length, confirmados: normalized.length, modo: 'local' };
+    if (resposta?.error) throw resposta.error;
+
+    const qtd = Number(resposta?.data || 0);
+    confirmados += Number.isFinite(qtd) ? qtd : 0;
+    onProgress?.({
+      salvos: Math.min(index + chunk.length, payload.length),
+      confirmados,
+      total: payload.length,
+      modo: 'supabase',
+      metodo: 'rpc',
+    });
+    await aguardar(0);
   }
 
-  const supabase = ensureClient();
-  await validarTabelaRealizadoCtes(supabase);
+  return confirmados;
+}
 
-  const payload = normalized.map(sanitizeRealizadoDbRow).filter((row) => row.chave_cte);
-  if (!payload.length) {
-    throw new Error('A planilha foi lida, mas nenhum CT-e ficou com chave para salvar. Confira se existe coluna Chave CT-e ou Número CT-e.');
-  }
-
+async function salvarRealizadoCtesViaUpsert(supabase, payload = [], options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const chunkSize = Number(options.chunkSize || 250) || 250;
   let retornadosSupabase = 0;
 
@@ -1970,14 +1979,105 @@ export async function salvarRealizadoCtes(rows = [], options = {}) {
     }
 
     retornadosSupabase += Array.isArray(resposta?.data) ? resposta.data.length : 0;
-
     onProgress?.({
       salvos: Math.min(index + chunk.length, payload.length),
       confirmados: retornadosSupabase,
       total: payload.length,
       modo: 'supabase',
+      metodo: 'upsert',
     });
     await aguardar(0);
+  }
+
+  return retornadosSupabase;
+}
+
+export async function diagnosticarRealizadoSupabaseDb() {
+  const info = getSupabaseInfo();
+  if (!info.configured) {
+    return {
+      ok: false,
+      configured: false,
+      host: info.host,
+      total: 0,
+      erro: 'Supabase não configurado no front. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel.',
+    };
+  }
+
+  const supabase = ensureClient();
+  const status = {
+    ok: false,
+    configured: true,
+    host: info.host,
+    total: 0,
+    tabelaOk: false,
+    rpcOk: false,
+    erro: '',
+  };
+
+  const tabela = await supabase
+    .from('realizado_ctes')
+    .select('id', { count: 'exact', head: true });
+
+  if (tabela.error) {
+    status.erro = `Tabela realizado_ctes não respondeu: ${tabela.error.message}`;
+    return status;
+  }
+
+  status.tabelaOk = true;
+  status.total = Number(tabela.count || 0);
+
+  const rpc = await supabase.rpc('diagnosticar_realizado_ctes');
+  if (!rpc.error) {
+    status.rpcOk = true;
+    status.total = Number(rpc.data?.total ?? status.total ?? 0);
+  }
+
+  status.ok = true;
+  return status;
+}
+
+export async function salvarRealizadoCtes(rows = [], options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const requireSupabase = options.requireSupabase === true;
+  const normalized = (rows || []).map(normalizeRealizadoDbRow).filter((row) => row.chaveCte || row.numeroCte);
+  if (!normalized.length) return { ok: true, inseridos: 0, confirmados: 0 };
+
+  if (!isSupabaseConfigured()) {
+    if (requireSupabase) {
+      throw new Error(
+        'Supabase não configurado no front. A importação não será salva na base online. Confira as variáveis VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel/GitHub e publique novamente.'
+      );
+    }
+
+    const atual = readRealizadoLocal();
+    const byKey = new Map(atual.map((row) => [row.chaveCte || `${row.numeroCte}|${row.emissao}`, row]));
+    normalized.forEach((row) => byKey.set(row.chaveCte || `${row.numeroCte}|${row.emissao}`, row));
+    writeRealizadoLocal([...byKey.values()].sort((a, b) => String(b.emissao).localeCompare(String(a.emissao))));
+    onProgress?.({ salvos: normalized.length, confirmados: normalized.length, total: normalized.length, modo: 'local', metodo: 'local' });
+    return { ok: true, inseridos: normalized.length, confirmados: normalized.length, modo: 'local', metodo: 'local' };
+  }
+
+  const supabase = ensureClient();
+  await validarTabelaRealizadoCtes(supabase);
+
+  const payload = normalized.map(sanitizeRealizadoDbRow).filter((row) => row.chave_cte);
+  if (!payload.length) {
+    throw new Error('A planilha foi lida, mas nenhum CT-e ficou com chave para salvar. Confira se existe coluna Chave CT-e ou Número CT-e.');
+  }
+
+  let retornadosSupabase = 0;
+  let metodo = 'rpc';
+
+  try {
+    retornadosSupabase = await salvarRealizadoCtesViaRpc(supabase, payload, options);
+  } catch (rpcError) {
+    if (!isRpcMissingError(rpcError)) {
+      throw new Error(`Erro ao salvar via função importar_realizado_ctes. Rode novamente o script supabase/realizado_ctes_schema.sql. Detalhe: ${rpcError.message || rpcError}`);
+    }
+
+    metodo = 'upsert';
+    retornadosSupabase = await salvarRealizadoCtesViaUpsert(supabase, payload, options);
   }
 
   const confirmados = await contarChavesRealizadoNoSupabase(
@@ -1986,8 +2086,9 @@ export async function salvarRealizadoCtes(rows = [], options = {}) {
   );
 
   if (!confirmados) {
+    const info = getSupabaseInfo();
     throw new Error(
-      'A chamada de gravação terminou, mas nenhuma linha foi confirmada na tabela realizado_ctes. Isso normalmente é RLS/permissão no Supabase ou o front apontando para outro projeto. Rode o script atualizado supabase/realizado_ctes_schema.sql e confira as variáveis do Vercel.'
+      `A chamada de gravação terminou, mas nenhuma linha foi confirmada na tabela realizado_ctes. Projeto do front: ${info.host || 'não identificado'}. Isso normalmente é RLS/permissão, script SQL não rodado ou Vercel apontando para outro Supabase.`
     );
   }
 
@@ -1998,6 +2099,8 @@ export async function salvarRealizadoCtes(rows = [], options = {}) {
     retornadosSupabase,
     lidos: normalized.length,
     modo: 'supabase',
+    metodo,
+    projeto: getSupabaseInfo().host,
   };
 }
 
