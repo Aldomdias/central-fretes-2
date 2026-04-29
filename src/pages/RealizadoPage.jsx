@@ -28,6 +28,37 @@ const DEFAULT_FILTROS = {
   transportadora: '',
 };
 
+const REALIZADO_FOLDER_HISTORY_KEY = 'amd-realizado-ctes-pasta-importados-v1';
+const EXTENSOES_REALIZADO = ['.xlsx', '.xls', '.csv'];
+
+function isArquivoRealizadoImportavel(file) {
+  const nome = String(file?.name || '').toLowerCase();
+  return EXTENSOES_REALIZADO.some((ext) => nome.endsWith(ext));
+}
+
+function getArquivoAssinatura(file) {
+  const caminho = String(file?.webkitRelativePath || file?.name || '').trim();
+  return [caminho, file?.size || 0, file?.lastModified || 0].join('|');
+}
+
+function lerHistoricoPastaRealizado() {
+  try {
+    const raw = localStorage.getItem(REALIZADO_FOLDER_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function salvarHistoricoPastaRealizado(historySet) {
+  try {
+    localStorage.setItem(REALIZADO_FOLDER_HISTORY_KEY, JSON.stringify([...historySet]));
+  } catch {
+    // Se o navegador bloquear localStorage, o upsert no Supabase ainda evita duplicidade de CT-e.
+  }
+}
+
 function SummaryCard({ title, value, subtitle }) {
   return (
     <div className="summary-card">
@@ -266,6 +297,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [feedback, setFeedback] = useState('');
   const [importMeta, setImportMeta] = useState(null);
   const [saveMeta, setSaveMeta] = useState(null);
+  const [folderMeta, setFolderMeta] = useState(null);
   const [supabaseDiag, setSupabaseDiag] = useState(null);
   const [mostrarPendencias, setMostrarPendencias] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -274,6 +306,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [inputKey, setInputKey] = useState(fileInputKey());
   const ibgeCacheRef = useRef(new Map());
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
 
   async function carregarBase(filtrosCarga = filtros) {
     setCarregando(true);
@@ -389,66 +422,60 @@ export default function RealizadoPage({ transportadoras = [] }) {
     }
   }
 
-  async function onImportarArquivo(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  async function importarArquivoRealizado(file, options = {}) {
+    const { diagnosticoPreValidado = null, atualizarTelaFinal = true, origem = 'arquivo' } = options;
+    const nomeExibicao = file.webkitRelativePath || file.name;
 
-    setImportando(true);
     setErro('');
     setResultado(null);
-    setImportMeta(null);
-    setSaveMeta(null);
-    setFeedback(`Arquivo selecionado: ${file.name} (${(file.size / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB). Lendo a planilha...`);
+    setFeedback(`Arquivo selecionado: ${nomeExibicao} (${(file.size / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB). Lendo a planilha...`);
 
-    try {
-      const { registros, meta } = await parseRealizadoCtesFile(file);
-      setImportMeta(meta);
+    const { registros, meta } = await parseRealizadoCtesFile(file);
+    setImportMeta({ ...meta, arquivo: nomeExibicao });
 
-      if (!registros.length) {
-        setErro(
-          `Nenhum CT-e válido encontrado na aba ${meta.aba || 'selecionada'}. Linhas lidas: ${Number(meta.linhasOriginais || 0).toLocaleString('pt-BR')}. Confira se existem as colunas Chave CTE, Valor CTE, Valor NF e as cidades/UFs.`
-        );
-        return;
-      }
-
-      const avisoRef = meta.refFoiCorrigida
-        ? ` A referência interna da aba veio como ${meta.refOriginal || 'vazia'} e foi corrigida para ${meta.refCorrigida}.`
-        : '';
-
-      setFeedback(
-        `Arquivo lido na aba ${meta.aba}: ${meta.registrosValidos.toLocaleString('pt-BR')} CT-e(s) válidos de ${meta.linhasOriginais.toLocaleString('pt-BR')} linha(s).${avisoRef} Salvando no Supabase...`
+    if (!registros.length) {
+      throw new Error(
+        `Nenhum CT-e válido encontrado em ${nomeExibicao}, aba ${meta.aba || 'selecionada'}. Linhas lidas: ${Number(meta.linhasOriginais || 0).toLocaleString('pt-BR')}. Confira se existem as colunas Chave CTE, Valor CTE, Valor NF e as cidades/UFs.`
       );
+    }
 
-      setRows(registros);
+    const avisoRef = meta.refFoiCorrigida
+      ? ` A referência interna da aba veio como ${meta.refOriginal || 'vazia'} e foi corrigida para ${meta.refCorrigida}.`
+      : '';
 
-      const diagnostico = await diagnosticarSupabase();
-      if (!diagnostico?.ok) {
-        throw new Error(diagnostico?.erro || 'Supabase não confirmado. A importação foi bloqueada para não ficar só local.');
-      }
+    setFeedback(
+      `Arquivo lido (${origem}): ${nomeExibicao} • aba ${meta.aba}: ${meta.registrosValidos.toLocaleString('pt-BR')} CT-e(s) válidos de ${meta.linhasOriginais.toLocaleString('pt-BR')} linha(s).${avisoRef} Salvando no Supabase...`
+    );
 
-      const save = await salvarRealizadoCtes(registros, {
-        chunkSize: 250,
-        requireSupabase: true,
-        onProgress: ({ salvos, confirmados, total, modo, metodo }) => {
-          const modoTexto = modo === 'local' ? 'local' : `no Supabase${metodo ? ` via ${metodo}` : ''}`;
-          const confirmacaoTexto = confirmados ? ` • confirmados: ${Number(confirmados).toLocaleString('pt-BR')}` : '';
-          setFeedback(
-            `Salvando realizado ${modoTexto}: ${Number(salvos || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s)${confirmacaoTexto}...`
-          );
-        },
-      });
-      setSaveMeta(save);
+    const diagnostico = diagnosticoPreValidado || await diagnosticarSupabase();
+    if (!diagnostico?.ok) {
+      throw new Error(diagnostico?.erro || 'Supabase não confirmado. A importação foi bloqueada para não ficar só local.');
+    }
 
-      if (!save.inseridos || !save.confirmados) {
-        throw new Error('A planilha foi lida, mas o Supabase não confirmou nenhuma gravação. Confira se a tabela realizado_ctes existe, se o script atualizado foi rodado e se as variáveis do Vercel apontam para o projeto correto.');
-      }
+    const save = await salvarRealizadoCtes(registros, {
+      chunkSize: 250,
+      requireSupabase: true,
+      onProgress: ({ salvos, confirmados, total, modo, metodo }) => {
+        const modoTexto = modo === 'local' ? 'local' : `no Supabase${metodo ? ` via ${metodo}` : ''}`;
+        const confirmacaoTexto = confirmados ? ` • confirmados: ${Number(confirmados).toLocaleString('pt-BR')}` : '';
+        setFeedback(
+          `Salvando ${nomeExibicao} ${modoTexto}: ${Number(salvos || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s)${confirmacaoTexto}...`
+        );
+      },
+    });
+    setSaveMeta(save);
 
+    if (!save.inseridos || !save.confirmados) {
+      throw new Error(`A planilha ${nomeExibicao} foi lida, mas o Supabase não confirmou nenhuma gravação. Confira se a tabela realizado_ctes existe, se o script atualizado foi rodado e se as variáveis do Vercel apontam para o projeto correto.`);
+    }
+
+    if (atualizarTelaFinal) {
       setFeedback(
-        `Importação concluída no Supabase: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados de ${file.name}. Projeto: ${save.projeto || diagnostico?.host || '—'} • método: ${save.metodo || '—'}. Atualizando a tela...`
+        `Importação concluída no Supabase: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados de ${nomeExibicao}. Projeto: ${save.projeto || diagnostico?.host || '—'} • método: ${save.metodo || '—'}. Atualizando a tela...`
       );
       setInputKey(fileInputKey());
 
-      const dataAtualizada = await listarRealizadoCtes({ limit: 15000 });
+      const dataAtualizada = await listarRealizadoCtes({ limit: 15000, incluirSemCanal: true });
       if (dataAtualizada.length) {
         setRows(dataAtualizada);
         setFeedback(
@@ -457,8 +484,93 @@ export default function RealizadoPage({ transportadoras = [] }) {
       } else {
         throw new Error('O Supabase confirmou a gravação, mas a consulta da base voltou vazia. Isso indica política de leitura/RLS ou o front apontando para outra base. Rode o script atualizado e confira o projeto do Supabase usado no Vercel.');
       }
+    }
+
+    return { registros, meta, save, arquivo: nomeExibicao };
+  }
+
+  async function onImportarArquivo(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setImportando(true);
+    setErro('');
+    setFolderMeta(null);
+    setImportMeta(null);
+    setSaveMeta(null);
+
+    try {
+      await importarArquivoRealizado(file, { origem: 'arquivo único' });
     } catch (error) {
       setErro(error.message || 'Erro ao importar realizado.');
+    } finally {
+      setImportando(false);
+      if (event.target) event.target.value = '';
+    }
+  }
+
+  async function onImportarPasta(event) {
+    const files = Array.from(event.target.files || []).filter(isArquivoRealizadoImportavel);
+    if (!files.length) {
+      setErro('Nenhum arquivo .xlsx, .xls ou .csv encontrado na pasta selecionada.');
+      if (event.target) event.target.value = '';
+      return;
+    }
+
+    const history = lerHistoricoPastaRealizado();
+    const novos = files.filter((file) => !history.has(getArquivoAssinatura(file)));
+    const ignorados = files.length - novos.length;
+
+    setImportando(true);
+    setErro('');
+    setResultado(null);
+    setImportMeta(null);
+    setSaveMeta(null);
+    setFolderMeta({ total: files.length, novos: novos.length, ignorados, processados: 0, importados: 0, confirmados: 0, erros: [] });
+
+    try {
+      if (!novos.length) {
+        setFeedback(`Pasta selecionada com ${files.length.toLocaleString('pt-BR')} arquivo(s), mas todos já constam no histórico deste navegador. Nada novo para subir.`);
+        return;
+      }
+
+      const diagnostico = await diagnosticarSupabase();
+      if (!diagnostico?.ok) {
+        throw new Error(diagnostico?.erro || 'Supabase não confirmado. A importação da pasta foi bloqueada.');
+      }
+
+      let importados = 0;
+      let confirmados = 0;
+      const erros = [];
+
+      for (let index = 0; index < novos.length; index += 1) {
+        const file = novos[index];
+        const nomeExibicao = file.webkitRelativePath || file.name;
+        setFolderMeta({ total: files.length, novos: novos.length, ignorados, processados: index, importados, confirmados, erros });
+        setFeedback(`Importando pasta: arquivo ${index + 1} de ${novos.length} • ${nomeExibicao}`);
+        await nextFrame();
+
+        try {
+          const result = await importarArquivoRealizado(file, {
+            diagnosticoPreValidado: diagnostico,
+            atualizarTelaFinal: false,
+            origem: 'pasta',
+          });
+          importados += 1;
+          confirmados += Number(result?.save?.confirmados || 0);
+          history.add(getArquivoAssinatura(file));
+          salvarHistoricoPastaRealizado(history);
+        } catch (errorArquivo) {
+          erros.push({ arquivo: nomeExibicao, erro: errorArquivo.message || 'Erro ao importar arquivo.' });
+        }
+      }
+
+      setFolderMeta({ total: files.length, novos: novos.length, ignorados, processados: novos.length, importados, confirmados, erros });
+      setFeedback(`Importação da pasta concluída: ${importados.toLocaleString('pt-BR')} arquivo(s) novo(s) importado(s), ${ignorados.toLocaleString('pt-BR')} já conhecido(s), ${confirmados.toLocaleString('pt-BR')} CT-e(s) confirmados${erros.length ? ` e ${erros.length.toLocaleString('pt-BR')} arquivo(s) com erro` : ''}. Atualizando base...`);
+      setInputKey(fileInputKey());
+      await carregarBase(filtros);
+    } catch (error) {
+      setErro(error.message || 'Erro ao importar pasta do realizado.');
     } finally {
       setImportando(false);
       if (event.target) event.target.value = '';
@@ -814,12 +926,29 @@ export default function RealizadoPage({ transportadoras = [] }) {
             <p>Modelo esperado: planilha com aba Registros e colunas como Transportadora, Emissão, Chave CTE, Valor CTE, Peso, Valor NF, CEP/Cidade origem e destino.</p>
           </div>
           <input key={inputKey} ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={onImportarArquivo} disabled={importando || simulando} />
+          <input ref={folderInputRef} type="file" accept=".xlsx,.xls,.csv" multiple webkitdirectory="" directory="" onChange={onImportarPasta} disabled={importando || simulando} style={{ display: 'none' }} />
           <button className="btn-primary" onClick={() => fileInputRef.current?.click()} disabled={importando || simulando}>
             {importando ? 'Importando...' : 'Selecionar arquivo realizado'}
           </button>
+          <button className="btn-secondary" onClick={() => folderInputRef.current?.click()} disabled={importando || simulando}>
+            Mapear pasta e subir novos
+          </button>
+          <p className="muted-text">A pasta é selecionada pelo navegador. O sistema ignora arquivos já importados neste navegador e o Supabase evita duplicar CT-e pela chave.</p>
+          {folderMeta ? (
+            <div className="import-meta-box">
+              <strong>Pasta:</strong> {Number(folderMeta.total || 0).toLocaleString('pt-BR')} arquivo(s) encontrados • {Number(folderMeta.novos || 0).toLocaleString('pt-BR')} novo(s) • {Number(folderMeta.ignorados || 0).toLocaleString('pt-BR')} já conhecido(s) • {Number(folderMeta.processados || 0).toLocaleString('pt-BR')} processado(s)
+              {folderMeta.confirmados ? <span> • {Number(folderMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados</span> : null}
+              {folderMeta.erros?.length ? <span> • {folderMeta.erros.length.toLocaleString('pt-BR')} erro(s)</span> : null}
+            </div>
+          ) : null}
+          {folderMeta?.erros?.length ? (
+            <div className="import-meta-box danger">
+              <strong>Arquivos com erro:</strong> {folderMeta.erros.slice(0, 3).map((item) => `${item.arquivo}: ${item.erro}`).join(' | ')}
+            </div>
+          ) : null}
           {importMeta ? (
             <div className="import-meta-box">
-              <strong>Última leitura:</strong> aba {importMeta.aba || '—'} • {Number(importMeta.registrosValidos || 0).toLocaleString('pt-BR')} CT-e(s) válidos
+              <strong>Última leitura:</strong> {importMeta.arquivo ? `${importMeta.arquivo} • ` : ''}aba {importMeta.aba || '—'} • {Number(importMeta.registrosValidos || 0).toLocaleString('pt-BR')} CT-e(s) válidos
               {importMeta.refFoiCorrigida ? <span> • intervalo corrigido de {importMeta.refOriginal || 'vazio'} para {importMeta.refCorrigida}</span> : null}
             </div>
           ) : null}
