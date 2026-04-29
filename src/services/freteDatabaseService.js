@@ -1840,17 +1840,22 @@ function filtrarRealizadoLocal(rows = [], filtros = {}) {
   });
 }
 
-export async function listarRealizadoCtes(filtros = {}) {
-  if (!isSupabaseConfigured()) {
-    return filtrarRealizadoLocal(readRealizadoLocal(), filtros).slice(0, filtros.limit || REALIZADO_LOCAL_LIMIT);
-  }
+function isCanalRealizadoPreenchido(value) {
+  return String(value ?? '').trim().length > 0;
+}
 
-  const supabase = ensureClient();
+function aplicarFiltroSemCanal(rows = [], filtros = {}) {
+  const incluirSemCanal = filtros.incluirSemCanal !== false;
+  if (incluirSemCanal) return rows;
+  return rows.filter((row) => isCanalRealizadoPreenchido(row.canal));
+}
+
+async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
   const limit = Number(filtros.limit || 10000) || 10000;
   let query = supabase
     .from('realizado_ctes')
     .select('*')
-    .order('emissao', { ascending: false })
+    .order('criado_em', { ascending: false })
     .limit(limit);
 
   if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
@@ -1858,13 +1863,51 @@ export async function listarRealizadoCtes(filtros = {}) {
   if (filtros.canal) query = query.eq('canal', filtros.canal);
   if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
+  if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
+  if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
 
   const { data, error } = await query;
-  if (error) {
-    throw new Error(`Erro ao carregar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql. Detalhe: ${error.message}`);
+  if (error) throw error;
+  return (data || []).map(normalizeRealizadoDbRow);
+}
+
+async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
+  const resposta = await supabase.rpc('listar_realizado_ctes', {
+    p_limit: Number(filtros.limit || 10000) || 10000,
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_canal: filtros.canal || null,
+    p_origem: filtros.origem || null,
+    p_uf_destino: filtros.ufDestino || null,
+    p_incluir_sem_canal: filtros.incluirSemCanal !== false,
+    p_somente_sem_canal: filtros.somenteSemCanal === true,
+  });
+
+  if (resposta?.error) throw resposta.error;
+  return (resposta?.data || []).map(normalizeRealizadoDbRow);
+}
+
+export async function listarRealizadoCtes(filtros = {}) {
+  if (!isSupabaseConfigured()) {
+    const locais = filtrarRealizadoLocal(readRealizadoLocal(), filtros);
+    return aplicarFiltroSemCanal(locais, filtros).slice(0, filtros.limit || REALIZADO_LOCAL_LIMIT);
   }
 
-  return (data || []).map(normalizeRealizadoDbRow);
+  const supabase = ensureClient();
+
+  try {
+    return await listarRealizadoCtesViaRpc(supabase, filtros);
+  } catch (rpcError) {
+    if (!isRpcMissingError(rpcError)) {
+      throw new Error(`Erro ao carregar realizado_ctes via Supabase. Detalhe: ${rpcError.message || rpcError}`);
+    }
+
+    try {
+      return await listarRealizadoCtesViaSelect(supabase, filtros);
+    } catch (selectError) {
+      throw new Error(`Erro ao carregar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql atualizado. Detalhe: ${selectError.message || selectError}`);
+    }
+  }
 }
 
 function aguardar(ms = 0) {
@@ -2010,8 +2053,11 @@ export async function diagnosticarRealizadoSupabaseDb() {
     configured: true,
     host: info.host,
     total: 0,
+    comCanal: 0,
+    semCanal: 0,
     tabelaOk: false,
     rpcOk: false,
+    listagemRpcOk: false,
     erro: '',
   };
 
@@ -2031,7 +2077,21 @@ export async function diagnosticarRealizadoSupabaseDb() {
   if (!rpc.error) {
     status.rpcOk = true;
     status.total = Number(rpc.data?.total ?? status.total ?? 0);
+    status.comCanal = Number(rpc.data?.com_canal ?? status.comCanal ?? 0);
+    status.semCanal = Number(rpc.data?.sem_canal ?? status.semCanal ?? 0);
   }
+
+  const listagem = await supabase.rpc('listar_realizado_ctes', {
+    p_limit: 1,
+    p_inicio: null,
+    p_fim: null,
+    p_canal: null,
+    p_origem: null,
+    p_uf_destino: null,
+    p_incluir_sem_canal: true,
+    p_somente_sem_canal: false,
+  });
+  if (!listagem.error) status.listagemRpcOk = true;
 
   status.ok = true;
   return status;
@@ -2107,6 +2167,12 @@ export async function salvarRealizadoCtes(rows = [], options = {}) {
 export async function excluirRealizadoCtes(filtros = {}) {
   if (!isSupabaseConfigured()) {
     const atual = readRealizadoLocal();
+    if (filtros.somenteSemCanal) {
+      const restantes = atual.filter((row) => isCanalRealizadoPreenchido(row.canal));
+      writeRealizadoLocal(restantes);
+      return { ok: true, removidos: atual.length - restantes.length, modo: 'local' };
+    }
+
     if (!filtros.inicio && !filtros.fim && !filtros.arquivoOrigem) {
       writeRealizadoLocal([]);
       return { ok: true, removidos: atual.length, modo: 'local' };
@@ -2119,13 +2185,26 @@ export async function excluirRealizadoCtes(filtros = {}) {
   }
 
   const supabase = ensureClient();
+
+  if (filtros.somenteSemCanal) {
+    const rpc = await supabase.rpc('excluir_realizado_ctes_sem_canal');
+    if (!rpc.error) {
+      return { ok: true, removidos: Number(rpc.data || 0), modo: 'supabase', metodo: 'rpc' };
+    }
+
+    if (!isRpcMissingError(rpc.error)) {
+      throw new Error(`Erro ao excluir pendências sem canal. Detalhe: ${rpc.error.message}`);
+    }
+  }
+
   let query = supabase.from('realizado_ctes').delete();
 
   if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
   if (filtros.arquivoOrigem) query = query.eq('arquivo_origem', filtros.arquivoOrigem);
+  if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
 
-  if (!filtros.inicio && !filtros.fim && !filtros.arquivoOrigem) {
+  if (!filtros.inicio && !filtros.fim && !filtros.arquivoOrigem && !filtros.somenteSemCanal) {
     query = query.neq('chave_cte', '__nunca__');
   }
 

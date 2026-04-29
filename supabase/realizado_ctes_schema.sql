@@ -82,6 +82,8 @@ as $$
   select jsonb_build_object(
     'tabela', 'realizado_ctes',
     'total', count(*),
+    'com_canal', count(*) filter (where nullif(btrim(coalesce(canal, '')), '') is not null),
+    'sem_canal', count(*) filter (where nullif(btrim(coalesce(canal, '')), '') is null),
     'ultima_importacao', max(criado_em),
     'ultima_atualizacao', max(updated_at)
   )
@@ -89,6 +91,62 @@ as $$
 $$;
 
 grant execute on function public.diagnosticar_realizado_ctes() to anon, authenticated;
+
+-- Listagem via RPC para evitar o caso em que gravou, mas a tela não consegue puxar de volta por filtro/permissão/query.
+create or replace function public.listar_realizado_ctes(
+  p_limit integer default 10000,
+  p_inicio date default null,
+  p_fim date default null,
+  p_canal text default null,
+  p_origem text default null,
+  p_uf_destino text default null,
+  p_incluir_sem_canal boolean default true,
+  p_somente_sem_canal boolean default false
+)
+returns setof public.realizado_ctes
+language sql
+security definer
+set search_path = public
+as $$
+  select r.*
+  from public.realizado_ctes r
+  where (p_inicio is null or r.emissao >= p_inicio::timestamptz)
+    and (p_fim is null or r.emissao <= (p_fim::timestamp + interval '1 day' - interval '1 second')::timestamptz)
+    and (nullif(btrim(coalesce(p_canal, '')), '') is null or upper(coalesce(r.canal, '')) = upper(btrim(p_canal)))
+    and (nullif(btrim(coalesce(p_origem, '')), '') is null or lower(coalesce(r.cidade_origem, '')) like '%' || lower(btrim(p_origem)) || '%')
+    and (nullif(btrim(coalesce(p_uf_destino, '')), '') is null or upper(coalesce(r.uf_destino, '')) = upper(btrim(p_uf_destino)))
+    and (
+      p_incluir_sem_canal
+      or nullif(btrim(coalesce(r.canal, '')), '') is not null
+    )
+    and (
+      not p_somente_sem_canal
+      or nullif(btrim(coalesce(r.canal, '')), '') is null
+    )
+  order by r.criado_em desc, r.emissao desc nulls last
+  limit greatest(1, least(coalesce(p_limit, 10000), 50000));
+$$;
+
+grant execute on function public.listar_realizado_ctes(integer, date, date, text, text, text, boolean, boolean) to anon, authenticated;
+
+create or replace function public.excluir_realizado_ctes_sem_canal()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count integer := 0;
+begin
+  delete from public.realizado_ctes
+  where nullif(btrim(coalesce(canal, '')), '') is null;
+
+  get diagnostics v_count = row_count;
+  return coalesce(v_count, 0);
+end;
+$$;
+
+grant execute on function public.excluir_realizado_ctes_sem_canal() to anon, authenticated;
 
 -- Função RPC usada pelo front para importar lotes e receber a quantidade efetivamente gravada.
 -- Ela evita o caso de a tela ler a planilha, mas o insert direto do navegador não confirmar nada.

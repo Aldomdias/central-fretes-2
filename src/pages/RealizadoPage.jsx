@@ -101,6 +101,10 @@ function fileInputKey() {
   return `realizado-${Date.now()}`;
 }
 
+function hasCanalRealizado(row = {}) {
+  return String(row.canal || '').trim().length > 0;
+}
+
 function exportarCsvAnalise(resultado, transportadora) {
   const linhas = [
     [
@@ -163,6 +167,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [importMeta, setImportMeta] = useState(null);
   const [saveMeta, setSaveMeta] = useState(null);
   const [supabaseDiag, setSupabaseDiag] = useState(null);
+  const [mostrarPendencias, setMostrarPendencias] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [inputKey, setInputKey] = useState(fileInputKey());
@@ -180,9 +185,16 @@ export default function RealizadoPage({ transportadoras = [] }) {
         origem: filtrosCarga.origem,
         ufDestino: filtrosCarga.ufDestino,
         limit: 15000,
+        incluirSemCanal: true,
       });
       setRows(data);
-      setFeedback(data.length ? `Base realizada carregada com ${data.length.toLocaleString('pt-BR')} CT-e(s).` : 'Nenhum CT-e encontrado para os filtros atuais.');
+      const comCanal = data.filter(hasCanalRealizado).length;
+      const semCanal = data.length - comCanal;
+      setFeedback(
+        data.length
+          ? `Base realizada carregada com ${data.length.toLocaleString('pt-BR')} CT-e(s): ${comCanal.toLocaleString('pt-BR')} com canal e ${semCanal.toLocaleString('pt-BR')} pendência(s) sem canal.`
+          : 'Nenhum CT-e encontrado para os filtros atuais.'
+      );
     } catch (error) {
       setErro(error.message || 'Erro ao carregar base realizada.');
     } finally {
@@ -218,7 +230,10 @@ export default function RealizadoPage({ transportadoras = [] }) {
     };
   }, []);
 
-  const rowsFiltradas = useMemo(() => filtrarRows(rows, filtros), [rows, filtros]);
+  const rowsValidas = useMemo(() => rows.filter(hasCanalRealizado), [rows]);
+  const rowsSemCanal = useMemo(() => rows.filter((row) => !hasCanalRealizado(row)), [rows]);
+  const rowsFiltradas = useMemo(() => filtrarRows(rowsValidas, filtros), [rowsValidas, filtros]);
+  const pendenciasFiltradas = useMemo(() => filtrarRows(rowsSemCanal, { ...filtros, canal: '' }), [rowsSemCanal, filtros]);
   const stats = useMemo(() => statsRealizado(rowsFiltradas), [rowsFiltradas]);
   const canaisDisponiveis = useMemo(() => {
     const fromRows = rows.map((item) => item.canal).filter(Boolean);
@@ -254,7 +269,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
         return status;
       }
       setFeedback(
-        `Supabase conectado: ${status.host || 'projeto não identificado'} • tabela realizado_ctes com ${Number(status.total || 0).toLocaleString('pt-BR')} registro(s)${status.rpcOk ? ' • função RPC OK' : ' • função RPC pendente'}.`);
+        `Supabase conectado: ${status.host || 'projeto não identificado'} • total ${Number(status.total || 0).toLocaleString('pt-BR')} • com canal ${Number(status.comCanal || 0).toLocaleString('pt-BR')} • sem canal ${Number(status.semCanal || 0).toLocaleString('pt-BR')}${status.rpcOk ? ' • RPC OK' : ' • RPC pendente'}${status.listagemRpcOk ? ' • listagem OK' : ' • listagem pendente'}.`);
       return status;
     } catch (error) {
       const status = { ok: false, erro: error.message || 'Erro ao diagnosticar Supabase.' };
@@ -402,6 +417,32 @@ export default function RealizadoPage({ transportadoras = [] }) {
     return enriquecidos;
   }
 
+  async function excluirPendenciasSemCanal() {
+    const total = rowsSemCanal.length;
+    if (!total) {
+      setFeedback('Não há pendências sem canal para excluir.');
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `Tem certeza que deseja excluir ${total.toLocaleString('pt-BR')} CT-e(s) sem canal? Essa limpeza remove apenas os registros pendentes, não mexe nos CT-e(s) com canal.`
+    );
+    if (!confirmar) return;
+
+    setCarregando(true);
+    setErro('');
+    try {
+      const resp = await excluirRealizadoCtes({ somenteSemCanal: true });
+      const removidos = Number(resp?.removidos ?? total);
+      setFeedback(`${removidos.toLocaleString('pt-BR')} pendência(s) sem canal excluída(s). Atualizando base...`);
+      await carregarBase(filtros);
+    } catch (error) {
+      setErro(error.message || 'Erro ao excluir pendências sem canal.');
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   async function onSimular() {
     if (!filtros.transportadora) {
       setErro('Escolha uma transportadora para simular no realizado.');
@@ -482,17 +523,59 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
       {supabaseDiag ? (
         <div className={supabaseDiag.ok ? 'sim-alert success' : 'sim-alert'}>
-          <strong>Diagnóstico Supabase:</strong> {supabaseDiag.host || 'sem projeto'} • tabela: {supabaseDiag.tabelaOk ? 'OK' : 'não confirmada'} • registros: {Number(supabaseDiag.total || 0).toLocaleString('pt-BR')} • RPC: {supabaseDiag.rpcOk ? 'OK' : 'pendente'}
+          <strong>Diagnóstico Supabase:</strong> {supabaseDiag.host || 'sem projeto'} • tabela: {supabaseDiag.tabelaOk ? 'OK' : 'não confirmada'} • total: {Number(supabaseDiag.total || 0).toLocaleString('pt-BR')} • com canal: {Number(supabaseDiag.comCanal || 0).toLocaleString('pt-BR')} • sem canal: {Number(supabaseDiag.semCanal || 0).toLocaleString('pt-BR')} • importar: {supabaseDiag.rpcOk ? 'OK' : 'pendente'} • puxar: {supabaseDiag.listagemRpcOk ? 'OK' : 'pendente'}
           {supabaseDiag.erro ? <span> • {supabaseDiag.erro}</span> : null}
         </div>
       ) : null}
 
       <div className="summary-strip">
-        <SummaryCard title="CT-e(s) no filtro" value={stats.ctes.toLocaleString('pt-BR')} subtitle={`${formatDateBr(stats.periodoInicio)} até ${formatDateBr(stats.periodoFim)}`} />
-        <SummaryCard title="Frete realizado" value={formatCurrency(stats.valorCte)} subtitle="Soma do Valor CT-e" />
+        <SummaryCard title="CT-e(s) válidos" value={stats.ctes.toLocaleString('pt-BR')} subtitle={`${formatDateBr(stats.periodoInicio)} até ${formatDateBr(stats.periodoFim)}`} />
+        <SummaryCard title="Frete realizado" value={formatCurrency(stats.valorCte)} subtitle="Soma do Valor CT-e com canal" />
         <SummaryCard title="Valor NF" value={formatCurrency(stats.valorNF)} subtitle="Base para % de frete" />
-        <SummaryCard title="% frete realizado" value={formatPercent(stats.percentualFrete)} subtitle="Frete realizado / NF" />
+        <SummaryCard title="Pendências sem canal" value={rowsSemCanal.length.toLocaleString('pt-BR')} subtitle="fora da simulação até avaliar" />
       </div>
+
+      {rowsSemCanal.length ? (
+        <section className="sim-card top-space">
+          <div className="sim-parametros-header">
+            <div>
+              <h2>Pendências do realizado</h2>
+              <p>{rowsSemCanal.length.toLocaleString('pt-BR')} CT-e(s) vieram sem canal. Eles ficam fora da simulação até você revisar ou excluir.</p>
+            </div>
+            <div className="actions-right wrap">
+              <button className="btn-secondary" onClick={() => setMostrarPendencias((prev) => !prev)}>
+                {mostrarPendencias ? 'Ocultar pendências' : 'Avaliar pendências'}
+              </button>
+              <button className="btn-danger" onClick={excluirPendenciasSemCanal} disabled={carregando || importando || simulando}>
+                Excluir sem canal
+              </button>
+            </div>
+          </div>
+
+          {mostrarPendencias ? (
+            <div className="sim-table-wrap top-space">
+              <table className="sim-table">
+                <thead><tr><th>Emissão</th><th>CT-e</th><th>Transportadora</th><th>Origem</th><th>Destino</th><th>Valor CT-e</th><th>Valor NF</th><th>Arquivo</th></tr></thead>
+                <tbody>
+                  {pendenciasFiltradas.slice(0, 80).map((item) => (
+                    <tr key={item.chaveCte || `${item.numeroCte}-${item.emissao}-sem-canal`}>
+                      <td>{formatDateBr(item.emissao)}</td>
+                      <td>{item.numeroCte || item.chaveCte?.slice(-8)}</td>
+                      <td>{item.transportadora || '—'}</td>
+                      <td>{item.cidadeOrigem}/{item.ufOrigem}</td>
+                      <td>{item.cidadeDestino}/{item.ufDestino}</td>
+                      <td>{formatCurrency(item.valorCte)}</td>
+                      <td>{formatCurrency(item.valorNF)}</td>
+                      <td>{item.arquivoOrigem || '—'}</td>
+                    </tr>
+                  ))}
+                  {!pendenciasFiltradas.length ? <tr><td colSpan="8">Nenhuma pendência sem canal nos filtros atuais.</td></tr> : null}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <div className="feature-grid three">
         <section className="panel-card">
@@ -654,8 +737,8 @@ export default function RealizadoPage({ transportadoras = [] }) {
       <section className="table-card">
         <div className="sim-parametros-header">
           <div>
-            <div className="panel-title">Amostra da base realizada</div>
-            <p>Mostrando até 50 CT-e(s) conforme os filtros atuais.</p>
+            <div className="panel-title">Amostra da base realizada com canal</div>
+            <p>Mostrando até 50 CT-e(s) válidos conforme os filtros atuais. Registros sem canal ficam na área de pendências.</p>
           </div>
           <span className="status-pill">{rowsFiltradas.length.toLocaleString('pt-BR')} linha(s)</span>
         </div>

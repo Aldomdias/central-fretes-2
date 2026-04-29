@@ -1,0 +1,27 @@
+PATCH - Realizado CT-e: corrigir puxar do Supabase + pendências sem canal
+
+Arquivos alterados:
+- src/pages/RealizadoPage.jsx
+- src/services/freteDatabaseService.js
+- src/utils/realizadoCtes.js
+- src/lib/supabaseClient.js
+- supabase/realizado_ctes_schema.sql
+
+O que muda:
+1. A tela passa a puxar a base do Supabase via RPC listar_realizado_ctes, além do fallback por select normal.
+2. O diagnóstico agora mostra: total, com canal, sem canal, RPC de importação e RPC de listagem.
+3. CT-e sem canal fica separado como Pendência do Realizado.
+4. A simulação e a amostra principal usam apenas CT-e com canal.
+5. Foi incluído botão para avaliar pendências e botão para excluir somente CT-e sem canal.
+
+Depois de aplicar o patch:
+1. Rode novamente o SQL completo: supabase/realizado_ctes_schema.sql
+2. Publique no Vercel.
+3. Abra Realizado CT-e > Diagnosticar Supabase.
+4. O esperado é aparecer puxar: OK.
+5. Clique em Atualizar base.
+
+SQL de conferência no Supabase:
+select public.diagnosticar_realizado_ctes();
+select count(*) as total from public.realizado_ctes;
+select count(*) as sem_canal from public.realizado_ctes where nullif(btrim(coalesce(canal, '')), '') is null;
