@@ -589,49 +589,22 @@ function normalizarCanalRealizadoTexto(value) {
     .replace(/\s+/g, ' ');
 }
 
-const CANAIS_B2C_REALIZADO = [
-  'B2C',
-  'VIA VAREJO',
-  'MERCADO LIVRE',
-  'MERCADOR LIVRE',
-  'B2W',
-  'MAGAZINE LUIZA',
-  'CARREFOUR',
-  'GPA',
-  'COLOMBO',
-  'AMAZON',
-  'INTER',
-  'ANYMARKET',
-  'ANY MARKET',
-  'BRADESCO SHOP',
-  'ITAU SHOP',
-  'ITAÚ SHOP',
-  'SHOPEE',
-  'LIVELO',
-  'MARKETPLACE',
-  'MARKET PLACE',
-  'ECOMMERCE',
-  'E-COMMERCE',
-];
-
-const CANAIS_ATACADO_REALIZADO = [
-  'ATACADO',
-  'B2B',
-  'CANTU',
-  'CANTU PNEUS',
-];
-
-function contemCanalRealizado(canal, lista = []) {
-  return lista.some((item) => canal === item || canal.includes(item));
-}
-
 function categoriaCanalRealizado(value) {
   const canal = normalizarCanalRealizadoTexto(value);
   if (!canal) return '';
+  if (
+    canal.includes('MERCADO LIVRE') ||
+    canal.includes('SHOPEE') ||
+    canal.includes('B2C') ||
+    canal.includes('MARKETPLACE') ||
+    canal.includes('MARKET PLACE') ||
+    canal.includes('ECOMMERCE') ||
+    canal.includes('E-COMMERCE')
+  ) return 'B2C';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (contemCanalRealizado(canal, CANAIS_ATACADO_REALIZADO)) return 'ATACADO';
-  if (contemCanalRealizado(canal, CANAIS_B2C_REALIZADO)) return 'B2C';
+  if (canal.includes('ATACADO')) return 'ATACADO';
+  if (canal.includes('B2B')) return 'B2B';
   return canal;
 }
 
@@ -642,9 +615,12 @@ function canalCompativelRealizado(canalLinha, canalReferencia) {
   if (!linha) return false;
   if (linha === referencia) return true;
 
-  const categoriaLinha = categoriaCanalRealizado(linha);
-  const categoriaReferencia = categoriaCanalRealizado(referencia);
-  return Boolean(categoriaLinha && categoriaReferencia && categoriaLinha === categoriaReferencia);
+  const referenciasAgrupadas = new Set(['B2C', 'B2B', 'ATACADO', 'INTERCOMPANY', 'REVERSA']);
+  if (referenciasAgrupadas.has(referencia)) {
+    return categoriaCanalRealizado(linha) === referencia;
+  }
+
+  return false;
 }
 
 function canalRealizadoRaw(row = {}, canalPadrao = '') {

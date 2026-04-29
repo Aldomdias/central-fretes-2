@@ -7,7 +7,6 @@ import {
   diagnosticarRealizadoSupabaseDb,
   excluirRealizadoCtes,
   listarRealizadoCtes,
-  resolverDestinoIbgeDb,
   salvarRealizadoCtes,
 } from '../services/freteDatabaseService';
 import { simularRealizadoPorTransportadoraAsync } from '../utils/calculoFrete';
@@ -24,8 +23,11 @@ const DEFAULT_FILTROS = {
   inicio: '',
   fim: '',
   canal: '',
-  origem: '',
+  transportadoraRealizada: '',
+  ufOrigem: '',
   ufDestino: '',
+  origem: '',
+  destino: '',
   transportadora: '',
 };
 
@@ -66,6 +68,16 @@ function SummaryCard({ title, value, subtitle }) {
       <span>{title}</span>
       <strong>{value}</strong>
       <span>{subtitle}</span>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value, subtitle }) {
+  return (
+    <div className="summary-card mini">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {subtitle ? <span>{subtitle}</span> : null}
     </div>
   );
 }
@@ -198,16 +210,23 @@ function filtrarRows(rows = [], filtros = {}) {
   const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
   const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
   const canal = String(filtros.canal || '').trim();
+  const transportadoraRealizada = normalizarBusca(filtros.transportadoraRealizada);
   const origem = cidadeFiltroTela(filtros.origem);
+  const destino = cidadeFiltroTela(filtros.destino);
+  const ufOrigem = String(filtros.ufOrigem || '').trim().toUpperCase();
   const ufDestino = String(filtros.ufDestino || '').trim().toUpperCase();
 
   return rows.filter((row) => {
     const data = row.emissao ? new Date(row.emissao) : null;
+    const origemParsed = splitCidadeUfTela(row.cidadeOrigem, row.ufOrigem);
     const destinoParsed = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
     if (inicio && (!data || data < inicio)) return false;
     if (fim && (!data || data > fim)) return false;
     if (!canalCompativelTela(row.canal || row.canalVendas || row.canais, canal)) return false;
+    if (transportadoraRealizada && !normalizarBusca(row.transportadora).includes(transportadoraRealizada)) return false;
     if (origem && cidadeFiltroTela(row.cidadeOrigem, row.ufOrigem) !== origem) return false;
+    if (destino && cidadeFiltroTela(row.cidadeDestino, row.ufDestino) !== destino) return false;
+    if (ufOrigem && String(origemParsed.uf || row.ufOrigem || '').trim().toUpperCase() !== ufOrigem) return false;
     if (ufDestino && String(destinoParsed.uf || row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
     return true;
   });
@@ -314,6 +333,8 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [resumoRealizado, setResumoRealizado] = useState(null);
   const [opcoes, setOpcoes] = useState({ transportadoras: [], canais: [], origens: [], municipiosIbge: [] });
   const [filtros, setFiltros] = useState(DEFAULT_FILTROS);
+  const [filtrosAplicados, setFiltrosAplicados] = useState(DEFAULT_FILTROS);
+  const [mostrarImportacao, setMostrarImportacao] = useState(false);
   const [carregando, setCarregando] = useState(false);
   const [importando, setImportando] = useState(false);
   const [simulando, setSimulando] = useState(false);
@@ -341,8 +362,11 @@ export default function RealizadoPage({ transportadoras = [] }) {
         inicio: filtrosCarga.inicio,
         fim: filtrosCarga.fim,
         canal: filtrosCarga.canal,
-        origem: filtrosCarga.origem,
+        transportadoraRealizada: filtrosCarga.transportadoraRealizada,
+        ufOrigem: filtrosCarga.ufOrigem,
         ufDestino: filtrosCarga.ufDestino,
+        origem: filtrosCarga.origem,
+        destino: filtrosCarga.destino,
         limit: temFiltro ? 15000 : 50,
         incluirSemCanal: temFiltro,
         amostra: !temFiltro,
@@ -352,6 +376,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
       const resumo = painel.resumo || null;
       setRows(data);
       setResumoRealizado(resumo);
+      setFiltrosAplicados({ ...DEFAULT_FILTROS, ...filtrosCarga });
 
       const totalResumo = Number(resumo?.total || 0);
       const comCanalResumo = Number(resumo?.comCanal || 0);
@@ -409,8 +434,8 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
   const rowsValidas = useMemo(() => rows.filter(hasCanalRealizado), [rows]);
   const rowsSemCanal = useMemo(() => rows.filter((row) => !hasCanalRealizado(row)), [rows]);
-  const rowsFiltradas = useMemo(() => filtrarRows(rowsValidas, filtros), [rowsValidas, filtros]);
-  const pendenciasFiltradas = useMemo(() => filtrarRows(rowsSemCanal, { ...filtros, canal: '' }), [rowsSemCanal, filtros]);
+  const rowsFiltradas = useMemo(() => filtrarRows(rowsValidas, filtrosAplicados), [rowsValidas, filtrosAplicados]);
+  const pendenciasFiltradas = useMemo(() => filtrarRows(rowsSemCanal, { ...filtrosAplicados, canal: '' }), [rowsSemCanal, filtrosAplicados]);
   const stats = useMemo(() => {
     const local = statsRealizado(rowsFiltradas);
     if (!resumoRealizado) {
@@ -430,6 +455,31 @@ export default function RealizadoPage({ transportadoras = [] }) {
       periodoFim: resumoRealizado.periodoFim || local.periodoFim,
     };
   }, [resumoRealizado, rowsFiltradas, rows.length, rowsSemCanal.length]);
+  const painelGestao = useMemo(() => {
+    const base = rowsFiltradas || [];
+    const agrupar = (keyFn) => {
+      const map = new Map();
+      base.forEach((row) => {
+        const key = keyFn(row) || 'Não informado';
+        const atual = map.get(key) || { chave: key, ctes: 0, frete: 0, nf: 0 };
+        atual.ctes += 1;
+        atual.frete += Number(row.valorCte || 0);
+        atual.nf += Number(row.valorNF || 0);
+        map.set(key, atual);
+      });
+      return [...map.values()]
+        .map((item) => ({ ...item, percentual: item.nf > 0 ? (item.frete / item.nf) * 100 : 0 }))
+        .sort((a, b) => b.frete - a.frete || b.ctes - a.ctes)
+        .slice(0, 8);
+    };
+    return {
+      porTransportadora: agrupar((row) => row.transportadora),
+      porCanal: agrupar((row) => categoriaCanalTela(row.canal || row.canalVendas || row.canais)),
+      porOrigem: agrupar((row) => row.cidadeOrigem),
+      porMes: agrupar((row) => String(row.emissao || '').slice(0, 7)),
+    };
+  }, [rowsFiltradas]);
+
   const canaisDisponiveis = useMemo(() => {
     const fromRows = rows.map((item) => item.canal).filter(Boolean);
     const canaisAgrupados = [...new Set([...(opcoes.canais || []), ...fromRows]
@@ -453,6 +503,15 @@ export default function RealizadoPage({ transportadoras = [] }) {
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [opcoes.transportadoras, rows, transportadoras]);
+
+  const transportadorasRealizadasDisponiveis = useMemo(() => {
+    return [...new Set(rows.map((item) => item.transportadora).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [rows]);
+  const destinosDisponiveis = useMemo(() => {
+    return [...new Set(rows.map((item) => item.cidadeDestino).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [rows]);
 
   const cidadePorIbge = useMemo(() => buildCidadePorIbge(opcoes.municipiosIbge), [opcoes.municipiosIbge]);
   const ibgePorCidade = useMemo(() => buildIbgePorCidade(opcoes.municipiosIbge), [opcoes.municipiosIbge]);
@@ -662,7 +721,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
     }
   }
 
-  async function resolverIbgeDestino(row) {
+  function resolverIbgeDestino(row) {
     if (row.ibgeDestino) return row.ibgeDestino;
 
     const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
@@ -673,32 +732,9 @@ export default function RealizadoPage({ transportadoras = [] }) {
     if (ibgeCacheRef.current.has(cachedKey)) return ibgeCacheRef.current.get(cachedKey);
 
     const local = ibgePorCidade.get(localKey) || ibgePorCidade.get(semUfKey);
-    if (local) {
-      ibgeCacheRef.current.set(cachedKey, local);
-      return local;
-    }
-
-    const tentativas = [
-      destino.cidade && destino.uf ? [destino.cidade, destino.uf].join('/') : '',
-      destino.cidade,
-      row.cepDestino,
-    ].filter(Boolean);
-
-    for (const busca of tentativas) {
-      try {
-        const resolvido = await resolverDestinoIbgeDb(busca);
-        const ibge = resolvido?.ibge || '';
-        if (ibge) {
-          ibgeCacheRef.current.set(cachedKey, ibge);
-          return ibge;
-        }
-      } catch {
-        // tenta a próxima forma de localização
-      }
-    }
-
-    ibgeCacheRef.current.set(cachedKey, '');
-    return '';
+    const ibge = local || '';
+    ibgeCacheRef.current.set(cachedKey, ibge);
+    return ibge;
   }
 
 
@@ -707,7 +743,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
     const total = registros.length;
     for (let index = 0; index < registros.length; index += 1) {
       const row = registros[index];
-      const ibgeDestino = await resolverIbgeDestino(row);
+      const ibgeDestino = resolverIbgeDestino(row);
       enriquecidos.push({ ...row, ibgeDestino });
 
       const atual = index + 1;
@@ -758,6 +794,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   }
 
   async function onSimular() {
+    const filtrosSimulacao = { ...filtrosAplicados, transportadora: filtros.transportadora || filtrosAplicados.transportadora };
     if (!filtros.transportadora) {
       setErro('Escolha uma transportadora para simular no realizado.');
       return;
@@ -816,16 +853,16 @@ export default function RealizadoPage({ transportadoras = [] }) {
       });
       setFeedback(
         destinosIbge.length
-          ? `Buscando malha filtrada: origem ${filtros.origem || 'todas'}, canal ${filtros.canal || 'todos'} e ${destinosIbge.length.toLocaleString('pt-BR')} destino(s).`
+          ? `Buscando malha filtrada: origem ${filtrosSimulacao.origem || 'todas'}, canal ${filtrosSimulacao.canal || 'todos'} e ${destinosIbge.length.toLocaleString('pt-BR')} destino(s).`
           : 'Nenhum destino com IBGE encontrado. A simulação vai tentar diagnosticar pela origem e canal.'
       );
       await nextFrame();
 
       const baseOnline = await buscarBaseSimulacaoDb({
         nomeTransportadora: filtros.transportadora,
-        canal: filtros.canal,
-        origem: filtros.origem,
-        ufDestino: filtros.ufDestino,
+        canal: filtrosSimulacao.canal,
+        origem: filtrosSimulacao.origem,
+        ufDestino: filtrosSimulacao.ufDestino,
         destinoCodigos: destinosIbge,
       });
       const base = baseOnline?.length ? baseOnline : transportadoras;
@@ -857,7 +894,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
         transportadoras: base,
         realizados: registrosComIbge,
         nomeTransportadora: filtros.transportadora,
-        filtros,
+        filtros: filtrosSimulacao,
         cidadePorIbge,
         chunkSize: totalSimular <= 50 ? 1 : 25,
         onProgress: ({ atual, total, etapa }) => {
@@ -880,10 +917,10 @@ export default function RealizadoPage({ transportadoras = [] }) {
         atual: totalSimular,
         total: totalSimular,
         percentual: 100,
-        mensagem: `Simulação concluída para ${filtros.transportadora}.`,
+        mensagem: `Simulação concluída para ${filtrosSimulacao.transportadora}.`,
       });
       setResultado(analise);
-      setFeedback(`Simulação concluída para ${filtros.transportadora}.`);
+      setFeedback(`Simulação concluída para ${filtrosSimulacao.transportadora}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao simular realizado.');
     } finally {
@@ -948,6 +985,46 @@ export default function RealizadoPage({ transportadoras = [] }) {
         <SummaryCard title="Pendências sem canal" value={stats.pendencias.toLocaleString('pt-BR')} subtitle="fora da simulação até avaliar" />
       </div>
 
+      <section className="sim-card top-space">
+        <div className="sim-parametros-header">
+          <div>
+            <h2>Painel de gestão do realizado</h2>
+            <p>Visão rápida conforme a última pesquisa. Use os filtros para analisar por canal, transportadora, UF, origem ou destino.</p>
+          </div>
+          <span className="status-pill">{rowsFiltradas.length.toLocaleString('pt-BR')} linha(s) na amostra</span>
+        </div>
+        <div className="feature-grid three top-space">
+          <div className="import-meta-box">
+            <strong>Top transportadoras por frete</strong>
+            {painelGestao.porTransportadora.slice(0, 5).map((item) => (
+              <p key={item.chave}>{item.chave}: {formatCurrency(item.frete)} • {formatPercent(item.percentual)} • {item.ctes.toLocaleString('pt-BR')} CT-e(s)</p>
+            ))}
+            {!painelGestao.porTransportadora.length ? <p>Pesquise a base para montar o ranking.</p> : null}
+          </div>
+          <div className="import-meta-box">
+            <strong>Canal</strong>
+            {painelGestao.porCanal.slice(0, 5).map((item) => (
+              <p key={item.chave}>{item.chave}: {formatCurrency(item.frete)} • {formatPercent(item.percentual)}</p>
+            ))}
+            {!painelGestao.porCanal.length ? <p>Sem dados na amostra.</p> : null}
+          </div>
+          <div className="import-meta-box">
+            <strong>Origem</strong>
+            {painelGestao.porOrigem.slice(0, 5).map((item) => (
+              <p key={item.chave}>{item.chave}: {formatCurrency(item.frete)} • {formatPercent(item.percentual)}</p>
+            ))}
+            {!painelGestao.porOrigem.length ? <p>Sem dados na amostra.</p> : null}
+          </div>
+          <div className="import-meta-box">
+            <strong>Mês</strong>
+            {painelGestao.porMes.slice(0, 5).map((item) => (
+              <p key={item.chave}>{item.chave}: {formatCurrency(item.frete)} • {formatPercent(item.percentual)}</p>
+            ))}
+            {!painelGestao.porMes.length ? <p>Sem dados na amostra.</p> : null}
+          </div>
+        </div>
+      </section>
+
       {stats.pendencias > 0 ? (
         <section className="sim-card top-space">
           <div className="sim-parametros-header">
@@ -990,77 +1067,101 @@ export default function RealizadoPage({ transportadoras = [] }) {
         </section>
       ) : null}
 
-      <div className="feature-grid three">
+      <div className="feature-grid import-grid">
         <section className="panel-card">
-          <div>
-            <div className="panel-title">1. Importar realizado</div>
-            <p>Modelo esperado: planilha com aba Registros e colunas como Transportadora, Emissão, Chave CTE, Valor CTE, Peso, Valor NF, CEP/Cidade origem e destino.</p>
+          <div className="sim-parametros-header">
+            <div>
+              <div className="panel-title">1. Importar realizado</div>
+              <p>Use arquivo único ou mapeie uma pasta para subir somente arquivos novos.</p>
+            </div>
+            <button className="btn-secondary" onClick={() => setMostrarImportacao((prev) => !prev)} disabled={importando || simulando}>
+              {mostrarImportacao ? 'Fechar importação' : 'Abrir importação'}
+            </button>
           </div>
-          <input key={inputKey} ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={onImportarArquivo} disabled={importando || simulando} />
-          <input ref={folderInputRef} type="file" accept=".xlsx,.xls,.csv" multiple webkitdirectory="" directory="" onChange={onImportarPasta} disabled={importando || simulando} style={{ display: 'none' }} />
-          <button className="btn-primary" onClick={() => fileInputRef.current?.click()} disabled={importando || simulando}>
-            {importando ? 'Importando...' : 'Selecionar arquivo realizado'}
-          </button>
-          <button className="btn-secondary" onClick={() => folderInputRef.current?.click()} disabled={importando || simulando}>
-            Mapear pasta e subir novos
-          </button>
-          <p className="muted-text">A pasta é selecionada pelo navegador. O sistema ignora arquivos já importados neste navegador e o Supabase evita duplicar CT-e pela chave.</p>
-          {folderMeta ? (
-            <div className="import-meta-box">
-              <strong>Pasta:</strong> {Number(folderMeta.total || 0).toLocaleString('pt-BR')} arquivo(s) encontrados • {Number(folderMeta.novos || 0).toLocaleString('pt-BR')} novo(s) • {Number(folderMeta.ignorados || 0).toLocaleString('pt-BR')} já conhecido(s) • {Number(folderMeta.processados || 0).toLocaleString('pt-BR')} processado(s)
-              {folderMeta.confirmados ? <span> • {Number(folderMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados</span> : null}
-              {folderMeta.erros?.length ? <span> • {folderMeta.erros.length.toLocaleString('pt-BR')} erro(s)</span> : null}
+          {mostrarImportacao ? (
+            <div className="top-space">
+              <input key={inputKey} ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={onImportarArquivo} disabled={importando || simulando} />
+              <button className="btn-primary" onClick={() => fileInputRef.current?.click()} disabled={importando || simulando}>
+                {importando ? 'Importando...' : 'Selecionar arquivo realizado'}
+              </button>
+              <input
+                ref={folderInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                multiple
+                webkitdirectory=""
+                directory=""
+                onChange={onImportarPasta}
+                style={{ display: 'none' }}
+                disabled={importando || simulando}
+              />
+              <button className="btn-secondary full" onClick={() => folderInputRef.current?.click()} disabled={importando || simulando}>
+                Mapear pasta e subir novos
+              </button>
+              <p>A pasta é selecionada pelo navegador. O sistema ignora arquivos já importados neste navegador e o Supabase evita duplicar CT-e pela chave.</p>
+              {folderMeta ? (
+                <div className="import-meta-box">
+                  <strong>Pasta:</strong> {Number(folderMeta.total || 0).toLocaleString('pt-BR')} arquivo(s) encontrados • {Number(folderMeta.novos || 0).toLocaleString('pt-BR')} novo(s) • {Number(folderMeta.ignorados || 0).toLocaleString('pt-BR')} já conhecido(s) • {Number(folderMeta.processados || 0).toLocaleString('pt-BR')} processado(s)
+                  {folderMeta.confirmados ? <span> • {Number(folderMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados</span> : null}
+                  {folderMeta.erros?.length ? <span> • {folderMeta.erros.length.toLocaleString('pt-BR')} erro(s)</span> : null}
+                </div>
+              ) : null}
+              {folderMeta?.erros?.length ? (
+                <div className="import-meta-box danger">
+                  <strong>Arquivos com erro:</strong> {folderMeta.erros.slice(0, 3).map((item) => item.arquivo + ': ' + item.erro).join(' | ')}
+                </div>
+              ) : null}
+              {importMeta ? (
+                <div className="import-meta-box">
+                  <strong>Última leitura:</strong> {importMeta.arquivo ? importMeta.arquivo + ' • ' : ''}aba {importMeta.aba || '—'} • {Number(importMeta.registrosValidos || 0).toLocaleString('pt-BR')} CT-e(s) válidos
+                  {importMeta.refFoiCorrigida ? <span> • intervalo corrigido de {importMeta.refOriginal || 'vazio'} para {importMeta.refCorrigida}</span> : null}
+                </div>
+              ) : null}
+              {saveMeta ? (
+                <div className="import-meta-box success">
+                  <strong>Supabase:</strong> {String(saveMeta.modo || '').toUpperCase()} • {Number(saveMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados • método: {saveMeta.metodo || '—'} • projeto: {saveMeta.projeto || '—'}
+                </div>
+              ) : null}
             </div>
-          ) : null}
-          {folderMeta?.erros?.length ? (
-            <div className="import-meta-box danger">
-              <strong>Arquivos com erro:</strong> {folderMeta.erros.slice(0, 3).map((item) => `${item.arquivo}: ${item.erro}`).join(' | ')}
-            </div>
-          ) : null}
-          {importMeta ? (
-            <div className="import-meta-box">
-              <strong>Última leitura:</strong> {importMeta.arquivo ? `${importMeta.arquivo} • ` : ''}aba {importMeta.aba || '—'} • {Number(importMeta.registrosValidos || 0).toLocaleString('pt-BR')} CT-e(s) válidos
-              {importMeta.refFoiCorrigida ? <span> • intervalo corrigido de {importMeta.refOriginal || 'vazio'} para {importMeta.refCorrigida}</span> : null}
-            </div>
-          ) : null}
-          {saveMeta ? (
-            <div className="import-meta-box success">
-              <strong>Supabase:</strong> {String(saveMeta.modo || '').toUpperCase()} • {Number(saveMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados • método: {saveMeta.metodo || '—'} • projeto: {saveMeta.projeto || '—'}
-            </div>
-          ) : null}
+          ) : (
+            <div className="import-meta-box">Importação recolhida para deixar a tela de análise mais limpa.</div>
+          )}
         </section>
 
-        <section className="panel-card">
+        <section className="panel-card wide">
           <div>
-            <div className="panel-title">2. Filtrar período/base</div>
-            <p>Use os filtros para avaliar um mês, uma origem, um canal ou uma UF específica.</p>
+            <div className="panel-title">2. Pesquisar base realizada</div>
+            <p>Preencha os filtros e clique em Pesquisar para atualizar cards, amostra e simulação.</p>
           </div>
-          <div className="form-grid">
+          <div className="form-grid three">
             <div className="field"><label>Data inicial</label><input type="date" value={filtros.inicio} onChange={(e) => alterarFiltro('inicio', e.target.value)} /></div>
             <div className="field"><label>Data final</label><input type="date" value={filtros.fim} onChange={(e) => alterarFiltro('fim', e.target.value)} /></div>
+            <div className="field"><label>Transportadora realizada</label><input list="transportadoras-realizadas-list" value={filtros.transportadoraRealizada} onChange={(e) => alterarFiltro('transportadoraRealizada', e.target.value)} placeholder="Todas" /></div>
             <div className="field"><label>Canal</label><select value={filtros.canal} onChange={(e) => alterarFiltro('canal', e.target.value)}><option value="">Todos</option>{canaisDisponiveis.map((item) => <option key={item} value={item}>{item}</option>)}</select></div>
+            <div className="field"><label>UF origem</label><input value={filtros.ufOrigem} onChange={(e) => alterarFiltro('ufOrigem', e.target.value.toUpperCase().slice(0, 2))} placeholder="Ex.: SC" /></div>
             <div className="field"><label>UF destino</label><input value={filtros.ufDestino} onChange={(e) => alterarFiltro('ufDestino', e.target.value.toUpperCase().slice(0, 2))} placeholder="Ex.: SP" /></div>
+            <div className="field"><label>Origem</label><input list="origens-realizado-list" value={filtros.origem} onChange={(e) => alterarFiltro('origem', e.target.value)} placeholder="Todas ou digite a origem" /></div>
+            <div className="field"><label>Destino</label><input list="destinos-realizado-list" value={filtros.destino} onChange={(e) => alterarFiltro('destino', e.target.value)} placeholder="Todos ou digite o destino" /></div>
+            <div className="field"><label>&nbsp;</label><button className="btn-primary full" onClick={() => carregarBase(filtros)} disabled={carregando || importando || simulando}>{carregando ? 'Pesquisando...' : 'Pesquisar'}</button></div>
           </div>
-          <div className="field">
-            <label>Origem</label>
-            <input list="origens-realizado-list" value={filtros.origem} onChange={(e) => alterarFiltro('origem', e.target.value)} placeholder="Todas ou digite a origem" />
-            <datalist id="origens-realizado-list">{origensDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
-          </div>
+          <datalist id="origens-realizado-list">{origensDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
+          <datalist id="destinos-realizado-list">{destinosDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
+          <datalist id="transportadoras-realizadas-list">{transportadorasRealizadasDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
         </section>
 
-        <section className="panel-card">
+        <section className="panel-card wide">
           <div>
             <div className="panel-title">3. Simular transportadora</div>
-            <p>A análise considera apenas CT-e(s) onde a transportadora possui tabela para a mesma origem, destino e canal.</p>
+            <p>A simulação usa a última base pesquisada. Para base grande, pesquise antes por período/canal/origem/UF.</p>
           </div>
-          <div className="field">
-            <label>Transportadora simulada</label>
-            <input list="transportadoras-realizado-list" value={filtros.transportadora} onChange={(e) => alterarFiltro('transportadora', e.target.value)} placeholder="Ex.: Camilo dos Santos" />
-            <datalist id="transportadoras-realizado-list">{transportadorasDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
+          <div className="form-grid">
+            <div className="field">
+              <label>Transportadora simulada</label>
+              <input list="transportadoras-realizado-list" value={filtros.transportadora} onChange={(e) => alterarFiltro('transportadora', e.target.value)} placeholder="Ex.: Camilo dos Santos" />
+              <datalist id="transportadoras-realizado-list">{transportadorasDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
+            </div>
+            <div className="field"><label>&nbsp;</label><button className="btn-primary full" onClick={onSimular} disabled={simulando || importando || !rowsFiltradas.length}>{simulando ? 'Simulando realizado...' : 'Simular no realizado'}</button></div>
           </div>
-          <button className="btn-primary full" onClick={onSimular} disabled={simulando || importando || !rowsFiltradas.length}>
-            {simulando ? 'Simulando realizado...' : 'Simular no realizado'}
-          </button>
         </section>
       </div>
 

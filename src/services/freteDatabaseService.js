@@ -1918,7 +1918,10 @@ function filtrarRealizadoLocal(rows = [], filtros = {}) {
   const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
   const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
   const canal = String(filtros.canal || '').trim();
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim().toLowerCase();
   const origem = String(filtros.origem || '').trim();
+  const destino = String(filtros.destino || '').trim();
+  const ufOrigem = String(filtros.ufOrigem || '').trim().toUpperCase();
   const ufDestino = String(filtros.ufDestino || '').trim().toUpperCase();
 
   return (rows || []).filter((row) => {
@@ -1926,14 +1929,17 @@ function filtrarRealizadoLocal(rows = [], filtros = {}) {
     if (inicio && (!emissao || emissao < inicio)) return false;
     if (fim && (!emissao || emissao > fim)) return false;
     if (canal && !canalCompativelDb(row.canal || row.canalVendas || row.canais, canal)) return false;
+    if (transportadoraRealizada && !String(row.transportadora || '').toLowerCase().includes(transportadoraRealizada)) return false;
     if (origem && !origemCompativelDb(row.cidadeOrigem, origem)) return false;
+    if (destino && !origemCompativelDb(row.cidadeDestino, destino)) return false;
+    if (ufOrigem && String(row.ufOrigem || '').trim().toUpperCase() !== ufOrigem) return false;
     if (ufDestino && String(row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
     return true;
   });
 }
 
 function temFiltroRealizadoDb(filtros = {}) {
-  return Boolean(filtros.inicio || filtros.fim || filtros.canal || filtros.origem || filtros.ufDestino || filtros.somenteSemCanal);
+  return Boolean(filtros.inicio || filtros.fim || filtros.canal || filtros.transportadoraRealizada || filtros.ufOrigem || filtros.ufDestino || filtros.origem || filtros.destino || filtros.somenteSemCanal);
 }
 
 function isCanalRealizadoPreenchido(value) {
@@ -2029,6 +2035,9 @@ async function resumirRealizadoCtesViaRpc(supabase, filtros = {}) {
     p_canal: filtros.canal || null,
     p_origem: filtros.origem || null,
     p_uf_destino: filtros.ufDestino || null,
+    p_transportadora: filtros.transportadoraRealizada || null,
+    p_uf_origem: filtros.ufOrigem || null,
+    p_destino: filtros.destino || null,
   });
 
   if (resposta?.error) throw resposta.error;
@@ -2045,6 +2054,9 @@ async function listarRealizadoCtesViaAmostraRpc(supabase, filtros = {}) {
     p_canal: filtros.canal || null,
     p_origem: filtros.origem || null,
     p_uf_destino: filtros.ufDestino || null,
+    p_transportadora: filtros.transportadoraRealizada || null,
+    p_uf_origem: filtros.ufOrigem || null,
+    p_destino: filtros.destino || null,
     p_incluir_sem_canal: filtros.incluirSemCanal !== false,
     p_somente_sem_canal: filtros.somenteSemCanal === true,
   });
@@ -2110,6 +2122,8 @@ async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
   const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
   const origem = limparOrigemParaConsultaDb(filtros.origem || '');
+  const destino = limparOrigemParaConsultaDb(filtros.destino || '');
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
   const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
 
   let query = supabase
@@ -2119,8 +2133,11 @@ async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
 
   if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.ufOrigem) query = query.eq('uf_origem', String(filtros.ufOrigem).trim().toUpperCase());
   if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
+  if (transportadoraRealizada) query = query.ilike('transportadora', `%${transportadoraRealizada}%`);
   if (origem) query = query.ilike('cidade_origem', `${origem}%`);
+  if (destino) query = query.ilike('cidade_destino', `${destino}%`);
   if (canalVariantes.length) query = query.in('canal', canalVariantes);
   if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
   if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
@@ -2144,6 +2161,9 @@ async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
     p_canal: filtros.canal || null,
     p_origem: filtros.origem || null,
     p_uf_destino: filtros.ufDestino || null,
+    p_transportadora: filtros.transportadoraRealizada || null,
+    p_uf_origem: filtros.ufOrigem || null,
+    p_destino: filtros.destino || null,
     p_incluir_sem_canal: filtros.incluirSemCanal !== false,
     p_somente_sem_canal: filtros.somenteSemCanal === true,
   });
