@@ -9,7 +9,7 @@ import {
   resolverDestinoIbgeDb,
   salvarRealizadoCtes,
 } from '../services/freteDatabaseService';
-import { simularRealizadoPorTransportadora } from '../utils/calculoFrete';
+import { simularRealizadoPorTransportadoraAsync } from '../utils/calculoFrete';
 import {
   formatCurrency,
   formatDateBr,
@@ -101,6 +101,22 @@ function fileInputKey() {
   return `realizado-${Date.now()}`;
 }
 
+function nextFrame() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+function calcularPercentualProgresso(atual = 0, total = 0) {
+  const safeTotal = Math.max(Number(total) || 0, 1);
+  const safeAtual = Math.max(Number(atual) || 0, 0);
+  return Math.min(100, Math.max(0, Math.round((safeAtual / safeTotal) * 100)));
+}
+
 function hasCanalRealizado(row = {}) {
   return String(row.canal || '').trim().length > 0;
 }
@@ -169,6 +185,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [supabaseDiag, setSupabaseDiag] = useState(null);
   const [mostrarPendencias, setMostrarPendencias] = useState(false);
   const [resultado, setResultado] = useState(null);
+  const [simProgress, setSimProgress] = useState(null);
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [inputKey, setInputKey] = useState(fileInputKey());
   const ibgeCacheRef = useRef(new Map());
@@ -456,7 +473,9 @@ export default function RealizadoPage({ transportadoras = [] }) {
     setSimulando(true);
     setErro('');
     setResultado(null);
+    setSimProgress({ etapa: 'Preparando simulação', atual: 0, total: rowsFiltradas.length, percentual: 0, mensagem: 'Buscando tabelas e rotas da transportadora...' });
     setFeedback('Buscando tabelas e rotas que a transportadora participa...');
+    await nextFrame();
 
     try {
       const baseOnline = await buscarBaseSimulacaoDb({
@@ -465,33 +484,77 @@ export default function RealizadoPage({ transportadoras = [] }) {
       });
       const base = baseOnline?.length ? baseOnline : transportadoras;
 
+      setSimProgress((prev) => ({ ...(prev || {}), etapa: 'Base carregada', percentual: 8, mensagem: `Base de tabelas carregada com ${Number(base?.length || 0).toLocaleString('pt-BR')} transportadora(s)/registro(s).` }));
+      await nextFrame();
+
       if (!base?.length) {
         setErro('Não encontrei tabela/base de simulação para essa transportadora.');
         return;
       }
 
       const limite = rowsFiltradas.slice(0, 6000);
+      const totalSimular = limite.length;
       if (rowsFiltradas.length > limite.length) {
         setFeedback(`Simulando os primeiros ${limite.length.toLocaleString('pt-BR')} CT-e(s) dos filtros para manter a tela leve.`);
       }
 
-      const registrosComIbge = await enriquecerComIbge(limite);
-      setFeedback('Calculando frete simulado por CT-e e comparando com o valor realizado...');
+      setSimProgress({
+        etapa: 'Resolvendo destinos/IBGE',
+        atual: 0,
+        total: totalSimular,
+        percentual: 10,
+        mensagem: `Preparando ${totalSimular.toLocaleString('pt-BR')} CT-e(s) para cruzar destino com IBGE...`,
+      });
+      await nextFrame();
 
-      const analise = simularRealizadoPorTransportadora({
+      const registrosComIbge = await enriquecerComIbge(limite);
+
+      setSimProgress({
+        etapa: 'Calculando fretes',
+        atual: 0,
+        total: totalSimular,
+        percentual: 35,
+        mensagem: 'Calculando frete simulado por CT-e e comparando com o valor realizado...',
+      });
+      setFeedback('Calculando frete simulado por CT-e e comparando com o valor realizado...');
+      await nextFrame();
+
+      const analise = await simularRealizadoPorTransportadoraAsync({
         transportadoras: base,
         realizados: registrosComIbge,
         nomeTransportadora: filtros.transportadora,
         filtros,
         cidadePorIbge,
+        chunkSize: 25,
+        onProgress: ({ atual, total, etapa }) => {
+          const percentualInterno = calcularPercentualProgresso(atual, total);
+          const percentual = Math.min(98, 35 + Math.round(percentualInterno * 0.63));
+          const mensagem = `${Number(atual || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s) processados`;
+          setSimProgress({
+            etapa: etapa || 'Calculando fretes',
+            atual,
+            total,
+            percentual,
+            mensagem,
+          });
+          setFeedback(`Simulação em andamento: ${mensagem}.`);
+        },
       });
 
+      setSimProgress({
+        etapa: 'Concluído',
+        atual: totalSimular,
+        total: totalSimular,
+        percentual: 100,
+        mensagem: `Simulação concluída para ${filtros.transportadora}.`,
+      });
       setResultado(analise);
       setFeedback(`Simulação concluída para ${filtros.transportadora}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao simular realizado.');
     } finally {
       setSimulando(false);
+      setTimeout(() => setSimProgress(null), 2500);
     }
   }
 
@@ -520,6 +583,21 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
+
+      {simulando && simProgress ? (
+        <div className="sim-alert info">
+          <div className="sim-parametros-header">
+            <div>
+              <strong>Andamento da simulação: {simProgress.etapa}</strong>
+              <p>{simProgress.mensagem}</p>
+            </div>
+            <span>{Number(simProgress.percentual || 0).toLocaleString('pt-BR')}%</span>
+          </div>
+          <div style={{ height: 10, borderRadius: 999, background: 'rgba(0,0,0,0.08)', overflow: 'hidden', marginTop: 10 }}>
+            <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, Number(simProgress.percentual || 0)))}%`, borderRadius: 999, background: '#9153F0', transition: 'width 180ms ease' }} />
+          </div>
+        </div>
+      ) : null}
 
       {supabaseDiag ? (
         <div className={supabaseDiag.ok ? 'sim-alert success' : 'sim-alert'}>
