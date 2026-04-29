@@ -801,3 +801,163 @@ export function simularRealizadoPorTransportadora({
     foraMalha,
   };
 }
+
+
+function aguardarProximoFrameRealizado() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+export async function simularRealizadoPorTransportadoraAsync({
+  transportadoras = [],
+  realizados = [],
+  nomeTransportadora = '',
+  filtros = {},
+  cidadePorIbge,
+  onProgress,
+  chunkSize = 25,
+} = {}) {
+  const alvo = normalizarComparacaoRealizado(nomeTransportadora);
+  const selecionados = filtrarRealizadosBase(realizados, filtros);
+  const detalhes = [];
+  const foraMalha = [];
+  const total = selecionados.length;
+
+  const informarProgresso = async (atual, etapa = 'Calculando fretes') => {
+    if (typeof onProgress === 'function') {
+      onProgress({
+        etapa,
+        atual,
+        total,
+        detalhes: detalhes.length,
+        foraMalha: foraMalha.length,
+      });
+    }
+    await aguardarProximoFrameRealizado();
+  };
+
+  if (!alvo) {
+    await informarProgresso(total, 'Concluído');
+    return {
+      resumo: montarResumoRealizado([], selecionados, selecionados.length),
+      detalhes: [],
+      foraMalha: selecionados,
+    };
+  }
+
+  await informarProgresso(0, 'Iniciando cálculo');
+
+  for (let index = 0; index < selecionados.length; index += 1) {
+    const row = selecionados[index];
+    const origemKey = normalizarComparacaoRealizado(row.cidadeOrigem);
+    const destinoKey = normalizarComparacaoRealizado(row.cidadeDestino);
+    const destinoIbge = String(row.ibgeDestino || row.codigoIbgeDestino || '').replace(/\D/g, '');
+    const canalLinha = canalRealizado(row, filtros.canal);
+    const peso = pesoRealizadoNumero(row);
+    const valorNF = toNumber(row.valorNF);
+    const valorRealizado = valorRealizadoNumero(row);
+
+    if (!origemKey || (!destinoIbge && !destinoKey) || peso <= 0) {
+      foraMalha.push({ ...row, motivo: 'Sem origem, destino ou peso para simular' });
+      if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {
+        await informarProgresso(index + 1, 'Calculando fretes');
+      }
+      continue;
+    }
+
+    const cenarios = [];
+
+    (transportadoras || []).forEach((transportadora) => {
+      (transportadora.origens || [])
+        .filter((origem) => !canalLinha || String(origem.canal || '').trim().toUpperCase() === canalLinha)
+        .filter((origem) => normalizarComparacaoRealizado(origem.cidade) === origemKey)
+        .forEach((origem) => {
+          (origem.rotas || []).forEach((rota) => {
+            const rotaIbge = String(rota.ibgeDestino || '').replace(/\D/g, '');
+            const cidadeRota = normalizarComparacaoRealizado(getCidadeByIbge(rotaIbge, cidadePorIbge));
+            const destinoCompativel = destinoIbge
+              ? rotaIbge === destinoIbge
+              : cidadeRota && cidadeRota === destinoKey;
+
+            if (!destinoCompativel) return;
+
+            const item = calcularItem({
+              transportadora,
+              origem,
+              rota,
+              peso,
+              valorNF,
+              cidadePorIbge,
+              gradeCanal: [],
+            });
+
+            if (item) cenarios.push(item);
+          });
+        });
+    });
+
+    const rankeados = rankearPorChave(cenarios);
+    const candidato = rankeados.find((item) => normalizarComparacaoRealizado(item.transportadora) === alvo);
+
+    if (!candidato) {
+      foraMalha.push({ ...row, motivo: 'Transportadora não participa da origem/destino/canal no período selecionado' });
+      if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {
+        await informarProgresso(index + 1, 'Calculando fretes');
+      }
+      continue;
+    }
+
+    const rankingAtual = rankeados.find(
+      (item) => normalizarComparacaoRealizado(item.transportadora) === normalizarComparacaoRealizado(row.transportadora)
+    );
+    const impacto = valorRealizado - candidato.total;
+
+    detalhes.push({
+      id: row.id || row.chaveCte || `${row.numeroCte}-${detalhes.length}`,
+      chaveCte: row.chaveCte || '',
+      numeroCte: row.numeroCte || '',
+      emissao: row.emissao || '',
+      transportadoraRealizada: row.transportadora || '',
+      transportadoraSimulada: candidato.transportadora,
+      origem: row.cidadeOrigem || candidato.origem,
+      cidadeDestino: row.cidadeDestino || candidato.cidadeDestino,
+      ibgeDestino: destinoIbge || candidato.ibgeDestino,
+      ufDestino: row.ufDestino || candidato.ufDestino,
+      canal: canalLinha || candidato.canal,
+      peso,
+      valorNF,
+      valorRealizado,
+      valorSimulado: candidato.total,
+      percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
+      percentualSimulado: candidato.percentualSobreNF || (valorNF > 0 ? (candidato.total / valorNF) * 100 : 0),
+      impacto,
+      economiaPositiva: Math.max(impacto, 0),
+      aumentoPositivo: Math.max(candidato.total - valorRealizado, 0),
+      ranking: candidato.ranking,
+      ganharia: candidato.ranking === 1,
+      liderTransportadora: candidato.liderTransportadora,
+      perdeuPara: candidato.perdeuPara,
+      freteSubstituta: candidato.freteSubstituta,
+      rankingTransportadoraAtual: rankingAtual?.ranking || null,
+      valorTabelaTransportadoraAtual: rankingAtual?.total || null,
+      detalhes: candidato.detalhes,
+    });
+
+    if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {
+      await informarProgresso(index + 1, 'Calculando fretes');
+    }
+  }
+
+  await informarProgresso(total, 'Montando resultado');
+
+  return {
+    resumo: montarResumoRealizado(detalhes, foraMalha, selecionados.length),
+    detalhes: detalhes.sort((a, b) => Math.abs(b.impacto) - Math.abs(a.impacto)),
+    foraMalha,
+  };
+}

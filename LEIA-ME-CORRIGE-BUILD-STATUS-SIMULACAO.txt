@@ -1,0 +1,14 @@
+CORREÇÃO DO BUILD - STATUS DA SIMULAÇÃO REALIZADO CT-e
+
+Erro corrigido:
+src/pages/RealizadoPage.jsx importa simularRealizadoPorTransportadoraAsync,
+mas o arquivo src/utils/calculoFrete.js publicado na branch não tinha essa exportação.
+
+Como aplicar:
+1. Substitua o arquivo abaixo no projeto:
+   src/utils/calculoFrete.js
+2. Faça commit/push na branch Melhoria-importação.
+3. O build deve passar.
+
+Observação:
+Este patch é complementar ao patch de status da simulação. Ele garante que a função async usada pela tela Realizado CT-e esteja exportada corretamente.
