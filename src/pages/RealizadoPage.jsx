@@ -42,8 +42,55 @@ function normalizarBusca(value) {
   return normalizeHeaderRealizado(value).replace(/\s+/g, ' ');
 }
 
+function normalizarCanalTela(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+function categoriaCanalTela(value) {
+  const canal = normalizarCanalTela(value);
+  if (!canal) return '';
+  if (canal.includes('MERCADO LIVRE') || canal.includes('SHOPEE') || canal.includes('B2C') || canal.includes('MARKETPLACE') || canal.includes('MARKET PLACE') || canal.includes('ECOMMERCE') || canal.includes('E-COMMERCE')) return 'B2C';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (canal.includes('ATACADO')) return 'ATACADO';
+  if (canal.includes('B2B')) return 'B2B';
+  return canal;
+}
+
+function canalCompativelTela(canalLinha, canalFiltro) {
+  const filtro = normalizarCanalTela(canalFiltro);
+  if (!filtro) return true;
+  const linha = normalizarCanalTela(canalLinha);
+  if (!linha) return false;
+  if (linha === filtro) return true;
+  const categoriasFiltro = new Set(['B2C', 'B2B', 'ATACADO', 'INTERCOMPANY', 'REVERSA']);
+  if (categoriasFiltro.has(filtro)) return categoriaCanalTela(linha) === filtro;
+  return false;
+}
+
+function splitCidadeUfTela(cidadeRaw, ufRaw = '') {
+  let cidade = String(cidadeRaw || '').trim();
+  let uf = String(ufRaw || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+  const match = cidade.match(/^(.*?)(?:\s*\/\s*|\s*-\s*)([A-Za-z]{2})$/);
+  if (match) {
+    cidade = match[1].trim();
+    if (!uf) uf = match[2].toUpperCase();
+  }
+  return { cidade, uf };
+}
+
+function cidadeFiltroTela(cidade, uf = '') {
+  return normalizarBusca(splitCidadeUfTela(cidade, uf).cidade);
+}
+
 function buildCidadeKey(cidade, uf = '') {
-  return `${normalizarBusca(cidade)}|${String(uf || '').trim().toUpperCase()}`;
+  const parsed = splitCidadeUfTela(cidade, uf);
+  return [normalizarBusca(parsed.cidade), String(parsed.uf || '').trim().toUpperCase()].join('|');
 }
 
 function buildCidadePorIbge(municipios = []) {
@@ -82,17 +129,18 @@ function statsRealizado(rows = []) {
 function filtrarRows(rows = [], filtros = {}) {
   const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
   const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
-  const canal = String(filtros.canal || '').trim().toUpperCase();
-  const origem = normalizarBusca(filtros.origem);
+  const canal = String(filtros.canal || '').trim();
+  const origem = cidadeFiltroTela(filtros.origem);
   const ufDestino = String(filtros.ufDestino || '').trim().toUpperCase();
 
   return rows.filter((row) => {
     const data = row.emissao ? new Date(row.emissao) : null;
+    const destinoParsed = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
     if (inicio && (!data || data < inicio)) return false;
     if (fim && (!data || data > fim)) return false;
-    if (canal && String(row.canal || '').trim().toUpperCase() !== canal) return false;
-    if (origem && normalizarBusca(row.cidadeOrigem) !== origem) return false;
-    if (ufDestino && String(row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
+    if (!canalCompativelTela(row.canal || row.canalVendas || row.canais, canal)) return false;
+    if (origem && cidadeFiltroTela(row.cidadeOrigem, row.ufOrigem) !== origem) return false;
+    if (ufDestino && String(destinoParsed.uf || row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
     return true;
   });
 }
@@ -393,9 +441,10 @@ export default function RealizadoPage({ transportadoras = [] }) {
   async function resolverIbgeDestino(row) {
     if (row.ibgeDestino) return row.ibgeDestino;
 
-    const localKey = buildCidadeKey(row.cidadeDestino, row.ufDestino);
-    const semUfKey = buildCidadeKey(row.cidadeDestino);
-    const cachedKey = `${row.cepDestino || ''}|${localKey}`;
+    const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
+    const localKey = buildCidadeKey(destino.cidade, destino.uf);
+    const semUfKey = buildCidadeKey(destino.cidade);
+    const cachedKey = [row.cepDestino || '', localKey].join('|');
 
     if (ibgeCacheRef.current.has(cachedKey)) return ibgeCacheRef.current.get(cachedKey);
 
@@ -405,19 +454,29 @@ export default function RealizadoPage({ transportadoras = [] }) {
       return local;
     }
 
-    const busca = row.cepDestino || row.cidadeDestino;
-    if (!busca) return '';
+    const tentativas = [
+      destino.cidade && destino.uf ? [destino.cidade, destino.uf].join('/') : '',
+      destino.cidade,
+      row.cepDestino,
+    ].filter(Boolean);
 
-    try {
-      const resolvido = await resolverDestinoIbgeDb(busca);
-      const ibge = resolvido?.ibge || '';
-      ibgeCacheRef.current.set(cachedKey, ibge);
-      return ibge;
-    } catch {
-      ibgeCacheRef.current.set(cachedKey, '');
-      return '';
+    for (const busca of tentativas) {
+      try {
+        const resolvido = await resolverDestinoIbgeDb(busca);
+        const ibge = resolvido?.ibge || '';
+        if (ibge) {
+          ibgeCacheRef.current.set(cachedKey, ibge);
+          return ibge;
+        }
+      } catch {
+        // tenta a próxima forma de localização
+      }
     }
+
+    ibgeCacheRef.current.set(cachedKey, '');
+    return '';
   }
+
 
   async function enriquecerComIbge(registros = []) {
     const enriquecidos = [];
@@ -751,6 +810,30 @@ export default function RealizadoPage({ transportadoras = [] }) {
                         <td>{formatCurrency(item.valorRealizado)}</td>
                         <td>{formatCurrency(item.valorSimulado)}</td>
                         <td>{formatCurrency(item.economia)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+
+          {resultado.foraMalha?.length ? (
+            <div className="sim-parametros-box top-space">
+              <div className="sim-parametros-header"><strong>Fora da malha / não localizado</strong><span>{resultado.foraMalha.length.toLocaleString('pt-BR')} CT-e(s)</span></div>
+              <p>Mostrando os primeiros casos para identificar se o problema é origem, canal, destino/IBGE ou faixa de peso.</p>
+              <div className="sim-table-wrap">
+                <table className="sim-table">
+                  <thead><tr><th>CT-e</th><th>Canal</th><th>Origem</th><th>Destino</th><th>Peso</th><th>Motivo</th></tr></thead>
+                  <tbody>
+                    {resultado.foraMalha.slice(0, 20).map((item) => (
+                      <tr key={item.id || item.chaveCte || [item.numeroCte, item.emissao, item.cidadeDestino].join('-')}>
+                        <td>{item.numeroCte || item.chaveCte?.slice(-8) || '—'}</td>
+                        <td>{item.canal || item.canalVendas || item.canais || '—'}</td>
+                        <td>{item.cidadeOrigem}/{item.ufOrigem}</td>
+                        <td>{item.cidadeDestino}/{item.ufDestino}</td>
+                        <td>{formatNumber(Math.max(Number(item.pesoDeclarado) || 0, Number(item.pesoCubado) || 0), 3)}</td>
+                        <td>{item.motivo || 'Não localizado na tabela da transportadora simulada.'}</td>
                       </tr>
                     ))}
                   </tbody>

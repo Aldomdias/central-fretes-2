@@ -580,19 +580,108 @@ function normalizarComparacaoRealizado(value) {
     .trim();
 }
 
+function normalizarCanalRealizadoTexto(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+function categoriaCanalRealizado(value) {
+  const canal = normalizarCanalRealizadoTexto(value);
+  if (!canal) return '';
+  if (
+    canal.includes('MERCADO LIVRE') ||
+    canal.includes('SHOPEE') ||
+    canal.includes('B2C') ||
+    canal.includes('MARKETPLACE') ||
+    canal.includes('MARKET PLACE') ||
+    canal.includes('ECOMMERCE') ||
+    canal.includes('E-COMMERCE')
+  ) return 'B2C';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (canal.includes('ATACADO')) return 'ATACADO';
+  if (canal.includes('B2B')) return 'B2B';
+  return canal;
+}
+
+function canalCompativelRealizado(canalLinha, canalReferencia) {
+  const referencia = normalizarCanalRealizadoTexto(canalReferencia);
+  if (!referencia) return true;
+  const linha = normalizarCanalRealizadoTexto(canalLinha);
+  if (!linha) return false;
+  if (linha === referencia) return true;
+
+  const referenciasAgrupadas = new Set(['B2C', 'B2B', 'ATACADO', 'INTERCOMPANY', 'REVERSA']);
+  if (referenciasAgrupadas.has(referencia)) {
+    return categoriaCanalRealizado(linha) === referencia;
+  }
+
+  return false;
+}
+
+function canalRealizadoRaw(row = {}, canalPadrao = '') {
+  return row.canal || row.canalVendas || row.canais || canalPadrao || '';
+}
+
+function canalRealizado(row = {}, canalPadrao = '') {
+  return categoriaCanalRealizado(canalRealizadoRaw(row, canalPadrao)) || normalizarCanalRealizadoTexto(canalRealizadoRaw(row, canalPadrao));
+}
+
+function splitCidadeUfRealizado(cidadeRaw, ufRaw = '') {
+  let cidade = String(cidadeRaw || '').trim();
+  let uf = String(ufRaw || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+
+  const match = cidade.match(/^(.*?)(?:\s*\/\s*|\s*-\s*)([A-Za-z]{2})$/);
+  if (match) {
+    cidade = match[1].trim();
+    if (!uf) uf = match[2].toUpperCase();
+  }
+
+  if (uf) {
+    cidade = cidade.replace(new RegExp(`\\s*(?:/|-)\\s*${uf}\\s*$`, 'i'), '').trim();
+  }
+
+  return { cidade, uf };
+}
+
+function cidadeOrigemRealizado(row = {}) {
+  return splitCidadeUfRealizado(row.cidadeOrigem || row.origem || '', row.ufOrigem || row.uf_origem || '').cidade;
+}
+
+function ufOrigemRealizado(row = {}) {
+  return splitCidadeUfRealizado(row.cidadeOrigem || row.origem || '', row.ufOrigem || row.uf_origem || '').uf;
+}
+
+function destinoRealizadoInfo(row = {}) {
+  const parsed = splitCidadeUfRealizado(row.cidadeDestino || row.destino || '', row.ufDestino || row.uf_destino || '');
+  const ibge = String(row.ibgeDestino || row.codigoIbgeDestino || row.codigo_ibge_destino || '').replace(/\D/g, '');
+  const keys = new Set();
+  const cidadeKey = normalizarComparacaoRealizado(parsed.cidade);
+  if (cidadeKey) keys.add(cidadeKey);
+  const rawKey = normalizarComparacaoRealizado(row.cidadeDestino || row.destino || '');
+  if (rawKey) keys.add(rawKey);
+
+  return {
+    cidade: parsed.cidade,
+    uf: parsed.uf,
+    ibge,
+    keys: [...keys],
+  };
+}
+
 function valorRealizadoNumero(row = {}) {
   return toNumber(row.valorCte ?? row.valorFrete ?? row.valorRealizado ?? row.valorCalculado ?? 0);
 }
 
 function pesoRealizadoNumero(row = {}) {
   const pesoDeclarado = toNumber(row.pesoDeclarado ?? row.peso ?? 0);
-  const pesoCubado = toNumber(row.pesoCubado ?? 0);
+  const pesoCubado = toNumber(row.pesoCubado ?? row.peso_cubado ?? 0);
   const pesoFinal = Math.max(pesoDeclarado, pesoCubado);
   return pesoFinal > 0 ? pesoFinal : pesoDeclarado;
-}
-
-function canalRealizado(row = {}, canalPadrao = '') {
-  return String(row.canal || row.canalVendas || row.canais || canalPadrao || '').trim().toUpperCase();
 }
 
 function dentroPeriodoRealizado(row = {}, filtros = {}) {
@@ -608,17 +697,63 @@ function dentroPeriodoRealizado(row = {}, filtros = {}) {
 }
 
 function filtrarRealizadosBase(realizados = [], filtros = {}) {
-  const canalFiltro = String(filtros.canal || '').trim().toUpperCase();
-  const origemFiltro = normalizarComparacaoRealizado(filtros.origem);
+  const origemFiltro = normalizarComparacaoRealizado(splitCidadeUfRealizado(filtros.origem || '').cidade);
   const ufDestinoFiltro = String(filtros.ufDestino || '').trim().toUpperCase();
 
   return (realizados || []).filter((row) => {
+    const destino = destinoRealizadoInfo(row);
     if (!dentroPeriodoRealizado(row, filtros)) return false;
-    if (canalFiltro && canalRealizado(row) !== canalFiltro) return false;
-    if (origemFiltro && normalizarComparacaoRealizado(row.cidadeOrigem) !== origemFiltro) return false;
-    if (ufDestinoFiltro && String(row.ufDestino || '').trim().toUpperCase() !== ufDestinoFiltro) return false;
+    if (!canalCompativelRealizado(canalRealizadoRaw(row), filtros.canal)) return false;
+    if (origemFiltro && normalizarComparacaoRealizado(cidadeOrigemRealizado(row)) !== origemFiltro) return false;
+    if (ufDestinoFiltro && String(destino.uf || '').trim().toUpperCase() !== ufDestinoFiltro) return false;
     return true;
   });
+}
+
+function rotaDestinoCompativel(rota = {}, destinoInfo = {}, cidadePorIbge) {
+  const rotaIbge = String(rota.ibgeDestino || '').replace(/\D/g, '');
+  if (!rotaIbge) return false;
+  if (destinoInfo.ibge) return rotaIbge === destinoInfo.ibge;
+
+  const ufRota = getUfByIbge(rotaIbge);
+  if (destinoInfo.uf && ufRota && destinoInfo.uf !== ufRota) return false;
+
+  const cidadePorCodigo = normalizarComparacaoRealizado(getCidadeByIbge(rotaIbge, cidadePorIbge));
+  const rotaNomeParsed = splitCidadeUfRealizado(rota.nomeRota || rota.rota || rota.cidadeDestino || '', ufRota);
+  const rotaNomeCidade = normalizarComparacaoRealizado(rotaNomeParsed.cidade);
+  const rotaNomeRaw = normalizarComparacaoRealizado(rota.nomeRota || rota.rota || rota.cidadeDestino || '');
+
+  return destinoInfo.keys.some((destinoKey) => {
+    if (!destinoKey) return false;
+    if (cidadePorCodigo && cidadePorCodigo === destinoKey) return true;
+    if (rotaNomeCidade && rotaNomeCidade === destinoKey) return true;
+    if (rotaNomeRaw && rotaNomeRaw === destinoKey) return true;
+    if (rotaNomeRaw && rotaNomeRaw.startsWith(`${destinoKey} `)) return true;
+    return false;
+  });
+}
+
+function motivoForaMalha(row, contexto = {}) {
+  const origem = cidadeOrigemRealizado(row);
+  const destino = destinoRealizadoInfo(row);
+  const canal = canalRealizado(row, contexto.filtroCanal);
+  if (contexto.tipo === 'sem-dados') {
+    return `Sem dados obrigatórios para simular: origem ${origem || 'vazia'}, destino ${destino.cidade || destino.ibge || 'vazio'}, peso ${contexto.peso || 0}.`;
+  }
+  if (contexto.tipo === 'sem-origem') {
+    return `Origem/canal não encontrados na tabela: origem ${origem || 'vazia'}, canal ${canal || 'vazio'}.`;
+  }
+  if (contexto.tipo === 'sem-destino') {
+    return `Destino não localizado na malha da origem: ${destino.cidade || 'vazio'}${destino.uf ? `/${destino.uf}` : ''}${destino.ibge ? ` • IBGE ${destino.ibge}` : ''}.`;
+  }
+  if (contexto.tipo === 'sem-cotacao') {
+    return `Destino localizado, mas sem cotação/faixa válida para peso ${formatarNumeroMotivo(contexto.peso)} kg.`;
+  }
+  return 'Transportadora não participa da origem/destino/canal no período selecionado.';
+}
+
+function formatarNumeroMotivo(value) {
+  return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 3 });
 }
 
 function montarResumoRealizado(detalhes = [], foraMalha = [], totalSelecionado = 0) {
@@ -685,6 +820,107 @@ function montarResumoRealizado(detalhes = [], foraMalha = [], totalSelecionado =
   };
 }
 
+function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge }) {
+  const origemCidade = cidadeOrigemRealizado(row);
+  const origemKey = normalizarComparacaoRealizado(origemCidade);
+  const destinoInfo = destinoRealizadoInfo(row);
+  const canalLinha = canalRealizado(row, filtros.canal);
+  const canalRaw = canalRealizadoRaw(row, filtros.canal);
+  const peso = pesoRealizadoNumero(row);
+  const valorNF = toNumber(row.valorNF);
+  const valorRealizado = valorRealizadoNumero(row);
+
+  if (!origemKey || (!destinoInfo.ibge && !destinoInfo.keys.length) || peso <= 0) {
+    foraMalha.push({ ...row, motivo: motivoForaMalha(row, { tipo: 'sem-dados', peso, filtroCanal: filtros.canal }) });
+    return;
+  }
+
+  const cenarios = [];
+  let encontrouOrigemCanal = false;
+  let encontrouDestino = false;
+  let encontrouDestinoSemCotacao = false;
+
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora.origens || [])
+      .filter((origem) => canalCompativelRealizado(canalRaw, origem.canal))
+      .filter((origem) => normalizarComparacaoRealizado(origem.cidade) === origemKey)
+      .forEach((origem) => {
+        encontrouOrigemCanal = true;
+        (origem.rotas || []).forEach((rota) => {
+          if (!rotaDestinoCompativel(rota, destinoInfo, cidadePorIbge)) return;
+          encontrouDestino = true;
+
+          const item = calcularItem({
+            transportadora,
+            origem,
+            rota,
+            peso,
+            valorNF,
+            cidadePorIbge,
+            gradeCanal: [],
+          });
+
+          if (item) {
+            cenarios.push(item);
+          } else {
+            encontrouDestinoSemCotacao = true;
+          }
+        });
+      });
+  });
+
+  const rankeados = rankearPorChave(cenarios);
+  const candidato = rankeados.find((item) => normalizarComparacaoRealizado(item.transportadora) === alvo);
+
+  if (!candidato) {
+    const tipo = !encontrouOrigemCanal
+      ? 'sem-origem'
+      : !encontrouDestino
+        ? 'sem-destino'
+        : encontrouDestinoSemCotacao
+          ? 'sem-cotacao'
+          : 'sem-destino';
+    foraMalha.push({ ...row, motivo: motivoForaMalha(row, { tipo, peso, filtroCanal: filtros.canal }) });
+    return;
+  }
+
+  const rankingAtual = rankeados.find(
+    (item) => normalizarComparacaoRealizado(item.transportadora) === normalizarComparacaoRealizado(row.transportadora)
+  );
+  const impacto = valorRealizado - candidato.total;
+
+  detalhes.push({
+    id: row.id || row.chaveCte || `${row.numeroCte}-${detalhes.length}`,
+    chaveCte: row.chaveCte || '',
+    numeroCte: row.numeroCte || '',
+    emissao: row.emissao || '',
+    transportadoraRealizada: row.transportadora || '',
+    transportadoraSimulada: candidato.transportadora,
+    origem: origemCidade || candidato.origem,
+    cidadeDestino: destinoInfo.cidade || candidato.cidadeDestino,
+    ibgeDestino: destinoInfo.ibge || candidato.ibgeDestino,
+    ufDestino: destinoInfo.uf || candidato.ufDestino,
+    canal: canalLinha || candidato.canal,
+    peso,
+    valorNF,
+    valorRealizado,
+    valorSimulado: candidato.total,
+    percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
+    percentualSimulado: candidato.percentualSobreNF || (valorNF > 0 ? (candidato.total / valorNF) * 100 : 0),
+    impacto,
+    economiaPositiva: Math.max(impacto, 0),
+    aumentoPositivo: Math.max(candidato.total - valorRealizado, 0),
+    ranking: candidato.ranking,
+    ganharia: candidato.ranking === 1,
+    liderTransportadora: candidato.liderTransportadora,
+    perdeuPara: candidato.perdeuPara,
+    freteSubstituta: candidato.freteSubstituta,
+    rankingTransportadoraAtual: rankingAtual?.ranking || null,
+    valorTabelaTransportadoraAtual: rankingAtual?.total || null,
+    detalhes: candidato.detalhes,
+  });
+}
+
 export function simularRealizadoPorTransportadora({
   transportadoras = [],
   realizados = [],
@@ -706,93 +942,7 @@ export function simularRealizadoPorTransportadora({
   }
 
   selecionados.forEach((row) => {
-    const origemKey = normalizarComparacaoRealizado(row.cidadeOrigem);
-    const destinoKey = normalizarComparacaoRealizado(row.cidadeDestino);
-    const destinoIbge = String(row.ibgeDestino || row.codigoIbgeDestino || '').replace(/\D/g, '');
-    const canalLinha = canalRealizado(row, filtros.canal);
-    const peso = pesoRealizadoNumero(row);
-    const valorNF = toNumber(row.valorNF);
-    const valorRealizado = valorRealizadoNumero(row);
-
-    if (!origemKey || (!destinoIbge && !destinoKey) || peso <= 0) {
-      foraMalha.push({ ...row, motivo: 'Sem origem, destino ou peso para simular' });
-      return;
-    }
-
-    const cenarios = [];
-
-    (transportadoras || []).forEach((transportadora) => {
-      (transportadora.origens || [])
-        .filter((origem) => !canalLinha || String(origem.canal || '').trim().toUpperCase() === canalLinha)
-        .filter((origem) => normalizarComparacaoRealizado(origem.cidade) === origemKey)
-        .forEach((origem) => {
-          (origem.rotas || []).forEach((rota) => {
-            const rotaIbge = String(rota.ibgeDestino || '').replace(/\D/g, '');
-            const cidadeRota = normalizarComparacaoRealizado(getCidadeByIbge(rotaIbge, cidadePorIbge));
-            const destinoCompativel = destinoIbge
-              ? rotaIbge === destinoIbge
-              : cidadeRota && cidadeRota === destinoKey;
-
-            if (!destinoCompativel) return;
-
-            const item = calcularItem({
-              transportadora,
-              origem,
-              rota,
-              peso,
-              valorNF,
-              cidadePorIbge,
-              gradeCanal: [],
-            });
-
-            if (item) cenarios.push(item);
-          });
-        });
-    });
-
-    const rankeados = rankearPorChave(cenarios);
-    const candidato = rankeados.find((item) => normalizarComparacaoRealizado(item.transportadora) === alvo);
-
-    if (!candidato) {
-      foraMalha.push({ ...row, motivo: 'Transportadora não participa da origem/destino/canal no período selecionado' });
-      return;
-    }
-
-    const rankingAtual = rankeados.find(
-      (item) => normalizarComparacaoRealizado(item.transportadora) === normalizarComparacaoRealizado(row.transportadora)
-    );
-    const impacto = valorRealizado - candidato.total;
-
-    detalhes.push({
-      id: row.id || row.chaveCte || `${row.numeroCte}-${detalhes.length}`,
-      chaveCte: row.chaveCte || '',
-      numeroCte: row.numeroCte || '',
-      emissao: row.emissao || '',
-      transportadoraRealizada: row.transportadora || '',
-      transportadoraSimulada: candidato.transportadora,
-      origem: row.cidadeOrigem || candidato.origem,
-      cidadeDestino: row.cidadeDestino || candidato.cidadeDestino,
-      ibgeDestino: destinoIbge || candidato.ibgeDestino,
-      ufDestino: row.ufDestino || candidato.ufDestino,
-      canal: canalLinha || candidato.canal,
-      peso,
-      valorNF,
-      valorRealizado,
-      valorSimulado: candidato.total,
-      percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
-      percentualSimulado: candidato.percentualSobreNF || (valorNF > 0 ? (candidato.total / valorNF) * 100 : 0),
-      impacto,
-      economiaPositiva: Math.max(impacto, 0),
-      aumentoPositivo: Math.max(candidato.total - valorRealizado, 0),
-      ranking: candidato.ranking,
-      ganharia: candidato.ranking === 1,
-      liderTransportadora: candidato.liderTransportadora,
-      perdeuPara: candidato.perdeuPara,
-      freteSubstituta: candidato.freteSubstituta,
-      rankingTransportadoraAtual: rankingAtual?.ranking || null,
-      valorTabelaTransportadoraAtual: rankingAtual?.total || null,
-      detalhes: candidato.detalhes,
-    });
+    simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge });
   });
 
   return {
@@ -801,7 +951,6 @@ export function simularRealizadoPorTransportadora({
     foraMalha,
   };
 }
-
 
 function aguardarProximoFrameRealizado() {
   return new Promise((resolve) => {
@@ -853,99 +1002,14 @@ export async function simularRealizadoPorTransportadoraAsync({
   await informarProgresso(0, 'Iniciando cálculo');
 
   for (let index = 0; index < selecionados.length; index += 1) {
-    const row = selecionados[index];
-    const origemKey = normalizarComparacaoRealizado(row.cidadeOrigem);
-    const destinoKey = normalizarComparacaoRealizado(row.cidadeDestino);
-    const destinoIbge = String(row.ibgeDestino || row.codigoIbgeDestino || '').replace(/\D/g, '');
-    const canalLinha = canalRealizado(row, filtros.canal);
-    const peso = pesoRealizadoNumero(row);
-    const valorNF = toNumber(row.valorNF);
-    const valorRealizado = valorRealizadoNumero(row);
-
-    if (!origemKey || (!destinoIbge && !destinoKey) || peso <= 0) {
-      foraMalha.push({ ...row, motivo: 'Sem origem, destino ou peso para simular' });
-      if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {
-        await informarProgresso(index + 1, 'Calculando fretes');
-      }
-      continue;
-    }
-
-    const cenarios = [];
-
-    (transportadoras || []).forEach((transportadora) => {
-      (transportadora.origens || [])
-        .filter((origem) => !canalLinha || String(origem.canal || '').trim().toUpperCase() === canalLinha)
-        .filter((origem) => normalizarComparacaoRealizado(origem.cidade) === origemKey)
-        .forEach((origem) => {
-          (origem.rotas || []).forEach((rota) => {
-            const rotaIbge = String(rota.ibgeDestino || '').replace(/\D/g, '');
-            const cidadeRota = normalizarComparacaoRealizado(getCidadeByIbge(rotaIbge, cidadePorIbge));
-            const destinoCompativel = destinoIbge
-              ? rotaIbge === destinoIbge
-              : cidadeRota && cidadeRota === destinoKey;
-
-            if (!destinoCompativel) return;
-
-            const item = calcularItem({
-              transportadora,
-              origem,
-              rota,
-              peso,
-              valorNF,
-              cidadePorIbge,
-              gradeCanal: [],
-            });
-
-            if (item) cenarios.push(item);
-          });
-        });
-    });
-
-    const rankeados = rankearPorChave(cenarios);
-    const candidato = rankeados.find((item) => normalizarComparacaoRealizado(item.transportadora) === alvo);
-
-    if (!candidato) {
-      foraMalha.push({ ...row, motivo: 'Transportadora não participa da origem/destino/canal no período selecionado' });
-      if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {
-        await informarProgresso(index + 1, 'Calculando fretes');
-      }
-      continue;
-    }
-
-    const rankingAtual = rankeados.find(
-      (item) => normalizarComparacaoRealizado(item.transportadora) === normalizarComparacaoRealizado(row.transportadora)
-    );
-    const impacto = valorRealizado - candidato.total;
-
-    detalhes.push({
-      id: row.id || row.chaveCte || `${row.numeroCte}-${detalhes.length}`,
-      chaveCte: row.chaveCte || '',
-      numeroCte: row.numeroCte || '',
-      emissao: row.emissao || '',
-      transportadoraRealizada: row.transportadora || '',
-      transportadoraSimulada: candidato.transportadora,
-      origem: row.cidadeOrigem || candidato.origem,
-      cidadeDestino: row.cidadeDestino || candidato.cidadeDestino,
-      ibgeDestino: destinoIbge || candidato.ibgeDestino,
-      ufDestino: row.ufDestino || candidato.ufDestino,
-      canal: canalLinha || candidato.canal,
-      peso,
-      valorNF,
-      valorRealizado,
-      valorSimulado: candidato.total,
-      percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
-      percentualSimulado: candidato.percentualSobreNF || (valorNF > 0 ? (candidato.total / valorNF) * 100 : 0),
-      impacto,
-      economiaPositiva: Math.max(impacto, 0),
-      aumentoPositivo: Math.max(candidato.total - valorRealizado, 0),
-      ranking: candidato.ranking,
-      ganharia: candidato.ranking === 1,
-      liderTransportadora: candidato.liderTransportadora,
-      perdeuPara: candidato.perdeuPara,
-      freteSubstituta: candidato.freteSubstituta,
-      rankingTransportadoraAtual: rankingAtual?.ranking || null,
-      valorTabelaTransportadoraAtual: rankingAtual?.total || null,
-      detalhes: candidato.detalhes,
+    simularLinhaRealizado({
+      row: selecionados[index],
+      detalhes,
+      foraMalha,
+      transportadoras,
+      alvo,
+      filtros,
+      cidadePorIbge,
     });
 
     if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {
