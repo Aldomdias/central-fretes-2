@@ -1918,18 +1918,22 @@ function filtrarRealizadoLocal(rows = [], filtros = {}) {
   const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
   const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
   const canal = String(filtros.canal || '').trim();
-  const origem = String(filtros.origem || '').trim().toLowerCase();
+  const origem = String(filtros.origem || '').trim();
   const ufDestino = String(filtros.ufDestino || '').trim().toUpperCase();
 
   return (rows || []).filter((row) => {
     const emissao = row.emissao ? new Date(row.emissao) : null;
     if (inicio && (!emissao || emissao < inicio)) return false;
     if (fim && (!emissao || emissao > fim)) return false;
-    if (canal && !canalCompativelDb(row.canal, canal)) return false;
-    if (origem && String(row.cidadeOrigem || '').trim().toLowerCase() !== origem) return false;
+    if (canal && !canalCompativelDb(row.canal || row.canalVendas || row.canais, canal)) return false;
+    if (origem && !origemCompativelDb(row.cidadeOrigem, origem)) return false;
     if (ufDestino && String(row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
     return true;
   });
+}
+
+function temFiltroRealizadoDb(filtros = {}) {
+  return Boolean(filtros.inicio || filtros.fim || filtros.canal || filtros.origem || filtros.ufDestino || filtros.somenteSemCanal);
 }
 
 function isCanalRealizadoPreenchido(value) {
@@ -1942,33 +1946,78 @@ function aplicarFiltroSemCanal(rows = [], filtros = {}) {
   return rows.filter((row) => isCanalRealizadoPreenchido(row.canal));
 }
 
+const REALIZADO_SELECT_COLUMNS = [
+  'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','emissao','chave_cte','numero_cte','serie_cte',
+  'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino',
+  'peso_declarado','peso_cubado','metros_cubicos','volume','canais','canal','canal_vendas','valor_nf','percentual_frete',
+  'cep_destino','cep_origem','cidade_origem','cidade_destino','transportadora_contratada','prazo_entrega_cliente','criado_em','updated_at'
+].join(',');
+
+function uniqueNonEmpty(values = []) {
+  return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function canalVariantesConsultaDb(canalFiltro = '') {
+  const categoria = categoriaCanalDb(canalFiltro);
+  if (!categoria) return [];
+  if (categoria === 'B2C') {
+    return uniqueNonEmpty([
+      'B2C', 'b2c', 'VIA VAREJO', 'Via Varejo', 'MERCADO LIVRE', 'Mercado Livre', 'MERCADOR LIVRE', 'Mercador Livre',
+      'B2W', 'MAGAZINE LUIZA', 'Magazine Luiza', 'MAGALU', 'CARREFOUR', 'Carrefour', 'GPA', 'COLOMBO', 'Colombo',
+      'AMAZON', 'Amazon', 'INTER', 'Inter', 'ANYMARKET', 'AnyMarket', 'ANY MARKET', 'BRADESCO SHOP', 'Bradesco Shop',
+      'ITAU SHOP', 'ITAÚ SHOP', 'Itaú Shop', 'SHOPEE', 'Shopee', 'LIVELO', 'Livelo', 'MARKETPLACE', 'Marketplace',
+      'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE',
+    ]);
+  }
+  if (categoria === 'ATACADO') {
+    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b', 'CANTU', 'Cantu', 'CANTU PNEUS', 'Cantu Pneus']);
+  }
+  return uniqueNonEmpty([canalFiltro, normalizarCanalDb(canalFiltro), categoria]);
+}
+
+function limparOrigemParaConsultaDb(origem = '') {
+  return cidadeSemUfDb(origem)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
 async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
-  const limit = Number(filtros.limit || 10000) || 10000;
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const origem = limparOrigemParaConsultaDb(filtros.origem || '');
+  const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
+
   let query = supabase
     .from('realizado_ctes')
-    .select('*')
-    .order('emissao', { ascending: false, nullsFirst: false })
-    .order('criado_em', { ascending: false })
+    .select(REALIZADO_SELECT_COLUMNS)
     .limit(limit);
 
   if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
-  if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem);
-  if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
+  if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
+  if (origem) query = query.ilike('cidade_origem', `${origem}%`);
+  if (canalVariantes.length) query = query.in('canal', canalVariantes);
   if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
   if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
 
+  if (filtros.inicio || filtros.fim) {
+    query = query.order('emissao', { ascending: false, nullsFirst: false });
+  }
+
   const { data, error } = await query;
   if (error) throw error;
-  return filtrarRealizadoLocal((data || []).map(normalizeRealizadoDbRow), filtros);
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal((data || []).map(normalizeRealizadoDbRow), filtros), filtros);
 }
 
 async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
   const resposta = await supabase.rpc('listar_realizado_ctes', {
-    p_limit: Number(filtros.limit || 10000) || 10000,
+    p_limit: limit,
     p_inicio: filtros.inicio || null,
     p_fim: filtros.fim || null,
-    p_canal: null,
+    p_canal: filtros.canal || null,
     p_origem: filtros.origem || null,
     p_uf_destino: filtros.ufDestino || null,
     p_incluir_sem_canal: filtros.incluirSemCanal !== false,
@@ -1976,24 +2025,39 @@ async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
   });
 
   if (resposta?.error) throw resposta.error;
-  return filtrarRealizadoLocal((resposta?.data || []).map(normalizeRealizadoDbRow), filtros);
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal((resposta?.data || []).map(normalizeRealizadoDbRow), filtros), filtros);
 }
 
 export async function listarRealizadoCtes(filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const filtrosSeguros = {
+    ...filtros,
+    limit: Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200)),
+    amostra: filtros.amostra === true || !temFiltro,
+  };
+
   if (!isSupabaseConfigured()) {
-    const locais = filtrarRealizadoLocal(readRealizadoLocal(), filtros);
-    return aplicarFiltroSemCanal(locais, filtros).slice(0, filtros.limit || REALIZADO_LOCAL_LIMIT);
+    const locais = filtrarRealizadoLocal(readRealizadoLocal(), filtrosSeguros);
+    return aplicarFiltroSemCanal(locais, filtrosSeguros).slice(0, filtrosSeguros.limit || REALIZADO_LOCAL_LIMIT);
   }
 
   const supabase = ensureClient();
 
   try {
-    return await listarRealizadoCtesViaRpc(supabase, filtros);
-  } catch (rpcError) {
+    return await executarComTimeout(
+      listarRealizadoCtesViaSelect(supabase, filtrosSeguros),
+      temFiltro ? 25000 : 8000,
+      'A consulta direta do realizado demorou demais. Use filtros mais específicos ou rode o SQL atualizado de performance.'
+    );
+  } catch (selectError) {
     try {
-      return await listarRealizadoCtesViaSelect(supabase, filtros);
-    } catch (selectError) {
-      throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto e precisa do SQL atualizado com índices/RPC rápida. Detalhe RPC: ${rpcError.message || rpcError}. Detalhe select: ${selectError.message || selectError}`);
+      return await executarComTimeout(
+        listarRealizadoCtesViaRpc(supabase, filtrosSeguros),
+        temFiltro ? 25000 : 8000,
+        'A listagem RPC do realizado demorou demais. Use filtros de período/canal/origem/UF.'
+      );
+    } catch (rpcError) {
+      throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto; use filtro de período/canal/origem/UF e rode o SQL atualizado. Detalhe select: ${selectError.message || selectError}. Detalhe RPC: ${rpcError.message || rpcError}`);
     }
   }
 }
@@ -2152,46 +2216,50 @@ export async function diagnosticarRealizadoSupabaseDb() {
     erro: '',
   };
 
-  const tabela = await supabase
-    .from('realizado_ctes')
-    .select('id')
-    .limit(1);
-
-  if (tabela.error) {
-    status.erro = `Tabela realizado_ctes não respondeu: ${tabela.error.message}`;
+  try {
+    const tabela = await executarComTimeout(
+      supabase.from('realizado_ctes').select('id').limit(1),
+      5000,
+      'A tabela realizado_ctes demorou para responder.'
+    );
+    if (tabela.error) {
+      status.erro = `Tabela realizado_ctes não respondeu: ${tabela.error.message}`;
+      return status;
+    }
+    status.tabelaOk = true;
+    status.listagemRpcOk = true;
+  } catch (error) {
+    status.erro = error.message || 'Tabela realizado_ctes não respondeu.';
     return status;
   }
 
-  status.tabelaOk = true;
-
-  const rpc = await supabase.rpc('diagnosticar_realizado_ctes');
-  if (!rpc.error) {
-    status.rpcOk = true;
-    status.total = Number(rpc.data?.total ?? rpc.data?.total_estimado ?? 0);
-    status.comCanal = rpc.data?.com_canal === null || rpc.data?.com_canal === undefined ? null : Number(rpc.data.com_canal || 0);
-    status.semCanal = rpc.data?.sem_canal === null || rpc.data?.sem_canal === undefined ? null : Number(rpc.data.sem_canal || 0);
-    status.contagemExata = rpc.data?.contagem_exata === true;
-  } else {
-    status.erro = `Diagnóstico rápido pendente: ${rpc.error.message || rpc.error}`;
+  try {
+    const estimativa = await executarComTimeout(
+      supabase.from('realizado_ctes').select('id', { count: 'planned', head: true }),
+      5000,
+      'Estimativa de total demorou demais.'
+    );
+    if (!estimativa.error) {
+      status.total = Number(estimativa.count || 0);
+      status.contagemExata = false;
+    }
+  } catch {
+    // Mantém diagnóstico OK mesmo sem estimativa.
   }
 
-  const listagem = await supabase.rpc('listar_realizado_ctes', {
-    p_limit: 1,
-    p_inicio: null,
-    p_fim: null,
-    p_canal: null,
-    p_origem: null,
-    p_uf_destino: null,
-    p_incluir_sem_canal: true,
-    p_somente_sem_canal: false,
-  });
-  if (!listagem.error) {
-    status.listagemRpcOk = true;
-  } else {
-    status.erro = status.erro || `Listagem pendente: ${listagem.error.message || listagem.error}`;
+  try {
+    const rpcImport = await executarComTimeout(
+      supabase.rpc('importar_realizado_ctes', { p_rows: [] }),
+      5000,
+      'Teste da RPC de importação demorou demais.'
+    );
+    status.rpcOk = !rpcImport.error;
+    if (rpcImport.error) status.erro = status.erro || `RPC de importação pendente: ${rpcImport.error.message || rpcImport.error}`;
+  } catch (error) {
+    status.erro = status.erro || (error.message || 'RPC de importação pendente.');
   }
 
-  status.ok = true;
+  status.ok = status.tabelaOk;
   return status;
 }
 

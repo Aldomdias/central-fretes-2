@@ -216,6 +216,21 @@ function fileInputKey() {
   return `realizado-${Date.now()}`;
 }
 
+function temFiltroMinimoRealizado(filtros = {}) {
+  return Boolean(
+    filtros.inicio ||
+    filtros.fim ||
+    filtros.canal ||
+    filtros.origem ||
+    filtros.ufDestino
+  );
+}
+
+function textoContagem(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  return Number(value || 0).toLocaleString('pt-BR');
+}
+
 function nextFrame() {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === 'function') {
@@ -319,25 +334,43 @@ export default function RealizadoPage({ transportadoras = [] }) {
     setCarregando(true);
     setErro('');
     try {
+      const temFiltro = temFiltroMinimoRealizado(filtrosCarga);
+      const limite = temFiltro ? 15000 : 50;
       const data = await listarRealizadoCtes({
         inicio: filtrosCarga.inicio,
         fim: filtrosCarga.fim,
         canal: filtrosCarga.canal,
         origem: filtrosCarga.origem,
         ufDestino: filtrosCarga.ufDestino,
-        limit: 15000,
-        incluirSemCanal: true,
+        limit: limite,
+        incluirSemCanal: temFiltro,
+        amostra: !temFiltro,
       });
       setRows(data);
       const comCanal = data.filter(hasCanalRealizado).length;
       const semCanal = data.length - comCanal;
-      setFeedback(
-        data.length
-          ? `Base realizada carregada com ${data.length.toLocaleString('pt-BR')} CT-e(s): ${comCanal.toLocaleString('pt-BR')} com canal e ${semCanal.toLocaleString('pt-BR')} pendência(s) sem canal.`
-          : 'Nenhum CT-e encontrado para os filtros atuais.'
-      );
+      if (!temFiltro) {
+        setFeedback(
+          data.length
+            ? `Base grande detectada. Mostrando apenas uma amostra leve de ${data.length.toLocaleString('pt-BR')} CT-e(s). Para trabalhar a base completa, filtre por período, canal, origem ou UF destino.`
+            : 'Base realizada sem amostra carregada. Use filtros para buscar CT-e(s) na base grande.'
+        );
+      } else {
+        setFeedback(
+          data.length
+            ? `Base realizada carregada com ${data.length.toLocaleString('pt-BR')} CT-e(s) no filtro: ${comCanal.toLocaleString('pt-BR')} com canal e ${semCanal.toLocaleString('pt-BR')} pendência(s) sem canal.`
+            : 'Nenhum CT-e encontrado para os filtros atuais.'
+        );
+      }
     } catch (error) {
-      setErro(error.message || 'Erro ao carregar base realizada.');
+      const temFiltro = temFiltroMinimoRealizado(filtrosCarga);
+      if (!temFiltro) {
+        setRows([]);
+        setErro('');
+        setFeedback('Base grande conectada, mas a amostra sem filtro não respondeu a tempo. Use pelo menos um filtro de período, canal, origem ou UF destino para buscar no Supabase.');
+      } else {
+        setErro(error.message || 'Erro ao carregar base realizada.');
+      }
     } finally {
       setCarregando(false);
     }
@@ -359,7 +392,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
           origens: opcoesDb?.origens || [],
           municipiosIbge: municipios?.length ? municipios : opcoesDb?.municipiosIbge || [],
         });
-        await carregarBase(DEFAULT_FILTROS);
+        await carregarBase({ ...DEFAULT_FILTROS, amostra: true });
       } catch (error) {
         if (ativo) setErro(error.message || 'Erro ao iniciar base realizada.');
       }
@@ -482,11 +515,11 @@ export default function RealizadoPage({ transportadoras = [] }) {
       );
       setInputKey(fileInputKey());
 
-      const dataAtualizada = await listarRealizadoCtes({ limit: 15000, incluirSemCanal: true });
+      const dataAtualizada = await listarRealizadoCtes({ limit: 50, incluirSemCanal: false, amostra: true });
       if (dataAtualizada.length) {
         setRows(dataAtualizada);
         setFeedback(
-          `Base realizada carregada do Supabase com ${dataAtualizada.length.toLocaleString('pt-BR')} CT-e(s). Última importação confirmada: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s). Projeto: ${save.projeto || diagnostico?.host || '—'} • método: ${save.metodo || '—'}.`
+          `Amostra atualizada do Supabase com ${dataAtualizada.length.toLocaleString('pt-BR')} CT-e(s). Última importação confirmada: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s). Projeto: ${save.projeto || diagnostico?.host || '—'} • método: ${save.metodo || '—'}.`
         );
       } else {
         throw new Error('O Supabase confirmou a gravação, mas a consulta da base voltou vazia. Isso indica política de leitura/RLS ou o front apontando para outra base. Rode o script atualizado e confira o projeto do Supabase usado no Vercel.');
