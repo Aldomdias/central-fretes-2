@@ -7,6 +7,7 @@ import {
   diagnosticarRealizadoSupabaseDb,
   excluirRealizadoCtes,
   listarRealizadoCtes,
+  resolverDestinoIbgeDb,
   salvarRealizadoCtes,
 } from '../services/freteDatabaseService';
 import { simularRealizadoPorTransportadoraAsync } from '../utils/calculoFrete';
@@ -337,15 +338,30 @@ function agruparDestinosPorOrigem(registros = []) {
     const origem = splitCidadeUfTela(row.cidadeOrigem, row.ufOrigem).cidade || row.cidadeOrigem || '';
     const origemKey = normalizarBusca(origem);
     if (!origemKey) return;
-    const atual = map.get(origemKey) || { origem, destinos: new Set(), linhas: 0 };
+    const atual = map.get(origemKey) || { origem, destinos: new Set(), ufsDestino: new Set(), semIbge: 0, linhas: 0 };
     const ibge = String(row.ibgeDestino || '').replace(/\D/g, '');
-    if (ibge) atual.destinos.add(ibge);
+    const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
+    if (destino.uf) atual.ufsDestino.add(destino.uf);
+    if (ibge) {
+      atual.destinos.add(ibge);
+    } else {
+      atual.semIbge += 1;
+    }
     atual.linhas += 1;
     map.set(origemKey, atual);
   });
 
   return [...map.values()]
-    .map((item) => ({ ...item, destinos: [...item.destinos] }))
+    .map((item) => {
+      const ufs = [...item.ufsDestino].filter(Boolean);
+      return {
+        ...item,
+        // Se alguma linha não achou IBGE, busca a malha inteira da UF/origem.
+        // Assim a simulação ainda consegue casar por nome da rota/cidade.
+        destinos: item.semIbge > 0 ? [] : [...item.destinos],
+        ufDestino: ufs.length === 1 ? ufs[0] : '',
+      };
+    })
     .sort((a, b) => b.linhas - a.linhas || a.origem.localeCompare(b.origem, 'pt-BR'));
 }
 
@@ -803,7 +819,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
     }
   }
 
-  function resolverIbgeDestino(row) {
+  function resolverIbgeDestinoLocal(row) {
     if (row.ibgeDestino) return String(row.ibgeDestino || '').replace(/\D/g, '');
 
     const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
@@ -815,15 +831,67 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
     const local = ibgePorCidade.get(localKey) || ibgePorCidade.get(semUfKey) || '';
     const ibge = String(local || '').replace(/\D/g, '');
-    ibgeCacheRef.current.set(cachedKey, ibge);
+    if (ibge) ibgeCacheRef.current.set(cachedKey, ibge);
     return ibge;
   }
 
-  function prepararRegistrosParaSimulacao(registros = []) {
-    return (registros || []).map((row) => ({
-      ...row,
-      ibgeDestino: resolverIbgeDestino(row),
-    }));
+  async function resolverIbgeDestinoComFallback(row) {
+    const local = resolverIbgeDestinoLocal(row);
+    if (local) return local;
+
+    const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
+    const localKey = buildCidadeKey(destino.cidade, destino.uf);
+    const cachedKey = [row.cepDestino || '', localKey, 'fallback'].join('|');
+    if (ibgeCacheRef.current.has(cachedKey)) return ibgeCacheRef.current.get(cachedKey);
+
+    const tentativas = [
+      destino.cidade && destino.uf ? `${destino.cidade}/${destino.uf}` : '',
+      destino.cidade,
+      row.cepDestino,
+    ].filter(Boolean);
+
+    for (const tentativa of tentativas) {
+      try {
+        const resolvido = await resolverDestinoIbgeDb(tentativa);
+        const ibge = String(resolvido?.ibge || '').replace(/\D/g, '');
+        if (ibge) {
+          ibgeCacheRef.current.set(cachedKey, ibge);
+          return ibge;
+        }
+      } catch {
+        // tenta a próxima forma de localização
+      }
+    }
+
+    ibgeCacheRef.current.set(cachedKey, '');
+    return '';
+  }
+
+  async function prepararRegistrosParaSimulacao(registros = [], onProgress) {
+    const preparados = [];
+    const cacheLote = new Map();
+    const total = registros.length;
+
+    for (let index = 0; index < registros.length; index += 1) {
+      const row = registros[index];
+      const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
+      const chaveDestino = [destino.cidade, destino.uf, row.cepDestino || ''].join('|').toUpperCase();
+
+      let ibge = cacheLote.get(chaveDestino);
+      if (ibge === undefined) {
+        ibge = await resolverIbgeDestinoComFallback(row);
+        cacheLote.set(chaveDestino, ibge || '');
+      }
+
+      preparados.push({ ...row, ibgeDestino: ibge || '' });
+
+      if (typeof onProgress === 'function' && ((index + 1) % 25 === 0 || index === registros.length - 1)) {
+        onProgress(index + 1, total, cacheLote.size);
+        await nextFrame();
+      }
+    }
+
+    return preparados;
   }
 
 
@@ -898,7 +966,16 @@ export default function RealizadoPage({ transportadoras = [] }) {
       });
       await nextFrame();
 
-      const registrosComIbge = prepararRegistrosParaSimulacao(limite);
+      const registrosComIbge = await prepararRegistrosParaSimulacao(limite, (atual, total, destinosUnicos) => {
+        const percentual = Math.min(18, 8 + Math.round((atual / Math.max(total, 1)) * 10));
+        setSimProgress({
+          etapa: 'Resolvendo destinos/IBGE',
+          atual,
+          total,
+          percentual,
+          mensagem: `${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) cruzados • ${Number(destinosUnicos || 0).toLocaleString('pt-BR')} destino(s) único(s)`,
+        });
+      });
       const gruposOrigem = agruparDestinosPorOrigem(registrosComIbge);
 
       if (!gruposOrigem.length) {
@@ -923,7 +1000,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
           nomeTransportadora: filtros.transportadora,
           canal: filtrosSimulacao.canal,
           origem: grupo.origem,
-          ufDestino: filtrosSimulacao.ufDestino,
+          ufDestino: filtrosSimulacao.ufDestino || grupo.ufDestino,
           destinoCodigos: grupo.destinos,
         });
         bases.push(parcial || []);

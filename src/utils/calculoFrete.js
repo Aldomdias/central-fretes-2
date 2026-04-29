@@ -845,20 +845,55 @@ function montarResumoRealizado(detalhes = [], foraMalha = [], totalSelecionado =
 }
 
 
+function adicionarOrigemIndiceRealizado(map, key, item) {
+  const normalized = normalizarComparacaoRealizado(key);
+  if (!normalized) return;
+  const lista = map.get(normalized) || [];
+  const jaExiste = lista.some((atual) => atual.transportadora === item.transportadora && atual.origem === item.origem);
+  if (!jaExiste) lista.push(item);
+  map.set(normalized, lista);
+}
+
 function criarIndiceOrigensRealizado(transportadoras = []) {
   const map = new Map();
 
   (transportadoras || []).forEach((transportadora) => {
     (transportadora.origens || []).forEach((origem) => {
-      const origemKey = normalizarComparacaoRealizado(origem?.cidade || '');
-      if (!origemKey) return;
-      const lista = map.get(origemKey) || [];
-      lista.push({ transportadora, origem });
-      map.set(origemKey, lista);
+      const item = { transportadora, origem };
+      const cidadeRaw = origem?.cidade || '';
+      const parsed = splitCidadeUfRealizado(cidadeRaw, '');
+      adicionarOrigemIndiceRealizado(map, cidadeRaw, item);
+      adicionarOrigemIndiceRealizado(map, parsed.cidade, item);
+      if (parsed.uf) adicionarOrigemIndiceRealizado(map, `${parsed.cidade} ${parsed.uf}`, item);
+
+      // Algumas origens vêm cadastradas como "CIDADE/UF" ou "CIDADE - UF".
+      // O realizado geralmente vem separado em cidade + UF, então indexamos as variações.
+      (origem.rotas || []).forEach((rota) => {
+        const ufOrigem = getUfByIbge(rota?.ibgeOrigem);
+        if (ufOrigem && parsed.cidade) adicionarOrigemIndiceRealizado(map, `${parsed.cidade} ${ufOrigem}`, item);
+      });
     });
   });
 
   return map;
+}
+
+function buscarCandidatosOrigemRealizado(indiceOrigens, origemKey) {
+  const direta = indiceOrigens?.get(origemKey) || [];
+  if (direta.length) return direta;
+
+  const candidatos = [];
+  for (const [key, lista] of indiceOrigens?.entries?.() || []) {
+    if (!key || !origemKey) continue;
+    if (key === origemKey || key.includes(origemKey) || origemKey.includes(key)) {
+      (lista || []).forEach((item) => {
+        if (!candidatos.some((atual) => atual.transportadora === item.transportadora && atual.origem === item.origem)) {
+          candidatos.push(item);
+        }
+      });
+    }
+  }
+  return candidatos;
 }
 
 function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge, indiceOrigens }) {
@@ -881,7 +916,7 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
   let encontrouDestino = false;
   let encontrouDestinoSemCotacao = false;
 
-  const candidatosOrigem = indiceOrigens?.get(origemKey) || [];
+  const candidatosOrigem = buscarCandidatosOrigemRealizado(indiceOrigens, origemKey);
 
   candidatosOrigem
     .filter(({ origem }) => canalCompativelRealizado(canalRaw, origem.canal))
