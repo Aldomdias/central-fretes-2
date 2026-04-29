@@ -2,13 +2,39 @@ import * as XLSX from 'xlsx';
 
 const HEADER_MAP = {
   'transportadora': 'transportadora',
+  'transportador': 'transportadora',
+  'nome transportadora': 'transportadora',
   'cnpj transportadora': 'cnpjTransportadora',
+  'cnpj do transportador': 'cnpjTransportadora',
   'emissao': 'emissao',
+  'data emissao': 'emissao',
+  'data de emissao': 'emissao',
   'emissao cte': 'emissao',
+  'emissao ct e': 'emissao',
+  'data emissao cte': 'emissao',
+  'data emissao ct e': 'emissao',
   'chave cte': 'chaveCte',
+  'chave ct e': 'chaveCte',
+  'chave do cte': 'chaveCte',
+  'chave do ct e': 'chaveCte',
+  'chave acesso cte': 'chaveCte',
+  'chave acesso ct e': 'chaveCte',
+  'chave de acesso cte': 'chaveCte',
+  'chave de acesso ct e': 'chaveCte',
   'numero cte': 'numeroCte',
+  'numero ct e': 'numeroCte',
+  'n cte': 'numeroCte',
+  'n ct e': 'numeroCte',
+  'cte': 'numeroCte',
+  'ct e': 'numeroCte',
   'serie cte': 'serieCte',
+  'serie ct e': 'serieCte',
   'valor cte': 'valorCte',
+  'valor ct e': 'valorCte',
+  'valor do cte': 'valorCte',
+  'valor do ct e': 'valorCte',
+  'frete': 'valorCte',
+  'valor frete': 'valorCte',
   'valor calculado': 'valorCalculado',
   'diferenca': 'diferenca',
   'situacao': 'situacao',
@@ -16,29 +42,42 @@ const HEADER_MAP = {
   'status conciliacao': 'statusConciliacao',
   'status erp': 'statusErp',
   'uf origem': 'ufOrigem',
+  'estado origem': 'ufOrigem',
   'uf destino': 'ufDestino',
+  'estado destino': 'ufDestino',
   'peso declarado': 'pesoDeclarado',
+  'peso': 'pesoDeclarado',
+  'peso real': 'pesoDeclarado',
   'peso cubado': 'pesoCubado',
+  'cubagem': 'pesoCubado',
   'metros cubicos': 'metrosCubicos',
   'volume': 'volume',
+  'volumes': 'volume',
   'canais': 'canais',
   'canal': 'canal',
   'valor nf': 'valorNF',
+  'valor nota': 'valorNF',
+  'valor nota fiscal': 'valorNF',
+  'valor da nota': 'valorNF',
+  'valor da nf': 'valorNF',
   'percentual frete': 'percentualFrete',
+  'frete nf': 'percentualFrete',
   'canal de vendas': 'canalVendas',
   'cep destino': 'cepDestino',
   'cep origem': 'cepOrigem',
   'cidade origem': 'cidadeOrigem',
+  'municipio origem': 'cidadeOrigem',
   'cidade destino': 'cidadeDestino',
+  'municipio destino': 'cidadeDestino',
   'transportadora contratada': 'transportadoraContratada',
   'prazo de entrega para o cliente': 'prazoEntregaCliente',
   'entrega de cte': 'entregaCte',
+  'entrega de ct e': 'entregaCte',
   'data de criacao do pedido': 'dataCriacaoPedido',
   'data de pagamento do pedido': 'dataPagamentoPedido',
   'data de faturamento do pedido': 'dataFaturamentoPedido',
   'data de expedicao do pedido': 'dataExpedicaoPedido',
 };
-
 export function normalizeHeaderRealizado(value) {
   return String(value ?? '')
     .normalize('NFD')
@@ -158,6 +197,26 @@ function normalizeRowObject(row = {}) {
   return normalized;
 }
 
+function cleanKeyPart(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+function buildFallbackCteKey(item = {}, emissao = '') {
+  const numero = cleanKeyPart(item.numeroCte || item.cte || item.ctE);
+  const transportadora = cleanKeyPart(item.transportadora);
+  const origem = cleanKeyPart(item.cidadeOrigem || item.ufOrigem);
+  const destino = cleanKeyPart(item.cidadeDestino || item.ufDestino);
+  const valor = cleanKeyPart(toNumberRealizado(item.valorCte || item.valorNF).toFixed(2));
+  const data = cleanKeyPart(emissao ? emissao.slice(0, 10) : item.emissao);
+  const parts = [numero, data, transportadora, origem, destino, valor].filter(Boolean);
+  return parts.length >= 2 ? `cte-sem-chave-${parts.join('-')}` : '';
+}
+
 function getCompetencia(emissaoIso, fallbackFileName = '') {
   if (emissaoIso) {
     const data = new Date(emissaoIso);
@@ -174,7 +233,8 @@ function getCompetencia(emissaoIso, fallbackFileName = '') {
 function normalizeRegistro(row = {}, arquivoOrigem = '') {
   const item = normalizeRowObject(row);
   const emissao = parseDateRealizado(item.emissao);
-  const chaveCte = String(item.chaveCte || '').replace(/\D/g, '') || String(item.chaveCte || '').trim();
+  const chaveOficial = String(item.chaveCte || '').replace(/\D/g, '') || String(item.chaveCte || '').trim();
+  const chaveCte = chaveOficial || buildFallbackCteKey(item, emissao);
 
   return {
     id: chaveCte || `${item.numeroCte || ''}-${item.emissao || ''}-${item.valorCte || ''}`,

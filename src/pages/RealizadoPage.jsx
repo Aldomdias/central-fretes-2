@@ -269,6 +269,8 @@ export default function RealizadoPage({ transportadoras = [] }) {
         `Arquivo lido na aba ${meta.aba}: ${meta.registrosValidos.toLocaleString('pt-BR')} CT-e(s) válidos de ${meta.linhasOriginais.toLocaleString('pt-BR')} linha(s).${avisoRef} Salvando no Supabase...`
       );
 
+      setRows(registros);
+
       const save = await salvarRealizadoCtes(registros, {
         chunkSize: 250,
         onProgress: ({ salvos, total, modo }) => {
@@ -278,9 +280,23 @@ export default function RealizadoPage({ transportadoras = [] }) {
         },
       });
 
+      if (!save.inseridos) {
+        throw new Error('A planilha foi lida, mas nenhum CT-e foi salvo. Verifique se a coluna Chave CT-e ou Número CT-e veio preenchida.');
+      }
+
       setFeedback(`Importação concluída: ${save.inseridos.toLocaleString('pt-BR')} CT-e(s) salvos de ${file.name}. Atualizando a tela...`);
       setInputKey(fileInputKey());
-      await carregarBase(DEFAULT_FILTROS);
+
+      const dataAtualizada = await listarRealizadoCtes({ limit: 15000 });
+      if (dataAtualizada.length) {
+        setRows(dataAtualizada);
+        setFeedback(`Base realizada carregada com ${dataAtualizada.length.toLocaleString('pt-BR')} CT-e(s).`);
+      } else {
+        setRows(registros);
+        setFeedback(
+          `A planilha foi lida com ${registros.length.toLocaleString('pt-BR')} CT-e(s), mas a consulta ao Supabase voltou vazia. Mantive a base na tela para simular agora; confira se o script realizado_ctes_schema.sql foi rodado e se a tabela está recebendo registros.`
+        );
+      }
     } catch (error) {
       setErro(error.message || 'Erro ao importar realizado.');
     } finally {

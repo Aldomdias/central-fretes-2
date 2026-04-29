@@ -1763,8 +1763,28 @@ function normalizeRealizadoDbRow(row = {}) {
   };
 }
 
+function buildRealizadoFallbackKey(row = {}) {
+  const parts = [
+    row.numeroCte || row.numero_cte,
+    row.emissao,
+    row.transportadora,
+    row.cidadeOrigem || row.cidade_origem,
+    row.cidadeDestino || row.cidade_destino,
+    row.valorCte ?? row.valor_cte ?? row.valorNF ?? row.valor_nf,
+  ]
+    .map((part) => String(part ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80))
+    .filter(Boolean);
+
+  return parts.length >= 2 ? `cte-sem-chave-${parts.join('-')}` : '';
+}
+
 function sanitizeRealizadoDbRow(row = {}) {
-  const chave = String(row.chaveCte || row.chave_cte || '').trim();
+  const chave = String(row.chaveCte || row.chave_cte || buildRealizadoFallbackKey(row)).trim();
   return {
     arquivo_origem: row.arquivoOrigem || row.arquivo_origem || '',
     competencia: row.competencia || '',
@@ -1881,6 +1901,10 @@ export async function salvarRealizadoCtes(rows = [], options = {}) {
 
   const supabase = ensureClient();
   const payload = normalized.map(sanitizeRealizadoDbRow).filter((row) => row.chave_cte);
+  if (!payload.length) {
+    throw new Error('A planilha foi lida, mas nenhum CT-e ficou com chave para salvar. Confira se existe coluna Chave CT-e ou Número CT-e.');
+  }
+
   const chunkSize = Number(options.chunkSize || 250) || 250;
 
   for (let index = 0; index < payload.length; index += chunkSize) {
@@ -1903,7 +1927,7 @@ export async function salvarRealizadoCtes(rows = [], options = {}) {
     await aguardar(0);
   }
 
-  return { ok: true, inseridos: payload.length, modo: 'supabase' };
+  return { ok: true, inseridos: payload.length, lidos: normalized.length, modo: 'supabase' };
 }
 
 export async function excluirRealizadoCtes(filtros = {}) {
