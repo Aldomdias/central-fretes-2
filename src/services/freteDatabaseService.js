@@ -810,15 +810,74 @@ async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
   return rows;
 }
 
+
+async function fetchTransportadorasByIds(supabase, ids = []) {
+  const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
+  if (!uniqueIds.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+  for (let index = 0; index < uniqueIds.length; index += chunkSize) {
+    const chunk = uniqueIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('transportadoras')
+      .select('id, nome, status')
+      .in('id', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  return rows;
+}
+
+function destinoKeyDb(value = '') {
+  return normalizeBuscaDb(cidadeSemUfDb(value));
+}
+
+function rotaDestinoLocalCompativelDb(rota = {}, destinosNormalizados = []) {
+  if (!destinosNormalizados.length) return true;
+
+  const destinoIbges = new Set(
+    destinosNormalizados
+      .map((item) => String(item || '').replace(/\D/g, ''))
+      .filter((item) => item.length >= 6)
+  );
+  const destinoNomes = new Set(
+    destinosNormalizados
+      .map((item) => destinoKeyDb(item))
+      .filter(Boolean)
+  );
+
+  const rotaIbge = String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, '');
+  if (rotaIbge && destinoIbges.has(rotaIbge)) return true;
+
+  const nomeRota = rota.nome_rota || rota.nomeRota || rota.rota || rota.cidade_destino || '';
+  const nomeRotaKey = destinoKeyDb(nomeRota);
+  if (!nomeRotaKey) return false;
+
+  for (const destinoNome of destinoNomes) {
+    if (!destinoNome) continue;
+    if (nomeRotaKey === destinoNome) return true;
+    if (nomeRotaKey.includes(destinoNome) && destinoNome.length >= 5) return true;
+    if (destinoNome.includes(nomeRotaKey) && nomeRotaKey.length >= 5) return true;
+  }
+
+  return false;
+}
+
 async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = [], ufDestino = '') {
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
   const ufFiltro = String(ufDestino || '').trim().toUpperCase();
+  const destinosIbge = destinosNormalizados
+    .map((item) => String(item || '').replace(/\D/g, ''))
+    .filter((item) => item.length >= 6);
 
   if (!ids.length) return [];
 
   const rows = [];
-  const chunkSize = 100;
+  const chunkSize = 50;
+  const usarFiltroIbgeNoBanco = Boolean(destinosIbge.length && !ufFiltro && destinosIbge.length <= 150);
 
   for (let index = 0; index < ids.length; index += chunkSize) {
     const chunk = ids.slice(index, index + chunkSize);
@@ -830,21 +889,29 @@ async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = [], uf
         .select('*')
         .in('origem_id', chunk);
 
-      if (destinosNormalizados.length) {
-        query = query.in('ibge_destino', destinosNormalizados);
+      // Quando há UF destino, é mais seguro buscar a malha da origem/UF e casar no front.
+      // Isso evita perder cidades quando o IBGE da tabela veio diferente, vazio ou quando
+      // a rota está cadastrada pelo nome da cidade.
+      if (usarFiltroIbgeNoBanco) {
+        query = query.in('ibge_destino', destinosIbge);
       }
 
       const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
 
-      if (error) throw error;
+      if (error) {
+        throw new Error(`Erro ao buscar rotas da malha: ${error.message || error.details || 'Bad Request'}`);
+      }
 
-      const page = (data || []).filter((rota) => {
-        if (!ufFiltro) return true;
+      const rawPage = data || [];
+      const page = rawPage.filter((rota) => {
         const ibge = String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, '');
-        return !ibge || ufFromIbgeLike(ibge) === ufFiltro;
+        if (ufFiltro && ibge && ufFromIbgeLike(ibge) !== ufFiltro) return false;
+        if (!usarFiltroIbgeNoBanco && destinosNormalizados.length && !rotaDestinoLocalCompativelDb(rota, destinosNormalizados)) return false;
+        return true;
       });
+
       rows.push(...page);
-      if (page.length < PAGE_SIZE) break;
+      if (rawPage.length < PAGE_SIZE) break;
       from += PAGE_SIZE;
     }
   }
@@ -969,21 +1036,19 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
 
   const [
-    transportadorasResponse,
+    transportadorasRows,
     generalidades,
     cotacoes,
     taxas,
   ] = await Promise.all([
-    supabase.from('transportadoras').select('id, nome, status').in('id', transportadoraIds),
+    fetchTransportadorasByIds(supabase, transportadoraIds),
     fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
     fetchRowsByOrigemIds(supabase, 'cotacoes', origemIdsComRota),
     fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIdsComRota),
   ]);
 
-  if (transportadorasResponse.error) throw transportadorasResponse.error;
-
   return transportadorasFromDbRows({
-    transportadoras: transportadorasResponse.data || [],
+    transportadoras: transportadorasRows || [],
     origens,
     generalidades,
     rotas: rotas || [],
@@ -1514,7 +1579,10 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   // Quando a tela pede malha por UF, carregamos a origem/UF inteira. Isso é mais robusto
   // para tabelas onde o IBGE da rota veio vazio/incorreto, mas o nome da cidade está certo.
   if (nomeTransportadora && origem) {
-    if (!destinos.length && ufDestino) {
+    // Para simulação em cima do realizado, quando há UF destino carregamos a malha
+    // da origem/UF inteira. É mais robusto do que filtrar por IBGE antes, porque
+    // algumas tabelas têm IBGE ausente/divergente, mas a rota está correta pelo nome.
+    if (ufDestino) {
       return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino });
     }
 

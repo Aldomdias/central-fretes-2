@@ -580,6 +580,23 @@ function normalizarComparacaoRealizado(value) {
     .trim();
 }
 
+function normalizarCidadeRotaRealizado(value) {
+  return normalizarComparacaoRealizado(splitCidadeUfRealizado(value || '', '').cidade || value || '');
+}
+
+function keysCidadeRealizado(cidade = '', uf = '') {
+  const parsed = splitCidadeUfRealizado(cidade, uf);
+  const keys = new Set();
+  const cidadeKey = normalizarComparacaoRealizado(parsed.cidade);
+  const rawKey = normalizarComparacaoRealizado(cidade);
+  if (cidadeKey) keys.add(cidadeKey);
+  if (rawKey) keys.add(rawKey);
+  if (cidadeKey && parsed.uf) {
+    keys.add(normalizarComparacaoRealizado(`${parsed.cidade} ${parsed.uf}`));
+    keys.add(normalizarComparacaoRealizado(`${parsed.cidade}/${parsed.uf}`));
+  }
+  return [...keys].filter(Boolean);
+}
 function normalizarCanalRealizadoTexto(value) {
   return String(value || '')
     .normalize('NFD')
@@ -683,9 +700,8 @@ function ufOrigemRealizado(row = {}) {
 function destinoRealizadoInfo(row = {}) {
   const parsed = splitCidadeUfRealizado(row.cidadeDestino || row.destino || '', row.ufDestino || row.uf_destino || '');
   const ibge = String(row.ibgeDestino || row.codigoIbgeDestino || row.codigo_ibge_destino || '').replace(/\D/g, '');
-  const keys = new Set();
-  const cidadeKey = normalizarComparacaoRealizado(parsed.cidade);
-  if (cidadeKey) keys.add(cidadeKey);
+  const keys = new Set(keysCidadeRealizado(parsed.cidade, parsed.uf));
+
   const rawKey = normalizarComparacaoRealizado(row.cidadeDestino || row.destino || '');
   if (rawKey) keys.add(rawKey);
 
@@ -693,10 +709,9 @@ function destinoRealizadoInfo(row = {}) {
     cidade: parsed.cidade,
     uf: parsed.uf,
     ibge,
-    keys: [...keys],
+    keys: [...keys].filter(Boolean),
   };
 }
-
 function valorRealizadoNumero(row = {}) {
   return toNumber(row.valorCte ?? row.valorFrete ?? row.valorRealizado ?? row.valorCalculado ?? 0);
 }
@@ -740,40 +755,44 @@ function rotaDestinoCompativel(rota = {}, destinoInfo = {}, cidadePorIbge) {
   // 1) Melhor cenário: IBGE do realizado bate exatamente com o IBGE da rota.
   if (rotaIbge && destinoInfo.ibge && rotaIbge === destinoInfo.ibge) return true;
 
-  const ufRota = rotaIbge ? getUfByIbge(rotaIbge) : '';
+  const ufRotaPorIbge = rotaIbge ? getUfByIbge(rotaIbge) : '';
   const rotaNomeOriginal = rota.nomeRota || rota.rota || rota.cidadeDestino || rota.nome_rota || '';
-  const rotaNomeParsed = splitCidadeUfRealizado(rotaNomeOriginal, ufRota);
-  const rotaUfNome = rotaNomeParsed.uf || ufRota || '';
+  const rotaNomeParsed = splitCidadeUfRealizado(rotaNomeOriginal, '');
+  const rotaUfExplicita = rotaNomeParsed.uf || '';
 
-  // 2) Mesmo quando o IBGE não bate ou está vazio, tenta casar pelo nome da cidade.
-  // Isso é necessário porque algumas tabelas chegam com IBGE ausente/incorreto,
-  // mas a rota/cotação está cadastrada com o nome da cidade.
   const cidadePorCodigo = normalizarComparacaoRealizado(getCidadeByIbge(rotaIbge, cidadePorIbge));
-  const rotaNomeCidade = normalizarComparacaoRealizado(rotaNomeParsed.cidade);
+  const rotaNomeCidade = normalizarCidadeRotaRealizado(rotaNomeParsed.cidade || rotaNomeOriginal);
   const rotaNomeRaw = normalizarComparacaoRealizado(rotaNomeOriginal);
   const destinoKeys = Array.isArray(destinoInfo.keys) ? destinoInfo.keys : [];
 
+  const rotaKeys = new Set([cidadePorCodigo, rotaNomeCidade, rotaNomeRaw].filter(Boolean));
+  if (rotaNomeCidade && ufRotaPorIbge) rotaKeys.add(normalizarComparacaoRealizado(`${rotaNomeCidade} ${ufRotaPorIbge}`));
+  if (rotaNomeCidade && rotaUfExplicita) rotaKeys.add(normalizarComparacaoRealizado(`${rotaNomeCidade} ${rotaUfExplicita}`));
+
   const nomeBate = destinoKeys.some((destinoKey) => {
     if (!destinoKey) return false;
-    if (cidadePorCodigo && cidadePorCodigo === destinoKey) return true;
-    if (rotaNomeCidade && rotaNomeCidade === destinoKey) return true;
-    if (rotaNomeRaw && rotaNomeRaw === destinoKey) return true;
-    if (rotaNomeRaw && rotaNomeRaw.startsWith(`${destinoKey} `)) return true;
-    if (rotaNomeCidade && destinoKey && rotaNomeCidade.includes(destinoKey) && destinoKey.length >= 5) return true;
+    for (const rotaKey of rotaKeys) {
+      if (!rotaKey) continue;
+      if (rotaKey === destinoKey) return true;
+      if (rotaKey.startsWith(`${destinoKey} `)) return true;
+      if (destinoKey.startsWith(`${rotaKey} `)) return true;
+      if (rotaKey.includes(destinoKey) && destinoKey.length >= 5) return true;
+      if (destinoKey.includes(rotaKey) && rotaKey.length >= 5) return true;
+    }
     return false;
   });
 
   if (!nomeBate) return false;
 
-  // Se houver UF explícita e confiável na rota, respeita. Se o IBGE da rota veio errado,
-  // o nome da rota continua podendo validar a cidade.
-  if (destinoInfo.uf && rotaUfNome && rotaUfNome !== destinoInfo.uf) {
+  // Só bloqueia por UF quando a UF está explícita no nome da rota.
+  // Se a UF veio apenas do IBGE e o nome da cidade bateu, aceitamos para compensar
+  // cadastros com IBGE divergente ou incompleto.
+  if (destinoInfo.uf && rotaUfExplicita && rotaUfExplicita !== destinoInfo.uf) {
     return false;
   }
 
   return true;
 }
-
 function motivoForaMalha(row, contexto = {}) {
   const origem = cidadeOrigemRealizado(row);
   const destino = destinoRealizadoInfo(row);

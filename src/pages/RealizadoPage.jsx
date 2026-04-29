@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buscarBaseSimulacaoDb,
   carregarPainelRealizadoCtes,
+  carregarTransportadoraCompletaDb,
   carregarMunicipiosIbgeDb,
   carregarOpcoesSimuladorDb,
   diagnosticarRealizadoSupabaseDb,
@@ -980,16 +981,30 @@ export default function RealizadoPage({ transportadoras = [] }) {
       const buscarMalhaPorUf = totalSimular <= 2000;
       for (let index = 0; index < gruposOrigem.length; index += 1) {
         const grupo = gruposOrigem[index];
-        const parcial = await buscarBaseSimulacaoDb({
-          nomeTransportadora: filtros.transportadora,
-          canal: filtrosSimulacao.canal,
-          origem: grupo.origem,
-          ufDestino: filtrosSimulacao.ufDestino || grupo.ufDestino,
-          // Para bases menores/médias é mais seguro carregar a malha da origem/UF
-          // e casar por IBGE OU nome da rota. Isso evita perder cidades quando a
-          // tabela está com IBGE ausente/incorreto, mas a cidade está cadastrada.
-          destinoCodigos: buscarMalhaPorUf ? [] : grupo.destinos,
-        });
+        let parcial = [];
+        try {
+          parcial = await buscarBaseSimulacaoDb({
+            nomeTransportadora: filtros.transportadora,
+            canal: filtrosSimulacao.canal,
+            origem: grupo.origem,
+            ufDestino: filtrosSimulacao.ufDestino || grupo.ufDestino,
+            // Para bases menores/médias é mais seguro carregar a malha da origem/UF
+            // e casar por IBGE OU nome da rota. Isso evita perder cidades quando a
+            // tabela está com IBGE ausente/incorreto, mas a cidade está cadastrada.
+            destinoCodigos: buscarMalhaPorUf ? [] : grupo.destinos,
+          });
+        } catch (malhaError) {
+          // Contingência: se a busca concorrencial da malha der Bad Request/timeout,
+          // ainda carregamos a tabela completa da transportadora simulada para não
+          // bloquear a análise. O ranking pode ficar limitado, mas o frete simulado roda.
+          setFeedback(`Falha ao buscar malha concorrencial de ${grupo.origem}. Tentando carregar somente a transportadora simulada para concluir o cálculo...`);
+          try {
+            const transportadoraCompleta = await carregarTransportadoraCompletaDb('', filtros.transportadora);
+            parcial = transportadoraCompleta ? [transportadoraCompleta] : [];
+          } catch (fallbackError) {
+            throw new Error(`Erro ao buscar malha para simulação: ${malhaError?.message || 'Bad Request'}. Fallback também falhou: ${fallbackError?.message || 'sem detalhe'}`);
+          }
+        }
         bases.push(parcial || []);
 
         const atual = index + 1;
