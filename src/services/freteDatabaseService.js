@@ -1982,6 +1982,130 @@ function limparOrigemParaConsultaDb(origem = '') {
     .trim();
 }
 
+
+function normalizeResumoRealizadoDb(raw = {}) {
+  const valorCte = Number(raw.valor_cte ?? raw.valorCte ?? 0) || 0;
+  const valorNF = Number(raw.valor_nf ?? raw.valorNF ?? 0) || 0;
+  const percentual = raw.percentual_frete ?? raw.percentualFrete;
+  return {
+    total: Number(raw.total ?? 0) || 0,
+    comCanal: Number(raw.com_canal ?? raw.comCanal ?? 0) || 0,
+    semCanal: Number(raw.sem_canal ?? raw.semCanal ?? 0) || 0,
+    valorCte,
+    valorNF,
+    percentualFrete: Number.isFinite(Number(percentual)) ? Number(percentual) : (valorNF > 0 ? (valorCte / valorNF) * 100 : 0),
+    periodoInicio: raw.periodo_inicio ?? raw.periodoInicio ?? '',
+    periodoFim: raw.periodo_fim ?? raw.periodoFim ?? '',
+    amostra: Boolean(raw.amostra),
+    filtroAplicado: Boolean(raw.filtro_aplicado ?? raw.filtroAplicado),
+  };
+}
+
+function resumoFromRowsRealizado(rows = []) {
+  const lista = Array.isArray(rows) ? rows : [];
+  const comCanalRows = lista.filter((row) => isCanalRealizadoPreenchido(row.canal));
+  const valorCte = comCanalRows.reduce((acc, row) => acc + (Number(row.valorCte) || 0), 0);
+  const valorNF = comCanalRows.reduce((acc, row) => acc + (Number(row.valorNF) || 0), 0);
+  const datas = comCanalRows.map((row) => row.emissao).filter(Boolean).sort();
+  const chaves = new Set(comCanalRows.map((row) => row.chaveCte || row.numeroCte || row.id).filter(Boolean));
+  return {
+    total: lista.length,
+    comCanal: chaves.size || comCanalRows.length,
+    semCanal: Math.max(lista.length - comCanalRows.length, 0),
+    valorCte,
+    valorNF,
+    percentualFrete: valorNF > 0 ? (valorCte / valorNF) * 100 : 0,
+    periodoInicio: datas[0] || '',
+    periodoFim: datas[datas.length - 1] || '',
+    amostra: true,
+    filtroAplicado: false,
+  };
+}
+
+async function resumirRealizadoCtesViaRpc(supabase, filtros = {}) {
+  const resposta = await supabase.rpc('resumo_realizado_ctes', {
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_canal: filtros.canal || null,
+    p_origem: filtros.origem || null,
+    p_uf_destino: filtros.ufDestino || null,
+  });
+
+  if (resposta?.error) throw resposta.error;
+  return normalizeResumoRealizadoDb(resposta?.data || {});
+}
+
+async function listarRealizadoCtesViaAmostraRpc(supabase, filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const resposta = await supabase.rpc('amostra_realizado_ctes', {
+    p_limit: limit,
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_canal: filtros.canal || null,
+    p_origem: filtros.origem || null,
+    p_uf_destino: filtros.ufDestino || null,
+    p_incluir_sem_canal: filtros.incluirSemCanal !== false,
+    p_somente_sem_canal: filtros.somenteSemCanal === true,
+  });
+
+  if (resposta?.error) throw resposta.error;
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal((resposta?.data || []).map(normalizeRealizadoDbRow), filtros), filtros);
+}
+
+export async function resumirRealizadoCtes(filtros = {}) {
+  if (!isSupabaseConfigured()) {
+    return resumoFromRowsRealizado(filtrarRealizadoLocal(readRealizadoLocal(), filtros));
+  }
+
+  const supabase = ensureClient();
+  try {
+    return await executarComTimeout(
+      resumirRealizadoCtesViaRpc(supabase, filtros),
+      30000,
+      'O resumo do realizado demorou demais. Rode o SQL atualizado de resumo/amostra e tente filtrar por período.'
+    );
+  } catch (error) {
+    const amostra = await listarRealizadoCtes({ ...filtros, limit: 200, amostra: true }).catch(() => []);
+    const fallback = resumoFromRowsRealizado(amostra);
+    fallback.erro = error.message || String(error);
+    return fallback;
+  }
+}
+
+export async function carregarPainelRealizadoCtes(filtros = {}) {
+  const temFiltro = temFiltroRealizadoDb(filtros);
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 15000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const filtrosBusca = { ...filtros, limit, amostra: !temFiltro };
+
+  if (!isSupabaseConfigured()) {
+    const rows = aplicarFiltroSemCanal(filtrarRealizadoLocal(readRealizadoLocal(), filtrosBusca), filtrosBusca).slice(0, limit);
+    return { rows, resumo: resumoFromRowsRealizado(rows), origem: 'local' };
+  }
+
+  const [resumoResult, rowsResult] = await Promise.allSettled([
+    resumirRealizadoCtes(filtrosBusca),
+    listarRealizadoCtes(filtrosBusca),
+  ]);
+
+  const rows = rowsResult.status === 'fulfilled' ? rowsResult.value : [];
+  const resumo = resumoResult.status === 'fulfilled' ? resumoResult.value : resumoFromRowsRealizado(rows);
+  const erros = [];
+  if (resumoResult.status === 'rejected') erros.push(`resumo: ${resumoResult.reason?.message || resumoResult.reason}`);
+  if (rowsResult.status === 'rejected') erros.push(`amostra: ${rowsResult.reason?.message || rowsResult.reason}`);
+
+  if (!rows.length && !resumo?.total && erros.length) {
+    throw new Error(`Não consegui puxar a base realizada do Supabase. ${erros.join(' | ')}`);
+  }
+
+  return {
+    rows,
+    resumo,
+    origem: 'supabase',
+    erroAmostra: rowsResult.status === 'rejected' ? (rowsResult.reason?.message || String(rowsResult.reason)) : '',
+  };
+}
+
 async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
   const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
@@ -2045,19 +2169,27 @@ export async function listarRealizadoCtes(filtros = {}) {
 
   try {
     return await executarComTimeout(
-      listarRealizadoCtesViaSelect(supabase, filtrosSeguros),
+      listarRealizadoCtesViaAmostraRpc(supabase, filtrosSeguros),
       temFiltro ? 25000 : 8000,
-      'A consulta direta do realizado demorou demais. Use filtros mais específicos ou rode o SQL atualizado de performance.'
+      'A amostra rápida do realizado demorou demais. Rode o SQL atualizado de resumo/amostra.'
     );
-  } catch (selectError) {
+  } catch (amostraError) {
     try {
       return await executarComTimeout(
-        listarRealizadoCtesViaRpc(supabase, filtrosSeguros),
+        listarRealizadoCtesViaSelect(supabase, filtrosSeguros),
         temFiltro ? 25000 : 8000,
-        'A listagem RPC do realizado demorou demais. Use filtros de período/canal/origem/UF.'
+        'A consulta direta do realizado demorou demais. Use filtros mais específicos ou rode o SQL atualizado de performance.'
       );
-    } catch (rpcError) {
-      throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto; use filtro de período/canal/origem/UF e rode o SQL atualizado. Detalhe select: ${selectError.message || selectError}. Detalhe RPC: ${rpcError.message || rpcError}`);
+    } catch (selectError) {
+      try {
+        return await executarComTimeout(
+          listarRealizadoCtesViaRpc(supabase, filtrosSeguros),
+          temFiltro ? 25000 : 8000,
+          'A listagem RPC do realizado demorou demais. Use filtros de período/canal/origem/UF.'
+        );
+      } catch (rpcError) {
+        throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto; rode o SQL atualizado. Detalhe amostra: ${amostraError.message || amostraError}. Detalhe select: ${selectError.message || selectError}. Detalhe RPC: ${rpcError.message || rpcError}`);
+      }
     }
   }
 }
@@ -2245,6 +2377,26 @@ export async function diagnosticarRealizadoSupabaseDb() {
     }
   } catch {
     // Mantém diagnóstico OK mesmo sem estimativa.
+  }
+
+  try {
+    const resumo = await executarComTimeout(
+      resumirRealizadoCtesViaRpc(supabase, {}),
+      30000,
+      'Resumo rápido demorou demais.'
+    );
+    if (resumo) {
+      status.total = Number(resumo.total || status.total || 0);
+      status.comCanal = Number(resumo.comCanal || 0);
+      status.semCanal = Number(resumo.semCanal || 0);
+      status.valorCte = Number(resumo.valorCte || 0);
+      status.valorNF = Number(resumo.valorNF || 0);
+      status.percentualFrete = Number(resumo.percentualFrete || 0);
+      status.contagemExata = true;
+      status.listagemRpcOk = true;
+    }
+  } catch (error) {
+    status.erro = status.erro || `Resumo pendente: ${error.message || error}`;
   }
 
   try {

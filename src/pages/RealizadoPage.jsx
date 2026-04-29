@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buscarBaseSimulacaoDb,
+  carregarPainelRealizadoCtes,
   carregarMunicipiosIbgeDb,
   carregarOpcoesSimuladorDb,
   diagnosticarRealizadoSupabaseDb,
@@ -310,6 +311,7 @@ function formatDiagCount(value, sufixo = '') {
 
 export default function RealizadoPage({ transportadoras = [] }) {
   const [rows, setRows] = useState([]);
+  const [resumoRealizado, setResumoRealizado] = useState(null);
   const [opcoes, setOpcoes] = useState({ transportadoras: [], canais: [], origens: [], municipiosIbge: [] });
   const [filtros, setFiltros] = useState(DEFAULT_FILTROS);
   const [carregando, setCarregando] = useState(false);
@@ -335,42 +337,43 @@ export default function RealizadoPage({ transportadoras = [] }) {
     setErro('');
     try {
       const temFiltro = temFiltroMinimoRealizado(filtrosCarga);
-      const limite = temFiltro ? 15000 : 50;
-      const data = await listarRealizadoCtes({
+      const painel = await carregarPainelRealizadoCtes({
         inicio: filtrosCarga.inicio,
         fim: filtrosCarga.fim,
         canal: filtrosCarga.canal,
         origem: filtrosCarga.origem,
         ufDestino: filtrosCarga.ufDestino,
-        limit: limite,
+        limit: temFiltro ? 15000 : 50,
         incluirSemCanal: temFiltro,
         amostra: !temFiltro,
       });
+
+      const data = painel.rows || [];
+      const resumo = painel.resumo || null;
       setRows(data);
-      const comCanal = data.filter(hasCanalRealizado).length;
-      const semCanal = data.length - comCanal;
+      setResumoRealizado(resumo);
+
+      const totalResumo = Number(resumo?.total || 0);
+      const comCanalResumo = Number(resumo?.comCanal || 0);
+      const semCanalResumo = Number(resumo?.semCanal || 0);
+
       if (!temFiltro) {
         setFeedback(
-          data.length
-            ? `Base grande detectada. Mostrando apenas uma amostra leve de ${data.length.toLocaleString('pt-BR')} CT-e(s). Para trabalhar a base completa, filtre por período, canal, origem ou UF destino.`
-            : 'Base realizada sem amostra carregada. Use filtros para buscar CT-e(s) na base grande.'
+          `Base realizada conectada: ${totalResumo.toLocaleString('pt-BR')} CT-e(s) no Supabase, ${comCanalResumo.toLocaleString('pt-BR')} com canal e ${semCanalResumo.toLocaleString('pt-BR')} sem canal. Mostrando amostra de ${data.length.toLocaleString('pt-BR')} linha(s).`
         );
       } else {
         setFeedback(
-          data.length
-            ? `Base realizada carregada com ${data.length.toLocaleString('pt-BR')} CT-e(s) no filtro: ${comCanal.toLocaleString('pt-BR')} com canal e ${semCanal.toLocaleString('pt-BR')} pendência(s) sem canal.`
+          totalResumo
+            ? `Filtro carregado: ${comCanalResumo.toLocaleString('pt-BR')} CT-e(s) com canal, ${semCanalResumo.toLocaleString('pt-BR')} pendência(s), amostra de ${data.length.toLocaleString('pt-BR')} linha(s).`
             : 'Nenhum CT-e encontrado para os filtros atuais.'
         );
       }
-    } catch (error) {
-      const temFiltro = temFiltroMinimoRealizado(filtrosCarga);
-      if (!temFiltro) {
-        setRows([]);
-        setErro('');
-        setFeedback('Base grande conectada, mas a amostra sem filtro não respondeu a tempo. Use pelo menos um filtro de período, canal, origem ou UF destino para buscar no Supabase.');
-      } else {
-        setErro(error.message || 'Erro ao carregar base realizada.');
+
+      if (painel.erroAmostra) {
+        setErro(`Resumo carregado, mas a amostra da tabela falhou: ${painel.erroAmostra}`);
       }
+    } catch (error) {
+      setErro(error.message || 'Erro ao carregar base realizada.');
     } finally {
       setCarregando(false);
     }
@@ -408,7 +411,25 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const rowsSemCanal = useMemo(() => rows.filter((row) => !hasCanalRealizado(row)), [rows]);
   const rowsFiltradas = useMemo(() => filtrarRows(rowsValidas, filtros), [rowsValidas, filtros]);
   const pendenciasFiltradas = useMemo(() => filtrarRows(rowsSemCanal, { ...filtros, canal: '' }), [rowsSemCanal, filtros]);
-  const stats = useMemo(() => statsRealizado(rowsFiltradas), [rowsFiltradas]);
+  const stats = useMemo(() => {
+    const local = statsRealizado(rowsFiltradas);
+    if (!resumoRealizado) {
+      return { ...local, total: rows.length, pendencias: rowsSemCanal.length };
+    }
+    const valorCte = Number(resumoRealizado.valorCte ?? local.valorCte) || 0;
+    const valorNF = Number(resumoRealizado.valorNF ?? local.valorNF) || 0;
+    return {
+      ...local,
+      total: Number(resumoRealizado.total ?? rows.length) || 0,
+      ctes: Number(resumoRealizado.comCanal ?? local.ctes) || 0,
+      valorCte,
+      valorNF,
+      percentualFrete: Number.isFinite(Number(resumoRealizado.percentualFrete)) ? Number(resumoRealizado.percentualFrete) : (valorNF > 0 ? (valorCte / valorNF) * 100 : 0),
+      pendencias: Number(resumoRealizado.semCanal ?? rowsSemCanal.length) || 0,
+      periodoInicio: resumoRealizado.periodoInicio || local.periodoInicio,
+      periodoFim: resumoRealizado.periodoFim || local.periodoFim,
+    };
+  }, [resumoRealizado, rowsFiltradas, rows.length, rowsSemCanal.length]);
   const canaisDisponiveis = useMemo(() => {
     const fromRows = rows.map((item) => item.canal).filter(Boolean);
     const canaisAgrupados = [...new Set([...(opcoes.canais || []), ...fromRows]
@@ -923,15 +944,16 @@ export default function RealizadoPage({ transportadoras = [] }) {
         <SummaryCard title="CT-e(s) válidos" value={stats.ctes.toLocaleString('pt-BR')} subtitle={`${formatDateBr(stats.periodoInicio)} até ${formatDateBr(stats.periodoFim)}`} />
         <SummaryCard title="Frete realizado" value={formatCurrency(stats.valorCte)} subtitle="Soma do Valor CT-e com canal" />
         <SummaryCard title="Valor NF" value={formatCurrency(stats.valorNF)} subtitle="Base para % de frete" />
-        <SummaryCard title="Pendências sem canal" value={rowsSemCanal.length.toLocaleString('pt-BR')} subtitle="fora da simulação até avaliar" />
+        <SummaryCard title="% frete realizado" value={formatPercent(stats.percentualFrete)} subtitle="Frete realizado / NF" />
+        <SummaryCard title="Pendências sem canal" value={stats.pendencias.toLocaleString('pt-BR')} subtitle="fora da simulação até avaliar" />
       </div>
 
-      {rowsSemCanal.length ? (
+      {stats.pendencias > 0 ? (
         <section className="sim-card top-space">
           <div className="sim-parametros-header">
             <div>
               <h2>Pendências do realizado</h2>
-              <p>{rowsSemCanal.length.toLocaleString('pt-BR')} CT-e(s) vieram sem canal. Eles ficam fora da simulação até você revisar ou excluir.</p>
+              <p>{stats.pendencias.toLocaleString('pt-BR')} CT-e(s) vieram sem canal. Eles ficam fora da simulação até você revisar ou excluir.</p>
             </div>
             <div className="actions-right wrap">
               <button className="btn-secondary" onClick={() => setMostrarPendencias((prev) => !prev)}>
