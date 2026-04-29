@@ -160,6 +160,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
   const [importMeta, setImportMeta] = useState(null);
+  const [saveMeta, setSaveMeta] = useState(null);
   const [resultado, setResultado] = useState(null);
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [inputKey, setInputKey] = useState(fileInputKey());
@@ -248,6 +249,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
     setErro('');
     setResultado(null);
     setImportMeta(null);
+    setSaveMeta(null);
     setFeedback(`Arquivo selecionado: ${file.name} (${(file.size / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB). Lendo a planilha...`);
 
     try {
@@ -273,29 +275,34 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
       const save = await salvarRealizadoCtes(registros, {
         chunkSize: 250,
-        onProgress: ({ salvos, total, modo }) => {
+        requireSupabase: true,
+        onProgress: ({ salvos, confirmados, total, modo }) => {
+          const modoTexto = modo === 'local' ? 'local' : 'no Supabase';
+          const confirmacaoTexto = confirmados ? ` • confirmados: ${Number(confirmados).toLocaleString('pt-BR')}` : '';
           setFeedback(
-            `Salvando realizado ${modo === 'local' ? 'local' : 'no Supabase'}: ${Number(salvos || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s)...`
+            `Salvando realizado ${modoTexto}: ${Number(salvos || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s)${confirmacaoTexto}...`
           );
         },
       });
+      setSaveMeta(save);
 
-      if (!save.inseridos) {
-        throw new Error('A planilha foi lida, mas nenhum CT-e foi salvo. Verifique se a coluna Chave CT-e ou Número CT-e veio preenchida.');
+      if (!save.inseridos || !save.confirmados) {
+        throw new Error('A planilha foi lida, mas o Supabase não confirmou nenhuma gravação. Confira se a tabela realizado_ctes existe, se o script atualizado foi rodado e se as variáveis do Vercel apontam para o projeto correto.');
       }
 
-      setFeedback(`Importação concluída: ${save.inseridos.toLocaleString('pt-BR')} CT-e(s) salvos de ${file.name}. Atualizando a tela...`);
+      setFeedback(
+        `Importação concluída no Supabase: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados de ${file.name}. Atualizando a tela...`
+      );
       setInputKey(fileInputKey());
 
       const dataAtualizada = await listarRealizadoCtes({ limit: 15000 });
       if (dataAtualizada.length) {
         setRows(dataAtualizada);
-        setFeedback(`Base realizada carregada com ${dataAtualizada.length.toLocaleString('pt-BR')} CT-e(s).`);
-      } else {
-        setRows(registros);
         setFeedback(
-          `A planilha foi lida com ${registros.length.toLocaleString('pt-BR')} CT-e(s), mas a consulta ao Supabase voltou vazia. Mantive a base na tela para simular agora; confira se o script realizado_ctes_schema.sql foi rodado e se a tabela está recebendo registros.`
+          `Base realizada carregada do Supabase com ${dataAtualizada.length.toLocaleString('pt-BR')} CT-e(s). Última importação confirmada: ${Number(save.confirmados || 0).toLocaleString('pt-BR')} CT-e(s).`
         );
+      } else {
+        throw new Error('O Supabase confirmou a gravação, mas a consulta da base voltou vazia. Isso indica política de leitura/RLS ou o front apontando para outra base. Rode o script atualizado e confira o projeto do Supabase usado no Vercel.');
       }
     } catch (error) {
       setErro(error.message || 'Erro ao importar realizado.');
@@ -463,6 +470,11 @@ export default function RealizadoPage({ transportadoras = [] }) {
             <div className="import-meta-box">
               <strong>Última leitura:</strong> aba {importMeta.aba || '—'} • {Number(importMeta.registrosValidos || 0).toLocaleString('pt-BR')} CT-e(s) válidos
               {importMeta.refFoiCorrigida ? <span> • intervalo corrigido de {importMeta.refOriginal || 'vazio'} para {importMeta.refCorrigida}</span> : null}
+            </div>
+          ) : null}
+          {saveMeta ? (
+            <div className="import-meta-box success">
+              <strong>Supabase:</strong> {String(saveMeta.modo || '').toUpperCase()} • {Number(saveMeta.confirmados || 0).toLocaleString('pt-BR')} CT-e(s) confirmados
             </div>
           ) : null}
         </section>

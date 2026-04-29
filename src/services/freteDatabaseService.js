@@ -1885,49 +1885,120 @@ async function executarComTimeout(promise, ms, mensagem) {
   }
 }
 
+
+async function validarTabelaRealizadoCtes(supabase) {
+  const { error } = await supabase
+    .from('realizado_ctes')
+    .select('chave_cte', { count: 'exact', head: true })
+    .limit(1);
+
+  if (error) {
+    throw new Error(
+      `Não consegui acessar a tabela realizado_ctes no Supabase. Rode novamente o script supabase/realizado_ctes_schema.sql e confira as permissões/RLS. Detalhe: ${error.message}`
+    );
+  }
+}
+
+async function contarChavesRealizadoNoSupabase(supabase, chaves = []) {
+  const unicas = [...new Set((chaves || []).filter(Boolean))];
+  if (!unicas.length) return 0;
+
+  let confirmados = 0;
+  const chunkSize = 500;
+  for (let index = 0; index < unicas.length; index += chunkSize) {
+    const chunk = unicas.slice(index, index + chunkSize);
+    const { count, error } = await supabase
+      .from('realizado_ctes')
+      .select('chave_cte', { count: 'exact', head: true })
+      .in('chave_cte', chunk);
+
+    if (error) {
+      throw new Error(`O Supabase gravou/recebeu a importação, mas não deixou confirmar a leitura. Confira permissões/RLS da tabela realizado_ctes. Detalhe: ${error.message}`);
+    }
+
+    confirmados += Number(count || 0);
+  }
+
+  return confirmados;
+}
+
 export async function salvarRealizadoCtes(rows = [], options = {}) {
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const requireSupabase = options.requireSupabase === true;
   const normalized = (rows || []).map(normalizeRealizadoDbRow).filter((row) => row.chaveCte || row.numeroCte);
-  if (!normalized.length) return { ok: true, inseridos: 0 };
+  if (!normalized.length) return { ok: true, inseridos: 0, confirmados: 0 };
 
   if (!isSupabaseConfigured()) {
+    if (requireSupabase) {
+      throw new Error(
+        'Supabase não configurado no front. A importação não será salva na base online. Confira as variáveis VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel/GitHub e publique novamente.'
+      );
+    }
+
     const atual = readRealizadoLocal();
     const byKey = new Map(atual.map((row) => [row.chaveCte || `${row.numeroCte}|${row.emissao}`, row]));
     normalized.forEach((row) => byKey.set(row.chaveCte || `${row.numeroCte}|${row.emissao}`, row));
     writeRealizadoLocal([...byKey.values()].sort((a, b) => String(b.emissao).localeCompare(String(a.emissao))));
-    onProgress?.({ salvos: normalized.length, total: normalized.length, modo: 'local' });
-    return { ok: true, inseridos: normalized.length, modo: 'local' };
+    onProgress?.({ salvos: normalized.length, confirmados: normalized.length, total: normalized.length, modo: 'local' });
+    return { ok: true, inseridos: normalized.length, confirmados: normalized.length, modo: 'local' };
   }
 
   const supabase = ensureClient();
+  await validarTabelaRealizadoCtes(supabase);
+
   const payload = normalized.map(sanitizeRealizadoDbRow).filter((row) => row.chave_cte);
   if (!payload.length) {
     throw new Error('A planilha foi lida, mas nenhum CT-e ficou com chave para salvar. Confira se existe coluna Chave CT-e ou Número CT-e.');
   }
 
   const chunkSize = Number(options.chunkSize || 250) || 250;
+  let retornadosSupabase = 0;
 
   for (let index = 0; index < payload.length; index += chunkSize) {
     const chunk = payload.slice(index, index + chunkSize);
     const resposta = await executarComTimeout(
-      supabase.from('realizado_ctes').upsert(chunk, { onConflict: 'chave_cte' }),
+      supabase
+        .from('realizado_ctes')
+        .upsert(chunk, { onConflict: 'chave_cte' })
+        .select('chave_cte'),
       90000,
       'A gravação no Supabase demorou demais e foi interrompida. Verifique a conexão e tente novamente com um período menor.'
     );
 
     if (resposta?.error) {
-      throw new Error(`Erro ao salvar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql. Detalhe: ${resposta.error.message}`);
+      throw new Error(`Erro ao salvar realizado_ctes no Supabase. Rode o script supabase/realizado_ctes_schema.sql e confira permissões/RLS. Detalhe: ${resposta.error.message}`);
     }
+
+    retornadosSupabase += Array.isArray(resposta?.data) ? resposta.data.length : 0;
 
     onProgress?.({
       salvos: Math.min(index + chunk.length, payload.length),
+      confirmados: retornadosSupabase,
       total: payload.length,
       modo: 'supabase',
     });
     await aguardar(0);
   }
 
-  return { ok: true, inseridos: payload.length, lidos: normalized.length, modo: 'supabase' };
+  const confirmados = await contarChavesRealizadoNoSupabase(
+    supabase,
+    payload.map((row) => row.chave_cte)
+  );
+
+  if (!confirmados) {
+    throw new Error(
+      'A chamada de gravação terminou, mas nenhuma linha foi confirmada na tabela realizado_ctes. Isso normalmente é RLS/permissão no Supabase ou o front apontando para outro projeto. Rode o script atualizado supabase/realizado_ctes_schema.sql e confira as variáveis do Vercel.'
+    );
+  }
+
+  return {
+    ok: true,
+    inseridos: payload.length,
+    confirmados,
+    retornadosSupabase,
+    lidos: normalized.length,
+    modo: 'supabase',
+  };
 }
 
 export async function excluirRealizadoCtes(filtros = {}) {
