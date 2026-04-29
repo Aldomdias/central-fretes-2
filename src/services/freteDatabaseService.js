@@ -854,39 +854,32 @@ function ufFromIbgeLike(value) {
 }
 
 async function buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino = '' }) {
-  const { data: transportadorasAlvo, error: transportadoraError } = await supabase
+  let { data: transportadorasAlvo, error: transportadoraError } = await supabase
     .from('transportadoras')
     .select('id, nome, status')
     .ilike('nome', nomeTransportadora);
 
   if (transportadoraError) throw transportadoraError;
+
+  if (nomeTransportadora && !(transportadorasAlvo || []).length) {
+    const fallback = await supabase
+      .from('transportadoras')
+      .select('id, nome, status')
+      .ilike('nome', `%${nomeTransportadora}%`);
+
+    if (fallback.error) throw fallback.error;
+    transportadorasAlvo = fallback.data || [];
+  }
+
   const alvoIds = (transportadorasAlvo || []).map((item) => item.id);
   if (!alvoIds.length) return [];
 
-  let origensQuery = supabase
-    .from('origens')
-    .select('id, cidade, canal, transportadora_id')
-    .in('transportadora_id', alvoIds);
-
-  if (canal) origensQuery = origensQuery.eq('canal', canal);
-  if (origem) origensQuery = origensQuery.ilike('cidade', origem);
-
-  let { data: origensAlvo, error: origensAlvoError } = await origensQuery;
-  if (origensAlvoError) throw origensAlvoError;
-
-  if (origem && !(origensAlvo || []).length) {
-    let fallbackQuery = supabase
-      .from('origens')
-      .select('id, cidade, canal, transportadora_id')
-      .in('transportadora_id', alvoIds)
-      .ilike('cidade', `%${origem}%`);
-
-    if (canal) fallbackQuery = fallbackQuery.eq('canal', canal);
-
-    const fallback = await fallbackQuery;
-    if (fallback.error) throw fallback.error;
-    origensAlvo = fallback.data || [];
-  }
+  const origensAlvo = await buscarOrigensFiltradasDb({
+    supabase,
+    origem,
+    canal,
+    transportadoraIds: alvoIds,
+  });
 
   const origemIds = (origensAlvo || []).map((item) => item.id);
   if (!origemIds.length) return [];
@@ -945,28 +938,11 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
 async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [] }) {
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
 
-  let origensQuery = supabase
-    .from('origens')
-    .select('id, transportadora_id, cidade, canal, status');
-
-  if (origem) origensQuery = origensQuery.ilike('cidade', origem);
-  if (canal) origensQuery = origensQuery.eq('canal', canal);
-
-  let { data: origensBase, error: origensError } = await origensQuery;
-  if (origensError) throw origensError;
-
-  if (origem && !(origensBase || []).length) {
-    let fallbackQuery = supabase
-      .from('origens')
-      .select('id, transportadora_id, cidade, canal, status')
-      .ilike('cidade', `%${origem}%`);
-
-    if (canal) fallbackQuery = fallbackQuery.eq('canal', canal);
-
-    const fallback = await fallbackQuery;
-    if (fallback.error) throw fallback.error;
-    origensBase = fallback.data || [];
-  }
+  const origensBase = await buscarOrigensFiltradasDb({
+    supabase,
+    origem,
+    canal,
+  });
 
   const origemIdsBase = (origensBase || []).map((item) => item.id);
   if (!origemIdsBase.length) return [];
@@ -1097,6 +1073,103 @@ function normalizeBuscaDb(texto) {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
+}
+
+function normalizarCanalDb(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+const CANAIS_B2C_DB = [
+  'B2C',
+  'VIA VAREJO',
+  'MERCADO LIVRE',
+  'MERCADOR LIVRE',
+  'B2W',
+  'MAGAZINE LUIZA',
+  'CARREFOUR',
+  'GPA',
+  'COLOMBO',
+  'AMAZON',
+  'INTER',
+  'ANYMARKET',
+  'ANY MARKET',
+  'BRADESCO SHOP',
+  'ITAU SHOP',
+  'ITAÚ SHOP',
+  'SHOPEE',
+  'LIVELO',
+  'MARKETPLACE',
+  'MARKET PLACE',
+  'ECOMMERCE',
+  'E-COMMERCE',
+];
+
+const CANAIS_ATACADO_DB = [
+  'ATACADO',
+  'B2B',
+  'CANTU',
+  'CANTU PNEUS',
+];
+
+function contemCanalDb(canal, lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
+}
+
+function categoriaCanalDb(value) {
+  const canal = normalizarCanalDb(value);
+  if (!canal) return '';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (contemCanalDb(canal, CANAIS_ATACADO_DB)) return 'ATACADO';
+  if (contemCanalDb(canal, CANAIS_B2C_DB)) return 'B2C';
+  return canal;
+}
+
+function canalCompativelDb(canalBase = '', canalFiltro = '') {
+  const filtro = normalizarCanalDb(canalFiltro);
+  if (!filtro) return true;
+  const base = normalizarCanalDb(canalBase);
+  if (!base) return false;
+  if (base === filtro) return true;
+
+  const categoriaBase = categoriaCanalDb(base);
+  const categoriaFiltro = categoriaCanalDb(filtro);
+  return Boolean(categoriaBase && categoriaFiltro && categoriaBase === categoriaFiltro);
+}
+
+function cidadeSemUfDb(texto = '') {
+  return String(texto || '')
+    .replace(/\s*(?:\/|-)\s*[A-Z]{2}\s*$/i, '')
+    .trim();
+}
+
+function origemCompativelDb(cidadeBase = '', origemFiltro = '') {
+  const filtro = normalizeBuscaDb(cidadeSemUfDb(origemFiltro));
+  if (!filtro) return true;
+  const cidade = normalizeBuscaDb(cidadeSemUfDb(cidadeBase));
+  if (!cidade) return false;
+  return cidade === filtro || cidade.includes(filtro) || filtro.includes(cidade);
+}
+
+async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', transportadoraIds = [] } = {}) {
+  let query = supabase
+    .from('origens')
+    .select('id, transportadora_id, cidade, canal, status');
+
+  if (Array.isArray(transportadoraIds) && transportadoraIds.length) {
+    query = query.in('transportadora_id', transportadoraIds);
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+
+  return (data || [])
+    .filter((item) => canalCompativelDb(item.canal, canal))
+    .filter((item) => origemCompativelDb(item.cidade, origem));
 }
 
 function normalizeMunicipioIbgeRow(row = {}) {
@@ -1446,12 +1519,23 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora
   // selecionada e depois monta a base concorrente para os mesmos destinos/origens.
   if (nomeTransportadora) {
-    const { data: transportadorasAlvo, error: transportadoraError } = await supabase
+    let { data: transportadorasAlvo, error: transportadoraError } = await supabase
       .from('transportadoras')
       .select('id, nome, status')
       .ilike('nome', nomeTransportadora);
 
     if (transportadoraError) throw transportadoraError;
+
+    if (nomeTransportadora && !(transportadorasAlvo || []).length) {
+      const fallback = await supabase
+        .from('transportadoras')
+        .select('id, nome, status')
+        .ilike('nome', `%${nomeTransportadora}%`);
+
+      if (fallback.error) throw fallback.error;
+      transportadorasAlvo = fallback.data || [];
+    }
+
     const alvoIds = (transportadorasAlvo || []).map((item) => item.id);
     if (!alvoIds.length) return [];
 
@@ -1463,7 +1547,7 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
     if (origensAlvoError) throw origensAlvoError;
 
     const pares = (origensAlvo || [])
-      .filter((item) => !canal || item.canal === canal)
+      .filter((item) => canalCompativelDb(item.canal, canal))
       .map((item) => ({ origem: item.cidade, canal: item.canal }));
 
     const bases = [];
@@ -1825,7 +1909,7 @@ function sanitizeRealizadoDbRow(row = {}) {
 function filtrarRealizadoLocal(rows = [], filtros = {}) {
   const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
   const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
-  const canal = String(filtros.canal || '').toUpperCase();
+  const canal = String(filtros.canal || '').trim();
   const origem = String(filtros.origem || '').trim().toLowerCase();
   const ufDestino = String(filtros.ufDestino || '').trim().toUpperCase();
 
@@ -1833,7 +1917,7 @@ function filtrarRealizadoLocal(rows = [], filtros = {}) {
     const emissao = row.emissao ? new Date(row.emissao) : null;
     if (inicio && (!emissao || emissao < inicio)) return false;
     if (fim && (!emissao || emissao > fim)) return false;
-    if (canal && String(row.canal || '').toUpperCase() !== canal) return false;
+    if (canal && !canalCompativelDb(row.canal, canal)) return false;
     if (origem && String(row.cidadeOrigem || '').trim().toLowerCase() !== origem) return false;
     if (ufDestino && String(row.ufDestino || '').trim().toUpperCase() !== ufDestino) return false;
     return true;
@@ -1860,7 +1944,6 @@ async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
 
   if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
-  if (filtros.canal) query = query.eq('canal', filtros.canal);
   if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
@@ -1868,7 +1951,7 @@ async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data || []).map(normalizeRealizadoDbRow);
+  return filtrarRealizadoLocal((data || []).map(normalizeRealizadoDbRow), filtros);
 }
 
 async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
@@ -1876,7 +1959,7 @@ async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
     p_limit: Number(filtros.limit || 10000) || 10000,
     p_inicio: filtros.inicio || null,
     p_fim: filtros.fim || null,
-    p_canal: filtros.canal || null,
+    p_canal: null,
     p_origem: filtros.origem || null,
     p_uf_destino: filtros.ufDestino || null,
     p_incluir_sem_canal: filtros.incluirSemCanal !== false,
@@ -1884,7 +1967,7 @@ async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
   });
 
   if (resposta?.error) throw resposta.error;
-  return (resposta?.data || []).map(normalizeRealizadoDbRow);
+  return filtrarRealizadoLocal((resposta?.data || []).map(normalizeRealizadoDbRow), filtros);
 }
 
 export async function listarRealizadoCtes(filtros = {}) {

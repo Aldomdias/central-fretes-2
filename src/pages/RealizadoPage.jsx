@@ -51,14 +51,49 @@ function normalizarCanalTela(value) {
     .replace(/\s+/g, ' ');
 }
 
+const CANAIS_B2C_TELA = [
+  'B2C',
+  'VIA VAREJO',
+  'MERCADO LIVRE',
+  'MERCADOR LIVRE',
+  'B2W',
+  'MAGAZINE LUIZA',
+  'CARREFOUR',
+  'GPA',
+  'COLOMBO',
+  'AMAZON',
+  'INTER',
+  'ANYMARKET',
+  'ANY MARKET',
+  'BRADESCO SHOP',
+  'ITAU SHOP',
+  'ITAÚ SHOP',
+  'SHOPEE',
+  'LIVELO',
+  'MARKETPLACE',
+  'MARKET PLACE',
+  'ECOMMERCE',
+  'E-COMMERCE',
+];
+
+const CANAIS_ATACADO_TELA = [
+  'ATACADO',
+  'B2B',
+  'CANTU',
+  'CANTU PNEUS',
+];
+
+function contemCanalTela(canal, lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
+}
+
 function categoriaCanalTela(value) {
   const canal = normalizarCanalTela(value);
   if (!canal) return '';
-  if (canal.includes('MERCADO LIVRE') || canal.includes('SHOPEE') || canal.includes('B2C') || canal.includes('MARKETPLACE') || canal.includes('MARKET PLACE') || canal.includes('ECOMMERCE') || canal.includes('E-COMMERCE')) return 'B2C';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (canal.includes('ATACADO')) return 'ATACADO';
-  if (canal.includes('B2B')) return 'B2B';
+  if (contemCanalTela(canal, CANAIS_ATACADO_TELA)) return 'ATACADO';
+  if (contemCanalTela(canal, CANAIS_B2C_TELA)) return 'B2C';
   return canal;
 }
 
@@ -68,9 +103,10 @@ function canalCompativelTela(canalLinha, canalFiltro) {
   const linha = normalizarCanalTela(canalLinha);
   if (!linha) return false;
   if (linha === filtro) return true;
-  const categoriasFiltro = new Set(['B2C', 'B2B', 'ATACADO', 'INTERCOMPANY', 'REVERSA']);
-  if (categoriasFiltro.has(filtro)) return categoriaCanalTela(linha) === filtro;
-  return false;
+
+  const categoriaLinha = categoriaCanalTela(linha);
+  const categoriaFiltro = categoriaCanalTela(filtro);
+  return Boolean(categoriaLinha && categoriaFiltro && categoriaLinha === categoriaFiltro);
 }
 
 function splitCidadeUfTela(cidadeRaw, ufRaw = '') {
@@ -302,7 +338,16 @@ export default function RealizadoPage({ transportadoras = [] }) {
   const stats = useMemo(() => statsRealizado(rowsFiltradas), [rowsFiltradas]);
   const canaisDisponiveis = useMemo(() => {
     const fromRows = rows.map((item) => item.canal).filter(Boolean);
-    return [...new Set([...(opcoes.canais || []), ...fromRows])].sort();
+    const canaisAgrupados = [...new Set([...(opcoes.canais || []), ...fromRows]
+      .map(categoriaCanalTela)
+      .filter(Boolean))];
+    const ordem = ['ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA'];
+    return canaisAgrupados.sort((a, b) => {
+      const ia = ordem.indexOf(a);
+      const ib = ordem.indexOf(b);
+      if (ia !== -1 || ib !== -1) return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+      return a.localeCompare(b, 'pt-BR');
+    });
   }, [opcoes.canais, rows]);
   const origensDisponiveis = useMemo(() => {
     const fromRows = rows.map((item) => item.cidadeOrigem).filter(Boolean);
