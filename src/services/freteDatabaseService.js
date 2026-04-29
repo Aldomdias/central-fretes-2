@@ -810,9 +810,10 @@ async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
   return rows;
 }
 
-async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = []) {
+async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = [], ufDestino = '') {
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
+  const ufFiltro = String(ufDestino || '').trim().toUpperCase();
 
   if (!ids.length) return [];
 
@@ -837,7 +838,11 @@ async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = []) {
 
       if (error) throw error;
 
-      const page = data || [];
+      const page = (data || []).filter((rota) => {
+        if (!ufFiltro) return true;
+        const ibge = String(rota.ibge_destino || rota.ibgeDestino || '').replace(/\D/g, '');
+        return !ibge || ufFromIbgeLike(ibge) === ufFiltro;
+      });
       rows.push(...page);
       if (page.length < PAGE_SIZE) break;
       from += PAGE_SIZE;
@@ -943,7 +948,7 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
   })).filter((item) => item.origens.length);
 }
 
-async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [] }) {
+async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '' }) {
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
 
   const origensBase = await buscarOrigensFiltradasDb({
@@ -955,7 +960,7 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   const origemIdsBase = (origensBase || []).map((item) => item.id);
   if (!origemIdsBase.length) return [];
 
-  const rotas = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados);
+  const rotas = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados, ufDestino);
 
   const origemIdsComRota = Array.from(new Set((rotas || []).map((item) => item.origem_id)));
   if (!origemIdsComRota.length) return [];
@@ -1505,23 +1510,27 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
     destinoCodigo,
   ].map((item) => String(item || '').trim()).filter(Boolean)));
 
-  // Caso análise de transportadora por origem:
-  // Primeiro busca somente os destinos atendidos pela transportadora analisada.
-  // Depois busca concorrentes apenas nesses destinos. Isso evita carregar a origem inteira.
+  // Caso análise de transportadora por origem.
+  // Quando a tela pede malha por UF, carregamos a origem/UF inteira. Isso é mais robusto
+  // para tabelas onde o IBGE da rota veio vazio/incorreto, mas o nome da cidade está certo.
   if (nomeTransportadora && origem) {
+    if (!destinos.length && ufDestino) {
+      return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino });
+    }
+
     const destinosAlvo = destinos.length
       ? destinos
       : await buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino });
 
     if (!destinosAlvo.length) return [];
 
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo });
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo, ufDestino });
   }
 
   // Caso principal: simulação simples ou lista com destino informado.
   // Busca todos os concorrentes da mesma origem/canal/destino.
   if (origem || destinos.length) {
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos });
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino });
   }
 
   // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora
@@ -1564,7 +1573,7 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
     );
 
     for (const par of paresUnicos) {
-      const parcial = await buscarBasePorOrigemDestino({ supabase, origem: par.origem, canal: par.canal, destinos: [] });
+      const parcial = await buscarBasePorOrigemDestino({ supabase, origem: par.origem, canal: par.canal, destinos: [], ufDestino });
       bases.push(...parcial);
     }
 

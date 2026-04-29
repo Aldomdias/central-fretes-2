@@ -839,31 +839,14 @@ export default function RealizadoPage({ transportadoras = [] }) {
     const local = resolverIbgeDestinoLocal(row);
     if (local) return local;
 
+    // Para a simulação do realizado, não podemos travar a tela fazendo uma chamada
+    // ao Supabase para cada cidade não encontrada. Quando a cidade não bater no
+    // mapa IBGE local, seguimos sem IBGE e deixamos o cálculo casar pelo nome da
+    // rota/cidade dentro da malha carregada da origem/UF.
     const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
     const localKey = buildCidadeKey(destino.cidade, destino.uf);
-    const cachedKey = [row.cepDestino || '', localKey, 'fallback'].join('|');
-    if (ibgeCacheRef.current.has(cachedKey)) return ibgeCacheRef.current.get(cachedKey);
-
-    const tentativas = [
-      destino.cidade && destino.uf ? `${destino.cidade}/${destino.uf}` : '',
-      destino.cidade,
-      row.cepDestino,
-    ].filter(Boolean);
-
-    for (const tentativa of tentativas) {
-      try {
-        const resolvido = await resolverDestinoIbgeDb(tentativa);
-        const ibge = String(resolvido?.ibge || '').replace(/\D/g, '');
-        if (ibge) {
-          ibgeCacheRef.current.set(cachedKey, ibge);
-          return ibge;
-        }
-      } catch {
-        // tenta a próxima forma de localização
-      }
-    }
-
-    ibgeCacheRef.current.set(cachedKey, '');
+    const cachedKey = [row.cepDestino || '', localKey, 'sem-ibge-local'].join('|');
+    if (!ibgeCacheRef.current.has(cachedKey)) ibgeCacheRef.current.set(cachedKey, '');
     return '';
   }
 
@@ -885,7 +868,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
       preparados.push({ ...row, ibgeDestino: ibge || '' });
 
-      if (typeof onProgress === 'function' && ((index + 1) % 25 === 0 || index === registros.length - 1)) {
+      if (typeof onProgress === 'function' && ((index + 1) % 50 === 0 || index === registros.length - 1)) {
         onProgress(index + 1, total, cacheLote.size);
         await nextFrame();
       }
@@ -988,12 +971,13 @@ export default function RealizadoPage({ transportadoras = [] }) {
         atual: 0,
         total: gruposOrigem.length,
         percentual: 18,
-        mensagem: `Buscando tabelas por ${gruposOrigem.length.toLocaleString('pt-BR')} origem(ns) do realizado...`,
+        mensagem: `Buscando tabelas por ${gruposOrigem.length.toLocaleString('pt-BR')} origem(ns) do realizado usando malha por UF quando possível...`,
       });
       setFeedback(`Buscando malha filtrada da transportadora ${filtros.transportadora} por origem/destino do realizado.`);
       await nextFrame();
 
       const bases = [];
+      const buscarMalhaPorUf = totalSimular <= 2000;
       for (let index = 0; index < gruposOrigem.length; index += 1) {
         const grupo = gruposOrigem[index];
         const parcial = await buscarBaseSimulacaoDb({
@@ -1001,7 +985,10 @@ export default function RealizadoPage({ transportadoras = [] }) {
           canal: filtrosSimulacao.canal,
           origem: grupo.origem,
           ufDestino: filtrosSimulacao.ufDestino || grupo.ufDestino,
-          destinoCodigos: grupo.destinos,
+          // Para bases menores/médias é mais seguro carregar a malha da origem/UF
+          // e casar por IBGE OU nome da rota. Isso evita perder cidades quando a
+          // tabela está com IBGE ausente/incorreto, mas a cidade está cadastrada.
+          destinoCodigos: buscarMalhaPorUf ? [] : grupo.destinos,
         });
         bases.push(parcial || []);
 
