@@ -485,9 +485,20 @@ export default function RealizadoPage({ transportadoras = [] }) {
       const row = registros[index];
       const ibgeDestino = await resolverIbgeDestino(row);
       enriquecidos.push({ ...row, ibgeDestino });
-      if (index > 0 && index % 250 === 0) {
-        setFeedback(`Resolvendo destinos do realizado: ${index.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s)...`);
-        await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const atual = index + 1;
+      const deveAtualizarTela = total <= 50 || atual % 100 === 0 || atual === total;
+      if (deveAtualizarTela) {
+        const percentualIbge = Math.min(30, 10 + Math.round((atual / Math.max(total, 1)) * 20));
+        setSimProgress({
+          etapa: 'Resolvendo destinos/IBGE',
+          atual,
+          total,
+          percentual: percentualIbge,
+          mensagem: `${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) com destino analisado`,
+        });
+        setFeedback(`Resolvendo destinos do realizado: ${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s)...`);
+        await nextFrame();
       }
     }
     return enriquecidos;
@@ -532,27 +543,21 @@ export default function RealizadoPage({ transportadoras = [] }) {
     setSimulando(true);
     setErro('');
     setResultado(null);
-    setSimProgress({ etapa: 'Preparando simulação', atual: 0, total: rowsFiltradas.length, percentual: 0, mensagem: 'Buscando tabelas e rotas da transportadora...' });
-    setFeedback('Buscando tabelas e rotas que a transportadora participa...');
+
+    const limite = rowsFiltradas.slice(0, 6000);
+    const totalSimular = limite.length;
+
+    setSimProgress({
+      etapa: 'Preparando simulação',
+      atual: 0,
+      total: totalSimular,
+      percentual: 0,
+      mensagem: `Preparando ${totalSimular.toLocaleString('pt-BR')} CT-e(s) filtrado(s)...`,
+    });
+    setFeedback(`Preparando ${totalSimular.toLocaleString('pt-BR')} CT-e(s) para simular no realizado...`);
     await nextFrame();
 
     try {
-      const baseOnline = await buscarBaseSimulacaoDb({
-        nomeTransportadora: filtros.transportadora,
-        canal: filtros.canal,
-      });
-      const base = baseOnline?.length ? baseOnline : transportadoras;
-
-      setSimProgress((prev) => ({ ...(prev || {}), etapa: 'Base carregada', percentual: 8, mensagem: `Base de tabelas carregada com ${Number(base?.length || 0).toLocaleString('pt-BR')} transportadora(s)/registro(s).` }));
-      await nextFrame();
-
-      if (!base?.length) {
-        setErro('Não encontrei tabela/base de simulação para essa transportadora.');
-        return;
-      }
-
-      const limite = rowsFiltradas.slice(0, 6000);
-      const totalSimular = limite.length;
       if (rowsFiltradas.length > limite.length) {
         setFeedback(`Simulando os primeiros ${limite.length.toLocaleString('pt-BR')} CT-e(s) dos filtros para manter a tela leve.`);
       }
@@ -562,17 +567,60 @@ export default function RealizadoPage({ transportadoras = [] }) {
         atual: 0,
         total: totalSimular,
         percentual: 10,
-        mensagem: `Preparando ${totalSimular.toLocaleString('pt-BR')} CT-e(s) para cruzar destino com IBGE...`,
+        mensagem: `Cruzando cidade/UF/CEP dos ${totalSimular.toLocaleString('pt-BR')} CT-e(s) com IBGE...`,
       });
       await nextFrame();
 
       const registrosComIbge = await enriquecerComIbge(limite);
+      const destinosIbge = Array.from(new Set(
+        registrosComIbge
+          .map((row) => String(row.ibgeDestino || '').replace(/\D/g, ''))
+          .filter(Boolean)
+      ));
+
+      setSimProgress({
+        etapa: 'Buscando malha filtrada',
+        atual: destinosIbge.length,
+        total: Math.max(destinosIbge.length, 1),
+        percentual: 32,
+        mensagem: destinosIbge.length
+          ? `Buscando tabelas somente da origem/filtro e ${destinosIbge.length.toLocaleString('pt-BR')} destino(s) encontrado(s)...`
+          : 'Nenhum IBGE foi encontrado nos CT-e(s); buscando pela origem/filtro para diagnosticar fora da malha...',
+      });
+      setFeedback(
+        destinosIbge.length
+          ? `Buscando malha filtrada: origem ${filtros.origem || 'todas'}, canal ${filtros.canal || 'todos'} e ${destinosIbge.length.toLocaleString('pt-BR')} destino(s).`
+          : 'Nenhum destino com IBGE encontrado. A simulação vai tentar diagnosticar pela origem e canal.'
+      );
+      await nextFrame();
+
+      const baseOnline = await buscarBaseSimulacaoDb({
+        nomeTransportadora: filtros.transportadora,
+        canal: filtros.canal,
+        origem: filtros.origem,
+        ufDestino: filtros.ufDestino,
+        destinoCodigos: destinosIbge,
+      });
+      const base = baseOnline?.length ? baseOnline : transportadoras;
+
+      setSimProgress((prev) => ({
+        ...(prev || {}),
+        etapa: 'Base carregada',
+        percentual: 35,
+        mensagem: `Malha carregada com ${Number(base?.length || 0).toLocaleString('pt-BR')} transportadora(s)/registro(s) para os filtros atuais.`,
+      }));
+      await nextFrame();
+
+      if (!base?.length) {
+        setErro('Não encontrei tabela/base de simulação para essa transportadora, origem, canal e destinos filtrados. Confira se a transportadora tem origem e rotas cadastradas para esse cenário.');
+        return;
+      }
 
       setSimProgress({
         etapa: 'Calculando fretes',
         atual: 0,
         total: totalSimular,
-        percentual: 35,
+        percentual: 40,
         mensagem: 'Calculando frete simulado por CT-e e comparando com o valor realizado...',
       });
       setFeedback('Calculando frete simulado por CT-e e comparando com o valor realizado...');
@@ -584,10 +632,10 @@ export default function RealizadoPage({ transportadoras = [] }) {
         nomeTransportadora: filtros.transportadora,
         filtros,
         cidadePorIbge,
-        chunkSize: 25,
+        chunkSize: totalSimular <= 50 ? 1 : 25,
         onProgress: ({ atual, total, etapa }) => {
           const percentualInterno = calcularPercentualProgresso(atual, total);
-          const percentual = Math.min(98, 35 + Math.round(percentualInterno * 0.63));
+          const percentual = Math.min(98, 40 + Math.round(percentualInterno * 0.58));
           const mensagem = `${Number(atual || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s) processados`;
           setSimProgress({
             etapa: etapa || 'Calculando fretes',
