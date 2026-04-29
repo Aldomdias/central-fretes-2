@@ -1947,6 +1947,7 @@ async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
   let query = supabase
     .from('realizado_ctes')
     .select('*')
+    .order('emissao', { ascending: false, nullsFirst: false })
     .order('criado_em', { ascending: false })
     .limit(limit);
 
@@ -1989,14 +1990,10 @@ export async function listarRealizadoCtes(filtros = {}) {
   try {
     return await listarRealizadoCtesViaRpc(supabase, filtros);
   } catch (rpcError) {
-    if (!isRpcMissingError(rpcError)) {
-      throw new Error(`Erro ao carregar realizado_ctes via Supabase. Detalhe: ${rpcError.message || rpcError}`);
-    }
-
     try {
       return await listarRealizadoCtesViaSelect(supabase, filtros);
     } catch (selectError) {
-      throw new Error(`Erro ao carregar realizado_ctes. Rode o script supabase/realizado_ctes_schema.sql atualizado. Detalhe: ${selectError.message || selectError}`);
+      throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto e precisa do SQL atualizado com índices/RPC rápida. Detalhe RPC: ${rpcError.message || rpcError}. Detalhe select: ${selectError.message || selectError}`);
     }
   }
 }
@@ -2023,7 +2020,7 @@ async function executarComTimeout(promise, ms, mensagem) {
 async function validarTabelaRealizadoCtes(supabase) {
   const { error } = await supabase
     .from('realizado_ctes')
-    .select('chave_cte', { count: 'exact', head: true })
+    .select('chave_cte')
     .limit(1);
 
   if (error) {
@@ -2133,7 +2130,9 @@ export async function diagnosticarRealizadoSupabaseDb() {
       ok: false,
       configured: false,
       host: info.host,
-      total: 0,
+      total: null,
+      comCanal: null,
+      semCanal: null,
       erro: 'Supabase não configurado no front. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel.',
     };
   }
@@ -2143,18 +2142,20 @@ export async function diagnosticarRealizadoSupabaseDb() {
     ok: false,
     configured: true,
     host: info.host,
-    total: 0,
-    comCanal: 0,
-    semCanal: 0,
+    total: null,
+    comCanal: null,
+    semCanal: null,
     tabelaOk: false,
     rpcOk: false,
     listagemRpcOk: false,
+    contagemExata: false,
     erro: '',
   };
 
   const tabela = await supabase
     .from('realizado_ctes')
-    .select('id', { count: 'exact', head: true });
+    .select('id')
+    .limit(1);
 
   if (tabela.error) {
     status.erro = `Tabela realizado_ctes não respondeu: ${tabela.error.message}`;
@@ -2162,14 +2163,16 @@ export async function diagnosticarRealizadoSupabaseDb() {
   }
 
   status.tabelaOk = true;
-  status.total = Number(tabela.count || 0);
 
   const rpc = await supabase.rpc('diagnosticar_realizado_ctes');
   if (!rpc.error) {
     status.rpcOk = true;
-    status.total = Number(rpc.data?.total ?? status.total ?? 0);
-    status.comCanal = Number(rpc.data?.com_canal ?? status.comCanal ?? 0);
-    status.semCanal = Number(rpc.data?.sem_canal ?? status.semCanal ?? 0);
+    status.total = Number(rpc.data?.total ?? rpc.data?.total_estimado ?? 0);
+    status.comCanal = rpc.data?.com_canal === null || rpc.data?.com_canal === undefined ? null : Number(rpc.data.com_canal || 0);
+    status.semCanal = rpc.data?.sem_canal === null || rpc.data?.sem_canal === undefined ? null : Number(rpc.data.sem_canal || 0);
+    status.contagemExata = rpc.data?.contagem_exata === true;
+  } else {
+    status.erro = `Diagnóstico rápido pendente: ${rpc.error.message || rpc.error}`;
   }
 
   const listagem = await supabase.rpc('listar_realizado_ctes', {
@@ -2182,7 +2185,11 @@ export async function diagnosticarRealizadoSupabaseDb() {
     p_incluir_sem_canal: true,
     p_somente_sem_canal: false,
   });
-  if (!listagem.error) status.listagemRpcOk = true;
+  if (!listagem.error) {
+    status.listagemRpcOk = true;
+  } else {
+    status.erro = status.erro || `Listagem pendente: ${listagem.error.message || listagem.error}`;
+  }
 
   status.ok = true;
   return status;

@@ -286,6 +286,13 @@ function exportarCsvAnalise(resultado, transportadora) {
   URL.revokeObjectURL(url);
 }
 
+function formatDiagCount(value, sufixo = '') {
+  if (value === null || value === undefined || value === '') return 'não calculado';
+  const numero = Number(value);
+  if (!Number.isFinite(numero)) return 'não calculado';
+  return `${numero.toLocaleString('pt-BR')}${sufixo}`;
+}
+
 export default function RealizadoPage({ transportadoras = [] }) {
   const [rows, setRows] = useState([]);
   const [opcoes, setOpcoes] = useState({ transportadoras: [], canais: [], origens: [], municipiosIbge: [] });
@@ -874,7 +881,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
       {supabaseDiag ? (
         <div className={supabaseDiag.ok ? 'sim-alert success' : 'sim-alert'}>
-          <strong>Diagnóstico Supabase:</strong> {supabaseDiag.host || 'sem projeto'} • tabela: {supabaseDiag.tabelaOk ? 'OK' : 'não confirmada'} • total: {Number(supabaseDiag.total || 0).toLocaleString('pt-BR')} • com canal: {Number(supabaseDiag.comCanal || 0).toLocaleString('pt-BR')} • sem canal: {Number(supabaseDiag.semCanal || 0).toLocaleString('pt-BR')} • importar: {supabaseDiag.rpcOk ? 'OK' : 'pendente'} • puxar: {supabaseDiag.listagemRpcOk ? 'OK' : 'pendente'}
+          <strong>Diagnóstico Supabase:</strong> {supabaseDiag.host || 'sem projeto'} • tabela: {supabaseDiag.tabelaOk ? 'OK' : 'não confirmada'} • total: {formatDiagCount(supabaseDiag.total, supabaseDiag.contagemExata ? '' : ' estimado')} • com canal: {formatDiagCount(supabaseDiag.comCanal)} • sem canal: {formatDiagCount(supabaseDiag.semCanal)} • importar: {supabaseDiag.rpcOk ? 'OK' : 'pendente'} • puxar: {supabaseDiag.listagemRpcOk ? 'OK' : 'pendente'}
           {supabaseDiag.erro ? <span> • {supabaseDiag.erro}</span> : null}
         </div>
       ) : null}
