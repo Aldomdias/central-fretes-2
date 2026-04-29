@@ -315,3 +315,75 @@ end;
 $$;
 
 grant execute on function public.importar_realizado_ctes(jsonb) to anon, authenticated;
+
+-- Patch de segurança e tolerância numérica para importação em massa.
+-- Evita numeric field overflow em arquivos pesados e cria uma lixeira antes de exclusões.
+alter table public.realizado_ctes alter column valor_cte type numeric(20,6);
+alter table public.realizado_ctes alter column valor_calculado type numeric(20,6);
+alter table public.realizado_ctes alter column diferenca type numeric(20,6);
+alter table public.realizado_ctes alter column peso_declarado type numeric(20,6);
+alter table public.realizado_ctes alter column peso_cubado type numeric(20,6);
+alter table public.realizado_ctes alter column metros_cubicos type numeric(20,6);
+alter table public.realizado_ctes alter column volume type numeric(20,6);
+alter table public.realizado_ctes alter column valor_nf type numeric(20,6);
+alter table public.realizado_ctes alter column percentual_frete type numeric(20,6);
+alter table public.realizado_ctes alter column prazo_entrega_cliente type numeric(20,6);
+
+create table if not exists public.realizado_ctes_lixeira (like public.realizado_ctes including all);
+alter table public.realizado_ctes_lixeira add column if not exists deleted_at timestamptz not null default now();
+alter table public.realizado_ctes_lixeira add column if not exists delete_reason text;
+grant select, insert on public.realizado_ctes_lixeira to anon, authenticated;
+
+create or replace function public.excluir_realizado_ctes_sem_canal(p_confirmacao text default '')
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count integer := 0;
+begin
+  if coalesce(p_confirmacao, '') <> 'EXCLUIR SEM CANAL' then
+    raise exception 'Exclusão bloqueada. Confirmação inválida para excluir CT-e(s) sem canal.';
+  end if;
+
+  insert into public.realizado_ctes_lixeira
+  select r.*, now(), 'SEM_CANAL'
+  from public.realizado_ctes r
+  where nullif(btrim(coalesce(r.canal, '')), '') is null;
+
+  delete from public.realizado_ctes r
+  where nullif(btrim(coalesce(r.canal, '')), '') is null;
+
+  get diagnostics v_count = row_count;
+  return coalesce(v_count, 0);
+end;
+$$;
+
+grant execute on function public.excluir_realizado_ctes_sem_canal(text) to anon, authenticated;
+
+create or replace function public.limpar_realizado_ctes(p_confirmacao text default '')
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count integer := 0;
+begin
+  if coalesce(p_confirmacao, '') <> 'APAGAR BASE REALIZADA' then
+    raise exception 'Exclusão bloqueada. Confirmação inválida para zerar a base realizada.';
+  end if;
+
+  insert into public.realizado_ctes_lixeira
+  select r.*, now(), 'LIMPEZA_TOTAL'
+  from public.realizado_ctes r;
+
+  delete from public.realizado_ctes;
+
+  get diagnostics v_count = row_count;
+  return coalesce(v_count, 0);
+end;
+$$;
+
+grant execute on function public.limpar_realizado_ctes(text) to anon, authenticated;

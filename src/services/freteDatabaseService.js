@@ -44,6 +44,14 @@ function toNumberOrNull(value) {
   return Number.isFinite(normalized) ? normalized : null;
 }
 
+function toSafeRealizadoNumber(value, maxAbs = 999999999999) {
+  const parsed = toNumberOrNull(value);
+  if (parsed === null) return null;
+  if (!Number.isFinite(parsed)) return null;
+  if (Math.abs(parsed) > maxAbs) return null;
+  return parsed;
+}
+
 function toBoolean(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
@@ -1878,30 +1886,30 @@ function sanitizeRealizadoDbRow(row = {}) {
     chave_cte: chave || null,
     numero_cte: row.numeroCte || row.numero_cte || '',
     serie_cte: row.serieCte || row.serie_cte || '',
-    valor_cte: toNumberOrNull(row.valorCte ?? row.valor_cte),
-    valor_calculado: toNumberOrNull(row.valorCalculado ?? row.valor_calculado),
-    diferenca: toNumberOrNull(row.diferenca),
+    valor_cte: toSafeRealizadoNumber(row.valorCte ?? row.valor_cte),
+    valor_calculado: toSafeRealizadoNumber(row.valorCalculado ?? row.valor_calculado),
+    diferenca: toSafeRealizadoNumber(row.diferenca),
     situacao: row.situacao || '',
     status: row.status || '',
     status_conciliacao: row.statusConciliacao || row.status_conciliacao || '',
     status_erp: row.statusErp || row.status_erp || '',
     uf_origem: row.ufOrigem || row.uf_origem || '',
     uf_destino: row.ufDestino || row.uf_destino || '',
-    peso_declarado: toNumberOrNull(row.pesoDeclarado ?? row.peso_declarado),
-    peso_cubado: toNumberOrNull(row.pesoCubado ?? row.peso_cubado),
-    metros_cubicos: toNumberOrNull(row.metrosCubicos ?? row.metros_cubicos),
-    volume: toNumberOrNull(row.volume),
+    peso_declarado: toSafeRealizadoNumber(row.pesoDeclarado ?? row.peso_declarado),
+    peso_cubado: toSafeRealizadoNumber(row.pesoCubado ?? row.peso_cubado),
+    metros_cubicos: toSafeRealizadoNumber(row.metrosCubicos ?? row.metros_cubicos),
+    volume: toSafeRealizadoNumber(row.volume),
     canais: row.canais || '',
     canal: row.canal || '',
     canal_vendas: row.canalVendas || row.canal_vendas || '',
-    valor_nf: toNumberOrNull(row.valorNF ?? row.valor_nf),
-    percentual_frete: toNumberOrNull(row.percentualFrete ?? row.percentual_frete),
+    valor_nf: toSafeRealizadoNumber(row.valorNF ?? row.valor_nf),
+    percentual_frete: toSafeRealizadoNumber(row.percentualFrete ?? row.percentual_frete, 999999),
     cep_destino: row.cepDestino || row.cep_destino || '',
     cep_origem: row.cepOrigem || row.cep_origem || '',
     cidade_origem: row.cidadeOrigem || row.cidade_origem || '',
     cidade_destino: row.cidadeDestino || row.cidade_destino || '',
     transportadora_contratada: row.transportadoraContratada || row.transportadora_contratada || '',
-    prazo_entrega_cliente: toNumberOrNull(row.prazoEntregaCliente ?? row.prazo_entrega_cliente),
+    prazo_entrega_cliente: toSafeRealizadoNumber(row.prazoEntregaCliente ?? row.prazo_entrega_cliente, 999999),
     raw: {},
   };
 }
@@ -2248,6 +2256,14 @@ export async function salvarRealizadoCtes(rows = [], options = {}) {
 }
 
 export async function excluirRealizadoCtes(filtros = {}) {
+  const limpezaTotal = !filtros.inicio && !filtros.fim && !filtros.arquivoOrigem && !filtros.somenteSemCanal;
+  if (limpezaTotal && filtros.confirmacao !== 'APAGAR BASE REALIZADA') {
+    throw new Error('Exclusão bloqueada por segurança. Para zerar a base, confirme digitando APAGAR BASE REALIZADA.');
+  }
+  if (filtros.somenteSemCanal && filtros.confirmacao !== 'EXCLUIR SEM CANAL') {
+    throw new Error('Exclusão de pendências bloqueada por segurança. Para excluir, confirme digitando EXCLUIR SEM CANAL.');
+  }
+
   if (!isSupabaseConfigured()) {
     const atual = readRealizadoLocal();
     if (filtros.somenteSemCanal) {
@@ -2256,7 +2272,7 @@ export async function excluirRealizadoCtes(filtros = {}) {
       return { ok: true, removidos: atual.length - restantes.length, modo: 'local' };
     }
 
-    if (!filtros.inicio && !filtros.fim && !filtros.arquivoOrigem) {
+    if (limpezaTotal) {
       writeRealizadoLocal([]);
       return { ok: true, removidos: atual.length, modo: 'local' };
     }
@@ -2270,7 +2286,7 @@ export async function excluirRealizadoCtes(filtros = {}) {
   const supabase = ensureClient();
 
   if (filtros.somenteSemCanal) {
-    const rpc = await supabase.rpc('excluir_realizado_ctes_sem_canal');
+    const rpc = await supabase.rpc('excluir_realizado_ctes_sem_canal', { p_confirmacao: 'EXCLUIR SEM CANAL' });
     if (!rpc.error) {
       return { ok: true, removidos: Number(rpc.data || 0), modo: 'supabase', metodo: 'rpc' };
     }
@@ -2280,18 +2296,25 @@ export async function excluirRealizadoCtes(filtros = {}) {
     }
   }
 
+  if (limpezaTotal) {
+    const rpc = await supabase.rpc('limpar_realizado_ctes', { p_confirmacao: 'APAGAR BASE REALIZADA' });
+    if (!rpc.error) {
+      return { ok: true, removidos: Number(rpc.data || 0), modo: 'supabase', metodo: 'rpc' };
+    }
+    if (!isRpcMissingError(rpc.error)) {
+      throw new Error(`Erro ao limpar base realizada. Detalhe: ${rpc.error.message}`);
+    }
+  }
+
   let query = supabase.from('realizado_ctes').delete();
 
   if (filtros.inicio) query = query.gte('emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) query = query.lte('emissao', `${filtros.fim}T23:59:59`);
   if (filtros.arquivoOrigem) query = query.eq('arquivo_origem', filtros.arquivoOrigem);
   if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
+  if (limpezaTotal) query = query.neq('chave_cte', '__nunca__');
 
-  if (!filtros.inicio && !filtros.fim && !filtros.arquivoOrigem && !filtros.somenteSemCanal) {
-    query = query.neq('chave_cte', '__nunca__');
-  }
-
-  const { error } = await query;
+  const { error, count } = await query.select('id', { count: 'exact' });
   if (error) throw error;
-  return { ok: true, modo: 'supabase' };
+  return { ok: true, modo: 'supabase', removidos: Number(count || 0) };
 }

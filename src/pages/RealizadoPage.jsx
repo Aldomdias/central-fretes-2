@@ -578,16 +578,22 @@ export default function RealizadoPage({ transportadoras = [] }) {
   }
 
   async function limparBase() {
-    const confirmar = window.confirm('Tem certeza que deseja limpar a base realizada carregada? Essa ação remove os CT-e(s) do realizado.');
-    if (!confirmar) return;
+    const totalAtual = rows.length;
+    const texto = window.prompt(
+      `ATENÇÃO: esta ação pode apagar toda a base realizada do Supabase.\n\nBase carregada na tela: ${totalAtual.toLocaleString('pt-BR')} CT-e(s).\n\nPara confirmar, digite exatamente: APAGAR BASE REALIZADA`
+    );
+    if (texto !== 'APAGAR BASE REALIZADA') {
+      setFeedback('Limpeza cancelada. Nenhum CT-e foi excluído.');
+      return;
+    }
 
     setCarregando(true);
     setErro('');
     try {
-      await excluirRealizadoCtes({});
+      const resp = await excluirRealizadoCtes({ confirmacao: 'APAGAR BASE REALIZADA' });
       setRows([]);
       setResultado(null);
-      setFeedback('Base realizada limpa com sucesso.');
+      setFeedback(`Base realizada limpa com segurança. Registros removidos: ${Number(resp?.removidos || 0).toLocaleString('pt-BR')}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao limpar base realizada.');
     } finally {
@@ -668,15 +674,18 @@ export default function RealizadoPage({ transportadoras = [] }) {
       return;
     }
 
-    const confirmar = window.confirm(
-      `Tem certeza que deseja excluir ${total.toLocaleString('pt-BR')} CT-e(s) sem canal? Essa limpeza remove apenas os registros pendentes, não mexe nos CT-e(s) com canal.`
+    const texto = window.prompt(
+      `ATENÇÃO: você está prestes a excluir ${total.toLocaleString('pt-BR')} CT-e(s) sem canal.\n\nAntes de apagar, revise em Avaliar pendências.\n\nPara confirmar, digite exatamente: EXCLUIR SEM CANAL`
     );
-    if (!confirmar) return;
+    if (texto !== 'EXCLUIR SEM CANAL') {
+      setFeedback('Exclusão de pendências cancelada. Nenhum CT-e foi excluído.');
+      return;
+    }
 
     setCarregando(true);
     setErro('');
     try {
-      const resp = await excluirRealizadoCtes({ somenteSemCanal: true });
+      const resp = await excluirRealizadoCtes({ somenteSemCanal: true, confirmacao: 'EXCLUIR SEM CANAL' });
       const removidos = Number(resp?.removidos ?? total);
       setFeedback(`${removidos.toLocaleString('pt-BR')} pendência(s) sem canal excluída(s). Atualizando base...`);
       await carregarBase(filtros);
@@ -840,7 +849,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
             {carregando ? 'Atualizando...' : 'Atualizar base'}
           </button>
           <button className="btn-danger" onClick={limparBase} disabled={carregando || importando || simulando || !rows.length}>
-            Limpar realizado
+            Zerar base realizada
           </button>
         </div>
       </div>
