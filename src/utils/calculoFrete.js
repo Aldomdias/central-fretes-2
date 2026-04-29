@@ -589,22 +589,49 @@ function normalizarCanalRealizadoTexto(value) {
     .replace(/\s+/g, ' ');
 }
 
+const CANAIS_B2C_REALIZADO = [
+  'B2C',
+  'VIA VAREJO',
+  'MERCADO LIVRE',
+  'MERCADOR LIVRE',
+  'B2W',
+  'MAGAZINE LUIZA',
+  'CARREFOUR',
+  'GPA',
+  'COLOMBO',
+  'AMAZON',
+  'INTER',
+  'ANYMARKET',
+  'ANY MARKET',
+  'BRADESCO SHOP',
+  'ITAU SHOP',
+  'ITAÚ SHOP',
+  'SHOPEE',
+  'LIVELO',
+  'MARKETPLACE',
+  'MARKET PLACE',
+  'ECOMMERCE',
+  'E-COMMERCE',
+];
+
+const CANAIS_ATACADO_REALIZADO = [
+  'ATACADO',
+  'B2B',
+  'CANTU',
+  'CANTU PNEUS',
+];
+
+function contemCanalRealizado(canal, lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
+}
+
 function categoriaCanalRealizado(value) {
   const canal = normalizarCanalRealizadoTexto(value);
   if (!canal) return '';
-  if (
-    canal.includes('MERCADO LIVRE') ||
-    canal.includes('SHOPEE') ||
-    canal.includes('B2C') ||
-    canal.includes('MARKETPLACE') ||
-    canal.includes('MARKET PLACE') ||
-    canal.includes('ECOMMERCE') ||
-    canal.includes('E-COMMERCE')
-  ) return 'B2C';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (canal.includes('ATACADO')) return 'ATACADO';
-  if (canal.includes('B2B')) return 'B2B';
+  if (contemCanalRealizado(canal, CANAIS_ATACADO_REALIZADO)) return 'ATACADO';
+  if (contemCanalRealizado(canal, CANAIS_B2C_REALIZADO)) return 'B2C';
   return canal;
 }
 
@@ -615,12 +642,9 @@ function canalCompativelRealizado(canalLinha, canalReferencia) {
   if (!linha) return false;
   if (linha === referencia) return true;
 
-  const referenciasAgrupadas = new Set(['B2C', 'B2B', 'ATACADO', 'INTERCOMPANY', 'REVERSA']);
-  if (referenciasAgrupadas.has(referencia)) {
-    return categoriaCanalRealizado(linha) === referencia;
-  }
-
-  return false;
+  const categoriaLinha = categoriaCanalRealizado(linha);
+  const categoriaReferencia = categoriaCanalRealizado(referencia);
+  return Boolean(categoriaLinha && categoriaReferencia && categoriaLinha === categoriaReferencia);
 }
 
 function canalRealizadoRaw(row = {}, canalPadrao = '') {
@@ -820,7 +844,24 @@ function montarResumoRealizado(detalhes = [], foraMalha = [], totalSelecionado =
   };
 }
 
-function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge }) {
+
+function criarIndiceOrigensRealizado(transportadoras = []) {
+  const map = new Map();
+
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora.origens || []).forEach((origem) => {
+      const origemKey = normalizarComparacaoRealizado(origem?.cidade || '');
+      if (!origemKey) return;
+      const lista = map.get(origemKey) || [];
+      lista.push({ transportadora, origem });
+      map.set(origemKey, lista);
+    });
+  });
+
+  return map;
+}
+
+function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge, indiceOrigens }) {
   const origemCidade = cidadeOrigemRealizado(row);
   const origemKey = normalizarComparacaoRealizado(origemCidade);
   const destinoInfo = destinoRealizadoInfo(row);
@@ -840,34 +881,33 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
   let encontrouDestino = false;
   let encontrouDestinoSemCotacao = false;
 
-  (transportadoras || []).forEach((transportadora) => {
-    (transportadora.origens || [])
-      .filter((origem) => canalCompativelRealizado(canalRaw, origem.canal))
-      .filter((origem) => normalizarComparacaoRealizado(origem.cidade) === origemKey)
-      .forEach((origem) => {
-        encontrouOrigemCanal = true;
-        (origem.rotas || []).forEach((rota) => {
-          if (!rotaDestinoCompativel(rota, destinoInfo, cidadePorIbge)) return;
-          encontrouDestino = true;
+  const candidatosOrigem = indiceOrigens?.get(origemKey) || [];
 
-          const item = calcularItem({
-            transportadora,
-            origem,
-            rota,
-            peso,
-            valorNF,
-            cidadePorIbge,
-            gradeCanal: [],
-          });
+  candidatosOrigem
+    .filter(({ origem }) => canalCompativelRealizado(canalRaw, origem.canal))
+    .forEach(({ transportadora, origem }) => {
+      encontrouOrigemCanal = true;
+      (origem.rotas || []).forEach((rota) => {
+        if (!rotaDestinoCompativel(rota, destinoInfo, cidadePorIbge)) return;
+        encontrouDestino = true;
 
-          if (item) {
-            cenarios.push(item);
-          } else {
-            encontrouDestinoSemCotacao = true;
-          }
+        const item = calcularItem({
+          transportadora,
+          origem,
+          rota,
+          peso,
+          valorNF,
+          cidadePorIbge,
+          gradeCanal: [],
         });
+
+        if (item) {
+          cenarios.push(item);
+        } else {
+          encontrouDestinoSemCotacao = true;
+        }
       });
-  });
+    });
 
   const rankeados = rankearPorChave(cenarios);
   const candidato = rankeados.find((item) => normalizarComparacaoRealizado(item.transportadora) === alvo);
@@ -932,6 +972,7 @@ export function simularRealizadoPorTransportadora({
   const selecionados = filtrarRealizadosBase(realizados, filtros);
   const detalhes = [];
   const foraMalha = [];
+  const indiceOrigens = criarIndiceOrigensRealizado(transportadoras);
 
   if (!alvo) {
     return {
@@ -942,7 +983,7 @@ export function simularRealizadoPorTransportadora({
   }
 
   selecionados.forEach((row) => {
-    simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge });
+    simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge, indiceOrigens });
   });
 
   return {
@@ -976,6 +1017,7 @@ export async function simularRealizadoPorTransportadoraAsync({
   const detalhes = [];
   const foraMalha = [];
   const total = selecionados.length;
+  const indiceOrigens = criarIndiceOrigensRealizado(transportadoras);
 
   const informarProgresso = async (atual, etapa = 'Calculando fretes') => {
     if (typeof onProgress === 'function') {
@@ -1010,6 +1052,7 @@ export async function simularRealizadoPorTransportadoraAsync({
       alvo,
       filtros,
       cidadePorIbge,
+      indiceOrigens,
     });
 
     if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {

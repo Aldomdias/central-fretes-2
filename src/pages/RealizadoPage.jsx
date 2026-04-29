@@ -241,8 +241,11 @@ function temFiltroMinimoRealizado(filtros = {}) {
     filtros.inicio ||
     filtros.fim ||
     filtros.canal ||
+    filtros.transportadoraRealizada ||
+    filtros.ufOrigem ||
+    filtros.ufDestino ||
     filtros.origem ||
-    filtros.ufDestino
+    filtros.destino
   );
 }
 
@@ -265,6 +268,85 @@ function calcularPercentualProgresso(atual = 0, total = 0) {
   const safeTotal = Math.max(Number(total) || 0, 1);
   const safeAtual = Math.max(Number(atual) || 0, 0);
   return Math.min(100, Math.max(0, Math.round((safeAtual / safeTotal) * 100)));
+}
+
+function normalizarTransportadoraKey(value) {
+  return normalizarBusca(value).replace(/\s+/g, ' ');
+}
+
+function mergeListaPorIdOuKey(atual = [], novos = [], keyFn) {
+  const map = new Map();
+  [...(atual || []), ...(novos || [])].forEach((item) => {
+    const key = keyFn(item);
+    if (!key) return;
+    if (!map.has(key)) map.set(key, item);
+  });
+  return [...map.values()];
+}
+
+function mergeOrigensTransportadora(origensAtuais = [], origensNovas = []) {
+  const map = new Map();
+  [...(origensAtuais || []), ...(origensNovas || [])].forEach((origem) => {
+    const key = [normalizarBusca(origem?.cidade), categoriaCanalTela(origem?.canal || ''), origem?.id || ''].join('|');
+    if (!key.trim()) return;
+
+    const existente = map.get(key);
+    if (!existente) {
+      map.set(key, { ...origem });
+      return;
+    }
+
+    map.set(key, {
+      ...existente,
+      ...origem,
+      generalidades: { ...(existente.generalidades || {}), ...(origem.generalidades || {}) },
+      rotas: mergeListaPorIdOuKey(existente.rotas, origem.rotas, (item) => String(item?.id || `${item?.ibgeDestino || ''}|${item?.nomeRota || ''}`)),
+      cotacoes: mergeListaPorIdOuKey(existente.cotacoes, origem.cotacoes, (item) => String(item?.id || `${item?.rota || ''}|${item?.pesoMin || ''}|${item?.pesoMax || ''}`)),
+      taxasEspeciais: mergeListaPorIdOuKey(existente.taxasEspeciais, origem.taxasEspeciais, (item) => String(item?.id || item?.ibgeDestino || '')),
+    });
+  });
+  return [...map.values()];
+}
+
+function mergeBasesSimulacao(bases = []) {
+  const map = new Map();
+
+  (bases || []).flat().filter(Boolean).forEach((transportadora) => {
+    const key = normalizarTransportadoraKey(transportadora?.nome) || String(transportadora?.id || '');
+    if (!key) return;
+    const existente = map.get(key);
+    if (!existente) {
+      map.set(key, { ...transportadora, origens: transportadora.origens || [] });
+      return;
+    }
+
+    map.set(key, {
+      ...existente,
+      ...transportadora,
+      origens: mergeOrigensTransportadora(existente.origens, transportadora.origens),
+    });
+  });
+
+  return [...map.values()];
+}
+
+function agruparDestinosPorOrigem(registros = []) {
+  const map = new Map();
+
+  (registros || []).forEach((row) => {
+    const origem = splitCidadeUfTela(row.cidadeOrigem, row.ufOrigem).cidade || row.cidadeOrigem || '';
+    const origemKey = normalizarBusca(origem);
+    if (!origemKey) return;
+    const atual = map.get(origemKey) || { origem, destinos: new Set(), linhas: 0 };
+    const ibge = String(row.ibgeDestino || '').replace(/\D/g, '');
+    if (ibge) atual.destinos.add(ibge);
+    atual.linhas += 1;
+    map.set(origemKey, atual);
+  });
+
+  return [...map.values()]
+    .map((item) => ({ ...item, destinos: [...item.destinos] }))
+    .sort((a, b) => b.linhas - a.linhas || a.origem.localeCompare(b.origem, 'pt-BR'));
 }
 
 function hasCanalRealizado(row = {}) {
@@ -722,7 +804,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
   }
 
   function resolverIbgeDestino(row) {
-    if (row.ibgeDestino) return row.ibgeDestino;
+    if (row.ibgeDestino) return String(row.ibgeDestino || '').replace(/\D/g, '');
 
     const destino = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
     const localKey = buildCidadeKey(destino.cidade, destino.uf);
@@ -731,38 +813,19 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
     if (ibgeCacheRef.current.has(cachedKey)) return ibgeCacheRef.current.get(cachedKey);
 
-    const local = ibgePorCidade.get(localKey) || ibgePorCidade.get(semUfKey);
-    const ibge = local || '';
+    const local = ibgePorCidade.get(localKey) || ibgePorCidade.get(semUfKey) || '';
+    const ibge = String(local || '').replace(/\D/g, '');
     ibgeCacheRef.current.set(cachedKey, ibge);
     return ibge;
   }
 
-
-  async function enriquecerComIbge(registros = []) {
-    const enriquecidos = [];
-    const total = registros.length;
-    for (let index = 0; index < registros.length; index += 1) {
-      const row = registros[index];
-      const ibgeDestino = resolverIbgeDestino(row);
-      enriquecidos.push({ ...row, ibgeDestino });
-
-      const atual = index + 1;
-      const deveAtualizarTela = total <= 50 || atual % 100 === 0 || atual === total;
-      if (deveAtualizarTela) {
-        const percentualIbge = Math.min(30, 10 + Math.round((atual / Math.max(total, 1)) * 20));
-        setSimProgress({
-          etapa: 'Resolvendo destinos/IBGE',
-          atual,
-          total,
-          percentual: percentualIbge,
-          mensagem: `${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) com destino analisado`,
-        });
-        setFeedback(`Resolvendo destinos do realizado: ${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s)...`);
-        await nextFrame();
-      }
-    }
-    return enriquecidos;
+  function prepararRegistrosParaSimulacao(registros = []) {
+    return (registros || []).map((row) => ({
+      ...row,
+      ibgeDestino: resolverIbgeDestino(row),
+    }));
   }
+
 
   async function excluirPendenciasSemCanal() {
     const total = rowsSemCanal.length;
@@ -800,7 +863,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
       return;
     }
     if (!rowsFiltradas.length) {
-      setErro('Não há CT-e realizado para simular nos filtros atuais.');
+      setErro('Não há CT-e realizado para simular nos filtros atuais. Clique em Pesquisar após ajustar os filtros.');
       return;
     }
 
@@ -827,56 +890,79 @@ export default function RealizadoPage({ transportadoras = [] }) {
       }
 
       setSimProgress({
-        etapa: 'Resolvendo destinos/IBGE',
-        atual: 0,
+        etapa: 'Preparando destinos',
+        atual: totalSimular,
         total: totalSimular,
-        percentual: 10,
-        mensagem: `Cruzando cidade/UF/CEP dos ${totalSimular.toLocaleString('pt-BR')} CT-e(s) com IBGE...`,
+        percentual: 12,
+        mensagem: 'Cruzando cidade/UF com a base IBGE local...',
       });
       await nextFrame();
 
-      const registrosComIbge = await enriquecerComIbge(limite);
-      const destinosIbge = Array.from(new Set(
-        registrosComIbge
-          .map((row) => String(row.ibgeDestino || '').replace(/\D/g, ''))
-          .filter(Boolean)
-      ));
+      const registrosComIbge = prepararRegistrosParaSimulacao(limite);
+      const gruposOrigem = agruparDestinosPorOrigem(registrosComIbge);
+
+      if (!gruposOrigem.length) {
+        setErro('Não encontrei origem válida nos CT-e(s) filtrados para buscar a malha de simulação.');
+        return;
+      }
 
       setSimProgress({
         etapa: 'Buscando malha filtrada',
-        atual: destinosIbge.length,
-        total: Math.max(destinosIbge.length, 1),
-        percentual: 32,
-        mensagem: destinosIbge.length
-          ? `Buscando tabelas somente da origem/filtro e ${destinosIbge.length.toLocaleString('pt-BR')} destino(s) encontrado(s)...`
-          : 'Nenhum IBGE foi encontrado nos CT-e(s); buscando pela origem/filtro para diagnosticar fora da malha...',
+        atual: 0,
+        total: gruposOrigem.length,
+        percentual: 18,
+        mensagem: `Buscando tabelas por ${gruposOrigem.length.toLocaleString('pt-BR')} origem(ns) do realizado...`,
       });
-      setFeedback(
-        destinosIbge.length
-          ? `Buscando malha filtrada: origem ${filtrosSimulacao.origem || 'todas'}, canal ${filtrosSimulacao.canal || 'todos'} e ${destinosIbge.length.toLocaleString('pt-BR')} destino(s).`
-          : 'Nenhum destino com IBGE encontrado. A simulação vai tentar diagnosticar pela origem e canal.'
-      );
+      setFeedback(`Buscando malha filtrada da transportadora ${filtros.transportadora} por origem/destino do realizado.`);
       await nextFrame();
 
-      const baseOnline = await buscarBaseSimulacaoDb({
-        nomeTransportadora: filtros.transportadora,
-        canal: filtrosSimulacao.canal,
-        origem: filtrosSimulacao.origem,
-        ufDestino: filtrosSimulacao.ufDestino,
-        destinoCodigos: destinosIbge,
-      });
-      const base = baseOnline?.length ? baseOnline : transportadoras;
+      const bases = [];
+      for (let index = 0; index < gruposOrigem.length; index += 1) {
+        const grupo = gruposOrigem[index];
+        const parcial = await buscarBaseSimulacaoDb({
+          nomeTransportadora: filtros.transportadora,
+          canal: filtrosSimulacao.canal,
+          origem: grupo.origem,
+          ufDestino: filtrosSimulacao.ufDestino,
+          destinoCodigos: grupo.destinos,
+        });
+        bases.push(parcial || []);
 
-      setSimProgress((prev) => ({
-        ...(prev || {}),
+        const atual = index + 1;
+        const percentual = Math.min(38, 18 + Math.round((atual / Math.max(gruposOrigem.length, 1)) * 20));
+        setSimProgress({
+          etapa: 'Buscando malha filtrada',
+          atual,
+          total: gruposOrigem.length,
+          percentual,
+          mensagem: `${atual.toLocaleString('pt-BR')} de ${gruposOrigem.length.toLocaleString('pt-BR')} origem(ns) carregada(s): ${grupo.origem}`,
+        });
+        await nextFrame();
+      }
+
+      const base = mergeBasesSimulacao(bases);
+
+      setSimProgress({
         etapa: 'Base carregada',
-        percentual: 35,
-        mensagem: `Malha carregada com ${Number(base?.length || 0).toLocaleString('pt-BR')} transportadora(s)/registro(s) para os filtros atuais.`,
-      }));
+        atual: base.length,
+        total: Math.max(base.length, 1),
+        percentual: 40,
+        mensagem: `Malha carregada com ${base.length.toLocaleString('pt-BR')} transportadora(s) concorrente(s).`,
+      });
       await nextFrame();
 
-      if (!base?.length) {
-        setErro('Não encontrei tabela/base de simulação para essa transportadora, origem, canal e destinos filtrados. Confira se a transportadora tem origem e rotas cadastradas para esse cenário.');
+      if (!base.length) {
+        setErro('Não encontrei tabela/base de simulação para essa transportadora nas origens/destinos filtrados. Confira se a transportadora tem origem, canal e rotas cadastradas para esse cenário.');
+        return;
+      }
+
+      const alvoKey = normalizarTransportadoraKey(filtros.transportadora);
+      const temAlvo = base.some((item) => {
+        const itemKey = normalizarTransportadoraKey(item.nome);
+        return itemKey === alvoKey || itemKey.includes(alvoKey) || alvoKey.includes(itemKey);
+      });
+      if (!temAlvo) {
+        setErro(`A malha filtrada foi carregada, mas não encontrei a transportadora "${filtros.transportadora}" dentro dela. Revise o nome selecionado ou o cadastro dessa transportadora.`);
         return;
       }
 
@@ -884,7 +970,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
         etapa: 'Calculando fretes',
         atual: 0,
         total: totalSimular,
-        percentual: 40,
+        percentual: 42,
         mensagem: 'Calculando frete simulado por CT-e e comparando com o valor realizado...',
       });
       setFeedback('Calculando frete simulado por CT-e e comparando com o valor realizado...');
@@ -897,10 +983,10 @@ export default function RealizadoPage({ transportadoras = [] }) {
         filtros: filtrosSimulacao,
         cidadePorIbge,
         chunkSize: totalSimular <= 50 ? 1 : 25,
-        onProgress: ({ atual, total, etapa }) => {
+        onProgress: ({ atual, total, etapa, detalhes, foraMalha }) => {
           const percentualInterno = calcularPercentualProgresso(atual, total);
-          const percentual = Math.min(98, 40 + Math.round(percentualInterno * 0.58));
-          const mensagem = `${Number(atual || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s) processados`;
+          const percentual = Math.min(98, 42 + Math.round(percentualInterno * 0.56));
+          const mensagem = `${Number(atual || 0).toLocaleString('pt-BR')} de ${Number(total || 0).toLocaleString('pt-BR')} CT-e(s) processados • ${Number(detalhes || 0).toLocaleString('pt-BR')} simulados • ${Number(foraMalha || 0).toLocaleString('pt-BR')} fora da malha`;
           setSimProgress({
             etapa: etapa || 'Calculando fretes',
             atual,
@@ -920,12 +1006,12 @@ export default function RealizadoPage({ transportadoras = [] }) {
         mensagem: `Simulação concluída para ${filtrosSimulacao.transportadora}.`,
       });
       setResultado(analise);
-      setFeedback(`Simulação concluída para ${filtrosSimulacao.transportadora}.`);
+      setFeedback(`Simulação concluída para ${filtrosSimulacao.transportadora}. ${Number(analise?.resumo?.ctesComSimulacao || 0).toLocaleString('pt-BR')} CT-e(s) tiveram cálculo simulado e ${Number(analise?.resumo?.ctesForaMalha || 0).toLocaleString('pt-BR')} ficaram fora da malha.`);
     } catch (error) {
       setErro(error.message || 'Erro ao simular realizado.');
     } finally {
       setSimulando(false);
-      setTimeout(() => setSimProgress(null), 2500);
+      setTimeout(() => setSimProgress(null), 3500);
     }
   }
 
