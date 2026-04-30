@@ -1,0 +1,312 @@
+diff --git a/src/pages/RealizadoLocalPage.jsx b/src/pages/RealizadoLocalPage.jsx
+--- a/src/pages/RealizadoLocalPage.jsx
++++ b/src/pages/RealizadoLocalPage.jsx
+@@
+-import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
++import {
++  carregarBaseCompletaDb,
++  carregarMunicipiosIbgeDb,
++  carregarTransportadorasPorNomeDb,
++} from '../services/freteDatabaseService';
+@@
+ function makeFileKey() {
+   return `realizado-local-${Date.now()}`;
+ }
++
++const CACHE_TABELAS_COMPLETA_KEY = 'amd-fretes-cache-tabelas-completa-v1';
++const CACHE_TABELAS_TRANSPORTADORA_PREFIX = 'amd-fretes-cache-tabela-transportadora-v1:';
++const CACHE_TABELAS_TTL_MS = 1000 * 60 * 60 * 12;
++
++function normalizarNomeCache(value) {
++  return String(value || '')
++    .normalize('NFD')
++    .replace(/[\u0300-\u036f]/g, '')
++    .trim()
++    .toUpperCase()
++    .replace(/\s+/g, ' ');
++}
++
++function chaveCacheTransportadora(nome) {
++  return `${CACHE_TABELAS_TRANSPORTADORA_PREFIX}${normalizarNomeCache(nome)}`;
++}
++
++function lerCacheTabelas(key) {
++  try {
++    const raw = localStorage.getItem(key);
++    if (!raw) return null;
++    const parsed = JSON.parse(raw);
++    if (!parsed?.createdAt || !Array.isArray(parsed?.transportadoras)) return null;
++    if (Date.now() - Number(parsed.createdAt) > CACHE_TABELAS_TTL_MS) return null;
++    return parsed;
++  } catch {
++    return null;
++  }
++}
++
++function salvarCacheTabelas(key, transportadoras, meta = {}) {
++  try {
++    localStorage.setItem(key, JSON.stringify({
++      createdAt: Date.now(),
++      updatedAt: new Date().toISOString(),
++      transportadoras,
++      meta,
++    }));
++  } catch {
++    // Se o navegador bloquear ou o cache exceder limite, a simulação continua buscando do Supabase.
++  }
++}
++
++function filtrarTransportadoraExata(base = [], nome = '') {
++  const alvo = normalizarNomeCache(nome);
++  if (!alvo) return [];
++  return (base || []).filter((item) => normalizarNomeCache(item?.nome) === alvo);
++}
+@@
+   const [detalheAberto, setDetalheAberto] = useState(null);
+   const [transportadorasTabela, setTransportadorasTabela] = useState(null);
++  const [cacheTabelaInfo, setCacheTabelaInfo] = useState(null);
+   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
+   const [modoSimulacao, setModoSimulacao] = useState('rapido');
+   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
+@@
+-  async function carregarTabelasFrete() {
+-    if (transportadorasTabela?.length) return transportadorasTabela;
+-    setProgress((prev) => ({ ...(prev || {}), etapa: 'Carregando tabelas', percentual: 15, mensagem: 'Carregando tabelas de frete do Supabase uma única vez...' }));
+-    await nextFrame();
+-    const base = await carregarBaseCompletaDb().catch(() => []);
+-    const finalBase = base?.length ? base : transportadoras;
+-    setTransportadorasTabela(finalBase);
+-    return finalBase;
+-  }
++  async function carregarTabelasFrete() {
++    const nomeSelecionado = filtros.transportadora;
++
++    // Modo rápido: não carrega a base inteira. Busca/cacheia somente a transportadora escolhida.
++    if (modoSimulacao === 'rapido' && nomeSelecionado) {
++      const cacheKey = chaveCacheTransportadora(nomeSelecionado);
++
++      const emMemoria = filtrarTransportadoraExata(transportadorasTabela, nomeSelecionado);
++      if (emMemoria.length) {
++        setCacheTabelaInfo({ origem: 'memória', tipo: 'transportadora', nome: nomeSelecionado, total: emMemoria.length });
++        return emMemoria;
++      }
++
++      const cache = lerCacheTabelas(cacheKey);
++      if (cache?.transportadoras?.length) {
++        setTransportadorasTabela((prev) => {
++          const existentes = Array.isArray(prev) ? prev : [];
++          const nomes = new Set(existentes.map((item) => normalizarNomeCache(item?.nome)));
++          return [
++            ...existentes,
++            ...cache.transportadoras.filter((item) => !nomes.has(normalizarNomeCache(item?.nome))),
++          ];
++        });
++        setCacheTabelaInfo({ origem: 'cache local', tipo: 'transportadora', nome: nomeSelecionado, total: cache.transportadoras.length, updatedAt: cache.updatedAt });
++        return cache.transportadoras;
++      }
++
++      setProgress((prev) => ({
++        ...(prev || {}),
++        etapa: 'Carregando tabela selecionada',
++        percentual: 15,
++        mensagem: `Modo rápido: buscando apenas a tabela da transportadora ${nomeSelecionado}...`,
++      }));
++      await nextFrame();
++
++      let baseSelecionada = await carregarTransportadorasPorNomeDb([nomeSelecionado]).catch(() => []);
++
++      // Fallback: se a função nova ainda não estiver disponível no banco/local, tenta usar a base já carregada em memória/store.
++      if (!baseSelecionada?.length) {
++        baseSelecionada = filtrarTransportadoraExata(transportadoras, nomeSelecionado);
++      }
++
++      if (baseSelecionada?.length) {
++        salvarCacheTabelas(cacheKey, baseSelecionada, { tipo: 'transportadora', nome: nomeSelecionado });
++        setTransportadorasTabela((prev) => {
++          const existentes = Array.isArray(prev) ? prev : [];
++          const nomes = new Set(existentes.map((item) => normalizarNomeCache(item?.nome)));
++          return [
++            ...existentes,
++            ...baseSelecionada.filter((item) => !nomes.has(normalizarNomeCache(item?.nome))),
++          ];
++        });
++        setCacheTabelaInfo({ origem: 'Supabase filtrado', tipo: 'transportadora', nome: nomeSelecionado, total: baseSelecionada.length });
++        return baseSelecionada;
++      }
++    }
++
++    // Modo completo: usa cache da base completa; se não houver, carrega tudo uma vez.
++    if (transportadorasTabela?.length && modoSimulacao === 'completo') return transportadorasTabela;
++
++    const cacheCompleto = lerCacheTabelas(CACHE_TABELAS_COMPLETA_KEY);
++    if (cacheCompleto?.transportadoras?.length) {
++      setTransportadorasTabela(cacheCompleto.transportadoras);
++      setCacheTabelaInfo({ origem: 'cache local', tipo: 'base completa', total: cacheCompleto.transportadoras.length, updatedAt: cacheCompleto.updatedAt });
++      return cacheCompleto.transportadoras;
++    }
++
++    setProgress((prev) => ({
++      ...(prev || {}),
++      etapa: 'Carregando tabelas completas',
++      percentual: 15,
++      mensagem: 'Modo completo: carregando todas as tabelas do Supabase. Depois ficará em cache local.',
++    }));
++    await nextFrame();
++    const base = await carregarBaseCompletaDb().catch(() => []);
++    const finalBase = base?.length ? base : transportadoras;
++    if (finalBase?.length) salvarCacheTabelas(CACHE_TABELAS_COMPLETA_KEY, finalBase, { tipo: 'base completa' });
++    setTransportadorasTabela(finalBase);
++    setCacheTabelaInfo({ origem: base?.length ? 'Supabase completo' : 'memória/store', tipo: 'base completa', total: finalBase.length });
++    return finalBase;
++  }
+@@
+           {escopoSimulacao ? (
+             <div className="import-meta-box">
+               Malha simulada: <strong>{escopoSimulacao.totalRotas.toLocaleString('pt-BR')}</strong> rota(s) • {escopoSimulacao.origens.length.toLocaleString('pt-BR')} origem(ns) • canais: {escopoSimulacao.canais.join(', ') || '—'}
+             </div>
+           ) : null}
++          {cacheTabelaInfo ? (
++            <div className="import-meta-box">
++              Tabelas: <strong>{cacheTabelaInfo.origem}</strong> • {cacheTabelaInfo.tipo} {cacheTabelaInfo.nome ? `• ${cacheTabelaInfo.nome}` : ''}
++            </div>
++          ) : null}
+           <button className="btn-primary full" onClick={simular} disabled={simulando || importando || carregando || !stats.total}>
+             {simulando ? 'Simulando local...' : 'Simular no realizado local'}
+           </button>
+diff --git a/src/services/freteDatabaseService.js b/src/services/freteDatabaseService.js
+--- a/src/services/freteDatabaseService.js
++++ b/src/services/freteDatabaseService.js
+@@
+ export async function buscarUltimoSnapshot() {
+   return carregarSnapshotFretesDb();
+ }
++
++export async function carregarTransportadorasPorNomeDb(nomes = []) {
++  const listaNomes = Array.from(new Set(
++    (Array.isArray(nomes) ? nomes : [nomes])
++      .map((item) => String(item || '').trim())
++      .filter(Boolean)
++  ));
++
++  if (!listaNomes.length) return [];
++
++  const nomeKey = (value) => String(value || '')
++    .normalize('NFD')
++    .replace(/[\u0300-\u036f]/g, '')
++    .trim()
++    .toUpperCase()
++    .replace(/\s+/g, ' ');
++
++  const desejadas = new Set(listaNomes.map(nomeKey));
++
++  if (!isSupabaseConfigured()) {
++    const base = await carregarBaseCompletaDb();
++    return (base || []).filter((item) => desejadas.has(nomeKey(item?.nome)));
++  }
++
++  const supabase = ensureClient();
++
++  const { data: transportadorasRows, error: transportadorasError } = await supabase
++    .from('transportadoras')
++    .select('id, nome, status')
++    .in('nome', listaNomes);
++
++  if (transportadorasError) throw transportadorasError;
++
++  let transportadorasFiltradas = transportadorasRows || [];
++
++  // Caso o nome venha com diferença de acento/espaço, busca uma página leve e filtra no front.
++  if (!transportadorasFiltradas.length) {
++    const { data: todas, error: todasError } = await supabase
++      .from('transportadoras')
++      .select('id, nome, status')
++      .order('nome', { ascending: true })
++      .limit(5000);
++    if (todasError) throw todasError;
++    transportadorasFiltradas = (todas || []).filter((item) => desejadas.has(nomeKey(item.nome)));
++  }
++
++  if (!transportadorasFiltradas.length) return [];
++
++  const transportadoraIds = transportadorasFiltradas.map((item) => item.id).filter(Boolean);
++  const origens = [];
++
++  for (let index = 0; index < transportadoraIds.length; index += 100) {
++    const chunk = transportadoraIds.slice(index, index + 100);
++    let from = 0;
++    while (true) {
++      const { data, error } = await supabase
++        .from('origens')
++        .select('*')
++        .in('transportadora_id', chunk)
++        .range(from, from + PAGE_SIZE - 1);
++      if (error) throw error;
++      const page = data || [];
++      origens.push(...page);
++      if (page.length < PAGE_SIZE) break;
++      from += PAGE_SIZE;
++    }
++  }
++
++  const origemIds = origens.map((item) => item.id).filter(Boolean);
++  const [generalidades, rotas, cotacoes, taxas] = await Promise.all([
++    fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
++    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
++    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
++    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
++  ]);
++
++  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
++  const rotasByOrigem = new Map();
++  const cotacoesByOrigem = new Map();
++  const taxasByOrigem = new Map();
++
++  rotas.forEach((item) => {
++    const key = String(item.origem_id);
++    const list = rotasByOrigem.get(key) || [];
++    list.push(item);
++    rotasByOrigem.set(key, list);
++  });
++
++  cotacoes.forEach((item) => {
++    const key = String(item.origem_id);
++    const list = cotacoesByOrigem.get(key) || [];
++    list.push(item);
++    cotacoesByOrigem.set(key, list);
++  });
++
++  taxas.forEach((item) => {
++    const key = String(item.origem_id);
++    const list = taxasByOrigem.get(key) || [];
++    list.push(item);
++    taxasByOrigem.set(key, list);
++  });
++
++  const origensByTransportadora = new Map();
++  origens.forEach((origem) => {
++    const key = String(origem.transportadora_id);
++    const list = origensByTransportadora.get(key) || [];
++    list.push(
++      normalizeOrigemFromDb(
++        origem,
++        generalidadeByOrigem.get(String(origem.id)),
++        rotasByOrigem.get(String(origem.id)) || [],
++        cotacoesByOrigem.get(String(origem.id)) || [],
++        taxasByOrigem.get(String(origem.id)) || []
++      )
++    );
++    origensByTransportadora.set(key, list);
++  });
++
++  return transportadorasFiltradas.map((transportadora) => ({
++    id: transportadora.id,
++    nome: transportadora.nome || '',
++    status: transportadora.status || 'Ativa',
++    origens: origensByTransportadora.get(String(transportadora.id)) || [],
++  }));
++}
+ 
+ 
+ 
+ 
+ async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
