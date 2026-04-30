@@ -18,8 +18,6 @@ const UF_POR_CODIGO = {
   '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
 };
 
-const origemCache = new WeakMap();
-
 function normalize(value) {
   return String(value || '')
     .normalize('NFD')
@@ -40,6 +38,10 @@ function onlyDigits(value) {
 function toNumber(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function sleepFrame() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 export function categoriaCanalRealizado(value) {
@@ -264,52 +266,14 @@ function getUfByIbge(ibge) {
   return UF_POR_CODIGO[onlyDigits(ibge).slice(0, 2)] || '';
 }
 
-function criarOrigemIndexada(origem = {}) {
-  if (!origem || typeof origem !== 'object') return origem;
-  const cached = origemCache.get(origem);
-  if (cached) return cached;
-
-  const cotacoesPorRota = new Map();
-  (origem.cotacoes || []).forEach((cotacao) => {
-    const key = normalizeKey(cotacao?.rota || '');
-    if (!key) return;
-    const lista = cotacoesPorRota.get(key) || [];
-    lista.push(cotacao);
-    cotacoesPorRota.set(key, lista);
-  });
-
-  cotacoesPorRota.forEach((lista) => {
-    lista.sort((a, b) => toNumber(a.pesoMin) - toNumber(b.pesoMin));
-  });
-
-  const taxasPorIbge = new Map();
-  (origem.taxasEspeciais || []).forEach((taxa) => {
-    const ibge = onlyDigits(taxa?.ibgeDestino || '');
-    if (ibge) taxasPorIbge.set(ibge, taxa);
-  });
-
-  const indexada = {
-    ...origem,
-    __cotacoesPorRota: cotacoesPorRota,
-    __taxasPorIbge: taxasPorIbge,
-  };
-
-  origemCache.set(origem, indexada);
-  return indexada;
-}
-
 function getTaxaDestino(origem, ibgeDestino) {
-  const ibge = onlyDigits(ibgeDestino || '');
-  return origem?.__taxasPorIbge?.get(ibge)
-    || (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino || '') === String(ibgeDestino || ''))
-    || {};
+  return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino || '') === String(ibgeDestino || '')) || {};
 }
 
 function getCotacao(origem, rotaNome, peso) {
   const rotaKey = normalizeKey(rotaNome);
-  const lista = origem?.__cotacoesPorRota?.get(rotaKey) || (origem.cotacoes || []);
-  return lista.find((cotacao) => {
-    const mesmaRota = origem?.__cotacoesPorRota ? true : normalizeKey(cotacao.rota) === rotaKey;
+  return (origem.cotacoes || []).find((cotacao) => {
+    const mesmaRota = normalizeKey(cotacao.rota) === rotaKey;
     const pesoMin = toNumber(cotacao.pesoMin);
     const pesoMaxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
     const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined ? Number.POSITIVE_INFINITY : toNumber(pesoMaxRaw);
@@ -318,18 +282,17 @@ function getCotacao(origem, rotaNome, peso) {
 }
 
 function calcularItemTabela({ transportadora, origem, rota, cte }) {
-  const origemCalculo = criarOrigemIndexada(origem);
   const peso = Math.max(toNumber(cte.peso), toNumber(cte.pesoCubado), toNumber(cte.pesoDeclarado));
   const valorNF = toNumber(cte.valorNF);
-  const cotacao = getCotacao(origemCalculo, rota.nomeRota, peso);
+  const cotacao = getCotacao(origem, rota.nomeRota, peso);
   if (!cotacao) return null;
 
-  const taxaDestino = getTaxaDestino(origemCalculo, rota.ibgeDestino);
-  const tipoCalculo = String(origemCalculo.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
+  const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
   const engineInput = {
     rota,
     cotacao,
-    generalidades: origemCalculo.generalidades || {},
+    generalidades: origem.generalidades || {},
     taxaDestino,
     pesoKg: peso,
     valorNf: valorNF,
@@ -341,8 +304,8 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
   return {
     transportadora: transportadora.nome,
     transportadoraId: transportadora.id,
-    origem: origemCalculo.cidade,
-    canal: categoriaCanalRealizado(origemCalculo.canal),
+    origem: origem.cidade,
+    canal: categoriaCanalRealizado(origem.canal),
     ibgeOrigem: String(rota.ibgeOrigem || ''),
     ibgeDestino: String(rota.ibgeDestino || ''),
     chaveRotaIbge: `${rota.ibgeOrigem}-${rota.ibgeDestino}`,
@@ -378,9 +341,8 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
   (transportadoras || []).forEach((transportadora) => {
     if (!transportadora?.nome) return;
     stats.transportadoras += 1;
-    (transportadora.origens || []).forEach((origemRaw) => {
+    (transportadora.origens || []).forEach((origem) => {
       stats.origens += 1;
-      const origem = criarOrigemIndexada(origemRaw);
       const canal = categoriaCanalRealizado(origem.canal || '');
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;
       const origemUfPelaRota = getUfByIbge(origem.rotas?.[0]?.ibgeOrigem || '');
@@ -463,18 +425,45 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
   };
 }
 
-function buildPorUfUpdater(porUfMap, cte, ganharia, escolhidoTotal, impacto) {
-  const ufKey = cte.ufDestino || 'SEM UF';
-  const uf = porUfMap.get(ufKey) || { uf: ufKey, ctes: 0, ganharia: 0, valorRealizado: 0, valorSimulado: 0, economia: 0 };
-  uf.ctes += 1;
-  if (ganharia) uf.ganharia += 1;
-  uf.valorRealizado += toNumber(cte.valorCte);
-  uf.valorSimulado += escolhidoTotal;
-  uf.economia += impacto;
-  porUfMap.set(ufKey, uf);
+function montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalculado }) {
+  const impacto = toNumber(cte.valorCte) - escolhido.total;
+  return {
+    id: cte.chaveCte,
+    chaveCte: cte.chaveCte,
+    numeroCte: cte.numeroCte,
+    emissao: cte.dataEmissao,
+    transportadoraRealizada: cte.transportadora,
+    transportadoraSimulada: escolhido.transportadora,
+    origem: cte.cidadeOrigem,
+    cidadeDestino: cte.cidadeDestino,
+    ufDestino: cte.ufDestino,
+    canal: cte.canal,
+    peso: cte.peso,
+    valorNF: cte.valorNF,
+    valorRealizado: cte.valorCte,
+    valorSimulado: escolhido.total,
+    impacto,
+    ranking,
+    rankingCalculado,
+    ganharia,
+    liderTransportadora: lider?.transportadora || '',
+    freteSubstituta: rankingCalculado && ranking === 1 ? 0 : (lider?.total || 0),
+    percentualRealizado: cte.valorNF > 0 ? (cte.valorCte / cte.valorNF) * 100 : 0,
+    percentualSimulado: cte.valorNF > 0 ? (escolhido.total / cte.valorNF) * 100 : 0,
+    detalhes: escolhido.detalhes,
+  };
 }
 
-export async function simularRealizadoLocalRapido({ realizados = [], transportadoras = [], municipios = [], nomeTransportadora, onProgress }) {
+export async function simularRealizadoLocalRapido({
+  realizados = [],
+  transportadoras = [],
+  municipios = [],
+  nomeTransportadora,
+  modoSimulacao = 'rapido',
+  onProgress,
+}) {
+  const modo = modoSimulacao === 'completo' ? 'completo' : 'rapido';
+  const rankingCalculado = modo === 'completo';
   const { index, stats } = construirIndiceFretesPorRota(transportadoras, municipios);
   const detalhes = [];
   const foraMalha = [];
@@ -487,8 +476,6 @@ export async function simularRealizadoLocalRapido({ realizados = [], transportad
   let valorSimuladoTotal = 0;
   let valorNfSimulado = 0;
 
-  const PROGRESS_INTERVAL = 250;
-
   for (let i = 0; i < realizados.length; i += 1) {
     const cte = realizados[i];
     const key = `${categoriaCanalRealizado(cte.canal)}|${cte.chaveRotaIbge}`;
@@ -497,90 +484,75 @@ export async function simularRealizadoLocalRapido({ realizados = [], transportad
     if (!cte.chaveRotaIbge || !candidatos.length) {
       foraMalha.push({ ...cte, motivo: cte.chaveRotaIbge ? 'Rota não encontrada nas tabelas cadastradas' : 'CT-e sem chave IBGE origem-destino' });
     } else {
-      const candidatosTransportadora = candidatos.filter((item) => transportadoraMatch(item.transportadora?.nome, nomeTransportadora));
+      const candidatosDaSimulada = candidatos.filter((item) => transportadoraMatch(item.transportadora?.nome, nomeTransportadora));
 
-      if (!candidatosTransportadora.length) {
+      if (!candidatosDaSimulada.length) {
         foraMalha.push({ ...cte, motivo: 'Transportadora simulada não possui tabela nessa rota/canal' });
       } else {
-        const calculadosTransportadora = candidatosTransportadora
-          .map((item) => calcularItemTabela({ ...item, cte }))
-          .filter(Boolean)
-          .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
+        let escolhido = null;
+        let lider = null;
+        let ranking = null;
 
-        const escolhido = calculadosTransportadora[0] || null;
+        if (rankingCalculado) {
+          const calculados = candidatos
+            .map((item) => calcularItemTabela({ ...item, cte }))
+            .filter(Boolean)
+            .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
+
+          const escolhidoIndex = calculados.findIndex((item) => transportadoraMatch(item.transportadora, nomeTransportadora));
+          escolhido = escolhidoIndex >= 0 ? calculados[escolhidoIndex] : null;
+          lider = calculados[0] || null;
+          ranking = escolhidoIndex >= 0 ? escolhidoIndex + 1 : null;
+        } else {
+          const calculadosSimulada = candidatosDaSimulada
+            .map((item) => calcularItemTabela({ ...item, cte }))
+            .filter(Boolean)
+            .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
+
+          escolhido = calculadosSimulada[0] || null;
+          lider = null;
+          ranking = null;
+        }
 
         if (!escolhido) {
-          foraMalha.push({ ...cte, motivo: 'Transportadora simulada possui rota, mas não possui faixa/cotação para o peso' });
+          foraMalha.push({ ...cte, motivo: 'Sem cotação/faixa de peso válida para a transportadora simulada' });
         } else {
-          // Só calcula ranking concorrencial quando a rota tem uma lista pequena de candidatos.
-          // Isso evita travar o navegador em bases grandes. O impacto financeiro da transportadora
-          // simulada continua sendo calculado para todos os CT-e(s).
-          let ranking = 0;
-          let ganharia = false;
-          let liderTransportadora = '';
-          let freteSubstituta = 0;
+          const ganharia = rankingCalculado ? ranking === 1 : false;
+          const detalhe = montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalculado });
 
-          if (candidatos.length <= 25) {
-            const calculados = candidatos
-              .map((item) => calcularItemTabela({ ...item, cte }))
-              .filter(Boolean)
-              .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
-            const escolhidoIndex = calculados.findIndex((item) => transportadoraMatch(item.transportadora, nomeTransportadora));
-            ranking = escolhidoIndex >= 0 ? escolhidoIndex + 1 : 0;
-            ganharia = ranking === 1;
-            liderTransportadora = calculados[0]?.transportadora || '';
-            freteSubstituta = ranking === 1 ? (calculados[1]?.total || 0) : (calculados[0]?.total || 0);
-          }
-
-          const impacto = toNumber(cte.valorCte) - escolhido.total;
           ctesComSimulacao += 1;
           valorSimuladoTotal += escolhido.total;
           valorNfSimulado += toNumber(cte.valorNF);
-          impactoLiquido += impacto;
+          impactoLiquido += detalhe.impacto;
 
           if (ganharia) {
             ctesGanharia += 1;
             faturamentoGanhador += escolhido.total;
-            economiaGanhador += impacto;
+            economiaGanhador += detalhe.impacto;
           }
 
-          const detalhe = {
-            id: cte.chaveCte,
-            chaveCte: cte.chaveCte,
-            numeroCte: cte.numeroCte,
-            emissao: cte.dataEmissao,
-            transportadoraRealizada: cte.transportadora,
-            transportadoraSimulada: escolhido.transportadora,
-            origem: cte.cidadeOrigem,
-            cidadeDestino: cte.cidadeDestino,
-            ufDestino: cte.ufDestino,
-            canal: cte.canal,
-            peso: cte.peso,
-            valorNF: cte.valorNF,
-            valorRealizado: cte.valorCte,
-            valorSimulado: escolhido.total,
-            impacto,
-            ranking,
-            ganharia,
-            liderTransportadora,
-            freteSubstituta,
-            percentualRealizado: cte.valorNF > 0 ? (cte.valorCte / cte.valorNF) * 100 : 0,
-            percentualSimulado: cte.valorNF > 0 ? (escolhido.total / cte.valorNF) * 100 : 0,
-            detalhes: escolhido.detalhes,
-          };
           detalhes.push(detalhe);
-          buildPorUfUpdater(porUfMap, cte, ganharia, escolhido.total, impacto);
+
+          const ufKey = cte.ufDestino || 'SEM UF';
+          const uf = porUfMap.get(ufKey) || { uf: ufKey, ctes: 0, ganharia: 0, valorRealizado: 0, valorSimulado: 0, economia: 0 };
+          uf.ctes += 1;
+          if (ganharia) uf.ganharia += 1;
+          uf.valorRealizado += toNumber(cte.valorCte);
+          uf.valorSimulado += escolhido.total;
+          uf.economia += detalhe.impacto;
+          porUfMap.set(ufKey, uf);
         }
       }
     }
 
-    if (i % PROGRESS_INTERVAL === 0) {
-      onProgress?.({ atual: i + 1, total: realizados.length, etapa: 'Calculando fretes localmente' });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    const step = modo === 'rapido' ? 500 : 100;
+    if (i % step === 0) {
+      onProgress?.({ atual: i + 1, total: realizados.length, etapa: modo === 'rapido' ? 'Calculando impacto rápido' : 'Calculando ranking completo' });
+      await sleepFrame();
     }
   }
 
-  onProgress?.({ atual: realizados.length, total: realizados.length, etapa: 'Calculando fretes localmente' });
+  onProgress?.({ atual: realizados.length, total: realizados.length, etapa: 'Finalizando simulação local' });
 
   const porUf = [...porUfMap.values()].map((item) => ({
     ...item,
@@ -589,9 +561,11 @@ export async function simularRealizadoLocalRapido({ realizados = [], transportad
 
   return {
     resumo: {
+      modo,
+      rankingCalculado,
       ctesComSimulacao,
       ctesGanharia,
-      aderencia: ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
+      aderencia: rankingCalculado && ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
       faturamentoGanhador,
       economiaGanhador,
       impactoLiquido,
@@ -599,12 +573,10 @@ export async function simularRealizadoLocalRapido({ realizados = [], transportad
       ctesForaMalha: foraMalha.length,
       porUf,
       indexStats: stats,
-      modo: 'rapido_com_ranking_parcial',
     },
     detalhes: detalhes.sort((a, b) => {
-      const rankA = Number(a.ranking || 9999);
-      const rankB = Number(b.ranking || 9999);
-      return rankA - rankB || b.impacto - a.impacto;
+      if (rankingCalculado) return (a.ranking || 9999) - (b.ranking || 9999) || b.impacto - a.impacto;
+      return b.impacto - a.impacto;
     }),
     foraMalha,
   };

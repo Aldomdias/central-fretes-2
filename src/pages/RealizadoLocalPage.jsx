@@ -77,6 +77,11 @@ function makeFileKey() {
   return `realizado-local-${Date.now()}`;
 }
 
+function rankingLabel(item, rankingCalculado) {
+  if (!rankingCalculado) return 'Rápido';
+  return item.ranking ? `${item.ranking}º${item.ganharia ? ' • ganharia' : ''}` : '—';
+}
+
 export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [filtros, setFiltros] = useState(DEFAULT_FILTROS);
   const [filtrosAplicados, setFiltrosAplicados] = useState(DEFAULT_FILTROS);
@@ -96,6 +101,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [transportadorasTabela, setTransportadorasTabela] = useState(null);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
+  const [modoSimulacao, setModoSimulacao] = useState('rapido');
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const fileInputRef = useRef(null);
 
@@ -170,8 +176,6 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     let tabelas = transportadorasTabela;
     let fonte = baseMunicipios.length ? 'Supabase IBGE' : 'pendente';
 
-    // Se a tabela IBGE não carregou, usa as próprias tabelas de frete como fallback.
-    // Isso permite resolver IBGE das cidades que existem na malha cadastrada e destrava a simulação local.
     if (!baseMunicipios.length || baseMunicipios.length < 1000) {
       setProgress((prev) => ({
         ...(prev || {}),
@@ -190,7 +194,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
     const enriquecidos = enriquecerMunicipiosComTabelas(baseMunicipios, tabelas || transportadoras || []);
     if (!enriquecidos.length) {
-      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base local não consegue simular. Confira a tabela ibge_municipios ou se as tabelas de frete possuem IBGE origem/destino.');
+      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base local não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.');
     }
 
     setMunicipios(enriquecidos);
@@ -276,7 +280,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         mensagem: 'Atualizando resumo local...',
       });
       setFeedback(
-        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}. Referência IBGE: ${ibgeInfo.total.toLocaleString('pt-BR')} município(s).`
+        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
       );
       setFileKey(makeFileKey());
       await pesquisar(filtros, false);
@@ -358,8 +362,6 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       const filtrosBase = usarMalhaAutomatica
         ? {
             ...filtrosAplicados,
-            // A malha da transportadora já define origem/destino/UF.
-            // Mantemos período, competência, canal, peso e transportadora realizada.
             origem: '',
             destino: '',
             ufOrigem: '',
@@ -398,7 +400,15 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           : `Preparando simulação local: ${rows.length.toLocaleString('pt-BR')} CT-e(s) usados${totalCompativel > rows.length ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontrados. Limite atual: ${limit.toLocaleString('pt-BR')}.` : '.'}`
       );
 
-      setProgress({ etapa: 'Indexando tabelas', atual: 0, total: baseTabelas.length, percentual: 30, mensagem: 'Criando índice em memória por canal + chave IBGE...' });
+      setProgress({
+        etapa: 'Indexando tabelas',
+        atual: 0,
+        total: baseTabelas.length,
+        percentual: 30,
+        mensagem: modoSimulacao === 'rapido'
+          ? 'Modo rápido: preparando cálculo somente da transportadora simulada.'
+          : 'Modo completo: preparando cálculo de ranking contra concorrentes.',
+      });
       await nextFrame();
 
       const analise = await simularRealizadoLocalRapido({
@@ -406,14 +416,25 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         transportadoras: baseTabelas,
         municipios,
         nomeTransportadora: filtros.transportadora,
+        modoSimulacao,
         onProgress: ({ atual, total, etapa }) => {
-          setProgress({ etapa, atual, total, percentual: 35 + Math.round(pct(atual, total) * 0.63), mensagem: `${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) simulados localmente...` });
+          setProgress({
+            etapa,
+            atual,
+            total,
+            percentual: 35 + Math.round(pct(atual, total) * 0.63),
+            mensagem: `${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) simulados localmente...`,
+          });
         },
       });
 
       setResultado(analise);
       setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Simulação local concluída.' });
-      setFeedback(`Simulação local concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) avaliados e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha.`);
+      setFeedback(
+        analise.resumo.rankingCalculado
+          ? `Simulação completa concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) avaliados e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha.`
+          : `Simulação rápida concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) com frete simulado e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha. Ranking/ganhadores não calculados no modo rápido.`
+      );
     } catch (error) {
       setErro(error.message || 'Erro ao simular realizado local.');
     } finally {
@@ -426,6 +447,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     const fromTabelas = (transportadorasTabela || transportadoras || []).map((item) => item.nome).filter(Boolean);
     return [...new Set(fromTabelas)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [transportadorasTabela, transportadoras]);
+
+  const rankingCalculado = resultado?.resumo?.rankingCalculado !== false;
 
   return (
     <div className="page-shell realizado-page">
@@ -515,18 +538,28 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         </section>
 
         <section className="panel-card">
-          <div className="panel-title">3. Simular local rápido</div>
-          <p>Usa a base local filtrada e as tabelas de frete do Supabase indexadas por canal + chave IBGE.</p>
+          <div className="panel-title">3. Simular local</div>
+          <p>Use modo rápido para impacto financeiro. Use completo apenas quando precisar ranking/ganhadores contra concorrentes.</p>
           <div className="field">
             <label>Transportadora simulada</label>
             <input list="transportadoras-local-list" value={filtros.transportadora} onChange={(e) => alterarFiltro('transportadora', e.target.value)} placeholder="Ex.: TOTAL EXPRESS" />
             <datalist id="transportadoras-local-list">{transportadorasDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
           </div>
+          <div className="field">
+            <label>Modo da simulação</label>
+            <select value={modoSimulacao} onChange={(e) => setModoSimulacao(e.target.value)}>
+              <option value="rapido">Rápido — impacto financeiro</option>
+              <option value="completo">Completo — ranking e ganhadores</option>
+            </select>
+            <small>
+              Rápido calcula somente a transportadora escolhida. Completo compara com concorrentes e demora mais.
+            </small>
+          </div>
           <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
             <input type="checkbox" checked={usarMalhaAutomatica} onChange={(e) => setUsarMalhaAutomatica(e.target.checked)} />
             <span>
               Usar malha da transportadora automaticamente
-              <small style={{ display: 'block' }}>Na simulação, mantém período/canal/peso e ignora origem/destino/UF digitados para usar somente as rotas que a transportadora atende.</small>
+              <small style={{ display: 'block' }}>Mantém período/canal/peso e usa somente as rotas que a transportadora atende.</small>
             </span>
           </label>
           {escopoSimulacao ? (
@@ -561,15 +594,20 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <div className="sim-parametros-header">
             <div>
               <h2>Resultado da simulação local</h2>
-              <p>Transportadora simulada: <strong>{filtros.transportadora}</strong></p>
+              <p>Transportadora simulada: <strong>{filtros.transportadora}</strong> • modo: <strong>{resultado.resumo.modo === 'completo' ? 'Completo' : 'Rápido'}</strong></p>
             </div>
           </div>
+          {!rankingCalculado ? (
+            <div className="sim-alert info">
+              Modo rápido: ranking, aderência e CT-e(s) que ganharia não são calculados. Use o modo completo quando precisar comparar contra todos os concorrentes.
+            </div>
+          ) : null}
           <div className="sim-analise-resumo top-space">
             <div><span>CT-e(s) avaliados</span><strong>{resultado.resumo.ctesComSimulacao.toLocaleString('pt-BR')}</strong></div>
-            <div><span>CT-e(s) que ganharia</span><strong>{resultado.resumo.ctesGanharia.toLocaleString('pt-BR')}</strong></div>
-            <div><span>Aderência</span><strong>{formatPercent(resultado.resumo.aderencia)}</strong></div>
-            <div><span>Faturamento se vencedora</span><strong>{formatCurrency(resultado.resumo.faturamentoGanhador)}</strong></div>
-            <div><span>Economia se vencedora</span><strong>{formatCurrency(resultado.resumo.economiaGanhador)}</strong></div>
+            <div><span>CT-e(s) que ganharia</span><strong>{rankingCalculado ? resultado.resumo.ctesGanharia.toLocaleString('pt-BR') : '—'}</strong></div>
+            <div><span>Aderência</span><strong>{rankingCalculado ? formatPercent(resultado.resumo.aderencia) : '—'}</strong></div>
+            <div><span>Faturamento se vencedora</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.faturamentoGanhador) : '—'}</strong></div>
+            <div><span>Economia se vencedora</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.economiaGanhador) : '—'}</strong></div>
             <div><span>Impacto total</span><strong>{formatCurrency(resultado.resumo.impactoLiquido)}</strong></div>
             <div><span>% frete simulado</span><strong>{formatPercent(resultado.resumo.percentualSimulado)}</strong></div>
             <div><span>Fora da malha</span><strong>{resultado.resumo.ctesForaMalha.toLocaleString('pt-BR')}</strong></div>
@@ -581,7 +619,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               <div className="sim-table-wrap">
                 <table className="sim-table">
                   <thead><tr><th>UF</th><th>CT-e(s)</th><th>Ganharia</th><th>Aderência</th><th>Realizado</th><th>Simulado</th><th>Economia</th></tr></thead>
-                  <tbody>{resultado.resumo.porUf.map((item) => <tr key={item.uf}><td>{item.uf}</td><td>{item.ctes}</td><td>{item.ganharia}</td><td>{formatPercent(item.aderencia)}</td><td>{formatCurrency(item.valorRealizado)}</td><td>{formatCurrency(item.valorSimulado)}</td><td>{formatCurrency(item.economia)}</td></tr>)}</tbody>
+                  <tbody>{resultado.resumo.porUf.map((item) => <tr key={item.uf}><td>{item.uf}</td><td>{item.ctes}</td><td>{rankingCalculado ? item.ganharia : '—'}</td><td>{rankingCalculado ? formatPercent(item.aderencia) : '—'}</td><td>{formatCurrency(item.valorRealizado)}</td><td>{formatCurrency(item.valorSimulado)}</td><td>{formatCurrency(item.economia)}</td></tr>)}</tbody>
                 </table>
               </div>
             </div>
@@ -613,7 +651,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                       <td>{formatCurrency(item.valorRealizado)}</td>
                       <td>{formatCurrency(item.valorSimulado)}</td>
                       <td className={item.impacto >= 0 ? 'positivo' : 'negativo'}>{formatCurrency(item.impacto)}</td>
-                      <td>{item.ranking}º {item.ganharia ? '• ganharia' : ''}</td>
+                      <td>{rankingLabel(item, rankingCalculado)}</td>
                       <td><button className="link-btn" onClick={() => setDetalheAberto(detalheAberto === item.id ? null : item.id)}>Detalhe</button></td>
                     </tr>
                     {detalheAberto === item.id ? (
@@ -639,7 +677,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <table className="sim-table">
             <thead><tr><th>Emissão</th><th>CT-e</th><th>Transportadora</th><th>Canal</th><th>Origem</th><th>Destino</th><th>IBGE Origem</th><th>IBGE Destino</th><th>Peso</th><th>Valor CT-e</th><th>Valor NF</th></tr></thead>
             <tbody>
-              {amostra.map((item) => (
+              {amostra.length ? amostra.map((item) => (
                 <tr key={item.chaveCte}>
                   <td>{formatDateBr(item.dataEmissao)}</td>
                   <td>{item.numeroCte || item.chaveCte?.slice(-8)}</td>
@@ -653,8 +691,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                   <td>{formatCurrency(item.valorCte)}</td>
                   <td>{formatCurrency(item.valorNF)}</td>
                 </tr>
-              ))}
-              {!amostra.length ? <tr><td colSpan="11">Nenhum CT-e carregado na amostra local.</td></tr> : null}
+              )) : <tr><td colSpan="11">Nenhum CT-e carregado ainda.</td></tr>}
             </tbody>
           </table>
         </div>
