@@ -6,11 +6,8 @@ import {
   limparRealizadoLocal,
   listarRealizadoLocal,
   resumirRealizadoLocal,
-  salvarRealizadoLocal,
 } from '../services/realizadoLocalDb';
 import {
-  categoriaCanalRealizado,
-  prepararRegistrosRealizadoLocal,
   simularRealizadoLocalRapido,
 } from '../utils/realizadoLocalEngine';
 import {
@@ -18,7 +15,6 @@ import {
   formatDateBr,
   formatNumber,
   formatPercent,
-  parseRealizadoCtesFile,
 } from '../utils/realizadoCtes';
 
 const DEFAULT_FILTROS = {
@@ -162,6 +158,54 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
+  function importarArquivosComWorker(files = []) {
+    return new Promise((resolve, reject) => {
+      if (typeof Worker === 'undefined') {
+        reject(new Error('Este navegador não suporta processamento em segundo plano com Worker.'));
+        return;
+      }
+
+      const worker = new Worker(new URL('../workers/realizadoLocalImportWorker.js', import.meta.url), { type: 'module' });
+
+      worker.onmessage = (event) => {
+        const msg = event.data || {};
+
+        if (msg.type === 'progress') {
+          setProgress({
+            etapa: msg.etapa || 'Importando base local',
+            atual: msg.atual || 0,
+            total: msg.total || files.length,
+            percentual: msg.percentual || 0,
+            mensagem: msg.mensagem || 'Processando arquivo local...',
+          });
+          if (msg.feedback) setFeedback(msg.feedback);
+        }
+
+        if (msg.type === 'done') {
+          worker.terminate();
+          resolve(msg.result || {});
+        }
+
+        if (msg.type === 'error') {
+          worker.terminate();
+          reject(new Error(msg.message || 'Erro ao processar arquivo local.'));
+        }
+      };
+
+      worker.onerror = (event) => {
+        worker.terminate();
+        reject(new Error(event.message || 'Erro no processador local de arquivos.'));
+      };
+
+      worker.postMessage({
+        type: 'importar-realizado-local',
+        files,
+        municipios,
+        competencia: filtros.competencia,
+      });
+    });
+  }
+
   async function importarArquivos(event) {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
@@ -169,36 +213,29 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setImportando(true);
     setErro('');
     setResultado(null);
-    setProgress({ etapa: 'Lendo arquivos', atual: 0, total: files.length, percentual: 0, mensagem: 'Preparando importação local...' });
+    setProgress({
+      etapa: 'Preparando leitura local',
+      atual: 0,
+      total: files.length,
+      percentual: 1,
+      mensagem: 'Enviando arquivo para processamento em segundo plano. A tela pode continuar aberta durante a leitura.',
+    });
 
     try {
-      let totalLidos = 0;
-      let totalPreparados = 0;
-      let totalPendencias = 0;
-      const todos = [];
-
-      for (let index = 0; index < files.length; index += 1) {
-        const file = files[index];
-        setProgress({ etapa: 'Lendo arquivos', atual: index + 1, total: files.length, percentual: pct(index + 1, files.length) * 0.35, mensagem: `Lendo ${file.name}...` });
-        const parsed = await parseRealizadoCtesFile(file);
-        totalLidos += parsed.registros.length;
-        const { rows, pendencias } = prepararRegistrosRealizadoLocal(parsed.registros, municipios, { competencia: filtros.competencia });
-        totalPreparados += rows.length;
-        totalPendencias += pendencias.length;
-        todos.push(...rows);
-        await nextFrame();
+      const result = await importarArquivosComWorker(files);
+      if (!result.totalPreparados && result.erros?.length) {
+        throw new Error(`Nenhum CT-e foi importado. Primeiro erro: ${result.erros[0]?.arquivo || result.erros[0]?.nome || 'arquivo'} - ${result.erros[0]?.erro || 'erro desconhecido'}`);
       }
-
-      setProgress({ etapa: 'Gravando base local', atual: 0, total: todos.length, percentual: 40, mensagem: `Gravando ${todos.length.toLocaleString('pt-BR')} CT-e(s) no navegador...` });
-      await salvarRealizadoLocal(todos, {
-        chunkSize: 1000,
-        onProgress: ({ salvos, total }) => {
-          setProgress({ etapa: 'Gravando base local', atual: salvos, total, percentual: 40 + Math.round(pct(salvos, total) * 0.55), mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) gravados localmente...` });
-        },
+      setProgress({
+        etapa: 'Atualizando painel',
+        atual: result.totalPreparados || 0,
+        total: result.totalPreparados || 0,
+        percentual: 100,
+        mensagem: 'Atualizando resumo local...',
       });
-
-      setProgress({ etapa: 'Atualizando painel', atual: todos.length, total: todos.length, percentual: 100, mensagem: 'Atualizando resumo local...' });
-      setFeedback(`Importação local concluída: ${totalPreparados.toLocaleString('pt-BR')} CT-e(s) preparados de ${totalLidos.toLocaleString('pt-BR')} lidos. Pendências IBGE: ${totalPendencias.toLocaleString('pt-BR')}.`);
+      setFeedback(
+        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
+      );
       setFileKey(makeFileKey());
       await pesquisar(filtros, false);
     } catch (error) {
