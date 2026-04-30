@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import {
   buscarRealizadoLocalParaSimulacao,
   diagnosticarRealizadoLocal,
@@ -111,14 +112,27 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     async function init() {
       setCarregando(true);
       try {
-        const [diag, municipiosDb] = await Promise.all([
+        const [diag, municipiosDbRaw] = await Promise.all([
           diagnosticarRealizadoLocal().catch(() => ({ total: 0 })),
           carregarMunicipiosIbgeDb().catch(() => []),
         ]);
+        let municipiosDb = municipiosDbRaw || [];
+        let fonteIbge = municipiosDb.length ? 'Supabase IBGE' : 'pendente';
+        if (municipiosDb.length < 5000) {
+          try {
+            const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
+            if (oficial.municipios?.length > municipiosDb.length) {
+              municipiosDb = oficial.municipios;
+              fonteIbge = oficial.fonte;
+            }
+          } catch {
+            // Mantém a fonte disponível; a importação ainda tenta fallback pelas tabelas.
+          }
+        }
         if (!ativo) return;
         setDiagnostico(diag);
         setMunicipios(municipiosDb || []);
-        setIbgeInfo({ total: (municipiosDb || []).length, fonte: (municipiosDb || []).length ? 'Supabase IBGE' : 'pendente' });
+        setIbgeInfo({ total: (municipiosDb || []).length, fonte: fonteIbge });
         await pesquisar(DEFAULT_FILTROS, false);
       } catch (error) {
         if (ativo) setErro(error.message || 'Erro ao iniciar realizado local.');
@@ -164,11 +178,30 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   async function prepararMunicipiosParaImportacao() {
     let baseMunicipios = Array.isArray(municipios) ? municipios : [];
     let tabelas = transportadorasTabela;
-    let fonte = baseMunicipios.length ? 'Supabase IBGE' : 'pendente';
+    let fonte = baseMunicipios.length ? ibgeInfo.fonte || 'Supabase IBGE' : 'pendente';
 
-    // Se a tabela IBGE não carregou, usa as próprias tabelas de frete como fallback.
+    if (baseMunicipios.length < 5000) {
+      setProgress((prev) => ({
+        ...(prev || {}),
+        etapa: 'Carregando referência IBGE',
+        percentual: 2,
+        mensagem: 'Baixando/validando base oficial de municípios IBGE...',
+      }));
+      await nextFrame();
+      try {
+        const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
+        if (oficial.municipios?.length > baseMunicipios.length) {
+          baseMunicipios = oficial.municipios;
+          fonte = oficial.fonte;
+        }
+      } catch {
+        // Se não baixar, segue com Supabase/tabelas.
+      }
+    }
+
+    // Se a tabela IBGE não carregou completa, usa as próprias tabelas de frete como fallback.
     // Isso permite resolver IBGE das cidades que existem na malha cadastrada e destrava a simulação local.
-    if (!baseMunicipios.length || baseMunicipios.length < 1000) {
+    if (!baseMunicipios.length || baseMunicipios.length < 5000) {
       setProgress((prev) => ({
         ...(prev || {}),
         etapa: 'Carregando referência IBGE',
@@ -237,7 +270,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         type: 'importar-realizado-local',
         files,
         municipios: municipiosResolucao,
-        competencia: filtros.competencia,
+        // Quando importar mais de um mês, deixa a competência ser identificada pela emissão/arquivo.
+        // Se mantiver uma competência fixa, todos os arquivos acabam aparecendo como janeiro, fevereiro etc.
+        competencia: files.length === 1 ? filtros.competencia : '',
       });
     });
   }
@@ -272,10 +307,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         mensagem: 'Atualizando resumo local...',
       });
       setFeedback(
-        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}. Referência IBGE: ${ibgeInfo.total.toLocaleString('pt-BR')} município(s).`
+        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}. Referência IBGE: ${municipiosResolucao.length.toLocaleString('pt-BR')} município(s).`
       );
       setFileKey(makeFileKey());
-      await pesquisar(filtros, false);
+      const filtrosPosImportacao = files.length > 1 ? { ...filtros, competencia: '', inicio: '', fim: '' } : filtros;
+      if (files.length > 1) setFiltros(filtrosPosImportacao);
+      await pesquisar(filtrosPosImportacao, false);
     } catch (error) {
       setErro(error.message || 'Erro ao importar arquivos locais.');
     } finally {

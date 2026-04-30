@@ -1,5 +1,6 @@
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import { prepararRegistrosRealizadoLocal } from '../utils/realizadoLocalEngine';
+import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { salvarRealizadoLocal } from '../services/realizadoLocalDb';
 
 function pct(atual, total) {
@@ -22,7 +23,27 @@ function contarIbgeOk(rows = []) {
 }
 
 async function importarRealizadoLocal({ files = [], municipios = [], competencia = '' }) {
-  if (!Array.isArray(municipios) || !municipios.length) {
+  let municipiosReferencia = Array.isArray(municipios) ? municipios : [];
+
+  if (municipiosReferencia.length < 5000) {
+    postProgress({
+      etapa: 'Carregando IBGE',
+      atual: 0,
+      total: files.length,
+      percentual: 2,
+      mensagem: 'Base IBGE incompleta no navegador; tentando baixar a referência oficial do IBGE...',
+    });
+    try {
+      const oficial = await carregarMunicipiosIbgeOficial({ usarCache: false });
+      if (oficial.municipios?.length > municipiosReferencia.length) {
+        municipiosReferencia = oficial.municipios;
+      }
+    } catch {
+      // Mantém a referência que veio da tela.
+    }
+  }
+
+  if (!Array.isArray(municipiosReferencia) || !municipiosReferencia.length) {
     throw new Error('Base IBGE não foi carregada. Recarregue a tela e tente novamente; sem IBGE a simulação não consegue cruzar origem/destino.');
   }
 
@@ -44,7 +65,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index, totalArquivos, 5),
-        mensagem: `Lendo ${nome}. Base IBGE disponível: ${municipios.length.toLocaleString('pt-BR')} município(s).`,
+        mensagem: `Lendo ${nome}. Base IBGE disponível: ${municipiosReferencia.length.toLocaleString('pt-BR')} município(s).`,
       });
 
       const parsed = await parseRealizadoCtesFile(file);
@@ -58,7 +79,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         mensagem: `Gerando base enxuta e chave IBGE de ${nome}: ${parsed.registros.length.toLocaleString('pt-BR')} CT-e(s) lidos...`,
       });
 
-      const { rows, pendencias } = prepararRegistrosRealizadoLocal(parsed.registros, municipios, { competencia });
+      const { rows, pendencias } = prepararRegistrosRealizadoLocal(parsed.registros, municipiosReferencia, { competencia });
       const ibgeOk = contarIbgeOk(rows);
       if (rows.length && ibgeOk === 0) {
         throw new Error(`Nenhum IBGE foi localizado em ${nome}. A importação foi interrompida para não salvar uma base que não simula. Verifique se a base IBGE/tabelas foi carregada.`);
