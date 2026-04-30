@@ -1,14 +1,15 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
-import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import {
   buscarRealizadoLocalParaSimulacao,
+  buscarRealizadoLocalPorMalha,
   diagnosticarRealizadoLocal,
   limparRealizadoLocal,
   listarRealizadoLocal,
   resumirRealizadoLocal,
 } from '../services/realizadoLocalDb';
 import {
+  construirEscopoTransportadoraSimulada,
   enriquecerMunicipiosComTabelas,
   simularRealizadoLocalRapido,
 } from '../utils/realizadoLocalEngine';
@@ -94,6 +95,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [fileKey, setFileKey] = useState(makeFileKey());
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [transportadorasTabela, setTransportadorasTabela] = useState(null);
+  const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
+  const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const fileInputRef = useRef(null);
 
   const stats = useMemo(() => ({
@@ -112,27 +115,14 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     async function init() {
       setCarregando(true);
       try {
-        const [diag, municipiosDbRaw] = await Promise.all([
+        const [diag, municipiosDb] = await Promise.all([
           diagnosticarRealizadoLocal().catch(() => ({ total: 0 })),
           carregarMunicipiosIbgeDb().catch(() => []),
         ]);
-        let municipiosDb = municipiosDbRaw || [];
-        let fonteIbge = municipiosDb.length ? 'Supabase IBGE' : 'pendente';
-        if (municipiosDb.length < 5000) {
-          try {
-            const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
-            if (oficial.municipios?.length > municipiosDb.length) {
-              municipiosDb = oficial.municipios;
-              fonteIbge = oficial.fonte;
-            }
-          } catch {
-            // Mantém a fonte disponível; a importação ainda tenta fallback pelas tabelas.
-          }
-        }
         if (!ativo) return;
         setDiagnostico(diag);
         setMunicipios(municipiosDb || []);
-        setIbgeInfo({ total: (municipiosDb || []).length, fonte: fonteIbge });
+        setIbgeInfo({ total: (municipiosDb || []).length, fonte: (municipiosDb || []).length ? 'Supabase IBGE' : 'pendente' });
         await pesquisar(DEFAULT_FILTROS, false);
       } catch (error) {
         if (ativo) setErro(error.message || 'Erro ao iniciar realizado local.');
@@ -178,30 +168,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   async function prepararMunicipiosParaImportacao() {
     let baseMunicipios = Array.isArray(municipios) ? municipios : [];
     let tabelas = transportadorasTabela;
-    let fonte = baseMunicipios.length ? ibgeInfo.fonte || 'Supabase IBGE' : 'pendente';
+    let fonte = baseMunicipios.length ? 'Supabase IBGE' : 'pendente';
 
-    if (baseMunicipios.length < 5000) {
-      setProgress((prev) => ({
-        ...(prev || {}),
-        etapa: 'Carregando referência IBGE',
-        percentual: 2,
-        mensagem: 'Baixando/validando base oficial de municípios IBGE...',
-      }));
-      await nextFrame();
-      try {
-        const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
-        if (oficial.municipios?.length > baseMunicipios.length) {
-          baseMunicipios = oficial.municipios;
-          fonte = oficial.fonte;
-        }
-      } catch {
-        // Se não baixar, segue com Supabase/tabelas.
-      }
-    }
-
-    // Se a tabela IBGE não carregou completa, usa as próprias tabelas de frete como fallback.
+    // Se a tabela IBGE não carregou, usa as próprias tabelas de frete como fallback.
     // Isso permite resolver IBGE das cidades que existem na malha cadastrada e destrava a simulação local.
-    if (!baseMunicipios.length || baseMunicipios.length < 5000) {
+    if (!baseMunicipios.length || baseMunicipios.length < 1000) {
       setProgress((prev) => ({
         ...(prev || {}),
         etapa: 'Carregando referência IBGE',
@@ -270,9 +241,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         type: 'importar-realizado-local',
         files,
         municipios: municipiosResolucao,
-        // Quando importar mais de um mês, deixa a competência ser identificada pela emissão/arquivo.
-        // Se mantiver uma competência fixa, todos os arquivos acabam aparecendo como janeiro, fevereiro etc.
-        competencia: files.length === 1 ? filtros.competencia : '',
+        competencia: filtros.competencia,
       });
     });
   }
@@ -307,12 +276,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         mensagem: 'Atualizando resumo local...',
       });
       setFeedback(
-        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}. Referência IBGE: ${municipiosResolucao.length.toLocaleString('pt-BR')} município(s).`
+        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}. Referência IBGE: ${ibgeInfo.total.toLocaleString('pt-BR')} município(s).`
       );
       setFileKey(makeFileKey());
-      const filtrosPosImportacao = files.length > 1 ? { ...filtros, competencia: '', inicio: '', fim: '' } : filtros;
-      if (files.length > 1) setFiltros(filtrosPosImportacao);
-      await pesquisar(filtrosPosImportacao, false);
+      await pesquisar(filtros, false);
     } catch (error) {
       setErro(error.message || 'Erro ao importar arquivos locais.');
     } finally {
@@ -360,21 +327,76 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setSimulando(true);
     setErro('');
     setResultado(null);
-    setProgress({ etapa: 'Preparando realizado', atual: 0, total: 0, percentual: 5, mensagem: 'Buscando CT-e(s) filtrados na base local...' });
+    setEscopoSimulacao(null);
+    setProgress({ etapa: 'Carregando malha', atual: 0, total: 0, percentual: 5, mensagem: 'Carregando tabelas e montando escopo da transportadora...' });
 
     try {
-      const { rows, totalCompativel, limit } = await buscarRealizadoLocalParaSimulacao(filtrosAplicados, { limit: 10000 });
-      if (!rows.length) {
-        setErro('Nenhum CT-e encontrado na base local para simular nos filtros pesquisados.');
-        return;
-      }
-
-      setFeedback(`Preparando simulação local: ${rows.length.toLocaleString('pt-BR')} CT-e(s) usados${totalCompativel > rows.length ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontrados. Limite atual: ${limit.toLocaleString('pt-BR')}.` : '.'}`);
       const baseTabelas = await carregarTabelasFrete();
       if (!baseTabelas?.length) {
         setErro('Não encontrei tabelas de frete carregadas do Supabase para simular.');
         return;
       }
+
+      const escopo = construirEscopoTransportadoraSimulada({
+        transportadoras: baseTabelas,
+        nomeTransportadora: filtros.transportadora,
+        municipios,
+        canalFiltro: filtrosAplicados.canal || filtros.canal,
+      });
+      setEscopoSimulacao(escopo);
+
+      if (!escopo.transportadora) {
+        setErro('Não encontrei essa transportadora nas tabelas cadastradas. Confira se o nome está igual ao cadastro.');
+        return;
+      }
+
+      if (usarMalhaAutomatica && !escopo.totalRotas) {
+        setErro('A transportadora selecionada foi encontrada, mas não possui rotas com IBGE para o canal selecionado. Confira as rotas/tabelas cadastradas.');
+        return;
+      }
+
+      const filtrosBase = usarMalhaAutomatica
+        ? {
+            ...filtrosAplicados,
+            // A malha da transportadora já define origem/destino/UF.
+            // Mantemos período, competência, canal, peso e transportadora realizada.
+            origem: '',
+            destino: '',
+            ufOrigem: '',
+            ufDestino: '',
+          }
+        : filtrosAplicados;
+
+      setProgress({
+        etapa: usarMalhaAutomatica ? 'Filtrando pela malha' : 'Preparando realizado',
+        atual: 0,
+        total: escopo.totalRotas || 0,
+        percentual: 18,
+        mensagem: usarMalhaAutomatica
+          ? `Aplicando malha automática da ${escopo.transportadora}: ${escopo.totalRotas.toLocaleString('pt-BR')} rota(s), ${escopo.origens.length.toLocaleString('pt-BR')} origem(ns).`
+          : 'Buscando CT-e(s) filtrados na base local...',
+      });
+      await nextFrame();
+
+      const buscaRealizado = usarMalhaAutomatica
+        ? await buscarRealizadoLocalPorMalha(filtrosBase, escopo.routeKeys, { limit: 10000 })
+        : await buscarRealizadoLocalParaSimulacao(filtrosBase, { limit: 10000 });
+
+      const { rows, totalCompativel, limit } = buscaRealizado;
+      if (!rows.length) {
+        setErro(
+          usarMalhaAutomatica
+            ? 'Nenhum CT-e da base local caiu dentro da malha da transportadora selecionada para o período/filtros atuais. Tente ampliar o período ou remover canal/peso/transportadora realizada.'
+            : 'Nenhum CT-e encontrado na base local para simular nos filtros pesquisados.'
+        );
+        return;
+      }
+
+      setFeedback(
+        usarMalhaAutomatica
+          ? `Simulação automática: ${rows.length.toLocaleString('pt-BR')} CT-e(s) dentro da malha da ${escopo.transportadora}${totalCompativel > rows.length ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontrados. Limite atual: ${limit.toLocaleString('pt-BR')}.` : '.'}`
+          : `Preparando simulação local: ${rows.length.toLocaleString('pt-BR')} CT-e(s) usados${totalCompativel > rows.length ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontrados. Limite atual: ${limit.toLocaleString('pt-BR')}.` : '.'}`
+      );
 
       setProgress({ etapa: 'Indexando tabelas', atual: 0, total: baseTabelas.length, percentual: 30, mensagem: 'Criando índice em memória por canal + chave IBGE...' });
       await nextFrame();
@@ -500,6 +522,18 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             <input list="transportadoras-local-list" value={filtros.transportadora} onChange={(e) => alterarFiltro('transportadora', e.target.value)} placeholder="Ex.: TOTAL EXPRESS" />
             <datalist id="transportadoras-local-list">{transportadorasDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
           </div>
+          <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+            <input type="checkbox" checked={usarMalhaAutomatica} onChange={(e) => setUsarMalhaAutomatica(e.target.checked)} />
+            <span>
+              Usar malha da transportadora automaticamente
+              <small style={{ display: 'block' }}>Na simulação, mantém período/canal/peso e ignora origem/destino/UF digitados para usar somente as rotas que a transportadora atende.</small>
+            </span>
+          </label>
+          {escopoSimulacao ? (
+            <div className="import-meta-box">
+              Malha simulada: <strong>{escopoSimulacao.totalRotas.toLocaleString('pt-BR')}</strong> rota(s) • {escopoSimulacao.origens.length.toLocaleString('pt-BR')} origem(ns) • canais: {escopoSimulacao.canais.join(', ') || '—'}
+            </div>
+          ) : null}
           <button className="btn-primary full" onClick={simular} disabled={simulando || importando || carregando || !stats.total}>
             {simulando ? 'Simulando local...' : 'Simular no realizado local'}
           </button>

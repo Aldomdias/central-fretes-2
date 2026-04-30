@@ -148,6 +148,57 @@ export async function listarRealizadoLocal(filtros = {}, options = {}) {
   return { rows, avaliados };
 }
 
+function normalizeCanalParaMalha(value) {
+  const canal = normalize(value);
+  if (!canal) return '';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (['ATACADO', 'B2B', 'CANTU', 'CANTU PNEUS'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
+  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', 'LIVELO', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE'].some((item) => canal === item || canal.includes(item))) return 'B2C';
+  return canal;
+}
+
+function chaveMalhaCte(row = {}) {
+  const canal = normalizeCanalParaMalha(row.canal);
+  const rota = String(row.chaveRotaIbge || '').trim();
+  return canal && rota ? `${canal}|${rota}` : '';
+}
+
+export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [], options = {}) {
+  const keys = malhaKeys instanceof Set ? malhaKeys : new Set(malhaKeys || []);
+  if (!keys.size) return { rows: [], totalCompativel: 0, limit: Number(options.limit || 5000), malhaKeys: 0, avaliados: 0 };
+
+  const db = await openDb();
+  const limit = Number(options.limit || 5000);
+  const rows = [];
+  let totalCompativel = 0;
+  let avaliados = 0;
+
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CTES, 'readonly');
+    const store = tx.objectStore(STORE_CTES);
+    const req = store.openCursor(null, 'prev');
+    req.onerror = () => reject(req.error || new Error('Erro ao buscar base local pela malha da transportadora.'));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      avaliados += 1;
+      const row = cursor.value;
+      if (keys.has(chaveMalhaCte(row)) && filtrarCteLocal(row, filtros)) {
+        totalCompativel += 1;
+        if (rows.length < limit) rows.push(row);
+      }
+      cursor.continue();
+    };
+  });
+
+  db.close();
+  return { rows, totalCompativel, limit, malhaKeys: keys.size, avaliados };
+}
+
 export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {
   const db = await openDb();
   const limit = Number(options.limit || 5000);
