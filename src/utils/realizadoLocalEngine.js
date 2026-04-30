@@ -78,12 +78,95 @@ export function montarMapasIbge(municipios = []) {
   return { porCidadeUf, porIbge };
 }
 
+function limparNomeCidadeTabela(value) {
+  let texto = normalizeTextRealizado(value);
+  if (!texto) return '';
+  texto = texto.replace(/^\d+\s*[-–—]\s*/g, '');
+  texto = texto.replace(/\s*\([^)]*\)\s*/g, ' ');
+  texto = texto.replace(/\bROTA\b|\bINTERIOR\b|\bCAPITAL\b|\bREGIAO\b|\bREGIÃO\b/gi, ' ');
+  texto = texto.replace(/\s+/g, ' ').trim();
+  return texto;
+}
+
+function adicionarMunicipioMap(map, item = {}) {
+  const ibge = onlyDigits(item.ibge || item.codigo_ibge || item.codigo || item.codigoMunicipio || '');
+  const cidade = limparNomeCidadeTabela(item.cidade || item.nome || item.municipio || item.nomeMunicipio || item.nome_rota || '');
+  const uf = String(item.uf || item.estado || getUfByIbge(ibge) || '').trim().toUpperCase();
+  if (!ibge || ibge.length < 7 || !cidade) return;
+  const key = `${ibge}|${normalizeKey(cidade)}|${uf}`;
+  if (!map.has(key)) map.set(key, { ibge, cidade, uf });
+}
+
+export function enriquecerMunicipiosComTabelas(municipios = [], transportadoras = []) {
+  const map = new Map();
+
+  (municipios || []).forEach((item) => adicionarMunicipioMap(map, item));
+
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora?.origens || []).forEach((origem) => {
+      const rotas = origem?.rotas || [];
+      const primeiraRota = rotas.find((rota) => rota?.ibgeOrigem);
+      const ibgeOrigem = onlyDigits(primeiraRota?.ibgeOrigem || origem?.ibgeOrigem || '');
+      if (ibgeOrigem && origem?.cidade) {
+        adicionarMunicipioMap(map, {
+          ibge: ibgeOrigem,
+          cidade: origem.cidade,
+          uf: getUfByIbge(ibgeOrigem),
+        });
+      }
+
+      rotas.forEach((rota) => {
+        const destinoIbge = onlyDigits(rota?.ibgeDestino || '');
+        if (destinoIbge) {
+          adicionarMunicipioMap(map, {
+            ibge: destinoIbge,
+            cidade: rota?.cidadeDestino || rota?.destino || rota?.nomeRota,
+            uf: getUfByIbge(destinoIbge),
+          });
+        }
+
+        const rotaIbgeOrigem = onlyDigits(rota?.ibgeOrigem || '');
+        if (rotaIbgeOrigem && origem?.cidade) {
+          adicionarMunicipioMap(map, {
+            ibge: rotaIbgeOrigem,
+            cidade: origem.cidade,
+            uf: getUfByIbge(rotaIbgeOrigem),
+          });
+        }
+      });
+    });
+  });
+
+  return [...map.values()].sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
+}
+
+function gerarVariantesCidade(cidade = '') {
+  const base = normalizeKey(cidade);
+  const variantes = new Set([base]);
+  if (base.startsWith('SAO ')) variantes.add(base.replace(/^SAO /, 'S '));
+  if (base.startsWith('S ')) variantes.add(base.replace(/^S /, 'SAO '));
+  if (base.startsWith('SANTO ')) variantes.add(base.replace(/^SANTO /, 'STO '));
+  if (base.startsWith('SANTA ')) variantes.add(base.replace(/^SANTA /, 'STA '));
+  return [...variantes].filter(Boolean);
+}
+
 export function resolverIbgeLocal(cidadeRaw, ufRaw, mapasIbge) {
   const parsed = splitCidadeUf(cidadeRaw, ufRaw);
   const cidadeKey = normalizeKey(parsed.cidade);
   const uf = parsed.uf || String(ufRaw || '').trim().toUpperCase();
   if (!cidadeKey) return '';
-  return mapasIbge?.porCidadeUf?.get(`${cidadeKey}|${uf}`) || mapasIbge?.porCidadeUf?.get(`${cidadeKey}|`) || '';
+
+  for (const variante of gerarVariantesCidade(cidadeKey)) {
+    const exatoUf = mapasIbge?.porCidadeUf?.get(`${variante}|${uf}`);
+    if (exatoUf) return exatoUf;
+  }
+
+  for (const variante of gerarVariantesCidade(cidadeKey)) {
+    const semUf = mapasIbge?.porCidadeUf?.get(`${variante}|`);
+    if (semUf) return semUf;
+  }
+
+  return '';
 }
 
 function getCompetencia(dataEmissao = '', fallback = '') {

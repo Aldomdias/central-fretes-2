@@ -17,7 +17,15 @@ function calcularPercentualArquivo(index, totalArquivos, percentualDentroArquivo
   return Math.min(99, Math.round(base + (fatia * (percentualDentroArquivo / 100))));
 }
 
+function contarIbgeOk(rows = []) {
+  return (rows || []).filter((row) => row.ibgeOk || (row.ibgeOrigem && row.ibgeDestino)).length;
+}
+
 async function importarRealizadoLocal({ files = [], municipios = [], competencia = '' }) {
+  if (!Array.isArray(municipios) || !municipios.length) {
+    throw new Error('Base IBGE não foi carregada. Recarregue a tela e tente novamente; sem IBGE a simulação não consegue cruzar origem/destino.');
+  }
+
   let totalLidos = 0;
   let totalPreparados = 0;
   let totalPendencias = 0;
@@ -36,7 +44,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index, totalArquivos, 5),
-        mensagem: `Lendo ${nome}. Arquivos Excel grandes podem demorar nesta etapa, mas o navegador continua trabalhando em segundo plano.`,
+        mensagem: `Lendo ${nome}. Base IBGE disponível: ${municipios.length.toLocaleString('pt-BR')} município(s).`,
       });
 
       const parsed = await parseRealizadoCtesFile(file);
@@ -51,6 +59,10 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       });
 
       const { rows, pendencias } = prepararRegistrosRealizadoLocal(parsed.registros, municipios, { competencia });
+      const ibgeOk = contarIbgeOk(rows);
+      if (rows.length && ibgeOk === 0) {
+        throw new Error(`Nenhum IBGE foi localizado em ${nome}. A importação foi interrompida para não salvar uma base que não simula. Verifique se a base IBGE/tabelas foi carregada.`);
+      }
       totalPreparados += rows.length;
       totalPendencias += pendencias.length;
 
@@ -59,7 +71,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: 0,
         total: rows.length,
         percentual: calcularPercentualArquivo(index, totalArquivos, 65),
-        mensagem: `Gravando ${rows.length.toLocaleString('pt-BR')} CT-e(s) de ${nome} no navegador...`,
+        mensagem: `Gravando ${rows.length.toLocaleString('pt-BR')} CT-e(s) de ${nome}; ${ibgeOk.toLocaleString('pt-BR')} com IBGE e ${pendencias.length.toLocaleString('pt-BR')} pendência(s)...`,
       });
 
       const save = await salvarRealizadoLocal(rows, {
@@ -82,6 +94,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         lidos: parsed.registros.length,
         preparados: rows.length,
         pendencias: pendencias.length,
+        ibgeOk,
         salvos: save.salvos || rows.length,
       });
 

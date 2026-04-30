@@ -8,6 +8,7 @@ import {
   resumirRealizadoLocal,
 } from '../services/realizadoLocalDb';
 import {
+  enriquecerMunicipiosComTabelas,
   simularRealizadoLocalRapido,
 } from '../utils/realizadoLocalEngine';
 import {
@@ -78,6 +79,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [filtros, setFiltros] = useState(DEFAULT_FILTROS);
   const [filtrosAplicados, setFiltrosAplicados] = useState(DEFAULT_FILTROS);
   const [municipios, setMunicipios] = useState([]);
+  const [ibgeInfo, setIbgeInfo] = useState({ total: 0, fonte: 'não carregado' });
   const [resumo, setResumo] = useState(null);
   const [amostra, setAmostra] = useState([]);
   const [diagnostico, setDiagnostico] = useState(null);
@@ -116,6 +118,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         if (!ativo) return;
         setDiagnostico(diag);
         setMunicipios(municipiosDb || []);
+        setIbgeInfo({ total: (municipiosDb || []).length, fonte: (municipiosDb || []).length ? 'Supabase IBGE' : 'pendente' });
         await pesquisar(DEFAULT_FILTROS, false);
       } catch (error) {
         if (ativo) setErro(error.message || 'Erro ao iniciar realizado local.');
@@ -158,7 +161,40 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
-  function importarArquivosComWorker(files = []) {
+  async function prepararMunicipiosParaImportacao() {
+    let baseMunicipios = Array.isArray(municipios) ? municipios : [];
+    let tabelas = transportadorasTabela;
+    let fonte = baseMunicipios.length ? 'Supabase IBGE' : 'pendente';
+
+    // Se a tabela IBGE não carregou, usa as próprias tabelas de frete como fallback.
+    // Isso permite resolver IBGE das cidades que existem na malha cadastrada e destrava a simulação local.
+    if (!baseMunicipios.length || baseMunicipios.length < 1000) {
+      setProgress((prev) => ({
+        ...(prev || {}),
+        etapa: 'Carregando referência IBGE',
+        percentual: 3,
+        mensagem: 'Carregando municípios IBGE e fallback pelas tabelas de frete...',
+      }));
+      await nextFrame();
+      if (!tabelas?.length) {
+        const base = await carregarBaseCompletaDb().catch(() => []);
+        tabelas = base?.length ? base : transportadoras;
+        if (base?.length) setTransportadorasTabela(base);
+      }
+      fonte = baseMunicipios.length ? 'Supabase IBGE + tabelas' : 'Tabelas de frete';
+    }
+
+    const enriquecidos = enriquecerMunicipiosComTabelas(baseMunicipios, tabelas || transportadoras || []);
+    if (!enriquecidos.length) {
+      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base local não consegue simular. Confira a tabela ibge_municipios ou se as tabelas de frete possuem IBGE origem/destino.');
+    }
+
+    setMunicipios(enriquecidos);
+    setIbgeInfo({ total: enriquecidos.length, fonte });
+    return enriquecidos;
+  }
+
+  function importarArquivosComWorker(files = [], municipiosResolucao = municipios) {
     return new Promise((resolve, reject) => {
       if (typeof Worker === 'undefined') {
         reject(new Error('Este navegador não suporta processamento em segundo plano com Worker.'));
@@ -200,7 +236,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       worker.postMessage({
         type: 'importar-realizado-local',
         files,
-        municipios,
+        municipios: municipiosResolucao,
         competencia: filtros.competencia,
       });
     });
@@ -222,7 +258,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     });
 
     try {
-      const result = await importarArquivosComWorker(files);
+      const municipiosResolucao = await prepararMunicipiosParaImportacao();
+      setFeedback(`Referência IBGE pronta: ${municipiosResolucao.length.toLocaleString('pt-BR')} município(s). Iniciando leitura do arquivo...`);
+      const result = await importarArquivosComWorker(files, municipiosResolucao);
       if (!result.totalPreparados && result.erros?.length) {
         throw new Error(`Nenhum CT-e foi importado. Primeiro erro: ${result.erros[0]?.arquivo || result.erros[0]?.nome || 'arquivo'} - ${result.erros[0]?.erro || 'erro desconhecido'}`);
       }
@@ -234,7 +272,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         mensagem: 'Atualizando resumo local...',
       });
       setFeedback(
-        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
+        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}. Referência IBGE: ${ibgeInfo.total.toLocaleString('pt-BR')} município(s).`
       );
       setFileKey(makeFileKey());
       await pesquisar(filtros, false);
@@ -352,6 +390,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
+      <div className={ibgeInfo.total ? 'sim-alert success' : 'sim-alert'}>
+        <strong>Referência IBGE local:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação local só deve ser feita depois dessa referência carregar.
+      </div>
 
       {progress ? (
         <div className="sim-alert info">
