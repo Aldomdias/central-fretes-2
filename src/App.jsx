@@ -7,6 +7,7 @@ import ImportacaoPage from './pages/ImportacaoPage';
 import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import RealizadoPage from './pages/RealizadoPage';
+import ImportarRealizadoCtePage from './pages/ImportarRealizadoCtePage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -83,6 +84,10 @@ export default function App() {
 
   if (paginaAtual === 'realizado') {
     content = <RealizadoPage transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'importar-realizado-cte') {
+    content = <ImportarRealizadoCtePage />;
   }
 
   if (paginaAtual === 'transportadoras') {
