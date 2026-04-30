@@ -365,10 +365,17 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
   return { index, stats };
 }
 
-function transportadoraMatch(nomeTabela, nomeFiltro) {
+function transportadoraMatch(nomeTabela, nomeFiltro, options = {}) {
   const tabela = normalizeKey(nomeTabela);
   const filtro = normalizeKey(nomeFiltro);
   if (!filtro) return false;
+
+  // Quando o usuário escolhe uma opção da lista de transportadoras,
+  // a simulação precisa usar exatamente aquela tabela cadastrada.
+  // Isso evita misturar nomes parecidos, exemplo:
+  // TOTAL EXPRESS x TOTAL EXPRESS SIMULAR x TOTAL EXPRESSHUB SIMULAR.
+  if (options.exato) return tabela === filtro;
+
   return tabela === filtro || tabela.includes(filtro) || filtro.includes(tabela);
 }
 
@@ -383,7 +390,7 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
   let rotasSemIbge = 0;
 
   (transportadoras || []).forEach((transportadora) => {
-    if (!transportadoraMatch(transportadora?.nome, nomeTransportadora)) return;
+    if (!transportadoraMatch(transportadora?.nome, nomeTransportadora, { exato: true })) return;
     transportadoraEncontrada = transportadora?.nome || transportadoraEncontrada;
 
     (transportadora.origens || []).forEach((origem) => {
@@ -484,7 +491,7 @@ export async function simularRealizadoLocalRapido({
     if (!cte.chaveRotaIbge || !candidatos.length) {
       foraMalha.push({ ...cte, motivo: cte.chaveRotaIbge ? 'Rota não encontrada nas tabelas cadastradas' : 'CT-e sem chave IBGE origem-destino' });
     } else {
-      const candidatosDaSimulada = candidatos.filter((item) => transportadoraMatch(item.transportadora?.nome, nomeTransportadora));
+      const candidatosDaSimulada = candidatos.filter((item) => transportadoraMatch(item.transportadora?.nome, nomeTransportadora, { exato: true }));
 
       if (!candidatosDaSimulada.length) {
         foraMalha.push({ ...cte, motivo: 'Transportadora simulada não possui tabela nessa rota/canal' });
@@ -499,7 +506,7 @@ export async function simularRealizadoLocalRapido({
             .filter(Boolean)
             .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
 
-          const escolhidoIndex = calculados.findIndex((item) => transportadoraMatch(item.transportadora, nomeTransportadora));
+          const escolhidoIndex = calculados.findIndex((item) => transportadoraMatch(item.transportadora, nomeTransportadora, { exato: true }));
           escolhido = escolhidoIndex >= 0 ? calculados[escolhidoIndex] : null;
           lider = calculados[0] || null;
           ranking = escolhidoIndex >= 0 ? escolhidoIndex + 1 : null;

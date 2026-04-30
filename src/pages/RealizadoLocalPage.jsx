@@ -542,8 +542,13 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <p>Use modo rápido para impacto financeiro. Use completo apenas quando precisar ranking/ganhadores contra concorrentes.</p>
           <div className="field">
             <label>Transportadora simulada</label>
-            <input list="transportadoras-local-list" value={filtros.transportadora} onChange={(e) => alterarFiltro('transportadora', e.target.value)} placeholder="Ex.: TOTAL EXPRESS" />
-            <datalist id="transportadoras-local-list">{transportadorasDisponiveis.map((item) => <option key={item} value={item} />)}</datalist>
+            <select value={filtros.transportadora} onChange={(e) => alterarFiltro('transportadora', e.target.value)}>
+              <option value="">Selecione a transportadora cadastrada</option>
+              {transportadorasDisponiveis.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+            <small>Escolha a tabela exata que deseja testar. Assim o sistema não mistura nomes parecidos, como “TOTAL EXPRESS” e “TOTAL EXPRESS SIMULAR”.</small>
           </div>
           <div className="field">
             <label>Modo da simulação</label>
