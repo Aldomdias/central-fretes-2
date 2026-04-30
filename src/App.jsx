@@ -7,7 +7,7 @@ import ImportacaoPage from './pages/ImportacaoPage';
 import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import RealizadoPage from './pages/RealizadoPage';
-import ImportarRealizadoCtePage from './pages/ImportarRealizadoCtePage';
+import RealizadoLocalPage from './pages/RealizadoLocalPage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -86,8 +86,8 @@ export default function App() {
     content = <RealizadoPage transportadoras={transportadorasMemo} />;
   }
 
-  if (paginaAtual === 'importar-realizado-cte') {
-    content = <ImportarRealizadoCtePage />;
+  if (paginaAtual === 'realizado-local') {
+    content = <RealizadoLocalPage transportadoras={transportadorasMemo} />;
   }
 
   if (paginaAtual === 'transportadoras') {

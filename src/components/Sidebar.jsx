@@ -3,8 +3,8 @@ import logoAmd from '../assets/amd-log.png';
 const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
-  { chave: 'realizado', label: 'Realizado CT-e', icon: '▤' },
-  { chave: 'importar-realizado-cte', label: 'Importar Realizado CT-e', icon: '▥' },
+  { chave: 'realizado-local', label: 'Realizado Local', icon: '▤' },
+  { chave: 'realizado', label: 'Realizado CT-e', icon: '▥' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
   { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
   { chave: 'importar-template', label: 'Importar Template', icon: '⇩' },
