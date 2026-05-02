@@ -40,6 +40,41 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function faixaLabel(cotacao = {}, peso = 0) {
+  const min = toNumber(cotacao.pesoMin);
+  const maxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
+  const max = maxRaw === '' || maxRaw === null || maxRaw === undefined ? 0 : toNumber(maxRaw);
+  if (min || max) {
+    if (!max || max >= 999999) return `${min.toLocaleString('pt-BR')}+ kg`;
+    return `${min.toLocaleString('pt-BR')} a ${max.toLocaleString('pt-BR')} kg`;
+  }
+  const p = toNumber(peso);
+  if (p <= 2) return '0 a 2 kg';
+  if (p <= 5) return '2 a 5 kg';
+  if (p <= 10) return '5 a 10 kg';
+  if (p <= 20) return '10 a 20 kg';
+  if (p <= 30) return '20 a 30 kg';
+  if (p <= 50) return '30 a 50 kg';
+  if (p <= 70) return '50 a 70 kg';
+  if (p <= 100) return '70 a 100 kg';
+  return '100+ kg';
+}
+
+function percentualReducaoNecessaria(valorSimulado, referencia) {
+  const simulado = toNumber(valorSimulado);
+  const ref = toNumber(referencia);
+  if (simulado <= 0 || ref <= 0 || simulado <= ref) return 0;
+  return ((simulado - ref) / simulado) * 100;
+}
+
+function getReferenciaCompetitiva({ valorRealizado, lider, rankingCalculado }) {
+  const realizado = toNumber(valorRealizado);
+  const liderTotal = rankingCalculado ? toNumber(lider?.total) : 0;
+  if (liderTotal > 0 && realizado > 0) return Math.min(realizado, liderTotal);
+  if (liderTotal > 0) return liderTotal;
+  return realizado;
+}
+
 function sleepFrame() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -401,6 +436,10 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
     chaveRotaIbge: `${rota.ibgeOrigem}-${rota.ibgeDestino}`,
     rotaNome: rota.nomeRota,
     prazo: toNumber(rota.prazoEntregaDias),
+    faixaPeso: faixaLabel(cotacao, peso),
+    pesoMinFaixa: toNumber(cotacao.pesoMin),
+    pesoMaxFaixa: toNumber(cotacao.pesoMax ?? cotacao.pesoLimite),
+    tipoCalculo,
     total: calculo.total,
     percentualSobreNF: valorNF > 0 ? (calculo.total / valorNF) * 100 : 0,
     detalhes: {
@@ -415,6 +454,9 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
         percentualAplicado: toNumber(cotacao.percentual || cotacao.fretePercentual),
         valorFixoAplicado: toNumber(cotacao.valorFixo || cotacao.taxaAplicada),
         rsKgAplicado: toNumber(cotacao.rsKg),
+        faixaPeso: faixaLabel(cotacao, peso),
+        pesoMin: toNumber(cotacao.pesoMin),
+        pesoMax: toNumber(cotacao.pesoMax ?? cotacao.pesoLimite),
         pesoLimite: toNumber(cotacao.pesoMax || cotacao.pesoLimite),
         excessoKg: toNumber(cotacao.excesso || cotacao.excessoPeso),
       },
@@ -530,6 +572,10 @@ function montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado }) {
   const economizaria = impacto > 0.009;
   const aumento = impacto < -0.009;
   const ganhaRanking = rankingCalculado ? ranking === 1 : true;
+  const referenciaCompetitiva = getReferenciaCompetitiva({ valorRealizado, lider, rankingCalculado });
+  const desvioCompetitivo = valorSimulado - referenciaCompetitiva;
+  const precisaReduzirValor = desvioCompetitivo > 0.009 ? desvioCompetitivo : 0;
+  const precisaReduzirPercentual = percentualReducaoNecessaria(valorSimulado, referenciaCompetitiva);
 
   // Regra de negócio do realizado local:
   // o sistema só aloca a carga para a transportadora simulada quando ela reduz custo.
@@ -549,17 +595,31 @@ function montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado }) {
     id: cte.chaveCte,
     chaveCte: cte.chaveCte,
     numeroCte: cte.numeroCte,
+    competencia: cte.competencia || getCompetencia(cte.dataEmissao, ''),
     emissao: cte.dataEmissao,
     transportadoraRealizada: cte.transportadora,
     transportadoraSimulada: escolhido.transportadora,
     origem: cte.cidadeOrigem,
+    ufOrigem: cte.ufOrigem,
     cidadeDestino: cte.cidadeDestino,
     ufDestino: cte.ufDestino,
+    rota: `${cte.cidadeOrigem}/${cte.ufOrigem || ''} → ${cte.cidadeDestino}/${cte.ufDestino || ''}`,
+    rotaNome: escolhido.rotaNome || cte.cidadeDestino,
+    chaveRotaIbge: cte.chaveRotaIbge,
     canal: cte.canal,
     peso: cte.peso,
+    faixaPeso: escolhido.faixaPeso || escolhido.detalhes?.frete?.faixaPeso || faixaLabel({}, cte.peso),
+    pesoMinFaixa: escolhido.pesoMinFaixa || escolhido.detalhes?.frete?.pesoMin || 0,
+    pesoMaxFaixa: escolhido.pesoMaxFaixa || escolhido.detalhes?.frete?.pesoMax || 0,
+    tipoCalculo: escolhido.tipoCalculo || escolhido.detalhes?.frete?.tipoCalculo || '',
+    prazo: escolhido.prazo || 0,
     valorNF,
     valorRealizado,
     valorSimulado,
+    referenciaCompetitiva,
+    desvioCompetitivo,
+    precisaReduzirValor,
+    precisaReduzirPercentual,
     impacto,
     economiaVsRealizado: economizaria ? impacto : 0,
     aumentoVsRealizado: aumento ? Math.abs(impacto) : 0,
@@ -580,6 +640,105 @@ function montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado }) {
     percentualSimulado: valorNF > 0 ? (valorSimulado / valorNF) * 100 : 0,
     detalhes: escolhido.detalhes,
   };
+}
+
+function novoGrupoSimulacao(key, extras = {}) {
+  return {
+    chave: key || 'Não informado',
+    ctes: 0,
+    ctesGanharia: 0,
+    ctesNaoAlocados: 0,
+    valorRealizado: 0,
+    valorSimulado: 0,
+    valorNF: 0,
+    valorRealizadoGanhador: 0,
+    valorSimuladoGanhador: 0,
+    valorNfGanhador: 0,
+    savingPotencial: 0,
+    aumentoIgnorado: 0,
+    precisaReduzirValor: 0,
+    referenciaCompetitiva: 0,
+    valorSimuladoNaoAlocado: 0,
+    ...extras,
+  };
+}
+
+function acumularGrupo(grupo, detalhe) {
+  grupo.ctes += 1;
+  grupo.valorRealizado += toNumber(detalhe.valorRealizado);
+  grupo.valorSimulado += toNumber(detalhe.valorSimulado);
+  grupo.valorNF += toNumber(detalhe.valorNF);
+
+  if (detalhe.ganharia) {
+    grupo.ctesGanharia += 1;
+    grupo.valorRealizadoGanhador += toNumber(detalhe.valorRealizadoAlocado);
+    grupo.valorSimuladoGanhador += toNumber(detalhe.valorSimuladoAlocado);
+    grupo.valorNfGanhador += toNumber(detalhe.valorNfAlocado);
+    grupo.savingPotencial += toNumber(detalhe.savingPotencial);
+  } else {
+    grupo.ctesNaoAlocados += 1;
+    grupo.aumentoIgnorado += toNumber(detalhe.aumentoVsRealizado);
+    grupo.precisaReduzirValor += toNumber(detalhe.precisaReduzirValor);
+    grupo.referenciaCompetitiva += toNumber(detalhe.referenciaCompetitiva);
+    grupo.valorSimuladoNaoAlocado += toNumber(detalhe.valorSimulado);
+  }
+}
+
+function finalizarGrupo(grupo) {
+  const reducaoSugeridaPercentual = grupo.valorSimuladoNaoAlocado > 0
+    ? (grupo.precisaReduzirValor / grupo.valorSimuladoNaoAlocado) * 100
+    : 0;
+  return {
+    ...grupo,
+    percentualAlocacao: grupo.ctes ? (grupo.ctesGanharia / grupo.ctes) * 100 : 0,
+    percentualFreteRealizado: grupo.valorNF > 0 ? (grupo.valorRealizado / grupo.valorNF) * 100 : 0,
+    percentualFreteSimulado: grupo.valorNF > 0 ? (grupo.valorSimulado / grupo.valorNF) * 100 : 0,
+    percentualFreteGanhador: grupo.valorNfGanhador > 0 ? (grupo.valorSimuladoGanhador / grupo.valorNfGanhador) * 100 : 0,
+    reducaoSugeridaPercentual,
+    ticketMedioRealizado: grupo.ctes ? grupo.valorRealizado / grupo.ctes : 0,
+    ticketMedioSimulado: grupo.ctes ? grupo.valorSimulado / grupo.ctes : 0,
+  };
+}
+
+function gerarAnalisesGerenciais(detalhes = []) {
+  const porMesMap = new Map();
+  const porRotaMap = new Map();
+  const porFaixaMap = new Map();
+  const porRotaFaixaMap = new Map();
+
+  detalhes.forEach((detalhe) => {
+    const mes = detalhe.competencia || String(detalhe.emissao || '').slice(0, 7) || 'Sem mês';
+    const rota = detalhe.rota || `${detalhe.origem} → ${detalhe.cidadeDestino}/${detalhe.ufDestino}`;
+    const faixa = detalhe.faixaPeso || faixaLabel({}, detalhe.peso);
+    const rotaFaixaKey = `${rota} | ${faixa}`;
+
+    if (!porMesMap.has(mes)) porMesMap.set(mes, novoGrupoSimulacao(mes, { mes }));
+    if (!porRotaMap.has(rota)) porRotaMap.set(rota, novoGrupoSimulacao(rota, { rota, origem: detalhe.origem, ufOrigem: detalhe.ufOrigem, destino: detalhe.cidadeDestino, ufDestino: detalhe.ufDestino }));
+    if (!porFaixaMap.has(faixa)) porFaixaMap.set(faixa, novoGrupoSimulacao(faixa, { faixaPeso: faixa }));
+    if (!porRotaFaixaMap.has(rotaFaixaKey)) porRotaFaixaMap.set(rotaFaixaKey, novoGrupoSimulacao(rotaFaixaKey, { rota, faixaPeso: faixa, origem: detalhe.origem, ufOrigem: detalhe.ufOrigem, destino: detalhe.cidadeDestino, ufDestino: detalhe.ufDestino }));
+
+    acumularGrupo(porMesMap.get(mes), detalhe);
+    acumularGrupo(porRotaMap.get(rota), detalhe);
+    acumularGrupo(porFaixaMap.get(faixa), detalhe);
+    acumularGrupo(porRotaFaixaMap.get(rotaFaixaKey), detalhe);
+  });
+
+  const porMes = [...porMesMap.values()].map(finalizarGrupo).sort((a, b) => String(a.mes).localeCompare(String(b.mes)));
+  const porRota = [...porRotaMap.values()].map(finalizarGrupo).sort((a, b) => b.savingPotencial - a.savingPotencial || b.ctes - a.ctes);
+  const porFaixaPeso = [...porFaixaMap.values()].map(finalizarGrupo).sort((a, b) => b.savingPotencial - a.savingPotencial || b.ctes - a.ctes);
+  const porRotaFaixa = [...porRotaFaixaMap.values()].map(finalizarGrupo).sort((a, b) => b.savingPotencial - a.savingPotencial || b.precisaReduzirValor - a.precisaReduzirValor);
+
+  const oportunidadesAjuste = porRotaFaixa
+    .filter((item) => item.ctesNaoAlocados > 0 && item.precisaReduzirValor > 0)
+    .sort((a, b) => b.precisaReduzirValor - a.precisaReduzirValor || b.ctesNaoAlocados - a.ctesNaoAlocados)
+    .slice(0, 200);
+
+  const rotasCompetitivas = porRotaFaixa
+    .filter((item) => item.ctesGanharia > 0 && item.savingPotencial > 0)
+    .sort((a, b) => b.savingPotencial - a.savingPotencial || b.ctesGanharia - a.ctesGanharia)
+    .slice(0, 200);
+
+  return { porMes, porRota, porFaixaPeso, porRotaFaixa, oportunidadesAjuste, rotasCompetitivas };
 }
 
 export async function simularRealizadoLocalRapido({
@@ -729,6 +888,14 @@ export async function simularRealizadoLocalRapido({
     percentualFreteGanhador: item.valorNfGanhador > 0 ? (item.valorSimuladoGanhador / item.valorNfGanhador) * 100 : 0,
   })).sort((a, b) => b.ctes - a.ctes || a.uf.localeCompare(b.uf));
 
+  const detalhesOrdenados = detalhes.sort((a, b) => {
+    if (a.ganharia !== b.ganharia) return a.ganharia ? -1 : 1;
+    if (rankingCalculado) return (a.ranking || 9999) - (b.ranking || 9999) || (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
+    return (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
+  });
+
+  const analises = gerarAnalisesGerenciais(detalhesOrdenados);
+
   return {
     resumo: {
       modo,
@@ -755,11 +922,8 @@ export async function simularRealizadoLocalRapido({
       porUf,
       indexStats: stats,
     },
-    detalhes: detalhes.sort((a, b) => {
-      if (a.ganharia !== b.ganharia) return a.ganharia ? -1 : 1;
-      if (rankingCalculado) return (a.ranking || 9999) - (b.ranking || 9999) || (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
-      return (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
-    }),
+    detalhes: detalhesOrdenados,
+    analises,
     foraMalha,
   };
 }

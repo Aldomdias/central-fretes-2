@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
+  baixarModeloIbgeCep,
   consultarFaixasCepIbgeDb,
   consultarMunicipiosIbge,
   diagnosticarBaseIbgeSupabase,
+  importarBaseIbgeCepSupabase,
   sincronizarIbgeOficialSupabase,
 } from '../services/ibgeService';
 
@@ -17,6 +19,9 @@ export default function ConsultaIbgePage() {
   const [erro, setErro] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
+  const [importandoArquivo, setImportandoArquivo] = useState(false);
+  const [arquivoKey, setArquivoKey] = useState(0);
+  const [ultimaImportacao, setUltimaImportacao] = useState(null);
   const [progresso, setProgresso] = useState(null);
   const [faixasCep, setFaixasCep] = useState({});
 
@@ -67,6 +72,33 @@ export default function ConsultaIbgePage() {
     }
   }
 
+  async function importarArquivoIbge(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setImportandoArquivo(true);
+    setErro('');
+    setFeedback('');
+    setUltimaImportacao(null);
+    setProgresso({ etapa: 'lendo_arquivo', salvos: 0, total: 0 });
+    try {
+      const result = await importarBaseIbgeCepSupabase(file, {
+        onProgress: ({ etapa, salvos, total }) => setProgresso({ etapa, salvos, total }),
+      });
+      setUltimaImportacao(result);
+      setFeedback(
+        `Base IBGE/CEP importada: ${Number(result.municipiosSalvos || 0).toLocaleString('pt-BR')} município(s) e ${Number(result.faixasSalvas || 0).toLocaleString('pt-BR')} faixa(s) de CEP. Linhas ignoradas: ${Number(result.linhasIgnoradas || 0).toLocaleString('pt-BR')}.`
+      );
+      await atualizarDiagnostico();
+      if (termo || uf) await pesquisar();
+    } catch (error) {
+      setErro(error.message || 'Erro ao importar base IBGE/CEP. Confirme se o SQL foi rodado no Supabase.');
+    } finally {
+      setImportandoArquivo(false);
+      setArquivoKey((prev) => prev + 1);
+      setTimeout(() => setProgresso(null), 2500);
+    }
+  }
+
   async function carregarFaixas(ibge) {
     const codigo = String(ibge || '');
     if (!codigo) return;
@@ -85,13 +117,25 @@ export default function ConsultaIbgePage() {
           <div className="amd-mini-brand">AMD Log • Base IBGE</div>
           <h1>Consulta IBGE</h1>
           <p>
-            Base oficial para resolver origem/destino com cidade, UF, código IBGE e faixa de CEP. Essa tela ajuda a validar se o Supabase está com a referência completa.
+            Base oficial para resolver origem/destino com cidade, UF, código IBGE e faixa de CEP. Aqui você consegue pesquisar cidade/CEP e importar a base IBGE/CEP completa para o Supabase.
           </p>
         </div>
         <div className="actions-right wrap">
-          <button className="btn-secondary" onClick={atualizarDiagnostico} disabled={carregando || sincronizando}>Atualizar diagnóstico</button>
-          <button className="btn-primary" onClick={sincronizar} disabled={sincronizando || carregando}>
-            {sincronizando ? 'Sincronizando...' : 'Sincronizar IBGE no Supabase'}
+          <button className="btn-secondary" onClick={atualizarDiagnostico} disabled={carregando || sincronizando || importandoArquivo}>Atualizar diagnóstico</button>
+          <button className="btn-secondary" onClick={baixarModeloIbgeCep} disabled={sincronizando || importandoArquivo}>Baixar modelo IBGE/CEP</button>
+          <label className="btn-primary file-button" style={{ cursor: (sincronizando || importandoArquivo) ? 'not-allowed' : 'pointer' }}>
+            {importandoArquivo ? 'Importando...' : 'Importar base IBGE/CEP'}
+            <input
+              key={arquivoKey}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={importarArquivoIbge}
+              disabled={sincronizando || importandoArquivo}
+              style={{ display: 'none' }}
+            />
+          </label>
+          <button className="btn-primary" onClick={sincronizar} disabled={sincronizando || carregando || importandoArquivo}>
+            {sincronizando ? 'Sincronizando...' : 'Sincronizar só municípios oficiais'}
           </button>
         </div>
       </div>
@@ -101,21 +145,28 @@ export default function ConsultaIbgePage() {
       {diagnostico ? (
         <div className={diagnostico.total >= 5000 ? 'sim-alert success' : 'sim-alert'}>
           <strong>Status Supabase IBGE:</strong> {diagnostico.conectado ? 'conectado' : 'não configurado'} • tabela: {diagnostico.existe ? 'encontrada' : 'não encontrada'} • municípios: {Number(diagnostico.total || 0).toLocaleString('pt-BR')} • faixas CEP: {Number(diagnostico.faixasCep || 0).toLocaleString('pt-BR')}
+          {diagnostico.faixasCep === 0 ? <span> • As faixas de CEP ainda não foram importadas. Use o botão “Importar base IBGE/CEP”.</span> : null}
           {diagnostico.erro ? <span> • {diagnostico.erro}</span> : null}
         </div>
       ) : null}
 
       {progresso ? (
         <div className="sim-alert info">
-          Sincronizando IBGE: {Number(progresso.salvos || 0).toLocaleString('pt-BR')} de {Number(progresso.total || 0).toLocaleString('pt-BR')} município(s).
+          Processando IBGE/CEP{progresso.etapa ? ` (${progresso.etapa})` : ''}: {Number(progresso.salvos || 0).toLocaleString('pt-BR')} de {Number(progresso.total || 0).toLocaleString('pt-BR')} registro(s).
+        </div>
+      ) : null}
+
+      {ultimaImportacao?.exemplosIgnoradas?.length ? (
+        <div className="sim-alert">
+          <strong>Linhas ignoradas na importação:</strong> {ultimaImportacao.exemplosIgnoradas.join(' | ')}
         </div>
       ) : null}
 
       <section className="sim-card">
         <form className="form-grid consulta-ibge-form" onSubmit={pesquisar}>
           <div className="field">
-            <label>Cidade, código IBGE ou parte do nome</label>
-            <input value={termo} onChange={(e) => setTermo(e.target.value)} placeholder="Ex.: Itajaí, Itajai, São Paulo, 4208203" />
+            <label>Cidade, código IBGE, CEP ou parte do nome</label>
+            <input value={termo} onChange={(e) => setTermo(e.target.value)} placeholder="Ex.: Itajaí, Itajai, São Paulo, 4208203, 88300000" />
           </div>
           <div className="field">
             <label>UF</label>
@@ -134,7 +185,7 @@ export default function ConsultaIbgePage() {
         <div className="sim-parametros-header">
           <div>
             <div className="panel-title">Resultado da consulta</div>
-            <p>Pesquisa com normalização de acento e fallback oficial quando a tabela do Supabase estiver vazia.</p>
+            <p>Pesquisa com normalização de acento, código IBGE e CEP. Quando houver faixa de CEP cadastrada, também localiza o município pelo CEP informado.</p>
           </div>
           <span className="status-pill">{resultados.length.toLocaleString('pt-BR')} resultado(s)</span>
         </div>

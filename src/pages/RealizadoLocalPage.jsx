@@ -71,6 +71,131 @@ function MiniTable({ title, rows = [], tipo, onSelect, activeKey }) {
   );
 }
 
+function DetailMetric({ label, value, tone = '' }) {
+  return (
+    <div className="summary-card compact">
+      <span>{label}</span>
+      <strong className={tone}>{value}</strong>
+    </div>
+  );
+}
+
+function DetalheSimulacao({ item, rankingCalculado }) {
+  const frete = item.detalhes?.frete || {};
+  const taxas = item.detalhes?.taxas || {};
+  const taxasRows = Object.entries(taxas).filter(([, value]) => Number(value || 0) !== 0);
+
+  return (
+    <div className="realizado-detail-panel" style={{ alignItems: 'stretch', display: 'block' }}>
+      <div className="sim-parametros-header">
+        <div>
+          <span>Detalhe do cálculo</span>
+          <strong>CT-e {item.numeroCte || item.chaveCte?.slice(-8)} • {item.rota}</strong>
+          <small>{item.motivoAlocacao}</small>
+        </div>
+        <span className={item.ganharia ? 'status-pill success' : 'status-pill'}>{rankingLabel(item, rankingCalculado)}</span>
+      </div>
+
+      <div className="sim-analise-resumo top-space-sm">
+        <DetailMetric label="Realizado" value={formatCurrency(item.valorRealizado)} />
+        <DetailMetric label="Simulado" value={formatCurrency(item.valorSimulado)} />
+        <DetailMetric label="Saving considerado" value={formatCurrency(item.savingPotencial || 0)} tone={item.ganharia ? 'positivo' : ''} />
+        <DetailMetric label="Faixa de peso" value={item.faixaPeso || '—'} />
+        <DetailMetric label="Peso do CT-e" value={`${formatNumber(item.peso, 3)} kg`} />
+        <DetailMetric label="% redução necessária" value={formatPercent(item.precisaReduzirPercentual || 0)} />
+      </div>
+
+      <div className="feature-grid three top-space-sm">
+        <div className="sim-parametros-box">
+          <strong>Dados do CT-e</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Realizada</span><strong>{item.transportadoraRealizada || '—'}</strong></div>
+            <div className="mini-list-row"><span>Canal</span><strong>{item.canal || '—'}</strong></div>
+            <div className="mini-list-row"><span>Valor NF</span><strong>{formatCurrency(item.valorNF)}</strong></div>
+            <div className="mini-list-row"><span>Emissão</span><strong>{formatDateBr(item.emissao)}</strong></div>
+          </div>
+        </div>
+        <div className="sim-parametros-box">
+          <strong>Memória do frete</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Tipo</span><strong>{frete.tipoCalculo || item.tipoCalculo || '—'}</strong></div>
+            <div className="mini-list-row"><span>Base</span><strong>{formatCurrency(frete.valorBase || 0)}</strong></div>
+            <div className="mini-list-row"><span>Subtotal</span><strong>{formatCurrency(frete.subtotal || 0)}</strong></div>
+            <div className="mini-list-row"><span>ICMS</span><strong>{formatCurrency(frete.icms || 0)}</strong></div>
+            <div className="mini-list-row"><span>Total</span><strong>{formatCurrency(frete.total || item.valorSimulado || 0)}</strong></div>
+          </div>
+        </div>
+        <div className="sim-parametros-box">
+          <strong>Faixa / taxa aplicada</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Percentual</span><strong>{formatPercent(frete.percentualAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Valor fixo</span><strong>{formatCurrency(frete.valorFixoAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>R$/kg</span><strong>{formatCurrency(frete.rsKgAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Peso limite</span><strong>{formatNumber(frete.pesoLimite || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Excesso kg</span><strong>{formatNumber(frete.excessoKg || 0, 3)} kg</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="sim-parametros-box top-space-sm">
+        <strong>Taxas consideradas</strong>
+        <div className="mini-list top-space-sm">
+          {taxasRows.length ? taxasRows.map(([nome, valor]) => (
+            <div className="mini-list-row" key={nome}><span>{nome}</span><strong>{formatCurrency(valor)}</strong></div>
+          )) : <span>Nenhuma taxa adicional aplicada neste CT-e.</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AnaliseGerencialTable({ title, subtitle, rows = [], tipo = 'rota-faixa', limit = 12 }) {
+  const linhas = (rows || []).slice(0, limit);
+  return (
+    <div className="sim-parametros-box top-space">
+      <div className="sim-parametros-header">
+        <div>
+          <strong>{title}</strong>
+          {subtitle ? <p>{subtitle}</p> : null}
+        </div>
+        <span>{(rows || []).length.toLocaleString('pt-BR')} linha(s)</span>
+      </div>
+      <div className="sim-table-wrap">
+        <table className="sim-table">
+          <thead>
+            <tr>
+              <th>{tipo === 'mes' ? 'Mês' : tipo === 'faixa' ? 'Faixa de peso' : 'Rota / faixa'}</th>
+              <th>CT-e(s)</th>
+              <th>Sairia</th>
+              <th>% aloc.</th>
+              <th>Realizado ganho</th>
+              <th>Simulado ganho</th>
+              <th>Saving</th>
+              <th>Redução necessária</th>
+              <th>% sugerido</th>
+            </tr>
+          </thead>
+          <tbody>
+            {linhas.length ? linhas.map((item) => (
+              <tr key={item.chave}>
+                <td>{tipo === 'mes' ? item.mes : tipo === 'faixa' ? item.faixaPeso : `${item.rota || item.chave}${item.faixaPeso ? ` • ${item.faixaPeso}` : ''}`}</td>
+                <td>{Number(item.ctes || 0).toLocaleString('pt-BR')}</td>
+                <td>{Number(item.ctesGanharia || 0).toLocaleString('pt-BR')}</td>
+                <td>{formatPercent(item.percentualAlocacao || 0)}</td>
+                <td>{formatCurrency(item.valorRealizadoGanhador || 0)}</td>
+                <td>{formatCurrency(item.valorSimuladoGanhador || 0)}</td>
+                <td className="positivo">{formatCurrency(item.savingPotencial || 0)}</td>
+                <td>{formatCurrency(item.precisaReduzirValor || 0)}</td>
+                <td>{formatPercent(item.reducaoSugeridaPercentual || 0)}</td>
+              </tr>
+            )) : <tr><td colSpan="9">Sem dados para esta visão.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function nextFrame() {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
@@ -181,14 +306,20 @@ function simToExportRow(item = {}) {
     Transportadora_Realizada: item.transportadoraRealizada || '',
     Transportadora_Simulada: item.transportadoraSimulada || '',
     Origem: item.origem || '',
+    UF_Origem: item.ufOrigem || '',
     Destino: item.cidadeDestino || '',
     UF_Destino: item.ufDestino || '',
+    Rota: item.rota || '',
     Canal: item.canal || '',
     Peso: item.peso || 0,
+    Faixa_Peso: item.faixaPeso || '',
     Valor_NF: item.valorNF || 0,
     Valor_Realizado: item.valorRealizado || 0,
     Valor_Simulado: item.valorSimulado || 0,
     Impacto_Unitario: item.impacto || 0,
+    Referencia_Competitiva: item.referenciaCompetitiva || 0,
+    Reducao_Necessaria_Valor: item.precisaReduzirValor || 0,
+    Reducao_Necessaria_Percentual: item.precisaReduzirPercentual || 0,
     Resultado_Impacto: item.resultadoImpacto || (economizaria ? 'Reduz custo vs realizado' : 'Fica acima do realizado'),
     Motivo_Alocacao: item.motivoAlocacao || '',
     Sairia_Pela_Transportadora: item.ganharia ? 'Sim' : 'Não',
@@ -207,6 +338,36 @@ function simToExportRow(item = {}) {
       : 'Modo rápido: Sim quando Valor_Simulado é menor que Valor_Realizado. Cargas acima do realizado não são alocadas.',
     Lider_Transportadora: item.liderTransportadora || '',
     Frete_Substituta: rankingCalculado ? (item.freteSubstituta || 0) : '',
+  };
+}
+
+function analiseToExportRow(item = {}) {
+  return {
+    Chave: item.chave || '',
+    Mes: item.mes || '',
+    Rota: item.rota || '',
+    Origem: item.origem || '',
+    UF_Origem: item.ufOrigem || '',
+    Destino: item.destino || '',
+    UF_Destino: item.ufDestino || '',
+    Faixa_Peso: item.faixaPeso || '',
+    CTes: item.ctes || 0,
+    CTes_Sairia: item.ctesGanharia || 0,
+    CTes_Nao_Alocados: item.ctesNaoAlocados || 0,
+    Percentual_Alocacao: item.percentualAlocacao || 0,
+    Valor_Realizado_Total: item.valorRealizado || 0,
+    Valor_Simulado_Total: item.valorSimulado || 0,
+    Valor_NF_Total: item.valorNF || 0,
+    Valor_Realizado_Cargas_Ganhas: item.valorRealizadoGanhador || 0,
+    Valor_Simulado_Cargas_Ganhas: item.valorSimuladoGanhador || 0,
+    Valor_NF_Cargas_Ganhas: item.valorNfGanhador || 0,
+    Saving_Potencial: item.savingPotencial || 0,
+    Aumento_Ignorado: item.aumentoIgnorado || 0,
+    Reducao_Necessaria_Valor: item.precisaReduzirValor || 0,
+    Reducao_Sugerida_Percentual: item.reducaoSugeridaPercentual || 0,
+    Percentual_Frete_Realizado: item.percentualFreteRealizado || 0,
+    Percentual_Frete_Simulado: item.percentualFreteSimulado || 0,
+    Percentual_Frete_Ganhador: item.percentualFreteGanhador || 0,
   };
 }
 
@@ -774,6 +935,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     if (!resultado) return;
     baixarXlsx(`realizado-local-simulacao-${Date.now()}.xlsx`, {
       Resultado: (resultado.detalhes || []).map(simToExportRow),
+      Saving_Mes: (resultado.analises?.porMes || []).map(analiseToExportRow),
+      Saving_Rotas: (resultado.analises?.porRota || []).map(analiseToExportRow),
+      Saving_Faixas: (resultado.analises?.porFaixaPeso || []).map(analiseToExportRow),
+      Rota_Faixa: (resultado.analises?.porRotaFaixa || []).map(analiseToExportRow),
+      Oportunidades_Ajuste: (resultado.analises?.oportunidadesAjuste || []).map(analiseToExportRow),
+      Rotas_Competitivas: (resultado.analises?.rotasCompetitivas || []).map(analiseToExportRow),
       Fora_da_Malha: (resultado.foraMalha || []).map(cteToExportRow),
       Resumo_UF: resultado.resumo?.porUf || [],
     });
@@ -970,6 +1137,43 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             <div><span>Fora da malha</span><strong>{resultado.resumo.ctesForaMalha.toLocaleString('pt-BR')}</strong></div>
           </div>
 
+          <div className="sim-alert success top-space">
+            <strong>Visão para negociação:</strong> agora o painel separa o que a transportadora realmente ganharia por preço e mostra onde ela precisa melhorar por rota e faixa de peso. Para B2C, use principalmente as visões de faixa e rota/faixa, porque muitas tabelas são por faixa de kg.
+          </div>
+
+          <AnaliseGerencialTable
+            title="Saving mês a mês"
+            subtitle="Mostra o potencial real considerando apenas as cargas que sairiam pela transportadora."
+            rows={resultado.analises?.porMes || []}
+            tipo="mes"
+            limit={24}
+          />
+
+          <div className="feature-grid two top-space">
+            <AnaliseGerencialTable
+              title="Onde ela já está competitiva por faixa"
+              subtitle="Faixas com maior saving potencial."
+              rows={resultado.analises?.porFaixaPeso || []}
+              tipo="faixa"
+              limit={12}
+            />
+            <AnaliseGerencialTable
+              title="O que precisa melhorar por rota e faixa"
+              subtitle="Mostra onde o valor simulado ficou acima da referência e qual redução média seria necessária."
+              rows={resultado.analises?.oportunidadesAjuste || []}
+              tipo="rota-faixa"
+              limit={12}
+            />
+          </div>
+
+          <AnaliseGerencialTable
+            title="Top rotas com saving potencial"
+            subtitle="Rotas onde a transportadora gera maior economia real nas cargas que ganharia."
+            rows={resultado.analises?.porRota || []}
+            tipo="rota"
+            limit={20}
+          />
+
           {resultado.resumo.porUf?.length ? (
             <div className="sim-parametros-box top-space">
               <div className="sim-parametros-header"><strong>Resumo por UF destino</strong><span>{resultado.resumo.porUf.length} UF(s)</span></div>
@@ -996,7 +1200,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
           <div className="sim-table-wrap top-space">
             <table className="sim-table">
-              <thead><tr><th>CT-e</th><th>Emissão</th><th>Realizada</th><th>Origem → Destino</th><th>Valor CT-e</th><th>Simulado</th><th>Saving considerado</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>CT-e</th><th>Emissão</th><th>Realizada</th><th>Origem → Destino</th><th>Faixa</th><th>Valor CT-e</th><th>Simulado</th><th>Saving considerado</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {resultado.detalhes.slice(0, 100).map((item) => (
                   <Fragment key={item.id}>
@@ -1005,6 +1209,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                       <td>{formatDateBr(item.emissao)}</td>
                       <td>{item.transportadoraRealizada}</td>
                       <td>{item.origem} → {item.cidadeDestino}/{item.ufDestino}</td>
+                      <td>{item.faixaPeso || '—'}</td>
                       <td>{formatCurrency(item.valorRealizado)}</td>
                       <td>{formatCurrency(item.valorSimulado)}</td>
                       <td className={item.ganharia ? 'positivo' : ''}>{formatCurrency(item.savingPotencial || 0)}</td>
@@ -1012,7 +1217,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                       <td><button className="link-btn" onClick={() => setDetalheAberto(detalheAberto === item.id ? null : item.id)}>Detalhe</button></td>
                     </tr>
                     {detalheAberto === item.id ? (
-                      <tr className="sim-detalhe-row"><td colSpan="9"><pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{JSON.stringify(item.detalhes, null, 2)}</pre></td></tr>
+                      <tr className="sim-detalhe-row"><td colSpan="10"><DetalheSimulacao item={item} rankingCalculado={rankingCalculado} /></td></tr>
                     ) : null}
                   </Fragment>
                 ))}
