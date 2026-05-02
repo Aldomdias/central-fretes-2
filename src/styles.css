@@ -958,3 +958,58 @@ textarea,
   font-size: 13px;
   line-height: 1.45;
 }
+
+/* Módulo independente: Controle de Transportadoras e Lotação */
+.lotacao-page .lotacao-upload-card {
+  align-content: start;
+}
+
+.lotacao-page input[type="file"] {
+  border: 1px dashed var(--border);
+  background: var(--panel-soft);
+}
+
+.lotacao-summary-mini {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lotacao-comparativo-card {
+  align-content: start;
+}
+
+.lotacao-table-card {
+  min-height: 320px;
+}
+
+.lotacao-page .table-card td.positivo,
+.lotacao-page .sim-analise-tabela td.positivo {
+  color: #0f7a58;
+  font-weight: 800;
+}
+
+.lotacao-page .table-card td.negativo,
+.lotacao-page .sim-analise-tabela td.negativo {
+  color: #b42318;
+  font-weight: 800;
+}
+
+.lotacao-page .status-pill {
+  white-space: nowrap;
+}
+
+button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1200px) {
+  .lotacao-summary-mini {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .lotacao-summary-mini {
+    grid-template-columns: 1fr;
+  }
+}

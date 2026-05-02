@@ -8,6 +8,7 @@ const menuPrincipal = [
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
   { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
   { chave: 'importar-template', label: 'Importar Template', icon: '⇩' },
+  { chave: 'lotacao', label: 'Lotação', icon: '🚚' },
 ];
 
 const menuCadastros = [

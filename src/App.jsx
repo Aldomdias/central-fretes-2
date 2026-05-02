@@ -8,6 +8,7 @@ import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import RealizadoPage from './pages/RealizadoPage';
 import RealizadoLocalPage from './pages/RealizadoLocalPage';
+import LotacaoPage from './pages/LotacaoPage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -88,6 +89,10 @@ export default function App() {
 
   if (paginaAtual === 'realizado-local') {
     content = <RealizadoLocalPage transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'lotacao') {
+    content = <LotacaoPage />;
   }
 
   if (paginaAtual === 'transportadoras') {
