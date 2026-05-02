@@ -295,6 +295,7 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
       numeroCte: String(row.numeroCte || '').trim(),
       transportadora: normalizeTextRealizado(row.transportadora),
       cnpjTransportadora: String(row.cnpjTransportadora || '').replace(/\D/g, ''),
+      tomadorServico: normalizeTextRealizado(row.tomadorServico || row.raw?.tomadorServico || ''),
       cidadeOrigem: origem.cidade,
       ufOrigem: origem.uf,
       ibgeOrigem,
@@ -836,23 +837,36 @@ export async function simularRealizadoLocalRapido({
         let lider = null;
         let ranking = null;
 
-        if (rankingCalculado) {
-          const calculados = candidatos
-            .map((item) => calcularItemTabela({ ...item, cte }))
-            .filter(Boolean)
-            .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
+        const calculadosSimulada = candidatosDaSimulada
+          .map((item) => calcularItemTabela({ ...item, cte }))
+          .filter(Boolean)
+          .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
 
-          const escolhidoIndex = calculados.findIndex((item) => transportadoraMatch(item.transportadora, nomeTransportadora, { exato: true }));
-          escolhido = escolhidoIndex >= 0 ? calculados[escolhidoIndex] : null;
-          lider = calculados[0] || null;
-          ranking = escolhidoIndex >= 0 ? escolhidoIndex + 1 : null;
+        escolhido = calculadosSimulada[0] || null;
+
+        if (rankingCalculado && escolhido) {
+          lider = escolhido;
+          let menoresQueEscolhido = 0;
+
+          for (const candidato of candidatos) {
+            if (transportadoraMatch(candidato.transportadora?.nome, nomeTransportadora, { exato: true })) continue;
+            const calculado = calcularItemTabela({ ...candidato, cte });
+            if (!calculado) continue;
+
+            if (
+              calculado.total < (lider?.total ?? Infinity) ||
+              (calculado.total === lider?.total && calculado.prazo < (lider?.prazo ?? Infinity))
+            ) {
+              lider = calculado;
+            }
+
+            if (calculado.total < escolhido.total - 0.009) {
+              menoresQueEscolhido += 1;
+            }
+          }
+
+          ranking = menoresQueEscolhido + 1;
         } else {
-          const calculadosSimulada = candidatosDaSimulada
-            .map((item) => calcularItemTabela({ ...item, cte }))
-            .filter(Boolean)
-            .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
-
-          escolhido = calculadosSimulada[0] || null;
           lider = null;
           ranking = null;
         }

@@ -910,6 +910,89 @@ async function fetchTransportadorasByIds(supabase, ids = []) {
   return rows;
 }
 
+async function fetchOrigensByIds(supabase, ids = []) {
+  const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
+  if (!uniqueIds.length) return [];
+
+  const rows = [];
+  const chunkSize = 100;
+  for (let index = 0; index < uniqueIds.length; index += chunkSize) {
+    const chunk = uniqueIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('origens')
+      .select('*')
+      .in('id', chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  return rows;
+}
+
+function parseRouteKeysDb(routeKeys = []) {
+  const pares = [];
+  const keySet = new Set();
+
+  (routeKeys || []).forEach((raw) => {
+    const texto = String(raw || '').trim();
+    if (!texto) return;
+    const [canalRaw, rotaRaw] = texto.includes('|') ? texto.split('|') : ['', texto];
+    const [origemRaw, destinoRaw] = String(rotaRaw || '').split('-');
+    const ibgeOrigem = String(origemRaw || '').replace(/\D/g, '');
+    const ibgeDestino = String(destinoRaw || '').replace(/\D/g, '');
+    if (!ibgeOrigem || !ibgeDestino) return;
+    const canal = categoriaCanalDb(canalRaw);
+    const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
+    pares.push({ canal, ibgeOrigem, ibgeDestino, pairKey });
+    keySet.add(canal ? `${canal}|${pairKey}` : pairKey);
+  });
+
+  return { pares, keySet };
+}
+
+async function fetchRotasByIbgePairs(supabase, pares = []) {
+  const pairSet = new Set((pares || []).map((par) => par.pairKey).filter(Boolean));
+  if (!pairSet.size) return [];
+
+  const origens = Array.from(new Set((pares || []).map((par) => par.ibgeOrigem).filter(Boolean)));
+  const destinos = Array.from(new Set((pares || []).map((par) => par.ibgeDestino).filter(Boolean)));
+  const rowsById = new Map();
+  const origemChunkSize = 40;
+  const destinoChunkSize = 80;
+
+  for (let oi = 0; oi < origens.length; oi += origemChunkSize) {
+    const origemChunk = origens.slice(oi, oi + origemChunkSize);
+    for (let di = 0; di < destinos.length; di += destinoChunkSize) {
+      const destinoChunk = destinos.slice(di, di + destinoChunkSize);
+      let from = 0;
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('rotas')
+          .select('*')
+          .in('ibge_origem', origemChunk)
+          .in('ibge_destino', destinoChunk)
+          .range(from, from + PAGE_SIZE - 1);
+
+        if (error) throw error;
+
+        const page = data || [];
+        page.forEach((rota) => {
+          const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
+          const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
+          if (!pairSet.has(`${ibgeOrigem}-${ibgeDestino}`)) return;
+          rowsById.set(String(rota.id || `${rota.origem_id}-${ibgeOrigem}-${ibgeDestino}-${rota.nome_rota || ''}`), rota);
+        });
+
+        if (page.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+    }
+  }
+
+  return [...rowsById.values()];
+}
+
 function destinoKeyDb(value = '') {
   return normalizeBuscaDb(cidadeSemUfDb(value));
 }
@@ -1124,6 +1207,61 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
     cotacoes,
     taxas,
   ] = await Promise.all([
+    fetchTransportadorasByIds(supabase, transportadoraIds),
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
+    fetchCotacoesByOrigemIdsAndRotas(supabase, origemIdsComRota, rotaNomes),
+    fetchTaxasByOrigemIdsAndDestinos(supabase, origemIdsComRota, destinosIbgeDasRotas),
+  ]);
+
+  return transportadorasFromDbRows({
+    transportadoras: transportadorasRows || [],
+    origens,
+    generalidades,
+    rotas: rotas || [],
+    cotacoes,
+    taxas,
+  });
+}
+
+export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = '' } = {}) {
+  if (!isSupabaseConfigured()) {
+    const raw = localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
+  }
+
+  const { pares, keySet } = parseRouteKeysDb(routeKeys);
+  if (!pares.length) return [];
+
+  const supabase = ensureClient();
+  const rotasBase = await fetchRotasByIbgePairs(supabase, pares);
+  if (!rotasBase.length) return [];
+
+  const origemRows = await fetchOrigensByIds(supabase, Array.from(new Set(rotasBase.map((item) => item.origem_id).filter(Boolean))));
+  const origemById = new Map((origemRows || []).map((item) => [String(item.id), item]));
+  const canalFiltro = categoriaCanalDb(canal);
+
+  const rotas = rotasBase.filter((rota) => {
+    const origemRow = origemById.get(String(rota.origem_id));
+    if (!origemRow) return false;
+    if (canalFiltro && !canalCompativelDb(origemRow.canal, canalFiltro)) return false;
+    const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
+    const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
+    const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
+    const canalKey = `${categoriaCanalDb(origemRow.canal)}|${pairKey}`;
+    return keySet.has(canalKey) || keySet.has(pairKey);
+  });
+
+  const origemIdsComRota = Array.from(new Set(rotas.map((item) => item.origem_id).filter(Boolean)));
+  if (!origemIdsComRota.length) return [];
+
+  const origens = origemRows.filter((item) => origemIdsComRota.includes(item.id));
+  const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
+  const rotaNomes = Array.from(new Set((rotas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
+  const destinosIbgeDasRotas = Array.from(new Set((rotas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
+
+  const [transportadorasRows, generalidades, cotacoes, taxas] = await Promise.all([
     fetchTransportadorasByIds(supabase, transportadoraIds),
     fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
     fetchCotacoesByOrigemIdsAndRotas(supabase, origemIdsComRota, rotaNomes),

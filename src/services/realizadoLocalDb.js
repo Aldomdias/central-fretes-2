@@ -1,5 +1,6 @@
+import { isTomadorServicoValidoRealizado } from '../utils/realizadoCtes';
 const DB_NAME = 'amd-realizado-local-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_CTES = 'ctes_enxutos';
 const STORE_META = 'meta';
 
@@ -19,6 +20,7 @@ function openDb() {
         store.createIndex('ufOrigem', 'ufOrigem', { unique: false });
         store.createIndex('ufDestino', 'ufDestino', { unique: false });
         store.createIndex('chaveRotaIbge', 'chaveRotaIbge', { unique: false });
+        store.createIndex('tomadorServico', 'tomadorServico', { unique: false });
       } else {
         const store = req.transaction.objectStore(STORE_CTES);
         if (!store.indexNames.contains('competencia')) store.createIndex('competencia', 'competencia', { unique: false });
@@ -28,6 +30,7 @@ function openDb() {
         if (!store.indexNames.contains('ufOrigem')) store.createIndex('ufOrigem', 'ufOrigem', { unique: false });
         if (!store.indexNames.contains('ufDestino')) store.createIndex('ufDestino', 'ufDestino', { unique: false });
         if (!store.indexNames.contains('chaveRotaIbge')) store.createIndex('chaveRotaIbge', 'chaveRotaIbge', { unique: false });
+        if (!store.indexNames.contains('tomadorServico')) store.createIndex('tomadorServico', 'tomadorServico', { unique: false });
       }
 
       if (!db.objectStoreNames.contains(STORE_META)) {
@@ -353,6 +356,50 @@ export async function diagnosticarRealizadoLocal() {
   const meta = await requestToPromise(tx.objectStore(STORE_META).get('ultimaAtualizacao')).catch(() => null);
   db.close();
   return { total: count || 0, ultimaAtualizacao: meta?.value || '' };
+}
+
+export async function limparNaoTomadoresRealizadoLocal(options = {}) {
+  const db = await openDb();
+  let avaliados = 0;
+  let removidos = 0;
+  let mantidos = 0;
+
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CTES, 'readwrite');
+    const store = tx.objectStore(STORE_CTES);
+    const req = store.openCursor();
+
+    req.onerror = () => reject(req.error || new Error('Erro ao limpar tomadores da base local.'));
+    tx.onerror = () => reject(tx.error || new Error('Erro na transação de limpeza de tomadores.'));
+    tx.oncomplete = () => resolve();
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      avaliados += 1;
+      const row = cursor.value || {};
+      if (!isTomadorServicoValidoRealizado(row.tomadorServico)) {
+        cursor.delete();
+        removidos += 1;
+      } else {
+        mantidos += 1;
+      }
+      if (avaliados % 1000 === 0) options.onProgress?.({ avaliados, removidos, mantidos });
+      cursor.continue();
+    };
+  });
+
+  const txMeta = db.transaction(STORE_META, 'readwrite');
+  txMeta.objectStore(STORE_META).put({
+    key: 'ultimaLimpezaTomador',
+    value: new Date().toISOString(),
+    avaliados,
+    removidos,
+    mantidos,
+  });
+  await txComplete(txMeta);
+  db.close();
+  return { avaliados, removidos, mantidos };
 }
 
 export async function limparRealizadoLocal() {

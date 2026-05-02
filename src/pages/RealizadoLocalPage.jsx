@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { buscarBaseSimulacaoDb, carregarBaseCompletaDb, carregarTransportadoraCompletaDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarTransportadoraCompletaDb } from '../services/freteDatabaseService';
 import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import {
   buscarRealizadoLocalParaSimulacao,
@@ -8,11 +8,13 @@ import {
   diagnosticarRealizadoLocal,
   exportarRealizadoLocal,
   limparRealizadoLocal,
+  limparNaoTomadoresRealizadoLocal,
   salvarRealizadoLocal,
   listarRealizadoLocal,
   resumirRealizadoLocal,
 } from '../services/realizadoLocalDb';
 import {
+  categoriaCanalRealizado,
   construirEscopoTransportadoraSimulada,
   enriquecerMunicipiosComTabelas,
   prepararRegistrosRealizadoLocal,
@@ -23,6 +25,7 @@ import {
   formatDateBr,
   formatNumber,
   formatPercent,
+  regraTomadorServicoRealizadoTexto,
 } from '../utils/realizadoCtes';
 
 const DEFAULT_FILTROS = {
@@ -386,6 +389,7 @@ function cteToExportRow(item = {}) {
     CTE: item.numeroCte || '',
     Chave_CTE: item.chaveCte || '',
     Transportadora_Realizada: item.transportadora || '',
+    Tomador_Servico: item.tomadorServico || '',
     Canal: item.canal || '',
     Origem: item.cidadeOrigem || '',
     UF_Origem: item.ufOrigem || '',
@@ -702,7 +706,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         mensagem: 'Atualizando resumo local...',
       });
       setFeedback(
-        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) preparados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
+        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) considerados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
       );
       setFileKey(makeFileKey());
       await pesquisar(filtros, false);
@@ -762,6 +766,37 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setFeedback(`IBGE local reprocessado: ${rows.length.toLocaleString('pt-BR')} CT-e(s). Pendências atuais: ${pendencias.length.toLocaleString('pt-BR')}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao reprocessar IBGE da base local.');
+    } finally {
+      setCarregando(false);
+      setTimeout(() => setProgress(null), 2500);
+    }
+  }
+
+  async function limparNaoTomadoresLocal() {
+    const ok = window.confirm(`Deseja remover da base local todos os CT-e(s) cujo Tomador de Serviço não contenha: ${regraTomadorServicoRealizadoTexto()}?`);
+    if (!ok) return;
+
+    setCarregando(true);
+    setErro('');
+    setFeedback('Limpando CT-e(s) fora da regra de tomador...');
+    setProgress({ etapa: 'Limpando tomadores', atual: 0, total: diagnostico?.total || 0, percentual: 5, mensagem: 'Removendo CT-e(s) que não são tomadores CPX/ITR/GRIP/GP PNEUS...' });
+
+    try {
+      const result = await limparNaoTomadoresRealizadoLocal({
+        onProgress: ({ avaliados, removidos, mantidos }) => {
+          setProgress({
+            etapa: 'Limpando tomadores',
+            atual: avaliados,
+            total: diagnostico?.total || avaliados,
+            percentual: 5 + Math.round(pct(avaliados, diagnostico?.total || avaliados) * 0.85),
+            mensagem: `${avaliados.toLocaleString('pt-BR')} avaliados • ${removidos.toLocaleString('pt-BR')} removidos • ${mantidos.toLocaleString('pt-BR')} mantidos`,
+          });
+        },
+      });
+      setFeedback(`Limpeza concluída: ${result.mantidos.toLocaleString('pt-BR')} mantidos e ${result.removidos.toLocaleString('pt-BR')} removidos pela regra de tomador.`);
+      await pesquisar(filtros, false);
+    } catch (error) {
+      setErro(error.message || 'Erro ao limpar tomadores da base local.');
     } finally {
       setCarregando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -835,47 +870,58 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
     setProgress((prev) => ({
       ...(prev || {}),
-      etapa: 'Carregando concorrentes enxutos',
+      etapa: 'Carregando concorrentes por rota IBGE',
       percentual: 26,
-      mensagem: 'Modo completo: buscando somente concorrentes das origens/destinos existentes no realizado filtrado.',
+      mensagem: 'Modo completo otimizado: buscando somente as tabelas das rotas IBGE presentes nos CT-e(s) filtrados.',
     }));
     await nextFrame();
 
-    const grupos = new Map();
-    rows.forEach((row) => {
-      const origem = row.cidadeOrigem || '';
-      const canal = row.canal || '';
-      const destino = String(row.ibgeDestino || '').replace(/\D/g, '');
-      if (!origem || !destino) return;
-      const key = `${origem}|${canal}`;
-      const grupo = grupos.get(key) || { origem, canal, destinos: new Set() };
-      grupo.destinos.add(destino);
-      grupos.set(key, grupo);
-    });
+    const routeKeys = Array.from(new Set(
+      rows
+        .map((row) => {
+          const rota = String(row.chaveRotaIbge || '').trim();
+          if (!rota) return '';
+          return `${categoriaCanalRealizado(row.canal)}|${rota}`;
+        })
+        .filter(Boolean)
+    ));
 
     const partes = [tabelaSelecionada];
-    for (const grupo of grupos.values()) {
-      const destinos = [...grupo.destinos];
-      for (let i = 0; i < destinos.length; i += 200) {
-        const destinoCodigos = destinos.slice(i, i + 200);
-        const parcial = await buscarBaseSimulacaoDb({
-          origem: grupo.origem,
-          canal: grupo.canal,
-          destinoCodigos,
-        }).catch(() => []);
-        if (parcial?.length) partes.push(parcial);
-        await nextFrame();
+    try {
+      const concorrentesPorRota = await buscarBaseSimulacaoPorRotasDb({
+        routeKeys,
+        canal: filtrosAplicados.canal || filtros.canal || '',
+      });
+      if (concorrentesPorRota?.length) partes.push(concorrentesPorRota);
+    } catch (error) {
+      console.warn('Falha na busca otimizada por rotas. Tentando fallback enxuto por origem/destino.', error);
+      const grupos = new Map();
+      rows.forEach((row) => {
+        const origem = row.cidadeOrigem || '';
+        const canal = row.canal || '';
+        const destino = String(row.ibgeDestino || '').replace(/\D/g, '');
+        if (!origem || !destino) return;
+        const key = `${origem}|${canal}`;
+        const grupo = grupos.get(key) || { origem, canal, destinos: new Set() };
+        grupo.destinos.add(destino);
+        grupos.set(key, grupo);
+      });
+
+      for (const grupo of grupos.values()) {
+        const destinos = [...grupo.destinos];
+        for (let i = 0; i < destinos.length; i += 120) {
+          const destinoCodigos = destinos.slice(i, i + 120);
+          const parcial = await buscarBaseSimulacaoDb({ origem: grupo.origem, canal: grupo.canal, destinoCodigos }).catch(() => []);
+          if (parcial?.length) partes.push(parcial);
+          await nextFrame();
+        }
       }
     }
 
     const mescladas = mesclarTransportadorasParciais(partes);
     if (mescladas.length) return mescladas;
 
-    if (transportadorasTabela?.length) return transportadorasTabela;
-    const base = await carregarBaseCompletaDb().catch(() => []);
-    const finalBase = base?.length ? base : transportadoras;
-    setTransportadorasTabela(finalBase);
-    return finalBase;
+    return tabelaSelecionada;
   }
 
   async function simular() {
@@ -1094,6 +1140,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <button className="btn-secondary" onClick={reprocessarIbgeLocal} disabled={carregando || importando || simulando || !diagnostico?.total || !municipios.length}>
             Reprocessar IBGE local
           </button>
+          <button className="btn-secondary" onClick={limparNaoTomadoresLocal} disabled={carregando || importando || simulando || !diagnostico?.total}>
+            Limpar não tomadores
+          </button>
           <button className="btn-danger" onClick={limparBase} disabled={carregando || importando || simulando || !diagnostico?.total}>
             Limpar base local
           </button>
@@ -1104,6 +1153,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
       <div className={ibgeInfo.total ? 'sim-alert success' : 'sim-alert'}>
         <strong>Referência IBGE local:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação local usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se o Supabase estiver vazio.
+      </div>
+      <div className="sim-alert info">
+        <strong>Regra de limpeza do realizado:</strong> entram na base apenas CT-e(s) cujo Tomador de Serviço contenha {regraTomadorServicoRealizadoTexto()}. Use “Limpar não tomadores” para reprocessar uma base antiga já importada.
       </div>
 
       {progress ? (
@@ -1187,7 +1239,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               <option value="completo">Completo — ranking e ganhadores</option>
             </select>
             <small>
-              Rápido calcula somente a transportadora escolhida. Completo compara com concorrentes e demora mais.
+              Rápido calcula somente a transportadora escolhida. Completo otimizado compara apenas concorrentes das mesmas rotas IBGE filtradas.
             </small>
           </div>
           <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>

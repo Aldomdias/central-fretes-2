@@ -6,6 +6,16 @@ const HEADER_MAP = {
   'nome transportadora': 'transportadora',
   'cnpj transportadora': 'cnpjTransportadora',
   'cnpj do transportador': 'cnpjTransportadora',
+  'tomador': 'tomadorServico',
+  'tomador servico': 'tomadorServico',
+  'tomador de servico': 'tomadorServico',
+  'tomador do servico': 'tomadorServico',
+  'tomador servico cte': 'tomadorServico',
+  'tomador de servico cte': 'tomadorServico',
+  'nome tomador': 'tomadorServico',
+  'razao social tomador': 'tomadorServico',
+  'razao social do tomador': 'tomadorServico',
+  'cliente tomador': 'tomadorServico',
   'emissao': 'emissao',
   'data emissao': 'emissao',
   'data de emissao': 'emissao',
@@ -94,6 +104,29 @@ const HEADER_MAP = {
   'data de faturamento do pedido': 'dataFaturamentoPedido',
   'data de expedicao do pedido': 'dataExpedicaoPedido',
 };
+
+export const TOMADORES_SERVICO_VALIDOS_REALIZADO = ['CPX', 'ITR', 'GRIP', 'GP PNEUS'];
+
+export function normalizarTomadorServicoRealizado(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isTomadorServicoValidoRealizado(value) {
+  const texto = normalizarTomadorServicoRealizado(value);
+  if (!texto) return false;
+  return TOMADORES_SERVICO_VALIDOS_REALIZADO.some((tomador) => texto.includes(normalizarTomadorServicoRealizado(tomador)));
+}
+
+export function regraTomadorServicoRealizadoTexto() {
+  return TOMADORES_SERVICO_VALIDOS_REALIZADO.join(', ');
+}
+
 export function normalizeHeaderRealizado(value) {
   return String(value ?? '')
     .normalize('NFD')
@@ -258,6 +291,7 @@ function normalizeRegistro(row = {}, arquivoOrigem = '') {
     competencia: getCompetencia(emissao, arquivoOrigem),
     transportadora: normalizeTextRealizado(item.transportadora),
     cnpjTransportadora: String(item.cnpjTransportadora || '').replace(/\D/g, ''),
+    tomadorServico: normalizeTextRealizado(item.tomadorServico || item.tomador || ''),
     emissao,
     chaveCte,
     numeroCte: String(item.numeroCte || '').trim(),
@@ -361,12 +395,13 @@ export async function parseRealizadoCtesFile(file) {
   const refInfo = corrigirRefDaAba(sheet);
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false, blankrows: false });
 
-  const registros = deduplicateRows(
-    rows
-      .map((row) => normalizeRegistro(row, file.name || ''))
-      .filter((row) => row.chaveCte || row.numeroCte)
-      .filter((row) => row.valorCte > 0 || row.valorNF > 0)
-  );
+  const normalizados = rows
+    .map((row) => normalizeRegistro(row, file.name || ''))
+    .filter((row) => row.chaveCte || row.numeroCte)
+    .filter((row) => row.valorCte > 0 || row.valorNF > 0);
+
+  const comTomadorValido = normalizados.filter((row) => isTomadorServicoValidoRealizado(row.tomadorServico));
+  const registros = deduplicateRows(comTomadorValido);
 
   return {
     registros,
@@ -379,6 +414,9 @@ export async function parseRealizadoCtesFile(file) {
       refFoiCorrigida: refInfo.corrigida,
       linhasEstimadas: contarLinhasPelaRef(refInfo.refCorrigida),
       linhasOriginais: rows.length,
+      registrosAntesTomador: normalizados.length,
+      registrosIgnoradosTomador: Math.max(0, normalizados.length - comTomadorValido.length),
+      regraTomador: regraTomadorServicoRealizadoTexto(),
       registrosValidos: registros.length,
     },
   };
