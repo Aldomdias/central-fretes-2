@@ -659,6 +659,9 @@ function novoGrupoSimulacao(key, extras = {}) {
     precisaReduzirValor: 0,
     referenciaCompetitiva: 0,
     valorSimuladoNaoAlocado: 0,
+    valorRealizadoNaoAlocado: 0,
+    valorNfNaoAlocado: 0,
+    ctesComAjuste: 0,
     ...extras,
   };
 }
@@ -681,22 +684,46 @@ function acumularGrupo(grupo, detalhe) {
     grupo.precisaReduzirValor += toNumber(detalhe.precisaReduzirValor);
     grupo.referenciaCompetitiva += toNumber(detalhe.referenciaCompetitiva);
     grupo.valorSimuladoNaoAlocado += toNumber(detalhe.valorSimulado);
+    grupo.valorRealizadoNaoAlocado += toNumber(detalhe.valorRealizado);
+    grupo.valorNfNaoAlocado += toNumber(detalhe.valorNF);
+    if (toNumber(detalhe.precisaReduzirValor) > 0.009) grupo.ctesComAjuste += 1;
   }
+}
+
+function statusFornecedorGrupo(grupo) {
+  if (!grupo.ctes) return 'Sem volume';
+  if (grupo.ctesGanharia && !grupo.ctesComAjuste) return 'Competitivo';
+  if (grupo.ctesGanharia && grupo.ctesComAjuste) return 'Parcial: manter ganhas e ajustar perdidas';
+  if (!grupo.ctesGanharia && grupo.ctesComAjuste) return 'Precisa reduzir para ganhar volume';
+  return 'Sem oportunidade de alocação';
 }
 
 function finalizarGrupo(grupo) {
   const reducaoSugeridaPercentual = grupo.valorSimuladoNaoAlocado > 0
     ? (grupo.precisaReduzirValor / grupo.valorSimuladoNaoAlocado) * 100
     : 0;
+  const referenciaMediaNaoAlocada = grupo.ctesNaoAlocados > 0 ? grupo.referenciaCompetitiva / grupo.ctesNaoAlocados : 0;
+  const simuladoMedioNaoAlocado = grupo.ctesNaoAlocados > 0 ? grupo.valorSimuladoNaoAlocado / grupo.ctesNaoAlocados : 0;
+  const reducaoMediaPorCte = grupo.ctesComAjuste > 0 ? grupo.precisaReduzirValor / grupo.ctesComAjuste : 0;
+  const ganhoMedioPorCte = grupo.ctesGanharia > 0 ? grupo.savingPotencial / grupo.ctesGanharia : 0;
+
   return {
     ...grupo,
     percentualAlocacao: grupo.ctes ? (grupo.ctesGanharia / grupo.ctes) * 100 : 0,
     percentualFreteRealizado: grupo.valorNF > 0 ? (grupo.valorRealizado / grupo.valorNF) * 100 : 0,
     percentualFreteSimulado: grupo.valorNF > 0 ? (grupo.valorSimulado / grupo.valorNF) * 100 : 0,
     percentualFreteGanhador: grupo.valorNfGanhador > 0 ? (grupo.valorSimuladoGanhador / grupo.valorNfGanhador) * 100 : 0,
+    percentualFreteNaoAlocado: grupo.valorNfNaoAlocado > 0 ? (grupo.valorSimuladoNaoAlocado / grupo.valorNfNaoAlocado) * 100 : 0,
     reducaoSugeridaPercentual,
+    referenciaMediaNaoAlocada,
+    simuladoMedioNaoAlocado,
+    reducaoMediaPorCte,
+    ganhoMedioPorCte,
     ticketMedioRealizado: grupo.ctes ? grupo.valorRealizado / grupo.ctes : 0,
     ticketMedioSimulado: grupo.ctes ? grupo.valorSimulado / grupo.ctes : 0,
+    potencialCtesAjuste: grupo.ctesComAjuste,
+    potencialVolumeNaoAlocado: grupo.ctesNaoAlocados,
+    statusFornecedor: statusFornecedorGrupo(grupo),
   };
 }
 
@@ -738,7 +765,31 @@ function gerarAnalisesGerenciais(detalhes = []) {
     .sort((a, b) => b.savingPotencial - a.savingPotencial || b.ctesGanharia - a.ctesGanharia)
     .slice(0, 200);
 
-  return { porMes, porRota, porFaixaPeso, porRotaFaixa, oportunidadesAjuste, rotasCompetitivas };
+  const ajustePorFaixa = porFaixaPeso
+    .filter((item) => item.ctesComAjuste > 0 && item.precisaReduzirValor > 0)
+    .sort((a, b) => b.ctesComAjuste - a.ctesComAjuste || b.precisaReduzirValor - a.precisaReduzirValor);
+
+  const visaoFornecedor = porRotaFaixa
+    .filter((item) => item.ctesGanharia > 0 || item.ctesComAjuste > 0)
+    .sort((a, b) => {
+      const oportunidadeA = (a.savingPotencial || 0) + (a.precisaReduzirValor || 0);
+      const oportunidadeB = (b.savingPotencial || 0) + (b.precisaReduzirValor || 0);
+      return oportunidadeB - oportunidadeA || b.ctes - a.ctes;
+    })
+    .slice(0, 300);
+
+  const planoAcaoFornecedor = [
+    ...rotasCompetitivas.slice(0, 10).map((item) => ({ ...item, tipoAcao: 'Defender volume', acaoRecomendada: 'Manter tabela competitiva e reforçar capacidade nesta rota/faixa.' })),
+    ...oportunidadesAjuste.slice(0, 20).map((item) => ({ ...item, tipoAcao: 'Reduzir para capturar volume', acaoRecomendada: `Reduzir em média ${reducaoSugeridaTexto(item.reducaoSugeridaPercentual)} nesta rota/faixa para ficar competitivo.` })),
+  ];
+
+  return { porMes, porRota, porFaixaPeso, porRotaFaixa, oportunidadesAjuste, rotasCompetitivas, ajustePorFaixa, visaoFornecedor, planoAcaoFornecedor };
+}
+
+function reducaoSugeridaTexto(percentual = 0) {
+  const valor = Number(percentual || 0);
+  if (!Number.isFinite(valor) || valor <= 0) return '0,00%';
+  return `${valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
 export async function simularRealizadoLocalRapido({

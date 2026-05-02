@@ -196,6 +196,116 @@ function AnaliseGerencialTable({ title, subtitle, rows = [], tipo = 'rota-faixa'
   );
 }
 
+
+function FornecedorInsightPanel({ resultado, transportadora }) {
+  const analises = resultado?.analises || {};
+  const melhorCompetitiva = analises.rotasCompetitivas?.[0];
+  const maiorAjuste = analises.oportunidadesAjuste?.[0];
+  const faixaCritica = analises.ajustePorFaixa?.[0];
+  const linhasFornecedor = analises.visaoFornecedor || [];
+  const ajusteFaixa = analises.ajustePorFaixa || [];
+
+  return (
+    <div className="sim-parametros-box top-space">
+      <div className="sim-parametros-header">
+        <div>
+          <strong>Visão para devolutiva ao transportador</strong>
+          <p>Resumo comercial para mostrar onde a tabela já é competitiva e onde precisa reduzir por rota e faixa de peso.</p>
+        </div>
+        <span>{transportadora || 'Transportadora simulada'}</span>
+      </div>
+
+      <div className="feature-grid three top-space-sm">
+        <div className="sim-parametros-box subtle">
+          <strong>Melhor argumento de volume</strong>
+          <p>{melhorCompetitiva ? `${melhorCompetitiva.rota} • ${melhorCompetitiva.faixaPeso || 'faixa não informada'}` : 'Ainda não há rota/faixa competitiva no filtro.'}</p>
+          <small>{melhorCompetitiva ? `${Number(melhorCompetitiva.ctesGanharia || 0).toLocaleString('pt-BR')} CT-e(s) ganhos • saving ${formatCurrency(melhorCompetitiva.savingPotencial || 0)}` : 'Use uma base maior ou confira malha/tabela.'}</small>
+        </div>
+        <div className="sim-parametros-box subtle">
+          <strong>Maior ponto de ajuste</strong>
+          <p>{maiorAjuste ? `${maiorAjuste.rota} • ${maiorAjuste.faixaPeso || 'faixa não informada'}` : 'Sem ajuste necessário nas linhas simuladas.'}</p>
+          <small>{maiorAjuste ? `redução média sugerida ${formatPercent(maiorAjuste.reducaoSugeridaPercentual || 0)} • ${Number(maiorAjuste.ctesComAjuste || maiorAjuste.ctesNaoAlocados || 0).toLocaleString('pt-BR')} CT-e(s) com oportunidade` : 'A transportadora está abaixo ou sem referência nesta visão.'}</small>
+        </div>
+        <div className="sim-parametros-box subtle">
+          <strong>Faixa de peso crítica</strong>
+          <p>{faixaCritica ? faixaCritica.faixaPeso : 'Sem faixa crítica identificada.'}</p>
+          <small>{faixaCritica ? `${Number(faixaCritica.ctesComAjuste || 0).toLocaleString('pt-BR')} CT-e(s) pedem ajuste • redução ${formatPercent(faixaCritica.reducaoSugeridaPercentual || 0)}` : 'Boa visão para B2C quando a tabela é por faixa.'}</small>
+        </div>
+      </div>
+
+      <div className="sim-alert info top-space-sm">
+        <strong>Como ler:</strong> nas linhas competitivas, a transportadora já pode receber volume. Nas linhas com ajuste, o sistema mostra a redução média necessária sobre o frete simulado para ela ficar dentro da referência e capturar mais CT-e(s).
+      </div>
+
+      <div className="sim-table-wrap top-space">
+        <table className="sim-table">
+          <thead>
+            <tr>
+              <th>Rota</th>
+              <th>Faixa</th>
+              <th>CT-e(s)</th>
+              <th>Sairia</th>
+              <th>Precisa ajuste</th>
+              <th>% aloc.</th>
+              <th>Saving atual</th>
+              <th>Redução média sugerida</th>
+              <th>Status fornecedor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {linhasFornecedor.slice(0, 25).map((item) => (
+              <tr key={item.chave}>
+                <td>{item.rota || item.chave}</td>
+                <td>{item.faixaPeso || '—'}</td>
+                <td>{Number(item.ctes || 0).toLocaleString('pt-BR')}</td>
+                <td>{Number(item.ctesGanharia || 0).toLocaleString('pt-BR')}</td>
+                <td>{Number(item.ctesComAjuste || 0).toLocaleString('pt-BR')}</td>
+                <td>{formatPercent(item.percentualAlocacao || 0)}</td>
+                <td className={item.savingPotencial > 0 ? 'positivo' : ''}>{formatCurrency(item.savingPotencial || 0)}</td>
+                <td>{formatPercent(item.reducaoSugeridaPercentual || 0)}</td>
+                <td>{item.statusFornecedor || '—'}</td>
+              </tr>
+            ))}
+            {!linhasFornecedor.length ? <tr><td colSpan="9">Sem visão de fornecedor para o filtro atual.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="sim-table-wrap top-space">
+        <table className="sim-table">
+          <thead>
+            <tr>
+              <th>Faixa de peso</th>
+              <th>CT-e(s)</th>
+              <th>Sairia</th>
+              <th>Precisa ajuste</th>
+              <th>% aloc.</th>
+              <th>Saving atual</th>
+              <th>Redução necessária total</th>
+              <th>% redução média</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ajusteFaixa.slice(0, 12).map((item) => (
+              <tr key={item.chave}>
+                <td>{item.faixaPeso || item.chave}</td>
+                <td>{Number(item.ctes || 0).toLocaleString('pt-BR')}</td>
+                <td>{Number(item.ctesGanharia || 0).toLocaleString('pt-BR')}</td>
+                <td>{Number(item.ctesComAjuste || 0).toLocaleString('pt-BR')}</td>
+                <td>{formatPercent(item.percentualAlocacao || 0)}</td>
+                <td className={item.savingPotencial > 0 ? 'positivo' : ''}>{formatCurrency(item.savingPotencial || 0)}</td>
+                <td>{formatCurrency(item.precisaReduzirValor || 0)}</td>
+                <td>{formatPercent(item.reducaoSugeridaPercentual || 0)}</td>
+              </tr>
+            ))}
+            {!ajusteFaixa.length ? <tr><td colSpan="8">Nenhuma faixa com ajuste necessário no filtro atual.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function nextFrame() {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
@@ -368,6 +478,17 @@ function analiseToExportRow(item = {}) {
     Percentual_Frete_Realizado: item.percentualFreteRealizado || 0,
     Percentual_Frete_Simulado: item.percentualFreteSimulado || 0,
     Percentual_Frete_Ganhador: item.percentualFreteGanhador || 0,
+    CTes_Com_Ajuste: item.ctesComAjuste || 0,
+    Potencial_CTEs_Ajuste: item.potencialCtesAjuste || 0,
+    Valor_Simulado_Nao_Alocado: item.valorSimuladoNaoAlocado || 0,
+    Referencia_Competitiva_Nao_Alocado: item.referenciaCompetitiva || 0,
+    Referencia_Media_Nao_Alocada: item.referenciaMediaNaoAlocada || 0,
+    Simulado_Medio_Nao_Alocado: item.simuladoMedioNaoAlocado || 0,
+    Reducao_Media_Por_CTE: item.reducaoMediaPorCte || 0,
+    Ganho_Medio_Por_CTE: item.ganhoMedioPorCte || 0,
+    Status_Fornecedor: item.statusFornecedor || '',
+    Tipo_Acao: item.tipoAcao || '',
+    Acao_Recomendada: item.acaoRecomendada || '',
   };
 }
 
@@ -941,6 +1062,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       Rota_Faixa: (resultado.analises?.porRotaFaixa || []).map(analiseToExportRow),
       Oportunidades_Ajuste: (resultado.analises?.oportunidadesAjuste || []).map(analiseToExportRow),
       Rotas_Competitivas: (resultado.analises?.rotasCompetitivas || []).map(analiseToExportRow),
+      Visao_Fornecedor: (resultado.analises?.visaoFornecedor || []).map(analiseToExportRow),
+      Ajuste_por_Faixa: (resultado.analises?.ajustePorFaixa || []).map(analiseToExportRow),
+      Plano_Acao_Fornecedor: (resultado.analises?.planoAcaoFornecedor || []).map(analiseToExportRow),
       Fora_da_Malha: (resultado.foraMalha || []).map(cteToExportRow),
       Resumo_UF: resultado.resumo?.porUf || [],
     });
@@ -1140,6 +1264,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <div className="sim-alert success top-space">
             <strong>Visão para negociação:</strong> agora o painel separa o que a transportadora realmente ganharia por preço e mostra onde ela precisa melhorar por rota e faixa de peso. Para B2C, use principalmente as visões de faixa e rota/faixa, porque muitas tabelas são por faixa de kg.
           </div>
+
+          <FornecedorInsightPanel resultado={resultado} transportadora={filtros.transportadora} />
 
           <AnaliseGerencialTable
             title="Saving mês a mês"
