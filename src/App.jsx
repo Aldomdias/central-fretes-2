@@ -91,7 +91,6 @@ export default function App() {
     content = <RealizadoLocalPage transportadoras={transportadorasMemo} />;
   }
 
-
   if (paginaAtual === 'lotacao') {
     content = <LotacaoPage />;
   }

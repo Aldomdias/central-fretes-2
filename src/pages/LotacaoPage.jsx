@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   analisarAnttTodasTransportadoras,
   analisarTabelaVersusAntt,
@@ -20,6 +20,14 @@ import {
   salvarTabelasLotacao,
   upsertTabelaLotacao,
 } from '../utils/lotacaoTables';
+import {
+  carregarTabelasLotacaoSupabase,
+  diagnosticarLotacaoSupabase,
+  lotacaoSupabaseConfigurado,
+  obterInfoLotacaoSupabase,
+  removerTabelaLotacaoSupabase,
+  salvarTabelaLotacaoSupabase,
+} from '../services/lotacaoSupabaseService';
 
 function formatarData(valor) {
   if (!valor) return '-';
@@ -629,14 +637,50 @@ function ListaTabelas({ tabelas, onRemover }) {
 }
 
 export default function LotacaoPage() {
-  const [tabelas, setTabelas] = useState(() => carregarTabelasLotacao());
+  const [tabelas, setTabelas] = useState([]);
   const [selecionadaId, setSelecionadaId] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [fonteDados, setFonteDados] = useState('carregando');
+  const [diagnostico, setDiagnostico] = useState(null);
+
+  const usarSupabase = lotacaoSupabaseConfigurado();
+  const supabaseInfo = obterInfoLotacaoSupabase();
+
+  const recarregarDados = useCallback(async ({ silencioso = false } = {}) => {
+    if (!silencioso) setCarregando(true);
+    try {
+      if (usarSupabase) {
+        const resposta = await carregarTabelasLotacaoSupabase();
+        setTabelas(resposta.tabelas || []);
+        setFonteDados('supabase');
+        if (!silencioso) setFeedback(`Base de lotação atualizada pelo Supabase. Tabelas: ${(resposta.tabelas || []).length}.`);
+        return;
+      }
+
+      const locais = carregarTabelasLotacao();
+      setTabelas(locais);
+      setFonteDados('local');
+      if (!silencioso) setFeedback('Supabase não configurado. Dados carregados do navegador temporariamente.');
+    } catch (error) {
+      const locais = carregarTabelasLotacao();
+      setTabelas(locais);
+      setFonteDados('local-fallback');
+      setFeedback(`Não consegui carregar a lotação no Supabase: ${error.message || error}. Carreguei o backup local do navegador, se existir.`);
+    } finally {
+      if (!silencioso) setCarregando(false);
+    }
+  }, [usarSupabase]);
 
   useEffect(() => {
-    salvarTabelasLotacao(tabelas);
-  }, [tabelas]);
+    recarregarDados({ silencioso: true });
+  }, [recarregarDados]);
+
+  useEffect(() => {
+    if (!usarSupabase && fonteDados !== 'carregando') {
+      salvarTabelasLotacao(tabelas);
+    }
+  }, [fonteDados, tabelas, usarSupabase]);
 
   const resumo = useMemo(() => resumoLotacao(tabelas), [tabelas]);
   const transportadoras = useMemo(() => obterTabelasPorTipo(tabelas, 'TRANSPORTADORA'), [tabelas]);
@@ -672,11 +716,22 @@ export default function LotacaoPage() {
     try {
       const nomePadrao = tipo === 'ANTT' ? 'ANTT' : nome;
       const tabela = await importarTabelaLotacao(file, { tipo, nomePadrao });
-      const next = upsertTabelaLotacao(tabelas, tabela);
-      setTabelas(next);
+
+      if (usarSupabase) {
+        await salvarTabelaLotacaoSupabase(tabela);
+        await recarregarDados({ silencioso: true });
+        setFonteDados('supabase');
+      } else {
+        const next = upsertTabelaLotacao(tabelas, tabela);
+        setTabelas(next);
+        salvarTabelasLotacao(next);
+        setFonteDados('local');
+      }
+
       if (tipo === 'TRANSPORTADORA') setSelecionadaId(tabela.id);
       setFeedback(
         `Tabela ${tabela.nome} importada com ${tabela.linhas.length} rotas válidas (${tabela.rotasUnicas || tabela.linhas.length} rotas únicas). ` +
+        `Destino dos dados: ${usarSupabase ? 'Supabase' : 'navegador/localStorage'}. ` +
         `Modelo: ${tabela.modelo}. Valor usado: ${tabela.resumoFontesValor || 'não identificado'}. ` +
         `Abas importadas: ${listarAbas(tabela.abasImportadas)}.`
       );
@@ -687,14 +742,59 @@ export default function LotacaoPage() {
     }
   };
 
-  const remover = (id) => {
+  const remover = async (id) => {
     const tabela = tabelas.find((item) => item.id === id);
     if (!tabela) return;
     const ok = window.confirm(`Deseja excluir a tabela ${tabela.nome}?`);
     if (!ok) return;
-    setTabelas((prev) => removerTabelaLotacao(prev, id));
-    setFeedback(`Tabela ${tabela.nome} excluída.`);
+
+    setCarregando(true);
+    setFeedback('');
+    try {
+      if (usarSupabase) {
+        await removerTabelaLotacaoSupabase(id);
+        await recarregarDados({ silencioso: true });
+        setFonteDados('supabase');
+      } else {
+        const next = removerTabelaLotacao(tabelas, id);
+        setTabelas(next);
+        salvarTabelasLotacao(next);
+        setFonteDados('local');
+      }
+      setFeedback(`Tabela ${tabela.nome} excluída.`);
+    } catch (error) {
+      setFeedback(error.message || 'Erro ao excluir tabela de lotação.');
+    } finally {
+      setCarregando(false);
+    }
   };
+
+  const diagnosticar = async () => {
+    setCarregando(true);
+    setFeedback('');
+    try {
+      const resposta = await diagnosticarLotacaoSupabase();
+      setDiagnostico(resposta);
+      if (resposta.ok) {
+        setFeedback(`Supabase OK para Lotação. Tabelas: ${resposta.tabelas}. Rotas: ${resposta.rotas}.`);
+      } else {
+        setFeedback(resposta.erro || 'Supabase não configurado para o módulo de lotação.');
+      }
+    } catch (error) {
+      setDiagnostico({ ok: false, erro: error.message || String(error) });
+      setFeedback(error.message || 'Erro ao diagnosticar Supabase de lotação.');
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  const statusDados = fonteDados === 'supabase'
+    ? `Supabase${supabaseInfo.host ? ` · ${supabaseInfo.host}` : ''}`
+    : fonteDados === 'local-fallback'
+      ? 'Backup local do navegador'
+      : fonteDados === 'local'
+        ? 'Navegador/localStorage'
+        : 'Carregando';
 
   return (
     <div className="page-shell lotacao-page">
@@ -707,6 +807,19 @@ export default function LotacaoPage() {
             acompanhar se os valores estão abaixo, iguais ou acima da referência ANTT.
           </p>
         </div>
+        <div className="actions-right gap-row lotacao-actions-top">
+          <button type="button" className="btn-secondary" onClick={diagnosticar} disabled={carregando || !usarSupabase}>
+            Diagnosticar Supabase
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => recarregarDados()} disabled={carregando}>
+            Atualizar base
+          </button>
+        </div>
+      </div>
+
+      <div className={fonteDados === 'supabase' ? 'sim-alert success' : 'sim-alert info'}>
+        <strong>Base de dados:</strong> {statusDados}. {usarSupabase ? 'As tabelas importadas ficam disponíveis no Supabase.' : 'Configure o Supabase para gravar no servidor.'}
+        {diagnostico?.ok ? <span> · Diagnóstico: {diagnostico.tabelas} tabelas e {diagnostico.rotas} rotas.</span> : null}
       </div>
 
       {feedback && <div className="formatacao-alerta">{feedback}</div>}
@@ -793,8 +906,9 @@ export default function LotacaoPage() {
 
       <div className="hint-box">
         Regra usada: comparação por Origem + UF Origem + Destino + UF Destino + Tipo de veículo. O Target é dinâmico:
-        sempre o menor preço entre as transportadoras cadastradas. A ANTT é apenas referência paralela para identificar
-        valores abaixo, iguais ou acima da tabela oficial. Os dados continuam salvos apenas no navegador até ligarmos o módulo ao servidor/Supabase.
+        sempre o menor preço entre as transportadoras cadastradas. A ANTT é referência paralela para identificar
+        valores abaixo, iguais ou acima da tabela oficial. Quando o Supabase estiver configurado e o script SQL aplicado,
+        as tabelas ficam salvas no servidor e não apenas no navegador.
       </div>
     </div>
   );
