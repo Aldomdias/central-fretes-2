@@ -1013,3 +1013,45 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+.lotacao-modelos-card {
+  margin-bottom: 18px;
+}
+
+.lotacao-modelo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: 14px 0;
+}
+
+.lotacao-modelo-grid > div {
+  border: 1px solid var(--border-soft);
+  background: var(--panel-soft);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.lotacao-modelo-grid strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.lotacao-modelo-grid p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.hint-box.compact {
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+@media (max-width: 1200px) {
+  .lotacao-modelo-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  baixarModeloLotacao,
   carregarTabelasLotacao,
   compararComReferencia,
   formatarMoeda,
@@ -7,7 +8,6 @@ import {
   importarTabelaLotacao,
   obterReferencia,
   obterTabelasPorTipo,
-  paraNumero,
   pesquisarRotaLotacao,
   removerTabelaLotacao,
   resumoLotacao,
@@ -25,7 +25,8 @@ function formatarData(valor) {
 function nomeTipo(tipo) {
   return {
     TARGET: 'Target',
-    NTT: 'NTT',
+    ANTT: 'ANTT',
+    NTT: 'ANTT',
     TRANSPORTADORA: 'Transportadora',
   }[tipo] || tipo;
 }
@@ -82,6 +83,42 @@ function UploadCard({ tipo, titulo, descricao, nomeObrigatorio, onImportar, carr
       >
         {carregando ? 'Importando...' : 'Subir tabela'}
       </button>
+    </div>
+  );
+}
+
+
+function ModelosAceitos() {
+  return (
+    <div className="panel-card lotacao-modelos-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Modelos aceitos para upload</div>
+          <p className="compact">Use esse bloco para conferir se a planilha está no padrão antes de importar.</p>
+        </div>
+        <button type="button" className="btn-secondary" onClick={baixarModeloLotacao}>
+          Baixar modelo Excel
+        </button>
+      </div>
+
+      <div className="lotacao-modelo-grid">
+        <div>
+          <strong>Colunas principais</strong>
+          <p>Transportadora, Origem, UF Origem, Destino, UF Destino, KM, Tipo, Frete Valor, Frete Final (Ajustado ANTT), Frete Atual, Frete ANTT, ICMS e Pedágio.</p>
+        </div>
+        <div>
+          <strong>Valor usado na comparação</strong>
+          <p>Target/Transportadora: Frete Final (Ajustado ANTT) → Frete Atual → Frete Valor → Frete ANTT. ANTT: Frete ANTT → Frete Final → Frete Atual → Frete Valor.</p>
+        </div>
+        <div>
+          <strong>Chave da rota</strong>
+          <p>Origem + UF Origem + Destino + UF Destino + Tipo de veículo. Rotas repetidas na mesma tabela são consolidadas pelo menor valor para evitar distorção.</p>
+        </div>
+      </div>
+
+      <div className="hint-box compact">
+        Validação esperada: se subir o mesmo arquivo como Target e depois como Transportadora, a aderência versus Target precisa fechar em 100%. Se não fechar, é sinal de coluna ou chave lida diferente.
+      </div>
     </div>
   );
 }
@@ -169,6 +206,7 @@ function TabelaDetalhesComparativo({ comparativo }) {
             <th>Tabela</th>
             <th>Referência</th>
             <th>Diferença</th>
+            <th>Valor lido</th>
             <th>Status</th>
           </tr>
         </thead>
@@ -181,6 +219,7 @@ function TabelaDetalhesComparativo({ comparativo }) {
               <td>{formatarMoeda(item.valorTabela)}</td>
               <td>{formatarMoeda(item.valorReferencia)}</td>
               <td className={classeStatus(item.status)}>{formatarMoeda(item.diferenca)}</td>
+              <td>{item.fonteTabela || '-'} x {item.fonteReferencia || '-'}</td>
               <td><span className={`status-pill ${item.status === 'Ganha' ? 'dark' : ''}`}>{item.status}</span></td>
             </tr>
           ))}
@@ -313,7 +352,7 @@ function ListaTabelas({ tabelas, onRemover }) {
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Tabelas cadastradas</div>
-          <p className="compact">Target e NTT são únicos. Ao subir novamente, o sistema substitui a versão anterior.</p>
+          <p className="compact">Target e ANTT são únicos. Ao subir novamente, o sistema substitui a versão anterior.</p>
         </div>
       </div>
       <table>
@@ -323,6 +362,8 @@ function ListaTabelas({ tabelas, onRemover }) {
             <th>Nome</th>
             <th>Arquivo</th>
             <th>Rotas</th>
+            <th>Rotas únicas</th>
+            <th>Valor usado</th>
             <th>Origens</th>
             <th>Destinos</th>
             <th>Importado em</th>
@@ -336,6 +377,8 @@ function ListaTabelas({ tabelas, onRemover }) {
               <td><strong>{tabela.nome}</strong></td>
               <td>{tabela.fileName || '-'}</td>
               <td>{tabela.linhas?.length || 0}</td>
+              <td>{tabela.rotasUnicas || '-'}</td>
+              <td>{tabela.resumoFontesValor || '-'}</td>
               <td>{tabela.origens || '-'}</td>
               <td>{tabela.destinos || '-'}</td>
               <td>{formatarData(tabela.createdAt)}</td>
@@ -377,27 +420,27 @@ export default function LotacaoPage() {
   }, [transportadoras, selecionadaId]);
 
   const target = obterReferencia(tabelas, 'TARGET');
-  const ntt = obterReferencia(tabelas, 'NTT');
+  const antt = obterReferencia(tabelas, 'ANTT');
 
   const comparativoTarget = useMemo(
     () => compararComReferencia(tabelaSelecionada, target),
     [tabelaSelecionada, target]
   );
-  const comparativoNtt = useMemo(
-    () => compararComReferencia(tabelaSelecionada, ntt),
-    [tabelaSelecionada, ntt]
+  const comparativoAntt = useMemo(
+    () => compararComReferencia(tabelaSelecionada, antt),
+    [tabelaSelecionada, antt]
   );
 
   const importar = async ({ tipo, file, nome }) => {
     setCarregando(true);
     setFeedback('');
     try {
-      const nomePadrao = tipo === 'TARGET' ? 'Target Lotação' : tipo === 'NTT' ? 'NTT' : nome;
+      const nomePadrao = tipo === 'TARGET' ? 'Target Lotação' : tipo === 'ANTT' ? 'ANTT' : nome;
       const tabela = await importarTabelaLotacao(file, { tipo, nomePadrao });
       const next = upsertTabelaLotacao(tabelas, tabela);
       setTabelas(next);
       if (tipo === 'TRANSPORTADORA') setSelecionadaId(tabela.id);
-      setFeedback(`Tabela ${tabela.nome} importada com ${tabela.linhas.length} rotas válidas.`);
+      setFeedback(`Tabela ${tabela.nome} importada com ${tabela.linhas.length} rotas válidas (${tabela.rotasUnicas || tabela.linhas.length} rotas únicas). Valor usado: ${tabela.resumoFontesValor || 'não identificado'}.`);
     } catch (error) {
       setFeedback(error.message || 'Erro ao importar tabela de lotação.');
     } finally {
@@ -421,12 +464,14 @@ export default function LotacaoPage() {
           <div className="amd-mini-brand">Central de Fretes · Lotação</div>
           <h1>Controle de transportadoras e lotação</h1>
           <p>
-            Módulo independente para subir tabela target, tabela NTT e tabelas de transportadoras. A cada cadastro, o sistema compara automaticamente quem ganha, quem perde e permite pesquisar origem/destino.
+            Módulo independente para subir tabela target, tabela ANTT e tabelas de transportadoras. A cada cadastro, o sistema compara automaticamente quem ganha, quem perde e permite pesquisar origem/destino.
           </p>
         </div>
       </div>
 
       {feedback && <div className="formatacao-alerta">{feedback}</div>}
+
+      <ModelosAceitos />
 
       <div className="summary-strip">
         <div className="summary-card">
@@ -438,8 +483,8 @@ export default function LotacaoPage() {
           <strong>{resumo.rotasTarget}</strong>
         </div>
         <div className="summary-card">
-          <span>Rotas NTT</span>
-          <strong>{resumo.rotasNtt}</strong>
+          <span>Rotas ANTT</span>
+          <strong>{resumo.rotasAntt}</strong>
         </div>
         <div className="summary-card">
           <span>Total de rotas</span>
@@ -456,16 +501,16 @@ export default function LotacaoPage() {
           carregando={carregando}
         />
         <UploadCard
-          tipo="NTT"
-          titulo="Subir tabela NTT"
-          descricao="Tabela de referência NTT para comparação paralela contra cada transportadora cadastrada."
+          tipo="ANTT"
+          titulo="Subir tabela ANTT"
+          descricao="Tabela de referência ANTT para comparação paralela contra cada transportadora cadastrada."
           onImportar={importar}
           carregando={carregando}
         />
         <UploadCard
           tipo="TRANSPORTADORA"
           titulo="Cadastrar transportadora"
-          descricao="Suba a tabela da transportadora. O sistema já compara contra Target e NTT quando existirem."
+          descricao="Suba a tabela da transportadora. O sistema já compara contra Target e ANTT quando existirem."
           nomeObrigatorio
           onImportar={importar}
           carregando={carregando}
@@ -476,7 +521,7 @@ export default function LotacaoPage() {
         <div className="section-row">
           <div>
             <div className="panel-title">Comparativo automático da transportadora</div>
-            <p>Escolha uma transportadora cadastrada para ver a aderência versus Target e versus NTT.</p>
+            <p>Escolha uma transportadora cadastrada para ver a aderência versus Target e versus ANTT.</p>
           </div>
           <label className="field small-width">
             Transportadora
@@ -492,12 +537,12 @@ export default function LotacaoPage() {
 
       <div className="feature-grid import-grid">
         <ResumoComparativo titulo="Versus Target" comparativo={comparativoTarget} />
-        <ResumoComparativo titulo="Versus NTT" comparativo={comparativoNtt} />
+        <ResumoComparativo titulo="Versus ANTT" comparativo={comparativoAntt} />
       </div>
 
       <div className="feature-grid import-grid">
         <TabelaDetalhesComparativo comparativo={comparativoTarget} />
-        <TabelaDetalhesComparativo comparativo={comparativoNtt} />
+        <TabelaDetalhesComparativo comparativo={comparativoAntt} />
       </div>
 
       <PesquisaRotas tabelas={tabelas} />

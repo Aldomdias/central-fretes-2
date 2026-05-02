@@ -1,7 +1,8 @@
 import * as XLSX from 'xlsx';
 
-const LOTACAO_STORAGE_KEY = 'central_fretes_lotacao_tabelas_v1';
+const LOTACAO_STORAGE_KEY = 'central_fretes_lotacao_tabelas_v2';
 const MAX_EXEMPLOS_COMPARATIVO = 500;
+const TIPOS_ANTT = ['ANTT', 'NTT'];
 
 function uid(prefix = 'lot') {
   if (globalThis.crypto?.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
@@ -18,6 +19,14 @@ export function normalizarTexto(valor = '') {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .toUpperCase();
+}
+
+export function normalizarTipoTabela(tipo = '') {
+  const normalized = normalizarTexto(tipo);
+  if (normalized === 'NTT') return 'ANTT';
+  if (normalized === 'ANTT') return 'ANTT';
+  if (normalized === 'TARGET') return 'TARGET';
+  return 'TRANSPORTADORA';
 }
 
 export function paraNumero(valor) {
@@ -147,7 +156,7 @@ function mapearCabecalho(headerRow) {
   }
 
   const tipo = encontrarColuna(headers, (h) =>
-    h === 'TIPO' || contem(h, ['TIPO VEICULO', 'VEICULO', 'CARRETA'])
+    h === 'TIPO' || contem(h, ['TIPO VEICULO', 'TIPO DE VEICULO', 'VEICULO', 'CARRETA'])
   );
   const km = encontrarColuna(headers, (h) => h === 'KM' || contem(h, ['DISTANCIA']));
   const prazo = encontrarColuna(headers, (h) => contem(h, ['PRAZO']));
@@ -155,13 +164,26 @@ function mapearCabecalho(headerRow) {
   const pedagio = encontrarColuna(headers, (h) => contem(h, ['PEDAGIO']));
 
   const freteAtual = encontrarColuna(headers, (h) =>
-    h.includes('FRETE ATUAL') || h.includes('VALOR ATUAL')
+    h.includes('FRETE ATUAL') || h.includes('VALOR ATUAL') || h.includes('TABELA ATUAL')
+  );
+
+  const freteFinal = encontrarColuna(headers, (h) =>
+    !h.includes('DIFERENCA') && (
+      h.includes('FRETE FINAL') ||
+      (h.includes('AJUSTADO') && h.includes('ANTT')) ||
+      h.includes('VALOR FINAL')
+    )
+  );
+
+  const freteAntt = encontrarColuna(headers, (h) =>
+    h.includes('ANTT') && h.includes('FRETE') && !h.includes('FINAL') && !h.includes('AJUSTADO')
   );
 
   const freteValor = encontrarColuna(headers, (h) => {
     if (h.includes('ANTT')) return false;
     if (h.includes('DIFERENCA')) return false;
     if (h.includes('AJUSTADO')) return false;
+    if (h.includes('FINAL')) return false;
     return (
       h.includes('FRETE VALOR') ||
       h.includes('VALOR FRETE') ||
@@ -170,14 +192,6 @@ function mapearCabecalho(headerRow) {
       h.includes('TARIFA')
     );
   });
-
-  const freteFinal = encontrarColuna(headers, (h) =>
-    !h.includes('ANTT') && !h.includes('DIFERENCA') && contem(h, ['FRETE FINAL'])
-  );
-
-  const freteAntt = encontrarColuna(headers, (h) =>
-    h.includes('ANTT') && h.includes('FRETE')
-  );
 
   const diferenca = encontrarColuna(headers, (h) => contem(h, ['DIFERENCA']));
 
@@ -209,6 +223,7 @@ function pontuarCabecalho(headers) {
   if (joined.includes('DESTINO')) score += 3;
   if (joined.includes('UF')) score += 2;
   if (joined.includes('FRETE')) score += 3;
+  if (joined.includes('ANTT')) score += 1;
   if (joined.includes('KM')) score += 1;
   if (joined.includes('TIPO')) score += 1;
   return score;
@@ -230,11 +245,37 @@ function chaveRota(row) {
     .join('|');
 }
 
-function parseSheet(sheet, sheetName, nomePadrao = '') {
+function selecionarValorComparacao(values, col, tipoTabela) {
+  const tipo = normalizarTipoTabela(tipoTabela);
+  const candidatosComerciais = [
+    ['freteFinal', 'Frete Final (Ajustado ANTT)'],
+    ['freteAtual', 'Frete Atual'],
+    ['freteValor', 'Frete Valor'],
+    ['freteAntt', 'Frete ANTT'],
+  ];
+  const candidatosAntt = [
+    ['freteAntt', 'Frete ANTT'],
+    ['freteFinal', 'Frete Final (Ajustado ANTT)'],
+    ['freteAtual', 'Frete Atual'],
+    ['freteValor', 'Frete Valor'],
+  ];
+
+  const candidatos = tipo === 'ANTT' ? candidatosAntt : candidatosComerciais;
+  for (const [campo, fonte] of candidatos) {
+    const valor = paraNumero(obterValor(values, col[campo]));
+    if (valor !== null) return { valor, fonte };
+  }
+
+  return { valor: null, fonte: '' };
+}
+
+function parseSheet(sheet, sheetName, options = {}) {
   const rows = linhasDaPlanilha(sheet);
   const headerInfo = encontrarLinhaCabecalho(rows);
   if (!headerInfo) return [];
 
+  const tipoTabela = normalizarTipoTabela(options.tipo || 'TRANSPORTADORA');
+  const nomePadrao = options.nomePadrao || '';
   const col = mapearCabecalho(headerInfo.values);
   if (col.destino < 0 || col.ufDestino < 0) return [];
 
@@ -255,7 +296,7 @@ function parseSheet(sheet, sheetName, nomePadrao = '') {
     const valorFrete = paraNumero(obterValor(values, col.freteValor));
     const valorFinal = paraNumero(obterValor(values, col.freteFinal));
     const valorAntt = paraNumero(obterValor(values, col.freteAntt));
-    const valorComparacao = valorAtual ?? valorFrete ?? valorFinal ?? valorAntt;
+    const { valor: valorComparacao, fonte: valorFonte } = selecionarValorComparacao(values, col, tipoTabela);
 
     if (valorComparacao === null) return;
 
@@ -281,6 +322,7 @@ function parseSheet(sheet, sheetName, nomePadrao = '') {
       freteAntt: valorAntt,
       diferencaAntt: paraNumero(obterValor(values, col.diferenca)),
       valor: valorComparacao,
+      valorFonte,
     };
 
     item.chave = chaveRota(item);
@@ -290,39 +332,70 @@ function parseSheet(sheet, sheetName, nomePadrao = '') {
   return linhas;
 }
 
+function resumirFontesValor(linhas = []) {
+  return linhas.reduce((acc, linha) => {
+    const fonte = linha.valorFonte || 'Não identificado';
+    acc[fonte] = (acc[fonte] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function formatarResumoFontes(fontes = {}) {
+  const entries = Object.entries(fontes);
+  if (!entries.length) return '';
+  return entries.map(([fonte, total]) => `${fonte}: ${total}`).join(' | ');
+}
+
 export async function importarTabelaLotacao(file, options = {}) {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', dense: false, cellDates: false });
+  const tipo = normalizarTipoTabela(options.tipo || 'TRANSPORTADORA');
   const nomePadrao = options.nomePadrao || '';
+  const abasImportadas = [];
+  const abasIgnoradas = [];
+  const linhas = [];
 
-  const linhas = workbook.SheetNames.flatMap((sheetName) => {
+  workbook.SheetNames.forEach((sheetName) => {
     const sheet = workbook.Sheets[sheetName];
-    return parseSheet(sheet, sheetName, nomePadrao);
+    const linhasAba = parseSheet(sheet, sheetName, { tipo, nomePadrao });
+    if (linhasAba.length) {
+      abasImportadas.push({ nome: sheetName, rotas: linhasAba.length });
+      linhas.push(...linhasAba);
+    } else {
+      abasIgnoradas.push(sheetName);
+    }
   });
 
   if (!linhas.length) {
-    throw new Error('Não encontrei linhas válidas de lotação. Confira se a planilha tem colunas de origem, destino, UF, tipo e frete.');
+    throw new Error('Não encontrei linhas válidas de lotação. Confira se a planilha tem colunas de Origem, UF Origem, Destino, UF Destino, Tipo e uma coluna de valor de frete. Use o bloco "Modelos aceitos" como referência.');
   }
 
   const nomeDetectado = nomePadrao || linhas.find((row) => row.transportadora)?.transportadora || file.name?.replace(/\.[^.]+$/, '') || 'Tabela sem nome';
+  const fontesValor = resumirFontesValor(linhas);
 
   return {
     id: uid('tab'),
     nome: nomeDetectado,
-    tipo: options.tipo || 'TRANSPORTADORA',
+    tipo,
     fileName: file.name || '',
     createdAt: new Date().toISOString(),
     linhas,
     totalLinhas: linhas.length,
+    rotasUnicas: indexarPorChave({ linhas }).size,
     origens: [...new Set(linhas.map((item) => `${item.origem}/${item.ufOrigem}`).filter(Boolean))].length,
     destinos: [...new Set(linhas.map((item) => `${item.destino}/${item.ufDestino}`).filter(Boolean))].length,
+    abasImportadas,
+    abasIgnoradas,
+    fontesValor,
+    resumoFontesValor: formatarResumoFontes(fontesValor),
   };
 }
 
 export function carregarTabelasLotacao() {
   try {
     const parsed = JSON.parse(localStorage.getItem(LOTACAO_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((tabela) => ({ ...tabela, tipo: normalizarTipoTabela(tabela.tipo) }));
   } catch {
     return [];
   }
@@ -333,14 +406,18 @@ export function salvarTabelasLotacao(tabelas = []) {
 }
 
 export function upsertTabelaLotacao(tabelas = [], tabelaNova) {
-  const tipoUnico = ['TARGET', 'NTT'].includes(tabelaNova.tipo);
+  const novoTipo = normalizarTipoTabela(tabelaNova.tipo);
+  const tipoUnico = ['TARGET', 'ANTT'].includes(novoTipo);
+  const tabelaNormalizada = { ...tabelaNova, tipo: novoTipo };
+
   const semConflito = tabelas.filter((tabela) => {
-    if (tipoUnico && tabela.tipo === tabelaNova.tipo) return false;
-    if (!tipoUnico && tabela.tipo === 'TRANSPORTADORA' && normalizarTexto(tabela.nome) === normalizarTexto(tabelaNova.nome)) return false;
+    const tipoAtual = normalizarTipoTabela(tabela.tipo);
+    if (tipoUnico && tipoAtual === novoTipo) return false;
+    if (!tipoUnico && tipoAtual === 'TRANSPORTADORA' && normalizarTexto(tabela.nome) === normalizarTexto(tabelaNormalizada.nome)) return false;
     return true;
   });
 
-  return [tabelaNova, ...semConflito];
+  return [tabelaNormalizada, ...semConflito];
 }
 
 export function removerTabelaLotacao(tabelas = [], tabelaId) {
@@ -348,11 +425,16 @@ export function removerTabelaLotacao(tabelas = [], tabelaId) {
 }
 
 export function obterTabelasPorTipo(tabelas = [], tipo) {
-  return tabelas.filter((tabela) => tabela.tipo === tipo);
+  const tipoNormalizado = normalizarTipoTabela(tipo);
+  return tabelas.filter((tabela) => normalizarTipoTabela(tabela.tipo) === tipoNormalizado);
 }
 
 export function obterReferencia(tabelas = [], tipo) {
-  return tabelas.find((tabela) => tabela.tipo === tipo) || null;
+  const tipoNormalizado = normalizarTipoTabela(tipo);
+  if (tipoNormalizado === 'ANTT') {
+    return tabelas.find((tabela) => TIPOS_ANTT.includes(normalizarTexto(tabela.tipo))) || null;
+  }
+  return tabelas.find((tabela) => normalizarTipoTabela(tabela.tipo) === tipoNormalizado) || null;
 }
 
 function indexarPorChave(tabela) {
@@ -373,6 +455,7 @@ function indexarPorChave(tabela) {
 export function compararComReferencia(tabela, referencia) {
   if (!tabela || !referencia) return null;
 
+  const mapaTabela = indexarPorChave(tabela);
   const mapaReferencia = indexarPorChave(referencia);
   const detalhes = [];
   let ganha = 0;
@@ -383,7 +466,7 @@ export function compararComReferencia(tabela, referencia) {
   let somaVariacao = 0;
   let comparadas = 0;
 
-  (tabela.linhas || []).forEach((linha) => {
+  mapaTabela.forEach((linha) => {
     const ref = mapaReferencia.get(linha.chave);
     if (!ref) {
       semReferencia += 1;
@@ -412,6 +495,8 @@ export function compararComReferencia(tabela, referencia) {
       tipo: linha.tipo,
       valorTabela: linha.valor,
       valorReferencia: ref.valor,
+      fonteTabela: linha.valorFonte,
+      fonteReferencia: ref.valorFonte,
       diferenca,
       variacao,
       status,
@@ -421,7 +506,7 @@ export function compararComReferencia(tabela, referencia) {
 
   detalhes.sort((a, b) => Math.abs(b.diferenca) - Math.abs(a.diferenca));
 
-  const baseTotal = (tabela.linhas || []).length;
+  const baseTotal = mapaTabela.size;
   const aderencia = comparadas ? ((ganha + empata) / comparadas) * 100 : 0;
   const cobertura = baseTotal ? (comparadas / baseTotal) * 100 : 0;
   const variacaoMedia = comparadas ? somaVariacao / comparadas : 0;
@@ -430,7 +515,7 @@ export function compararComReferencia(tabela, referencia) {
     tabelaNome: tabela.nome,
     referenciaNome: referencia.nome,
     baseTotal,
-    referenciaTotal: referencia.linhas?.length || 0,
+    referenciaTotal: mapaReferencia.size,
     comparadas,
     semReferencia,
     cobertura,
@@ -454,8 +539,7 @@ export function pesquisarRotaLotacao(tabelas = [], filtros = {}) {
   const origem = filtros.origem || '';
   const destino = filtros.destino || '';
   const tipo = filtros.tipo || '';
-
-  const resultados = [];
+  const resultadosPorTabelaRota = new Map();
 
   tabelas.forEach((tabela) => {
     (tabela.linhas || []).forEach((linha) => {
@@ -463,32 +547,55 @@ export function pesquisarRotaLotacao(tabelas = [], filtros = {}) {
       if (!matchTexto(linha.destino, destino)) return;
       if (tipo && !matchTexto(linha.tipo, tipo)) return;
 
-      resultados.push({
+      const chaveResultado = `${tabela.id}|${linha.chave}`;
+      const resultado = {
         ...linha,
         tabelaId: tabela.id,
         tabelaNome: tabela.nome,
-        tabelaTipo: tabela.tipo,
-      });
+        tabelaTipo: normalizarTipoTabela(tabela.tipo),
+      };
+      const atual = resultadosPorTabelaRota.get(chaveResultado);
+      if (!atual || (resultado.valor ?? Infinity) < (atual.valor ?? Infinity)) {
+        resultadosPorTabelaRota.set(chaveResultado, resultado);
+      }
     });
   });
 
-  return resultados.sort((a, b) => (a.valor ?? Infinity) - (b.valor ?? Infinity));
+  return [...resultadosPorTabelaRota.values()].sort((a, b) => (a.valor ?? Infinity) - (b.valor ?? Infinity));
 }
 
 export function resumoLotacao(tabelas = []) {
   const target = obterReferencia(tabelas, 'TARGET');
-  const ntt = obterReferencia(tabelas, 'NTT');
+  const antt = obterReferencia(tabelas, 'ANTT');
   const transportadoras = obterTabelasPorTipo(tabelas, 'TRANSPORTADORA');
   const totalRotas = tabelas.reduce((acc, tabela) => acc + (tabela.linhas?.length || 0), 0);
 
   return {
     target,
-    ntt,
+    antt,
     transportadoras,
     totalTabelas: tabelas.length,
     totalRotas,
     totalTransportadoras: transportadoras.length,
     rotasTarget: target?.linhas?.length || 0,
-    rotasNtt: ntt?.linhas?.length || 0,
+    rotasAntt: antt?.linhas?.length || 0,
   };
+}
+
+export function baixarModeloLotacao() {
+  const exemplo = [
+    ['Transportadora', 'Origem', 'UF Origem', 'Destino', 'UF Destino', 'KM', 'Tipo', 'Frete Valor', 'Frete Final (Ajustado ANTT)', 'Frete Atual', 'Frete ANTT', 'ICMS', 'Pedágio'],
+    ['TRANSPORTADORA EXEMPLO', 'ITAJAÍ', 'SC', 'MACEIÓ', 'AL', 3024, 'CARRETA BAÚ', 19915.35, 23064.05, '', 23064.05, 0.07, 842],
+    ['TRANSPORTADORA EXEMPLO', 'ITUPEVA', 'SP', 'FEIRA DE SANTANA', 'BA', 1873, 'CARRETA BAÚ', 13014.54, 14532.38, '', 14532.38, 0.07, 625.2],
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(exemplo);
+  ws['!cols'] = [
+    { wch: 24 }, { wch: 18 }, { wch: 12 }, { wch: 24 }, { wch: 12 }, { wch: 10 },
+    { wch: 18 }, { wch: 14 }, { wch: 26 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'MODELO LOTACAO');
+  XLSX.writeFile(wb, 'modelo_lotacao_antt_target_transportadora.xlsx');
 }
