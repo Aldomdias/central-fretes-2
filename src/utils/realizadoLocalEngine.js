@@ -524,6 +524,8 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
 
 function montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalculado }) {
   const impacto = toNumber(cte.valorCte) - escolhido.total;
+  const economizaria = impacto > 0.009;
+  const aumento = impacto < -0.009;
   return {
     id: cte.chaveCte,
     chaveCte: cte.chaveCte,
@@ -540,6 +542,10 @@ function montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalcul
     valorRealizado: cte.valorCte,
     valorSimulado: escolhido.total,
     impacto,
+    economiaVsRealizado: economizaria ? impacto : 0,
+    aumentoVsRealizado: aumento ? Math.abs(impacto) : 0,
+    resultadoImpacto: economizaria ? 'Reduz custo vs realizado' : (aumento ? 'Fica acima do realizado' : 'Empata com realizado'),
+    economizaria,
     ranking,
     rankingCalculado,
     ganharia,
@@ -569,6 +575,9 @@ export async function simularRealizadoLocalRapido({
   let faturamentoGanhador = 0;
   let economiaGanhador = 0;
   let ctesGanharia = 0;
+  let ctesEconomizaria = 0;
+  let economiaBruta = 0;
+  let aumentoBruto = 0;
   let ctesComSimulacao = 0;
   let valorSimuladoTotal = 0;
   let valorNfSimulado = 0;
@@ -622,6 +631,13 @@ export async function simularRealizadoLocalRapido({
           valorNfSimulado += toNumber(cte.valorNF);
           impactoLiquido += detalhe.impacto;
 
+          if (detalhe.economizaria) {
+            ctesEconomizaria += 1;
+            economiaBruta += detalhe.economiaVsRealizado;
+          } else {
+            aumentoBruto += detalhe.aumentoVsRealizado;
+          }
+
           if (ganharia) {
             ctesGanharia += 1;
             faturamentoGanhador += escolhido.total;
@@ -631,9 +647,15 @@ export async function simularRealizadoLocalRapido({
           detalhes.push(detalhe);
 
           const ufKey = cte.ufDestino || 'SEM UF';
-          const uf = porUfMap.get(ufKey) || { uf: ufKey, ctes: 0, ganharia: 0, valorRealizado: 0, valorSimulado: 0, economia: 0 };
+          const uf = porUfMap.get(ufKey) || { uf: ufKey, ctes: 0, ganharia: 0, economizaria: 0, valorRealizado: 0, valorSimulado: 0, economia: 0, economiaBruta: 0, aumentoBruto: 0 };
           uf.ctes += 1;
           if (ganharia) uf.ganharia += 1;
+          if (detalhe.economizaria) {
+            uf.economizaria += 1;
+            uf.economiaBruta += detalhe.economiaVsRealizado;
+          } else {
+            uf.aumentoBruto += detalhe.aumentoVsRealizado;
+          }
           uf.valorRealizado += toNumber(cte.valorCte);
           uf.valorSimulado += escolhido.total;
           uf.economia += detalhe.impacto;
@@ -654,6 +676,7 @@ export async function simularRealizadoLocalRapido({
   const porUf = [...porUfMap.values()].map((item) => ({
     ...item,
     aderencia: item.ctes ? (item.ganharia / item.ctes) * 100 : 0,
+    percentualEconomizaria: item.ctes ? (item.economizaria / item.ctes) * 100 : 0,
   })).sort((a, b) => b.ctes - a.ctes || a.uf.localeCompare(b.uf));
 
   return {
@@ -662,6 +685,10 @@ export async function simularRealizadoLocalRapido({
       rankingCalculado,
       ctesComSimulacao,
       ctesGanharia,
+      ctesEconomizaria,
+      percentualEconomizaria: ctesComSimulacao ? (ctesEconomizaria / ctesComSimulacao) * 100 : 0,
+      economiaBruta,
+      aumentoBruto,
       aderencia: rankingCalculado && ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
       faturamentoGanhador,
       economiaGanhador,

@@ -126,7 +126,7 @@ function makeFileKey() {
 }
 
 function rankingLabel(item, rankingCalculado) {
-  if (!rankingCalculado) return 'Rápido';
+  if (!rankingCalculado) return item.economizaria ? 'Rápido • reduz custo' : 'Rápido • fica acima';
   return item.ranking ? `${item.ranking}º${item.ganharia ? ' • ganharia' : ''}` : '—';
 }
 
@@ -171,6 +171,8 @@ function cteToExportRow(item = {}) {
 }
 
 function simToExportRow(item = {}) {
+  const rankingCalculado = item.rankingCalculado !== false;
+  const economizaria = item.economizaria || Number(item.impacto || 0) > 0.009;
   return {
     CTE: item.numeroCte || '',
     Chave_CTE: item.chaveCte || '',
@@ -186,12 +188,18 @@ function simToExportRow(item = {}) {
     Valor_Realizado: item.valorRealizado || 0,
     Valor_Simulado: item.valorSimulado || 0,
     Impacto: item.impacto || 0,
+    Resultado_Impacto: item.resultadoImpacto || (economizaria ? 'Reduz custo vs realizado' : 'Fica acima do realizado'),
+    Economia_vs_Realizado: item.economiaVsRealizado || (economizaria ? item.impacto || 0 : 0),
+    Aumento_vs_Realizado: item.aumentoVsRealizado || (!economizaria ? Math.abs(Number(item.impacto || 0)) : 0),
     Percentual_Realizado: item.percentualRealizado || 0,
     Percentual_Simulado: item.percentualSimulado || 0,
-    Ranking: item.ranking || '',
-    Ganharia: item.ganharia ? 'Sim' : 'Não',
+    Ranking: rankingCalculado ? (item.ranking || '') : 'Não calculado no modo rápido',
+    Ganharia: rankingCalculado ? (item.ganharia ? 'Sim' : 'Não') : (economizaria ? 'Sim' : 'Não'),
+    Metrica_Ganharia: rankingCalculado
+      ? 'Modo completo: Sim quando a transportadora simulada é 1º menor preço entre concorrentes'
+      : 'Modo rápido: Sim quando Valor_Simulado é menor que Valor_Realizado',
     Lider_Transportadora: item.liderTransportadora || '',
-    Frete_Substituta: item.freteSubstituta || 0,
+    Frete_Substituta: rankingCalculado ? (item.freteSubstituta || 0) : '',
   };
 }
 
@@ -942,16 +950,16 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           </div>
           {!rankingCalculado ? (
             <div className="sim-alert info">
-              Modo rápido: ranking, aderência e CT-e(s) que ganharia não são calculados. Use o modo completo quando precisar comparar contra todos os concorrentes.
+              Modo rápido: a coluna “Ganharia” usa a métrica de impacto financeiro, ou seja, Sim quando o valor simulado fica menor que o CT-e realizado. Ranking contra concorrentes e aderência de 1º lugar só aparecem no modo completo.
             </div>
           ) : null}
           <div className="sim-analise-resumo top-space">
             <div><span>CT-e(s) avaliados</span><strong>{resultado.resumo.ctesComSimulacao.toLocaleString('pt-BR')}</strong></div>
-            <div><span>CT-e(s) que ganharia</span><strong>{rankingCalculado ? resultado.resumo.ctesGanharia.toLocaleString('pt-BR') : '—'}</strong></div>
-            <div><span>Aderência</span><strong>{rankingCalculado ? formatPercent(resultado.resumo.aderencia) : '—'}</strong></div>
-            <div><span>Faturamento se vencedora</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.faturamentoGanhador) : '—'}</strong></div>
-            <div><span>Economia se vencedora</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.economiaGanhador) : '—'}</strong></div>
-            <div><span>Impacto total</span><strong>{formatCurrency(resultado.resumo.impactoLiquido)}</strong></div>
+            <div><span>{rankingCalculado ? 'CT-e(s) que ganharia' : 'CT-e(s) com redução'}</span><strong>{rankingCalculado ? resultado.resumo.ctesGanharia.toLocaleString('pt-BR') : (resultado.resumo.ctesEconomizaria || 0).toLocaleString('pt-BR')}</strong></div>
+            <div><span>{rankingCalculado ? 'Aderência' : '% com redução'}</span><strong>{rankingCalculado ? formatPercent(resultado.resumo.aderencia) : formatPercent(resultado.resumo.percentualEconomizaria || 0)}</strong></div>
+            <div><span>{rankingCalculado ? 'Faturamento se vencedora' : 'Economia bruta'}</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.faturamentoGanhador) : formatCurrency(resultado.resumo.economiaBruta || 0)}</strong></div>
+            <div><span>{rankingCalculado ? 'Economia se vencedora' : 'Aumento bruto'}</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.economiaGanhador) : formatCurrency(resultado.resumo.aumentoBruto || 0)}</strong></div>
+            <div><span>Impacto total líquido</span><strong>{formatCurrency(resultado.resumo.impactoLiquido)}</strong></div>
             <div><span>% frete simulado</span><strong>{formatPercent(resultado.resumo.percentualSimulado)}</strong></div>
             <div><span>Fora da malha</span><strong>{resultado.resumo.ctesForaMalha.toLocaleString('pt-BR')}</strong></div>
           </div>
@@ -961,8 +969,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               <div className="sim-parametros-header"><strong>Resumo por UF destino</strong><span>{resultado.resumo.porUf.length} UF(s)</span></div>
               <div className="sim-table-wrap">
                 <table className="sim-table">
-                  <thead><tr><th>UF</th><th>CT-e(s)</th><th>Ganharia</th><th>Aderência</th><th>Realizado</th><th>Simulado</th><th>Economia</th></tr></thead>
-                  <tbody>{resultado.resumo.porUf.map((item) => <tr key={item.uf}><td>{item.uf}</td><td>{item.ctes}</td><td>{rankingCalculado ? item.ganharia : '—'}</td><td>{rankingCalculado ? formatPercent(item.aderencia) : '—'}</td><td>{formatCurrency(item.valorRealizado)}</td><td>{formatCurrency(item.valorSimulado)}</td><td>{formatCurrency(item.economia)}</td></tr>)}</tbody>
+                  <thead><tr><th>UF</th><th>CT-e(s)</th><th>{rankingCalculado ? 'Ganharia' : 'Reduz custo'}</th><th>{rankingCalculado ? 'Aderência' : '% redução'}</th><th>Realizado</th><th>Simulado</th><th>Impacto líquido</th></tr></thead>
+                  <tbody>{resultado.resumo.porUf.map((item) => <tr key={item.uf}><td>{item.uf}</td><td>{item.ctes}</td><td>{rankingCalculado ? item.ganharia : item.economizaria}</td><td>{rankingCalculado ? formatPercent(item.aderencia) : formatPercent(item.percentualEconomizaria || 0)}</td><td>{formatCurrency(item.valorRealizado)}</td><td>{formatCurrency(item.valorSimulado)}</td><td>{formatCurrency(item.economia)}</td></tr>)}</tbody>
                 </table>
               </div>
             </div>
