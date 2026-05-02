@@ -1,7 +1,8 @@
 import * as XLSX from 'xlsx';
 
-const LOTACAO_STORAGE_KEY = 'central_fretes_lotacao_tabelas_v2';
+const LOTACAO_STORAGE_KEY = 'central_fretes_lotacao_tabelas_v3_modelos_oficiais';
 const MAX_EXEMPLOS_COMPARATIVO = 500;
+const TOLERANCIA_EMPATE = 0.01;
 const TIPOS_ANTT = ['ANTT', 'NTT'];
 
 function uid(prefix = 'lot') {
@@ -17,16 +18,24 @@ export function normalizarTexto(valor = '') {
   return limparTexto(valor)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/Ç/g, 'C')
+    .replace(/ç/g, 'c')
     .replace(/\s+/g, ' ')
     .toUpperCase();
 }
 
 export function normalizarTipoTabela(tipo = '') {
   const normalized = normalizarTexto(tipo);
-  if (normalized === 'NTT') return 'ANTT';
-  if (normalized === 'ANTT') return 'ANTT';
+  if (normalized === 'NTT' || normalized === 'ANTT') return 'ANTT';
   if (normalized === 'TARGET') return 'TARGET';
   return 'TRANSPORTADORA';
+}
+
+export function nomeTipoLotacao(tipo = '') {
+  const normalizado = normalizarTipoTabela(tipo);
+  if (normalizado === 'TARGET') return 'Target';
+  if (normalizado === 'ANTT') return 'ANTT';
+  return 'Transportadora';
 }
 
 export function paraNumero(valor) {
@@ -76,6 +85,7 @@ function linhaTemValor(row = []) {
 function normalizarHeader(valor) {
   return normalizarTexto(valor)
     .replace(/\n/g, ' ')
+    .replace(/[\/\\]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -86,7 +96,8 @@ function linhasDaPlanilha(sheet) {
   Object.keys(sheet || {}).forEach((addr) => {
     if (addr.startsWith('!')) return;
     const decoded = XLSX.utils.decode_cell(addr);
-    const value = sheet[addr]?.v;
+    const cell = sheet[addr];
+    const value = cell?.v ?? cell?.w;
     if (value === undefined || value === null || value === '') return;
 
     const row = rowsByIndex.get(decoded.r) || [];
@@ -100,20 +111,21 @@ function linhasDaPlanilha(sheet) {
 }
 
 function contem(header, termos = []) {
-  return termos.some((termo) => header.includes(termo));
+  const safeHeader = header || '';
+  return termos.some((termo) => safeHeader.includes(termo));
 }
 
 function encontrarColuna(headers, predicate) {
-  return headers.findIndex((header) => predicate(header));
+  return headers.findIndex((header, index) => predicate(header || '', index));
 }
 
 function encontrarColunaDepois(headers, inicio, predicate) {
-  return headers.findIndex((header, index) => index > inicio && predicate(header));
+  return headers.findIndex((header, index) => index > inicio && predicate(header || '', index));
 }
 
 function detectarOrigemNoTopo(rows, sheetName = '') {
   const top = rows
-    .slice(0, 8)
+    .slice(0, 10)
     .flatMap((item) => item.values || [])
     .map((value) => limparTexto(value))
     .filter(Boolean);
@@ -163,27 +175,26 @@ function mapearCabecalho(headerRow) {
   const icms = encontrarColuna(headers, (h) => contem(h, ['ICMS']));
   const pedagio = encontrarColuna(headers, (h) => contem(h, ['PEDAGIO']));
 
-  const freteAtual = encontrarColuna(headers, (h) =>
-    h.includes('FRETE ATUAL') || h.includes('VALOR ATUAL') || h.includes('TABELA ATUAL')
+  const target = encontrarColuna(headers, (h) =>
+    h === 'TARGET' || (h.includes('TARGET') && !h.includes('DIFERENCA'))
   );
 
-  const freteFinal = encontrarColuna(headers, (h) =>
-    !h.includes('DIFERENCA') && (
-      h.includes('FRETE FINAL') ||
-      (h.includes('AJUSTADO') && h.includes('ANTT')) ||
-      h.includes('VALOR FINAL')
-    )
+  const freteAnttOficial = encontrarColuna(headers, (h) =>
+    h.includes('FRETE') && h.includes('ANTT') && h.includes('OFICIAL')
   );
 
   const freteAntt = encontrarColuna(headers, (h) =>
-    h.includes('ANTT') && h.includes('FRETE') && !h.includes('FINAL') && !h.includes('AJUSTADO')
+    h.includes('FRETE') && h.includes('ANTT') && !h.includes('DIFERENCA')
+  );
+
+  const freteAtual = encontrarColuna(headers, (h) =>
+    h.includes('FRETE ATUAL') || h.includes('VALOR ATUAL') || h.includes('TABELA ATUAL')
   );
 
   const freteValor = encontrarColuna(headers, (h) => {
     if (h.includes('ANTT')) return false;
     if (h.includes('DIFERENCA')) return false;
-    if (h.includes('AJUSTADO')) return false;
-    if (h.includes('FINAL')) return false;
+    if (h.includes('TARGET')) return false;
     return (
       h.includes('FRETE VALOR') ||
       h.includes('VALOR FRETE') ||
@@ -206,37 +217,64 @@ function mapearCabecalho(headerRow) {
     prazo,
     icms,
     pedagio,
+    target,
+    freteAnttOficial,
+    freteAntt,
     freteAtual,
     freteValor,
-    freteFinal,
-    freteAntt,
     diferenca,
     headers,
   };
 }
 
-function pontuarCabecalho(headers) {
+function pontuarCabecalho(headers, tipoTabela) {
+  const tipo = normalizarTipoTabela(tipoTabela);
   const joined = headers.join(' | ');
   let score = 0;
+
   if (joined.includes('TRANSPORTADORA')) score += 2;
   if (joined.includes('ORIGEM')) score += 2;
   if (joined.includes('DESTINO')) score += 3;
   if (joined.includes('UF')) score += 2;
-  if (joined.includes('FRETE')) score += 3;
-  if (joined.includes('ANTT')) score += 1;
   if (joined.includes('KM')) score += 1;
   if (joined.includes('TIPO')) score += 1;
+
+  if (tipo === 'ANTT') {
+    if (joined.includes('ANTT')) score += 5;
+    if (joined.includes('FRETE ANTT OFICIAL')) score += 6;
+  } else {
+    if (joined.includes('TARGET')) score += 8;
+    if (joined.includes('PEDAGIO')) score += 1;
+    if (joined.includes('ICMS')) score += 1;
+  }
+
   return score;
 }
 
-function encontrarLinhaCabecalho(rows) {
+function validarCabecalhoPorTipo(col, tipoTabela) {
+  const tipo = normalizarTipoTabela(tipoTabela);
+  const baseOk = col.destino >= 0 && col.ufDestino >= 0 && col.tipo >= 0;
+  if (!baseOk) return false;
+
+  if (tipo === 'ANTT') {
+    return col.freteAnttOficial >= 0 || col.freteAntt >= 0;
+  }
+
+  return col.target >= 0;
+}
+
+function encontrarLinhaCabecalho(rows, tipoTabela) {
   let melhor = null;
-  rows.slice(0, 40).forEach((row) => {
+  rows.slice(0, 50).forEach((row) => {
     const headers = (row.values || []).map(normalizarHeader);
-    const score = pontuarCabecalho(headers);
-    if (!melhor || score > melhor.score) melhor = { rowIndex: row.rowIndex, score, values: row.values };
+    const col = mapearCabecalho(row.values || []);
+    const score = pontuarCabecalho(headers, tipoTabela);
+    const valido = validarCabecalhoPorTipo(col, tipoTabela);
+    if (valido && (!melhor || score > melhor.score)) {
+      melhor = { rowIndex: row.rowIndex, score, values: row.values, col };
+    }
   });
-  return melhor && melhor.score >= 7 ? melhor : null;
+  return melhor && melhor.score >= 8 ? melhor : null;
 }
 
 function chaveRota(row) {
@@ -247,38 +285,33 @@ function chaveRota(row) {
 
 function selecionarValorComparacao(values, col, tipoTabela) {
   const tipo = normalizarTipoTabela(tipoTabela);
-  const candidatosComerciais = [
-    ['freteFinal', 'Frete Final (Ajustado ANTT)'],
-    ['freteAtual', 'Frete Atual'],
-    ['freteValor', 'Frete Valor'],
-    ['freteAntt', 'Frete ANTT'],
-  ];
-  const candidatosAntt = [
-    ['freteAntt', 'Frete ANTT'],
-    ['freteFinal', 'Frete Final (Ajustado ANTT)'],
-    ['freteAtual', 'Frete Atual'],
-    ['freteValor', 'Frete Valor'],
-  ];
 
-  const candidatos = tipo === 'ANTT' ? candidatosAntt : candidatosComerciais;
-  for (const [campo, fonte] of candidatos) {
-    const valor = paraNumero(obterValor(values, col[campo]));
-    if (valor !== null) return { valor, fonte };
+  if (tipo === 'ANTT') {
+    const candidatosAntt = [
+      ['freteAnttOficial', 'Frete ANTT Oficial'],
+      ['freteAntt', 'Frete ANTT'],
+    ];
+    for (const [campo, fonte] of candidatosAntt) {
+      const valor = paraNumero(obterValor(values, col[campo]));
+      if (valor !== null) return { valor, fonte };
+    }
+    return { valor: null, fonte: '' };
   }
+
+  const valorTarget = paraNumero(obterValor(values, col.target));
+  if (valorTarget !== null) return { valor: valorTarget, fonte: 'TARGET' };
 
   return { valor: null, fonte: '' };
 }
 
 function parseSheet(sheet, sheetName, options = {}) {
   const rows = linhasDaPlanilha(sheet);
-  const headerInfo = encontrarLinhaCabecalho(rows);
-  if (!headerInfo) return [];
-
   const tipoTabela = normalizarTipoTabela(options.tipo || 'TRANSPORTADORA');
-  const nomePadrao = options.nomePadrao || '';
-  const col = mapearCabecalho(headerInfo.values);
-  if (col.destino < 0 || col.ufDestino < 0) return [];
+  const headerInfo = encontrarLinhaCabecalho(rows, tipoTabela);
+  if (!headerInfo) return { linhas: [], motivo: 'Cabeçalho do modelo não encontrado' };
 
+  const nomePadrao = options.nomePadrao || '';
+  const col = headerInfo.col || mapearCabecalho(headerInfo.values);
   const origemTopo = detectarOrigemNoTopo(rows, sheetName);
   const dataRows = rows.filter((row) => row.rowIndex > headerInfo.rowIndex && linhaTemValor(row.values));
   const linhas = [];
@@ -291,14 +324,9 @@ function parseSheet(sheet, sheetName, options = {}) {
     const origemLinha = limparTexto(obterValor(values, col.origem)) || origemTopo;
     const ufOrigem = limparTexto(obterValor(values, col.ufOrigem)).toUpperCase();
     const tipo = limparTexto(obterValor(values, col.tipo)) || 'GERAL';
-
-    const valorAtual = paraNumero(obterValor(values, col.freteAtual));
-    const valorFrete = paraNumero(obterValor(values, col.freteValor));
-    const valorFinal = paraNumero(obterValor(values, col.freteFinal));
-    const valorAntt = paraNumero(obterValor(values, col.freteAntt));
     const { valor: valorComparacao, fonte: valorFonte } = selecionarValorComparacao(values, col, tipoTabela);
 
-    if (valorComparacao === null) return;
+    if (!origemLinha || !ufOrigem || valorComparacao === null) return;
 
     const transportadoraLinha = limparTexto(obterValor(values, col.transportadora)) || nomePadrao || 'Sem nome';
 
@@ -316,10 +344,11 @@ function parseSheet(sheet, sheetName, options = {}) {
       prazo: limparTexto(obterValor(values, col.prazo)),
       icms: paraNumero(obterValor(values, col.icms)),
       pedagio: paraNumero(obterValor(values, col.pedagio)),
-      freteAtual: valorAtual,
-      freteValor: valorFrete,
-      freteFinal: valorFinal,
-      freteAntt: valorAntt,
+      target: paraNumero(obterValor(values, col.target)),
+      freteAnttOficial: paraNumero(obterValor(values, col.freteAnttOficial)),
+      freteAntt: paraNumero(obterValor(values, col.freteAntt)),
+      freteAtual: paraNumero(obterValor(values, col.freteAtual)),
+      freteValor: paraNumero(obterValor(values, col.freteValor)),
       diferencaAntt: paraNumero(obterValor(values, col.diferenca)),
       valor: valorComparacao,
       valorFonte,
@@ -329,7 +358,7 @@ function parseSheet(sheet, sheetName, options = {}) {
     linhas.push(item);
   });
 
-  return linhas;
+  return { linhas, motivo: linhas.length ? '' : 'Nenhuma linha com valor válido no modelo' };
 }
 
 function resumirFontesValor(linhas = []) {
@@ -346,6 +375,12 @@ function formatarResumoFontes(fontes = {}) {
   return entries.map(([fonte, total]) => `${fonte}: ${total}`).join(' | ');
 }
 
+function nomeModeloEsperado(tipo) {
+  const normalizado = normalizarTipoTabela(tipo);
+  if (normalizado === 'ANTT') return 'ANTT BASE';
+  return 'TARGET / TRANSPORTADORA';
+}
+
 export async function importarTabelaLotacao(file, options = {}) {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', dense: false, cellDates: false });
@@ -357,17 +392,20 @@ export async function importarTabelaLotacao(file, options = {}) {
 
   workbook.SheetNames.forEach((sheetName) => {
     const sheet = workbook.Sheets[sheetName];
-    const linhasAba = parseSheet(sheet, sheetName, { tipo, nomePadrao });
-    if (linhasAba.length) {
-      abasImportadas.push({ nome: sheetName, rotas: linhasAba.length });
-      linhas.push(...linhasAba);
+    const resultado = parseSheet(sheet, sheetName, { tipo, nomePadrao });
+    if (resultado.linhas.length) {
+      abasImportadas.push({ nome: sheetName, rotas: resultado.linhas.length });
+      linhas.push(...resultado.linhas);
     } else {
-      abasIgnoradas.push(sheetName);
+      abasIgnoradas.push({ nome: sheetName, motivo: resultado.motivo || 'Sem linhas válidas' });
     }
   });
 
   if (!linhas.length) {
-    throw new Error('Não encontrei linhas válidas de lotação. Confira se a planilha tem colunas de Origem, UF Origem, Destino, UF Destino, Tipo e uma coluna de valor de frete. Use o bloco "Modelos aceitos" como referência.');
+    const esperado = tipo === 'ANTT'
+      ? 'Modelo ANTT: Transportadora, Origem, UF ORIGEM, Destino, UF DESTINO/UF, KM, TIPO e Frete ANTT Oficial.'
+      : 'Modelo Target/Transportadora: Transportadora, Origem, UF ORIGEM, Destino, UF DESTINO/UF, KM, TIPO, TARGET, ICMS e Pedágio.';
+    throw new Error(`Não encontrei linhas válidas para o modelo ${nomeModeloEsperado(tipo)}. ${esperado}`);
   }
 
   const nomeDetectado = nomePadrao || linhas.find((row) => row.transportadora)?.transportadora || file.name?.replace(/\.[^.]+$/, '') || 'Tabela sem nome';
@@ -377,6 +415,7 @@ export async function importarTabelaLotacao(file, options = {}) {
     id: uid('tab'),
     nome: nomeDetectado,
     tipo,
+    modelo: nomeModeloEsperado(tipo),
     fileName: file.name || '',
     createdAt: new Date().toISOString(),
     linhas,
@@ -476,7 +515,7 @@ export function compararComReferencia(tabela, referencia) {
     const diferenca = (linha.valor || 0) - (ref.valor || 0);
     const variacao = ref.valor ? (diferenca / ref.valor) * 100 : 0;
     let status = 'Empata';
-    if (Math.abs(diferenca) > 0.01) status = diferenca < 0 ? 'Ganha' : 'Perde';
+    if (Math.abs(diferenca) > TOLERANCIA_EMPATE) status = diferenca < 0 ? 'Ganha' : 'Perde';
 
     if (status === 'Ganha') ganha += 1;
     if (status === 'Perde') perde += 1;
@@ -493,6 +532,7 @@ export function compararComReferencia(tabela, referencia) {
       destino: linha.destino,
       ufDestino: linha.ufDestino,
       tipo: linha.tipo,
+      km: linha.km || ref.km,
       valorTabela: linha.valor,
       valorReferencia: ref.valor,
       fonteTabela: linha.valorFonte,
@@ -578,24 +618,46 @@ export function resumoLotacao(tabelas = []) {
     totalRotas,
     totalTransportadoras: transportadoras.length,
     rotasTarget: target?.linhas?.length || 0,
+    rotasUnicasTarget: target?.rotasUnicas || 0,
     rotasAntt: antt?.linhas?.length || 0,
+    rotasUnicasAntt: antt?.rotasUnicas || 0,
   };
 }
 
-export function baixarModeloLotacao() {
+export function baixarModeloTargetTransportadora() {
   const exemplo = [
-    ['Transportadora', 'Origem', 'UF Origem', 'Destino', 'UF Destino', 'KM', 'Tipo', 'Frete Valor', 'Frete Final (Ajustado ANTT)', 'Frete Atual', 'Frete ANTT', 'ICMS', 'Pedágio'],
-    ['TRANSPORTADORA EXEMPLO', 'ITAJAÍ', 'SC', 'MACEIÓ', 'AL', 3024, 'CARRETA BAÚ', 19915.35, 23064.05, '', 23064.05, 0.07, 842],
-    ['TRANSPORTADORA EXEMPLO', 'ITUPEVA', 'SP', 'FEIRA DE SANTANA', 'BA', 1873, 'CARRETA BAÚ', 13014.54, 14532.38, '', 14532.38, 0.07, 625.2],
+    ['Transportadora', 'Origem', 'UF ORIGEM', 'Destino', 'UF DESTINO', 'KM', 'TIPO', 'TARGET', 'ICMS', 'Pedágio'],
+    ['TRANSPORTADORA EXEMPLO', 'ITAJAÍ', 'SC', 'MACEIÓ', 'AL', 3024, 'CARRETA BÁU', 23064.05, 0.07, 842],
+    ['TRANSPORTADORA EXEMPLO', 'ITUPEVA', 'SP', 'FEIRA DE SANTANA', 'BA', 1873, 'CARRETA BÁU', 14532.38, 0.07, 625.2],
+    ['TRANSPORTADORA EXEMPLO', 'JABOATÃO', 'PE', 'FORTALEZA', 'CE', 807, 'CARRETA BÁU', 6824.99664, 0.12, 0],
   ];
 
   const ws = XLSX.utils.aoa_to_sheet(exemplo);
   ws['!cols'] = [
-    { wch: 24 }, { wch: 18 }, { wch: 12 }, { wch: 24 }, { wch: 12 }, { wch: 10 },
-    { wch: 18 }, { wch: 14 }, { wch: 26 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+    { wch: 24 }, { wch: 18 }, { wch: 12 }, { wch: 26 }, { wch: 12 },
+    { wch: 10 }, { wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
   ];
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'MODELO LOTACAO');
-  XLSX.writeFile(wb, 'modelo_lotacao_antt_target_transportadora.xlsx');
+  XLSX.utils.book_append_sheet(wb, ws, 'MODELO TARGET');
+  XLSX.writeFile(wb, 'modelo_lotacao_target_transportadora.xlsx');
+}
+
+export function baixarModeloAntt() {
+  const exemplo = [
+    ['Transportadora', 'Origem', 'UF ORIGEM', 'Destino', 'UF DESTINO', 'KM', 'TIPO', 'Frete ANTT Oficial'],
+    ['TRANSGP', 'ITAJAÍ', 'SC', 'MACEIÓ', 'AL', 3024, 'CARRETA BÁU', 23064.05],
+    ['TRANSGP', 'ITUPEVA', 'SP', 'FEIRA DE SANTANA', 'BA', 1873, 'CARRETA BÁU', 14532.38],
+    ['TRANSGP', 'JABOATÃO', 'PE', 'FORTALEZA', 'CE', 807, 'CARRETA BÁU', 6630.7568],
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(exemplo);
+  ws['!cols'] = [
+    { wch: 24 }, { wch: 18 }, { wch: 12 }, { wch: 26 },
+    { wch: 12 }, { wch: 10 }, { wch: 18 }, { wch: 20 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'MODELO ANTT');
+  XLSX.writeFile(wb, 'modelo_lotacao_antt.xlsx');
 }

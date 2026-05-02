@@ -959,99 +959,118 @@ textarea,
   line-height: 1.45;
 }
 
-/* Módulo independente: Controle de Transportadoras e Lotação */
-.lotacao-page .lotacao-upload-card {
-  align-content: start;
+/* Módulo Lotação - modelos oficiais Target/ANTT */
+.lotacao-page {
+  gap: 22px;
 }
 
-.lotacao-page input[type="file"] {
-  border: 1px dashed var(--border);
-  background: var(--panel-soft);
+.lotacao-upload-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 330px;
 }
 
-.lotacao-summary-mini {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+.lotacao-upload-card p,
+.lotacao-modelos-card p {
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 6px 0 0;
 }
 
-.lotacao-comparativo-card {
-  align-content: start;
-}
-
-.lotacao-table-card {
-  min-height: 320px;
-}
-
-.lotacao-page .table-card td.positivo,
-.lotacao-page .sim-analise-tabela td.positivo {
-  color: #0f7a58;
-  font-weight: 800;
-}
-
-.lotacao-page .table-card td.negativo,
-.lotacao-page .sim-analise-tabela td.negativo {
-  color: #b42318;
-  font-weight: 800;
-}
-
-.lotacao-page .status-pill {
-  white-space: nowrap;
-}
-
-button:disabled {
-  opacity: 0.58;
-  cursor: not-allowed;
-}
-
-@media (max-width: 1200px) {
-  .lotacao-summary-mini {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 720px) {
-  .lotacao-summary-mini {
-    grid-template-columns: 1fr;
-  }
-}
-
-.lotacao-modelos-card {
-  margin-bottom: 18px;
+.lotacao-model-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .lotacao-modelo-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin: 14px 0;
+  gap: 16px;
+  margin-top: 18px;
 }
 
 .lotacao-modelo-grid > div {
   border: 1px solid var(--border-soft);
   background: var(--panel-soft);
-  border-radius: 16px;
-  padding: 14px;
+  border-radius: 18px;
+  padding: 16px;
 }
 
 .lotacao-modelo-grid strong {
   display: block;
+  font-size: 16px;
   margin-bottom: 6px;
-  color: var(--text);
 }
 
-.lotacao-modelo-grid p {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.45;
+.lotacao-kpis .summary-card small {
+  display: block;
   color: var(--muted);
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 700;
 }
 
-.hint-box.compact {
-  margin-top: 10px;
-  font-size: 14px;
+.lotacao-summary-mini {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 16px;
 }
 
-@media (max-width: 1200px) {
-  .lotacao-modelo-grid {
+.lotacao-comparativo-card .summary-card {
+  padding: 18px;
+}
+
+.lotacao-comparativo-card .summary-card strong {
+  font-size: 24px;
+}
+
+.lotacao-table-card {
+  min-width: 0;
+}
+
+.lotacao-table-card .sim-analise-tabela-wrap,
+.table-card .sim-analise-tabela-wrap {
+  overflow-x: auto;
+}
+
+.lotacao-page .field.small-width {
+  min-width: 240px;
+}
+
+.lotacao-page .sim-analise-resumo {
+  margin-top: 16px;
+}
+
+.lotacao-page .compact {
+  margin: 0;
+}
+
+.lotacao-page td.positivo {
+  color: #0f7a58;
+  font-weight: 800;
+}
+
+.lotacao-page td.negativo {
+  color: #b42318;
+  font-weight: 800;
+}
+
+@media (max-width: 1180px) {
+  .lotacao-modelo-grid,
+  .feature-grid.import-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .lotacao-model-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 760px) {
+  .lotacao-summary-mini,
+  .lotacao-kpis {
     grid-template-columns: 1fr;
   }
 }
