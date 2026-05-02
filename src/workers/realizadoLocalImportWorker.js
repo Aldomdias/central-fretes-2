@@ -34,7 +34,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       mensagem: 'Base IBGE incompleta no navegador; tentando baixar a referência oficial do IBGE...',
     });
     try {
-      const oficial = await carregarMunicipiosIbgeOficial({ usarCache: false });
+      const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
       if (oficial.municipios?.length > municipiosReferencia.length) {
         municipiosReferencia = oficial.municipios;
       }

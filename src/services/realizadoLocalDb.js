@@ -245,6 +245,8 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
     porTransportadora: new Map(),
     porCanal: new Map(),
     porOrigem: new Map(),
+    porDestino: new Map(),
+    porUfDestino: new Map(),
     porMes: new Map(),
   };
 
@@ -287,6 +289,8 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
         addGroup(resumo.porTransportadora, row.transportadora, row);
         addGroup(resumo.porCanal, row.canal, row);
         addGroup(resumo.porOrigem, `${row.cidadeOrigem}/${row.ufOrigem}`, row);
+        addGroup(resumo.porDestino, `${row.cidadeDestino}/${row.ufDestino}`, row);
+        addGroup(resumo.porUfDestino, row.ufDestino || 'Sem UF', row);
         addGroup(resumo.porMes, row.competencia || data.slice(0, 7), row);
       }
       cursor.continue();
@@ -306,8 +310,40 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
     porTransportadora: finalize(resumo.porTransportadora),
     porCanal: finalize(resumo.porCanal),
     porOrigem: finalize(resumo.porOrigem),
+    porDestino: finalize(resumo.porDestino),
+    porUfDestino: finalize(resumo.porUfDestino),
     porMes: finalize(resumo.porMes),
   };
+}
+
+export async function exportarRealizadoLocal(filtros = {}, options = {}) {
+  const db = await openDb();
+  const limit = Number(options.limit || 100000);
+  const rows = [];
+  let totalCompativel = 0;
+
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CTES, 'readonly');
+    const store = tx.objectStore(STORE_CTES);
+    const req = store.openCursor(null, 'prev');
+    req.onerror = () => reject(req.error || new Error('Erro ao exportar base local.'));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      const row = cursor.value;
+      if (filtrarCteLocal(row, filtros)) {
+        totalCompativel += 1;
+        if (rows.length < limit) rows.push(row);
+      }
+      cursor.continue();
+    };
+  });
+
+  db.close();
+  return { rows, totalCompativel, limit };
 }
 
 export async function diagnosticarRealizadoLocal() {

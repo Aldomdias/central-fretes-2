@@ -1,9 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import * as XLSX from 'xlsx';
+import { buscarBaseSimulacaoDb, carregarBaseCompletaDb, carregarTransportadoraCompletaDb } from '../services/freteDatabaseService';
+import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import {
   buscarRealizadoLocalParaSimulacao,
   buscarRealizadoLocalPorMalha,
   diagnosticarRealizadoLocal,
+  exportarRealizadoLocal,
   limparRealizadoLocal,
   listarRealizadoLocal,
   resumirRealizadoLocal,
@@ -45,16 +48,21 @@ function SummaryCard({ title, value, subtitle }) {
   );
 }
 
-function MiniTable({ title, rows = [] }) {
+function MiniTable({ title, rows = [], tipo, onSelect, activeKey }) {
   return (
     <div className="sim-parametros-box">
       <strong>{title}</strong>
       <div className="mini-list top-space-sm">
         {rows.length ? rows.map((item) => (
-          <div key={item.chave} className="mini-list-row">
+          <button
+            type="button"
+            key={`${tipo || title}-${item.chave}`}
+            className={activeKey === `${tipo}:${item.chave}` ? 'mini-list-row clickable active' : 'mini-list-row clickable'}
+            onClick={() => onSelect?.(tipo, item)}
+          >
             <span>{item.chave}</span>
             <strong>{formatCurrency(item.frete)} • {formatPercent(item.percentual)} • {item.ctes.toLocaleString('pt-BR')} CT-e(s)</strong>
-          </div>
+          </button>
         )) : <span>Sem dados para o filtro.</span>}
       </div>
     </div>
@@ -82,6 +90,71 @@ function rankingLabel(item, rankingCalculado) {
   return item.ranking ? `${item.ranking}º${item.ganharia ? ' • ganharia' : ''}` : '—';
 }
 
+function sheetSafeName(value = 'Planilha') {
+  return String(value || 'Planilha').replace(/[\\/?*\[\]:]/g, ' ').slice(0, 31) || 'Planilha';
+}
+
+function baixarXlsx(nomeArquivo, abas = {}) {
+  const workbook = XLSX.utils.book_new();
+  Object.entries(abas).forEach(([nome, rows]) => {
+    const sheet = XLSX.utils.json_to_sheet(rows || []);
+    XLSX.utils.book_append_sheet(workbook, sheet, sheetSafeName(nome));
+  });
+  XLSX.writeFile(workbook, nomeArquivo);
+}
+
+function cteToExportRow(item = {}) {
+  return {
+    Competencia: item.competencia || '',
+    Emissao: item.dataEmissao || '',
+    CTE: item.numeroCte || '',
+    Chave_CTE: item.chaveCte || '',
+    Transportadora_Realizada: item.transportadora || '',
+    Canal: item.canal || '',
+    Origem: item.cidadeOrigem || '',
+    UF_Origem: item.ufOrigem || '',
+    IBGE_Origem: item.ibgeOrigem || '',
+    Destino: item.cidadeDestino || '',
+    UF_Destino: item.ufDestino || '',
+    IBGE_Destino: item.ibgeDestino || '',
+    Chave_Rota_IBGE: item.chaveRotaIbge || '',
+    Peso: item.peso || 0,
+    Peso_Declarado: item.pesoDeclarado || 0,
+    Peso_Cubado: item.pesoCubado || 0,
+    Cubagem: item.cubagem || 0,
+    Volumes: item.qtdVolumes || 0,
+    Valor_CTE: item.valorCte || 0,
+    Valor_NF: item.valorNF || 0,
+    IBGE_OK: item.ibgeOk ? 'Sim' : 'Não',
+    Arquivo_Origem: item.arquivoOrigem || '',
+  };
+}
+
+function simToExportRow(item = {}) {
+  return {
+    CTE: item.numeroCte || '',
+    Chave_CTE: item.chaveCte || '',
+    Emissao: item.emissao || '',
+    Transportadora_Realizada: item.transportadoraRealizada || '',
+    Transportadora_Simulada: item.transportadoraSimulada || '',
+    Origem: item.origem || '',
+    Destino: item.cidadeDestino || '',
+    UF_Destino: item.ufDestino || '',
+    Canal: item.canal || '',
+    Peso: item.peso || 0,
+    Valor_NF: item.valorNF || 0,
+    Valor_Realizado: item.valorRealizado || 0,
+    Valor_Simulado: item.valorSimulado || 0,
+    Impacto: item.impacto || 0,
+    Percentual_Realizado: item.percentualRealizado || 0,
+    Percentual_Simulado: item.percentualSimulado || 0,
+    Ranking: item.ranking || '',
+    Ganharia: item.ganharia ? 'Sim' : 'Não',
+    Lider_Transportadora: item.liderTransportadora || '',
+    Frete_Substituta: item.freteSubstituta || 0,
+  };
+}
+
 export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [filtros, setFiltros] = useState(DEFAULT_FILTROS);
   const [filtrosAplicados, setFiltrosAplicados] = useState(DEFAULT_FILTROS);
@@ -100,9 +173,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [fileKey, setFileKey] = useState(makeFileKey());
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [transportadorasTabela, setTransportadorasTabela] = useState(null);
+  const [transportadoraSimuladaCache, setTransportadoraSimuladaCache] = useState({});
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
   const [modoSimulacao, setModoSimulacao] = useState('rapido');
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
+  const [grupoDetalhe, setGrupoDetalhe] = useState(null);
+  const [exportando, setExportando] = useState(false);
   const fileInputRef = useRef(null);
 
   const stats = useMemo(() => ({
@@ -121,14 +197,17 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     async function init() {
       setCarregando(true);
       try {
-        const [diag, municipiosDb] = await Promise.all([
+        const [diag, ibgeRef] = await Promise.all([
           diagnosticarRealizadoLocal().catch(() => ({ total: 0 })),
-          carregarMunicipiosIbgeDb().catch(() => []),
+          carregarMunicipiosIbgeComFallback({ permitirOficial: true }).catch(() => ({ municipios: [], fonte: 'pendente', totalSupabase: 0 })),
         ]);
         if (!ativo) return;
         setDiagnostico(diag);
-        setMunicipios(municipiosDb || []);
-        setIbgeInfo({ total: (municipiosDb || []).length, fonte: (municipiosDb || []).length ? 'Supabase IBGE' : 'pendente' });
+        setMunicipios(ibgeRef.municipios || []);
+        setIbgeInfo({
+          total: (ibgeRef.municipios || []).length,
+          fonte: `${ibgeRef.fonte || 'pendente'}${ibgeRef.totalSupabase && ibgeRef.totalSupabase < 5000 ? ` • Supabase: ${ibgeRef.totalSupabase.toLocaleString('pt-BR')}` : ''}`,
+        });
         await pesquisar(DEFAULT_FILTROS, false);
       } catch (error) {
         if (ativo) setErro(error.message || 'Erro ao iniciar realizado local.');
@@ -174,22 +253,28 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   async function prepararMunicipiosParaImportacao() {
     let baseMunicipios = Array.isArray(municipios) ? municipios : [];
     let tabelas = transportadorasTabela;
-    let fonte = baseMunicipios.length ? 'Supabase IBGE' : 'pendente';
+    let fonte = baseMunicipios.length ? ibgeInfo.fonte : 'pendente';
 
-    if (!baseMunicipios.length || baseMunicipios.length < 1000) {
+    if (!baseMunicipios.length || baseMunicipios.length < 5000) {
       setProgress((prev) => ({
         ...(prev || {}),
         etapa: 'Carregando referência IBGE',
         percentual: 3,
-        mensagem: 'Carregando municípios IBGE e fallback pelas tabelas de frete...',
+        mensagem: 'Carregando base oficial IBGE com normalização por cidade/UF. Se o Supabase estiver vazio, uso fallback oficial em cache.',
       }));
       await nextFrame();
-      if (!tabelas?.length) {
+      const ibgeRef = await carregarMunicipiosIbgeComFallback({ permitirOficial: true }).catch(() => ({ municipios: baseMunicipios, fonte }));
+      if ((ibgeRef.municipios || []).length > baseMunicipios.length) {
+        baseMunicipios = ibgeRef.municipios || [];
+        fonte = ibgeRef.fonte || fonte;
+      }
+
+      if (!tabelas?.length && baseMunicipios.length < 5000) {
         const base = await carregarBaseCompletaDb().catch(() => []);
         tabelas = base?.length ? base : transportadoras;
         if (base?.length) setTransportadorasTabela(base);
+        fonte = baseMunicipios.length ? `${fonte} + tabelas` : 'Tabelas de frete';
       }
-      fonte = baseMunicipios.length ? 'Supabase IBGE + tabelas' : 'Tabelas de frete';
     }
 
     const enriquecidos = enriquecerMunicipiosComTabelas(baseMunicipios, tabelas || transportadoras || []);
@@ -312,10 +397,91 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
-  async function carregarTabelasFrete() {
-    if (transportadorasTabela?.length) return transportadorasTabela;
-    setProgress((prev) => ({ ...(prev || {}), etapa: 'Carregando tabelas', percentual: 15, mensagem: 'Carregando tabelas de frete do Supabase uma única vez...' }));
+  async function carregarTabelaTransportadoraSelecionada(nomeTransportadora) {
+    const nome = String(nomeTransportadora || '').trim();
+    if (!nome) return [];
+    if (transportadoraSimuladaCache[nome]?.length) return transportadoraSimuladaCache[nome];
+
+    setProgress((prev) => ({
+      ...(prev || {}),
+      etapa: 'Carregando tabela simulada',
+      percentual: 12,
+      mensagem: `Carregando somente a tabela da ${nome}. Isso deixa o modo rápido bem mais leve.`,
+    }));
     await nextFrame();
+
+    const selecionada = await carregarTransportadoraCompletaDb(null, nome).catch(() => null);
+    const base = selecionada ? [selecionada] : (transportadoras || []).filter((item) => item.nome === nome);
+    setTransportadoraSimuladaCache((prev) => ({ ...prev, [nome]: base }));
+    return base;
+  }
+
+  function mesclarTransportadorasParciais(listas = []) {
+    const mapa = new Map();
+    const origemKeysPorTransportadora = new Map();
+
+    listas.flat().filter(Boolean).forEach((transportadora) => {
+      const chaveTransportadora = transportadora.id || transportadora.nome;
+      if (!chaveTransportadora) return;
+      const atual = mapa.get(chaveTransportadora) || { ...transportadora, origens: [] };
+      const origemKeys = origemKeysPorTransportadora.get(chaveTransportadora) || new Set();
+
+      (transportadora.origens || []).forEach((origem) => {
+        const origemKey = origem.id || `${origem.cidade}|${origem.canal}|${(origem.rotas || []).map((rota) => rota.ibgeDestino || rota.nomeRota).join(',')}`;
+        if (origemKeys.has(origemKey)) return;
+        origemKeys.add(origemKey);
+        atual.origens.push(origem);
+      });
+
+      mapa.set(chaveTransportadora, atual);
+      origemKeysPorTransportadora.set(chaveTransportadora, origemKeys);
+    });
+
+    return [...mapa.values()].filter((item) => item.origens?.length);
+  }
+
+  async function carregarTabelasConcorrentesParaRealizado(rows = [], tabelaSelecionada = []) {
+    if (!rows.length) return tabelaSelecionada;
+
+    setProgress((prev) => ({
+      ...(prev || {}),
+      etapa: 'Carregando concorrentes enxutos',
+      percentual: 26,
+      mensagem: 'Modo completo: buscando somente concorrentes das origens/destinos existentes no realizado filtrado.',
+    }));
+    await nextFrame();
+
+    const grupos = new Map();
+    rows.forEach((row) => {
+      const origem = row.cidadeOrigem || '';
+      const canal = row.canal || '';
+      const destino = String(row.ibgeDestino || '').replace(/\D/g, '');
+      if (!origem || !destino) return;
+      const key = `${origem}|${canal}`;
+      const grupo = grupos.get(key) || { origem, canal, destinos: new Set() };
+      grupo.destinos.add(destino);
+      grupos.set(key, grupo);
+    });
+
+    const partes = [tabelaSelecionada];
+    for (const grupo of grupos.values()) {
+      const destinos = [...grupo.destinos];
+      for (let i = 0; i < destinos.length; i += 200) {
+        const destinoCodigos = destinos.slice(i, i + 200);
+        const parcial = await buscarBaseSimulacaoDb({
+          origem: grupo.origem,
+          canal: grupo.canal,
+          destinoCodigos,
+        }).catch(() => []);
+        if (parcial?.length) partes.push(parcial);
+        await nextFrame();
+      }
+    }
+
+    const mescladas = mesclarTransportadorasParciais(partes);
+    if (mescladas.length) return mescladas;
+
+    if (transportadorasTabela?.length) return transportadorasTabela;
     const base = await carregarBaseCompletaDb().catch(() => []);
     const finalBase = base?.length ? base : transportadoras;
     setTransportadorasTabela(finalBase);
@@ -335,14 +501,14 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setProgress({ etapa: 'Carregando malha', atual: 0, total: 0, percentual: 5, mensagem: 'Carregando tabelas e montando escopo da transportadora...' });
 
     try {
-      const baseTabelas = await carregarTabelasFrete();
-      if (!baseTabelas?.length) {
-        setErro('Não encontrei tabelas de frete carregadas do Supabase para simular.');
+      const tabelaSelecionada = await carregarTabelaTransportadoraSelecionada(filtros.transportadora);
+      if (!tabelaSelecionada?.length) {
+        setErro('Não encontrei a tabela dessa transportadora no Supabase. Confira se a tabela está cadastrada e se o nome selecionado é exatamente o mesmo.');
         return;
       }
 
       const escopo = construirEscopoTransportadoraSimulada({
-        transportadoras: baseTabelas,
+        transportadoras: tabelaSelecionada,
         nomeTransportadora: filtros.transportadora,
         municipios,
         canalFiltro: filtrosAplicados.canal || filtros.canal,
@@ -400,13 +566,17 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           : `Preparando simulação local: ${rows.length.toLocaleString('pt-BR')} CT-e(s) usados${totalCompativel > rows.length ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontrados. Limite atual: ${limit.toLocaleString('pt-BR')}.` : '.'}`
       );
 
+      const baseTabelas = modoSimulacao === 'rapido'
+        ? tabelaSelecionada
+        : await carregarTabelasConcorrentesParaRealizado(rows, tabelaSelecionada);
+
       setProgress({
         etapa: 'Indexando tabelas',
         atual: 0,
         total: baseTabelas.length,
         percentual: 30,
         mensagem: modoSimulacao === 'rapido'
-          ? 'Modo rápido: preparando cálculo somente da transportadora simulada.'
+          ? `Modo rápido: calculando somente ${filtros.transportadora}, sem puxar concorrentes.`
           : 'Modo completo: preparando cálculo de ranking contra concorrentes.',
       });
       await nextFrame();
@@ -448,6 +618,62 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     return [...new Set(fromTabelas)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [transportadorasTabela, transportadoras]);
 
+  function selecionarGrupo(tipo, item) {
+    if (!tipo || !item) return;
+    setGrupoDetalhe({ tipo, ...item });
+  }
+
+  async function aplicarGrupoComoFiltro() {
+    if (!grupoDetalhe) return;
+    const novoFiltro = { ...filtros };
+    if (grupoDetalhe.tipo === 'transportadora') novoFiltro.transportadoraRealizada = grupoDetalhe.chave === 'Não informado' ? '' : grupoDetalhe.chave;
+    if (grupoDetalhe.tipo === 'canal') novoFiltro.canal = grupoDetalhe.chave === 'Não informado' ? '' : grupoDetalhe.chave;
+    if (grupoDetalhe.tipo === 'mes') novoFiltro.competencia = grupoDetalhe.chave === 'Não informado' ? '' : grupoDetalhe.chave;
+    if (grupoDetalhe.tipo === 'origem') {
+      const [cidade, uf] = String(grupoDetalhe.chave || '').split('/');
+      novoFiltro.origem = cidade || '';
+      novoFiltro.ufOrigem = uf || '';
+    }
+    if (grupoDetalhe.tipo === 'destino') {
+      const [cidade, uf] = String(grupoDetalhe.chave || '').split('/');
+      novoFiltro.destino = cidade || '';
+      novoFiltro.ufDestino = uf || '';
+    }
+    setFiltros(novoFiltro);
+    await pesquisar(novoFiltro);
+  }
+
+  async function exportarBaseSelecionada() {
+    setExportando(true);
+    setErro('');
+    try {
+      const { rows, totalCompativel, limit } = await exportarRealizadoLocal(filtrosAplicados, { limit: 100000 });
+      if (!rows.length) {
+        setErro('Não existe base filtrada para exportar. Pesquise primeiro.');
+        return;
+      }
+      baixarXlsx(`realizado-local-base-filtrada-${Date.now()}.xlsx`, {
+        Base_Filtrada: rows.map(cteToExportRow),
+      });
+      setFeedback(`Base filtrada exportada: ${rows.length.toLocaleString('pt-BR')} linha(s)${totalCompativel > limit ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontradas` : ''}.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao exportar base filtrada.');
+    } finally {
+      setExportando(false);
+    }
+  }
+
+  function exportarResultadoSimulacao() {
+    if (!resultado) return;
+    baixarXlsx(`realizado-local-simulacao-${Date.now()}.xlsx`, {
+      Resultado: (resultado.detalhes || []).map(simToExportRow),
+      Fora_da_Malha: (resultado.foraMalha || []).map(cteToExportRow),
+      Resumo_UF: resultado.resumo?.porUf || [],
+    });
+    setFeedback('Resultado da simulação exportado em Excel.');
+  }
+
+  const grupoAtivoKey = grupoDetalhe ? `${grupoDetalhe.tipo}:${grupoDetalhe.chave}` : '';
   const rankingCalculado = resultado?.resumo?.rankingCalculado !== false;
 
   return (
@@ -464,6 +690,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <button className="btn-secondary" onClick={() => pesquisar(filtros)} disabled={carregando || importando || simulando}>
             {carregando ? 'Pesquisando...' : 'Pesquisar base local'}
           </button>
+          <button className="btn-secondary" onClick={exportarBaseSelecionada} disabled={exportando || carregando || importando || simulando || !stats.total}>
+            {exportando ? 'Exportando...' : 'Exportar base filtrada'}
+          </button>
           <button className="btn-danger" onClick={limparBase} disabled={carregando || importando || simulando || !diagnostico?.total}>
             Limpar base local
           </button>
@@ -473,7 +702,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
       <div className={ibgeInfo.total ? 'sim-alert success' : 'sim-alert'}>
-        <strong>Referência IBGE local:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação local só deve ser feita depois dessa referência carregar.
+        <strong>Referência IBGE local:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação local usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se o Supabase estiver vazio.
       </div>
 
       {progress ? (
@@ -587,11 +816,24 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <span className="status-pill">{amostra.length.toLocaleString('pt-BR')} linha(s) na amostra</span>
         </div>
         <div className="feature-grid four top-space">
-          <MiniTable title="Top transportadoras" rows={resumo?.porTransportadora || []} />
-          <MiniTable title="Canal" rows={resumo?.porCanal || []} />
-          <MiniTable title="Origem" rows={resumo?.porOrigem || []} />
-          <MiniTable title="Mês" rows={resumo?.porMes || []} />
+          <MiniTable title="Top transportadoras" tipo="transportadora" rows={resumo?.porTransportadora || []} onSelect={selecionarGrupo} activeKey={grupoAtivoKey} />
+          <MiniTable title="Origem" tipo="origem" rows={resumo?.porOrigem || []} onSelect={selecionarGrupo} activeKey={grupoAtivoKey} />
+          <MiniTable title="Destino" tipo="destino" rows={resumo?.porDestino || []} onSelect={selecionarGrupo} activeKey={grupoAtivoKey} />
+          <MiniTable title="Canal / mês" tipo="canal" rows={resumo?.porCanal || []} onSelect={selecionarGrupo} activeKey={grupoAtivoKey} />
         </div>
+        {grupoDetalhe ? (
+          <div className="realizado-detail-panel top-space">
+            <div>
+              <span>Detalhe selecionado</span>
+              <strong>{grupoDetalhe.chave}</strong>
+              <small>{grupoDetalhe.tipo} • {grupoDetalhe.ctes.toLocaleString('pt-BR')} CT-e(s) • {formatCurrency(grupoDetalhe.frete)} • {formatPercent(grupoDetalhe.percentual)}</small>
+            </div>
+            <div className="actions-right wrap">
+              <button className="btn-secondary" onClick={aplicarGrupoComoFiltro}>Filtrar por este item</button>
+              <button className="btn-link" onClick={() => setGrupoDetalhe(null)}>Recolher</button>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       {resultado ? (
@@ -601,6 +843,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               <h2>Resultado da simulação local</h2>
               <p>Transportadora simulada: <strong>{filtros.transportadora}</strong> • modo: <strong>{resultado.resumo.modo === 'completo' ? 'Completo' : 'Rápido'}</strong></p>
             </div>
+            <button className="btn-secondary" onClick={exportarResultadoSimulacao}>Exportar simulação</button>
           </div>
           {!rankingCalculado ? (
             <div className="sim-alert info">

@@ -9,6 +9,7 @@ import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import RealizadoPage from './pages/RealizadoPage';
 import RealizadoLocalPage from './pages/RealizadoLocalPage';
 import LotacaoPage from './pages/LotacaoPage';
+import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -93,6 +94,10 @@ export default function App() {
 
   if (paginaAtual === 'lotacao') {
     content = <LotacaoPage />;
+  }
+
+  if (paginaAtual === 'consulta-ibge') {
+    content = <ConsultaIbgePage />;
   }
 
   if (paginaAtual === 'transportadoras') {

@@ -9,6 +9,7 @@ const menuPrincipal = [
   { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
   { chave: 'importar-template', label: 'Importar Template', icon: '⇩' },
   { chave: 'lotacao', label: 'Lotação', icon: '▧' },
+  { chave: 'consulta-ibge', label: 'Consulta IBGE', icon: '⌖' },
 ];
 
 const menuCadastros = [
