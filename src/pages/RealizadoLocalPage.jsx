@@ -126,8 +126,9 @@ function makeFileKey() {
 }
 
 function rankingLabel(item, rankingCalculado) {
-  if (!rankingCalculado) return item.economizaria ? 'Rápido • reduz custo' : 'Rápido • fica acima';
-  return item.ranking ? `${item.ranking}º${item.ganharia ? ' • ganharia' : ''}` : '—';
+  if (item.ganharia) return rankingCalculado ? `${item.ranking || 1}º • sairia / saving` : 'Sairia • gera saving';
+  if (rankingCalculado && item.ranking) return `${item.ranking}º • não sai`;
+  return item.economizaria ? 'Reduz, mas não alocada' : 'Não sai • acima realizado';
 }
 
 function sheetSafeName(value = 'Planilha') {
@@ -187,17 +188,23 @@ function simToExportRow(item = {}) {
     Valor_NF: item.valorNF || 0,
     Valor_Realizado: item.valorRealizado || 0,
     Valor_Simulado: item.valorSimulado || 0,
-    Impacto: item.impacto || 0,
+    Impacto_Unitario: item.impacto || 0,
     Resultado_Impacto: item.resultadoImpacto || (economizaria ? 'Reduz custo vs realizado' : 'Fica acima do realizado'),
+    Motivo_Alocacao: item.motivoAlocacao || '',
+    Sairia_Pela_Transportadora: item.ganharia ? 'Sim' : 'Não',
+    Saving_Potencial: item.savingPotencial || 0,
+    Valor_Realizado_Considerado: item.valorRealizadoAlocado || 0,
+    Valor_Simulado_Considerado: item.valorSimuladoAlocado || 0,
     Economia_vs_Realizado: item.economiaVsRealizado || (economizaria ? item.impacto || 0 : 0),
-    Aumento_vs_Realizado: item.aumentoVsRealizado || (!economizaria ? Math.abs(Number(item.impacto || 0)) : 0),
+    Aumento_Ignorado_Nao_Aloca: item.aumentoVsRealizado || (!economizaria ? Math.abs(Number(item.impacto || 0)) : 0),
     Percentual_Realizado: item.percentualRealizado || 0,
     Percentual_Simulado: item.percentualSimulado || 0,
     Ranking: rankingCalculado ? (item.ranking || '') : 'Não calculado no modo rápido',
-    Ganharia: rankingCalculado ? (item.ganharia ? 'Sim' : 'Não') : (economizaria ? 'Sim' : 'Não'),
+    Menor_Preco_Entre_Tabelas: rankingCalculado ? (item.ganhaRanking ? 'Sim' : 'Não') : 'Não calculado no modo rápido',
+    Ganharia: item.ganharia ? 'Sim' : 'Não',
     Metrica_Ganharia: rankingCalculado
-      ? 'Modo completo: Sim quando a transportadora simulada é 1º menor preço entre concorrentes'
-      : 'Modo rápido: Sim quando Valor_Simulado é menor que Valor_Realizado',
+      ? 'Modo completo: Sim quando é 1º menor preço entre tabelas e reduz custo vs realizado'
+      : 'Modo rápido: Sim quando Valor_Simulado é menor que Valor_Realizado. Cargas acima do realizado não são alocadas.',
     Lider_Transportadora: item.liderTransportadora || '',
     Frete_Substituta: rankingCalculado ? (item.freteSubstituta || 0) : '',
   };
@@ -702,8 +709,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Simulação local concluída.' });
       setFeedback(
         analise.resumo.rankingCalculado
-          ? `Simulação completa concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) avaliados e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha.`
-          : `Simulação rápida concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) com frete simulado e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha. Ranking/ganhadores não calculados no modo rápido.`
+          ? `Simulação completa concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) avaliados, ${analise.resumo.ctesGanharia.toLocaleString('pt-BR')} sairia(m) pela transportadora e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha.`
+          : `Simulação rápida concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) com frete simulado, ${analise.resumo.ctesGanharia.toLocaleString('pt-BR')} com saving e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha.`
       );
     } catch (error) {
       setErro(error.message || 'Erro ao simular realizado local.');
@@ -948,19 +955,18 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             </div>
             <button className="btn-secondary" onClick={exportarResultadoSimulacao}>Exportar simulação</button>
           </div>
-          {!rankingCalculado ? (
-            <div className="sim-alert info">
-              Modo rápido: a coluna “Ganharia” usa a métrica de impacto financeiro, ou seja, Sim quando o valor simulado fica menor que o CT-e realizado. Ranking contra concorrentes e aderência de 1º lugar só aparecem no modo completo.
-            </div>
-          ) : null}
+          <div className="sim-alert info">
+            Métrica aplicada: o sistema só considera como carga ganha/alocada quando a transportadora simulada reduz o custo contra o CT-e realizado. Carga em que o valor simulado fica acima do realizado não entra como prejuízo; ela simplesmente não sairia por essa transportadora. {rankingCalculado ? 'No modo completo, além de reduzir custo, a transportadora também precisa ser o menor preço entre as tabelas concorrentes.' : 'No modo rápido, a comparação é somente contra o realizado atual.'}
+          </div>
           <div className="sim-analise-resumo top-space">
             <div><span>CT-e(s) avaliados</span><strong>{resultado.resumo.ctesComSimulacao.toLocaleString('pt-BR')}</strong></div>
-            <div><span>{rankingCalculado ? 'CT-e(s) que ganharia' : 'CT-e(s) com redução'}</span><strong>{rankingCalculado ? resultado.resumo.ctesGanharia.toLocaleString('pt-BR') : (resultado.resumo.ctesEconomizaria || 0).toLocaleString('pt-BR')}</strong></div>
-            <div><span>{rankingCalculado ? 'Aderência' : '% com redução'}</span><strong>{rankingCalculado ? formatPercent(resultado.resumo.aderencia) : formatPercent(resultado.resumo.percentualEconomizaria || 0)}</strong></div>
-            <div><span>{rankingCalculado ? 'Faturamento se vencedora' : 'Economia bruta'}</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.faturamentoGanhador) : formatCurrency(resultado.resumo.economiaBruta || 0)}</strong></div>
-            <div><span>{rankingCalculado ? 'Economia se vencedora' : 'Aumento bruto'}</span><strong>{rankingCalculado ? formatCurrency(resultado.resumo.economiaGanhador) : formatCurrency(resultado.resumo.aumentoBruto || 0)}</strong></div>
-            <div><span>Impacto total líquido</span><strong>{formatCurrency(resultado.resumo.impactoLiquido)}</strong></div>
-            <div><span>% frete simulado</span><strong>{formatPercent(resultado.resumo.percentualSimulado)}</strong></div>
+            <div><span>CT-e(s) que sairia por ela</span><strong>{resultado.resumo.ctesGanharia.toLocaleString('pt-BR')}</strong></div>
+            <div><span>% alocação com saving</span><strong>{formatPercent(resultado.resumo.aderencia || 0)}</strong></div>
+            <div><span>Faturamento nas cargas ganhas</span><strong>{formatCurrency(resultado.resumo.faturamentoGanhador || 0)}</strong></div>
+            <div><span>Saving potencial</span><strong>{formatCurrency(resultado.resumo.savingPotencial || resultado.resumo.economiaGanhador || 0)}</strong></div>
+            <div><span>Aumento ignorado / não aloca</span><strong>{formatCurrency(resultado.resumo.aumentoIgnorado || 0)}</strong></div>
+            <div><span>Impacto se carregasse tudo</span><strong>{formatCurrency(resultado.resumo.impactoSeCarregasseTudo ?? resultado.resumo.impactoLiquido)}</strong></div>
+            <div><span>% frete nas cargas ganhas</span><strong>{formatPercent(resultado.resumo.percentualFreteGanhador || 0)}</strong></div>
             <div><span>Fora da malha</span><strong>{resultado.resumo.ctesForaMalha.toLocaleString('pt-BR')}</strong></div>
           </div>
 
@@ -969,8 +975,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               <div className="sim-parametros-header"><strong>Resumo por UF destino</strong><span>{resultado.resumo.porUf.length} UF(s)</span></div>
               <div className="sim-table-wrap">
                 <table className="sim-table">
-                  <thead><tr><th>UF</th><th>CT-e(s)</th><th>{rankingCalculado ? 'Ganharia' : 'Reduz custo'}</th><th>{rankingCalculado ? 'Aderência' : '% redução'}</th><th>Realizado</th><th>Simulado</th><th>Impacto líquido</th></tr></thead>
-                  <tbody>{resultado.resumo.porUf.map((item) => <tr key={item.uf}><td>{item.uf}</td><td>{item.ctes}</td><td>{rankingCalculado ? item.ganharia : item.economizaria}</td><td>{rankingCalculado ? formatPercent(item.aderencia) : formatPercent(item.percentualEconomizaria || 0)}</td><td>{formatCurrency(item.valorRealizado)}</td><td>{formatCurrency(item.valorSimulado)}</td><td>{formatCurrency(item.economia)}</td></tr>)}</tbody>
+                  <thead><tr><th>UF</th><th>CT-e(s)</th><th>Sairia por ela</th><th>% alocação</th><th>Realizado cargas ganhas</th><th>Simulado cargas ganhas</th><th>Saving potencial</th></tr></thead>
+                  <tbody>{resultado.resumo.porUf.map((item) => <tr key={item.uf}><td>{item.uf}</td><td>{item.ctes}</td><td>{item.ganharia}</td><td>{formatPercent(item.aderencia || 0)}</td><td>{formatCurrency(item.valorRealizadoGanhador || 0)}</td><td>{formatCurrency(item.valorSimuladoGanhador || 0)}</td><td>{formatCurrency(item.savingPotencial || 0)}</td></tr>)}</tbody>
                 </table>
               </div>
             </div>
@@ -990,7 +996,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
           <div className="sim-table-wrap top-space">
             <table className="sim-table">
-              <thead><tr><th>CT-e</th><th>Emissão</th><th>Realizada</th><th>Origem → Destino</th><th>Valor CT-e</th><th>Simulado</th><th>Impacto</th><th>Ranking</th><th></th></tr></thead>
+              <thead><tr><th>CT-e</th><th>Emissão</th><th>Realizada</th><th>Origem → Destino</th><th>Valor CT-e</th><th>Simulado</th><th>Saving considerado</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {resultado.detalhes.slice(0, 100).map((item) => (
                   <Fragment key={item.id}>
@@ -1001,8 +1007,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                       <td>{item.origem} → {item.cidadeDestino}/{item.ufDestino}</td>
                       <td>{formatCurrency(item.valorRealizado)}</td>
                       <td>{formatCurrency(item.valorSimulado)}</td>
-                      <td className={item.impacto >= 0 ? 'positivo' : 'negativo'}>{formatCurrency(item.impacto)}</td>
-                      <td>{rankingLabel(item, rankingCalculado)}</td>
+                      <td className={item.ganharia ? 'positivo' : ''}>{formatCurrency(item.savingPotencial || 0)}</td>
+                      <td title={item.motivoAlocacao || ''}>{rankingLabel(item, rankingCalculado)}</td>
                       <td><button className="link-btn" onClick={() => setDetalheAberto(detalheAberto === item.id ? null : item.id)}>Detalhe</button></td>
                     </tr>
                     {detalheAberto === item.id ? (

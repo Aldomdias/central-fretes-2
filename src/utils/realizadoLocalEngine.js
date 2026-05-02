@@ -522,10 +522,29 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
   };
 }
 
-function montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalculado }) {
-  const impacto = toNumber(cte.valorCte) - escolhido.total;
+function montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado }) {
+  const valorRealizado = toNumber(cte.valorCte);
+  const valorSimulado = toNumber(escolhido.total);
+  const valorNF = toNumber(cte.valorNF);
+  const impacto = valorRealizado - valorSimulado;
   const economizaria = impacto > 0.009;
   const aumento = impacto < -0.009;
+  const ganhaRanking = rankingCalculado ? ranking === 1 : true;
+
+  // Regra de negócio do realizado local:
+  // o sistema só aloca a carga para a transportadora simulada quando ela reduz custo.
+  // No modo completo, além de reduzir custo, ela também precisa ser o menor preço entre as tabelas.
+  const ganharia = Boolean(economizaria && ganhaRanking);
+  const savingPotencial = ganharia ? impacto : 0;
+  const valorRealizadoAlocado = ganharia ? valorRealizado : 0;
+  const valorSimuladoAlocado = ganharia ? valorSimulado : 0;
+  const valorNfAlocado = ganharia ? valorNF : 0;
+
+  let motivoAlocacao = 'Sairia pela transportadora: gera saving vs realizado';
+  if (!economizaria && aumento) motivoAlocacao = 'Não sairia: valor simulado fica acima do realizado';
+  else if (!economizaria) motivoAlocacao = 'Não sairia: valor simulado empata com o realizado';
+  else if (rankingCalculado && !ganhaRanking) motivoAlocacao = 'Não sairia: existe concorrente com menor preço na tabela';
+
   return {
     id: cte.chaveCte,
     chaveCte: cte.chaveCte,
@@ -538,21 +557,27 @@ function montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalcul
     ufDestino: cte.ufDestino,
     canal: cte.canal,
     peso: cte.peso,
-    valorNF: cte.valorNF,
-    valorRealizado: cte.valorCte,
-    valorSimulado: escolhido.total,
+    valorNF,
+    valorRealizado,
+    valorSimulado,
     impacto,
     economiaVsRealizado: economizaria ? impacto : 0,
     aumentoVsRealizado: aumento ? Math.abs(impacto) : 0,
+    savingPotencial,
+    valorRealizadoAlocado,
+    valorSimuladoAlocado,
+    valorNfAlocado,
     resultadoImpacto: economizaria ? 'Reduz custo vs realizado' : (aumento ? 'Fica acima do realizado' : 'Empata com realizado'),
+    motivoAlocacao,
     economizaria,
     ranking,
     rankingCalculado,
+    ganhaRanking,
     ganharia,
     liderTransportadora: lider?.transportadora || '',
     freteSubstituta: rankingCalculado && ranking === 1 ? 0 : (lider?.total || 0),
-    percentualRealizado: cte.valorNF > 0 ? (cte.valorCte / cte.valorNF) * 100 : 0,
-    percentualSimulado: cte.valorNF > 0 ? (escolhido.total / cte.valorNF) * 100 : 0,
+    percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
+    percentualSimulado: valorNF > 0 ? (valorSimulado / valorNF) * 100 : 0,
     detalhes: escolhido.detalhes,
   };
 }
@@ -581,6 +606,8 @@ export async function simularRealizadoLocalRapido({
   let ctesComSimulacao = 0;
   let valorSimuladoTotal = 0;
   let valorNfSimulado = 0;
+  let valorRealizadoGanhador = 0;
+  let valorNfGanhador = 0;
 
   for (let i = 0; i < realizados.length; i += 1) {
     const cte = realizados[i];
@@ -623,8 +650,8 @@ export async function simularRealizadoLocalRapido({
         if (!escolhido) {
           foraMalha.push({ ...cte, motivo: 'Sem cotação/faixa de peso válida para a transportadora simulada' });
         } else {
-          const ganharia = rankingCalculado ? ranking === 1 : false;
-          const detalhe = montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalculado });
+          const detalhe = montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado });
+          const ganharia = detalhe.ganharia;
 
           ctesComSimulacao += 1;
           valorSimuladoTotal += escolhido.total;
@@ -640,16 +667,38 @@ export async function simularRealizadoLocalRapido({
 
           if (ganharia) {
             ctesGanharia += 1;
-            faturamentoGanhador += escolhido.total;
-            economiaGanhador += detalhe.impacto;
+            faturamentoGanhador += detalhe.valorSimuladoAlocado;
+            valorRealizadoGanhador += detalhe.valorRealizadoAlocado;
+            valorNfGanhador += detalhe.valorNfAlocado;
+            economiaGanhador += detalhe.savingPotencial;
           }
 
           detalhes.push(detalhe);
 
           const ufKey = cte.ufDestino || 'SEM UF';
-          const uf = porUfMap.get(ufKey) || { uf: ufKey, ctes: 0, ganharia: 0, economizaria: 0, valorRealizado: 0, valorSimulado: 0, economia: 0, economiaBruta: 0, aumentoBruto: 0 };
+          const uf = porUfMap.get(ufKey) || {
+            uf: ufKey,
+            ctes: 0,
+            ganharia: 0,
+            economizaria: 0,
+            valorRealizado: 0,
+            valorSimulado: 0,
+            economia: 0,
+            economiaBruta: 0,
+            aumentoBruto: 0,
+            valorRealizadoGanhador: 0,
+            valorSimuladoGanhador: 0,
+            valorNfGanhador: 0,
+            savingPotencial: 0,
+          };
           uf.ctes += 1;
-          if (ganharia) uf.ganharia += 1;
+          if (ganharia) {
+            uf.ganharia += 1;
+            uf.valorRealizadoGanhador += detalhe.valorRealizadoAlocado;
+            uf.valorSimuladoGanhador += detalhe.valorSimuladoAlocado;
+            uf.valorNfGanhador += detalhe.valorNfAlocado;
+            uf.savingPotencial += detalhe.savingPotencial;
+          }
           if (detalhe.economizaria) {
             uf.economizaria += 1;
             uf.economiaBruta += detalhe.economiaVsRealizado;
@@ -677,6 +726,7 @@ export async function simularRealizadoLocalRapido({
     ...item,
     aderencia: item.ctes ? (item.ganharia / item.ctes) * 100 : 0,
     percentualEconomizaria: item.ctes ? (item.economizaria / item.ctes) * 100 : 0,
+    percentualFreteGanhador: item.valorNfGanhador > 0 ? (item.valorSimuladoGanhador / item.valorNfGanhador) * 100 : 0,
   })).sort((a, b) => b.ctes - a.ctes || a.uf.localeCompare(b.uf));
 
   return {
@@ -689,18 +739,26 @@ export async function simularRealizadoLocalRapido({
       percentualEconomizaria: ctesComSimulacao ? (ctesEconomizaria / ctesComSimulacao) * 100 : 0,
       economiaBruta,
       aumentoBruto,
-      aderencia: rankingCalculado && ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
+      aumentoIgnorado: aumentoBruto,
+      aderencia: ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
       faturamentoGanhador,
+      valorRealizadoGanhador,
+      valorNfGanhador,
       economiaGanhador,
+      savingPotencial: economiaGanhador,
+      ctesNaoAlocados: Math.max(0, ctesComSimulacao - ctesGanharia),
       impactoLiquido,
+      impactoSeCarregasseTudo: impactoLiquido,
       percentualSimulado: valorNfSimulado > 0 ? (valorSimuladoTotal / valorNfSimulado) * 100 : 0,
+      percentualFreteGanhador: valorNfGanhador > 0 ? (faturamentoGanhador / valorNfGanhador) * 100 : 0,
       ctesForaMalha: foraMalha.length,
       porUf,
       indexStats: stats,
     },
     detalhes: detalhes.sort((a, b) => {
-      if (rankingCalculado) return (a.ranking || 9999) - (b.ranking || 9999) || b.impacto - a.impacto;
-      return b.impacto - a.impacto;
+      if (a.ganharia !== b.ganharia) return a.ganharia ? -1 : 1;
+      if (rankingCalculado) return (a.ranking || 9999) - (b.ranking || 9999) || (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
+      return (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
     }),
     foraMalha,
   };
