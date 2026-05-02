@@ -350,31 +350,92 @@ export function simularPorTransportadora({ transportadoras, nomeTransportadora, 
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
-export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, grade, cidadePorIbge }) {
+export function analisarTransportadoraPorGrade({ transportadoras, nomeTransportadora, canal, origem = '', ufDestino = '', grade, cidadePorIbge }) {
   const pesoValorPairs = Array.isArray(grade) ? grade : [];
   const todosResultados = [];
 
-  pesoValorPairs.forEach((linha) => {
-    const resultados = simularPorTransportadora({
-      transportadoras,
-      nomeTransportadora,
-      canal,
-      origem: '',
-      destinoCodigos: [],
-      peso: toNumber(linha.peso),
-      valorNF: toNumber(linha.valorNF),
-      cidadePorIbge,
-    });
-    resultados.forEach((item) => {
-      todosResultados.push({
-        ...item,
-        gradePeso: toNumber(linha.peso),
-        gradeValorNF: toNumber(linha.valorNF),
-        gradeCubagem: toNumber(linha.cubagem),
-        pesoCubado: toNumber(item?.detalhes?.frete?.pesoCubado),
-        pesoConsiderado: toNumber(item?.detalhes?.frete?.pesoConsiderado),
+  const origemFiltro = String(origem || '').trim();
+  const ufFiltro = String(ufDestino || '').trim().toUpperCase();
+
+  // Otimização importante:
+  // Antes a análise calculava TODOS os destinos e só depois filtrava a transportadora.
+  // Agora primeiro descobrimos quais destinos a transportadora analisada atende
+  // na origem/canal selecionados. Depois calculamos concorrência apenas nesses destinos.
+  const destinosDaTransportadora = new Set();
+
+  (transportadoras || []).forEach((transportadora) => {
+    if (transportadora.nome !== nomeTransportadora) return;
+
+    (transportadora.origens || [])
+      .filter((origemItem) => !canal || origemItem.canal === canal)
+      .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+      .forEach((origemItem) => {
+        (origemItem.rotas || []).forEach((rota) => {
+          const ibge = String(rota.ibgeDestino || '');
+          if (!ibge) return;
+          if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+          destinosDaTransportadora.add(`${origemItem.cidade}|${ibge}`);
+        });
       });
+  });
+
+  if (!destinosDaTransportadora.size) {
+    return {
+      rotasAvaliadas: 0,
+      vitorias: 0,
+      aderencia: 0,
+      saving: 0,
+      prazoMedio: 0,
+      freteMedio: 0,
+      percentualMedioSobreNF: 0,
+      detalhes: [],
+      porUf: [],
+    };
+  }
+
+  pesoValorPairs.forEach((linha) => {
+    const peso = toNumber(linha.peso);
+    const valorNF = toNumber(linha.valorNF);
+    const resultados = [];
+
+    (transportadoras || []).forEach((transportadora) => {
+      (transportadora.origens || [])
+        .filter((origemItem) => !canal || origemItem.canal === canal)
+        .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+        .forEach((origemItem) => {
+          (origemItem.rotas || []).forEach((rota) => {
+            const ibge = String(rota.ibgeDestino || '');
+            if (!ibge) return;
+            if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+            if (!destinosDaTransportadora.has(`${origemItem.cidade}|${ibge}`)) return;
+
+            const item = calcularItem({
+              transportadora,
+              origem: origemItem,
+              rota,
+              peso,
+              valorNF,
+              cidadePorIbge,
+              gradeCanal: [],
+            });
+
+            if (item) resultados.push(item);
+          });
+        });
     });
+
+    rankearPorChave(resultados)
+      .filter((item) => item.transportadora === nomeTransportadora)
+      .forEach((item) => {
+        todosResultados.push({
+          ...item,
+          gradePeso: peso,
+          gradeValorNF: valorNF,
+          gradeCubagem: toNumber(linha.cubagem),
+          pesoCubado: toNumber(item?.detalhes?.frete?.pesoCubado),
+          pesoConsiderado: toNumber(item?.detalhes?.frete?.pesoConsiderado),
+        });
+      });
   });
 
   const rotasAvaliadas = todosResultados.length;
@@ -396,7 +457,11 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
   });
 
   const porUf = [...porUfMap.values()]
-    .map((item) => ({ ...item, aderencia: item.total ? (item.vitorias / item.total) * 100 : 0, freteMedio: item.total ? item.valor / item.total : 0 }))
+    .map((item) => ({
+      ...item,
+      aderencia: item.total ? (item.vitorias / item.total) * 100 : 0,
+      freteMedio: item.total ? item.valor / item.total : 0,
+    }))
     .sort((a, b) => b.total - a.total || a.uf.localeCompare(b.uf));
 
   return {
@@ -503,5 +568,574 @@ export function analisarCoberturaTabela({ transportadoras, canal, origem, transp
     faltantes: faltantes.sort((a, b) => (a.uf || '').localeCompare(b.uf || '') || (a.cidade || '').localeCompare(b.cidade || '') || a.ibge.localeCompare(b.ibge)),
     cobertas: cobertas.sort((a, b) => (a.uf || '').localeCompare(b.uf || '') || (a.cidade || '').localeCompare(b.cidade || '') || a.ibge.localeCompare(b.ibge)),
     resumoPorUf: [...porUfMap.values()].sort((a, b) => b.faltantes - a.faltantes || a.uf.localeCompare(b.uf)),
+  };
+}
+
+function normalizarComparacaoRealizado(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function normalizarCidadeRotaRealizado(value) {
+  return normalizarComparacaoRealizado(splitCidadeUfRealizado(value || '', '').cidade || value || '');
+}
+
+function keysCidadeRealizado(cidade = '', uf = '') {
+  const parsed = splitCidadeUfRealizado(cidade, uf);
+  const keys = new Set();
+  const cidadeKey = normalizarComparacaoRealizado(parsed.cidade);
+  const rawKey = normalizarComparacaoRealizado(cidade);
+  if (cidadeKey) keys.add(cidadeKey);
+  if (rawKey) keys.add(rawKey);
+  if (cidadeKey && parsed.uf) {
+    keys.add(normalizarComparacaoRealizado(`${parsed.cidade} ${parsed.uf}`));
+    keys.add(normalizarComparacaoRealizado(`${parsed.cidade}/${parsed.uf}`));
+  }
+  return [...keys].filter(Boolean);
+}
+function normalizarCanalRealizadoTexto(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+const CANAIS_B2C_REALIZADO = [
+  'B2C',
+  'VIA VAREJO',
+  'MERCADO LIVRE',
+  'MERCADOR LIVRE',
+  'B2W',
+  'MAGAZINE LUIZA',
+  'CARREFOUR',
+  'GPA',
+  'COLOMBO',
+  'AMAZON',
+  'INTER',
+  'ANYMARKET',
+  'ANY MARKET',
+  'BRADESCO SHOP',
+  'ITAU SHOP',
+  'ITAÚ SHOP',
+  'SHOPEE',
+  'LIVELO',
+  'MARKETPLACE',
+  'MARKET PLACE',
+  'ECOMMERCE',
+  'E-COMMERCE',
+];
+
+const CANAIS_ATACADO_REALIZADO = [
+  'ATACADO',
+  'B2B',
+  'CANTU',
+  'CANTU PNEUS',
+];
+
+function contemCanalRealizado(canal, lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
+}
+
+function categoriaCanalRealizado(value) {
+  const canal = normalizarCanalRealizadoTexto(value);
+  if (!canal) return '';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (contemCanalRealizado(canal, CANAIS_ATACADO_REALIZADO)) return 'ATACADO';
+  if (contemCanalRealizado(canal, CANAIS_B2C_REALIZADO)) return 'B2C';
+  return canal;
+}
+
+function canalCompativelRealizado(canalLinha, canalReferencia) {
+  const referencia = normalizarCanalRealizadoTexto(canalReferencia);
+  if (!referencia) return true;
+  const linha = normalizarCanalRealizadoTexto(canalLinha);
+  if (!linha) return false;
+  if (linha === referencia) return true;
+
+  const categoriaLinha = categoriaCanalRealizado(linha);
+  const categoriaReferencia = categoriaCanalRealizado(referencia);
+  return Boolean(categoriaLinha && categoriaReferencia && categoriaLinha === categoriaReferencia);
+}
+
+function canalRealizadoRaw(row = {}, canalPadrao = '') {
+  return row.canal || row.canalVendas || row.canais || canalPadrao || '';
+}
+
+function canalRealizado(row = {}, canalPadrao = '') {
+  return categoriaCanalRealizado(canalRealizadoRaw(row, canalPadrao)) || normalizarCanalRealizadoTexto(canalRealizadoRaw(row, canalPadrao));
+}
+
+function splitCidadeUfRealizado(cidadeRaw, ufRaw = '') {
+  let cidade = String(cidadeRaw || '').trim();
+  let uf = String(ufRaw || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+
+  const match = cidade.match(/^(.*?)(?:\s*\/\s*|\s*-\s*)([A-Za-z]{2})$/);
+  if (match) {
+    cidade = match[1].trim();
+    if (!uf) uf = match[2].toUpperCase();
+  }
+
+  if (uf) {
+    cidade = cidade.replace(new RegExp(`\\s*(?:/|-)\\s*${uf}\\s*$`, 'i'), '').trim();
+  }
+
+  return { cidade, uf };
+}
+
+function cidadeOrigemRealizado(row = {}) {
+  return splitCidadeUfRealizado(row.cidadeOrigem || row.origem || '', row.ufOrigem || row.uf_origem || '').cidade;
+}
+
+function ufOrigemRealizado(row = {}) {
+  return splitCidadeUfRealizado(row.cidadeOrigem || row.origem || '', row.ufOrigem || row.uf_origem || '').uf;
+}
+
+function destinoRealizadoInfo(row = {}) {
+  const parsed = splitCidadeUfRealizado(row.cidadeDestino || row.destino || '', row.ufDestino || row.uf_destino || '');
+  const ibge = String(row.ibgeDestino || row.codigoIbgeDestino || row.codigo_ibge_destino || '').replace(/\D/g, '');
+  const keys = new Set(keysCidadeRealizado(parsed.cidade, parsed.uf));
+
+  const rawKey = normalizarComparacaoRealizado(row.cidadeDestino || row.destino || '');
+  if (rawKey) keys.add(rawKey);
+
+  return {
+    cidade: parsed.cidade,
+    uf: parsed.uf,
+    ibge,
+    keys: [...keys].filter(Boolean),
+  };
+}
+function valorRealizadoNumero(row = {}) {
+  return toNumber(row.valorCte ?? row.valorFrete ?? row.valorRealizado ?? row.valorCalculado ?? 0);
+}
+
+function pesoRealizadoNumero(row = {}) {
+  const pesoDeclarado = toNumber(row.pesoDeclarado ?? row.peso ?? 0);
+  const pesoCubado = toNumber(row.pesoCubado ?? row.peso_cubado ?? 0);
+  const pesoFinal = Math.max(pesoDeclarado, pesoCubado);
+  return pesoFinal > 0 ? pesoFinal : pesoDeclarado;
+}
+
+function dentroPeriodoRealizado(row = {}, filtros = {}) {
+  const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
+  const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
+  if (!inicio && !fim) return true;
+
+  const data = row.emissao ? new Date(row.emissao) : null;
+  if (!data || Number.isNaN(data.getTime())) return false;
+  if (inicio && data < inicio) return false;
+  if (fim && data > fim) return false;
+  return true;
+}
+
+function filtrarRealizadosBase(realizados = [], filtros = {}) {
+  const origemFiltro = normalizarComparacaoRealizado(splitCidadeUfRealizado(filtros.origem || '').cidade);
+  const ufDestinoFiltro = String(filtros.ufDestino || '').trim().toUpperCase();
+
+  return (realizados || []).filter((row) => {
+    const destino = destinoRealizadoInfo(row);
+    if (!dentroPeriodoRealizado(row, filtros)) return false;
+    if (!canalCompativelRealizado(canalRealizadoRaw(row), filtros.canal)) return false;
+    if (origemFiltro && normalizarComparacaoRealizado(cidadeOrigemRealizado(row)) !== origemFiltro) return false;
+    if (ufDestinoFiltro && String(destino.uf || '').trim().toUpperCase() !== ufDestinoFiltro) return false;
+    return true;
+  });
+}
+
+function rotaDestinoCompativel(rota = {}, destinoInfo = {}, cidadePorIbge) {
+  const rotaIbge = String(rota.ibgeDestino || rota.ibge_destino || '').replace(/\D/g, '');
+
+  // 1) Melhor cenário: IBGE do realizado bate exatamente com o IBGE da rota.
+  if (rotaIbge && destinoInfo.ibge && rotaIbge === destinoInfo.ibge) return true;
+
+  const ufRotaPorIbge = rotaIbge ? getUfByIbge(rotaIbge) : '';
+  const rotaNomeOriginal = rota.nomeRota || rota.rota || rota.cidadeDestino || rota.nome_rota || '';
+  const rotaNomeParsed = splitCidadeUfRealizado(rotaNomeOriginal, '');
+  const rotaUfExplicita = rotaNomeParsed.uf || '';
+
+  const cidadePorCodigo = normalizarComparacaoRealizado(getCidadeByIbge(rotaIbge, cidadePorIbge));
+  const rotaNomeCidade = normalizarCidadeRotaRealizado(rotaNomeParsed.cidade || rotaNomeOriginal);
+  const rotaNomeRaw = normalizarComparacaoRealizado(rotaNomeOriginal);
+  const destinoKeys = Array.isArray(destinoInfo.keys) ? destinoInfo.keys : [];
+
+  const rotaKeys = new Set([cidadePorCodigo, rotaNomeCidade, rotaNomeRaw].filter(Boolean));
+  if (rotaNomeCidade && ufRotaPorIbge) rotaKeys.add(normalizarComparacaoRealizado(`${rotaNomeCidade} ${ufRotaPorIbge}`));
+  if (rotaNomeCidade && rotaUfExplicita) rotaKeys.add(normalizarComparacaoRealizado(`${rotaNomeCidade} ${rotaUfExplicita}`));
+
+  const nomeBate = destinoKeys.some((destinoKey) => {
+    if (!destinoKey) return false;
+    for (const rotaKey of rotaKeys) {
+      if (!rotaKey) continue;
+      if (rotaKey === destinoKey) return true;
+      if (rotaKey.startsWith(`${destinoKey} `)) return true;
+      if (destinoKey.startsWith(`${rotaKey} `)) return true;
+      if (rotaKey.includes(destinoKey) && destinoKey.length >= 5) return true;
+      if (destinoKey.includes(rotaKey) && rotaKey.length >= 5) return true;
+    }
+    return false;
+  });
+
+  if (!nomeBate) return false;
+
+  // Só bloqueia por UF quando a UF está explícita no nome da rota.
+  // Se a UF veio apenas do IBGE e o nome da cidade bateu, aceitamos para compensar
+  // cadastros com IBGE divergente ou incompleto.
+  if (destinoInfo.uf && rotaUfExplicita && rotaUfExplicita !== destinoInfo.uf) {
+    return false;
+  }
+
+  return true;
+}
+function motivoForaMalha(row, contexto = {}) {
+  const origem = cidadeOrigemRealizado(row);
+  const destino = destinoRealizadoInfo(row);
+  const canal = canalRealizado(row, contexto.filtroCanal);
+  if (contexto.tipo === 'sem-dados') {
+    return `Sem dados obrigatórios para simular: origem ${origem || 'vazia'}, destino ${destino.cidade || destino.ibge || 'vazio'}, peso ${contexto.peso || 0}.`;
+  }
+  if (contexto.tipo === 'sem-origem') {
+    return `Origem/canal não encontrados na tabela: origem ${origem || 'vazia'}, canal ${canal || 'vazio'}.`;
+  }
+  if (contexto.tipo === 'sem-destino') {
+    return `Destino não localizado na malha da origem: ${destino.cidade || 'vazio'}${destino.uf ? `/${destino.uf}` : ''}${destino.ibge ? ` • IBGE ${destino.ibge}` : ''}.`;
+  }
+  if (contexto.tipo === 'sem-cotacao') {
+    return `Destino localizado, mas sem cotação/faixa válida para peso ${formatarNumeroMotivo(contexto.peso)} kg.`;
+  }
+  return 'Transportadora não participa da origem/destino/canal no período selecionado.';
+}
+
+function formatarNumeroMotivo(value) {
+  return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+}
+
+function montarResumoRealizado(detalhes = [], foraMalha = [], totalSelecionado = 0) {
+  const ctesComSimulacao = detalhes.length;
+  const ctesGanharia = detalhes.filter((item) => item.ganharia).length;
+  const valorRealizado = detalhes.reduce((acc, item) => acc + item.valorRealizado, 0);
+  const valorNF = detalhes.reduce((acc, item) => acc + item.valorNF, 0);
+  const valorSimulado = detalhes.reduce((acc, item) => acc + item.valorSimulado, 0);
+  const faturamentoGanhador = detalhes
+    .filter((item) => item.ganharia)
+    .reduce((acc, item) => acc + item.valorSimulado, 0);
+  const economiaGanhador = detalhes
+    .filter((item) => item.ganharia)
+    .reduce((acc, item) => acc + Math.max(item.impacto, 0), 0);
+  const impactoLiquido = detalhes.reduce((acc, item) => acc + item.impacto, 0);
+  const economiaPotencial = detalhes.reduce((acc, item) => acc + Math.max(item.impacto, 0), 0);
+  const aumentoPotencial = detalhes.reduce((acc, item) => acc + Math.max(item.valorSimulado - item.valorRealizado, 0), 0);
+
+  const porUfMap = new Map();
+  detalhes.forEach((item) => {
+    const key = item.ufDestino || 'SEM UF';
+    const atual = porUfMap.get(key) || {
+      uf: key,
+      ctes: 0,
+      ganharia: 0,
+      valorRealizado: 0,
+      valorSimulado: 0,
+      economia: 0,
+    };
+    atual.ctes += 1;
+    atual.valorRealizado += item.valorRealizado;
+    atual.valorSimulado += item.valorSimulado;
+    atual.economia += Math.max(item.impacto, 0);
+    if (item.ganharia) atual.ganharia += 1;
+    porUfMap.set(key, atual);
+  });
+
+  const porUf = [...porUfMap.values()]
+    .map((item) => ({
+      ...item,
+      aderencia: item.ctes ? (item.ganharia / item.ctes) * 100 : 0,
+      impacto: item.valorRealizado - item.valorSimulado,
+    }))
+    .sort((a, b) => b.ctes - a.ctes || a.uf.localeCompare(b.uf));
+
+  return {
+    totalSelecionado,
+    ctesComSimulacao,
+    ctesForaMalha: foraMalha.length,
+    ctesGanharia,
+    aderencia: ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
+    valorRealizado,
+    valorNF,
+    valorSimulado,
+    faturamentoGanhador,
+    economiaGanhador,
+    impactoLiquido,
+    economiaPotencial,
+    aumentoPotencial,
+    percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
+    percentualSimulado: valorNF > 0 ? (valorSimulado / valorNF) * 100 : 0,
+    percentualReducao: valorRealizado > 0 ? (impactoLiquido / valorRealizado) * 100 : 0,
+    porUf,
+  };
+}
+
+
+function adicionarOrigemIndiceRealizado(map, key, item) {
+  const normalized = normalizarComparacaoRealizado(key);
+  if (!normalized) return;
+  const lista = map.get(normalized) || [];
+  const jaExiste = lista.some((atual) => atual.transportadora === item.transportadora && atual.origem === item.origem);
+  if (!jaExiste) lista.push(item);
+  map.set(normalized, lista);
+}
+
+function criarIndiceOrigensRealizado(transportadoras = []) {
+  const map = new Map();
+
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora.origens || []).forEach((origem) => {
+      const item = { transportadora, origem };
+      const cidadeRaw = origem?.cidade || '';
+      const parsed = splitCidadeUfRealizado(cidadeRaw, '');
+      adicionarOrigemIndiceRealizado(map, cidadeRaw, item);
+      adicionarOrigemIndiceRealizado(map, parsed.cidade, item);
+      if (parsed.uf) adicionarOrigemIndiceRealizado(map, `${parsed.cidade} ${parsed.uf}`, item);
+
+      // Algumas origens vêm cadastradas como "CIDADE/UF" ou "CIDADE - UF".
+      // O realizado geralmente vem separado em cidade + UF, então indexamos as variações.
+      (origem.rotas || []).forEach((rota) => {
+        const ufOrigem = getUfByIbge(rota?.ibgeOrigem);
+        if (ufOrigem && parsed.cidade) adicionarOrigemIndiceRealizado(map, `${parsed.cidade} ${ufOrigem}`, item);
+      });
+    });
+  });
+
+  return map;
+}
+
+function buscarCandidatosOrigemRealizado(indiceOrigens, origemKey) {
+  const direta = indiceOrigens?.get(origemKey) || [];
+  if (direta.length) return direta;
+
+  const candidatos = [];
+  for (const [key, lista] of indiceOrigens?.entries?.() || []) {
+    if (!key || !origemKey) continue;
+    if (key === origemKey || key.includes(origemKey) || origemKey.includes(key)) {
+      (lista || []).forEach((item) => {
+        if (!candidatos.some((atual) => atual.transportadora === item.transportadora && atual.origem === item.origem)) {
+          candidatos.push(item);
+        }
+      });
+    }
+  }
+  return candidatos;
+}
+
+function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge, indiceOrigens }) {
+  const origemCidade = cidadeOrigemRealizado(row);
+  const origemKey = normalizarComparacaoRealizado(origemCidade);
+  const destinoInfo = destinoRealizadoInfo(row);
+  const canalLinha = canalRealizado(row, filtros.canal);
+  const canalRaw = canalRealizadoRaw(row, filtros.canal);
+  const peso = pesoRealizadoNumero(row);
+  const valorNF = toNumber(row.valorNF);
+  const valorRealizado = valorRealizadoNumero(row);
+
+  if (!origemKey || (!destinoInfo.ibge && !destinoInfo.keys.length) || peso <= 0) {
+    foraMalha.push({ ...row, motivo: motivoForaMalha(row, { tipo: 'sem-dados', peso, filtroCanal: filtros.canal }) });
+    return;
+  }
+
+  const cenarios = [];
+  let encontrouOrigemCanal = false;
+  let encontrouDestino = false;
+  let encontrouDestinoSemCotacao = false;
+
+  const candidatosOrigem = buscarCandidatosOrigemRealizado(indiceOrigens, origemKey);
+
+  candidatosOrigem
+    .filter(({ origem }) => canalCompativelRealizado(canalRaw, origem.canal))
+    .forEach(({ transportadora, origem }) => {
+      encontrouOrigemCanal = true;
+      (origem.rotas || []).forEach((rota) => {
+        if (!rotaDestinoCompativel(rota, destinoInfo, cidadePorIbge)) return;
+        encontrouDestino = true;
+
+        const item = calcularItem({
+          transportadora,
+          origem,
+          rota,
+          peso,
+          valorNF,
+          cidadePorIbge,
+          gradeCanal: [],
+        });
+
+        if (item) {
+          cenarios.push(item);
+        } else {
+          encontrouDestinoSemCotacao = true;
+        }
+      });
+    });
+
+  const rankeados = rankearPorChave(cenarios);
+  const candidato = rankeados.find((item) => normalizarComparacaoRealizado(item.transportadora) === alvo);
+
+  if (!candidato) {
+    const tipo = !encontrouOrigemCanal
+      ? 'sem-origem'
+      : !encontrouDestino
+        ? 'sem-destino'
+        : encontrouDestinoSemCotacao
+          ? 'sem-cotacao'
+          : 'sem-destino';
+    foraMalha.push({ ...row, motivo: motivoForaMalha(row, { tipo, peso, filtroCanal: filtros.canal }) });
+    return;
+  }
+
+  const rankingAtual = rankeados.find(
+    (item) => normalizarComparacaoRealizado(item.transportadora) === normalizarComparacaoRealizado(row.transportadora)
+  );
+  const impacto = valorRealizado - candidato.total;
+
+  detalhes.push({
+    id: row.id || row.chaveCte || `${row.numeroCte}-${detalhes.length}`,
+    chaveCte: row.chaveCte || '',
+    numeroCte: row.numeroCte || '',
+    emissao: row.emissao || '',
+    transportadoraRealizada: row.transportadora || '',
+    transportadoraSimulada: candidato.transportadora,
+    origem: origemCidade || candidato.origem,
+    cidadeDestino: destinoInfo.cidade || candidato.cidadeDestino,
+    ibgeDestino: destinoInfo.ibge || candidato.ibgeDestino,
+    ufDestino: destinoInfo.uf || candidato.ufDestino,
+    canal: canalLinha || candidato.canal,
+    peso,
+    valorNF,
+    valorRealizado,
+    valorSimulado: candidato.total,
+    percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
+    percentualSimulado: candidato.percentualSobreNF || (valorNF > 0 ? (candidato.total / valorNF) * 100 : 0),
+    impacto,
+    economiaPositiva: Math.max(impacto, 0),
+    aumentoPositivo: Math.max(candidato.total - valorRealizado, 0),
+    ranking: candidato.ranking,
+    ganharia: candidato.ranking === 1,
+    liderTransportadora: candidato.liderTransportadora,
+    perdeuPara: candidato.perdeuPara,
+    freteSubstituta: candidato.freteSubstituta,
+    rankingTransportadoraAtual: rankingAtual?.ranking || null,
+    valorTabelaTransportadoraAtual: rankingAtual?.total || null,
+    detalhes: candidato.detalhes,
+  });
+}
+
+export function simularRealizadoPorTransportadora({
+  transportadoras = [],
+  realizados = [],
+  nomeTransportadora = '',
+  filtros = {},
+  cidadePorIbge,
+} = {}) {
+  const alvo = normalizarComparacaoRealizado(nomeTransportadora);
+  const selecionados = filtrarRealizadosBase(realizados, filtros);
+  const detalhes = [];
+  const foraMalha = [];
+  const indiceOrigens = criarIndiceOrigensRealizado(transportadoras);
+
+  if (!alvo) {
+    return {
+      resumo: montarResumoRealizado([], selecionados, selecionados.length),
+      detalhes: [],
+      foraMalha: selecionados,
+    };
+  }
+
+  selecionados.forEach((row) => {
+    simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo, filtros, cidadePorIbge, indiceOrigens });
+  });
+
+  return {
+    resumo: montarResumoRealizado(detalhes, foraMalha, selecionados.length),
+    detalhes: detalhes.sort((a, b) => Math.abs(b.impacto) - Math.abs(a.impacto)),
+    foraMalha,
+  };
+}
+
+function aguardarProximoFrameRealizado() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+export async function simularRealizadoPorTransportadoraAsync({
+  transportadoras = [],
+  realizados = [],
+  nomeTransportadora = '',
+  filtros = {},
+  cidadePorIbge,
+  onProgress,
+  chunkSize = 25,
+} = {}) {
+  const alvo = normalizarComparacaoRealizado(nomeTransportadora);
+  const selecionados = filtrarRealizadosBase(realizados, filtros);
+  const detalhes = [];
+  const foraMalha = [];
+  const total = selecionados.length;
+  const indiceOrigens = criarIndiceOrigensRealizado(transportadoras);
+
+  const informarProgresso = async (atual, etapa = 'Calculando fretes') => {
+    if (typeof onProgress === 'function') {
+      onProgress({
+        etapa,
+        atual,
+        total,
+        detalhes: detalhes.length,
+        foraMalha: foraMalha.length,
+      });
+    }
+    await aguardarProximoFrameRealizado();
+  };
+
+  if (!alvo) {
+    await informarProgresso(total, 'Concluído');
+    return {
+      resumo: montarResumoRealizado([], selecionados, selecionados.length),
+      detalhes: [],
+      foraMalha: selecionados,
+    };
+  }
+
+  await informarProgresso(0, 'Iniciando cálculo');
+
+  for (let index = 0; index < selecionados.length; index += 1) {
+    simularLinhaRealizado({
+      row: selecionados[index],
+      detalhes,
+      foraMalha,
+      transportadoras,
+      alvo,
+      filtros,
+      cidadePorIbge,
+      indiceOrigens,
+    });
+
+    if ((index + 1) % chunkSize === 0 || index === selecionados.length - 1) {
+      await informarProgresso(index + 1, 'Calculando fretes');
+    }
+  }
+
+  await informarProgresso(total, 'Montando resultado');
+
+  return {
+    resumo: montarResumoRealizado(detalhes, foraMalha, selecionados.length),
+    detalhes: detalhes.sort((a, b) => Math.abs(b.impacto) - Math.abs(a.impacto)),
+    foraMalha,
   };
 }

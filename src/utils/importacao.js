@@ -649,6 +649,9 @@ function sheetRowsForTipo(tipo, rows = []) {
 
   if (tipo === 'taxas') {
     return rows.map((item) => ({
+      Transportadora: item.transportadora || '',
+      Origem: item.origem || '',
+      Canal: item.canal || '',
       'IBGE Destino': item.ibgeDestino || '',
       'TDA (R$)': item.tda ?? '',
       'TDR (R$)': item.tdr ?? '',
@@ -725,6 +728,9 @@ function prepModelRows(tipo) {
   if (tipo === 'taxas') {
     return sheetRowsForTipo(tipo, [
       {
+        transportadora: 'ALFA',
+        origem: 'CAMPINAS',
+        canal: 'ATACADO',
         ibgeDestino: '3106200',
         tda: 10,
         tdr: 0,

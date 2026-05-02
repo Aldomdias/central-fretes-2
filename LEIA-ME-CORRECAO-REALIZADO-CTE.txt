@@ -1,0 +1,24 @@
+CORREÇÃO - Realizado CT-e não gravava na base
+
+Sintoma:
+- A tela mostrava "Última leitura: X CT-e(s) válidos", mas a amostra ficava com 0 linhas.
+- Não aparecia erro, porque a planilha era lida, mas os registros podiam ficar sem chave_cte para gravar.
+
+Causa principal corrigida:
+- Alguns arquivos vêm com cabeçalhos usando CT-e com hífen, por exemplo:
+  Chave CT-e, Número CT-e, Valor CT-e.
+- O normalizador anterior esperava CTE sem hífen. Com isso, a chave oficial não era localizada.
+- Quando não havia chave oficial, o salvamento filtrava os registros e acabava salvando 0 linhas silenciosamente.
+
+O que mudou:
+1. Inclusão de aliases para cabeçalhos com CT-e, CT E, Nº CT-e, Valor CT-e etc.
+2. Criação de uma chave técnica quando a planilha não trouxer Chave CT-e, usando Número CT-e + emissão + transportadora + rota + valor.
+3. O importador agora mostra erro se a planilha for lida mas nenhum CT-e puder ser salvo.
+4. A tela mostra os registros lidos imediatamente; se o Supabase voltar vazio, mantém a base em tela e avisa.
+
+Arquivos alterados:
+- src/utils/realizadoCtes.js
+- src/services/freteDatabaseService.js
+- src/pages/RealizadoPage.jsx
+
+Substitua esses arquivos no projeto e publique novamente.

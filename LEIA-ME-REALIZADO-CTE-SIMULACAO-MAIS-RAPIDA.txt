@@ -1,0 +1,16 @@
+Patch: Realizado CT-e - simulação mais rápida com filtro aplicado
+
+Problema corrigido:
+A tela estava simulando poucos CT-e(s), mas antes de calcular carregava uma base muito grande da transportadora, porque buscava a malha da MID pelo nome/canal sem aplicar a origem, UF e destinos filtrados.
+
+Ajuste feito:
+- A simulação agora resolve primeiro os destinos/IBGE dos CT-e(s) filtrados.
+- Depois busca no Supabase somente a malha necessária: transportadora + canal + origem + UF + destinos encontrados.
+- Para filtros pequenos, como 7 linhas, o progresso atualiza linha a linha.
+- A etapa de carregamento agora mostra "Buscando malha filtrada".
+
+Arquivos alterados:
+- src/pages/RealizadoPage.jsx
+- src/utils/calculoFrete.js
+
+Não precisa rodar SQL novo no Supabase.

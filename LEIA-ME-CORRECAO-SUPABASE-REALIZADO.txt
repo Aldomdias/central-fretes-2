@@ -1,0 +1,24 @@
+Correção Realizado CT-e - gravação no Supabase
+
+Problema corrigido:
+- A tela podia mostrar os CT-e(s) lidos, mas isso não garantia que a gravação tinha sido confirmada no Supabase.
+- Agora o importador exige Supabase configurado, grava com retorno da base, confirma a quantidade salva e mostra um bloco "Supabase: ... CT-e(s) confirmados".
+- Se a tabela não existir, se o RLS/permissão bloquear ou se o Vercel estiver apontando para outro projeto Supabase, a tela passa a mostrar erro claro.
+
+Arquivos para substituir:
+- src/pages/RealizadoPage.jsx
+- src/services/freteDatabaseService.js
+- src/utils/realizadoCtes.js
+
+Arquivo para rodar no Supabase:
+- supabase/realizado_ctes_schema.sql
+
+Importante:
+1. Rode novamente o script supabase/realizado_ctes_schema.sql no SQL Editor do Supabase.
+2. Publique o projeto novamente no Vercel.
+3. Teste com o arquivo menor.
+4. Depois da importação, a tela precisa mostrar: "Supabase: SUPABASE • X CT-e(s) confirmados".
+
+Se aparecer erro de Supabase não configurado, revisar as variáveis:
+- VITE_SUPABASE_URL
+- VITE_SUPABASE_ANON_KEY

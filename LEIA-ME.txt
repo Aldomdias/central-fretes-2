@@ -1,13 +1,29 @@
-PATCH - Qualquer alteração dentro da transportadora salva no Supabase
+PATCH - Transportadoras visíveis + análise otimizada v3
 
-Corrige:
-- Excluir transportadora remove do Supabase.
-- Excluir origem remove origem e dados vinculados do Supabase.
-- Excluir linha de rotas/cotações/taxas remove do Supabase.
-- Excluir tudo em uma seção remove do Supabase.
-- Inclusões e edições continuam salvando direto nas tabelas relacionais.
-- Não grava snapshot gigante.
+Correções principais:
+
+1) Tela Transportadoras
+- Lista agora pagina em 20 transportadoras.
+- Ao abrir a tela ou filtrar, o sistema atualiza automaticamente apenas as transportadoras visíveis.
+- Botão "Atualizar visíveis" força recarga da página atual.
+- Depois que os detalhes da transportadora são carregados, o status do card é recalculado com rotas/fretes reais.
+- Isso evita ter que entrar uma por uma para o status mudar.
+
+2) Simulador / Análise de transportadora
+- Quando houver Transportadora + Origem, o Supabase busca primeiro os destinos daquela transportadora.
+- Depois busca concorrentes apenas nos mesmos destinos.
+- Se UF destino estiver preenchida, reduz ainda mais a consulta.
+- Isso evita carregar a origem inteira e reduz travamento nos 92%.
 
 Arquivos:
+- src/pages/TransportadorasPage.jsx
+- src/pages/SimuladorPage.jsx
 - src/services/freteDatabaseService.js
-- src/data/store.js
+- src/utils/calculoFrete.js
+- supabase/CRIAR_VIEW_COBERTURA_TRANSPORTADORAS.sql
+
+Teste recomendado:
+1) Transportadoras: abrir lista e aguardar "Atualizando visíveis..."
+2) Filtrar por MOVVI ou canal B2C e observar os cards visíveis atualizando.
+3) Simulador > Análise de transportadora:
+   Transportadora MOVVI / Canal B2C / Origem Itajai / UF MG

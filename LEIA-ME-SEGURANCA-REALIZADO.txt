@@ -1,0 +1,19 @@
+Patch de segurança para Realizado CT-e
+
+Motivo:
+- A base caiu de centenas de milhares de linhas para poucos registros, o que indica exclusão/limpeza ou importação parcial após erro.
+- O erro "numeric field overflow" também indicou que alguns campos numéricos estavam estourando o tipo numeric da tabela.
+
+O que foi alterado:
+1) O botão de zerar base agora exige digitar: APAGAR BASE REALIZADA
+2) O botão excluir sem canal exige digitar: EXCLUIR SEM CANAL
+3) O service bloqueia exclusões sem confirmação, mesmo se alguém chamar a função por engano.
+4) O SQL aumenta os campos numéricos para numeric(20,6).
+5) O SQL cria a tabela realizado_ctes_lixeira e arquiva registros antes de apagar.
+6) A importação sanitiza números absurdamente grandes para evitar overflow.
+
+Depois de aplicar o patch, rode o arquivo:
+supabase/realizado_ctes_schema.sql
+
+Para consultar o que foi apagado após esse patch:
+select delete_reason, count(*) from public.realizado_ctes_lixeira group by delete_reason;

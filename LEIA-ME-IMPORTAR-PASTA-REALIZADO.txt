@@ -1,0 +1,19 @@
+PATCH - REALIZADO CT-e | IMPORTAÇÃO POR PASTA
+
+O que entra:
+- Novo botão: "Mapear pasta e subir novos".
+- Permite selecionar uma pasta do computador pelo navegador.
+- Processa apenas arquivos .xlsx, .xls e .csv.
+- Guarda no navegador um histórico dos arquivos já importados, usando caminho + tamanho + data de modificação.
+- Em nova seleção da mesma pasta, ignora os arquivos já conhecidos e sobe somente os novos.
+- O Supabase continua evitando duplicidade de CT-e pela chave/upsert.
+
+Limitação importante:
+- Navegador web não permite monitorar uma pasta automaticamente em segundo plano.
+- É necessário clicar no botão e selecionar a pasta novamente quando quiser importar os novos arquivos.
+- O histórico de arquivos já lidos fica no navegador/máquina atual. Em outro computador ou navegador, ele pode reler arquivos antigos, mas o Supabase não deve duplicar os CT-e(s).
+
+Arquivo alterado:
+- src/pages/RealizadoPage.jsx
+
+Não precisa rodar SQL novo.

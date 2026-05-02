@@ -1,0 +1,14 @@
+Patch: Realizado CT-e - localização de origem/destino/IBGE
+
+Substituir os arquivos:
+- src/pages/RealizadoPage.jsx
+- src/utils/calculoFrete.js
+
+Ajustes:
+- Corrige filtro por origem quando o realizado vem como cidade/UF.
+- Corrige filtro de canal agrupado: B2C passa a considerar B2C, Mercado Livre, Shopee, Marketplace/E-commerce.
+- Na resolução de IBGE, tenta cidade/UF antes do CEP, evitando falha quando a tabela de faixa de CEP não está carregada.
+- Na simulação, compara destino por IBGE, cidade/UF e nome da rota.
+- Mostra na tela os primeiros CT-e(s) fora da malha com o motivo: origem/canal não encontrado, destino não localizado ou sem cotação/faixa.
+
+Não precisa rodar SQL novo.

@@ -726,13 +726,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
     iniciarProcessamentoUi('Análise de transportadora', `Preparando análise de ${transportadoraAnalise} em ${origemAnalise}...`, 8);
 
     try {
-      atualizarProcessamentoUi('Buscando apenas destinos da transportadora nesta origem/UF...', 28);
+      atualizarProcessamentoUi('Consultando concorrentes no Supabase para esta origem...', 28);
 
       const baseOnline = await carregarBaseOnline({
         canal: canalAnalise,
         origem: origemAnalise,
         nomeTransportadora: transportadoraAnalise,
-        ufDestino: ufAnalise,
       });
 
       if (!baseOnline.length) {

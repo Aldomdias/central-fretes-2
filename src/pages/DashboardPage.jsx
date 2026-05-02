@@ -13,15 +13,10 @@ function getStatus(syncStatus, hasData) {
   if (syncStatus?.carregando) {
     return {
       titulo: 'Conectando ao Supabase',
-      detalhe: 'Buscando apenas o resumo da base para não travar com milhares de rotas.',
+      detalhe: hasData
+        ? 'Atualizando o resumo da base sem carregar a base pesada.'
+        : 'Buscando resumo da base no banco.',
       classe: 'dark',
-    };
-  }
-  if (syncStatus?.fonte === 'supabase-resumo') {
-    return {
-      titulo: 'Conectado ao Supabase',
-      detalhe: 'Resumo da base carregado. A importação salva direto nas tabelas do banco.',
-      classe: 'ok',
     };
   }
   if (syncStatus?.sincronizando) {
@@ -29,6 +24,13 @@ function getStatus(syncStatus, hasData) {
   }
   if (syncStatus?.erro) {
     return { titulo: 'Erro na sincronização', detalhe: syncStatus.erro, classe: 'warn' };
+  }
+  if (syncStatus?.fonte === 'supabase-resumo') {
+    return {
+      titulo: 'Conectado ao Supabase',
+      detalhe: 'Resumo da base carregado. A importação e a simulação usam as tabelas do banco.',
+      classe: 'ok',
+    };
   }
   if (syncStatus?.modo === 'local') {
     return { titulo: 'Modo local', detalhe: 'Base local do navegador em uso.', classe: 'warn' };
@@ -42,6 +44,8 @@ export default function DashboardPage({
   onAbrirTransportadoras,
   onAbrirImportacao,
   onAbrirFormatacaoTabelas,
+  onAtualizarBase,
+  onConferirBase,
   syncStatus,
 }) {
   const statsBase = buildDashboardStats(transportadoras);
@@ -89,8 +93,48 @@ export default function DashboardPage({
             <strong>Última atualização:</strong> {formatarDataHora(syncStatus?.ultimaSincronizacao)}
           </div>
         </div>
-        <div className="actions-right">
+        <div className="actions-right gap-row">
+          <button
+            className="btn-secondary"
+            onClick={onAtualizarBase}
+            disabled={syncStatus?.carregando || syncStatus?.sincronizando}
+            title="Atualizar resumo da base pelo Supabase"
+          >
+            {syncStatus?.carregando ? 'Atualizando...' : 'Atualizar base'}
+          </button>
           <span className="status-pill dark">Salvamento automático</span>
+        </div>
+      </div>
+
+      <div className="info-card amd-next-phase-card">
+        <div className="info-badge">✅</div>
+        <div style={{ flex: 1 }}>
+          <div className="info-title">Conferência da base</div>
+          <div className="info-text">
+            {syncStatus?.conferenciaBase ? (
+              <>
+                <strong>{syncStatus.conferenciaBase.transportadoras}</strong> transportadoras ·{' '}
+                <strong>{syncStatus.conferenciaBase.origens}</strong> origens ·{' '}
+                <strong>{syncStatus.conferenciaBase.rotas}</strong> rotas ·{' '}
+                <strong>{syncStatus.conferenciaBase.cotacoes}</strong> cotações
+                {syncStatus.conferenciaBase.semValidacao ? (
+                  <> · <strong>cobertura sem validação</strong></>
+                ) : (
+                  <> · <strong>{syncStatus.conferenciaBase.validadas}</strong> transportadoras validadas</>
+                )}
+              </>
+            ) : (
+              <>Clique em <strong>Conferir base</strong> para validar os totais direto no Supabase.</>
+            )}
+          </div>
+          <div className="info-text">
+            O simulador consulta o Supabase na hora da simulação. A tela de Transportadoras usa a view de cobertura para não depender de abrir transportadora por transportadora.
+          </div>
+        </div>
+        <div className="actions-right gap-row">
+          <button className="btn-secondary" onClick={onConferirBase} disabled={syncStatus?.carregando || syncStatus?.sincronizando}>
+            Conferir base
+          </button>
         </div>
       </div>
 

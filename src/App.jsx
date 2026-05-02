@@ -6,6 +6,9 @@ import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
 import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
+import RealizadoPage from './pages/RealizadoPage';
+import RealizadoLocalPage from './pages/RealizadoLocalPage';
+import LotacaoPage from './pages/LotacaoPage';
 import { useFreteStore } from './data/store';
 
 export default function App() {
@@ -57,6 +60,8 @@ export default function App() {
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
         onAbrirFormatacaoTabelas={() => setPaginaAtual('formatacao')}
+        onAtualizarBase={store.atualizarResumo}
+        onConferirBase={store.conferirBase}
         syncStatus={store.syncStatus}
       />
     );
@@ -76,6 +81,18 @@ export default function App() {
 
   if (paginaAtual === 'importar-template') {
     content = <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'realizado') {
+    content = <RealizadoPage transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'realizado-local') {
+    content = <RealizadoLocalPage transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'lotacao') {
+    content = <LotacaoPage />;
   }
 
   if (paginaAtual === 'transportadoras') {

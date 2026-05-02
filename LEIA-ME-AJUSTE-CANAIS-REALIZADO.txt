@@ -1,0 +1,23 @@
+Patch: ajuste de agrupamento de canais no Realizado CT-e
+
+Correção aplicada:
+- B2B passa a ser tratado como ATACADO.
+- CANTU / CANTU PNEUS passa a ser tratado como ATACADO.
+- Canais marketplace/e-commerce passam a ser tratados como B2C:
+  B2C, Via Varejo, Mercado Livre/Mercador Livre, B2W, Magazine Luiza,
+  Carrefour, GPA, Colombo, Amazon, Inter, AnyMarket, Bradesco Shop,
+  Itaú Shop, Shopee, Livelo, Marketplace/E-commerce.
+
+Efeito na tela:
+- O filtro Canal deixa de mostrar vários canais soltos quando eles já pertencem a uma categoria.
+- B2B e CANTU não aparecem mais como canal separado; entram em ATACADO.
+- Mercado Livre, Shopee, Amazon, Magazine Luiza etc. entram em B2C.
+- A simulação usa a mesma regra de agrupamento para cruzar realizado x tabela.
+- A busca da malha no Supabase também usa compatibilidade de canal, não apenas canal exatamente igual.
+
+Arquivos alterados:
+- src/pages/RealizadoPage.jsx
+- src/utils/calculoFrete.js
+- src/services/freteDatabaseService.js
+
+Não precisa rodar SQL novo no Supabase.
