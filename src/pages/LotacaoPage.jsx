@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  analisarAnttTodasTransportadoras,
+  analisarTabelaVersusAntt,
   baixarModeloAntt,
-  baixarModeloTargetTransportadora,
+  baixarModeloTransportadora,
   carregarTabelasLotacao,
   compararComReferencia,
+  criarReferenciaMenorPreco,
   formatarMoeda,
   formatarPercentual,
   importarTabelaLotacao,
   nomeTipoLotacao,
-  obterReferencia,
+  obterAntt,
   obterTabelasPorTipo,
   pesquisarRotaLotacao,
+  rankingMelhoresPorRota,
   removerTabelaLotacao,
   resumoLotacao,
   salvarTabelasLotacao,
@@ -24,9 +28,15 @@ function formatarData(valor) {
   return data.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 }
 
-function classeStatus(status) {
-  if (status === 'Ganha') return 'positivo';
-  if (status === 'Perde') return 'negativo';
+function classeDiferenca(valor) {
+  if (valor > 0.01) return 'negativo';
+  if (valor < -0.01) return 'positivo';
+  return '';
+}
+
+function classeAntt(status) {
+  if (status === 'Abaixo ANTT') return 'negativo';
+  if (status === 'Acima ANTT') return 'positivo';
   return '';
 }
 
@@ -43,7 +53,7 @@ function UploadCard({ tipo, titulo, descricao, nomeObrigatorio, onImportar, carr
     if (!arquivo) return;
     await onImportar({ tipo, file: arquivo, nome: nome.trim() });
     setArquivo(null);
-    if (tipo !== 'TRANSPORTADORA') setNome('');
+    if (nomeObrigatorio) setNome('');
   };
 
   return (
@@ -92,13 +102,13 @@ function ModelosAceitos() {
         <div>
           <div className="panel-title">Modelos oficiais aceitos</div>
           <p className="compact">
-            A leitura foi travada nos dois modelos enviados: um para ANTT e outro para Target/Transportadoras.
-            Assim o sistema não tenta adivinhar valor e evita aderência errada.
+            O módulo agora trabalha sem upload de Target. O Target é calculado automaticamente como o menor preço
+            entre as transportadoras cadastradas para cada origem, destino e tipo de veículo.
           </p>
         </div>
         <div className="lotacao-model-actions">
-          <button type="button" className="btn-secondary" onClick={baixarModeloTargetTransportadora}>
-            Baixar modelo Target/Transportadora
+          <button type="button" className="btn-secondary" onClick={baixarModeloTransportadora}>
+            Baixar modelo Transportadora
           </button>
           <button type="button" className="btn-secondary" onClick={baixarModeloAntt}>
             Baixar modelo ANTT
@@ -108,56 +118,56 @@ function ModelosAceitos() {
 
       <div className="lotacao-modelo-grid">
         <div>
-          <strong>Target e Transportadoras</strong>
+          <strong>Transportadoras</strong>
           <p>
-            Colunas aceitas: Transportadora, Origem, UF ORIGEM, Destino, UF DESTINO ou UF, KM, TIPO,
-            TARGET, ICMS e Pedágio. O valor da comparação será sempre a coluna TARGET.
+            Use o modelo TARGET que você enviou como padrão para subir as transportadoras. A coluna TARGET continua
+            sendo o valor da tabela da transportadora, mas não existe mais uma tabela Target separada.
           </p>
         </div>
         <div>
           <strong>ANTT</strong>
           <p>
-            Colunas aceitas: Transportadora, Origem, UF ORIGEM, Destino, UF DESTINO ou UF, KM, TIPO e
-            Frete ANTT Oficial. O valor da comparação será sempre o Frete ANTT Oficial.
+            Use o modelo ANTT BASE enviado. O sistema compara todas as transportadoras contra o Frete ANTT Oficial
+            e mostra quantas rotas estão abaixo, iguais ou acima da referência.
           </p>
         </div>
         <div>
           <strong>Chave de comparação</strong>
           <p>
-            Origem + UF Origem + Destino + UF Destino + Tipo de veículo. Se existir rota repetida na mesma
-            tabela, o sistema considera o menor valor para não distorcer o ranking.
+            Origem + UF Origem + Destino + UF Destino + Tipo de veículo. Se existir rota repetida na mesma tabela,
+            o sistema considera o menor valor para não distorcer o ranking.
           </p>
         </div>
       </div>
 
       <div className="hint-box compact">
-        Validação esperada: se subir o arquivo TARGET como Target e depois subir o mesmo arquivo como Transportadora,
-        o comparativo versus Target precisa fechar em 100% de aderência, com todas as rotas empatadas.
+        Regra nova: o melhor preço passa a ser calculado entre as transportadoras cadastradas. A ANTT fica como
+        referência separada para análise de abaixo/acima da tabela oficial.
       </div>
     </div>
   );
 }
 
-function ResumoComparativo({ titulo, comparativo }) {
+function ResumoMelhorPreco({ comparativo }) {
   if (!comparativo) {
     return (
       <div className="panel-card">
-        <div className="panel-title">{titulo}</div>
-        <p>Suba a referência e selecione uma transportadora para comparar.</p>
+        <div className="panel-title">Versus melhor preço</div>
+        <p>Cadastre transportadoras para comparar contra o menor valor disponível por rota.</p>
       </div>
     );
   }
+
+  const aderenciaMelhor = comparativo.comparadas ? (comparativo.empata / comparativo.comparadas) * 100 : 0;
 
   return (
     <div className="panel-card lotacao-comparativo-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">{titulo}</div>
-          <p>
-            {comparativo.tabelaNome} versus {comparativo.referenciaNome}
-          </p>
+          <div className="panel-title">Versus melhor preço entre transportadoras</div>
+          <p>{comparativo.tabelaNome} versus menor valor cadastrado por rota.</p>
         </div>
-        <span className="status-pill dark">Aderência {formatarPercentual(comparativo.aderencia)}</span>
+        <span className="status-pill dark">Melhor em {formatarPercentual(aderenciaMelhor)}</span>
       </div>
 
       <div className="summary-strip lotacao-summary-mini">
@@ -166,11 +176,11 @@ function ResumoComparativo({ titulo, comparativo }) {
           <strong>{comparativo.comparadas}</strong>
         </div>
         <div className="summary-card">
-          <span>Ganha</span>
-          <strong>{comparativo.ganha}</strong>
+          <span>É melhor opção</span>
+          <strong>{comparativo.empata}</strong>
         </div>
         <div className="summary-card">
-          <span>Perde</span>
+          <span>Acima do melhor</span>
           <strong>{comparativo.perde}</strong>
         </div>
         <div className="summary-card">
@@ -181,35 +191,145 @@ function ResumoComparativo({ titulo, comparativo }) {
 
       <div className="sim-analise-resumo">
         <div>
-          <span>Cobertura da comparação</span>
+          <span>Cobertura</span>
           <strong>{formatarPercentual(comparativo.cobertura)}</strong>
         </div>
         <div>
-          <span>Empata</span>
-          <strong>{comparativo.empata}</strong>
-        </div>
-        <div>
-          <span>Sem referência</span>
+          <span>Sem comparação</span>
           <strong>{comparativo.semReferencia}</strong>
         </div>
         <div>
-          <span>Variação média</span>
+          <span>Variação média vs melhor</span>
           <strong>{formatarPercentual(comparativo.variacaoMedia)}</strong>
+        </div>
+        <div>
+          <span>Rotas no mercado</span>
+          <strong>{comparativo.referenciaTotal}</strong>
         </div>
       </div>
     </div>
   );
 }
 
-function TabelaDetalhesComparativo({ titulo, comparativo }) {
-  if (!comparativo?.detalhes?.length) return null;
+function ResumoAntt({ titulo, analise }) {
+  if (!analise) {
+    return (
+      <div className="panel-card">
+        <div className="panel-title">{titulo}</div>
+        <p>Suba a ANTT e cadastre transportadoras para ver a análise.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel-card lotacao-comparativo-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">{titulo}</div>
+          <p>{analise.tabelaNome} versus {analise.referenciaNome}.</p>
+        </div>
+        <span className="status-pill dark">Abaixo {formatarPercentual(analise.pctAbaixo)}</span>
+      </div>
+
+      <div className="summary-strip lotacao-summary-mini">
+        <div className="summary-card">
+          <span>Comparadas</span>
+          <strong>{analise.comparadas}</strong>
+        </div>
+        <div className="summary-card">
+          <span>Abaixo ANTT</span>
+          <strong>{analise.abaixo}</strong>
+        </div>
+        <div className="summary-card">
+          <span>Acima ANTT</span>
+          <strong>{analise.acima}</strong>
+        </div>
+        <div className="summary-card">
+          <span>Diferença total</span>
+          <strong>{formatarMoeda(analise.somaDiferenca)}</strong>
+        </div>
+      </div>
+
+      <div className="sim-analise-resumo">
+        <div>
+          <span>% abaixo ANTT</span>
+          <strong>{formatarPercentual(analise.pctAbaixo)}</strong>
+        </div>
+        <div>
+          <span>% acima ANTT</span>
+          <strong>{formatarPercentual(analise.pctAcima)}</strong>
+        </div>
+        <div>
+          <span>% igual ANTT</span>
+          <strong>{formatarPercentual(analise.pctIgual)}</strong>
+        </div>
+        <div>
+          <span>Variação média</span>
+          <strong>{formatarPercentual(analise.variacaoMedia)}</strong>
+        </div>
+        <div>
+          <span>Sem ANTT</span>
+          <strong>{analise.semReferencia}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RankingMelhores({ ranking }) {
+  if (!ranking?.ranking?.length) return null;
 
   return (
     <div className="table-card lotacao-table-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">{titulo}</div>
-          <p className="compact">Principais rotas onde a tabela mais ganha ou perde contra a referência.</p>
+          <div className="panel-title">Melhores opções por rota</div>
+          <p className="compact">
+            Quantas vezes cada transportadora é o menor preço entre as tabelas cadastradas.
+          </p>
+        </div>
+        <span className="status-pill dark">{ranking.rotasMapeadas} rotas mapeadas</span>
+      </div>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th>Posição</th>
+              <th>Transportadora</th>
+              <th>Melhor opção</th>
+              <th>Participações</th>
+              <th>% melhor</th>
+              <th>Ticket médio</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ranking.ranking.map((item, index) => (
+              <tr key={item.nome}>
+                <td>{index + 1}</td>
+                <td><strong>{item.nome}</strong></td>
+                <td>{item.melhores}</td>
+                <td>{item.participacoes}</td>
+                <td>{formatarPercentual(item.percentualMelhor)}</td>
+                <td>{formatarMoeda(item.ticketMedio)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TabelaDetalhesMelhorPreco({ comparativo }) {
+  const linhas = (comparativo?.detalhes || []).filter((item) => Math.abs(item.diferenca) > 0.01);
+  if (!linhas.length) return null;
+
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Onde a transportadora está acima do melhor preço</div>
+          <p className="compact">Principais rotas onde existe outra transportadora mais barata.</p>
         </div>
       </div>
       <div className="sim-analise-tabela-wrap">
@@ -219,24 +339,118 @@ function TabelaDetalhesComparativo({ titulo, comparativo }) {
               <th>Origem</th>
               <th>Destino</th>
               <th>Tipo</th>
-              <th>Tabela</th>
-              <th>Referência</th>
+              <th>Tabela selecionada</th>
+              <th>Melhor preço</th>
+              <th>Melhor transportadora</th>
               <th>Diferença</th>
-              <th>Valor lido</th>
-              <th>Status</th>
+              <th>%</th>
             </tr>
           </thead>
           <tbody>
-            {comparativo.detalhes.slice(0, 80).map((item) => (
+            {linhas.slice(0, 80).map((item) => (
               <tr key={item.id}>
                 <td>{item.origem}/{item.ufOrigem}</td>
                 <td>{item.destino}/{item.ufDestino}</td>
                 <td>{item.tipo}</td>
                 <td>{formatarMoeda(item.valorTabela)}</td>
                 <td>{formatarMoeda(item.valorReferencia)}</td>
-                <td className={classeStatus(item.status)}>{formatarMoeda(item.diferenca)}</td>
-                <td>{item.fonteTabela || '-'} x {item.fonteReferencia || '-'}</td>
-                <td><span className={`status-pill ${item.status === 'Ganha' ? 'dark' : ''}`}>{item.status}</span></td>
+                <td>{item.melhorTabelaNome || '-'}</td>
+                <td className={classeDiferenca(item.diferenca)}>{formatarMoeda(item.diferenca)}</td>
+                <td className={classeDiferenca(item.diferenca)}>{formatarPercentual(item.variacao)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TabelaDetalhesAntt({ titulo, analise }) {
+  if (!analise?.detalhes?.length) return null;
+
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">{titulo}</div>
+          <p className="compact">Maiores diferenças percentuais contra a referência ANTT.</p>
+        </div>
+      </div>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th>Transportadora</th>
+              <th>Origem</th>
+              <th>Destino</th>
+              <th>Tipo</th>
+              <th>Tabela</th>
+              <th>ANTT</th>
+              <th>Diferença</th>
+              <th>%</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {analise.detalhes.slice(0, 100).map((item) => (
+              <tr key={item.id}>
+                <td><strong>{item.tabelaNome}</strong></td>
+                <td>{item.origem}/{item.ufOrigem}</td>
+                <td>{item.destino}/{item.ufDestino}</td>
+                <td>{item.tipo}</td>
+                <td>{formatarMoeda(item.valorTabela)}</td>
+                <td>{formatarMoeda(item.valorAntt)}</td>
+                <td className={classeAntt(item.status)}>{formatarMoeda(item.diferenca)}</td>
+                <td className={classeAntt(item.status)}>{formatarPercentual(item.variacao)}</td>
+                <td><span className="status-pill">{item.status}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ResumoAnttPorTransportadora({ analise }) {
+  if (!analise?.porTransportadora?.length) return null;
+
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Resumo ANTT por transportadora</div>
+          <p className="compact">Visão rápida de cada tabela contra a referência ANTT.</p>
+        </div>
+      </div>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th>Transportadora</th>
+              <th>Comparadas</th>
+              <th>Abaixo ANTT</th>
+              <th>% abaixo</th>
+              <th>Acima ANTT</th>
+              <th>% acima</th>
+              <th>Igual</th>
+              <th>Diferença total</th>
+              <th>Variação média</th>
+            </tr>
+          </thead>
+          <tbody>
+            {analise.porTransportadora.map((item) => (
+              <tr key={item.tabelaNome}>
+                <td><strong>{item.tabelaNome}</strong></td>
+                <td>{item.comparadas}</td>
+                <td className="negativo">{item.abaixo}</td>
+                <td className="negativo">{formatarPercentual(item.pctAbaixo)}</td>
+                <td className="positivo">{item.acima}</td>
+                <td className="positivo">{formatarPercentual(item.pctAcima)}</td>
+                <td>{item.igual}</td>
+                <td>{formatarMoeda(item.somaDiferenca)}</td>
+                <td>{formatarPercentual(item.variacaoMedia)}</td>
               </tr>
             ))}
           </tbody>
@@ -262,7 +476,7 @@ function PesquisaRotas({ tabelas }) {
       <div className="section-row">
         <div>
           <div className="panel-title">Pesquisa por origem e destino</div>
-          <p>Digite origem, destino ou tipo de veículo para ver o ranking do mais barato ao mais caro.</p>
+          <p>Digite origem, destino ou tipo de veículo para ver o ranking das transportadoras, do mais barato ao mais caro.</p>
         </div>
       </div>
 
@@ -320,8 +534,7 @@ function PesquisaRotas({ tabelas }) {
             <thead>
               <tr>
                 <th>Posição</th>
-                <th>Tabela</th>
-                <th>Tipo tabela</th>
+                <th>Transportadora</th>
                 <th>Origem</th>
                 <th>Destino</th>
                 <th>Tipo</th>
@@ -335,7 +548,6 @@ function PesquisaRotas({ tabelas }) {
                 <tr key={`${item.tabelaId}-${item.id}-${index}`}>
                   <td>{index + 1}</td>
                   <td><strong>{item.tabelaNome}</strong></td>
-                  <td>{nomeTipoLotacao(item.tabelaTipo)}</td>
                   <td>{item.origem}/{item.ufOrigem}</td>
                   <td>{item.destino}/{item.ufDestino}</td>
                   <td>{item.tipo}</td>
@@ -371,7 +583,7 @@ function ListaTabelas({ tabelas, onRemover }) {
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Tabelas cadastradas</div>
-          <p className="compact">Target e ANTT são únicos. Ao subir novamente, o sistema substitui a versão anterior.</p>
+          <p className="compact">A ANTT é única. Ao subir novamente, o sistema substitui a versão anterior. Transportadoras são substituídas pelo mesmo nome.</p>
         </div>
       </div>
       <div className="sim-analise-tabela-wrap">
@@ -428,6 +640,11 @@ export default function LotacaoPage() {
 
   const resumo = useMemo(() => resumoLotacao(tabelas), [tabelas]);
   const transportadoras = useMemo(() => obterTabelasPorTipo(tabelas, 'TRANSPORTADORA'), [tabelas]);
+  const antt = useMemo(() => obterAntt(tabelas), [tabelas]);
+  const referenciaMenorPreco = useMemo(() => criarReferenciaMenorPreco(transportadoras), [transportadoras]);
+  const ranking = useMemo(() => rankingMelhoresPorRota(transportadoras), [transportadoras]);
+  const analiseAnttGeral = useMemo(() => analisarAnttTodasTransportadoras(transportadoras, antt), [transportadoras, antt]);
+
   const tabelaSelecionada = useMemo(
     () => transportadoras.find((item) => item.id === selecionadaId) || transportadoras[0] || null,
     [transportadoras, selecionadaId]
@@ -440,15 +657,12 @@ export default function LotacaoPage() {
     }
   }, [transportadoras, selecionadaId]);
 
-  const target = obterReferencia(tabelas, 'TARGET');
-  const antt = obterReferencia(tabelas, 'ANTT');
-
-  const comparativoTarget = useMemo(
-    () => compararComReferencia(tabelaSelecionada, target),
-    [tabelaSelecionada, target]
+  const comparativoMelhorPreco = useMemo(
+    () => compararComReferencia(tabelaSelecionada, referenciaMenorPreco),
+    [tabelaSelecionada, referenciaMenorPreco]
   );
-  const comparativoAntt = useMemo(
-    () => compararComReferencia(tabelaSelecionada, antt),
+  const analiseAnttSelecionada = useMemo(
+    () => analisarTabelaVersusAntt(tabelaSelecionada, antt),
     [tabelaSelecionada, antt]
   );
 
@@ -456,7 +670,7 @@ export default function LotacaoPage() {
     setCarregando(true);
     setFeedback('');
     try {
-      const nomePadrao = tipo === 'TARGET' ? 'Target Lotação' : tipo === 'ANTT' ? 'ANTT' : nome;
+      const nomePadrao = tipo === 'ANTT' ? 'ANTT' : nome;
       const tabela = await importarTabelaLotacao(file, { tipo, nomePadrao });
       const next = upsertTabelaLotacao(tabelas, tabela);
       setTabelas(next);
@@ -489,8 +703,8 @@ export default function LotacaoPage() {
           <div className="amd-mini-brand">Central de Fretes · Lotação</div>
           <h1>Controle de transportadoras e lotação</h1>
           <p>
-            Módulo independente para subir tabela target, tabela ANTT e tabelas de transportadoras. A cada cadastro,
-            o sistema compara automaticamente quem ganha, quem perde e permite pesquisar origem/destino.
+            Módulo independente para cadastrar tabelas de transportadoras, comparar o menor preço entre elas e
+            acompanhar se os valores estão abaixo, iguais ou acima da referência ANTT.
           </p>
         </div>
       </div>
@@ -505,9 +719,9 @@ export default function LotacaoPage() {
           <strong>{resumo.totalTransportadoras}</strong>
         </div>
         <div className="summary-card">
-          <span>Rotas target</span>
-          <strong>{resumo.rotasTarget}</strong>
-          <small>{resumo.rotasUnicasTarget || 0} únicas</small>
+          <span>Rotas mercado</span>
+          <strong>{resumo.totalRotasTransportadoras}</strong>
+          <small>{resumo.rotasMelhorPreco || 0} únicas</small>
         </div>
         <div className="summary-card">
           <span>Rotas ANTT</span>
@@ -520,36 +734,34 @@ export default function LotacaoPage() {
         </div>
       </div>
 
-      <div className="feature-grid three-cols">
-        <UploadCard
-          tipo="TARGET"
-          titulo="Subir tabela target"
-          descricao="Use o modelo TARGET enviado. O valor de comparação será a coluna TARGET. Subir novamente substitui a versão anterior."
-          onImportar={importar}
-          carregando={carregando}
-        />
+      <div className="feature-grid import-grid">
         <UploadCard
           tipo="ANTT"
           titulo="Subir tabela ANTT"
-          descricao="Use o modelo ANTT BASE enviado. O valor de comparação será a coluna Frete ANTT Oficial."
+          descricao="Use o modelo ANTT BASE enviado. O valor de comparação será a coluna Frete ANTT Oficial. Subir novamente substitui a versão anterior."
           onImportar={importar}
           carregando={carregando}
         />
         <UploadCard
           tipo="TRANSPORTADORA"
           titulo="Cadastrar transportadora"
-          descricao="Use o mesmo modelo do Target para as transportadoras. O sistema compara contra Target e ANTT quando existirem."
+          descricao="Use o modelo de transportadora baseado no TARGET enviado. A coluna TARGET será o valor da tabela da transportadora."
           nomeObrigatorio
           onImportar={importar}
           carregando={carregando}
         />
       </div>
 
+      <RankingMelhores ranking={ranking} />
+
+      <ResumoAntt titulo="Análise geral versus ANTT" analise={analiseAnttGeral} />
+      <ResumoAnttPorTransportadora analise={analiseAnttGeral} />
+
       <div className="panel-card">
         <div className="section-row">
           <div>
             <div className="panel-title">Comparativo automático da transportadora</div>
-            <p>Escolha uma transportadora cadastrada para ver a aderência versus Target e versus ANTT.</p>
+            <p>Escolha uma transportadora para ver se ela é a melhor opção nas rotas e como fica versus ANTT.</p>
           </div>
           <label className="field small-width">
             Transportadora
@@ -564,21 +776,25 @@ export default function LotacaoPage() {
       </div>
 
       <div className="feature-grid import-grid">
-        <ResumoComparativo titulo="Versus Target" comparativo={comparativoTarget} />
-        <ResumoComparativo titulo="Versus ANTT" comparativo={comparativoAntt} />
+        <ResumoMelhorPreco comparativo={comparativoMelhorPreco} />
+        <ResumoAntt titulo="Transportadora selecionada versus ANTT" analise={analiseAnttSelecionada} />
       </div>
 
       <div className="feature-grid import-grid">
-        <TabelaDetalhesComparativo titulo="Maiores diferenças versus Target" comparativo={comparativoTarget} />
-        <TabelaDetalhesComparativo titulo="Maiores diferenças versus ANTT" comparativo={comparativoAntt} />
+        <TabelaDetalhesMelhorPreco comparativo={comparativoMelhorPreco} />
+        <TabelaDetalhesAntt titulo="Maiores diferenças da selecionada versus ANTT" analise={analiseAnttSelecionada} />
       </div>
+
+      <TabelaDetalhesAntt titulo="Maiores diferenças gerais versus ANTT" analise={analiseAnttGeral} />
 
       <PesquisaRotas tabelas={tabelas} />
 
       <ListaTabelas tabelas={tabelas} onRemover={remover} />
 
       <div className="hint-box">
-        Regra usada: comparação por Origem + UF Origem + Destino + UF Destino + Tipo de veículo. Aderência considera as rotas em que a transportadora fica menor ou igual à referência. Os dados continuam salvos apenas no navegador até ligarmos o módulo ao servidor/Supabase.
+        Regra usada: comparação por Origem + UF Origem + Destino + UF Destino + Tipo de veículo. O Target é dinâmico:
+        sempre o menor preço entre as transportadoras cadastradas. A ANTT é apenas referência paralela para identificar
+        valores abaixo, iguais ou acima da tabela oficial. Os dados continuam salvos apenas no navegador até ligarmos o módulo ao servidor/Supabase.
       </div>
     </div>
   );
