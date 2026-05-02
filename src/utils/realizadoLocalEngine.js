@@ -155,6 +155,20 @@ function gerarVariantesCidade(cidade = '') {
 }
 
 export function resolverIbgeLocal(cidadeRaw, ufRaw, mapasIbge) {
+  return resolverMunicipioLocal(cidadeRaw, ufRaw, '', mapasIbge).ibge;
+}
+
+function municipiosCompatíveis(cidadeA = '', cidadeB = '') {
+  const a = normalizeKey(cidadeA);
+  const b = normalizeKey(cidadeB);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 5 && b.includes(a)) return true;
+  if (b.length >= 5 && a.includes(b)) return true;
+  return gerarVariantesCidade(a).some((variante) => variante === b || gerarVariantesCidade(b).includes(variante));
+}
+
+function resolverPorCidadeUf(cidadeRaw, ufRaw, mapasIbge) {
   const parsed = splitCidadeUf(cidadeRaw, ufRaw);
   const cidadeKey = normalizeKey(parsed.cidade);
   const uf = parsed.uf || String(ufRaw || '').trim().toUpperCase();
@@ -171,6 +185,31 @@ export function resolverIbgeLocal(cidadeRaw, ufRaw, mapasIbge) {
   }
 
   return '';
+}
+
+function resolverMunicipioLocal(cidadeRaw, ufRaw, ibgeRaw, mapasIbge) {
+  const parsed = splitCidadeUf(cidadeRaw, ufRaw);
+  const ibgeInformado = onlyDigits(ibgeRaw).slice(0, 7);
+  const ibgePorCidade = resolverPorCidadeUf(parsed.cidade, parsed.uf, mapasIbge);
+  const municipioInformado = ibgeInformado ? mapasIbge?.porIbge?.get(ibgeInformado) : null;
+
+  // A base realizada às vezes vem com UF trocada ou com a coluna IBGE deslocada.
+  // Por isso, quando o nome da cidade não bate com o IBGE informado, a cidade/UF normalizada
+  // vira a fonte principal. Isso evita exemplos como ITAJAI/DF recebendo IBGE de FORTALEZA.
+  let ibge = '';
+  if (ibgePorCidade && ibgeInformado && municipioInformado && !municipiosCompatíveis(parsed.cidade, municipioInformado.cidade)) {
+    ibge = ibgePorCidade;
+  } else {
+    ibge = ibgeInformado || ibgePorCidade;
+  }
+
+  const municipioFinal = ibge ? mapasIbge?.porIbge?.get(ibge) : null;
+  return {
+    ibge,
+    cidade: parsed.cidade || municipioFinal?.cidade || '',
+    uf: municipioFinal?.uf || parsed.uf || getUfByIbge(ibge),
+    corrigidoPorCidade: Boolean(ibgePorCidade && ibgeInformado && ibgePorCidade !== ibgeInformado),
+  };
 }
 
 function getCompetencia(dataEmissao = '', fallback = '') {
@@ -199,10 +238,10 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
   const competenciaSelecionada = String(options.competencia || '').trim();
 
   const rows = (registros || []).map((row) => {
-    const origem = splitCidadeUf(row.cidadeOrigem, row.ufOrigem);
-    const destino = splitCidadeUf(row.cidadeDestino, row.ufDestino);
-    const ibgeOrigem = row.ibgeOrigem || resolverIbgeLocal(origem.cidade, origem.uf, mapasIbge);
-    const ibgeDestino = row.ibgeDestino || resolverIbgeLocal(destino.cidade, destino.uf, mapasIbge);
+    const origem = resolverMunicipioLocal(row.cidadeOrigem, row.ufOrigem, row.ibgeOrigem, mapasIbge);
+    const destino = resolverMunicipioLocal(row.cidadeDestino, row.ufDestino, row.ibgeDestino, mapasIbge);
+    const ibgeOrigem = origem.ibge;
+    const ibgeDestino = destino.ibge;
     const pesoDeclarado = toNumberRealizado(row.pesoDeclarado);
     const pesoCubado = toNumberRealizado(row.pesoCubado);
     const metrosCubicos = toNumberRealizado(row.metrosCubicos);
@@ -239,6 +278,8 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
       canalOriginal: row.canal || row.canalVendas || row.canais || '',
       arquivoOrigem: row.arquivoOrigem || '',
       ibgeOk: Boolean(ibgeOrigem && ibgeDestino),
+      ibgeCorrigidoOrigem: Boolean(origem.corrigidoPorCidade),
+      ibgeCorrigidoDestino: Boolean(destino.corrigidoPorCidade),
       createdAt: new Date().toISOString(),
     };
   }).filter((row) => {
@@ -266,19 +307,68 @@ function getUfByIbge(ibge) {
   return UF_POR_CODIGO[onlyDigits(ibge).slice(0, 2)] || '';
 }
 
+const taxasIndexCache = new WeakMap();
+const cotacoesIndexCache = new WeakMap();
+
 function getTaxaDestino(origem, ibgeDestino) {
-  return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino || '') === String(ibgeDestino || '')) || {};
+  if (!origem) return {};
+  let index = taxasIndexCache.get(origem);
+  if (!index) {
+    index = new Map();
+    (origem.taxasEspeciais || []).forEach((item) => {
+      const key = String(item.ibgeDestino || '').replace(/\D/g, '');
+      if (key && !index.has(key)) index.set(key, item);
+    });
+    taxasIndexCache.set(origem, index);
+  }
+  return index.get(String(ibgeDestino || '').replace(/\D/g, '')) || {};
+}
+
+function normalizarCotacaoParaIndice(cotacao = {}) {
+  const pesoMin = toNumber(cotacao.pesoMin);
+  const pesoMaxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
+  const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined ? Number.POSITIVE_INFINITY : toNumber(pesoMaxRaw);
+  return { ...cotacao, pesoMinIndex: pesoMin, pesoMaxIndex: pesoMax };
+}
+
+function getCotacoesPorRota(origem) {
+  if (!origem) return new Map();
+  let index = cotacoesIndexCache.get(origem);
+  if (index) return index;
+
+  index = new Map();
+  (origem.cotacoes || []).forEach((cotacao) => {
+    const rotaKey = normalizeKey(cotacao.rota || cotacao.nomeRota || cotacao.destino || '');
+    if (!rotaKey) return;
+    const list = index.get(rotaKey) || [];
+    list.push(normalizarCotacaoParaIndice(cotacao));
+    index.set(rotaKey, list);
+  });
+
+  index.forEach((list) => list.sort((a, b) => a.pesoMinIndex - b.pesoMinIndex || a.pesoMaxIndex - b.pesoMaxIndex));
+  cotacoesIndexCache.set(origem, index);
+  return index;
 }
 
 function getCotacao(origem, rotaNome, peso) {
   const rotaKey = normalizeKey(rotaNome);
-  return (origem.cotacoes || []).find((cotacao) => {
-    const mesmaRota = normalizeKey(cotacao.rota) === rotaKey;
-    const pesoMin = toNumber(cotacao.pesoMin);
-    const pesoMaxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
-    const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined ? Number.POSITIVE_INFINITY : toNumber(pesoMaxRaw);
-    return mesmaRota && peso >= pesoMin && peso <= pesoMax;
-  });
+  const index = getCotacoesPorRota(origem);
+  const candidatos = index.get(rotaKey) || [];
+
+  for (const cotacao of candidatos) {
+    if (peso >= cotacao.pesoMinIndex && peso <= cotacao.pesoMaxIndex) return cotacao;
+  }
+
+  // Fallback seguro para bases antigas em que a cotação foi gravada com variação no nome da rota.
+  // Só percorre listas já indexadas por rota, bem menor do que varrer todas as cotações a cada CT-e.
+  for (const [key, list] of index.entries()) {
+    if (!key || !(key === rotaKey || key.includes(rotaKey) || rotaKey.includes(key))) continue;
+    for (const cotacao of list) {
+      if (peso >= cotacao.pesoMinIndex && peso <= cotacao.pesoMaxIndex) return cotacao;
+    }
+  }
+
+  return null;
 }
 
 function calcularItemTabela({ transportadora, origem, rota, cte }) {

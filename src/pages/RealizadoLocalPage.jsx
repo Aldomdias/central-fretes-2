@@ -8,12 +8,14 @@ import {
   diagnosticarRealizadoLocal,
   exportarRealizadoLocal,
   limparRealizadoLocal,
+  salvarRealizadoLocal,
   listarRealizadoLocal,
   resumirRealizadoLocal,
 } from '../services/realizadoLocalDb';
 import {
   construirEscopoTransportadoraSimulada,
   enriquecerMunicipiosComTabelas,
+  prepararRegistrosRealizadoLocal,
   simularRealizadoLocalRapido,
 } from '../utils/realizadoLocalEngine';
 import {
@@ -73,6 +75,44 @@ function nextFrame() {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
     else setTimeout(resolve, 0);
+  });
+}
+
+function simularRealizadoLocalWorker(payload, onProgress) {
+  if (typeof Worker === 'undefined') {
+    return simularRealizadoLocalRapido({ ...payload, onProgress });
+  }
+
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = new Worker(new URL('../workers/realizadoLocalSimulationWorker.js', import.meta.url), { type: 'module' });
+    } catch (error) {
+      simularRealizadoLocalRapido({ ...payload, onProgress }).then(resolve).catch(reject);
+      return;
+    }
+
+    worker.onmessage = (event) => {
+      const msg = event.data || {};
+      if (msg.type === 'progress') {
+        onProgress?.(msg);
+      }
+      if (msg.type === 'done') {
+        worker.terminate();
+        resolve(msg.result);
+      }
+      if (msg.type === 'error') {
+        worker.terminate();
+        reject(new Error(msg.message || 'Erro ao simular realizado local.'));
+      }
+    };
+
+    worker.onerror = (event) => {
+      worker.terminate();
+      reject(new Error(event?.message || 'Erro no processamento em segundo plano da simulação local.'));
+    };
+
+    worker.postMessage({ type: 'simular-realizado-local', ...payload });
   });
 }
 
@@ -378,6 +418,59 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
+  async function reprocessarIbgeLocal() {
+    const texto = window.prompt('Para reprocessar cidade/UF/IBGE da base local, digite REPROCESSAR IBGE');
+    if (texto !== 'REPROCESSAR IBGE') return;
+
+    setCarregando(true);
+    setErro('');
+    setFeedback('Reprocessando IBGE da base local com a referência atual...');
+    setProgress({ etapa: 'Reprocessando IBGE', atual: 0, total: stats.total || 0, percentual: 5, mensagem: 'Lendo base local já importada...' });
+
+    try {
+      const baseAtual = await exportarRealizadoLocal({}, { limit: 500000 });
+      const rowsAtuais = baseAtual.rows || [];
+      if (!rowsAtuais.length) {
+        setFeedback('Não há base local para reprocessar.');
+        return;
+      }
+
+      setProgress({ etapa: 'Reprocessando IBGE', atual: rowsAtuais.length, total: rowsAtuais.length, percentual: 35, mensagem: 'Corrigindo IBGE, UF e chave origem-destino...' });
+      await nextFrame();
+
+      const registros = rowsAtuais.map((row) => ({
+        ...row,
+        emissao: row.dataEmissao || row.emissao || '',
+        volume: row.qtdVolumes || row.volume || 0,
+        arquivoOrigem: row.arquivoOrigem || 'base-local-reprocessada',
+      }));
+
+      const { rows, pendencias } = prepararRegistrosRealizadoLocal(registros, municipios, {});
+      await limparRealizadoLocal();
+      await salvarRealizadoLocal(rows, {
+        chunkSize: 1000,
+        onProgress: ({ salvos, total }) => {
+          setProgress({
+            etapa: 'Gravando base corrigida',
+            atual: salvos,
+            total,
+            percentual: 40 + Math.round(pct(salvos, total) * 0.55),
+            mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) regravados com IBGE corrigido...`,
+          });
+        },
+      });
+
+      await pesquisar(filtros, false);
+      setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Base local reprocessada.' });
+      setFeedback(`IBGE local reprocessado: ${rows.length.toLocaleString('pt-BR')} CT-e(s). Pendências atuais: ${pendencias.length.toLocaleString('pt-BR')}.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao reprocessar IBGE da base local.');
+    } finally {
+      setCarregando(false);
+      setTimeout(() => setProgress(null), 2500);
+    }
+  }
+
   async function limparBase() {
     const texto = window.prompt('Para limpar a base local deste navegador, digite LIMPAR LOCAL');
     if (texto !== 'LIMPAR LOCAL') return;
@@ -581,21 +674,20 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       });
       await nextFrame();
 
-      const analise = await simularRealizadoLocalRapido({
+      const analise = await simularRealizadoLocalWorker({
         realizados: rows,
         transportadoras: baseTabelas,
         municipios,
         nomeTransportadora: filtros.transportadora,
         modoSimulacao,
-        onProgress: ({ atual, total, etapa }) => {
-          setProgress({
-            etapa,
-            atual,
-            total,
-            percentual: 35 + Math.round(pct(atual, total) * 0.63),
-            mensagem: `${atual.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) simulados localmente...`,
-          });
-        },
+      }, ({ atual = 0, total = rows.length, etapa = 'Calculando frete local' }) => {
+        setProgress({
+          etapa,
+          atual,
+          total,
+          percentual: 35 + Math.round(pct(atual, total) * 0.63),
+          mensagem: `${Number(atual || 0).toLocaleString('pt-BR')} de ${Number(total || rows.length).toLocaleString('pt-BR')} CT-e(s) simulados em segundo plano...`,
+        });
       });
 
       setResultado(analise);
@@ -692,6 +784,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           </button>
           <button className="btn-secondary" onClick={exportarBaseSelecionada} disabled={exportando || carregando || importando || simulando || !stats.total}>
             {exportando ? 'Exportando...' : 'Exportar base filtrada'}
+          </button>
+          <button className="btn-secondary" onClick={reprocessarIbgeLocal} disabled={carregando || importando || simulando || !diagnostico?.total || !municipios.length}>
+            Reprocessar IBGE local
           </button>
           <button className="btn-danger" onClick={limparBase} disabled={carregando || importando || simulando || !diagnostico?.total}>
             Limpar base local

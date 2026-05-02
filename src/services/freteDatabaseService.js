@@ -810,6 +810,86 @@ async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
   return rows;
 }
 
+async function fetchCotacoesByOrigemIdsAndRotas(supabase, origemIds = [], rotaNomes = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  const rotas = Array.from(new Set((rotaNomes || []).map((item) => String(item || '').trim()).filter(Boolean)));
+  if (!ids.length) return [];
+  if (!rotas.length || rotas.length > 400) return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+
+  const rows = [];
+  const origemChunkSize = 50;
+  const rotaChunkSize = 80;
+
+  try {
+    for (let oi = 0; oi < ids.length; oi += origemChunkSize) {
+      const origemChunk = ids.slice(oi, oi + origemChunkSize);
+      for (let ri = 0; ri < rotas.length; ri += rotaChunkSize) {
+        const rotaChunk = rotas.slice(ri, ri + rotaChunkSize);
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('cotacoes')
+            .select('*')
+            .in('origem_id', origemChunk)
+            .in('rota', rotaChunk)
+            .range(from, from + PAGE_SIZE - 1);
+
+          if (error) throw error;
+          const page = data || [];
+          rows.push(...page);
+          if (page.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+        }
+      }
+    }
+  } catch {
+    return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+  }
+
+  // Se a base usa nome de cotação diferente do nome da rota, volta para o modo robusto.
+  if (!rows.length) return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+  return rows;
+}
+
+async function fetchTaxasByOrigemIdsAndDestinos(supabase, origemIds = [], destinosIbge = []) {
+  const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
+  const destinos = Array.from(new Set((destinosIbge || []).map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean)));
+  if (!ids.length) return [];
+  if (!destinos.length || destinos.length > 500) return fetchRowsByOrigemIds(supabase, 'taxas_especiais', ids);
+
+  const rows = [];
+  const origemChunkSize = 50;
+  const destinoChunkSize = 120;
+
+  try {
+    for (let oi = 0; oi < ids.length; oi += origemChunkSize) {
+      const origemChunk = ids.slice(oi, oi + origemChunkSize);
+      for (let di = 0; di < destinos.length; di += destinoChunkSize) {
+        const destinoChunk = destinos.slice(di, di + destinoChunkSize);
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('taxas_especiais')
+            .select('*')
+            .in('origem_id', origemChunk)
+            .in('ibge_destino', destinoChunk)
+            .range(from, from + PAGE_SIZE - 1);
+
+          if (error) throw error;
+          const page = data || [];
+          rows.push(...page);
+          if (page.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+        }
+      }
+    }
+  } catch {
+    return fetchRowsByOrigemIds(supabase, 'taxas_especiais', ids);
+  }
+
+  return rows;
+}
+
 
 async function fetchTransportadorasByIds(supabase, ids = []) {
   const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
@@ -1035,6 +1115,9 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   const origens = (origensBase || []).filter((item) => origemIdsComRota.includes(item.id));
   const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
 
+  const rotaNomes = Array.from(new Set((rotas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
+  const destinosIbgeDasRotas = Array.from(new Set((rotas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
+
   const [
     transportadorasRows,
     generalidades,
@@ -1043,8 +1126,8 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   ] = await Promise.all([
     fetchTransportadorasByIds(supabase, transportadoraIds),
     fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
-    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIdsComRota),
-    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIdsComRota),
+    fetchCotacoesByOrigemIdsAndRotas(supabase, origemIdsComRota, rotaNomes),
+    fetchTaxasByOrigemIdsAndDestinos(supabase, origemIdsComRota, destinosIbgeDasRotas),
   ]);
 
   return transportadorasFromDbRows({
@@ -1095,6 +1178,17 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
 
     transportadora = response.data;
     transportadoraError = response.error;
+
+    if (!transportadora && !transportadoraError) {
+      const fallback = await supabase
+        .from('transportadoras')
+        .select('id, nome, status')
+        .ilike('nome', `%${transportadoraNome}%`)
+        .limit(2);
+
+      if (fallback.error) transportadoraError = fallback.error;
+      else if ((fallback.data || []).length === 1) transportadora = fallback.data[0];
+    }
   }
 
   if (transportadoraError) throw transportadoraError;
@@ -1350,7 +1444,7 @@ async function resolverCepEmFaixasDb(cepLimpo) {
         const municipio = normalizeMunicipioIbgeRow(data[0]);
         if (municipio) return municipio;
 
-        const ibge = pickIbgeValue(data[0], ['ibge', 'codigo_ibge', 'cod_ibge', 'codigo_municipio']).replace(/\D/g, '');
+        const ibge = pickIbgeValue(data[0], ['ibge', 'codigo_ibge', 'cod_ibge', 'codigo_municipio', 'codigo_municipio_completo']).replace(/\D/g, '');
         if (ibge) return { ibge, cidade: '', uf: '' };
       }
     } catch {
