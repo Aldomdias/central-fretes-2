@@ -34,6 +34,7 @@ const DEFAULT_FILTROS = {
   fim: '',
   canal: '',
   transportadoraRealizada: '',
+  excluirEbazar: true,
   ufOrigem: '',
   ufDestino: '',
   origem: '',
@@ -961,15 +962,20 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         return;
       }
 
+      const filtrosSimulacao = {
+        ...filtrosAplicados,
+        excluirEbazar: filtros.excluirEbazar,
+      };
+
       const filtrosBase = usarMalhaAutomatica
         ? {
-            ...filtrosAplicados,
+            ...filtrosSimulacao,
             origem: '',
             destino: '',
             ufOrigem: '',
             ufDestino: '',
           }
-        : filtrosAplicados;
+        : filtrosSimulacao;
 
       setProgress({
         etapa: usarMalhaAutomatica ? 'Filtrando pela malha' : 'Preparando realizado',
@@ -1157,6 +1163,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <div className="sim-alert info">
         <strong>Regra de limpeza do realizado:</strong> entram na base apenas CT-e(s) cujo Tomador de Serviço contenha {regraTomadorServicoRealizadoTexto()}. Use “Limpar não tomadores” para reprocessar uma base antiga já importada.
       </div>
+      <div className={filtrosAplicados.excluirEbazar ? 'sim-alert info' : 'sim-alert success'}>
+        <strong>Filtro EBAZAR:</strong> {filtrosAplicados.excluirEbazar ? 'EBAZAR está fora da base pesquisada/análise atual.' : 'EBAZAR está incluída na base pesquisada/análise atual.'}
+      </div>
 
       {progress ? (
         <div className="sim-alert info">
@@ -1215,6 +1224,13 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             <div className="field"><label>Peso máximo</label><input type="number" value={filtros.pesoMax} onChange={(e) => alterarFiltro('pesoMax', e.target.value)} placeholder="Ex.: 100" /></div>
           </div>
           <div className="field"><label>Transportadora realizada</label><input value={filtros.transportadoraRealizada} onChange={(e) => alterarFiltro('transportadoraRealizada', e.target.value)} placeholder="Ex.: MOVVI" /></div>
+          <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8, marginBottom: 8 }}>
+            <input type="checkbox" checked={Boolean(filtros.excluirEbazar)} onChange={(e) => alterarFiltro('excluirEbazar', e.target.checked)} />
+            <span>
+              Retirar EBAZAR da base/análise
+              <small style={{ display: 'block' }}>Com essa opção marcada, o painel, a exportação e a simulação desconsideram CT-e(s) em que a transportadora realizada contenha “EBAZAR”. Desmarque quando quiser usar EBAZAR na comparação.</small>
+            </span>
+          </label>
           <div className="form-grid"><div className="field"><label>Origem</label><input value={filtros.origem} onChange={(e) => alterarFiltro('origem', e.target.value)} placeholder="Itajaí" /></div><div className="field"><label>Destino</label><input value={filtros.destino} onChange={(e) => alterarFiltro('destino', e.target.value)} placeholder="São Paulo" /></div></div>
           <button className="btn-primary full" onClick={() => pesquisar(filtros)} disabled={carregando || importando || simulando}>Pesquisar</button>
         </section>

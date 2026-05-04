@@ -70,6 +70,11 @@ function normalizeLoose(value) {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function isTransportadoraEbazar(value) {
+  const nome = normalizeLoose(value);
+  return nome.includes('EBAZAR');
+}
+
 function toNumber(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
@@ -89,6 +94,7 @@ export function filtrarCteLocal(row = {}, filtros = {}) {
   if (filtros.inicio && (!row.dataEmissao || row.dataEmissao.slice(0, 10) < filtros.inicio)) return false;
   if (filtros.fim && (!row.dataEmissao || row.dataEmissao.slice(0, 10) > filtros.fim)) return false;
   if (filtros.canal && normalize(row.canal) !== normalize(filtros.canal)) return false;
+  if (filtros.excluirEbazar && isTransportadoraEbazar(row.transportadora)) return false;
   if (filtros.transportadoraRealizada && !normalizeLoose(row.transportadora).includes(normalizeLoose(filtros.transportadoraRealizada))) return false;
   if (filtros.ufOrigem && normalize(row.ufOrigem) !== normalize(filtros.ufOrigem)) return false;
   if (filtros.ufDestino && normalize(row.ufDestino) !== normalize(filtros.ufDestino)) return false;
