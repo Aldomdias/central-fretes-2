@@ -1,6 +1,14 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarTransportadoraCompletaDb } from '../services/freteDatabaseService';
+import {
+  buscarTabelaTransportadoraLocal,
+  excluirTabelaTransportadoraLocal,
+  extrairTransportadoraDeArquivoLocal,
+  listarTabelasTransportadoraLocal,
+  montarArquivoTabelaLocal,
+  salvarTabelaTransportadoraLocal,
+} from '../services/tabelaTransportadoraLocalDb';
 import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import {
   buscarRealizadoLocalParaSimulacao,
@@ -383,6 +391,26 @@ function baixarXlsx(nomeArquivo, abas = {}) {
   XLSX.writeFile(workbook, nomeArquivo);
 }
 
+function baixarJson(nomeArquivo, payload = {}) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = nomeArquivo;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function formatBytes(bytes = 0) {
+  const n = Number(bytes || 0);
+  if (!n) return '—';
+  if (n < 1024) return `${n.toLocaleString('pt-BR')} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} KB`;
+  return `${(n / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+}
+
 function cteToExportRow(item = {}) {
   return {
     Competencia: item.competencia || '',
@@ -516,12 +544,16 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [detalheAberto, setDetalheAberto] = useState(null);
   const [transportadorasTabela, setTransportadorasTabela] = useState(null);
   const [transportadoraSimuladaCache, setTransportadoraSimuladaCache] = useState({});
+  const [tabelasLocais, setTabelasLocais] = useState([]);
+  const [usarTabelaSalvaLocal, setUsarTabelaSalvaLocal] = useState(false);
+  const [salvandoTabelaLocal, setSalvandoTabelaLocal] = useState(false);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
   const [modoSimulacao, setModoSimulacao] = useState('rapido');
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const [grupoDetalhe, setGrupoDetalhe] = useState(null);
   const [exportando, setExportando] = useState(false);
   const fileInputRef = useRef(null);
+  const tabelaLocalInputRef = useRef(null);
 
   const stats = useMemo(() => ({
     total: Number(resumo?.total || 0),
@@ -559,6 +591,16 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
     init();
     return () => { ativo = false; };
+  }, []);
+
+  async function atualizarTabelasLocais() {
+    const lista = await listarTabelasTransportadoraLocal().catch(() => []);
+    setTabelasLocais(lista || []);
+    return lista || [];
+  }
+
+  useEffect(() => {
+    atualizarTabelasLocais();
   }, []);
 
   function alterarFiltro(campo, valor) {
@@ -823,10 +865,28 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
-  async function carregarTabelaTransportadoraSelecionada(nomeTransportadora) {
+  async function carregarTabelaTransportadoraSelecionada(nomeTransportadora, options = {}) {
     const nome = String(nomeTransportadora || '').trim();
+    const forcarLocal = Boolean(options.forcarLocal || usarTabelaSalvaLocal);
     if (!nome) return [];
-    if (transportadoraSimuladaCache[nome]?.length) return transportadoraSimuladaCache[nome];
+    if (!forcarLocal && transportadoraSimuladaCache[nome]?.length) return transportadoraSimuladaCache[nome];
+
+    if (forcarLocal) {
+      setProgress((prev) => ({
+        ...(prev || {}),
+        etapa: 'Carregando tabela local',
+        percentual: 10,
+        mensagem: `Usando a tabela salva localmente da ${nome}, sem consultar o Supabase.`,
+      }));
+      await nextFrame();
+      const snapshot = await buscarTabelaTransportadoraLocal(nome);
+      if (!snapshot?.payload) {
+        throw new Error(`A tabela da ${nome} ainda não está salva neste navegador. Desmarque “usar tabela salva local” para buscar no Supabase uma vez, ou importe um JSON de tabela local.`);
+      }
+      const baseLocal = [snapshot.payload];
+      setTransportadoraSimuladaCache((prev) => ({ ...prev, [nome]: baseLocal }));
+      return baseLocal;
+    }
 
     setProgress((prev) => ({
       ...(prev || {}),
@@ -838,8 +898,108 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
     const selecionada = await carregarTransportadoraCompletaDb(null, nome).catch(() => null);
     const base = selecionada ? [selecionada] : (transportadoras || []).filter((item) => item.nome === nome);
+    if (selecionada) {
+      salvarTabelaTransportadoraLocal(selecionada)
+        .then(() => atualizarTabelasLocais())
+        .catch((error) => console.warn('Não foi possível salvar snapshot local da transportadora.', error));
+    }
     setTransportadoraSimuladaCache((prev) => ({ ...prev, [nome]: base }));
     return base;
+  }
+
+  async function salvarTransportadoraSelecionadaLocal() {
+    const nome = String(filtros.transportadora || '').trim();
+    if (!nome) {
+      setErro('Escolha uma transportadora para salvar a tabela local.');
+      return;
+    }
+
+    setSalvandoTabelaLocal(true);
+    setErro('');
+    setFeedback(`Salvando tabela da ${nome} localmente...`);
+    setProgress({ etapa: 'Salvando tabela local', atual: 0, total: 1, percentual: 8, mensagem: 'Buscando a tabela cadastrada no Supabase uma única vez.' });
+
+    try {
+      const tabela = await carregarTransportadoraCompletaDb(null, nome);
+      if (!tabela?.nome) throw new Error(`Não encontrei tabela cadastrada para ${nome}.`);
+      const registro = await salvarTabelaTransportadoraLocal(tabela);
+      await atualizarTabelasLocais();
+      setTransportadoraSimuladaCache((prev) => ({ ...prev, [nome]: [tabela] }));
+      setUsarTabelaSalvaLocal(true);
+      setProgress({ etapa: 'Tabela local salva', atual: 1, total: 1, percentual: 100, mensagem: 'Snapshot local pronto para simulação rápida.' });
+      setFeedback(`Tabela local salva: ${registro.nome} • ${Number(registro.contagem?.origens || 0).toLocaleString('pt-BR')} origem(ns) • ${Number(registro.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s) • ${formatBytes(registro.tamanhoBytes)}.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao salvar tabela local.');
+    } finally {
+      setSalvandoTabelaLocal(false);
+      setTimeout(() => setProgress(null), 2000);
+    }
+  }
+
+  async function removerTransportadoraLocal() {
+    const nome = String(filtros.transportadora || '').trim();
+    if (!nome) {
+      setErro('Escolha uma transportadora para remover a tabela local.');
+      return;
+    }
+    const ok = window.confirm(`Remover a tabela local salva da ${nome}? Isso não altera o Supabase.`);
+    if (!ok) return;
+    try {
+      await excluirTabelaTransportadoraLocal(nome);
+      await atualizarTabelasLocais();
+      setTransportadoraSimuladaCache((prev) => {
+        const next = { ...prev };
+        delete next[nome];
+        return next;
+      });
+      setFeedback(`Tabela local da ${nome} removida deste navegador.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao remover tabela local.');
+    }
+  }
+
+  async function exportarTransportadoraLocal() {
+    const nome = String(filtros.transportadora || '').trim();
+    if (!nome) {
+      setErro('Escolha uma transportadora para exportar a tabela local.');
+      return;
+    }
+    try {
+      const snapshot = await buscarTabelaTransportadoraLocal(nome);
+      if (!snapshot?.payload) {
+        setErro(`Não existe tabela local salva para ${nome}.`);
+        return;
+      }
+      const safe = nome.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'transportadora';
+      baixarJson(`tabela-local-${safe}-${Date.now()}.json`, montarArquivoTabelaLocal(snapshot.payload));
+      setFeedback(`Tabela local da ${nome} exportada em JSON.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao exportar tabela local.');
+    }
+  }
+
+  async function importarTransportadoraLocal(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setSalvandoTabelaLocal(true);
+    setErro('');
+    setFeedback('Importando tabela local em JSON...');
+    try {
+      const texto = await file.text();
+      const json = JSON.parse(texto);
+      const transportadora = extrairTransportadoraDeArquivoLocal(json);
+      const registro = await salvarTabelaTransportadoraLocal(transportadora);
+      await atualizarTabelasLocais();
+      setTransportadoraSimuladaCache((prev) => ({ ...prev, [registro.nome]: [transportadora] }));
+      setFiltros((prev) => ({ ...prev, transportadora: registro.nome }));
+      setUsarTabelaSalvaLocal(true);
+      setFeedback(`Tabela local importada: ${registro.nome} • ${Number(registro.contagem?.origens || 0).toLocaleString('pt-BR')} origem(ns) • ${Number(registro.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s).`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao importar tabela local.');
+    } finally {
+      setSalvandoTabelaLocal(false);
+      if (event.target) event.target.value = '';
+    }
   }
 
   function mesclarTransportadorasParciais(listas = []) {
@@ -938,7 +1098,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setProgress({ etapa: 'Carregando malha', atual: 0, total: 0, percentual: 5, mensagem: 'Carregando tabelas e montando escopo da transportadora...' });
 
     try {
-      const tabelaSelecionada = await carregarTabelaTransportadoraSelecionada(filtros.transportadora);
+      const tabelaSelecionada = await carregarTabelaTransportadoraSelecionada(filtros.transportadora, { forcarLocal: usarTabelaSalvaLocal });
       if (!tabelaSelecionada?.length) {
         setErro('Não encontrei a tabela dessa transportadora no Supabase. Confira se a tabela está cadastrada e se o nome selecionado é exatamente o mesmo.');
         return;
@@ -1056,8 +1216,15 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
   const transportadorasDisponiveis = useMemo(() => {
     const fromTabelas = (transportadorasTabela || transportadoras || []).map((item) => item.nome).filter(Boolean);
-    return [...new Set(fromTabelas)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  }, [transportadorasTabela, transportadoras]);
+    const fromLocal = (tabelasLocais || []).map((item) => item.nome).filter(Boolean);
+    return [...new Set([...fromTabelas, ...fromLocal])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [transportadorasTabela, transportadoras, tabelasLocais]);
+
+  const tabelaLocalSelecionada = useMemo(() => {
+    const nome = String(filtros.transportadora || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (!nome) return null;
+    return (tabelasLocais || []).find((item) => item.nomeNormalizado === nome) || null;
+  }, [filtros.transportadora, tabelasLocais]);
 
   function selecionarGrupo(tipo, item) {
     if (!tipo || !item) return;
@@ -1258,6 +1425,50 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               Rápido calcula somente a transportadora escolhida. Completo otimizado compara apenas concorrentes das mesmas rotas IBGE filtradas.
             </small>
           </div>
+          <div className="sim-parametros-box subtle top-space-sm">
+            <div className="sim-parametros-header">
+              <div>
+                <strong>Tabela local da transportadora</strong>
+                <p>Use para continuar simulando mesmo quando o Supabase estiver sem limite. A tabela fica salva apenas neste navegador.</p>
+              </div>
+              <span>{tabelasLocais.length.toLocaleString('pt-BR')} salva(s)</span>
+            </div>
+            <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
+              <input type="checkbox" checked={usarTabelaSalvaLocal} onChange={(e) => setUsarTabelaSalvaLocal(e.target.checked)} />
+              <span>
+                Usar tabela salva localmente nesta simulação
+                <small style={{ display: 'block' }}>Recomendado para o modo rápido. No modo completo, os concorrentes ainda dependem do Supabase.</small>
+              </span>
+            </label>
+            <div className="mini-list top-space-sm">
+              <div className="mini-list-row">
+                <span>Status da tabela selecionada</span>
+                <strong>{tabelaLocalSelecionada ? `Salva em ${formatDateBr(tabelaLocalSelecionada.atualizadoEm)} • ${Number(tabelaLocalSelecionada.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s)` : 'Ainda não salva localmente'}</strong>
+              </div>
+              {tabelaLocalSelecionada ? (
+                <div className="mini-list-row">
+                  <span>Tamanho aproximado</span>
+                  <strong>{formatBytes(tabelaLocalSelecionada.tamanhoBytes)}</strong>
+                </div>
+              ) : null}
+            </div>
+            <div className="button-row" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+              <button className="btn-secondary" type="button" onClick={salvarTransportadoraSelecionadaLocal} disabled={salvandoTabelaLocal || simulando || importando || !filtros.transportadora}>
+                {salvandoTabelaLocal ? 'Salvando...' : 'Salvar tabela local'}
+              </button>
+              <button className="btn-secondary" type="button" onClick={() => tabelaLocalInputRef.current?.click()} disabled={salvandoTabelaLocal || simulando || importando}>
+                Importar JSON local
+              </button>
+              <button className="btn-secondary" type="button" onClick={exportarTransportadoraLocal} disabled={!tabelaLocalSelecionada || simulando || importando}>
+                Exportar JSON
+              </button>
+              <button className="btn-secondary" type="button" onClick={removerTransportadoraLocal} disabled={!tabelaLocalSelecionada || simulando || importando}>
+                Remover local
+              </button>
+            </div>
+            <input ref={tabelaLocalInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={importarTransportadoraLocal} />
+          </div>
+
           <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
             <input type="checkbox" checked={usarMalhaAutomatica} onChange={(e) => setUsarMalhaAutomatica(e.target.checked)} />
             <span>
