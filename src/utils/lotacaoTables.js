@@ -411,7 +411,8 @@ export function carregarTabelasLotacao() {
     const parsed = JSON.parse(localStorage.getItem(LOTACAO_STORAGE_KEY) || '[]');
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .map((tabela) => ({ ...tabela, tipo: normalizarTipoTabela(tabela.tipo) }))
+      .filter((tabela) => tabela && typeof tabela === 'object')
+      .map((tabela) => ({ ...tabela, tipo: normalizarTipoTabela(tabela.tipo), linhas: Array.isArray(tabela.linhas) ? tabela.linhas : [] }))
       .filter((tabela) => normalizarTipoTabela(tabela.tipo) === 'ANTT' || normalizarTipoTabela(tabela.tipo) === 'TRANSPORTADORA');
   } catch {
     return [];
@@ -427,6 +428,7 @@ export function upsertTabelaLotacao(tabelas = [], tabelaNova) {
   const tabelaNormalizada = { ...tabelaNova, tipo: novoTipo };
 
   const semConflito = tabelas.filter((tabela) => {
+    if (!tabela || typeof tabela !== 'object') return false;
     const tipoAtual = normalizarTipoTabela(tabela.tipo);
     if (novoTipo === 'ANTT' && tipoAtual === 'ANTT') return false;
     if (novoTipo === 'TRANSPORTADORA' && tipoAtual === 'TRANSPORTADORA' && normalizarTexto(tabela.nome) === normalizarTexto(tabelaNormalizada.nome)) return false;
@@ -437,22 +439,23 @@ export function upsertTabelaLotacao(tabelas = [], tabelaNova) {
 }
 
 export function removerTabelaLotacao(tabelas = [], tabelaId) {
-  return tabelas.filter((tabela) => tabela.id !== tabelaId);
+  return tabelas.filter((tabela) => tabela && tabela.id !== tabelaId);
 }
 
 export function obterTabelasPorTipo(tabelas = [], tipo) {
   const tipoNormalizado = normalizarTipoTabela(tipo);
-  return tabelas.filter((tabela) => normalizarTipoTabela(tabela.tipo) === tipoNormalizado);
+  return tabelas.filter((tabela) => tabela && typeof tabela === 'object' && normalizarTipoTabela(tabela.tipo) === tipoNormalizado);
 }
 
 export function obterAntt(tabelas = []) {
-  return tabelas.find((tabela) => normalizarTipoTabela(tabela.tipo) === 'ANTT') || null;
+  return tabelas.find((tabela) => tabela && typeof tabela === 'object' && normalizarTipoTabela(tabela.tipo) === 'ANTT') || null;
 }
 
 function indexarPorChave(tabela) {
   const mapa = new Map();
-  (tabela?.linhas || []).forEach((linha) => {
-    if (!linha.chave) return;
+  const linhas = Array.isArray(tabela?.linhas) ? tabela.linhas : [];
+  linhas.forEach((linha) => {
+    if (!linha || typeof linha !== 'object' || !linha.chave) return;
     if (!mapa.has(linha.chave)) {
       mapa.set(linha.chave, linha);
       return;
@@ -579,6 +582,295 @@ export function compararComReferencia(tabela, referencia) {
     variacaoMedia,
     detalhes: detalhes.slice(0, MAX_EXEMPLOS_COMPARATIVO),
   };
+}
+
+
+function compararValorComAntt(valorTabela, refAntt) {
+  if (!refAntt || refAntt.valor === null || refAntt.valor === undefined) {
+    return {
+      diferencaAntt: null,
+      variacaoAntt: null,
+      statusAntt: 'Sem NTT',
+    };
+  }
+
+  const valorBase = Number(refAntt.valor || 0);
+  const valor = Number(valorTabela || 0);
+  const diferencaAntt = valor - valorBase;
+  const variacaoAntt = valorBase ? (diferencaAntt / valorBase) * 100 : 0;
+  let statusAntt = 'Igual NTT';
+
+  if (diferencaAntt < -TOLERANCIA_EMPATE) statusAntt = 'Abaixo NTT';
+  if (diferencaAntt > TOLERANCIA_EMPATE) statusAntt = 'Acima NTT';
+
+  return { diferencaAntt, variacaoAntt, statusAntt };
+}
+
+export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste, antt = null) {
+  if (!tabelaAntiga || !tabelaReajuste) return null;
+
+  const mapaAntigo = indexarPorChave(tabelaAntiga);
+  const mapaNovo = indexarPorChave(tabelaReajuste);
+  const mapaAntt = antt ? indexarPorChave(antt) : new Map();
+  const detalhes = [];
+  const rotasNovas = [];
+  const rotasSemReajuste = [];
+
+  let comparadas = 0;
+  let comparadasAntt = 0;
+  let aumentou = 0;
+  let reduziu = 0;
+  let manteve = 0;
+
+  let antigoAbaixoAntt = 0;
+  let antigoAcimaAntt = 0;
+  let antigoIgualAntt = 0;
+  let reajusteAbaixoAntt = 0;
+  let reajusteAcimaAntt = 0;
+  let reajusteIgualAntt = 0;
+  let ajustadasAteAntt = 0;
+
+  let somaValorAntigo = 0;
+  let somaValorNovo = 0;
+  let somaValorAntt = 0;
+  let somaVariacao = 0;
+  let somaDiferencaReajusteAntt = 0;
+  let somaVariacaoReajusteAntt = 0;
+  let somaVariacaoReajusteAcimaAntt = 0;
+  let somaVariacaoReajusteAbaixoAntt = 0;
+  let valorNecessarioAjustarAteAntt = 0;
+  let maiorAumento = null;
+  let maiorReducao = null;
+
+  mapaNovo.forEach((linhaNova) => {
+    const linhaAntiga = mapaAntigo.get(linhaNova.chave);
+    if (!linhaAntiga) {
+      rotasNovas.push({
+        id: `nova-${linhaNova.id}`,
+        origem: linhaNova.origem,
+        ufOrigem: linhaNova.ufOrigem,
+        destino: linhaNova.destino,
+        ufDestino: linhaNova.ufDestino,
+        tipo: linhaNova.tipo,
+        km: linhaNova.km,
+        valorNovo: linhaNova.valor,
+        fonteNova: linhaNova.valorFonte,
+        status: 'Rota nova',
+      });
+      return;
+    }
+
+    const valorAntigo = Number(linhaAntiga.valor || 0);
+    const valorNovo = Number(linhaNova.valor || 0);
+    const diferenca = valorNovo - valorAntigo;
+    const variacao = valorAntigo ? (diferenca / valorAntigo) * 100 : 0;
+    let status = 'Sem alteração';
+
+    if (diferenca > TOLERANCIA_EMPATE) {
+      status = 'Aumentou';
+      aumentou += 1;
+    } else if (diferenca < -TOLERANCIA_EMPATE) {
+      status = 'Reduziu';
+      reduziu += 1;
+    } else {
+      manteve += 1;
+    }
+
+    comparadas += 1;
+    somaValorAntigo += valorAntigo;
+    somaValorNovo += valorNovo;
+    somaVariacao += variacao;
+
+    const refAntt = mapaAntt.get(linhaNova.chave) || mapaAntt.get(linhaAntiga.chave) || null;
+    const comparacaoAntigoAntt = compararValorComAntt(valorAntigo, refAntt);
+    const comparacaoNovoAntt = compararValorComAntt(valorNovo, refAntt);
+
+    if (refAntt) {
+      const valorAntt = Number(refAntt.valor || 0);
+      comparadasAntt += 1;
+      somaValorAntt += valorAntt;
+      somaDiferencaReajusteAntt += comparacaoNovoAntt.diferencaAntt || 0;
+      somaVariacaoReajusteAntt += comparacaoNovoAntt.variacaoAntt || 0;
+
+      if (comparacaoAntigoAntt.statusAntt === 'Abaixo NTT') {
+        antigoAbaixoAntt += 1;
+        valorNecessarioAjustarAteAntt += Math.max(0, valorAntt - valorAntigo);
+        if (valorNovo + TOLERANCIA_EMPATE >= valorAntt) ajustadasAteAntt += 1;
+      }
+      if (comparacaoAntigoAntt.statusAntt === 'Acima NTT') antigoAcimaAntt += 1;
+      if (comparacaoAntigoAntt.statusAntt === 'Igual NTT') antigoIgualAntt += 1;
+
+      if (comparacaoNovoAntt.statusAntt === 'Abaixo NTT') {
+        reajusteAbaixoAntt += 1;
+        somaVariacaoReajusteAbaixoAntt += comparacaoNovoAntt.variacaoAntt || 0;
+      }
+      if (comparacaoNovoAntt.statusAntt === 'Acima NTT') {
+        reajusteAcimaAntt += 1;
+        somaVariacaoReajusteAcimaAntt += comparacaoNovoAntt.variacaoAntt || 0;
+      }
+      if (comparacaoNovoAntt.statusAntt === 'Igual NTT') reajusteIgualAntt += 1;
+    }
+
+    const detalhe = {
+      id: `reajuste-${linhaAntiga.id}-${linhaNova.id}`,
+      origem: linhaAntiga.origem || linhaNova.origem,
+      ufOrigem: linhaAntiga.ufOrigem || linhaNova.ufOrigem,
+      destino: linhaAntiga.destino || linhaNova.destino,
+      ufDestino: linhaAntiga.ufDestino || linhaNova.ufDestino,
+      tipo: linhaAntiga.tipo || linhaNova.tipo,
+      km: linhaNova.km || linhaAntiga.km,
+      valorAntigo,
+      valorNovo,
+      valorAntt: refAntt?.valor ?? null,
+      fonteAntiga: linhaAntiga.valorFonte,
+      fonteNova: linhaNova.valorFonte,
+      fonteAntt: refAntt?.valorFonte || '',
+      diferenca,
+      variacao,
+      diferencaAntigoAntt: comparacaoAntigoAntt.diferencaAntt,
+      variacaoAntigoAntt: comparacaoAntigoAntt.variacaoAntt,
+      statusAntigoAntt: comparacaoAntigoAntt.statusAntt,
+      diferencaNovoAntt: comparacaoNovoAntt.diferencaAntt,
+      variacaoNovoAntt: comparacaoNovoAntt.variacaoAntt,
+      statusNovoAntt: comparacaoNovoAntt.statusAntt,
+      status,
+    };
+
+    if (!maiorAumento || variacao > maiorAumento.variacao) maiorAumento = detalhe;
+    if (!maiorReducao || variacao < maiorReducao.variacao) maiorReducao = detalhe;
+    detalhes.push(detalhe);
+  });
+
+  mapaAntigo.forEach((linhaAntiga) => {
+    if (mapaNovo.has(linhaAntiga.chave)) return;
+    rotasSemReajuste.push({
+      id: `sem-reajuste-${linhaAntiga.id}`,
+      origem: linhaAntiga.origem,
+      ufOrigem: linhaAntiga.ufOrigem,
+      destino: linhaAntiga.destino,
+      ufDestino: linhaAntiga.ufDestino,
+      tipo: linhaAntiga.tipo,
+      km: linhaAntiga.km,
+      valorAntigo: linhaAntiga.valor,
+      fonteAntiga: linhaAntiga.valorFonte,
+      status: 'Sem rota na reajustada',
+    });
+  });
+
+  detalhes.sort((a, b) => Math.abs(b.variacao) - Math.abs(a.variacao));
+  rotasNovas.sort((a, b) => (b.valorNovo || 0) - (a.valorNovo || 0));
+  rotasSemReajuste.sort((a, b) => (b.valorAntigo || 0) - (a.valorAntigo || 0));
+
+  const diferencaTotal = somaValorNovo - somaValorAntigo;
+  const variacaoPonderada = somaValorAntigo ? (diferencaTotal / somaValorAntigo) * 100 : 0;
+  const variacaoMedia = comparadas ? somaVariacao / comparadas : 0;
+  const coberturaAntiga = mapaAntigo.size ? (comparadas / mapaAntigo.size) * 100 : 0;
+  const coberturaNova = mapaNovo.size ? (comparadas / mapaNovo.size) * 100 : 0;
+
+  return {
+    tabelaAntigaNome: tabelaAntiga.nome,
+    tabelaReajusteNome: tabelaReajuste.nome,
+    baseAntiga: mapaAntigo.size,
+    baseNova: mapaNovo.size,
+    comparadas,
+    comparadasAntt,
+    semAntt: comparadas - comparadasAntt,
+    aumentou,
+    reduziu,
+    manteve,
+    rotasNovas: rotasNovas.length,
+    rotasSemReajuste: rotasSemReajuste.length,
+    somaValorAntigo,
+    somaValorNovo,
+    somaValorAntt,
+    antigoAbaixoAntt,
+    antigoAcimaAntt,
+    antigoIgualAntt,
+    reajusteAbaixoAntt,
+    reajusteAcimaAntt,
+    reajusteIgualAntt,
+    ajustadasAteAntt,
+    rotasQuePrecisamAjusteAntt: antigoAbaixoAntt,
+    valorNecessarioAjustarAteAntt,
+    pctAntigoAbaixoAntt: comparadasAntt ? (antigoAbaixoAntt / comparadasAntt) * 100 : 0,
+    pctAntigoAcimaAntt: comparadasAntt ? (antigoAcimaAntt / comparadasAntt) * 100 : 0,
+    pctAntigoIgualAntt: comparadasAntt ? (antigoIgualAntt / comparadasAntt) * 100 : 0,
+    pctReajusteAbaixoAntt: comparadasAntt ? (reajusteAbaixoAntt / comparadasAntt) * 100 : 0,
+    pctReajusteAcimaAntt: comparadasAntt ? (reajusteAcimaAntt / comparadasAntt) * 100 : 0,
+    pctReajusteIgualAntt: comparadasAntt ? (reajusteIgualAntt / comparadasAntt) * 100 : 0,
+    diferencaTotal,
+    variacaoPonderada,
+    variacaoMedia,
+    diferencaTotalReajusteAntt: somaDiferencaReajusteAntt,
+    variacaoMediaReajusteAntt: comparadasAntt ? somaVariacaoReajusteAntt / comparadasAntt : 0,
+    variacaoMediaReajusteAcimaAntt: reajusteAcimaAntt ? somaVariacaoReajusteAcimaAntt / reajusteAcimaAntt : 0,
+    variacaoMediaReajusteAbaixoAntt: reajusteAbaixoAntt ? somaVariacaoReajusteAbaixoAntt / reajusteAbaixoAntt : 0,
+    coberturaAntiga,
+    coberturaNova,
+    maiorAumento,
+    maiorReducao,
+    detalhes: detalhes.slice(0, MAX_EXEMPLOS_COMPARATIVO),
+    detalhesRotasNovas: rotasNovas.slice(0, 100),
+    detalhesRotasSemReajuste: rotasSemReajuste.slice(0, 100),
+  };
+}
+
+function nomeArquivoSeguro(valor = '') {
+  return normalizarTexto(valor)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'comparativo';
+}
+
+export function exportarComparativoReajusteXlsx(comparativo) {
+  if (!comparativo?.detalhes?.length) return;
+
+  const resumo = [
+    ['Tabela antiga', comparativo.tabelaAntigaNome],
+    ['Tabela reajustada', comparativo.tabelaReajusteNome],
+    ['Rotas comparadas', comparativo.comparadas],
+    ['Aumento ponderado %', comparativo.variacaoPonderada],
+    ['Diferença total R$', comparativo.diferencaTotal],
+    ['Rotas com aumento', comparativo.aumentou],
+    ['Rotas com redução', comparativo.reduziu],
+    ['Rotas sem alteração', comparativo.manteve],
+    ['Rotas com NTT', comparativo.comparadasAntt || 0],
+    ['Antiga abaixo NTT', comparativo.antigoAbaixoAntt || 0],
+    ['Antiga acima NTT', comparativo.antigoAcimaAntt || 0],
+    ['Reajuste abaixo NTT', comparativo.reajusteAbaixoAntt || 0],
+    ['Reajuste acima NTT', comparativo.reajusteAcimaAntt || 0],
+    ['% reajuste acima NTT', comparativo.pctReajusteAcimaAntt || 0],
+    ['% médio reajuste acima NTT', comparativo.variacaoMediaReajusteAcimaAntt || 0],
+    ['Rotas que teriam reajuste até NTT', comparativo.rotasQuePrecisamAjusteAntt || 0],
+    ['Valor necessário para ajustar até NTT', comparativo.valorNecessarioAjustarAteAntt || 0],
+    ['Rotas antigas ajustadas até NTT pela nova tabela', comparativo.ajustadasAteAntt || 0],
+  ];
+
+  const linhas = comparativo.detalhes.map((item) => ({
+    Origem: `${item.origem}/${item.ufOrigem}`,
+    Destino: `${item.destino}/${item.ufDestino}`,
+    Tipo: item.tipo,
+    KM: item.km || '',
+    'Valor antigo': item.valorAntigo,
+    NTT: item.valorAntt ?? '',
+    'Valor reajuste': item.valorNovo,
+    'Diferença reajuste': item.diferenca,
+    '% aumento': item.variacao,
+    'Antigo x NTT R$': item.diferencaAntigoAntt ?? '',
+    'Antigo x NTT %': item.variacaoAntigoAntt ?? '',
+    'Reajuste x NTT R$': item.diferencaNovoAntt ?? '',
+    'Reajuste x NTT %': item.variacaoNovoAntt ?? '',
+    'Status reajuste': item.status,
+    'Status antigo x NTT': item.statusAntigoAntt || '',
+    'Status reajuste x NTT': item.statusNovoAntt || '',
+  }));
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(resumo), 'Resumo');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(linhas), 'Rotas');
+
+  const nome = nomeArquivoSeguro(`${comparativo.tabelaAntigaNome}-${comparativo.tabelaReajusteNome}`);
+  XLSX.writeFile(workbook, `comparativo-reajuste-lotacao-${nome}.xlsx`);
 }
 
 export function analisarTabelaVersusAntt(tabela, antt) {
@@ -833,17 +1125,18 @@ export function pesquisarRotaLotacao(tabelas = [], filtros = {}) {
 }
 
 export function resumoLotacao(tabelas = []) {
-  const antt = obterAntt(tabelas);
-  const transportadoras = obterTabelasPorTipo(tabelas, 'TRANSPORTADORA');
-  const totalRotasTransportadoras = transportadoras.reduce((acc, tabela) => acc + (tabela.linhas?.length || 0), 0);
-  const totalRotas = tabelas.reduce((acc, tabela) => acc + (tabela.linhas?.length || 0), 0);
+  const tabelasValidas = Array.isArray(tabelas) ? tabelas.filter((tabela) => tabela && typeof tabela === 'object') : [];
+  const antt = obterAntt(tabelasValidas);
+  const transportadoras = obterTabelasPorTipo(tabelasValidas, 'TRANSPORTADORA');
+  const totalRotasTransportadoras = transportadoras.reduce((acc, tabela) => acc + (Array.isArray(tabela.linhas) ? tabela.linhas.length : 0), 0);
+  const totalRotas = tabelasValidas.reduce((acc, tabela) => acc + (Array.isArray(tabela.linhas) ? tabela.linhas.length : 0), 0);
   const referenciaMenorPreco = criarReferenciaMenorPreco(transportadoras);
 
   return {
     antt,
     transportadoras,
     referenciaMenorPreco,
-    totalTabelas: tabelas.length,
+    totalTabelas: tabelasValidas.length,
     totalRotas,
     totalRotasTransportadoras,
     totalTransportadoras: transportadoras.length,

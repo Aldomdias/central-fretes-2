@@ -1,5 +1,6 @@
+import { isTomadorServicoValidoRealizado } from '../utils/realizadoCtes';
 const DB_NAME = 'amd-realizado-local-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_CTES = 'ctes_enxutos';
 const STORE_META = 'meta';
 
@@ -19,6 +20,7 @@ function openDb() {
         store.createIndex('ufOrigem', 'ufOrigem', { unique: false });
         store.createIndex('ufDestino', 'ufDestino', { unique: false });
         store.createIndex('chaveRotaIbge', 'chaveRotaIbge', { unique: false });
+        store.createIndex('tomadorServico', 'tomadorServico', { unique: false });
       } else {
         const store = req.transaction.objectStore(STORE_CTES);
         if (!store.indexNames.contains('competencia')) store.createIndex('competencia', 'competencia', { unique: false });
@@ -28,6 +30,7 @@ function openDb() {
         if (!store.indexNames.contains('ufOrigem')) store.createIndex('ufOrigem', 'ufOrigem', { unique: false });
         if (!store.indexNames.contains('ufDestino')) store.createIndex('ufDestino', 'ufDestino', { unique: false });
         if (!store.indexNames.contains('chaveRotaIbge')) store.createIndex('chaveRotaIbge', 'chaveRotaIbge', { unique: false });
+        if (!store.indexNames.contains('tomadorServico')) store.createIndex('tomadorServico', 'tomadorServico', { unique: false });
       }
 
       if (!db.objectStoreNames.contains(STORE_META)) {
@@ -67,6 +70,11 @@ function normalizeLoose(value) {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function isTransportadoraEbazar(value) {
+  const nome = normalizeLoose(value);
+  return nome.includes('EBAZAR');
+}
+
 function toNumber(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
@@ -86,6 +94,7 @@ export function filtrarCteLocal(row = {}, filtros = {}) {
   if (filtros.inicio && (!row.dataEmissao || row.dataEmissao.slice(0, 10) < filtros.inicio)) return false;
   if (filtros.fim && (!row.dataEmissao || row.dataEmissao.slice(0, 10) > filtros.fim)) return false;
   if (filtros.canal && normalize(row.canal) !== normalize(filtros.canal)) return false;
+  if (filtros.excluirEbazar && isTransportadoraEbazar(row.transportadora)) return false;
   if (filtros.transportadoraRealizada && !normalizeLoose(row.transportadora).includes(normalizeLoose(filtros.transportadoraRealizada))) return false;
   if (filtros.ufOrigem && normalize(row.ufOrigem) !== normalize(filtros.ufOrigem)) return false;
   if (filtros.ufDestino && normalize(row.ufDestino) !== normalize(filtros.ufDestino)) return false;
@@ -245,6 +254,8 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
     porTransportadora: new Map(),
     porCanal: new Map(),
     porOrigem: new Map(),
+    porDestino: new Map(),
+    porUfDestino: new Map(),
     porMes: new Map(),
   };
 
@@ -287,6 +298,8 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
         addGroup(resumo.porTransportadora, row.transportadora, row);
         addGroup(resumo.porCanal, row.canal, row);
         addGroup(resumo.porOrigem, `${row.cidadeOrigem}/${row.ufOrigem}`, row);
+        addGroup(resumo.porDestino, `${row.cidadeDestino}/${row.ufDestino}`, row);
+        addGroup(resumo.porUfDestino, row.ufDestino || 'Sem UF', row);
         addGroup(resumo.porMes, row.competencia || data.slice(0, 7), row);
       }
       cursor.continue();
@@ -306,8 +319,40 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
     porTransportadora: finalize(resumo.porTransportadora),
     porCanal: finalize(resumo.porCanal),
     porOrigem: finalize(resumo.porOrigem),
+    porDestino: finalize(resumo.porDestino),
+    porUfDestino: finalize(resumo.porUfDestino),
     porMes: finalize(resumo.porMes),
   };
+}
+
+export async function exportarRealizadoLocal(filtros = {}, options = {}) {
+  const db = await openDb();
+  const limit = Number(options.limit || 100000);
+  const rows = [];
+  let totalCompativel = 0;
+
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CTES, 'readonly');
+    const store = tx.objectStore(STORE_CTES);
+    const req = store.openCursor(null, 'prev');
+    req.onerror = () => reject(req.error || new Error('Erro ao exportar base local.'));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      const row = cursor.value;
+      if (filtrarCteLocal(row, filtros)) {
+        totalCompativel += 1;
+        if (rows.length < limit) rows.push(row);
+      }
+      cursor.continue();
+    };
+  });
+
+  db.close();
+  return { rows, totalCompativel, limit };
 }
 
 export async function diagnosticarRealizadoLocal() {
@@ -317,6 +362,50 @@ export async function diagnosticarRealizadoLocal() {
   const meta = await requestToPromise(tx.objectStore(STORE_META).get('ultimaAtualizacao')).catch(() => null);
   db.close();
   return { total: count || 0, ultimaAtualizacao: meta?.value || '' };
+}
+
+export async function limparNaoTomadoresRealizadoLocal(options = {}) {
+  const db = await openDb();
+  let avaliados = 0;
+  let removidos = 0;
+  let mantidos = 0;
+
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CTES, 'readwrite');
+    const store = tx.objectStore(STORE_CTES);
+    const req = store.openCursor();
+
+    req.onerror = () => reject(req.error || new Error('Erro ao limpar tomadores da base local.'));
+    tx.onerror = () => reject(tx.error || new Error('Erro na transação de limpeza de tomadores.'));
+    tx.oncomplete = () => resolve();
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      avaliados += 1;
+      const row = cursor.value || {};
+      if (!isTomadorServicoValidoRealizado(row.tomadorServico)) {
+        cursor.delete();
+        removidos += 1;
+      } else {
+        mantidos += 1;
+      }
+      if (avaliados % 1000 === 0) options.onProgress?.({ avaliados, removidos, mantidos });
+      cursor.continue();
+    };
+  });
+
+  const txMeta = db.transaction(STORE_META, 'readwrite');
+  txMeta.objectStore(STORE_META).put({
+    key: 'ultimaLimpezaTomador',
+    value: new Date().toISOString(),
+    avaliados,
+    removidos,
+    mantidos,
+  });
+  await txComplete(txMeta);
+  db.close();
+  return { avaliados, removidos, mantidos };
 }
 
 export async function limparRealizadoLocal() {

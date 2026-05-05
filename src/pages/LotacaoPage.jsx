@@ -6,6 +6,8 @@ import {
   baixarModeloTransportadora,
   carregarTabelasLotacao,
   compararComReferencia,
+  compararTabelaReajuste,
+  exportarComparativoReajusteXlsx,
   criarReferenciaMenorPreco,
   formatarMoeda,
   formatarPercentual,
@@ -43,9 +45,21 @@ function classeDiferenca(valor) {
 }
 
 function classeAntt(status) {
-  if (status === 'Abaixo ANTT') return 'negativo';
-  if (status === 'Acima ANTT') return 'positivo';
+  if (status === 'Abaixo ANTT' || status === 'Abaixo NTT') return 'negativo';
+  if (status === 'Acima ANTT' || status === 'Acima NTT') return 'positivo';
   return '';
+}
+
+function classeReajuste(status) {
+  if (status === 'Aumentou') return 'negativo';
+  if (status === 'Reduziu') return 'positivo';
+  return '';
+}
+
+function percentualSeguro(valor, casas = 1) {
+  const numero = Number(valor);
+  if (!Number.isFinite(numero)) return '-';
+  return formatarPercentual(numero, casas);
 }
 
 function listarAbas(abas = []) {
@@ -99,6 +113,220 @@ function UploadCard({ tipo, titulo, descricao, nomeObrigatorio, onImportar, carr
       >
         {carregando ? 'Importando...' : 'Subir tabela'}
       </button>
+    </div>
+  );
+}
+
+
+function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaId, onTabelaAntigaChange, onImportar, tabelaReajuste, onLimpar, comparativo }) {
+  const [nomeReajuste, setNomeReajuste] = useState('');
+  const [arquivo, setArquivo] = useState(null);
+  const detalhes = Array.isArray(comparativo?.detalhes) ? comparativo.detalhes : [];
+  const temComparativo = Boolean(comparativo && !comparativo.erro);
+
+  const enviar = async () => {
+    if (!arquivo || !tabelaAntigaId) return;
+    await onImportar({ file: arquivo, nome: nomeReajuste.trim(), tabelaAntigaId });
+    setArquivo(null);
+  };
+
+  return (
+    <div className="panel-card lotacao-reajuste-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Comparar tabela de reajuste</div>
+          <p>
+            Suba uma tabela reajustada para comparar contra a tabela antiga cadastrada, sem substituir a oficial.
+            A visão mostra o aumento rota a rota e também compara valor antigo e reajustado contra a NTT.
+          </p>
+        </div>
+        {tabelaReajuste && (
+          <button type="button" className="btn-secondary" onClick={onLimpar} disabled={carregando}>
+            Limpar reajuste
+          </button>
+        )}
+      </div>
+
+      <div className="filter-grid three lotacao-reajuste-form">
+        <label className="field">
+          Tabela antiga/oficial
+          <select value={tabelaAntigaId || ''} onChange={(event) => onTabelaAntigaChange(event.target.value)} disabled={!transportadoras.length}>
+            {transportadoras.length === 0 && <option value="">Cadastre uma transportadora primeiro</option>}
+            {transportadoras.map((tabela) => (
+              <option key={tabela.id} value={tabela.id}>{tabela.nome}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          Nome da tabela reajustada
+          <input
+            value={nomeReajuste}
+            onChange={(event) => setNomeReajuste(event.target.value)}
+            placeholder="Ex.: TransGP reajuste 2026"
+          />
+        </label>
+        <label className="field">
+          Arquivo Excel de reajuste
+          <input
+            type="file"
+            accept=".xlsx,.xls,.xlsm"
+            onChange={(event) => setArquivo(event.target.files?.[0] || null)}
+          />
+        </label>
+      </div>
+
+      <div className="actions-right gap-row lotacao-reajuste-actions">
+        {temComparativo && (
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={carregando || !detalhes.length}
+            onClick={() => exportarComparativoReajusteXlsx(comparativo)}
+          >
+            Baixar visão Excel
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={carregando || !arquivo || !tabelaAntigaId}
+          onClick={enviar}
+        >
+          {carregando ? 'Comparando...' : 'Subir reajuste e comparar'}
+        </button>
+      </div>
+
+      {comparativo?.erro && (
+        <div className="formatacao-alerta top-space-sm">
+          Não consegui montar o comparativo de reajuste: {comparativo.erro}
+        </div>
+      )}
+
+      {!temComparativo && !comparativo?.erro && (
+        <div className="hint-box compact">
+          Use o mesmo modelo de transportadora. A coluna TARGET será lida como valor reajustado. Se a ANTT/NTT estiver cadastrada, o relatório também mostra quantas rotas ficam abaixo, iguais ou acima da referência.
+        </div>
+      )}
+
+      {temComparativo && (
+        <>
+          <div className="summary-strip lotacao-summary-mini top-space-sm">
+            <div className="summary-card">
+              <span>Rotas comparadas</span>
+              <strong>{comparativo.comparadas || 0}</strong>
+              <small>{percentualSeguro(comparativo.coberturaAntiga)} da antiga</small>
+            </div>
+            <div className="summary-card">
+              <span>Aumento ponderado</span>
+              <strong className={comparativo.variacaoPonderada > 0 ? 'negativo' : comparativo.variacaoPonderada < 0 ? 'positivo' : ''}>
+                {percentualSeguro(comparativo.variacaoPonderada)}
+              </strong>
+              <small>{formatarMoeda(comparativo.diferencaTotal)} de diferença</small>
+            </div>
+            <div className="summary-card">
+              <span>Antiga abaixo NTT</span>
+              <strong className="negativo">{comparativo.antigoAbaixoAntt || 0}</strong>
+              <small>{percentualSeguro(comparativo.pctAntigoAbaixoAntt)} das rotas com NTT</small>
+            </div>
+            <div className="summary-card">
+              <span>Reajuste acima NTT</span>
+              <strong className="positivo">{comparativo.reajusteAcimaAntt || 0}</strong>
+              <small>{percentualSeguro(comparativo.pctReajusteAcimaAntt)} · média {percentualSeguro(comparativo.variacaoMediaReajusteAcimaAntt)}</small>
+            </div>
+            <div className="summary-card">
+              <span>Reajuste até NTT</span>
+              <strong>{comparativo.rotasQuePrecisamAjusteAntt || 0}</strong>
+              <small>{formatarMoeda(comparativo.valorNecessarioAjustarAteAntt || 0)} para ajustar antiga</small>
+            </div>
+          </div>
+
+          <div className="sim-analise-resumo top-space-sm">
+            <div>
+              <span>Tabela antiga</span>
+              <strong>{comparativo.tabelaAntigaNome || '-'}</strong>
+            </div>
+            <div>
+              <span>Tabela reajustada</span>
+              <strong>{comparativo.tabelaReajusteNome || '-'}</strong>
+            </div>
+            <div>
+              <span>Antiga acima/igual NTT</span>
+              <strong>{comparativo.antigoAcimaAntt || 0} acima · {comparativo.antigoIgualAntt || 0} igual</strong>
+            </div>
+            <div>
+              <span>Reajuste abaixo/igual NTT</span>
+              <strong>{comparativo.reajusteAbaixoAntt || 0} abaixo · {comparativo.reajusteIgualAntt || 0} igual</strong>
+            </div>
+            <div>
+              <span>Rotas ajustadas até NTT</span>
+              <strong>{comparativo.ajustadasAteAntt || 0}</strong>
+            </div>
+            <div>
+              <span>Sem paridade de rota</span>
+              <strong>{comparativo.rotasNovas || 0} novas · {comparativo.rotasSemReajuste || 0} sem reajuste</strong>
+            </div>
+          </div>
+
+          {!comparativo.comparadasAntt && (
+            <div className="hint-box compact top-space-sm">
+              A coluna NTT só será preenchida quando existir uma tabela ANTT/NTT cadastrada no módulo de Lotação com a mesma chave da rota.
+            </div>
+          )}
+
+          <div className="section-row compact-top top-space-sm">
+            <div>
+              <div className="panel-title small-title">Visão rota a rota para enviar aos transportadores</div>
+              <p className="compact">Mostra valor anterior, NTT, valor reajustado e o percentual de aumento por rota.</p>
+            </div>
+            <span className="status-pill dark">{detalhes.length} linhas</span>
+          </div>
+
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>Origem</th>
+                  <th>Destino</th>
+                  <th>Tipo</th>
+                  <th>KM</th>
+                  <th>Valor anterior</th>
+                  <th>NTT</th>
+                  <th>Valor reajuste</th>
+                  <th>Diferença</th>
+                  <th>% aumento</th>
+                  <th>Anterior x NTT</th>
+                  <th>Reajuste x NTT</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detalhes.map((item) => (
+                  <tr key={item.id}>
+                    <td>{item.origem}/{item.ufOrigem}</td>
+                    <td>{item.destino}/{item.ufDestino}</td>
+                    <td>{item.tipo}</td>
+                    <td>{item.km || '-'}</td>
+                    <td>{formatarMoeda(item.valorAntigo)}</td>
+                    <td>{item.valorAntt === null || item.valorAntt === undefined ? '-' : formatarMoeda(item.valorAntt)}</td>
+                    <td>{formatarMoeda(item.valorNovo)}</td>
+                    <td className={classeReajuste(item.status)}>{formatarMoeda(item.diferenca)}</td>
+                    <td className={classeReajuste(item.status)}><strong>{percentualSeguro(item.variacao)}</strong></td>
+                    <td className={classeAntt(item.statusAntigoAntt)}>{item.valorAntt === null || item.valorAntt === undefined ? '-' : percentualSeguro(item.variacaoAntigoAntt)}</td>
+                    <td className={classeAntt(item.statusNovoAntt)}>{item.valorAntt === null || item.valorAntt === undefined ? '-' : percentualSeguro(item.variacaoNovoAntt)}</td>
+                    <td><span className="status-pill">{item.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {(comparativo.rotasNovas > 0 || comparativo.rotasSemReajuste > 0) && (
+            <div className="hint-box compact top-space-sm">
+              Atenção: {comparativo.rotasNovas || 0} rota(s) existem apenas na tabela reajustada e {comparativo.rotasSemReajuste || 0} rota(s) da antiga não vieram na reajustada. Essas rotas não entram no percentual de aumento.
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -643,6 +871,8 @@ export default function LotacaoPage() {
   const [feedback, setFeedback] = useState('');
   const [fonteDados, setFonteDados] = useState('carregando');
   const [diagnostico, setDiagnostico] = useState(null);
+  const [tabelaReajuste, setTabelaReajuste] = useState(null);
+  const [tabelaAntigaReajusteId, setTabelaAntigaReajusteId] = useState('');
 
   const usarSupabase = lotacaoSupabaseConfigurado();
   const supabaseInfo = obterInfoLotacaoSupabase();
@@ -701,6 +931,14 @@ export default function LotacaoPage() {
     }
   }, [transportadoras, selecionadaId]);
 
+
+  useEffect(() => {
+    if (!tabelaAntigaReajusteId && transportadoras[0]) setTabelaAntigaReajusteId(transportadoras[0].id);
+    if (tabelaAntigaReajusteId && !transportadoras.some((item) => item.id === tabelaAntigaReajusteId)) {
+      setTabelaAntigaReajusteId(transportadoras[0]?.id || '');
+    }
+  }, [transportadoras, tabelaAntigaReajusteId]);
+
   const comparativoMelhorPreco = useMemo(
     () => compararComReferencia(tabelaSelecionada, referenciaMenorPreco),
     [tabelaSelecionada, referenciaMenorPreco]
@@ -709,6 +947,20 @@ export default function LotacaoPage() {
     () => analisarTabelaVersusAntt(tabelaSelecionada, antt),
     [tabelaSelecionada, antt]
   );
+
+
+  const tabelaAntigaReajuste = useMemo(
+    () => transportadoras.find((item) => item.id === tabelaAntigaReajusteId) || transportadoras[0] || null,
+    [transportadoras, tabelaAntigaReajusteId]
+  );
+
+  const comparativoReajuste = useMemo(() => {
+    try {
+      return compararTabelaReajuste(tabelaAntigaReajuste, tabelaReajuste, antt);
+    } catch (error) {
+      return { erro: error.message || String(error), detalhes: [] };
+    }
+  }, [tabelaAntigaReajuste, tabelaReajuste, antt]);
 
   const importar = async ({ tipo, file, nome }) => {
     setCarregando(true);
@@ -737,6 +989,33 @@ export default function LotacaoPage() {
       );
     } catch (error) {
       setFeedback(error.message || 'Erro ao importar tabela de lotação.');
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+
+  const importarReajuste = async ({ file, nome, tabelaAntigaId }) => {
+    setCarregando(true);
+    setFeedback('');
+    try {
+      const antiga = transportadoras.find((item) => item.id === tabelaAntigaId) || transportadoras[0];
+      const nomePadrao = nome || `${antiga?.nome || 'Tabela'} reajustada`;
+      const tabela = await importarTabelaLotacao(file, { tipo: 'TRANSPORTADORA', nomePadrao });
+      setTabelaReajuste({
+        ...tabela,
+        nome: nomePadrao,
+        tipo: 'TRANSPORTADORA',
+        modelo: 'REAJUSTE TEMPORÁRIO / LOTAÇÃO',
+      });
+      setTabelaAntigaReajusteId(tabelaAntigaId || antiga?.id || '');
+      setFeedback(
+        `Tabela de reajuste ${nomePadrao} carregada para comparação temporária com ${antiga?.nome || 'a tabela antiga'}. ` +
+        `Foram lidas ${tabela.linhas.length} rotas válidas (${tabela.rotasUnicas || tabela.linhas.length} rotas únicas). ` +
+        'Ela não foi salva no Supabase nem substituiu a tabela oficial.'
+      );
+    } catch (error) {
+      setFeedback(error.message || 'Erro ao importar tabela de reajuste.');
     } finally {
       setCarregando(false);
     }
@@ -864,6 +1143,21 @@ export default function LotacaoPage() {
           carregando={carregando}
         />
       </div>
+
+
+      <ComparativoReajusteLotacao
+        transportadoras={transportadoras}
+        carregando={carregando}
+        tabelaAntigaId={tabelaAntigaReajusteId}
+        onTabelaAntigaChange={setTabelaAntigaReajusteId}
+        onImportar={importarReajuste}
+        tabelaReajuste={tabelaReajuste}
+        onLimpar={() => {
+          setTabelaReajuste(null);
+          setFeedback('Comparativo de reajuste limpo. Nenhuma tabela oficial foi alterada.');
+        }}
+        comparativo={comparativoReajuste}
+      />
 
       <RankingMelhores ranking={ranking} />
 

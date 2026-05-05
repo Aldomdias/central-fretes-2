@@ -40,6 +40,41 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function faixaLabel(cotacao = {}, peso = 0) {
+  const min = toNumber(cotacao.pesoMin);
+  const maxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
+  const max = maxRaw === '' || maxRaw === null || maxRaw === undefined ? 0 : toNumber(maxRaw);
+  if (min || max) {
+    if (!max || max >= 999999) return `${min.toLocaleString('pt-BR')}+ kg`;
+    return `${min.toLocaleString('pt-BR')} a ${max.toLocaleString('pt-BR')} kg`;
+  }
+  const p = toNumber(peso);
+  if (p <= 2) return '0 a 2 kg';
+  if (p <= 5) return '2 a 5 kg';
+  if (p <= 10) return '5 a 10 kg';
+  if (p <= 20) return '10 a 20 kg';
+  if (p <= 30) return '20 a 30 kg';
+  if (p <= 50) return '30 a 50 kg';
+  if (p <= 70) return '50 a 70 kg';
+  if (p <= 100) return '70 a 100 kg';
+  return '100+ kg';
+}
+
+function percentualReducaoNecessaria(valorSimulado, referencia) {
+  const simulado = toNumber(valorSimulado);
+  const ref = toNumber(referencia);
+  if (simulado <= 0 || ref <= 0 || simulado <= ref) return 0;
+  return ((simulado - ref) / simulado) * 100;
+}
+
+function getReferenciaCompetitiva({ valorRealizado, lider, rankingCalculado }) {
+  const realizado = toNumber(valorRealizado);
+  const liderTotal = rankingCalculado ? toNumber(lider?.total) : 0;
+  if (liderTotal > 0 && realizado > 0) return Math.min(realizado, liderTotal);
+  if (liderTotal > 0) return liderTotal;
+  return realizado;
+}
+
 function sleepFrame() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -155,6 +190,65 @@ function gerarVariantesCidade(cidade = '') {
 }
 
 export function resolverIbgeLocal(cidadeRaw, ufRaw, mapasIbge) {
+  return resolverMunicipioLocal(cidadeRaw, ufRaw, '', mapasIbge).ibge;
+}
+
+function primeiroValor(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+}
+
+function resolverIbgeOrigemDaRota(rota = {}, origem = {}, mapasIbge) {
+  const informado = onlyDigits(primeiroValor(
+    rota.ibgeOrigem, rota.ibge_origem, rota.codigoIbgeOrigem, rota.codigoMunicipioOrigem,
+    origem.ibgeOrigem, origem.codigoIbgeOrigem, origem.codigoMunicipioOrigem
+  )).slice(0, 7);
+  if (informado) return informado;
+
+  const cidadeOrigem = primeiroValor(origem.cidade, origem.origem, rota.cidadeOrigem, rota.origem);
+  const ufOrigem = primeiroValor(origem.uf, origem.ufOrigem, rota.ufOrigem, rota.uf_origem);
+  return resolverIbgeLocal(cidadeOrigem, ufOrigem, mapasIbge);
+}
+
+function resolverIbgeDestinoDaRota(rota = {}, mapasIbge) {
+  const informado = onlyDigits(primeiroValor(
+    rota.ibgeDestino, rota.ibge_destino, rota.codigoIbgeDestino, rota.codigoMunicipioDestino,
+    rota.codigoMunicipioCompletoDestino, rota.codigo_municipio_completo, rota.codigo_municipio_destino,
+    rota.ibge, rota.codigoIbge, rota.codIbge
+  )).slice(0, 7);
+  if (informado) return informado;
+
+  // Fallback importante para tabelas B2C/CEP: algumas rotas quebradas por faixa de CEP
+  // chegam sem IBGE, mas com cidade/UF ou nome da rota. Quando isso acontece, resolvemos
+  // pelo cadastro de municípios antes de considerar a rota como fora da malha.
+  const cidadeDestino = primeiroValor(
+    rota.cidadeDestino, rota.cidade_destino, rota.destino, rota.municipioDestino, rota.municipio_destino,
+    rota.nomeMunicipio, rota.nome_municipio, rota.nomeRota, rota.nome_rota, rota.rota
+  );
+  const ufDestino = primeiroValor(rota.ufDestino, rota.uf_destino, rota.uf, rota.estadoDestino, rota.estado_destino);
+  return resolverIbgeLocal(cidadeDestino, ufDestino, mapasIbge);
+}
+
+function rotaTemCepSemIbge(rota = {}) {
+  const ibge = onlyDigits(primeiroValor(rota.ibgeDestino, rota.ibge_destino, rota.codigoIbgeDestino, rota.codigoMunicipioDestino));
+  const cepInicial = onlyDigits(primeiroValor(rota.cepInicial, rota.cep_inicial, rota.cepInicio, rota.cep_inicio));
+  const cepFinal = onlyDigits(primeiroValor(rota.cepFinal, rota.cep_final, rota.cepFim, rota.cep_fim));
+  return !ibge && Boolean(cepInicial || cepFinal);
+}
+
+function municipiosCompatíveis(cidadeA = '', cidadeB = '') {
+  const a = normalizeKey(cidadeA);
+  const b = normalizeKey(cidadeB);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 5 && b.includes(a)) return true;
+  if (b.length >= 5 && a.includes(b)) return true;
+  return gerarVariantesCidade(a).some((variante) => variante === b || gerarVariantesCidade(b).includes(variante));
+}
+
+function resolverPorCidadeUf(cidadeRaw, ufRaw, mapasIbge) {
   const parsed = splitCidadeUf(cidadeRaw, ufRaw);
   const cidadeKey = normalizeKey(parsed.cidade);
   const uf = parsed.uf || String(ufRaw || '').trim().toUpperCase();
@@ -171,6 +265,31 @@ export function resolverIbgeLocal(cidadeRaw, ufRaw, mapasIbge) {
   }
 
   return '';
+}
+
+function resolverMunicipioLocal(cidadeRaw, ufRaw, ibgeRaw, mapasIbge) {
+  const parsed = splitCidadeUf(cidadeRaw, ufRaw);
+  const ibgeInformado = onlyDigits(ibgeRaw).slice(0, 7);
+  const ibgePorCidade = resolverPorCidadeUf(parsed.cidade, parsed.uf, mapasIbge);
+  const municipioInformado = ibgeInformado ? mapasIbge?.porIbge?.get(ibgeInformado) : null;
+
+  // A base realizada às vezes vem com UF trocada ou com a coluna IBGE deslocada.
+  // Por isso, quando o nome da cidade não bate com o IBGE informado, a cidade/UF normalizada
+  // vira a fonte principal. Isso evita exemplos como ITAJAI/DF recebendo IBGE de FORTALEZA.
+  let ibge = '';
+  if (ibgePorCidade && ibgeInformado && municipioInformado && !municipiosCompatíveis(parsed.cidade, municipioInformado.cidade)) {
+    ibge = ibgePorCidade;
+  } else {
+    ibge = ibgeInformado || ibgePorCidade;
+  }
+
+  const municipioFinal = ibge ? mapasIbge?.porIbge?.get(ibge) : null;
+  return {
+    ibge,
+    cidade: parsed.cidade || municipioFinal?.cidade || '',
+    uf: municipioFinal?.uf || parsed.uf || getUfByIbge(ibge),
+    corrigidoPorCidade: Boolean(ibgePorCidade && ibgeInformado && ibgePorCidade !== ibgeInformado),
+  };
 }
 
 function getCompetencia(dataEmissao = '', fallback = '') {
@@ -199,10 +318,10 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
   const competenciaSelecionada = String(options.competencia || '').trim();
 
   const rows = (registros || []).map((row) => {
-    const origem = splitCidadeUf(row.cidadeOrigem, row.ufOrigem);
-    const destino = splitCidadeUf(row.cidadeDestino, row.ufDestino);
-    const ibgeOrigem = row.ibgeOrigem || resolverIbgeLocal(origem.cidade, origem.uf, mapasIbge);
-    const ibgeDestino = row.ibgeDestino || resolverIbgeLocal(destino.cidade, destino.uf, mapasIbge);
+    const origem = resolverMunicipioLocal(row.cidadeOrigem, row.ufOrigem, row.ibgeOrigem, mapasIbge);
+    const destino = resolverMunicipioLocal(row.cidadeDestino, row.ufDestino, row.ibgeDestino, mapasIbge);
+    const ibgeOrigem = origem.ibge;
+    const ibgeDestino = destino.ibge;
     const pesoDeclarado = toNumberRealizado(row.pesoDeclarado);
     const pesoCubado = toNumberRealizado(row.pesoCubado);
     const metrosCubicos = toNumberRealizado(row.metrosCubicos);
@@ -221,6 +340,7 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
       numeroCte: String(row.numeroCte || '').trim(),
       transportadora: normalizeTextRealizado(row.transportadora),
       cnpjTransportadora: String(row.cnpjTransportadora || '').replace(/\D/g, ''),
+      tomadorServico: normalizeTextRealizado(row.tomadorServico || row.raw?.tomadorServico || ''),
       cidadeOrigem: origem.cidade,
       ufOrigem: origem.uf,
       ibgeOrigem,
@@ -239,6 +359,8 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
       canalOriginal: row.canal || row.canalVendas || row.canais || '',
       arquivoOrigem: row.arquivoOrigem || '',
       ibgeOk: Boolean(ibgeOrigem && ibgeDestino),
+      ibgeCorrigidoOrigem: Boolean(origem.corrigidoPorCidade),
+      ibgeCorrigidoDestino: Boolean(destino.corrigidoPorCidade),
       createdAt: new Date().toISOString(),
     };
   }).filter((row) => {
@@ -266,25 +388,112 @@ function getUfByIbge(ibge) {
   return UF_POR_CODIGO[onlyDigits(ibge).slice(0, 2)] || '';
 }
 
+const taxasIndexCache = new WeakMap();
+const cotacoesIndexCache = new WeakMap();
+
 function getTaxaDestino(origem, ibgeDestino) {
-  return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino || '') === String(ibgeDestino || '')) || {};
+  if (!origem) return {};
+  let index = taxasIndexCache.get(origem);
+  if (!index) {
+    index = new Map();
+    (origem.taxasEspeciais || []).forEach((item) => {
+      const key = String(item.ibgeDestino || '').replace(/\D/g, '');
+      if (key && !index.has(key)) index.set(key, item);
+    });
+    taxasIndexCache.set(origem, index);
+  }
+  return index.get(String(ibgeDestino || '').replace(/\D/g, '')) || {};
 }
 
-function getCotacao(origem, rotaNome, peso) {
-  const rotaKey = normalizeKey(rotaNome);
-  return (origem.cotacoes || []).find((cotacao) => {
-    const mesmaRota = normalizeKey(cotacao.rota) === rotaKey;
-    const pesoMin = toNumber(cotacao.pesoMin);
-    const pesoMaxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
-    const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined ? Number.POSITIVE_INFINITY : toNumber(pesoMaxRaw);
-    return mesmaRota && peso >= pesoMin && peso <= pesoMax;
+function normalizarCotacaoParaIndice(cotacao = {}) {
+  const pesoMin = toNumber(cotacao.pesoMin);
+  const pesoMaxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
+  const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined ? Number.POSITIVE_INFINITY : toNumber(pesoMaxRaw);
+  return { ...cotacao, pesoMinIndex: pesoMin, pesoMaxIndex: pesoMax };
+}
+
+function getCotacoesPorRota(origem) {
+  if (!origem) return new Map();
+  let index = cotacoesIndexCache.get(origem);
+  if (index) return index;
+
+  index = new Map();
+  (origem.cotacoes || []).forEach((cotacao) => {
+    const rotaKey = normalizeKey(cotacao.rota || cotacao.nomeRota || cotacao.destino || '');
+    const keys = new Set();
+    if (rotaKey) keys.add(rotaKey);
+    if (!rotaKey || ['GERAL', 'TODOS', 'TODAS', 'TODOS DESTINOS', 'TODAS ROTAS'].includes(rotaKey)) keys.add('__GERAL__');
+
+    keys.forEach((key) => {
+      const list = index.get(key) || [];
+      list.push(normalizarCotacaoParaIndice(cotacao));
+      index.set(key, list);
+    });
   });
+
+  index.forEach((list) => list.sort((a, b) => a.pesoMinIndex - b.pesoMinIndex || a.pesoMaxIndex - b.pesoMaxIndex));
+  cotacoesIndexCache.set(origem, index);
+  return index;
+}
+
+function montarChavesCotacaoDaRota(rota = {}) {
+  const valores = [
+    rota.nomeRota,
+    rota.nome_rota,
+    rota.rota,
+    rota.cidadeDestino,
+    rota.cidade_destino,
+    rota.destino,
+    rota.municipioDestino,
+    rota.municipio_destino,
+    rota.ibgeDestino,
+    rota.ibge_destino,
+  ];
+
+  const chaves = [];
+  valores.forEach((value) => {
+    const key = normalizeKey(value);
+    if (key && !chaves.includes(key)) chaves.push(key);
+  });
+  chaves.push('__GERAL__');
+  return chaves;
+}
+
+function cotacaoServeParaPeso(cotacao = {}, peso = 0) {
+  return peso >= cotacao.pesoMinIndex && peso <= cotacao.pesoMaxIndex;
+}
+
+function getCotacao(origem, rota, peso) {
+  const index = getCotacoesPorRota(origem);
+  const rotaKeys = montarChavesCotacaoDaRota(rota);
+
+  for (const rotaKey of rotaKeys) {
+    const candidatos = index.get(rotaKey) || [];
+    for (const cotacao of candidatos) {
+      if (cotacaoServeParaPeso(cotacao, peso)) return cotacao;
+    }
+  }
+
+  // Fallback seguro para bases antigas em que a cotação foi gravada com variação no nome da rota.
+  // Em tabelas B2C quebradas por CEP, o nome da rota pode vir como "Sao Paulo 01000-000 a 01999-999"
+  // e a cotação como "Sao Paulo". Por isso comparamos por inclusão entre as chaves normalizadas.
+  for (const rotaKey of rotaKeys.filter((key) => key !== '__GERAL__')) {
+    for (const [key, list] of index.entries()) {
+      if (!key || key === '__GERAL__') continue;
+      if (!(key === rotaKey || key.includes(rotaKey) || rotaKey.includes(key))) continue;
+      for (const cotacao of list) {
+        if (cotacaoServeParaPeso(cotacao, peso)) return cotacao;
+      }
+    }
+  }
+
+  return null;
 }
 
 function calcularItemTabela({ transportadora, origem, rota, cte }) {
   const peso = Math.max(toNumber(cte.peso), toNumber(cte.pesoCubado), toNumber(cte.pesoDeclarado));
   const valorNF = toNumber(cte.valorNF);
-  const cotacao = getCotacao(origem, rota.nomeRota, peso);
+  const cotacao = getCotacao(origem, rota, peso);
   if (!cotacao) return null;
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
@@ -311,6 +520,10 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
     chaveRotaIbge: `${rota.ibgeOrigem}-${rota.ibgeDestino}`,
     rotaNome: rota.nomeRota,
     prazo: toNumber(rota.prazoEntregaDias),
+    faixaPeso: faixaLabel(cotacao, peso),
+    pesoMinFaixa: toNumber(cotacao.pesoMin),
+    pesoMaxFaixa: toNumber(cotacao.pesoMax ?? cotacao.pesoLimite),
+    tipoCalculo,
     total: calculo.total,
     percentualSobreNF: valorNF > 0 ? (calculo.total / valorNF) * 100 : 0,
     detalhes: {
@@ -325,6 +538,9 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
         percentualAplicado: toNumber(cotacao.percentual || cotacao.fretePercentual),
         valorFixoAplicado: toNumber(cotacao.valorFixo || cotacao.taxaAplicada),
         rsKgAplicado: toNumber(cotacao.rsKg),
+        faixaPeso: faixaLabel(cotacao, peso),
+        pesoMin: toNumber(cotacao.pesoMin),
+        pesoMax: toNumber(cotacao.pesoMax ?? cotacao.pesoLimite),
         pesoLimite: toNumber(cotacao.pesoMax || cotacao.pesoLimite),
         excessoKg: toNumber(cotacao.excesso || cotacao.excessoPeso),
       },
@@ -336,7 +552,7 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
 export function construirIndiceFretesPorRota(transportadoras = [], municipios = []) {
   const mapasIbge = montarMapasIbge(municipios);
   const index = new Map();
-  const stats = { transportadoras: 0, origens: 0, rotas: 0, rotasComIbge: 0 };
+  const stats = { transportadoras: 0, origens: 0, rotas: 0, rotasComIbge: 0, rotasSemIbge: 0, rotasCepSemIbge: 0, chavesRota: 0 };
 
   (transportadoras || []).forEach((transportadora) => {
     if (!transportadora?.nome) return;
@@ -350,9 +566,13 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
 
       (origem.rotas || []).forEach((rota) => {
         stats.rotas += 1;
-        const ibgeOrigem = onlyDigits(rota.ibgeOrigem) || ibgeOrigemFallback;
-        const ibgeDestino = onlyDigits(rota.ibgeDestino);
-        if (!ibgeOrigem || !ibgeDestino) return;
+        const ibgeOrigem = resolverIbgeOrigemDaRota(rota, origem, mapasIbge) || ibgeOrigemFallback;
+        const ibgeDestino = resolverIbgeDestinoDaRota(rota, mapasIbge);
+        if (!ibgeOrigem || !ibgeDestino) {
+          stats.rotasSemIbge += 1;
+          if (rotaTemCepSemIbge(rota)) stats.rotasCepSemIbge += 1;
+          return;
+        }
         stats.rotasComIbge += 1;
         const key = `${canal}|${ibgeOrigem}-${ibgeDestino}`;
         const list = index.get(key) || [];
@@ -362,6 +582,7 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
     });
   });
 
+  stats.chavesRota = index.size;
   return { index, stats };
 }
 
@@ -388,6 +609,8 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
   const destinos = new Set();
   let transportadoraEncontrada = '';
   let rotasSemIbge = 0;
+  let rotasCepSemIbge = 0;
+  let totalRotasCadastradas = 0;
 
   (transportadoras || []).forEach((transportadora) => {
     if (!transportadoraMatch(transportadora?.nome, nomeTransportadora, { exato: true })) return;
@@ -403,10 +626,12 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
       const ibgeOrigemFallback = resolverIbgeLocal(origemCidade, origemUfPelaRota, mapasIbge);
 
       (origem.rotas || []).forEach((rota) => {
-        const ibgeOrigem = onlyDigits(rota.ibgeOrigem) || ibgeOrigemFallback;
-        const ibgeDestino = onlyDigits(rota.ibgeDestino);
+        totalRotasCadastradas += 1;
+        const ibgeOrigem = resolverIbgeOrigemDaRota(rota, origem, mapasIbge) || ibgeOrigemFallback;
+        const ibgeDestino = resolverIbgeDestinoDaRota(rota, mapasIbge);
         if (!ibgeOrigem || !ibgeDestino) {
           rotasSemIbge += 1;
+          if (rotaTemCepSemIbge(rota)) rotasCepSemIbge += 1;
           return;
         }
         const chaveRota = `${ibgeOrigem}-${ibgeDestino}`;
@@ -428,37 +653,238 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
     origens: [...origens].filter(Boolean).sort((a, b) => a.localeCompare(b, 'pt-BR')),
     destinos: [...destinos].filter(Boolean).sort((a, b) => a.localeCompare(b, 'pt-BR')),
     totalRotas: routeKeys.size,
+    totalRotasCadastradas,
     rotasSemIbge,
+    rotasCepSemIbge,
   };
 }
 
-function montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalculado }) {
-  const impacto = toNumber(cte.valorCte) - escolhido.total;
+function montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado }) {
+  const valorRealizado = toNumber(cte.valorCte);
+  const valorSimulado = toNumber(escolhido.total);
+  const valorNF = toNumber(cte.valorNF);
+  const impacto = valorRealizado - valorSimulado;
+  const economizaria = impacto > 0.009;
+  const aumento = impacto < -0.009;
+  const ganhaRanking = rankingCalculado ? ranking === 1 : true;
+  const referenciaCompetitiva = getReferenciaCompetitiva({ valorRealizado, lider, rankingCalculado });
+  const desvioCompetitivo = valorSimulado - referenciaCompetitiva;
+  const precisaReduzirValor = desvioCompetitivo > 0.009 ? desvioCompetitivo : 0;
+  const precisaReduzirPercentual = percentualReducaoNecessaria(valorSimulado, referenciaCompetitiva);
+
+  // Regra de negócio do realizado local:
+  // o sistema só aloca a carga para a transportadora simulada quando ela reduz custo.
+  // No modo completo, além de reduzir custo, ela também precisa ser o menor preço entre as tabelas.
+  const ganharia = Boolean(economizaria && ganhaRanking);
+  const savingPotencial = ganharia ? impacto : 0;
+  const valorRealizadoAlocado = ganharia ? valorRealizado : 0;
+  const valorSimuladoAlocado = ganharia ? valorSimulado : 0;
+  const valorNfAlocado = ganharia ? valorNF : 0;
+
+  let motivoAlocacao = 'Sairia pela transportadora: gera saving vs realizado';
+  if (!economizaria && aumento) motivoAlocacao = 'Não sairia: valor simulado fica acima do realizado';
+  else if (!economizaria) motivoAlocacao = 'Não sairia: valor simulado empata com o realizado';
+  else if (rankingCalculado && !ganhaRanking) motivoAlocacao = 'Não sairia: existe concorrente com menor preço na tabela';
+
   return {
     id: cte.chaveCte,
     chaveCte: cte.chaveCte,
     numeroCte: cte.numeroCte,
+    competencia: cte.competencia || getCompetencia(cte.dataEmissao, ''),
     emissao: cte.dataEmissao,
     transportadoraRealizada: cte.transportadora,
     transportadoraSimulada: escolhido.transportadora,
     origem: cte.cidadeOrigem,
+    ufOrigem: cte.ufOrigem,
     cidadeDestino: cte.cidadeDestino,
     ufDestino: cte.ufDestino,
+    rota: `${cte.cidadeOrigem}/${cte.ufOrigem || ''} → ${cte.cidadeDestino}/${cte.ufDestino || ''}`,
+    rotaNome: escolhido.rotaNome || cte.cidadeDestino,
+    chaveRotaIbge: cte.chaveRotaIbge,
     canal: cte.canal,
     peso: cte.peso,
-    valorNF: cte.valorNF,
-    valorRealizado: cte.valorCte,
-    valorSimulado: escolhido.total,
+    faixaPeso: escolhido.faixaPeso || escolhido.detalhes?.frete?.faixaPeso || faixaLabel({}, cte.peso),
+    pesoMinFaixa: escolhido.pesoMinFaixa || escolhido.detalhes?.frete?.pesoMin || 0,
+    pesoMaxFaixa: escolhido.pesoMaxFaixa || escolhido.detalhes?.frete?.pesoMax || 0,
+    tipoCalculo: escolhido.tipoCalculo || escolhido.detalhes?.frete?.tipoCalculo || '',
+    prazo: escolhido.prazo || 0,
+    valorNF,
+    valorRealizado,
+    valorSimulado,
+    referenciaCompetitiva,
+    desvioCompetitivo,
+    precisaReduzirValor,
+    precisaReduzirPercentual,
     impacto,
+    economiaVsRealizado: economizaria ? impacto : 0,
+    aumentoVsRealizado: aumento ? Math.abs(impacto) : 0,
+    savingPotencial,
+    valorRealizadoAlocado,
+    valorSimuladoAlocado,
+    valorNfAlocado,
+    resultadoImpacto: economizaria ? 'Reduz custo vs realizado' : (aumento ? 'Fica acima do realizado' : 'Empata com realizado'),
+    motivoAlocacao,
+    economizaria,
     ranking,
     rankingCalculado,
+    ganhaRanking,
     ganharia,
     liderTransportadora: lider?.transportadora || '',
     freteSubstituta: rankingCalculado && ranking === 1 ? 0 : (lider?.total || 0),
-    percentualRealizado: cte.valorNF > 0 ? (cte.valorCte / cte.valorNF) * 100 : 0,
-    percentualSimulado: cte.valorNF > 0 ? (escolhido.total / cte.valorNF) * 100 : 0,
+    percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
+    percentualSimulado: valorNF > 0 ? (valorSimulado / valorNF) * 100 : 0,
     detalhes: escolhido.detalhes,
   };
+}
+
+function novoGrupoSimulacao(key, extras = {}) {
+  return {
+    chave: key || 'Não informado',
+    ctes: 0,
+    ctesGanharia: 0,
+    ctesNaoAlocados: 0,
+    valorRealizado: 0,
+    valorSimulado: 0,
+    valorNF: 0,
+    valorRealizadoGanhador: 0,
+    valorSimuladoGanhador: 0,
+    valorNfGanhador: 0,
+    savingPotencial: 0,
+    aumentoIgnorado: 0,
+    precisaReduzirValor: 0,
+    referenciaCompetitiva: 0,
+    valorSimuladoNaoAlocado: 0,
+    valorRealizadoNaoAlocado: 0,
+    valorNfNaoAlocado: 0,
+    ctesComAjuste: 0,
+    ...extras,
+  };
+}
+
+function acumularGrupo(grupo, detalhe) {
+  grupo.ctes += 1;
+  grupo.valorRealizado += toNumber(detalhe.valorRealizado);
+  grupo.valorSimulado += toNumber(detalhe.valorSimulado);
+  grupo.valorNF += toNumber(detalhe.valorNF);
+
+  if (detalhe.ganharia) {
+    grupo.ctesGanharia += 1;
+    grupo.valorRealizadoGanhador += toNumber(detalhe.valorRealizadoAlocado);
+    grupo.valorSimuladoGanhador += toNumber(detalhe.valorSimuladoAlocado);
+    grupo.valorNfGanhador += toNumber(detalhe.valorNfAlocado);
+    grupo.savingPotencial += toNumber(detalhe.savingPotencial);
+  } else {
+    grupo.ctesNaoAlocados += 1;
+    grupo.aumentoIgnorado += toNumber(detalhe.aumentoVsRealizado);
+    grupo.precisaReduzirValor += toNumber(detalhe.precisaReduzirValor);
+    grupo.referenciaCompetitiva += toNumber(detalhe.referenciaCompetitiva);
+    grupo.valorSimuladoNaoAlocado += toNumber(detalhe.valorSimulado);
+    grupo.valorRealizadoNaoAlocado += toNumber(detalhe.valorRealizado);
+    grupo.valorNfNaoAlocado += toNumber(detalhe.valorNF);
+    if (toNumber(detalhe.precisaReduzirValor) > 0.009) grupo.ctesComAjuste += 1;
+  }
+}
+
+function statusFornecedorGrupo(grupo) {
+  if (!grupo.ctes) return 'Sem volume';
+  if (grupo.ctesGanharia && !grupo.ctesComAjuste) return 'Competitivo';
+  if (grupo.ctesGanharia && grupo.ctesComAjuste) return 'Parcial: manter ganhas e ajustar perdidas';
+  if (!grupo.ctesGanharia && grupo.ctesComAjuste) return 'Precisa reduzir para ganhar volume';
+  return 'Sem oportunidade de alocação';
+}
+
+function finalizarGrupo(grupo) {
+  const reducaoSugeridaPercentual = grupo.valorSimuladoNaoAlocado > 0
+    ? (grupo.precisaReduzirValor / grupo.valorSimuladoNaoAlocado) * 100
+    : 0;
+  const referenciaMediaNaoAlocada = grupo.ctesNaoAlocados > 0 ? grupo.referenciaCompetitiva / grupo.ctesNaoAlocados : 0;
+  const simuladoMedioNaoAlocado = grupo.ctesNaoAlocados > 0 ? grupo.valorSimuladoNaoAlocado / grupo.ctesNaoAlocados : 0;
+  const reducaoMediaPorCte = grupo.ctesComAjuste > 0 ? grupo.precisaReduzirValor / grupo.ctesComAjuste : 0;
+  const ganhoMedioPorCte = grupo.ctesGanharia > 0 ? grupo.savingPotencial / grupo.ctesGanharia : 0;
+
+  return {
+    ...grupo,
+    percentualAlocacao: grupo.ctes ? (grupo.ctesGanharia / grupo.ctes) * 100 : 0,
+    percentualFreteRealizado: grupo.valorNF > 0 ? (grupo.valorRealizado / grupo.valorNF) * 100 : 0,
+    percentualFreteSimulado: grupo.valorNF > 0 ? (grupo.valorSimulado / grupo.valorNF) * 100 : 0,
+    percentualFreteGanhador: grupo.valorNfGanhador > 0 ? (grupo.valorSimuladoGanhador / grupo.valorNfGanhador) * 100 : 0,
+    percentualFreteNaoAlocado: grupo.valorNfNaoAlocado > 0 ? (grupo.valorSimuladoNaoAlocado / grupo.valorNfNaoAlocado) * 100 : 0,
+    reducaoSugeridaPercentual,
+    referenciaMediaNaoAlocada,
+    simuladoMedioNaoAlocado,
+    reducaoMediaPorCte,
+    ganhoMedioPorCte,
+    ticketMedioRealizado: grupo.ctes ? grupo.valorRealizado / grupo.ctes : 0,
+    ticketMedioSimulado: grupo.ctes ? grupo.valorSimulado / grupo.ctes : 0,
+    potencialCtesAjuste: grupo.ctesComAjuste,
+    potencialVolumeNaoAlocado: grupo.ctesNaoAlocados,
+    statusFornecedor: statusFornecedorGrupo(grupo),
+  };
+}
+
+function gerarAnalisesGerenciais(detalhes = []) {
+  const porMesMap = new Map();
+  const porRotaMap = new Map();
+  const porFaixaMap = new Map();
+  const porRotaFaixaMap = new Map();
+
+  detalhes.forEach((detalhe) => {
+    const mes = detalhe.competencia || String(detalhe.emissao || '').slice(0, 7) || 'Sem mês';
+    const rota = detalhe.rota || `${detalhe.origem} → ${detalhe.cidadeDestino}/${detalhe.ufDestino}`;
+    const faixa = detalhe.faixaPeso || faixaLabel({}, detalhe.peso);
+    const rotaFaixaKey = `${rota} | ${faixa}`;
+
+    if (!porMesMap.has(mes)) porMesMap.set(mes, novoGrupoSimulacao(mes, { mes }));
+    if (!porRotaMap.has(rota)) porRotaMap.set(rota, novoGrupoSimulacao(rota, { rota, origem: detalhe.origem, ufOrigem: detalhe.ufOrigem, destino: detalhe.cidadeDestino, ufDestino: detalhe.ufDestino }));
+    if (!porFaixaMap.has(faixa)) porFaixaMap.set(faixa, novoGrupoSimulacao(faixa, { faixaPeso: faixa }));
+    if (!porRotaFaixaMap.has(rotaFaixaKey)) porRotaFaixaMap.set(rotaFaixaKey, novoGrupoSimulacao(rotaFaixaKey, { rota, faixaPeso: faixa, origem: detalhe.origem, ufOrigem: detalhe.ufOrigem, destino: detalhe.cidadeDestino, ufDestino: detalhe.ufDestino }));
+
+    acumularGrupo(porMesMap.get(mes), detalhe);
+    acumularGrupo(porRotaMap.get(rota), detalhe);
+    acumularGrupo(porFaixaMap.get(faixa), detalhe);
+    acumularGrupo(porRotaFaixaMap.get(rotaFaixaKey), detalhe);
+  });
+
+  const porMes = [...porMesMap.values()].map(finalizarGrupo).sort((a, b) => String(a.mes).localeCompare(String(b.mes)));
+  const porRota = [...porRotaMap.values()].map(finalizarGrupo).sort((a, b) => b.savingPotencial - a.savingPotencial || b.ctes - a.ctes);
+  const porFaixaPeso = [...porFaixaMap.values()].map(finalizarGrupo).sort((a, b) => b.savingPotencial - a.savingPotencial || b.ctes - a.ctes);
+  const porRotaFaixa = [...porRotaFaixaMap.values()].map(finalizarGrupo).sort((a, b) => b.savingPotencial - a.savingPotencial || b.precisaReduzirValor - a.precisaReduzirValor);
+
+  const oportunidadesAjuste = porRotaFaixa
+    .filter((item) => item.ctesNaoAlocados > 0 && item.precisaReduzirValor > 0)
+    .sort((a, b) => b.precisaReduzirValor - a.precisaReduzirValor || b.ctesNaoAlocados - a.ctesNaoAlocados)
+    .slice(0, 200);
+
+  const rotasCompetitivas = porRotaFaixa
+    .filter((item) => item.ctesGanharia > 0 && item.savingPotencial > 0)
+    .sort((a, b) => b.savingPotencial - a.savingPotencial || b.ctesGanharia - a.ctesGanharia)
+    .slice(0, 200);
+
+  const ajustePorFaixa = porFaixaPeso
+    .filter((item) => item.ctesComAjuste > 0 && item.precisaReduzirValor > 0)
+    .sort((a, b) => b.ctesComAjuste - a.ctesComAjuste || b.precisaReduzirValor - a.precisaReduzirValor);
+
+  const visaoFornecedor = porRotaFaixa
+    .filter((item) => item.ctesGanharia > 0 || item.ctesComAjuste > 0)
+    .sort((a, b) => {
+      const oportunidadeA = (a.savingPotencial || 0) + (a.precisaReduzirValor || 0);
+      const oportunidadeB = (b.savingPotencial || 0) + (b.precisaReduzirValor || 0);
+      return oportunidadeB - oportunidadeA || b.ctes - a.ctes;
+    })
+    .slice(0, 300);
+
+  const planoAcaoFornecedor = [
+    ...rotasCompetitivas.slice(0, 10).map((item) => ({ ...item, tipoAcao: 'Defender volume', acaoRecomendada: 'Manter tabela competitiva e reforçar capacidade nesta rota/faixa.' })),
+    ...oportunidadesAjuste.slice(0, 20).map((item) => ({ ...item, tipoAcao: 'Reduzir para capturar volume', acaoRecomendada: `Reduzir em média ${reducaoSugeridaTexto(item.reducaoSugeridaPercentual)} nesta rota/faixa para ficar competitivo.` })),
+  ];
+
+  return { porMes, porRota, porFaixaPeso, porRotaFaixa, oportunidadesAjuste, rotasCompetitivas, ajustePorFaixa, visaoFornecedor, planoAcaoFornecedor };
+}
+
+function reducaoSugeridaTexto(percentual = 0) {
+  const valor = Number(percentual || 0);
+  if (!Number.isFinite(valor) || valor <= 0) return '0,00%';
+  return `${valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
 export async function simularRealizadoLocalRapido({
@@ -479,9 +905,14 @@ export async function simularRealizadoLocalRapido({
   let faturamentoGanhador = 0;
   let economiaGanhador = 0;
   let ctesGanharia = 0;
+  let ctesEconomizaria = 0;
+  let economiaBruta = 0;
+  let aumentoBruto = 0;
   let ctesComSimulacao = 0;
   let valorSimuladoTotal = 0;
   let valorNfSimulado = 0;
+  let valorRealizadoGanhador = 0;
+  let valorNfGanhador = 0;
 
   for (let i = 0; i < realizados.length; i += 1) {
     const cte = realizados[i];
@@ -500,23 +931,36 @@ export async function simularRealizadoLocalRapido({
         let lider = null;
         let ranking = null;
 
-        if (rankingCalculado) {
-          const calculados = candidatos
-            .map((item) => calcularItemTabela({ ...item, cte }))
-            .filter(Boolean)
-            .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
+        const calculadosSimulada = candidatosDaSimulada
+          .map((item) => calcularItemTabela({ ...item, cte }))
+          .filter(Boolean)
+          .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
 
-          const escolhidoIndex = calculados.findIndex((item) => transportadoraMatch(item.transportadora, nomeTransportadora, { exato: true }));
-          escolhido = escolhidoIndex >= 0 ? calculados[escolhidoIndex] : null;
-          lider = calculados[0] || null;
-          ranking = escolhidoIndex >= 0 ? escolhidoIndex + 1 : null;
+        escolhido = calculadosSimulada[0] || null;
+
+        if (rankingCalculado && escolhido) {
+          lider = escolhido;
+          let menoresQueEscolhido = 0;
+
+          for (const candidato of candidatos) {
+            if (transportadoraMatch(candidato.transportadora?.nome, nomeTransportadora, { exato: true })) continue;
+            const calculado = calcularItemTabela({ ...candidato, cte });
+            if (!calculado) continue;
+
+            if (
+              calculado.total < (lider?.total ?? Infinity) ||
+              (calculado.total === lider?.total && calculado.prazo < (lider?.prazo ?? Infinity))
+            ) {
+              lider = calculado;
+            }
+
+            if (calculado.total < escolhido.total - 0.009) {
+              menoresQueEscolhido += 1;
+            }
+          }
+
+          ranking = menoresQueEscolhido + 1;
         } else {
-          const calculadosSimulada = candidatosDaSimulada
-            .map((item) => calcularItemTabela({ ...item, cte }))
-            .filter(Boolean)
-            .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
-
-          escolhido = calculadosSimulada[0] || null;
           lider = null;
           ranking = null;
         }
@@ -524,26 +968,61 @@ export async function simularRealizadoLocalRapido({
         if (!escolhido) {
           foraMalha.push({ ...cte, motivo: 'Sem cotação/faixa de peso válida para a transportadora simulada' });
         } else {
-          const ganharia = rankingCalculado ? ranking === 1 : false;
-          const detalhe = montarDetalhe({ cte, escolhido, lider, ranking, ganharia, rankingCalculado });
+          const detalhe = montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado });
+          const ganharia = detalhe.ganharia;
 
           ctesComSimulacao += 1;
           valorSimuladoTotal += escolhido.total;
           valorNfSimulado += toNumber(cte.valorNF);
           impactoLiquido += detalhe.impacto;
 
+          if (detalhe.economizaria) {
+            ctesEconomizaria += 1;
+            economiaBruta += detalhe.economiaVsRealizado;
+          } else {
+            aumentoBruto += detalhe.aumentoVsRealizado;
+          }
+
           if (ganharia) {
             ctesGanharia += 1;
-            faturamentoGanhador += escolhido.total;
-            economiaGanhador += detalhe.impacto;
+            faturamentoGanhador += detalhe.valorSimuladoAlocado;
+            valorRealizadoGanhador += detalhe.valorRealizadoAlocado;
+            valorNfGanhador += detalhe.valorNfAlocado;
+            economiaGanhador += detalhe.savingPotencial;
           }
 
           detalhes.push(detalhe);
 
           const ufKey = cte.ufDestino || 'SEM UF';
-          const uf = porUfMap.get(ufKey) || { uf: ufKey, ctes: 0, ganharia: 0, valorRealizado: 0, valorSimulado: 0, economia: 0 };
+          const uf = porUfMap.get(ufKey) || {
+            uf: ufKey,
+            ctes: 0,
+            ganharia: 0,
+            economizaria: 0,
+            valorRealizado: 0,
+            valorSimulado: 0,
+            economia: 0,
+            economiaBruta: 0,
+            aumentoBruto: 0,
+            valorRealizadoGanhador: 0,
+            valorSimuladoGanhador: 0,
+            valorNfGanhador: 0,
+            savingPotencial: 0,
+          };
           uf.ctes += 1;
-          if (ganharia) uf.ganharia += 1;
+          if (ganharia) {
+            uf.ganharia += 1;
+            uf.valorRealizadoGanhador += detalhe.valorRealizadoAlocado;
+            uf.valorSimuladoGanhador += detalhe.valorSimuladoAlocado;
+            uf.valorNfGanhador += detalhe.valorNfAlocado;
+            uf.savingPotencial += detalhe.savingPotencial;
+          }
+          if (detalhe.economizaria) {
+            uf.economizaria += 1;
+            uf.economiaBruta += detalhe.economiaVsRealizado;
+          } else {
+            uf.aumentoBruto += detalhe.aumentoVsRealizado;
+          }
           uf.valorRealizado += toNumber(cte.valorCte);
           uf.valorSimulado += escolhido.total;
           uf.economia += detalhe.impacto;
@@ -564,7 +1043,17 @@ export async function simularRealizadoLocalRapido({
   const porUf = [...porUfMap.values()].map((item) => ({
     ...item,
     aderencia: item.ctes ? (item.ganharia / item.ctes) * 100 : 0,
+    percentualEconomizaria: item.ctes ? (item.economizaria / item.ctes) * 100 : 0,
+    percentualFreteGanhador: item.valorNfGanhador > 0 ? (item.valorSimuladoGanhador / item.valorNfGanhador) * 100 : 0,
   })).sort((a, b) => b.ctes - a.ctes || a.uf.localeCompare(b.uf));
+
+  const detalhesOrdenados = detalhes.sort((a, b) => {
+    if (a.ganharia !== b.ganharia) return a.ganharia ? -1 : 1;
+    if (rankingCalculado) return (a.ranking || 9999) - (b.ranking || 9999) || (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
+    return (b.savingPotencial || 0) - (a.savingPotencial || 0) || b.impacto - a.impacto;
+  });
+
+  const analises = gerarAnalisesGerenciais(detalhesOrdenados);
 
   return {
     resumo: {
@@ -572,19 +1061,28 @@ export async function simularRealizadoLocalRapido({
       rankingCalculado,
       ctesComSimulacao,
       ctesGanharia,
-      aderencia: rankingCalculado && ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
+      ctesEconomizaria,
+      percentualEconomizaria: ctesComSimulacao ? (ctesEconomizaria / ctesComSimulacao) * 100 : 0,
+      economiaBruta,
+      aumentoBruto,
+      aumentoIgnorado: aumentoBruto,
+      aderencia: ctesComSimulacao ? (ctesGanharia / ctesComSimulacao) * 100 : 0,
       faturamentoGanhador,
+      valorRealizadoGanhador,
+      valorNfGanhador,
       economiaGanhador,
+      savingPotencial: economiaGanhador,
+      ctesNaoAlocados: Math.max(0, ctesComSimulacao - ctesGanharia),
       impactoLiquido,
+      impactoSeCarregasseTudo: impactoLiquido,
       percentualSimulado: valorNfSimulado > 0 ? (valorSimuladoTotal / valorNfSimulado) * 100 : 0,
+      percentualFreteGanhador: valorNfGanhador > 0 ? (faturamentoGanhador / valorNfGanhador) * 100 : 0,
       ctesForaMalha: foraMalha.length,
       porUf,
       indexStats: stats,
     },
-    detalhes: detalhes.sort((a, b) => {
-      if (rankingCalculado) return (a.ranking || 9999) - (b.ranking || 9999) || b.impacto - a.impacto;
-      return b.impacto - a.impacto;
-    }),
+    detalhes: detalhesOrdenados,
+    analises,
     foraMalha,
   };
 }

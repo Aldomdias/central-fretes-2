@@ -34,7 +34,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       mensagem: 'Base IBGE incompleta no navegador; tentando baixar a referência oficial do IBGE...',
     });
     try {
-      const oficial = await carregarMunicipiosIbgeOficial({ usarCache: false });
+      const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
       if (oficial.municipios?.length > municipiosReferencia.length) {
         municipiosReferencia = oficial.municipios;
       }
@@ -51,6 +51,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
   let totalPreparados = 0;
   let totalPendencias = 0;
   let totalSalvos = 0;
+  let totalIgnoradosTomador = 0;
   const arquivos = [];
   const erros = [];
 
@@ -69,14 +70,15 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       });
 
       const parsed = await parseRealizadoCtesFile(file);
-      totalLidos += parsed.registros.length;
+      totalLidos += parsed.meta?.registrosAntesTomador || parsed.registros.length;
+      totalIgnoradosTomador += parsed.meta?.registrosIgnoradosTomador || 0;
 
       postProgress({
         etapa: 'Gerando base enxuta',
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index, totalArquivos, 45),
-        mensagem: `Gerando base enxuta e chave IBGE de ${nome}: ${parsed.registros.length.toLocaleString('pt-BR')} CT-e(s) lidos...`,
+        mensagem: `Gerando base enxuta e chave IBGE de ${nome}: ${parsed.registros.length.toLocaleString('pt-BR')} CT-e(s) com tomador válido; ${(parsed.meta?.registrosIgnoradosTomador || 0).toLocaleString('pt-BR')} ignorado(s) por tomador...`,
       });
 
       const { rows, pendencias } = prepararRegistrosRealizadoLocal(parsed.registros, municipiosReferencia, { competencia });
@@ -112,7 +114,8 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       totalSalvos += save.salvos || rows.length;
       arquivos.push({
         nome,
-        lidos: parsed.registros.length,
+        lidos: parsed.meta?.registrosAntesTomador || parsed.registros.length,
+        ignoradosTomador: parsed.meta?.registrosIgnoradosTomador || 0,
         preparados: rows.length,
         pendencias: pendencias.length,
         ibgeOk,
@@ -138,7 +141,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
     }
   }
 
-  return { totalLidos, totalPreparados, totalPendencias, totalSalvos, arquivos, erros };
+  return { totalLidos, totalPreparados, totalPendencias, totalSalvos, totalIgnoradosTomador, regraTomador: 'CPX, ITR, GRIP, GP PNEUS', arquivos, erros };
 }
 
 self.onmessage = async (event) => {
