@@ -1770,7 +1770,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           </label>
           {escopoSimulacao ? (
             <div className="import-meta-box">
-              Malha simulada: <strong>{escopoSimulacao.totalRotas.toLocaleString('pt-BR')}</strong> rota(s) • {escopoSimulacao.origens.length.toLocaleString('pt-BR')} origem(ns) • canais: {escopoSimulacao.canais.join(', ') || '—'}
+              Malha simulada: <strong>{escopoSimulacao.totalRotas.toLocaleString('pt-BR')}</strong> rota(s) úteis • {escopoSimulacao.origens.length.toLocaleString('pt-BR')} origem(ns) • canais: {escopoSimulacao.canais.join(', ') || '—'}
+              {escopoSimulacao.totalRotasCadastradas ? <span> • cadastradas: {escopoSimulacao.totalRotasCadastradas.toLocaleString('pt-BR')}</span> : null}
+              {escopoSimulacao.rotasSemIbge ? <span> • sem IBGE: {escopoSimulacao.rotasSemIbge.toLocaleString('pt-BR')}</span> : null}
+              {escopoSimulacao.rotasCepSemIbge ? <span> • CEP sem IBGE: {escopoSimulacao.rotasCepSemIbge.toLocaleString('pt-BR')}</span> : null}
+              {escopoSimulacao.rotasCepSemIbge ? <small style={{ display: 'block', marginTop: 4 }}>Se aparecer CEP sem IBGE, atualize/salve a transportadora selecionada depois de importar a base IBGE/CEP completa.</small> : null}
             </div>
           ) : null}
           <button className="btn-primary full" onClick={simular} disabled={simulando || importando || carregando || !stats.total}>

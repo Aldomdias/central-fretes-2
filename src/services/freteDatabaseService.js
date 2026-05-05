@@ -44,6 +44,23 @@ function toNumberOrNull(value) {
   return Number.isFinite(normalized) ? normalized : null;
 }
 
+function normalizarCepDb(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.padStart(8, '0').slice(0, 8);
+}
+
+function onlyDigitsDb(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function pickFirstDb(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+}
+
 function toSafeRealizadoNumber(value, maxAbs = 999999999999) {
   const parsed = toNumberOrNull(value);
   if (parsed === null) return null;
@@ -487,12 +504,14 @@ export async function carregarBaseCompletaDb() {
       fetchAllRows(supabase, 'taxas_especiais'),
     ]);
 
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
   const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = new Map();
   const cotacoesByOrigem = new Map();
   const taxasByOrigem = new Map();
 
-  rotas.forEach((item) => {
+  rotasNormalizadas.forEach((item) => {
     const key = String(item.origem_id);
     const list = rotasByOrigem.get(key) || [];
     list.push(item);
@@ -1190,7 +1209,8 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   const origemIdsBase = (origensBase || []).map((item) => item.id);
   if (!origemIdsBase.length) return [];
 
-  const rotas = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados, ufDestino);
+  const rotasRaw = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados, ufDestino);
+  const rotas = await enriquecerRotasComIbgeDestinoPorCepDb(rotasRaw);
 
   const origemIdsComRota = Array.from(new Set((rotas || []).map((item) => item.origem_id)));
   if (!origemIdsComRota.length) return [];
@@ -1351,11 +1371,13 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
   ]);
 
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
   return transportadorasFromDbRows({
     transportadoras: [transportadora],
     origens: origens || [],
     generalidades,
-    rotas,
+    rotas: rotasNormalizadas,
     cotacoes,
     taxas,
   })[0] || {
@@ -1534,6 +1556,63 @@ function normalizeMunicipioIbgeRow(row = {}) {
 
   if (!ibge || !cidade) return null;
   return { ibge, cidade, uf };
+}
+
+async function resolverIbgePorCepDbComCache(cep, cache) {
+  const cepLimpo = normalizarCepDb(cep);
+  if (!cepLimpo) return '';
+  if (cache.has(cepLimpo)) return cache.get(cepLimpo);
+
+  const municipio = await resolverCepEmFaixasDb(cepLimpo).catch(() => null);
+  const ibge = onlyDigitsDb(municipio?.ibge || municipio?.codigo_ibge || municipio?.codigo || '').slice(0, 7);
+  cache.set(cepLimpo, ibge || '');
+  return ibge || '';
+}
+
+async function enriquecerRotasComIbgeDestinoPorCepDb(rotas = []) {
+  const lista = Array.isArray(rotas) ? rotas : [];
+  const pendentes = lista.filter((rota) => {
+    const ibge = onlyDigitsDb(pickFirstDb(rota.ibge_destino, rota.ibgeDestino, rota.codigo_ibge_destino, rota.codigoMunicipioDestino));
+    const cepInicial = normalizarCepDb(pickFirstDb(rota.cep_inicial, rota.cepInicial, rota.cep_inicio, rota.cepInicio));
+    const cepFinal = normalizarCepDb(pickFirstDb(rota.cep_final, rota.cepFinal, rota.cep_fim, rota.cepFim));
+    return !ibge && Boolean(cepInicial || cepFinal);
+  });
+
+  if (!pendentes.length || !isSupabaseConfigured()) return lista;
+
+  const cache = new Map();
+  const resultado = [];
+
+  for (const rota of lista) {
+    const ibgeAtual = onlyDigitsDb(pickFirstDb(rota.ibge_destino, rota.ibgeDestino, rota.codigo_ibge_destino, rota.codigoMunicipioDestino)).slice(0, 7);
+    if (ibgeAtual) {
+      resultado.push(rota);
+      continue;
+    }
+
+    const cepInicial = normalizarCepDb(pickFirstDb(rota.cep_inicial, rota.cepInicial, rota.cep_inicio, rota.cepInicio));
+    const cepFinal = normalizarCepDb(pickFirstDb(rota.cep_final, rota.cepFinal, rota.cep_fim, rota.cepFim));
+    let ibgeResolvido = '';
+
+    if (cepInicial) ibgeResolvido = await resolverIbgePorCepDbComCache(cepInicial, cache);
+    if (!ibgeResolvido && cepFinal) ibgeResolvido = await resolverIbgePorCepDbComCache(cepFinal, cache);
+
+    if (ibgeResolvido) {
+      resultado.push({
+        ...rota,
+        ibge_destino: ibgeResolvido,
+        extra: {
+          ...(rota.extra || {}),
+          ibgeResolvidoPorCep: true,
+          cepReferenciaIbge: cepInicial || cepFinal || '',
+        },
+      });
+    } else {
+      resultado.push(rota);
+    }
+  }
+
+  return resultado;
 }
 
 export async function carregarMunicipiosIbgeDb() {
