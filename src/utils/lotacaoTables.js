@@ -551,6 +551,12 @@ export function compararComReferencia(tabela, referencia) {
       melhorTabelaNome: ref.melhorTabelaNome || ref.transportadora || referencia.nome,
       diferenca,
       variacao,
+      diferencaAntigoAntt: comparacaoAntigoAntt.diferencaAntt,
+      variacaoAntigoAntt: comparacaoAntigoAntt.variacaoAntt,
+      statusAntigoAntt: comparacaoAntigoAntt.statusAntt,
+      diferencaNovoAntt: comparacaoNovoAntt.diferencaAntt,
+      variacaoNovoAntt: comparacaoNovoAntt.variacaoAntt,
+      statusNovoAntt: comparacaoNovoAntt.statusAntt,
       status,
       referenciaNome: referencia.nome,
     });
@@ -582,21 +588,51 @@ export function compararComReferencia(tabela, referencia) {
 }
 
 
-export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
+function compararValorComAntt(valorTabela, refAntt) {
+  if (!refAntt || refAntt.valor === null || refAntt.valor === undefined) {
+    return {
+      diferencaAntt: null,
+      variacaoAntt: null,
+      statusAntt: 'Sem NTT',
+    };
+  }
+
+  const valorBase = Number(refAntt.valor || 0);
+  const valor = Number(valorTabela || 0);
+  const diferencaAntt = valor - valorBase;
+  const variacaoAntt = valorBase ? (diferencaAntt / valorBase) * 100 : 0;
+  let statusAntt = 'Igual NTT';
+
+  if (diferencaAntt < -TOLERANCIA_EMPATE) statusAntt = 'Abaixo NTT';
+  if (diferencaAntt > TOLERANCIA_EMPATE) statusAntt = 'Acima NTT';
+
+  return { diferencaAntt, variacaoAntt, statusAntt };
+}
+
+
+export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste, antt = null) {
   if (!tabelaAntiga || !tabelaReajuste) return null;
 
   const mapaAntigo = indexarPorChave(tabelaAntiga);
   const mapaNovo = indexarPorChave(tabelaReajuste);
+  const mapaAntt = antt ? indexarPorChave(antt) : new Map();
   const detalhes = [];
   const rotasNovas = [];
   const rotasSemReajuste = [];
   let comparadas = 0;
+  let comparadasAntt = 0;
   let aumentou = 0;
   let reduziu = 0;
   let manteve = 0;
+  let reajusteAbaixoAntt = 0;
+  let reajusteAcimaAntt = 0;
+  let reajusteIgualAntt = 0;
   let somaValorAntigo = 0;
   let somaValorNovo = 0;
+  let somaValorAntt = 0;
   let somaVariacao = 0;
+  let somaDiferencaReajusteAntt = 0;
+  let somaVariacaoReajusteAntt = 0;
   let maiorAumento = null;
   let maiorReducao = null;
 
@@ -639,6 +675,20 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
     somaValorNovo += valorNovo;
     somaVariacao += variacao;
 
+    const refAntt = mapaAntt.get(linhaNova.chave) || mapaAntt.get(linhaAntiga.chave) || null;
+    const comparacaoAntigoAntt = compararValorComAntt(valorAntigo, refAntt);
+    const comparacaoNovoAntt = compararValorComAntt(valorNovo, refAntt);
+
+    if (refAntt) {
+      comparadasAntt += 1;
+      somaValorAntt += Number(refAntt.valor || 0);
+      somaDiferencaReajusteAntt += comparacaoNovoAntt.diferencaAntt || 0;
+      somaVariacaoReajusteAntt += comparacaoNovoAntt.variacaoAntt || 0;
+      if (comparacaoNovoAntt.statusAntt === 'Abaixo NTT') reajusteAbaixoAntt += 1;
+      if (comparacaoNovoAntt.statusAntt === 'Acima NTT') reajusteAcimaAntt += 1;
+      if (comparacaoNovoAntt.statusAntt === 'Igual NTT') reajusteIgualAntt += 1;
+    }
+
     const detalhe = {
       id: `reajuste-${linhaAntiga.id}-${linhaNova.id}`,
       origem: linhaAntiga.origem || linhaNova.origem,
@@ -649,10 +699,18 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
       km: linhaNova.km || linhaAntiga.km,
       valorAntigo,
       valorNovo,
+      valorAntt: refAntt?.valor ?? null,
       fonteAntiga: linhaAntiga.valorFonte,
       fonteNova: linhaNova.valorFonte,
+      fonteAntt: refAntt?.valorFonte || '',
       diferenca,
       variacao,
+      diferencaAntigoAntt: comparacaoAntigoAntt.diferencaAntt,
+      variacaoAntigoAntt: comparacaoAntigoAntt.variacaoAntt,
+      statusAntigoAntt: comparacaoAntigoAntt.statusAntt,
+      diferencaNovoAntt: comparacaoNovoAntt.diferencaAntt,
+      variacaoNovoAntt: comparacaoNovoAntt.variacaoAntt,
+      statusNovoAntt: comparacaoNovoAntt.statusAntt,
       status,
     };
 
@@ -686,6 +744,10 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
   const variacaoMedia = comparadas ? somaVariacao / comparadas : 0;
   const coberturaAntiga = mapaAntigo.size ? (comparadas / mapaAntigo.size) * 100 : 0;
   const coberturaNova = mapaNovo.size ? (comparadas / mapaNovo.size) * 100 : 0;
+  const variacaoMediaReajusteAntt = comparadasAntt ? somaVariacaoReajusteAntt / comparadasAntt : 0;
+  const pctReajusteAbaixoAntt = comparadasAntt ? (reajusteAbaixoAntt / comparadasAntt) * 100 : 0;
+  const pctReajusteAcimaAntt = comparadasAntt ? (reajusteAcimaAntt / comparadasAntt) * 100 : 0;
+  const pctReajusteIgualAntt = comparadasAntt ? (reajusteIgualAntt / comparadasAntt) * 100 : 0;
 
   return {
     tabelaAntigaNome: tabelaAntiga.nome,
@@ -693,6 +755,8 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
     baseAntiga: mapaAntigo.size,
     baseNova: mapaNovo.size,
     comparadas,
+    comparadasAntt,
+    semAntt: comparadas - comparadasAntt,
     aumentou,
     reduziu,
     manteve,
@@ -700,9 +764,18 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
     rotasSemReajuste: rotasSemReajuste.length,
     somaValorAntigo,
     somaValorNovo,
+    somaValorAntt,
+    reajusteAbaixoAntt,
+    reajusteAcimaAntt,
+    reajusteIgualAntt,
+    pctReajusteAbaixoAntt,
+    pctReajusteAcimaAntt,
+    pctReajusteIgualAntt,
     diferencaTotal,
     variacaoPonderada,
     variacaoMedia,
+    diferencaTotalReajusteAntt: somaDiferencaReajusteAntt,
+    variacaoMediaReajusteAntt,
     coberturaAntiga,
     coberturaNova,
     maiorAumento,
@@ -711,6 +784,57 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
     detalhesRotasNovas: rotasNovas.slice(0, 100),
     detalhesRotasSemReajuste: rotasSemReajuste.slice(0, 100),
   };
+}
+
+function nomeArquivoSeguro(valor = '') {
+  return normalizarTexto(valor)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'comparativo';
+}
+
+export function exportarComparativoReajusteXlsx(comparativo) {
+  if (!comparativo?.detalhes?.length) return;
+
+  const resumo = [
+    ['Tabela antiga', comparativo.tabelaAntigaNome],
+    ['Tabela reajustada', comparativo.tabelaReajusteNome],
+    ['Rotas comparadas', comparativo.comparadas],
+    ['Aumento ponderado %', comparativo.variacaoPonderada],
+    ['Diferença total R$', comparativo.diferencaTotal],
+    ['Rotas com aumento', comparativo.aumentou],
+    ['Rotas com redução', comparativo.reduziu],
+    ['Rotas sem alteração', comparativo.manteve],
+    ['Rotas com NTT', comparativo.comparadasAntt || 0],
+    ['Reajuste acima NTT', comparativo.reajusteAcimaAntt || 0],
+    ['Reajuste abaixo NTT', comparativo.reajusteAbaixoAntt || 0],
+    ['Reajuste igual NTT', comparativo.reajusteIgualAntt || 0],
+    ['Variação média reajuste x NTT %', comparativo.variacaoMediaReajusteAntt || 0],
+  ];
+
+  const linhas = comparativo.detalhes.map((item) => ({
+    Origem: `${item.origem}/${item.ufOrigem}`,
+    Destino: `${item.destino}/${item.ufDestino}`,
+    Tipo: item.tipo,
+    KM: item.km || '',
+    'Valor antigo': item.valorAntigo,
+    NTT: item.valorAntt ?? '',
+    'Valor reajuste': item.valorNovo,
+    'Diferença reajuste': item.diferenca,
+    '% aumento': item.variacao,
+    'Antigo x NTT %': item.variacaoAntigoAntt ?? '',
+    'Reajuste x NTT %': item.variacaoNovoAntt ?? '',
+    'Status reajuste': item.status,
+    'Status antigo x NTT': item.statusAntigoAntt || '',
+    'Status reajuste x NTT': item.statusNovoAntt || '',
+  }));
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(resumo), 'Resumo');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(linhas), 'Rotas');
+
+  const nome = nomeArquivoSeguro(`${comparativo.tabelaAntigaNome}-${comparativo.tabelaReajusteNome}`);
+  XLSX.writeFile(workbook, `comparativo-reajuste-lotacao-${nome}.xlsx`);
 }
 
 export function analisarTabelaVersusAntt(tabela, antt) {
