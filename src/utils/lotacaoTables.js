@@ -411,7 +411,8 @@ export function carregarTabelasLotacao() {
     const parsed = JSON.parse(localStorage.getItem(LOTACAO_STORAGE_KEY) || '[]');
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .map((tabela) => ({ ...tabela, tipo: normalizarTipoTabela(tabela.tipo) }))
+      .filter((tabela) => tabela && typeof tabela === 'object')
+      .map((tabela) => ({ ...tabela, tipo: normalizarTipoTabela(tabela.tipo), linhas: Array.isArray(tabela.linhas) ? tabela.linhas : [] }))
       .filter((tabela) => normalizarTipoTabela(tabela.tipo) === 'ANTT' || normalizarTipoTabela(tabela.tipo) === 'TRANSPORTADORA');
   } catch {
     return [];
@@ -427,6 +428,7 @@ export function upsertTabelaLotacao(tabelas = [], tabelaNova) {
   const tabelaNormalizada = { ...tabelaNova, tipo: novoTipo };
 
   const semConflito = tabelas.filter((tabela) => {
+    if (!tabela || typeof tabela !== 'object') return false;
     const tipoAtual = normalizarTipoTabela(tabela.tipo);
     if (novoTipo === 'ANTT' && tipoAtual === 'ANTT') return false;
     if (novoTipo === 'TRANSPORTADORA' && tipoAtual === 'TRANSPORTADORA' && normalizarTexto(tabela.nome) === normalizarTexto(tabelaNormalizada.nome)) return false;
@@ -437,22 +439,23 @@ export function upsertTabelaLotacao(tabelas = [], tabelaNova) {
 }
 
 export function removerTabelaLotacao(tabelas = [], tabelaId) {
-  return tabelas.filter((tabela) => tabela.id !== tabelaId);
+  return tabelas.filter((tabela) => tabela && tabela.id !== tabelaId);
 }
 
 export function obterTabelasPorTipo(tabelas = [], tipo) {
   const tipoNormalizado = normalizarTipoTabela(tipo);
-  return tabelas.filter((tabela) => normalizarTipoTabela(tabela.tipo) === tipoNormalizado);
+  return tabelas.filter((tabela) => tabela && typeof tabela === 'object' && normalizarTipoTabela(tabela.tipo) === tipoNormalizado);
 }
 
 export function obterAntt(tabelas = []) {
-  return tabelas.find((tabela) => normalizarTipoTabela(tabela.tipo) === 'ANTT') || null;
+  return tabelas.find((tabela) => tabela && typeof tabela === 'object' && normalizarTipoTabela(tabela.tipo) === 'ANTT') || null;
 }
 
 function indexarPorChave(tabela) {
   const mapa = new Map();
-  (tabela?.linhas || []).forEach((linha) => {
-    if (!linha.chave) return;
+  const linhas = Array.isArray(tabela?.linhas) ? tabela.linhas : [];
+  linhas.forEach((linha) => {
+    if (!linha || typeof linha !== 'object' || !linha.chave) return;
     if (!mapa.has(linha.chave)) {
       mapa.set(linha.chave, linha);
       return;
@@ -551,12 +554,6 @@ export function compararComReferencia(tabela, referencia) {
       melhorTabelaNome: ref.melhorTabelaNome || ref.transportadora || referencia.nome,
       diferenca,
       variacao,
-      diferencaAntigoAntt: comparacaoAntigoAntt.diferencaAntt,
-      variacaoAntigoAntt: comparacaoAntigoAntt.variacaoAntt,
-      statusAntigoAntt: comparacaoAntigoAntt.statusAntt,
-      diferencaNovoAntt: comparacaoNovoAntt.diferencaAntt,
-      variacaoNovoAntt: comparacaoNovoAntt.variacaoAntt,
-      statusNovoAntt: comparacaoNovoAntt.statusAntt,
       status,
       referenciaNome: referencia.nome,
     });
@@ -609,7 +606,6 @@ function compararValorComAntt(valorTabela, refAntt) {
   return { diferencaAntt, variacaoAntt, statusAntt };
 }
 
-
 export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste, antt = null) {
   if (!tabelaAntiga || !tabelaReajuste) return null;
 
@@ -619,20 +615,30 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste, antt = null
   const detalhes = [];
   const rotasNovas = [];
   const rotasSemReajuste = [];
+
   let comparadas = 0;
   let comparadasAntt = 0;
   let aumentou = 0;
   let reduziu = 0;
   let manteve = 0;
+
+  let antigoAbaixoAntt = 0;
+  let antigoAcimaAntt = 0;
+  let antigoIgualAntt = 0;
   let reajusteAbaixoAntt = 0;
   let reajusteAcimaAntt = 0;
   let reajusteIgualAntt = 0;
+  let ajustadasAteAntt = 0;
+
   let somaValorAntigo = 0;
   let somaValorNovo = 0;
   let somaValorAntt = 0;
   let somaVariacao = 0;
   let somaDiferencaReajusteAntt = 0;
   let somaVariacaoReajusteAntt = 0;
+  let somaVariacaoReajusteAcimaAntt = 0;
+  let somaVariacaoReajusteAbaixoAntt = 0;
+  let valorNecessarioAjustarAteAntt = 0;
   let maiorAumento = null;
   let maiorReducao = null;
 
@@ -680,12 +686,28 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste, antt = null
     const comparacaoNovoAntt = compararValorComAntt(valorNovo, refAntt);
 
     if (refAntt) {
+      const valorAntt = Number(refAntt.valor || 0);
       comparadasAntt += 1;
-      somaValorAntt += Number(refAntt.valor || 0);
+      somaValorAntt += valorAntt;
       somaDiferencaReajusteAntt += comparacaoNovoAntt.diferencaAntt || 0;
       somaVariacaoReajusteAntt += comparacaoNovoAntt.variacaoAntt || 0;
-      if (comparacaoNovoAntt.statusAntt === 'Abaixo NTT') reajusteAbaixoAntt += 1;
-      if (comparacaoNovoAntt.statusAntt === 'Acima NTT') reajusteAcimaAntt += 1;
+
+      if (comparacaoAntigoAntt.statusAntt === 'Abaixo NTT') {
+        antigoAbaixoAntt += 1;
+        valorNecessarioAjustarAteAntt += Math.max(0, valorAntt - valorAntigo);
+        if (valorNovo + TOLERANCIA_EMPATE >= valorAntt) ajustadasAteAntt += 1;
+      }
+      if (comparacaoAntigoAntt.statusAntt === 'Acima NTT') antigoAcimaAntt += 1;
+      if (comparacaoAntigoAntt.statusAntt === 'Igual NTT') antigoIgualAntt += 1;
+
+      if (comparacaoNovoAntt.statusAntt === 'Abaixo NTT') {
+        reajusteAbaixoAntt += 1;
+        somaVariacaoReajusteAbaixoAntt += comparacaoNovoAntt.variacaoAntt || 0;
+      }
+      if (comparacaoNovoAntt.statusAntt === 'Acima NTT') {
+        reajusteAcimaAntt += 1;
+        somaVariacaoReajusteAcimaAntt += comparacaoNovoAntt.variacaoAntt || 0;
+      }
       if (comparacaoNovoAntt.statusAntt === 'Igual NTT') reajusteIgualAntt += 1;
     }
 
@@ -744,10 +766,6 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste, antt = null
   const variacaoMedia = comparadas ? somaVariacao / comparadas : 0;
   const coberturaAntiga = mapaAntigo.size ? (comparadas / mapaAntigo.size) * 100 : 0;
   const coberturaNova = mapaNovo.size ? (comparadas / mapaNovo.size) * 100 : 0;
-  const variacaoMediaReajusteAntt = comparadasAntt ? somaVariacaoReajusteAntt / comparadasAntt : 0;
-  const pctReajusteAbaixoAntt = comparadasAntt ? (reajusteAbaixoAntt / comparadasAntt) * 100 : 0;
-  const pctReajusteAcimaAntt = comparadasAntt ? (reajusteAcimaAntt / comparadasAntt) * 100 : 0;
-  const pctReajusteIgualAntt = comparadasAntt ? (reajusteIgualAntt / comparadasAntt) * 100 : 0;
 
   return {
     tabelaAntigaNome: tabelaAntiga.nome,
@@ -765,17 +783,28 @@ export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste, antt = null
     somaValorAntigo,
     somaValorNovo,
     somaValorAntt,
+    antigoAbaixoAntt,
+    antigoAcimaAntt,
+    antigoIgualAntt,
     reajusteAbaixoAntt,
     reajusteAcimaAntt,
     reajusteIgualAntt,
-    pctReajusteAbaixoAntt,
-    pctReajusteAcimaAntt,
-    pctReajusteIgualAntt,
+    ajustadasAteAntt,
+    rotasQuePrecisamAjusteAntt: antigoAbaixoAntt,
+    valorNecessarioAjustarAteAntt,
+    pctAntigoAbaixoAntt: comparadasAntt ? (antigoAbaixoAntt / comparadasAntt) * 100 : 0,
+    pctAntigoAcimaAntt: comparadasAntt ? (antigoAcimaAntt / comparadasAntt) * 100 : 0,
+    pctAntigoIgualAntt: comparadasAntt ? (antigoIgualAntt / comparadasAntt) * 100 : 0,
+    pctReajusteAbaixoAntt: comparadasAntt ? (reajusteAbaixoAntt / comparadasAntt) * 100 : 0,
+    pctReajusteAcimaAntt: comparadasAntt ? (reajusteAcimaAntt / comparadasAntt) * 100 : 0,
+    pctReajusteIgualAntt: comparadasAntt ? (reajusteIgualAntt / comparadasAntt) * 100 : 0,
     diferencaTotal,
     variacaoPonderada,
     variacaoMedia,
     diferencaTotalReajusteAntt: somaDiferencaReajusteAntt,
-    variacaoMediaReajusteAntt,
+    variacaoMediaReajusteAntt: comparadasAntt ? somaVariacaoReajusteAntt / comparadasAntt : 0,
+    variacaoMediaReajusteAcimaAntt: reajusteAcimaAntt ? somaVariacaoReajusteAcimaAntt / reajusteAcimaAntt : 0,
+    variacaoMediaReajusteAbaixoAntt: reajusteAbaixoAntt ? somaVariacaoReajusteAbaixoAntt / reajusteAbaixoAntt : 0,
     coberturaAntiga,
     coberturaNova,
     maiorAumento,
@@ -806,10 +835,15 @@ export function exportarComparativoReajusteXlsx(comparativo) {
     ['Rotas com redução', comparativo.reduziu],
     ['Rotas sem alteração', comparativo.manteve],
     ['Rotas com NTT', comparativo.comparadasAntt || 0],
-    ['Reajuste acima NTT', comparativo.reajusteAcimaAntt || 0],
+    ['Antiga abaixo NTT', comparativo.antigoAbaixoAntt || 0],
+    ['Antiga acima NTT', comparativo.antigoAcimaAntt || 0],
     ['Reajuste abaixo NTT', comparativo.reajusteAbaixoAntt || 0],
-    ['Reajuste igual NTT', comparativo.reajusteIgualAntt || 0],
-    ['Variação média reajuste x NTT %', comparativo.variacaoMediaReajusteAntt || 0],
+    ['Reajuste acima NTT', comparativo.reajusteAcimaAntt || 0],
+    ['% reajuste acima NTT', comparativo.pctReajusteAcimaAntt || 0],
+    ['% médio reajuste acima NTT', comparativo.variacaoMediaReajusteAcimaAntt || 0],
+    ['Rotas que teriam reajuste até NTT', comparativo.rotasQuePrecisamAjusteAntt || 0],
+    ['Valor necessário para ajustar até NTT', comparativo.valorNecessarioAjustarAteAntt || 0],
+    ['Rotas antigas ajustadas até NTT pela nova tabela', comparativo.ajustadasAteAntt || 0],
   ];
 
   const linhas = comparativo.detalhes.map((item) => ({
@@ -822,7 +856,9 @@ export function exportarComparativoReajusteXlsx(comparativo) {
     'Valor reajuste': item.valorNovo,
     'Diferença reajuste': item.diferenca,
     '% aumento': item.variacao,
+    'Antigo x NTT R$': item.diferencaAntigoAntt ?? '',
     'Antigo x NTT %': item.variacaoAntigoAntt ?? '',
+    'Reajuste x NTT R$': item.diferencaNovoAntt ?? '',
     'Reajuste x NTT %': item.variacaoNovoAntt ?? '',
     'Status reajuste': item.status,
     'Status antigo x NTT': item.statusAntigoAntt || '',
@@ -1089,17 +1125,18 @@ export function pesquisarRotaLotacao(tabelas = [], filtros = {}) {
 }
 
 export function resumoLotacao(tabelas = []) {
-  const antt = obterAntt(tabelas);
-  const transportadoras = obterTabelasPorTipo(tabelas, 'TRANSPORTADORA');
-  const totalRotasTransportadoras = transportadoras.reduce((acc, tabela) => acc + (tabela.linhas?.length || 0), 0);
-  const totalRotas = tabelas.reduce((acc, tabela) => acc + (tabela.linhas?.length || 0), 0);
+  const tabelasValidas = Array.isArray(tabelas) ? tabelas.filter((tabela) => tabela && typeof tabela === 'object') : [];
+  const antt = obterAntt(tabelasValidas);
+  const transportadoras = obterTabelasPorTipo(tabelasValidas, 'TRANSPORTADORA');
+  const totalRotasTransportadoras = transportadoras.reduce((acc, tabela) => acc + (Array.isArray(tabela.linhas) ? tabela.linhas.length : 0), 0);
+  const totalRotas = tabelasValidas.reduce((acc, tabela) => acc + (Array.isArray(tabela.linhas) ? tabela.linhas.length : 0), 0);
   const referenciaMenorPreco = criarReferenciaMenorPreco(transportadoras);
 
   return {
     antt,
     transportadoras,
     referenciaMenorPreco,
-    totalTabelas: tabelas.length,
+    totalTabelas: tabelasValidas.length,
     totalRotas,
     totalRotasTransportadoras,
     totalTransportadoras: transportadoras.length,

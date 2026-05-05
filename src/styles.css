@@ -1121,40 +1121,26 @@ button:disabled {
   }
 }
 
-/* Lotação: comparativo temporário de reajuste */
+
+/* Lotação - comparação temporária de reajuste */
 .lotacao-reajuste-card {
-  margin-top: 18px;
+  border: 1px solid rgba(145, 83, 240, 0.18);
 }
 
-.filter-grid {
-  display: grid;
-  gap: 16px;
-}
-
-.filter-grid.three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.lotacao-reajuste-form {
+  align-items: end;
 }
 
 .lotacao-reajuste-actions {
-  justify-content: flex-end;
+  margin-top: 12px;
+  flex-wrap: wrap;
 }
 
-.lotacao-page .summary-card strong.positivo,
-.lotacao-page .sim-analise-resumo strong.positivo {
-  color: #0f7a58;
+.lotacao-summary-mini.top-space-sm,
+.top-space-sm {
+  margin-top: 14px;
 }
 
-.lotacao-page .summary-card strong.negativo,
-.lotacao-page .sim-analise-resumo strong.negativo {
-  color: #b42318;
-}
-
-.lotacao-page .panel-title.small-title {
-  font-size: 18px;
-}
-
-@media (max-width: 920px) {
-  .filter-grid.three {
-    grid-template-columns: 1fr;
-  }
+.small-title {
+  font-size: 1rem;
 }
