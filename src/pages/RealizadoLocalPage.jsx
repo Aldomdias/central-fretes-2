@@ -34,6 +34,7 @@ import {
   prepararRegistrosRealizadoLocal,
   simularRealizadoLocalRapido,
 } from '../utils/realizadoLocalEngine';
+import { modelosFaixaPadrao } from '../utils/formatacaoTabela';
 import {
   formatCurrency,
   formatDateBr,
@@ -59,6 +60,153 @@ const DEFAULT_FILTROS = {
 };
 
 const ECONOMIA_SUPABASE_LOCAL_KEY = 'amd-realizado-local-economia-supabase';
+
+const DEFAULT_VOLUMETRIA_CONFIG = {
+  canal: '',
+  inicio: '',
+  fim: '',
+  agrupamento: 'ibge',
+  excluirEbazar: true,
+  incluirDetalhe: true,
+};
+
+function obterPesoVolumetria(row = {}) {
+  return Math.max(
+    Number(row.peso || 0),
+    Number(row.pesoDeclarado || 0),
+    Number(row.pesoCubado || 0)
+  );
+}
+
+function labelFaixaModelo(item = {}) {
+  const inicial = Number(item.pesoInicial || 0);
+  const final = Number(item.pesoFinal || 0);
+  if (!Number.isFinite(final) || final >= 999999) return `${inicial.toLocaleString('pt-BR')}+ kg`;
+  return `${inicial.toLocaleString('pt-BR')} a ${final.toLocaleString('pt-BR')} kg`;
+}
+
+function faixaPorCanalVolumetria(canal, peso) {
+  const canalNormalizado = categoriaCanalRealizado(canal);
+  const modelos = modelosFaixaPadrao();
+  const modelo = modelos.find((item) => item.canal === canalNormalizado)
+    || modelos.find((item) => item.canal === 'ATACADO');
+  const pesoNumero = Number(peso || 0);
+  const faixa = (modelo?.itens || []).find((item) => {
+    const inicial = Number(item.pesoInicial || 0);
+    const final = Number(item.pesoFinal || 0);
+    if (!Number.isFinite(pesoNumero)) return false;
+    if (final >= 999999) return pesoNumero > inicial;
+    if (inicial <= 0) return pesoNumero <= final;
+    return pesoNumero > inicial && pesoNumero <= final;
+  });
+  return faixa ? labelFaixaModelo(faixa) : 'Sem faixa';
+}
+
+function chaveVolumetria(row = {}, agrupamento = 'ibge', faixaPeso = '') {
+  const canal = categoriaCanalRealizado(row.canal) || row.canal || 'Sem canal';
+  const origem = row.cidadeOrigem || 'Sem origem';
+  const ufOrigem = row.ufOrigem || '';
+  const destino = row.cidadeDestino || 'Sem destino';
+  const ufDestino = row.ufDestino || '';
+  const ibgeOrigem = row.ibgeOrigem || '';
+  const ibgeDestino = row.ibgeDestino || '';
+
+  if (agrupamento === 'uf') return [canal, ufOrigem, ufDestino, faixaPeso].join('|');
+  if (agrupamento === 'cidade-uf') return [canal, origem, ufOrigem, destino, ufDestino, faixaPeso].join('|');
+  if (agrupamento === 'cidade-destino-ibge') return [canal, origem, ufOrigem, ibgeOrigem, destino, ufDestino, ibgeDestino, faixaPeso].join('|');
+  return [canal, ibgeOrigem, ibgeDestino, faixaPeso].join('|');
+}
+
+function criarLinhaVolumetriaInicial(row = {}, agrupamento = 'ibge', faixaPeso = '') {
+  const canal = categoriaCanalRealizado(row.canal) || row.canal || 'Sem canal';
+  return {
+    Canal: canal,
+    Agrupamento: agrupamento === 'uf' ? 'Estado x Estado' : agrupamento === 'cidade-uf' ? 'Cidade/UF x Cidade/UF' : agrupamento === 'cidade-destino-ibge' ? 'Cidade + IBGE' : 'IBGE origem x IBGE destino',
+    UF_Origem: row.ufOrigem || '',
+    Origem: row.cidadeOrigem || '',
+    IBGE_Origem: row.ibgeOrigem || '',
+    UF_Destino: row.ufDestino || '',
+    Destino: row.cidadeDestino || '',
+    IBGE_Destino: row.ibgeDestino || '',
+    Faixa_Peso: faixaPeso || '',
+    CTes: 0,
+    Volumes: 0,
+    Peso_Real: 0,
+    Peso_Declarado: 0,
+    Peso_Cubado: 0,
+    Peso_Considerado: 0,
+    Cubagem: 0,
+    Valor_NF: 0,
+    Frete_Realizado: 0,
+    Peso_Medio: 0,
+    Cubagem_Media: 0,
+    Valor_NF_Medio: 0,
+    Volumes_Medio: 0,
+    Percentual_Frete: 0,
+  };
+}
+
+function montarVolumetria(rows = [], config = {}) {
+  const agrupamento = config.agrupamento || 'ibge';
+  const mapa = new Map();
+
+  rows.forEach((row) => {
+    const canal = categoriaCanalRealizado(row.canal) || row.canal || '';
+    const pesoConsiderado = obterPesoVolumetria(row);
+    const faixaPeso = canal === 'B2C' || canal === 'ATACADO' ? faixaPorCanalVolumetria(canal, pesoConsiderado) : '';
+    const chave = chaveVolumetria(row, agrupamento, faixaPeso);
+    if (!mapa.has(chave)) mapa.set(chave, criarLinhaVolumetriaInicial(row, agrupamento, faixaPeso));
+    const acc = mapa.get(chave);
+    acc.CTes += 1;
+    acc.Volumes += Number(row.qtdVolumes || row.volume || 0);
+    acc.Peso_Real += Number(row.peso || 0);
+    acc.Peso_Declarado += Number(row.pesoDeclarado || 0);
+    acc.Peso_Cubado += Number(row.pesoCubado || 0);
+    acc.Peso_Considerado += pesoConsiderado;
+    acc.Cubagem += Number(row.cubagem || 0);
+    acc.Valor_NF += Number(row.valorNF || 0);
+    acc.Frete_Realizado += Number(row.valorCte || 0);
+  });
+
+  return [...mapa.values()]
+    .map((item) => ({
+      ...item,
+      Peso_Medio: item.CTes ? item.Peso_Considerado / item.CTes : 0,
+      Cubagem_Media: item.CTes ? item.Cubagem / item.CTes : 0,
+      Valor_NF_Medio: item.CTes ? item.Valor_NF / item.CTes : 0,
+      Volumes_Medio: item.CTes ? item.Volumes / item.CTes : 0,
+      Percentual_Frete: item.Valor_NF ? (item.Frete_Realizado / item.Valor_NF) * 100 : 0,
+    }))
+    .sort((a, b) => String(a.Canal).localeCompare(String(b.Canal), 'pt-BR') || String(a.UF_Origem).localeCompare(String(b.UF_Origem), 'pt-BR') || String(a.UF_Destino).localeCompare(String(b.UF_Destino), 'pt-BR') || b.CTes - a.CTes);
+}
+
+function volumetriaDetalheRow(item = {}) {
+  const canal = categoriaCanalRealizado(item.canal) || item.canal || '';
+  const pesoConsiderado = obterPesoVolumetria(item);
+  return {
+    Competencia: item.competencia || '',
+    Emissao: item.dataEmissao || '',
+    Canal: canal,
+    CTE: item.numeroCte || '',
+    Transportadora_Realizada: item.transportadora || '',
+    UF_Origem: item.ufOrigem || '',
+    Origem: item.cidadeOrigem || '',
+    IBGE_Origem: item.ibgeOrigem || '',
+    UF_Destino: item.ufDestino || '',
+    Destino: item.cidadeDestino || '',
+    IBGE_Destino: item.ibgeDestino || '',
+    Faixa_Peso: canal === 'B2C' || canal === 'ATACADO' ? faixaPorCanalVolumetria(canal, pesoConsiderado) : '',
+    Peso_Real: item.peso || 0,
+    Peso_Declarado: item.pesoDeclarado || 0,
+    Peso_Cubado: item.pesoCubado || 0,
+    Peso_Considerado: pesoConsiderado,
+    Cubagem: item.cubagem || 0,
+    Volumes: item.qtdVolumes || item.volume || 0,
+    Valor_NF: item.valorNF || 0,
+    Frete_Realizado: item.valorCte || 0,
+  };
+}
+
 
 function readPreferenciaEconomiaSupabase() {
   try {
@@ -579,6 +727,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const [grupoDetalhe, setGrupoDetalhe] = useState(null);
   const [exportando, setExportando] = useState(false);
+  const [modalVolumetriaAberto, setModalVolumetriaAberto] = useState(false);
+  const [volumetriaConfig, setVolumetriaConfig] = useState(DEFAULT_VOLUMETRIA_CONFIG);
+  const [exportandoVolumetria, setExportandoVolumetria] = useState(false);
   const fileInputRef = useRef(null);
   const tabelaLocalInputRef = useRef(null);
 
@@ -1506,6 +1657,70 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     await pesquisar(novoFiltro);
   }
 
+  function abrirModalVolumetria() {
+    setVolumetriaConfig((prev) => ({
+      ...DEFAULT_VOLUMETRIA_CONFIG,
+      ...prev,
+      canal: filtrosAplicados.canal || prev.canal || '',
+      inicio: filtrosAplicados.inicio || prev.inicio || '',
+      fim: filtrosAplicados.fim || prev.fim || '',
+      excluirEbazar: filtrosAplicados.excluirEbazar !== undefined ? Boolean(filtrosAplicados.excluirEbazar) : true,
+    }));
+    setModalVolumetriaAberto(true);
+  }
+
+  function alterarVolumetriaConfig(campo, valor) {
+    setVolumetriaConfig((prev) => ({ ...prev, [campo]: valor }));
+  }
+
+  async function exportarVolumetriaTransportador() {
+    setExportandoVolumetria(true);
+    setErro('');
+    try {
+      const filtrosVolumetria = {
+        ...DEFAULT_FILTROS,
+        canal: volumetriaConfig.canal,
+        inicio: volumetriaConfig.inicio,
+        fim: volumetriaConfig.fim,
+        excluirEbazar: Boolean(volumetriaConfig.excluirEbazar),
+      };
+      const { rows, totalCompativel, limit } = await exportarRealizadoLocal(filtrosVolumetria, { limit: 500000 });
+      if (!rows.length) {
+        setErro('Não existe base para gerar volumetria com os filtros informados.');
+        return;
+      }
+
+      const volumetria = montarVolumetria(rows, volumetriaConfig);
+      const resumoVolumetria = [{
+        Canal: volumetriaConfig.canal || 'Todos',
+        Periodo_Inicial: volumetriaConfig.inicio || 'Todos',
+        Periodo_Final: volumetriaConfig.fim || 'Todos',
+        Agrupamento: volumetriaConfig.agrupamento,
+        CTes_Exportados: rows.length,
+        CTes_Encontrados: totalCompativel,
+        Linhas_Volumetria: volumetria.length,
+        Limite_Exportacao: limit,
+        Observacao: totalCompativel > limit ? 'A base encontrada passou do limite exportado. Refaça com período menor.' : 'Volumetria completa dentro do limite.',
+      }];
+
+      const abas = {
+        Volumetria: volumetria,
+        Resumo: resumoVolumetria,
+      };
+      if (volumetriaConfig.incluirDetalhe) {
+        abas.Detalhe_CTE = rows.map(volumetriaDetalheRow);
+      }
+
+      baixarXlsx(`volumetria-transportador-${volumetriaConfig.canal || 'todos'}-${Date.now()}.xlsx`, abas);
+      setFeedback(`Volumetria exportada: ${rows.length.toLocaleString('pt-BR')} CT-e(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas. Inclui volumes, peso, cubagem, valor de nota e faixa ${volumetriaConfig.canal || 'por canal'}.`);
+      setModalVolumetriaAberto(false);
+    } catch (error) {
+      setErro(error.message || 'Erro ao exportar volumetria.');
+    } finally {
+      setExportandoVolumetria(false);
+    }
+  }
+
   async function exportarBaseSelecionada() {
     setExportando(true);
     setErro('');
@@ -1565,6 +1780,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <button className="btn-secondary" onClick={exportarBaseSelecionada} disabled={exportando || carregando || importando || simulando || !stats.total}>
             {exportando ? 'Exportando...' : 'Exportar base filtrada'}
           </button>
+          <button className="btn-secondary" onClick={abrirModalVolumetria} disabled={exportandoVolumetria || carregando || importando || simulando || !diagnostico?.total}>
+            {exportandoVolumetria ? 'Gerando volumetria...' : 'Exportar volumetria'}
+          </button>
           <button className="btn-secondary" onClick={reprocessarIbgeLocal} disabled={carregando || importando || simulando || !diagnostico?.total || !municipios.length}>
             Reprocessar IBGE local
           </button>
@@ -1591,6 +1809,84 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <div className={economizarSupabase ? 'sim-alert success' : 'sim-alert info'}>
         <strong>Modo economia Supabase:</strong> {economizarSupabase ? 'ativo — simulações tentam usar tabelas salvas/importadas localmente antes de consultar o banco.' : 'desativado — o sistema pode consultar o Supabase para baixar tabelas que ainda não estão locais.'}
       </div>
+
+      {modalVolumetriaAberto ? (
+        <div className="modal-overlay">
+          <div className="modal-card volumetria-modal-card">
+            <div className="modal-header">
+              <div>
+                <div className="panel-title">Exportar volumetria para transportador</div>
+                <p className="compact no-margin">
+                  Gere uma base agrupada para precificação com origem, destino, IBGE, peso, cubagem, valor de nota e número de volumes.
+                </p>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setModalVolumetriaAberto(false)} disabled={exportandoVolumetria}>×</button>
+            </div>
+
+            <div className="form-grid three">
+              <label className="field">
+                Canal da volumetria
+                <select value={volumetriaConfig.canal} onChange={(e) => alterarVolumetriaConfig('canal', e.target.value)}>
+                  <option value="">Todos</option>
+                  <option value="ATACADO">ATACADO</option>
+                  <option value="B2C">B2C</option>
+                  <option value="INTERCOMPANY">INTERCOMPANY</option>
+                  <option value="REVERSA">REVERSA</option>
+                </select>
+              </label>
+              <label className="field">
+                Período inicial
+                <input type="date" value={volumetriaConfig.inicio} onChange={(e) => alterarVolumetriaConfig('inicio', e.target.value)} />
+              </label>
+              <label className="field">
+                Período final
+                <input type="date" value={volumetriaConfig.fim} onChange={(e) => alterarVolumetriaConfig('fim', e.target.value)} />
+              </label>
+            </div>
+
+            <div className="form-grid two top-space-sm">
+              <label className="field">
+                Região / agrupamento
+                <select value={volumetriaConfig.agrupamento} onChange={(e) => alterarVolumetriaConfig('agrupamento', e.target.value)}>
+                  <option value="ibge">IBGE origem x IBGE destino</option>
+                  <option value="cidade-destino-ibge">Cidade/UF + IBGE origem e destino</option>
+                  <option value="cidade-uf">Cidade/UF origem x cidade/UF destino</option>
+                  <option value="uf">Estado origem x estado destino</option>
+                </select>
+              </label>
+              <div className="sim-parametros-box subtle">
+                <strong>Faixa de peso automática</strong>
+                <p className="compact no-margin">
+                  ATACADO usa faixas 0-20, 20-30, 30-50, 50-70, 70-100 e 100+ kg. B2C usa 0-2, 2-5, 5-10, 10-20, 20-30, 30-50, 50-70, 70-100 e 100+ kg.
+                </p>
+              </div>
+            </div>
+
+            <div className="sim-parametros-box top-space-sm">
+              <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <input type="checkbox" checked={Boolean(volumetriaConfig.excluirEbazar)} onChange={(e) => alterarVolumetriaConfig('excluirEbazar', e.target.checked)} />
+                <span>Retirar EBAZAR da volumetria</span>
+              </label>
+              <label className="check-row top-space-sm" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <input type="checkbox" checked={Boolean(volumetriaConfig.incluirDetalhe)} onChange={(e) => alterarVolumetriaConfig('incluirDetalhe', e.target.checked)} />
+                <span>Incluir aba de detalhe por CT-e além da volumetria agrupada</span>
+              </label>
+            </div>
+
+            <div className="hint-box top-space-sm">
+              O arquivo exportado traz a aba <strong>Volumetria</strong> para envio ao transportador e, opcionalmente, a aba <strong>Detalhe_CTE</strong> para conferência interna.
+              A coluna <strong>Volumes</strong> entra somada por rota/faixa, junto com peso, cubagem e valor de nota.
+            </div>
+
+            <div className="actions-right top-space">
+              <button type="button" className="btn-secondary" onClick={() => setModalVolumetriaAberto(false)} disabled={exportandoVolumetria}>Cancelar</button>
+              <button type="button" className="btn-primary" onClick={exportarVolumetriaTransportador} disabled={exportandoVolumetria}>
+                {exportandoVolumetria ? 'Gerando arquivo...' : 'Gerar Excel de volumetria'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {progress ? (
         <div className="sim-alert info">
