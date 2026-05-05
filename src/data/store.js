@@ -173,6 +173,26 @@ function mergeImportBatch(prev, payloads = [], tipo) {
   return (payloads || []).reduce((acc, payload) => mergeImport(acc, payload, tipo), prev);
 }
 
+
+function contarItensTransportadora(transportadora = {}) {
+  const origens = Array.isArray(transportadora.origens) ? transportadora.origens : [];
+  return origens.reduce(
+    (acc, origem) => {
+      acc.origens += 1;
+      acc.rotas += Array.isArray(origem.rotas) ? origem.rotas.length : 0;
+      acc.cotacoes += Array.isArray(origem.cotacoes) ? origem.cotacoes.length : 0;
+      acc.taxasEspeciais += Array.isArray(origem.taxasEspeciais) ? origem.taxasEspeciais.length : 0;
+      if (origem.generalidades) acc.generalidades += 1;
+      return acc;
+    },
+    { origens: 0, rotas: 0, cotacoes: 0, taxasEspeciais: 0, generalidades: 0 }
+  );
+}
+
+function montarMensagemContagem(contagem = {}) {
+  return `${contagem.origens || 0} origem(ns), ${contagem.rotas || 0} rota(s), ${contagem.cotacoes || 0} frete(s), ${contagem.taxasEspeciais || 0} taxa(s) e ${contagem.generalidades || 0} generalidade(s)`;
+}
+
 export function useFreteStore() {
   const [transportadoras, setTransportadoras] = useState([]);
   const [syncStatus, setSyncStatus] = useState({
@@ -522,6 +542,64 @@ export function useFreteStore() {
           }));
           return false;
         }
+      },
+      async salvarTransportadoraCompleta(transportadoraId, origemId = null) {
+        if (!bancoConfigurado()) {
+          return { ok: false, erro: new Error('Supabase não configurado. A base foi mantida apenas localmente.') };
+        }
+
+        const atual = (transportadoras || []).find((item) => String(item.id) === String(transportadoraId));
+        if (!atual) {
+          return { ok: false, erro: new Error('Transportadora não encontrada para salvar.') };
+        }
+
+        const baseSalvar = origemId
+          ? {
+              ...atual,
+              origens: (atual.origens || []).filter((origem) => String(origem.id) === String(origemId)),
+            }
+          : atual;
+
+        const normalized = normalizeTransportadora(baseSalvar);
+        const contagem = contarItensTransportadora(normalized);
+
+        if (!contagem.origens) {
+          return { ok: false, erro: new Error('Nenhuma origem encontrada para salvar.') };
+        }
+
+        setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
+
+        try {
+          await salvarSecaoDb([normalized], 'generalidades', undefined, { atualizarSnapshot: false });
+          await salvarSecaoDb([normalized], 'rotas', undefined, { atualizarSnapshot: false });
+          await salvarSecaoDb([normalized], 'cotacoes', undefined, { atualizarSnapshot: false });
+          await salvarSecaoDb([normalized], 'taxas', undefined, { atualizarSnapshot: false });
+
+          const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            ultimaSincronizacao: new Date().toISOString(),
+            fonte: 'supabase-detalhe-salvo',
+            resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
+          }));
+
+          return {
+            ok: true,
+            contagem,
+            mensagem: `Salvo no Supabase: ${montarMensagemContagem(contagem)}.`,
+          };
+        } catch (error) {
+          setSyncStatus((prev) => ({
+            ...prev,
+            sincronizando: false,
+            erro: error.message || 'Erro ao salvar transportadora no Supabase.',
+          }));
+          return { ok: false, erro: error, contagem };
+        }
+      },
+      async salvarOrigemCompleta(transportadoraId, origemId) {
+        return this.salvarTransportadoraCompleta(transportadoraId, origemId);
       },
       resetarBase() {
         setTransportadoras([]);
