@@ -581,6 +581,138 @@ export function compararComReferencia(tabela, referencia) {
   };
 }
 
+
+export function compararTabelaReajuste(tabelaAntiga, tabelaReajuste) {
+  if (!tabelaAntiga || !tabelaReajuste) return null;
+
+  const mapaAntigo = indexarPorChave(tabelaAntiga);
+  const mapaNovo = indexarPorChave(tabelaReajuste);
+  const detalhes = [];
+  const rotasNovas = [];
+  const rotasSemReajuste = [];
+  let comparadas = 0;
+  let aumentou = 0;
+  let reduziu = 0;
+  let manteve = 0;
+  let somaValorAntigo = 0;
+  let somaValorNovo = 0;
+  let somaVariacao = 0;
+  let maiorAumento = null;
+  let maiorReducao = null;
+
+  mapaNovo.forEach((linhaNova) => {
+    const linhaAntiga = mapaAntigo.get(linhaNova.chave);
+    if (!linhaAntiga) {
+      rotasNovas.push({
+        id: `nova-${linhaNova.id}`,
+        origem: linhaNova.origem,
+        ufOrigem: linhaNova.ufOrigem,
+        destino: linhaNova.destino,
+        ufDestino: linhaNova.ufDestino,
+        tipo: linhaNova.tipo,
+        km: linhaNova.km,
+        valorNovo: linhaNova.valor,
+        fonteNova: linhaNova.valorFonte,
+        status: 'Rota nova',
+      });
+      return;
+    }
+
+    const valorAntigo = Number(linhaAntiga.valor || 0);
+    const valorNovo = Number(linhaNova.valor || 0);
+    const diferenca = valorNovo - valorAntigo;
+    const variacao = valorAntigo ? (diferenca / valorAntigo) * 100 : 0;
+    let status = 'Sem alteração';
+
+    if (diferenca > TOLERANCIA_EMPATE) {
+      status = 'Aumentou';
+      aumentou += 1;
+    } else if (diferenca < -TOLERANCIA_EMPATE) {
+      status = 'Reduziu';
+      reduziu += 1;
+    } else {
+      manteve += 1;
+    }
+
+    comparadas += 1;
+    somaValorAntigo += valorAntigo;
+    somaValorNovo += valorNovo;
+    somaVariacao += variacao;
+
+    const detalhe = {
+      id: `reajuste-${linhaAntiga.id}-${linhaNova.id}`,
+      origem: linhaAntiga.origem || linhaNova.origem,
+      ufOrigem: linhaAntiga.ufOrigem || linhaNova.ufOrigem,
+      destino: linhaAntiga.destino || linhaNova.destino,
+      ufDestino: linhaAntiga.ufDestino || linhaNova.ufDestino,
+      tipo: linhaAntiga.tipo || linhaNova.tipo,
+      km: linhaNova.km || linhaAntiga.km,
+      valorAntigo,
+      valorNovo,
+      fonteAntiga: linhaAntiga.valorFonte,
+      fonteNova: linhaNova.valorFonte,
+      diferenca,
+      variacao,
+      status,
+    };
+
+    if (!maiorAumento || variacao > maiorAumento.variacao) maiorAumento = detalhe;
+    if (!maiorReducao || variacao < maiorReducao.variacao) maiorReducao = detalhe;
+    detalhes.push(detalhe);
+  });
+
+  mapaAntigo.forEach((linhaAntiga) => {
+    if (mapaNovo.has(linhaAntiga.chave)) return;
+    rotasSemReajuste.push({
+      id: `sem-reajuste-${linhaAntiga.id}`,
+      origem: linhaAntiga.origem,
+      ufOrigem: linhaAntiga.ufOrigem,
+      destino: linhaAntiga.destino,
+      ufDestino: linhaAntiga.ufDestino,
+      tipo: linhaAntiga.tipo,
+      km: linhaAntiga.km,
+      valorAntigo: linhaAntiga.valor,
+      fonteAntiga: linhaAntiga.valorFonte,
+      status: 'Sem rota na reajustada',
+    });
+  });
+
+  detalhes.sort((a, b) => Math.abs(b.variacao) - Math.abs(a.variacao));
+  rotasNovas.sort((a, b) => (b.valorNovo || 0) - (a.valorNovo || 0));
+  rotasSemReajuste.sort((a, b) => (b.valorAntigo || 0) - (a.valorAntigo || 0));
+
+  const diferencaTotal = somaValorNovo - somaValorAntigo;
+  const variacaoPonderada = somaValorAntigo ? (diferencaTotal / somaValorAntigo) * 100 : 0;
+  const variacaoMedia = comparadas ? somaVariacao / comparadas : 0;
+  const coberturaAntiga = mapaAntigo.size ? (comparadas / mapaAntigo.size) * 100 : 0;
+  const coberturaNova = mapaNovo.size ? (comparadas / mapaNovo.size) * 100 : 0;
+
+  return {
+    tabelaAntigaNome: tabelaAntiga.nome,
+    tabelaReajusteNome: tabelaReajuste.nome,
+    baseAntiga: mapaAntigo.size,
+    baseNova: mapaNovo.size,
+    comparadas,
+    aumentou,
+    reduziu,
+    manteve,
+    rotasNovas: rotasNovas.length,
+    rotasSemReajuste: rotasSemReajuste.length,
+    somaValorAntigo,
+    somaValorNovo,
+    diferencaTotal,
+    variacaoPonderada,
+    variacaoMedia,
+    coberturaAntiga,
+    coberturaNova,
+    maiorAumento,
+    maiorReducao,
+    detalhes: detalhes.slice(0, MAX_EXEMPLOS_COMPARATIVO),
+    detalhesRotasNovas: rotasNovas.slice(0, 100),
+    detalhesRotasSemReajuste: rotasSemReajuste.slice(0, 100),
+  };
+}
+
 export function analisarTabelaVersusAntt(tabela, antt) {
   if (!tabela || !antt) return null;
 
