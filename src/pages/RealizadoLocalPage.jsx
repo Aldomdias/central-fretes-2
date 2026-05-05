@@ -1044,6 +1044,31 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
+  function possuiTabelaCompletaLocal(transportadora = {}) {
+    const origens = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
+    if (!origens.length) return false;
+    return origens.some((origem) => {
+      const temGeneralidades = origem?.generalidades && Object.keys(origem.generalidades || {}).length > 0;
+      return (
+        (Array.isArray(origem.rotas) && origem.rotas.length) ||
+        (Array.isArray(origem.cotacoes) && origem.cotacoes.length) ||
+        (Array.isArray(origem.taxasEspeciais) && origem.taxasEspeciais.length) ||
+        temGeneralidades
+      );
+    });
+  }
+
+  function obterBaseCompletaEmMemoria() {
+    const base = Array.isArray(transportadorasTabela) && transportadorasTabela.length
+      ? transportadorasTabela
+      : Array.isArray(transportadoras)
+        ? transportadoras
+        : [];
+
+    const completas = (base || []).filter((item) => item?.nome && possuiTabelaCompletaLocal(item));
+    return completas;
+  }
+
   async function exportarTodasTabelasLocais() {
     setSalvandoTabelaLocal(true);
     setErro('');
@@ -1051,15 +1076,119 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       const registros = await buscarTodasTabelasTransportadoraLocal();
       const transportadorasLocal = registros.map((item) => item.payload).filter(Boolean);
       if (!transportadorasLocal.length) {
-        setErro('Não há tabelas locais salvas para exportar.');
+        setErro('Não há tabelas locais salvas para exportar. Este botão exporta apenas o que já foi salvo/importado no navegador. Para gerar a base completa, use “Baixar pacote completo do Supabase”.');
         return;
       }
-      baixarJson(`pacote-tabelas-locais-${Date.now()}.json`, montarArquivoTabelasLocais(transportadorasLocal));
-      setFeedback(`Pacote local exportado com ${transportadorasLocal.length.toLocaleString('pt-BR')} transportadora(s). Esse arquivo pode ser salvo na máquina/rede e importado depois sem gastar Supabase.`);
+
+      const totalCadastro = (transportadoras || []).filter((item) => item?.nome).length;
+      if (totalCadastro > transportadorasLocal.length) {
+        const ok = window.confirm(
+          `Atenção: existem ${transportadorasLocal.length.toLocaleString('pt-BR')} tabela(s) salva(s) localmente, mas o cadastro mostra ${totalCadastro.toLocaleString('pt-BR')} transportadora(s).\n\n` +
+          'Este pacote vai exportar somente o que está salvo no navegador. Continuar mesmo assim?\n\n' +
+          'Para gerar pacote com todas as transportadoras, clique em “Baixar pacote completo do Supabase”.'
+        );
+        if (!ok) return;
+      }
+
+      baixarJson(`pacote-tabelas-salvas-navegador-${Date.now()}.json`, montarArquivoTabelasLocais(transportadorasLocal));
+      setFeedback(`Pacote salvo no navegador exportado com ${transportadorasLocal.length.toLocaleString('pt-BR')} transportadora(s). Se apareceu só TAM, é porque somente TAM está salva localmente neste navegador.`);
     } catch (error) {
       setErro(error.message || 'Erro ao exportar pacote local.');
     } finally {
       setSalvandoTabelaLocal(false);
+    }
+  }
+
+  async function baixarPacoteCompletoSupabase() {
+    const ok = window.confirm(
+      'Vou montar um pacote completo com todas as tabelas disponíveis.\n\n' +
+      'Se a base completa ainda não estiver carregada em memória, será feita uma consulta ao Supabase uma única vez. Depois o pacote fica salvo no navegador e pode ser exportado/importado sem gastar Supabase.\n\n' +
+      'Continuar?'
+    );
+    if (!ok) return;
+
+    setSalvandoTabelaLocal(true);
+    setErro('');
+    setProgress({
+      etapa: 'Montando pacote local completo',
+      atual: 0,
+      total: 1,
+      percentual: 5,
+      mensagem: 'Verificando se já existe base completa carregada em memória antes de consultar o Supabase.',
+    });
+
+    try {
+      let baseCompleta = obterBaseCompletaEmMemoria();
+      let fonte = 'memória/local';
+
+      if (!baseCompleta.length || baseCompleta.length < Math.max(1, Math.floor(((transportadoras || []).length || 0) * 0.5))) {
+        setProgress({
+          etapa: 'Baixando pacote completo do Supabase',
+          atual: 0,
+          total: 1,
+          percentual: 18,
+          mensagem: 'Consultando transportadoras, origens, rotas, fretes, taxas e generalidades uma vez para salvar localmente.',
+        });
+        await nextFrame();
+        baseCompleta = await carregarBaseCompletaDb();
+        fonte = 'Supabase';
+      }
+
+      const transportadorasValidas = (baseCompleta || []).filter((item) => item?.nome);
+      if (!transportadorasValidas.length) {
+        throw new Error('Não encontrei nenhuma transportadora completa para montar o pacote.');
+      }
+
+      setProgress({
+        etapa: 'Salvando pacote no navegador',
+        atual: 0,
+        total: transportadorasValidas.length,
+        percentual: 65,
+        mensagem: `Salvando ${transportadorasValidas.length.toLocaleString('pt-BR')} transportadora(s) localmente para simular sem Supabase.`,
+      });
+      await nextFrame();
+
+      const registros = await salvarTabelasTransportadoraLocal(transportadorasValidas);
+      await atualizarTabelasLocais();
+      setTransportadoraSimuladaCache((prev) => {
+        const next = { ...prev };
+        transportadorasValidas.forEach((item) => {
+          if (item?.nome) next[item.nome] = [item];
+        });
+        return next;
+      });
+      setTransportadorasTabela(transportadorasValidas);
+      setUsarTabelaSalvaLocal(true);
+      setEconomizarSupabase(true);
+
+      const pacote = montarArquivoTabelasLocais(transportadorasValidas);
+      baixarJson(`pacote-tabelas-completo-${Date.now()}.json`, pacote);
+
+      const totais = registros.reduce((acc, item) => {
+        acc.origens += Number(item.contagem?.origens || 0);
+        acc.rotas += Number(item.contagem?.rotas || 0);
+        acc.cotacoes += Number(item.contagem?.cotacoes || 0);
+        acc.taxas += Number(item.contagem?.taxas || 0);
+        return acc;
+      }, { origens: 0, rotas: 0, cotacoes: 0, taxas: 0 });
+
+      setProgress({
+        etapa: 'Pacote completo pronto',
+        atual: registros.length,
+        total: registros.length,
+        percentual: 100,
+        mensagem: 'Pacote completo salvo no navegador e exportado em JSON.',
+      });
+      setFeedback(
+        `Pacote completo gerado a partir de ${fonte}: ${registros.length.toLocaleString('pt-BR')} transportadora(s), ` +
+        `${totais.origens.toLocaleString('pt-BR')} origem(ns), ${totais.rotas.toLocaleString('pt-BR')} rota(s), ` +
+        `${totais.cotacoes.toLocaleString('pt-BR')} faixa(s)/frete(s) e ${totais.taxas.toLocaleString('pt-BR')} taxa(s). Agora o rápido e o completo podem usar pacote local.`
+      );
+    } catch (error) {
+      setErro(error.message || 'Erro ao baixar pacote completo para uso local.');
+    } finally {
+      setSalvandoTabelaLocal(false);
+      setTimeout(() => setProgress(null), 3000);
     }
   }
 
@@ -1512,9 +1641,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             <div className="sim-parametros-header">
               <div>
                 <strong>Tabela local da transportadora</strong>
-                <p>Use para reduzir consumo do Supabase. A tabela/pacote fica salvo no navegador e pode ser exportado para uma pasta da máquina ou rede.</p>
+                <p>Use para reduzir consumo do Supabase. O pacote completo pode ser baixado uma vez e depois fica salvo no navegador ou em arquivo JSON na rede.</p>
               </div>
-              <span>{tabelasLocais.length.toLocaleString('pt-BR')} tabela(s) local(is)</span>
+              <span>{tabelasLocais.length.toLocaleString('pt-BR')} de {Math.max((transportadoras || []).filter((item) => item?.nome).length, tabelasLocais.length).toLocaleString('pt-BR')} tabela(s) local(is)</span>
             </div>
             <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
               <input type="checkbox" checked={economizarSupabase} onChange={(e) => setEconomizarSupabase(e.target.checked)} />
@@ -1542,6 +1671,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                 </div>
               ) : null}
             </div>
+            {tabelasLocais.length && (transportadoras || []).filter((item) => item?.nome).length > tabelasLocais.length ? (
+              <div className="sim-alert warn" style={{ marginTop: 10 }}>
+                Hoje existem {tabelasLocais.length.toLocaleString('pt-BR')} tabela(s) salvas no navegador. Para o pacote trazer todas, use <strong>Baixar pacote completo do Supabase</strong> uma vez.
+              </div>
+            ) : null}
             <div className="button-row" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
               <button className="btn-secondary" type="button" onClick={salvarTransportadoraSelecionadaLocal} disabled={salvandoTabelaLocal || simulando || importando || !filtros.transportadora}>
                 {salvandoTabelaLocal ? 'Salvando...' : 'Salvar tabela local'}
@@ -1553,7 +1687,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                 Exportar JSON selecionada
               </button>
               <button className="btn-secondary" type="button" onClick={exportarTodasTabelasLocais} disabled={!tabelasLocais.length || simulando || importando || salvandoTabelaLocal}>
-                Exportar pacote local
+                Exportar pacote salvo no navegador
+              </button>
+              <button className="btn-primary" type="button" onClick={baixarPacoteCompletoSupabase} disabled={simulando || importando || salvandoTabelaLocal}>
+                Baixar pacote completo do Supabase
               </button>
               <button className="btn-secondary" type="button" onClick={removerTransportadoraLocal} disabled={!tabelaLocalSelecionada || simulando || importando}>
                 Remover local
