@@ -8,7 +8,9 @@ const menuPrincipal = [
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
   { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
   { chave: 'importar-template', label: 'Importar Template', icon: '⇩' },
-  { chave: 'lotacao', label: 'Lotação', icon: '▧' },
+  { chave: 'lotacao', label: 'Lotação Tabelas', icon: '▧' },
+  { chave: 'lotacao-operacao', label: 'Lotação Operação', icon: '🚚' },
+  { chave: 'lotacao-auditoria', label: 'Auditoria Lotação', icon: '✓' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', icon: '⌖' },
 ];
 
