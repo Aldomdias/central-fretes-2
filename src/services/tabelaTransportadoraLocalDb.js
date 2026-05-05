@@ -44,18 +44,30 @@ function txComplete(tx) {
   });
 }
 
+function contarGeneralidadesValor(value) {
+  if (!value) return 0;
+  if (Array.isArray(value)) return value.filter(Boolean).length;
+  if (typeof value === 'object') {
+    // No cadastro atual, generalidades normalmente é um objeto por origem.
+    // Conta como 1 quando há pelo menos um campo preenchido, para deixar claro
+    // se o pacote local trouxe as condições gerais usadas no cálculo.
+    return Object.keys(value).length ? 1 : 0;
+  }
+  return 1;
+}
+
 function contarEstrutura(transportadora = {}) {
   const origens = Array.isArray(transportadora.origens) ? transportadora.origens : [];
   let rotas = 0;
   let cotacoes = 0;
   let taxas = 0;
-  let generalidades = 0;
+  let generalidades = contarGeneralidadesValor(transportadora.generalidades);
 
   origens.forEach((origem) => {
     rotas += Array.isArray(origem.rotas) ? origem.rotas.length : 0;
     cotacoes += Array.isArray(origem.cotacoes) ? origem.cotacoes.length : 0;
     taxas += Array.isArray(origem.taxasEspeciais) ? origem.taxasEspeciais.length : Array.isArray(origem.taxas) ? origem.taxas.length : 0;
-    generalidades += origem.generalidades ? 1 : 0;
+    generalidades += contarGeneralidadesValor(origem.generalidades);
   });
 
   return { origens: origens.length, rotas, cotacoes, taxas, generalidades };
@@ -238,8 +250,9 @@ export function montarArquivoTabelasLocais(transportadoras = []) {
     acc.rotas += contagem.rotas || 0;
     acc.cotacoes += contagem.cotacoes || 0;
     acc.taxas += contagem.taxas || 0;
+    acc.generalidades += contagem.generalidades || 0;
     return acc;
-  }, { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0, taxas: 0 });
+  }, { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0, taxas: 0, generalidades: 0 });
 
   return {
     tipo: 'AMD_LOG_TABELAS_TRANSPORTADORAS_LOCAL',

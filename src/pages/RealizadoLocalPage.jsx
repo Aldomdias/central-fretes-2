@@ -949,8 +949,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
     setSalvandoTabelaLocal(true);
     setErro('');
-    setFeedback(`Salvando tabela da ${nome} localmente...`);
-    setProgress({ etapa: 'Salvando tabela local', atual: 0, total: 1, percentual: 8, mensagem: 'Buscando a tabela cadastrada no Supabase uma única vez e salvando no navegador para reutilizar.' });
+    setFeedback(`Atualizando tabela local da ${nome}...`);
+    setProgress({ etapa: 'Atualizando tabela local', atual: 0, total: 1, percentual: 8, mensagem: 'Buscando a versão atual da transportadora no Supabase uma única vez. A cópia local será sobrescrita com rotas, faixas, taxas e generalidades atuais.' });
 
     try {
       const tabela = await carregarTransportadoraCompletaDb(null, nome);
@@ -959,8 +959,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       await atualizarTabelasLocais();
       setTransportadoraSimuladaCache((prev) => ({ ...prev, [nome]: [tabela] }));
       setUsarTabelaSalvaLocal(true);
-      setProgress({ etapa: 'Tabela local salva', atual: 1, total: 1, percentual: 100, mensagem: 'Snapshot local pronto para simulação rápida.' });
-      setFeedback(`Tabela local salva: ${registro.nome} • ${Number(registro.contagem?.origens || 0).toLocaleString('pt-BR')} origem(ns) • ${Number(registro.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s) • ${formatBytes(registro.tamanhoBytes)}.`);
+      setProgress({ etapa: 'Tabela local atualizada', atual: 1, total: 1, percentual: 100, mensagem: 'Tabela local pronta para simulação rápida.' });
+      setFeedback(`Tabela local atualizada: ${registro.nome} • ${Number(registro.contagem?.origens || 0).toLocaleString('pt-BR')} origem(ns) • ${Number(registro.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s) • ${Number(registro.contagem?.cotacoes || 0).toLocaleString('pt-BR')} faixa(s) • ${Number(registro.contagem?.taxas || 0).toLocaleString('pt-BR')} taxa(s) • ${Number(registro.contagem?.generalidades || 0).toLocaleString('pt-BR')} generalidade(s) • ${formatBytes(registro.tamanhoBytes)}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao salvar tabela local.');
     } finally {
@@ -1058,10 +1058,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         acc.origens += Number(item.contagem?.origens || 0);
         acc.rotas += Number(item.contagem?.rotas || 0);
         acc.cotacoes += Number(item.contagem?.cotacoes || 0);
+        acc.generalidades += Number(item.contagem?.generalidades || 0);
         acc.incompletas += Number(item.contagem?.rotas || 0) > 0 && Number(item.contagem?.cotacoes || 0) > 0 ? 0 : 1;
         return acc;
-      }, { origens: 0, rotas: 0, cotacoes: 0, incompletas: 0 });
-      setFeedback(`Pacote local importado: ${registros.length.toLocaleString('pt-BR')} transportadora(s) • ${totais.origens.toLocaleString('pt-BR')} origem(ns) • ${totais.rotas.toLocaleString('pt-BR')} rota(s) • ${totais.cotacoes.toLocaleString('pt-BR')} cotação(ões)/faixa(s).${totais.incompletas ? ` Atenção: ${totais.incompletas.toLocaleString('pt-BR')} transportadora(s) sem rotas/cotações úteis para simulação.` : ''} Supabase não foi consultado.`);
+      }, { origens: 0, rotas: 0, cotacoes: 0, generalidades: 0, incompletas: 0 });
+      setFeedback(`Pacote local importado: ${registros.length.toLocaleString('pt-BR')} transportadora(s) • ${totais.origens.toLocaleString('pt-BR')} origem(ns) • ${totais.rotas.toLocaleString('pt-BR')} rota(s) • ${totais.cotacoes.toLocaleString('pt-BR')} cotação(ões)/faixa(s) • ${totais.generalidades.toLocaleString('pt-BR')} generalidade(s).${totais.incompletas ? ` Atenção: ${totais.incompletas.toLocaleString('pt-BR')} transportadora(s) sem rotas/cotações úteis para simulação.` : ''} Supabase não foi consultado.`);
     } catch (error) {
       setErro(error.message || 'Erro ao importar pacote local.');
     } finally {
@@ -1085,9 +1086,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       acc.rotas += Number(contagem.rotas || 0);
       acc.cotacoes += Number(contagem.cotacoes || 0);
       acc.taxas += Number(contagem.taxas || 0);
+      acc.generalidades += Number(contagem.generalidades || 0);
       acc.incompletas += contagem.origens > 0 && contagem.rotas > 0 && contagem.cotacoes > 0 ? 0 : 1;
       return acc;
-    }, { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0, taxas: 0, incompletas: 0 });
+    }, { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0, taxas: 0, generalidades: 0, incompletas: 0 });
   }
 
   function obterBaseCompletaEmMemoria() {
@@ -1209,8 +1211,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         acc.rotas += Number(item.contagem?.rotas || 0);
         acc.cotacoes += Number(item.contagem?.cotacoes || 0);
         acc.taxas += Number(item.contagem?.taxas || 0);
+        acc.generalidades += Number(item.contagem?.generalidades || 0);
         return acc;
-      }, { origens: 0, rotas: 0, cotacoes: 0, taxas: 0 });
+      }, { origens: 0, rotas: 0, cotacoes: 0, taxas: 0, generalidades: 0 });
 
       setProgress({
         etapa: 'Pacote completo pronto',
@@ -1222,7 +1225,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setFeedback(
         `Pacote completo gerado a partir de ${fonte}: ${registros.length.toLocaleString('pt-BR')} transportadora(s), ` +
         `${totais.origens.toLocaleString('pt-BR')} origem(ns), ${totais.rotas.toLocaleString('pt-BR')} rota(s), ` +
-        `${totais.cotacoes.toLocaleString('pt-BR')} faixa(s)/frete(s) e ${totais.taxas.toLocaleString('pt-BR')} taxa(s). ` +
+        `${totais.cotacoes.toLocaleString('pt-BR')} faixa(s)/frete(s), ${totais.taxas.toLocaleString('pt-BR')} taxa(s) ` +
+        `e ${totais.generalidades.toLocaleString('pt-BR')} generalidade(s). ` +
         `${incompletas ? `${incompletas.toLocaleString('pt-BR')} cadastro(s) sem rota/cotação útil foram ignorados no pacote. ` : ''}` +
         'Agora o rápido e o completo podem usar pacote local.'
       );
@@ -1704,7 +1708,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             <div className="mini-list top-space-sm">
               <div className="mini-list-row">
                 <span>Status da tabela selecionada</span>
-                <strong>{tabelaLocalSelecionada ? `Salva em ${formatDateBr(tabelaLocalSelecionada.atualizadoEm)} • ${Number(tabelaLocalSelecionada.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s) • ${Number(tabelaLocalSelecionada.contagem?.cotacoes || 0).toLocaleString('pt-BR')} faixa(s)` : 'Ainda não salva localmente'}</strong>
+                <strong>{tabelaLocalSelecionada ? `Salva em ${formatDateBr(tabelaLocalSelecionada.atualizadoEm)} • ${Number(tabelaLocalSelecionada.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s) • ${Number(tabelaLocalSelecionada.contagem?.cotacoes || 0).toLocaleString('pt-BR')} faixa(s) • ${Number(tabelaLocalSelecionada.contagem?.taxas || 0).toLocaleString('pt-BR')} taxa(s) • ${Number(tabelaLocalSelecionada.contagem?.generalidades || 0).toLocaleString('pt-BR')} generalidade(s)` : 'Ainda não salva localmente'}</strong>
               </div>
               {tabelaLocalSelecionada ? (
                 <div className="mini-list-row">
@@ -1718,14 +1722,19 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                 Esta tabela local está incompleta para simulação: precisa ter rota(s) e faixa(s)/cotação(ões). Se apareceu 0 rotas, limpe o pacote local e baixe novamente do Supabase.
               </div>
             ) : null}
+            {tabelaLocalSelecionada && Number(tabelaLocalSelecionada.contagem?.generalidades || 0) === 0 ? (
+              <div className="sim-alert warn" style={{ marginTop: 10 }}>
+                Atenção: esta tabela local está sem generalidades. Se você cadastrou ou corrigiu generalidades da {filtros.transportadora}, clique em <strong>Atualizar/Salvar selecionada</strong> para sobrescrever a cópia local com a versão atual do Supabase.
+              </div>
+            ) : null}
             {tabelasLocais.length && (transportadoras || []).filter((item) => item?.nome).length > tabelasLocais.length ? (
               <div className="sim-alert warn" style={{ marginTop: 10 }}>
                 Hoje existem {tabelasLocais.length.toLocaleString('pt-BR')} tabela(s) salvas no navegador. Para o pacote trazer todas, use <strong>Baixar pacote completo do Supabase</strong> uma vez.
               </div>
             ) : null}
             <div className="button-row" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-              <button className="btn-secondary" type="button" onClick={salvarTransportadoraSelecionadaLocal} disabled={salvandoTabelaLocal || simulando || importando || !filtros.transportadora}>
-                {salvandoTabelaLocal ? 'Salvando...' : 'Salvar tabela local'}
+              <button className="btn-secondary" type="button" onClick={salvarTransportadoraSelecionadaLocal} disabled={salvandoTabelaLocal || simulando || importando || !filtros.transportadora} title="Busca a versão atual da transportadora no Supabase e sobrescreve a cópia local, incluindo generalidades.">
+                {salvandoTabelaLocal ? 'Atualizando...' : 'Atualizar/Salvar selecionada'}
               </button>
               <button className="btn-secondary" type="button" onClick={() => tabelaLocalInputRef.current?.click()} disabled={salvandoTabelaLocal || simulando || importando}>
                 Importar pacote JSON local
@@ -1745,6 +1754,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               <button className="btn-secondary" type="button" onClick={removerTransportadoraLocal} disabled={!tabelaLocalSelecionada || simulando || importando}>
                 Remover local
               </button>
+            </div>
+            <div className="sim-alert info" style={{ marginTop: 10 }}>
+              Para atualizar uma transportadora local, selecione a transportadora e clique em <strong>Atualizar/Salvar selecionada</strong>. Isso consulta o Supabase uma vez e substitui apenas essa transportadora no navegador, mantendo o restante do pacote local.
             </div>
             <input ref={tabelaLocalInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={importarTransportadoraLocal} />
           </div>
