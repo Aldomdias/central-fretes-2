@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
@@ -12,36 +12,68 @@ import LotacaoPage from './pages/LotacaoPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
+import LoginPage from './pages/LoginPage';
+import UserManagementPage from './pages/UserManagementPage';
 import { useFreteStore } from './data/store';
+import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
+
+function primeiraPaginaPermitida(usuario) {
+  const candidatas = ['dashboard', 'simulador', 'realizado-local', 'realizado', 'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'consulta-ibge', 'transportadoras', 'usuarios'];
+  return candidatas.find((pagina) => usuarioTemAcesso(usuario, pagina)) || 'dashboard';
+}
 
 export default function App() {
   const store = useFreteStore();
+  const [sessao, setSessao] = useState(() => carregarSessao());
   const [paginaAtual, setPaginaAtual] = useState('dashboard');
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
   const [origemSelecionadaId, setOrigemSelecionadaId] = useState(null);
 
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
 
+  useEffect(() => {
+    if (!sessao) return;
+    if (!usuarioTemAcesso(sessao, paginaAtual)) setPaginaAtual(primeiraPaginaPermitida(sessao));
+  }, [sessao, paginaAtual]);
+
+  if (!sessao) {
+    return <LoginPage onLogin={setSessao} />;
+  }
+
+  const mudarPagina = (pagina) => {
+    if (!usuarioTemAcesso(sessao, pagina)) return;
+    setPaginaAtual(pagina);
+    if (pagina !== 'transportadoras') {
+      setTransportadoraSelecionadaId(null);
+      setOrigemSelecionadaId(null);
+    }
+  };
+
+  const sair = () => {
+    sairLocal();
+    setSessao(null);
+  };
+
   const abrirTransportadoras = () => {
-    setPaginaAtual('transportadoras');
+    mudarPagina('transportadoras');
     setTransportadoraSelecionadaId(null);
     setOrigemSelecionadaId(null);
   };
 
   const abrirSimulador = () => {
-    setPaginaAtual('simulador');
+    mudarPagina('simulador');
     setTransportadoraSelecionadaId(null);
     setOrigemSelecionadaId(null);
   };
 
   const abrirImportacao = () => {
-    setPaginaAtual('importacao');
+    mudarPagina('importacao');
     setTransportadoraSelecionadaId(null);
     setOrigemSelecionadaId(null);
   };
 
   const abrirTransportadora = (id) => {
-    setPaginaAtual('transportadoras');
+    mudarPagina('transportadoras');
     setTransportadoraSelecionadaId(id);
     setOrigemSelecionadaId(null);
   };
@@ -51,7 +83,7 @@ export default function App() {
   const voltarTransportadoras = () => {
     if (origemSelecionadaId) return setOrigemSelecionadaId(null);
     if (transportadoraSelecionadaId) return setTransportadoraSelecionadaId(null);
-    setPaginaAtual('dashboard');
+    mudarPagina('dashboard');
   };
 
   let content = null;
@@ -62,7 +94,7 @@ export default function App() {
         onAbrirSimulador={abrirSimulador}
         onAbrirTransportadoras={abrirTransportadoras}
         onAbrirImportacao={abrirImportacao}
-        onAbrirFormatacaoTabelas={() => setPaginaAtual('formatacao')}
+        onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')}
         onAtualizarBase={store.atualizarResumo}
         onConferirBase={store.conferirBase}
         syncStatus={store.syncStatus}
@@ -110,6 +142,10 @@ export default function App() {
     content = <ConsultaIbgePage />;
   }
 
+  if (paginaAtual === 'usuarios') {
+    content = <UserManagementPage usuarioAtual={sessao} />;
+  }
+
   if (paginaAtual === 'transportadoras') {
     content = (
       <TransportadorasPage
@@ -124,17 +160,22 @@ export default function App() {
     );
   }
 
+  if (!content) {
+    content = (
+      <div className="panel-card">
+        <div className="panel-title">Sem acesso</div>
+        <p>Seu perfil não tem permissão para acessar esta tela.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="app-layout">
       <Sidebar
         paginaAtual={paginaAtual}
-        onMudarPagina={(pagina) => {
-          setPaginaAtual(pagina);
-          if (pagina !== 'transportadoras') {
-            setTransportadoraSelecionadaId(null);
-            setOrigemSelecionadaId(null);
-          }
-        }}
+        onMudarPagina={mudarPagina}
+        usuario={sessao}
+        onLogout={sair}
       />
       <main className="app-content">{content}</main>
     </div>

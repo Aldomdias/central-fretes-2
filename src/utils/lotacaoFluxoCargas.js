@@ -552,12 +552,56 @@ export function salvarSolicitacoesPagamento(solicitacoes = []) {
   localStorage.setItem(SOLICITACOES_STORAGE_KEY, JSON.stringify(solicitacoes));
 }
 
+function normalizarCte(valor = '') {
+  const texto = normalizarTexto(valor);
+  if (!texto || texto === 'OUTRO' || texto === 'DIST' || texto === 'SEM CTE') return '';
+  return texto;
+}
+
+export function cteJaLancado(lancamentos = [], carga, cte) {
+  if (!carga) return false;
+  const cteKey = normalizarCte(cte);
+  if (!cteKey) return false;
+  const distKey = chaveDist(carga.dist);
+  return (lancamentos || []).some((item) => item.distKey === distKey && normalizarCte(item.cte || item.cteKey) === cteKey);
+}
+
+export function ctesLancadosCarga(lancamentos = [], carga) {
+  if (!carga) return [];
+  const distKey = chaveDist(carga.dist);
+  return (lancamentos || [])
+    .filter((item) => item.distKey === distKey)
+    .map((item) => item.cte || '')
+    .filter(Boolean);
+}
+
 export function totalLancadoCarga(lancamentos = [], carga) {
   if (!carga) return 0;
   const distKey = chaveDist(carga.dist);
   return (lancamentos || [])
     .filter((item) => item.distKey === distKey)
     .reduce((acc, item) => acc + (Number(item.valorLancado) || 0), 0);
+}
+
+export function totalAdicionalAutorizadoCarga(solicitacoes = [], carga) {
+  if (!carga) return 0;
+  const distKey = chaveDist(carga.dist);
+  return (solicitacoes || [])
+    .filter((item) => item.distKey === distKey && item.status === 'APROVADO')
+    .reduce((acc, item) => {
+      if (item.tipo === 'CUSTO_ADICIONAL') return acc + (Number(item.valorAdicional) || Number(item.valorLancado) || 0);
+      return acc + (Number(item.excedente) || 0);
+    }, 0);
+}
+
+export function totalAutorizadoCarga(solicitacoes = [], carga) {
+  if (!carga) return 0;
+  return (Number(carga.valorComparacao) || 0) + totalAdicionalAutorizadoCarga(solicitacoes, carga);
+}
+
+export function saldoDisponivelCarga(lancamentos = [], solicitacoes = [], carga) {
+  if (!carga) return 0;
+  return totalAutorizadoCarga(solicitacoes, carga) - totalLancadoCarga(lancamentos, carga);
 }
 
 export function lancamentosDaCarga(lancamentos = [], carga) {
@@ -568,34 +612,50 @@ export function lancamentosDaCarga(lancamentos = [], carga) {
     .sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
 }
 
-export function criarLancamentoAuditoria(carga, dados, lancamentosAtuais = []) {
+export function solicitacoesDaCarga(solicitacoes = [], carga) {
+  if (!carga) return [];
+  const distKey = chaveDist(carga.dist);
+  return (solicitacoes || [])
+    .filter((item) => item.distKey === distKey)
+    .sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
+}
+
+export function criarLancamentoAuditoria(carga, dados, lancamentosAtuais = [], solicitacoesAtuais = []) {
   const valorLancado = paraNumero(dados.valorLancado) || 0;
+  const cte = limparTexto(dados.cte || '');
+  if (cteJaLancado(lancamentosAtuais, carga, cte)) {
+    throw new Error(`O CT-e ${cte} já foi lançado para a DIST ${carga.dist}. Escolha outro CT-e.`);
+  }
+
   const totalAnterior = totalLancadoCarga(lancamentosAtuais, carga);
-  const saldoDisponivel = Math.max(0, (Number(carga.valorComparacao) || 0) - totalAnterior);
+  const saldoDisponivel = Math.max(0, saldoDisponivelCarga(lancamentosAtuais, solicitacoesAtuais, carga));
   const excedente = Number(Math.max(0, valorLancado - saldoDisponivel).toFixed(2));
 
-  const lancamento = {
+  return {
     id: uid('aud'),
     cargaId: carga.id,
     dist: carga.dist,
     distKey: chaveDist(carga.dist),
-    cte: limparTexto(dados.cte || ''),
+    cte,
+    cteKey: normalizarCte(cte),
     fatura: limparTexto(dados.fatura || ''),
     valorLancado,
     valorAutorizadoCarga: Number(carga.valorComparacao) || 0,
+    totalAutorizadoNoMomento: Number(totalAutorizadoCarga(solicitacoesAtuais, carga).toFixed(2)),
     totalAnterior: Number(totalAnterior.toFixed(2)),
+    saldoAnterior: Number(saldoDisponivel.toFixed(2)),
     excedente,
     status: excedente > 0 ? 'EXCEDEU' : 'OK',
     observacao: limparTexto(dados.observacao || ''),
     criadoEm: new Date().toISOString(),
   };
-
-  return lancamento;
 }
 
 export function criarSolicitacaoPagamento(carga, lancamento) {
   return {
     id: uid('sol'),
+    tipo: 'EXCEDENTE_AUDITORIA',
+    origemSolicitacao: 'AUDITORIA',
     cargaId: carga.id,
     dist: carga.dist,
     distKey: chaveDist(carga.dist),
@@ -607,12 +667,45 @@ export function criarSolicitacaoPagamento(carga, lancamento) {
     tipoVeiculo: carga.tipoVeiculo,
     valorAutorizadoCarga: Number(carga.valorComparacao) || 0,
     totalAnterior: lancamento.totalAnterior,
+    saldoAnterior: lancamento.saldoAnterior,
     valorLancado: lancamento.valorLancado,
     excedente: lancamento.excedente,
+    valorAdicional: lancamento.excedente,
     status: 'PENDENTE',
     observacao: lancamento.observacao,
     criadoEm: new Date().toISOString(),
     atualizadoEm: '',
+  };
+}
+
+export function criarCustoAdicionalLotacao(carga, dados = {}) {
+  const valorAdicional = paraNumero(dados.valorAdicional) || 0;
+  if (!valorAdicional || valorAdicional <= 0) throw new Error('Informe o valor do custo adicional.');
+  const tipoCusto = limparTexto(dados.tipoCusto || 'Custo adicional');
+  return {
+    id: uid('sol'),
+    tipo: 'CUSTO_ADICIONAL',
+    origemSolicitacao: 'OPERACAO',
+    cargaId: carga.id,
+    dist: carga.dist,
+    distKey: chaveDist(carga.dist),
+    cte: limparTexto(dados.cte || ''),
+    fatura: limparTexto(dados.fatura || ''),
+    transportadora: carga.transportadora,
+    origem: carga.origem,
+    destino: carga.destino,
+    tipoVeiculo: carga.tipoVeiculo,
+    valorAutorizadoCarga: Number(carga.valorComparacao) || 0,
+    totalAnterior: 0,
+    saldoAnterior: 0,
+    valorLancado: valorAdicional,
+    excedente: 0,
+    valorAdicional,
+    tipoCusto,
+    status: 'APROVADO',
+    observacao: limparTexto(dados.observacao || ''),
+    criadoEm: new Date().toISOString(),
+    atualizadoEm: new Date().toISOString(),
   };
 }
 
@@ -630,19 +723,23 @@ export function atualizarStatusSolicitacao(solicitacoes = [], id, status, observ
 
 export function textoSolicitacaoPagamento(solicitacao) {
   if (!solicitacao) return '';
+  const tipo = solicitacao.tipo === 'CUSTO_ADICIONAL' ? `Custo adicional - ${solicitacao.tipoCusto || 'Operação'}` : 'Excedente de auditoria';
   return [
     `Solicitação de autorização de pagamento - ${solicitacao.dist}`,
     '',
+    `Tipo: ${tipo}`,
     `Transportadora: ${solicitacao.transportadora}`,
     `Rota: ${solicitacao.origem} x ${solicitacao.destino}`,
     `Tipo de veículo: ${solicitacao.tipoVeiculo}`,
     `CT-e auditado: ${solicitacao.cte || '-'}`,
     `Fatura: ${solicitacao.fatura || '-'}`,
-    `Valor autorizado da carga: ${formatarMoeda(solicitacao.valorAutorizadoCarga)}`,
+    `Valor base autorizado da carga: ${formatarMoeda(solicitacao.valorAutorizadoCarga)}`,
     `Total já lançado antes: ${formatarMoeda(solicitacao.totalAnterior)}`,
-    `Valor lançado agora: ${formatarMoeda(solicitacao.valorLancado)}`,
-    `Excedente solicitado: ${formatarMoeda(solicitacao.excedente)}`,
+    `Saldo antes: ${formatarMoeda(solicitacao.saldoAnterior)}`,
+    `Valor lançado/custo: ${formatarMoeda(solicitacao.valorLancado || solicitacao.valorAdicional)}`,
+    `Excedente solicitado: ${formatarMoeda(solicitacao.excedente || solicitacao.valorAdicional)}`,
     '',
     `Observação: ${solicitacao.observacao || '-'}`,
-  ].join('\n');
+    solicitacao.resposta ? `Resposta operação: ${solicitacao.resposta}` : '',
+  ].filter(Boolean).join('\n');
 }

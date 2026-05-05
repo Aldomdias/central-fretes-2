@@ -1219,3 +1219,89 @@ button:disabled {
     align-items: stretch;
   }
 }
+
+/* Login e gestão de usuários */
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(135deg, #021944 0%, #071b49 45%, #f3f5f9 45%, #f3f5f9 100%);
+}
+
+.login-card {
+  width: min(560px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 34px;
+  border-radius: 28px;
+  background: #fff;
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 60px rgba(7, 27, 73, 0.18);
+}
+
+.login-card h1 {
+  margin: 8px 0 8px;
+  font-size: 48px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.login-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.sidebar-user-box {
+  margin: 0 18px 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,255,255,0.10);
+  display: grid;
+  gap: 4px;
+}
+
+.sidebar-user-box strong {
+  font-size: 15px;
+}
+
+.sidebar-user-box span {
+  color: rgba(255,255,255,0.72);
+  font-size: 13px;
+}
+
+.logout-button {
+  width: 100%;
+  margin-bottom: 10px;
+  border: 1px solid rgba(255,255,255,0.22);
+  background: rgba(255,255,255,0.10);
+  color: #fff;
+  border-radius: 14px;
+  min-height: 44px;
+  font-weight: 800;
+}
+
+.sidebar-footer-note span {
+  display: block;
+}
+
+.muted-block {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.link-button {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lotacao-custo-card {
+  border: 1px solid rgba(4, 199, 164, 0.26);
+}
