@@ -9,6 +9,8 @@ import ImportarTemplatePage from './pages/ImportarTemplatePage';
 import RealizadoPage from './pages/RealizadoPage';
 import RealizadoLocalPage from './pages/RealizadoLocalPage';
 import LotacaoPage from './pages/LotacaoPage';
+import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
+import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import { useFreteStore } from './data/store';
 
@@ -94,6 +96,14 @@ export default function App() {
 
   if (paginaAtual === 'lotacao') {
     content = <LotacaoPage />;
+  }
+
+  if (paginaAtual === 'lotacao-operacao') {
+    content = <LotacaoOperacaoPage />;
+  }
+
+  if (paginaAtual === 'lotacao-auditoria') {
+    content = <LotacaoAuditoriaPage />;
   }
 
   if (paginaAtual === 'consulta-ibge') {
