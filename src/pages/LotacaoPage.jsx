@@ -7,6 +7,7 @@ import {
   carregarTabelasLotacao,
   compararComReferencia,
   compararTabelaReajuste,
+  exportarComparativoReajusteXlsx,
   criarReferenciaMenorPreco,
   formatarMoeda,
   formatarPercentual,
@@ -44,8 +45,8 @@ function classeDiferenca(valor) {
 }
 
 function classeAntt(status) {
-  if (status === 'Abaixo ANTT') return 'negativo';
-  if (status === 'Acima ANTT') return 'positivo';
+  if (status === 'Abaixo ANTT' || status === 'Abaixo NTT') return 'negativo';
+  if (status === 'Acima ANTT' || status === 'Acima NTT') return 'positivo';
   return '';
 }
 
@@ -167,6 +168,16 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
       </div>
 
       <div className="actions-right gap-row lotacao-reajuste-actions">
+        {comparativo && (
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={carregando || !comparativo.detalhes?.length}
+            onClick={() => exportarComparativoReajusteXlsx(comparativo)}
+          >
+            Baixar visão Excel
+          </button>
+        )}
         <button
           type="button"
           className="btn-primary"
@@ -179,7 +190,7 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
 
       {!comparativo && (
         <div className="hint-box compact">
-          Use o mesmo modelo de transportadora. A coluna TARGET será lida como valor reajustado. A comparação usa Origem + UF Origem + Destino + UF Destino + Tipo de veículo.
+          Use o mesmo modelo de transportadora. A coluna TARGET será lida como valor reajustado. Se a ANTT/NTT estiver cadastrada, o relatório também mostra a comparação da tabela antiga e da reajustada contra a referência.
         </div>
       )}
 
@@ -206,6 +217,13 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
               <small>{formatarMoeda(comparativo.somaValorAntigo)} → {formatarMoeda(comparativo.somaValorNovo)}</small>
             </div>
             <div className="summary-card">
+              <span>Reajuste x NTT</span>
+              <strong className={comparativo.diferencaTotalReajusteAntt > 0 ? 'positivo' : comparativo.diferencaTotalReajusteAntt < 0 ? 'negativo' : ''}>
+                {comparativo.comparadasAntt ? formatarPercentual(comparativo.variacaoMediaReajusteAntt) : '-'}
+              </strong>
+              <small>{comparativo.comparadasAntt ? `${comparativo.reajusteAcimaAntt} acima · ${comparativo.reajusteAbaixoAntt} abaixo` : 'Suba a ANTT/NTT'}</small>
+            </div>
+            <div className="summary-card">
               <span>Rotas com aumento</span>
               <strong>{comparativo.aumentou}</strong>
               <small>{comparativo.reduziu} reduziram · {comparativo.manteve} iguais</small>
@@ -226,10 +244,20 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
               <strong>{formatarPercentual(comparativo.variacaoMedia)}</strong>
             </div>
             <div>
+              <span>Rotas com NTT</span>
+              <strong>{comparativo.comparadasAntt || 0}</strong>
+            </div>
+            <div>
               <span>Sem paridade de rota</span>
               <strong>{comparativo.rotasNovas} novas · {comparativo.rotasSemReajuste} sem reajuste</strong>
             </div>
           </div>
+
+          {!comparativo.comparadasAntt && (
+            <div className="hint-box compact top-space-sm">
+              A coluna NTT só será preenchida quando existir uma tabela ANTT/NTT cadastrada no módulo de Lotação com a mesma chave da rota.
+            </div>
+          )}
 
           <div className="section-row compact-top top-space-sm">
             <div>
@@ -248,9 +276,12 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
                   <th>Tipo</th>
                   <th>KM</th>
                   <th>Valor antigo</th>
+                  <th>NTT</th>
                   <th>Valor reajuste</th>
                   <th>Diferença</th>
                   <th>% aumento</th>
+                  <th>Antigo x NTT</th>
+                  <th>Reajuste x NTT</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -262,9 +293,12 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
                     <td>{item.tipo}</td>
                     <td>{item.km || '-'}</td>
                     <td>{formatarMoeda(item.valorAntigo)}</td>
+                    <td>{formatarMoeda(item.valorAntt)}</td>
                     <td>{formatarMoeda(item.valorNovo)}</td>
                     <td className={classeReajuste(item.status)}>{formatarMoeda(item.diferenca)}</td>
                     <td className={classeReajuste(item.status)}><strong>{formatarPercentual(item.variacao)}</strong></td>
+                    <td className={classeAntt(item.statusAntigoAntt)}>{item.valorAntt === null || item.valorAntt === undefined ? '-' : formatarPercentual(item.variacaoAntigoAntt)}</td>
+                    <td className={classeAntt(item.statusNovoAntt)}>{item.valorAntt === null || item.valorAntt === undefined ? '-' : formatarPercentual(item.variacaoNovoAntt)}</td>
                     <td><span className="status-pill">{item.status}</span></td>
                   </tr>
                 ))}
@@ -905,8 +939,8 @@ export default function LotacaoPage() {
     [transportadoras, tabelaAntigaReajusteId]
   );
   const comparativoReajuste = useMemo(
-    () => compararTabelaReajuste(tabelaAntigaReajuste, tabelaReajuste),
-    [tabelaAntigaReajuste, tabelaReajuste]
+    () => compararTabelaReajuste(tabelaAntigaReajuste, tabelaReajuste, antt),
+    [tabelaAntigaReajuste, tabelaReajuste, antt]
   );
 
   const importar = async ({ tipo, file, nome }) => {
@@ -958,7 +992,7 @@ export default function LotacaoPage() {
       setFeedback(
         `Tabela de reajuste ${nomePadrao} carregada para comparação temporária com ${antiga?.nome || 'a tabela antiga'}. ` +
         `Foram lidas ${tabela.linhas.length} rotas válidas (${tabela.rotasUnicas || tabela.linhas.length} rotas únicas). ` +
-        'Ela não foi salva no Supabase nem substituiu a tabela oficial.'
+        'Ela não foi salva no Supabase nem substituiu a tabela oficial. Se a ANTT/NTT estiver cadastrada, a visão também trará o comparativo contra a referência.'
       );
     } catch (error) {
       setFeedback(error.message || 'Erro ao importar tabela de reajuste.');
