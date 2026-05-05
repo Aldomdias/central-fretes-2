@@ -7,10 +7,13 @@ import {
   excluirTabelaTransportadoraLocal,
   extrairTransportadorasDeArquivoLocal,
   listarTabelasTransportadoraLocal,
+  limparTodasTabelasTransportadoraLocal,
   montarArquivoTabelaLocal,
   montarArquivoTabelasLocais,
   salvarTabelaTransportadoraLocal,
   salvarTabelasTransportadoraLocal,
+  contarEstruturaTransportadoraLocal,
+  transportadoraTemTabelaUtilLocal,
 } from '../services/tabelaTransportadoraLocalDb';
 import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import {
@@ -988,6 +991,27 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
+  async function limparPacoteLocalTransportadoras() {
+    const ok = window.confirm(
+      'Limpar todas as tabelas de transportadoras salvas localmente neste navegador?\n\n' +
+      'Isso não altera o Supabase e é recomendado quando um pacote foi gerado com 0 rotas ou incompleto.'
+    );
+    if (!ok) return;
+    setSalvandoTabelaLocal(true);
+    setErro('');
+    try {
+      await limparTodasTabelasTransportadoraLocal();
+      await atualizarTabelasLocais();
+      setTransportadoraSimuladaCache({});
+      setTransportadorasTabela(null);
+      setFeedback('Pacote local de transportadoras limpo neste navegador. Baixe novamente o pacote completo do Supabase para corrigir as rotas.');
+    } catch (error) {
+      setErro(error.message || 'Erro ao limpar pacote local.');
+    } finally {
+      setSalvandoTabelaLocal(false);
+    }
+  }
+
   async function exportarTransportadoraLocal() {
     const nome = String(filtros.transportadora || '').trim();
     if (!nome) {
@@ -1033,9 +1057,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       const totais = registros.reduce((acc, item) => {
         acc.origens += Number(item.contagem?.origens || 0);
         acc.rotas += Number(item.contagem?.rotas || 0);
+        acc.cotacoes += Number(item.contagem?.cotacoes || 0);
+        acc.incompletas += Number(item.contagem?.rotas || 0) > 0 && Number(item.contagem?.cotacoes || 0) > 0 ? 0 : 1;
         return acc;
-      }, { origens: 0, rotas: 0 });
-      setFeedback(`Pacote local importado: ${registros.length.toLocaleString('pt-BR')} transportadora(s) • ${totais.origens.toLocaleString('pt-BR')} origem(ns) • ${totais.rotas.toLocaleString('pt-BR')} rota(s). Supabase não foi consultado.`);
+      }, { origens: 0, rotas: 0, cotacoes: 0, incompletas: 0 });
+      setFeedback(`Pacote local importado: ${registros.length.toLocaleString('pt-BR')} transportadora(s) • ${totais.origens.toLocaleString('pt-BR')} origem(ns) • ${totais.rotas.toLocaleString('pt-BR')} rota(s) • ${totais.cotacoes.toLocaleString('pt-BR')} cotação(ões)/faixa(s).${totais.incompletas ? ` Atenção: ${totais.incompletas.toLocaleString('pt-BR')} transportadora(s) sem rotas/cotações úteis para simulação.` : ''} Supabase não foi consultado.`);
     } catch (error) {
       setErro(error.message || 'Erro ao importar pacote local.');
     } finally {
@@ -1045,17 +1071,23 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   function possuiTabelaCompletaLocal(transportadora = {}) {
-    const origens = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
-    if (!origens.length) return false;
-    return origens.some((origem) => {
-      const temGeneralidades = origem?.generalidades && Object.keys(origem.generalidades || {}).length > 0;
-      return (
-        (Array.isArray(origem.rotas) && origem.rotas.length) ||
-        (Array.isArray(origem.cotacoes) && origem.cotacoes.length) ||
-        (Array.isArray(origem.taxasEspeciais) && origem.taxasEspeciais.length) ||
-        temGeneralidades
-      );
-    });
+    // Para simulação local não basta ter cadastro/origem/generalidade.
+    // Precisa ter rotas/malha e cotações/faixas. Caso contrário o pacote fica bonito,
+    // mas não calcula frete nem ranking e aparece com 0 rotas.
+    return transportadoraTemTabelaUtilLocal(transportadora);
+  }
+
+  function resumirQualidadePacoteLocal(transportadorasPacote = []) {
+    return (transportadorasPacote || []).reduce((acc, item) => {
+      const contagem = contarEstruturaTransportadoraLocal(item);
+      acc.transportadoras += 1;
+      acc.origens += Number(contagem.origens || 0);
+      acc.rotas += Number(contagem.rotas || 0);
+      acc.cotacoes += Number(contagem.cotacoes || 0);
+      acc.taxas += Number(contagem.taxas || 0);
+      acc.incompletas += contagem.origens > 0 && contagem.rotas > 0 && contagem.cotacoes > 0 ? 0 : 1;
+      return acc;
+    }, { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0, taxas: 0, incompletas: 0 });
   }
 
   function obterBaseCompletaEmMemoria() {
@@ -1102,7 +1134,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   async function baixarPacoteCompletoSupabase() {
     const ok = window.confirm(
       'Vou montar um pacote completo com todas as tabelas disponíveis.\n\n' +
-      'Se a base completa ainda não estiver carregada em memória, será feita uma consulta ao Supabase uma única vez. Depois o pacote fica salvo no navegador e pode ser exportado/importado sem gastar Supabase.\n\n' +
+      'Será feita uma consulta ao Supabase uma única vez para baixar a estrutura real com rotas e cotações. Não vou usar a memória da tela, porque ela pode estar incompleta e gerar pacote com 0 rotas. Depois o pacote fica salvo no navegador e pode ser exportado/importado sem gastar Supabase.\n\n' +
       'Continuar?'
     );
     if (!ok) return;
@@ -1110,33 +1142,41 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setSalvandoTabelaLocal(true);
     setErro('');
     setProgress({
-      etapa: 'Montando pacote local completo',
+      etapa: 'Baixando pacote completo do Supabase',
       atual: 0,
       total: 1,
-      percentual: 5,
-      mensagem: 'Verificando se já existe base completa carregada em memória antes de consultar o Supabase.',
+      percentual: 8,
+      mensagem: 'Consultando o Supabase agora. Não vou usar a memória da tela, porque ela pode ter só cadastro/resumo e gerar pacote com 0 rotas.',
     });
 
     try {
-      let baseCompleta = obterBaseCompletaEmMemoria();
-      let fonte = 'memória/local';
+      await nextFrame();
+      const baseCompleta = await carregarBaseCompletaDb();
+      const fonte = 'Supabase';
 
-      if (!baseCompleta.length || baseCompleta.length < Math.max(1, Math.floor(((transportadoras || []).length || 0) * 0.5))) {
-        setProgress({
-          etapa: 'Baixando pacote completo do Supabase',
-          atual: 0,
-          total: 1,
-          percentual: 18,
-          mensagem: 'Consultando transportadoras, origens, rotas, fretes, taxas e generalidades uma vez para salvar localmente.',
-        });
-        await nextFrame();
-        baseCompleta = await carregarBaseCompletaDb();
-        fonte = 'Supabase';
+      const todasComNome = (baseCompleta || []).filter((item) => item?.nome);
+      const resumoQualidade = resumirQualidadePacoteLocal(todasComNome);
+
+      if (!Number(resumoQualidade.rotas || 0)) {
+        throw new Error(
+          `O Supabase retornou ${resumoQualidade.transportadoras.toLocaleString('pt-BR')} transportadora(s), ` +
+          `${resumoQualidade.origens.toLocaleString('pt-BR')} origem(ns), mas 0 rota(s). ` +
+          'Por segurança não gerei o pacote, porque pacote sem rotas não simula por IBGE. ' +
+          'Isso normalmente acontece quando a tela usa apenas cadastro/resumo ou quando a tabela rotas não foi carregada no banco. Confira o cadastro de rotas/malha no Supabase antes de gerar o pacote.'
+        );
       }
 
-      const transportadorasValidas = (baseCompleta || []).filter((item) => item?.nome);
+      const transportadorasValidas = todasComNome.filter((item) => possuiTabelaCompletaLocal(item));
+      const incompletas = Math.max(0, resumoQualidade.transportadoras - transportadorasValidas.length);
+
       if (!transportadorasValidas.length) {
-        throw new Error('Não encontrei nenhuma transportadora completa para montar o pacote.');
+        throw new Error(
+          `Baixei dados do Supabase, mas nenhuma transportadora veio completa para simulação. ` +
+          `Totais baixados: ${resumoQualidade.origens.toLocaleString('pt-BR')} origem(ns), ` +
+          `${resumoQualidade.rotas.toLocaleString('pt-BR')} rota(s), ` +
+          `${resumoQualidade.cotacoes.toLocaleString('pt-BR')} cotação(ões)/faixa(s). ` +
+          'Para simular localmente, a transportadora precisa ter rotas e cotações/faixas.'
+        );
       }
 
       setProgress({
@@ -1182,7 +1222,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setFeedback(
         `Pacote completo gerado a partir de ${fonte}: ${registros.length.toLocaleString('pt-BR')} transportadora(s), ` +
         `${totais.origens.toLocaleString('pt-BR')} origem(ns), ${totais.rotas.toLocaleString('pt-BR')} rota(s), ` +
-        `${totais.cotacoes.toLocaleString('pt-BR')} faixa(s)/frete(s) e ${totais.taxas.toLocaleString('pt-BR')} taxa(s). Agora o rápido e o completo podem usar pacote local.`
+        `${totais.cotacoes.toLocaleString('pt-BR')} faixa(s)/frete(s) e ${totais.taxas.toLocaleString('pt-BR')} taxa(s). ` +
+        `${incompletas ? `${incompletas.toLocaleString('pt-BR')} cadastro(s) sem rota/cotação útil foram ignorados no pacote. ` : ''}` +
+        'Agora o rápido e o completo podem usar pacote local.'
       );
     } catch (error) {
       setErro(error.message || 'Erro ao baixar pacote completo para uso local.');
@@ -1662,7 +1704,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             <div className="mini-list top-space-sm">
               <div className="mini-list-row">
                 <span>Status da tabela selecionada</span>
-                <strong>{tabelaLocalSelecionada ? `Salva em ${formatDateBr(tabelaLocalSelecionada.atualizadoEm)} • ${Number(tabelaLocalSelecionada.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s)` : 'Ainda não salva localmente'}</strong>
+                <strong>{tabelaLocalSelecionada ? `Salva em ${formatDateBr(tabelaLocalSelecionada.atualizadoEm)} • ${Number(tabelaLocalSelecionada.contagem?.rotas || 0).toLocaleString('pt-BR')} rota(s) • ${Number(tabelaLocalSelecionada.contagem?.cotacoes || 0).toLocaleString('pt-BR')} faixa(s)` : 'Ainda não salva localmente'}</strong>
               </div>
               {tabelaLocalSelecionada ? (
                 <div className="mini-list-row">
@@ -1671,6 +1713,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
                 </div>
               ) : null}
             </div>
+            {tabelaLocalSelecionada && (!Number(tabelaLocalSelecionada.contagem?.rotas || 0) || !Number(tabelaLocalSelecionada.contagem?.cotacoes || 0)) ? (
+              <div className="sim-alert warn" style={{ marginTop: 10 }}>
+                Esta tabela local está incompleta para simulação: precisa ter rota(s) e faixa(s)/cotação(ões). Se apareceu 0 rotas, limpe o pacote local e baixe novamente do Supabase.
+              </div>
+            ) : null}
             {tabelasLocais.length && (transportadoras || []).filter((item) => item?.nome).length > tabelasLocais.length ? (
               <div className="sim-alert warn" style={{ marginTop: 10 }}>
                 Hoje existem {tabelasLocais.length.toLocaleString('pt-BR')} tabela(s) salvas no navegador. Para o pacote trazer todas, use <strong>Baixar pacote completo do Supabase</strong> uma vez.
@@ -1691,6 +1738,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               </button>
               <button className="btn-primary" type="button" onClick={baixarPacoteCompletoSupabase} disabled={simulando || importando || salvandoTabelaLocal}>
                 Baixar pacote completo do Supabase
+              </button>
+              <button className="btn-secondary" type="button" onClick={limparPacoteLocalTransportadoras} disabled={!tabelasLocais.length || simulando || importando || salvandoTabelaLocal}>
+                Limpar pacote local
               </button>
               <button className="btn-secondary" type="button" onClick={removerTransportadoraLocal} disabled={!tabelaLocalSelecionada || simulando || importando}>
                 Remover local

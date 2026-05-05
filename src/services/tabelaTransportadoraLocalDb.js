@@ -1,5 +1,5 @@
 const DB_NAME = 'amd-tabelas-transportadora-local-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_SNAPSHOTS = 'snapshots_transportadora';
 
 function normalizeNome(value) {
@@ -69,8 +69,55 @@ function serializarSnapshot(transportadora = {}) {
   }
 }
 
+export function contarEstruturaTransportadoraLocal(transportadora = {}) {
+  return contarEstrutura(transportadora);
+}
+
+export function transportadoraTemTabelaUtilLocal(transportadora = {}) {
+  const contagem = contarEstrutura(transportadora);
+  // Para simular localmente precisa ter malha/rota e cotação/faixa.
+  // Se vier 0 rotas, não há como cruzar origem/destino por IBGE.
+  return Boolean(contagem.origens > 0 && contagem.rotas > 0 && contagem.cotacoes > 0);
+}
+
+function resumoPacoteLocal(transportadora = {}) {
+  const contagem = contarEstrutura(transportadora);
+  const completa = transportadoraTemTabelaUtilLocal(transportadora);
+  return {
+    pacoteLocal: true,
+    status: completa ? 'Completa para simulação' : 'Incompleta para simulação',
+    severidade: completa ? 'ok' : 'warn',
+    origens: contagem.origens,
+    rotas: contagem.rotas,
+    cotacoes: contagem.cotacoes,
+    taxas: contagem.taxas,
+    generalidades: contagem.generalidades,
+    atualizadoEm: new Date().toISOString(),
+  };
+}
+
 function limparTransportadora(transportadora = {}) {
-  return JSON.parse(JSON.stringify(transportadora || {}));
+  const payload = JSON.parse(JSON.stringify(transportadora || {}));
+  const resumo = resumoPacoteLocal(payload);
+
+  // O pacote local deve refletir a estrutura que será usada na simulação.
+  // Evita exportar o resumo antigo do cadastro, como "Sem validação" com rotas/cotações zeradas,
+  // quando a transportadora possui origens/cotações dentro do arquivo.
+  payload.resumoPacoteLocal = resumo;
+  payload.resumoCobertura = {
+    ...(payload.resumoCobertura || {}),
+    cobertura: resumo.status,
+    severidade: resumo.severidade,
+    inconsistentes: Number(payload.resumoCobertura?.inconsistentes || 0),
+    pendencias: Number(payload.resumoCobertura?.pendencias || 0),
+    faltandoFrete: Number(payload.resumoCobertura?.faltandoFrete || 0),
+    faltandoRota: Number(payload.resumoCobertura?.faltandoRota || 0),
+    totalRotas: resumo.rotas,
+    totalCotacoes: resumo.cotacoes,
+    resumo: true,
+    pacoteLocal: true,
+  };
+  return payload;
 }
 
 function criarRegistro(transportadora = {}) {
@@ -135,13 +182,17 @@ export async function buscarTodasTabelasTransportadoraLocal() {
 export async function listarTabelasTransportadoraLocal() {
   const rows = await buscarTodasTabelasTransportadoraLocal();
   return (rows || [])
-    .map((item) => ({
-      nome: item.nome,
-      nomeNormalizado: item.nomeNormalizado,
-      atualizadoEm: item.atualizadoEm,
-      contagem: item.contagem || {},
-      tamanhoBytes: item.tamanhoBytes || 0,
-    }))
+    .map((item) => {
+      const contagemAtual = contarEstrutura(item.payload || {});
+      return {
+        nome: item.nome,
+        nomeNormalizado: item.nomeNormalizado,
+        atualizadoEm: item.atualizadoEm,
+        contagem: contagemAtual,
+        tamanhoBytes: item.tamanhoBytes || 0,
+        statusPacote: transportadoraTemTabelaUtilLocal(item.payload || {}) ? 'Completa para simulação' : 'Incompleta para simulação',
+      };
+    })
     .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
 }
 
@@ -152,6 +203,15 @@ export async function excluirTabelaTransportadoraLocal(nomeTransportadora = '') 
   const db = await openDb();
   const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
   tx.objectStore(STORE_SNAPSHOTS).delete(nomeNormalizado);
+  await txComplete(tx);
+  db.close();
+  return true;
+}
+
+export async function limparTodasTabelasTransportadoraLocal() {
+  const db = await openDb();
+  const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
+  tx.objectStore(STORE_SNAPSHOTS).clear();
   await txComplete(tx);
   db.close();
   return true;
