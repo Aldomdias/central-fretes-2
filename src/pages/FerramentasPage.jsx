@@ -11,11 +11,12 @@ const DEFAULT_CONFIG = {
   fim: '',
   agrupamento: 'cidade_ibge',
   excluirEbazar: true,
-  incluirDetalhe: false,
+  incluirDetalhe: true,
   vincularCtes: true,
 };
 
 const CANAIS = ['', 'ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA'];
+const CANAIS_GRADE = ['ATACADO', 'B2C'];
 
 function toNumber(value) {
   const n = Number(value || 0);
@@ -26,10 +27,73 @@ function safeSheetName(nome) {
   return String(nome || 'Planilha').replace(/[\\/?*\[\]:]/g, ' ').slice(0, 31) || 'Planilha';
 }
 
+function isMoneyColumn(header = '') {
+  const h = String(header).toUpperCase();
+  return h.includes('VALOR') || h.includes('FRETE') || h.includes('NF');
+}
+
+function isPercentColumn(header = '') {
+  return String(header).toUpperCase().includes('PERCENTUAL') || String(header).includes('%');
+}
+
+function isNumericColumn(header = '') {
+  const h = String(header).toUpperCase();
+  return [
+    'NOTAS', 'VOLUMES', 'PESO', 'CUBAGEM', 'M3', 'CTES', 'MEDIA', 'MÉDIA', 'QTD', 'TOTAL', 'PERCENTUAL', 'FRETE', 'VALOR', 'NF'
+  ].some((termo) => h.includes(termo));
+}
+
+function columnWidth(header = '') {
+  const h = String(header || '');
+  if (h.includes('Chave') || h.includes('CHAVE')) return { wch: 44 };
+  if (h.includes('Observacao') || h.includes('Observação')) return { wch: 42 };
+  if (h.includes('Transportadora')) return { wch: 34 };
+  if (h.includes('Origem') || h.includes('Destino')) return { wch: 28 };
+  if (h.includes('IBGE')) return { wch: 14 };
+  if (h.includes('Faixa')) return { wch: 18 };
+  if (h.includes('Data')) return { wch: 14 };
+  if (h.includes('Valor') || h.includes('Frete')) return { wch: 18 };
+  return { wch: Math.min(Math.max(h.length + 4, 12), 28) };
+}
+
+function aplicarFormatoPlanilha(ws, rows = []) {
+  if (!rows?.length) return;
+  const headers = Object.keys(rows[0] || {});
+  if (!headers.length) return;
+
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range(range) };
+  ws['!cols'] = headers.map(columnWidth);
+
+  headers.forEach((header, colIndex) => {
+    const headerRef = XLSX.utils.encode_cell({ r: 0, c: colIndex });
+    if (ws[headerRef]) ws[headerRef].s = { font: { bold: true } };
+
+    for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
+      const ref = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+      const cell = ws[ref];
+      if (!cell) continue;
+      if (typeof cell.v !== 'number') continue;
+
+      if (isPercentColumn(header)) {
+        cell.z = '0.00"%"';
+      } else if (isMoneyColumn(header)) {
+        cell.z = 'R$ #,##0.00';
+      } else if (String(header).toUpperCase().includes('CUBAGEM')) {
+        cell.z = '#,##0.000000';
+      } else if (isNumericColumn(header)) {
+        cell.z = '#,##0.00';
+      }
+    }
+  });
+}
+
 function baixarXlsx(nomeArquivo, abas) {
   const wb = XLSX.utils.book_new();
   Object.entries(abas).forEach(([nome, rows]) => {
-    const ws = XLSX.utils.json_to_sheet(rows || []);
+    const safeRows = rows || [];
+    const ws = XLSX.utils.json_to_sheet(safeRows);
+    aplicarFormatoPlanilha(ws, safeRows);
     XLSX.utils.book_append_sheet(wb, ws, safeSheetName(nome));
   });
   XLSX.writeFile(wb, nomeArquivo);
@@ -44,7 +108,8 @@ function faixaVolumetria(canal, peso, grade = {}) {
   const linha = encontrarLinhaGradePorPeso(grade[canalNorm] || [], peso);
   if (!linha) return '';
   const limite = Number(linha.peso || 0);
-  if (!limite || limite >= 999999) return `${limite >= 999999 ? '100+' : limite} kg`;
+  if (!limite) return '';
+  if (limite >= 999999) return '100+ kg';
   return `Até ${limite.toLocaleString('pt-BR')} kg`;
 }
 
@@ -64,10 +129,8 @@ function linhaInicial(row = {}, agrupamento, faixa) {
     Peso_Declarado: 0,
     Peso_Cubado: 0,
     Peso_Considerado: 0,
-    Cubagem: 0,
+    Cubagem_m3: 0,
     Valor_NF: 0,
-    CTEs_Vinculados: 0,
-    Frete_CTE_Vinculado: 0,
   };
 
   if (agrupamento === 'estado') {
@@ -102,30 +165,27 @@ function montarVolumetria(rows = [], config = {}, grade = {}) {
     item.Peso_Declarado += toNumber(row.pesoDeclarado);
     item.Peso_Cubado += toNumber(row.pesoCubado);
     item.Peso_Considerado += peso;
-    item.Cubagem += toNumber(row.cubagem);
+    item.Cubagem_m3 += toNumber(row.cubagem);
     item.Valor_NF += toNumber(row.valorNF);
-    item.CTEs_Vinculados += toNumber(row.qtdCtesVinculados);
-    item.Frete_CTE_Vinculado += toNumber(row.valorCteVinculado);
   });
 
   return [...mapa.values()].map((item) => ({
     ...item,
     Media_Peso_Nota: item.Notas ? item.Peso_Considerado / item.Notas : 0,
     Media_Volumes_Nota: item.Notas ? item.Volumes / item.Notas : 0,
-    Media_Cubagem_Nota: item.Notas ? item.Cubagem / item.Notas : 0,
-    Percentual_Frete_CTE: item.Valor_NF ? (item.Frete_CTE_Vinculado / item.Valor_NF) * 100 : 0,
+    Media_Cubagem_Nota: item.Notas ? item.Cubagem_m3 / item.Notas : 0,
+    Media_Valor_NF_Nota: item.Notas ? item.Valor_NF / item.Notas : 0,
   })).sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')));
 }
 
-function detalheRow(row = {}, grade = {}) {
+function detalheTrackingRow(row = {}, grade = {}) {
   const canal = String(row.canal || '').toUpperCase();
   const peso = pesoConsiderado(row);
   return {
-    Nota_Fiscal: row.notaFiscal || '',
+    Nota_Fiscal: row.notaFiscal || row.numeroNf || row.nfNumero || '',
     Pedido: row.pedido || '',
-    Data: row.data || '',
+    Data: row.data || row.dataFaturamento || '',
     Canal: row.canal || '',
-    Transportadora: row.transportadora || '',
     Origem: row.cidadeOrigem || '',
     UF_Origem: row.ufOrigem || '',
     IBGE_Origem: row.ibgeOrigem || '',
@@ -134,20 +194,39 @@ function detalheRow(row = {}, grade = {}) {
     IBGE_Destino: row.ibgeDestino || '',
     Faixa_Peso: canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso, grade) : '',
     Volumes: toNumber(row.qtdVolumes),
+    Peso_Real: toNumber(row.peso),
+    Peso_Declarado: toNumber(row.pesoDeclarado),
+    Peso_Cubado: toNumber(row.pesoCubado),
     Peso_Considerado: peso,
-    Cubagem: toNumber(row.cubagem),
+    Cubagem_m3: toNumber(row.cubagem),
     Valor_NF: toNumber(row.valorNF),
-    CTEs_Vinculados: toNumber(row.qtdCtesVinculados),
-    Frete_CTE_Vinculado: toNumber(row.valorCteVinculado),
-    Percentual_Frete_CTE: toNumber(row.percentualFreteCteVinculado),
-    Transportadoras_CTE: row.transportadorasCte || '',
-    Numeros_CTE: row.numerosCteVinculados || row.cteNumero || '',
-    Chave_Relacao: row.chaveRelacaoUsada || '',
+    Endereco_Complementado_CTE: row.enderecoComplementadoPorCte ? 'Sim' : 'Não',
+    Campos_Complementados_CTE: row.camposComplementadosPorCte || '',
   };
 }
 
-
-const CANAIS_GRADE = ['ATACADO', 'B2C'];
+function vinculoCteInternoRow(row = {}) {
+  return {
+    Nota_Fiscal: row.notaFiscal || row.numeroNf || row.nfNumero || '',
+    Pedido: row.pedido || '',
+    Canal: row.canal || '',
+    Origem: row.cidadeOrigem || '',
+    UF_Origem: row.ufOrigem || '',
+    IBGE_Origem: row.ibgeOrigem || '',
+    Destino: row.cidadeDestino || '',
+    UF_Destino: row.ufDestino || '',
+    IBGE_Destino: row.ibgeDestino || '',
+    CTEs_Vinculados: toNumber(row.qtdCtesVinculados),
+    Numeros_CTE: row.numerosCteVinculados || row.cteNumero || '',
+    Chaves_CTE: row.chavesCteVinculadas || '',
+    Transportadoras_CTE: row.transportadorasCte || '',
+    Frete_CTE_Vinculado: toNumber(row.valorCteVinculado),
+    Percentual_Frete_CTE: toNumber(row.percentualFreteCteVinculado),
+    Chave_Relacao: row.chaveRelacaoUsada || '',
+    Endereco_Complementado_CTE: row.enderecoComplementadoPorCte ? 'Sim' : 'Não',
+    Campos_Complementados_CTE: row.camposComplementadosPorCte || '',
+  };
+}
 
 function normalizarValorInput(value) {
   return String(value ?? '').replace(',', '.');
@@ -215,7 +294,7 @@ export default function FerramentasPage() {
       let rowsBase = rows;
       let resumoVinculo = null;
       if (config.vincularCtes) {
-        setMensagem('Tracking carregado. Buscando CT-es locais para vincular por chave do CT-e, número do CT-e ou chave da NF...');
+        setMensagem('Tracking carregado. Buscando CT-es locais para complementar IBGE/UF e montar validação interna...');
         const ctes = await exportarRealizadoLocal({
           inicio: config.inicio,
           fim: config.fim,
@@ -228,6 +307,7 @@ export default function FerramentasPage() {
       }
 
       const volumetria = montarVolumetria(rowsBase, config, grade);
+      const detalheNotas = rowsBase.map((row) => detalheTrackingRow(row, grade));
       const resumo = [{
         Canal: config.canal || 'Todos',
         Periodo_Inicial: config.inicio || 'Todos',
@@ -238,11 +318,21 @@ export default function FerramentasPage() {
         Tracking_com_CTE_vinculado: resumoVinculo?.vinculadas ?? '-',
         Tracking_sem_CTE_vinculado: resumoVinculo?.semVinculo ?? '-',
         Percentual_vinculado: resumoVinculo?.percentualVinculado ?? '-',
-        Frete_CTE_vinculado: resumoVinculo?.valorCteVinculadoTotal ?? '-',
-        Observacao: totalCompativel > limit ? 'A base passou do limite exportado. Refaça com período menor.' : 'Volumetria completa dentro do limite.',
+        Observacao: totalCompativel > limit
+          ? 'A base passou do limite exportado. Refaça com período menor.'
+          : 'Volumetria completa dentro do limite. Abas Volumetria e Detalhe_Notas não trazem valor de frete realizado para envio ao transportador.',
       }];
-      const abas = { Volumetria: volumetria, Resumo: resumo };
-      if (config.incluirDetalhe) abas.Detalhe_Tracking = rowsBase.map((row) => detalheRow(row, grade));
+
+      const abas = {
+        Volumetria,
+        Detalhe_Notas: config.incluirDetalhe ? detalheNotas : [],
+        Resumo: resumo,
+      };
+
+      if (config.vincularCtes) {
+        abas.Validacao_CTE_Interna = rowsBase.map(vinculoCteInternoRow);
+      }
+
       baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
       setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s) do Tracking, ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}.`);
     } catch (error) {
@@ -262,7 +352,6 @@ export default function FerramentasPage() {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
-
 
       <section className="panel-card">
         <div className="section-row compact-top">
@@ -299,7 +388,7 @@ export default function FerramentasPage() {
                   <td><input value={linha.peso ?? ''} onChange={(e) => alterarGrade(index, 'peso', e.target.value)} placeholder="Ex.: 50" /></td>
                   <td><input value={linha.valorNF ?? ''} onChange={(e) => alterarGrade(index, 'valorNF', e.target.value)} placeholder="Ex.: 2000" /></td>
                   <td><input value={linha.cubagem ?? ''} onChange={(e) => alterarGrade(index, 'cubagem', e.target.value)} placeholder="Ex.: 0,320" /></td>
-                  <td>Se o CT-e não tiver cubagem, usa esta cubagem para peso até {linha.peso || '...'} kg.</td>
+                  <td>Usa esta cubagem para pesos até {linha.peso || '...'} kg.</td>
                   <td><button className="btn-secondary" type="button" onClick={() => removerFaixaGrade(index)}>Remover</button></td>
                 </tr>
               ))}
@@ -353,16 +442,16 @@ export default function FerramentasPage() {
           </label>
           <label className="checkbox-line">
             <input type="checkbox" checked={Boolean(config.incluirDetalhe)} onChange={(e) => alterar('incluirDetalhe', e.target.checked)} />
-            Incluir detalhe por nota
+            Incluir aba sem agrupamento por nota
           </label>
           <label className="checkbox-line">
             <input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} />
-            Vincular com CT-es locais
+            Vincular com CT-es locais para completar dados
           </label>
         </div>
 
         <div className="hint-box compact">
-          Para ATACADO e B2C, o arquivo já inclui a faixa de peso padrão do canal. A fonte principal é o Tracking local. Se marcar vínculo com CT-e, o sistema tenta conversar com a base CTS por Chave CTE, número do CT-e e chave da NF para trazer frete realizado.
+          A aba Volumetria agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento para avaliar a variação nota a nota. Se vincular CT-es, o sistema usa a base CTS para completar UF/IBGE quando faltar no Tracking e cria uma aba interna de validação; o valor de frete realizado não entra nas abas para envio ao transportador.
         </div>
 
         <div className="actions-right">
