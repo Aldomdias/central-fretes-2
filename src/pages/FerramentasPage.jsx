@@ -324,7 +324,7 @@ export default function FerramentasPage() {
       }];
 
       const abas = {
-        Volumetria,
+        Volumetria: volumetria,
         Detalhe_Notas: config.incluirDetalhe ? detalheNotas : [],
         Resumo: resumo,
       };
