@@ -388,6 +388,69 @@ function getUfByIbge(ibge) {
   return UF_POR_CODIGO[onlyDigits(ibge).slice(0, 2)] || '';
 }
 
+function toBooleanFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    if (['true', '1', 'sim', 's', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'nao', 'n', 'no'].includes(normalized)) return false;
+  }
+  return Boolean(value);
+}
+
+function origemTemIcmsAtivo(origem = {}) {
+  const generalidades = origem.generalidades || {};
+  return toBooleanFlag(
+    generalidades.incideIcms ??
+    generalidades.incide_icms ??
+    generalidades.icms ??
+    generalidades.aplicaIcms ??
+    generalidades.aplica_icms ??
+    origem.incideIcms ??
+    origem.incide_icms
+  );
+}
+
+function inferirAliquotaIcmsRealizado(origem = {}, rota = {}, cte = {}) {
+  const generalidades = origem.generalidades || {};
+  const manual = toNumber(
+    generalidades.aliquotaIcms ??
+    generalidades.aliquota_icms ??
+    generalidades.icmsPercentual ??
+    generalidades.icms_percentual
+  );
+
+  const ufOrigem = String(
+    cte.ufOrigem ||
+    rota.ufOrigem ||
+    getUfByIbge(rota.ibgeOrigem || cte.ibgeOrigem || origem.rotas?.[0]?.ibgeOrigem)
+  ).trim().toUpperCase();
+
+  const ufDestino = String(
+    cte.ufDestino ||
+    rota.ufDestino ||
+    getUfByIbge(rota.ibgeDestino || cte.ibgeDestino)
+  ).trim().toUpperCase();
+
+  if (manual > 0) return { aliquota: manual, origem: 'manual', ufOrigem, ufDestino };
+  if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao sem UF completa', ufOrigem, ufDestino };
+  if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao interna', ufOrigem, ufDestino };
+
+  const sulSudesteSemES = new Set(['PR', 'SC', 'RS', 'SP', 'RJ', 'MG']);
+  const norteNordesteCentroOesteMaisES = new Set(['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'PA', 'PB', 'PE', 'PI', 'RN', 'RO', 'RR', 'SE', 'TO']);
+
+  if (sulSudesteSemES.has(ufOrigem) && norteNordesteCentroOesteMaisES.has(ufDestino)) {
+    return { aliquota: 7, origem: 'legislacao interestadual 7%', ufOrigem, ufDestino };
+  }
+
+  return { aliquota: 12, origem: 'legislacao interestadual 12%', ufOrigem, ufDestino };
+}
+
 const taxasIndexCache = new WeakMap();
 const cotacoesIndexCache = new WeakMap();
 
@@ -498,10 +561,16 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  const icmsInfo = inferirAliquotaIcmsRealizado(origem, rota, cte);
+  const generalidadesCalculadas = {
+    ...(origem.generalidades || {}),
+    incideIcms: origemTemIcmsAtivo(origem),
+    aliquotaIcms: icmsInfo.aliquota,
+  };
   const engineInput = {
     rota,
     cotacao,
-    generalidades: origem.generalidades || {},
+    generalidades: generalidadesCalculadas,
     taxaDestino,
     pesoKg: peso,
     valorNf: valorNF,
@@ -535,6 +604,11 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
         subtotal: calculo.subtotal,
         icms: calculo.icms,
         total: calculo.total,
+        aliquotaIcms: toNumber(icmsInfo.aliquota),
+        origemAliquotaIcms: icmsInfo.origem,
+        incideIcms: generalidadesCalculadas.incideIcms,
+        ufOrigem: icmsInfo.ufOrigem || '',
+        ufDestino: icmsInfo.ufDestino || '',
         percentualAplicado: toNumber(cotacao.percentual || cotacao.fretePercentual),
         valorFixoAplicado: toNumber(cotacao.valorFixo || cotacao.taxaAplicada),
         rsKgAplicado: toNumber(cotacao.rsKg),

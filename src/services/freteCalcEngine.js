@@ -8,6 +8,32 @@ function toPercent(value) {
   return toNumber(value) / 100;
 }
 
+function toBooleanFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+    if (['true', '1', 'sim', 's', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'nao', 'n', 'no'].includes(normalized)) return false;
+  }
+  return Boolean(value);
+}
+
+function deveAplicarIcms(generalidades = {}) {
+  return toBooleanFlag(
+    generalidades.incideIcms ??
+    generalidades.incide_icms ??
+    generalidades.icms ??
+    generalidades.aplicaIcms ??
+    generalidades.aplica_icms
+  );
+}
+
 export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 0, pesoKg = 0 }) {
   const adValPercentual = taxaDestino.adVal ?? generalidades.adValorem ?? 0;
   const adValMinimo = taxaDestino.adValMinimo ?? generalidades.adValoremMinimo ?? 0;
@@ -82,7 +108,7 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
   const valorBase = componenteBase.valor;
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
   const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras;
-  const icms = generalidades.incideIcms ? subtotal * toPercent(generalidades.aliquotaIcms) : 0;
+  const icms = deveAplicarIcms(generalidades) ? subtotal * toPercent(generalidades.aliquotaIcms) : 0;
 
   return {
     tipoCalculo: 'PERCENTUAL',
@@ -125,7 +151,7 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
 
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
   const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras;
-  const icms = generalidades.incideIcms ? subtotal * toPercent(generalidades.aliquotaIcms) : 0;
+  const icms = deveAplicarIcms(generalidades) ? subtotal * toPercent(generalidades.aliquotaIcms) : 0;
 
   return {
     tipoCalculo: 'FAIXA_DE_PESO',

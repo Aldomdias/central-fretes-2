@@ -307,7 +307,10 @@ function DetalheSimulacao({ item, rankingCalculado }) {
             <div className="mini-list-row"><span>Tipo</span><strong>{frete.tipoCalculo || item.tipoCalculo || '—'}</strong></div>
             <div className="mini-list-row"><span>Base</span><strong>{formatCurrency(frete.valorBase || 0)}</strong></div>
             <div className="mini-list-row"><span>Subtotal</span><strong>{formatCurrency(frete.subtotal || 0)}</strong></div>
-            <div className="mini-list-row"><span>ICMS</span><strong>{formatCurrency(frete.icms || 0)}</strong></div>
+            <div className="mini-list-row"><span>ICMS {frete.incideIcms ? `(${formatPercent(frete.aliquotaIcms || 0)})` : '(não incidiu)'}</span><strong>{formatCurrency(frete.icms || 0)}</strong></div>
+            {frete.incideIcms && (frete.ufOrigem || frete.ufDestino || frete.origemAliquotaIcms) && (
+              <div className="mini-list-row"><span>Regra ICMS</span><strong>{frete.ufOrigem || 'UF?'} → {frete.ufDestino || 'UF?'} · {frete.origemAliquotaIcms || 'cadastro'}</strong></div>
+            )}
             <div className="mini-list-row"><span>Total</span><strong>{formatCurrency(frete.total || item.valorSimulado || 0)}</strong></div>
           </div>
         </div>
