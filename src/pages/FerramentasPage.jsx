@@ -3,7 +3,13 @@ import * as XLSX from 'xlsx';
 import { exportarTrackingLocal } from '../utils/trackingLocal';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import { relacionarTrackingComCtes } from '../utils/trackingCteLink';
-import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao, encontrarLinhaGradePorPeso } from '../utils/gradeFreteConfig';
+import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import {
+  carregarGradeFrete,
+  salvarGradeFrete,
+  restaurarGradeFretePadrao,
+  encontrarLinhaGradePorPeso,
+} from '../utils/gradeFreteConfig';
 
 const DEFAULT_CONFIG = {
   canal: '',
@@ -18,9 +24,50 @@ const DEFAULT_CONFIG = {
 const CANAIS = ['', 'ATACADO', 'B2C'];
 const CANAIS_GRADE = ['ATACADO', 'B2C'];
 
+const UF_POR_CODIGO_IBGE = {
+  '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
+  '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
+  '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
+  '41': 'PR', '42': 'SC', '43': 'RS',
+  '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
+};
+
 function toNumber(value) {
-  const n = Number(value || 0);
-  return Number.isFinite(n) ? n : 0;
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const text = String(value).trim();
+  if (!text) return 0;
+  const normalized = text.includes(',') ? text.replace(/\./g, '').replace(',', '.') : text;
+  const parsed = Number(normalized.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function onlyDigits(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function cleanUf(value = '') {
+  const uf = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z]/g, '')
+    .slice(0, 2);
+  return uf.length === 2 ? uf : '';
+}
+
+function getUfByIbge(ibge = '') {
+  return UF_POR_CODIGO_IBGE[onlyDigits(ibge).slice(0, 2)] || '';
+}
+
+function normalizarCidade(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function safeSheetName(nome) {
@@ -39,7 +86,7 @@ function isPercentColumn(header = '') {
 function isNumericColumn(header = '') {
   const h = String(header).toUpperCase();
   return [
-    'NOTAS', 'VOLUMES', 'PESO', 'CUBAGEM', 'M3', 'CTES', 'MEDIA', 'MÉDIA', 'QTD', 'TOTAL', 'PERCENTUAL', 'FRETE', 'VALOR', 'NF'
+    'NOTAS', 'VOLUMES', 'PESO', 'CUBAGEM', 'M3', 'CTES', 'MEDIA', 'MÉDIA', 'QTD', 'TOTAL', 'PERCENTUAL', 'FRETE', 'VALOR', 'NF',
   ].some((termo) => h.includes(termo));
 }
 
@@ -67,14 +114,10 @@ function aplicarFormatoPlanilha(ws, rows = []) {
   ws['!cols'] = headers.map(columnWidth);
 
   headers.forEach((header, colIndex) => {
-    const headerRef = XLSX.utils.encode_cell({ r: 0, c: colIndex });
-    if (ws[headerRef]) ws[headerRef].s = { font: { bold: true } };
-
     for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
       const ref = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
       const cell = ws[ref];
-      if (!cell) continue;
-      if (typeof cell.v !== 'number') continue;
+      if (!cell || typeof cell.v !== 'number') continue;
 
       if (isPercentColumn(header)) {
         cell.z = '0.00"%"';
@@ -151,6 +194,178 @@ function linhaInicial(row = {}, agrupamento, faixa) {
   };
 }
 
+function addLocalidade(cidadeRaw, ufRaw, ibgeRaw, maps, fonte = 'base') {
+  const cidade = String(cidadeRaw || '').trim();
+  const cidadeKey = normalizarCidade(cidade);
+  if (!cidadeKey) return;
+
+  const ibge = onlyDigits(ibgeRaw).slice(0, 7);
+  const uf = cleanUf(ufRaw) || getUfByIbge(ibge);
+  if (!uf && !ibge) return;
+
+  const localidade = {
+    cidade,
+    uf,
+    ibge,
+    fonte,
+    score: (uf ? 1 : 0) + (ibge ? 2 : 0),
+  };
+
+  const listaCidade = maps.porCidade.get(cidadeKey) || [];
+  listaCidade.push(localidade);
+  maps.porCidade.set(cidadeKey, listaCidade);
+
+  if (uf) {
+    const chaveCidadeUf = `${cidadeKey}|${uf}`;
+    const listaCidadeUf = maps.porCidadeUf.get(chaveCidadeUf) || [];
+    listaCidadeUf.push(localidade);
+    maps.porCidadeUf.set(chaveCidadeUf, listaCidadeUf);
+  }
+
+  if (ibge && !maps.porIbge.has(ibge)) maps.porIbge.set(ibge, localidade);
+}
+
+function criarMapasLocalidades(rows = [], municipios = []) {
+  const maps = {
+    porCidade: new Map(),
+    porCidadeUf: new Map(),
+    porIbge: new Map(),
+  };
+
+  (municipios || []).forEach((item) => {
+    const ibge = onlyDigits(item.ibge || item.codigo_ibge || item.codigo || item.codigoMunicipio || '').slice(0, 7);
+    const cidade = item.cidade || item.nome || item.municipio || item.nomeMunicipio || '';
+    const uf = item.uf || item.estado || getUfByIbge(ibge);
+    addLocalidade(cidade, uf, ibge, maps, 'municipios');
+  });
+
+  (rows || []).forEach((row) => {
+    addLocalidade(row.cidadeOrigem, row.ufOrigem, row.ibgeOrigem, maps, 'tracking/cte');
+    addLocalidade(row.cidadeDestino, row.ufDestino, row.ibgeDestino, maps, 'tracking/cte');
+  });
+
+  return maps;
+}
+
+function escolherMelhorLocalidade(candidatos = []) {
+  const validos = (candidatos || [])
+    .filter((item) => item && (item.uf || item.ibge))
+    .map((item) => ({ ...item, uf: cleanUf(item.uf) || getUfByIbge(item.ibge), ibge: onlyDigits(item.ibge).slice(0, 7) }))
+    .filter((item) => item.uf || item.ibge);
+
+  if (!validos.length) return null;
+
+  const porAssinatura = new Map();
+  validos.forEach((item) => {
+    const assinatura = `${item.uf || ''}|${item.ibge || ''}`;
+    const atual = porAssinatura.get(assinatura) || { ...item, count: 0, scoreTotal: 0 };
+    atual.count += 1;
+    atual.scoreTotal += Number(item.score || 0);
+    porAssinatura.set(assinatura, atual);
+  });
+
+  const opcoes = [...porAssinatura.values()]
+    .sort((a, b) => b.scoreTotal - a.scoreTotal || b.count - a.count);
+
+  if (opcoes.length === 1) return opcoes[0];
+
+  // Se existe uma opção com IBGE + UF e as demais são incompletas da mesma UF,
+  // escolhe a completa. Caso existam duas cidades homônimas completas, não preenche.
+  const completas = opcoes.filter((item) => item.uf && item.ibge);
+  const assinaturasCompletas = new Set(completas.map((item) => `${item.uf}|${item.ibge}`));
+  if (assinaturasCompletas.size === 1) return completas[0];
+
+  return null;
+}
+
+function completarLocalidade(row = {}, prefixo, maps) {
+  const cidadeCampo = prefixo === 'Origem' ? 'cidadeOrigem' : 'cidadeDestino';
+  const ufCampo = prefixo === 'Origem' ? 'ufOrigem' : 'ufDestino';
+  const ibgeCampo = prefixo === 'Origem' ? 'ibgeOrigem' : 'ibgeDestino';
+
+  const cidade = String(row[cidadeCampo] || '').trim();
+  const cidadeKey = normalizarCidade(cidade);
+  let uf = cleanUf(row[ufCampo]);
+  let ibge = onlyDigits(row[ibgeCampo]).slice(0, 7);
+
+  const campos = [];
+
+  if (ibge && !uf) {
+    uf = getUfByIbge(ibge);
+    if (uf) campos.push(`${ufCampo}=IBGE`);
+  }
+
+  if (!cidadeKey) {
+    return { ...row, [ufCampo]: uf, [ibgeCampo]: ibge };
+  }
+
+  let escolhido = null;
+  if (uf) escolhido = escolherMelhorLocalidade(maps.porCidadeUf.get(`${cidadeKey}|${uf}`) || []);
+  if (!escolhido) escolhido = escolherMelhorLocalidade(maps.porCidade.get(cidadeKey) || []);
+
+  if (escolhido) {
+    if (!uf && escolhido.uf) {
+      uf = escolhido.uf;
+      campos.push(`${ufCampo}=recorrencia`);
+    }
+    if (!ibge && escolhido.ibge) {
+      ibge = escolhido.ibge;
+      campos.push(`${ibgeCampo}=recorrencia`);
+    }
+  }
+
+  const complementosAnteriores = String(row.camposComplementadosPorRecorrencia || '').trim();
+  const complementos = [...new Set([
+    ...complementosAnteriores.split(' | ').filter(Boolean),
+    ...campos,
+  ])].join(' | ');
+
+  return {
+    ...row,
+    [ufCampo]: uf,
+    [ibgeCampo]: ibge,
+    chaveRotaIbge: (prefixo === 'Destino' && row.ibgeOrigem && ibge)
+      ? `${row.ibgeOrigem}-${ibge}`
+      : row.chaveRotaIbge,
+    camposComplementadosPorRecorrencia: complementos,
+    enderecoComplementadoPorRecorrencia: Boolean(complementos),
+  };
+}
+
+async function carregarMunicipiosSeguro() {
+  try {
+    const municipios = await carregarMunicipiosIbgeDb();
+    return Array.isArray(municipios) ? municipios : [];
+  } catch {
+    return [];
+  }
+}
+
+async function completarGeografiaVolumetria(rows = []) {
+  const municipios = await carregarMunicipiosSeguro();
+  let maps = criarMapasLocalidades(rows, municipios);
+
+  // Duas passadas: a primeira usa IBGE/UF existentes e municípios; a segunda
+  // reaproveita o que acabou de ser preenchido para uniformizar cidades repetidas.
+  let preenchidas = (rows || []).map((row) => {
+    const origem = completarLocalidade(row, 'Origem', maps);
+    return completarLocalidade(origem, 'Destino', maps);
+  });
+
+  maps = criarMapasLocalidades(preenchidas, municipios);
+
+  preenchidas = preenchidas.map((row) => {
+    const origem = completarLocalidade(row, 'Origem', maps);
+    const destino = completarLocalidade(origem, 'Destino', maps);
+    const chaveRotaIbge = destino.ibgeOrigem && destino.ibgeDestino
+      ? `${destino.ibgeOrigem}-${destino.ibgeDestino}`
+      : '';
+    return { ...destino, chaveRotaIbge };
+  });
+
+  return preenchidas;
+}
+
 function montarVolumetria(rows = [], config = {}, grade = {}) {
   const mapa = new Map();
   rows.forEach((row) => {
@@ -187,6 +402,7 @@ function detalheTrackingRow(row = {}, grade = {}) {
     Pedido: row.pedido || '',
     Data: row.data || row.dataFaturamento || '',
     Canal: row.canal || '',
+    Canal_Original: row.canalOriginal || '',
     Origem: row.cidadeOrigem || '',
     UF_Origem: row.ufOrigem || '',
     IBGE_Origem: row.ibgeOrigem || '',
@@ -201,31 +417,9 @@ function detalheTrackingRow(row = {}, grade = {}) {
     Peso_Considerado: peso,
     Cubagem_m3: toNumber(row.cubagem),
     Valor_NF: toNumber(row.valorNF),
-    Endereco_Complementado_CTE: row.enderecoComplementadoPorCte ? 'Sim' : 'Não',
-    Campos_Complementados_CTE: row.camposComplementadosPorCte || '',
-  };
-}
-
-function vinculoCteInternoRow(row = {}) {
-  return {
-    Nota_Fiscal: row.notaFiscal || row.numeroNf || row.nfNumero || '',
-    Pedido: row.pedido || '',
-    Canal: row.canal || '',
-    Origem: row.cidadeOrigem || '',
-    UF_Origem: row.ufOrigem || '',
-    IBGE_Origem: row.ibgeOrigem || '',
-    Destino: row.cidadeDestino || '',
-    UF_Destino: row.ufDestino || '',
-    IBGE_Destino: row.ibgeDestino || '',
-    CTEs_Vinculados: toNumber(row.qtdCtesVinculados),
-    Numeros_CTE: row.numerosCteVinculados || row.cteNumero || '',
-    Chaves_CTE: row.chavesCteVinculadas || '',
-    Transportadoras_CTE: row.transportadorasCte || '',
-    Frete_CTE_Vinculado: toNumber(row.valorCteVinculado),
-    Percentual_Frete_CTE: toNumber(row.percentualFreteCteVinculado),
-    Chave_Relacao: row.chaveRelacaoUsada || '',
-    Endereco_Complementado_CTE: row.enderecoComplementadoPorCte ? 'Sim' : 'Não',
-    Campos_Complementados_CTE: row.camposComplementadosPorCte || '',
+    Complementado_CTE: row.enderecoComplementadoPorCte ? 'Sim' : 'Não',
+    Complementado_Recorrencia: row.enderecoComplementadoPorRecorrencia ? 'Sim' : 'Não',
+    Campos_Complementados: [row.camposComplementadosPorCte, row.camposComplementadosPorRecorrencia].filter(Boolean).join(' | '),
   };
 }
 
@@ -290,12 +484,16 @@ export default function FerramentasPage() {
         fim: config.fim,
         excluirEbazar: Boolean(config.excluirEbazar),
       }, { limit: 500000 });
-      if (!rows.length) throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
+
+      if (!rows.length) {
+        throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
+      }
 
       let rowsBase = rows;
       let resumoVinculo = null;
+
       if (config.vincularCtes) {
-        setMensagem('Tracking carregado. Buscando CT-es locais para complementar IBGE/UF e montar validação interna...');
+        setMensagem('Tracking carregado. Buscando CT-es locais para complementar UF/IBGE...');
         const ctes = await exportarRealizadoLocal({
           inicio: config.inicio,
           fim: config.fim,
@@ -307,22 +505,11 @@ export default function FerramentasPage() {
         resumoVinculo = relacionamento.resumo;
       }
 
+      setMensagem('Completando UF e IBGE por município, CT-e e recorrência da própria base...');
+      rowsBase = await completarGeografiaVolumetria(rowsBase);
+
       const volumetria = montarVolumetria(rowsBase, config, grade);
       const detalheNotas = rowsBase.map((row) => detalheTrackingRow(row, grade));
-      const resumo = [{
-        Canal: config.canal || 'Todos',
-        Periodo_Inicial: config.inicio || 'Todos',
-        Periodo_Final: config.fim || 'Todos',
-        Agrupamento: config.agrupamento,
-        Notas: rowsBase.length,
-        Linhas_Volumetria: volumetria.length,
-        Tracking_com_CTE_vinculado: resumoVinculo?.vinculadas ?? '-',
-        Tracking_sem_CTE_vinculado: resumoVinculo?.semVinculo ?? '-',
-        Percentual_vinculado: resumoVinculo?.percentualVinculado ?? '-',
-        Observacao: totalCompativel > limit
-          ? 'A base passou do limite exportado. Refaça com período menor.'
-          : 'Volumetria completa dentro do limite. Abas Volumetria e Detalhe_Notas não trazem valor de frete realizado para envio ao transportador.',
-      }];
 
       const abas = {
         Volumetria_Agrupada: volumetria,
@@ -330,7 +517,7 @@ export default function FerramentasPage() {
       };
 
       baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
-      setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s) do Tracking, ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}.`);
+      setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. UF/IBGE foram uniformizados antes de gerar o Excel.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -447,7 +634,7 @@ export default function FerramentasPage() {
         </div>
 
         <div className="hint-box compact">
-          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento para avaliar a variação nota a nota. Se vincular CT-es, o sistema usa a base CTS apenas para completar UF/IBGE/origem/destino quando faltar no Tracking. O arquivo final sai somente com as abas para envio ao transportador, sem frete realizado.
+          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento para avaliar a variação nota a nota. Antes de gerar o Excel, o sistema uniformiza UF e IBGE usando município cadastrado, CT-e vinculado e recorrência da própria base. Se SINOP aparecer com MT/5107909 em uma linha, as demais linhas de SINOP serão preenchidas também, desde que não exista conflito de cidade homônima.
         </div>
 
         <div className="actions-right">
