@@ -158,6 +158,8 @@ function ResultadoCard({ item }) {
               <div>Peso informado: <strong>{item.detalhes?.frete?.pesoInformado} kg</strong></div>
               <div>Peso da grade: <strong>{item.detalhes?.frete?.pesoGrade} kg</strong></div>
               <div>Cubagem da grade: <strong>{Number(item.detalhes?.frete?.cubagemGrade || 0).toFixed(6)} m³</strong></div>
+              <div>Cubagem usada: <strong>{Number(item.detalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
+              <div>Origem da cubagem: <strong>{item.detalhes?.frete?.origemCubagem || 'sem cubagem'}</strong></div>
               <div>Fator cubagem: <strong>{item.detalhes?.frete?.fatorCubagem} kg/m³</strong></div>
               <div>Peso cubado: <strong>{Number(item.detalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong></div>
               <div>Peso considerado: <strong>{Number(item.detalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
@@ -237,6 +239,15 @@ function pesoRealizado(row = {}) {
   return Math.max(numeroRealizado(row.peso), numeroRealizado(row.pesoDeclarado), numeroRealizado(row.pesoCubado));
 }
 
+function cubagemRealizado(row = {}) {
+  return Math.max(
+    numeroRealizado(row.cubagem),
+    numeroRealizado(row.metrosCubicos),
+    numeroRealizado(row.m3),
+    numeroRealizado(row.volumeCubico)
+  );
+}
+
 function normalizarTransportadoraSimulador(nome = '') {
   return String(nome || '')
     .normalize('NFD')
@@ -294,6 +305,7 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
     const valorCte = numeroRealizado(row.valorCte);
     const nf = numeroRealizado(row.valorNF);
     const pesoLinha = pesoRealizado(row);
+    const cubagemLinha = cubagemRealizado(row);
     const vol = numeroRealizado(row.qtdVolumes);
     const destino = String(row.ibgeDestino || '').trim();
     freteRealizado += valorCte;
@@ -342,6 +354,7 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       canal: filtros.canal,
       peso: pesoLinha,
       valorNF: nf,
+      cubagem: cubagemLinha,
       destinoCodigo: destino,
       cidadePorIbge,
       gradeCanal,
@@ -398,6 +411,10 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       diferenca: economia,
       realEraGanhador: realFoiGanhador,
       concorrentes: resultado.length,
+      cubagemAplicada: numeroRealizado(vencedor?.detalhes?.frete?.cubagemAplicada),
+      origemCubagem: vencedor?.detalhes?.frete?.origemCubagem || '',
+      pesoCubado: numeroRealizado(vencedor?.detalhes?.frete?.pesoCubado),
+      pesoConsiderado: numeroRealizado(vencedor?.detalhes?.frete?.pesoConsiderado),
     });
   });
 
@@ -1544,7 +1561,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div className="sim-parametros-header">
                     <div>
                       <strong>Simulação sobre realizado local</strong>
-                      <p>Usa o peso, cubagem, valor NF e volumes reais do Realizado Local. Não usa a grade padrão.</p>
+                      <p>Usa peso, valor NF e volumes reais. A cubagem vem da linha realizada quando existir; se não existir, usa a cubagem da faixa da grade do canal.</p>
                     </div>
                   </div>
                   <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
@@ -1598,7 +1615,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   </div>
                 </div>
                 <div className="sim-parametros-box">
-                  <div className="sim-parametros-header"><div><strong>Maiores oportunidades no realizado</strong><p>CT-es onde a tabela simulada indica menor preço que o frete realizado.</p></div></div>
+                  <div className="sim-parametros-header"><div><strong>Maiores oportunidades no realizado</strong><p>CT-es onde a tabela simulada indica menor preço que o frete realizado. A simulação considera cubagem real ou cubagem da faixa da grade.</p></div></div>
                   <div className="sim-cobertura-lista">
                     {(resultadoOrigem.realizado?.simulacoes || []).slice(0, 60).map((item, idx) => (
                       <div key={`${item.cte}-${idx}`}>{item.destino}/{item.uf} · Real: {item.transportadoraReal} {formatMoney(item.freteRealizado)} · Melhor: {item.vencedor} {formatMoney(item.freteVencedor)} · Dif.: {formatMoney(item.saving)}</div>
