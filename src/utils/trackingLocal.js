@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 
 const DB_NAME = 'amd-tracking-local-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_TRACKING = 'tracking_rows';
 const STORE_META = 'meta';
 
@@ -37,20 +37,55 @@ const UF_POR_CENTRO_EXPEDICAO = {
   '2600': 'PE',
 };
 
+
+const CANAL_DEPARA_TRACKING = {
+  'MERCADO LIVRE': 'B2C',
+  SHOPEE: 'B2C',
+  'MAGAZINE LUIZA': 'B2C',
+  B2C: 'B2C',
+  AMAZON: 'B2C',
+  INTER: 'B2C',
+  'VIA VAREJO': 'B2C',
+  CARREFOUR: 'B2C',
+  'CANTU PNEUS': 'B2C',
+  'ITAU SHOP': 'B2C',
+  'ITAÚ SHOP': 'B2C',
+  'ITAÃº SHOP': 'B2C',
+  '99': 'B2C',
+  MUSTANG: 'B2C',
+  LIVELO: 'B2C',
+  'BRADESCO SHOP': 'B2C',
+  COOPERA: 'B2C',
+  B2B: 'ATACADO',
+  ATACADO: 'ATACADO',
+};
+
 function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
+      let store;
       if (!db.objectStoreNames.contains(STORE_TRACKING)) {
-        const store = db.createObjectStore(STORE_TRACKING, { keyPath: 'id' });
-        store.createIndex('data', 'data', { unique: false });
-        store.createIndex('canal', 'canal', { unique: false });
-        store.createIndex('transportadora', 'transportadora', { unique: false });
-        store.createIndex('ufOrigem', 'ufOrigem', { unique: false });
-        store.createIndex('ufDestino', 'ufDestino', { unique: false });
-        store.createIndex('chaveRotaIbge', 'chaveRotaIbge', { unique: false });
+        store = db.createObjectStore(STORE_TRACKING, { keyPath: 'id' });
+      } else {
+        store = req.transaction.objectStore(STORE_TRACKING);
       }
+      [
+        ['data', 'data'],
+        ['canal', 'canal'],
+        ['canalOriginal', 'canalOriginal'],
+        ['transportadora', 'transportadora'],
+        ['ufOrigem', 'ufOrigem'],
+        ['ufDestino', 'ufDestino'],
+        ['chaveRotaIbge', 'chaveRotaIbge'],
+        ['notaFiscal', 'notaFiscal'],
+        ['chaveNfe', 'chaveNfe'],
+        ['chaveCte', 'chaveCte'],
+        ['cteNumero', 'cteNumero'],
+      ].forEach(([nome, campo]) => {
+        if (!store.indexNames.contains(nome)) store.createIndex(nome, campo, { unique: false });
+      });
       if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
@@ -118,14 +153,36 @@ function parseDate(value) {
   return '';
 }
 
+function corrigirMojibakeCanal(value = '') {
+  return String(value || '')
+    .replace(/ItaÃº/gi, 'Itaú')
+    .replace(/ItaÃš/gi, 'Itaú')
+    .replace(/ItaÃº Shop/gi, 'Itaú Shop');
+}
+
 function categoriaCanal(value) {
-  const canal = normalize(value);
+  const canalOriginal = corrigirMojibakeCanal(value);
+  const canal = normalizeLoose(canalOriginal);
   if (!canal) return '';
-  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
-  if (canal.includes('REVERSA')) return 'REVERSA';
-  if (['ATACADO', 'B2B', 'CANTU', 'CANTU PNEUS'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
-  if (['B2C', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE', 'MARKETPLACE', 'MARKET PLACE', 'MERCADO LIVRE', 'MAGAZINE LUIZA', 'SHOPEE', 'AMAZON', 'ME2'].some((item) => canal === item || canal.includes(item))) return 'B2C';
-  return canal;
+
+  const depara = CANAL_DEPARA_TRACKING[canal] || CANAL_DEPARA_TRACKING[normalize(canalOriginal)];
+  if (depara) return depara;
+
+  const atacadoContem = ['ATACADO', 'B2B', 'B 2 B'];
+  if (atacadoContem.some((item) => canal === item || canal.includes(item))) return 'ATACADO';
+
+  const b2cContem = [
+    'B2C', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'SHOPEE', 'MAGAZINE', 'MAGALU',
+    'AMAZON', 'INTER', 'VIA VAREJO', 'VAREJO', 'CARREFOUR', 'CANTU PNEUS',
+    'ITAU', 'ITAÚ', '99', 'MUSTANG', 'LIVELO', 'BRADESCO', 'BRASIL SHOP',
+    'BRAZIL SHOP', 'COOPERA', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE',
+    'MARKETPLACE', 'MARKET PLACE', 'ANYMARKET', 'ANY MARKET', 'ME2'
+  ];
+  if (b2cContem.some((item) => canal === item || canal.includes(item))) return 'B2C';
+
+  // Tracking é base de venda. Para não perder volumetria no filtro B2C,
+  // canais não mapeados entram como B2C e ficam com o canal original preservado.
+  return 'B2C';
 }
 
 function headerKey(value) {
@@ -365,7 +422,7 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
     const ibgeDestino = ibgeDestinoInformado || resolverIbgeCidade(destino, ufDestino, mapas);
 
     const pesoDeclarado = toNumber(get(linha, col.pesoDeclarado));
-    const cubagemTracking = toNumber(get(linha, col.cubagem));
+    const cubagemTracking = toNumber(get(linha, col.cubagem)) || toNumber(get(linha, col.pesoCubado));
     const volumes = toNumber(get(linha, col.totalUnidades)) || toNumber(get(linha, col.quantidadeItens));
     const canalOriginal = text(get(linha, col.canal));
     const regiao = text(get(linha, col.regiao));
@@ -381,8 +438,8 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
       pedidoErp: text(get(linha, col.pedidoErp)),
       data,
       competencia: data ? data.slice(0, 7) : '',
-      canal: categoriaCanal(canalOriginal || regiao || modoEnvio),
-      canalOriginal,
+      canal: categoriaCanal(canalOriginal || text(get(linha, col.loja)) || regiao || modoEnvio),
+      canalOriginal: corrigirMojibakeCanal(canalOriginal),
       loja: text(get(linha, col.loja)),
       statusPedido: text(get(linha, col.statusPedido)),
       transportadora: text(get(linha, col.transportadora)),
@@ -491,11 +548,23 @@ export async function importarTrackingLocal(files = [], options = {}) {
   return { total, detalhes };
 }
 
+function normalizarCanalTrackingRow(row = {}) {
+  const canalOriginal = row.canalOriginal || row.raw?.Canal || row.raw?.canal || row.canal || row.loja || row.regiao || row.modoEnvio || '';
+  const canalClassificado = categoriaCanal(canalOriginal);
+  return {
+    ...row,
+    canalOriginal,
+    canal: canalClassificado || row.canal || '',
+    canalNaoClassificado: !CANAL_DEPARA_TRACKING[normalizeLoose(canalOriginal)] && !CANAL_DEPARA_TRACKING[normalize(canalOriginal)] && canalClassificado === 'B2C',
+  };
+}
+
 function isEbazar(value) {
   return normalizeLoose(value).includes('EBAZAR');
 }
 
 export function filtrarTrackingLocal(row = {}, filtros = {}) {
+  row = normalizarCanalTrackingRow(row);
   if (filtros.inicio && (!row.data || row.data < filtros.inicio)) return false;
   if (filtros.fim && (!row.data || row.data > filtros.fim)) return false;
   if (filtros.canal && normalize(row.canal) !== normalize(filtros.canal)) return false;
@@ -522,7 +591,7 @@ export async function exportarTrackingLocal(filtros = {}, options = {}) {
     req.onsuccess = () => {
       const cursor = req.result;
       if (!cursor) return resolve();
-      const row = cursor.value;
+      const row = normalizarCanalTrackingRow(cursor.value);
       if (filtrarTrackingLocal(row, filtros)) {
         totalCompativel += 1;
         if (rows.length < limit) rows.push(row);

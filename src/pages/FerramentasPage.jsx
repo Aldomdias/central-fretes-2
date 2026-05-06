@@ -15,7 +15,7 @@ const DEFAULT_CONFIG = {
   vincularCtes: true,
 };
 
-const CANAIS = ['', 'ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA'];
+const CANAIS = ['', 'ATACADO', 'B2C'];
 const CANAIS_GRADE = ['ATACADO', 'B2C'];
 
 function toNumber(value) {
@@ -63,6 +63,7 @@ function aplicarFormatoPlanilha(ws, rows = []) {
 
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
   ws['!autofilter'] = { ref: XLSX.utils.encode_range(range) };
+  ws['!views'] = [{ state: 'frozen', ySplit: 1 }];
   ws['!cols'] = headers.map(columnWidth);
 
   headers.forEach((header, colIndex) => {
@@ -324,14 +325,9 @@ export default function FerramentasPage() {
       }];
 
       const abas = {
-        Volumetria: volumetria,
+        Volumetria_Agrupada: volumetria,
         Detalhe_Notas: config.incluirDetalhe ? detalheNotas : [],
-        Resumo: resumo,
       };
-
-      if (config.vincularCtes) {
-        abas.Validacao_CTE_Interna = rowsBase.map(vinculoCteInternoRow);
-      }
 
       baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
       setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s) do Tracking, ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}.`);
@@ -451,7 +447,7 @@ export default function FerramentasPage() {
         </div>
 
         <div className="hint-box compact">
-          A aba Volumetria agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento para avaliar a variação nota a nota. Se vincular CT-es, o sistema usa a base CTS para completar UF/IBGE quando faltar no Tracking e cria uma aba interna de validação; o valor de frete realizado não entra nas abas para envio ao transportador.
+          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento para avaliar a variação nota a nota. Se vincular CT-es, o sistema usa a base CTS apenas para completar UF/IBGE/origem/destino quando faltar no Tracking. O arquivo final sai somente com as abas para envio ao transportador, sem frete realizado.
         </div>
 
         <div className="actions-right">
