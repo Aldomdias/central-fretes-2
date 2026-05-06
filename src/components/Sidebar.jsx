@@ -13,6 +13,7 @@ const menuPrincipal = [
   { chave: 'lotacao-operacao', label: 'Lotação Operação', icon: '🚚' },
   { chave: 'lotacao-auditoria', label: 'Auditoria Lotação', icon: '☑' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', icon: '⌖' },
+  { chave: 'ferramentas', label: 'Ferramentas', icon: '🛠' },
 ];
 
 const menuCadastros = [

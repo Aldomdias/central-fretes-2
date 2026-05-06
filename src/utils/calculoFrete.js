@@ -483,6 +483,172 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
   };
 }
 
+
+export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', ufDestino = '', grade = [], cidadePorIbge }) {
+  const pesoValorPairs = Array.isArray(grade) ? grade : [];
+  const origemFiltro = String(origem || '').trim();
+  const ufFiltro = String(ufDestino || '').trim().toUpperCase();
+  const detalhes = [];
+
+  pesoValorPairs.forEach((linha) => {
+    const peso = toNumber(linha.peso);
+    const valorNF = toNumber(linha.valorNF);
+    const resultados = [];
+
+    (transportadoras || []).forEach((transportadora) => {
+      (transportadora.origens || [])
+        .filter((origemItem) => !canal || origemItem.canal === canal)
+        .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+        .forEach((origemItem) => {
+          (origemItem.rotas || []).forEach((rota) => {
+            const ibge = String(rota.ibgeDestino || '');
+            if (!ibge) return;
+            if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+
+            const item = calcularItem({
+              transportadora,
+              origem: origemItem,
+              rota,
+              peso,
+              valorNF,
+              cidadePorIbge,
+              gradeCanal: [],
+            });
+
+            if (item) resultados.push(item);
+          });
+        });
+    });
+
+    rankearPorChave(resultados).forEach((item) => {
+      detalhes.push({
+        ...item,
+        gradePeso: peso,
+        gradeValorNF: valorNF,
+        gradeCubagem: toNumber(linha.cubagem),
+        pesoCubado: toNumber(item?.detalhes?.frete?.pesoCubado),
+        pesoConsiderado: toNumber(item?.detalhes?.frete?.pesoConsiderado),
+      });
+    });
+  });
+
+  const gruposRota = new Map();
+  detalhes.forEach((item) => {
+    const chave = `${item.origem}|${item.ibgeDestino}|${item.gradePeso}|${item.gradeValorNF}`;
+    if (!gruposRota.has(chave)) gruposRota.set(chave, []);
+    gruposRota.get(chave).push(item);
+  });
+
+  const rotas = [...gruposRota.values()];
+  const vencedores = rotas.map((grupo) => grupo.find((item) => item.ranking === 1) || grupo.sort((a, b) => a.total - b.total)[0]).filter(Boolean);
+  const segundos = rotas.map((grupo) => [...grupo].sort((a, b) => a.ranking - b.ranking)[1]).filter(Boolean);
+
+  const porTransportadoraMap = new Map();
+  detalhes.forEach((item) => {
+    const atual = porTransportadoraMap.get(item.transportadora) || {
+      transportadora: item.transportadora,
+      participacoes: 0,
+      vitorias: 0,
+      frete: 0,
+      diferencaLider: 0,
+      prazo: 0,
+    };
+    atual.participacoes += 1;
+    atual.frete += Number(item.total || 0);
+    atual.prazo += Number(item.prazo || 0);
+    atual.diferencaLider += Number(item.diferencaLider || 0);
+    if (Number(item.ranking) === 1) atual.vitorias += 1;
+    porTransportadoraMap.set(item.transportadora, atual);
+  });
+
+  const porTransportadora = [...porTransportadoraMap.values()]
+    .map((item) => ({
+      ...item,
+      aderencia: item.participacoes ? (item.vitorias / item.participacoes) * 100 : 0,
+      freteMedio: item.participacoes ? item.frete / item.participacoes : 0,
+      prazoMedio: item.participacoes ? item.prazo / item.participacoes : 0,
+      diferencaMediaLider: item.participacoes ? item.diferencaLider / item.participacoes : 0,
+    }))
+    .sort((a, b) => b.vitorias - a.vitorias || b.aderencia - a.aderencia || a.freteMedio - b.freteMedio);
+
+  const porUfMap = new Map();
+  vencedores.forEach((item) => {
+    const key = item.ufDestino || 'SEM UF';
+    const atual = porUfMap.get(key) || { uf: key, rotas: 0, frete: 0, vencedores: new Map() };
+    atual.rotas += 1;
+    atual.frete += Number(item.total || 0);
+    atual.vencedores.set(item.transportadora, (atual.vencedores.get(item.transportadora) || 0) + 1);
+    porUfMap.set(key, atual);
+  });
+
+  const porUf = [...porUfMap.values()].map((item) => {
+    const top = [...item.vencedores.entries()].sort((a, b) => b[1] - a[1])[0];
+    return {
+      uf: item.uf,
+      rotas: item.rotas,
+      freteMedio: item.rotas ? item.frete / item.rotas : 0,
+      transportadoraDominante: top?.[0] || '',
+      qtdDominante: top?.[1] || 0,
+      pctDominante: item.rotas ? ((top?.[1] || 0) / item.rotas) * 100 : 0,
+    };
+  }).sort((a, b) => b.rotas - a.rotas || a.uf.localeCompare(b.uf));
+
+  const coberturaMap = new Map();
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora.origens || [])
+      .filter((origemItem) => !canal || origemItem.canal === canal)
+      .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+      .forEach((origemItem) => {
+        (origemItem.rotas || []).forEach((rota) => {
+          const ibge = String(rota.ibgeDestino || '');
+          if (!ibge) return;
+          if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+          const key = `${origemItem.cidade}|${ibge}`;
+          const atual = coberturaMap.get(key) || {
+            origem: origemItem.cidade,
+            ibgeDestino: ibge,
+            cidadeDestino: getCidadeByIbge(ibge, cidadePorIbge),
+            ufDestino: getUfByIbge(ibge),
+            transportadoras: new Set(),
+          };
+          atual.transportadoras.add(transportadora.nome);
+          coberturaMap.set(key, atual);
+        });
+      });
+  });
+
+  const coberturaRotas = [...coberturaMap.values()].map((item) => ({
+    ...item,
+    quantidadeTransportadoras: item.transportadoras.size,
+    transportadoras: [...item.transportadoras].sort(),
+  }));
+
+  const rotasComUmaTransportadora = coberturaRotas.filter((item) => item.quantidadeTransportadoras === 1)
+    .sort((a, b) => (a.ufDestino || '').localeCompare(b.ufDestino || '') || (a.cidadeDestino || '').localeCompare(b.cidadeDestino || ''));
+
+  const savingVsSegundo = vencedores.reduce((acc, item) => acc + Number(item.savingSegundo || 0), 0);
+  const freteVencedorTotal = vencedores.reduce((acc, item) => acc + Number(item.total || 0), 0);
+  const freteSegundoTotal = segundos.reduce((acc, item) => acc + Number(item.total || 0), 0);
+
+  return {
+    origem: origemFiltro || 'Todas',
+    canal,
+    ufDestino: ufFiltro,
+    cenariosAvaliados: detalhes.length,
+    combinacoesRotaGrade: rotas.length,
+    destinosCobertos: coberturaRotas.length,
+    rotasComUmaTransportadora: rotasComUmaTransportadora.length,
+    savingVsSegundo,
+    freteVencedorTotal,
+    freteSegundoTotal,
+    freteMedioVencedor: vencedores.length ? freteVencedorTotal / vencedores.length : 0,
+    porTransportadora,
+    porUf,
+    rotasCriticas: rotasComUmaTransportadora.slice(0, 150),
+    detalhes: detalhes.sort((a, b) => a.ranking - b.ranking || a.total - b.total),
+  };
+}
+
 export function analisarCoberturaTabela({ transportadoras, canal, origem, transportadora, ufDestino, cidadePorIbge }) {
   const baseTransportadoras = (transportadoras || []).filter((item) => !transportadora || item.nome === transportadora);
   const origensFiltradas = baseTransportadoras.flatMap((item) =>

@@ -1780,9 +1780,6 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <button className="btn-secondary" onClick={exportarBaseSelecionada} disabled={exportando || carregando || importando || simulando || !stats.total}>
             {exportando ? 'Exportando...' : 'Exportar base filtrada'}
           </button>
-          <button className="btn-secondary" onClick={abrirModalVolumetria} disabled={exportandoVolumetria || carregando || importando || simulando || !diagnostico?.total}>
-            {exportandoVolumetria ? 'Gerando volumetria...' : 'Exportar volumetria'}
-          </button>
           <button className="btn-secondary" onClick={reprocessarIbgeLocal} disabled={carregando || importando || simulando || !diagnostico?.total || !municipios.length}>
             Reprocessar IBGE local
           </button>
