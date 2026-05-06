@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { exportarTrackingLocal } from '../utils/trackingLocal';
+import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
+import { relacionarTrackingComCtes } from '../utils/trackingCteLink';
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao, encontrarLinhaGradePorPeso } from '../utils/gradeFreteConfig';
 
 const DEFAULT_CONFIG = {
@@ -10,6 +12,7 @@ const DEFAULT_CONFIG = {
   agrupamento: 'cidade_ibge',
   excluirEbazar: true,
   incluirDetalhe: false,
+  vincularCtes: true,
 };
 
 const CANAIS = ['', 'ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA'];
@@ -63,6 +66,8 @@ function linhaInicial(row = {}, agrupamento, faixa) {
     Peso_Considerado: 0,
     Cubagem: 0,
     Valor_NF: 0,
+    CTEs_Vinculados: 0,
+    Frete_CTE_Vinculado: 0,
   };
 
   if (agrupamento === 'estado') {
@@ -99,6 +104,8 @@ function montarVolumetria(rows = [], config = {}, grade = {}) {
     item.Peso_Considerado += peso;
     item.Cubagem += toNumber(row.cubagem);
     item.Valor_NF += toNumber(row.valorNF);
+    item.CTEs_Vinculados += toNumber(row.qtdCtesVinculados);
+    item.Frete_CTE_Vinculado += toNumber(row.valorCteVinculado);
   });
 
   return [...mapa.values()].map((item) => ({
@@ -106,6 +113,7 @@ function montarVolumetria(rows = [], config = {}, grade = {}) {
     Media_Peso_Nota: item.Notas ? item.Peso_Considerado / item.Notas : 0,
     Media_Volumes_Nota: item.Notas ? item.Volumes / item.Notas : 0,
     Media_Cubagem_Nota: item.Notas ? item.Cubagem / item.Notas : 0,
+    Percentual_Frete_CTE: item.Valor_NF ? (item.Frete_CTE_Vinculado / item.Valor_NF) * 100 : 0,
   })).sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')));
 }
 
@@ -129,6 +137,12 @@ function detalheRow(row = {}, grade = {}) {
     Peso_Considerado: peso,
     Cubagem: toNumber(row.cubagem),
     Valor_NF: toNumber(row.valorNF),
+    CTEs_Vinculados: toNumber(row.qtdCtesVinculados),
+    Frete_CTE_Vinculado: toNumber(row.valorCteVinculado),
+    Percentual_Frete_CTE: toNumber(row.percentualFreteCteVinculado),
+    Transportadoras_CTE: row.transportadorasCte || '',
+    Numeros_CTE: row.numerosCteVinculados || row.cteNumero || '',
+    Chave_Relacao: row.chaveRelacaoUsada || '',
   };
 }
 
@@ -198,20 +212,39 @@ export default function FerramentasPage() {
       }, { limit: 500000 });
       if (!rows.length) throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
 
-      const volumetria = montarVolumetria(rows, config, grade);
+      let rowsBase = rows;
+      let resumoVinculo = null;
+      if (config.vincularCtes) {
+        setMensagem('Tracking carregado. Buscando CT-es locais para vincular por chave do CT-e, número do CT-e ou chave da NF...');
+        const ctes = await exportarRealizadoLocal({
+          inicio: config.inicio,
+          fim: config.fim,
+          canal: config.canal,
+          excluirEbazar: Boolean(config.excluirEbazar),
+        }, { limit: 500000 });
+        const relacionamento = relacionarTrackingComCtes(rows, ctes.rows || []);
+        rowsBase = relacionamento.rows;
+        resumoVinculo = relacionamento.resumo;
+      }
+
+      const volumetria = montarVolumetria(rowsBase, config, grade);
       const resumo = [{
         Canal: config.canal || 'Todos',
         Periodo_Inicial: config.inicio || 'Todos',
         Periodo_Final: config.fim || 'Todos',
         Agrupamento: config.agrupamento,
-        Notas: rows.length,
+        Notas: rowsBase.length,
         Linhas_Volumetria: volumetria.length,
+        Tracking_com_CTE_vinculado: resumoVinculo?.vinculadas ?? '-',
+        Tracking_sem_CTE_vinculado: resumoVinculo?.semVinculo ?? '-',
+        Percentual_vinculado: resumoVinculo?.percentualVinculado ?? '-',
+        Frete_CTE_vinculado: resumoVinculo?.valorCteVinculadoTotal ?? '-',
         Observacao: totalCompativel > limit ? 'A base passou do limite exportado. Refaça com período menor.' : 'Volumetria completa dentro do limite.',
       }];
       const abas = { Volumetria: volumetria, Resumo: resumo };
-      if (config.incluirDetalhe) abas.Detalhe_Tracking = rows.map((row) => detalheRow(row, grade));
+      if (config.incluirDetalhe) abas.Detalhe_Tracking = rowsBase.map((row) => detalheRow(row, grade));
       baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
-      setMensagem(`Volumetria exportada: ${rows.length.toLocaleString('pt-BR')} nota(s)/linha(s) do Tracking, ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas.`);
+      setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s) do Tracking, ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -322,10 +355,14 @@ export default function FerramentasPage() {
             <input type="checkbox" checked={Boolean(config.incluirDetalhe)} onChange={(e) => alterar('incluirDetalhe', e.target.checked)} />
             Incluir detalhe por nota
           </label>
+          <label className="checkbox-line">
+            <input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} />
+            Vincular com CT-es locais
+          </label>
         </div>
 
         <div className="hint-box compact">
-          Para ATACADO e B2C, o arquivo já inclui a faixa de peso padrão do canal. A fonte desta volumetria agora é o Tracking local, não mais a base de CT-e.
+          Para ATACADO e B2C, o arquivo já inclui a faixa de peso padrão do canal. A fonte principal é o Tracking local. Se marcar vínculo com CT-e, o sistema tenta conversar com a base CTS por Chave CTE, número do CT-e e chave da NF para trazer frete realizado.
         </div>
 
         <div className="actions-right">
