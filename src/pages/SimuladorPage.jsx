@@ -11,6 +11,7 @@ import {
   simularPorTransportadora,
   simularSimples,
 } from '../utils/calculoFrete';
+import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
 import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 
@@ -87,13 +88,7 @@ function buildDestinoLabel(item) {
   return `IBGE ${item.ibgeDestino}`;
 }
 function getGradeInicial() {
-  try {
-    const raw = localStorage.getItem(GRADE_STORAGE_KEY);
-    if (!raw) return GRADE_PADRAO;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') return parsed;
-  } catch {}
-  return GRADE_PADRAO;
+  return carregarGradeFrete();
 }
 function getRankingBadge(ranking) {
   if (ranking === 1) return '🏆 1º lugar';
@@ -1102,13 +1097,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
 
   const atualizarGradePadrao = () => {
-    const novaGrade = { ...GRADE_PADRAO };
-    localStorage.setItem(GRADE_STORAGE_KEY, JSON.stringify(novaGrade));
+    const novaGrade = restaurarGradeFretePadrao();
     setGrade(novaGrade);
   };
 
   const salvarGradeAtual = () => {
-    localStorage.setItem(GRADE_STORAGE_KEY, JSON.stringify(grade));
+    const gradeSalva = salvarGradeFrete(grade);
+    setGrade(gradeSalva);
   };
 
   const onAnalisarOrigem = async () => {

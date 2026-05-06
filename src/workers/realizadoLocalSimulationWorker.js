@@ -15,6 +15,7 @@ self.onmessage = async (event) => {
       municipios: msg.municipios || [],
       nomeTransportadora: msg.nomeTransportadora || '',
       modoSimulacao: msg.modoSimulacao || 'rapido',
+      gradeFrete: msg.gradeFrete || {},
       onProgress: (payload) => postProgress(payload || {}),
     });
     self.postMessage({ type: 'done', result });

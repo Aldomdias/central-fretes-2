@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
+import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao, encontrarLinhaGradePorPeso } from '../utils/gradeFreteConfig';
 
 const DEFAULT_CONFIG = {
   canal: '',
@@ -35,19 +36,13 @@ function pesoConsiderado(row = {}) {
   return Math.max(toNumber(row.peso), toNumber(row.pesoDeclarado), toNumber(row.pesoCubado));
 }
 
-function faixaVolumetria(canal, peso) {
-  const p = Number(peso || 0);
-  const canalNorm = String(canal || '').toUpperCase();
-  const faixasB2C = [
-    [0, 2, '0 A 2'], [2, 5, '2 A 5'], [5, 10, '5 A 10'], [10, 20, '10 A 20'],
-    [20, 30, '20 A 30'], [30, 50, '30 A 50'], [50, 70, '50 A 70'], [70, 100, '70 A 100'], [100, Infinity, '100 A 999999999'],
-  ];
-  const faixasAtacado = [
-    [0, 20, '0 A 20'], [20, 30, '20 A 30'], [30, 50, '30 A 50'], [50, 70, '50 A 70'], [70, 100, '70 A 100'], [100, Infinity, '100+'],
-  ];
-  const faixas = canalNorm === 'B2C' ? faixasB2C : faixasAtacado;
-  const match = faixas.find(([min, max]) => p >= min && p < max);
-  return match?.[2] || '';
+function faixaVolumetria(canal, peso, grade = {}) {
+  const canalNorm = String(canal || '').toUpperCase() === 'B2C' ? 'B2C' : 'ATACADO';
+  const linha = encontrarLinhaGradePorPeso(grade[canalNorm] || [], peso);
+  if (!linha) return '';
+  const limite = Number(linha.peso || 0);
+  if (!limite || limite >= 999999) return `${limite >= 999999 ? '100+' : limite} kg`;
+  return `Até ${limite.toLocaleString('pt-BR')} kg`;
 }
 
 function chaveVolumetria(row = {}, agrupamento, faixa) {
@@ -88,12 +83,12 @@ function linhaInicial(row = {}, agrupamento, faixa) {
   };
 }
 
-function montarVolumetria(rows = [], config = {}) {
+function montarVolumetria(rows = [], config = {}, grade = {}) {
   const mapa = new Map();
   rows.forEach((row) => {
     const canal = String(row.canal || '').toUpperCase();
     const peso = pesoConsiderado(row);
-    const faixa = canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso) : '';
+    const faixa = canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso, grade) : '';
     const chave = chaveVolumetria(row, config.agrupamento, faixa);
     if (!mapa.has(chave)) mapa.set(chave, linhaInicial(row, config.agrupamento, faixa));
     const item = mapa.get(chave);
@@ -116,7 +111,7 @@ function montarVolumetria(rows = [], config = {}) {
   })).sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')));
 }
 
-function detalheRow(row = {}) {
+function detalheRow(row = {}, grade = {}) {
   const canal = String(row.canal || '').toUpperCase();
   const peso = pesoConsiderado(row);
   return {
@@ -130,7 +125,7 @@ function detalheRow(row = {}) {
     Destino: row.cidadeDestino || '',
     UF_Destino: row.ufDestino || '',
     IBGE_Destino: row.ibgeDestino || '',
-    Faixa_Peso: canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso) : '',
+    Faixa_Peso: canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso, grade) : '',
     Volumes: toNumber(row.qtdVolumes),
     Peso_Considerado: peso,
     Cubagem: toNumber(row.cubagem),
@@ -139,13 +134,58 @@ function detalheRow(row = {}) {
   };
 }
 
+
+const CANAIS_GRADE = ['ATACADO', 'B2C'];
+
+function normalizarValorInput(value) {
+  return String(value ?? '').replace(',', '.');
+}
+
 export default function FerramentasPage() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
   const [erro, setErro] = useState('');
+  const [grade, setGrade] = useState(() => carregarGradeFrete());
+  const [canalGrade, setCanalGrade] = useState('ATACADO');
 
   const alterar = (campo, valor) => setConfig((prev) => ({ ...prev, [campo]: valor }));
+
+  const alterarGrade = (index, campo, valor) => {
+    setGrade((prev) => {
+      const linhas = [...(prev[canalGrade] || [])];
+      linhas[index] = { ...linhas[index], [campo]: normalizarValorInput(valor) };
+      return { ...prev, [canalGrade]: linhas };
+    });
+  };
+
+  const adicionarFaixaGrade = () => {
+    setGrade((prev) => ({
+      ...prev,
+      [canalGrade]: [...(prev[canalGrade] || []), { peso: '', valorNF: '', cubagem: '' }],
+    }));
+  };
+
+  const removerFaixaGrade = (index) => {
+    setGrade((prev) => ({
+      ...prev,
+      [canalGrade]: (prev[canalGrade] || []).filter((_, i) => i !== index),
+    }));
+  };
+
+  const salvarGradeAtual = () => {
+    const normalizada = salvarGradeFrete(grade);
+    setGrade(normalizada);
+    setMensagem('Grade salva. O simulador e o Realizado Local passam a usar estes pesos, valores de NF e cubagens.');
+    setErro('');
+  };
+
+  const restaurarGradePadrao = () => {
+    const normalizada = restaurarGradeFretePadrao();
+    setGrade(normalizada);
+    setMensagem('Grade padrão restaurada. Revise as cubagens antes de simular.');
+    setErro('');
+  };
 
   async function exportarVolumetria() {
     setCarregando(true);
@@ -160,7 +200,7 @@ export default function FerramentasPage() {
       }, { limit: 500000 });
       if (!rows.length) throw new Error('Não existe base local com os filtros informados.');
 
-      const volumetria = montarVolumetria(rows, config);
+      const volumetria = montarVolumetria(rows, config, grade);
       const resumo = [{
         Canal: config.canal || 'Todos',
         Periodo_Inicial: config.inicio || 'Todos',
@@ -171,7 +211,7 @@ export default function FerramentasPage() {
         Observacao: totalCompativel > limit ? 'A base passou do limite exportado. Refaça com período menor.' : 'Volumetria completa dentro do limite.',
       }];
       const abas = { Volumetria: volumetria, Resumo: resumo };
-      if (config.incluirDetalhe) abas.Detalhe_CTE = rows.map(detalheRow);
+      if (config.incluirDetalhe) abas.Detalhe_CTE = rows.map((row) => detalheRow(row, grade));
       baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
       setMensagem(`Volumetria exportada: ${rows.length.toLocaleString('pt-BR')} CT-e(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s).`);
     } catch (error) {
@@ -191,6 +231,60 @@ export default function FerramentasPage() {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
+
+
+      <section className="panel-card">
+        <div className="section-row compact-top">
+          <div>
+            <div className="panel-title">Manutenção da grade de peso, NF e cubagem</div>
+            <p>Essa grade é usada pelo Simulador e pelo Realizado Local quando a cubagem real não vem preenchida. Ajuste a cubagem da faixa para calibrar o peso cubado.</p>
+          </div>
+          <div className="actions-right gap-row">
+            <button className="btn-secondary" type="button" onClick={restaurarGradePadrao}>Restaurar padrão</button>
+            <button className="btn-primary" type="button" onClick={salvarGradeAtual}>Salvar grade</button>
+          </div>
+        </div>
+
+        <div className="toggle-row">
+          {CANAIS_GRADE.map((item) => (
+            <button key={item} type="button" className={canalGrade === item ? 'toggle-btn active' : 'toggle-btn'} onClick={() => setCanalGrade(item)}>{item}</button>
+          ))}
+        </div>
+
+        <div className="sim-analise-tabela-wrap top-space-sm">
+          <table className="sim-analise-tabela">
+            <thead>
+              <tr>
+                <th>Limite da faixa até kg</th>
+                <th>Valor NF padrão</th>
+                <th>Cubagem padrão da faixa m³</th>
+                <th>Observação</th>
+                <th>Ação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(grade[canalGrade] || []).map((linha, index) => (
+                <tr key={`${canalGrade}-${index}`}>
+                  <td><input value={linha.peso ?? ''} onChange={(e) => alterarGrade(index, 'peso', e.target.value)} placeholder="Ex.: 50" /></td>
+                  <td><input value={linha.valorNF ?? ''} onChange={(e) => alterarGrade(index, 'valorNF', e.target.value)} placeholder="Ex.: 2000" /></td>
+                  <td><input value={linha.cubagem ?? ''} onChange={(e) => alterarGrade(index, 'cubagem', e.target.value)} placeholder="Ex.: 0,320" /></td>
+                  <td>Se o CT-e não tiver cubagem, usa esta cubagem para peso até {linha.peso || '...'} kg.</td>
+                  <td><button className="btn-secondary" type="button" onClick={() => removerFaixaGrade(index)}>Remover</button></td>
+                </tr>
+              ))}
+              {!(grade[canalGrade] || []).length && <tr><td colSpan="5">Nenhuma faixa cadastrada para este canal.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="actions-right top-space-sm">
+          <button className="btn-secondary" type="button" onClick={adicionarFaixaGrade}>Adicionar faixa</button>
+        </div>
+
+        <div className="hint-box compact">
+          A regra usa a primeira faixa com limite maior ou igual ao peso do CT-e. Exemplo: peso 51 kg usa a faixa de 70 kg ou 100 kg, conforme estiver cadastrada. O cálculo do peso cubado é: cubagem usada × fator de cubagem da transportadora/origem.
+        </div>
+      </section>
 
       <section className="panel-card">
         <div className="section-row compact-top">

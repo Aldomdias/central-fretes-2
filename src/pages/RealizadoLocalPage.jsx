@@ -35,6 +35,7 @@ import {
   simularRealizadoLocalRapido,
 } from '../utils/realizadoLocalEngine';
 import { modelosFaixaPadrao } from '../utils/formatacaoTabela';
+import { carregarGradeFrete } from '../utils/gradeFreteConfig';
 import {
   formatCurrency,
   formatDateBr,
@@ -266,10 +267,27 @@ function DetailMetric({ label, value, tone = '' }) {
   );
 }
 
+function nomeComponenteBase(nome = '') {
+  const mapa = {
+    valorKg: 'R$/kg x peso considerado',
+    valorPercentual: 'Percentual sobre NF',
+    valorFixo: 'Valor fixo / taxa aplicada',
+    minimoAplicavel: 'Frete mínimo aplicável',
+    valorFaixaComExcedente: 'Faixa + excedente + percentual',
+  };
+  return mapa[nome] || nome || 'Não identificado';
+}
+
 function DetalheSimulacao({ item, rankingCalculado }) {
   const frete = item.detalhes?.frete || {};
   const taxas = item.detalhes?.taxas || {};
   const taxasRows = Object.entries(taxas).filter(([, value]) => Number(value || 0) !== 0);
+  const valorPercentual = Number(frete.valorPercentualCalculado || 0);
+  const valorKg = Number(frete.valorKgGarantia || 0);
+  const valorFixo = Number(frete.valorFixoCalculado || frete.valorFixoAplicado || 0);
+  const minimoAplicavel = Number(frete.minimoAplicavel || 0);
+  const valorFaixaComExcedente = Number(frete.valorFaixaComExcedente || 0);
+  const componenteVencedor = nomeComponenteBase(frete.componenteBase);
 
   return (
     <div className="realizado-detail-panel" style={{ alignItems: 'stretch', display: 'block' }}>
@@ -286,8 +304,8 @@ function DetalheSimulacao({ item, rankingCalculado }) {
         <DetailMetric label="Realizado" value={formatCurrency(item.valorRealizado)} />
         <DetailMetric label="Simulado" value={formatCurrency(item.valorSimulado)} />
         <DetailMetric label="Saving considerado" value={formatCurrency(item.savingPotencial || 0)} tone={item.ganharia ? 'positivo' : ''} />
-        <DetailMetric label="Faixa de peso" value={item.faixaPeso || '—'} />
-        <DetailMetric label="Peso do CT-e" value={`${formatNumber(item.peso, 3)} kg`} />
+        <DetailMetric label="Componente vencedor" value={componenteVencedor} />
+        <DetailMetric label="Peso considerado" value={`${formatNumber(frete.pesoConsiderado || item.peso, 3)} kg`} />
         <DetailMetric label="% redução necessária" value={formatPercent(item.precisaReduzirPercentual || 0)} />
       </div>
 
@@ -296,32 +314,89 @@ function DetalheSimulacao({ item, rankingCalculado }) {
           <strong>Dados do CT-e</strong>
           <div className="mini-list top-space-sm">
             <div className="mini-list-row"><span>Realizada</span><strong>{item.transportadoraRealizada || '—'}</strong></div>
+            <div className="mini-list-row"><span>Simulada</span><strong>{item.transportadoraSimulada || '—'}</strong></div>
             <div className="mini-list-row"><span>Canal</span><strong>{item.canal || '—'}</strong></div>
             <div className="mini-list-row"><span>Valor NF</span><strong>{formatCurrency(item.valorNF)}</strong></div>
+            <div className="mini-list-row"><span>Origem</span><strong>{item.origem}/{item.ufOrigem}</strong></div>
+            <div className="mini-list-row"><span>Destino</span><strong>{item.cidadeDestino}/{item.ufDestino}</strong></div>
             <div className="mini-list-row"><span>Emissão</span><strong>{formatDateBr(item.emissao)}</strong></div>
           </div>
         </div>
+
+        <div className="sim-parametros-box">
+          <strong>Cubagem e peso</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Peso informado CT-e</span><strong>{formatNumber(frete.pesoInformado || item.peso, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso declarado</span><strong>{formatNumber(frete.pesoDeclarado || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso cubado original</span><strong>{formatNumber(frete.pesoCubadoOriginal || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso da grade</span><strong>{formatNumber(frete.pesoGrade || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Cubagem realizada</span><strong>{formatNumber(frete.cubagemRealizada || 0, 6)} m³</strong></div>
+            <div className="mini-list-row"><span>Cubagem da grade</span><strong>{formatNumber(frete.cubagemGrade || 0, 6)} m³</strong></div>
+            <div className="mini-list-row"><span>Cubagem usada</span><strong>{formatNumber(frete.cubagemAplicada || 0, 6)} m³</strong></div>
+            <div className="mini-list-row"><span>Origem da cubagem</span><strong>{frete.origemCubagem || 'sem cubagem'}</strong></div>
+            <div className="mini-list-row"><span>Fator cubagem</span><strong>{formatNumber(frete.fatorCubagem || 0, 3)} kg/m³</strong></div>
+            <div className="mini-list-row"><span>Cálculo peso cubado</span><strong>{formatNumber(frete.cubagemAplicada || 0, 6)} × {formatNumber(frete.fatorCubagem || 0, 3)} = {formatNumber(frete.pesoCubado || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso considerado</span><strong>{formatNumber(frete.pesoConsiderado || item.peso, 3)} kg</strong></div>
+          </div>
+        </div>
+
+        <div className="sim-parametros-box">
+          <strong>Faixa / taxa aplicada</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Faixa de peso</span><strong>{frete.faixaPeso || item.faixaPeso || '—'}</strong></div>
+            <div className="mini-list-row"><span>Peso mín. faixa</span><strong>{formatNumber(frete.pesoMin || item.pesoMinFaixa || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso máx. faixa</span><strong>{formatNumber(frete.pesoMax || item.pesoMaxFaixa || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Percentual</span><strong>{formatPercent(frete.percentualAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Valor fixo / taxa</span><strong>{formatCurrency(frete.valorFixoAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>R$/kg</span><strong>{formatCurrency(frete.rsKgAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Excesso R$/kg</span><strong>{formatCurrency(frete.excessoKg || 0)}</strong></div>
+            <div className="mini-list-row"><span>Peso excedente</span><strong>{formatNumber(frete.pesoExcedente || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Valor excedente</span><strong>{formatCurrency(frete.valorExcedente || 0)}</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="feature-grid three top-space-sm">
+        <div className="sim-parametros-box">
+          <strong>Comparativo da base</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Percentual sobre NF</span><strong>{formatCurrency(item.valorNF)} × {formatPercent(frete.percentualAplicado || 0)} = {formatCurrency(valorPercentual)}</strong></div>
+            <div className="mini-list-row"><span>Kg garantia</span><strong>{formatNumber(frete.pesoConsiderado || item.peso, 3)} kg × {formatCurrency(frete.rsKgAplicado || 0)} = {formatCurrency(valorKg)}</strong></div>
+            <div className="mini-list-row"><span>Valor fixo</span><strong>{formatCurrency(valorFixo)}</strong></div>
+            <div className="mini-list-row"><span>Faixa + excedente</span><strong>{formatCurrency(valorFaixaComExcedente)}</strong></div>
+            <div className="mini-list-row"><span>Frete mínimo rota</span><strong>{formatCurrency(frete.minimoRota || 0)}</strong></div>
+            <div className="mini-list-row"><span>Frete mínimo cotação</span><strong>{formatCurrency(frete.freteMinimoCotacao || 0)}</strong></div>
+            <div className="mini-list-row"><span>Frete mínimo generalidade</span><strong>{formatCurrency(frete.freteMinimoGeneralidade || 0)}</strong></div>
+            <div className="mini-list-row"><span>Mínimo aplicável</span><strong>{formatCurrency(minimoAplicavel)}</strong></div>
+            <div className="mini-list-row"><span>Base escolhida</span><strong>{componenteVencedor} · {formatCurrency(frete.valorBase || 0)}</strong></div>
+          </div>
+        </div>
+
         <div className="sim-parametros-box">
           <strong>Memória do frete</strong>
           <div className="mini-list top-space-sm">
             <div className="mini-list-row"><span>Tipo</span><strong>{frete.tipoCalculo || item.tipoCalculo || '—'}</strong></div>
             <div className="mini-list-row"><span>Base</span><strong>{formatCurrency(frete.valorBase || 0)}</strong></div>
-            <div className="mini-list-row"><span>Subtotal</span><strong>{formatCurrency(frete.subtotal || 0)}</strong></div>
+            <div className="mini-list-row"><span>Taxas adicionais</span><strong>{formatCurrency(taxasRows.reduce((acc, [, valor]) => acc + Number(valor || 0), 0))}</strong></div>
+            <div className="mini-list-row"><span>Subtotal antes ICMS</span><strong>{formatCurrency(frete.subtotal || 0)}</strong></div>
             <div className="mini-list-row"><span>ICMS {frete.incideIcms ? `(${formatPercent(frete.aliquotaIcms || 0)})` : '(não incidiu)'}</span><strong>{formatCurrency(frete.icms || 0)}</strong></div>
             {frete.incideIcms && (frete.ufOrigem || frete.ufDestino || frete.origemAliquotaIcms) && (
               <div className="mini-list-row"><span>Regra ICMS</span><strong>{frete.ufOrigem || 'UF?'} → {frete.ufDestino || 'UF?'} · {frete.origemAliquotaIcms || 'cadastro'}</strong></div>
             )}
-            <div className="mini-list-row"><span>Total</span><strong>{formatCurrency(frete.total || item.valorSimulado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Total simulado</span><strong>{formatCurrency(frete.total || item.valorSimulado || 0)}</strong></div>
           </div>
         </div>
+
         <div className="sim-parametros-box">
-          <strong>Faixa / taxa aplicada</strong>
+          <strong>Resultado vs realizado</strong>
           <div className="mini-list top-space-sm">
-            <div className="mini-list-row"><span>Percentual</span><strong>{formatPercent(frete.percentualAplicado || 0)}</strong></div>
-            <div className="mini-list-row"><span>Valor fixo</span><strong>{formatCurrency(frete.valorFixoAplicado || 0)}</strong></div>
-            <div className="mini-list-row"><span>R$/kg</span><strong>{formatCurrency(frete.rsKgAplicado || 0)}</strong></div>
-            <div className="mini-list-row"><span>Peso limite</span><strong>{formatNumber(frete.pesoLimite || 0, 3)} kg</strong></div>
-            <div className="mini-list-row"><span>Excesso kg</span><strong>{formatNumber(frete.excessoKg || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Frete realizado</span><strong>{formatCurrency(item.valorRealizado)}</strong></div>
+            <div className="mini-list-row"><span>Frete simulado</span><strong>{formatCurrency(item.valorSimulado)}</strong></div>
+            <div className="mini-list-row"><span>Diferença</span><strong>{formatCurrency(item.impacto || 0)}</strong></div>
+            <div className="mini-list-row"><span>Saving considerado</span><strong>{formatCurrency(item.savingPotencial || 0)}</strong></div>
+            <div className="mini-list-row"><span>% realizado/NF</span><strong>{formatPercent(item.percentualRealizado || 0)}</strong></div>
+            <div className="mini-list-row"><span>% simulado/NF</span><strong>{formatPercent(item.percentualSimulado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Líder no ranking</span><strong>{item.liderTransportadora || (rankingCalculado ? '—' : 'ranking não calculado')}</strong></div>
           </div>
         </div>
       </div>
@@ -727,6 +802,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [salvandoTabelaLocal, setSalvandoTabelaLocal] = useState(false);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
   const [modoSimulacao, setModoSimulacao] = useState('rapido');
+  const [gradeFrete, setGradeFrete] = useState(() => carregarGradeFrete());
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const [grupoDetalhe, setGrupoDetalhe] = useState(null);
   const [exportando, setExportando] = useState(false);
@@ -1493,6 +1569,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function simular() {
+    const gradeAtual = carregarGradeFrete();
+    setGradeFrete(gradeAtual);
     if (!filtros.transportadora) {
       setErro('Escolha a transportadora que deseja simular.');
       return;
@@ -1598,6 +1676,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         municipios,
         nomeTransportadora: filtros.transportadora,
         modoSimulacao,
+        gradeFrete: gradeAtual,
       }, ({ atual = 0, total = rows.length, etapa = 'Calculando frete local' }) => {
         setProgress({
           etapa,
