@@ -15,6 +15,9 @@ const DEFAULT_CONFIG = {
   canal: '',
   inicio: '',
   fim: '',
+  origem: '',
+  ufOrigem: '',
+  ufDestino: '',
   agrupamento: 'cidade_ibge',
   excluirEbazar: true,
   incluirDetalhe: true,
@@ -23,6 +26,7 @@ const DEFAULT_CONFIG = {
 
 const CANAIS = ['', 'ATACADO', 'B2C'];
 const CANAIS_GRADE = ['ATACADO', 'B2C'];
+const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 
 const UF_POR_CODIGO_IBGE = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -70,8 +74,16 @@ function normalizarCidade(value = '') {
     .trim();
 }
 
+function normalizeBusca(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
 function safeSheetName(nome) {
-  return String(nome || 'Planilha').replace(/[\\/?*\[\]:]/g, ' ').slice(0, 31) || 'Planilha';
+  return String(nome || 'Planilha').replace(/[\\/?*[\]:]/g, ' ').slice(0, 31) || 'Planilha';
 }
 
 function isMoneyColumn(header = '') {
@@ -86,7 +98,8 @@ function isPercentColumn(header = '') {
 function isNumericColumn(header = '') {
   const h = String(header).toUpperCase();
   return [
-    'NOTAS', 'VOLUMES', 'PESO', 'CUBAGEM', 'M3', 'CTES', 'MEDIA', 'MÉDIA', 'QTD', 'TOTAL', 'PERCENTUAL', 'FRETE', 'VALOR', 'NF',
+    'NOTAS', 'VOLUMES', 'PESO', 'CUBAGEM', 'M3', 'CTES', 'MEDIA', 'MÉDIA',
+    'QTD', 'TOTAL', 'PERCENTUAL', 'FRETE', 'VALOR', 'NF',
   ].some((termo) => h.includes(termo));
 }
 
@@ -105,6 +118,7 @@ function columnWidth(header = '') {
 
 function aplicarFormatoPlanilha(ws, rows = []) {
   if (!rows?.length) return;
+
   const headers = Object.keys(rows[0] || {});
   if (!headers.length) return;
 
@@ -134,12 +148,14 @@ function aplicarFormatoPlanilha(ws, rows = []) {
 
 function baixarXlsx(nomeArquivo, abas) {
   const wb = XLSX.utils.book_new();
+
   Object.entries(abas).forEach(([nome, rows]) => {
     const safeRows = rows || [];
     const ws = XLSX.utils.json_to_sheet(safeRows);
     aplicarFormatoPlanilha(ws, safeRows);
     XLSX.utils.book_append_sheet(wb, ws, safeSheetName(nome));
   });
+
   XLSX.writeFile(wb, nomeArquivo);
 }
 
@@ -151,16 +167,28 @@ function faixaVolumetria(canal, peso, grade = {}) {
   const canalNorm = String(canal || '').toUpperCase() === 'B2C' ? 'B2C' : 'ATACADO';
   const linha = encontrarLinhaGradePorPeso(grade[canalNorm] || [], peso);
   if (!linha) return '';
+
   const limite = Number(linha.peso || 0);
   if (!limite) return '';
   if (limite >= 999999) return '100+ kg';
+
   return `Até ${limite.toLocaleString('pt-BR')} kg`;
 }
 
 function chaveVolumetria(row = {}, agrupamento, faixa) {
   if (agrupamento === 'estado') return [row.canal, row.ufOrigem, row.ufDestino, faixa].join('|');
   if (agrupamento === 'ibge') return [row.canal, row.ibgeOrigem, row.ibgeDestino, faixa].join('|');
-  return [row.canal, row.cidadeOrigem, row.ufOrigem, row.ibgeOrigem, row.cidadeDestino, row.ufDestino, row.ibgeDestino, faixa].join('|');
+
+  return [
+    row.canal,
+    row.cidadeOrigem,
+    row.ufOrigem,
+    row.ibgeOrigem,
+    row.cidadeDestino,
+    row.ufDestino,
+    row.ibgeDestino,
+    faixa,
+  ].join('|');
 }
 
 function linhaInicial(row = {}, agrupamento, faixa) {
@@ -178,11 +206,21 @@ function linhaInicial(row = {}, agrupamento, faixa) {
   };
 
   if (agrupamento === 'estado') {
-    return { ...base, UF_Origem: row.ufOrigem || '', UF_Destino: row.ufDestino || '' };
+    return {
+      ...base,
+      UF_Origem: row.ufOrigem || '',
+      UF_Destino: row.ufDestino || '',
+    };
   }
+
   if (agrupamento === 'ibge') {
-    return { ...base, IBGE_Origem: row.ibgeOrigem || '', IBGE_Destino: row.ibgeDestino || '' };
+    return {
+      ...base,
+      IBGE_Origem: row.ibgeOrigem || '',
+      IBGE_Destino: row.ibgeDestino || '',
+    };
   }
+
   return {
     ...base,
     Origem: row.cidadeOrigem || '',
@@ -250,7 +288,11 @@ function criarMapasLocalidades(rows = [], municipios = []) {
 function escolherMelhorLocalidade(candidatos = []) {
   const validos = (candidatos || [])
     .filter((item) => item && (item.uf || item.ibge))
-    .map((item) => ({ ...item, uf: cleanUf(item.uf) || getUfByIbge(item.ibge), ibge: onlyDigits(item.ibge).slice(0, 7) }))
+    .map((item) => ({
+      ...item,
+      uf: cleanUf(item.uf) || getUfByIbge(item.ibge),
+      ibge: onlyDigits(item.ibge).slice(0, 7),
+    }))
     .filter((item) => item.uf || item.ibge);
 
   if (!validos.length) return null;
@@ -269,8 +311,6 @@ function escolherMelhorLocalidade(candidatos = []) {
 
   if (opcoes.length === 1) return opcoes[0];
 
-  // Se existe uma opção com IBGE + UF e as demais são incompletas da mesma UF,
-  // escolhe a completa. Caso existam duas cidades homônimas completas, não preenche.
   const completas = opcoes.filter((item) => item.uf && item.ibge);
   const assinaturasCompletas = new Set(completas.map((item) => `${item.uf}|${item.ibge}`));
   if (assinaturasCompletas.size === 1) return completas[0];
@@ -295,22 +335,20 @@ function completarLocalidade(row = {}, prefixo, maps) {
     if (uf) campos.push(`${ufCampo}=IBGE`);
   }
 
-  if (!cidadeKey) {
-    return { ...row, [ufCampo]: uf, [ibgeCampo]: ibge };
-  }
+  if (cidadeKey) {
+    let escolhido = null;
+    if (uf) escolhido = escolherMelhorLocalidade(maps.porCidadeUf.get(`${cidadeKey}|${uf}`) || []);
+    if (!escolhido) escolhido = escolherMelhorLocalidade(maps.porCidade.get(cidadeKey) || []);
 
-  let escolhido = null;
-  if (uf) escolhido = escolherMelhorLocalidade(maps.porCidadeUf.get(`${cidadeKey}|${uf}`) || []);
-  if (!escolhido) escolhido = escolherMelhorLocalidade(maps.porCidade.get(cidadeKey) || []);
-
-  if (escolhido) {
-    if (!uf && escolhido.uf) {
-      uf = escolhido.uf;
-      campos.push(`${ufCampo}=recorrencia`);
-    }
-    if (!ibge && escolhido.ibge) {
-      ibge = escolhido.ibge;
-      campos.push(`${ibgeCampo}=recorrencia`);
+    if (escolhido) {
+      if (!uf && escolhido.uf) {
+        uf = escolhido.uf;
+        campos.push(`${ufCampo}=recorrencia`);
+      }
+      if (!ibge && escolhido.ibge) {
+        ibge = escolhido.ibge;
+        campos.push(`${ibgeCampo}=recorrencia`);
+      }
     }
   }
 
@@ -324,9 +362,6 @@ function completarLocalidade(row = {}, prefixo, maps) {
     ...row,
     [ufCampo]: uf,
     [ibgeCampo]: ibge,
-    chaveRotaIbge: (prefixo === 'Destino' && row.ibgeOrigem && ibge)
-      ? `${row.ibgeOrigem}-${ibge}`
-      : row.chaveRotaIbge,
     camposComplementadosPorRecorrencia: complementos,
     enderecoComplementadoPorRecorrencia: Boolean(complementos),
   };
@@ -345,8 +380,6 @@ async function completarGeografiaVolumetria(rows = []) {
   const municipios = await carregarMunicipiosSeguro();
   let maps = criarMapasLocalidades(rows, municipios);
 
-  // Duas passadas: a primeira usa IBGE/UF existentes e municípios; a segunda
-  // reaproveita o que acabou de ser preenchido para uniformizar cidades repetidas.
   let preenchidas = (rows || []).map((row) => {
     const origem = completarLocalidade(row, 'Origem', maps);
     return completarLocalidade(origem, 'Destino', maps);
@@ -366,14 +399,30 @@ async function completarGeografiaVolumetria(rows = []) {
   return preenchidas;
 }
 
+function aplicarFiltrosFinais(rows = [], config = {}) {
+  const origemFiltro = normalizarCidade(config.origem);
+  const ufOrigemFiltro = cleanUf(config.ufOrigem);
+  const ufDestinoFiltro = cleanUf(config.ufDestino);
+
+  return (rows || []).filter((row) => {
+    if (origemFiltro && !normalizarCidade(row.cidadeOrigem).includes(origemFiltro)) return false;
+    if (ufOrigemFiltro && cleanUf(row.ufOrigem) !== ufOrigemFiltro) return false;
+    if (ufDestinoFiltro && cleanUf(row.ufDestino) !== ufDestinoFiltro) return false;
+    return true;
+  });
+}
+
 function montarVolumetria(rows = [], config = {}, grade = {}) {
   const mapa = new Map();
+
   rows.forEach((row) => {
     const canal = String(row.canal || '').toUpperCase();
     const peso = pesoConsiderado(row);
     const faixa = canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso, grade) : '';
     const chave = chaveVolumetria(row, config.agrupamento, faixa);
+
     if (!mapa.has(chave)) mapa.set(chave, linhaInicial(row, config.agrupamento, faixa));
+
     const item = mapa.get(chave);
     item.Notas += 1;
     item.Volumes += toNumber(row.qtdVolumes);
@@ -385,18 +434,21 @@ function montarVolumetria(rows = [], config = {}, grade = {}) {
     item.Valor_NF += toNumber(row.valorNF);
   });
 
-  return [...mapa.values()].map((item) => ({
-    ...item,
-    Media_Peso_Nota: item.Notas ? item.Peso_Considerado / item.Notas : 0,
-    Media_Volumes_Nota: item.Notas ? item.Volumes / item.Notas : 0,
-    Media_Cubagem_Nota: item.Notas ? item.Cubagem_m3 / item.Notas : 0,
-    Media_Valor_NF_Nota: item.Notas ? item.Valor_NF / item.Notas : 0,
-  })).sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')));
+  return [...mapa.values()]
+    .map((item) => ({
+      ...item,
+      Media_Peso_Nota: item.Notas ? item.Peso_Considerado / item.Notas : 0,
+      Media_Volumes_Nota: item.Notas ? item.Volumes / item.Notas : 0,
+      Media_Cubagem_Nota: item.Notas ? item.Cubagem_m3 / item.Notas : 0,
+      Media_Valor_NF_Nota: item.Notas ? item.Valor_NF / item.Notas : 0,
+    }))
+    .sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')));
 }
 
 function detalheTrackingRow(row = {}, grade = {}) {
   const canal = String(row.canal || '').toUpperCase();
   const peso = pesoConsiderado(row);
+
   return {
     Nota_Fiscal: row.notaFiscal || row.numeroNf || row.nfNumero || '',
     Pedido: row.pedido || '',
@@ -477,13 +529,17 @@ export default function FerramentasPage() {
     setCarregando(true);
     setErro('');
     setMensagem('Gerando volumetria a partir do Tracking local...');
+
     try {
-      const { rows, totalCompativel, limit } = await exportarTrackingLocal({
+      const filtroBase = {
         canal: config.canal,
         inicio: config.inicio,
         fim: config.fim,
+        origem: config.origem,
         excluirEbazar: Boolean(config.excluirEbazar),
-      }, { limit: 500000 });
+      };
+
+      const { rows, totalCompativel, limit } = await exportarTrackingLocal(filtroBase, { limit: 500000 });
 
       if (!rows.length) {
         throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
@@ -494,12 +550,7 @@ export default function FerramentasPage() {
 
       if (config.vincularCtes) {
         setMensagem('Tracking carregado. Buscando CT-es locais para complementar UF/IBGE...');
-        const ctes = await exportarRealizadoLocal({
-          inicio: config.inicio,
-          fim: config.fim,
-          canal: config.canal,
-          excluirEbazar: Boolean(config.excluirEbazar),
-        }, { limit: 500000 });
+        const ctes = await exportarRealizadoLocal(filtroBase, { limit: 500000 });
         const relacionamento = relacionarTrackingComCtes(rows, ctes.rows || []);
         rowsBase = relacionamento.rows;
         resumoVinculo = relacionamento.resumo;
@@ -507,6 +558,11 @@ export default function FerramentasPage() {
 
       setMensagem('Completando UF e IBGE por município, CT-e e recorrência da própria base...');
       rowsBase = await completarGeografiaVolumetria(rowsBase);
+      rowsBase = aplicarFiltrosFinais(rowsBase, config);
+
+      if (!rowsBase.length) {
+        throw new Error('Após completar UF/IBGE, nenhuma linha ficou dentro dos filtros de origem/UF selecionados.');
+      }
 
       const volumetria = montarVolumetria(rowsBase, config, grade);
       const detalheNotas = rowsBase.map((row) => detalheTrackingRow(row, grade));
@@ -517,7 +573,8 @@ export default function FerramentasPage() {
       };
 
       baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
-      setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. UF/IBGE foram uniformizados antes de gerar o Excel.`);
+
+      setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Filtros aplicados: origem ${config.origem || 'todas'}, UF origem ${config.ufOrigem || 'todas'}, UF destino ${config.ufDestino || 'todas'}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -612,6 +669,22 @@ export default function FerramentasPage() {
         </div>
 
         <div className="form-grid three">
+          <label className="field">Origem
+            <input value={config.origem} onChange={(e) => alterar('origem', e.target.value)} placeholder="Ex.: Sinop, Itajaí, Serra" />
+          </label>
+          <label className="field">UF origem
+            <select value={config.ufOrigem} onChange={(e) => alterar('ufOrigem', e.target.value)}>
+              {UF_OPTIONS.map((uf) => <option key={`origem-${uf || 'todos'}`} value={uf}>{uf || 'Todas'}</option>)}
+            </select>
+          </label>
+          <label className="field">UF destino
+            <select value={config.ufDestino} onChange={(e) => alterar('ufDestino', e.target.value)}>
+              {UF_OPTIONS.map((uf) => <option key={`destino-${uf || 'todos'}`} value={uf}>{uf || 'Todas'}</option>)}
+            </select>
+          </label>
+        </div>
+
+        <div className="form-grid three">
           <label className="field">Agrupamento
             <select value={config.agrupamento} onChange={(e) => alterar('agrupamento', e.target.value)}>
               <option value="cidade_ibge">Cidade/UF + IBGE origem e destino</option>
@@ -634,7 +707,7 @@ export default function FerramentasPage() {
         </div>
 
         <div className="hint-box compact">
-          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento para avaliar a variação nota a nota. Antes de gerar o Excel, o sistema uniformiza UF e IBGE usando município cadastrado, CT-e vinculado e recorrência da própria base. Se SINOP aparecer com MT/5107909 em uma linha, as demais linhas de SINOP serão preenchidas também, desde que não exista conflito de cidade homônima.
+          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento. Os filtros de UF são aplicados depois que o sistema tenta completar UF/IBGE por município cadastrado, CT-e vinculado e recorrência da própria base.
         </div>
 
         <div className="actions-right">
