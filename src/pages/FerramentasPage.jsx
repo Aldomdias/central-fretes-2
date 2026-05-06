@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import * as XLSX from 'xlsx';
-import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
+import { exportarTrackingLocal } from '../utils/trackingLocal';
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao, encontrarLinhaGradePorPeso } from '../utils/gradeFreteConfig';
 
 const DEFAULT_CONFIG = {
@@ -55,7 +55,7 @@ function linhaInicial(row = {}, agrupamento, faixa) {
   const base = {
     Canal: row.canal || '',
     Faixa_Peso: faixa,
-    CTEs: 0,
+    Notas: 0,
     Volumes: 0,
     Peso_Real: 0,
     Peso_Declarado: 0,
@@ -63,7 +63,6 @@ function linhaInicial(row = {}, agrupamento, faixa) {
     Peso_Considerado: 0,
     Cubagem: 0,
     Valor_NF: 0,
-    Frete_Realizado: 0,
   };
 
   if (agrupamento === 'estado') {
@@ -92,7 +91,7 @@ function montarVolumetria(rows = [], config = {}, grade = {}) {
     const chave = chaveVolumetria(row, config.agrupamento, faixa);
     if (!mapa.has(chave)) mapa.set(chave, linhaInicial(row, config.agrupamento, faixa));
     const item = mapa.get(chave);
-    item.CTEs += 1;
+    item.Notas += 1;
     item.Volumes += toNumber(row.qtdVolumes);
     item.Peso_Real += toNumber(row.peso);
     item.Peso_Declarado += toNumber(row.pesoDeclarado);
@@ -100,14 +99,13 @@ function montarVolumetria(rows = [], config = {}, grade = {}) {
     item.Peso_Considerado += peso;
     item.Cubagem += toNumber(row.cubagem);
     item.Valor_NF += toNumber(row.valorNF);
-    item.Frete_Realizado += toNumber(row.valorCte);
   });
 
   return [...mapa.values()].map((item) => ({
     ...item,
-    Media_Peso_CTE: item.CTEs ? item.Peso_Considerado / item.CTEs : 0,
-    Media_Volumes_CTE: item.CTEs ? item.Volumes / item.CTEs : 0,
-    Percentual_Frete: item.Valor_NF ? (item.Frete_Realizado / item.Valor_NF) * 100 : 0,
+    Media_Peso_Nota: item.Notas ? item.Peso_Considerado / item.Notas : 0,
+    Media_Volumes_Nota: item.Notas ? item.Volumes / item.Notas : 0,
+    Media_Cubagem_Nota: item.Notas ? item.Cubagem / item.Notas : 0,
   })).sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')));
 }
 
@@ -115,8 +113,9 @@ function detalheRow(row = {}, grade = {}) {
   const canal = String(row.canal || '').toUpperCase();
   const peso = pesoConsiderado(row);
   return {
-    CTE: row.numeroCte || '',
-    Data: row.dataEmissao || '',
+    Nota_Fiscal: row.notaFiscal || '',
+    Pedido: row.pedido || '',
+    Data: row.data || '',
     Canal: row.canal || '',
     Transportadora: row.transportadora || '',
     Origem: row.cidadeOrigem || '',
@@ -130,7 +129,6 @@ function detalheRow(row = {}, grade = {}) {
     Peso_Considerado: peso,
     Cubagem: toNumber(row.cubagem),
     Valor_NF: toNumber(row.valorNF),
-    Frete_Realizado: toNumber(row.valorCte),
   };
 }
 
@@ -190,15 +188,15 @@ export default function FerramentasPage() {
   async function exportarVolumetria() {
     setCarregando(true);
     setErro('');
-    setMensagem('Gerando volumetria a partir do Realizado Local...');
+    setMensagem('Gerando volumetria a partir do Tracking local...');
     try {
-      const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
+      const { rows, totalCompativel, limit } = await exportarTrackingLocal({
         canal: config.canal,
         inicio: config.inicio,
         fim: config.fim,
         excluirEbazar: Boolean(config.excluirEbazar),
       }, { limit: 500000 });
-      if (!rows.length) throw new Error('Não existe base local com os filtros informados.');
+      if (!rows.length) throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
 
       const volumetria = montarVolumetria(rows, config, grade);
       const resumo = [{
@@ -206,14 +204,14 @@ export default function FerramentasPage() {
         Periodo_Inicial: config.inicio || 'Todos',
         Periodo_Final: config.fim || 'Todos',
         Agrupamento: config.agrupamento,
-        CTEs: rows.length,
+        Notas: rows.length,
         Linhas_Volumetria: volumetria.length,
         Observacao: totalCompativel > limit ? 'A base passou do limite exportado. Refaça com período menor.' : 'Volumetria completa dentro do limite.',
       }];
       const abas = { Volumetria: volumetria, Resumo: resumo };
-      if (config.incluirDetalhe) abas.Detalhe_CTE = rows.map((row) => detalheRow(row, grade));
+      if (config.incluirDetalhe) abas.Detalhe_Tracking = rows.map((row) => detalheRow(row, grade));
       baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
-      setMensagem(`Volumetria exportada: ${rows.length.toLocaleString('pt-BR')} CT-e(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s).`);
+      setMensagem(`Volumetria exportada: ${rows.length.toLocaleString('pt-BR')} nota(s)/linha(s) do Tracking, ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -226,7 +224,7 @@ export default function FerramentasPage() {
       <div className="page-header">
         <div className="amd-mini-brand">AMD Log • Ferramentas</div>
         <h1>Ferramentas</h1>
-        <p>Utilitários separados das telas operacionais para gerar bases de apoio, volumetria e arquivos para transportadores.</p>
+        <p>Utilitários separados das telas operacionais para manter grades e gerar volumetria a partir da base de Tracking.</p>
       </div>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
@@ -237,7 +235,7 @@ export default function FerramentasPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Manutenção da grade de peso, NF e cubagem</div>
-            <p>Essa grade é usada pelo Simulador e pelo Realizado Local quando a cubagem real não vem preenchida. Ajuste a cubagem da faixa para calibrar o peso cubado.</p>
+            <p>Essa grade é usada pelo Simulador e pelo Realizado Local. Para cubagem, o cálculo usa somente a cubagem cadastrada aqui por faixa; a cubagem realizada é ignorada.</p>
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={restaurarGradePadrao}>Restaurar padrão</button>
@@ -282,7 +280,7 @@ export default function FerramentasPage() {
         </div>
 
         <div className="hint-box compact">
-          A regra usa a primeira faixa com limite maior ou igual ao peso do CT-e. Exemplo: peso 51 kg usa a faixa de 70 kg ou 100 kg, conforme estiver cadastrada. O cálculo do peso cubado é: cubagem usada × fator de cubagem da transportadora/origem.
+          A regra usa a primeira faixa com limite maior ou igual ao peso. Exemplo: peso 51 kg usa a faixa de 70 kg ou 100 kg, conforme estiver cadastrada. O cálculo do peso cubado é: cubagem da grade × fator de cubagem da transportadora/origem.
         </div>
       </section>
 
@@ -290,7 +288,7 @@ export default function FerramentasPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Exportar volumetria para transportador</div>
-            <p>Gera uma base agrupada do Realizado Local com origem, destino, IBGE, faixa de peso, cubagem, valor de nota e volumes.</p>
+            <p>Gera uma base agrupada da base local de Tracking com origem, destino, IBGE, faixa de peso, cubagem, valor de nota e volumes para precificação do transportador.</p>
           </div>
         </div>
 
@@ -322,12 +320,12 @@ export default function FerramentasPage() {
           </label>
           <label className="checkbox-line">
             <input type="checkbox" checked={Boolean(config.incluirDetalhe)} onChange={(e) => alterar('incluirDetalhe', e.target.checked)} />
-            Incluir detalhe por CT-e
+            Incluir detalhe por nota
           </label>
         </div>
 
         <div className="hint-box compact">
-          Para ATACADO e B2C, o arquivo já inclui a faixa de peso padrão do canal para facilitar a precificação da transportadora.
+          Para ATACADO e B2C, o arquivo já inclui a faixa de peso padrão do canal. A fonte desta volumetria agora é o Tracking local, não mais a base de CT-e.
         </div>
 
         <div className="actions-right">

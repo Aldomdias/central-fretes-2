@@ -556,7 +556,10 @@ function getCotacao(origem, rota, peso) {
 
 function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }) {
   const pesoDeclarado = toNumber(cte.pesoDeclarado);
-  const pesoInformado = Math.max(toNumber(cte.peso), pesoDeclarado, 0);
+  // Importante: não usar peso cubado/cubagem do realizado para definir o peso de cálculo,
+  // porque essa cubagem vem inconsistente em algumas bases. O peso base é o peso real/declarado
+  // e a cubagem aplicada vem exclusivamente da grade configurada.
+  const pesoInformado = pesoDeclarado > 0 ? pesoDeclarado : Math.max(toNumber(cte.peso), 0);
   const pesoCubadoOriginal = toNumber(cte.pesoCubado);
   const cubagemRealizada = Math.max(
     toNumber(cte.cubagem),
@@ -564,17 +567,17 @@ function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }
     toNumber(cte.m3),
     toNumber(cte.volumeCubico)
   );
-  const linhaGrade = encontrarLinhaGradePorPeso(gradeCanal, pesoInformado || pesoDeclarado || pesoCubadoOriginal);
+  const linhaGrade = encontrarLinhaGradePorPeso(gradeCanal, pesoInformado || pesoDeclarado || toNumber(cte.peso));
   const cubagemGrade = toNumber(linhaGrade?.cubagem);
-  const cubagemAplicada = cubagemRealizada > 0 ? cubagemRealizada : cubagemGrade;
-  const origemCubagem = cubagemRealizada > 0 ? 'realizado' : cubagemGrade > 0 ? 'grade' : 'sem cubagem';
+  const cubagemAplicada = cubagemGrade;
+  const origemCubagem = cubagemGrade > 0 ? 'grade' : 'sem cubagem';
   const fatorCubagem = toNumber(
     origem.generalidades?.cubagem ??
     origem.generalidades?.fatorCubagem ??
     origem.generalidades?.fator_cubagem
   );
   const pesoCubadoCalculado = cubagemAplicada > 0 && fatorCubagem > 0 ? cubagemAplicada * fatorCubagem : 0;
-  const pesoConsiderado = Math.max(pesoInformado, pesoCubadoOriginal, pesoCubadoCalculado, pesoDeclarado);
+  const pesoConsiderado = Math.max(pesoInformado, pesoCubadoCalculado, pesoDeclarado);
 
   return {
     pesoInformado,
@@ -582,6 +585,7 @@ function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }
     pesoCubadoOriginal,
     pesoGrade: toNumber(linhaGrade?.peso),
     valorNFGrade: toNumber(linhaGrade?.valorNF),
+    cubagemRealizadaInformada: cubagemRealizada,
     cubagemRealizada,
     cubagemGrade,
     cubagemAplicada,

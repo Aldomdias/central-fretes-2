@@ -124,35 +124,63 @@ function getCotacaoPorRota(origem, rotaNome, peso) {
 }
 
 
+function normalizarLinhaGrade(item = {}) {
+  const peso = toNumber(item?.peso ?? item?.pesoMax ?? item?.pesoLimite);
+  const pesoMin = toNumber(item?.pesoMin ?? item?.peso_min ?? item?.min);
+  const pesoMaxRaw = item?.pesoMax ?? item?.pesoLimite ?? item?.peso_max ?? item?.max ?? item?.peso;
+  const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined
+    ? Number.POSITIVE_INFINITY
+    : toNumber(pesoMaxRaw);
+
+  return {
+    ...item,
+    peso,
+    pesoMin,
+    pesoMax: pesoMax || peso || Number.POSITIVE_INFINITY,
+    valorNF: toNumber(item?.valorNF ?? item?.valorNf ?? item?.nf),
+    cubagem: toNumber(item?.cubagem ?? item?.cubagemM3 ?? item?.metrosCubicos),
+  };
+}
+
 function getLinhaGradeMaisProxima(gradeCanal = [], pesoInformado = 0) {
+  const peso = toNumber(pesoInformado);
   const lista = (Array.isArray(gradeCanal) ? gradeCanal : [])
-    .map((item) => ({
-      peso: toNumber(item?.peso),
-      valorNF: toNumber(item?.valorNF),
-      cubagem: toNumber(item?.cubagem),
-    }))
-    .filter((item) => item.peso > 0)
-    .sort((a, b) => a.peso - b.peso);
+    .map(normalizarLinhaGrade)
+    .filter((item) => item.peso > 0 || item.pesoMax > 0)
+    .sort((a, b) => (a.pesoMax || a.peso) - (b.pesoMax || b.peso));
 
   if (!lista.length) return null;
 
-  return lista.reduce((melhor, atual) => {
-    if (!melhor) return atual;
-    const diffMelhor = Math.abs(melhor.peso - pesoInformado);
-    const diffAtual = Math.abs(atual.peso - pesoInformado);
-    if (diffAtual < diffMelhor) return atual;
-    if (diffAtual === diffMelhor) return atual.peso >= melhor.peso ? atual : melhor;
-    return melhor;
-  }, null);
+  const porFaixa = lista.find((item) => {
+    const min = toNumber(item.pesoMin);
+    const max = item.pesoMax && Number.isFinite(item.pesoMax) ? item.pesoMax : item.peso;
+    return peso >= min && peso <= max;
+  });
+  if (porFaixa) return porFaixa;
+
+  // Quando a grade vem apenas com o peso final da faixa (ex.: 2, 5, 10, 20...),
+  // usa a primeira faixa cujo teto seja maior ou igual ao peso real. Isso evita
+  // escolher a faixa anterior por "proximidade" e ignorar a cubagem correta.
+  const teto = lista.find((item) => peso <= (item.peso || item.pesoMax));
+  if (teto) return teto;
+
+  return lista[lista.length - 1];
 }
 
-function calcularPesosComCubagem({ pesoInformado, gradeLinha, fatorCubagem }) {
+function calcularPesosComCubagem({ pesoInformado, cubagemInformada = 0, gradeLinha, fatorCubagem }) {
+  const cubagemReal = toNumber(cubagemInformada);
   const cubagemGrade = toNumber(gradeLinha?.cubagem);
-  const pesoCubado = cubagemGrade > 0 && fatorCubagem > 0 ? cubagemGrade * fatorCubagem : 0;
+  // Regra operacional: a cubagem informada no realizado/tracking pode vir inconsistente.
+  // Para simulação, a cubagem considerada deve ser exclusivamente a da grade configurada.
+  const cubagemAplicada = cubagemGrade;
+  const origemCubagem = cubagemGrade > 0 ? 'grade' : 'sem cubagem';
+  const pesoCubado = cubagemAplicada > 0 && fatorCubagem > 0 ? cubagemAplicada * fatorCubagem : 0;
   const pesoConsiderado = Math.max(toNumber(pesoInformado), pesoCubado);
   return {
-    pesoGrade: toNumber(gradeLinha?.peso) || toNumber(pesoInformado),
+    pesoGrade: toNumber(gradeLinha?.peso || gradeLinha?.pesoMax) || toNumber(pesoInformado),
     cubagemGrade,
+    cubagemAplicada,
+    origemCubagem,
     pesoCubado,
     pesoConsiderado,
   };
@@ -182,6 +210,9 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       pesoInformado: peso,
       pesoGrade: pesosAplicados?.pesoGrade || toNumber(gradeLinha?.peso) || peso,
       cubagemGrade: pesosAplicados?.cubagemGrade || toNumber(gradeLinha?.cubagem) || 0,
+      cubagemRealizadaInformada: toNumber(pesosAplicados?.cubagemRealizadaInformada ?? pesosAplicados?.cubagemReal ?? 0),
+      cubagemAplicada: pesosAplicados?.cubagemAplicada || pesosAplicados?.cubagemGrade || toNumber(gradeLinha?.cubagem) || 0,
+      origemCubagem: pesosAplicados?.origemCubagem || 'sem cubagem',
       fatorCubagem,
       pesoCubado: pesosAplicados?.pesoCubado || 0,
       pesoConsiderado: pesosAplicados?.pesoConsiderado || peso,
@@ -239,10 +270,10 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   };
 }
 
-function calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIbge, gradeCanal }) {
+function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatorCubagem = toNumber(origem?.generalidades?.cubagem);
-  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, gradeLinha, fatorCubagem });
+  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem });
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado);
   if (!cotacao) return null;
 
@@ -315,6 +346,7 @@ function rankearPorChave(resultados = []) {
 function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
   const peso = toNumber(filtros.peso);
   const valorNF = toNumber(filtros.valorNF);
+  const cubagem = toNumber(filtros.cubagem);
   const destinoNormalizado = normalizeText(filtros.destinoCodigo);
 
   return (transportadoras || []).flatMap((transportadora) =>
@@ -328,25 +360,26 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
             const cidade = normalizeText(getCidadeByIbge(rota.ibgeDestino, cidadePorIbge));
             return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
           })
-          .map((rota) => calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIbge, gradeCanal: filtros.gradeCanal }))
+          .map((rota) => calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal }))
           .filter(Boolean),
       ),
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
-  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, destinoCodigo, gradeCanal }, cidadePorIbge);
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
+  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge);
   return rankearPorChave(resultados)
     .filter((item) => item.origem === origem && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
-export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cidadePorIbge, gradeCanal = [] }) {
+export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal = [] }) {
   const resultados = listarCenarios(transportadoras, {
     origem,
     canal,
     peso,
     valorNF,
+    cubagem,
     destinoCodigo: '',
     gradeCanal,
   }, cidadePorIbge).filter((item) => !destinoCodigos?.length || destinoCodigos.includes(String(item.ibgeDestino)) || destinoCodigos.includes(normalizeText(item.cidadeDestino)));
@@ -422,7 +455,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
               peso,
               valorNF,
               cidadePorIbge,
-              gradeCanal: [],
+              gradeCanal: [linha],
             });
 
             if (item) resultados.push(item);
@@ -512,7 +545,7 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
               peso,
               valorNF,
               cidadePorIbge,
-              gradeCanal: [],
+              gradeCanal: [linha],
             });
 
             if (item) resultados.push(item);

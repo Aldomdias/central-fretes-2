@@ -15,11 +15,12 @@ import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
 import FerramentasPage from './pages/FerramentasPage';
+import TrackingPage from './pages/TrackingPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
 function primeiraPaginaPermitida(usuario) {
-  const candidatas = ['dashboard', 'simulador', 'realizado-local', 'realizado', 'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios'];
+  const candidatas = ['dashboard', 'simulador', 'realizado-local', 'tracking', 'realizado', 'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios'];
   return candidatas.find((pagina) => usuarioTemAcesso(usuario, pagina)) || 'dashboard';
 }
 
@@ -125,6 +126,10 @@ export default function App() {
 
   if (paginaAtual === 'realizado-local') {
     content = <RealizadoLocalPage transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'tracking') {
+    content = <TrackingPage />;
   }
 
   if (paginaAtual === 'lotacao') {

@@ -330,10 +330,10 @@ function DetalheSimulacao({ item, rankingCalculado }) {
             <div className="mini-list-row"><span>Peso declarado</span><strong>{formatNumber(frete.pesoDeclarado || 0, 3)} kg</strong></div>
             <div className="mini-list-row"><span>Peso cubado original</span><strong>{formatNumber(frete.pesoCubadoOriginal || 0, 3)} kg</strong></div>
             <div className="mini-list-row"><span>Peso da grade</span><strong>{formatNumber(frete.pesoGrade || 0, 3)} kg</strong></div>
-            <div className="mini-list-row"><span>Cubagem realizada</span><strong>{formatNumber(frete.cubagemRealizada || 0, 6)} m³</strong></div>
+            <div className="mini-list-row"><span>Cubagem informada na base</span><strong>{formatNumber(frete.cubagemRealizadaInformada ?? frete.cubagemRealizada ?? 0, 6)} m³ ignorada</strong></div>
             <div className="mini-list-row"><span>Cubagem da grade</span><strong>{formatNumber(frete.cubagemGrade || 0, 6)} m³</strong></div>
-            <div className="mini-list-row"><span>Cubagem usada</span><strong>{formatNumber(frete.cubagemAplicada || 0, 6)} m³</strong></div>
-            <div className="mini-list-row"><span>Origem da cubagem</span><strong>{frete.origemCubagem || 'sem cubagem'}</strong></div>
+            <div className="mini-list-row"><span>Cubagem usada no cálculo</span><strong>{formatNumber(frete.cubagemAplicada || 0, 6)} m³</strong></div>
+            <div className="mini-list-row"><span>Regra da cubagem</span><strong>{frete.origemCubagem === 'grade' ? 'somente grade' : 'sem cubagem na grade'}</strong></div>
             <div className="mini-list-row"><span>Fator cubagem</span><strong>{formatNumber(frete.fatorCubagem || 0, 3)} kg/m³</strong></div>
             <div className="mini-list-row"><span>Cálculo peso cubado</span><strong>{formatNumber(frete.cubagemAplicada || 0, 6)} × {formatNumber(frete.fatorCubagem || 0, 3)} = {formatNumber(frete.pesoCubado || 0, 3)} kg</strong></div>
             <div className="mini-list-row"><span>Peso considerado</span><strong>{formatNumber(frete.pesoConsiderado || item.peso, 3)} kg</strong></div>

@@ -5,6 +5,7 @@ const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
   { chave: 'realizado-local', label: 'Realizado Local', icon: '▤' },
+  { chave: 'tracking', label: 'Tracking', icon: '📦' },
   { chave: 'realizado', label: 'Realizado CT-e', icon: '▥' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
   { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },

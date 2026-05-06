@@ -153,8 +153,8 @@ function ResultadoCard({ item }) {
               <div>Peso informado: <strong>{item.detalhes?.frete?.pesoInformado} kg</strong></div>
               <div>Peso da grade: <strong>{item.detalhes?.frete?.pesoGrade} kg</strong></div>
               <div>Cubagem da grade: <strong>{Number(item.detalhes?.frete?.cubagemGrade || 0).toFixed(6)} m³</strong></div>
-              <div>Cubagem usada: <strong>{Number(item.detalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
-              <div>Origem da cubagem: <strong>{item.detalhes?.frete?.origemCubagem || 'sem cubagem'}</strong></div>
+              <div>Cubagem usada no cálculo: <strong>{Number(item.detalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
+              <div>Regra da cubagem: <strong>{item.detalhes?.frete?.origemCubagem === 'grade' ? 'somente grade' : 'sem cubagem na grade'}</strong></div>
               <div>Fator cubagem: <strong>{item.detalhes?.frete?.fatorCubagem} kg/m³</strong></div>
               <div>Peso cubado: <strong>{Number(item.detalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong></div>
               <div>Peso considerado: <strong>{Number(item.detalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
@@ -231,16 +231,13 @@ function numeroRealizado(value) {
 }
 
 function pesoRealizado(row = {}) {
-  return Math.max(numeroRealizado(row.peso), numeroRealizado(row.pesoDeclarado), numeroRealizado(row.pesoCubado));
+  const declarado = numeroRealizado(row.pesoDeclarado);
+  return declarado > 0 ? declarado : numeroRealizado(row.peso);
 }
 
-function cubagemRealizado(row = {}) {
-  return Math.max(
-    numeroRealizado(row.cubagem),
-    numeroRealizado(row.metrosCubicos),
-    numeroRealizado(row.m3),
-    numeroRealizado(row.volumeCubico)
-  );
+function cubagemRealizado() {
+  // Cubagem do realizado não é usada na simulação. A regra usa somente a cubagem da grade.
+  return 0;
 }
 
 function normalizarTransportadoraSimulador(nome = '') {
