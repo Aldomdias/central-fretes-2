@@ -237,20 +237,60 @@ function pesoRealizado(row = {}) {
   return Math.max(numeroRealizado(row.peso), numeroRealizado(row.pesoDeclarado), numeroRealizado(row.pesoCubado));
 }
 
+function normalizarTransportadoraSimulador(nome = '') {
+  return String(nome || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function criarMetricaRealizadoTransportadora(nome) {
+  return {
+    transportadora: nome || 'Sem transportadora',
+    ctesConcorreu: 0,
+    ctesGanharia: 0,
+    ctesCarregou: 0,
+    ctesCarregadosComTabela: 0,
+    ctesCarregouGanhando: 0,
+    ctesCarregouPerdendo: 0,
+    freteRealizado: 0,
+    freteTabelaPropria: 0,
+    freteMelhorParaCargasCarregadas: 0,
+    valorNF: 0,
+    peso: 0,
+    volumes: 0,
+  };
+}
+
+function obterMetricaRealizado(mapa, nome) {
+  const nomeLimpo = String(nome || 'Sem transportadora').trim() || 'Sem transportadora';
+  const chave = normalizarTransportadoraSimulador(nomeLimpo);
+  if (!mapa.has(chave)) mapa.set(chave, criarMetricaRealizadoTransportadora(nomeLimpo));
+  return mapa.get(chave);
+}
+
 function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cidadePorIbge, gradeCanal = []) {
   const porTransportadoraMap = new Map();
+  const simulacaoTransportadoraMap = new Map();
   const porDestinoMap = new Map();
   const simulacoes = [];
   let freteRealizado = 0;
+  let freteRealizadoComTabela = 0;
+  let freteGanhadorTotal = 0;
   let valorNF = 0;
   let peso = 0;
   let volumes = 0;
   let semTabela = 0;
   let savingPotencial = 0;
+  let diferencaPotencialTotal = 0;
   let ganhoRealizado = 0;
+  let ctesSimulados = 0;
 
-  (rows || []).slice(0, 3000).forEach((row) => {
+  (rows || []).slice(0, 5000).forEach((row) => {
     const transportadora = String(row.transportadora || 'Sem transportadora').trim() || 'Sem transportadora';
+    const transportadoraKey = normalizarTransportadoraSimulador(transportadora);
     const valorCte = numeroRealizado(row.valorCte);
     const nf = numeroRealizado(row.valorNF);
     const pesoLinha = pesoRealizado(row);
@@ -269,8 +309,23 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
     t.volumes += vol;
     porTransportadoraMap.set(transportadora, t);
 
+    const metricaReal = obterMetricaRealizado(simulacaoTransportadoraMap, transportadora);
+    metricaReal.ctesCarregou += 1;
+    metricaReal.freteRealizado += valorCte;
+    metricaReal.valorNF += nf;
+    metricaReal.peso += pesoLinha;
+    metricaReal.volumes += vol;
+
     const chaveDestino = `${row.cidadeDestino || ''}/${row.ufDestino || ''}|${destino}`;
-    const d = porDestinoMap.get(chaveDestino) || { destino: row.cidadeDestino || '', uf: row.ufDestino || '', ibge: destino, ctes: 0, transportadoras: new Set(), frete: 0 };
+    const d = porDestinoMap.get(chaveDestino) || {
+      destino: row.cidadeDestino || '',
+      uf: row.ufDestino || '',
+      ibge: destino,
+      ctes: 0,
+      transportadoras: new Set(),
+      concorrentesTabela: new Set(),
+      frete: 0,
+    };
     d.ctes += 1;
     d.frete += valorCte;
     d.transportadoras.add(transportadora);
@@ -290,17 +345,46 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       destinoCodigo: destino,
       cidadePorIbge,
       gradeCanal,
+    }) || [];
+
+    resultado.forEach((item) => {
+      const nomeTabela = item.transportadora || 'Sem transportadora';
+      const metrica = obterMetricaRealizado(simulacaoTransportadoraMap, nomeTabela);
+      metrica.ctesConcorreu += 1;
+      d.concorrentesTabela.add(nomeTabela);
+      if (Number(item.ranking) === 1) metrica.ctesGanharia += 1;
     });
 
-    const vencedor = resultado?.[0];
+    const vencedor = resultado[0];
     if (!vencedor) {
       semTabela += 1;
       return;
     }
 
-    const economia = Math.max(valorCte - numeroRealizado(vencedor.total), 0);
-    savingPotencial += economia;
-    if (String(vencedor.transportadora || '').toUpperCase() === transportadora.toUpperCase()) ganhoRealizado += 1;
+    ctesSimulados += 1;
+    freteRealizadoComTabela += valorCte;
+    freteGanhadorTotal += numeroRealizado(vencedor.total);
+
+    const resultadoReal = resultado.find((item) => normalizarTransportadoraSimulador(item.transportadora) === transportadoraKey);
+    if (resultadoReal) {
+      metricaReal.ctesCarregadosComTabela += 1;
+      metricaReal.freteTabelaPropria += numeroRealizado(resultadoReal.total);
+    }
+
+    metricaReal.freteMelhorParaCargasCarregadas += numeroRealizado(vencedor.total);
+
+    const economia = valorCte - numeroRealizado(vencedor.total);
+    diferencaPotencialTotal += economia;
+    savingPotencial += Math.max(economia, 0);
+
+    const realFoiGanhador = normalizarTransportadoraSimulador(vencedor.transportadora) === transportadoraKey;
+    if (realFoiGanhador) {
+      ganhoRealizado += 1;
+      metricaReal.ctesCarregouGanhando += 1;
+    } else {
+      metricaReal.ctesCarregouPerdendo += 1;
+    }
+
     simulacoes.push({
       cte: row.numeroCte || row.chaveCte || '',
       destino: row.cidadeDestino || vencedor.cidadeDestino || '',
@@ -310,7 +394,10 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       freteRealizado: valorCte,
       vencedor: vencedor.transportadora,
       freteVencedor: vencedor.total,
-      saving: economia,
+      saving: Math.max(economia, 0),
+      diferenca: economia,
+      realEraGanhador: realFoiGanhador,
+      concorrentes: resultado.length,
     });
   });
 
@@ -321,26 +408,62 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
     percentualFrete: item.valorNF ? (item.frete / item.valorNF) * 100 : 0,
   })).sort((a, b) => b.ctes - a.ctes || b.frete - a.frete);
 
+  const simulacaoPorTransportadora = [...simulacaoTransportadoraMap.values()].map((item) => {
+    const diferencaPotencial = item.freteRealizado - item.freteMelhorParaCargasCarregadas;
+    return {
+      ...item,
+      pctGanharia: item.ctesConcorreu ? (item.ctesGanharia / item.ctesConcorreu) * 100 : 0,
+      pctCarregou: rows.length ? (item.ctesCarregou / rows.length) * 100 : 0,
+      acertoOperacional: item.ctesCarregadosComTabela ? (item.ctesCarregouGanhando / item.ctesCarregadosComTabela) * 100 : 0,
+      diferencaPotencial,
+      economiaPotencial: Math.max(diferencaPotencial, 0),
+      percentualEconomiaPotencial: item.freteRealizado ? (Math.max(diferencaPotencial, 0) / item.freteRealizado) * 100 : 0,
+    };
+  }).sort((a, b) => b.economiaPotencial - a.economiaPotencial || b.ctesCarregou - a.ctesCarregou || b.ctesGanharia - a.ctesGanharia);
+
   const porDestino = [...porDestinoMap.values()].map((item) => ({
     ...item,
     qtdTransportadoras: item.transportadoras.size,
+    qtdConcorrentesTabela: item.concorrentesTabela.size,
     transportadoras: [...item.transportadoras].sort(),
-  })).sort((a, b) => b.ctes - a.ctes || a.uf.localeCompare(b.uf));
+    concorrentesTabela: [...item.concorrentesTabela].sort(),
+    statusCobertura: item.concorrentesTabela.size === 0
+      ? 'Sem cobertura'
+      : item.concorrentesTabela.size === 1
+        ? 'Baixa concorrência'
+        : item.concorrentesTabela.size === 2
+          ? 'Concorrência limitada'
+          : 'Concorrência saudável',
+  })).sort((a, b) => a.qtdConcorrentesTabela - b.qtdConcorrentesTabela || b.ctes - a.ctes || a.uf.localeCompare(b.uf));
+
+  const destinosSemTabela = porDestino.filter((item) => item.qtdConcorrentesTabela === 0);
+  const destinosUmaOpcao = porDestino.filter((item) => item.qtdConcorrentesTabela === 1);
+  const destinosDuasOpcoes = porDestino.filter((item) => item.qtdConcorrentesTabela === 2);
 
   return {
     ctes: rows.length,
+    ctesSimulados,
     freteRealizado,
+    freteRealizadoComTabela,
+    freteGanhadorTotal,
+    diferencaPotencialTotal,
     valorNF,
     peso,
     volumes,
     percentualFreteRealizado: valorNF ? (freteRealizado / valorNF) * 100 : 0,
     savingPotencial,
+    percentualSavingPotencial: freteRealizadoComTabela ? (savingPotencial / freteRealizadoComTabela) * 100 : 0,
     semTabela,
     ganhoRealizado,
-    aderenciaRealizada: simulacoes.length ? (ganhoRealizado / simulacoes.length) * 100 : 0,
+    aderenciaRealizada: ctesSimulados ? (ganhoRealizado / ctesSimulados) * 100 : 0,
+    destinosSemTabela: destinosSemTabela.length,
+    destinosUmaOpcao: destinosUmaOpcao.length,
+    destinosDuasOpcoes: destinosDuasOpcoes.length,
     porTransportadora,
+    simulacaoPorTransportadora,
     porDestino,
-    simulacoes: simulacoes.sort((a, b) => b.saving - a.saving).slice(0, 100),
+    destinosCriticos: porDestino.filter((item) => item.qtdConcorrentesTabela <= 2).slice(0, 150),
+    simulacoes: simulacoes.sort((a, b) => b.saving - a.saving).slice(0, 150),
   };
 }
 
@@ -1048,6 +1171,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ...((resultadoOrigem.realizado?.porTransportadora || []).map((item) => [
         'Realizado', item.transportadora, item.ctes, item.pctCtes.toFixed(2), item.frete.toFixed(2), item.pctFrete.toFixed(2), item.valorNF.toFixed(2), item.percentualFrete.toFixed(2),
       ])),
+      [],
+      ['Simulação sobre realizado', 'Transportadora', 'CT-es concorreu', 'CT-es ganharia', '% ganharia', 'CT-es carregou', '% carregou', 'Acerto operacional', 'Frete realizado', 'Frete melhor nas cargas', 'Diferença potencial'],
+      ...((resultadoOrigem.realizado?.simulacaoPorTransportadora || []).map((item) => [
+        'Simulação sobre realizado', item.transportadora, item.ctesConcorreu, item.ctesGanharia, item.pctGanharia.toFixed(2), item.ctesCarregou, item.pctCarregou.toFixed(2), item.acertoOperacional.toFixed(2), item.freteRealizado.toFixed(2), item.freteMelhorParaCargasCarregadas.toFixed(2), item.diferencaPotencial.toFixed(2),
+      ])),
     ];
     const { nomeArquivo, csv } = exportarLinhasCsv(`analise-origem-${origemOrigem.toLowerCase().replace(/\s+/g, '-')}.csv`, linhas);
     downloadCsv(nomeArquivo, csv);
@@ -1358,20 +1486,22 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {resultadoOrigem.realizado && (
                 <div className="sim-analise-resumo">
                   <div><span>Frete realizado</span><strong>{formatMoney(resultadoOrigem.realizado.freteRealizado)}</strong></div>
-                  <div><span>% frete realizado</span><strong>{formatPercent(resultadoOrigem.realizado.percentualFreteRealizado)}</strong></div>
-                  <div><span>Peso realizado</span><strong>{Number(resultadoOrigem.realizado.peso || 0).toLocaleString('pt-BR')} kg</strong></div>
-                  <div><span>Volumes</span><strong>{Number(resultadoOrigem.realizado.volumes || 0).toLocaleString('pt-BR')}</strong></div>
-                  <div><span>Saving potencial realizado</span><strong>{formatMoney(resultadoOrigem.realizado.savingPotencial)}</strong></div>
+                  <div><span>Frete se fosse ganhador</span><strong>{formatMoney(resultadoOrigem.realizado.freteGanhadorTotal)}</strong></div>
+                  <div><span>Diferença potencial</span><strong>{formatMoney(resultadoOrigem.realizado.diferencaPotencialTotal)}</strong></div>
+                  <div><span>% economia potencial</span><strong>{formatPercent(resultadoOrigem.realizado.percentualSavingPotencial)}</strong></div>
+                  <div><span>Acerto operacional</span><strong>{formatPercent(resultadoOrigem.realizado.aderenciaRealizada)}</strong></div>
                   <div><span>Sem tabela no realizado</span><strong>{resultadoOrigem.realizado.semTabela}</strong></div>
+                  <div><span>Destinos sem cobertura</span><strong>{resultadoOrigem.realizado.destinosSemTabela}</strong></div>
+                  <div><span>Destinos com 1 opção</span><strong>{resultadoOrigem.realizado.destinosUmaOpcao}</strong></div>
                 </div>
               )}
 
               <div className="sim-grid-2" style={{ display: 'grid', gap: 16 }}>
                 <div className="sim-parametros-box">
-                  <div className="sim-parametros-header"><div><strong>Ranking por tabela</strong><p>Quem ganha mais combinações da origem, considerando a grade do canal.</p></div></div>
+                  <div className="sim-parametros-header"><div><strong>Potencial por grade</strong><p>Quem ganha mais rotas/faixas simuladas da origem. Esta visão não representa volume real carregado.</p></div></div>
                   <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                     <table className="sim-analise-tabela">
-                      <thead><tr><th>Transportadora</th><th>Vitórias</th><th>Aderência</th><th>Frete médio</th><th>Prazo</th></tr></thead>
+                      <thead><tr><th>Transportadora</th><th>Rotas/faixas ganhas</th><th>Aderência</th><th>Frete médio</th><th>Prazo</th></tr></thead>
                       <tbody>
                         {(resultadoOrigem.tabela.porTransportadora || []).slice(0, 20).map((item) => (
                           <tr key={item.transportadora}>
@@ -1409,14 +1539,62 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </div>
               </div>
 
+              {resultadoOrigem.realizado && (
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header">
+                    <div>
+                      <strong>Simulação sobre realizado local</strong>
+                      <p>Usa o peso, cubagem, valor NF e volumes reais do Realizado Local. Não usa a grade padrão.</p>
+                    </div>
+                  </div>
+                  <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                    <table className="sim-analise-tabela">
+                      <thead>
+                        <tr>
+                          <th>Transportadora</th>
+                          <th>CT-es concorreu</th>
+                          <th>CT-es ganharia</th>
+                          <th>% ganharia</th>
+                          <th>CT-es carregou</th>
+                          <th>% carregou</th>
+                          <th>Acerto operacional</th>
+                          <th>Frete realizado</th>
+                          <th>Frete melhor</th>
+                          <th>Dif. potencial</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {((resultadoOrigem.realizado?.simulacaoPorTransportadora || []).slice(0, 30)).map((item) => (
+                          <tr key={item.transportadora}>
+                            <td><strong>{item.transportadora}</strong></td>
+                            <td>{item.ctesConcorreu}</td>
+                            <td>{item.ctesGanharia}</td>
+                            <td>{formatPercent(item.pctGanharia)}</td>
+                            <td>{item.ctesCarregou}</td>
+                            <td>{formatPercent(item.pctCarregou)}</td>
+                            <td>{formatPercent(item.acertoOperacional)}</td>
+                            <td>{formatMoney(item.freteRealizado)}</td>
+                            <td>{formatMoney(item.freteMelhorParaCargasCarregadas)}</td>
+                            <td>{formatMoney(item.diferencaPotencial)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               <div className="sim-grid-2" style={{ display: 'grid', gap: 16 }}>
                 <div className="sim-parametros-box">
-                  <div className="sim-parametros-header"><div><strong>Buracos e rotas sensíveis</strong><p>Destinos onde existe só uma transportadora cadastrada na origem.</p></div></div>
+                  <div className="sim-parametros-header"><div><strong>Buracos e rotas sensíveis</strong><p>Sem cobertura = 0 transportadoras com tabela. Baixa concorrência = 1 transportadora. Concorrência limitada = 2 transportadoras.</p></div></div>
                   <div className="sim-cobertura-lista">
-                    {(resultadoOrigem.tabela.rotasCriticas || []).slice(0, 60).map((item, idx) => (
-                      <div key={`${item.ibgeDestino}-${idx}`}>{item.origem} → {item.cidadeDestino || `IBGE ${item.ibgeDestino}`}/{item.ufDestino} · {item.transportadoras.join(', ')}</div>
+                    {((resultadoOrigem.realizado?.destinosCriticos || resultadoOrigem.tabela.rotasCriticas || []).slice(0, 60)).map((item, idx) => (
+                      <div key={`${item.ibgeDestino || item.ibge}-${idx}`}>
+                        {(item.origem || resultadoOrigem.filtros.origem)} → {item.cidadeDestino || item.destino || `IBGE ${item.ibgeDestino || item.ibge}`}/{item.ufDestino || item.uf} · {item.statusCobertura || 'Baixa concorrência'} · {(item.concorrentesTabela || item.transportadoras || []).join(', ') || 'Sem tabela'}
+                      </div>
                     ))}
-                    {!resultadoOrigem.tabela.rotasCriticas?.length && <div>Nenhuma rota com apenas uma transportadora encontrada nos filtros.</div>}
+                    {resultadoOrigem.realizado && !resultadoOrigem.realizado.destinosCriticos?.length && <div>Nenhum destino crítico no realizado filtrado.</div>}
+                    {!resultadoOrigem.realizado && !resultadoOrigem.tabela.rotasCriticas?.length && <div>Nenhuma rota com apenas uma transportadora encontrada nos filtros.</div>}
                   </div>
                 </div>
                 <div className="sim-parametros-box">
