@@ -5,6 +5,38 @@ const DB_VERSION = 1;
 const STORE_TRACKING = 'tracking_rows';
 const STORE_META = 'meta';
 
+const UF_POR_CODIGO = {
+  '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
+  '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
+  '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
+  '41': 'PR', '42': 'SC', '43': 'RS',
+  '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
+};
+
+const UF_POR_CIDADE_ORIGEM = {
+  ITAJAI: 'SC',
+  ITAJAÍ: 'SC',
+  ITUPEVA: 'SP',
+  JABOATAO: 'PE',
+  'JABOATAO DOS GUARARAPES': 'PE',
+  'JABOATÃO': 'PE',
+  'JABOATÃO DOS GUARARAPES': 'PE',
+  SERRA: 'ES',
+  CONTAGEM: 'MG',
+  GOIANIA: 'GO',
+  GOIÂNIA: 'GO',
+  RIBEIRAO: 'PE',
+  RIBEIRÃO: 'PE',
+};
+
+const UF_POR_CENTRO_EXPEDICAO = {
+  '4210': 'ES', // Serra/ES
+  '4200': 'SC',
+  '4208': 'SC',
+  '3500': 'SP',
+  '2600': 'PE',
+};
+
 function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -62,6 +94,7 @@ function toNumber(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
   const text = String(value).trim();
   if (!text) return 0;
+  if (/nao|não|encontrado|data/i.test(text)) return 0;
   const normalized = text.includes(',') ? text.replace(/\./g, '').replace(',', '.') : text;
   return Number(normalized.replace(/[^0-9.-]/g, '')) || 0;
 }
@@ -91,7 +124,7 @@ function categoriaCanal(value) {
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
   if (['ATACADO', 'B2B', 'CANTU', 'CANTU PNEUS'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
-  if (['B2C', 'ECOMMERCE', 'E-COMMERCE', 'MARKETPLACE', 'MARKET PLACE', 'MERCADO LIVRE', 'MAGAZINE LUIZA', 'SHOPEE', 'AMAZON'].some((item) => canal === item || canal.includes(item))) return 'B2C';
+  if (['B2C', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE', 'MARKETPLACE', 'MARKET PLACE', 'MERCADO LIVRE', 'MAGAZINE LUIZA', 'SHOPEE', 'AMAZON', 'ME2'].some((item) => canal === item || canal.includes(item))) return 'B2C';
   return canal;
 }
 
@@ -101,7 +134,24 @@ function headerKey(value) {
 
 function findCol(headers, terms = []) {
   const normalized = headers.map(headerKey);
-  return normalized.findIndex((h) => terms.some((term) => h === term || h.includes(term)));
+  const normalizedTerms = terms.map(headerKey);
+  for (const term of normalizedTerms) {
+    const exact = normalized.findIndex((h) => h === term);
+    if (exact >= 0) return exact;
+  }
+  for (const term of normalizedTerms) {
+    const contains = normalized.findIndex((h) => term && h.includes(term));
+    if (contains >= 0) return contains;
+  }
+  return -1;
+}
+
+function pickFirstCol(headers, candidates = []) {
+  for (const group of candidates) {
+    const idx = findCol(headers, Array.isArray(group) ? group : [group]);
+    if (idx >= 0) return idx;
+  }
+  return -1;
 }
 
 function detectHeader(rows = []) {
@@ -109,12 +159,13 @@ function detectHeader(rows = []) {
   rows.slice(0, 30).forEach((row, index) => {
     const h = row.map(headerKey).join(' | ');
     let score = 0;
-    if (h.includes('NOTA') || h.includes('NF')) score += 3;
-    if (h.includes('ORIGEM')) score += 3;
-    if (h.includes('DESTINO')) score += 3;
-    if (h.includes('PESO')) score += 2;
-    if (h.includes('CUBAGEM') || h.includes('M3') || h.includes('METROS CUBICOS')) score += 2;
-    if (h.includes('VALOR')) score += 1;
+    if (h.includes('NF CHAVE') || h.includes('NF NUMERO')) score += 6;
+    if (h.includes('PEDIDO ERP') || h.includes('PEDIDO LOJISTA')) score += 4;
+    if (h.includes('CIDADE DE ORIGEM') || h.includes('CIDADE ORIGEM')) score += 4;
+    if (h.includes('CIDADE DESTINO')) score += 4;
+    if (h.includes('PESO DECLARADO')) score += 3;
+    if (h.includes('PESO CUBADO')) score += 3;
+    if (h.includes('VALOR DA NF')) score += 3;
     if (score > best.score) best = { index, score };
   });
   return best.score >= 5 ? best.index : 0;
@@ -127,24 +178,59 @@ function get(row, col) {
 
 function mapColumns(headers = []) {
   return {
-    notaFiscal: findCol(headers, ['NOTA FISCAL', 'NF', 'NUMERO NF', 'NFE', 'DOCUMENTO']),
-    chaveNfe: findCol(headers, ['CHAVE NFE', 'CHAVE NF', 'CHAVE NOTA', 'CHAVE ACESSO']),
-    pedido: findCol(headers, ['PEDIDO', 'ORDER', 'ORDEM']),
-    data: findCol(headers, ['DATA EMISSAO', 'EMISSAO', 'DATA NF', 'DATA PEDIDO', 'DATA']),
-    canal: findCol(headers, ['CANAL', 'CANAL VENDA', 'CANAL VENDAS', 'TIPO CANAL']),
-    transportadora: findCol(headers, ['TRANSPORTADORA', 'FORNECEDOR', 'OPERADOR', 'CARRIER']),
-    origem: findCol(headers, ['CIDADE ORIGEM', 'ORIGEM', 'MUNICIPIO ORIGEM']),
-    ufOrigem: findCol(headers, ['UF ORIGEM', 'UF ORIG', 'ESTADO ORIGEM']),
-    ibgeOrigem: findCol(headers, ['IBGE ORIGEM', 'CODIGO IBGE ORIGEM', 'COD MUNICIPIO ORIGEM']),
-    destino: findCol(headers, ['CIDADE DESTINO', 'DESTINO', 'MUNICIPIO DESTINO', 'CIDADE ENTREGA']),
-    ufDestino: findCol(headers, ['UF DESTINO', 'UF DEST', 'ESTADO DESTINO', 'UF ENTREGA']),
-    ibgeDestino: findCol(headers, ['IBGE DESTINO', 'CODIGO IBGE DESTINO', 'COD MUNICIPIO DESTINO']),
-    peso: findCol(headers, ['PESO', 'PESO REAL', 'PESO TOTAL', 'PESO BRUTO', 'PESO KG']),
-    cubagem: findCol(headers, ['CUBAGEM', 'M3', 'METROS CUBICOS', 'METRAGEM CUBICA']),
-    valorNF: findCol(headers, ['VALOR NF', 'VALOR NOTA', 'VALOR DA NOTA', 'VALOR MERCADORIA', 'VLR NF']),
-    volumes: findCol(headers, ['VOLUMES', 'VOLUME', 'QTD VOLUMES', 'QTDE VOLUMES', 'QUANTIDADE VOLUMES']),
-    status: findCol(headers, ['STATUS', 'SITUACAO', 'SITUAÇÃO']),
-    entrega: findCol(headers, ['DATA ENTREGA', 'ENTREGA', 'DT ENTREGA']),
+    pedidoLojista: findCol(headers, ['PEDIDO LOJISTA']),
+    pedidoMarketplace: findCol(headers, ['PEDIDO MARKETPLACE']),
+    pedidoErp: findCol(headers, ['PEDIDO ERP']),
+    pedido: pickFirstCol(headers, ['PEDIDO ERP', 'PEDIDO LOJISTA', 'PEDIDO MARKETPLACE', 'PEDIDO', 'ORDER', 'ORDEM']),
+    canal: findCol(headers, ['CANAL']),
+    loja: findCol(headers, ['LOJA']),
+    statusPedido: findCol(headers, ['STATUS PEDIDO']),
+    dataCriacao: findCol(headers, ['DATA CRIACAO', 'DATA CRIAÇÃO']),
+    dataExpedicao: findCol(headers, ['DATA EXPEDICAO', 'DATA EXPEDIÇÃO']),
+    cdOrigem: findCol(headers, ['CD DE ORIGEM']),
+    centroExpedicao: findCol(headers, ['CENTRO DE EXPEDICAO', 'CENTRO DE EXPEDIÇÃO']),
+    origem: pickFirstCol(headers, ['CIDADE DE ORIGEM', 'CIDADE ORIGEM', 'ORIGEM', 'MUNICIPIO ORIGEM']),
+    ufOrigem: pickFirstCol(headers, ['UF ORIGEM', 'UF ORIG', 'ESTADO ORIGEM']),
+    ibgeOrigem: pickFirstCol(headers, ['IBGE ORIGEM', 'CODIGO IBGE ORIGEM', 'COD MUNICIPIO ORIGEM']),
+    destino: pickFirstCol(headers, ['CIDADE DESTINO', 'DESTINO', 'MUNICIPIO DESTINO', 'CIDADE ENTREGA']),
+    regiaoDestino: findCol(headers, ['REGIAO DESTINO', 'REGIÃO DESTINO']),
+    ufDestino: pickFirstCol(headers, ['UF DESTINO', 'UF DEST', 'ESTADO DESTINO', 'UF ENTREGA', 'REGIAO DESTINO', 'REGIÃO DESTINO']),
+    ibgeDestino: pickFirstCol(headers, ['IBGE DESTINO', 'CODIGO IBGE DESTINO', 'COD MUNICIPIO DESTINO']),
+    transportadora: pickFirstCol(headers, ['TRANSPORTADORA CONTRATADA CANTU', 'TRANSPORTADORA', 'FORNECEDOR', 'OPERADOR', 'CARRIER']),
+    transportadoraOriginal: findCol(headers, ['TRANSPORTADORA']),
+    transportadoraContratada: findCol(headers, ['TRANSPORTADORA CONTRATADA CANTU']),
+    segmento: findCol(headers, ['SEGMENTO']),
+    regiao: findCol(headers, ['REGIAO', 'REGIÃO']),
+    tipoMovimentacao: findCol(headers, ['TIPO DE MOVIMENTACAO', 'TIPO DE MOVIMENTAÇÃO']),
+    chaveNfe: pickFirstCol(headers, ['NF CHAVE', 'CHAVE NFE', 'CHAVE NF', 'CHAVE NOTA', 'CHAVE ACESSO']),
+    notaFiscal: pickFirstCol(headers, ['NF NUMERO', 'NF NÚMERO', 'NUMERO NF', 'NÚMERO NF', 'NOTA FISCAL', 'NFE NUMERO', 'DOCUMENTO']),
+    dataFaturamento: findCol(headers, ['DATA FATURAMENTO']),
+    cteNumero: pickFirstCol(headers, ['CTE NUMERO SERIE', 'CTE NÚMERO SÉRIE', 'CTE NUMERO', 'CTE']),
+    cteAdicional: findCol(headers, ['CTE NUMERO SERIE ADICIONAL', 'CTE NÚMERO SÉRIE ADICIONAL']),
+    dataEmissaoCte: findCol(headers, ['DATA EMISSAO CTE', 'DATA EMISSÃO CTE']),
+    chaveCte: findCol(headers, ['CHAVE CTE']),
+    entregaCte: findCol(headers, ['ENTREGA DE CTE']),
+    situacao: findCol(headers, ['SITUACAO', 'SITUAÇÃO']),
+    previsaoCliente: findCol(headers, ['PREVISAO P CLIENTE', 'PREVISÃO P CLIENTE']),
+    prevTransportadora: findCol(headers, ['PREV TRANSPORTADORA']),
+    valorCalculadoFrete: findCol(headers, ['VLR CALCULADO FRETE', 'VALOR CALCULADO FRETE']),
+    descricaoCalculo: findCol(headers, ['DESCRICAO CALCULO', 'DESCRIÇÃO CALCULO']),
+    dataTransporte: findCol(headers, ['DATA TRANSPORTE']),
+    dataEntrega: pickFirstCol(headers, ['DATA ENTREGA', 'ENTREGA', 'DT ENTREGA']),
+    tipoOrdem: findCol(headers, ['TIPO DE ORDEM']),
+    modelo: findCol(headers, ['MODELO']),
+    valorCte: findCol(headers, ['VALOR CT E', 'VALOR CTE', 'VALOR CT-E']),
+    valorNF: pickFirstCol(headers, ['VALOR DA NF', 'VALOR NF', 'VALOR NOTA', 'VALOR DA NOTA', 'VALOR MERCADORIA', 'VLR NF']),
+    percentualFrete: findCol(headers, ['PERCENTUAL DE FRETE']),
+    pesoDeclarado: findCol(headers, ['PESO DECLARADO', 'PESO REAL', 'PESO TOTAL', 'PESO BRUTO', 'PESO KG']),
+    pesoCubado: findCol(headers, ['PESO CUBADO']),
+    cubagem: pickFirstCol(headers, ['CUBAGEM', 'M3', 'METROS CUBICOS', 'METRAGEM CUBICA', 'PESO CUBADO']),
+    quantidadeItens: findCol(headers, ['QUANTIDADE DE ITENS', 'QTD ITENS']),
+    totalUnidades: findCol(headers, ['TOTAL DE UNIDADES', 'VOLUMES', 'VOLUME', 'QTD VOLUMES', 'QTDE VOLUMES', 'QUANTIDADE VOLUMES']),
+    numeroRomaneio: findCol(headers, ['NUMERO DO ROMANEIO', 'NÚMERO DO ROMANEIO']),
+    modoEnvio: findCol(headers, ['MODO DE ENVIO DO PEDIDO']),
+    deposito: findCol(headers, ['DEPOSITO', 'DEPÓSITO']),
+    emailCompra: findCol(headers, ['EMAIL DE COMPRA']),
   };
 }
 
@@ -152,7 +238,217 @@ function rowHasValue(row = []) {
   return row.some((value) => String(value ?? '').trim() !== '');
 }
 
-async function parseFile(file) {
+function detectarSeparadorCsv(texto = '') {
+  const primeiraLinha = texto.split(/\r?\n/).find((line) => line.trim()) || '';
+  const candidatos = [';', ',', '\t'];
+  return candidatos
+    .map((sep) => ({ sep, count: primeiraLinha.split(sep).length }))
+    .sort((a, b) => b.count - a.count)[0]?.sep || ';';
+}
+
+function parseCsvMatrix(texto = '') {
+  const sep = detectarSeparadorCsv(texto);
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+
+  for (let i = 0; i < texto.length; i += 1) {
+    const char = texto[i];
+    const next = texto[i + 1];
+    if (char === '"') {
+      if (quoted && next === '"') {
+        cell += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+    if (!quoted && char === sep) {
+      row.push(cell);
+      cell = '';
+      continue;
+    }
+    if (!quoted && (char === '\n' || char === '\r')) {
+      if (char === '\r' && next === '\n') i += 1;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+    cell += char;
+  }
+  row.push(cell);
+  if (row.some((value) => String(value ?? '').trim() !== '')) rows.push(row);
+  return rows;
+}
+
+function isCsvFile(file) {
+  return /\.csv$/i.test(file?.name || '') || /csv/i.test(file?.type || '');
+}
+
+function parseUfFromRegiaoDestino(value = '') {
+  const raw = String(value || '').trim().toUpperCase();
+  const first = raw.match(/^([A-Z]{2})\b/);
+  if (first) return first[1];
+  const slash = raw.match(/\/\s*([A-Z]{2})$/);
+  return slash ? slash[1] : '';
+}
+
+function getUfByIbge(ibge = '') {
+  return UF_POR_CODIGO[onlyDigits(ibge).slice(0, 2)] || '';
+}
+
+function montarMapasMunicipios(municipios = []) {
+  const porCidadeUf = new Map();
+  const porIbge = new Map();
+  (municipios || []).forEach((item) => {
+    const ibge = onlyDigits(item.ibge || item.codigo_ibge || item.codigo || item.codigoMunicipio || '').slice(0, 7);
+    const cidade = text(item.cidade || item.nome || item.municipio || item.nomeMunicipio || '');
+    const uf = text(item.uf || item.estado || getUfByIbge(ibge)).toUpperCase().slice(0, 2);
+    if (!ibge || !cidade) return;
+    const cidadeKey = normalizeLoose(cidade);
+    porIbge.set(ibge, { ibge, cidade, uf });
+    porCidadeUf.set(`${cidadeKey}|${uf}`, ibge);
+    if (!porCidadeUf.has(`${cidadeKey}|`)) porCidadeUf.set(`${cidadeKey}|`, ibge);
+  });
+  return { porCidadeUf, porIbge };
+}
+
+function resolverIbgeCidade(cidadeRaw = '', ufRaw = '', mapas = {}) {
+  const cidadeKey = normalizeLoose(cidadeRaw);
+  const uf = String(ufRaw || '').trim().toUpperCase().slice(0, 2);
+  if (!cidadeKey) return '';
+  return mapas.porCidadeUf?.get(`${cidadeKey}|${uf}`) || mapas.porCidadeUf?.get(`${cidadeKey}|`) || '';
+}
+
+function inferirUfOrigem(cidade = '', cdOrigem = '', centroExpedicao = '', ibgeOrigem = '') {
+  const ufIbge = getUfByIbge(ibgeOrigem);
+  if (ufIbge) return ufIbge;
+  const cd = onlyDigits(centroExpedicao || cdOrigem).slice(0, 4);
+  if (UF_POR_CENTRO_EXPEDICAO[cd]) return UF_POR_CENTRO_EXPEDICAO[cd];
+  return UF_POR_CIDADE_ORIGEM[normalizeLoose(cidade)] || '';
+}
+
+function buildRowsFromMatrix(matriz = [], file, options = {}) {
+  const headerIndex = detectHeader(matriz);
+  const headers = matriz[headerIndex] || [];
+  const col = mapColumns(headers);
+  const mapas = montarMapasMunicipios(options.municipios || []);
+  const rows = [];
+
+  matriz.slice(headerIndex + 1).forEach((linha, index) => {
+    if (!rowHasValue(linha)) return;
+
+    const notaFiscal = text(get(linha, col.notaFiscal));
+    const chaveNfe = onlyDigits(get(linha, col.chaveNfe));
+    const pedido = text(get(linha, col.pedido));
+    const origem = text(get(linha, col.origem));
+    const destino = text(get(linha, col.destino));
+    if (!notaFiscal && !chaveNfe && !pedido && !origem && !destino) return;
+
+    const data = parseDate(
+      get(linha, col.dataFaturamento) ||
+      get(linha, col.dataExpedicao) ||
+      get(linha, col.dataCriacao) ||
+      get(linha, col.dataEmissaoCte)
+    );
+
+    const ibgeOrigemInformado = onlyDigits(get(linha, col.ibgeOrigem)).slice(0, 7);
+    const ufOrigem = text(get(linha, col.ufOrigem)).toUpperCase().slice(0, 2) || inferirUfOrigem(origem, get(linha, col.cdOrigem), get(linha, col.centroExpedicao), ibgeOrigemInformado);
+    const ibgeOrigem = ibgeOrigemInformado || resolverIbgeCidade(origem, ufOrigem, mapas);
+
+    const ibgeDestinoInformado = onlyDigits(get(linha, col.ibgeDestino)).slice(0, 7);
+    const ufDestino = text(get(linha, col.ufDestino)).toUpperCase().slice(0, 2) || parseUfFromRegiaoDestino(get(linha, col.regiaoDestino));
+    const ibgeDestino = ibgeDestinoInformado || resolverIbgeCidade(destino, ufDestino, mapas);
+
+    const pesoDeclarado = toNumber(get(linha, col.pesoDeclarado));
+    const cubagemTracking = toNumber(get(linha, col.cubagem));
+    const volumes = toNumber(get(linha, col.totalUnidades)) || toNumber(get(linha, col.quantidadeItens));
+    const canalOriginal = text(get(linha, col.canal));
+    const regiao = text(get(linha, col.regiao));
+    const modoEnvio = text(get(linha, col.modoEnvio));
+
+    const row = {
+      id: chaveNfe || `${normalizeLoose(notaFiscal || pedido || file.name)}-${headerIndex + index + 2}`.slice(0, 240),
+      notaFiscal,
+      chaveNfe,
+      pedido,
+      pedidoLojista: text(get(linha, col.pedidoLojista)),
+      pedidoMarketplace: text(get(linha, col.pedidoMarketplace)),
+      pedidoErp: text(get(linha, col.pedidoErp)),
+      data,
+      competencia: data ? data.slice(0, 7) : '',
+      canal: categoriaCanal(canalOriginal || regiao || modoEnvio),
+      canalOriginal,
+      loja: text(get(linha, col.loja)),
+      statusPedido: text(get(linha, col.statusPedido)),
+      transportadora: text(get(linha, col.transportadora)),
+      transportadoraOriginal: text(get(linha, col.transportadoraOriginal)),
+      transportadoraContratada: text(get(linha, col.transportadoraContratada)),
+      cidadeOrigem: origem,
+      ufOrigem,
+      ibgeOrigem,
+      cdOrigem: text(get(linha, col.cdOrigem)),
+      centroExpedicao: text(get(linha, col.centroExpedicao)),
+      cidadeDestino: destino,
+      ufDestino,
+      ibgeDestino,
+      regiaoDestino: text(get(linha, col.regiaoDestino)),
+      chaveRotaIbge: ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '',
+      peso: pesoDeclarado,
+      pesoDeclarado,
+      pesoCubadoOriginal: toNumber(get(linha, col.pesoCubado)),
+      cubagem: cubagemTracking,
+      valorNF: toNumber(get(linha, col.valorNF)),
+      qtdVolumes: volumes,
+      quantidadeItens: toNumber(get(linha, col.quantidadeItens)),
+      totalUnidades: toNumber(get(linha, col.totalUnidades)),
+      cteNumero: text(get(linha, col.cteNumero)),
+      cteAdicional: text(get(linha, col.cteAdicional)),
+      dataEmissaoCte: parseDate(get(linha, col.dataEmissaoCte)),
+      chaveCte: onlyDigits(get(linha, col.chaveCte)),
+      entregaCte: text(get(linha, col.entregaCte)),
+      valorCalculadoFrete: toNumber(get(linha, col.valorCalculadoFrete)),
+      valorCte: toNumber(get(linha, col.valorCte)),
+      percentualFrete: toNumber(get(linha, col.percentualFrete)),
+      descricaoCalculo: text(get(linha, col.descricaoCalculo)),
+      situacao: text(get(linha, col.situacao)) || text(get(linha, col.statusPedido)),
+      status: text(get(linha, col.situacao)) || text(get(linha, col.statusPedido)),
+      previsaoCliente: parseDate(get(linha, col.previsaoCliente)),
+      prevTransportadora: parseDate(get(linha, col.prevTransportadora)),
+      dataTransporte: parseDate(get(linha, col.dataTransporte)),
+      entrega: parseDate(get(linha, col.dataEntrega)),
+      tipoOrdem: text(get(linha, col.tipoOrdem)),
+      modelo: text(get(linha, col.modelo)),
+      segmento: text(get(linha, col.segmento)),
+      regiao,
+      tipoMovimentacao: text(get(linha, col.tipoMovimentacao)),
+      modoEnvio,
+      numeroRomaneio: text(get(linha, col.numeroRomaneio)),
+      deposito: text(get(linha, col.deposito)),
+      emailCompra: text(get(linha, col.emailCompra)),
+      arquivoOrigem: file.name || '',
+      abaOrigem: isCsvFile(file) ? 'CSV' : 'Planilha',
+      linhaExcel: headerIndex + index + 2,
+      ibgeOk: Boolean(ibgeOrigem && ibgeDestino),
+      criadoEm: new Date().toISOString(),
+    };
+    rows.push(row);
+  });
+
+  return rows;
+}
+
+async function parseFile(file, options = {}) {
+  if (isCsvFile(file)) {
+    const matriz = parseCsvMatrix(await file.text());
+    const rows = buildRowsFromMatrix(matriz, file, options);
+    return { rows, abas: [{ nome: 'CSV', linhas: rows.length }] };
+  }
+
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: 'array', cellDates: true, dense: false });
   const rows = [];
@@ -161,57 +457,9 @@ async function parseFile(file) {
   wb.SheetNames.forEach((sheetName) => {
     const sheet = wb.Sheets[sheetName];
     const matriz = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
-    const headerIndex = detectHeader(matriz);
-    const headers = matriz[headerIndex] || [];
-    const col = mapColumns(headers);
-    let totalAba = 0;
-
-    matriz.slice(headerIndex + 1).forEach((linha, index) => {
-      if (!rowHasValue(linha)) return;
-      const notaFiscal = text(get(linha, col.notaFiscal));
-      const chaveNfe = onlyDigits(get(linha, col.chaveNfe));
-      const pedido = text(get(linha, col.pedido));
-      const origem = text(get(linha, col.origem));
-      const destino = text(get(linha, col.destino));
-      const data = parseDate(get(linha, col.data));
-      const peso = toNumber(get(linha, col.peso));
-      const valorNF = toNumber(get(linha, col.valorNF));
-      if (!notaFiscal && !chaveNfe && !pedido && !origem && !destino) return;
-
-      const ibgeOrigem = onlyDigits(get(linha, col.ibgeOrigem)).slice(0, 7);
-      const ibgeDestino = onlyDigits(get(linha, col.ibgeDestino)).slice(0, 7);
-      const row = {
-        id: chaveNfe || `${normalizeLoose(notaFiscal || pedido || file.name)}-${sheetName}-${headerIndex + index + 2}`.slice(0, 240),
-        notaFiscal,
-        chaveNfe,
-        pedido,
-        data,
-        competencia: data ? data.slice(0, 7) : '',
-        canal: categoriaCanal(get(linha, col.canal)),
-        canalOriginal: text(get(linha, col.canal)),
-        transportadora: text(get(linha, col.transportadora)),
-        cidadeOrigem: origem,
-        ufOrigem: text(get(linha, col.ufOrigem)).toUpperCase().slice(0, 2),
-        ibgeOrigem,
-        cidadeDestino: destino,
-        ufDestino: text(get(linha, col.ufDestino)).toUpperCase().slice(0, 2),
-        ibgeDestino,
-        chaveRotaIbge: ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '',
-        peso,
-        cubagem: toNumber(get(linha, col.cubagem)),
-        valorNF,
-        qtdVolumes: toNumber(get(linha, col.volumes)),
-        status: text(get(linha, col.status)),
-        entrega: parseDate(get(linha, col.entrega)),
-        arquivoOrigem: file.name || '',
-        abaOrigem: sheetName,
-        linhaExcel: headerIndex + index + 2,
-        criadoEm: new Date().toISOString(),
-      };
-      rows.push(row);
-      totalAba += 1;
-    });
-    abas.push({ nome: sheetName, linhas: totalAba });
+    const abaRows = buildRowsFromMatrix(matriz, file, options).map((row) => ({ ...row, abaOrigem: sheetName }));
+    rows.push(...abaRows);
+    abas.push({ nome: sheetName, linhas: abaRows.length });
   });
 
   return { rows, abas };
@@ -224,7 +472,7 @@ export async function importarTrackingLocal(files = [], options = {}) {
   const detalhes = [];
 
   for (const file of lista) {
-    const { rows, abas } = await parseFile(file);
+    const { rows, abas } = await parseFile(file, options);
     detalhes.push({ arquivo: file.name, linhas: rows.length, abas });
     for (let index = 0; index < rows.length; index += 1000) {
       const chunk = rows.slice(index, index + 1000);
@@ -309,12 +557,14 @@ export async function resumirTrackingLocal(filtros = {}) {
     acc.peso += toNumber(row.peso);
     acc.cubagem += toNumber(row.cubagem);
     acc.volumes += toNumber(row.qtdVolumes);
+    if (row.ibgeOk) acc.comIbge += 1;
+    else acc.semIbge += 1;
     if (row.data) {
       if (!acc.periodoInicio || row.data < acc.periodoInicio) acc.periodoInicio = row.data;
       if (!acc.periodoFim || row.data > acc.periodoFim) acc.periodoFim = row.data;
     }
     return acc;
-  }, { notas: 0, valorNF: 0, peso: 0, cubagem: 0, volumes: 0, periodoInicio: '', periodoFim: '', totalCompativel });
+  }, { notas: 0, valorNF: 0, peso: 0, cubagem: 0, volumes: 0, periodoInicio: '', periodoFim: '', totalCompativel, comIbge: 0, semIbge: 0 });
   return resumo;
 }
 

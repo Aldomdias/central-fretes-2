@@ -6,6 +6,7 @@ import {
   listarTrackingLocal,
   resumirTrackingLocal,
 } from '../utils/trackingLocal';
+import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 
 function formatarNumero(value, casas = 0) {
   return Number(value || 0).toLocaleString('pt-BR', {
@@ -58,7 +59,14 @@ export default function TrackingPage() {
     setErro('');
     setMensagem('Importando Tracking local...');
     try {
+      let municipios = [];
+      try {
+        municipios = await carregarMunicipiosIbgeDb();
+      } catch {
+        municipios = [];
+      }
       const resultado = await importarTrackingLocal(arquivos, {
+        municipios,
         onProgress: ({ total, arquivo }) => setMensagem(`Importando ${arquivo || ''} • ${formatarNumero(total)} linhas salvas...`),
       });
       setMensagem(`Tracking importado: ${formatarNumero(resultado.total)} linha(s) salvas em base local.`);
@@ -104,7 +112,7 @@ export default function TrackingPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Importar arquivo ou pasta de Tracking</div>
-            <p>Use Excel com colunas de origem, destino, IBGE, canal, peso, cubagem, valor da nota e volumes. O leitor tenta reconhecer nomes de coluna automaticamente.</p>
+            <p>Use Excel ou CSV. O leitor já reconhece o layout do relatório Trackings com ponto e vírgula: Pedido ERP, Canal, CD de origem, Cidade de origem, Cidade destino, Região destino, NF, peso declarado, peso cubado/cubagem, valor da NF e volumes.</p>
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={atualizarTela} disabled={carregando}>Atualizar</button>
@@ -151,6 +159,7 @@ export default function TrackingPage() {
         <div className="summary-card"><span>Valor NF</span><strong>{formatarMoeda(resumo?.valorNF)}</strong><small>{formatarNumero(resumo?.notas)} notas/linhas</small></div>
         <div className="summary-card"><span>Peso total</span><strong>{formatarNumero(resumo?.peso, 2)} kg</strong><small>Volumes: {formatarNumero(resumo?.volumes)}</small></div>
         <div className="summary-card"><span>Cubagem total</span><strong>{formatarNumero(resumo?.cubagem, 4)} m³</strong><small>{resumo?.periodoInicio || '-'} até {resumo?.periodoFim || '-'}</small></div>
+        <div className="summary-card"><span>IBGE resolvido</span><strong>{formatarNumero(resumo?.comIbge || 0)}</strong><small>Sem IBGE: {formatarNumero(resumo?.semIbge || 0)}</small></div>
       </div>
 
       <section className="table-card">
@@ -166,10 +175,13 @@ export default function TrackingPage() {
               <tr>
                 <th>Data</th>
                 <th>NF</th>
+                <th>Pedido ERP</th>
                 <th>Canal</th>
                 <th>Transportadora</th>
                 <th>Origem</th>
+                <th>IBGE Origem</th>
                 <th>Destino</th>
+                <th>IBGE Destino</th>
                 <th>Peso</th>
                 <th>Cubagem</th>
                 <th>Valor NF</th>
@@ -181,17 +193,20 @@ export default function TrackingPage() {
                 <tr key={row.id}>
                   <td>{row.data || '-'}</td>
                   <td>{row.notaFiscal || row.pedido || '-'}</td>
+                  <td>{row.pedidoErp || '-'}</td>
                   <td>{row.canal || '-'}</td>
                   <td>{row.transportadora || '-'}</td>
                   <td>{row.cidadeOrigem}/{row.ufOrigem}</td>
+                  <td>{row.ibgeOrigem || '-'}</td>
                   <td>{row.cidadeDestino}/{row.ufDestino}</td>
+                  <td>{row.ibgeDestino || '-'}</td>
                   <td>{formatarNumero(row.peso, 2)}</td>
                   <td>{formatarNumero(row.cubagem, 4)}</td>
                   <td>{formatarMoeda(row.valorNF)}</td>
                   <td>{formatarNumero(row.qtdVolumes)}</td>
                 </tr>
               ))}
-              {!amostra.length && <tr><td colSpan="10">Nenhuma linha de Tracking importada ainda.</td></tr>}
+              {!amostra.length && <tr><td colSpan="13">Nenhuma linha de Tracking importada ainda.</td></tr>}
             </tbody>
           </table>
         </div>
