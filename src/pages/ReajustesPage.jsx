@@ -127,6 +127,168 @@ function linhasRelatorio(itens = [], fimPeriodo = '') {
   }));
 }
 
+function linhasPreenchimentoReajustes(itens = []) {
+  return (itens || []).map((item) => ({
+    ID_Sistema: item.id || '',
+    Transportadora: item.transportadoraInformada || '',
+    Canal: item.canal || '',
+    Status: item.status || '',
+    Data_Inicio: String(item.dataInicio || '').slice(0, 10),
+    'Reajuste_Solicitado_%': toNumber(item.reajusteSolicitado),
+    'Reajuste_Aplicado_%': toNumber(item.reajusteAplicado),
+    Vinculo_Realizado: (item.transportadorasRealizado || []).join(' | '),
+    Observacao: item.observacao || '',
+  }));
+}
+
+function normalizarChavePlanilha(value = '') {
+  return normalizarTextoReajuste(value).replace(/\s+/g, '');
+}
+
+function pickPlanilha(row = {}, ...nomes) {
+  const mapa = new Map(Object.keys(row || {}).map((key) => [normalizarChavePlanilha(key), key]));
+  for (const nome of nomes) {
+    const key = mapa.get(normalizarChavePlanilha(nome));
+    if (key !== undefined) return row[key];
+  }
+  return '';
+}
+
+function dataPlanilhaParaIso(value) {
+  if (!value) return '';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed?.y) return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
+  }
+  const raw = String(value || '').trim();
+  const iso = raw.match(/^(20\d{2})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}-${String(iso[3]).padStart(2, '0')}`;
+  const br = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](20\d{2})/);
+  if (br) return `${br[3]}-${String(br[2]).padStart(2, '0')}-${String(br[1]).padStart(2, '0')}`;
+  return raw.slice(0, 10);
+}
+
+function separarVinculos(value = '') {
+  return String(value || '')
+    .split('|')
+    .map((nome) => nome.trim())
+    .filter(Boolean)
+    .filter((nome, index, arr) => arr.findIndex((outro) => normalizarTextoReajuste(outro) === normalizarTextoReajuste(nome)) === index);
+}
+
+function parecePreenchimentoSimplificado(rows = []) {
+  if (!rows.length) return false;
+  const headers = Object.keys(rows[0] || {}).map(normalizarChavePlanilha);
+  return headers.includes('IDSISTEMA')
+    || (headers.includes('TRANSPORTADORA') && headers.some((header) => header.includes('REAJUSTEAPLICADO')))
+    || (headers.includes('TRANSPORTADORA') && headers.includes('DATAINICIO') && headers.includes('STATUS'));
+}
+
+function linhaPreenchimentoParaDados(row = {}) {
+  const transportadora = String(pickPlanilha(row, 'Transportadora', 'Transportadora_Informada') || '').trim();
+  const canal = String(pickPlanilha(row, 'Canal') || '').trim();
+  const status = String(pickPlanilha(row, 'Status', 'Negociação', 'Negociacao') || '').trim();
+  const dataInicio = dataPlanilhaParaIso(pickPlanilha(row, 'Data_Inicio', 'Data Inicio', 'Data início', 'Inicio'));
+  const reajusteSolicitado = parsePercentReajuste(pickPlanilha(row, 'Reajuste_Solicitado_%', 'Solicitado_%', 'Solicitado', 'Reajuste Solicitado'));
+  const reajusteAplicado = parsePercentReajuste(pickPlanilha(row, 'Reajuste_Aplicado_%', 'Aplicado_%', 'Aplicado', 'Proposta Final', 'Reajuste Aplicado'));
+  const vinculos = separarVinculos(pickPlanilha(row, 'Vinculo_Realizado', 'Vínculo_Realizado', 'Vinculos_Realizado', 'Vínculos_Realizado'));
+  const observacao = String(pickPlanilha(row, 'Observacao', 'Observação', 'Obs') || '').trim();
+
+  return {
+    id: String(pickPlanilha(row, 'ID_Sistema', 'ID Sistema', 'Id') || '').trim(),
+    transportadora,
+    canal,
+    status,
+    dataInicio,
+    reajusteSolicitado,
+    reajusteAplicado,
+    vinculos,
+    observacao,
+  };
+}
+
+function atualizarReajustesComPreenchimento(itensAtuais = [], rows = []) {
+  const itens = [...(itensAtuais || [])];
+  const porId = new Map(itens.map((item, index) => [String(item.id || ''), index]).filter(([id]) => id));
+  const porNomeCanal = new Map();
+  itens.forEach((item, index) => {
+    const chave = `${normalizarTextoReajuste(item.transportadoraInformada)}|${normalizarTextoReajuste(item.canal)}`;
+    if (!porNomeCanal.has(chave)) porNomeCanal.set(chave, index);
+  });
+
+  let atualizados = 0;
+  let criados = 0;
+  let ignorados = 0;
+
+  rows.forEach((row) => {
+    const dados = linhaPreenchimentoParaDados(row);
+    if (!dados.id && !dados.transportadora) {
+      ignorados += 1;
+      return;
+    }
+
+    const chaveNomeCanal = `${normalizarTextoReajuste(dados.transportadora)}|${normalizarTextoReajuste(dados.canal)}`;
+    const index = porId.has(dados.id) ? porId.get(dados.id) : porNomeCanal.get(chaveNomeCanal);
+
+    if (index !== undefined && itens[index]) {
+      const atual = itens[index];
+      itens[index] = {
+        ...atual,
+        transportadoraInformada: dados.transportadora || atual.transportadoraInformada,
+        canal: dados.canal,
+        status: dados.status || atual.status,
+        dataInicio: dados.dataInicio,
+        reajusteSolicitado: dados.reajusteSolicitado,
+        reajusteSolicitadoTexto: dados.reajusteSolicitado ? `${(dados.reajusteSolicitado * 100).toLocaleString('pt-BR')}%` : '',
+        reajusteAplicado: dados.reajusteAplicado,
+        propostaFinal: dados.reajusteAplicado,
+        transportadorasRealizado: dados.vinculos,
+        transportadoraSistema: dados.vinculos.join(' | '),
+        observacao: dados.observacao,
+        atualizadoEm: new Date().toISOString(),
+      };
+      atualizados += 1;
+      return;
+    }
+
+    if (!dados.transportadora) {
+      ignorados += 1;
+      return;
+    }
+
+    const novo = criarReajusteManual({
+      transportadoraInformada: dados.transportadora,
+      canal: dados.canal,
+      dataInicio: dados.dataInicio,
+      reajusteSolicitado: dados.reajusteSolicitado,
+      reajusteAplicado: dados.reajusteAplicado,
+      status: dados.status || 'EM ANÁLISE',
+      observacao: dados.observacao,
+    });
+    novo.transportadorasRealizado = dados.vinculos;
+    novo.transportadoraSistema = dados.vinculos.join(' | ');
+    itens.push(novo);
+    porId.set(novo.id, itens.length - 1);
+    porNomeCanal.set(chaveNomeCanal, itens.length - 1);
+    criados += 1;
+  });
+
+  return { itens, atualizados, criados, ignorados };
+}
+
+function lerWorkbookParaJson(wb, preferencia = []) {
+  const nomesNormalizados = new Map(wb.SheetNames.map((name) => [normalizarChavePlanilha(name), name]));
+  const sheetName = preferencia
+    .map((name) => nomesNormalizados.get(normalizarChavePlanilha(name)))
+    .find(Boolean) || wb.SheetNames[0];
+  const ws = wb.Sheets[sheetName];
+  return {
+    sheetName,
+    rows: XLSX.utils.sheet_to_json(ws, { defval: '', raw: true }),
+  };
+}
+
 function nomesUnicosRealizado(rows = []) {
   const mapa = new Map();
 
@@ -532,8 +694,23 @@ export default function ReajustesPage() {
     }
     setCarregando(true);
     setErro('');
-    setMensagem('Lendo aba Final da planilha...');
+    setMensagem('Lendo planilha de reajustes...');
     try {
+      const buffer = await arquivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
+      const leitura = lerWorkbookParaJson(wb, ['Preenchimento', 'Atualizacao_Reajustes', 'Atualização_Reajustes']);
+
+      if (parecePreenchimentoSimplificado(leitura.rows)) {
+        const resultado = atualizarReajustesComPreenchimento(itens, leitura.rows);
+        persistir(resultado.itens);
+        setVinculoAtivoId(null);
+        setMensagem(
+          `Preenchimento simples importado da aba ${leitura.sheetName}: ${resultado.atualizados.toLocaleString('pt-BR')} atualizado(s), ${resultado.criados.toLocaleString('pt-BR')} novo(s)`
+          + (resultado.ignorados ? ` e ${resultado.ignorados.toLocaleString('pt-BR')} linha(s) ignorada(s).` : '.')
+        );
+        return;
+      }
+
       const resultado = await importarControleReajustes(arquivo);
       let nomes = opcoesRealizado;
       if (!nomes.length) nomes = await carregarNomesRealizado(false);
@@ -602,6 +779,41 @@ export default function ReajustesPage() {
       Efetivados: efetivados,
       Sem_Vinculo: semVinculo,
     });
+  }
+
+  function exportarPreenchimento() {
+    if (!itens.length) {
+      setErro('Não há reajustes carregados para gerar o modelo de preenchimento.');
+      return;
+    }
+
+    const preenchimento = linhasPreenchimentoReajustes(itens);
+    const orientacao = [
+      { Campo: 'ID_Sistema', Como_preencher: 'Não alterar. Essa coluna fica oculta e serve para atualizar o mesmo registro.', Obrigatorio: 'Sim' },
+      { Campo: 'Transportadora', Como_preencher: 'Nome da transportadora. Pode ajustar o nome se necessário.', Obrigatorio: 'Sim' },
+      { Campo: 'Canal', Como_preencher: 'ATACADO, B2C ou ATACADO E B2C.', Obrigatorio: 'Não' },
+      { Campo: 'Status', Como_preencher: 'EM ANÁLISE, ADIADO, APROVADO, EFETIVADO, NEGADO, PENDENTE ou AGUARDANDO RETORNO.', Obrigatorio: 'Não' },
+      { Campo: 'Data_Inicio', Como_preencher: 'Data de início no formato AAAA-MM-DD ou DD/MM/AAAA.', Obrigatorio: 'Não' },
+      { Campo: 'Reajuste_Solicitado_%', Como_preencher: 'Digite 10%, 10 ou 0,10 para representar 10%.', Obrigatorio: 'Não' },
+      { Campo: 'Reajuste_Aplicado_%', Como_preencher: 'Percentual aprovado/aplicado. Esse é o principal campo para atualizar.', Obrigatorio: 'Não' },
+      { Campo: 'Vinculo_Realizado', Como_preencher: 'Use | para separar mais de um nome. Ex.: ALFA | ALFA TRANSPORTES.', Obrigatorio: 'Não' },
+      { Campo: 'Observacao', Como_preencher: 'Observação da negociação.', Obrigatorio: 'Não' },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(preenchimento);
+    aplicarFormato(ws, preenchimento);
+    ws['!cols'] = ws['!cols'] || [];
+    ws['!cols'][0] = { ...(ws['!cols'][0] || {}), hidden: true, wch: 12 };
+    XLSX.utils.book_append_sheet(wb, ws, 'Preenchimento');
+
+    const wsOrientacao = XLSX.utils.json_to_sheet(orientacao);
+    aplicarFormato(wsOrientacao, orientacao);
+    XLSX.utils.book_append_sheet(wb, wsOrientacao, 'Orientacao');
+
+    XLSX.writeFile(wb, `preenchimento-reajustes-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    setMensagem('Modelo simples exportado. Atualize os campos necessários e importe o mesmo arquivo para gravar as alterações.');
+    setErro('');
   }
 
   function limparTudo() {
@@ -697,10 +909,13 @@ export default function ReajustesPage() {
       <section className="panel-card">
         <div className="section-row compact-top">
           <div>
-            <div className="panel-title">1. Importar ou incluir reajuste</div>
-            <p>Importe a aba Final da planilha ou inclua manualmente uma nova solicitação.</p>
+            <div className="panel-title">1. Importar, atualizar ou incluir reajuste</div>
+            <p>Importe a aba Final antiga ou use o modelo simples para atualizar apenas o que já está na tela.</p>
           </div>
           <div className="actions-right gap-row">
+            <button className="btn-secondary" type="button" onClick={exportarPreenchimento} disabled={!itens.length || carregando}>
+              Exportar preenchimento
+            </button>
             <button className="btn-secondary" type="button" onClick={() => setMostrarManual((prev) => !prev)}>
               {mostrarManual ? 'Fechar inclusão manual' : 'Incluir reajuste manual'}
             </button>
@@ -719,9 +934,13 @@ export default function ReajustesPage() {
           </label>
           <div className="actions-right" style={{ alignItems: 'end' }}>
             <button className="btn-primary" type="button" onClick={importarArquivo} disabled={carregando || !arquivo}>
-              {carregando ? 'Processando...' : 'Importar aba Final'}
+              {carregando ? 'Processando...' : 'Importar arquivo'}
             </button>
           </div>
+        </div>
+
+        <div className="hint-box compact" style={{ marginTop: 12 }}>
+          <strong>Modelo simples:</strong> clique em <strong>Exportar preenchimento</strong>, altere status, data, percentual aplicado, vínculo ou observação e importe o mesmo arquivo. O sistema atualiza os registros pelo ID oculto, sem depender da planilha pesada anterior.
         </div>
 
         {mostrarManual && (
