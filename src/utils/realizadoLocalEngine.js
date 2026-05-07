@@ -1,5 +1,6 @@
 import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine';
 import { toNumberRealizado, normalizeTextRealizado } from './realizadoCtes';
+import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete } from './gradeFreteConfig';
 
 const CANAIS_B2C = [
   'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
@@ -388,6 +389,69 @@ function getUfByIbge(ibge) {
   return UF_POR_CODIGO[onlyDigits(ibge).slice(0, 2)] || '';
 }
 
+function toBooleanFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    if (['true', '1', 'sim', 's', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'nao', 'n', 'no'].includes(normalized)) return false;
+  }
+  return Boolean(value);
+}
+
+function origemTemIcmsAtivo(origem = {}) {
+  const generalidades = origem.generalidades || {};
+  return toBooleanFlag(
+    generalidades.incideIcms ??
+    generalidades.incide_icms ??
+    generalidades.icms ??
+    generalidades.aplicaIcms ??
+    generalidades.aplica_icms ??
+    origem.incideIcms ??
+    origem.incide_icms
+  );
+}
+
+function inferirAliquotaIcmsRealizado(origem = {}, rota = {}, cte = {}) {
+  const generalidades = origem.generalidades || {};
+  const manual = toNumber(
+    generalidades.aliquotaIcms ??
+    generalidades.aliquota_icms ??
+    generalidades.icmsPercentual ??
+    generalidades.icms_percentual
+  );
+
+  const ufOrigem = String(
+    cte.ufOrigem ||
+    rota.ufOrigem ||
+    getUfByIbge(rota.ibgeOrigem || cte.ibgeOrigem || origem.rotas?.[0]?.ibgeOrigem)
+  ).trim().toUpperCase();
+
+  const ufDestino = String(
+    cte.ufDestino ||
+    rota.ufDestino ||
+    getUfByIbge(rota.ibgeDestino || cte.ibgeDestino)
+  ).trim().toUpperCase();
+
+  if (manual > 0) return { aliquota: manual, origem: 'manual', ufOrigem, ufDestino };
+  if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao sem UF completa', ufOrigem, ufDestino };
+  if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao interna', ufOrigem, ufDestino };
+
+  const sulSudesteSemES = new Set(['PR', 'SC', 'RS', 'SP', 'RJ', 'MG']);
+  const norteNordesteCentroOesteMaisES = new Set(['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'PA', 'PB', 'PE', 'PI', 'RN', 'RO', 'RR', 'SE', 'TO']);
+
+  if (sulSudesteSemES.has(ufOrigem) && norteNordesteCentroOesteMaisES.has(ufDestino)) {
+    return { aliquota: 7, origem: 'legislacao interestadual 7%', ufOrigem, ufDestino };
+  }
+
+  return { aliquota: 12, origem: 'legislacao interestadual 12%', ufOrigem, ufDestino };
+}
+
 const taxasIndexCache = new WeakMap();
 const cotacoesIndexCache = new WeakMap();
 
@@ -490,18 +554,67 @@ function getCotacao(origem, rota, peso) {
   return null;
 }
 
-function calcularItemTabela({ transportadora, origem, rota, cte }) {
-  const peso = Math.max(toNumber(cte.peso), toNumber(cte.pesoCubado), toNumber(cte.pesoDeclarado));
+function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }) {
+  const pesoDeclarado = toNumber(cte.pesoDeclarado);
+  // Importante: não usar peso cubado/cubagem do realizado para definir o peso de cálculo,
+  // porque essa cubagem vem inconsistente em algumas bases. O peso base é o peso real/declarado
+  // e a cubagem aplicada vem exclusivamente da grade configurada.
+  const pesoInformado = pesoDeclarado > 0 ? pesoDeclarado : Math.max(toNumber(cte.peso), 0);
+  const pesoCubadoOriginal = toNumber(cte.pesoCubado);
+  const cubagemRealizada = Math.max(
+    toNumber(cte.cubagem),
+    toNumber(cte.metrosCubicos),
+    toNumber(cte.m3),
+    toNumber(cte.volumeCubico)
+  );
+  const linhaGrade = encontrarLinhaGradePorPeso(gradeCanal, pesoInformado || pesoDeclarado || toNumber(cte.peso));
+  const cubagemGrade = toNumber(linhaGrade?.cubagem);
+  const cubagemAplicada = cubagemGrade;
+  const origemCubagem = cubagemGrade > 0 ? 'grade' : 'sem cubagem';
+  const fatorCubagem = toNumber(
+    origem.generalidades?.cubagem ??
+    origem.generalidades?.fatorCubagem ??
+    origem.generalidades?.fator_cubagem
+  );
+  const pesoCubadoCalculado = cubagemAplicada > 0 && fatorCubagem > 0 ? cubagemAplicada * fatorCubagem : 0;
+  const pesoConsiderado = Math.max(pesoInformado, pesoCubadoCalculado, pesoDeclarado);
+
+  return {
+    pesoInformado,
+    pesoDeclarado,
+    pesoCubadoOriginal,
+    pesoGrade: toNumber(linhaGrade?.peso),
+    valorNFGrade: toNumber(linhaGrade?.valorNF),
+    cubagemRealizadaInformada: cubagemRealizada,
+    cubagemRealizada,
+    cubagemGrade,
+    cubagemAplicada,
+    origemCubagem,
+    fatorCubagem,
+    pesoCubadoCalculado,
+    pesoConsiderado,
+  };
+}
+
+function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
+  const pesos = resolverPesoCubagemRealizado({ cte, origem, gradeCanal });
+  const peso = pesos.pesoConsiderado;
   const valorNF = toNumber(cte.valorNF);
   const cotacao = getCotacao(origem, rota, peso);
   if (!cotacao) return null;
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  const icmsInfo = inferirAliquotaIcmsRealizado(origem, rota, cte);
+  const generalidadesCalculadas = {
+    ...(origem.generalidades || {}),
+    incideIcms: origemTemIcmsAtivo(origem),
+    aliquotaIcms: icmsInfo.aliquota,
+  };
   const engineInput = {
     rota,
     cotacao,
-    generalidades: origem.generalidades || {},
+    generalidades: generalidadesCalculadas,
     taxaDestino,
     pesoKg: peso,
     valorNf: valorNF,
@@ -529,20 +642,50 @@ function calcularItemTabela({ transportadora, origem, rota, cte }) {
     detalhes: {
       frete: {
         tipoCalculo: calculo.tipoCalculo,
-        pesoInformado: peso,
+        pesoInformado: pesos.pesoInformado,
+        pesoDeclarado: pesos.pesoDeclarado,
+        pesoCubadoOriginal: pesos.pesoCubadoOriginal,
+        pesoGrade: pesos.pesoGrade,
+        cubagemRealizada: pesos.cubagemRealizada,
+        cubagemGrade: pesos.cubagemGrade,
+        cubagemAplicada: pesos.cubagemAplicada,
+        origemCubagem: pesos.origemCubagem,
+        fatorCubagem: pesos.fatorCubagem,
+        pesoCubado: pesos.pesoCubadoCalculado,
+        pesoCubadoCalculado: pesos.pesoCubadoCalculado,
+        pesoConsiderado: pesos.pesoConsiderado,
         valorNFInformado: valorNF,
+        valorNFGrade: pesos.valorNFGrade,
         valorBase: calculo.valorBase,
         subtotal: calculo.subtotal,
         icms: calculo.icms,
         total: calculo.total,
+        aliquotaIcms: toNumber(icmsInfo.aliquota),
+        origemAliquotaIcms: icmsInfo.origem,
+        incideIcms: generalidadesCalculadas.incideIcms,
+        ufOrigem: icmsInfo.ufOrigem || '',
+        ufDestino: icmsInfo.ufDestino || '',
         percentualAplicado: toNumber(cotacao.percentual || cotacao.fretePercentual),
         valorFixoAplicado: toNumber(cotacao.valorFixo || cotacao.taxaAplicada),
         rsKgAplicado: toNumber(cotacao.rsKg),
+        freteMinimoCotacao: toNumber(cotacao.freteMinimo ?? cotacao.frete_minimo ?? cotacao.valorMinimoFrete ?? cotacao.minimo),
+        freteMinimoGeneralidade: toNumber(origem.generalidades?.freteMinimo ?? origem.generalidades?.frete_minimo ?? origem.generalidades?.minimo),
+        minimoRota: toNumber(rota.valorMinimoFrete),
+        minimoAplicavel: toNumber(calculo.componentesBase?.minimoAplicavel),
+        valorKgGarantia: toNumber(calculo.componentesBase?.valorKg),
+        valorPercentualCalculado: toNumber(calculo.componentesBase?.valorPercentual),
+        componenteBase: calculo.componenteBase || '',
         faixaPeso: faixaLabel(cotacao, peso),
         pesoMin: toNumber(cotacao.pesoMin),
         pesoMax: toNumber(cotacao.pesoMax ?? cotacao.pesoLimite),
         pesoLimite: toNumber(cotacao.pesoMax || cotacao.pesoLimite),
         excessoKg: toNumber(cotacao.excesso || cotacao.excessoPeso),
+        pesoLimiteExcedente: toNumber(cotacao.pesoMax || cotacao.pesoLimite),
+        pesoExcedente: Math.max(0, pesos.pesoConsiderado - toNumber(cotacao.pesoMax || cotacao.pesoLimite)),
+        valorExcedente: toNumber(calculo.valorExcedente),
+        valorFaixa: toNumber(calculo.componentesBase?.valorFaixa),
+        valorFaixaComExcedente: toNumber(calculo.componentesBase?.valorFaixaComExcedente),
+        valorFixoCalculado: toNumber(calculo.componentesBase?.valorFixo),
       },
       taxas: calculo.taxas,
     },
@@ -893,10 +1036,12 @@ export async function simularRealizadoLocalRapido({
   municipios = [],
   nomeTransportadora,
   modoSimulacao = 'rapido',
+  gradeFrete = {},
   onProgress,
 }) {
   const modo = modoSimulacao === 'completo' ? 'completo' : 'rapido';
   const rankingCalculado = modo === 'completo';
+  const gradeNormalizada = normalizarGradeFrete(gradeFrete);
   const { index, stats } = construirIndiceFretesPorRota(transportadoras, municipios);
   const detalhes = [];
   const foraMalha = [];
@@ -916,7 +1061,9 @@ export async function simularRealizadoLocalRapido({
 
   for (let i = 0; i < realizados.length; i += 1) {
     const cte = realizados[i];
-    const key = `${categoriaCanalRealizado(cte.canal)}|${cte.chaveRotaIbge}`;
+    const canalCte = categoriaCanalRealizado(cte.canal);
+    const gradeCanal = gradeNormalizada[normalizarCanalGrade(canalCte)] || [];
+    const key = `${canalCte}|${cte.chaveRotaIbge}`;
     const candidatos = index.get(key) || [];
 
     if (!cte.chaveRotaIbge || !candidatos.length) {
@@ -932,7 +1079,7 @@ export async function simularRealizadoLocalRapido({
         let ranking = null;
 
         const calculadosSimulada = candidatosDaSimulada
-          .map((item) => calcularItemTabela({ ...item, cte }))
+          .map((item) => calcularItemTabela({ ...item, cte, gradeCanal }))
           .filter(Boolean)
           .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
 
@@ -944,7 +1091,7 @@ export async function simularRealizadoLocalRapido({
 
           for (const candidato of candidatos) {
             if (transportadoraMatch(candidato.transportadora?.nome, nomeTransportadora, { exato: true })) continue;
-            const calculado = calcularItemTabela({ ...candidato, cte });
+            const calculado = calcularItemTabela({ ...candidato, cte, gradeCanal });
             if (!calculado) continue;
 
             if (

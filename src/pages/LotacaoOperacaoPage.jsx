@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   carregarFluxoCargasLotacao,
+  buscarCargaPorDistOuCte,
   buscarHistoricoLotacao,
   formatarDataCurta,
   formatarMoeda,
+  carregarSolicitacoesPagamento,
+  criarCustoAdicionalLotacao,
+  atualizarStatusSolicitacao,
   importarMultiplosFluxos,
   limparFluxoCargasLotacao,
   mesclarFluxoCargas,
   rankingHistoricoPorTransportadora,
   resumirFluxoCargas,
   salvarFluxoCargasLotacao,
+  salvarSolicitacoesPagamento,
+  textoSolicitacaoPagamento,
 } from '../utils/lotacaoFluxoCargas';
 import {
   carregarTabelasLotacao,
@@ -296,11 +302,187 @@ function RankingHistorico({ ranking }) {
   );
 }
 
+
+function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
+  const [resposta, setResposta] = useState('');
+  const pendentes = solicitacoes.filter((item) => item.status === 'PENDENTE');
+  const recentes = solicitacoes.slice(0, 120);
+
+  const copiar = async (item) => {
+    const texto = textoSolicitacaoPagamento(item);
+    try {
+      await navigator.clipboard.writeText(texto);
+      window.alert('Solicitação copiada para a área de transferência.');
+    } catch {
+      window.prompt('Copie a solicitação abaixo:', texto);
+    }
+  };
+
+  const emailHref = (item) => {
+    const subject = encodeURIComponent(`Autorização de pagamento - ${item.dist}`);
+    const body = encodeURIComponent(textoSolicitacaoPagamento(item));
+    return `mailto:?subject=${subject}&body=${body}`;
+  };
+
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Aprovações de custo da lotação</div>
+          <p className="compact">Solicitações abertas pela auditoria quando o lançamento passa do saldo. A operação aprova ou recusa aqui.</p>
+        </div>
+        <span className="status-pill dark">{pendentes.length} pendente(s)</span>
+      </div>
+
+      <label className="field small-width">
+        Observação da resposta
+        <input value={resposta} onChange={(event) => setResposta(event.target.value)} placeholder="Opcional" />
+      </label>
+
+      {!recentes.length ? (
+        <div className="hint-box compact top-space-sm">Nenhuma solicitação de autorização criada até agora.</div>
+      ) : (
+        <div className="sim-analise-tabela-wrap top-space-sm">
+          <table className="sim-analise-tabela">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Tipo</th>
+                <th>DIST</th>
+                <th>CT-e</th>
+                <th>Transportadora</th>
+                <th>Rota</th>
+                <th>Valor</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentes.map((item) => (
+                <tr key={item.id}>
+                  <td><span className="status-pill">{item.status}</span></td>
+                  <td>{item.tipo === 'CUSTO_ADICIONAL' ? item.tipoCusto || 'Custo adicional' : 'Excedente auditoria'}</td>
+                  <td><strong>{item.dist}</strong></td>
+                  <td>{item.cte || '-'}</td>
+                  <td>{item.transportadora}</td>
+                  <td>{item.origem} x {item.destino}</td>
+                  <td className={item.status === 'RECUSADO' ? '' : 'negativo'}>{formatarMoeda(item.valorAdicional || item.excedente || item.valorLancado)}</td>
+                  <td>
+                    <div className="row-actions lotacao-auditoria-actions">
+                      <button type="button" className="btn-secondary" onClick={() => copiar(item)}>Copiar</button>
+                      <a className="btn-secondary link-button" href={emailHref(item)}>E-mail</a>
+                      {item.status === 'PENDENTE' && (
+                        <>
+                          <button type="button" className="btn-primary" onClick={() => onAtualizar(item.id, 'APROVADO', resposta)}>Aprovar</button>
+                          <button type="button" className="btn-danger" onClick={() => onAtualizar(item.id, 'RECUSADO', resposta)}>Recusar</button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustoAdicionalOperacao({ baseFluxo, onCriado }) {
+  const [busca, setBusca] = useState('');
+  const [selecionadaId, setSelecionadaId] = useState('');
+  const [form, setForm] = useState({ tipoCusto: 'Diária', valorAdicional: '', cte: '', fatura: '', observacao: '' });
+  const [mensagem, setMensagem] = useState('');
+
+  const resultados = useMemo(() => buscarCargaPorDistOuCte(baseFluxo.cargas, busca).slice(0, 20), [baseFluxo.cargas, busca]);
+  const selecionada = resultados.find((item) => item.id === selecionadaId) || resultados[0] || null;
+
+  const atualizar = (campo, valor) => setForm((prev) => ({ ...prev, [campo]: valor }));
+
+  const criar = () => {
+    if (!selecionada) {
+      setMensagem('Pesquise uma DIST ou CT-e válido antes de incluir custo.');
+      return;
+    }
+    try {
+      const custo = criarCustoAdicionalLotacao(selecionada, form);
+      onCriado(custo);
+      setForm({ tipoCusto: 'Diária', valorAdicional: '', cte: '', fatura: '', observacao: '' });
+      setMensagem('Custo adicional aprovado e liberado como saldo para auditoria.');
+    } catch (error) {
+      setMensagem(error.message || String(error));
+    }
+  };
+
+  return (
+    <div className="panel-card lotacao-custo-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Incluir custo adicional autorizado</div>
+          <p>Use quando a operação precisa liberar diária, descarga, taxa extra ou outro custo para uma DIST. O valor entra como saldo autorizado para a auditoria lançar depois.</p>
+        </div>
+      </div>
+
+      <div className="form-grid three">
+        <label className="field">
+          Buscar DIST ou CT-e
+          <input value={busca} onChange={(event) => setBusca(event.target.value)} placeholder="Ex.: 14676" />
+        </label>
+        <label className="field">
+          Carga encontrada
+          <select value={selecionadaId} onChange={(event) => setSelecionadaId(event.target.value)} disabled={!resultados.length}>
+            {resultados.length === 0 && <option value="">Nenhuma carga encontrada</option>}
+            {resultados.map((item) => (
+              <option key={item.id} value={item.id}>{item.dist} · {item.transportadora} · {item.origem} x {item.destino}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          Tipo do custo
+          <input value={form.tipoCusto} onChange={(event) => atualizar('tipoCusto', event.target.value)} placeholder="Diária, descarga, taxa extra..." />
+        </label>
+      </div>
+
+      <div className="form-grid three">
+        <label className="field">
+          Valor adicional
+          <input type="number" min="0" step="0.01" value={form.valorAdicional} onChange={(event) => atualizar('valorAdicional', event.target.value)} placeholder="Ex.: 500" />
+        </label>
+        <label className="field">
+          CT-e vinculado
+          <input value={form.cte} onChange={(event) => atualizar('cte', event.target.value)} placeholder="Opcional" />
+        </label>
+        <label className="field">
+          Fatura
+          <input value={form.fatura} onChange={(event) => atualizar('fatura', event.target.value)} placeholder="Opcional" />
+        </label>
+      </div>
+
+      <label className="field">
+        Justificativa da operação
+        <textarea value={form.observacao} onChange={(event) => atualizar('observacao', event.target.value)} placeholder="Explique o motivo do custo adicional" />
+      </label>
+
+      {selecionada && (
+        <div className="hint-box compact">
+          DIST selecionada: <strong>{selecionada.dist}</strong> · {selecionada.transportadora} · {selecionada.origem} x {selecionada.destino} · Valor base {formatarMoeda(selecionada.valorComparacao)}
+        </div>
+      )}
+      {mensagem && <div className="hint-box compact">{mensagem}</div>}
+
+      <div className="actions-right">
+        <button type="button" className="btn-primary" disabled={!selecionada || !form.valorAdicional} onClick={criar}>Liberar custo adicional</button>
+      </div>
+    </div>
+  );
+}
+
 export default function LotacaoOperacaoPage() {
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
   const [tabelas, setTabelas] = useState([]);
   const [fonte, setFonte] = useState('historico');
   const [filtros, setFiltros] = useState({ origem: '', destino: '', tipo: '', transportadora: '' });
+  const [solicitacoes, setSolicitacoes] = useState(() => carregarSolicitacoesPagamento());
 
   useEffect(() => {
     setTabelas(carregarTabelasLotacao());
@@ -312,6 +494,18 @@ export default function LotacaoOperacaoPage() {
   const rankingHistorico = useMemo(() => rankingHistoricoPorTransportadora(resultadosHistorico), [resultadosHistorico]);
 
   const atualizarFiltro = (campo, valor) => setFiltros((prev) => ({ ...prev, [campo]: valor }));
+  const atualizarSolicitacao = (id, status, observacao) => {
+    const base = carregarSolicitacoesPagamento();
+    const atualizadas = atualizarStatusSolicitacao(base, id, status, observacao);
+    salvarSolicitacoesPagamento(atualizadas);
+    setSolicitacoes(atualizadas);
+  };
+  const criarCustoAdicional = (custo) => {
+    const base = carregarSolicitacoesPagamento();
+    const novas = [custo, ...base];
+    salvarSolicitacoesPagamento(novas);
+    setSolicitacoes(novas);
+  };
   const mostrarTabela = fonte === 'tabela' || fonte === 'ambos';
   const mostrarHistorico = fonte === 'historico' || fonte === 'ambos';
 
@@ -329,6 +523,8 @@ export default function LotacaoOperacaoPage() {
 
       <ImportarFluxoCard onImportado={setBaseFluxo} resumo={resumo} />
       <KpisFluxo resumo={resumo} />
+      <AutorizacoesOperacao solicitacoes={solicitacoes} onAtualizar={atualizarSolicitacao} />
+      <CustoAdicionalOperacao baseFluxo={baseFluxo} onCriado={criarCustoAdicional} />
 
       <div className="panel-card">
         <div className="section-row compact-top">

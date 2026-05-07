@@ -6,15 +6,19 @@ import {
   carregarSolicitacoesPagamento,
   criarLancamentoAuditoria,
   criarSolicitacaoPagamento,
+  cteJaLancado,
+  ctesLancadosCarga,
   formatarDataCurta,
   formatarMoeda,
   lancamentosDaCarga,
   salvarLancamentosAuditoria,
   salvarSolicitacoesPagamento,
   separarCtes,
-  textoSolicitacaoPagamento,
+  saldoDisponivelCarga,
+  solicitacoesDaCarga,
+  totalAdicionalAutorizadoCarga,
+  totalAutorizadoCarga,
   totalLancadoCarga,
-  atualizarStatusSolicitacao,
 } from '../utils/lotacaoFluxoCargas';
 
 function classeSaldo(valor) {
@@ -44,10 +48,13 @@ function ListaResultados({ resultados, selecionada, onSelecionar }) {
   );
 }
 
-function ResumoCarga({ carga, lancamentos }) {
+function ResumoCarga({ carga, lancamentos, solicitacoes }) {
   if (!carga) return null;
   const totalLancado = totalLancadoCarga(lancamentos, carga);
-  const saldo = (Number(carga.valorComparacao) || 0) - totalLancado;
+  const autorizadoBase = Number(carga.valorComparacao) || 0;
+  const adicionalAutorizado = totalAdicionalAutorizadoCarga(solicitacoes, carga);
+  const totalAutorizado = totalAutorizadoCarga(solicitacoes, carga);
+  const saldo = totalAutorizado - totalLancado;
   const ctes = carga.ctes?.length ? carga.ctes : separarCtes(carga.cteRaw);
 
   return (
@@ -62,9 +69,14 @@ function ResumoCarga({ carga, lancamentos }) {
 
       <div className="summary-strip lotacao-summary-mini">
         <div className="summary-card">
-          <span>Valor auditável</span>
-          <strong>{formatarMoeda(carga.valorComparacao)}</strong>
+          <span>Valor auditável base</span>
+          <strong>{formatarMoeda(autorizadoBase)}</strong>
           <small>Sem pedágio e com ajuste de ICMS</small>
+        </div>
+        <div className="summary-card">
+          <span>Adicional autorizado</span>
+          <strong>{formatarMoeda(adicionalAutorizado)}</strong>
+          <small>Aprovado pela operação</small>
         </div>
         <div className="summary-card">
           <span>Total já lançado</span>
@@ -75,11 +87,6 @@ function ResumoCarga({ carga, lancamentos }) {
           <span>Saldo disponível</span>
           <strong className={classeSaldo(saldo)}>{formatarMoeda(saldo)}</strong>
           <small>Base para próximos CT-es</small>
-        </div>
-        <div className="summary-card">
-          <span>Pedágio separado</span>
-          <strong>{formatarMoeda(carga.pedagio)}</strong>
-          <small>Não entra na comparação</small>
         </div>
       </div>
 
@@ -97,12 +104,12 @@ function ResumoCarga({ carga, lancamentos }) {
           <strong>{formatarMoeda(carga.icmsRemovido)}</strong>
         </div>
         <div>
-          <span>Tipo de veículo</span>
-          <strong>{carga.tipoVeiculo}</strong>
+          <span>Pedágio separado</span>
+          <strong>{formatarMoeda(carga.pedagio)}</strong>
         </div>
         <div>
-          <span>Data coleta</span>
-          <strong>{formatarDataCurta(carga.coletaRealizada || carga.coletaPlanejada)}</strong>
+          <span>Tipo de veículo</span>
+          <strong>{carga.tipoVeiculo}</strong>
         </div>
         <div>
           <span>CT-e(s)</span>
@@ -117,21 +124,24 @@ function ResumoCarga({ carga, lancamentos }) {
   );
 }
 
-function FormLancamento({ carga, lancamentos, onRegistrar }) {
+function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
   const ctes = carga?.ctes?.length ? carga.ctes : separarCtes(carga?.cteRaw || '');
-  const [form, setForm] = useState({ cte: ctes[0] || '', valorLancado: '', fatura: '', observacao: '' });
+  const [form, setForm] = useState({ cte: ctes[0] || '', cteOutro: '', valorLancado: '', fatura: '', observacao: '' });
 
   if (!carga) return null;
 
   const totalLancado = totalLancadoCarga(lancamentos, carga);
-  const saldo = (Number(carga.valorComparacao) || 0) - totalLancado;
+  const saldo = saldoDisponivelCarga(lancamentos, solicitacoes, carga);
   const valorDigitado = Number(String(form.valorLancado || '').replace(',', '.')) || 0;
   const excedentePrevisto = Math.max(0, valorDigitado - Math.max(0, saldo));
+  const cteEfetivo = form.cte === 'OUTRO' ? form.cteOutro : form.cte;
+  const duplicado = cteJaLancado(lancamentos, carga, cteEfetivo);
+  const ctesLancados = ctesLancadosCarga(lancamentos, carga);
 
   const registrar = () => {
-    if (!valorDigitado || valorDigitado <= 0) return;
-    onRegistrar(form);
-    setForm({ cte: ctes[0] || '', valorLancado: '', fatura: '', observacao: '' });
+    if (!valorDigitado || valorDigitado <= 0 || duplicado) return;
+    onRegistrar({ ...form, cte: cteEfetivo });
+    setForm({ cte: ctes.find((cte) => !cteJaLancado(lancamentos, carga, cte)) || 'OUTRO', cteOutro: '', valorLancado: '', fatura: '', observacao: '' });
   };
 
   const atualizar = (campo, valor) => setForm((prev) => ({ ...prev, [campo]: valor }));
@@ -141,7 +151,7 @@ function FormLancamento({ carga, lancamentos, onRegistrar }) {
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Registrar lançamento auditado</div>
-          <p>Informe o CT-e ou a DIST, o valor lançado e a fatura. Se passar do saldo, será aberta uma solicitação de autorização.</p>
+          <p>Informe o CT-e, o valor lançado e a fatura. CT-e já utilizado na DIST fica bloqueado para evitar duplicidade.</p>
         </div>
       </div>
 
@@ -150,7 +160,10 @@ function FormLancamento({ carga, lancamentos, onRegistrar }) {
           CT-e auditado
           {ctes.length ? (
             <select value={form.cte} onChange={(event) => atualizar('cte', event.target.value)}>
-              {ctes.map((cte) => <option key={cte} value={cte}>{cte}</option>)}
+              {ctes.map((cte) => {
+                const usado = cteJaLancado(lancamentos, carga, cte);
+                return <option key={cte} value={cte} disabled={usado}>{cte}{usado ? ' · já lançado' : ''}</option>;
+              })}
               <option value="DIST">Lançamento pela DIST</option>
               <option value="OUTRO">Outro CT-e</option>
             </select>
@@ -158,6 +171,12 @@ function FormLancamento({ carga, lancamentos, onRegistrar }) {
             <input value={form.cte} onChange={(event) => atualizar('cte', event.target.value)} placeholder="CT-e ou DIST" />
           )}
         </label>
+        {form.cte === 'OUTRO' && (
+          <label className="field">
+            Informar outro CT-e
+            <input value={form.cteOutro} onChange={(event) => atualizar('cteOutro', event.target.value)} placeholder="Número do CT-e" />
+          </label>
+        )}
         <label className="field">
           Valor lançado
           <input
@@ -193,16 +212,32 @@ function FormLancamento({ carga, lancamentos, onRegistrar }) {
           <span>Excedente previsto</span>
           <strong className={excedentePrevisto > 0 ? 'negativo' : ''}>{formatarMoeda(excedentePrevisto)}</strong>
         </div>
+        <div>
+          <span>Total já lançado</span>
+          <strong>{formatarMoeda(totalLancado)}</strong>
+        </div>
       </div>
 
-      {excedentePrevisto > 0 && (
+      {ctesLancados.length > 0 && (
+        <div className="hint-box compact">
+          CT-e(s) já lançados nesta DIST: <strong>{ctesLancados.join(', ')}</strong>.
+        </div>
+      )}
+
+      {duplicado && (
         <div className="hint-box compact error-text">
-          Este lançamento passa do saldo da DIST. Ao registrar, o sistema cria uma solicitação pendente para a equipe de transporte aprovar ou recusar.
+          Este CT-e já foi lançado nesta DIST. Não é permitido registrar o mesmo CT-e duas vezes.
+        </div>
+      )}
+
+      {excedentePrevisto > 0 && !duplicado && (
+        <div className="hint-box compact error-text">
+          Este lançamento passa do saldo da DIST. Ao registrar, o sistema cria uma solicitação pendente na tela Lotação Operação para aprovação.
         </div>
       )}
 
       <div className="actions-right">
-        <button type="button" className="btn-primary" disabled={!valorDigitado || valorDigitado <= 0} onClick={registrar}>
+        <button type="button" className="btn-primary" disabled={!valorDigitado || valorDigitado <= 0 || duplicado || (form.cte === 'OUTRO' && !form.cteOutro.trim())} onClick={registrar}>
           {excedentePrevisto > 0 ? 'Registrar e abrir solicitação' : 'Registrar auditado'}
         </button>
       </div>
@@ -231,7 +266,7 @@ function HistoricoLancamentos({ carga, lancamentos }) {
               <th>CT-e</th>
               <th>Fatura</th>
               <th>Valor lançado</th>
-              <th>Total anterior</th>
+              <th>Saldo anterior</th>
               <th>Excedente</th>
               <th>Status</th>
               <th>Observação</th>
@@ -244,7 +279,7 @@ function HistoricoLancamentos({ carga, lancamentos }) {
                 <td>{item.cte || '-'}</td>
                 <td>{item.fatura || '-'}</td>
                 <td>{formatarMoeda(item.valorLancado)}</td>
-                <td>{formatarMoeda(item.totalAnterior)}</td>
+                <td>{formatarMoeda(item.saldoAnterior ?? item.totalAnterior)}</td>
                 <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
                 <td><span className="status-pill">{item.status}</span></td>
                 <td>{item.observacao || '-'}</td>
@@ -257,80 +292,42 @@ function HistoricoLancamentos({ carga, lancamentos }) {
   );
 }
 
-function SolicitacoesPagamento({ solicitacoes, onAtualizar }) {
-  const [resposta, setResposta] = useState('');
-  const pendentes = solicitacoes.filter((item) => item.status === 'PENDENTE');
-  const recentes = solicitacoes.slice(0, 80);
-
-  const copiar = async (item) => {
-    const texto = textoSolicitacaoPagamento(item);
-    try {
-      await navigator.clipboard.writeText(texto);
-      window.alert('Mensagem copiada para a área de transferência.');
-    } catch {
-      window.prompt('Copie a mensagem abaixo:', texto);
-    }
-  };
-
-  const emailHref = (item) => {
-    const subject = encodeURIComponent(`Autorização de pagamento - ${item.dist}`);
-    const body = encodeURIComponent(textoSolicitacaoPagamento(item));
-    return `mailto:?subject=${subject}&body=${body}`;
-  };
-
-  if (!recentes.length) return null;
+function MovimentosAutorizacao({ carga, solicitacoes }) {
+  if (!carga) return null;
+  const lista = solicitacoesDaCarga(solicitacoes, carga);
+  if (!lista.length) return null;
 
   return (
     <div className="table-card lotacao-table-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Solicitações de autorização</div>
-          <p className="compact">Quando o lançamento passa do saldo disponível, fica pendente para transporte aprovar ou recusar.</p>
+          <div className="panel-title">Autorizações e custos da operação</div>
+          <p className="compact">Aprovações ficam na tela Lotação Operação e, quando aprovadas, aumentam o saldo disponível para auditoria.</p>
         </div>
-        <span className="status-pill dark">{pendentes.length} pendente(s)</span>
       </div>
-
-      <label className="field small-width">
-        Observação da resposta
-        <input value={resposta} onChange={(event) => setResposta(event.target.value)} placeholder="Opcional" />
-      </label>
-
-      <div className="sim-analise-tabela-wrap top-space-sm">
+      <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
           <thead>
             <tr>
+              <th>Data</th>
+              <th>Tipo</th>
               <th>Status</th>
-              <th>DIST</th>
+              <th>Valor</th>
               <th>CT-e</th>
-              <th>Transportadora</th>
-              <th>Rota</th>
-              <th>Valor lançado</th>
-              <th>Excedente</th>
-              <th>Ações</th>
+              <th>Observação</th>
+              <th>Resposta</th>
             </tr>
           </thead>
           <tbody>
-            {recentes.map((item) => (
+            {lista.map((item) => (
               <tr key={item.id}>
+                <td>{formatarDataCurta(item.criadoEm)}</td>
+                <td>{item.tipo === 'CUSTO_ADICIONAL' ? item.tipoCusto || 'Custo adicional' : 'Excedente auditoria'}</td>
                 <td><span className="status-pill">{item.status}</span></td>
-                <td><strong>{item.dist}</strong></td>
+                <td>{formatarMoeda(item.valorAdicional || item.excedente)}</td>
                 <td>{item.cte || '-'}</td>
-                <td>{item.transportadora}</td>
-                <td>{item.origem} x {item.destino}</td>
-                <td>{formatarMoeda(item.valorLancado)}</td>
-                <td className="negativo">{formatarMoeda(item.excedente)}</td>
-                <td>
-                  <div className="row-actions lotacao-auditoria-actions">
-                    <button type="button" className="btn-secondary" onClick={() => copiar(item)}>Copiar</button>
-                    <a className="btn-secondary link-button" href={emailHref(item)}>E-mail</a>
-                    {item.status === 'PENDENTE' && (
-                      <>
-                        <button type="button" className="btn-primary" onClick={() => onAtualizar(item.id, 'APROVADO', resposta)}>Aprovar</button>
-                        <button type="button" className="btn-danger" onClick={() => onAtualizar(item.id, 'RECUSADO', resposta)}>Recusar</button>
-                      </>
-                    )}
-                  </div>
-                </td>
+                <td>{item.observacao || '-'}</td>
+                <td>{item.resposta || '-'}</td>
               </tr>
             ))}
           </tbody>
@@ -351,6 +348,8 @@ export default function LotacaoAuditoriaPage() {
   const resultados = useMemo(() => buscarCargaPorDistOuCte(baseFluxo.cargas, busca), [baseFluxo.cargas, busca]);
 
   const pesquisar = () => {
+    setSolicitacoes(carregarSolicitacoesPagamento());
+    setLancamentos(carregarLancamentosAuditoria());
     if (!resultados.length) {
       setSelecionada(null);
       setMensagem('Nenhuma DIST ou CT-e encontrado no histórico local. Importe o fluxo de carga na tela Lotação Operação.');
@@ -362,26 +361,27 @@ export default function LotacaoAuditoriaPage() {
 
   const registrarLancamento = (form) => {
     if (!selecionada) return;
-    const lancamento = criarLancamentoAuditoria(selecionada, form, lancamentos);
-    const novosLancamentos = [lancamento, ...lancamentos];
-    salvarLancamentosAuditoria(novosLancamentos);
-    setLancamentos(novosLancamentos);
+    try {
+      const solicitacoesAtuais = carregarSolicitacoesPagamento();
+      const lancamentosAtuais = carregarLancamentosAuditoria();
+      const lancamento = criarLancamentoAuditoria(selecionada, form, lancamentosAtuais, solicitacoesAtuais);
+      const novosLancamentos = [lancamento, ...lancamentosAtuais];
+      salvarLancamentosAuditoria(novosLancamentos);
+      setLancamentos(novosLancamentos);
 
-    if (lancamento.excedente > 0) {
-      const solicitacao = criarSolicitacaoPagamento(selecionada, lancamento);
-      const novasSolicitacoes = [solicitacao, ...solicitacoes];
-      salvarSolicitacoesPagamento(novasSolicitacoes);
-      setSolicitacoes(novasSolicitacoes);
-      setMensagem('Lançamento registrado e solicitação de autorização criada para transporte.');
-    } else {
-      setMensagem('Lançamento auditado registrado com sucesso.');
+      if (lancamento.excedente > 0) {
+        const solicitacao = criarSolicitacaoPagamento(selecionada, lancamento);
+        const novasSolicitacoes = [solicitacao, ...solicitacoesAtuais];
+        salvarSolicitacoesPagamento(novasSolicitacoes);
+        setSolicitacoes(novasSolicitacoes);
+        setMensagem('Lançamento registrado e solicitação criada para aprovação em Lotação Operação.');
+      } else {
+        setSolicitacoes(solicitacoesAtuais);
+        setMensagem('Lançamento auditado registrado com sucesso.');
+      }
+    } catch (error) {
+      setMensagem(error.message || String(error));
     }
-  };
-
-  const atualizarSolicitacao = (id, status, observacao) => {
-    const atualizadas = atualizarStatusSolicitacao(solicitacoes, id, status, observacao);
-    salvarSolicitacoesPagamento(atualizadas);
-    setSolicitacoes(atualizadas);
   };
 
   return (
@@ -425,10 +425,10 @@ export default function LotacaoAuditoriaPage() {
         <ListaResultados resultados={resultados} selecionada={selecionada} onSelecionar={setSelecionada} />
       </div>
 
-      <ResumoCarga carga={selecionada} lancamentos={lancamentos} />
-      <FormLancamento key={selecionada?.id || 'sem-carga'} carga={selecionada} lancamentos={lancamentos} onRegistrar={registrarLancamento} />
+      <ResumoCarga carga={selecionada} lancamentos={lancamentos} solicitacoes={solicitacoes} />
+      <FormLancamento key={selecionada?.id || 'sem-carga'} carga={selecionada} lancamentos={lancamentos} solicitacoes={solicitacoes} onRegistrar={registrarLancamento} />
       <HistoricoLancamentos carga={selecionada} lancamentos={lancamentos} />
-      <SolicitacoesPagamento solicitacoes={solicitacoes} onAtualizar={atualizarSolicitacao} />
+      <MovimentosAutorizacao carga={selecionada} solicitacoes={solicitacoes} />
     </div>
   );
 }

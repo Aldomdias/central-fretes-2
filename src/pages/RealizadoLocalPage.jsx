@@ -34,6 +34,8 @@ import {
   prepararRegistrosRealizadoLocal,
   simularRealizadoLocalRapido,
 } from '../utils/realizadoLocalEngine';
+import { modelosFaixaPadrao } from '../utils/formatacaoTabela';
+import { carregarGradeFrete } from '../utils/gradeFreteConfig';
 import {
   formatCurrency,
   formatDateBr,
@@ -59,6 +61,153 @@ const DEFAULT_FILTROS = {
 };
 
 const ECONOMIA_SUPABASE_LOCAL_KEY = 'amd-realizado-local-economia-supabase';
+
+const DEFAULT_VOLUMETRIA_CONFIG = {
+  canal: '',
+  inicio: '',
+  fim: '',
+  agrupamento: 'ibge',
+  excluirEbazar: true,
+  incluirDetalhe: true,
+};
+
+function obterPesoVolumetria(row = {}) {
+  return Math.max(
+    Number(row.peso || 0),
+    Number(row.pesoDeclarado || 0),
+    Number(row.pesoCubado || 0)
+  );
+}
+
+function labelFaixaModelo(item = {}) {
+  const inicial = Number(item.pesoInicial || 0);
+  const final = Number(item.pesoFinal || 0);
+  if (!Number.isFinite(final) || final >= 999999) return `${inicial.toLocaleString('pt-BR')}+ kg`;
+  return `${inicial.toLocaleString('pt-BR')} a ${final.toLocaleString('pt-BR')} kg`;
+}
+
+function faixaPorCanalVolumetria(canal, peso) {
+  const canalNormalizado = categoriaCanalRealizado(canal);
+  const modelos = modelosFaixaPadrao();
+  const modelo = modelos.find((item) => item.canal === canalNormalizado)
+    || modelos.find((item) => item.canal === 'ATACADO');
+  const pesoNumero = Number(peso || 0);
+  const faixa = (modelo?.itens || []).find((item) => {
+    const inicial = Number(item.pesoInicial || 0);
+    const final = Number(item.pesoFinal || 0);
+    if (!Number.isFinite(pesoNumero)) return false;
+    if (final >= 999999) return pesoNumero > inicial;
+    if (inicial <= 0) return pesoNumero <= final;
+    return pesoNumero > inicial && pesoNumero <= final;
+  });
+  return faixa ? labelFaixaModelo(faixa) : 'Sem faixa';
+}
+
+function chaveVolumetria(row = {}, agrupamento = 'ibge', faixaPeso = '') {
+  const canal = categoriaCanalRealizado(row.canal) || row.canal || 'Sem canal';
+  const origem = row.cidadeOrigem || 'Sem origem';
+  const ufOrigem = row.ufOrigem || '';
+  const destino = row.cidadeDestino || 'Sem destino';
+  const ufDestino = row.ufDestino || '';
+  const ibgeOrigem = row.ibgeOrigem || '';
+  const ibgeDestino = row.ibgeDestino || '';
+
+  if (agrupamento === 'uf') return [canal, ufOrigem, ufDestino, faixaPeso].join('|');
+  if (agrupamento === 'cidade-uf') return [canal, origem, ufOrigem, destino, ufDestino, faixaPeso].join('|');
+  if (agrupamento === 'cidade-destino-ibge') return [canal, origem, ufOrigem, ibgeOrigem, destino, ufDestino, ibgeDestino, faixaPeso].join('|');
+  return [canal, ibgeOrigem, ibgeDestino, faixaPeso].join('|');
+}
+
+function criarLinhaVolumetriaInicial(row = {}, agrupamento = 'ibge', faixaPeso = '') {
+  const canal = categoriaCanalRealizado(row.canal) || row.canal || 'Sem canal';
+  return {
+    Canal: canal,
+    Agrupamento: agrupamento === 'uf' ? 'Estado x Estado' : agrupamento === 'cidade-uf' ? 'Cidade/UF x Cidade/UF' : agrupamento === 'cidade-destino-ibge' ? 'Cidade + IBGE' : 'IBGE origem x IBGE destino',
+    UF_Origem: row.ufOrigem || '',
+    Origem: row.cidadeOrigem || '',
+    IBGE_Origem: row.ibgeOrigem || '',
+    UF_Destino: row.ufDestino || '',
+    Destino: row.cidadeDestino || '',
+    IBGE_Destino: row.ibgeDestino || '',
+    Faixa_Peso: faixaPeso || '',
+    CTes: 0,
+    Volumes: 0,
+    Peso_Real: 0,
+    Peso_Declarado: 0,
+    Peso_Cubado: 0,
+    Peso_Considerado: 0,
+    Cubagem: 0,
+    Valor_NF: 0,
+    Frete_Realizado: 0,
+    Peso_Medio: 0,
+    Cubagem_Media: 0,
+    Valor_NF_Medio: 0,
+    Volumes_Medio: 0,
+    Percentual_Frete: 0,
+  };
+}
+
+function montarVolumetria(rows = [], config = {}) {
+  const agrupamento = config.agrupamento || 'ibge';
+  const mapa = new Map();
+
+  rows.forEach((row) => {
+    const canal = categoriaCanalRealizado(row.canal) || row.canal || '';
+    const pesoConsiderado = obterPesoVolumetria(row);
+    const faixaPeso = canal === 'B2C' || canal === 'ATACADO' ? faixaPorCanalVolumetria(canal, pesoConsiderado) : '';
+    const chave = chaveVolumetria(row, agrupamento, faixaPeso);
+    if (!mapa.has(chave)) mapa.set(chave, criarLinhaVolumetriaInicial(row, agrupamento, faixaPeso));
+    const acc = mapa.get(chave);
+    acc.CTes += 1;
+    acc.Volumes += Number(row.qtdVolumes || row.volume || 0);
+    acc.Peso_Real += Number(row.peso || 0);
+    acc.Peso_Declarado += Number(row.pesoDeclarado || 0);
+    acc.Peso_Cubado += Number(row.pesoCubado || 0);
+    acc.Peso_Considerado += pesoConsiderado;
+    acc.Cubagem += Number(row.cubagem || 0);
+    acc.Valor_NF += Number(row.valorNF || 0);
+    acc.Frete_Realizado += Number(row.valorCte || 0);
+  });
+
+  return [...mapa.values()]
+    .map((item) => ({
+      ...item,
+      Peso_Medio: item.CTes ? item.Peso_Considerado / item.CTes : 0,
+      Cubagem_Media: item.CTes ? item.Cubagem / item.CTes : 0,
+      Valor_NF_Medio: item.CTes ? item.Valor_NF / item.CTes : 0,
+      Volumes_Medio: item.CTes ? item.Volumes / item.CTes : 0,
+      Percentual_Frete: item.Valor_NF ? (item.Frete_Realizado / item.Valor_NF) * 100 : 0,
+    }))
+    .sort((a, b) => String(a.Canal).localeCompare(String(b.Canal), 'pt-BR') || String(a.UF_Origem).localeCompare(String(b.UF_Origem), 'pt-BR') || String(a.UF_Destino).localeCompare(String(b.UF_Destino), 'pt-BR') || b.CTes - a.CTes);
+}
+
+function volumetriaDetalheRow(item = {}) {
+  const canal = categoriaCanalRealizado(item.canal) || item.canal || '';
+  const pesoConsiderado = obterPesoVolumetria(item);
+  return {
+    Competencia: item.competencia || '',
+    Emissao: item.dataEmissao || '',
+    Canal: canal,
+    CTE: item.numeroCte || '',
+    Transportadora_Realizada: item.transportadora || '',
+    UF_Origem: item.ufOrigem || '',
+    Origem: item.cidadeOrigem || '',
+    IBGE_Origem: item.ibgeOrigem || '',
+    UF_Destino: item.ufDestino || '',
+    Destino: item.cidadeDestino || '',
+    IBGE_Destino: item.ibgeDestino || '',
+    Faixa_Peso: canal === 'B2C' || canal === 'ATACADO' ? faixaPorCanalVolumetria(canal, pesoConsiderado) : '',
+    Peso_Real: item.peso || 0,
+    Peso_Declarado: item.pesoDeclarado || 0,
+    Peso_Cubado: item.pesoCubado || 0,
+    Peso_Considerado: pesoConsiderado,
+    Cubagem: item.cubagem || 0,
+    Volumes: item.qtdVolumes || item.volume || 0,
+    Valor_NF: item.valorNF || 0,
+    Frete_Realizado: item.valorCte || 0,
+  };
+}
+
 
 function readPreferenciaEconomiaSupabase() {
   try {
@@ -118,10 +267,27 @@ function DetailMetric({ label, value, tone = '' }) {
   );
 }
 
+function nomeComponenteBase(nome = '') {
+  const mapa = {
+    valorKg: 'R$/kg x peso considerado',
+    valorPercentual: 'Percentual sobre NF',
+    valorFixo: 'Valor fixo / taxa aplicada',
+    minimoAplicavel: 'Frete mínimo aplicável',
+    valorFaixaComExcedente: 'Faixa + excedente + percentual',
+  };
+  return mapa[nome] || nome || 'Não identificado';
+}
+
 function DetalheSimulacao({ item, rankingCalculado }) {
   const frete = item.detalhes?.frete || {};
   const taxas = item.detalhes?.taxas || {};
   const taxasRows = Object.entries(taxas).filter(([, value]) => Number(value || 0) !== 0);
+  const valorPercentual = Number(frete.valorPercentualCalculado || 0);
+  const valorKg = Number(frete.valorKgGarantia || 0);
+  const valorFixo = Number(frete.valorFixoCalculado || frete.valorFixoAplicado || 0);
+  const minimoAplicavel = Number(frete.minimoAplicavel || 0);
+  const valorFaixaComExcedente = Number(frete.valorFaixaComExcedente || 0);
+  const componenteVencedor = nomeComponenteBase(frete.componenteBase);
 
   return (
     <div className="realizado-detail-panel" style={{ alignItems: 'stretch', display: 'block' }}>
@@ -138,8 +304,8 @@ function DetalheSimulacao({ item, rankingCalculado }) {
         <DetailMetric label="Realizado" value={formatCurrency(item.valorRealizado)} />
         <DetailMetric label="Simulado" value={formatCurrency(item.valorSimulado)} />
         <DetailMetric label="Saving considerado" value={formatCurrency(item.savingPotencial || 0)} tone={item.ganharia ? 'positivo' : ''} />
-        <DetailMetric label="Faixa de peso" value={item.faixaPeso || '—'} />
-        <DetailMetric label="Peso do CT-e" value={`${formatNumber(item.peso, 3)} kg`} />
+        <DetailMetric label="Componente vencedor" value={componenteVencedor} />
+        <DetailMetric label="Peso considerado" value={`${formatNumber(frete.pesoConsiderado || item.peso, 3)} kg`} />
         <DetailMetric label="% redução necessária" value={formatPercent(item.precisaReduzirPercentual || 0)} />
       </div>
 
@@ -148,29 +314,89 @@ function DetalheSimulacao({ item, rankingCalculado }) {
           <strong>Dados do CT-e</strong>
           <div className="mini-list top-space-sm">
             <div className="mini-list-row"><span>Realizada</span><strong>{item.transportadoraRealizada || '—'}</strong></div>
+            <div className="mini-list-row"><span>Simulada</span><strong>{item.transportadoraSimulada || '—'}</strong></div>
             <div className="mini-list-row"><span>Canal</span><strong>{item.canal || '—'}</strong></div>
             <div className="mini-list-row"><span>Valor NF</span><strong>{formatCurrency(item.valorNF)}</strong></div>
+            <div className="mini-list-row"><span>Origem</span><strong>{item.origem}/{item.ufOrigem}</strong></div>
+            <div className="mini-list-row"><span>Destino</span><strong>{item.cidadeDestino}/{item.ufDestino}</strong></div>
             <div className="mini-list-row"><span>Emissão</span><strong>{formatDateBr(item.emissao)}</strong></div>
           </div>
         </div>
+
+        <div className="sim-parametros-box">
+          <strong>Cubagem e peso</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Peso informado CT-e</span><strong>{formatNumber(frete.pesoInformado || item.peso, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso declarado</span><strong>{formatNumber(frete.pesoDeclarado || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso cubado original</span><strong>{formatNumber(frete.pesoCubadoOriginal || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso da grade</span><strong>{formatNumber(frete.pesoGrade || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Cubagem informada na base</span><strong>{formatNumber(frete.cubagemRealizadaInformada ?? frete.cubagemRealizada ?? 0, 6)} m³ ignorada</strong></div>
+            <div className="mini-list-row"><span>Cubagem da grade</span><strong>{formatNumber(frete.cubagemGrade || 0, 6)} m³</strong></div>
+            <div className="mini-list-row"><span>Cubagem usada no cálculo</span><strong>{formatNumber(frete.cubagemAplicada || 0, 6)} m³</strong></div>
+            <div className="mini-list-row"><span>Regra da cubagem</span><strong>{frete.origemCubagem === 'grade' ? 'somente grade' : 'sem cubagem na grade'}</strong></div>
+            <div className="mini-list-row"><span>Fator cubagem</span><strong>{formatNumber(frete.fatorCubagem || 0, 3)} kg/m³</strong></div>
+            <div className="mini-list-row"><span>Cálculo peso cubado</span><strong>{formatNumber(frete.cubagemAplicada || 0, 6)} × {formatNumber(frete.fatorCubagem || 0, 3)} = {formatNumber(frete.pesoCubado || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso considerado</span><strong>{formatNumber(frete.pesoConsiderado || item.peso, 3)} kg</strong></div>
+          </div>
+        </div>
+
+        <div className="sim-parametros-box">
+          <strong>Faixa / taxa aplicada</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Faixa de peso</span><strong>{frete.faixaPeso || item.faixaPeso || '—'}</strong></div>
+            <div className="mini-list-row"><span>Peso mín. faixa</span><strong>{formatNumber(frete.pesoMin || item.pesoMinFaixa || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Peso máx. faixa</span><strong>{formatNumber(frete.pesoMax || item.pesoMaxFaixa || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Percentual</span><strong>{formatPercent(frete.percentualAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Valor fixo / taxa</span><strong>{formatCurrency(frete.valorFixoAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>R$/kg</span><strong>{formatCurrency(frete.rsKgAplicado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Excesso R$/kg</span><strong>{formatCurrency(frete.excessoKg || 0)}</strong></div>
+            <div className="mini-list-row"><span>Peso excedente</span><strong>{formatNumber(frete.pesoExcedente || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Valor excedente</span><strong>{formatCurrency(frete.valorExcedente || 0)}</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="feature-grid three top-space-sm">
+        <div className="sim-parametros-box">
+          <strong>Comparativo da base</strong>
+          <div className="mini-list top-space-sm">
+            <div className="mini-list-row"><span>Percentual sobre NF</span><strong>{formatCurrency(item.valorNF)} × {formatPercent(frete.percentualAplicado || 0)} = {formatCurrency(valorPercentual)}</strong></div>
+            <div className="mini-list-row"><span>Kg garantia</span><strong>{formatNumber(frete.pesoConsiderado || item.peso, 3)} kg × {formatCurrency(frete.rsKgAplicado || 0)} = {formatCurrency(valorKg)}</strong></div>
+            <div className="mini-list-row"><span>Valor fixo</span><strong>{formatCurrency(valorFixo)}</strong></div>
+            <div className="mini-list-row"><span>Faixa + excedente</span><strong>{formatCurrency(valorFaixaComExcedente)}</strong></div>
+            <div className="mini-list-row"><span>Frete mínimo rota</span><strong>{formatCurrency(frete.minimoRota || 0)}</strong></div>
+            <div className="mini-list-row"><span>Frete mínimo cotação</span><strong>{formatCurrency(frete.freteMinimoCotacao || 0)}</strong></div>
+            <div className="mini-list-row"><span>Frete mínimo generalidade</span><strong>{formatCurrency(frete.freteMinimoGeneralidade || 0)}</strong></div>
+            <div className="mini-list-row"><span>Mínimo aplicável</span><strong>{formatCurrency(minimoAplicavel)}</strong></div>
+            <div className="mini-list-row"><span>Base escolhida</span><strong>{componenteVencedor} · {formatCurrency(frete.valorBase || 0)}</strong></div>
+          </div>
+        </div>
+
         <div className="sim-parametros-box">
           <strong>Memória do frete</strong>
           <div className="mini-list top-space-sm">
             <div className="mini-list-row"><span>Tipo</span><strong>{frete.tipoCalculo || item.tipoCalculo || '—'}</strong></div>
             <div className="mini-list-row"><span>Base</span><strong>{formatCurrency(frete.valorBase || 0)}</strong></div>
-            <div className="mini-list-row"><span>Subtotal</span><strong>{formatCurrency(frete.subtotal || 0)}</strong></div>
-            <div className="mini-list-row"><span>ICMS</span><strong>{formatCurrency(frete.icms || 0)}</strong></div>
-            <div className="mini-list-row"><span>Total</span><strong>{formatCurrency(frete.total || item.valorSimulado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Taxas adicionais</span><strong>{formatCurrency(taxasRows.reduce((acc, [, valor]) => acc + Number(valor || 0), 0))}</strong></div>
+            <div className="mini-list-row"><span>Subtotal antes ICMS</span><strong>{formatCurrency(frete.subtotal || 0)}</strong></div>
+            <div className="mini-list-row"><span>ICMS {frete.incideIcms ? `(${formatPercent(frete.aliquotaIcms || 0)})` : '(não incidiu)'}</span><strong>{formatCurrency(frete.icms || 0)}</strong></div>
+            {frete.incideIcms && (frete.ufOrigem || frete.ufDestino || frete.origemAliquotaIcms) && (
+              <div className="mini-list-row"><span>Regra ICMS</span><strong>{frete.ufOrigem || 'UF?'} → {frete.ufDestino || 'UF?'} · {frete.origemAliquotaIcms || 'cadastro'}</strong></div>
+            )}
+            <div className="mini-list-row"><span>Total simulado</span><strong>{formatCurrency(frete.total || item.valorSimulado || 0)}</strong></div>
           </div>
         </div>
+
         <div className="sim-parametros-box">
-          <strong>Faixa / taxa aplicada</strong>
+          <strong>Resultado vs realizado</strong>
           <div className="mini-list top-space-sm">
-            <div className="mini-list-row"><span>Percentual</span><strong>{formatPercent(frete.percentualAplicado || 0)}</strong></div>
-            <div className="mini-list-row"><span>Valor fixo</span><strong>{formatCurrency(frete.valorFixoAplicado || 0)}</strong></div>
-            <div className="mini-list-row"><span>R$/kg</span><strong>{formatCurrency(frete.rsKgAplicado || 0)}</strong></div>
-            <div className="mini-list-row"><span>Peso limite</span><strong>{formatNumber(frete.pesoLimite || 0, 3)} kg</strong></div>
-            <div className="mini-list-row"><span>Excesso kg</span><strong>{formatNumber(frete.excessoKg || 0, 3)} kg</strong></div>
+            <div className="mini-list-row"><span>Frete realizado</span><strong>{formatCurrency(item.valorRealizado)}</strong></div>
+            <div className="mini-list-row"><span>Frete simulado</span><strong>{formatCurrency(item.valorSimulado)}</strong></div>
+            <div className="mini-list-row"><span>Diferença</span><strong>{formatCurrency(item.impacto || 0)}</strong></div>
+            <div className="mini-list-row"><span>Saving considerado</span><strong>{formatCurrency(item.savingPotencial || 0)}</strong></div>
+            <div className="mini-list-row"><span>% realizado/NF</span><strong>{formatPercent(item.percentualRealizado || 0)}</strong></div>
+            <div className="mini-list-row"><span>% simulado/NF</span><strong>{formatPercent(item.percentualSimulado || 0)}</strong></div>
+            <div className="mini-list-row"><span>Líder no ranking</span><strong>{item.liderTransportadora || (rankingCalculado ? '—' : 'ranking não calculado')}</strong></div>
           </div>
         </div>
       </div>
@@ -576,9 +802,13 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [salvandoTabelaLocal, setSalvandoTabelaLocal] = useState(false);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
   const [modoSimulacao, setModoSimulacao] = useState('rapido');
+  const [gradeFrete, setGradeFrete] = useState(() => carregarGradeFrete());
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const [grupoDetalhe, setGrupoDetalhe] = useState(null);
   const [exportando, setExportando] = useState(false);
+  const [modalVolumetriaAberto, setModalVolumetriaAberto] = useState(false);
+  const [volumetriaConfig, setVolumetriaConfig] = useState(DEFAULT_VOLUMETRIA_CONFIG);
+  const [exportandoVolumetria, setExportandoVolumetria] = useState(false);
   const fileInputRef = useRef(null);
   const tabelaLocalInputRef = useRef(null);
 
@@ -1339,6 +1569,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function simular() {
+    const gradeAtual = carregarGradeFrete();
+    setGradeFrete(gradeAtual);
     if (!filtros.transportadora) {
       setErro('Escolha a transportadora que deseja simular.');
       return;
@@ -1444,6 +1676,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         municipios,
         nomeTransportadora: filtros.transportadora,
         modoSimulacao,
+        gradeFrete: gradeAtual,
       }, ({ atual = 0, total = rows.length, etapa = 'Calculando frete local' }) => {
         setProgress({
           etapa,
@@ -1504,6 +1737,70 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
     setFiltros(novoFiltro);
     await pesquisar(novoFiltro);
+  }
+
+  function abrirModalVolumetria() {
+    setVolumetriaConfig((prev) => ({
+      ...DEFAULT_VOLUMETRIA_CONFIG,
+      ...prev,
+      canal: filtrosAplicados.canal || prev.canal || '',
+      inicio: filtrosAplicados.inicio || prev.inicio || '',
+      fim: filtrosAplicados.fim || prev.fim || '',
+      excluirEbazar: filtrosAplicados.excluirEbazar !== undefined ? Boolean(filtrosAplicados.excluirEbazar) : true,
+    }));
+    setModalVolumetriaAberto(true);
+  }
+
+  function alterarVolumetriaConfig(campo, valor) {
+    setVolumetriaConfig((prev) => ({ ...prev, [campo]: valor }));
+  }
+
+  async function exportarVolumetriaTransportador() {
+    setExportandoVolumetria(true);
+    setErro('');
+    try {
+      const filtrosVolumetria = {
+        ...DEFAULT_FILTROS,
+        canal: volumetriaConfig.canal,
+        inicio: volumetriaConfig.inicio,
+        fim: volumetriaConfig.fim,
+        excluirEbazar: Boolean(volumetriaConfig.excluirEbazar),
+      };
+      const { rows, totalCompativel, limit } = await exportarRealizadoLocal(filtrosVolumetria, { limit: 500000 });
+      if (!rows.length) {
+        setErro('Não existe base para gerar volumetria com os filtros informados.');
+        return;
+      }
+
+      const volumetria = montarVolumetria(rows, volumetriaConfig);
+      const resumoVolumetria = [{
+        Canal: volumetriaConfig.canal || 'Todos',
+        Periodo_Inicial: volumetriaConfig.inicio || 'Todos',
+        Periodo_Final: volumetriaConfig.fim || 'Todos',
+        Agrupamento: volumetriaConfig.agrupamento,
+        CTes_Exportados: rows.length,
+        CTes_Encontrados: totalCompativel,
+        Linhas_Volumetria: volumetria.length,
+        Limite_Exportacao: limit,
+        Observacao: totalCompativel > limit ? 'A base encontrada passou do limite exportado. Refaça com período menor.' : 'Volumetria completa dentro do limite.',
+      }];
+
+      const abas = {
+        Volumetria: volumetria,
+        Resumo: resumoVolumetria,
+      };
+      if (volumetriaConfig.incluirDetalhe) {
+        abas.Detalhe_CTE = rows.map(volumetriaDetalheRow);
+      }
+
+      baixarXlsx(`volumetria-transportador-${volumetriaConfig.canal || 'todos'}-${Date.now()}.xlsx`, abas);
+      setFeedback(`Volumetria exportada: ${rows.length.toLocaleString('pt-BR')} CT-e(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas. Inclui volumes, peso, cubagem, valor de nota e faixa ${volumetriaConfig.canal || 'por canal'}.`);
+      setModalVolumetriaAberto(false);
+    } catch (error) {
+      setErro(error.message || 'Erro ao exportar volumetria.');
+    } finally {
+      setExportandoVolumetria(false);
+    }
   }
 
   async function exportarBaseSelecionada() {
@@ -1591,6 +1888,84 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <div className={economizarSupabase ? 'sim-alert success' : 'sim-alert info'}>
         <strong>Modo economia Supabase:</strong> {economizarSupabase ? 'ativo — simulações tentam usar tabelas salvas/importadas localmente antes de consultar o banco.' : 'desativado — o sistema pode consultar o Supabase para baixar tabelas que ainda não estão locais.'}
       </div>
+
+      {modalVolumetriaAberto ? (
+        <div className="modal-overlay">
+          <div className="modal-card volumetria-modal-card">
+            <div className="modal-header">
+              <div>
+                <div className="panel-title">Exportar volumetria para transportador</div>
+                <p className="compact no-margin">
+                  Gere uma base agrupada para precificação com origem, destino, IBGE, peso, cubagem, valor de nota e número de volumes.
+                </p>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setModalVolumetriaAberto(false)} disabled={exportandoVolumetria}>×</button>
+            </div>
+
+            <div className="form-grid three">
+              <label className="field">
+                Canal da volumetria
+                <select value={volumetriaConfig.canal} onChange={(e) => alterarVolumetriaConfig('canal', e.target.value)}>
+                  <option value="">Todos</option>
+                  <option value="ATACADO">ATACADO</option>
+                  <option value="B2C">B2C</option>
+                  <option value="INTERCOMPANY">INTERCOMPANY</option>
+                  <option value="REVERSA">REVERSA</option>
+                </select>
+              </label>
+              <label className="field">
+                Período inicial
+                <input type="date" value={volumetriaConfig.inicio} onChange={(e) => alterarVolumetriaConfig('inicio', e.target.value)} />
+              </label>
+              <label className="field">
+                Período final
+                <input type="date" value={volumetriaConfig.fim} onChange={(e) => alterarVolumetriaConfig('fim', e.target.value)} />
+              </label>
+            </div>
+
+            <div className="form-grid two top-space-sm">
+              <label className="field">
+                Região / agrupamento
+                <select value={volumetriaConfig.agrupamento} onChange={(e) => alterarVolumetriaConfig('agrupamento', e.target.value)}>
+                  <option value="ibge">IBGE origem x IBGE destino</option>
+                  <option value="cidade-destino-ibge">Cidade/UF + IBGE origem e destino</option>
+                  <option value="cidade-uf">Cidade/UF origem x cidade/UF destino</option>
+                  <option value="uf">Estado origem x estado destino</option>
+                </select>
+              </label>
+              <div className="sim-parametros-box subtle">
+                <strong>Faixa de peso automática</strong>
+                <p className="compact no-margin">
+                  ATACADO usa faixas 0-20, 20-30, 30-50, 50-70, 70-100 e 100+ kg. B2C usa 0-2, 2-5, 5-10, 10-20, 20-30, 30-50, 50-70, 70-100 e 100+ kg.
+                </p>
+              </div>
+            </div>
+
+            <div className="sim-parametros-box top-space-sm">
+              <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <input type="checkbox" checked={Boolean(volumetriaConfig.excluirEbazar)} onChange={(e) => alterarVolumetriaConfig('excluirEbazar', e.target.checked)} />
+                <span>Retirar EBAZAR da volumetria</span>
+              </label>
+              <label className="check-row top-space-sm" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <input type="checkbox" checked={Boolean(volumetriaConfig.incluirDetalhe)} onChange={(e) => alterarVolumetriaConfig('incluirDetalhe', e.target.checked)} />
+                <span>Incluir aba de detalhe por CT-e além da volumetria agrupada</span>
+              </label>
+            </div>
+
+            <div className="hint-box top-space-sm">
+              O arquivo exportado traz a aba <strong>Volumetria</strong> para envio ao transportador e, opcionalmente, a aba <strong>Detalhe_CTE</strong> para conferência interna.
+              A coluna <strong>Volumes</strong> entra somada por rota/faixa, junto com peso, cubagem e valor de nota.
+            </div>
+
+            <div className="actions-right top-space">
+              <button type="button" className="btn-secondary" onClick={() => setModalVolumetriaAberto(false)} disabled={exportandoVolumetria}>Cancelar</button>
+              <button type="button" className="btn-primary" onClick={exportarVolumetriaTransportador} disabled={exportandoVolumetria}>
+                {exportandoVolumetria ? 'Gerando arquivo...' : 'Gerar Excel de volumetria'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {progress ? (
         <div className="sim-alert info">

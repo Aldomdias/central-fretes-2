@@ -124,35 +124,63 @@ function getCotacaoPorRota(origem, rotaNome, peso) {
 }
 
 
+function normalizarLinhaGrade(item = {}) {
+  const peso = toNumber(item?.peso ?? item?.pesoMax ?? item?.pesoLimite);
+  const pesoMin = toNumber(item?.pesoMin ?? item?.peso_min ?? item?.min);
+  const pesoMaxRaw = item?.pesoMax ?? item?.pesoLimite ?? item?.peso_max ?? item?.max ?? item?.peso;
+  const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined
+    ? Number.POSITIVE_INFINITY
+    : toNumber(pesoMaxRaw);
+
+  return {
+    ...item,
+    peso,
+    pesoMin,
+    pesoMax: pesoMax || peso || Number.POSITIVE_INFINITY,
+    valorNF: toNumber(item?.valorNF ?? item?.valorNf ?? item?.nf),
+    cubagem: toNumber(item?.cubagem ?? item?.cubagemM3 ?? item?.metrosCubicos),
+  };
+}
+
 function getLinhaGradeMaisProxima(gradeCanal = [], pesoInformado = 0) {
+  const peso = toNumber(pesoInformado);
   const lista = (Array.isArray(gradeCanal) ? gradeCanal : [])
-    .map((item) => ({
-      peso: toNumber(item?.peso),
-      valorNF: toNumber(item?.valorNF),
-      cubagem: toNumber(item?.cubagem),
-    }))
-    .filter((item) => item.peso > 0)
-    .sort((a, b) => a.peso - b.peso);
+    .map(normalizarLinhaGrade)
+    .filter((item) => item.peso > 0 || item.pesoMax > 0)
+    .sort((a, b) => (a.pesoMax || a.peso) - (b.pesoMax || b.peso));
 
   if (!lista.length) return null;
 
-  return lista.reduce((melhor, atual) => {
-    if (!melhor) return atual;
-    const diffMelhor = Math.abs(melhor.peso - pesoInformado);
-    const diffAtual = Math.abs(atual.peso - pesoInformado);
-    if (diffAtual < diffMelhor) return atual;
-    if (diffAtual === diffMelhor) return atual.peso >= melhor.peso ? atual : melhor;
-    return melhor;
-  }, null);
+  const porFaixa = lista.find((item) => {
+    const min = toNumber(item.pesoMin);
+    const max = item.pesoMax && Number.isFinite(item.pesoMax) ? item.pesoMax : item.peso;
+    return peso >= min && peso <= max;
+  });
+  if (porFaixa) return porFaixa;
+
+  // Quando a grade vem apenas com o peso final da faixa (ex.: 2, 5, 10, 20...),
+  // usa a primeira faixa cujo teto seja maior ou igual ao peso real. Isso evita
+  // escolher a faixa anterior por "proximidade" e ignorar a cubagem correta.
+  const teto = lista.find((item) => peso <= (item.peso || item.pesoMax));
+  if (teto) return teto;
+
+  return lista[lista.length - 1];
 }
 
-function calcularPesosComCubagem({ pesoInformado, gradeLinha, fatorCubagem }) {
+function calcularPesosComCubagem({ pesoInformado, cubagemInformada = 0, gradeLinha, fatorCubagem }) {
+  const cubagemReal = toNumber(cubagemInformada);
   const cubagemGrade = toNumber(gradeLinha?.cubagem);
-  const pesoCubado = cubagemGrade > 0 && fatorCubagem > 0 ? cubagemGrade * fatorCubagem : 0;
+  // Regra operacional: a cubagem informada no realizado/tracking pode vir inconsistente.
+  // Para simulação, a cubagem considerada deve ser exclusivamente a da grade configurada.
+  const cubagemAplicada = cubagemGrade;
+  const origemCubagem = cubagemGrade > 0 ? 'grade' : 'sem cubagem';
+  const pesoCubado = cubagemAplicada > 0 && fatorCubagem > 0 ? cubagemAplicada * fatorCubagem : 0;
   const pesoConsiderado = Math.max(toNumber(pesoInformado), pesoCubado);
   return {
-    pesoGrade: toNumber(gradeLinha?.peso) || toNumber(pesoInformado),
+    pesoGrade: toNumber(gradeLinha?.peso || gradeLinha?.pesoMax) || toNumber(pesoInformado),
     cubagemGrade,
+    cubagemAplicada,
+    origemCubagem,
     pesoCubado,
     pesoConsiderado,
   };
@@ -182,6 +210,9 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       pesoInformado: peso,
       pesoGrade: pesosAplicados?.pesoGrade || toNumber(gradeLinha?.peso) || peso,
       cubagemGrade: pesosAplicados?.cubagemGrade || toNumber(gradeLinha?.cubagem) || 0,
+      cubagemRealizadaInformada: toNumber(pesosAplicados?.cubagemRealizadaInformada ?? pesosAplicados?.cubagemReal ?? 0),
+      cubagemAplicada: pesosAplicados?.cubagemAplicada || pesosAplicados?.cubagemGrade || toNumber(gradeLinha?.cubagem) || 0,
+      origemCubagem: pesosAplicados?.origemCubagem || 'sem cubagem',
       fatorCubagem,
       pesoCubado: pesosAplicados?.pesoCubado || 0,
       pesoConsiderado: pesosAplicados?.pesoConsiderado || peso,
@@ -192,6 +223,12 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       pesoExcedente: toNumber(calculo.excedenteKg),
       valorExcedente: toNumber(calculo.valorExcedente),
       minimoRota: toNumber(rota?.valorMinimoFrete),
+      freteMinimoCotacao: toNumber(cotacao?.freteMinimo ?? cotacao?.frete_minimo ?? cotacao?.valorMinimoFrete ?? cotacao?.minimo),
+      freteMinimoGeneralidade: toNumber(origem?.generalidades?.freteMinimo ?? origem?.generalidades?.frete_minimo ?? origem?.generalidades?.minimo),
+      minimoAplicavel: toNumber(calculo.componentesBase?.minimoAplicavel),
+      valorKgGarantia: toNumber(calculo.componentesBase?.valorKg),
+      valorPercentualCalculado: toNumber(calculo.componentesBase?.valorPercentual),
+      componenteBase: calculo.componenteBase || '',
       valorBase: calculo.valorBase,
       subtotal: calculo.subtotal,
       icms: calculo.icms,
@@ -233,10 +270,10 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   };
 }
 
-function calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIbge, gradeCanal }) {
+function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatorCubagem = toNumber(origem?.generalidades?.cubagem);
-  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, gradeLinha, fatorCubagem });
+  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem });
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado);
   if (!cotacao) return null;
 
@@ -309,6 +346,7 @@ function rankearPorChave(resultados = []) {
 function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
   const peso = toNumber(filtros.peso);
   const valorNF = toNumber(filtros.valorNF);
+  const cubagem = toNumber(filtros.cubagem);
   const destinoNormalizado = normalizeText(filtros.destinoCodigo);
 
   return (transportadoras || []).flatMap((transportadora) =>
@@ -322,25 +360,26 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
             const cidade = normalizeText(getCidadeByIbge(rota.ibgeDestino, cidadePorIbge));
             return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
           })
-          .map((rota) => calcularItem({ transportadora, origem, rota, peso, valorNF, cidadePorIbge, gradeCanal: filtros.gradeCanal }))
+          .map((rota) => calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal }))
           .filter(Boolean),
       ),
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
-  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, destinoCodigo, gradeCanal }, cidadePorIbge);
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
+  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge);
   return rankearPorChave(resultados)
     .filter((item) => item.origem === origem && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
-export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cidadePorIbge, gradeCanal = [] }) {
+export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal = [] }) {
   const resultados = listarCenarios(transportadoras, {
     origem,
     canal,
     peso,
     valorNF,
+    cubagem,
     destinoCodigo: '',
     gradeCanal,
   }, cidadePorIbge).filter((item) => !destinoCodigos?.length || destinoCodigos.includes(String(item.ibgeDestino)) || destinoCodigos.includes(normalizeText(item.cidadeDestino)));
@@ -416,7 +455,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
               peso,
               valorNF,
               cidadePorIbge,
-              gradeCanal: [],
+              gradeCanal: [linha],
             });
 
             if (item) resultados.push(item);
@@ -474,6 +513,172 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
     percentualMedioSobreNF,
     detalhes: todosResultados.sort((a, b) => a.ranking - b.ranking || a.total - b.total),
     porUf,
+  };
+}
+
+
+export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', ufDestino = '', grade = [], cidadePorIbge }) {
+  const pesoValorPairs = Array.isArray(grade) ? grade : [];
+  const origemFiltro = String(origem || '').trim();
+  const ufFiltro = String(ufDestino || '').trim().toUpperCase();
+  const detalhes = [];
+
+  pesoValorPairs.forEach((linha) => {
+    const peso = toNumber(linha.peso);
+    const valorNF = toNumber(linha.valorNF);
+    const resultados = [];
+
+    (transportadoras || []).forEach((transportadora) => {
+      (transportadora.origens || [])
+        .filter((origemItem) => !canal || origemItem.canal === canal)
+        .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+        .forEach((origemItem) => {
+          (origemItem.rotas || []).forEach((rota) => {
+            const ibge = String(rota.ibgeDestino || '');
+            if (!ibge) return;
+            if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+
+            const item = calcularItem({
+              transportadora,
+              origem: origemItem,
+              rota,
+              peso,
+              valorNF,
+              cidadePorIbge,
+              gradeCanal: [linha],
+            });
+
+            if (item) resultados.push(item);
+          });
+        });
+    });
+
+    rankearPorChave(resultados).forEach((item) => {
+      detalhes.push({
+        ...item,
+        gradePeso: peso,
+        gradeValorNF: valorNF,
+        gradeCubagem: toNumber(linha.cubagem),
+        pesoCubado: toNumber(item?.detalhes?.frete?.pesoCubado),
+        pesoConsiderado: toNumber(item?.detalhes?.frete?.pesoConsiderado),
+      });
+    });
+  });
+
+  const gruposRota = new Map();
+  detalhes.forEach((item) => {
+    const chave = `${item.origem}|${item.ibgeDestino}|${item.gradePeso}|${item.gradeValorNF}`;
+    if (!gruposRota.has(chave)) gruposRota.set(chave, []);
+    gruposRota.get(chave).push(item);
+  });
+
+  const rotas = [...gruposRota.values()];
+  const vencedores = rotas.map((grupo) => grupo.find((item) => item.ranking === 1) || grupo.sort((a, b) => a.total - b.total)[0]).filter(Boolean);
+  const segundos = rotas.map((grupo) => [...grupo].sort((a, b) => a.ranking - b.ranking)[1]).filter(Boolean);
+
+  const porTransportadoraMap = new Map();
+  detalhes.forEach((item) => {
+    const atual = porTransportadoraMap.get(item.transportadora) || {
+      transportadora: item.transportadora,
+      participacoes: 0,
+      vitorias: 0,
+      frete: 0,
+      diferencaLider: 0,
+      prazo: 0,
+    };
+    atual.participacoes += 1;
+    atual.frete += Number(item.total || 0);
+    atual.prazo += Number(item.prazo || 0);
+    atual.diferencaLider += Number(item.diferencaLider || 0);
+    if (Number(item.ranking) === 1) atual.vitorias += 1;
+    porTransportadoraMap.set(item.transportadora, atual);
+  });
+
+  const porTransportadora = [...porTransportadoraMap.values()]
+    .map((item) => ({
+      ...item,
+      aderencia: item.participacoes ? (item.vitorias / item.participacoes) * 100 : 0,
+      freteMedio: item.participacoes ? item.frete / item.participacoes : 0,
+      prazoMedio: item.participacoes ? item.prazo / item.participacoes : 0,
+      diferencaMediaLider: item.participacoes ? item.diferencaLider / item.participacoes : 0,
+    }))
+    .sort((a, b) => b.vitorias - a.vitorias || b.aderencia - a.aderencia || a.freteMedio - b.freteMedio);
+
+  const porUfMap = new Map();
+  vencedores.forEach((item) => {
+    const key = item.ufDestino || 'SEM UF';
+    const atual = porUfMap.get(key) || { uf: key, rotas: 0, frete: 0, vencedores: new Map() };
+    atual.rotas += 1;
+    atual.frete += Number(item.total || 0);
+    atual.vencedores.set(item.transportadora, (atual.vencedores.get(item.transportadora) || 0) + 1);
+    porUfMap.set(key, atual);
+  });
+
+  const porUf = [...porUfMap.values()].map((item) => {
+    const top = [...item.vencedores.entries()].sort((a, b) => b[1] - a[1])[0];
+    return {
+      uf: item.uf,
+      rotas: item.rotas,
+      freteMedio: item.rotas ? item.frete / item.rotas : 0,
+      transportadoraDominante: top?.[0] || '',
+      qtdDominante: top?.[1] || 0,
+      pctDominante: item.rotas ? ((top?.[1] || 0) / item.rotas) * 100 : 0,
+    };
+  }).sort((a, b) => b.rotas - a.rotas || a.uf.localeCompare(b.uf));
+
+  const coberturaMap = new Map();
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora.origens || [])
+      .filter((origemItem) => !canal || origemItem.canal === canal)
+      .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+      .forEach((origemItem) => {
+        (origemItem.rotas || []).forEach((rota) => {
+          const ibge = String(rota.ibgeDestino || '');
+          if (!ibge) return;
+          if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
+          const key = `${origemItem.cidade}|${ibge}`;
+          const atual = coberturaMap.get(key) || {
+            origem: origemItem.cidade,
+            ibgeDestino: ibge,
+            cidadeDestino: getCidadeByIbge(ibge, cidadePorIbge),
+            ufDestino: getUfByIbge(ibge),
+            transportadoras: new Set(),
+          };
+          atual.transportadoras.add(transportadora.nome);
+          coberturaMap.set(key, atual);
+        });
+      });
+  });
+
+  const coberturaRotas = [...coberturaMap.values()].map((item) => ({
+    ...item,
+    quantidadeTransportadoras: item.transportadoras.size,
+    transportadoras: [...item.transportadoras].sort(),
+  }));
+
+  const rotasComUmaTransportadora = coberturaRotas.filter((item) => item.quantidadeTransportadoras === 1)
+    .sort((a, b) => (a.ufDestino || '').localeCompare(b.ufDestino || '') || (a.cidadeDestino || '').localeCompare(b.cidadeDestino || ''));
+
+  const savingVsSegundo = vencedores.reduce((acc, item) => acc + Number(item.savingSegundo || 0), 0);
+  const freteVencedorTotal = vencedores.reduce((acc, item) => acc + Number(item.total || 0), 0);
+  const freteSegundoTotal = segundos.reduce((acc, item) => acc + Number(item.total || 0), 0);
+
+  return {
+    origem: origemFiltro || 'Todas',
+    canal,
+    ufDestino: ufFiltro,
+    cenariosAvaliados: detalhes.length,
+    combinacoesRotaGrade: rotas.length,
+    destinosCobertos: coberturaRotas.length,
+    rotasComUmaTransportadora: rotasComUmaTransportadora.length,
+    savingVsSegundo,
+    freteVencedorTotal,
+    freteSegundoTotal,
+    freteMedioVencedor: vencedores.length ? freteVencedorTotal / vencedores.length : 0,
+    porTransportadora,
+    porUf,
+    rotasCriticas: rotasComUmaTransportadora.slice(0, 150),
+    detalhes: detalhes.sort((a, b) => a.ranking - b.ranking || a.total - b.total),
   };
 }
 
