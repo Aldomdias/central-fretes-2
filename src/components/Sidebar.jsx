@@ -6,6 +6,7 @@ const menuPrincipal = [
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
   { chave: 'realizado-local', label: 'Realizado Local', icon: '▤' },
   { chave: 'tracking', label: 'Tracking', icon: '📦' },
+  { chave: 'torre-controle', label: 'Torre de Controle', icon: '📊' },
   { chave: 'reajustes', label: 'Reajustes', icon: '📈' },
   { chave: 'realizado', label: 'Realizado CT-e', icon: '▥' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
