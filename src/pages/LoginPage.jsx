@@ -1,18 +1,23 @@
 import { useState } from 'react';
-import { loginLocal } from '../utils/authLocal';
+import { loginCentral } from '../utils/authLocal';
 
 export default function LoginPage({ onLogin }) {
   const [email, setEmail] = useState('aldomdias@gmail.com');
   const [senha, setSenha] = useState('123456');
   const [erro, setErro] = useState('');
+  const [carregando, setCarregando] = useState(false);
 
-  const entrar = () => {
+  const entrar = async () => {
+    if (carregando) return;
     setErro('');
+    setCarregando(true);
     try {
-      const sessao = loginLocal(email, senha);
+      const sessao = await loginCentral(email, senha);
       onLogin(sessao);
     } catch (error) {
       setErro(error.message || String(error));
+    } finally {
+      setCarregando(false);
     }
   };
 
@@ -34,6 +39,7 @@ export default function LoginPage({ onLogin }) {
               if (event.key === 'Enter') entrar();
             }}
             placeholder="seu@email.com"
+            disabled={carregando}
           />
         </label>
 
@@ -47,13 +53,14 @@ export default function LoginPage({ onLogin }) {
               if (event.key === 'Enter') entrar();
             }}
             placeholder="Senha"
+            disabled={carregando}
           />
         </label>
 
         {erro && <div className="hint-box compact error-text">{erro}</div>}
 
-        <button type="button" className="btn-primary full" onClick={entrar}>
-          Entrar
+        <button type="button" className="btn-primary full" onClick={entrar} disabled={carregando}>
+          {carregando ? 'Entrando...' : 'Entrar'}
         </button>
 
         <div className="hint-box compact">
