@@ -162,8 +162,8 @@ function normalizeCanalParaMalha(value) {
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (['ATACADO', 'B2B', 'CANTU', 'CANTU PNEUS'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
-  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', 'LIVELO', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE'].some((item) => canal === item || canal.includes(item))) return 'B2C';
+  if (['ATACADO', 'B2B'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
+  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'CANTU PNEUS', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO', 'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE'].some((item) => canal === item || canal.includes(item))) return 'B2C';
   return canal;
 }
 

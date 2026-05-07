@@ -819,6 +819,7 @@ const CANAIS_B2C_REALIZADO = [
   'B2W',
   'MAGAZINE LUIZA',
   'CARREFOUR',
+  'CANTU PNEUS',
   'GPA',
   'COLOMBO',
   'AMAZON',
@@ -829,7 +830,10 @@ const CANAIS_B2C_REALIZADO = [
   'ITAU SHOP',
   'ITAÚ SHOP',
   'SHOPEE',
+  '99',
+  'MUSTANG',
   'LIVELO',
+  'COOPERA',
   'MARKETPLACE',
   'MARKET PLACE',
   'ECOMMERCE',
@@ -839,8 +843,6 @@ const CANAIS_B2C_REALIZADO = [
 const CANAIS_ATACADO_REALIZADO = [
   'ATACADO',
   'B2B',
-  'CANTU',
-  'CANTU PNEUS',
 ];
 
 function contemCanalRealizado(canal, lista = []) {
