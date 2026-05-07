@@ -18,8 +18,9 @@ const DEFAULT_CONFIG = {
   origem: '',
   ufOrigem: '',
   ufDestino: '',
-  agrupamento: 'cidade_ibge',
+  agrupamento: 'cidade',
   excluirEbazar: true,
+  incluirIbge: false,
   incluirDetalhe: false,
   vincularCtes: false,
 };
@@ -545,6 +546,15 @@ export default function FerramentasPage() {
 
   const alterar = (campo, valor) => setConfig((prev) => ({ ...prev, [campo]: valor }));
 
+  const alterarIncluirIbge = (checked) => {
+    setConfig((prev) => ({
+      ...prev,
+      incluirIbge: checked,
+      vincularCtes: checked ? prev.vincularCtes : false,
+      agrupamento: checked || !['ibge', 'cidade_ibge'].includes(prev.agrupamento) ? prev.agrupamento : 'cidade',
+    }));
+  };
+
   const alterarGrade = (index, campo, valor) => {
     setGrade((prev) => {
       const linhas = [...(prev[canalGrade] || [])];
@@ -599,7 +609,7 @@ export default function FerramentasPage() {
       baixarArrayBuffer(resultado.fileName, resultado.arrayBuffer);
 
       const resumo = resultado.resumo || {};
-      setMensagem(`Volumetria exportada: ${(resumo.notas || 0).toLocaleString('pt-BR')} nota(s)/linha(s), ${(resumo.linhasVolumetria || 0).toLocaleString('pt-BR')} linha(s) agrupadas${config.vincularCtes ? `, ${(resumo.vinculadas || 0).toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Modo rápido em segundo plano aplicado.`);
+      setMensagem(`Volumetria exportada: ${(resumo.notas || 0).toLocaleString('pt-BR')} nota(s)/linha(s), ${(resumo.linhasVolumetria || 0).toLocaleString('pt-BR')} linha(s) agrupadas${resumo.incluirIbge ? ', com colunas IBGE' : ', sem colunas IBGE'}${resumo.vinculadas ? `, ${resumo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Modo rápido em segundo plano aplicado.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -675,7 +685,7 @@ export default function FerramentasPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Exportar volumetria para transportador</div>
-            <p>Gera uma base agrupada da base local de Tracking com origem, destino, IBGE, faixa de peso, cubagem, valor de nota e volumes para precificação do transportador. Agora o processamento roda em segundo plano para evitar travamento da tela.</p>
+            <p>Gera uma base agrupada da base local de Tracking com origem, destino, faixa de peso, cubagem, valor de nota e volumes para precificação do transportador. Por padrão exporta sem IBGE para ficar mais rápido; quando precisar, ative o flag de IBGE.</p>
           </div>
         </div>
 
@@ -712,8 +722,9 @@ export default function FerramentasPage() {
         <div className="form-grid three">
           <label className="field">Agrupamento
             <select value={config.agrupamento} onChange={(e) => alterar('agrupamento', e.target.value)}>
-              <option value="cidade_ibge">Cidade/UF + IBGE origem e destino</option>
-              <option value="ibge">IBGE origem x IBGE destino</option>
+              <option value="cidade">Cidade/UF origem x destino (sem IBGE)</option>
+              {config.incluirIbge ? <option value="cidade_ibge">Cidade/UF + IBGE origem x destino</option> : null}
+              {config.incluirIbge ? <option value="ibge">IBGE origem x IBGE destino</option> : null}
               <option value="estado">Estado origem x estado destino</option>
             </select>
           </label>
@@ -722,17 +733,21 @@ export default function FerramentasPage() {
             Retirar EBAZAR
           </label>
           <label className="checkbox-line">
+            <input type="checkbox" checked={Boolean(config.incluirIbge)} onChange={(e) => alterarIncluirIbge(e.target.checked)} />
+            Completar e incluir colunas IBGE (mais lento)
+          </label>
+          <label className="checkbox-line">
             <input type="checkbox" checked={Boolean(config.incluirDetalhe)} onChange={(e) => alterar('incluirDetalhe', e.target.checked)} />
             Incluir aba sem agrupamento por nota (mais pesado)
           </label>
           <label className="checkbox-line">
-            <input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} />
-            Vincular com CT-es locais para completar dados (mais lento)
+            <input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} disabled={!config.incluirIbge} />
+            Vincular com CT-es locais para completar IBGE (mais lento)
           </label>
         </div>
 
         <div className="hint-box compact">
-          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. Para deixar rápido, a aba Detalhe_Notas e o vínculo com CT-e vêm desligados por padrão. Ative apenas quando precisar investigar nota a nota ou completar dados faltantes por CT-e.
+          Modo rápido: deixa o flag de IBGE desligado. Assim o Excel sai sem colunas IBGE e o sistema pula a etapa pesada de completar municípios/IBGE. Modo completo: ative IBGE somente quando precisar dessas colunas ou do agrupamento por IBGE. A aba Detalhe_Notas e o vínculo com CT-e também vêm desligados por padrão para evitar travamento.
         </div>
 
         <div className="actions-right">

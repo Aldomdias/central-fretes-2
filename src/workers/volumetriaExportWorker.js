@@ -112,23 +112,33 @@ function faixaVolumetria(canal, peso, grade = {}) {
   return `Até ${limite.toLocaleString('pt-BR')} kg`;
 }
 
-function chaveVolumetria(row = {}, agrupamento, faixa) {
+function chaveVolumetria(row = {}, agrupamento, faixa, incluirIbge = false) {
   if (agrupamento === 'estado') return [row.canal, row.ufOrigem, row.ufDestino, faixa].join('|');
-  if (agrupamento === 'ibge') return [row.canal, row.ibgeOrigem, row.ibgeDestino, faixa].join('|');
+  if (incluirIbge && agrupamento === 'ibge') return [row.canal, row.ibgeOrigem, row.ibgeDestino, faixa].join('|');
+  if (incluirIbge && agrupamento === 'cidade_ibge') {
+    return [
+      row.canal,
+      row.cidadeOrigem,
+      row.ufOrigem,
+      row.ibgeOrigem,
+      row.cidadeDestino,
+      row.ufDestino,
+      row.ibgeDestino,
+      faixa,
+    ].join('|');
+  }
 
   return [
     row.canal,
     row.cidadeOrigem,
     row.ufOrigem,
-    row.ibgeOrigem,
     row.cidadeDestino,
     row.ufDestino,
-    row.ibgeDestino,
     faixa,
   ].join('|');
 }
 
-function linhaInicial(row = {}, agrupamento, faixa) {
+function linhaInicial(row = {}, agrupamento, faixa, incluirIbge = false) {
   const base = {
     Canal: row.canal || '',
     Faixa_Peso: faixa,
@@ -150,7 +160,7 @@ function linhaInicial(row = {}, agrupamento, faixa) {
     };
   }
 
-  if (agrupamento === 'ibge') {
+  if (incluirIbge && agrupamento === 'ibge') {
     return {
       ...base,
       IBGE_Origem: row.ibgeOrigem || '',
@@ -158,15 +168,20 @@ function linhaInicial(row = {}, agrupamento, faixa) {
     };
   }
 
-  return {
+  const linha = {
     ...base,
     Origem: row.cidadeOrigem || '',
     UF_Origem: row.ufOrigem || '',
-    IBGE_Origem: row.ibgeOrigem || '',
     Destino: row.cidadeDestino || '',
     UF_Destino: row.ufDestino || '',
-    IBGE_Destino: row.ibgeDestino || '',
   };
+
+  if (incluirIbge && agrupamento === 'cidade_ibge') {
+    linha.IBGE_Origem = row.ibgeOrigem || '';
+    linha.IBGE_Destino = row.ibgeDestino || '';
+  }
+
+  return linha;
 }
 
 function addLocalidade(cidadeRaw, ufRaw, ibgeRaw, maps, fonte = 'base') {
@@ -378,9 +393,9 @@ async function montarVolumetria(rows = [], config = {}, grade = {}) {
     const canal = String(row.canal || '').toUpperCase();
     const peso = pesoConsiderado(row);
     const faixa = canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso, grade) : '';
-    const chave = chaveVolumetria(row, config.agrupamento, faixa);
+    const chave = chaveVolumetria(row, config.agrupamento, faixa, Boolean(config.incluirIbge));
 
-    if (!mapa.has(chave)) mapa.set(chave, linhaInicial(row, config.agrupamento, faixa));
+    if (!mapa.has(chave)) mapa.set(chave, linhaInicial(row, config.agrupamento, faixa, Boolean(config.incluirIbge))); 
 
     const item = mapa.get(chave);
     item.Notas += 1;
@@ -406,14 +421,14 @@ async function montarVolumetria(rows = [], config = {}, grade = {}) {
       Media_Cubagem_Nota: item.Notas ? item.Cubagem_m3 / item.Notas : 0,
       Media_Valor_NF_Nota: item.Notas ? item.Valor_NF / item.Notas : 0,
     }))
-    .sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')));
+    .sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')) || String(a.Destino || '').localeCompare(String(b.Destino || '')));
 }
 
-function detalheTrackingRow(row = {}, grade = {}) {
+function detalheTrackingRow(row = {}, grade = {}, incluirIbge = false) {
   const canal = String(row.canal || '').toUpperCase();
   const peso = pesoConsiderado(row);
 
-  return {
+  const detalhe = {
     Nota_Fiscal: row.notaFiscal || row.numeroNf || row.nfNumero || '',
     Pedido: row.pedido || '',
     Data: row.data || row.dataFaturamento || '',
@@ -421,10 +436,8 @@ function detalheTrackingRow(row = {}, grade = {}) {
     Canal_Original: row.canalOriginal || '',
     Origem: row.cidadeOrigem || '',
     UF_Origem: row.ufOrigem || '',
-    IBGE_Origem: row.ibgeOrigem || '',
     Destino: row.cidadeDestino || '',
     UF_Destino: row.ufDestino || '',
-    IBGE_Destino: row.ibgeDestino || '',
     Faixa_Peso: canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso, grade) : '',
     Volumes: toNumber(row.qtdVolumes),
     Peso_Real: toNumber(row.peso),
@@ -433,22 +446,45 @@ function detalheTrackingRow(row = {}, grade = {}) {
     Peso_Considerado: peso,
     Cubagem_m3: toNumber(row.cubagem),
     Valor_NF: toNumber(row.valorNF),
-    Complementado_CTE: row.enderecoComplementadoPorCte ? 'Sim' : 'Não',
-    Complementado_Recorrencia: row.enderecoComplementadoPorRecorrencia ? 'Sim' : 'Não',
-    Campos_Complementados: [row.camposComplementadosPorCte, row.camposComplementadosPorRecorrencia].filter(Boolean).join(' | '),
   };
+
+  if (incluirIbge) {
+    detalhe.IBGE_Origem = row.ibgeOrigem || '';
+    detalhe.IBGE_Destino = row.ibgeDestino || '';
+    detalhe.Complementado_CTE = row.enderecoComplementadoPorCte ? 'Sim' : 'Não';
+    detalhe.Complementado_Recorrencia = row.enderecoComplementadoPorRecorrencia ? 'Sim' : 'Não';
+    detalhe.Campos_Complementados = [row.camposComplementadosPorCte, row.camposComplementadosPorRecorrencia].filter(Boolean).join(' | ');
+  }
+
+  return detalhe;
 }
 
-async function montarDetalhes(rows = [], grade = {}) {
+async function montarDetalhes(rows = [], grade = {}, incluirIbge = false) {
   const detalhes = [];
   for (let index = 0; index < rows.length; index += 1) {
-    detalhes.push(detalheTrackingRow(rows[index], grade));
+    detalhes.push(detalheTrackingRow(rows[index], grade, incluirIbge));
     if (index > 0 && index % CHUNK_SIZE === 0) {
       postProgress({ percentual: 84 + Math.round((index / rows.length) * 6), mensagem: `Preparando detalhe por nota: ${index.toLocaleString('pt-BR')} linha(s)...` });
       await waitFrame();
     }
   }
   return detalhes;
+}
+
+function normalizarConfigVolumetria(config = {}) {
+  const incluirIbge = Boolean(config.incluirIbge);
+  let agrupamento = config.agrupamento || 'cidade';
+
+  if (!incluirIbge && ['ibge', 'cidade_ibge'].includes(agrupamento)) {
+    agrupamento = 'cidade';
+  }
+
+  return {
+    ...config,
+    incluirIbge,
+    agrupamento,
+    vincularCtes: incluirIbge ? Boolean(config.vincularCtes) : false,
+  };
 }
 
 function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo }) {
@@ -460,17 +496,20 @@ function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit,
     UF_Origem: config.ufOrigem || 'Todas',
     UF_Destino: config.ufDestino || 'Todas',
     Agrupamento: config.agrupamento,
+    Modo_IBGE: config.incluirIbge ? 'Com IBGE' : 'Sem IBGE',
     Notas_Exportadas: rowsBase.length,
     Linhas_Volumetria: volumetria.length,
     Total_Compativel_Antes_Filtros_Finais: totalCompativel || rowsBase.length,
     Limite_Leitura: limit || '',
-    Vinculo_CTE_Ativo: config.vincularCtes ? 'Sim' : 'Não',
+    Vinculo_CTE_Ativo: config.vincularCtes && config.incluirIbge ? 'Sim' : 'Não',
     CTEs_Vinculados: resumoVinculo?.vinculadas || 0,
     Detalhe_por_Nota: config.incluirDetalhe ? 'Sim' : 'Não',
   }];
 }
 
 async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
+  config = normalizarConfigVolumetria(config);
+
   const filtroBase = {
     canal: config.canal,
     inicio: config.inicio,
@@ -500,11 +539,18 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
     postProgress({ percentual: 28, mensagem: 'Vínculo com CT-e desligado. Seguindo somente com Tracking...' });
   }
 
-  rowsBase = await completarGeografiaVolumetria(rowsBase);
+  if (config.incluirIbge) {
+    rowsBase = await completarGeografiaVolumetria(rowsBase);
+  } else {
+    postProgress({ percentual: 35, mensagem: 'Modo rápido sem IBGE: pulando complemento de municípios/IBGE...' });
+  }
+
   rowsBase = aplicarFiltrosFinais(rowsBase, config);
 
   if (!rowsBase.length) {
-    throw new Error('Após completar UF/IBGE, nenhuma linha ficou dentro dos filtros de origem/UF selecionados.');
+    throw new Error(config.incluirIbge
+      ? 'Após completar UF/IBGE, nenhuma linha ficou dentro dos filtros de origem/UF selecionados.'
+      : 'Nenhuma linha ficou dentro dos filtros selecionados. No modo sem IBGE, os filtros de UF usam apenas a UF que já veio no Tracking.');
   }
 
   postProgress({ percentual: 72, mensagem: 'Agrupando volumetria...' });
@@ -517,7 +563,7 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
 
   let detalheSheets = 0;
   if (config.incluirDetalhe) {
-    const detalhes = await montarDetalhes(rowsBase, grade);
+    const detalhes = await montarDetalhes(rowsBase, grade, Boolean(config.incluirIbge));
     for (let index = 0; index < detalhes.length; index += DETALHE_SHEET_LIMIT) {
       detalheSheets += 1;
       appendJsonSheet(wb, detalheSheets === 1 ? 'Detalhe_Notas' : `Detalhe_${detalheSheets}`, detalhes.slice(index, index + DETALHE_SHEET_LIMIT));
@@ -527,7 +573,8 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
 
   postProgress({ percentual: 96, mensagem: 'Gerando download do Excel...' });
   const arrayBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array', compression: false });
-  const fileName = `volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`;
+  const sufixoIbge = config.incluirIbge ? 'com-ibge' : 'sem-ibge';
+  const fileName = `volumetria-transportador-${config.canal || 'todos'}-${sufixoIbge}-${Date.now()}.xlsx`;
 
   return {
     arrayBuffer,
@@ -537,6 +584,7 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
       linhasVolumetria: volumetria.length,
       vinculadas: resumoVinculo?.vinculadas || 0,
       detalheSheets,
+      incluirIbge: Boolean(config.incluirIbge),
     },
   };
 }
