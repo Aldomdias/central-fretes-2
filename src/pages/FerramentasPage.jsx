@@ -20,8 +20,8 @@ const DEFAULT_CONFIG = {
   ufDestino: '',
   agrupamento: 'cidade_ibge',
   excluirEbazar: true,
-  incluirDetalhe: true,
-  vincularCtes: true,
+  incluirDetalhe: false,
+  vincularCtes: false,
 };
 
 const CANAIS = ['', 'ATACADO', 'B2C'];
@@ -157,6 +157,62 @@ function baixarXlsx(nomeArquivo, abas) {
   });
 
   XLSX.writeFile(wb, nomeArquivo);
+}
+
+
+function baixarArrayBuffer(nomeArquivo, arrayBuffer) {
+  const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = nomeArquivo;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportarVolumetriaEmWorker(payload, onProgress) {
+  return new Promise((resolve, reject) => {
+    if (typeof Worker === 'undefined') {
+      reject(new Error('Seu navegador não suportou processamento em segundo plano para exportar a volumetria.'));
+      return;
+    }
+
+    const worker = new Worker(new URL('../workers/volumetriaExportWorker.js', import.meta.url), { type: 'module' });
+    let finalizado = false;
+
+    const encerrar = () => {
+      if (!finalizado) {
+        finalizado = true;
+        worker.terminate();
+      }
+    };
+
+    worker.onmessage = (event) => {
+      const msg = event.data || {};
+      if (msg.type === 'progress') {
+        onProgress?.(msg);
+        return;
+      }
+      if (msg.type === 'done') {
+        encerrar();
+        resolve(msg);
+        return;
+      }
+      if (msg.type === 'error') {
+        encerrar();
+        reject(new Error(msg.message || 'Erro ao exportar volumetria.'));
+      }
+    };
+
+    worker.onerror = (event) => {
+      encerrar();
+      reject(new Error(event.message || 'Erro no processamento em segundo plano da volumetria.'));
+    };
+
+    worker.postMessage({ type: 'exportar-volumetria', ...payload });
+  });
 }
 
 function pesoConsiderado(row = {}) {
@@ -528,53 +584,22 @@ export default function FerramentasPage() {
   async function exportarVolumetria() {
     setCarregando(true);
     setErro('');
-    setMensagem('Gerando volumetria a partir do Tracking local...');
+    setMensagem('Gerando volumetria em segundo plano. Você pode continuar usando a tela enquanto o Excel é preparado...');
 
     try {
-      const filtroBase = {
-        canal: config.canal,
-        inicio: config.inicio,
-        fim: config.fim,
-        origem: config.origem,
-        excluirEbazar: Boolean(config.excluirEbazar),
-      };
+      const resultado = await exportarVolumetriaEmWorker(
+        { config, grade },
+        (progress) => {
+          const percentual = Number(progress.percentual || 0);
+          const prefixo = percentual ? `${percentual}% - ` : '';
+          setMensagem(`${prefixo}${progress.mensagem || 'Processando volumetria...'}`);
+        }
+      );
 
-      const { rows, totalCompativel, limit } = await exportarTrackingLocal(filtroBase, { limit: 500000 });
+      baixarArrayBuffer(resultado.fileName, resultado.arrayBuffer);
 
-      if (!rows.length) {
-        throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
-      }
-
-      let rowsBase = rows;
-      let resumoVinculo = null;
-
-      if (config.vincularCtes) {
-        setMensagem('Tracking carregado. Buscando CT-es locais para complementar UF/IBGE...');
-        const ctes = await exportarRealizadoLocal(filtroBase, { limit: 500000 });
-        const relacionamento = relacionarTrackingComCtes(rows, ctes.rows || []);
-        rowsBase = relacionamento.rows;
-        resumoVinculo = relacionamento.resumo;
-      }
-
-      setMensagem('Completando UF e IBGE por município, CT-e e recorrência da própria base...');
-      rowsBase = await completarGeografiaVolumetria(rowsBase);
-      rowsBase = aplicarFiltrosFinais(rowsBase, config);
-
-      if (!rowsBase.length) {
-        throw new Error('Após completar UF/IBGE, nenhuma linha ficou dentro dos filtros de origem/UF selecionados.');
-      }
-
-      const volumetria = montarVolumetria(rowsBase, config, grade);
-      const detalheNotas = rowsBase.map((row) => detalheTrackingRow(row, grade));
-
-      const abas = {
-        Volumetria_Agrupada: volumetria,
-        Detalhe_Notas: config.incluirDetalhe ? detalheNotas : [],
-      };
-
-      baixarXlsx(`volumetria-transportador-${config.canal || 'todos'}-${Date.now()}.xlsx`, abas);
-
-      setMensagem(`Volumetria exportada: ${rowsBase.length.toLocaleString('pt-BR')} nota(s)/linha(s), ${volumetria.length.toLocaleString('pt-BR')} linha(s) agrupadas${resumoVinculo ? `, ${resumoVinculo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Filtros aplicados: origem ${config.origem || 'todas'}, UF origem ${config.ufOrigem || 'todas'}, UF destino ${config.ufDestino || 'todas'}.`);
+      const resumo = resultado.resumo || {};
+      setMensagem(`Volumetria exportada: ${(resumo.notas || 0).toLocaleString('pt-BR')} nota(s)/linha(s), ${(resumo.linhasVolumetria || 0).toLocaleString('pt-BR')} linha(s) agrupadas${config.vincularCtes ? `, ${(resumo.vinculadas || 0).toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Modo rápido em segundo plano aplicado.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -650,7 +675,7 @@ export default function FerramentasPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Exportar volumetria para transportador</div>
-            <p>Gera uma base agrupada da base local de Tracking com origem, destino, IBGE, faixa de peso, cubagem, valor de nota e volumes para precificação do transportador.</p>
+            <p>Gera uma base agrupada da base local de Tracking com origem, destino, IBGE, faixa de peso, cubagem, valor de nota e volumes para precificação do transportador. Agora o processamento roda em segundo plano para evitar travamento da tela.</p>
           </div>
         </div>
 
@@ -698,21 +723,21 @@ export default function FerramentasPage() {
           </label>
           <label className="checkbox-line">
             <input type="checkbox" checked={Boolean(config.incluirDetalhe)} onChange={(e) => alterar('incluirDetalhe', e.target.checked)} />
-            Incluir aba sem agrupamento por nota
+            Incluir aba sem agrupamento por nota (mais pesado)
           </label>
           <label className="checkbox-line">
             <input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} />
-            Vincular com CT-es locais para completar dados
+            Vincular com CT-es locais para completar dados (mais lento)
           </label>
         </div>
 
         <div className="hint-box compact">
-          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. A aba Detalhe_Notas sai sem agrupamento. Os filtros de UF são aplicados depois que o sistema tenta completar UF/IBGE por município cadastrado, CT-e vinculado e recorrência da própria base.
+          A aba Volumetria_Agrupada agrupa por origem/destino/faixa. Para deixar rápido, a aba Detalhe_Notas e o vínculo com CT-e vêm desligados por padrão. Ative apenas quando precisar investigar nota a nota ou completar dados faltantes por CT-e.
         </div>
 
         <div className="actions-right">
           <button className="btn-primary" type="button" onClick={exportarVolumetria} disabled={carregando}>
-            {carregando ? 'Gerando...' : 'Gerar Excel de volumetria'}
+            {carregando ? 'Gerando em segundo plano...' : 'Gerar Excel de volumetria'}
           </button>
         </div>
       </section>
