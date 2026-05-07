@@ -37,20 +37,15 @@ const UF_POR_CENTRO_EXPEDICAO = {
   '2600': 'PE',
 };
 
-const UF_POR_NOME = {
-  ACRE: 'AC', ALAGOAS: 'AL', AMAPA: 'AP', AMAZONAS: 'AM', BAHIA: 'BA', CEARA: 'CE',
-  DISTRITO_FEDERAL: 'DF', ESPIRITO_SANTO: 'ES', GOIAS: 'GO', MARANHAO: 'MA',
-  MATO_GROSSO: 'MT', MATO_GROSSO_DO_SUL: 'MS', MINAS_GERAIS: 'MG', PARA: 'PA',
-  PARAIBA: 'PB', PARANA: 'PR', PERNAMBUCO: 'PE', PIAUI: 'PI', RIO_DE_JANEIRO: 'RJ',
-  RIO_GRANDE_DO_NORTE: 'RN', RIO_GRANDE_DO_SUL: 'RS', RONDONIA: 'RO', RORAIMA: 'RR',
-  SANTA_CATARINA: 'SC', SAO_PAULO: 'SP', SERGIPE: 'SE', TOCANTINS: 'TO',
-};
-
 
 const CANAL_DEPARA_TRACKING = {
+  // De/para oficial de canais usado no Tracking/Volumetria.
+  // Tudo que está aqui como B2C deve continuar B2C, mesmo que o texto contenha "Cantu".
   'MERCADO LIVRE': 'B2C',
+  'MERCADOR LIVRE': 'B2C',
   SHOPEE: 'B2C',
   'MAGAZINE LUIZA': 'B2C',
+  MAGALU: 'B2C',
   B2C: 'B2C',
   AMAZON: 'B2C',
   INTER: 'B2C',
@@ -66,6 +61,7 @@ const CANAL_DEPARA_TRACKING = {
   'BRADESCO SHOP': 'B2C',
   COOPERA: 'B2C',
   B2B: 'ATACADO',
+  'B 2 B': 'ATACADO',
   ATACADO: 'ATACADO',
 };
 
@@ -129,24 +125,6 @@ function normalizeLoose(value = '') {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function normalizeToken(value = '') {
-  return normalize(value).replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-}
-
-function cleanUfTracking(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const upper = normalize(raw);
-  const siglaIsolada = upper.match(/(^|[^A-Z])([A-Z]{2})(?=$|[^A-Z])/);
-  if (siglaIsolada && Object.values(UF_POR_NOME).includes(siglaIsolada[2])) return siglaIsolada[2];
-  const token = normalizeToken(raw);
-  if (UF_POR_NOME[token]) return UF_POR_NOME[token];
-  const apenasLetras = upper.replace(/[^A-Z]/g, '');
-  if (UF_POR_NOME[normalizeToken(apenasLetras)]) return UF_POR_NOME[normalizeToken(apenasLetras)];
-  if (Object.values(UF_POR_NOME).includes(apenasLetras.slice(0, 2))) return apenasLetras.slice(0, 2);
-  return '';
-}
-
 function onlyDigits(value = '') {
   return String(value || '').replace(/\D/g, '');
 }
@@ -195,14 +173,14 @@ function categoriaCanal(value) {
   const depara = CANAL_DEPARA_TRACKING[canal] || CANAL_DEPARA_TRACKING[normalize(canalOriginal)];
   if (depara) return depara;
 
-  const atacadoContem = ['ATACADO', 'B2B', 'B 2 B'];
-  if (atacadoContem.some((item) => canal === item || canal.includes(item))) return 'ATACADO';
+  const atacadoExato = ['ATACADO', 'B2B', 'B 2 B'];
+  if (atacadoExato.some((item) => canal === item || canal.includes(item))) return 'ATACADO';
 
   const b2cContem = [
-    'B2C', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'SHOPEE', 'MAGAZINE', 'MAGALU',
+    'B2C', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'SHOPEE', 'MAGAZINE LUIZA', 'MAGAZINE', 'MAGALU',
     'AMAZON', 'INTER', 'VIA VAREJO', 'VAREJO', 'CARREFOUR', 'CANTU PNEUS',
-    'ITAU', 'ITAÚ', '99', 'MUSTANG', 'LIVELO', 'BRADESCO', 'BRASIL SHOP',
-    'BRAZIL SHOP', 'COOPERA', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE',
+    'ITAU SHOP', 'ITAU', 'ITAÚ SHOP', 'ITAÚ', '99', 'MUSTANG', 'LIVELO', 'BRADESCO SHOP', 'BRADESCO',
+    'COOPERA', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE',
     'MARKETPLACE', 'MARKET PLACE', 'ANYMARKET', 'ANY MARKET', 'ME2'
   ];
   if (b2cContem.some((item) => canal === item || canal.includes(item))) return 'B2C';
@@ -210,24 +188,6 @@ function categoriaCanal(value) {
   // Tracking é base de venda. Para não perder volumetria no filtro B2C,
   // canais não mapeados entram como B2C e ficam com o canal original preservado.
   return 'B2C';
-}
-
-function categoriaCanalEstrita(value = '') {
-  const canal = normalizeLoose(corrigirMojibakeCanal(value));
-  if (!canal) return '';
-
-  const depara = CANAL_DEPARA_TRACKING[canal] || CANAL_DEPARA_TRACKING[normalize(value)];
-  if (depara) return depara;
-
-  if (['ATACADO', 'B2B', 'B 2 B', 'WHOLESALE', 'REVENDA'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
-  if ([
-    'B2C', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'SHOPEE', 'MAGAZINE', 'MAGALU',
-    'AMAZON', 'INTER', 'VIA VAREJO', 'VAREJO', 'CARREFOUR', 'CANTU PNEUS',
-    'ITAU', 'ITAÚ', '99', 'MUSTANG', 'LIVELO', 'BRADESCO', 'ECOMMERCE',
-    'E COMMERCE', 'E-COMMERCE', 'MARKETPLACE', 'MARKET PLACE', 'ANYMARKET', 'ANY MARKET', 'ME2'
-  ].some((item) => canal === item || canal.includes(item))) return 'B2C';
-
-  return '';
 }
 
 function headerKey(value) {
@@ -392,8 +352,6 @@ function isCsvFile(file) {
 }
 
 function parseUfFromRegiaoDestino(value = '') {
-  const uf = cleanUfTracking(value);
-  if (uf) return uf;
   const raw = String(value || '').trim().toUpperCase();
   const first = raw.match(/^([A-Z]{2})\b/);
   if (first) return first[1];
@@ -461,11 +419,11 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
     );
 
     const ibgeOrigemInformado = onlyDigits(get(linha, col.ibgeOrigem)).slice(0, 7);
-    const ufOrigem = cleanUfTracking(get(linha, col.ufOrigem)) || inferirUfOrigem(origem, get(linha, col.cdOrigem), get(linha, col.centroExpedicao), ibgeOrigemInformado);
+    const ufOrigem = text(get(linha, col.ufOrigem)).toUpperCase().slice(0, 2) || inferirUfOrigem(origem, get(linha, col.cdOrigem), get(linha, col.centroExpedicao), ibgeOrigemInformado);
     const ibgeOrigem = ibgeOrigemInformado || resolverIbgeCidade(origem, ufOrigem, mapas);
 
     const ibgeDestinoInformado = onlyDigits(get(linha, col.ibgeDestino)).slice(0, 7);
-    const ufDestino = cleanUfTracking(get(linha, col.ufDestino)) || parseUfFromRegiaoDestino(get(linha, col.regiaoDestino));
+    const ufDestino = text(get(linha, col.ufDestino)).toUpperCase().slice(0, 2) || parseUfFromRegiaoDestino(get(linha, col.regiaoDestino));
     const ibgeDestino = ibgeDestinoInformado || resolverIbgeCidade(destino, ufDestino, mapas);
 
     const pesoDeclarado = toNumber(get(linha, col.pesoDeclarado));
@@ -596,27 +554,13 @@ export async function importarTrackingLocal(files = [], options = {}) {
 }
 
 function normalizarCanalTrackingRow(row = {}) {
-  const canalOriginal = row.canalOriginal || row.raw?.Canal || row.raw?.canal || '';
-  const fontesFortes = [
-    canalOriginal,
-    row.loja,
-    row.regiao,
-    row.modoEnvio,
-    row.segmento,
-    row.tipoOrdem,
-    row.modelo,
-    row.tipoMovimentacao,
-  ].filter(Boolean).join(' ');
-
-  const canalEstrito = categoriaCanalEstrita(fontesFortes);
-  const canalAtual = categoriaCanalEstrita(row.canal);
-  const canalClassificado = canalEstrito || canalAtual || categoriaCanal(canalOriginal || row.canal || row.loja || row.regiao || row.modoEnvio || '');
-
+  const canalOriginal = row.canalOriginal || row.raw?.Canal || row.raw?.canal || row.canal || row.loja || row.regiao || row.modoEnvio || '';
+  const canalClassificado = categoriaCanal(canalOriginal);
   return {
     ...row,
-    canalOriginal: canalOriginal || row.canalOriginal || row.canal || '',
+    canalOriginal,
     canal: canalClassificado || row.canal || '',
-    canalNaoClassificado: !canalEstrito && !canalAtual && canalClassificado === 'B2C',
+    canalNaoClassificado: !CANAL_DEPARA_TRACKING[normalizeLoose(canalOriginal)] && !CANAL_DEPARA_TRACKING[normalize(canalOriginal)] && canalClassificado === 'B2C',
   };
 }
 
@@ -630,8 +574,8 @@ export function filtrarTrackingLocal(row = {}, filtros = {}) {
   if (filtros.fim && (!row.data || row.data > filtros.fim)) return false;
   if (filtros.canal && normalize(row.canal) !== normalize(filtros.canal)) return false;
   if (filtros.excluirEbazar && isEbazar(row.transportadora)) return false;
-  if (filtros.ufOrigem && cleanUfTracking(row.ufOrigem) !== cleanUfTracking(filtros.ufOrigem)) return false;
-  if (filtros.ufDestino && cleanUfTracking(row.ufDestino) !== cleanUfTracking(filtros.ufDestino)) return false;
+  if (filtros.ufOrigem && normalize(row.ufOrigem) !== normalize(filtros.ufOrigem)) return false;
+  if (filtros.ufDestino && normalize(row.ufDestino) !== normalize(filtros.ufDestino)) return false;
   if (filtros.origem && !normalizeLoose(row.cidadeOrigem).includes(normalizeLoose(filtros.origem))) return false;
   if (filtros.destino && !normalizeLoose(row.cidadeDestino).includes(normalizeLoose(filtros.destino))) return false;
   if (filtros.transportadora && !normalizeLoose(row.transportadora).includes(normalizeLoose(filtros.transportadora))) return false;

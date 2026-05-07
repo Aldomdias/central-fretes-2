@@ -105,6 +105,7 @@ const CANAIS_B2C_TELA = [
   'B2W',
   'MAGAZINE LUIZA',
   'CARREFOUR',
+  'CANTU PNEUS',
   'GPA',
   'COLOMBO',
   'AMAZON',
@@ -115,7 +116,10 @@ const CANAIS_B2C_TELA = [
   'ITAU SHOP',
   'ITAÚ SHOP',
   'SHOPEE',
+  '99',
+  'MUSTANG',
   'LIVELO',
+  'COOPERA',
   'MARKETPLACE',
   'MARKET PLACE',
   'ECOMMERCE',
@@ -125,8 +129,6 @@ const CANAIS_B2C_TELA = [
 const CANAIS_ATACADO_TELA = [
   'ATACADO',
   'B2B',
-  'CANTU',
-  'CANTU PNEUS',
 ];
 
 function contemCanalTela(canal, lista = []) {

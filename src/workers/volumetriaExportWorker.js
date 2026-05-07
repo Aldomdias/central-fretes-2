@@ -174,14 +174,63 @@ function valorNfMercadoria(row = {}) {
   return bruto;
 }
 
-function normalizarCanalTexto(value = '') {
+function corrigirMojibakeCanal(value = '') {
   return String(value || '')
+    .replace(/ItaÃº/gi, 'Itaú')
+    .replace(/ItaÃš/gi, 'Itaú')
+    .replace(/ItaÃº Shop/gi, 'Itaú Shop');
+}
+
+function normalizarCanalTexto(value = '') {
+  return corrigirMojibakeCanal(value)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+const CANAIS_B2C_VOLUMETRIA = [
+  'B2C',
+  'MERCADO LIVRE',
+  'MERCADOR LIVRE',
+  'SHOPEE',
+  'MAGAZINE LUIZA',
+  'MAGAZINE',
+  'MAGALU',
+  'AMAZON',
+  'INTER',
+  'VIA VAREJO',
+  'CARREFOUR',
+  'CANTU PNEUS',
+  'ITAU SHOP',
+  'ITAÚ SHOP',
+  '99',
+  'MUSTANG',
+  'LIVELO',
+  'BRADESCO SHOP',
+  'COOPERA',
+  'ECOMMERCE',
+  'E COMMERCE',
+  'E-COMMERCE',
+  'MARKETPLACE',
+  'MARKET PLACE',
+  'ANYMARKET',
+  'ANY MARKET',
+  'ME2',
+];
+
+const CANAIS_ATACADO_VOLUMETRIA = [
+  'ATACADO',
+  'B2B',
+  'B 2 B',
+  'WHOLESALE',
+  'REVENDA',
+];
+
+function contemCanalVolumetria(canal = '', lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
 }
 
 function normalizarCanalVolumetria(row = {}) {
@@ -196,14 +245,15 @@ function normalizarCanalVolumetria(row = {}) {
     row.regiao,
     row.transportadoraOriginal,
     row.transportadoraContratada,
-  ].map(normalizarCanalTexto).filter(Boolean).join(' ');
+  ].map(normalizarCanalTexto).filter(Boolean);
 
-  if (/\b(ATACADO|B2B|B 2 B|WHOLESALE|REVENDA)\b/.test(fontesFortes)) return 'ATACADO';
-  if (/\b(B2C|ECOMMERCE|E COMMERCE|E-COMMERCE|MARKETPLACE|MARKET PLACE|MERCADO LIVRE|SHOPEE|MAGAZINE|MAGALU|AMAZON|VIA VAREJO|VAREJO|CARREFOUR|ANYMARKET|ANY MARKET)\b/.test(fontesFortes)) return 'B2C';
+  // Primeiro respeita a lista oficial B2C enviada. Isso evita Cantu Pneus cair como Atacado.
+  if (fontesFortes.some((canal) => contemCanalVolumetria(canal, CANAIS_B2C_VOLUMETRIA))) return 'B2C';
+  if (fontesFortes.some((canal) => contemCanalVolumetria(canal, CANAIS_ATACADO_VOLUMETRIA))) return 'ATACADO';
 
   const canalAtual = normalizarCanalTexto(row.canal);
-  if (canalAtual.includes('ATACADO') || canalAtual.includes('B2B')) return 'ATACADO';
-  if (canalAtual.includes('B2C')) return 'B2C';
+  if (contemCanalVolumetria(canalAtual, CANAIS_B2C_VOLUMETRIA)) return 'B2C';
+  if (contemCanalVolumetria(canalAtual, CANAIS_ATACADO_VOLUMETRIA)) return 'ATACADO';
   return row.canal || '';
 }
 

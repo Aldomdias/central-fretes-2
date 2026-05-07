@@ -1424,6 +1424,7 @@ const CANAIS_B2C_DB = [
   'B2W',
   'MAGAZINE LUIZA',
   'CARREFOUR',
+  'CANTU PNEUS',
   'GPA',
   'COLOMBO',
   'AMAZON',
@@ -1434,7 +1435,10 @@ const CANAIS_B2C_DB = [
   'ITAU SHOP',
   'ITAÚ SHOP',
   'SHOPEE',
+  '99',
+  'MUSTANG',
   'LIVELO',
+  'COOPERA',
   'MARKETPLACE',
   'MARKET PLACE',
   'ECOMMERCE',
@@ -1444,8 +1448,6 @@ const CANAIS_B2C_DB = [
 const CANAIS_ATACADO_DB = [
   'ATACADO',
   'B2B',
-  'CANTU',
-  'CANTU PNEUS',
 ];
 
 function contemCanalDb(canal, lista = []) {
@@ -2364,7 +2366,7 @@ function canalVariantesConsultaDb(canalFiltro = '') {
     ]);
   }
   if (categoria === 'ATACADO') {
-    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b', 'CANTU', 'Cantu', 'CANTU PNEUS', 'Cantu Pneus']);
+    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b']);
   }
   return uniqueNonEmpty([canalFiltro, normalizarCanalDb(canalFiltro), categoria]);
 }
