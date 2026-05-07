@@ -120,18 +120,71 @@ function filtrarOpcoesRealizado(opcoes = [], busca = '', itemNome = '') {
     .slice(0, 18);
 }
 
-function VinculoRealizadoCell({ item, opcoesRealizado, busca, onBusca, onToggle, onMarcar, onLimpar }) {
-  const selecionadas = Array.isArray(item.transportadorasRealizado) ? item.transportadorasRealizado : [];
-  const sugestoes = useMemo(() => detectarMelhoresVinculos(item.transportadoraInformada, opcoesRealizado.map((opcao) => opcao.nome), 8), [item.transportadoraInformada, opcoesRealizado]);
-  const opcoes = useMemo(() => filtrarOpcoesRealizado(opcoesRealizado, busca, item.transportadoraInformada), [opcoesRealizado, busca, item.transportadoraInformada]);
+function resumoVinculosSelecionados(selecionadas = [], opcoesRealizado = []) {
   const selecionadasNorm = new Set(selecionadas.map(normalizarTextoReajuste));
+  return (opcoesRealizado || []).reduce((acc, opcao) => {
+    if (!selecionadasNorm.has(normalizarTextoReajuste(opcao.nome))) return acc;
+    acc.ctes += toNumber(opcao.ctes);
+    acc.frete += toNumber(opcao.frete);
+    return acc;
+  }, { ctes: 0, frete: 0 });
+}
+
+function VinculoRealizadoCell({
+  item,
+  opcoesRealizado,
+  busca,
+  onBusca,
+  onToggle,
+  onMarcar,
+  onLimpar,
+  aberto,
+  onEditar,
+  onConcluir,
+}) {
+  const selecionadas = Array.isArray(item.transportadorasRealizado) ? item.transportadorasRealizado : [];
+  const sugestoes = useMemo(
+    () => detectarMelhoresVinculos(item.transportadoraInformada, opcoesRealizado.map((opcao) => opcao.nome), 8),
+    [item.transportadoraInformada, opcoesRealizado]
+  );
+  const opcoes = useMemo(
+    () => filtrarOpcoesRealizado(opcoesRealizado, busca, item.transportadoraInformada),
+    [opcoesRealizado, busca, item.transportadoraInformada]
+  );
+  const selecionadasNorm = new Set(selecionadas.map(normalizarTextoReajuste));
+  const resumo = resumoVinculosSelecionados(selecionadas, opcoesRealizado);
+
+  if (!aberto) {
+    return (
+      <div style={{ minWidth: 340, display: 'grid', gap: 8 }}>
+        {selecionadas.length ? (
+          <>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {selecionadas.map((nome) => <span key={nome} className="pill-soft">{nome}</span>)}
+            </div>
+            <small style={{ color: '#64748b' }}>
+              {selecionadas.length.toLocaleString('pt-BR')} vínculo(s) • {resumo.ctes.toLocaleString('pt-BR')} CT-e(s) • {formatarMoedaReajuste(resumo.frete)} no Realizado Local
+            </small>
+          </>
+        ) : (
+          <span className="pill-soft">Sem vínculo realizado</span>
+        )}
+        <div>
+          <button type="button" className="btn-secondary" style={{ padding: '6px 10px', fontSize: 12 }} onClick={onEditar}>
+            Editar vínculo
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ minWidth: 360, display: 'grid', gap: 8 }}>
+    <div style={{ minWidth: 380, display: 'grid', gap: 8 }}>
       <input
         value={busca || ''}
         onChange={(event) => onBusca(event.target.value)}
         placeholder="Buscar nome no Realizado Local..."
+        autoFocus
       />
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -177,6 +230,15 @@ function VinculoRealizadoCell({ item, opcoesRealizado, busca, onBusca, onToggle,
         })}
         {!opcoes.length && <div style={{ color: '#64748b' }}>Nenhum nome encontrado na base realizada local.</div>}
       </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <small style={{ color: '#64748b' }}>
+          {selecionadas.length.toLocaleString('pt-BR')} vínculo(s) selecionado(s)
+        </small>
+        <button type="button" className="btn-primary" style={{ padding: '7px 12px', fontSize: 12 }} onClick={onConcluir}>
+          Concluir vínculo
+        </button>
+      </div>
     </div>
   );
 }
@@ -197,6 +259,7 @@ export default function ReajustesPage() {
   const [somenteEfetivados, setSomenteEfetivados] = useState(false);
   const [opcoesRealizado, setOpcoesRealizado] = useState([]);
   const [buscasVinculo, setBuscasVinculo] = useState({});
+  const [vinculoAbertoId, setVinculoAbertoId] = useState(null);
 
   useEffect(() => {
     salvarConfigReajustes(config);
@@ -292,6 +355,7 @@ export default function ReajustesPage() {
       if (!nomes.length) nomes = await carregarNomesRealizado(false);
       const comVinculo = aplicarVinculoAutomatico(resultado.itens, nomes.map((item) => item.nome));
       persistir(comVinculo);
+      setVinculoAbertoId(null);
       setMensagem(`Importado da aba ${resultado.sheetName}: ${resultado.total.toLocaleString('pt-BR')} reajuste(s). Vínculo agora usa os nomes do Realizado Local. Revise e marque mais de uma transportadora quando necessário.`);
     } catch (error) {
       setErro(error.message || 'Erro ao importar controle de reajustes.');
@@ -305,6 +369,7 @@ export default function ReajustesPage() {
     if (!nomes.length) nomes = await carregarNomesRealizado(false);
     const novos = aplicarVinculoAutomatico(itens, nomes.map((item) => item.nome));
     persistir(novos);
+    setVinculoAbertoId(null);
     setMensagem('Vínculo automático atualizado com base nos nomes do Realizado Local. Revise os casos que ficaram sem vínculo ou com mais de uma opção possível.');
     setErro('');
   }
@@ -353,6 +418,7 @@ export default function ReajustesPage() {
   function limparTudo() {
     if (!window.confirm('Deseja limpar o controle de reajustes local deste navegador?')) return;
     persistir([]);
+    setVinculoAbertoId(null);
     setMensagem('Controle de reajustes limpo.');
   }
 
@@ -473,6 +539,9 @@ export default function ReajustesPage() {
                       item={item}
                       opcoesRealizado={opcoesRealizado}
                       busca={buscasVinculo[item.id] || ''}
+                      aberto={vinculoAbertoId === item.id}
+                      onEditar={() => setVinculoAbertoId(item.id)}
+                      onConcluir={() => setVinculoAbertoId(null)}
                       onBusca={(valor) => alterarBuscaVinculo(item.id, valor)}
                       onToggle={(nome, checked) => toggleVinculo(item.id, nome, checked)}
                       onMarcar={(nomes) => setVinculosItem(item.id, [...(item.transportadorasRealizado || []), ...nomes])}
