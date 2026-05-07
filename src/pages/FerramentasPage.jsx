@@ -609,7 +609,7 @@ export default function FerramentasPage() {
       baixarArrayBuffer(resultado.fileName, resultado.arrayBuffer);
 
       const resumo = resultado.resumo || {};
-      setMensagem(`Volumetria exportada: ${(resumo.notas || 0).toLocaleString('pt-BR')} nota(s)/linha(s), ${(resumo.linhasVolumetria || 0).toLocaleString('pt-BR')} linha(s) agrupadas${resumo.incluirIbge ? ', com colunas IBGE' : ', sem colunas IBGE'}${resumo.vinculadas ? `, ${resumo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Modo rápido em segundo plano aplicado.`);
+      setMensagem(`Volumetria exportada: ${(resumo.notas || 0).toLocaleString('pt-BR')} nota(s)/linha(s), ${(resumo.linhasVolumetria || 0).toLocaleString('pt-BR')} linha(s) agrupadas${resumo.incluirIbge ? ', com colunas IBGE' : ', sem colunas IBGE'}${resumo.vinculadas ? `, ${resumo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Cubagem total e Valor_NF líquido do frete aplicados. Modo rápido em segundo plano aplicado.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -685,7 +685,7 @@ export default function FerramentasPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Exportar volumetria para transportador</div>
-            <p>Gera uma base agrupada da base local de Tracking com origem, destino, faixa de peso, cubagem, valor de nota e volumes para precificação do transportador. Por padrão exporta sem IBGE para ficar mais rápido; quando precisar, ative o flag de IBGE.</p>
+            <p>Gera uma base agrupada da base local de Tracking com origem, destino, faixa de peso, cubagem total da NF, valor de nota líquido do frete e volumes para precificação do transportador. Por padrão exporta sem IBGE para ficar mais rápido; quando precisar, ative o flag de IBGE.</p>
           </div>
         </div>
 
@@ -747,7 +747,7 @@ export default function FerramentasPage() {
         </div>
 
         <div className="hint-box compact">
-          Modo rápido: deixa o flag de IBGE desligado. Assim o Excel sai sem colunas IBGE e o sistema pula a etapa pesada de completar municípios/IBGE. Modo completo: ative IBGE somente quando precisar dessas colunas ou do agrupamento por IBGE. A aba Detalhe_Notas e o vínculo com CT-e também vêm desligados por padrão para evitar travamento.
+          Modo rápido: deixa o flag de IBGE desligado. Assim o Excel sai sem colunas IBGE e o sistema pula a etapa pesada de completar municípios/IBGE. A cubagem exportada considera cubagem unitária × volumes, e o Valor_NF já sai líquido do frete quando houver valor de frete na linha. Modo completo: ative IBGE somente quando precisar dessas colunas ou do agrupamento por IBGE.
         </div>
 
         <div className="actions-right">

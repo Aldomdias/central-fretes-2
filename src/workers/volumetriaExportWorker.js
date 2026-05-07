@@ -13,6 +13,29 @@ const UF_POR_CODIGO_IBGE = {
   '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
 };
 
+const UF_POR_NOME = {
+  ACRE: 'AC', ALAGOAS: 'AL', AMAPA: 'AP', AMAZONAS: 'AM', BAHIA: 'BA', CEARA: 'CE',
+  DISTRITO_FEDERAL: 'DF', ESPIRITO_SANTO: 'ES', GOIAS: 'GO', MARANHAO: 'MA',
+  MATO_GROSSO: 'MT', MATO_GROSSO_DO_SUL: 'MS', MINAS_GERAIS: 'MG', PARA: 'PA',
+  PARAIBA: 'PB', PARANA: 'PR', PERNAMBUCO: 'PE', PIAUI: 'PI', RIO_DE_JANEIRO: 'RJ',
+  RIO_GRANDE_DO_NORTE: 'RN', RIO_GRANDE_DO_SUL: 'RS', RONDONIA: 'RO', RORAIMA: 'RR',
+  SANTA_CATARINA: 'SC', SAO_PAULO: 'SP', SERGIPE: 'SE', TOCANTINS: 'TO',
+};
+
+const UF_POR_CIDADE_ORIGEM = {
+  ITAJAI: 'SC', ITAJAÍ: 'SC', ITUPEVA: 'SP', JABOATAO: 'PE', JABOATÃO: 'PE',
+  JABOATAO_DOS_GUARARAPES: 'PE', JABOATÃO_DOS_GUARARAPES: 'PE', SERRA: 'ES',
+  CONTAGEM: 'MG', GOIANIA: 'GO', GOIÂNIA: 'GO', RIBEIRAO: 'PE', RIBEIRÃO: 'PE',
+};
+
+const UF_POR_CENTRO_EXPEDICAO = {
+  '4210': 'ES',
+  '4200': 'SC',
+  '4208': 'SC',
+  '3500': 'SP',
+  '2600': 'PE',
+};
+
 const CHUNK_SIZE = 5000;
 const DETALHE_SHEET_LIMIT = 100000;
 
@@ -38,14 +61,35 @@ function onlyDigits(value = '') {
   return String(value || '').replace(/\D/g, '');
 }
 
-function cleanUf(value = '') {
-  const uf = String(value || '')
+function normalizeToken(value = '') {
+  return String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
-    .replace(/[^A-Z]/g, '')
-    .slice(0, 2);
-  return uf.length === 2 ? uf : '';
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function cleanUf(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const upper = raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+
+  const siglaIsolada = upper.match(/(^|[^A-Z])([A-Z]{2})(?=$|[^A-Z])/);
+  if (siglaIsolada && Object.values(UF_POR_NOME).includes(siglaIsolada[2])) return siglaIsolada[2];
+
+  const token = normalizeToken(raw);
+  if (UF_POR_NOME[token]) return UF_POR_NOME[token];
+
+  const apenasLetras = upper.replace(/[^A-Z]/g, '');
+  if (UF_POR_NOME[normalizeToken(apenasLetras)]) return UF_POR_NOME[normalizeToken(apenasLetras)];
+  if (Object.values(UF_POR_NOME).includes(apenasLetras.slice(0, 2))) return apenasLetras.slice(0, 2);
+
+  return '';
 }
 
 function getUfByIbge(ibge = '') {
@@ -100,16 +144,123 @@ function pesoConsiderado(row = {}) {
   return Math.max(toNumber(row.peso), toNumber(row.pesoDeclarado), toNumber(row.pesoCubado));
 }
 
+function qtdVolumes(row = {}) {
+  return toNumber(row.qtdVolumes || row.totalUnidades || row.quantidadeItens);
+}
+
+function cubagemUnitaria(row = {}) {
+  return toNumber(row.cubagem ?? row.cubagemUnitaria ?? row.m3);
+}
+
+function cubagemTotalNf(row = {}) {
+  const cubagem = cubagemUnitaria(row);
+  const volumes = qtdVolumes(row);
+  return cubagem * (volumes > 0 ? volumes : 1);
+}
+
+function valorFreteTracking(row = {}) {
+  return toNumber(row.valorCalculadoFrete ?? row.valorFrete ?? row.valorCte);
+}
+
+function valorNfBruto(row = {}) {
+  return toNumber(row.valorNF ?? row.valorNf ?? row.valorNota);
+}
+
+function valorNfMercadoria(row = {}) {
+  const bruto = valorNfBruto(row);
+  const frete = valorFreteTracking(row);
+  if (bruto > 0 && frete > 0 && bruto >= frete) return bruto - frete;
+  return bruto;
+}
+
+function normalizarCanalTexto(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizarCanalVolumetria(row = {}) {
+  const fontesFortes = [
+    row.canalOriginal,
+    row.loja,
+    row.segmento,
+    row.tipoMovimentacao,
+    row.tipoOrdem,
+    row.modelo,
+    row.modoEnvio,
+    row.regiao,
+    row.transportadoraOriginal,
+    row.transportadoraContratada,
+  ].map(normalizarCanalTexto).filter(Boolean).join(' ');
+
+  if (/\b(ATACADO|B2B|B 2 B|WHOLESALE|REVENDA)\b/.test(fontesFortes)) return 'ATACADO';
+  if (/\b(B2C|ECOMMERCE|E COMMERCE|E-COMMERCE|MARKETPLACE|MARKET PLACE|MERCADO LIVRE|SHOPEE|MAGAZINE|MAGALU|AMAZON|VIA VAREJO|VAREJO|CARREFOUR|ANYMARKET|ANY MARKET)\b/.test(fontesFortes)) return 'B2C';
+
+  const canalAtual = normalizarCanalTexto(row.canal);
+  if (canalAtual.includes('ATACADO') || canalAtual.includes('B2B')) return 'ATACADO';
+  if (canalAtual.includes('B2C')) return 'B2C';
+  return row.canal || '';
+}
+
+function inferirUfOrigemRapida(row = {}) {
+  const uf = cleanUf(row.ufOrigem) || getUfByIbge(row.ibgeOrigem);
+  if (uf) return uf;
+  const cidadeKey = normalizeToken(row.cidadeOrigem).replace(/_/g, '_');
+  if (UF_POR_CIDADE_ORIGEM[cidadeKey]) return UF_POR_CIDADE_ORIGEM[cidadeKey];
+  const centro = onlyDigits(row.centroExpedicao || row.cdOrigem).slice(0, 4);
+  return UF_POR_CENTRO_EXPEDICAO[centro] || '';
+}
+
+function inferirUfDestinoRapida(row = {}) {
+  return cleanUf(row.ufDestino)
+    || getUfByIbge(row.ibgeDestino)
+    || cleanUf(row.regiaoDestino)
+    || cleanUf(row.cidadeDestino);
+}
+
+function normalizarLinhaVolumetria(row = {}) {
+  return {
+    ...row,
+    canal: normalizarCanalVolumetria(row),
+    ufOrigem: inferirUfOrigemRapida(row),
+    ufDestino: inferirUfDestinoRapida(row),
+    qtdVolumes: qtdVolumes(row),
+    cubagemUnitariaM3: cubagemUnitaria(row),
+    cubagemTotalNfM3: cubagemTotalNf(row),
+    valorNfBrutoTracking: valorNfBruto(row),
+    valorFreteTracking: valorFreteTracking(row),
+    valorNfMercadoria: valorNfMercadoria(row),
+  };
+}
+
+function formatarPesoFaixa(value = 0) {
+  const numero = Number(value || 0);
+  return numero.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+}
+
 function faixaVolumetria(canal, peso, grade = {}) {
   const canalNorm = String(canal || '').toUpperCase() === 'B2C' ? 'B2C' : 'ATACADO';
-  const linha = encontrarLinhaGradePorPeso(grade[canalNorm] || [], peso);
+  const gradeCanal = (Array.isArray(grade[canalNorm]) ? grade[canalNorm] : [])
+    .map((item) => ({ ...item, peso: toNumber(item?.peso) }))
+    .filter((item) => item.peso > 0)
+    .sort((a, b) => a.peso - b.peso);
+
+  const linha = encontrarLinhaGradePorPeso(gradeCanal, peso);
   if (!linha) return '';
 
   const limite = Number(linha.peso || 0);
   if (!limite) return '';
-  if (limite >= 999999) return '100+ kg';
 
-  return `Até ${limite.toLocaleString('pt-BR')} kg`;
+  if (limite >= 999999) {
+    const anterior = [...gradeCanal].reverse().find((item) => item.peso > 0 && item.peso < 999999)?.peso;
+    return `${formatarPesoFaixa(anterior || 100)}+ kg`;
+  }
+
+  return `Até ${formatarPesoFaixa(limite)} kg`;
 }
 
 function chaveVolumetria(row = {}, agrupamento, faixa, incluirIbge = false) {
@@ -148,8 +299,10 @@ function linhaInicial(row = {}, agrupamento, faixa, incluirIbge = false) {
     Peso_Declarado: 0,
     Peso_Cubado: 0,
     Peso_Considerado: 0,
-    Cubagem_m3: 0,
+    Cubagem_Total_m3: 0,
     Valor_NF: 0,
+    Valor_NF_Bruto: 0,
+    Valor_Frete: 0,
   };
 
   if (agrupamento === 'estado') {
@@ -373,11 +526,13 @@ async function completarGeografiaVolumetria(rows = []) {
 }
 
 function aplicarFiltrosFinais(rows = [], config = {}) {
+  const canalFiltro = String(config.canal || '').toUpperCase();
   const origemFiltro = normalizarCidade(config.origem);
   const ufOrigemFiltro = cleanUf(config.ufOrigem);
   const ufDestinoFiltro = cleanUf(config.ufDestino);
 
-  return (rows || []).filter((row) => {
+  return (rows || []).map(normalizarLinhaVolumetria).filter((row) => {
+    if (canalFiltro && String(row.canal || '').toUpperCase() !== canalFiltro) return false;
     if (origemFiltro && !normalizarCidade(row.cidadeOrigem).includes(origemFiltro)) return false;
     if (ufOrigemFiltro && cleanUf(row.ufOrigem) !== ufOrigemFiltro) return false;
     if (ufDestinoFiltro && cleanUf(row.ufDestino) !== ufDestinoFiltro) return false;
@@ -389,7 +544,7 @@ async function montarVolumetria(rows = [], config = {}, grade = {}) {
   const mapa = new Map();
 
   for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
+    const row = normalizarLinhaVolumetria(rows[index]);
     const canal = String(row.canal || '').toUpperCase();
     const peso = pesoConsiderado(row);
     const faixa = canal === 'B2C' || canal === 'ATACADO' ? faixaVolumetria(canal, peso, grade) : '';
@@ -404,8 +559,10 @@ async function montarVolumetria(rows = [], config = {}, grade = {}) {
     item.Peso_Declarado += toNumber(row.pesoDeclarado);
     item.Peso_Cubado += toNumber(row.pesoCubado);
     item.Peso_Considerado += peso;
-    item.Cubagem_m3 += toNumber(row.cubagem);
-    item.Valor_NF += toNumber(row.valorNF);
+    item.Cubagem_Total_m3 += cubagemTotalNf(row);
+    item.Valor_NF += valorNfMercadoria(row);
+    item.Valor_NF_Bruto += valorNfBruto(row);
+    item.Valor_Frete += valorFreteTracking(row);
 
     if (index > 0 && index % CHUNK_SIZE === 0) {
       postProgress({ percentual: 72 + Math.round((index / rows.length) * 12), mensagem: `Agrupando volumetria: ${index.toLocaleString('pt-BR')} linha(s)...` });
@@ -418,13 +575,14 @@ async function montarVolumetria(rows = [], config = {}, grade = {}) {
       ...item,
       Media_Peso_Nota: item.Notas ? item.Peso_Considerado / item.Notas : 0,
       Media_Volumes_Nota: item.Notas ? item.Volumes / item.Notas : 0,
-      Media_Cubagem_Nota: item.Notas ? item.Cubagem_m3 / item.Notas : 0,
+      Media_Cubagem_Nota: item.Notas ? item.Cubagem_Total_m3 / item.Notas : 0,
       Media_Valor_NF_Nota: item.Notas ? item.Valor_NF / item.Notas : 0,
     }))
     .sort((a, b) => String(a.UF_Destino || a.IBGE_Destino || '').localeCompare(String(b.UF_Destino || b.IBGE_Destino || '')) || String(a.Destino || '').localeCompare(String(b.Destino || '')));
 }
 
 function detalheTrackingRow(row = {}, grade = {}, incluirIbge = false) {
+  row = normalizarLinhaVolumetria(row);
   const canal = String(row.canal || '').toUpperCase();
   const peso = pesoConsiderado(row);
 
@@ -444,8 +602,11 @@ function detalheTrackingRow(row = {}, grade = {}, incluirIbge = false) {
     Peso_Declarado: toNumber(row.pesoDeclarado),
     Peso_Cubado: toNumber(row.pesoCubado),
     Peso_Considerado: peso,
-    Cubagem_m3: toNumber(row.cubagem),
-    Valor_NF: toNumber(row.valorNF),
+    Cubagem_Unitaria_m3: cubagemUnitaria(row),
+    Cubagem_Total_m3: cubagemTotalNf(row),
+    Valor_NF: valorNfMercadoria(row),
+    Valor_NF_Bruto: valorNfBruto(row),
+    Valor_Frete: valorFreteTracking(row),
   };
 
   if (incluirIbge) {
@@ -504,6 +665,8 @@ function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit,
     Vinculo_CTE_Ativo: config.vincularCtes && config.incluirIbge ? 'Sim' : 'Não',
     CTEs_Vinculados: resumoVinculo?.vinculadas || 0,
     Detalhe_por_Nota: config.incluirDetalhe ? 'Sim' : 'Não',
+    Regra_Cubagem: 'Cubagem do Tracking multiplicada pela quantidade de volumes da NF',
+    Regra_Valor_NF: 'Valor_NF = Valor NF bruto - Valor do frete/calculado, quando houver',
   }];
 }
 
@@ -511,7 +674,8 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
   config = normalizarConfigVolumetria(config);
 
   const filtroBase = {
-    canal: config.canal,
+    // Canal e UF são filtrados depois da normalização rápida, para evitar perder volume
+    // quando o Tracking antigo veio com canal/estado incompleto ou como nome do estado.
     inicio: config.inicio,
     fim: config.fim,
     origem: config.origem,
@@ -525,7 +689,7 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
     throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
   }
 
-  let rowsBase = rows;
+  let rowsBase = rows.map(normalizarLinhaVolumetria);
   let resumoVinculo = null;
 
   if (config.vincularCtes) {
@@ -533,7 +697,7 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
     const ctes = await exportarRealizadoLocal(filtroBase, { limit: Number(config.limiteLeitura || 500000) });
     postProgress({ percentual: 28, mensagem: 'Relacionando Tracking com CT-es locais...' });
     const relacionamento = relacionarTrackingComCtes(rows, ctes.rows || []);
-    rowsBase = relacionamento.rows;
+    rowsBase = (relacionamento.rows || []).map(normalizarLinhaVolumetria);
     resumoVinculo = relacionamento.resumo;
   } else {
     postProgress({ percentual: 28, mensagem: 'Vínculo com CT-e desligado. Seguindo somente com Tracking...' });
