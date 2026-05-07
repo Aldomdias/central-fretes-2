@@ -2,6 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import {
+  carregarConfigReajustesSupabase,
+  carregarReajustesSupabase,
+  obterInfoReajustesSupabase,
+  reajustesSupabaseConfigurado,
+  salvarConfigReajustesSupabase,
+  salvarReajustesSupabase,
+} from '../services/reajustesSupabaseService';
+import {
   aplicarVinculoAutomatico,
   calcularImpactosReajustes,
   carregarConfigReajustes,
@@ -334,15 +342,104 @@ export default function ReajustesPage() {
   const [percentuaisEditando, setPercentuaisEditando] = useState({});
   const [mostrarManual, setMostrarManual] = useState(false);
   const [manual, setManual] = useState(FORM_MANUAL_VAZIO);
+  const [fontePersistencia, setFontePersistencia] = useState(() => reajustesSupabaseConfigurado() ? 'supabase' : 'local');
+  const [persistenciaPronta, setPersistenciaPronta] = useState(false);
+  const [sincronizandoSupabase, setSincronizandoSupabase] = useState(false);
+  const [ultimoSyncSupabase, setUltimoSyncSupabase] = useState('');
+
+  useEffect(() => {
+    let cancelado = false;
+
+    async function carregarPersistencia() {
+      if (!reajustesSupabaseConfigurado()) {
+        setFontePersistencia('local');
+        setPersistenciaPronta(true);
+        return;
+      }
+
+      setSincronizandoSupabase(true);
+      setMensagem('Carregando controle de reajustes do Supabase...');
+      setErro('');
+
+      try {
+        const [remotos, configRemota] = await Promise.all([
+          carregarReajustesSupabase(),
+          carregarConfigReajustesSupabase(),
+        ]);
+        if (cancelado) return;
+
+        const locais = carregarReajustes();
+        if (remotos.length) {
+          setItens(remotos);
+          if (configRemota?.inicio || configRemota?.fim) setConfig((prev) => ({ ...prev, ...configRemota }));
+          setFontePersistencia('supabase');
+          setUltimoSyncSupabase(new Date().toLocaleTimeString('pt-BR'));
+          setMensagem(`Controle de reajustes carregado do Supabase: ${remotos.length.toLocaleString('pt-BR')} registro(s).`);
+        } else if (locais.length) {
+          await salvarReajustesSupabase(locais);
+          await salvarConfigReajustesSupabase(configRemota || config);
+          if (cancelado) return;
+          setFontePersistencia('supabase');
+          setUltimoSyncSupabase(new Date().toLocaleTimeString('pt-BR'));
+          setMensagem(`Dados locais migrados para o Supabase: ${locais.length.toLocaleString('pt-BR')} registro(s).`);
+        } else {
+          if (configRemota?.inicio || configRemota?.fim) setConfig((prev) => ({ ...prev, ...configRemota }));
+          setFontePersistencia('supabase');
+          setUltimoSyncSupabase(new Date().toLocaleTimeString('pt-BR'));
+          setMensagem('Controle de reajustes conectado ao Supabase. Nenhum registro salvo ainda.');
+        }
+      } catch (error) {
+        if (!cancelado) {
+          setFontePersistencia('local');
+          setErro(error.message || 'Não foi possível carregar o controle de reajustes do Supabase. Mantive os dados locais deste navegador.');
+        }
+      } finally {
+        if (!cancelado) {
+          setSincronizandoSupabase(false);
+          setPersistenciaPronta(true);
+        }
+      }
+    }
+
+    carregarPersistencia();
+    carregarNomesRealizado(false).catch(() => {});
+
+    return () => {
+      cancelado = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     salvarConfigReajustes(config);
-  }, [config]);
+    if (!persistenciaPronta || fontePersistencia !== 'supabase') return undefined;
+
+    const handle = window.setTimeout(() => {
+      salvarConfigReajustesSupabase(config)
+        .then(() => setUltimoSyncSupabase(new Date().toLocaleTimeString('pt-BR')))
+        .catch((error) => setErro(error.message || 'Erro ao salvar configuração de reajustes no Supabase.'));
+    }, 500);
+
+    return () => window.clearTimeout(handle);
+  }, [config, fontePersistencia, persistenciaPronta]);
 
   useEffect(() => {
-    carregarNomesRealizado(false).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!persistenciaPronta || fontePersistencia !== 'supabase') return undefined;
+
+    const handle = window.setTimeout(() => {
+      setSincronizandoSupabase(true);
+      salvarReajustesSupabase(itens)
+        .then(() => {
+          setUltimoSyncSupabase(new Date().toLocaleTimeString('pt-BR'));
+        })
+        .catch((error) => {
+          setErro(error.message || 'Erro ao salvar reajustes no Supabase.');
+        })
+        .finally(() => setSincronizandoSupabase(false));
+    }, 700);
+
+    return () => window.clearTimeout(handle);
+  }, [itens, fontePersistencia, persistenciaPronta]);
 
   const resumo = useMemo(() => resumoReajustes(itens, config.fim), [itens, config.fim]);
   const itemVinculoAtivo = useMemo(() => itens.find((item) => item.id === vinculoAtivoId) || null, [itens, vinculoAtivoId]);
@@ -527,6 +624,31 @@ export default function ReajustesPage() {
     }
   }
 
+  async function sincronizarSupabaseAgora() {
+    if (!reajustesSupabaseConfigurado()) {
+      setErro('Supabase não configurado. Confira as variáveis VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
+      return;
+    }
+
+    setSincronizandoSupabase(true);
+    setErro('');
+    setMensagem('Salvando controle de reajustes no Supabase...');
+
+    try {
+      await salvarReajustesSupabase(itens);
+      await salvarConfigReajustesSupabase(config);
+      const info = obterInfoReajustesSupabase();
+      setFontePersistencia('supabase');
+      setPersistenciaPronta(true);
+      setUltimoSyncSupabase(new Date().toLocaleTimeString('pt-BR'));
+      setMensagem(`Controle de reajustes salvo no Supabase${info.host ? ` (${info.host})` : ''}: ${itens.length.toLocaleString('pt-BR')} registro(s).`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao salvar controle de reajustes no Supabase.');
+    } finally {
+      setSincronizandoSupabase(false);
+    }
+  }
+
   const vinculados = itens.filter((item) => (item.transportadorasRealizado || []).length).length;
 
   return (
@@ -558,6 +680,17 @@ export default function ReajustesPage() {
 
         <div className="hint-box compact">
           <strong>Regra de cálculo:</strong> Impacto previsto = frete do período filtrado × reajuste aplicado. Impacto realizado = frete a partir da data de início do reajuste até o fim do filtro × reajuste aplicado.
+        </div>
+
+        <div className="hint-box compact" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <strong>Persistência:</strong> {fontePersistencia === 'supabase' ? 'Supabase ativo' : 'Local deste navegador'}
+            {ultimoSyncSupabase ? <span> • último sync {ultimoSyncSupabase}</span> : null}
+            {sincronizandoSupabase ? <span> • salvando...</span> : null}
+          </div>
+          <button type="button" className="btn-secondary" onClick={sincronizarSupabaseAgora} disabled={sincronizandoSupabase}>
+            {sincronizandoSupabase ? 'Salvando...' : 'Salvar no Supabase agora'}
+          </button>
         </div>
       </section>
 
