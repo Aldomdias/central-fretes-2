@@ -90,6 +90,7 @@ function mapFinalRow(row = {}, index = 0) {
     canal: String(pick(row, 'CANAL') || '').trim(),
     transportadoraInformada: nome,
     transportadoraSistema: '',
+    transportadorasRealizado: [],
     dataInicio: excelDateToIso(pick(row, 'DATA INICIO', 'DATA DA SOLICITAÇÃO')),
     dataSolicitacao: excelDateToIso(pick(row, 'DATA DA SOLICITAÇÃO')),
     reajusteSolicitadoTexto: String(solicitadoRaw || '').trim(),
@@ -135,7 +136,15 @@ export async function importarControleReajustes(file) {
 export function carregarReajustes() {
   try {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => ({
+      ...item,
+      transportadorasRealizado: Array.isArray(item.transportadorasRealizado)
+        ? item.transportadorasRealizado
+        : item.transportadoraSistema
+          ? [item.transportadoraSistema]
+          : [],
+    }));
   } catch {
     return [];
   }
@@ -151,10 +160,7 @@ export function carregarConfigReajustes() {
     const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null');
     if (parsed && typeof parsed === 'object') return parsed;
   } catch {}
-  return {
-    inicio: '',
-    fim: '',
-  };
+  return { inicio: '', fim: '' };
 }
 
 export function salvarConfigReajustes(config = {}) {
@@ -172,58 +178,78 @@ export function mesAtualPadrao() {
   };
 }
 
-export function detectarMelhorVinculo(nome, transportadoras = []) {
-  const nomeNorm = normalizarTextoReajuste(nome);
-  if (!nomeNorm) return '';
-  const opcoes = (transportadoras || []).map((item) => ({
-    id: item.id,
-    nome: item.nome,
-    norm: normalizarTextoReajuste(item.nome),
-  })).filter((item) => item.nome);
-
-  const exato = opcoes.find((item) => item.norm === nomeNorm);
-  if (exato) return exato.nome;
-
-  const contem = opcoes
-    .map((item) => {
-      const a = item.norm;
-      const b = nomeNorm;
-      const score = a.includes(b) || b.includes(a)
-        ? Math.min(a.length, b.length) / Math.max(a.length, b.length)
-        : 0;
-      return { ...item, score };
-    })
-    .filter((item) => item.score >= 0.45)
-    .sort((a, b) => b.score - a.score)[0];
-
-  if (contem) return contem.nome;
-
-  const palavras = nomeNorm.split(' ').filter((p) => p.length >= 3);
-  const fuzzy = opcoes
-    .map((item) => {
-      const score = palavras.length ? palavras.filter((p) => item.norm.includes(p)).length / palavras.length : 0;
-      return { ...item, score };
-    })
-    .filter((item) => item.score >= 0.5)
-    .sort((a, b) => b.score - a.score || a.nome.localeCompare(b.nome))[0];
-
-  return fuzzy?.nome || '';
+function normalizarListaNomes(nomes = []) {
+  return (nomes || [])
+    .map((item) => (typeof item === 'string' ? item : item?.nome || item?.transportadora || item?.label || ''))
+    .map((nome) => String(nome || '').trim())
+    .filter(Boolean)
+    .filter((nome, index, arr) => arr.findIndex((n) => normalizarTextoReajuste(n) === normalizarTextoReajuste(nome)) === index)
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
-export function aplicarVinculoAutomatico(itens = [], transportadoras = []) {
+export function detectarMelhoresVinculos(nome, nomesRealizado = [], limite = 8) {
+  const nomeNorm = normalizarTextoReajuste(nome);
+  if (!nomeNorm) return [];
+
+  const opcoes = normalizarListaNomes(nomesRealizado).map((nomeOpcao) => ({
+    nome: nomeOpcao,
+    norm: normalizarTextoReajuste(nomeOpcao),
+  }));
+
+  const palavras = nomeNorm.split(' ').filter((p) => p.length >= 3);
+  const scored = opcoes.map((item) => {
+    const a = item.norm;
+    const b = nomeNorm;
+    let score = 0;
+
+    if (a === b) score = 1;
+    else if (a.includes(b) || b.includes(a)) score = Math.min(a.length, b.length) / Math.max(a.length, b.length);
+    else if (palavras.length) score = palavras.filter((p) => a.includes(p)).length / palavras.length;
+
+    return { ...item, score };
+  })
+    .filter((item) => item.score >= 0.45)
+    .sort((a, b) => b.score - a.score || a.nome.localeCompare(b.nome, 'pt-BR'));
+
+  return scored.slice(0, limite).map((item) => item.nome);
+}
+
+export function detectarMelhorVinculo(nome, nomesRealizado = []) {
+  return detectarMelhoresVinculos(nome, nomesRealizado, 1)[0] || '';
+}
+
+export function aplicarVinculoAutomatico(itens = [], nomesRealizado = []) {
   return (itens || []).map((item) => {
-    if (item.transportadoraSistema) return item;
+    const atuais = Array.isArray(item.transportadorasRealizado) ? item.transportadorasRealizado.filter(Boolean) : [];
+    if (atuais.length) return item;
+    const candidatos = detectarMelhoresVinculos(item.transportadoraInformada, nomesRealizado, 5);
     return {
       ...item,
-      transportadoraSistema: detectarMelhorVinculo(item.transportadoraInformada, transportadoras),
+      transportadorasRealizado: candidatos,
+      transportadoraSistema: candidatos.join(' | '),
     };
   });
 }
 
 function nomesPossiveis(item = {}) {
-  return [item.transportadoraSistema, item.transportadoraInformada]
-    .map(normalizarTextoReajuste)
-    .filter(Boolean);
+  const selecionados = Array.isArray(item.transportadorasRealizado)
+    ? item.transportadorasRealizado.map(normalizarTextoReajuste).filter(Boolean)
+    : [];
+
+  if (selecionados.length) return { nomes: selecionados, usarExato: true };
+
+  return {
+    nomes: [item.transportadoraSistema, item.transportadoraInformada]
+      .map(normalizarTextoReajuste)
+      .filter(Boolean),
+    usarExato: false,
+  };
+}
+
+function rowPertenceAoItem(rowNorm, nomes = [], usarExato = false) {
+  if (!rowNorm || !nomes.length) return false;
+  if (usarExato) return nomes.includes(rowNorm);
+  return nomes.some((nome) => rowNorm === nome || rowNorm.includes(nome) || nome.includes(rowNorm));
 }
 
 export function calcularImpactosReajustes(itens = [], realizados = []) {
@@ -236,8 +262,8 @@ export function calcularImpactosReajustes(itens = [], realizados = []) {
   }));
 
   return (itens || []).map((item) => {
-    const nomes = nomesPossiveis(item);
-    const linhas = realizadosNorm.filter((row) => nomes.some((nome) => row.transportadoraNorm === nome || row.transportadoraNorm.includes(nome) || nome.includes(row.transportadoraNorm)));
+    const { nomes, usarExato } = nomesPossiveis(item);
+    const linhas = realizadosNorm.filter((row) => rowPertenceAoItem(row.transportadoraNorm, nomes, usarExato));
     const valorFretePeriodo = linhas.reduce((acc, row) => acc + row.valorCteNum, 0);
     const valorNFPeriodo = linhas.reduce((acc, row) => acc + row.valorNfNum, 0);
     const pesoPeriodo = linhas.reduce((acc, row) => acc + row.pesoNum, 0);
@@ -259,7 +285,7 @@ export function calcularImpactosReajustes(itens = [], realizados = []) {
       freteComReajuste,
       percentualFreteAtual,
       percentualFreteComReajuste,
-      vinculado: Boolean(item.transportadoraSistema || linhas.length),
+      vinculado: Boolean((item.transportadorasRealizado || []).length || item.transportadoraSistema || linhas.length),
     };
   });
 }
@@ -275,7 +301,7 @@ export function isEfetivado(item = {}, fimPeriodo = '') {
 export function resumoReajustes(itens = [], fimPeriodo = '') {
   const totalSolicitados = itens.length;
   const efetivados = itens.filter((item) => isEfetivado(item, fimPeriodo));
-  const semVinculo = itens.filter((item) => !item.transportadoraSistema).length;
+  const semVinculo = itens.filter((item) => !(Array.isArray(item.transportadorasRealizado) && item.transportadorasRealizado.length) && !item.transportadoraSistema).length;
   const impactoTotal = itens.reduce((acc, item) => acc + toNumber(item.impactoPeriodo), 0);
   const impactoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoPeriodo), 0);
   const freteBase = itens.reduce((acc, item) => acc + toNumber(item.valorFretePeriodo), 0);

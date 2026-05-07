@@ -6,11 +6,13 @@ import {
   calcularImpactosReajustes,
   carregarConfigReajustes,
   carregarReajustes,
+  detectarMelhoresVinculos,
   formatarMoedaReajuste,
   formatarPercentualReajuste,
   importarControleReajustes,
   isEfetivado,
   mesAtualPadrao,
+  normalizarTextoReajuste,
   resumoReajustes,
   salvarConfigReajustes,
   salvarReajustes,
@@ -21,13 +23,6 @@ const STATUS_OPTIONS = ['EM ANÁLISE', 'ADIADO', 'APROVADO', 'EFETIVADO', 'NEGAD
 function toNumber(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
-}
-
-function formatDate(value) {
-  if (!value) return '-';
-  const [y, m, d] = String(value).slice(0, 10).split('-');
-  if (y && m && d) return `${d}/${m}/${y}`;
-  return String(value);
 }
 
 function safeSheetName(nome) {
@@ -42,11 +37,11 @@ function aplicarFormato(ws, rows = []) {
   ws['!views'] = [{ state: 'frozen', ySplit: 1 }];
   ws['!cols'] = headers.map((header) => {
     if (/observ/i.test(header)) return { wch: 42 };
-    if (/transportadora/i.test(header)) return { wch: 34 };
+    if (/transportadora|vinculo/i.test(header)) return { wch: 42 };
     if (/data/i.test(header)) return { wch: 14 };
     if (/valor|impacto|frete|faturamento|nf/i.test(header)) return { wch: 18 };
     if (/%|reajuste|percentual/i.test(header)) return { wch: 16 };
-    return { wch: Math.min(Math.max(String(header).length + 4, 12), 26) };
+    return { wch: Math.min(Math.max(String(header).length + 4, 12), 28) };
   });
   headers.forEach((header, colIndex) => {
     for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
@@ -73,7 +68,7 @@ function baixarXlsx(nomeArquivo, abas) {
 function linhasRelatorio(itens = [], fimPeriodo = '') {
   return itens.map((item) => ({
     Transportadora_Informada: item.transportadoraInformada || '',
-    Transportadora_Sistema: item.transportadoraSistema || '',
+    Vinculos_Realizado: (item.transportadorasRealizado || []).join(' | '),
     Canal: item.canal || '',
     Status: item.status || '',
     Data_Inicio: item.dataInicio || '',
@@ -92,7 +87,101 @@ function linhasRelatorio(itens = [], fimPeriodo = '') {
   }));
 }
 
-export default function ReajustesPage({ transportadoras = [] }) {
+function nomesUnicosRealizado(rows = []) {
+  const mapa = new Map();
+  (rows || []).forEach((row) => {
+    const nome = String(row.transportadora || row.nomeTransportadora || row.transportadoraRealizada || '').trim();
+    if (!nome) return;
+    const key = normalizarTextoReajuste(nome);
+    if (!key) return;
+    const atual = mapa.get(key) || { nome, ctes: 0, frete: 0 };
+    atual.ctes += 1;
+    atual.frete += toNumber(row.valorCte || row.valorCTe || row.valorFrete || row.freteRealizado);
+    mapa.set(key, atual);
+  });
+  return [...mapa.values()].sort((a, b) => b.frete - a.frete || b.ctes - a.ctes || a.nome.localeCompare(b.nome, 'pt-BR'));
+}
+
+function filtrarOpcoesRealizado(opcoes = [], busca = '', itemNome = '') {
+  const texto = normalizarTextoReajuste(busca || itemNome);
+  if (!texto) return opcoes.slice(0, 18);
+  const palavras = texto.split(' ').filter((p) => p.length >= 2);
+  return opcoes
+    .map((opcao) => {
+      const norm = normalizarTextoReajuste(opcao.nome);
+      let score = 0;
+      if (norm === texto) score = 100;
+      else if (norm.includes(texto) || texto.includes(norm)) score = 80;
+      else if (palavras.length) score = palavras.filter((p) => norm.includes(p)).length * 20;
+      return { ...opcao, score };
+    })
+    .filter((opcao) => opcao.score > 0)
+    .sort((a, b) => b.score - a.score || b.frete - a.frete || a.nome.localeCompare(b.nome, 'pt-BR'))
+    .slice(0, 18);
+}
+
+function VinculoRealizadoCell({ item, opcoesRealizado, busca, onBusca, onToggle, onMarcar, onLimpar }) {
+  const selecionadas = Array.isArray(item.transportadorasRealizado) ? item.transportadorasRealizado : [];
+  const sugestoes = useMemo(() => detectarMelhoresVinculos(item.transportadoraInformada, opcoesRealizado.map((opcao) => opcao.nome), 8), [item.transportadoraInformada, opcoesRealizado]);
+  const opcoes = useMemo(() => filtrarOpcoesRealizado(opcoesRealizado, busca, item.transportadoraInformada), [opcoesRealizado, busca, item.transportadoraInformada]);
+  const selecionadasNorm = new Set(selecionadas.map(normalizarTextoReajuste));
+
+  return (
+    <div style={{ minWidth: 360, display: 'grid', gap: 8 }}>
+      <input
+        value={busca || ''}
+        onChange={(event) => onBusca(event.target.value)}
+        placeholder="Buscar nome no Realizado Local..."
+      />
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {selecionadas.length ? selecionadas.map((nome) => (
+          <span key={nome} className="pill-soft">{nome}</span>
+        )) : <span className="pill-soft">Sem vínculo realizado</span>}
+      </div>
+
+      {sugestoes.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ color: '#64748b', fontSize: 12 }}>Sugestões:</span>
+          {sugestoes.map((nome) => (
+            <button key={nome} type="button" className="btn-secondary" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => onToggle(nome, true)}>
+              + {nome}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="btn-secondary" style={{ padding: '5px 8px', fontSize: 12 }} onClick={() => onMarcar(opcoes.map((opcao) => opcao.nome))} disabled={!opcoes.length}>
+          Marcar filtrados
+        </button>
+        <button type="button" className="btn-secondary" style={{ padding: '5px 8px', fontSize: 12 }} onClick={onLimpar} disabled={!selecionadas.length}>
+          Limpar
+        </button>
+      </div>
+
+      <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #d8e2f2', borderRadius: 12, padding: 8, background: '#fff' }}>
+        {opcoes.map((opcao) => {
+          const checked = selecionadasNorm.has(normalizarTextoReajuste(opcao.nome));
+          return (
+            <label key={opcao.nome} style={{ display: 'grid', gridTemplateColumns: '20px minmax(0, 1fr)', gap: 8, alignItems: 'start', padding: '4px 0' }}>
+              <input type="checkbox" checked={checked} onChange={(event) => onToggle(opcao.nome, event.target.checked)} />
+              <span>
+                <strong>{opcao.nome}</strong>
+                <small style={{ display: 'block', color: '#64748b' }}>
+                  {opcao.ctes.toLocaleString('pt-BR')} CT-e(s) • {Number(opcao.frete || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                </small>
+              </span>
+            </label>
+          );
+        })}
+        {!opcoes.length && <div style={{ color: '#64748b' }}>Nenhum nome encontrado na base realizada local.</div>}
+      </div>
+    </div>
+  );
+}
+
+export default function ReajustesPage() {
   const [itens, setItens] = useState(() => carregarReajustes());
   const [config, setConfig] = useState(() => {
     const salvo = carregarConfigReajustes();
@@ -106,23 +195,24 @@ export default function ReajustesPage({ transportadoras = [] }) {
   const [filtroTexto, setFiltroTexto] = useState('');
   const [filtroStatus, setFiltroStatus] = useState('');
   const [somenteEfetivados, setSomenteEfetivados] = useState(false);
+  const [opcoesRealizado, setOpcoesRealizado] = useState([]);
+  const [buscasVinculo, setBuscasVinculo] = useState({});
 
   useEffect(() => {
     salvarConfigReajustes(config);
   }, [config]);
 
-  const opcoesTransportadoras = useMemo(() => (transportadoras || [])
-    .map((item) => item.nome)
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b, 'pt-BR')),
-  [transportadoras]);
+  useEffect(() => {
+    carregarNomesRealizado(false).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const resumo = useMemo(() => resumoReajustes(itens, config.fim), [itens, config.fim]);
 
   const itensFiltrados = useMemo(() => {
     const texto = filtroTexto.trim().toUpperCase();
     return (itens || [])
-      .filter((item) => !texto || `${item.transportadoraInformada} ${item.transportadoraSistema} ${item.observacao}`.toUpperCase().includes(texto))
+      .filter((item) => !texto || `${item.transportadoraInformada} ${(item.transportadorasRealizado || []).join(' ')} ${item.observacao}`.toUpperCase().includes(texto))
       .filter((item) => !filtroStatus || item.status === filtroStatus)
       .filter((item) => !somenteEfetivados || isEfetivado(item, config.fim))
       .sort((a, b) => toNumber(b.impactoPeriodo) - toNumber(a.impactoPeriodo) || String(a.transportadoraInformada).localeCompare(String(b.transportadoraInformada), 'pt-BR'));
@@ -138,6 +228,56 @@ export default function ReajustesPage({ transportadoras = [] }) {
     persistir(novos);
   }
 
+  function alterarBuscaVinculo(id, valor) {
+    setBuscasVinculo((prev) => ({ ...prev, [id]: valor }));
+  }
+
+  function setVinculosItem(id, nomes) {
+    const limpos = (nomes || [])
+      .map((nome) => String(nome || '').trim())
+      .filter(Boolean)
+      .filter((nome, index, arr) => arr.findIndex((n) => normalizarTextoReajuste(n) === normalizarTextoReajuste(nome)) === index)
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+    const novos = itens.map((item) => item.id === id
+      ? {
+          ...item,
+          transportadorasRealizado: limpos,
+          transportadoraSistema: limpos.join(' | '),
+          atualizadoEm: new Date().toISOString(),
+        }
+      : item);
+    persistir(novos);
+  }
+
+  function toggleVinculo(id, nome, checked) {
+    const item = itens.find((row) => row.id === id);
+    if (!item) return;
+    const atuais = Array.isArray(item.transportadorasRealizado) ? item.transportadorasRealizado : [];
+    if (checked) setVinculosItem(id, [...atuais, nome]);
+    else setVinculosItem(id, atuais.filter((atual) => normalizarTextoReajuste(atual) !== normalizarTextoReajuste(nome)));
+  }
+
+  async function carregarNomesRealizado(exibirMensagem = true) {
+    if (exibirMensagem) {
+      setCarregando(true);
+      setErro('');
+      setMensagem('Carregando nomes de transportadoras do Realizado Local...');
+    }
+    try {
+      const { rows } = await exportarRealizadoLocal({}, { limit: 500000 });
+      const nomes = nomesUnicosRealizado(rows || []);
+      setOpcoesRealizado(nomes);
+      if (exibirMensagem) setMensagem(`Transportadoras carregadas do Realizado Local: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
+      return nomes;
+    } catch (error) {
+      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do Realizado Local.');
+      return [];
+    } finally {
+      if (exibirMensagem) setCarregando(false);
+    }
+  }
+
   async function importarArquivo() {
     if (!arquivo) {
       setErro('Selecione a planilha de controle de reajustes.');
@@ -148,9 +288,11 @@ export default function ReajustesPage({ transportadoras = [] }) {
     setMensagem('Lendo aba Final da planilha...');
     try {
       const resultado = await importarControleReajustes(arquivo);
-      const comVinculo = aplicarVinculoAutomatico(resultado.itens, transportadoras);
+      let nomes = opcoesRealizado;
+      if (!nomes.length) nomes = await carregarNomesRealizado(false);
+      const comVinculo = aplicarVinculoAutomatico(resultado.itens, nomes.map((item) => item.nome));
       persistir(comVinculo);
-      setMensagem(`Importado da aba ${resultado.sheetName}: ${resultado.total.toLocaleString('pt-BR')} reajuste(s). Revise os vínculos e calcule o impacto do período.`);
+      setMensagem(`Importado da aba ${resultado.sheetName}: ${resultado.total.toLocaleString('pt-BR')} reajuste(s). Vínculo agora usa os nomes do Realizado Local. Revise e marque mais de uma transportadora quando necessário.`);
     } catch (error) {
       setErro(error.message || 'Erro ao importar controle de reajustes.');
     } finally {
@@ -158,10 +300,12 @@ export default function ReajustesPage({ transportadoras = [] }) {
     }
   }
 
-  function tentarVincular() {
-    const novos = aplicarVinculoAutomatico(itens, transportadoras);
+  async function tentarVincular() {
+    let nomes = opcoesRealizado;
+    if (!nomes.length) nomes = await carregarNomesRealizado(false);
+    const novos = aplicarVinculoAutomatico(itens, nomes.map((item) => item.nome));
     persistir(novos);
-    setMensagem('Vínculo automático atualizado. Revise os casos que ficaram sem transportadora do sistema.');
+    setMensagem('Vínculo automático atualizado com base nos nomes do Realizado Local. Revise os casos que ficaram sem vínculo ou com mais de uma opção possível.');
     setErro('');
   }
 
@@ -187,7 +331,7 @@ export default function ReajustesPage({ transportadoras = [] }) {
   function exportarRelatorio() {
     const relatorio = linhasRelatorio(itens, config.fim);
     const efetivados = linhasRelatorio(itens.filter((item) => isEfetivado(item, config.fim)), config.fim);
-    const semVinculo = linhasRelatorio(itens.filter((item) => !item.transportadoraSistema), config.fim);
+    const semVinculo = linhasRelatorio(itens.filter((item) => !(item.transportadorasRealizado || []).length), config.fim);
     const resumoRows = [{
       Periodo_Inicial: config.inicio || 'Todos',
       Periodo_Final: config.fim || 'Todos',
@@ -217,7 +361,7 @@ export default function ReajustesPage({ transportadoras = [] }) {
       <div className="page-header">
         <div className="amd-mini-brand">AMD Log • Reajustes</div>
         <h1>Controle de reajustes</h1>
-        <p>Importe a aba Final da planilha, vincule com as transportadoras do sistema e calcule o impacto pelo Realizado Local do período.</p>
+        <p>Importe a aba Final da planilha, vincule com as transportadoras do Realizado Local e calcule o impacto pelo período realizado.</p>
       </div>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
@@ -226,10 +370,11 @@ export default function ReajustesPage({ transportadoras = [] }) {
       <section className="panel-card">
         <div className="section-row compact-top">
           <div>
-            <div className="panel-title">Importar controle</div>
-            <p>Use a planilha de controle de reajustes. O sistema lê a aba <strong>Final</strong> e preserva solicitado, proposta, data de início e observação.</p>
+            <div className="panel-title">Importar controle e carregar nomes realizados</div>
+            <p>Use a planilha de controle de reajustes. O vínculo é feito contra os nomes encontrados no Realizado Local, não contra o cadastro de tabelas.</p>
           </div>
           <div className="actions-right gap-row">
+            <button className="btn-secondary" type="button" onClick={() => carregarNomesRealizado(true)} disabled={carregando}>Carregar nomes do Realizado</button>
             <button className="btn-secondary" type="button" onClick={tentarVincular} disabled={!itens.length || carregando}>Tentar vincular nomes</button>
             <button className="btn-danger" type="button" onClick={limparTudo} disabled={!itens.length || carregando}>Limpar controle</button>
           </div>
@@ -242,13 +387,16 @@ export default function ReajustesPage({ transportadoras = [] }) {
             <button className="btn-primary" type="button" onClick={importarArquivo} disabled={carregando || !arquivo}>{carregando ? 'Processando...' : 'Importar aba Final'}</button>
           </div>
         </div>
+        <div className="hint-box compact">
+          Nomes disponíveis no Realizado Local: <strong>{opcoesRealizado.length.toLocaleString('pt-BR')}</strong>. Se uma transportadora aparece com variações, como ALFA, ALFA 2 e ALFA 3, marque todas no vínculo da linha.
+        </div>
       </section>
 
       <section className="panel-card">
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Impacto por período</div>
-            <p>Escolha o período, por exemplo abril, para calcular quanto o reajuste representaria sobre o faturamento realizado da transportadora.</p>
+            <p>Escolha o período, por exemplo abril, para calcular quanto o reajuste representaria sobre o frete realizado da transportadora.</p>
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={exportarRelatorio} disabled={!itens.length}>Exportar relatório</button>
@@ -263,7 +411,7 @@ export default function ReajustesPage({ transportadoras = [] }) {
             <input type="date" value={config.fim || ''} onChange={(event) => setConfig((prev) => ({ ...prev, fim: event.target.value }))} />
           </label>
           <label className="field">Busca
-            <input value={filtroTexto} onChange={(event) => setFiltroTexto(event.target.value)} placeholder="Transportadora, observação..." />
+            <input value={filtroTexto} onChange={(event) => setFiltroTexto(event.target.value)} placeholder="Transportadora, vínculo, observação..." />
           </label>
         </div>
         <div className="form-grid three">
@@ -283,7 +431,7 @@ export default function ReajustesPage({ transportadoras = [] }) {
       <div className="summary-strip lotacao-summary-mini">
         <div className="summary-card"><span>Solicitações</span><strong>{resumo.totalSolicitados.toLocaleString('pt-BR')}</strong><small>Registros importados</small></div>
         <div className="summary-card"><span>Efetivados/vigentes</span><strong>{resumo.totalEfetivados.toLocaleString('pt-BR')}</strong><small>Com status ou início no período</small></div>
-        <div className="summary-card"><span>Sem vínculo</span><strong>{resumo.semVinculo.toLocaleString('pt-BR')}</strong><small>Revisar nome da transportadora</small></div>
+        <div className="summary-card"><span>Sem vínculo</span><strong>{resumo.semVinculo.toLocaleString('pt-BR')}</strong><small>Revisar nomes do realizado</small></div>
         <div className="summary-card"><span>Frete base período</span><strong>{formatarMoedaReajuste(resumo.freteBase)}</strong><small>Realizado Local vinculado</small></div>
         <div className="summary-card"><span>Impacto total</span><strong>{formatarMoedaReajuste(resumo.impactoTotal)}</strong><small>Reajuste aplicado × frete</small></div>
         <div className="summary-card"><span>Impacto efetivado</span><strong>{formatarMoedaReajuste(resumo.impactoEfetivado)}</strong><small>Somente aprovados/vigentes</small></div>
@@ -292,8 +440,8 @@ export default function ReajustesPage({ transportadoras = [] }) {
       <section className="table-card">
         <div className="section-row compact-top">
           <div>
-            <div className="panel-title">Controle de reajustes</div>
-            <p className="compact">Edite o vínculo, o reajuste aplicado, status e data de início. As alterações ficam salvas localmente.</p>
+            <div className="panel-title">Controle de vínculos e impacto</div>
+            <p className="compact">Primeiro marque os nomes do Realizado Local para cada transportadora da planilha. Depois calcule o impacto.</p>
           </div>
           <span className="pill-soft">{itensFiltrados.length.toLocaleString('pt-BR')} linha(s)</span>
         </div>
@@ -302,7 +450,7 @@ export default function ReajustesPage({ transportadoras = [] }) {
             <thead>
               <tr>
                 <th>Transportadora planilha</th>
-                <th>Transportadora sistema</th>
+                <th>Vínculo no Realizado Local</th>
                 <th>Canal</th>
                 <th>Status</th>
                 <th>Data início</th>
@@ -321,10 +469,15 @@ export default function ReajustesPage({ transportadoras = [] }) {
                 <tr key={item.id}>
                   <td><strong>{item.transportadoraInformada}</strong></td>
                   <td>
-                    <select value={item.transportadoraSistema || ''} onChange={(event) => alterarItem(item.id, 'transportadoraSistema', event.target.value)}>
-                      <option value="">Sem vínculo</option>
-                      {opcoesTransportadoras.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
-                    </select>
+                    <VinculoRealizadoCell
+                      item={item}
+                      opcoesRealizado={opcoesRealizado}
+                      busca={buscasVinculo[item.id] || ''}
+                      onBusca={(valor) => alterarBuscaVinculo(item.id, valor)}
+                      onToggle={(nome, checked) => toggleVinculo(item.id, nome, checked)}
+                      onMarcar={(nomes) => setVinculosItem(item.id, [...(item.transportadorasRealizado || []), ...nomes])}
+                      onLimpar={() => setVinculosItem(item.id, [])}
+                    />
                   </td>
                   <td>{item.canal || '-'}</td>
                   <td>
