@@ -3,6 +3,7 @@ import { exportarTrackingLocal } from '../utils/trackingLocal';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import { relacionarTrackingComCtes } from '../utils/trackingCteLink';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { encontrarLinhaGradePorPeso } from '../utils/gradeFreteConfig';
 
 const UF_POR_CODIGO_IBGE = {
@@ -301,8 +302,6 @@ function linhaInicial(row = {}, agrupamento, faixa, incluirIbge = false) {
     Peso_Considerado: 0,
     Cubagem_Total_m3: 0,
     Valor_NF: 0,
-    Valor_NF_Bruto: 0,
-    Valor_Frete: 0,
   };
 
   if (agrupamento === 'estado') {
@@ -479,18 +478,115 @@ function completarLocalidade(row = {}, prefixo, maps) {
   };
 }
 
-async function carregarMunicipiosSeguro() {
+async function carregarMunicipiosSeguro({ permitirOnline = false } = {}) {
+  let municipiosDb = [];
   try {
     const municipios = await carregarMunicipiosIbgeDb();
-    return Array.isArray(municipios) ? municipios : [];
+    municipiosDb = Array.isArray(municipios) ? municipios : [];
+    if (municipiosDb.length >= 5000 || !permitirOnline) return municipiosDb;
   } catch {
-    return [];
+    municipiosDb = [];
   }
+
+  if (!permitirOnline) return municipiosDb;
+
+  try {
+    const resultado = await carregarMunicipiosIbgeOficial({ usarCache: true });
+    if (Array.isArray(resultado?.municipios) && resultado.municipios.length >= municipiosDb.length) {
+      return resultado.municipios;
+    }
+  } catch {
+    // Se não conseguir buscar a base oficial, segue com a base local/Supabase que estiver disponível.
+  }
+
+  return municipiosDb;
+}
+
+function criarMapaCidadeUf(municipios = []) {
+  const mapa = new Map();
+
+  (municipios || []).forEach((item) => {
+    const cidade = item.cidade || item.nome || item.municipio || item.nomeMunicipio || '';
+    const cidadeKey = normalizarCidade(cidade);
+    const ibge = onlyDigits(item.ibge || item.codigo_ibge || item.codigo || item.codigoMunicipio || '').slice(0, 7);
+    const uf = cleanUf(item.uf || item.estado) || getUfByIbge(ibge);
+    if (!cidadeKey || !uf) return;
+
+    if (!mapa.has(cidadeKey)) mapa.set(cidadeKey, new Set());
+    mapa.get(cidadeKey).add(uf);
+  });
+
+  return mapa;
+}
+
+function inferirUfComMapaCidade({ cidade, ufAtual, ibge, mapaCidadeUf, ufPreferida }) {
+  const ufExistente = cleanUf(ufAtual) || getUfByIbge(ibge);
+  if (ufExistente) return ufExistente;
+
+  const cidadeKey = normalizarCidade(cidade);
+  const opcoes = mapaCidadeUf?.get(cidadeKey);
+  if (!opcoes || !opcoes.size) return '';
+
+  const preferida = cleanUf(ufPreferida);
+  if (preferida && opcoes.has(preferida)) return preferida;
+
+  if (opcoes.size === 1) return [...opcoes][0];
+  return '';
+}
+
+async function completarUfVolumetriaSemIbge(rows = [], config = {}) {
+  const precisaMelhorarUf = Boolean(config.ufOrigem || config.ufDestino)
+    || (rows || []).some((row) => !cleanUf(row.ufOrigem) || !cleanUf(row.ufDestino));
+
+  if (!precisaMelhorarUf) return rows;
+
+  postProgress({ percentual: 36, mensagem: 'Modo rápido: normalizando UF por cidade, sem exportar colunas IBGE...' });
+  const municipios = await carregarMunicipiosSeguro({ permitirOnline: true });
+  const mapaCidadeUf = criarMapaCidadeUf(municipios);
+
+  if (!mapaCidadeUf.size) return rows;
+
+  const ufOrigemFiltro = cleanUf(config.ufOrigem);
+  const ufDestinoFiltro = cleanUf(config.ufDestino);
+
+  const resultado = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const ufOrigem = inferirUfComMapaCidade({
+      cidade: row.cidadeOrigem,
+      ufAtual: row.ufOrigem,
+      ibge: row.ibgeOrigem,
+      mapaCidadeUf,
+      ufPreferida: ufOrigemFiltro,
+    });
+    const ufDestino = inferirUfComMapaCidade({
+      cidade: row.cidadeDestino,
+      ufAtual: row.ufDestino,
+      ibge: row.ibgeDestino,
+      mapaCidadeUf,
+      ufPreferida: ufDestinoFiltro,
+    });
+
+    resultado.push({
+      ...row,
+      ufOrigem: ufOrigem || row.ufOrigem || '',
+      ufDestino: ufDestino || row.ufDestino || '',
+      ufOrigemInferidaSemIbge: !cleanUf(row.ufOrigem) && Boolean(ufOrigem),
+      ufDestinoInferidaSemIbge: !cleanUf(row.ufDestino) && Boolean(ufDestino),
+    });
+
+    if (index > 0 && index % CHUNK_SIZE === 0) {
+      postProgress({ percentual: 36 + Math.round((index / rows.length) * 8), mensagem: `Normalizando UF sem IBGE: ${index.toLocaleString('pt-BR')} linha(s)...` });
+      await waitFrame();
+    }
+  }
+
+  return resultado;
 }
 
 async function completarGeografiaVolumetria(rows = []) {
   postProgress({ percentual: 35, mensagem: 'Carregando base de municípios para completar UF/IBGE...' });
-  const municipios = await carregarMunicipiosSeguro();
+  const municipios = await carregarMunicipiosSeguro({ permitirOnline: true });
 
   postProgress({ percentual: 38, mensagem: 'Preparando mapa de cidades e IBGE...' });
   let maps = await criarMapasLocalidades(rows, municipios, 38, 8);
@@ -561,8 +657,6 @@ async function montarVolumetria(rows = [], config = {}, grade = {}) {
     item.Peso_Considerado += peso;
     item.Cubagem_Total_m3 += cubagemTotalNf(row);
     item.Valor_NF += valorNfMercadoria(row);
-    item.Valor_NF_Bruto += valorNfBruto(row);
-    item.Valor_Frete += valorFreteTracking(row);
 
     if (index > 0 && index % CHUNK_SIZE === 0) {
       postProgress({ percentual: 72 + Math.round((index / rows.length) * 12), mensagem: `Agrupando volumetria: ${index.toLocaleString('pt-BR')} linha(s)...` });
@@ -605,8 +699,6 @@ function detalheTrackingRow(row = {}, grade = {}, incluirIbge = false) {
     Cubagem_Unitaria_m3: cubagemUnitaria(row),
     Cubagem_Total_m3: cubagemTotalNf(row),
     Valor_NF: valorNfMercadoria(row),
-    Valor_NF_Bruto: valorNfBruto(row),
-    Valor_Frete: valorFreteTracking(row),
   };
 
   if (incluirIbge) {
@@ -648,7 +740,7 @@ function normalizarConfigVolumetria(config = {}) {
   };
 }
 
-function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo }) {
+function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo, diagnostico }) {
   return [{
     Canal: config.canal || 'Todos',
     Periodo_Inicial: config.inicio || 'Todos',
@@ -660,6 +752,9 @@ function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit,
     Modo_IBGE: config.incluirIbge ? 'Com IBGE' : 'Sem IBGE',
     Notas_Exportadas: rowsBase.length,
     Linhas_Volumetria: volumetria.length,
+    Linhas_Antes_Filtros_Finais: diagnostico?.linhasAntesFiltrosFinais ?? '',
+    Sem_UF_Origem_Antes_Filtro: diagnostico?.semUfOrigemAntes ?? '',
+    Sem_UF_Destino_Antes_Filtro: diagnostico?.semUfDestinoAntes ?? '',
     Total_Compativel_Antes_Filtros_Finais: totalCompativel || rowsBase.length,
     Limite_Leitura: limit || '',
     Vinculo_CTE_Ativo: config.vincularCtes && config.incluirIbge ? 'Sim' : 'Não',
@@ -667,7 +762,18 @@ function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit,
     Detalhe_por_Nota: config.incluirDetalhe ? 'Sim' : 'Não',
     Regra_Cubagem: 'Cubagem do Tracking multiplicada pela quantidade de volumes da NF',
     Regra_Valor_NF: 'Valor_NF = Valor NF bruto - Valor do frete/calculado, quando houver',
+    Regra_UF_Modo_Rapido: 'Sem IBGE: usa UF do Tracking; se faltar, tenta inferir pela cidade e pela UF filtrada, sem exportar IBGE',
   }];
+}
+
+function contarSemUf(rows = []) {
+  return (rows || []).reduce((acc, row) => {
+    if (!cleanUf(row.ufOrigem)) acc.semUfOrigem += 1;
+    if (!cleanUf(row.ufDestino)) acc.semUfDestino += 1;
+    if (row.ufOrigemInferidaSemIbge) acc.ufOrigemInferida += 1;
+    if (row.ufDestinoInferidaSemIbge) acc.ufDestinoInferida += 1;
+    return acc;
+  }, { semUfOrigem: 0, semUfDestino: 0, ufOrigemInferida: 0, ufDestinoInferida: 0 });
 }
 
 async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
@@ -706,10 +812,15 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
   if (config.incluirIbge) {
     rowsBase = await completarGeografiaVolumetria(rowsBase);
   } else {
-    postProgress({ percentual: 35, mensagem: 'Modo rápido sem IBGE: pulando complemento de municípios/IBGE...' });
+    rowsBase = await completarUfVolumetriaSemIbge(rowsBase, config);
+    postProgress({ percentual: 45, mensagem: 'Modo rápido sem IBGE: UF normalizada. Pulando exportação de colunas IBGE...' });
   }
 
+  const linhasAntesFiltrosFinais = rowsBase.length;
+  const diagnosticoAntesFiltro = contarSemUf(rowsBase);
+
   rowsBase = aplicarFiltrosFinais(rowsBase, config);
+  const diagnosticoDepoisFiltro = contarSemUf(rowsBase);
 
   if (!rowsBase.length) {
     throw new Error(config.incluirIbge
@@ -722,8 +833,31 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
 
   postProgress({ percentual: 88, mensagem: 'Montando arquivo Excel...' });
   const wb = XLSX.utils.book_new();
-  appendJsonSheet(wb, 'Resumo', buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo }));
+  const diagnostico = {
+    linhasAntesFiltrosFinais,
+    semUfOrigemAntes: diagnosticoAntesFiltro.semUfOrigem,
+    semUfDestinoAntes: diagnosticoAntesFiltro.semUfDestino,
+    semUfOrigemDepois: diagnosticoDepoisFiltro.semUfOrigem,
+    semUfDestinoDepois: diagnosticoDepoisFiltro.semUfDestino,
+    ufOrigemInferidaSemIbge: diagnosticoAntesFiltro.ufOrigemInferida,
+    ufDestinoInferidaSemIbge: diagnosticoAntesFiltro.ufDestinoInferida,
+  };
+
+  appendJsonSheet(wb, 'Resumo', buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo, diagnostico }));
   appendJsonSheet(wb, 'Volumetria_Agrupada', volumetria);
+  appendJsonSheet(wb, 'Diagnostico_UF', [{
+    Linhas_Antes_Filtros_Finais: diagnostico.linhasAntesFiltrosFinais,
+    Linhas_Depois_Filtros_Finais: rowsBase.length,
+    Sem_UF_Origem_Antes_Filtro: diagnostico.semUfOrigemAntes,
+    Sem_UF_Destino_Antes_Filtro: diagnostico.semUfDestinoAntes,
+    Sem_UF_Origem_Depois_Filtro: diagnostico.semUfOrigemDepois,
+    Sem_UF_Destino_Depois_Filtro: diagnostico.semUfDestinoDepois,
+    UF_Origem_Inferida_Sem_IBGE: diagnostico.ufOrigemInferidaSemIbge,
+    UF_Destino_Inferida_Sem_IBGE: diagnostico.ufDestinoInferidaSemIbge,
+    Filtro_UF_Origem: config.ufOrigem || 'Todas',
+    Filtro_UF_Destino: config.ufDestino || 'Todas',
+    Observacao: 'Esta aba ajuda a conferir se o filtro de UF está perdendo linhas por falta de UF no Tracking.',
+  }]);
 
   let detalheSheets = 0;
   if (config.incluirDetalhe) {
