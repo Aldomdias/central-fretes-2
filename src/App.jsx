@@ -14,15 +14,15 @@ import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
+import MinhaSenhaPage from './pages/MinhaSenhaPage';
 import FerramentasPage from './pages/FerramentasPage';
 import TrackingPage from './pages/TrackingPage';
-import TorreControlePage from './pages/TorreControlePage';
 import ReajustesPage from './pages/ReajustesPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
 function primeiraPaginaPermitida(usuario) {
-  const candidatas = ['dashboard', 'simulador', 'realizado-local', 'tracking', 'torre-controle', 'reajustes', 'realizado', 'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios'];
+  const candidatas = ['dashboard', 'simulador', 'realizado-local', 'tracking', 'reajustes', 'realizado', 'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha'];
   return candidatas.find((pagina) => usuarioTemAcesso(usuario, pagina)) || 'dashboard';
 }
 
@@ -134,10 +134,6 @@ export default function App() {
     content = <TrackingPage />;
   }
 
-  if (paginaAtual === 'torre-controle') {
-    content = <TorreControlePage />;
-  }
-
   if (paginaAtual === 'reajustes') {
     content = <ReajustesPage transportadoras={transportadorasMemo} />;
   }
@@ -164,6 +160,10 @@ export default function App() {
 
   if (paginaAtual === 'usuarios') {
     content = <UserManagementPage usuarioAtual={sessao} />;
+  }
+
+  if (paginaAtual === 'minha-senha') {
+    content = <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />;
   }
 
   if (paginaAtual === 'transportadoras') {

@@ -170,6 +170,7 @@ export async function salvarUsuariosAsync(usuarios = []) {
 
 export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
+  if (pagina === 'minha-senha') return true;
   const perfil = PERFIS_USUARIO[usuario.perfil] || PERFIS_USUARIO.CONSULTA;
   if (perfil.paginas.includes('*')) return true;
   return perfil.paginas.includes(pagina);
@@ -283,6 +284,42 @@ export async function atualizarUsuarioAsync(usuarios = [], id, alteracoes = {}) 
   const lista = atualizarUsuario(usuarios, id, alteracoes);
   await salvarUsuariosAsync(lista);
   return lista;
+}
+
+
+export async function alterarSenhaUsuarioLogado({ usuarioId, senhaAtual, novaSenha, confirmarSenha }) {
+  const senhaAtualLimpa = limparTexto(senhaAtual);
+  const novaSenhaLimpa = limparTexto(novaSenha);
+  const confirmarSenhaLimpa = limparTexto(confirmarSenha);
+
+  if (!usuarioId) throw new Error('Sessão inválida. Saia e entre novamente.');
+  if (!senhaAtualLimpa) throw new Error('Informe a senha atual.');
+  if (!novaSenhaLimpa) throw new Error('Informe a nova senha.');
+  if (novaSenhaLimpa.length < 4) throw new Error('A nova senha precisa ter pelo menos 4 caracteres.');
+  if (novaSenhaLimpa !== confirmarSenhaLimpa) throw new Error('A confirmação da nova senha não confere.');
+
+  const resultado = await carregarUsuariosAsync({ migrarLocal: false });
+  const usuarios = resultado.usuarios || [];
+  const usuario = usuarios.find((item) => item.id === usuarioId && item.ativo !== false);
+
+  if (!usuario) throw new Error('Usuário não encontrado ou inativo.');
+  if (String(usuario.senha || '') !== String(senhaAtualLimpa)) {
+    throw new Error('Senha atual inválida.');
+  }
+
+  const lista = atualizarUsuario(usuarios, usuarioId, { senha: novaSenhaLimpa });
+  const persistencia = await salvarUsuariosAsync(lista);
+  const usuarioAtualizado = lista.find((item) => item.id === usuarioId) || usuario;
+  const sessao = montarSessao(usuarioAtualizado);
+
+  return {
+    sessao: {
+      ...sessao,
+      origemUsuarios: persistencia.origem || resultado.origem,
+      usuariosSincronizados: Boolean(persistencia.sincronizado),
+    },
+    persistencia,
+  };
 }
 
 export function nomePerfil(perfil) {

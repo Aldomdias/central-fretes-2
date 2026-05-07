@@ -6,7 +6,6 @@ const menuPrincipal = [
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
   { chave: 'realizado-local', label: 'Realizado Local', icon: '▤' },
   { chave: 'tracking', label: 'Tracking', icon: '📦' },
-  { chave: 'torre-controle', label: 'Torre de Controle', icon: '📊' },
   { chave: 'reajustes', label: 'Reajustes', icon: '📈' },
   { chave: 'realizado', label: 'Realizado CT-e', icon: '▥' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
@@ -22,6 +21,10 @@ const menuPrincipal = [
 const menuCadastros = [
   { chave: 'transportadoras', label: 'Transportadoras', icon: '🏢' },
   { chave: 'usuarios', label: 'Gestão de usuários', icon: '👤' },
+];
+
+const menuConta = [
+  { chave: 'minha-senha', label: 'Alterar senha', icon: '🔐' },
 ];
 
 function BotaoMenu({ item, paginaAtual, onMudarPagina }) {
@@ -40,6 +43,7 @@ function BotaoMenu({ item, paginaAtual, onMudarPagina }) {
 export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout }) {
   const principais = menuPrincipal.filter((item) => usuarioTemAcesso(usuario, item.chave));
   const cadastros = menuCadastros.filter((item) => usuarioTemAcesso(usuario, item.chave));
+  const conta = menuConta.filter((item) => usuarioTemAcesso(usuario, item.chave));
 
   return (
     <aside className="sidebar-app">
@@ -67,6 +71,13 @@ export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout 
         <div className="menu-section">
           <div className="menu-section-title">CADASTROS</div>
           {cadastros.map((item) => <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} />)}
+        </div>
+      )}
+
+      {conta.length > 0 && (
+        <div className="menu-section">
+          <div className="menu-section-title">CONTA</div>
+          {conta.map((item) => <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} />)}
         </div>
       )}
 
