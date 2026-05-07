@@ -199,7 +199,7 @@ export function carregarConfigReajustes() {
     const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null');
     if (parsed && typeof parsed === 'object') return parsed;
   } catch {}
-  return { inicio: '', fim: '' };
+  return { mesesBaseImpacto: 3 };
 }
 
 export function salvarConfigReajustes(config = {}) {
@@ -214,6 +214,7 @@ export function mesAtualPadrao() {
   return {
     inicio: inicio.toISOString().slice(0, 10),
     fim: fim.toISOString().slice(0, 10),
+    mesesBaseImpacto: 3,
   };
 }
 
@@ -313,6 +314,113 @@ function filtrarPorData(rows = [], inicio = '', fim = '') {
   });
 }
 
+
+function isoDate(value) {
+  const raw = String(value || '').slice(0, 10);
+  if (/^20\d{2}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return '';
+}
+
+function dateFromIso(value) {
+  const iso = isoDate(value);
+  if (!iso) return null;
+  const [year, month, day] = iso.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function toIsoDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
+function addDaysIso(value, days) {
+  const date = dateFromIso(value);
+  if (!date) return '';
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return toIsoDate(date);
+}
+
+function mesesBaseImpacto(periodo = {}) {
+  const raw = Number(periodo.mesesBaseImpacto || periodo.mesesBase || 3);
+  if (!Number.isFinite(raw) || raw <= 0) return 3;
+  return Math.min(Math.max(1, Math.round(raw)), 12);
+}
+
+function dataInicioItem(item = {}) {
+  return isoDate(item.dataInicio || item.dataPrimeiraParcela || '');
+}
+
+function addMonthsIso(value, months) {
+  const date = dateFromIso(value);
+  if (!date) return '';
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + Number(months || 0));
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return toIsoDate(date);
+}
+
+function diffDaysInclusive(inicio = '', fim = '') {
+  const start = dateFromIso(inicio);
+  const end = dateFromIso(fim);
+  if (!start || !end || end < start) return 0;
+  return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+}
+
+function mesesEquivalentes(inicio = '', fim = '') {
+  const dias = diffDaysInclusive(inicio, fim);
+  if (!dias) return 0;
+  return dias / 30;
+}
+
+function calcularJanelaItem(item = {}, periodo = {}, ultimaDataRealizado = '') {
+  const inicio = dataInicioItem(item);
+  const meses = mesesBaseImpacto(periodo);
+
+  if (!inicio) {
+    return {
+      inicioBase: '',
+      fimBase: '',
+      inicioRealizado: '',
+      fimRealizado: '',
+      meses,
+      temDataInicio: false,
+      diasRealizados: 0,
+      mesesRealizados: 0,
+    };
+  }
+
+  const fimRealizado = ultimaDataRealizado && ultimaDataRealizado >= inicio ? ultimaDataRealizado : '';
+  const diasRealizados = fimRealizado ? diffDaysInclusive(inicio, fimRealizado) : 0;
+
+  return {
+    inicioBase: addMonthsIso(inicio, -meses),
+    fimBase: addDaysIso(inicio, -1),
+    inicioRealizado: inicio,
+    fimRealizado,
+    meses,
+    temDataInicio: true,
+    diasRealizados,
+    mesesRealizados: mesesEquivalentes(inicio, fimRealizado),
+  };
+}
+
+export function obterPeriodoConsultaImpactoReajustes(itens = [], periodo = {}) {
+  const inicios = [];
+
+  (itens || []).forEach((item) => {
+    const janela = calcularJanelaItem(item, periodo);
+    if (janela.inicioBase) inicios.push(janela.inicioBase);
+  });
+
+  return {
+    inicio: inicios.length ? inicios.sort()[0] : '',
+    fim: '',
+  };
+}
+
 export function calcularImpactosReajustes(itens = [], realizados = [], periodo = {}) {
   const realizadosNorm = (realizados || []).map((row) => ({
     ...row,
@@ -321,29 +429,67 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
     valorCteNum: toNumber(row.valorCte || row.valorCTe || row.valorFrete || row.freteRealizado),
     valorNfNum: toNumber(row.valorNF || row.valorNf || row.valorNota),
     pesoNum: toNumber(row.peso || row.pesoDeclarado || row.pesoConsiderado),
-  }));
+  })).filter((row) => row.dataRealizado);
+
+  const ultimaDataRealizado = realizadosNorm
+    .map((row) => row.dataRealizado)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || '';
 
   return (itens || []).map((item) => {
     const { nomes, usarExato } = nomesPossiveis(item);
-    const linhasPeriodo = realizadosNorm.filter((row) => rowPertenceAoItem(row.transportadoraNorm, nomes, usarExato));
-    const inicioRealizado = String(item.dataInicio || item.dataPrimeiraParcela || periodo.inicio || '').slice(0, 10);
-    const linhasRealizadoReajuste = filtrarPorData(linhasPeriodo, inicioRealizado, periodo.fim);
+    const linhasTransportadora = realizadosNorm.filter((row) => rowPertenceAoItem(row.transportadoraNorm, nomes, usarExato));
+    const janela = calcularJanelaItem(item, periodo, ultimaDataRealizado);
 
-    const valorFretePeriodo = linhasPeriodo.reduce((acc, row) => acc + row.valorCteNum, 0);
-    const valorNFPeriodo = linhasPeriodo.reduce((acc, row) => acc + row.valorNfNum, 0);
-    const pesoPeriodo = linhasPeriodo.reduce((acc, row) => acc + row.pesoNum, 0);
-    const ctesPeriodo = linhasPeriodo.length;
+    const linhasBase = janela.temDataInicio ? filtrarPorData(linhasTransportadora, janela.inicioBase, janela.fimBase) : [];
+    const linhasRealizadoReajuste = janela.inicioRealizado && janela.fimRealizado
+      ? filtrarPorData(linhasTransportadora, janela.inicioRealizado, janela.fimRealizado)
+      : [];
 
-    const valorFreteRealizadoReajuste = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorCteNum, 0);
-    const valorNFRealizadoReajuste = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorNfNum, 0);
+    const valorFreteBaseTotal = linhasBase.reduce((acc, row) => acc + row.valorCteNum, 0);
+    const valorNFBaseTotal = linhasBase.reduce((acc, row) => acc + row.valorNfNum, 0);
+    const pesoBaseTotal = linhasBase.reduce((acc, row) => acc + row.pesoNum, 0);
+    const ctesPeriodo = linhasBase.length;
+
+    const mesesBase = Math.max(Number(janela.meses || mesesBaseImpacto(periodo)), 1);
+    const valorFretePeriodo = valorFreteBaseTotal / mesesBase;
+    const valorNFPeriodo = valorNFBaseTotal / mesesBase;
+    const pesoPeriodo = pesoBaseTotal / mesesBase;
+
+    const valorFreteRealizadoTotal = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorCteNum, 0);
+    const valorNFRealizadoTotal = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorNfNum, 0);
+    const pesoRealizadoTotal = linhasRealizadoReajuste.reduce((acc, row) => acc + row.pesoNum, 0);
     const ctesRealizadoReajuste = linhasRealizadoReajuste.length;
 
-    const pct = toNumber(item.reajusteAplicado) || reajusteBase(item);
-    const impactoPrevisto = valorFretePeriodo * pct;
-    const impactoRealizado = valorFreteRealizadoReajuste * pct;
-    const freteComReajuste = valorFretePeriodo + impactoPrevisto;
+    const mesesRealizados = janela.mesesRealizados > 0 ? janela.mesesRealizados : 0;
+    const valorFreteRealizadoReajuste = mesesRealizados ? valorFreteRealizadoTotal / mesesRealizados : 0;
+    const valorNFRealizadoReajuste = mesesRealizados ? valorNFRealizadoTotal / mesesRealizados : 0;
+    const pesoRealizadoReajuste = mesesRealizados ? pesoRealizadoTotal / mesesRealizados : 0;
+
+    const pctSolicitado = toNumber(item.reajusteSolicitado) || reajusteBase(item);
+    const pctRepassado = toNumber(item.reajusteAplicado) || toNumber(item.propostaFinal) || pctSolicitado;
+    const pctReducao = Math.max(pctSolicitado - pctRepassado, 0);
+
+    const impactoPrevistoSolicitado = valorFretePeriodo * pctSolicitado;
+    const impactoPrevistoRepassado = valorFretePeriodo * pctRepassado;
+    const reducaoImpactoPrevisto = Math.max(impactoPrevistoSolicitado - impactoPrevistoRepassado, 0);
+
+    const impactoRealizadoSolicitado = valorFreteRealizadoReajuste * pctSolicitado;
+    const impactoRealizadoRepassado = valorFreteRealizadoReajuste * pctRepassado;
+    const reducaoImpactoRealizada = Math.max(impactoRealizadoSolicitado - impactoRealizadoRepassado, 0);
+
+    const impactoRealizadoTotalSolicitado = valorFreteRealizadoTotal * pctSolicitado;
+    const impactoRealizadoTotalRepassado = valorFreteRealizadoTotal * pctRepassado;
+    const reducaoImpactoRealizadaTotal = Math.max(impactoRealizadoTotalSolicitado - impactoRealizadoTotalRepassado, 0);
+
+    const freteComReajuste = valorFretePeriodo + impactoPrevistoRepassado;
+    const freteRealizadoComReajuste = valorFreteRealizadoReajuste + impactoRealizadoRepassado;
     const percentualFreteAtual = valorNFPeriodo ? valorFretePeriodo / valorNFPeriodo : 0;
     const percentualFreteComReajuste = valorNFPeriodo ? freteComReajuste / valorNFPeriodo : 0;
+    const percentualFreteRealizadoReajuste = valorNFRealizadoReajuste ? valorFreteRealizadoReajuste / valorNFRealizadoReajuste : 0;
+    const percentualFreteRealizadoComReajuste = valorNFRealizadoReajuste ? freteRealizadoComReajuste / valorNFRealizadoReajuste : 0;
+    const variacaoPercentualFreteRealizado = percentualFreteRealizadoReajuste - percentualFreteAtual;
 
     return {
       ...item,
@@ -351,20 +497,47 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
       valorFretePeriodo,
       valorNFPeriodo,
       pesoPeriodo,
-      reajusteAplicado: pct,
-      impactoPrevisto,
-      impactoPeriodo: impactoPrevisto,
+      valorFreteBaseTotal,
+      valorNFBaseTotal,
+      pesoBaseTotal,
+      reajusteSolicitado: pctSolicitado,
+      reajusteAplicado: pctRepassado,
+      percentualReducaoReajuste: pctReducao,
+      impactoPrevistoSolicitado,
+      impactoPrevistoRepassado,
+      reducaoImpactoPrevisto,
+      impactoPrevisto: impactoPrevistoRepassado,
+      impactoPeriodo: impactoPrevistoRepassado,
       freteComReajuste,
       percentualFreteAtual,
       percentualFreteComReajuste,
       ctesRealizadoReajuste,
       valorFreteRealizadoReajuste,
       valorNFRealizadoReajuste,
-      impactoRealizado,
-      percentualFreteRealizadoReajuste: valorNFRealizadoReajuste ? valorFreteRealizadoReajuste / valorNFRealizadoReajuste : 0,
-      inicioImpactoRealizado: inicioRealizado,
-      fimImpactoRealizado: String(periodo.fim || '').slice(0, 10),
-      vinculado: Boolean((item.transportadorasRealizado || []).length || item.transportadoraSistema || linhasPeriodo.length),
+      pesoRealizadoReajuste,
+      valorFreteRealizadoTotal,
+      valorNFRealizadoTotal,
+      pesoRealizadoTotal,
+      impactoRealizadoSolicitado,
+      impactoRealizadoRepassado,
+      reducaoImpactoRealizada,
+      impactoRealizado: impactoRealizadoRepassado,
+      impactoRealizadoTotalSolicitado,
+      impactoRealizadoTotalRepassado,
+      reducaoImpactoRealizadaTotal,
+      percentualFreteRealizadoReajuste,
+      percentualFreteRealizadoComReajuste,
+      variacaoPercentualFreteRealizado,
+      inicioImpactoBase: janela.inicioBase,
+      fimImpactoBase: janela.fimBase,
+      inicioImpactoRealizado: janela.inicioRealizado,
+      fimImpactoRealizado: janela.fimRealizado,
+      mesesBaseImpacto: janela.meses,
+      diasRealizadosImpacto: janela.diasRealizados,
+      mesesRealizadosImpacto: janela.mesesRealizados,
+      ultimaDataRealizadoImpacto: ultimaDataRealizado,
+      semDataInicioImpacto: !janela.temDataInicio,
+      vinculado: Boolean((item.transportadorasRealizado || []).length || item.transportadoraSistema || linhasTransportadora.length),
     };
   });
 }
@@ -381,22 +554,44 @@ export function resumoReajustes(itens = [], fimPeriodo = '') {
   const totalSolicitados = itens.length;
   const efetivados = itens.filter((item) => isEfetivado(item, fimPeriodo));
   const semVinculo = itens.filter((item) => !(Array.isArray(item.transportadorasRealizado) && item.transportadorasRealizado.length) && !item.transportadoraSistema).length;
-  const impactoTotal = itens.reduce((acc, item) => acc + toNumber(item.impactoPrevisto || item.impactoPeriodo), 0);
-  const impactoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoPrevisto || item.impactoPeriodo), 0);
-  const impactoRealizado = itens.reduce((acc, item) => acc + toNumber(item.impactoRealizado), 0);
-  const impactoRealizadoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoRealizado), 0);
+  const impactoPrevistoSolicitado = itens.reduce((acc, item) => acc + toNumber(item.impactoPrevistoSolicitado), 0);
+  const impactoTotal = itens.reduce((acc, item) => acc + toNumber(item.impactoPrevistoRepassado || item.impactoPrevisto || item.impactoPeriodo), 0);
+  const reducaoImpactoPrevisto = itens.reduce((acc, item) => acc + toNumber(item.reducaoImpactoPrevisto), 0);
+  const impactoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoPrevistoRepassado || item.impactoPrevisto || item.impactoPeriodo), 0);
+  const reducaoImpactoPrevistoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.reducaoImpactoPrevisto), 0);
+  const impactoRealizadoSolicitado = itens.reduce((acc, item) => acc + toNumber(item.impactoRealizadoSolicitado), 0);
+  const impactoRealizado = itens.reduce((acc, item) => acc + toNumber(item.impactoRealizadoRepassado || item.impactoRealizado), 0);
+  const reducaoImpactoRealizada = itens.reduce((acc, item) => acc + toNumber(item.reducaoImpactoRealizada), 0);
+  const impactoRealizadoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoRealizadoRepassado || item.impactoRealizado), 0);
+  const reducaoImpactoRealizadaEfetivada = efetivados.reduce((acc, item) => acc + toNumber(item.reducaoImpactoRealizada), 0);
   const freteBase = itens.reduce((acc, item) => acc + toNumber(item.valorFretePeriodo), 0);
+  const freteBaseTotal = itens.reduce((acc, item) => acc + toNumber(item.valorFreteBaseTotal), 0);
   const freteRealizadoReajuste = itens.reduce((acc, item) => acc + toNumber(item.valorFreteRealizadoReajuste), 0);
+  const freteRealizadoTotal = itens.reduce((acc, item) => acc + toNumber(item.valorFreteRealizadoTotal), 0);
+  const ultimaDataRealizado = itens
+    .map((item) => String(item.ultimaDataRealizadoImpacto || item.fimImpactoRealizado || '').slice(0, 10))
+    .filter(Boolean)
+    .sort()
+    .at(-1) || '';
   return {
     totalSolicitados,
     totalEfetivados: efetivados.length,
     semVinculo,
+    impactoPrevistoSolicitado,
     impactoTotal,
+    reducaoImpactoPrevisto,
     impactoEfetivado,
+    reducaoImpactoPrevistoEfetivado,
+    impactoRealizadoSolicitado,
     impactoRealizado,
+    reducaoImpactoRealizada,
     impactoRealizadoEfetivado,
+    reducaoImpactoRealizadaEfetivada,
     freteBase,
+    freteBaseTotal,
     freteRealizadoReajuste,
+    freteRealizadoTotal,
+    ultimaDataRealizado,
   };
 }
 

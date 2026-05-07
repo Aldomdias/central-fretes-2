@@ -22,6 +22,7 @@ import {
   isEfetivado,
   mesAtualPadrao,
   normalizarTextoReajuste,
+  obterPeriodoConsultaImpactoReajustes,
   parsePercentReajuste,
   resumoReajustes,
   salvarConfigReajustes,
@@ -60,6 +61,13 @@ function formatDate(value) {
   const [y, m, d] = raw.split('-');
   if (y && m && d) return `${d}/${m}/${y}`;
   return raw;
+}
+
+function periodoLabel(inicio, fim) {
+  const a = formatDate(inicio);
+  const b = formatDate(fim);
+  if (a === '-' && b === '-') return '-';
+  return `${a} a ${b}`;
 }
 
 function safeSheetName(nome) {
@@ -111,18 +119,34 @@ function linhasRelatorio(itens = [], fimPeriodo = '') {
     Canal: item.canal || '',
     Status: item.status || '',
     Data_Inicio: item.dataInicio || '',
-    Solicitado: toNumber(item.reajusteSolicitado),
-    Aplicado: toNumber(item.reajusteAplicado),
+    Meses_Base_Auto: toNumber(item.mesesBaseImpacto || 3),
+    Periodo_Base_Auto: periodoLabel(item.inicioImpactoBase, item.fimImpactoBase),
+    Periodo_Realizado_Apos_Inicio: periodoLabel(item.inicioImpactoRealizado, item.fimImpactoRealizado),
+    Reajuste_Solicitado: toNumber(item.reajusteSolicitado),
+    Reajuste_Repassado_Aplicado: toNumber(item.reajusteAplicado),
+    Reducao_Percentual_Reajuste: toNumber(item.percentualReducaoReajuste),
     Efetivado_No_Periodo: isEfetivado(item, fimPeriodo) ? 'Sim' : 'Não',
-    CTEs_Periodo_Base: toNumber(item.ctesPeriodo),
-    Frete_Base_Periodo: toNumber(item.valorFretePeriodo),
-    Impacto_Previsto: toNumber(item.impactoPrevisto || item.impactoPeriodo),
-    CTEs_Apos_Inicio: toNumber(item.ctesRealizadoReajuste),
-    Frete_Apos_Inicio: toNumber(item.valorFreteRealizadoReajuste),
-    Impacto_Realizado: toNumber(item.impactoRealizado),
-    Valor_NF_Periodo: toNumber(item.valorNFPeriodo),
-    Percentual_Atual_Realizado: toNumber(item.percentualFreteAtual),
-    Percentual_Com_Reajuste: toNumber(item.percentualFreteComReajuste),
+    CTEs_Base_Automatica: toNumber(item.ctesPeriodo),
+    Frete_Base_Total: toNumber(item.valorFreteBaseTotal),
+    Frete_Base_Medio_Mes: toNumber(item.valorFretePeriodo),
+    Impacto_Previsto_Solicitado_Mes: toNumber(item.impactoPrevistoSolicitado),
+    Impacto_Previsto_Repassado_Mes: toNumber(item.impactoPrevistoRepassado || item.impactoPrevisto || item.impactoPeriodo),
+    Reducao_Impacto_Previsto_Mes: toNumber(item.reducaoImpactoPrevisto),
+    CTEs_Realizado_Apos_Inicio: toNumber(item.ctesRealizadoReajuste),
+    Dias_Realizados_Apos_Inicio: toNumber(item.diasRealizadosImpacto),
+    Meses_Realizados_Equivalentes: toNumber(item.mesesRealizadosImpacto),
+    Frete_Realizado_Total: toNumber(item.valorFreteRealizadoTotal),
+    Frete_Realizado_Medio_Mes: toNumber(item.valorFreteRealizadoReajuste),
+    Impacto_Realizado_Solicitado_Mes: toNumber(item.impactoRealizadoSolicitado),
+    Impacto_Realizado_Repassado_Mes: toNumber(item.impactoRealizadoRepassado || item.impactoRealizado),
+    Reducao_Impacto_Realizada_Mes: toNumber(item.reducaoImpactoRealizada),
+    Impacto_Realizado_Repassado_Total: toNumber(item.impactoRealizadoTotalRepassado),
+    Reducao_Impacto_Realizada_Total: toNumber(item.reducaoImpactoRealizadaTotal),
+    Valor_NF_Base_Medio_Mes: toNumber(item.valorNFPeriodo),
+    Valor_NF_Realizado_Medio_Mes: toNumber(item.valorNFRealizadoReajuste),
+    Percentual_Frete_Base: toNumber(item.percentualFreteAtual),
+    Percentual_Frete_Realizado: toNumber(item.percentualFreteRealizadoReajuste),
+    Variacao_Percentual_Frete_pontos: toNumber(item.variacaoPercentualFreteRealizado),
     Observacao: item.observacao || '',
   }));
 }
@@ -603,7 +627,7 @@ export default function ReajustesPage() {
     return () => window.clearTimeout(handle);
   }, [itens, fontePersistencia, persistenciaPronta]);
 
-  const resumo = useMemo(() => resumoReajustes(itens, config.fim), [itens, config.fim]);
+  const resumo = useMemo(() => resumoReajustes(itens), [itens]);
   const itemVinculoAtivo = useMemo(() => itens.find((item) => item.id === vinculoAtivoId) || null, [itens, vinculoAtivoId]);
 
   const itensFiltrados = useMemo(() => {
@@ -611,9 +635,9 @@ export default function ReajustesPage() {
     return (itens || [])
       .filter((item) => !texto || normalizarTextoReajuste(`${item.transportadoraInformada} ${(item.transportadorasRealizado || []).join(' ')} ${item.observacao}`).includes(texto))
       .filter((item) => !filtroStatus || item.status === filtroStatus)
-      .filter((item) => !somenteEfetivados || isEfetivado(item, config.fim))
+      .filter((item) => !somenteEfetivados || isEfetivado(item))
       .sort((a, b) => toNumber(b.impactoRealizado || b.impactoPrevisto || b.impactoPeriodo) - toNumber(a.impactoRealizado || a.impactoPrevisto || a.impactoPeriodo) || String(a.transportadoraInformada).localeCompare(String(b.transportadoraInformada), 'pt-BR'));
-  }, [itens, filtroTexto, filtroStatus, somenteEfetivados, config.fim]);
+  }, [itens, filtroTexto, filtroStatus, somenteEfetivados]);
 
   function persistir(novos) {
     setItens(novos);
@@ -738,17 +762,28 @@ export default function ReajustesPage() {
   async function calcularImpacto() {
     setCarregando(true);
     setErro('');
-    setMensagem('Buscando Realizado Local para calcular impacto...');
+    const consulta = obterPeriodoConsultaImpactoReajustes(itens, config);
+    if (!consulta.inicio) {
+      setCarregando(false);
+      setErro('Informe a Data_Inicio dos reajustes antes de calcular. O impacto agora é sempre automático pela data de início, sem período manual.');
+      return;
+    }
+
+    setMensagem(`Buscando Realizado Local a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
     try {
       const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
-        inicio: config.inicio,
-        fim: config.fim,
+        inicio: consulta.inicio,
       }, { limit: 500000 });
 
       const calculados = calcularImpactosReajustes(itens, rows || [], config);
       persistir(calculados);
+      const resumoCalculado = resumoReajustes(calculados);
 
-      setMensagem(`Impacto calculado com ${Number(rows?.length || 0).toLocaleString('pt-BR')} CT-e(s) do Realizado Local${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`);
+      setMensagem(
+        `Impacto calculado com ${Number(rows?.length || 0).toLocaleString('pt-BR')} CT-e(s). `
+        + `Base prevista: média dos ${Number(config.mesesBaseImpacto || 3).toLocaleString('pt-BR')} mês(es) anteriores à Data_Inicio. `
+        + `Realizado: da Data_Inicio até ${formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base'}${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`
+      );
     } catch (error) {
       setErro(error.message || 'Erro ao calcular impacto pelo Realizado Local.');
     } finally {
@@ -757,23 +792,28 @@ export default function ReajustesPage() {
   }
 
   function exportarRelatorio() {
-    const relatorio = linhasRelatorio(itens, config.fim);
-    const efetivados = linhasRelatorio(itens.filter((item) => isEfetivado(item, config.fim)), config.fim);
-    const semVinculo = linhasRelatorio(itens.filter((item) => !(item.transportadorasRealizado || []).length), config.fim);
+    const relatorio = linhasRelatorio(itens);
+    const efetivados = linhasRelatorio(itens.filter((item) => isEfetivado(item)));
+    const semVinculo = linhasRelatorio(itens.filter((item) => !(item.transportadorasRealizado || []).length));
     const resumoRows = [{
-      Periodo_Inicial: config.inicio || 'Todos',
-      Periodo_Final: config.fim || 'Todos',
+      Meses_Base_Automatica: toNumber(config.mesesBaseImpacto || 3),
+      Realizado_Ate_Data_Mais_Recente_Base: resumo.ultimaDataRealizado || '',
       Reajustes: itens.length,
       Efetivados: efetivados.length,
       Sem_Vinculo: semVinculo.length,
-      Frete_Base_Periodo: resumo.freteBase,
-      Impacto_Previsto_Total: resumo.impactoTotal,
-      Frete_Apos_Data_Inicio: resumo.freteRealizadoReajuste,
-      Impacto_Realizado_Total: resumo.impactoRealizado,
+      Frete_Base_Automatica: resumo.freteBase,
+      Impacto_Previsto_Solicitado: resumo.impactoPrevistoSolicitado,
+      Impacto_Previsto_Repassado: resumo.impactoTotal,
+      Reducao_Impacto_Previsto: resumo.reducaoImpactoPrevisto,
+      Frete_Realizado_Apos_Data_Inicio: resumo.freteRealizadoReajuste,
+      Impacto_Realizado_Solicitado: resumo.impactoRealizadoSolicitado,
+      Impacto_Realizado_Repassado: resumo.impactoRealizado,
+      Reducao_Impacto_Realizada: resumo.reducaoImpactoRealizada,
       Impacto_Realizado_Efetivado: resumo.impactoRealizadoEfetivado,
+      Reducao_Realizada_Efetivada: resumo.reducaoImpactoRealizadaEfetivada,
     }];
 
-    baixarXlsx(`controle-reajustes-${config.inicio || 'inicio'}-${config.fim || 'fim'}.xlsx`, {
+    baixarXlsx(`controle-reajustes-impacto-${new Date().toISOString().slice(0, 10)}.xlsx`, {
       Resumo: resumoRows,
       Controle_Reajustes: relatorio,
       Efetivados: efetivados,
@@ -885,13 +925,15 @@ export default function ReajustesPage() {
         <div className="summary-strip lotacao-summary-mini">
           <div className="summary-card"><span>1. Registros</span><strong>{itens.length.toLocaleString('pt-BR')}</strong><small>importados ou manuais</small></div>
           <div className="summary-card"><span>2. Vínculos</span><strong>{vinculados.toLocaleString('pt-BR')}</strong><small>{resumo.semVinculo.toLocaleString('pt-BR')} sem vínculo</small></div>
-          <div className="summary-card"><span>3. Frete base</span><strong>{formatarMoedaReajuste(resumo.freteBase)}</strong><small>período selecionado</small></div>
-          <div className="summary-card"><span>4. Impacto previsto</span><strong>{formatarMoedaReajuste(resumo.impactoTotal)}</strong><small>base período × aplicado</small></div>
-          <div className="summary-card"><span>5. Impacto realizado</span><strong>{formatarMoedaReajuste(resumo.impactoRealizado)}</strong><small>após data início</small></div>
+          <div className="summary-card"><span>3. Frete base médio/mês</span><strong>{formatarMoedaReajuste(resumo.freteBase)}</strong><small>{toNumber(config.mesesBaseImpacto || 3)} mês(es) antes</small></div>
+          <div className="summary-card"><span>4. Previsto repassado/mês</span><strong>{formatarMoedaReajuste(resumo.impactoTotal)}</strong><small>média base × aplicado</small></div>
+          <div className="summary-card"><span>5. Saving previsto/mês</span><strong>{formatarMoedaReajuste(resumo.reducaoImpactoPrevisto)}</strong><small>solicitado - aplicado</small></div>
+          <div className="summary-card"><span>6. Realizado repassado/mês</span><strong>{formatarMoedaReajuste(resumo.impactoRealizado)}</strong><small>mensalizado após início</small></div>
+          <div className="summary-card"><span>7. Saving realizado/mês</span><strong>{formatarMoedaReajuste(resumo.reducaoImpactoRealizada)}</strong><small>solicitado - aplicado</small></div>
         </div>
 
         <div className="hint-box compact">
-          <strong>Regra de cálculo:</strong> Impacto previsto = frete do período filtrado × reajuste aplicado. Impacto realizado = frete a partir da data de início do reajuste até o fim do filtro × reajuste aplicado.
+          <strong>Regra de cálculo:</strong> informe somente a Data_Inicio do reajuste. O previsto usa a média mensal dos meses anteriores à vigência. Ex.: início em 23/03 e base de 3 meses = frete de 23/12 a 22/03 dividido por 3. O realizado usa o volume da Data_Inicio até a data mais recente existente na base, mensaliza esse volume e calcula solicitado, repassado/aplicado e saving da negociação.
         </div>
 
         <div className="hint-box compact" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -984,8 +1026,8 @@ export default function ReajustesPage() {
       <section className="panel-card">
         <div className="section-row compact-top">
           <div>
-            <div className="panel-title">2. Período, filtros e cálculo</div>
-            <p>Escolha o período base para prever impacto. O impacto realizado usa a data de início de cada reajuste dentro desse período.</p>
+            <div className="panel-title">2. Base automática, filtros e cálculo</div>
+            <p>Informe a data de início em cada reajuste. O sistema busca automaticamente a base anterior e mede o realizado depois da vigência.</p>
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={tentarVincular} disabled={!itens.length || carregando}>Sugerir vínculos</button>
@@ -997,11 +1039,15 @@ export default function ReajustesPage() {
         </div>
 
         <div className="form-grid three">
-          <label className="field">Período inicial
-            <input type="date" value={config.inicio || ''} onChange={(event) => setConfig((prev) => ({ ...prev, inicio: event.target.value }))} />
+          <label className="field">Base anterior para previsão
+            <select value={String(config.mesesBaseImpacto || 3)} onChange={(event) => setConfig((prev) => ({ ...prev, mesesBaseImpacto: Number(event.target.value) }))}>
+              <option value="1">1 mês anterior à vigência</option>
+              <option value="2">2 meses anteriores à vigência</option>
+              <option value="3">3 meses anteriores à vigência</option>
+            </select>
           </label>
-          <label className="field">Período final
-            <input type="date" value={config.fim || ''} onChange={(event) => setConfig((prev) => ({ ...prev, fim: event.target.value }))} />
+          <label className="field">Realizado até
+            <input value={resumo.ultimaDataRealizado ? formatDate(resumo.ultimaDataRealizado) : 'Data mais recente da base'} readOnly />
           </label>
           <label className="field">Busca
             <input value={filtroTexto} onChange={(event) => setFiltroTexto(event.target.value)} placeholder="Transportadora, vínculo, observação..." />
@@ -1019,6 +1065,9 @@ export default function ReajustesPage() {
             <input type="checkbox" checked={somenteEfetivados} onChange={(event) => setSomenteEfetivados(event.target.checked)} />
             Mostrar apenas reajustes efetivados/vigentes
           </label>
+          <div className="hint-box compact" style={{ margin: 0 }}>
+            Sem período manual: cada linha usa sua própria Data_Inicio para formar a base anterior e medir o realizado.
+          </div>
         </div>
       </section>
 
@@ -1052,13 +1101,20 @@ export default function ReajustesPage() {
                 <th>Início</th>
                 <th>Solicitado %</th>
                 <th>Aplicado %</th>
+                <th>Período base</th>
                 <th>CT-es base</th>
-                <th>Frete base</th>
-                <th>Impacto previsto</th>
-                <th>CT-es após início</th>
-                <th>Impacto realizado</th>
-                <th>% atual</th>
-                <th>% c/ reajuste</th>
+                <th>Frete base médio/mês</th>
+                <th>Previsto solicitado/mês</th>
+                <th>Previsto repassado/mês</th>
+                <th>Saving previsto/mês</th>
+                <th>Período realizado</th>
+                <th>CT-es realizado</th>
+                <th>Realizado solicitado/mês</th>
+                <th>Realizado repassado/mês</th>
+                <th>Saving realizado/mês</th>
+                <th>% base</th>
+                <th>% realizado</th>
+                <th>Dif. p.p.</th>
                 <th>Obs.</th>
               </tr>
             </thead>
@@ -1107,23 +1163,30 @@ export default function ReajustesPage() {
                         placeholder="Ex.: 5%"
                       />
                     </td>
+                    <td>
+                      {periodoLabel(item.inicioImpactoBase, item.fimImpactoBase)}
+                      <small style={{ display: 'block', color: '#64748b' }}>{toNumber(item.mesesBaseImpacto || config.mesesBaseImpacto || 3)} mês(es)</small>
+                    </td>
                     <td>{toNumber(item.ctesPeriodo).toLocaleString('pt-BR')}</td>
                     <td>{formatarMoedaReajuste(item.valorFretePeriodo)}</td>
-                    <td><strong>{formatarMoedaReajuste(item.impactoPrevisto || item.impactoPeriodo)}</strong></td>
-                    <td>
-                      {toNumber(item.ctesRealizadoReajuste).toLocaleString('pt-BR')}
-                      <small style={{ display: 'block', color: '#64748b' }}>desde {formatDate(item.inicioImpactoRealizado || item.dataInicio)}</small>
-                    </td>
-                    <td><strong>{formatarMoedaReajuste(item.impactoRealizado)}</strong></td>
+                    <td>{formatarMoedaReajuste(item.impactoPrevistoSolicitado)}</td>
+                    <td><strong>{formatarMoedaReajuste(item.impactoPrevistoRepassado || item.impactoPrevisto || item.impactoPeriodo)}</strong></td>
+                    <td><strong>{formatarMoedaReajuste(item.reducaoImpactoPrevisto)}</strong></td>
+                    <td>{periodoLabel(item.inicioImpactoRealizado || item.dataInicio, item.fimImpactoRealizado)}<small style={{ display: 'block', color: '#64748b' }}>{item.diasRealizadosImpacto ? `${toNumber(item.diasRealizadosImpacto).toLocaleString('pt-BR')} dia(s)` : ''}</small></td>
+                    <td>{toNumber(item.ctesRealizadoReajuste).toLocaleString('pt-BR')}</td>
+                    <td>{formatarMoedaReajuste(item.impactoRealizadoSolicitado)}</td>
+                    <td><strong>{formatarMoedaReajuste(item.impactoRealizadoRepassado || item.impactoRealizado)}</strong></td>
+                    <td><strong>{formatarMoedaReajuste(item.reducaoImpactoRealizada)}</strong></td>
                     <td>{item.percentualFreteAtual ? formatarPercentualReajuste(item.percentualFreteAtual) : '-'}</td>
-                    <td>{item.percentualFreteComReajuste ? formatarPercentualReajuste(item.percentualFreteComReajuste) : '-'}</td>
+                    <td>{item.percentualFreteRealizadoReajuste ? formatarPercentualReajuste(item.percentualFreteRealizadoReajuste) : '-'}</td>
+                    <td>{item.variacaoPercentualFreteRealizado ? formatarPercentualReajuste(item.variacaoPercentualFreteRealizado) : '-'}</td>
                     <td style={{ minWidth: 280 }}>
                       <textarea value={item.observacao || ''} onChange={(event) => alterarItem(item.id, 'observacao', event.target.value)} rows={2} />
                     </td>
                   </tr>
                 );
               })}
-              {!itensFiltrados.length && <tr><td colSpan="14">Nenhum reajuste carregado ou compatível com o filtro.</td></tr>}
+              {!itensFiltrados.length && <tr><td colSpan="21">Nenhum reajuste carregado ou compatível com o filtro.</td></tr>}
             </tbody>
           </table>
         </div>
