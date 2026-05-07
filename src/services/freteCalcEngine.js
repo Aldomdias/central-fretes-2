@@ -8,6 +8,17 @@ function toPercent(value) {
   return toNumber(value) / 100;
 }
 
+function calcularPedagioFracao100Kg(pesoKg, valorPorFracao) {
+  const peso = toNumber(pesoKg);
+  const pedagioUnitario = toNumber(valorPorFracao);
+
+  if (peso <= 0 || pedagioUnitario <= 0) return 0;
+
+  // Regra operacional: pedágio é cobrado por fração iniciada de 100 kg.
+  // Exemplos com R$ 7,50 por fração: 1 kg = R$ 7,50; 85 kg = R$ 7,50; 101 kg = R$ 15,00.
+  return Math.ceil(peso / 100) * pedagioUnitario;
+}
+
 function toBooleanFlag(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value === 1;
@@ -42,7 +53,7 @@ export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 
 
   const adValorem = Math.max(toNumber(valorNf) * toPercent(adValPercentual), toNumber(adValMinimo));
   const gris = Math.max(toNumber(valorNf) * toPercent(grisPercentual), toNumber(grisMinimo));
-  const pedagio = (toNumber(pesoKg) / 100) * toNumber(generalidades.pedagio);
+  const pedagio = calcularPedagioFracao100Kg(pesoKg, generalidades.pedagio);
 
   return {
     adValorem,
