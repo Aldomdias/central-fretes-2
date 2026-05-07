@@ -1,3 +1,10 @@
+import {
+  listarUsuariosSupabase,
+  registrarUltimoLoginSupabase,
+  salvarUsuariosSupabase,
+  usuarioSupabaseDisponivel,
+} from '../services/usuariosSupabaseService';
+
 const USERS_KEY = 'central_fretes_usuarios_v1';
 const SESSION_KEY = 'central_fretes_sessao_v1';
 
@@ -53,6 +60,18 @@ function salvarUsuariosInterno(usuarios = []) {
   localStorage.setItem(USERS_KEY, JSON.stringify(usuarios));
 }
 
+function montarSessao(usuario) {
+  const sessao = {
+    id: usuario.id,
+    nome: usuario.nome,
+    email: usuario.email,
+    perfil: usuario.perfil,
+    loginEm: new Date().toISOString(),
+  };
+  localStorage.setItem(SESSION_KEY, JSON.stringify(sessao));
+  return sessao;
+}
+
 export function carregarUsuarios() {
   try {
     const parsed = JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
@@ -64,8 +83,89 @@ export function carregarUsuarios() {
   return DEFAULT_USERS;
 }
 
+export async function carregarUsuariosAsync({ migrarLocal = true } = {}) {
+  const locais = carregarUsuarios();
+
+  if (!usuarioSupabaseDisponivel()) {
+    return {
+      usuarios: locais,
+      origem: 'local',
+      sincronizado: false,
+      mensagem: 'Supabase não configurado. Usando usuários locais deste navegador.',
+    };
+  }
+
+  try {
+    const remotos = await listarUsuariosSupabase();
+    if (remotos.length) {
+      salvarUsuariosInterno(remotos);
+      return {
+        usuarios: remotos,
+        origem: 'supabase',
+        sincronizado: true,
+        mensagem: 'Usuários carregados do Supabase.',
+      };
+    }
+
+    if (migrarLocal && locais.length) {
+      await salvarUsuariosSupabase(locais);
+      salvarUsuariosInterno(locais);
+      return {
+        usuarios: locais,
+        origem: 'supabase',
+        sincronizado: true,
+        migrado: true,
+        mensagem: 'Usuários locais migrados para o Supabase.',
+      };
+    }
+
+    return {
+      usuarios: locais,
+      origem: 'local',
+      sincronizado: false,
+      mensagem: 'Nenhum usuário encontrado no Supabase. Usando base local.',
+    };
+  } catch (error) {
+    return {
+      usuarios: locais,
+      origem: 'local',
+      sincronizado: false,
+      erro: error.message || String(error),
+      mensagem: 'Não foi possível carregar usuários do Supabase. Usando base local deste navegador.',
+    };
+  }
+}
+
 export function salvarUsuarios(usuarios = []) {
   salvarUsuariosInterno(usuarios);
+}
+
+export async function salvarUsuariosAsync(usuarios = []) {
+  salvarUsuariosInterno(usuarios);
+
+  if (!usuarioSupabaseDisponivel()) {
+    return {
+      origem: 'local',
+      sincronizado: false,
+      mensagem: 'Supabase não configurado. Alteração salva apenas neste navegador.',
+    };
+  }
+
+  try {
+    await salvarUsuariosSupabase(usuarios);
+    return {
+      origem: 'supabase',
+      sincronizado: true,
+      mensagem: 'Alteração salva no Supabase.',
+    };
+  } catch (error) {
+    return {
+      origem: 'local',
+      sincronizado: false,
+      erro: error.message || String(error),
+      mensagem: 'Alteração salva localmente, mas não sincronizou com o Supabase.',
+    };
+  }
 }
 
 export function usuarioTemAcesso(usuario, pagina) {
@@ -82,15 +182,34 @@ export function loginLocal(email, senha) {
   if (!usuario || String(usuario.senha || '') !== String(senha || '')) {
     throw new Error('E-mail ou senha inválidos.');
   }
-  const sessao = {
-    id: usuario.id,
-    nome: usuario.nome,
-    email: usuario.email,
-    perfil: usuario.perfil,
-    loginEm: new Date().toISOString(),
+  return montarSessao(usuario);
+}
+
+export async function loginCentral(email, senha) {
+  const resultado = await carregarUsuariosAsync({ migrarLocal: true });
+  const usuarios = resultado.usuarios || [];
+  const emailNorm = normalizarEmail(email);
+  const usuario = usuarios.find((item) => normalizarEmail(item.email) === emailNorm && item.ativo !== false);
+
+  if (!usuario || String(usuario.senha || '') !== String(senha || '')) {
+    throw new Error('E-mail ou senha inválidos.');
+  }
+
+  const sessao = montarSessao(usuario);
+
+  if (resultado.sincronizado) {
+    try {
+      await registrarUltimoLoginSupabase(usuario.id);
+    } catch {
+      // login já foi validado; não bloqueia entrada por falha de auditoria
+    }
+  }
+
+  return {
+    ...sessao,
+    origemUsuarios: resultado.origem,
+    usuariosSincronizados: resultado.sincronizado,
   };
-  localStorage.setItem(SESSION_KEY, JSON.stringify(sessao));
-  return sessao;
 }
 
 export function carregarSessao() {
@@ -131,8 +250,15 @@ export function criarUsuario(dados, usuariosAtuais = carregarUsuarios()) {
     perfil: dados.perfil || 'CONSULTA',
     ativo: dados.ativo !== false,
     criadoEm: new Date().toISOString(),
+    atualizadoEm: new Date().toISOString(),
   };
   return [novo, ...usuariosAtuais];
+}
+
+export async function criarUsuarioAsync(dados, usuariosAtuais = carregarUsuarios()) {
+  const lista = criarUsuario(dados, usuariosAtuais);
+  await salvarUsuariosAsync(lista);
+  return lista;
 }
 
 export function atualizarUsuario(usuarios = [], id, alteracoes = {}) {
@@ -151,6 +277,12 @@ export function atualizarUsuario(usuarios = [], id, alteracoes = {}) {
       atualizadoEm: new Date().toISOString(),
     };
   });
+}
+
+export async function atualizarUsuarioAsync(usuarios = [], id, alteracoes = {}) {
+  const lista = atualizarUsuario(usuarios, id, alteracoes);
+  await salvarUsuariosAsync(lista);
+  return lista;
 }
 
 export function nomePerfil(perfil) {
