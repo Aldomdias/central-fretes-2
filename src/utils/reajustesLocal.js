@@ -27,7 +27,7 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function parsePercent(value) {
+export function parsePercentReajuste(value) {
   if (value === null || value === undefined || value === '') return 0;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return 0;
@@ -62,7 +62,7 @@ function pick(row = {}, ...names) {
 }
 
 function reajusteBase(row = {}) {
-  return parsePercent(
+  return parsePercentReajuste(
     pick(
       row,
       'PROPOSTA FINAL',
@@ -79,7 +79,7 @@ function reajusteBase(row = {}) {
 function mapFinalRow(row = {}, index = 0) {
   const solicitadoRaw = pick(row, 'REAJUSTE SOLICITADO', 'REAJUSTE INICIAL%', 'REAJUSTE ANUAL', 'REAJUSTE EMERGENCIAL');
   const propostaRaw = pick(row, 'PROPOSTA FINAL', 'REAJUSTE FINAL%');
-  const reajusteAplicado = parsePercent(propostaRaw) || parsePercent(pick(row, 'Reajuste 1ª Parcela')) || parsePercent(solicitadoRaw);
+  const reajusteAplicado = parsePercentReajuste(propostaRaw) || parsePercentReajuste(pick(row, 'Reajuste 1ª Parcela')) || parsePercentReajuste(solicitadoRaw);
   const nome = String(pick(row, 'TRANSPORTADORA', 'Transportadora') || '').trim();
 
   return {
@@ -94,24 +94,63 @@ function mapFinalRow(row = {}, index = 0) {
     dataInicio: excelDateToIso(pick(row, 'DATA INICIO', 'DATA DA SOLICITAÇÃO')),
     dataSolicitacao: excelDateToIso(pick(row, 'DATA DA SOLICITAÇÃO')),
     reajusteSolicitadoTexto: String(solicitadoRaw || '').trim(),
-    reajusteSolicitado: parsePercent(solicitadoRaw),
-    reajustePrimeiraParcela: parsePercent(pick(row, 'Reajuste 1ª Parcela')),
+    reajusteSolicitado: parsePercentReajuste(solicitadoRaw),
+    reajustePrimeiraParcela: parsePercentReajuste(pick(row, 'Reajuste 1ª Parcela')),
     dataPrimeiraParcela: excelDateToIso(pick(row, 'Data 1ª Parcela')),
-    reajusteSegundaParcela: parsePercent(pick(row, 'Reajuste 2ª Parcela')),
+    reajusteSegundaParcela: parsePercentReajuste(pick(row, 'Reajuste 2ª Parcela')),
     dataSegundaParcela: excelDateToIso(pick(row, 'Data 2ª Parcela')),
-    propostaFinal: parsePercent(propostaRaw),
+    propostaFinal: parsePercentReajuste(propostaRaw),
     reajusteAplicado,
     status: row['NEGOCIAÇÃO'] || (reajusteAplicado ? 'EM ANÁLISE' : 'PENDENTE'),
-    representatividade: parsePercent(pick(row, 'Representatividade')),
+    representatividade: parsePercentReajuste(pick(row, 'Representatividade')),
     valorCtePlanilha: toNumber(pick(row, 'VALOR CTE')),
     faturamentoMedioPlanilha: toNumber(pick(row, 'Faturamento Médio', 'IMPACTO MÊS')),
     impactoEmergencialPlanilha: toNumber(pick(row, 'IMPACTO EMERGENCIAL')),
     impactoAnttPlanilha: toNumber(pick(row, 'IMPACTO ANTT')),
     impactoReajustePlanilha: toNumber(pick(row, 'IMPACTO REAJUSTE')),
-    percentualAtualRealizado: parsePercent(pick(row, '% Atual Realizado')),
-    percentualComReajuste: parsePercent(pick(row, '% Com Reajuste')),
+    percentualAtualRealizado: parsePercentReajuste(pick(row, '% Atual Realizado')),
+    percentualComReajuste: parsePercentReajuste(pick(row, '% Com Reajuste')),
     observacao: String(pick(row, 'OBSERVAÇÃO', 'OBSERVACAO') || '').trim(),
     ativo: Boolean(nome),
+    criadoEm: new Date().toISOString(),
+  };
+}
+
+export function criarReajusteManual(dados = {}) {
+  const nome = String(dados.transportadoraInformada || dados.transportadora || '').trim();
+  if (!nome) throw new Error('Informe a transportadora do reajuste.');
+  const solicitado = parsePercentReajuste(dados.reajusteSolicitado);
+  const aplicado = parsePercentReajuste(dados.reajusteAplicado || dados.reajusteSolicitado);
+  return {
+    id: uid('reajuste'),
+    origemImportacao: 'Manual',
+    linhaOrigem: '',
+    emergencial: '',
+    canal: String(dados.canal || '').trim(),
+    transportadoraInformada: nome,
+    transportadoraSistema: '',
+    transportadorasRealizado: [],
+    dataInicio: excelDateToIso(dados.dataInicio),
+    dataSolicitacao: excelDateToIso(dados.dataSolicitacao) || new Date().toISOString().slice(0, 10),
+    reajusteSolicitadoTexto: solicitado ? `${(solicitado * 100).toLocaleString('pt-BR')}%` : '',
+    reajusteSolicitado: solicitado,
+    reajustePrimeiraParcela: 0,
+    dataPrimeiraParcela: '',
+    reajusteSegundaParcela: 0,
+    dataSegundaParcela: '',
+    propostaFinal: aplicado,
+    reajusteAplicado: aplicado,
+    status: dados.status || 'EM ANÁLISE',
+    representatividade: 0,
+    valorCtePlanilha: 0,
+    faturamentoMedioPlanilha: 0,
+    impactoEmergencialPlanilha: 0,
+    impactoAnttPlanilha: 0,
+    impactoReajustePlanilha: 0,
+    percentualAtualRealizado: 0,
+    percentualComReajuste: 0,
+    observacao: String(dados.observacao || '').trim(),
+    ativo: true,
     criadoEm: new Date().toISOString(),
   };
 }
@@ -252,9 +291,32 @@ function rowPertenceAoItem(rowNorm, nomes = [], usarExato = false) {
   return nomes.some((nome) => rowNorm === nome || rowNorm.includes(nome) || nome.includes(rowNorm));
 }
 
-export function calcularImpactosReajustes(itens = [], realizados = []) {
+
+function dataRealizadoRow(row = {}) {
+  const value = row.data || row.dataEmissao || row.dataEmissaoCte || row.emissao || row.competencia || row.mes;
+  const raw = String(value || '').slice(0, 10);
+  if (/^20\d{2}-\d{2}-\d{2}$/.test(raw)) return raw;
+  if (/^20\d{2}-\d{2}$/.test(raw)) return `${raw}-01`;
+  return '';
+}
+
+function filtrarPorData(rows = [], inicio = '', fim = '') {
+  const inicioIso = String(inicio || '').slice(0, 10);
+  const fimIso = String(fim || '').slice(0, 10);
+  if (!inicioIso && !fimIso) return rows;
+  return rows.filter((row) => {
+    const data = dataRealizadoRow(row);
+    if (!data) return true;
+    if (inicioIso && data < inicioIso) return false;
+    if (fimIso && data > fimIso) return false;
+    return true;
+  });
+}
+
+export function calcularImpactosReajustes(itens = [], realizados = [], periodo = {}) {
   const realizadosNorm = (realizados || []).map((row) => ({
     ...row,
+    dataRealizado: dataRealizadoRow(row),
     transportadoraNorm: normalizarTextoReajuste(row.transportadora || row.nomeTransportadora || row.transportadoraRealizada),
     valorCteNum: toNumber(row.valorCte || row.valorCTe || row.valorFrete || row.freteRealizado),
     valorNfNum: toNumber(row.valorNF || row.valorNf || row.valorNota),
@@ -263,14 +325,23 @@ export function calcularImpactosReajustes(itens = [], realizados = []) {
 
   return (itens || []).map((item) => {
     const { nomes, usarExato } = nomesPossiveis(item);
-    const linhas = realizadosNorm.filter((row) => rowPertenceAoItem(row.transportadoraNorm, nomes, usarExato));
-    const valorFretePeriodo = linhas.reduce((acc, row) => acc + row.valorCteNum, 0);
-    const valorNFPeriodo = linhas.reduce((acc, row) => acc + row.valorNfNum, 0);
-    const pesoPeriodo = linhas.reduce((acc, row) => acc + row.pesoNum, 0);
-    const ctesPeriodo = linhas.length;
+    const linhasPeriodo = realizadosNorm.filter((row) => rowPertenceAoItem(row.transportadoraNorm, nomes, usarExato));
+    const inicioRealizado = String(item.dataInicio || item.dataPrimeiraParcela || periodo.inicio || '').slice(0, 10);
+    const linhasRealizadoReajuste = filtrarPorData(linhasPeriodo, inicioRealizado, periodo.fim);
+
+    const valorFretePeriodo = linhasPeriodo.reduce((acc, row) => acc + row.valorCteNum, 0);
+    const valorNFPeriodo = linhasPeriodo.reduce((acc, row) => acc + row.valorNfNum, 0);
+    const pesoPeriodo = linhasPeriodo.reduce((acc, row) => acc + row.pesoNum, 0);
+    const ctesPeriodo = linhasPeriodo.length;
+
+    const valorFreteRealizadoReajuste = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorCteNum, 0);
+    const valorNFRealizadoReajuste = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorNfNum, 0);
+    const ctesRealizadoReajuste = linhasRealizadoReajuste.length;
+
     const pct = toNumber(item.reajusteAplicado) || reajusteBase(item);
-    const impactoPeriodo = valorFretePeriodo * pct;
-    const freteComReajuste = valorFretePeriodo + impactoPeriodo;
+    const impactoPrevisto = valorFretePeriodo * pct;
+    const impactoRealizado = valorFreteRealizadoReajuste * pct;
+    const freteComReajuste = valorFretePeriodo + impactoPrevisto;
     const percentualFreteAtual = valorNFPeriodo ? valorFretePeriodo / valorNFPeriodo : 0;
     const percentualFreteComReajuste = valorNFPeriodo ? freteComReajuste / valorNFPeriodo : 0;
 
@@ -281,11 +352,19 @@ export function calcularImpactosReajustes(itens = [], realizados = []) {
       valorNFPeriodo,
       pesoPeriodo,
       reajusteAplicado: pct,
-      impactoPeriodo,
+      impactoPrevisto,
+      impactoPeriodo: impactoPrevisto,
       freteComReajuste,
       percentualFreteAtual,
       percentualFreteComReajuste,
-      vinculado: Boolean((item.transportadorasRealizado || []).length || item.transportadoraSistema || linhas.length),
+      ctesRealizadoReajuste,
+      valorFreteRealizadoReajuste,
+      valorNFRealizadoReajuste,
+      impactoRealizado,
+      percentualFreteRealizadoReajuste: valorNFRealizadoReajuste ? valorFreteRealizadoReajuste / valorNFRealizadoReajuste : 0,
+      inicioImpactoRealizado: inicioRealizado,
+      fimImpactoRealizado: String(periodo.fim || '').slice(0, 10),
+      vinculado: Boolean((item.transportadorasRealizado || []).length || item.transportadoraSistema || linhasPeriodo.length),
     };
   });
 }
@@ -302,16 +381,22 @@ export function resumoReajustes(itens = [], fimPeriodo = '') {
   const totalSolicitados = itens.length;
   const efetivados = itens.filter((item) => isEfetivado(item, fimPeriodo));
   const semVinculo = itens.filter((item) => !(Array.isArray(item.transportadorasRealizado) && item.transportadorasRealizado.length) && !item.transportadoraSistema).length;
-  const impactoTotal = itens.reduce((acc, item) => acc + toNumber(item.impactoPeriodo), 0);
-  const impactoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoPeriodo), 0);
+  const impactoTotal = itens.reduce((acc, item) => acc + toNumber(item.impactoPrevisto || item.impactoPeriodo), 0);
+  const impactoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoPrevisto || item.impactoPeriodo), 0);
+  const impactoRealizado = itens.reduce((acc, item) => acc + toNumber(item.impactoRealizado), 0);
+  const impactoRealizadoEfetivado = efetivados.reduce((acc, item) => acc + toNumber(item.impactoRealizado), 0);
   const freteBase = itens.reduce((acc, item) => acc + toNumber(item.valorFretePeriodo), 0);
+  const freteRealizadoReajuste = itens.reduce((acc, item) => acc + toNumber(item.valorFreteRealizadoReajuste), 0);
   return {
     totalSolicitados,
     totalEfetivados: efetivados.length,
     semVinculo,
     impactoTotal,
     impactoEfetivado,
+    impactoRealizado,
+    impactoRealizadoEfetivado,
     freteBase,
+    freteRealizadoReajuste,
   };
 }
 

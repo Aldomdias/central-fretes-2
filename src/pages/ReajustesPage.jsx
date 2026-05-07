@@ -6,6 +6,7 @@ import {
   calcularImpactosReajustes,
   carregarConfigReajustes,
   carregarReajustes,
+  criarReajusteManual,
   detectarMelhoresVinculos,
   formatarMoedaReajuste,
   formatarPercentualReajuste,
@@ -13,6 +14,7 @@ import {
   isEfetivado,
   mesAtualPadrao,
   normalizarTextoReajuste,
+  parsePercentReajuste,
   resumoReajustes,
   salvarConfigReajustes,
   salvarReajustes,
@@ -23,6 +25,20 @@ const STATUS_OPTIONS = ['EM ANÁLISE', 'ADIADO', 'APROVADO', 'EFETIVADO', 'NEGAD
 function toNumber(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function formatarPercentualInput(value) {
+  const n = toNumber(value) * 100;
+  if (!n) return '';
+  return n.toLocaleString('pt-BR', { maximumFractionDigits: 4 });
+}
+
+function parsePercentualInput(value) {
+  return parsePercentReajuste(value);
+}
+
+function hojeIso() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function safeSheetName(nome) {
@@ -75,18 +91,20 @@ function linhasRelatorio(itens = [], fimPeriodo = '') {
     Reajuste_Solicitado: toNumber(item.reajusteSolicitado),
     Reajuste_Aplicado: toNumber(item.reajusteAplicado),
     Efetivado_No_Periodo: isEfetivado(item, fimPeriodo) ? 'Sim' : 'Não',
-    CTEs_Periodo: toNumber(item.ctesPeriodo),
+    CTEs_Periodo_Base: toNumber(item.ctesPeriodo),
     Frete_Base_Periodo: toNumber(item.valorFretePeriodo),
     Valor_NF_Periodo: toNumber(item.valorNFPeriodo),
-    Impacto_Periodo: toNumber(item.impactoPeriodo),
+    Impacto_Previsto_Periodo: toNumber(item.impactoPrevisto || item.impactoPeriodo),
     Frete_Com_Reajuste: toNumber(item.freteComReajuste),
+    CTEs_Realizados_Apos_Inicio: toNumber(item.ctesRealizadoReajuste),
+    Frete_Realizado_Apos_Inicio: toNumber(item.valorFreteRealizadoReajuste),
+    Impacto_Realizado_Apos_Inicio: toNumber(item.impactoRealizado),
     Percentual_Atual_Realizado: toNumber(item.percentualFreteAtual),
     Percentual_Com_Reajuste: toNumber(item.percentualFreteComReajuste),
     Impacto_Planilha: toNumber(item.impactoReajustePlanilha || item.impactoEmergencialPlanilha),
     Observacao: item.observacao || '',
   }));
 }
-
 function nomesUnicosRealizado(rows = []) {
   const mapa = new Map();
   (rows || []).forEach((row) => {
@@ -260,6 +278,15 @@ export default function ReajustesPage() {
   const [opcoesRealizado, setOpcoesRealizado] = useState([]);
   const [buscasVinculo, setBuscasVinculo] = useState({});
   const [vinculoAbertoId, setVinculoAbertoId] = useState(null);
+  const [novoReajuste, setNovoReajuste] = useState({
+    transportadoraInformada: '',
+    canal: '',
+    status: 'EM ANÁLISE',
+    dataInicio: hojeIso(),
+    reajusteSolicitado: '',
+    reajusteAplicado: '',
+    observacao: '',
+  });
 
   useEffect(() => {
     salvarConfigReajustes(config);
@@ -289,6 +316,35 @@ export default function ReajustesPage() {
   function alterarItem(id, campo, valor) {
     const novos = itens.map((item) => item.id === id ? { ...item, [campo]: valor, atualizadoEm: new Date().toISOString() } : item);
     persistir(novos);
+  }
+
+
+  function alterarPercentualItem(id, campo, valor) {
+    alterarItem(id, campo, parsePercentualInput(valor));
+  }
+
+  function alterarNovo(campo, valor) {
+    setNovoReajuste((prev) => ({ ...prev, [campo]: valor }));
+  }
+
+  function adicionarReajusteManual() {
+    setErro('');
+    try {
+      const novo = criarReajusteManual(novoReajuste);
+      persistir([novo, ...itens]);
+      setNovoReajuste({
+        transportadoraInformada: '',
+        canal: '',
+        status: 'EM ANÁLISE',
+        dataInicio: hojeIso(),
+        reajusteSolicitado: '',
+        reajusteAplicado: '',
+        observacao: '',
+      });
+      setMensagem('Reajuste incluído manualmente. Agora vincule os nomes do Realizado Local e calcule o impacto.');
+    } catch (error) {
+      setErro(error.message || 'Erro ao incluir reajuste.');
+    }
   }
 
   function alterarBuscaVinculo(id, valor) {
@@ -383,7 +439,7 @@ export default function ReajustesPage() {
         inicio: config.inicio,
         fim: config.fim,
       }, { limit: 500000 });
-      const calculados = calcularImpactosReajustes(itens, rows || []);
+      const calculados = calcularImpactosReajustes(itens, rows || [], config);
       persistir(calculados);
       setMensagem(`Impacto calculado com ${Number(rows?.length || 0).toLocaleString('pt-BR')} CT-e(s) do Realizado Local${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`);
     } catch (error) {
@@ -404,8 +460,11 @@ export default function ReajustesPage() {
       Efetivados: efetivados.length,
       Sem_Vinculo: semVinculo.length,
       Frete_Base_Periodo: resumo.freteBase,
-      Impacto_Total_Periodo: resumo.impactoTotal,
-      Impacto_Efetivado_Periodo: resumo.impactoEfetivado,
+      Impacto_Previsto_Periodo: resumo.impactoTotal,
+      Impacto_Previsto_Efetivado: resumo.impactoEfetivado,
+      Frete_Realizado_Apos_Inicio: resumo.freteRealizadoReajuste,
+      Impacto_Realizado_Apos_Inicio: resumo.impactoRealizado,
+      Impacto_Realizado_Efetivado: resumo.impactoRealizadoEfetivado,
     }];
     baixarXlsx(`controle-reajustes-${config.inicio || 'inicio'}-${config.fim || 'fim'}.xlsx`, {
       Resumo: resumoRows,
@@ -461,8 +520,52 @@ export default function ReajustesPage() {
       <section className="panel-card">
         <div className="section-row compact-top">
           <div>
+            <div className="panel-title">Incluir reajuste manual</div>
+            <p>Use quando surgir uma nova solicitação que ainda não está na planilha. Informe percentuais como 8%, 8 ou 8,5 — o sistema grava como percentual corretamente.</p>
+          </div>
+          <div className="actions-right">
+            <button className="btn-primary" type="button" onClick={adicionarReajusteManual}>Adicionar reajuste</button>
+          </div>
+        </div>
+        <div className="form-grid three">
+          <label className="field">Transportadora
+            <input value={novoReajuste.transportadoraInformada} onChange={(event) => alterarNovo('transportadoraInformada', event.target.value)} placeholder="Ex.: ALFA" />
+          </label>
+          <label className="field">Canal
+            <select value={novoReajuste.canal} onChange={(event) => alterarNovo('canal', event.target.value)}>
+              <option value="">-</option>
+              <option value="ATACADO">ATACADO</option>
+              <option value="B2C">B2C</option>
+              <option value="ATACADO E B2C">ATACADO E B2C</option>
+            </select>
+          </label>
+          <label className="field">Status
+            <select value={novoReajuste.status} onChange={(event) => alterarNovo('status', event.target.value)}>
+              {STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="form-grid three">
+          <label className="field">Data início
+            <input type="date" value={novoReajuste.dataInicio} onChange={(event) => alterarNovo('dataInicio', event.target.value)} />
+          </label>
+          <label className="field">Solicitado %
+            <input value={novoReajuste.reajusteSolicitado} onChange={(event) => alterarNovo('reajusteSolicitado', event.target.value)} placeholder="Ex.: 10%" />
+          </label>
+          <label className="field">Aplicado %
+            <input value={novoReajuste.reajusteAplicado} onChange={(event) => alterarNovo('reajusteAplicado', event.target.value)} placeholder="Ex.: 8%" />
+          </label>
+        </div>
+        <label className="field">Observação
+          <textarea value={novoReajuste.observacao} onChange={(event) => alterarNovo('observacao', event.target.value)} rows={2} placeholder="Histórico, condição, aprovação, motivo..." />
+        </label>
+      </section>
+
+      <section className="panel-card">
+        <div className="section-row compact-top">
+          <div>
             <div className="panel-title">Impacto por período</div>
-            <p>Escolha o período, por exemplo abril, para calcular quanto o reajuste representaria sobre o frete realizado da transportadora.</p>
+            <p>Escolha o período base para a previsão. O impacto previsto usa todo o período filtrado; o impacto realizado usa apenas CT-es a partir da data de início do reajuste até o fim do filtro.</p>
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={exportarRelatorio} disabled={!itens.length}>Exportar relatório</button>
@@ -499,7 +602,8 @@ export default function ReajustesPage() {
         <div className="summary-card"><span>Efetivados/vigentes</span><strong>{resumo.totalEfetivados.toLocaleString('pt-BR')}</strong><small>Com status ou início no período</small></div>
         <div className="summary-card"><span>Sem vínculo</span><strong>{resumo.semVinculo.toLocaleString('pt-BR')}</strong><small>Revisar nomes do realizado</small></div>
         <div className="summary-card"><span>Frete base período</span><strong>{formatarMoedaReajuste(resumo.freteBase)}</strong><small>Realizado Local vinculado</small></div>
-        <div className="summary-card"><span>Impacto total</span><strong>{formatarMoedaReajuste(resumo.impactoTotal)}</strong><small>Reajuste aplicado × frete</small></div>
+        <div className="summary-card"><span>Impacto previsto</span><strong>{formatarMoedaReajuste(resumo.impactoTotal)}</strong><small>Base do período × reajuste</small></div>
+        <div className="summary-card"><span>Impacto realizado</span><strong>{formatarMoedaReajuste(resumo.impactoRealizado)}</strong><small>Da data início até fim do filtro</small></div>
         <div className="summary-card"><span>Impacto efetivado</span><strong>{formatarMoedaReajuste(resumo.impactoEfetivado)}</strong><small>Somente aprovados/vigentes</small></div>
       </div>
 
@@ -520,11 +624,12 @@ export default function ReajustesPage() {
                 <th>Canal</th>
                 <th>Status</th>
                 <th>Data início</th>
-                <th>Solicitado</th>
-                <th>Aplicado</th>
-                <th>CT-es período</th>
+                <th>Solicitado %</th>
+                <th>Aplicado %</th>
+                <th>CT-es base</th>
                 <th>Frete base</th>
-                <th>Impacto período</th>
+                <th>Impacto previsto</th>
+                <th>Impacto realizado</th>
                 <th>% atual</th>
                 <th>% c/ reajuste</th>
                 <th>Obs.</th>
@@ -556,11 +661,29 @@ export default function ReajustesPage() {
                     </select>
                   </td>
                   <td><input type="date" value={String(item.dataInicio || '').slice(0, 10)} onChange={(event) => alterarItem(item.id, 'dataInicio', event.target.value)} /></td>
-                  <td>{item.reajusteSolicitado ? formatarPercentualReajuste(item.reajusteSolicitado) : (item.reajusteSolicitadoTexto || '-')}</td>
-                  <td><input type="number" step="0.0001" value={toNumber(item.reajusteAplicado)} onChange={(event) => alterarItem(item.id, 'reajusteAplicado', Number(event.target.value || 0))} /></td>
+                  <td>
+                    <input
+                      style={{ minWidth: 92 }}
+                      value={formatarPercentualInput(item.reajusteSolicitado)}
+                      onChange={(event) => alterarPercentualItem(item.id, 'reajusteSolicitado', event.target.value)}
+                      placeholder="Ex.: 10%"
+                    />
+                  </td>
+                  <td>
+                    <input
+                      style={{ minWidth: 92 }}
+                      value={formatarPercentualInput(item.reajusteAplicado)}
+                      onChange={(event) => alterarPercentualItem(item.id, 'reajusteAplicado', event.target.value)}
+                      placeholder="Ex.: 8%"
+                    />
+                  </td>
                   <td>{toNumber(item.ctesPeriodo).toLocaleString('pt-BR')}</td>
                   <td>{formatarMoedaReajuste(item.valorFretePeriodo)}</td>
-                  <td><strong>{formatarMoedaReajuste(item.impactoPeriodo)}</strong></td>
+                  <td><strong>{formatarMoedaReajuste(item.impactoPrevisto || item.impactoPeriodo)}</strong></td>
+                  <td>
+                    <strong>{formatarMoedaReajuste(item.impactoRealizado)}</strong>
+                    {item.ctesRealizadoReajuste ? <small style={{ display: 'block', color: '#64748b' }}>{toNumber(item.ctesRealizadoReajuste).toLocaleString('pt-BR')} CT-e(s) após início</small> : null}
+                  </td>
                   <td>{item.percentualFreteAtual ? formatarPercentualReajuste(item.percentualFreteAtual) : '-'}</td>
                   <td>{item.percentualFreteComReajuste ? formatarPercentualReajuste(item.percentualFreteComReajuste) : '-'}</td>
                   <td style={{ minWidth: 280 }}>
@@ -568,7 +691,7 @@ export default function ReajustesPage() {
                   </td>
                 </tr>
               ))}
-              {!itensFiltrados.length && <tr><td colSpan="13">Nenhum reajuste carregado ou compatível com o filtro.</td></tr>}
+              {!itensFiltrados.length && <tr><td colSpan="14">Nenhum reajuste carregado ou compatível com o filtro.</td></tr>}
             </tbody>
           </table>
         </div>
