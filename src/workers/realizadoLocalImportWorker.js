@@ -1,7 +1,7 @@
-import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import { prepararRegistrosRealizadoLocal } from '../utils/realizadoLocalEngine';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { salvarRealizadoLocal, testarRealizadoOnlineSupabase } from '../services/realizadoLocalDb';
+import { parseRealizadoCtesFileFast } from '../utils/realizadoCtesFastParser';
 
 function pct(atual, total) {
   const safeTotal = Math.max(Number(total) || 0, 1);
@@ -22,6 +22,11 @@ function contarIbgeOk(rows = []) {
   return (rows || []).filter((row) => row.ibgeOk || (row.ibgeOrigem && row.ibgeDestino)).length;
 }
 
+function montarMensagemErroArquivo(nome, error) {
+  const detalhe = error?.message || 'erro desconhecido';
+  return `Erro ao processar ${nome}: ${detalhe}`;
+}
+
 async function importarRealizadoLocal({ files = [], municipios = [], competencia = '' }) {
   postProgress({
     etapa: 'Validando Supabase',
@@ -40,7 +45,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       atual: 0,
       total: files.length,
       percentual: 2,
-      mensagem: 'Base IBGE incompleta no navegador; tentando baixar a referência oficial do IBGE...',
+      mensagem: 'Base IBGE incompleta no navegador; tentando carregar a referência oficial do IBGE...',
     });
     try {
       const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
@@ -78,7 +83,18 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         mensagem: `Lendo ${nome}. Supabase OK com ${Number(diagOnline.totalAtual || 0).toLocaleString('pt-BR')} CT-e(s) atuais. Base IBGE disponível: ${municipiosReferencia.length.toLocaleString('pt-BR')} município(s).`,
       });
 
-      const parsed = await parseRealizadoCtesFile(file);
+      const parsed = await parseRealizadoCtesFileFast(file, {
+        onProgress: ({ etapa, percentualInterno, mensagem }) => {
+          postProgress({
+            etapa: etapa || 'Lendo arquivo',
+            atual: index + 1,
+            total: totalArquivos,
+            percentual: calcularPercentualArquivo(index, totalArquivos, percentualInterno || 5),
+            mensagem: mensagem || `Processando ${nome}...`,
+          });
+        },
+      });
+
       totalLidos += parsed.meta?.registrosAntesTomador || parsed.registros.length;
       totalIgnoradosTomador += parsed.meta?.registrosIgnoradosTomador || 0;
 
@@ -86,7 +102,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         etapa: 'Gerando base enxuta',
         atual: index + 1,
         total: totalArquivos,
-        percentual: calcularPercentualArquivo(index, totalArquivos, 45),
+        percentual: calcularPercentualArquivo(index, totalArquivos, 50),
         mensagem: `Gerando base enxuta e chave IBGE de ${nome}: ${parsed.registros.length.toLocaleString('pt-BR')} CT-e(s) com tomador válido; ${(parsed.meta?.registrosIgnoradosTomador || 0).toLocaleString('pt-BR')} ignorado(s) por tomador...`,
       });
 
@@ -107,7 +123,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       });
 
       const save = await salvarRealizadoLocal(rows, {
-        chunkSize: 250,
+        chunkSize: 200,
         exigirSupabase: true,
         onProgress: ({ salvos, total, duplicadosNoArquivo = 0, semChave = 0 }) => {
           const interno = 65 + Math.round(pct(salvos, total) * 0.30);
@@ -131,9 +147,10 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         pendencias: pendencias.length,
         ibgeOk,
         salvos: save.salvos || rows.length,
-        duplicadosNoArquivo: save.duplicadosNoArquivo || 0,
+        duplicadosNoArquivo: save.duplicadosNoArquivo || parsed.meta?.duplicadosNoArquivo || 0,
         semChave: save.semChave || 0,
         origem: origemGravacao,
+        parser: parsed.meta?.parser || 'fast-dense-worker',
       });
 
       postProgress({
@@ -150,9 +167,13 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index + 1, totalArquivos, 0),
-        mensagem: `Erro ao processar ${nome}: ${error?.message || 'erro desconhecido'}`,
+        mensagem: montarMensagemErroArquivo(nome, error),
       });
     }
+  }
+
+  if (!totalSalvos && erros.length) {
+    throw new Error(`Nenhum CT-e foi salvo no Supabase. Primeiro erro: ${erros[0].erro}`);
   }
 
   return { totalLidos, totalPreparados, totalPendencias, totalSalvos, totalIgnoradosTomador, regraTomador: 'CPX, ITR, GRIP, GP PNEUS', arquivos, erros };
