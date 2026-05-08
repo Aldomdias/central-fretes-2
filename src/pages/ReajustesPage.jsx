@@ -537,6 +537,8 @@ export default function ReajustesPage() {
   const [persistenciaPronta, setPersistenciaPronta] = useState(false);
   const [sincronizandoSupabase, setSincronizandoSupabase] = useState(false);
   const [ultimoSyncSupabase, setUltimoSyncSupabase] = useState('');
+  const [impactosAtualizadosEm, setImpactosAtualizadosEm] = useState('');
+  const [impactosPendentes, setImpactosPendentes] = useState(false);
 
   useEffect(() => {
     let cancelado = false;
@@ -651,6 +653,9 @@ export default function ReajustesPage() {
 
   function alterarItem(id, campo, valor) {
     const novos = itens.map((item) => item.id === id ? { ...item, [campo]: valor, atualizadoEm: new Date().toISOString() } : item);
+    if (['dataInicio', 'reajusteSolicitado', 'reajusteAplicado', 'transportadorasRealizado', 'transportadoraSistema'].includes(campo)) {
+      setImpactosPendentes(true);
+    }
     persistir(novos);
   }
 
@@ -685,6 +690,7 @@ export default function ReajustesPage() {
           atualizadoEm: new Date().toISOString(),
         }
       : item);
+    setImpactosPendentes(true);
     persistir(novos);
   }
 
@@ -788,6 +794,8 @@ export default function ReajustesPage() {
       if (reajustesRealizadoOnlineDisponivel()) {
         const calculados = await calcularImpactosReajustesOnline(itens, config);
         persistir(calculados);
+        setImpactosAtualizadosEm(new Date().toLocaleTimeString('pt-BR'));
+        setImpactosPendentes(false);
         const resumoCalculado = resumoReajustes(calculados);
         const ctesBase = calculados.reduce((acc, item) => acc + toNumber(item.ctesPeriodo), 0);
         const ctesRealizado = calculados.reduce((acc, item) => acc + toNumber(item.ctesRealizadoReajuste), 0);
@@ -806,6 +814,8 @@ export default function ReajustesPage() {
 
       const calculados = calcularImpactosReajustes(itens, rows || [], config);
       persistir(calculados);
+      setImpactosAtualizadosEm(new Date().toLocaleTimeString('pt-BR'));
+      setImpactosPendentes(false);
       const resumoCalculado = resumoReajustes(calculados);
 
       setMensagem(
@@ -1062,14 +1072,23 @@ export default function ReajustesPage() {
             <button className="btn-secondary" type="button" onClick={tentarVincular} disabled={!itens.length || carregando}>Sugerir vínculos</button>
             <button className="btn-secondary" type="button" onClick={exportarRelatorio} disabled={!itens.length}>Exportar relatório</button>
             <button className="btn-primary" type="button" onClick={calcularImpacto} disabled={!itens.length || carregando}>
-              {carregando ? 'Calculando...' : 'Calcular impacto'}
+              {carregando ? 'Calculando...' : impactosPendentes ? 'Atualizar impactos' : 'Calcular impacto'}
             </button>
           </div>
         </div>
 
+        <div className="hint-box compact" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <strong>Impactos:</strong> {impactosPendentes ? 'existem alterações pendentes de recálculo' : impactosAtualizadosEm ? `atualizados às ${impactosAtualizadosEm}` : 'ainda não calculados nesta sessão'}
+          </div>
+          <button className="btn-secondary" type="button" onClick={calcularImpacto} disabled={!itens.length || carregando}>
+            {carregando ? 'Calculando...' : 'Atualizar impactos agora'}
+          </button>
+        </div>
+
         <div className="form-grid three">
           <label className="field">Base anterior para previsão
-            <select value={String(config.mesesBaseImpacto || 3)} onChange={(event) => setConfig((prev) => ({ ...prev, mesesBaseImpacto: Number(event.target.value) }))}>
+            <select value={String(config.mesesBaseImpacto || 3)} onChange={(event) => { setConfig((prev) => ({ ...prev, mesesBaseImpacto: Number(event.target.value) })); setImpactosPendentes(true); }}>
               <option value="1">1 mês anterior à vigência</option>
               <option value="2">2 meses anteriores à vigência</option>
               <option value="3">3 meses anteriores à vigência</option>
@@ -1120,8 +1139,8 @@ export default function ReajustesPage() {
           <span className="pill-soft">{itensFiltrados.length.toLocaleString('pt-BR')} linha(s)</span>
         </div>
 
-        <div className="sim-analise-tabela-wrap">
-          <table className="sim-analise-tabela">
+        <div className="sim-analise-tabela-wrap reajustes-table-scroll" style={{ maxHeight: 'calc(100vh - 220px)', overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 14 }}>
+          <table className="sim-analise-tabela reajustes-impactos-table" style={{ minWidth: 2600 }}>
             <thead>
               <tr>
                 <th>Transportadora</th>
@@ -1196,13 +1215,13 @@ export default function ReajustesPage() {
                       {periodoLabel(item.inicioImpactoBase, item.fimImpactoBase)}
                       <small style={{ display: 'block', color: '#64748b' }}>{toNumber(item.mesesBaseImpacto || config.mesesBaseImpacto || 3)} mês(es)</small>
                     </td>
-                    <td>{toNumber(item.ctesPeriodo).toLocaleString('pt-BR')}</td>
+                    <td>{toNumber(item.ctesPeriodo).toLocaleString('pt-BR')}{item.fonteImpacto === 'realizado-online-supabase' && !toNumber(item.ctesPeriodo) && (item.transportadorasRealizado || []).length ? <small style={{ display: 'block', color: '#b45309' }}>Sem base anterior</small> : null}</td>
                     <td>{formatarMoedaReajuste(item.valorFretePeriodo)}</td>
                     <td>{formatarMoedaReajuste(item.impactoPrevistoSolicitado)}</td>
                     <td><strong>{formatarMoedaReajuste(item.impactoPrevistoRepassado || item.impactoPrevisto || item.impactoPeriodo)}</strong></td>
                     <td><strong>{formatarMoedaReajuste(item.reducaoImpactoPrevisto)}</strong></td>
                     <td>{periodoLabel(item.inicioImpactoRealizado || item.dataInicio, item.fimImpactoRealizado)}<small style={{ display: 'block', color: '#64748b' }}>{item.diasRealizadosImpacto ? `${toNumber(item.diasRealizadosImpacto).toLocaleString('pt-BR')} dia(s)` : ''}</small></td>
-                    <td>{toNumber(item.ctesRealizadoReajuste).toLocaleString('pt-BR')}</td>
+                    <td>{toNumber(item.ctesRealizadoReajuste).toLocaleString('pt-BR')}{item.fonteImpacto === 'realizado-online-supabase' && !toNumber(item.ctesRealizadoReajuste) && (item.transportadorasRealizado || []).length ? <small style={{ display: 'block', color: '#b45309' }}>Sem realizado após início</small> : null}</td>
                     <td>{formatarMoedaReajuste(item.impactoRealizadoSolicitado)}</td>
                     <td><strong>{formatarMoedaReajuste(item.impactoRealizadoRepassado || item.impactoRealizado)}</strong></td>
                     <td><strong>{formatarMoedaReajuste(item.reducaoImpactoRealizada)}</strong></td>

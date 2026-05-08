@@ -107,11 +107,11 @@ function normalizarResumo(data) {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row || typeof row !== 'object') return resumoVazio();
   return {
-    ctes: toNumber(row.ctes ?? row.total),
-    valorCte: toNumber(row.valorCte ?? row.valor_cte),
-    valorNF: toNumber(row.valorNF ?? row.valor_nf),
-    peso: toNumber(row.peso),
-    ultimaData: isoDate(row.ultimaData || row.ultima_data || ''),
+    ctes: toNumber(row.ctes ?? row.total ?? row.total_ctes),
+    valorCte: toNumber(row.valorCte ?? row.valor_cte ?? row.valor_cte_total ?? row.frete),
+    valorNF: toNumber(row.valorNF ?? row.valor_nf ?? row.valor_nf_total),
+    peso: toNumber(row.peso ?? row.peso_total),
+    ultimaData: isoDate(row.ultimaData || row.ultima_data || row.dataMaxima || row.data_maxima || ''),
   };
 }
 
