@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import {
   calcularImpactosReajustesOnline,
+  diagnosticarRealizadoOnlineReajustes,
   listarTransportadorasRealizadoReajustes,
   reajustesRealizadoOnlineDisponivel,
 } from '../services/reajustesRealizadoOnlineService';
@@ -731,6 +732,27 @@ export default function ReajustesPage() {
     }
   }
 
+
+  async function diagnosticarBaseOnline() {
+    setCarregando(true);
+    setErro('');
+    setMensagem('Diagnosticando base do Realizado Online no Supabase...');
+    try {
+      const diag = await diagnosticarRealizadoOnlineReajustes();
+      setMensagem(
+        `Diagnóstico Realizado Online: base unificada ${toNumber(diag.base_unificada).toLocaleString('pt-BR')} CT-e(s), `
+        + `${toNumber(diag.transportadoras).toLocaleString('pt-BR')} transportadora(s), `
+        + `período ${formatDate(diag.primeira_data) || '-'} a ${formatDate(diag.ultima_data) || '-'}, `
+        + `frete ${formatarMoedaReajuste(diag.frete_total)}. `
+        + `Detalhe: legado ${toNumber(diag.realizado_ctes).toLocaleString('pt-BR')} / enxuta ${toNumber(diag.realizado_ctes_enxuta).toLocaleString('pt-BR')}.`
+      );
+    } catch (error) {
+      setErro(error.message || 'Erro ao diagnosticar base online.');
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   async function importarArquivo() {
     if (!arquivo) {
       setErro('Selecione a planilha de controle de reajustes.');
@@ -908,7 +930,7 @@ export default function ReajustesPage() {
       persistir([novo, ...itens]);
       setManual(FORM_MANUAL_VAZIO);
       setMostrarManual(false);
-      setMensagem('Reajuste manual incluído. Agora faça o vínculo com o Realizado Local.');
+      setMensagem('Reajuste manual incluído. Agora faça o vínculo com o Realizado Online.');
       setErro('');
     } catch (error) {
       setErro(error.message || 'Erro ao incluir reajuste manual.');
@@ -947,7 +969,7 @@ export default function ReajustesPage() {
       <div className="page-header">
         <div className="amd-mini-brand">AMD Log • Reajustes</div>
         <h1>Controle de reajustes</h1>
-        <p>Gestão de solicitações, vínculos com o Realizado Local e cálculo de impacto previsto e realizado.</p>
+        <p>Gestão de solicitações, vínculos com o Realizado Online e cálculo de impacto previsto e realizado.</p>
       </div>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
@@ -1002,6 +1024,9 @@ export default function ReajustesPage() {
             </button>
             <button className="btn-secondary" type="button" onClick={() => carregarNomesRealizado(true)} disabled={carregando}>
               Atualizar nomes do Realizado
+            </button>
+            <button className="btn-secondary" type="button" onClick={diagnosticarBaseOnline} disabled={carregando}>
+              Diagnosticar base online
             </button>
             <button className="btn-danger" type="button" onClick={limparTudo} disabled={!itens.length || carregando}>
               Limpar controle

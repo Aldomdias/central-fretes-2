@@ -1,5 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
+const SQL_FIX_HINT = 'Rode o arquivo supabase/REAJUSTE_REALIZADO_ONLINE_FIX.sql no SQL Editor do Supabase.';
+
 function ensureClient() {
   const client = getSupabaseClient();
   if (!client || !isSupabaseConfigured()) {
@@ -155,7 +157,7 @@ async function rpcResumoRealizado(client, nomes = [], inicio = '', fim = '') {
 
   if (error) {
     throw new Error(
-      `Erro ao resumir CT-es do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes_BASE_TOTAL.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
+      `Erro ao resumir CT-es do Realizado Online. ${SQL_FIX_HINT} Detalhe: ${error.message || error.details || 'erro desconhecido'}`
     );
   }
 
@@ -170,7 +172,7 @@ export async function listarTransportadorasRealizadoReajustes() {
 
   if (error) {
     throw new Error(
-      `Erro ao carregar transportadoras do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes_BASE_TOTAL.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
+      `Erro ao carregar transportadoras do Realizado Online. ${SQL_FIX_HINT} Detalhe: ${error.message || error.details || 'erro desconhecido'}`
     );
   }
 
@@ -193,7 +195,7 @@ export async function obterUltimaDataRealizadoReajustes() {
   const { data, error } = await client.rpc('reajustes_realizado_ultima_data');
   if (error) {
     throw new Error(
-      `Erro ao consultar última data do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes_BASE_TOTAL.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
+      `Erro ao consultar última data do Realizado Online. ${SQL_FIX_HINT} Detalhe: ${error.message || error.details || 'erro desconhecido'}`
     );
   }
   return isoDate(data || '');
@@ -220,6 +222,18 @@ function calcularJanela(inicio = '', meses = 3, ultimaDataRealizado = '') {
     diasRealizados: fimRealizado ? diffDaysInclusive(inicio, fimRealizado) : 0,
     mesesRealizados: fimRealizado ? mesesEquivalentes(inicio, fimRealizado) : 0,
   };
+}
+
+
+export async function diagnosticarRealizadoOnlineReajustes() {
+  const client = ensureClient();
+  const { data, error } = await client.rpc('diagnosticar_realizado_online_reajustes');
+  if (error) {
+    throw new Error(
+      `Erro ao diagnosticar Realizado Online. ${SQL_FIX_HINT} Detalhe: ${error.message || error.details || 'erro desconhecido'}`
+    );
+  }
+  return data || {};
 }
 
 export async function calcularImpactosReajustesOnline(itens = [], periodo = {}) {
@@ -339,7 +353,7 @@ export async function calcularImpactosReajustesOnline(itens = [], periodo = {}) 
       semDataInicioImpacto: !inicio,
       vinculado: Boolean(nomes.length && (ctesPeriodo || ctesRealizadoReajuste)),
       nomesUsadosImpacto: nomes,
-      fonteImpacto: 'realizado-online-supabase-base-total',
+      fonteImpacto: 'realizado-online-supabase',
       avisoImpacto: !nomes.length
         ? 'Sem vínculo com transportadora do Realizado Online.'
         : !inicio
