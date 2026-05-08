@@ -1048,8 +1048,8 @@ export async function exportarRealizadoLocal(filtros = {}, options = {}) {
   return { rows: result.rows, totalCompativel: result.totalCompativel, limit, origem: 'supabase' };
 }
 
-export async function diagnosticarRealizadoLocal() {
-  if (!supabaseRealizadoDisponivel()) {
+export async function diagnosticarRealizadoLocal(options = {}) {
+  if (!supabaseRealizadoDisponivel() || options.forceLocal) {
     const local = await diagnosticarRealizadoLocalIndexedDb();
     return { ...local, origem: 'indexeddb' };
   }

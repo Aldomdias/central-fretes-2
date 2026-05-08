@@ -87,16 +87,18 @@ function iniciarEstado(files = []) {
   return id;
 }
 
-async function prepararMunicipiosParaImportacao({ municipios = [], ibgeInfo = {}, transportadoras = [], transportadorasTabela = [] } = {}) {
+async function prepararMunicipiosParaImportacao({ municipios = [], ibgeInfo = {}, transportadoras = [], transportadorasTabela = [], forceLocal = false } = {}) {
   let baseMunicipios = Array.isArray(municipios) ? municipios : [];
   let fonte = baseMunicipios.length ? ibgeInfo?.fonte || 'memória da tela' : 'pendente';
 
   setProgress({
-    etapa: 'Validando Realizado Online',
+    etapa: forceLocal ? 'Validando Realizado Local' : 'Validando Realizado Online',
     percentual: 2,
-    mensagem: 'Conferindo conexão com a tabela realizado_local_ctes no Supabase antes de processar o arquivo...',
+    mensagem: forceLocal
+      ? 'Modo emergência ativo: a base será salva somente no navegador, sem validar Supabase.'
+      : 'Conferindo conexão com a tabela realizado_local_ctes no Supabase antes de processar o arquivo...',
   });
-  await testarRealizadoOnlineSupabase();
+  if (!forceLocal) await testarRealizadoOnlineSupabase();
 
   if (!baseMunicipios.length || baseMunicipios.length < 5000) {
     setProgress({
@@ -140,7 +142,7 @@ async function prepararMunicipiosParaImportacao({ municipios = [], ibgeInfo = {}
   return { municipios: referencia, fonte };
 }
 
-function importarComWorker({ files = [], municipios = [], competencia = '' }) {
+function importarComWorker({ files = [], municipios = [], competencia = '', forceLocal = false }) {
   return new Promise((resolve, reject) => {
     if (typeof Worker === 'undefined') {
       reject(new Error('Este navegador não suporta processamento em segundo plano com Worker.'));
@@ -181,7 +183,7 @@ function importarComWorker({ files = [], municipios = [], competencia = '' }) {
             atual: Number(result.totalSalvos || result.totalPreparados || 0),
             total: Number(result.totalPreparados || result.totalSalvos || 0),
             percentual: 100,
-            mensagem: `${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no Supabase.`,
+            mensagem: `${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados ${result.origem === 'indexeddb' ? 'no navegador' : 'no Supabase'}.`,
             updatedAt: nowIso(),
           },
         });
@@ -230,6 +232,7 @@ function importarComWorker({ files = [], municipios = [], competencia = '' }) {
       files,
       municipios,
       competencia,
+      forceLocal,
     });
   });
 }
@@ -307,6 +310,7 @@ export function startRealizadoOnlineImport(payload = {}) {
         files,
         municipios: preparado.municipios,
         competencia: payload.competencia || '',
+        forceLocal: Boolean(payload.forceLocal),
       });
       return result;
     } catch (error) {

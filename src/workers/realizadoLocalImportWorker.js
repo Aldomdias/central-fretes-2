@@ -27,15 +27,26 @@ function montarMensagemErroArquivo(nome, error) {
   return `Erro ao processar ${nome}: ${detalhe}`;
 }
 
-async function importarRealizadoLocal({ files = [], municipios = [], competencia = '' }) {
-  postProgress({
-    etapa: 'Validando Supabase',
-    atual: 0,
-    total: files.length,
-    percentual: 1,
-    mensagem: 'Validando se a tabela realizado_local_ctes está acessível antes de ler o arquivo...',
-  });
-  const diagOnline = await testarRealizadoOnlineSupabase();
+async function importarRealizadoLocal({ files = [], municipios = [], competencia = '', forceLocal = false }) {
+  let diagOnline = null;
+  if (!forceLocal) {
+    postProgress({
+      etapa: 'Validando Supabase',
+      atual: 0,
+      total: files.length,
+      percentual: 1,
+      mensagem: 'Validando se a tabela realizado_local_ctes está acessível antes de ler o arquivo...',
+    });
+    diagOnline = await testarRealizadoOnlineSupabase();
+  } else {
+    postProgress({
+      etapa: 'Validando base local',
+      atual: 0,
+      total: files.length,
+      percentual: 1,
+      mensagem: 'Modo emergência ativo: o arquivo será salvo somente no navegador, sem consultar o Supabase.',
+    });
+  }
 
   let municipiosReferencia = Array.isArray(municipios) ? municipios : [];
 
@@ -80,7 +91,9 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index, totalArquivos, 5),
-        mensagem: `Lendo ${nome}. Supabase OK com ${Number(diagOnline.totalAtual || 0).toLocaleString('pt-BR')} CT-e(s) atuais. Base IBGE disponível: ${municipiosReferencia.length.toLocaleString('pt-BR')} município(s).`,
+        mensagem: forceLocal
+          ? `Lendo ${nome}. Modo local/emergência ativo. Base IBGE disponível: ${municipiosReferencia.length.toLocaleString('pt-BR')} município(s).`
+          : `Lendo ${nome}. Supabase OK com ${Number(diagOnline?.totalAtual || 0).toLocaleString('pt-BR')} CT-e(s) atuais. Base IBGE disponível: ${municipiosReferencia.length.toLocaleString('pt-BR')} município(s).`,
       });
 
       const parsed = await parseRealizadoCtesFileFast(file, {
@@ -115,24 +128,25 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       totalPendencias += pendencias.length;
 
       postProgress({
-        etapa: 'Gravando base online',
+        etapa: forceLocal ? 'Gravando base local' : 'Gravando base online',
         atual: 0,
         total: rows.length,
         percentual: calcularPercentualArquivo(index, totalArquivos, 65),
-        mensagem: `Gravando ${rows.length.toLocaleString('pt-BR')} CT-e(s) de ${nome}; ${ibgeOk.toLocaleString('pt-BR')} com IBGE e ${pendencias.length.toLocaleString('pt-BR')} pendência(s)...`,
+        mensagem: `Gravando ${rows.length.toLocaleString('pt-BR')} CT-e(s) de ${nome} ${forceLocal ? 'no navegador' : 'no Supabase'}; ${ibgeOk.toLocaleString('pt-BR')} com IBGE e ${pendencias.length.toLocaleString('pt-BR')} pendência(s)...`,
       });
 
       const save = await salvarRealizadoLocal(rows, {
-        chunkSize: 200,
-        exigirSupabase: true,
+        chunkSize: forceLocal ? 1000 : 200,
+        exigirSupabase: !forceLocal,
+        forceLocal,
         onProgress: ({ salvos, total, duplicadosNoArquivo = 0, semChave = 0 }) => {
           const interno = 65 + Math.round(pct(salvos, total) * 0.30);
           postProgress({
-            etapa: 'Gravando base online',
+            etapa: forceLocal ? 'Gravando base local' : 'Gravando base online',
             atual: salvos,
             total,
             percentual: calcularPercentualArquivo(index, totalArquivos, interno),
-            mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) gravados no Supabase de ${nome}. Repetidos no arquivo: ${Number(duplicadosNoArquivo || 0).toLocaleString('pt-BR')}; sem chave: ${Number(semChave || 0).toLocaleString('pt-BR')}.`,
+            mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) gravados ${forceLocal ? 'no navegador' : 'no Supabase'} de ${nome}. Repetidos no arquivo: ${Number(duplicadosNoArquivo || 0).toLocaleString('pt-BR')}; sem chave: ${Number(semChave || 0).toLocaleString('pt-BR')}.`,
           });
         },
       });
@@ -158,7 +172,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index + 1, totalArquivos, 0),
-        mensagem: `${nome} concluído: ${(save.salvos || rows.length).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no Supabase. Reimportação do mesmo CT-e sobrescreve a linha antiga pela chave do CT-e.`,
+        mensagem: `${nome} concluído: ${(save.salvos || rows.length).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados ${forceLocal ? 'no navegador' : 'no Supabase'}. Reimportação do mesmo CT-e sobrescreve a linha antiga pela chave do CT-e.`,
       });
     } catch (error) {
       erros.push({ nome, erro: error?.message || 'Erro desconhecido' });
@@ -173,10 +187,10 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
   }
 
   if (!totalSalvos && erros.length) {
-    throw new Error(`Nenhum CT-e foi salvo no Supabase. Primeiro erro: ${erros[0].erro}`);
+    throw new Error(`Nenhum CT-e foi salvo ${forceLocal ? 'no navegador' : 'no Supabase'}. Primeiro erro: ${erros[0].erro}`);
   }
 
-  return { totalLidos, totalPreparados, totalPendencias, totalSalvos, totalIgnoradosTomador, regraTomador: 'CPX, ITR, GRIP, GP PNEUS', arquivos, erros };
+  return { totalLidos, totalPreparados, totalPendencias, totalSalvos, totalIgnoradosTomador, regraTomador: 'CPX, ITR, GRIP, GP PNEUS', arquivos, erros, origem: forceLocal ? 'indexeddb' : 'supabase' };
 }
 
 self.onmessage = async (event) => {

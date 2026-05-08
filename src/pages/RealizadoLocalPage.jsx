@@ -67,6 +67,15 @@ const DEFAULT_FILTROS = {
 };
 
 const ECONOMIA_SUPABASE_LOCAL_KEY = 'amd-realizado-local-economia-supabase';
+const REALIZADO_LOCAL_EMERGENCIA_KEY = 'amd-realizado-usar-local-emergencia';
+
+function readPreferenciaRealizadoLocalEmergencia() {
+  try {
+    return localStorage.getItem(REALIZADO_LOCAL_EMERGENCIA_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 const DEFAULT_VOLUMETRIA_CONFIG = {
   canal: '',
@@ -673,7 +682,9 @@ function formatBytes(bytes = 0) {
 function mensagemResultadoImportacaoRealizado(result = {}) {
   const duplicadosNoArquivo = (result.arquivos || []).reduce((sum, item) => sum + Number(item.duplicadosNoArquivo || 0), 0);
   const semChave = (result.arquivos || []).reduce((sum, item) => sum + Number(item.semChave || 0), 0);
-  return `Importação online concluída: ${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no Supabase, de ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} preparados e ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Repetidos dentro do arquivo: ${duplicadosNoArquivo.toLocaleString('pt-BR')}. Sem chave descartados: ${semChave.toLocaleString('pt-BR')}. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`;
+  const destino = result.origem === 'indexeddb' ? 'no navegador' : 'no Supabase';
+  const tipo = result.origem === 'indexeddb' ? 'local/emergencial' : 'online';
+  return `Importação ${tipo} concluída: ${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados ${destino}, de ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} preparados e ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Repetidos dentro do arquivo: ${duplicadosNoArquivo.toLocaleString('pt-BR')}. Sem chave descartados: ${semChave.toLocaleString('pt-BR')}. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`;
 }
 
 function cteToExportRow(item = {}) {
@@ -812,6 +823,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [tabelasLocais, setTabelasLocais] = useState([]);
   const [usarTabelaSalvaLocal, setUsarTabelaSalvaLocal] = useState(true);
   const [economizarSupabase, setEconomizarSupabase] = useState(readPreferenciaEconomiaSupabase);
+  const [usarRealizadoLocalEmergencial, setUsarRealizadoLocalEmergencial] = useState(readPreferenciaRealizadoLocalEmergencia);
   const [salvandoTabelaLocal, setSalvandoTabelaLocal] = useState(false);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
   const [modoSimulacao, setModoSimulacao] = useState('rapido');
@@ -844,7 +856,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setCarregando(true);
       try {
         const [diag, ibgeRef] = await Promise.all([
-          diagnosticarRealizadoLocal().catch(() => ({ total: 0 })),
+          diagnosticarRealizadoLocal({ forceLocal: usarRealizadoLocalEmergencial }).catch(() => ({ total: 0 })),
           carregarMunicipiosIbgeComFallback({ permitirOficial: true }).catch(() => ({ municipios: [], fonte: 'pendente', totalSupabase: 0 })),
         ]);
         if (!ativo) return;
@@ -916,21 +928,26 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   async function pesquisar(filtrosBusca = filtros, mostrarMensagem = true) {
     setCarregando(true);
     setErro('');
+    const forceLocal = Boolean(usarRealizadoLocalEmergencial);
     try {
-      if (mostrarMensagem) setFeedback('Pesquisando diretamente a base online do Supabase...');
-      const diagAntes = await diagnosticarRealizadoLocal().catch(() => null);
+      if (mostrarMensagem) setFeedback(forceLocal ? 'Pesquisando base local do navegador...' : 'Pesquisando diretamente a base online do Supabase...');
+      const diagAntes = await diagnosticarRealizadoLocal({ forceLocal }).catch(() => null);
       const [resumoLocal, lista] = await Promise.all([
-        resumirRealizadoLocal(filtrosBusca, { top: 10, fallbackLimit: 300000 }),
-        listarRealizadoLocal(filtrosBusca, { limit: 50, pageSize: 1000 }),
+        resumirRealizadoLocal(filtrosBusca, { top: 10, fallbackLimit: 300000, forceLocal }),
+        listarRealizadoLocal(filtrosBusca, { limit: 50, pageSize: 1000, forceLocal }),
       ]);
-      const diag = await diagnosticarRealizadoLocal().catch(() => diagAntes);
+      const diag = await diagnosticarRealizadoLocal({ forceLocal }).catch(() => diagAntes);
       setResumo(resumoLocal);
       setAmostra(lista.rows || []);
       setDiagnostico(diag);
       setFiltrosAplicados({ ...DEFAULT_FILTROS, ...filtrosBusca });
-      setFeedback(mensagemBaseOnline(resumoLocal, diag, filtrosBusca));
+      if (forceLocal) {
+        setFeedback(`Base local carregada: ${Number(resumoLocal?.total || 0).toLocaleString('pt-BR')} CT-e(s), ${Number(resumoLocal?.comIbge || 0).toLocaleString('pt-BR')} com IBGE e ${Number(resumoLocal?.pendenciasIbge || 0).toLocaleString('pt-BR')} pendência(s). Total local no navegador: ${Number(diag?.total || 0).toLocaleString('pt-BR')} CT-e(s).`);
+      } else {
+        setFeedback(mensagemBaseOnline(resumoLocal, diag, filtrosBusca));
+      }
     } catch (error) {
-      setErro(error.message || 'Erro ao pesquisar base online.');
+      setErro(error.message || (forceLocal ? 'Erro ao pesquisar base local.' : 'Erro ao pesquisar base online.'));
     } finally {
       setCarregando(false);
     }
@@ -946,6 +963,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   useEffect(() => {
     filtrosRef.current = filtros;
   }, [filtros]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REALIZADO_LOCAL_EMERGENCIA_KEY, usarRealizadoLocalEmergencial ? '1' : '0');
+    } catch {}
+  }, [usarRealizadoLocalEmergencial]);
 
   useEffect(() => {
     function aplicarEstadoImportacaoGlobal(importState) {
@@ -991,18 +1014,20 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     return subscribeRealizadoOnlineImport(aplicarEstadoImportacaoGlobal);
   }, []);
 
-  async function prepararMunicipiosParaImportacao() {
+  async function prepararMunicipiosParaImportacao(forceLocal = false) {
     let baseMunicipios = Array.isArray(municipios) ? municipios : [];
     let fonte = baseMunicipios.length ? ibgeInfo.fonte : 'pendente';
 
     setProgress((prev) => ({
       ...(prev || {}),
-      etapa: 'Validando Realizado Online',
+      etapa: forceLocal ? 'Validando Realizado Local' : 'Validando Realizado Online',
       percentual: 2,
-      mensagem: 'Conferindo conexão com a tabela realizado_local_ctes no Supabase antes de processar o arquivo...',
+      mensagem: forceLocal
+        ? 'Modo emergência: salvando somente no navegador, sem validar Supabase.'
+        : 'Conferindo conexão com a tabela realizado_local_ctes no Supabase antes de processar o arquivo...',
     }));
     await nextFrame();
-    await testarRealizadoOnlineSupabase();
+    if (!forceLocal) await testarRealizadoOnlineSupabase();
 
     if (!baseMunicipios.length || baseMunicipios.length < 5000) {
       setProgress((prev) => ({
@@ -1042,7 +1067,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
 
     if (!referencia.length) {
-      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base online não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.');
+      throw new Error(`Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base ${forceLocal ? 'local' : 'online'} não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.`);
     }
 
     setProgress((prev) => ({
@@ -1058,7 +1083,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     return referencia;
   }
 
-  function importarArquivosComWorker(files = [], municipiosResolucao = municipios) {
+  function importarArquivosComWorker(files = [], municipiosResolucao = municipios, forceLocal = false) {
     return new Promise((resolve, reject) => {
       if (typeof Worker === 'undefined') {
         reject(new Error('Este navegador não suporta processamento em segundo plano com Worker.'));
@@ -1102,6 +1127,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         files,
         municipios: municipiosResolucao,
         competencia: filtros.competencia,
+        forceLocal,
       });
     });
   }
@@ -1110,17 +1136,32 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
 
+    const forceLocal = Boolean(usarRealizadoLocalEmergencial);
     setErro('');
     setResultado(null);
     setProgress({
-      etapa: 'Fila de importação online',
+      etapa: forceLocal ? 'Importação local emergencial' : 'Fila de importação online',
       atual: 0,
       total: files.length,
       percentual: 1,
-      mensagem: 'Importação enviada para o gerenciador global. Você pode sair desta tela; o andamento ficará no topo do sistema.',
+      mensagem: forceLocal
+        ? 'Os arquivos serão processados e salvos somente neste navegador. Não usa Supabase.'
+        : 'Importação enviada para o gerenciador global. Você pode sair desta tela; o andamento ficará no topo do sistema.',
     });
 
     try {
+      if (forceLocal) {
+        setImportando(true);
+        const referencia = await prepararMunicipiosParaImportacao(true);
+        const result = await importarArquivosComWorker(files, referencia, true);
+        setFeedback(mensagemResultadoImportacaoRealizado(result));
+        setFileKey(makeFileKey());
+        await pesquisar(filtros, false);
+        setProgress({ etapa: 'Importação local concluída', percentual: 100, mensagem: `${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no navegador.` });
+        setTimeout(() => setProgress(null), 2500);
+        return;
+      }
+
       const tarefa = startRealizadoOnlineImport({
         files,
         municipios,
@@ -1135,8 +1176,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         setErro(error?.message || 'Erro ao importar arquivos para a base online.');
       });
     } catch (error) {
-      setErro(error.message || 'Erro ao iniciar importação para a base online.');
+      setErro(error.message || (forceLocal ? 'Erro ao iniciar importação local.' : 'Erro ao iniciar importação para a base online.'));
     } finally {
+      setImportando(false);
       if (event.target) event.target.value = '';
     }
   }
@@ -1151,7 +1193,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setProgress({ etapa: 'Reprocessando IBGE', atual: 0, total: stats.total || 0, percentual: 5, mensagem: 'Lendo base online já importada...' });
 
     try {
-      const baseAtual = await exportarRealizadoLocal({}, { limit: 500000 });
+      const baseAtual = await exportarRealizadoLocal({}, { limit: 500000, forceLocal: usarRealizadoLocalEmergencial });
       const rowsAtuais = baseAtual.rows || [];
       if (!rowsAtuais.length) {
         setFeedback('Não há base online para reprocessar.');
@@ -1169,9 +1211,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       }));
 
       const { rows, pendencias } = prepararRegistrosRealizadoLocal(registros, municipios, {});
-      await limparRealizadoLocal();
+      await limparRealizadoLocal({ forceLocal: usarRealizadoLocalEmergencial });
       await salvarRealizadoLocal(rows, {
         chunkSize: 1000,
+        forceLocal: usarRealizadoLocalEmergencial,
         onProgress: ({ salvos, total }) => {
           setProgress({
             etapa: 'Gravando base corrigida',
@@ -1205,6 +1248,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
     try {
       const result = await limparNaoTomadoresRealizadoLocal({
+        forceLocal: usarRealizadoLocalEmergencial,
         onProgress: ({ avaliados, removidos, mantidos }) => {
           setProgress({
             etapa: 'Limpando tomadores',
@@ -1226,8 +1270,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function limparBase() {
-    const texto = window.prompt('Para limpar a base online do Supabase, digite APAGAR REALIZADO ONLINE');
-    if (texto !== 'APAGAR REALIZADO ONLINE') return;
+    const fraseConfirmacao = usarRealizadoLocalEmergencial ? 'APAGAR REALIZADO LOCAL' : 'APAGAR REALIZADO ONLINE';
+    const texto = window.prompt(`Para limpar a base ${usarRealizadoLocalEmergencial ? 'local deste navegador' : 'online do Supabase'}, digite ${fraseConfirmacao}`);
+    if (texto !== fraseConfirmacao) return;
     setCarregando(true);
     setErro('');
     try {
@@ -1235,8 +1280,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setResumo(null);
       setAmostra([]);
       setResultado(null);
-      setDiagnostico(await diagnosticarRealizadoLocal());
-      setFeedback('Base online limpa no Supabase.');
+      setDiagnostico(await diagnosticarRealizadoLocal({ forceLocal: usarRealizadoLocalEmergencial }));
+      setFeedback(usarRealizadoLocalEmergencial ? 'Base local limpa neste navegador.' : 'Base online limpa no Supabase.');
     } catch (error) {
       setErro(error.message || 'Erro ao limpar base online.');
     } finally {
@@ -1751,8 +1796,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       await nextFrame();
 
       const buscaRealizado = usarMalhaAutomatica
-        ? await buscarRealizadoLocalPorMalha(filtrosBase, escopo.routeKeys, { limit: 10000 })
-        : await buscarRealizadoLocalParaSimulacao(filtrosBase, { limit: 10000 });
+        ? await buscarRealizadoLocalPorMalha(filtrosBase, escopo.routeKeys, { limit: 10000, forceLocal: usarRealizadoLocalEmergencial })
+        : await buscarRealizadoLocalParaSimulacao(filtrosBase, { limit: 10000, forceLocal: usarRealizadoLocalEmergencial });
 
       const { rows, totalCompativel, limit } = buscaRealizado;
       if (!rows.length) {
@@ -1883,7 +1928,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         fim: volumetriaConfig.fim,
         excluirEbazar: Boolean(volumetriaConfig.excluirEbazar),
       };
-      const { rows, totalCompativel, limit } = await exportarRealizadoLocal(filtrosVolumetria, { limit: 500000 });
+      const { rows, totalCompativel, limit } = await exportarRealizadoLocal(filtrosVolumetria, { limit: 500000, forceLocal: usarRealizadoLocalEmergencial });
       if (!rows.length) {
         setErro('Não existe base para gerar volumetria com os filtros informados.');
         return;
@@ -1924,7 +1969,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setExportando(true);
     setErro('');
     try {
-      const { rows, totalCompativel, limit } = await exportarRealizadoLocal(filtrosAplicados, { limit: 100000 });
+      const { rows, totalCompativel, limit } = await exportarRealizadoLocal(filtrosAplicados, { limit: 100000, forceLocal: usarRealizadoLocalEmergencial });
       if (!rows.length) {
         setErro('Não existe base filtrada para exportar. Pesquise primeiro.');
         return;
@@ -1969,12 +2014,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <div className="amd-mini-brand">AMD Log • Realizado online</div>
           <h1>Realizado Online</h1>
           <p>
-            Carregue CT-e(s), grave a base enxuta no Supabase e use a mesma base em qualquer máquina para simular, auditar e exportar volumetria.
+            Carregue CT-e(s), use a base online no Supabase ou salve localmente em modo emergência para simular, auditar e calcular reajustes.
           </p>
         </div>
         <div className="actions-right wrap">
           <button className="btn-secondary" onClick={() => pesquisar(filtros)} disabled={carregando || importando || simulando}>
-            {carregando ? 'Pesquisando...' : 'Atualizar da base online'}
+            {carregando ? 'Pesquisando...' : usarRealizadoLocalEmergencial ? 'Atualizar da base local' : 'Atualizar da base online'}
           </button>
           <button className="btn-secondary" onClick={limparFiltrosEPesquisar} disabled={carregando || importando || simulando}>
             Limpar filtros e atualizar
@@ -1983,13 +2028,13 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             {exportando ? 'Exportando...' : 'Exportar base filtrada'}
           </button>
           <button className="btn-secondary" onClick={reprocessarIbgeLocal} disabled={carregando || importando || simulando || !diagnostico?.total || !municipios.length}>
-            Reprocessar IBGE online
+            {usarRealizadoLocalEmergencial ? 'Reprocessar IBGE local' : 'Reprocessar IBGE online'}
           </button>
           <button className="btn-secondary" onClick={limparNaoTomadoresLocal} disabled={carregando || importando || simulando || !diagnostico?.total}>
             Limpar não tomadores
           </button>
           <button className="btn-danger" onClick={limparBase} disabled={carregando || importando || simulando || !diagnostico?.total}>
-            Limpar base online
+            {usarRealizadoLocalEmergencial ? 'Limpar base local' : 'Limpar base online'}
           </button>
         </div>
       </div>
@@ -1997,7 +2042,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
       <div className={ibgeInfo.total ? 'sim-alert success' : 'sim-alert'}>
-        <strong>Referência IBGE:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação online usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se o Supabase estiver vazio.
+        <strong>Referência IBGE:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se a referência estiver vazia.
       </div>
       <div className="sim-alert info">
         <strong>Regra de limpeza do realizado:</strong> entram na base apenas CT-e(s) cujo Tomador de Serviço contenha {regraTomadorServicoRealizadoTexto()}. Use “Limpar não tomadores” para reprocessar uma base antiga já importada.
@@ -2008,9 +2053,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <div className={economizarSupabase ? 'sim-alert success' : 'sim-alert info'}>
         <strong>Modo economia Supabase:</strong> {economizarSupabase ? 'ativo — economiza consultas de tabelas de frete; o Realizado Online continua lendo a base do Supabase.' : 'desativado — o sistema pode consultar o Supabase para baixar tabelas que ainda não estão locais.'}
       </div>
+      <div className={usarRealizadoLocalEmergencial ? 'sim-alert success' : 'sim-alert info'}>
+        <strong>Fonte do realizado:</strong> {usarRealizadoLocalEmergencial ? 'modo emergência local ativo — upload, pesquisa, simulação e reajuste usam a base salva neste navegador.' : 'modo online ativo — usa Supabase.'}
+      </div>
       {Number(diagnostico?.total || 0) > 0 && !stats.total ? (
         <div className="sim-alert">
-          <strong>Atenção:</strong> existem {Number(diagnostico?.total || 0).toLocaleString('pt-BR')} CT-e(s) na base online, mas o filtro atual está retornando zero. Use “Limpar filtros e atualizar” para validar a base completa.
+          <strong>Atenção:</strong> existem {Number(diagnostico?.total || 0).toLocaleString('pt-BR')} CT-e(s) na base {usarRealizadoLocalEmergencial ? 'local' : 'online'}, mas o filtro atual está retornando zero. Use “Limpar filtros e atualizar” para validar a base completa.
         </div>
       ) : null}
 
@@ -2117,8 +2165,15 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
       <div className="feature-grid three">
         <section className="panel-card">
-          <div className="panel-title">1. Carregar base online</div>
-          <p>Selecione um ou mais arquivos mensais. O sistema grava uma base enxuta no Supabase para todos os usuários acessarem.</p>
+          <div className="panel-title">1. Carregar base realizada</div>
+          <p>Selecione um ou mais arquivos mensais. No modo emergência, o sistema grava somente no navegador para uso imediato no Reajuste.</p>
+          <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 10 }}>
+            <input type="checkbox" checked={usarRealizadoLocalEmergencial} onChange={(e) => setUsarRealizadoLocalEmergencial(e.target.checked)} />
+            <span>
+              Usar local / emergência
+              <small style={{ display: 'block' }}>Salva e consulta os CT-e(s) somente neste navegador. Use agora para Reajuste sem depender do Supabase.</small>
+            </span>
+          </label>
           <input
             key={fileKey}
             ref={fileInputRef}
@@ -2129,10 +2184,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             disabled={importando || simulando}
           />
           <button className="btn-primary full" onClick={() => fileInputRef.current?.click()} disabled={importando || simulando}>
-            {importando ? 'Importando local...' : 'Selecionar arquivos locais'}
+            {importando ? 'Importando...' : usarRealizadoLocalEmergencial ? 'Selecionar e salvar local' : 'Selecionar e salvar online'}
           </button>
           <div className="import-meta-box">
-            Base online Supabase: <strong>{Number(diagnostico?.total || 0).toLocaleString('pt-BR')}</strong> CT-e(s)
+            {usarRealizadoLocalEmergencial ? 'Base local navegador' : 'Base online Supabase'}: <strong>{Number(diagnostico?.total || 0).toLocaleString('pt-BR')}</strong> CT-e(s)
             {diagnostico?.projeto ? <span> • {diagnostico.projeto}</span> : null}
             {diagnostico?.periodoInicio || diagnostico?.periodoFim ? <small>Período: {formatDateBr(diagnostico?.periodoInicio)} até {formatDateBr(diagnostico?.periodoFim)}</small> : null}
           </div>
@@ -2289,7 +2344,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         <div className="sim-parametros-header">
           <div>
             <h2>Painel da base online</h2>
-            <p>Visão rápida da última pesquisa online gravada no Supabase.</p>
+            <p>Visão rápida da última pesquisa do realizado selecionado.</p>
           </div>
           <span className="status-pill">{amostra.length.toLocaleString('pt-BR')} linha(s) na amostra</span>
         </div>
