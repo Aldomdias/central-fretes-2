@@ -3,7 +3,6 @@ import * as XLSX from 'xlsx';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import {
   calcularImpactosReajustesOnline,
-  diagnosticarRealizadoOnlineReajustes,
   listarTransportadorasRealizadoReajustes,
   reajustesRealizadoOnlineDisponivel,
 } from '../services/reajustesRealizadoOnlineService';
@@ -37,6 +36,27 @@ import {
 
 const STATUS_OPTIONS = ['EM ANÁLISE', 'ADIADO', 'APROVADO', 'EFETIVADO', 'NEGADO', 'PENDENTE', 'AGUARDANDO RETORNO'];
 const CANAIS_OPTIONS = ['', 'ATACADO', 'B2C', 'ATACADO E B2C'];
+
+const REAJUSTES_FONTE_REALIZADO_KEY = 'central_fretes_reajustes_fonte_realizado_v1';
+
+function carregarFonteRealizadoPreferida() {
+  try {
+    const salvo = localStorage.getItem(REAJUSTES_FONTE_REALIZADO_KEY);
+    return salvo === 'online' ? 'online' : 'local';
+  } catch {
+    return 'local';
+  }
+}
+
+function salvarFonteRealizadoPreferida(value) {
+  try {
+    localStorage.setItem(REAJUSTES_FONTE_REALIZADO_KEY, value === 'online' ? 'online' : 'local');
+  } catch {}
+}
+
+function labelFonteRealizado(value) {
+  return value === 'online' ? 'Realizado Online / Supabase' : 'Realizado Local / emergência';
+}
 const FORM_MANUAL_VAZIO = {
   transportadoraInformada: '',
   canal: '',
@@ -540,6 +560,7 @@ export default function ReajustesPage() {
   const [ultimoSyncSupabase, setUltimoSyncSupabase] = useState('');
   const [impactosAtualizadosEm, setImpactosAtualizadosEm] = useState('');
   const [impactosPendentes, setImpactosPendentes] = useState(false);
+  const [fonteRealizado, setFonteRealizado] = useState(carregarFonteRealizadoPreferida);
 
   useEffect(() => {
     let cancelado = false;
@@ -603,6 +624,10 @@ export default function ReajustesPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    salvarFonteRealizadoPreferida(fonteRealizado);
+  }, [fonteRealizado]);
 
   useEffect(() => {
     salvarConfigReajustes(config);
@@ -704,13 +729,15 @@ export default function ReajustesPage() {
   }
 
   async function carregarNomesRealizado(exibirMensagem = true) {
+    const usarOnline = fonteRealizado === 'online' && reajustesRealizadoOnlineDisponivel();
+    const fonteLabel = labelFonteRealizado(fonteRealizado);
     if (exibirMensagem) {
       setCarregando(true);
       setErro('');
-      setMensagem('Carregando nomes de transportadoras do Realizado Online...');
+      setMensagem(`Carregando nomes de transportadoras do ${fonteLabel}...`);
     }
     try {
-      if (reajustesRealizadoOnlineDisponivel()) {
+      if (usarOnline) {
         const nomes = await listarTransportadorasRealizadoReajustes();
         setOpcoesRealizado(nomes);
         if (exibirMensagem) {
@@ -719,37 +746,19 @@ export default function ReajustesPage() {
         return nomes;
       }
 
-      const { rows } = await exportarRealizadoLocal({}, { limit: 500000 });
+      const { rows, totalCompativel, limit } = await exportarRealizadoLocal({}, { limit: 500000, forceLocal: true });
       const nomes = nomesUnicosRealizado(rows || []);
       setOpcoesRealizado(nomes);
-      if (exibirMensagem) setMensagem(`Transportadoras carregadas do Realizado Local: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
+      if (exibirMensagem) {
+        const avisoLimite = Number(totalCompativel || 0) > Number(limit || 0) ? ` Limite lido: ${Number(limit || 0).toLocaleString('pt-BR')} CT-e(s).` : '';
+        setMensagem(`Transportadoras carregadas do Realizado Local: ${nomes.length.toLocaleString('pt-BR')} nome(s), ${Number(totalCompativel || rows?.length || 0).toLocaleString('pt-BR')} CT-e(s).${avisoLimite}`);
+      }
       return nomes;
     } catch (error) {
-      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do Realizado Online.');
+      if (exibirMensagem) setErro(error.message || `Erro ao carregar transportadoras do ${fonteLabel}.`);
       return [];
     } finally {
       if (exibirMensagem) setCarregando(false);
-    }
-  }
-
-
-  async function diagnosticarBaseOnline() {
-    setCarregando(true);
-    setErro('');
-    setMensagem('Diagnosticando base do Realizado Online no Supabase...');
-    try {
-      const diag = await diagnosticarRealizadoOnlineReajustes();
-      setMensagem(
-        `Diagnóstico Realizado Online: base unificada ${toNumber(diag.base_unificada).toLocaleString('pt-BR')} CT-e(s), `
-        + `${toNumber(diag.transportadoras).toLocaleString('pt-BR')} transportadora(s), `
-        + `período ${formatDate(diag.primeira_data) || '-'} a ${formatDate(diag.ultima_data) || '-'}, `
-        + `frete ${formatarMoedaReajuste(diag.frete_total)}. `
-        + `Detalhe: legado ${toNumber(diag.realizado_ctes).toLocaleString('pt-BR')} / enxuta ${toNumber(diag.realizado_ctes_enxuta).toLocaleString('pt-BR')}.`
-      );
-    } catch (error) {
-      setErro(error.message || 'Erro ao diagnosticar base online.');
-    } finally {
-      setCarregando(false);
     }
   }
 
@@ -797,7 +806,7 @@ export default function ReajustesPage() {
     const novos = aplicarVinculoAutomatico(itens, nomes.map((item) => item.nome));
     persistir(novos);
     setVinculoAtivoId(null);
-    setMensagem('Vínculo automático atualizado com base nos nomes do Realizado Local.');
+    setMensagem(`Vínculo automático atualizado com base nos nomes do ${labelFonteRealizado(fonteRealizado)}.`);
     setErro('');
   }
 
@@ -811,9 +820,11 @@ export default function ReajustesPage() {
       return;
     }
 
-    setMensagem(`Calculando impacto pela base do Realizado Online a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
+    const usarOnline = fonteRealizado === 'online' && reajustesRealizadoOnlineDisponivel();
+    const fonteLabel = labelFonteRealizado(fonteRealizado);
+    setMensagem(`Calculando impacto pelo ${fonteLabel} a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
     try {
-      if (reajustesRealizadoOnlineDisponivel()) {
+      if (usarOnline) {
         const calculados = await calcularImpactosReajustesOnline(itens, config);
         persistir(calculados);
         setImpactosAtualizadosEm(new Date().toLocaleTimeString('pt-BR'));
@@ -832,7 +843,12 @@ export default function ReajustesPage() {
 
       const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
         inicio: consulta.inicio,
-      }, { limit: 500000 });
+      }, { limit: 500000, forceLocal: true });
+
+      if (!rows?.length) {
+        setErro('A base local do navegador está vazia ou não tem CT-e dentro do período necessário. Carregue a base CT-e no modo “Salvar só local/emergência” antes de calcular.');
+        return;
+      }
 
       const calculados = calcularImpactosReajustes(itens, rows || [], config);
       persistir(calculados);
@@ -841,12 +857,12 @@ export default function ReajustesPage() {
       const resumoCalculado = resumoReajustes(calculados);
 
       setMensagem(
-        `Impacto calculado com ${Number(rows?.length || 0).toLocaleString('pt-BR')} CT-e(s). `
+        `Impacto calculado pelo Realizado Local com ${Number(rows?.length || 0).toLocaleString('pt-BR')} CT-e(s). `
         + `Base prevista: média dos ${Number(config.mesesBaseImpacto || 3).toLocaleString('pt-BR')} mês(es) anteriores à Data_Inicio. `
         + `Realizado: da Data_Inicio até ${formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base'}${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao calcular impacto pelo Realizado Online.');
+      setErro(error.message || `Erro ao calcular impacto pelo ${fonteLabel}.`);
     } finally {
       setCarregando(false);
     }
@@ -930,7 +946,7 @@ export default function ReajustesPage() {
       persistir([novo, ...itens]);
       setManual(FORM_MANUAL_VAZIO);
       setMostrarManual(false);
-      setMensagem('Reajuste manual incluído. Agora faça o vínculo com o Realizado Online.');
+      setMensagem('Reajuste manual incluído. Agora faça o vínculo com o Realizado Local.');
       setErro('');
     } catch (error) {
       setErro(error.message || 'Erro ao incluir reajuste manual.');
@@ -969,7 +985,7 @@ export default function ReajustesPage() {
       <div className="page-header">
         <div className="amd-mini-brand">AMD Log • Reajustes</div>
         <h1>Controle de reajustes</h1>
-        <p>Gestão de solicitações, vínculos com o Realizado Online e cálculo de impacto previsto e realizado.</p>
+        <p>Gestão de solicitações, vínculos com o Realizado e cálculo de impacto previsto e realizado. Para emergência, use o Realizado Local do navegador.</p>
       </div>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
@@ -1023,10 +1039,7 @@ export default function ReajustesPage() {
               {mostrarManual ? 'Fechar inclusão manual' : 'Incluir reajuste manual'}
             </button>
             <button className="btn-secondary" type="button" onClick={() => carregarNomesRealizado(true)} disabled={carregando}>
-              Atualizar nomes do Realizado
-            </button>
-            <button className="btn-secondary" type="button" onClick={diagnosticarBaseOnline} disabled={carregando}>
-              Diagnosticar base online
+              Atualizar nomes do Realizado escolhido
             </button>
             <button className="btn-danger" type="button" onClick={limparTudo} disabled={!itens.length || carregando}>
               Limpar controle
@@ -1091,7 +1104,7 @@ export default function ReajustesPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">2. Base automática, filtros e cálculo</div>
-            <p>Informe a data de início em cada reajuste. O sistema busca automaticamente a base anterior e mede o realizado depois da vigência.</p>
+            <p>Informe a data de início em cada reajuste. Escolha se o cálculo usa a base local emergencial ou a base online.</p>
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={tentarVincular} disabled={!itens.length || carregando}>Sugerir vínculos</button>
@@ -1112,6 +1125,12 @@ export default function ReajustesPage() {
         </div>
 
         <div className="form-grid three">
+          <label className="field">Fonte da base CT-e
+            <select value={fonteRealizado} onChange={(event) => { setFonteRealizado(event.target.value); setOpcoesRealizado([]); setImpactosPendentes(true); }}>
+              <option value="local">Realizado Local / emergência</option>
+              <option value="online">Realizado Online / Supabase</option>
+            </select>
+          </label>
           <label className="field">Base anterior para previsão
             <select value={String(config.mesesBaseImpacto || 3)} onChange={(event) => { setConfig((prev) => ({ ...prev, mesesBaseImpacto: Number(event.target.value) })); setImpactosPendentes(true); }}>
               <option value="1">1 mês anterior à vigência</option>
@@ -1139,7 +1158,7 @@ export default function ReajustesPage() {
             Mostrar apenas reajustes efetivados/vigentes
           </label>
           <div className="hint-box compact" style={{ margin: 0 }}>
-            Sem período manual: cada linha usa sua própria Data_Inicio para formar a base anterior e medir o realizado.
+            Sem período manual: cada linha usa sua própria Data_Inicio. No modo local, nada depende do Supabase.
           </div>
         </div>
       </section>
