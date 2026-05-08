@@ -88,6 +88,30 @@ function buildSnapshotPayload(transportadoras, chave = SNAPSHOT_CHAVE) {
   };
 }
 
+
+function montarResumoBaseTransportadoras(transportadoras = []) {
+  const base = Array.isArray(transportadoras) ? transportadoras : [];
+  const origens = base.flatMap((item) => Array.isArray(item.origens) ? item.origens : []);
+  return {
+    transportadoras: base,
+    resumo: {
+      transportadoras: base.length,
+      origens: origens.length,
+      rotas: origens.reduce((acc, origem) => acc + (Array.isArray(origem.rotas) ? origem.rotas.length : 0), 0),
+      cotacoes: origens.reduce((acc, origem) => acc + (Array.isArray(origem.cotacoes) ? origem.cotacoes.length : 0), 0),
+      taxasEspeciais: origens.reduce((acc, origem) => acc + (Array.isArray(origem.taxasEspeciais) ? origem.taxasEspeciais.length : 0), 0),
+    },
+  };
+}
+
+function extrairTransportadorasSnapshot(snapshot) {
+  if (!snapshot) return [];
+  if (Array.isArray(snapshot)) return snapshot;
+  if (Array.isArray(snapshot.transportadoras)) return snapshot.transportadoras;
+  if (Array.isArray(snapshot.payload?.transportadoras)) return snapshot.payload.transportadoras;
+  return [];
+}
+
 async function fetchAllRows(supabase, table, orderBy = null, ascending = true) {
   const allRows = [];
   let from = 0;
@@ -560,19 +584,9 @@ export async function carregarBaseCompletaDb() {
 export async function carregarResumoBaseDb() {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
-    if (!raw) return { transportadoras: [], resumo: { transportadoras: 0, origens: 0, rotas: 0, cotacoes: 0 } };
+    if (!raw) return montarResumoBaseTransportadoras([]);
     const parsed = JSON.parse(raw);
-    const transportadoras = Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
-    const origens = transportadoras.flatMap((item) => item.origens || []);
-    return {
-      transportadoras,
-      resumo: {
-        transportadoras: transportadoras.length,
-        origens: origens.length,
-        rotas: origens.reduce((acc, origem) => acc + (origem.rotas?.length || 0), 0),
-        cotacoes: origens.reduce((acc, origem) => acc + (origem.cotacoes?.length || 0), 0),
-      },
-    };
+    return montarResumoBaseTransportadoras(extrairTransportadorasSnapshot(parsed));
   }
 
   const supabase = ensureClient();
@@ -593,6 +607,22 @@ export async function carregarResumoBaseDb() {
   if (origensResponse.error) throw origensResponse.error;
   if (rotasCountResponse.error) throw rotasCountResponse.error;
   if (cotacoesCountResponse.error) throw cotacoesCountResponse.error;
+
+  let resumoSnapshot = null;
+  try {
+    const snapshot = await carregarSnapshotFretesDb();
+    const transportadorasSnapshot = extrairTransportadorasSnapshot(snapshot);
+    if (transportadorasSnapshot.length) {
+      resumoSnapshot = montarResumoBaseTransportadoras(transportadorasSnapshot);
+      resumoSnapshot.fonte = 'supabase-snapshot-fallback';
+    }
+  } catch {
+    resumoSnapshot = null;
+  }
+
+  if (!(transportadorasResponse.data || []).length && resumoSnapshot?.transportadoras?.length) {
+    return resumoSnapshot;
+  }
 
   const origensByTransportadora = new Map();
   (origensResponse.data || []).forEach((origem) => {
@@ -663,7 +693,7 @@ export async function carregarResumoBaseDb() {
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
 
-  return {
+  const resumoEstruturado = {
     transportadoras,
     resumo: {
       transportadoras: transportadoras.length,
@@ -671,7 +701,22 @@ export async function carregarResumoBaseDb() {
       rotas: rotasCountResponse.count || 0,
       cotacoes: cotacoesCountResponse.count || 0,
     },
+    fonte: 'supabase-tabelas',
   };
+
+  if (resumoSnapshot?.transportadoras?.length) {
+    const resumoSnap = resumoSnapshot.resumo || {};
+    const resumoTab = resumoEstruturado.resumo || {};
+    const snapshotMaisCompleto =
+      Number(resumoSnap.transportadoras || 0) > Number(resumoTab.transportadoras || 0) ||
+      Number(resumoSnap.origens || 0) > Number(resumoTab.origens || 0);
+
+    if (snapshotMaisCompleto) {
+      return resumoSnapshot;
+    }
+  }
+
+  return resumoEstruturado;
 }
 
 export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHAVE, options = {}) {
@@ -1424,7 +1469,6 @@ const CANAIS_B2C_DB = [
   'B2W',
   'MAGAZINE LUIZA',
   'CARREFOUR',
-  'CANTU PNEUS',
   'GPA',
   'COLOMBO',
   'AMAZON',
@@ -1435,10 +1479,7 @@ const CANAIS_B2C_DB = [
   'ITAU SHOP',
   'ITAÚ SHOP',
   'SHOPEE',
-  '99',
-  'MUSTANG',
   'LIVELO',
-  'COOPERA',
   'MARKETPLACE',
   'MARKET PLACE',
   'ECOMMERCE',
@@ -1448,6 +1489,8 @@ const CANAIS_B2C_DB = [
 const CANAIS_ATACADO_DB = [
   'ATACADO',
   'B2B',
+  'CANTU',
+  'CANTU PNEUS',
 ];
 
 function contemCanalDb(canal, lista = []) {
@@ -2366,7 +2409,7 @@ function canalVariantesConsultaDb(canalFiltro = '') {
     ]);
   }
   if (categoria === 'ATACADO') {
-    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b']);
+    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b', 'CANTU', 'Cantu', 'CANTU PNEUS', 'Cantu Pneus']);
   }
   return uniqueNonEmpty([canalFiltro, normalizarCanalDb(canalFiltro), categoria]);
 }

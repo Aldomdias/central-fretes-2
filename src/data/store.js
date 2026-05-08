@@ -194,7 +194,7 @@ function montarMensagemContagem(contagem = {}) {
 }
 
 export function useFreteStore() {
-  const [transportadoras, setTransportadoras] = useState([]);
+  const [transportadoras, setTransportadoras] = useState(() => (readLocalState() || []).map(normalizeTransportadora));
   const [syncStatus, setSyncStatus] = useState({
     modo: bancoConfigurado() ? 'supabase' : 'local',
     carregando: false,
@@ -209,9 +209,15 @@ export function useFreteStore() {
   const loadedRef = useRef(false);
 
   useEffect(() => {
-    if (loadedRef.current) {
-      persistLocalState(transportadoras);
+    if (!loadedRef.current) return;
+
+    // Evita apagar o cache local quando o Supabase responder vazio por timeout, RLS
+    // ou tabela estruturada incompleta. Isso preserva a navegação entre módulos.
+    if (bancoConfigurado() && (!Array.isArray(transportadoras) || transportadoras.length === 0)) {
+      return;
     }
+
+    persistLocalState(transportadoras);
   }, [transportadoras]);
 
   useEffect(() => {
@@ -221,18 +227,32 @@ export function useFreteStore() {
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
       try {
         if (bancoConfigurado()) {
+          const cacheLocal = (readLocalState() || []).map(normalizeTransportadora);
+          if (cacheLocal.length && !transportadoras.length) {
+            setTransportadoras(cacheLocal);
+          }
+
           const resumo = await carregarResumoBaseDb();
           const conferencia = await carregarConferenciaBaseDb().catch(() => null);
           if (cancelled) return;
 
-          setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
+          const baseSupabase = (resumo.transportadoras || []).map(normalizeTransportadora);
+          const deveAplicarBaseSupabase = baseSupabase.length > 0 || cacheLocal.length === 0;
+
+          if (deveAplicarBaseSupabase) {
+            setTransportadoras(baseSupabase);
+          }
+
           loadedRef.current = true;
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
-            fonte: 'supabase-resumo',
+            fonte: resumo.fonte || (deveAplicarBaseSupabase ? 'supabase-resumo' : 'cache-local-protegido'),
             resumoBase: resumo.resumo,
             conferenciaBase: conferencia,
+            erro: !deveAplicarBaseSupabase && cacheLocal.length
+              ? 'Supabase retornou 0 transportadoras. Mantive o cache local para não apagar a tela.'
+              : '',
           }));
           return;
         }
@@ -249,11 +269,16 @@ export function useFreteStore() {
         }));
       } catch (error) {
         if (cancelled) return;
+        const cacheLocal = (readLocalState() || []).map(normalizeTransportadora);
+        if (cacheLocal.length) {
+          setTransportadoras(cacheLocal);
+        }
         loadedRef.current = true;
         setSyncStatus((prev) => ({
           ...prev,
           carregando: false,
-          erro: error.message || 'Erro ao carregar resumo da base.',
+          fonte: cacheLocal.length ? 'cache-local-protegido' : prev.fonte,
+          erro: `${error.message || 'Erro ao carregar resumo da base.'}${cacheLocal.length ? ' Mantive o cache local na tela.' : ''}`,
         }));
       }
     }
@@ -348,15 +373,23 @@ export function useFreteStore() {
           const resumo = await carregarResumoBaseDb();
           const conferencia = await carregarConferenciaBaseDb().catch(() => null);
 
-          setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
+          const baseSupabase = (resumo.transportadoras || []).map(normalizeTransportadora);
+          const manterAtual = !baseSupabase.length && Array.isArray(transportadoras) && transportadoras.length > 0;
+
+          if (!manterAtual) {
+            setTransportadoras(baseSupabase);
+          }
 
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
-            fonte: 'supabase-resumo',
+            fonte: resumo.fonte || (manterAtual ? 'cache-local-protegido' : 'supabase-resumo'),
             resumoBase: resumo.resumo,
             conferenciaBase: conferencia || prev.conferenciaBase,
             ultimaSincronizacao: new Date().toISOString(),
+            erro: manterAtual
+              ? 'Atualização retornou 0 transportadoras. Mantive a base atual para não apagar a tela.'
+              : '',
           }));
 
           return true;
@@ -428,12 +461,19 @@ export function useFreteStore() {
         try {
           const snapshot = await carregarSnapshotFretesDb();
           const base = snapshot?.payload?.transportadoras || [];
-          setTransportadoras((base || []).map(normalizeTransportadora));
+          const normalized = (base || []).map(normalizeTransportadora);
+          const manterAtual = !normalized.length && Array.isArray(transportadoras) && transportadoras.length > 0;
+
+          if (!manterAtual) {
+            setTransportadoras(normalized);
+          }
+
           setSyncStatus((prev) => ({
             ...prev,
             carregando: false,
             ultimaSincronizacao: snapshot?.updated_at || snapshot?.payload?.updatedAt || '',
-            fonte: 'supabase-snapshot',
+            fonte: manterAtual ? 'cache-local-protegido' : 'supabase-snapshot',
+            erro: manterAtual ? 'Snapshot retornou vazio. Mantive a base atual para não apagar a tela.' : '',
           }));
           return true;
         } catch (error) {
