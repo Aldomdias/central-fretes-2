@@ -1,0 +1,40 @@
+/* Ajuste de navegação da tabela de Reajustes */
+.reajustes-page .sim-analise-tabela-wrap,
+.reajustes-page .table-card,
+.reajustes-scroll-wrap {
+  max-height: 72vh;
+  overflow: auto !important;
+  position: relative;
+}
+
+.reajustes-page .sim-analise-tabela,
+.reajustes-page table.reajustes-table {
+  min-width: 1900px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.reajustes-page .sim-analise-tabela thead th,
+.reajustes-page table.reajustes-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-soft, #f8faff);
+}
+
+.reajustes-page .sim-analise-tabela th:first-child,
+.reajustes-page .sim-analise-tabela td:first-child,
+.reajustes-page table.reajustes-table th:first-child,
+.reajustes-page table.reajustes-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #fff;
+  min-width: 180px;
+}
+
+.reajustes-page .sim-analise-tabela thead th:first-child,
+.reajustes-page table.reajustes-table thead th:first-child {
+  background: var(--panel-soft, #f8faff);
+  z-index: 4;
+}
