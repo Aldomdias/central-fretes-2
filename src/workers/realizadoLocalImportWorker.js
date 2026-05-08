@@ -1,7 +1,7 @@
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import { prepararRegistrosRealizadoLocal } from '../utils/realizadoLocalEngine';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
-import { salvarRealizadoLocal } from '../services/realizadoLocalDb';
+import { salvarRealizadoLocal, testarRealizadoOnlineSupabase } from '../services/realizadoLocalDb';
 
 function pct(atual, total) {
   const safeTotal = Math.max(Number(total) || 0, 1);
@@ -23,6 +23,15 @@ function contarIbgeOk(rows = []) {
 }
 
 async function importarRealizadoLocal({ files = [], municipios = [], competencia = '' }) {
+  postProgress({
+    etapa: 'Validando Supabase',
+    atual: 0,
+    total: files.length,
+    percentual: 1,
+    mensagem: 'Validando se a tabela realizado_local_ctes está acessível antes de ler o arquivo...',
+  });
+  const diagOnline = await testarRealizadoOnlineSupabase();
+
   let municipiosReferencia = Array.isArray(municipios) ? municipios : [];
 
   if (municipiosReferencia.length < 5000) {
@@ -66,7 +75,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index, totalArquivos, 5),
-        mensagem: `Lendo ${nome}. Base IBGE disponível: ${municipiosReferencia.length.toLocaleString('pt-BR')} município(s).`,
+        mensagem: `Lendo ${nome}. Supabase OK com ${Number(diagOnline.totalAtual || 0).toLocaleString('pt-BR')} CT-e(s) atuais. Base IBGE disponível: ${municipiosReferencia.length.toLocaleString('pt-BR')} município(s).`,
       });
 
       const parsed = await parseRealizadoCtesFile(file);
@@ -98,15 +107,16 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       });
 
       const save = await salvarRealizadoLocal(rows, {
-        chunkSize: 1000,
-        onProgress: ({ salvos, total }) => {
+        chunkSize: 250,
+        exigirSupabase: true,
+        onProgress: ({ salvos, total, duplicadosNoArquivo = 0, semChave = 0 }) => {
           const interno = 65 + Math.round(pct(salvos, total) * 0.30);
           postProgress({
             etapa: 'Gravando base online',
             atual: salvos,
             total,
             percentual: calcularPercentualArquivo(index, totalArquivos, interno),
-            mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) gravados na base online de ${nome}...`,
+            mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) gravados no Supabase de ${nome}. Repetidos no arquivo: ${Number(duplicadosNoArquivo || 0).toLocaleString('pt-BR')}; sem chave: ${Number(semChave || 0).toLocaleString('pt-BR')}.`,
           });
         },
       });
@@ -121,6 +131,8 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         pendencias: pendencias.length,
         ibgeOk,
         salvos: save.salvos || rows.length,
+        duplicadosNoArquivo: save.duplicadosNoArquivo || 0,
+        semChave: save.semChave || 0,
         origem: origemGravacao,
       });
 
@@ -129,7 +141,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index + 1, totalArquivos, 0),
-        mensagem: `${nome} concluído: ${(save.salvos || rows.length).toLocaleString('pt-BR')} CT-e(s) salvos no realizado online.`,
+        mensagem: `${nome} concluído: ${(save.salvos || rows.length).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no Supabase. Reimportação do mesmo CT-e sobrescreve a linha antiga pela chave do CT-e.`,
       });
     } catch (error) {
       erros.push({ nome, erro: error?.message || 'Erro desconhecido' });

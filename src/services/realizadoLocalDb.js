@@ -474,12 +474,35 @@ function dateOrNullOnline(value) {
   return parsed.toISOString();
 }
 
+function montarChaveCteOnline(row = {}) {
+  const chaveInformada = cleanTextOnline(row.chaveCte || row.chave_cte);
+  if (chaveInformada) return chaveInformada;
+
+  // Algumas bases vêm sem chave completa do CT-e. Para não descartar essas linhas
+  // e ainda impedir duplicidade, criamos uma chave determinística com os campos
+  // mais estáveis do arquivo. Reimportar o mesmo arquivo atualiza a mesma linha.
+  const numeroCte = cleanTextOnline(row.numeroCte || row.numero_cte);
+  const transportadora = cleanTextOnline(row.transportadora);
+  const cnpj = cleanDigitsOnline(row.cnpjTransportadora || row.cnpj_transportadora);
+  const emissao = cleanTextOnline(row.dataEmissao || row.data_emissao || row.emissao).slice(0, 10);
+  const origem = cleanTextOnline(row.cidadeOrigem || row.cidade_origem);
+  const destino = cleanTextOnline(row.cidadeDestino || row.cidade_destino);
+  const valor = String(toSafeNumberOnline(row.valorCte ?? row.valor_cte, 999999999)).replace('.', ',');
+  const fallback = [numeroCte, cnpj || transportadora, emissao, origem, destino, valor]
+    .map((item) => normalizeLoose(item))
+    .filter(Boolean)
+    .join('|');
+
+  return fallback ? `AUTO|${fallback}` : '';
+}
+
 function toDbRealizadoLocal(row = {}) {
-  const chaveCte = cleanTextOnline(row.chaveCte || row.chave_cte);
+  const chaveCte = montarChaveCteOnline(row);
+  const dataEmissao = dateOrNullOnline(row.dataEmissao || row.data_emissao || row.emissao);
   return {
     chave_cte: chaveCte,
     competencia: cleanTextOnline(row.competencia),
-    data_emissao: dateOrNullOnline(row.dataEmissao || row.data_emissao || row.emissao),
+    data_emissao: dataEmissao,
     numero_cte: cleanTextOnline(row.numeroCte || row.numero_cte),
     transportadora: cleanTextOnline(row.transportadora),
     cnpj_transportadora: cleanDigitsOnline(row.cnpjTransportadora || row.cnpj_transportadora),
@@ -558,6 +581,37 @@ function aplicarFiltrosBasicosOnline(query, filtros = {}) {
 
 function sleepOnline(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function deduplicarPayloadRealizadoOnline(payload = []) {
+  const map = new Map();
+  let semChave = 0;
+  let duplicadosNoArquivo = 0;
+
+  (payload || []).forEach((row) => {
+    const chave = cleanTextOnline(row?.chave_cte);
+    if (!chave) {
+      semChave += 1;
+      return;
+    }
+    if (map.has(chave)) duplicadosNoArquivo += 1;
+    map.set(chave, row);
+  });
+
+  return { rows: [...map.values()], semChave, duplicadosNoArquivo };
+}
+
+export async function testarRealizadoOnlineSupabase() {
+  const supabase = ensureRealizadoOnlineClient();
+  const { count, error } = await supabase
+    .from(REALIZADO_ONLINE_TABLE)
+    .select('chave_cte', { count: 'planned', head: true });
+
+  if (error) {
+    throw new Error(`Não consegui acessar a tabela ${REALIZADO_ONLINE_TABLE} no Supabase. Rode o SQL supabase/realizado_local_online_schema.sql e confira as permissões. Detalhe: ${error.message}`);
+  }
+
+  return { ok: true, totalAtual: Number(count || 0), origem: 'supabase', projeto: getSupabaseInfo().host };
 }
 
 async function fetchRealizadoOnline(filtros = {}, options = {}) {
@@ -725,32 +779,66 @@ async function resumirRealizadoOnline(filtros = {}, options = {}) {
 }
 
 export async function salvarRealizadoLocal(registros = [], options = {}) {
-  if (!supabaseRealizadoDisponivel() || options.forceLocal) {
+  if (options.forceLocal) {
+    return salvarRealizadoLocalIndexedDb(registros, options);
+  }
+
+  if (!supabaseRealizadoDisponivel()) {
+    if (options.exigirSupabase) {
+      throw new Error('Realizado Online precisa do Supabase configurado. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel.');
+    }
     return salvarRealizadoLocalIndexedDb(registros, options);
   }
 
   const supabase = ensureRealizadoOnlineClient();
-  const payload = (registros || []).map(toDbRealizadoLocal).filter((row) => row.chave_cte);
-  if (!payload.length) return { salvos: 0, origem: 'supabase' };
-  const chunkSize = Math.max(50, Math.min(Number(options.chunkSize || 500), 1000));
+  const bruto = (registros || []).map(toDbRealizadoLocal);
+  const dedupe = deduplicarPayloadRealizadoOnline(bruto);
+  const payload = dedupe.rows;
+
+  if (!payload.length) {
+    return {
+      salvos: 0,
+      origem: 'supabase',
+      projeto: getSupabaseInfo().host,
+      semChave: dedupe.semChave,
+      duplicadosNoArquivo: dedupe.duplicadosNoArquivo,
+    };
+  }
+
+  const chunkSize = Math.max(25, Math.min(Number(options.chunkSize || 250), 500));
   let salvos = 0;
 
   for (let index = 0; index < payload.length; index += chunkSize) {
     const chunk = payload.slice(index, index + chunkSize);
     const { error } = await supabase
       .from(REALIZADO_ONLINE_TABLE)
-      .upsert(chunk, { onConflict: 'chave_cte' });
+      .upsert(chunk, { onConflict: 'chave_cte', ignoreDuplicates: false });
+
     if (error) {
-      // Segurança: mantém uma cópia emergencial local para não perder a leitura do arquivo.
-      await salvarRealizadoLocalIndexedDb(registros, { ...options, forceLocal: true }).catch(() => null);
-      throw new Error(`Erro ao salvar realizado online no Supabase. Rode supabase/realizado_local_online_schema.sql. Cópia emergencial local foi tentada. Detalhe: ${error.message}`);
+      if (!options.exigirSupabase) {
+        await salvarRealizadoLocalIndexedDb(registros, { ...options, forceLocal: true }).catch(() => null);
+      }
+      throw new Error(`Erro ao salvar realizado online no Supabase. Nenhum dado deve ser considerado importado enquanto este erro aparecer. Rode supabase/realizado_local_online_schema.sql e confira permissões. Detalhe: ${error.message}`);
     }
+
     salvos += chunk.length;
-    options.onProgress?.({ salvos, total: payload.length, origem: 'supabase' });
+    options.onProgress?.({
+      salvos,
+      total: payload.length,
+      origem: 'supabase',
+      semChave: dedupe.semChave,
+      duplicadosNoArquivo: dedupe.duplicadosNoArquivo,
+    });
     await sleepOnline(0);
   }
 
-  return { salvos, origem: 'supabase', projeto: getSupabaseInfo().host };
+  return {
+    salvos,
+    origem: 'supabase',
+    projeto: getSupabaseInfo().host,
+    semChave: dedupe.semChave,
+    duplicadosNoArquivo: dedupe.duplicadosNoArquivo,
+  };
 }
 
 export async function listarRealizadoLocal(filtros = {}, options = {}) {

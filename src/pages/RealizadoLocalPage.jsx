@@ -26,6 +26,7 @@ import {
   salvarRealizadoLocal,
   listarRealizadoLocal,
   resumirRealizadoLocal,
+  testarRealizadoOnlineSupabase,
 } from '../services/realizadoLocalDb';
 import {
   categoriaCanalRealizado,
@@ -898,15 +899,23 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
   async function prepararMunicipiosParaImportacao() {
     let baseMunicipios = Array.isArray(municipios) ? municipios : [];
-    let tabelas = transportadorasTabela;
     let fonte = baseMunicipios.length ? ibgeInfo.fonte : 'pendente';
+
+    setProgress((prev) => ({
+      ...(prev || {}),
+      etapa: 'Validando Realizado Online',
+      percentual: 2,
+      mensagem: 'Conferindo conexão com a tabela realizado_local_ctes no Supabase antes de processar o arquivo...',
+    }));
+    await nextFrame();
+    await testarRealizadoOnlineSupabase();
 
     if (!baseMunicipios.length || baseMunicipios.length < 5000) {
       setProgress((prev) => ({
         ...(prev || {}),
         etapa: 'Carregando referência IBGE',
-        percentual: 3,
-        mensagem: 'Carregando base oficial IBGE com normalização por cidade/UF. Se o Supabase estiver vazio, uso fallback oficial em cache.',
+        percentual: 5,
+        mensagem: 'Carregando base IBGE para localizar origem/destino. Esta etapa roda antes de gravar no Supabase.',
       }));
       await nextFrame();
       const ibgeRef = await carregarMunicipiosIbgeComFallback({ permitirOficial: true }).catch(() => ({ municipios: baseMunicipios, fonte }));
@@ -914,23 +923,45 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         baseMunicipios = ibgeRef.municipios || [];
         fonte = ibgeRef.fonte || fonte;
       }
+    }
 
-      if (!tabelas?.length && baseMunicipios.length < 5000) {
+    // Para importação online, não vale puxar a base completa de tabelas/rotas sempre.
+    // Isso deixava a tela parada em 1% antes de qualquer gravação no Supabase.
+    // Só usa enriquecimento por tabela se a base IBGE estiver incompleta.
+    let referencia = baseMunicipios;
+    if (baseMunicipios.length < 5000) {
+      setProgress((prev) => ({
+        ...(prev || {}),
+        etapa: 'Complementando IBGE pelas tabelas',
+        percentual: 8,
+        mensagem: 'Base IBGE incompleta; buscando cidades pelas tabelas cadastradas como apoio.',
+      }));
+      await nextFrame();
+      let tabelas = transportadorasTabela;
+      if (!tabelas?.length) {
         const base = await carregarBaseCompletaDb().catch(() => []);
         tabelas = base?.length ? base : transportadoras;
         if (base?.length) setTransportadorasTabela(base);
-        fonte = baseMunicipios.length ? `${fonte} + tabelas` : 'Tabelas de frete';
       }
+      referencia = enriquecerMunicipiosComTabelas(baseMunicipios, tabelas || transportadoras || []);
+      fonte = referencia.length ? `${fonte} + tabelas` : fonte;
     }
 
-    const enriquecidos = enriquecerMunicipiosComTabelas(baseMunicipios, tabelas || transportadoras || []);
-    if (!enriquecidos.length) {
+    if (!referencia.length) {
       throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base online não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.');
     }
 
-    setMunicipios(enriquecidos);
-    setIbgeInfo({ total: enriquecidos.length, fonte });
-    return enriquecidos;
+    setProgress((prev) => ({
+      ...(prev || {}),
+      etapa: 'IBGE pronto',
+      percentual: 10,
+      mensagem: `Referência pronta com ${referencia.length.toLocaleString('pt-BR')} município(s). Iniciando leitura dos arquivos.`,
+    }));
+    await nextFrame();
+
+    setMunicipios(referencia);
+    setIbgeInfo({ total: referencia.length, fonte });
+    return referencia;
   }
 
   function importarArquivosComWorker(files = [], municipiosResolucao = municipios) {
@@ -1010,8 +1041,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         percentual: 100,
         mensagem: 'Atualizando resumo local...',
       });
+      const duplicadosNoArquivo = (result.arquivos || []).reduce((sum, item) => sum + Number(item.duplicadosNoArquivo || 0), 0);
+      const semChave = (result.arquivos || []).reduce((sum, item) => sum + Number(item.semChave || 0), 0);
       setFeedback(
-        `Importação online concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) considerados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
+        `Importação online concluída: ${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no Supabase, de ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} preparados e ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Repetidos dentro do arquivo: ${duplicadosNoArquivo.toLocaleString('pt-BR')}. Sem chave descartados: ${semChave.toLocaleString('pt-BR')}. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
       );
       setFileKey(makeFileKey());
       await pesquisar(filtros, false);
