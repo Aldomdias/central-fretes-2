@@ -163,8 +163,8 @@ function normalizeCanalParaMalha(value) {
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (['ATACADO', 'B2B', 'CANTU', 'CANTU PNEUS'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
-  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', 'LIVELO', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE'].some((item) => canal === item || canal.includes(item))) return 'B2C';
+  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'ITAÃº SHOP', 'SHOPEE', 'LIVELO', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE', 'CANTU PNEUS', 'CANTU'].some((item) => canal === item || canal.includes(item))) return 'B2C';
+  if (['ATACADO', 'B2B'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
   return canal;
 }
 
@@ -474,35 +474,12 @@ function dateOrNullOnline(value) {
   return parsed.toISOString();
 }
 
-function montarChaveCteOnline(row = {}) {
-  const chaveInformada = cleanTextOnline(row.chaveCte || row.chave_cte);
-  if (chaveInformada) return chaveInformada;
-
-  // Algumas bases vêm sem chave completa do CT-e. Para não descartar essas linhas
-  // e ainda impedir duplicidade, criamos uma chave determinística com os campos
-  // mais estáveis do arquivo. Reimportar o mesmo arquivo atualiza a mesma linha.
-  const numeroCte = cleanTextOnline(row.numeroCte || row.numero_cte);
-  const transportadora = cleanTextOnline(row.transportadora);
-  const cnpj = cleanDigitsOnline(row.cnpjTransportadora || row.cnpj_transportadora);
-  const emissao = cleanTextOnline(row.dataEmissao || row.data_emissao || row.emissao).slice(0, 10);
-  const origem = cleanTextOnline(row.cidadeOrigem || row.cidade_origem);
-  const destino = cleanTextOnline(row.cidadeDestino || row.cidade_destino);
-  const valor = String(toSafeNumberOnline(row.valorCte ?? row.valor_cte, 999999999)).replace('.', ',');
-  const fallback = [numeroCte, cnpj || transportadora, emissao, origem, destino, valor]
-    .map((item) => normalizeLoose(item))
-    .filter(Boolean)
-    .join('|');
-
-  return fallback ? `AUTO|${fallback}` : '';
-}
-
 function toDbRealizadoLocal(row = {}) {
-  const chaveCte = montarChaveCteOnline(row);
-  const dataEmissao = dateOrNullOnline(row.dataEmissao || row.data_emissao || row.emissao);
+  const chaveCte = cleanTextOnline(row.chaveCte || row.chave_cte);
   return {
     chave_cte: chaveCte,
     competencia: cleanTextOnline(row.competencia),
-    data_emissao: dataEmissao,
+    data_emissao: dateOrNullOnline(row.dataEmissao || row.data_emissao || row.emissao),
     numero_cte: cleanTextOnline(row.numeroCte || row.numero_cte),
     transportadora: cleanTextOnline(row.transportadora),
     cnpj_transportadora: cleanDigitsOnline(row.cnpjTransportadora || row.cnpj_transportadora),
@@ -583,29 +560,11 @@ function sleepOnline(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function deduplicarPayloadRealizadoOnline(payload = []) {
-  const map = new Map();
-  let semChave = 0;
-  let duplicadosNoArquivo = 0;
-
-  (payload || []).forEach((row) => {
-    const chave = cleanTextOnline(row?.chave_cte);
-    if (!chave) {
-      semChave += 1;
-      return;
-    }
-    if (map.has(chave)) duplicadosNoArquivo += 1;
-    map.set(chave, row);
-  });
-
-  return { rows: [...map.values()], semChave, duplicadosNoArquivo };
-}
-
 export async function testarRealizadoOnlineSupabase() {
   const supabase = ensureRealizadoOnlineClient();
   const { count, error } = await supabase
     .from(REALIZADO_ONLINE_TABLE)
-    .select('chave_cte', { count: 'planned', head: true });
+    .select('chave_cte', { count: 'exact', head: true });
 
   if (error) {
     throw new Error(`Não consegui acessar a tabela ${REALIZADO_ONLINE_TABLE} no Supabase. Rode o SQL supabase/realizado_local_online_schema.sql e confira as permissões. Detalhe: ${error.message}`);
@@ -778,66 +737,151 @@ async function resumirRealizadoOnline(filtros = {}, options = {}) {
   }
 }
 
-export async function salvarRealizadoLocal(registros = [], options = {}) {
-  if (options.forceLocal) {
-    return salvarRealizadoLocalIndexedDb(registros, options);
+function deduplicarPayloadRealizadoOnline(payload = []) {
+  const porChave = new Map();
+  let duplicadosNoLote = 0;
+
+  (payload || []).forEach((row) => {
+    const chave = cleanTextOnline(row.chave_cte);
+    if (!chave) return;
+    if (porChave.has(chave)) duplicadosNoLote += 1;
+    porChave.set(chave, { ...row, chave_cte: chave });
+  });
+
+  return { payload: [...porChave.values()], duplicadosNoLote };
+}
+
+async function salvarRealizadoLocalComRpc(supabase, chunk = []) {
+  const { data, error } = await supabase.rpc('importar_realizado_local_ctes_bulk', {
+    p_registros: chunk,
+  });
+  if (error) throw error;
+  return {
+    salvos: Number(data?.salvos ?? chunk.length),
+    novos: Number(data?.novos ?? 0),
+    atualizados: Number(data?.atualizados ?? 0),
+    ignorados: Number(data?.ignorados ?? 0),
+  };
+}
+
+async function salvarRealizadoLocalComUpsert(supabase, chunk = []) {
+  const { error } = await supabase
+    .from(REALIZADO_ONLINE_TABLE)
+    .upsert(chunk, { onConflict: 'chave_cte' });
+  if (error) throw error;
+  return { salvos: chunk.length, novos: 0, atualizados: 0, ignorados: 0 };
+}
+
+export async function apagarRealizadoLocalPorArquivos(arquivos = [], options = {}) {
+  const nomes = Array.isArray(arquivos) ? arquivos : [arquivos];
+  const nomesLimpos = [...new Set(nomes.map(cleanTextOnline).filter(Boolean))];
+  if (!nomesLimpos.length) return { removidos: 0, arquivos: 0, origem: 'supabase' };
+
+  if (!supabaseRealizadoDisponivel() || options.forceLocal) {
+    // No fallback local, o upsert por chave do IndexedDB já evita duplicidade.
+    // Não apagamos por arquivo para não fazer uma varredura pesada no navegador.
+    return { removidos: 0, arquivos: nomesLimpos.length, origem: 'indexeddb', ignoradoLocal: true };
   }
 
-  if (!supabaseRealizadoDisponivel()) {
-    if (options.exigirSupabase) {
-      throw new Error('Realizado Online precisa do Supabase configurado. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel.');
+  const supabase = ensureRealizadoOnlineClient();
+  let removidos = 0;
+
+  for (const nome of nomesLimpos) {
+    try {
+      const { data, error } = await supabase.rpc('limpar_realizado_local_por_arquivo', {
+        p_arquivo_origem: nome,
+        p_confirmacao: 'SUBSTITUIR ARQUIVO REALIZADO',
+      });
+      if (error) throw error;
+      removidos += Number(data?.removidos || 0);
+    } catch (error) {
+      const { count, error: countError } = await supabase
+        .from(REALIZADO_ONLINE_TABLE)
+        .delete({ count: 'exact' })
+        .eq('arquivo_origem', nome);
+      if (countError) {
+        throw new Error(`Erro ao substituir arquivo repetido no realizado online. Rode supabase/realizado_online_import_rapido_dedup.sql. Detalhe: ${countError.message || error.message}`);
+      }
+      removidos += Number(count || 0);
     }
+
+    options.onProgress?.({ arquivo: nome, removidos, arquivos: nomesLimpos.length, origem: 'supabase' });
+    await sleepOnline(0);
+  }
+
+  return { removidos, arquivos: nomesLimpos.length, origem: 'supabase' };
+}
+
+export async function salvarRealizadoLocal(registros = [], options = {}) {
+  if (!supabaseRealizadoDisponivel() || options.forceLocal) {
     return salvarRealizadoLocalIndexedDb(registros, options);
   }
 
   const supabase = ensureRealizadoOnlineClient();
-  const bruto = (registros || []).map(toDbRealizadoLocal);
-  const dedupe = deduplicarPayloadRealizadoOnline(bruto);
-  const payload = dedupe.rows;
+  const bruto = (registros || []).map(toDbRealizadoLocal).filter((row) => row.chave_cte);
+  const dedup = deduplicarPayloadRealizadoOnline(bruto);
+  const payload = dedup.payload;
+  if (!payload.length) return { salvos: 0, origem: 'supabase', duplicadosNoLote: dedup.duplicadosNoLote };
 
-  if (!payload.length) {
-    return {
-      salvos: 0,
-      origem: 'supabase',
-      projeto: getSupabaseInfo().host,
-      semChave: dedupe.semChave,
-      duplicadosNoArquivo: dedupe.duplicadosNoArquivo,
-    };
-  }
+  // A função SQL importar_realizado_local_ctes_bulk grava muitos registros por chamada
+  // e faz ON CONFLICT pela chave do CT-e. Se o SQL ainda não foi rodado, caímos
+  // automaticamente no upsert antigo, só que com lote menor.
+  const usarRpc = options.usarRpc !== false;
+  const chunkSize = usarRpc
+    ? Math.max(500, Math.min(Number(options.chunkSize || 5000), 8000))
+    : Math.max(50, Math.min(Number(options.chunkSize || 800), 1000));
 
-  const chunkSize = Math.max(25, Math.min(Number(options.chunkSize || 250), 500));
   let salvos = 0;
+  let novos = 0;
+  let atualizados = 0;
+  let ignorados = 0;
+  let rpcFalhou = false;
 
   for (let index = 0; index < payload.length; index += chunkSize) {
     const chunk = payload.slice(index, index + chunkSize);
-    const { error } = await supabase
-      .from(REALIZADO_ONLINE_TABLE)
-      .upsert(chunk, { onConflict: 'chave_cte', ignoreDuplicates: false });
+    let result;
 
-    if (error) {
-      if (!options.exigirSupabase) {
+    try {
+      result = usarRpc && !rpcFalhou
+        ? await salvarRealizadoLocalComRpc(supabase, chunk)
+        : await salvarRealizadoLocalComUpsert(supabase, chunk);
+    } catch (error) {
+      if (usarRpc && !rpcFalhou) {
+        rpcFalhou = true;
+        result = await salvarRealizadoLocalComUpsert(supabase, chunk);
+      } else {
+        // Segurança: mantém uma cópia emergencial local para não perder a leitura do arquivo.
         await salvarRealizadoLocalIndexedDb(registros, { ...options, forceLocal: true }).catch(() => null);
+        throw new Error(`Erro ao salvar realizado online no Supabase. Rode supabase/realizado_online_import_rapido_dedup.sql. Cópia emergencial local foi tentada. Detalhe: ${error.message}`);
       }
-      throw new Error(`Erro ao salvar realizado online no Supabase. Nenhum dado deve ser considerado importado enquanto este erro aparecer. Rode supabase/realizado_local_online_schema.sql e confira permissões. Detalhe: ${error.message}`);
     }
 
-    salvos += chunk.length;
+    salvos += result.salvos || chunk.length;
+    novos += result.novos || 0;
+    atualizados += result.atualizados || 0;
+    ignorados += result.ignorados || 0;
     options.onProgress?.({
       salvos,
       total: payload.length,
       origem: 'supabase',
-      semChave: dedupe.semChave,
-      duplicadosNoArquivo: dedupe.duplicadosNoArquivo,
+      novos,
+      atualizados,
+      ignorados,
+      duplicadosNoLote: dedup.duplicadosNoLote,
+      rpcAtivo: usarRpc && !rpcFalhou,
     });
     await sleepOnline(0);
   }
 
   return {
     salvos,
+    novos,
+    atualizados,
+    ignorados,
+    duplicadosNoLote: dedup.duplicadosNoLote,
     origem: 'supabase',
+    rpcAtivo: usarRpc && !rpcFalhou,
     projeto: getSupabaseInfo().host,
-    semChave: dedupe.semChave,
-    duplicadosNoArquivo: dedupe.duplicadosNoArquivo,
   };
 }
 
@@ -871,11 +915,35 @@ export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = 
   return { rows: result.rows.slice(0, limit), totalCompativel: result.totalCompativel, limit, origem: 'supabase' };
 }
 
+function filtrosRealizadoVazios(filtros = {}) {
+  return !Object.entries(filtros || {}).some(([key, value]) => {
+    if (key === 'excluirEbazar') return false;
+    return value !== '' && value !== null && value !== undefined && value !== false;
+  });
+}
+
 export async function resumirRealizadoLocal(filtros = {}, options = {}) {
   if (!supabaseRealizadoDisponivel() || options.forceLocal) {
     return resumirRealizadoLocalIndexedDb(filtros, options);
   }
-  return resumirRealizadoOnline(filtros, options);
+
+  const resumo = await resumirRealizadoOnline(filtros, options);
+
+  if (Number(resumo?.total || 0) === 0) {
+    const diag = await testarRealizadoOnlineSupabase().catch(() => null);
+    if (Number(diag?.totalAtual || 0) > 0) {
+      const fallback = await fetchRealizadoOnline(filtros, { limit: options.fallbackLimit || 300000, pageSize: 1000 });
+      const recalculado = resumoFromRowsOnline(fallback.rows, options);
+      recalculado.origem = 'supabase-direto';
+      recalculado.totalBancoOnline = Number(diag.totalAtual || 0);
+      if (!Number(recalculado.total || 0) && filtrosRealizadoVazios(filtros)) {
+        recalculado.aviso = `A tabela online tem ${Number(diag.totalAtual || 0).toLocaleString('pt-BR')} CT-e(s), mas a leitura direta não retornou linhas. Confira colunas/permissões da tabela realizado_local_ctes.`;
+      }
+      return recalculado;
+    }
+  }
+
+  return resumo;
 }
 
 export async function exportarRealizadoLocal(filtros = {}, options = {}) {
@@ -889,26 +957,53 @@ export async function exportarRealizadoLocal(filtros = {}, options = {}) {
 
 export async function diagnosticarRealizadoLocal() {
   if (!supabaseRealizadoDisponivel()) {
-    return diagnosticarRealizadoLocalIndexedDb();
+    const local = await diagnosticarRealizadoLocalIndexedDb();
+    return { ...local, origem: 'indexeddb' };
   }
+
   const supabase = ensureRealizadoOnlineClient();
+  const projeto = getSupabaseInfo().host;
+
   try {
     const { data, error } = await supabase.rpc('diagnosticar_realizado_local_ctes');
     if (error) throw error;
     return {
       total: Number(data?.total || 0),
       ultimaAtualizacao: data?.ultimaAtualizacao || data?.ultima_atualizacao || '',
+      periodoInicio: data?.periodoInicio || data?.periodo_inicio || '',
+      periodoFim: data?.periodoFim || data?.periodo_fim || '',
       origem: 'supabase',
-      projeto: getSupabaseInfo().host,
+      projeto,
     };
   } catch (error) {
     const { count, error: countError } = await supabase
       .from(REALIZADO_ONLINE_TABLE)
-      .select('chave_cte', { count: 'planned', head: true });
+      .select('chave_cte', { count: 'exact', head: true });
     if (countError) {
       throw new Error(`Erro ao diagnosticar realizado online. Rode supabase/realizado_local_online_schema.sql. Detalhe: ${countError.message || error.message}`);
     }
-    return { total: Number(count || 0), ultimaAtualizacao: '', origem: 'supabase', projeto: getSupabaseInfo().host };
+
+    const { data: inicioRows } = await supabase
+      .from(REALIZADO_ONLINE_TABLE)
+      .select('data_emissao,updated_at')
+      .order('data_emissao', { ascending: true, nullsFirst: false })
+      .limit(1);
+
+    const { data: fimRows } = await supabase
+      .from(REALIZADO_ONLINE_TABLE)
+      .select('data_emissao,updated_at')
+      .order('data_emissao', { ascending: false, nullsFirst: false })
+      .limit(1);
+
+    return {
+      total: Number(count || 0),
+      ultimaAtualizacao: fimRows?.[0]?.updated_at || inicioRows?.[0]?.updated_at || '',
+      periodoInicio: inicioRows?.[0]?.data_emissao ? String(inicioRows[0].data_emissao).slice(0, 10) : '',
+      periodoFim: fimRows?.[0]?.data_emissao ? String(fimRows[0].data_emissao).slice(0, 10) : '',
+      origem: 'supabase',
+      projeto,
+      avisoRpc: error.message || String(error),
+    };
   }
 }
 
