@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   carregarFluxoCargasLotacao,
+  carregarFluxoCargasLotacaoCompleto,
   buscarCargaPorDistOuCte,
   buscarHistoricoLotacao,
   formatarDataCurta,
@@ -10,10 +11,11 @@ import {
   atualizarStatusSolicitacao,
   importarMultiplosFluxos,
   limparFluxoCargasLotacao,
+  limparFluxoCargasLotacaoCompleto,
   mesclarFluxoCargas,
   rankingHistoricoPorTransportadora,
   resumirFluxoCargas,
-  salvarFluxoCargasLotacao,
+  salvarFluxoCargasLotacaoCompleto,
   salvarSolicitacoesPagamento,
   textoSolicitacaoPagamento,
 } from '../utils/lotacaoFluxoCargas';
@@ -54,12 +56,16 @@ function ImportarFluxoCard({ onImportado, resumo }) {
         throw new Error(resultado.erros[0]?.erro || 'Nenhuma carga válida encontrada nos arquivos selecionados.');
       }
       const novaBase = mesclarFluxoCargas(baseAtual, resultado.resultados, { modo, aliquotaIcmsPadrao: aliquota });
-      salvarFluxoCargasLotacao(novaBase);
+      setMensagem({ tipo: 'ok', texto: 'Cargas lidas. Salvando histórico da operação...' });
+      const salvamento = await salvarFluxoCargasLotacaoCompleto(novaBase);
       onImportado(novaBase);
       setArquivos([]);
       const total = resultado.resultados.reduce((acc, item) => acc + (item.cargas?.length || 0), 0);
       const erroTexto = resultado.erros.length ? ` ${resultado.erros.length} arquivo(s) tiveram erro.` : '';
-      setMensagem({ tipo: 'ok', texto: `${total} carga(s) importada(s) no histórico de lotação.${erroTexto}` });
+      const armazenamentoTexto = salvamento.armazenamento === 'indexedDB'
+        ? ' Base grande salva no armazenamento local ampliado do navegador.'
+        : '';
+      setMensagem({ tipo: 'ok', texto: `${total} carga(s) importada(s) no histórico de lotação.${erroTexto}${armazenamentoTexto}` });
     } catch (error) {
       setMensagem({ tipo: 'erro', texto: error.message || String(error) });
     } finally {
@@ -67,11 +73,20 @@ function ImportarFluxoCard({ onImportado, resumo }) {
     }
   };
 
-  const limpar = () => {
+  const limpar = async () => {
     if (!window.confirm('Deseja limpar todo o histórico local de cargas de lotação?')) return;
-    limparFluxoCargasLotacao();
-    onImportado(carregarFluxoCargasLotacao());
-    setMensagem({ tipo: 'ok', texto: 'Histórico local de cargas apagado.' });
+    setCarregando(true);
+    try {
+      await limparFluxoCargasLotacaoCompleto();
+      onImportado(carregarFluxoCargasLotacao());
+      setMensagem({ tipo: 'ok', texto: 'Histórico local de cargas apagado.' });
+    } catch (error) {
+      limparFluxoCargasLotacao();
+      onImportado(carregarFluxoCargasLotacao());
+      setMensagem({ tipo: 'erro', texto: error.message || String(error) });
+    } finally {
+      setCarregando(false);
+    }
   };
 
   return (
@@ -136,6 +151,7 @@ function ImportarFluxoCard({ onImportado, resumo }) {
       {arquivos.length > 0 && (
         <div className="hint-box compact">
           {arquivosValidos(arquivos).length} arquivo(s) Excel selecionado(s). Arquivos de outros formatos serão ignorados.
+          A importação agora usa armazenamento ampliado quando o histórico fica pesado demais para o localStorage.
         </div>
       )}
 
@@ -479,6 +495,7 @@ function CustoAdicionalOperacao({ baseFluxo, onCriado }) {
 
 export default function LotacaoOperacaoPage() {
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
+  const [carregandoHistorico, setCarregandoHistorico] = useState(false);
   const [tabelas, setTabelas] = useState([]);
   const [fonte, setFonte] = useState('historico');
   const [filtros, setFiltros] = useState({ origem: '', destino: '', tipo: '', transportadora: '' });
@@ -486,6 +503,21 @@ export default function LotacaoOperacaoPage() {
 
   useEffect(() => {
     setTabelas(carregarTabelasLotacao());
+    let cancelado = false;
+    setCarregandoHistorico(true);
+    carregarFluxoCargasLotacaoCompleto()
+      .then((base) => {
+        if (!cancelado) setBaseFluxo(base);
+      })
+      .catch((error) => {
+        console.error('Erro ao carregar histórico de lotação:', error);
+      })
+      .finally(() => {
+        if (!cancelado) setCarregandoHistorico(false);
+      });
+    return () => {
+      cancelado = true;
+    };
   }, []);
 
   const resumo = useMemo(() => resumirFluxoCargas(baseFluxo), [baseFluxo]);
@@ -521,6 +553,9 @@ export default function LotacaoOperacaoPage() {
         </div>
       </header>
 
+      {carregandoHistorico && (
+        <div className="hint-box compact">Carregando histórico de cargas da Lotação...</div>
+      )}
       <ImportarFluxoCard onImportado={setBaseFluxo} resumo={resumo} />
       <KpisFluxo resumo={resumo} />
       <AutorizacoesOperacao solicitacoes={solicitacoes} onAtualizar={atualizarSolicitacao} />

@@ -1,9 +1,131 @@
 import * as XLSX from 'xlsx';
 
 const FLUXO_STORAGE_KEY = 'central_fretes_lotacao_fluxo_cargas_v1';
+const FLUXO_DB_NAME = 'central_fretes_lotacao_db_v1';
+const FLUXO_DB_STORE = 'kv';
+const FLUXO_DB_KEY = 'fluxo_cargas';
+const FLUXO_LOCAL_MARKER = '__indexeddb__';
 const AUDITORIA_STORAGE_KEY = 'central_fretes_lotacao_auditoria_v1';
 const SOLICITACOES_STORAGE_KEY = 'central_fretes_lotacao_solicitacoes_pagamento_v1';
 const MAX_RESULTADOS = 300;
+
+
+function baseFluxoVazia(extra = {}) {
+  return {
+    cargas: [],
+    lotes: [],
+    atualizadoEm: '',
+    aliquotaIcmsPadrao: 12,
+    ...extra,
+  };
+}
+
+function isQuotaError(error) {
+  return error?.name === 'QuotaExceededError'
+    || error?.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || String(error?.message || '').toLowerCase().includes('quota');
+}
+
+function suportaIndexedDB() {
+  return typeof window !== 'undefined' && !!window.indexedDB;
+}
+
+function abrirBancoFluxoLotacao() {
+  return new Promise((resolve, reject) => {
+    if (!suportaIndexedDB()) {
+      reject(new Error('IndexedDB não disponível neste navegador.'));
+      return;
+    }
+
+    const request = window.indexedDB.open(FLUXO_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(FLUXO_DB_STORE)) {
+        db.createObjectStore(FLUXO_DB_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Falha ao abrir armazenamento local maior.'));
+  });
+}
+
+async function salvarFluxoIndexedDB(base) {
+  const db = await abrirBancoFluxoLotacao();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FLUXO_DB_STORE, 'readwrite');
+    tx.objectStore(FLUXO_DB_STORE).put(base, FLUXO_DB_KEY);
+    tx.oncomplete = () => {
+      db.close();
+      resolve(true);
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error('Falha ao salvar histórico de lotação no armazenamento local maior.'));
+    };
+  });
+}
+
+async function carregarFluxoIndexedDB() {
+  const db = await abrirBancoFluxoLotacao();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FLUXO_DB_STORE, 'readonly');
+    const request = tx.objectStore(FLUXO_DB_STORE).get(FLUXO_DB_KEY);
+    request.onsuccess = () => {
+      db.close();
+      resolve(request.result || null);
+    };
+    request.onerror = () => {
+      db.close();
+      reject(request.error || new Error('Falha ao carregar histórico de lotação do armazenamento local maior.'));
+    };
+  });
+}
+
+async function limparFluxoIndexedDB() {
+  if (!suportaIndexedDB()) return;
+  const db = await abrirBancoFluxoLotacao();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FLUXO_DB_STORE, 'readwrite');
+    tx.objectStore(FLUXO_DB_STORE).delete(FLUXO_DB_KEY);
+    tx.oncomplete = () => {
+      db.close();
+      resolve(true);
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error('Falha ao limpar histórico de lotação do armazenamento local maior.'));
+    };
+  });
+}
+
+function normalizarBaseFluxo(parsed = {}) {
+  return {
+    cargas: Array.isArray(parsed.cargas) ? parsed.cargas : [],
+    lotes: Array.isArray(parsed.lotes) ? parsed.lotes : [],
+    atualizadoEm: parsed.atualizadoEm || '',
+    aliquotaIcmsPadrao: parsed.aliquotaIcmsPadrao ?? 12,
+    armazenamento: parsed.armazenamento || parsed.storage || 'localStorage',
+    totalCargasSalvas: parsed.totalCargasSalvas ?? parsed.totalCargas ?? (Array.isArray(parsed.cargas) ? parsed.cargas.length : 0),
+  };
+}
+
+function salvarMarcadorIndexedDB(base) {
+  const marker = JSON.stringify({
+    armazenamento: FLUXO_LOCAL_MARKER,
+    storage: FLUXO_LOCAL_MARKER,
+    atualizadoEm: base?.atualizadoEm || new Date().toISOString(),
+    totalCargasSalvas: base?.cargas?.length || 0,
+    lotes: Array.isArray(base?.lotes) ? base.lotes.slice(0, 20) : [],
+    aliquotaIcmsPadrao: base?.aliquotaIcmsPadrao ?? 12,
+  });
+
+  try {
+    localStorage.removeItem(FLUXO_STORAGE_KEY);
+    localStorage.setItem(FLUXO_STORAGE_KEY, marker);
+  } catch (error) {
+    console.error('Erro ao salvar marcador do histórico de lotação:', error);
+  }
+}
 
 function uid(prefix = 'id') {
   if (globalThis.crypto?.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
@@ -386,19 +508,60 @@ export async function importarMultiplosFluxos(files = [], options = {}) {
 export function carregarFluxoCargasLotacao() {
   try {
     const parsed = JSON.parse(localStorage.getItem(FLUXO_STORAGE_KEY) || '{}');
-    return {
-      cargas: Array.isArray(parsed.cargas) ? parsed.cargas : [],
-      lotes: Array.isArray(parsed.lotes) ? parsed.lotes : [],
-      atualizadoEm: parsed.atualizadoEm || '',
-      aliquotaIcmsPadrao: parsed.aliquotaIcmsPadrao ?? 12,
-    };
+    const base = normalizarBaseFluxo(parsed);
+    if (base.armazenamento === FLUXO_LOCAL_MARKER || base.storage === FLUXO_LOCAL_MARKER) {
+      return baseFluxoVazia({
+        armazenamento: FLUXO_LOCAL_MARKER,
+        atualizadoEm: base.atualizadoEm,
+        lotes: base.lotes,
+        aliquotaIcmsPadrao: base.aliquotaIcmsPadrao,
+        totalCargasSalvas: base.totalCargasSalvas,
+      });
+    }
+    return base;
   } catch {
-    return { cargas: [], lotes: [], atualizadoEm: '', aliquotaIcmsPadrao: 12 };
+    return baseFluxoVazia();
   }
 }
 
+export async function carregarFluxoCargasLotacaoCompleto() {
+  const baseLocal = carregarFluxoCargasLotacao();
+  if (baseLocal.armazenamento !== FLUXO_LOCAL_MARKER) return baseLocal;
+
+  try {
+    const baseIndexed = await carregarFluxoIndexedDB();
+    if (baseIndexed) return normalizarBaseFluxo({ ...baseIndexed, armazenamento: 'indexedDB' });
+  } catch (error) {
+    console.error('Erro ao carregar histórico de lotação do IndexedDB:', error);
+  }
+
+  return baseLocal;
+}
+
 export function salvarFluxoCargasLotacao(base) {
-  localStorage.setItem(FLUXO_STORAGE_KEY, JSON.stringify(base));
+  try {
+    localStorage.setItem(FLUXO_STORAGE_KEY, JSON.stringify({ ...base, armazenamento: 'localStorage' }));
+    return { ok: true, armazenamento: 'localStorage' };
+  } catch (error) {
+    if (!isQuotaError(error)) throw error;
+    salvarMarcadorIndexedDB(base);
+    salvarFluxoIndexedDB({ ...base, armazenamento: 'indexedDB' }).catch((err) => {
+      console.error('Erro ao salvar histórico de lotação no IndexedDB:', err);
+    });
+    return { ok: true, armazenamento: 'indexedDB', pendente: true };
+  }
+}
+
+export async function salvarFluxoCargasLotacaoCompleto(base) {
+  try {
+    localStorage.setItem(FLUXO_STORAGE_KEY, JSON.stringify({ ...base, armazenamento: 'localStorage' }));
+    return { ok: true, armazenamento: 'localStorage' };
+  } catch (error) {
+    if (!isQuotaError(error)) throw error;
+    await salvarFluxoIndexedDB({ ...base, armazenamento: 'indexedDB' });
+    salvarMarcadorIndexedDB(base);
+    return { ok: true, armazenamento: 'indexedDB' };
+  }
 }
 
 export function mesclarFluxoCargas(baseAtual, importacoes = [], options = {}) {
@@ -438,6 +601,14 @@ export function mesclarFluxoCargas(baseAtual, importacoes = [], options = {}) {
 
 export function limparFluxoCargasLotacao() {
   localStorage.removeItem(FLUXO_STORAGE_KEY);
+  limparFluxoIndexedDB().catch((error) => {
+    console.error('Erro ao limpar histórico de lotação do IndexedDB:', error);
+  });
+}
+
+export async function limparFluxoCargasLotacaoCompleto() {
+  localStorage.removeItem(FLUXO_STORAGE_KEY);
+  await limparFluxoIndexedDB();
 }
 
 export function resumirFluxoCargas(base) {

@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   buscarCargaPorDistOuCte,
   carregarFluxoCargasLotacao,
+  carregarFluxoCargasLotacaoCompleto,
   carregarLancamentosAuditoria,
   carregarSolicitacoesPagamento,
   criarLancamentoAuditoria,
@@ -338,12 +339,31 @@ function MovimentosAutorizacao({ carga, solicitacoes }) {
 }
 
 export default function LotacaoAuditoriaPage() {
-  const [baseFluxo] = useState(() => carregarFluxoCargasLotacao());
+  const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
+  const [carregandoHistorico, setCarregandoHistorico] = useState(false);
   const [busca, setBusca] = useState('');
   const [selecionada, setSelecionada] = useState(null);
   const [lancamentos, setLancamentos] = useState(() => carregarLancamentosAuditoria());
   const [solicitacoes, setSolicitacoes] = useState(() => carregarSolicitacoesPagamento());
   const [mensagem, setMensagem] = useState('');
+
+  useEffect(() => {
+    let cancelado = false;
+    setCarregandoHistorico(true);
+    carregarFluxoCargasLotacaoCompleto()
+      .then((base) => {
+        if (!cancelado) setBaseFluxo(base);
+      })
+      .catch((error) => {
+        console.error('Erro ao carregar histórico de lotação na auditoria:', error);
+      })
+      .finally(() => {
+        if (!cancelado) setCarregandoHistorico(false);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, []);
 
   const resultados = useMemo(() => buscarCargaPorDistOuCte(baseFluxo.cargas, busca), [baseFluxo.cargas, busca]);
 
@@ -395,6 +415,10 @@ export default function LotacaoAuditoriaPage() {
           </p>
         </div>
       </header>
+
+      {carregandoHistorico && (
+        <div className="hint-box compact">Carregando histórico de cargas da Lotação...</div>
+      )}
 
       <div className="panel-card">
         <div className="section-row compact-top">
