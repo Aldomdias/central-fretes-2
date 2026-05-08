@@ -80,6 +80,15 @@ function limparNome(value) {
   return String(value || '').trim().replace(/\s+/g, ' ');
 }
 
+function normalizarTexto(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
 function nomesPossiveisItem(item = {}) {
   const selecionados = Array.isArray(item.transportadorasRealizado)
     ? item.transportadorasRealizado.map(limparNome).filter(Boolean)
@@ -90,7 +99,7 @@ function nomesPossiveisItem(item = {}) {
   return [item.transportadoraSistema, item.transportadoraInformada]
     .map(limparNome)
     .filter(Boolean)
-    .filter((nome, index, arr) => arr.findIndex((outro) => outro.toUpperCase() === nome.toUpperCase()) === index);
+    .filter((nome, index, arr) => arr.findIndex((outro) => normalizarTexto(outro) === normalizarTexto(nome)) === index);
 }
 
 function resumoVazio() {
@@ -99,6 +108,7 @@ function resumoVazio() {
     valorCte: 0,
     valorNF: 0,
     peso: 0,
+    primeiraData: '',
     ultimaData: '',
   };
 }
@@ -107,17 +117,35 @@ function normalizarResumo(data) {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row || typeof row !== 'object') return resumoVazio();
   return {
-    ctes: toNumber(row.ctes ?? row.total ?? row.total_ctes),
-    valorCte: toNumber(row.valorCte ?? row.valor_cte ?? row.valor_cte_total ?? row.frete),
-    valorNF: toNumber(row.valorNF ?? row.valor_nf ?? row.valor_nf_total),
-    peso: toNumber(row.peso ?? row.peso_total),
-    ultimaData: isoDate(row.ultimaData || row.ultima_data || row.dataMaxima || row.data_maxima || ''),
+    ctes: toNumber(row.ctes ?? row.total),
+    valorCte: toNumber(row.valorCte ?? row.valor_cte ?? row.frete),
+    valorNF: toNumber(row.valorNF ?? row.valor_nf),
+    peso: toNumber(row.peso),
+    primeiraData: isoDate(row.primeiraData || row.primeira_data || ''),
+    ultimaData: isoDate(row.ultimaData || row.ultima_data || ''),
   };
 }
 
+const resumoCache = new Map();
+
+function cacheKey(nomes = [], inicio = '', fim = '') {
+  return JSON.stringify({
+    nomes: (nomes || []).map(normalizarTexto).sort(),
+    inicio: inicio || '',
+    fim: fim || '',
+  });
+}
+
 async function rpcResumoRealizado(client, nomes = [], inicio = '', fim = '') {
-  const transportadoras = (nomes || []).map(limparNome).filter(Boolean);
+  const transportadoras = (nomes || [])
+    .map(limparNome)
+    .filter(Boolean)
+    .filter((nome, index, arr) => arr.findIndex((outro) => normalizarTexto(outro) === normalizarTexto(nome)) === index);
+
   if (!transportadoras.length) return resumoVazio();
+
+  const key = cacheKey(transportadoras, inicio, fim);
+  if (resumoCache.has(key)) return resumoCache.get(key);
 
   const { data, error } = await client.rpc('reajustes_resumo_realizado_ctes', {
     p_transportadoras: transportadoras,
@@ -127,11 +155,13 @@ async function rpcResumoRealizado(client, nomes = [], inicio = '', fim = '') {
 
   if (error) {
     throw new Error(
-      `Erro ao resumir CT-es do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
+      `Erro ao resumir CT-es do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes_BASE_TOTAL.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
     );
   }
 
-  return normalizarResumo(data);
+  const resumo = normalizarResumo(data);
+  resumoCache.set(key, resumo);
+  return resumo;
 }
 
 export async function listarTransportadorasRealizadoReajustes() {
@@ -140,7 +170,7 @@ export async function listarTransportadorasRealizadoReajustes() {
 
   if (error) {
     throw new Error(
-      `Erro ao carregar transportadoras do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
+      `Erro ao carregar transportadoras do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes_BASE_TOTAL.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
     );
   }
 
@@ -150,6 +180,9 @@ export async function listarTransportadorasRealizadoReajustes() {
       nome: limparNome(row.nome || row.transportadora),
       ctes: toNumber(row.ctes),
       frete: toNumber(row.frete || row.valorCte || row.valor_cte),
+      valorNF: toNumber(row.valorNF || row.valor_nf),
+      primeiraData: isoDate(row.primeiraData || row.primeira_data || ''),
+      ultimaData: isoDate(row.ultimaData || row.ultima_data || ''),
     }))
     .filter((row) => row.nome)
     .sort((a, b) => b.frete - a.frete || b.ctes - a.ctes || a.nome.localeCompare(b.nome, 'pt-BR'));
@@ -160,50 +193,57 @@ export async function obterUltimaDataRealizadoReajustes() {
   const { data, error } = await client.rpc('reajustes_realizado_ultima_data');
   if (error) {
     throw new Error(
-      `Erro ao consultar última data do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
+      `Erro ao consultar última data do Realizado Online. Rode supabase/reajustes_realizado_online_funcoes_BASE_TOTAL.sql no Supabase. Detalhe: ${error.message || error.details || 'erro desconhecido'}`
     );
   }
   return isoDate(data || '');
 }
 
+function calcularJanela(inicio = '', meses = 3, ultimaDataRealizado = '') {
+  if (!inicio) {
+    return {
+      inicioBase: '',
+      fimBase: '',
+      inicioRealizado: '',
+      fimRealizado: '',
+      diasRealizados: 0,
+      mesesRealizados: 0,
+    };
+  }
+
+  const fimRealizado = ultimaDataRealizado && ultimaDataRealizado >= inicio ? ultimaDataRealizado : '';
+  return {
+    inicioBase: addMonthsIso(inicio, -meses),
+    fimBase: addDaysIso(inicio, -1),
+    inicioRealizado: inicio,
+    fimRealizado,
+    diasRealizados: fimRealizado ? diffDaysInclusive(inicio, fimRealizado) : 0,
+    mesesRealizados: fimRealizado ? mesesEquivalentes(inicio, fimRealizado) : 0,
+  };
+}
+
 export async function calcularImpactosReajustesOnline(itens = [], periodo = {}) {
   const client = ensureClient();
+  resumoCache.clear();
+
   const ultimaDataRealizado = await obterUltimaDataRealizadoReajustes();
   const mesesBasePadrao = mesesBaseImpacto(periodo);
-
   const resultado = [];
 
   for (const item of itens || []) {
     const inicio = dataInicioItem(item);
-    const meses = mesesBaseImpacto({ ...periodo, mesesBaseImpacto: item.mesesBaseImpacto || periodo.mesesBaseImpacto || mesesBasePadrao });
+    const meses = mesesBaseImpacto({
+      ...periodo,
+      mesesBaseImpacto: item.mesesBaseImpacto || periodo.mesesBaseImpacto || mesesBasePadrao,
+    });
     const nomes = nomesPossiveisItem(item);
-
-    const janela = (() => {
-      if (!inicio) {
-        return {
-          inicioBase: '',
-          fimBase: '',
-          inicioRealizado: '',
-          fimRealizado: '',
-          diasRealizados: 0,
-          mesesRealizados: 0,
-        };
-      }
-      const fimRealizado = ultimaDataRealizado && ultimaDataRealizado >= inicio ? ultimaDataRealizado : '';
-      return {
-        inicioBase: addMonthsIso(inicio, -meses),
-        fimBase: addDaysIso(inicio, -1),
-        inicioRealizado: inicio,
-        fimRealizado,
-        diasRealizados: fimRealizado ? diffDaysInclusive(inicio, fimRealizado) : 0,
-        mesesRealizados: fimRealizado ? mesesEquivalentes(inicio, fimRealizado) : 0,
-      };
-    })();
-
+    const janela = calcularJanela(inicio, meses, ultimaDataRealizado);
     const podeCalcular = Boolean(inicio && nomes.length);
+
     const base = podeCalcular
       ? await rpcResumoRealizado(client, nomes, janela.inicioBase, janela.fimBase)
       : resumoVazio();
+
     const realizado = podeCalcular && janela.fimRealizado
       ? await rpcResumoRealizado(client, nomes, janela.inicioRealizado, janela.fimRealizado)
       : resumoVazio();
@@ -298,7 +338,15 @@ export async function calcularImpactosReajustesOnline(itens = [], periodo = {}) 
       ultimaDataRealizadoImpacto: ultimaDataRealizado,
       semDataInicioImpacto: !inicio,
       vinculado: Boolean(nomes.length && (ctesPeriodo || ctesRealizadoReajuste)),
-      fonteImpacto: 'realizado-online-supabase',
+      nomesUsadosImpacto: nomes,
+      fonteImpacto: 'realizado-online-supabase-base-total',
+      avisoImpacto: !nomes.length
+        ? 'Sem vínculo com transportadora do Realizado Online.'
+        : !inicio
+          ? 'Sem data de início para calcular a janela automática.'
+          : !ctesPeriodo && !ctesRealizadoReajuste
+            ? 'Vínculo encontrado, mas sem CT-e dentro das janelas calculadas.'
+            : '',
     });
   }
 
