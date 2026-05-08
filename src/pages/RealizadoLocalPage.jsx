@@ -885,25 +885,50 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     if (resultado) setResultado(null);
   }
 
+  function existeFiltroAtivo(filtrosBusca = {}) {
+    return Object.entries(filtrosBusca || {}).some(([key, value]) => {
+      if (key === 'excluirEbazar') return value === false;
+      return value !== '' && value !== null && value !== undefined && value !== false;
+    });
+  }
+
+  function mensagemBaseOnline(resumoLocal = {}, diag = null, filtrosBusca = {}) {
+    const totalFiltro = Number(resumoLocal?.total || 0);
+    const totalBanco = Number(diag?.total || resumoLocal?.totalBancoOnline || 0);
+    const projeto = diag?.projeto ? ` • projeto: ${diag.projeto}` : '';
+
+    if (totalFiltro > 0) {
+      const origem = resumoLocal?.origem === 'supabase-direto' ? 'leitura direta do Supabase' : 'base online';
+      return `Filtro carregado da ${origem}: ${totalFiltro.toLocaleString('pt-BR')} CT-e(s), ${Number(resumoLocal.comIbge || 0).toLocaleString('pt-BR')} com IBGE e ${Number(resumoLocal.pendenciasIbge || 0).toLocaleString('pt-BR')} pendência(s). Banco online: ${totalBanco.toLocaleString('pt-BR')} CT-e(s)${projeto}.`;
+    }
+
+    if (totalBanco > 0 && existeFiltroAtivo(filtrosBusca)) {
+      return `A base online tem ${totalBanco.toLocaleString('pt-BR')} CT-e(s)${projeto}, mas os filtros atuais retornaram zero. Clique em “Limpar filtros e atualizar” para conferir a base completa.`;
+    }
+
+    if (totalBanco > 0) {
+      return `O Supabase tem ${totalBanco.toLocaleString('pt-BR')} CT-e(s)${projeto}, mas o painel filtrado veio zerado. Use “Atualizar da base online”; se persistir, rode o SQL de sincronização do patch.`;
+    }
+
+    return `Nenhum CT-e encontrado na base online${projeto}.`;
+  }
+
   async function pesquisar(filtrosBusca = filtros, mostrarMensagem = true) {
     setCarregando(true);
     setErro('');
     try {
-      if (mostrarMensagem) setFeedback('Pesquisando base online...');
+      if (mostrarMensagem) setFeedback('Pesquisando diretamente a base online do Supabase...');
+      const diagAntes = await diagnosticarRealizadoLocal().catch(() => null);
       const [resumoLocal, lista] = await Promise.all([
-        resumirRealizadoLocal(filtrosBusca, { top: 10 }),
-        listarRealizadoLocal(filtrosBusca, { limit: 50 }),
+        resumirRealizadoLocal(filtrosBusca, { top: 10, fallbackLimit: 300000 }),
+        listarRealizadoLocal(filtrosBusca, { limit: 50, pageSize: 1000 }),
       ]);
-      const diag = await diagnosticarRealizadoLocal().catch(() => null);
+      const diag = await diagnosticarRealizadoLocal().catch(() => diagAntes);
       setResumo(resumoLocal);
       setAmostra(lista.rows || []);
       setDiagnostico(diag);
       setFiltrosAplicados({ ...DEFAULT_FILTROS, ...filtrosBusca });
-      setFeedback(
-        resumoLocal.total
-          ? `Filtro carregado da base online: ${resumoLocal.total.toLocaleString('pt-BR')} CT-e(s), ${resumoLocal.comIbge.toLocaleString('pt-BR')} com IBGE e ${resumoLocal.pendenciasIbge.toLocaleString('pt-BR')} pendência(s).`
-          : 'Nenhum CT-e encontrado na base online para os filtros atuais.'
-      );
+      setFeedback(mensagemBaseOnline(resumoLocal, diag, filtrosBusca));
     } catch (error) {
       setErro(error.message || 'Erro ao pesquisar base online.');
     } finally {
@@ -911,7 +936,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     }
   }
 
-
+  async function limparFiltrosEPesquisar() {
+    const base = { ...DEFAULT_FILTROS };
+    setFiltros(base);
+    setResultado(null);
+    await pesquisar(base, true);
+  }
 
   useEffect(() => {
     filtrosRef.current = filtros;
@@ -1944,7 +1974,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         </div>
         <div className="actions-right wrap">
           <button className="btn-secondary" onClick={() => pesquisar(filtros)} disabled={carregando || importando || simulando}>
-            {carregando ? 'Pesquisando...' : 'Pesquisar base online'}
+            {carregando ? 'Pesquisando...' : 'Atualizar da base online'}
+          </button>
+          <button className="btn-secondary" onClick={limparFiltrosEPesquisar} disabled={carregando || importando || simulando}>
+            Limpar filtros e atualizar
           </button>
           <button className="btn-secondary" onClick={exportarBaseSelecionada} disabled={exportando || carregando || importando || simulando || !stats.total}>
             {exportando ? 'Exportando...' : 'Exportar base filtrada'}
@@ -1973,8 +2006,13 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         <strong>Filtro EBAZAR:</strong> {filtrosAplicados.excluirEbazar ? 'EBAZAR está fora da base pesquisada/análise atual.' : 'EBAZAR está incluída na base pesquisada/análise atual.'}
       </div>
       <div className={economizarSupabase ? 'sim-alert success' : 'sim-alert info'}>
-        <strong>Modo economia Supabase:</strong> {economizarSupabase ? 'ativo — simulações tentam usar tabelas salvas/importadas localmente antes de consultar o banco.' : 'desativado — o sistema pode consultar o Supabase para baixar tabelas que ainda não estão locais.'}
+        <strong>Modo economia Supabase:</strong> {economizarSupabase ? 'ativo — economiza consultas de tabelas de frete; o Realizado Online continua lendo a base do Supabase.' : 'desativado — o sistema pode consultar o Supabase para baixar tabelas que ainda não estão locais.'}
       </div>
+      {Number(diagnostico?.total || 0) > 0 && !stats.total ? (
+        <div className="sim-alert">
+          <strong>Atenção:</strong> existem {Number(diagnostico?.total || 0).toLocaleString('pt-BR')} CT-e(s) na base online, mas o filtro atual está retornando zero. Use “Limpar filtros e atualizar” para validar a base completa.
+        </div>
+      ) : null}
 
       {modalVolumetriaAberto ? (
         <div className="modal-overlay">
@@ -2094,7 +2132,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             {importando ? 'Importando local...' : 'Selecionar arquivos locais'}
           </button>
           <div className="import-meta-box">
-            Base local neste navegador: <strong>{Number(diagnostico?.total || 0).toLocaleString('pt-BR')}</strong> CT-e(s)
+            Base online Supabase: <strong>{Number(diagnostico?.total || 0).toLocaleString('pt-BR')}</strong> CT-e(s)
+            {diagnostico?.projeto ? <span> • {diagnostico.projeto}</span> : null}
+            {diagnostico?.periodoInicio || diagnostico?.periodoFim ? <small>Período: {formatDateBr(diagnostico?.periodoInicio)} até {formatDateBr(diagnostico?.periodoFim)}</small> : null}
           </div>
         </section>
 
