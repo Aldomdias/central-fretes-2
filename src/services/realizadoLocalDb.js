@@ -71,6 +71,56 @@ function normalizeLoose(value) {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+
+const UF_IBGE_PREFIX = {
+  RO: '11', AC: '12', AM: '13', RR: '14', PA: '15', AP: '16', TO: '17',
+  MA: '21', PI: '22', CE: '23', RN: '24', PB: '25', PE: '26', AL: '27', SE: '28', BA: '29',
+  MG: '31', ES: '32', RJ: '33', SP: '35',
+  PR: '41', SC: '42', RS: '43',
+  MS: '50', MT: '51', GO: '52', DF: '53',
+};
+
+const IBGE_PREFIX_UF = Object.fromEntries(Object.entries(UF_IBGE_PREFIX).map(([uf, prefix]) => [prefix, uf]));
+
+const UF_NOME_MAP = {
+  RONDONIA: 'RO', ACRE: 'AC', AMAZONAS: 'AM', RORAIMA: 'RR', PARA: 'PA', AMAPA: 'AP', TOCANTINS: 'TO',
+  MARANHAO: 'MA', PIAUI: 'PI', CEARA: 'CE', RIO GRANDE DO NORTE: 'RN', PARAIBA: 'PB', PERNAMBUCO: 'PE', ALAGOAS: 'AL', SERGIPE: 'SE', BAHIA: 'BA',
+  MINAS GERAIS: 'MG', ESPIRITO SANTO: 'ES', RIO DE JANEIRO: 'RJ', SAO PAULO: 'SP',
+  PARANA: 'PR', SANTA CATARINA: 'SC', RIO GRANDE DO SUL: 'RS',
+  MATO GROSSO DO SUL: 'MS', MATO GROSSO: 'MT', GOIAS: 'GO', DISTRITO FEDERAL: 'DF',
+};
+
+function onlyDigits(value) {
+  return String(value ?? '').replace(/\D/g, '');
+}
+
+function normalizeAsciiBrasil(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+function ufFromIbgeBrasil(ibge) {
+  const prefix = onlyDigits(ibge).slice(0, 2);
+  return IBGE_PREFIX_UF[prefix] || '';
+}
+
+function normalizarUfBrasil(value) {
+  const ascii = normalizeAsciiBrasil(value).replace(/[^A-Z ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!ascii) return '';
+  const letras = ascii.replace(/[^A-Z]/g, '');
+  if (UF_IBGE_PREFIX[letras]) return letras;
+  if (UF_NOME_MAP[ascii]) return UF_NOME_MAP[ascii];
+  if (UF_NOME_MAP[letras]) return UF_NOME_MAP[letras];
+  return '';
+}
+
+function ufCompativelBrasil(uf, ibge) {
+  return normalizarUfBrasil(uf) || ufFromIbgeBrasil(ibge);
+}
+
 function isTransportadoraEbazar(value) {
   const nome = normalizeLoose(value);
   return nome.includes('EBAZAR');
@@ -97,8 +147,8 @@ export function filtrarCteLocal(row = {}, filtros = {}) {
   if (filtros.canal && normalize(row.canal) !== normalize(filtros.canal)) return false;
   if (filtros.excluirEbazar && isTransportadoraEbazar(row.transportadora)) return false;
   if (filtros.transportadoraRealizada && !normalizeLoose(row.transportadora).includes(normalizeLoose(filtros.transportadoraRealizada))) return false;
-  if (filtros.ufOrigem && normalize(row.ufOrigem) !== normalize(filtros.ufOrigem)) return false;
-  if (filtros.ufDestino && normalize(row.ufDestino) !== normalize(filtros.ufDestino)) return false;
+  if (filtros.ufOrigem && ufCompativelBrasil(row.ufOrigem, row.ibgeOrigem) !== ufCompativelBrasil(filtros.ufOrigem, '')) return false;
+  if (filtros.ufDestino && ufCompativelBrasil(row.ufDestino, row.ibgeDestino) !== ufCompativelBrasil(filtros.ufDestino, '')) return false;
   if (filtros.origem && !normalizeLoose(row.cidadeOrigem).includes(normalizeLoose(filtros.origem))) return false;
   if (filtros.destino && !normalizeLoose(row.cidadeDestino).includes(normalizeLoose(filtros.destino))) return false;
   if (filtros.somentePendenciasIbge && row.ibgeOk) return false;
@@ -451,7 +501,7 @@ function cleanTextOnline(value) {
 }
 
 function cleanUfOnline(value) {
-  return cleanTextOnline(value).toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+  return normalizarUfBrasil(value);
 }
 
 function cleanDigitsOnline(value) {
@@ -485,10 +535,10 @@ function toDbRealizadoLocal(row = {}) {
     cnpj_transportadora: cleanDigitsOnline(row.cnpjTransportadora || row.cnpj_transportadora),
     tomador_servico: cleanTextOnline(row.tomadorServico || row.tomador_servico),
     cidade_origem: cleanTextOnline(row.cidadeOrigem || row.cidade_origem),
-    uf_origem: cleanUfOnline(row.ufOrigem || row.uf_origem),
+    uf_origem: ufCompativelBrasil(row.ufOrigem || row.uf_origem, row.ibgeOrigem || row.ibge_origem),
     ibge_origem: cleanDigitsOnline(row.ibgeOrigem || row.ibge_origem).slice(0, 7),
     cidade_destino: cleanTextOnline(row.cidadeDestino || row.cidade_destino),
-    uf_destino: cleanUfOnline(row.ufDestino || row.uf_destino),
+    uf_destino: ufCompativelBrasil(row.ufDestino || row.uf_destino, row.ibgeDestino || row.ibge_destino),
     ibge_destino: cleanDigitsOnline(row.ibgeDestino || row.ibge_destino).slice(0, 7),
     chave_rota_ibge: cleanTextOnline(row.chaveRotaIbge || row.chave_rota_ibge),
     peso: toSafeNumberOnline(row.peso),
@@ -517,10 +567,10 @@ function fromDbRealizadoLocal(row = {}) {
     cnpjTransportadora: row.cnpj_transportadora || row.cnpjTransportadora || '',
     tomadorServico: row.tomador_servico || row.tomadorServico || '',
     cidadeOrigem: row.cidade_origem || row.cidadeOrigem || '',
-    ufOrigem: row.uf_origem || row.ufOrigem || '',
+    ufOrigem: ufCompativelBrasil(row.uf_origem || row.ufOrigem || '', row.ibge_origem || row.ibgeOrigem),
     ibgeOrigem: row.ibge_origem || row.ibgeOrigem || '',
     cidadeDestino: row.cidade_destino || row.cidadeDestino || '',
-    ufDestino: row.uf_destino || row.ufDestino || '',
+    ufDestino: ufCompativelBrasil(row.uf_destino || row.ufDestino || '', row.ibge_destino || row.ibgeDestino),
     ibgeDestino: row.ibge_destino || row.ibgeDestino || '',
     chaveRotaIbge: row.chave_rota_ibge || row.chaveRotaIbge || '',
     peso: Number(row.peso || 0),
@@ -541,14 +591,25 @@ function fromDbRealizadoLocal(row = {}) {
   };
 }
 
+
+function aplicarFiltroUfOnline(query, colunaUf, colunaIbge, value) {
+  const uf = normalizarUfBrasil(value);
+  if (!uf) return query;
+  const prefix = UF_IBGE_PREFIX[uf];
+  if (prefix) {
+    return query.or(`${colunaUf}.eq.${uf},${colunaIbge}.like.${prefix}*`);
+  }
+  return query.eq(colunaUf, uf);
+}
+
 function aplicarFiltrosBasicosOnline(query, filtros = {}) {
   if (filtros.competencia) query = query.eq('competencia', filtros.competencia);
   if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
   if (filtros.canal) query = query.eq('canal', normalize(filtros.canal));
   if (filtros.transportadoraRealizada) query = query.ilike('transportadora', `%${cleanTextOnline(filtros.transportadoraRealizada)}%`);
-  if (filtros.ufOrigem) query = query.eq('uf_origem', cleanUfOnline(filtros.ufOrigem));
-  if (filtros.ufDestino) query = query.eq('uf_destino', cleanUfOnline(filtros.ufDestino));
+  if (filtros.ufOrigem) query = aplicarFiltroUfOnline(query, 'uf_origem', 'ibge_origem', filtros.ufOrigem);
+  if (filtros.ufDestino) query = aplicarFiltroUfOnline(query, 'uf_destino', 'ibge_destino', filtros.ufDestino);
   if (filtros.origem) query = query.ilike('cidade_origem', `%${cleanTextOnline(filtros.origem)}%`);
   if (filtros.destino) query = query.ilike('cidade_destino', `%${cleanTextOnline(filtros.destino)}%`);
   if (filtros.somentePendenciasIbge) query = query.eq('ibge_ok', false);
@@ -690,6 +751,16 @@ function resumoFromRowsOnline(rows = [], options = {}) {
 
 async function resumirRealizadoOnline(filtros = {}, options = {}) {
   const supabase = ensureRealizadoOnlineClient();
+  const usarLeituraDiretaCompatUf = Boolean(filtros.ufOrigem || filtros.ufDestino || options.forceDireto);
+  if (usarLeituraDiretaCompatUf) {
+    const fallback = await fetchRealizadoOnline(filtros, { limit: options.fallbackLimit || 1000000, pageSize: 1000 });
+    const resumo = resumoFromRowsOnline(fallback.rows, options);
+    resumo.origem = 'supabase-direto-uf';
+    resumo.totalCompativel = fallback.totalCompativel;
+    resumo.avaliados = fallback.avaliados;
+    return resumo;
+  }
+
   try {
     const { data, error } = await supabase.rpc('resumir_realizado_local_ctes', {
       p_competencia: filtros.competencia || null,
