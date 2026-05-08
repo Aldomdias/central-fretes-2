@@ -2,6 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import {
+  calcularImpactosReajustesOnline,
+  listarTransportadorasRealizadoReajustes,
+  reajustesRealizadoOnlineDisponivel,
+} from '../services/reajustesRealizadoOnlineService';
+import {
   carregarConfigReajustesSupabase,
   carregarReajustesSupabase,
   obterInfoReajustesSupabase,
@@ -695,16 +700,25 @@ export default function ReajustesPage() {
     if (exibirMensagem) {
       setCarregando(true);
       setErro('');
-      setMensagem('Carregando nomes de transportadoras do Realizado Local...');
+      setMensagem('Carregando nomes de transportadoras do Realizado Online...');
     }
     try {
+      if (reajustesRealizadoOnlineDisponivel()) {
+        const nomes = await listarTransportadorasRealizadoReajustes();
+        setOpcoesRealizado(nomes);
+        if (exibirMensagem) {
+          setMensagem(`Transportadoras carregadas do Realizado Online: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
+        }
+        return nomes;
+      }
+
       const { rows } = await exportarRealizadoLocal({}, { limit: 500000 });
       const nomes = nomesUnicosRealizado(rows || []);
       setOpcoesRealizado(nomes);
       if (exibirMensagem) setMensagem(`Transportadoras carregadas do Realizado Local: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
       return nomes;
     } catch (error) {
-      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do Realizado Local.');
+      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do Realizado Online.');
       return [];
     } finally {
       if (exibirMensagem) setCarregando(false);
@@ -769,8 +783,23 @@ export default function ReajustesPage() {
       return;
     }
 
-    setMensagem(`Buscando Realizado Local a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
+    setMensagem(`Calculando impacto pela base do Realizado Online a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
     try {
+      if (reajustesRealizadoOnlineDisponivel()) {
+        const calculados = await calcularImpactosReajustesOnline(itens, config);
+        persistir(calculados);
+        const resumoCalculado = resumoReajustes(calculados);
+        const ctesBase = calculados.reduce((acc, item) => acc + toNumber(item.ctesPeriodo), 0);
+        const ctesRealizado = calculados.reduce((acc, item) => acc + toNumber(item.ctesRealizadoReajuste), 0);
+
+        setMensagem(
+          `Impacto calculado pela base online do Supabase com ${ctesBase.toLocaleString('pt-BR')} CT-e(s) na base prevista e ${ctesRealizado.toLocaleString('pt-BR')} CT-e(s) após a data de início. `
+          + `Base prevista: média dos ${Number(config.mesesBaseImpacto || 3).toLocaleString('pt-BR')} mês(es) anteriores à Data_Inicio. `
+          + `Realizado: da Data_Inicio até ${formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base'}.`
+        );
+        return;
+      }
+
       const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
         inicio: consulta.inicio,
       }, { limit: 500000 });
@@ -785,7 +814,7 @@ export default function ReajustesPage() {
         + `Realizado: da Data_Inicio até ${formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base'}${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao calcular impacto pelo Realizado Local.');
+      setErro(error.message || 'Erro ao calcular impacto pelo Realizado Online.');
     } finally {
       setCarregando(false);
     }
