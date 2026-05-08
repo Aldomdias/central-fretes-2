@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
+import GlobalImportStatus from './components/GlobalImportStatus';
 import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
 import TransportadorasPage from './pages/TransportadorasPage';
@@ -198,7 +199,10 @@ export default function App() {
         usuario={sessao}
         onLogout={sair}
       />
-      <main className="app-content">{content}</main>
+      <main className="app-content">
+        <GlobalImportStatus onAbrirRealizado={() => mudarPagina('realizado-local')} />
+        {content}
+      </main>
     </div>
   );
 }

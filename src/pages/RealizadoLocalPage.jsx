@@ -38,6 +38,11 @@ import {
 import { modelosFaixaPadrao } from '../utils/formatacaoTabela';
 import { carregarGradeFrete } from '../utils/gradeFreteConfig';
 import {
+  getRealizadoOnlineImportState,
+  startRealizadoOnlineImport,
+  subscribeRealizadoOnlineImport,
+} from '../services/realizadoOnlineImportManager';
+import {
   formatCurrency,
   formatDateBr,
   formatNumber,
@@ -664,6 +669,13 @@ function formatBytes(bytes = 0) {
   return `${(n / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
 }
 
+
+function mensagemResultadoImportacaoRealizado(result = {}) {
+  const duplicadosNoArquivo = (result.arquivos || []).reduce((sum, item) => sum + Number(item.duplicadosNoArquivo || 0), 0);
+  const semChave = (result.arquivos || []).reduce((sum, item) => sum + Number(item.semChave || 0), 0);
+  return `Importação online concluída: ${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no Supabase, de ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} preparados e ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Repetidos dentro do arquivo: ${duplicadosNoArquivo.toLocaleString('pt-BR')}. Sem chave descartados: ${semChave.toLocaleString('pt-BR')}. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`;
+}
+
 function cteToExportRow(item = {}) {
   return {
     Competencia: item.competencia || '',
@@ -812,6 +824,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [exportandoVolumetria, setExportandoVolumetria] = useState(false);
   const fileInputRef = useRef(null);
   const tabelaLocalInputRef = useRef(null);
+  const filtrosRef = useRef(filtros);
+  const importacaoProcessadaRef = useRef(null);
 
   const stats = useMemo(() => ({
     total: Number(resumo?.total || 0),
@@ -896,6 +910,56 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setCarregando(false);
     }
   }
+
+
+
+  useEffect(() => {
+    filtrosRef.current = filtros;
+  }, [filtros]);
+
+  useEffect(() => {
+    function aplicarEstadoImportacaoGlobal(importState) {
+      if (!importState || importState.status === 'idle') {
+        setImportando(false);
+        return;
+      }
+
+      const progressAtual = importState.progress || null;
+      if (progressAtual) setProgress(progressAtual);
+
+      if (importState.status === 'running') {
+        setImportando(true);
+        setErro('');
+        if (progressAtual?.mensagem) setFeedback(`Importação online em andamento: ${progressAtual.mensagem}`);
+        return;
+      }
+
+      setImportando(false);
+
+      if (importState.status === 'error') {
+        setErro(importState.error || progressAtual?.mensagem || 'Erro na importação online.');
+        return;
+      }
+
+      if (importState.status === 'done' && importState.id && importacaoProcessadaRef.current !== importState.id) {
+        importacaoProcessadaRef.current = importState.id;
+        const result = importState.result || {};
+        setProgress(progressAtual || {
+          etapa: 'Importação concluída',
+          percentual: 100,
+          mensagem: 'Importação concluída na base online.',
+        });
+        setFeedback(mensagemResultadoImportacaoRealizado(result));
+        setFileKey(makeFileKey());
+        pesquisar(filtrosRef.current, false).catch((error) => {
+          setErro(error?.message || 'Importação concluída, mas houve erro ao atualizar o painel.');
+        });
+      }
+    }
+
+    aplicarEstadoImportacaoGlobal(getRealizadoOnlineImportState());
+    return subscribeRealizadoOnlineImport(aplicarEstadoImportacaoGlobal);
+  }, []);
 
   async function prepararMunicipiosParaImportacao() {
     let baseMunicipios = Array.isArray(municipios) ? municipios : [];
@@ -1016,43 +1080,33 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
 
-    setImportando(true);
     setErro('');
     setResultado(null);
     setProgress({
-      etapa: 'Preparando leitura local',
+      etapa: 'Fila de importação online',
       atual: 0,
       total: files.length,
       percentual: 1,
-      mensagem: 'Enviando arquivo para processamento em segundo plano. A tela pode continuar aberta durante a leitura.',
+      mensagem: 'Importação enviada para o gerenciador global. Você pode sair desta tela; o andamento ficará no topo do sistema.',
     });
 
     try {
-      const municipiosResolucao = await prepararMunicipiosParaImportacao();
-      setFeedback(`Referência IBGE pronta: ${municipiosResolucao.length.toLocaleString('pt-BR')} município(s). Iniciando leitura do arquivo...`);
-      const result = await importarArquivosComWorker(files, municipiosResolucao);
-      if (!result.totalPreparados && result.erros?.length) {
-        throw new Error(`Nenhum CT-e foi importado. Primeiro erro: ${result.erros[0]?.arquivo || result.erros[0]?.nome || 'arquivo'} - ${result.erros[0]?.erro || 'erro desconhecido'}`);
-      }
-      setProgress({
-        etapa: 'Atualizando painel',
-        atual: result.totalPreparados || 0,
-        total: result.totalPreparados || 0,
-        percentual: 100,
-        mensagem: 'Atualizando resumo local...',
+      const tarefa = startRealizadoOnlineImport({
+        files,
+        municipios,
+        ibgeInfo,
+        transportadoras,
+        transportadorasTabela,
+        competencia: filtros.competencia,
       });
-      const duplicadosNoArquivo = (result.arquivos || []).reduce((sum, item) => sum + Number(item.duplicadosNoArquivo || 0), 0);
-      const semChave = (result.arquivos || []).reduce((sum, item) => sum + Number(item.semChave || 0), 0);
-      setFeedback(
-        `Importação online concluída: ${Number(result.totalSalvos || 0).toLocaleString('pt-BR')} CT-e(s) salvos/atualizados no Supabase, de ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} preparados e ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Repetidos dentro do arquivo: ${duplicadosNoArquivo.toLocaleString('pt-BR')}. Sem chave descartados: ${semChave.toLocaleString('pt-BR')}. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
-      );
-      setFileKey(makeFileKey());
-      await pesquisar(filtros, false);
+
+      setFeedback('Importação do Realizado Online iniciada. Pode navegar para outros módulos; acompanhe pelo aviso no topo da tela.');
+      tarefa.catch((error) => {
+        setErro(error?.message || 'Erro ao importar arquivos para a base online.');
+      });
     } catch (error) {
-      setErro(error.message || 'Erro ao importar arquivos para a base online.');
+      setErro(error.message || 'Erro ao iniciar importação para a base online.');
     } finally {
-      setImportando(false);
-      setTimeout(() => setProgress(null), 2500);
       if (event.target) event.target.value = '';
     }
   }
