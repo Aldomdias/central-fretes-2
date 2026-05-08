@@ -83,11 +83,33 @@ const UF_IBGE_PREFIX = {
 const IBGE_PREFIX_UF = Object.fromEntries(Object.entries(UF_IBGE_PREFIX).map(([uf, prefix]) => [prefix, uf]));
 
 const UF_NOME_MAP = {
-  RONDONIA: 'RO', ACRE: 'AC', AMAZONAS: 'AM', RORAIMA: 'RR', PARA: 'PA', AMAPA: 'AP', TOCANTINS: 'TO',
-  MARANHAO: 'MA', PIAUI: 'PI', CEARA: 'CE', RIO GRANDE DO NORTE: 'RN', PARAIBA: 'PB', PERNAMBUCO: 'PE', ALAGOAS: 'AL', SERGIPE: 'SE', BAHIA: 'BA',
-  MINAS GERAIS: 'MG', ESPIRITO SANTO: 'ES', RIO DE JANEIRO: 'RJ', SAO PAULO: 'SP',
-  PARANA: 'PR', SANTA CATARINA: 'SC', RIO GRANDE DO SUL: 'RS',
-  MATO GROSSO DO SUL: 'MS', MATO GROSSO: 'MT', GOIAS: 'GO', DISTRITO FEDERAL: 'DF',
+  'RONDONIA': 'RO',
+  'ACRE': 'AC',
+  'AMAZONAS': 'AM',
+  'RORAIMA': 'RR',
+  'PARA': 'PA',
+  'AMAPA': 'AP',
+  'TOCANTINS': 'TO',
+  'MARANHAO': 'MA',
+  'PIAUI': 'PI',
+  'CEARA': 'CE',
+  'RIO GRANDE DO NORTE': 'RN',
+  'PARAIBA': 'PB',
+  'PERNAMBUCO': 'PE',
+  'ALAGOAS': 'AL',
+  'SERGIPE': 'SE',
+  'BAHIA': 'BA',
+  'MINAS GERAIS': 'MG',
+  'ESPIRITO SANTO': 'ES',
+  'RIO DE JANEIRO': 'RJ',
+  'SAO PAULO': 'SP',
+  'PARANA': 'PR',
+  'SANTA CATARINA': 'SC',
+  'RIO GRANDE DO SUL': 'RS',
+  'MATO GROSSO DO SUL': 'MS',
+  'MATO GROSSO': 'MT',
+  'GOIAS': 'GO',
+  'DISTRITO FEDERAL': 'DF',
 };
 
 function onlyDigits(value) {
