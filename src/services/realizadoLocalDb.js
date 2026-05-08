@@ -617,10 +617,11 @@ function fromDbRealizadoLocal(row = {}) {
 function aplicarFiltroUfOnline(query, colunaUf, colunaIbge, value) {
   const uf = normalizarUfBrasil(value);
   if (!uf) return query;
-  const prefix = UF_IBGE_PREFIX[uf];
-  if (prefix) {
-    return query.or(`${colunaUf}.eq.${uf},${colunaIbge}.like.${prefix}*`);
-  }
+
+  // Consulta rápida: usar somente a coluna UF normalizada.
+  // A tentativa antiga fazia OR com IBGE (uf_origem = SC OR ibge_origem LIKE 42*)
+  // e isso derrubava o plano do Supabase em bases grandes, causando statement timeout.
+  // O SQL deste patch normaliza UF por IBGE em lote; depois disso a consulta fica indexável.
   return query.eq(colunaUf, uf);
 }
 
@@ -666,11 +667,15 @@ async function fetchRealizadoOnline(filtros = {}, options = {}) {
   for (let from = 0; rows.length < limit; from += pageSize) {
     let query = supabase
       .from(REALIZADO_ONLINE_TABLE)
-      .select(REALIZADO_ONLINE_SELECT)
-      .order('data_emissao', { ascending: false, nullsFirst: false })
-      .range(from, from + pageSize - 1);
+      .select(REALIZADO_ONLINE_SELECT);
 
     query = aplicarFiltrosBasicosOnline(query, filtros);
+
+    if (options.order !== false) {
+      query = query.order('data_emissao', { ascending: false, nullsFirst: false });
+    }
+
+    query = query.range(from, from + pageSize - 1);
     const { data, error } = await query;
     if (error) {
       throw new Error(`Erro ao consultar realizado online. Rode supabase/realizado_local_online_schema.sql. Detalhe: ${error.message}`);
@@ -773,15 +778,6 @@ function resumoFromRowsOnline(rows = [], options = {}) {
 
 async function resumirRealizadoOnline(filtros = {}, options = {}) {
   const supabase = ensureRealizadoOnlineClient();
-  const usarLeituraDiretaCompatUf = Boolean(filtros.ufOrigem || filtros.ufDestino || options.forceDireto);
-  if (usarLeituraDiretaCompatUf) {
-    const fallback = await fetchRealizadoOnline(filtros, { limit: options.fallbackLimit || 1000000, pageSize: 1000 });
-    const resumo = resumoFromRowsOnline(fallback.rows, options);
-    resumo.origem = 'supabase-direto-uf';
-    resumo.totalCompativel = fallback.totalCompativel;
-    resumo.avaliados = fallback.avaliados;
-    return resumo;
-  }
 
   try {
     const { data, error } = await supabase.rpc('resumir_realizado_local_ctes', {
@@ -823,9 +819,13 @@ async function resumirRealizadoOnline(filtros = {}, options = {}) {
       origem: 'supabase',
     };
   } catch (error) {
-    const fallback = await fetchRealizadoOnline(filtros, { limit: options.fallbackLimit || 200000 });
+    // Fallback leve: não tenta varrer 200 mil/1 milhão de linhas no navegador,
+    // porque isso também gera timeout no Supabase. Serve apenas para manter a tela
+    // utilizável caso a função SQL ainda não tenha sido atualizada.
+    const fallback = await fetchRealizadoOnline(filtros, { limit: options.fallbackLimit || 20000, pageSize: 1000, order: false });
     const resumo = resumoFromRowsOnline(fallback.rows, options);
     resumo.erroRpc = error.message || String(error);
+    resumo.fallbackParcial = fallback.rows.length >= (options.fallbackLimit || 20000);
     return resumo;
   }
 }
@@ -1025,7 +1025,7 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
   if (Number(resumo?.total || 0) === 0) {
     const diag = await testarRealizadoOnlineSupabase().catch(() => null);
     if (Number(diag?.totalAtual || 0) > 0) {
-      const fallback = await fetchRealizadoOnline(filtros, { limit: options.fallbackLimit || 300000, pageSize: 1000 });
+      const fallback = await fetchRealizadoOnline(filtros, { limit: options.fallbackLimit || 20000, pageSize: 1000, order: false });
       const recalculado = resumoFromRowsOnline(fallback.rows, options);
       recalculado.origem = 'supabase-direto';
       recalculado.totalBancoOnline = Number(diag.totalAtual || 0);
