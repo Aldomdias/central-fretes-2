@@ -6,7 +6,6 @@ import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
 import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
-import RealizadoPage from './pages/RealizadoPage';
 import RealizadoLocalPage from './pages/RealizadoLocalPage';
 import LotacaoPage from './pages/LotacaoPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
@@ -23,7 +22,7 @@ import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
 function primeiraPaginaPermitida(usuario) {
-  const candidatas = ['dashboard', 'simulador', 'realizado-local', 'tracking', 'torre-controle', 'reajustes', 'realizado', 'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha'];
+  const candidatas = ['dashboard', 'simulador', 'realizado-local', 'tracking', 'torre-controle', 'reajustes', 'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha'];
   return candidatas.find((pagina) => usuarioTemAcesso(usuario, pagina)) || 'dashboard';
 }
 
@@ -123,9 +122,6 @@ export default function App() {
     content = <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />;
   }
 
-  if (paginaAtual === 'realizado') {
-    content = <RealizadoPage transportadoras={transportadorasMemo} />;
-  }
 
   if (paginaAtual === 'realizado-local') {
     content = <RealizadoLocalPage transportadoras={transportadorasMemo} />;

@@ -874,7 +874,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setCarregando(true);
     setErro('');
     try {
-      if (mostrarMensagem) setFeedback('Pesquisando base local...');
+      if (mostrarMensagem) setFeedback('Pesquisando base online...');
       const [resumoLocal, lista] = await Promise.all([
         resumirRealizadoLocal(filtrosBusca, { top: 10 }),
         listarRealizadoLocal(filtrosBusca, { limit: 50 }),
@@ -886,11 +886,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setFiltrosAplicados({ ...DEFAULT_FILTROS, ...filtrosBusca });
       setFeedback(
         resumoLocal.total
-          ? `Filtro carregado da base local: ${resumoLocal.total.toLocaleString('pt-BR')} CT-e(s), ${resumoLocal.comIbge.toLocaleString('pt-BR')} com IBGE e ${resumoLocal.pendenciasIbge.toLocaleString('pt-BR')} pendência(s).`
-          : 'Nenhum CT-e encontrado na base local para os filtros atuais.'
+          ? `Filtro carregado da base online: ${resumoLocal.total.toLocaleString('pt-BR')} CT-e(s), ${resumoLocal.comIbge.toLocaleString('pt-BR')} com IBGE e ${resumoLocal.pendenciasIbge.toLocaleString('pt-BR')} pendência(s).`
+          : 'Nenhum CT-e encontrado na base online para os filtros atuais.'
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao pesquisar base local.');
+      setErro(error.message || 'Erro ao pesquisar base online.');
     } finally {
       setCarregando(false);
     }
@@ -925,7 +925,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
     const enriquecidos = enriquecerMunicipiosComTabelas(baseMunicipios, tabelas || transportadoras || []);
     if (!enriquecidos.length) {
-      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base local não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.');
+      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base online não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.');
     }
 
     setMunicipios(enriquecidos);
@@ -947,7 +947,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
         if (msg.type === 'progress') {
           setProgress({
-            etapa: msg.etapa || 'Importando base local',
+            etapa: msg.etapa || 'Importando base online',
             atual: msg.atual || 0,
             total: msg.total || files.length,
             percentual: msg.percentual || 0,
@@ -1011,12 +1011,12 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         mensagem: 'Atualizando resumo local...',
       });
       setFeedback(
-        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) considerados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
+        `Importação online concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) considerados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
       );
       setFileKey(makeFileKey());
       await pesquisar(filtros, false);
     } catch (error) {
-      setErro(error.message || 'Erro ao importar arquivos locais.');
+      setErro(error.message || 'Erro ao importar arquivos para a base online.');
     } finally {
       setImportando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -1025,19 +1025,19 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function reprocessarIbgeLocal() {
-    const texto = window.prompt('Para reprocessar cidade/UF/IBGE da base local, digite REPROCESSAR IBGE');
+    const texto = window.prompt('Para reprocessar cidade/UF/IBGE da base online, digite REPROCESSAR IBGE');
     if (texto !== 'REPROCESSAR IBGE') return;
 
     setCarregando(true);
     setErro('');
-    setFeedback('Reprocessando IBGE da base local com a referência atual...');
-    setProgress({ etapa: 'Reprocessando IBGE', atual: 0, total: stats.total || 0, percentual: 5, mensagem: 'Lendo base local já importada...' });
+    setFeedback('Reprocessando IBGE da base online com a referência atual...');
+    setProgress({ etapa: 'Reprocessando IBGE', atual: 0, total: stats.total || 0, percentual: 5, mensagem: 'Lendo base online já importada...' });
 
     try {
       const baseAtual = await exportarRealizadoLocal({}, { limit: 500000 });
       const rowsAtuais = baseAtual.rows || [];
       if (!rowsAtuais.length) {
-        setFeedback('Não há base local para reprocessar.');
+        setFeedback('Não há base online para reprocessar.');
         return;
       }
 
@@ -1067,10 +1067,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       });
 
       await pesquisar(filtros, false);
-      setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Base local reprocessada.' });
-      setFeedback(`IBGE local reprocessado: ${rows.length.toLocaleString('pt-BR')} CT-e(s). Pendências atuais: ${pendencias.length.toLocaleString('pt-BR')}.`);
+      setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Base online reprocessada.' });
+      setFeedback(`IBGE online reprocessado: ${rows.length.toLocaleString('pt-BR')} CT-e(s). Pendências atuais: ${pendencias.length.toLocaleString('pt-BR')}.`);
     } catch (error) {
-      setErro(error.message || 'Erro ao reprocessar IBGE da base local.');
+      setErro(error.message || 'Erro ao reprocessar IBGE da base online.');
     } finally {
       setCarregando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -1078,7 +1078,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function limparNaoTomadoresLocal() {
-    const ok = window.confirm(`Deseja remover da base local todos os CT-e(s) cujo Tomador de Serviço não contenha: ${regraTomadorServicoRealizadoTexto()}?`);
+    const ok = window.confirm(`Deseja remover da base online todos os CT-e(s) cujo Tomador de Serviço não contenha: ${regraTomadorServicoRealizadoTexto()}?`);
     if (!ok) return;
 
     setCarregando(true);
@@ -1101,7 +1101,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setFeedback(`Limpeza concluída: ${result.mantidos.toLocaleString('pt-BR')} mantidos e ${result.removidos.toLocaleString('pt-BR')} removidos pela regra de tomador.`);
       await pesquisar(filtros, false);
     } catch (error) {
-      setErro(error.message || 'Erro ao limpar tomadores da base local.');
+      setErro(error.message || 'Erro ao limpar tomadores da base online.');
     } finally {
       setCarregando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -1109,8 +1109,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function limparBase() {
-    const texto = window.prompt('Para limpar a base local deste navegador, digite LIMPAR LOCAL');
-    if (texto !== 'LIMPAR LOCAL') return;
+    const texto = window.prompt('Para limpar a base online do Supabase, digite APAGAR REALIZADO ONLINE');
+    if (texto !== 'APAGAR REALIZADO ONLINE') return;
     setCarregando(true);
     setErro('');
     try {
@@ -1119,9 +1119,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setAmostra([]);
       setResultado(null);
       setDiagnostico(await diagnosticarRealizadoLocal());
-      setFeedback('Base local limpa neste navegador. O Supabase não foi alterado.');
+      setFeedback('Base online limpa no Supabase.');
     } catch (error) {
-      setErro(error.message || 'Erro ao limpar base local.');
+      setErro(error.message || 'Erro ao limpar base online.');
     } finally {
       setCarregando(false);
     }
@@ -1629,7 +1629,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         percentual: 18,
         mensagem: usarMalhaAutomatica
           ? `Aplicando malha automática da ${escopo.transportadora}: ${escopo.totalRotas.toLocaleString('pt-BR')} rota(s), ${escopo.origens.length.toLocaleString('pt-BR')} origem(ns).`
-          : 'Buscando CT-e(s) filtrados na base local...',
+          : 'Buscando CT-e(s) filtrados na base online...',
       });
       await nextFrame();
 
@@ -1641,8 +1641,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       if (!rows.length) {
         setErro(
           usarMalhaAutomatica
-            ? 'Nenhum CT-e da base local caiu dentro da malha da transportadora selecionada para o período/filtros atuais. Tente ampliar o período ou remover canal/peso/transportadora realizada.'
-            : 'Nenhum CT-e encontrado na base local para simular nos filtros pesquisados.'
+            ? 'Nenhum CT-e da base online caiu dentro da malha da transportadora selecionada para o período/filtros atuais. Tente ampliar o período ou remover canal/peso/transportadora realizada.'
+            : 'Nenhum CT-e encontrado na base online para simular nos filtros pesquisados.'
         );
         return;
       }
@@ -1849,27 +1849,27 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     <div className="page-shell realizado-page">
       <div className="page-top between">
         <div className="page-header">
-          <div className="amd-mini-brand">AMD Log • Realizado local</div>
-          <h1>Realizado CT-e Local</h1>
+          <div className="amd-mini-brand">AMD Log • Realizado online</div>
+          <h1>Realizado Online</h1>
           <p>
-            Carregue CT-e(s) da sua máquina, gere base enxuta local com IBGE e simule sem gravar o realizado no Supabase.
+            Carregue CT-e(s), grave a base enxuta no Supabase e use a mesma base em qualquer máquina para simular, auditar e exportar volumetria.
           </p>
         </div>
         <div className="actions-right wrap">
           <button className="btn-secondary" onClick={() => pesquisar(filtros)} disabled={carregando || importando || simulando}>
-            {carregando ? 'Pesquisando...' : 'Pesquisar base local'}
+            {carregando ? 'Pesquisando...' : 'Pesquisar base online'}
           </button>
           <button className="btn-secondary" onClick={exportarBaseSelecionada} disabled={exportando || carregando || importando || simulando || !stats.total}>
             {exportando ? 'Exportando...' : 'Exportar base filtrada'}
           </button>
           <button className="btn-secondary" onClick={reprocessarIbgeLocal} disabled={carregando || importando || simulando || !diagnostico?.total || !municipios.length}>
-            Reprocessar IBGE local
+            Reprocessar IBGE online
           </button>
           <button className="btn-secondary" onClick={limparNaoTomadoresLocal} disabled={carregando || importando || simulando || !diagnostico?.total}>
             Limpar não tomadores
           </button>
           <button className="btn-danger" onClick={limparBase} disabled={carregando || importando || simulando || !diagnostico?.total}>
-            Limpar base local
+            Limpar base online
           </button>
         </div>
       </div>
@@ -1877,7 +1877,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
       <div className={ibgeInfo.total ? 'sim-alert success' : 'sim-alert'}>
-        <strong>Referência IBGE local:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação local usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se o Supabase estiver vazio.
+        <strong>Referência IBGE:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação online usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se o Supabase estiver vazio.
       </div>
       <div className="sim-alert info">
         <strong>Regra de limpeza do realizado:</strong> entram na base apenas CT-e(s) cujo Tomador de Serviço contenha {regraTomadorServicoRealizadoTexto()}. Use “Limpar não tomadores” para reprocessar uma base antiga já importada.
@@ -1992,8 +1992,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
       <div className="feature-grid three">
         <section className="panel-card">
-          <div className="panel-title">1. Carregar base local</div>
-          <p>Selecione um ou mais arquivos mensais. O sistema grava uma base enxuta apenas neste navegador, sem ocupar Supabase.</p>
+          <div className="panel-title">1. Carregar base online</div>
+          <p>Selecione um ou mais arquivos mensais. O sistema grava uma base enxuta no Supabase para todos os usuários acessarem.</p>
           <input
             key={fileKey}
             ref={fileInputRef}
@@ -2161,8 +2161,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <section className="sim-card">
         <div className="sim-parametros-header">
           <div>
-            <h2>Painel da base local</h2>
-            <p>Visão rápida da última pesquisa local, sem puxar CT-e do Supabase.</p>
+            <h2>Painel da base online</h2>
+            <p>Visão rápida da última pesquisa online gravada no Supabase.</p>
           </div>
           <span className="status-pill">{amostra.length.toLocaleString('pt-BR')} linha(s) na amostra</span>
         </div>
@@ -2306,7 +2306,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <section className="table-card">
         <div className="sim-parametros-header">
           <div>
-            <div className="panel-title">Amostra da base local enxuta</div>
+            <div className="panel-title">Amostra da base online enxuta</div>
             <p>Mostrando até 50 CT-e(s) da última pesquisa.</p>
           </div>
           <span className="status-pill">{amostra.length.toLocaleString('pt-BR')} linha(s)</span>

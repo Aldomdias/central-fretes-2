@@ -4,11 +4,10 @@ import { nomePerfil, usuarioTemAcesso } from '../utils/authLocal';
 const menuPrincipal = [
   { chave: 'dashboard', label: 'Dashboard', icon: '▦' },
   { chave: 'simulador', label: 'Simulador', icon: '▣' },
-  { chave: 'realizado-local', label: 'Realizado Local', icon: '▤' },
+  { chave: 'realizado-local', label: 'Realizado Online', icon: '▤' },
   { chave: 'tracking', label: 'Tracking', icon: '📦' },
   { chave: 'torre-controle', label: 'Torre de Controle', icon: '📊' },
   { chave: 'reajustes', label: 'Reajustes', icon: '📈' },
-  { chave: 'realizado', label: 'Realizado CT-e', icon: '▥' },
   { chave: 'importacao', label: 'Importação', icon: '⇪' },
   { chave: 'formatacao', label: 'Formatação de Tabelas', icon: '🧩' },
   { chave: 'importar-template', label: 'Importar Template', icon: '⇩' },

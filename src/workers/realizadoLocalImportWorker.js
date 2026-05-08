@@ -90,7 +90,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       totalPendencias += pendencias.length;
 
       postProgress({
-        etapa: 'Gravando base local',
+        etapa: 'Gravando base online',
         atual: 0,
         total: rows.length,
         percentual: calcularPercentualArquivo(index, totalArquivos, 65),
@@ -102,16 +102,17 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         onProgress: ({ salvos, total }) => {
           const interno = 65 + Math.round(pct(salvos, total) * 0.30);
           postProgress({
-            etapa: 'Gravando base local',
+            etapa: 'Gravando base online',
             atual: salvos,
             total,
             percentual: calcularPercentualArquivo(index, totalArquivos, interno),
-            mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) gravados de ${nome}...`,
+            mensagem: `${salvos.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} CT-e(s) gravados na base online de ${nome}...`,
           });
         },
       });
 
       totalSalvos += save.salvos || rows.length;
+      const origemGravacao = save.origem || 'supabase';
       arquivos.push({
         nome,
         lidos: parsed.meta?.registrosAntesTomador || parsed.registros.length,
@@ -120,6 +121,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         pendencias: pendencias.length,
         ibgeOk,
         salvos: save.salvos || rows.length,
+        origem: origemGravacao,
       });
 
       postProgress({
@@ -127,7 +129,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         atual: index + 1,
         total: totalArquivos,
         percentual: calcularPercentualArquivo(index + 1, totalArquivos, 0),
-        mensagem: `${nome} concluído: ${(save.salvos || rows.length).toLocaleString('pt-BR')} CT-e(s) salvos localmente.`,
+        mensagem: `${nome} concluído: ${(save.salvos || rows.length).toLocaleString('pt-BR')} CT-e(s) salvos no realizado online.`,
       });
     } catch (error) {
       erros.push({ nome, erro: error?.message || 'Erro desconhecido' });
