@@ -4,6 +4,40 @@ import * as localFallback from './ctesLocalFallbackDb';
 
 const TABELA_CTES = 'realizado_local_ctes';
 const DEFAULT_PAGE_SIZE = 1000;
+const CTES_SELECT_COLUMNS = [
+  'id',
+  'arquivo_origem',
+  'competencia',
+  'data_emissao',
+  'chave_cte',
+  'numero_cte',
+  'transportadora',
+  'cnpj_transportadora',
+  'canal',
+  'canal_original',
+  'cidade_origem',
+  'uf_origem',
+  'ibge_origem',
+  'cidade_destino',
+  'uf_destino',
+  'ibge_destino',
+  'chave_rota_ibge',
+  'peso',
+  'peso_declarado',
+  'peso_cubado',
+  'cubagem',
+  'qtd_volumes',
+  'valor_cte',
+  'valor_nf',
+  'ibge_ok',
+  'ibge_corrigido_origem',
+  'ibge_corrigido_destino',
+  'tomador_servico',
+  'created_at',
+  'updated_at',
+].join(',');
+const ROTAS_CHUNK_SIZE = 60;
+
 
 function getClient() {
   if (!isSupabaseConfigured()) return null;
@@ -47,6 +81,32 @@ function cleanUf(value) {
 
 function cleanDigits(value) {
   return String(value ?? '').replace(/\D/g, '');
+}
+
+function uniqueItems(items = []) {
+  return [...new Set((items || []).filter(Boolean))];
+}
+
+function chunkArray(items = [], chunkSize = 100) {
+  const size = Math.max(1, Number(chunkSize || 100));
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function splitRotaIbge(rota = '') {
+  const normalizada = normalizeChaveRotaIbge(rota);
+  if (!normalizada) return null;
+  const [origem, destino] = normalizada.split('-');
+  if (!origem || !destino) return null;
+  return { origem, destino, rota: normalizada };
+}
+
+function erroTimeoutSupabase(error = {}) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return msg.includes('statement timeout') || msg.includes('canceling statement due to statement timeout');
 }
 
 function normalizeChaveRotaIbge(rawValue = '', ibgeOrigemRaw = '', ibgeDestinoRaw = '') {
@@ -282,7 +342,7 @@ async function fetchRowsSupabase(filtros = {}, options = {}) {
     const to = from + pageSize - 1;
     let query = supabase
       .from(TABELA_CTES)
-      .select('*')
+      .select(CTES_SELECT_COLUMNS)
       .order('data_emissao', { ascending: false, nullsFirst: false })
       .range(from, to);
 
@@ -462,33 +522,117 @@ export async function listarRealizadoLocal(filtros = {}, options = {}) {
   return { rows: result.rows, avaliados: result.avaliados || result.rows.length };
 }
 
+
+async function fetchRowsSupabasePorRotas(filtros = {}, malhaKeys = [], options = {}) {
+  const supabase = getClient();
+  if (!supabase) return localFallback.buscarRealizadoLocalPorMalha(filtros, malhaKeys, options);
+
+  const keys = malhaKeys instanceof Set ? [...malhaKeys] : [...(malhaKeys || [])];
+  const rotas = uniqueItems([...extrairRotasDaMalha(keys)]);
+  const rotaSet = new Set(rotas);
+  const limit = Math.max(1, Number(options.limit || 10000));
+  const pageSize = Math.max(100, Math.min(Number(options.pageSize || DEFAULT_PAGE_SIZE), 1000));
+  const rowsByChave = new Map();
+  let avaliados = 0;
+  let consultas = 0;
+  let usouFallbackIbge = false;
+
+  const addPage = (data = []) => {
+    const page = (data || []).map(fromDbRow);
+    avaliados += page.length;
+    for (const row of page) {
+      const rota = chaveRotaCte(row);
+      if (!rota || !rotaSet.has(rota)) continue;
+      if (!filtrarCteLocal(row, filtros)) continue;
+      const key = row.chaveCte || row.id || `${rota}-${rowsByChave.size}`;
+      if (!rowsByChave.has(key)) rowsByChave.set(key, row);
+      if (rowsByChave.size >= limit) break;
+    }
+  };
+
+  const consultar = async (montarQuery, label = 'rotas') => {
+    for (let from = 0; rowsByChave.size < limit; from += pageSize) {
+      const to = from + pageSize - 1;
+      let query = montarQuery().range(from, to);
+      query = applyServerFilters(query, filtros);
+      const { data, error } = await query;
+      consultas += 1;
+      if (error) {
+        const complemento = erroTimeoutSupabase(error)
+          ? ' A consulta por CTes foi otimizada por rota IBGE, mas ainda estourou o tempo. Rode o SQL CTES_AJUSTE_SIMULACAO_SEM_TIMEOUT.sql no Supabase para criar os índices e padronizar a chave_rota_ibge.'
+          : '';
+        throw new Error(`Erro ao consultar CTes no Supabase (${TABELA_CTES}) por ${label}. Detalhe: ${error.message}.${complemento}`);
+      }
+      addPage(data || []);
+      if ((data || []).length < pageSize) break;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  // 1) Caminho principal: usa a coluna pronta chave_rota_ibge.
+  // Isso evita varrer a tabela inteira de CTes e elimina o timeout da simulação.
+  for (const chunk of chunkArray(rotas, Number(options.rotaChunkSize || ROTAS_CHUNK_SIZE))) {
+    if (rowsByChave.size >= limit) break;
+    await consultar(
+      () => supabase.from(TABELA_CTES).select(CTES_SELECT_COLUMNS).in('chave_rota_ibge', chunk),
+      'chave_rota_ibge'
+    );
+  }
+
+  // 2) Fallback seguro: se a base ainda tiver CTes antigos sem chave_rota_ibge,
+  // busca por par IBGE origem/destino. Agrupar por origem reduz muito o volume retornado.
+  const pares = rotas.map(splitRotaIbge).filter(Boolean);
+  const precisaFallbackIbge = rowsByChave.size < limit && pares.length;
+  if (precisaFallbackIbge) {
+    const destinosPorOrigem = new Map();
+    pares.forEach(({ origem, destino }) => {
+      const set = destinosPorOrigem.get(origem) || new Set();
+      set.add(destino);
+      destinosPorOrigem.set(origem, set);
+    });
+
+    for (const [origem, destinosSet] of destinosPorOrigem.entries()) {
+      if (rowsByChave.size >= limit) break;
+      const destinos = [...destinosSet];
+      for (const destinoChunk of chunkArray(destinos, Number(options.destinoChunkSize || 80))) {
+        if (rowsByChave.size >= limit) break;
+        usouFallbackIbge = true;
+        await consultar(
+          () => supabase
+            .from(TABELA_CTES)
+            .select(CTES_SELECT_COLUMNS)
+            .eq('ibge_origem', origem)
+            .in('ibge_destino', destinoChunk),
+          'ibge_origem/ibge_destino'
+        );
+      }
+    }
+  }
+
+  const rows = [...rowsByChave.values()].slice(0, limit);
+  return {
+    rows,
+    totalCompativel: rows.length,
+    limit,
+    malhaKeys: keys.length,
+    rotaKeys: rotas.length,
+    avaliados,
+    consultas,
+    usouFallbackIbge,
+  };
+}
+
 export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [], options = {}) {
   if (shouldUseFallback()) return localFallback.buscarRealizadoLocalPorMalha(filtros, malhaKeys, options);
-  const keys = malhaKeys instanceof Set ? malhaKeys : new Set(malhaKeys || []);
-  if (!keys.size) return { rows: [], totalCompativel: 0, limit: Number(options.limit || 5000), malhaKeys: 0, avaliados: 0 };
+  const keysArray = malhaKeys instanceof Set ? [...malhaKeys] : [...(malhaKeys || [])];
+  if (!keysArray.length) return { rows: [], totalCompativel: 0, limit: Number(options.limit || 5000), malhaKeys: 0, avaliados: 0 };
 
-  // A base CTes já existe no Supabase e pode ter registros antigos com canal gravado errado
-  // (ex.: B2B salvo como B2C). Por isso a busca da malha NÃO pode depender só de CANAL|ROTA.
-  // Primeiro tentamos a chave completa; se o canal divergir, mantemos o CT-e pela rota IBGE.
-  // O motor de cálculo também usa fallback por rota para escolher a tabela correta da transportadora.
-  const rotaKeys = extrairRotasDaMalha([...keys]);
-  const limiteSaida = Number(options.limit || 5000);
-  const base = await fetchRowsSupabase(filtros, { limit: Number(options.maxScan || 200000) });
-  const compativeis = base.rows.filter((row) => {
-    const chaveCompleta = chaveMalhaCte(row);
-    if (chaveCompleta && keys.has(chaveCompleta)) return true;
-    const rota = chaveRotaCte(row);
-    return Boolean(rota && rotaKeys.has(rota));
+  // Não varrer a tabela inteira de CTes.
+  // A simulação agora consulta somente as rotas IBGE existentes na malha da transportadora selecionada.
+  return fetchRowsSupabasePorRotas(filtros, keysArray, {
+    ...options,
+    limit: Number(options.limit || 10000),
   });
-
-  return {
-    rows: compativeis.slice(0, limiteSaida),
-    totalCompativel: compativeis.length,
-    limit: limiteSaida,
-    malhaKeys: keys.size,
-    rotaKeys: rotaKeys.size,
-    avaliados: base.avaliados || base.rows.length,
-  };
 }
 
 export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {

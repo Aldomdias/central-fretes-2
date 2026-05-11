@@ -1,0 +1,34 @@
+PATCH CTes - correção simulação por rota IBGE
+
+O que este patch corrige:
+
+1. A tela CTes continua usando a base já existente no Supabase:
+   public.realizado_local_ctes
+
+2. A simulação CTes x tabelas não depende mais somente da chave CANAL|ROTA.
+   Antes, se um CT-e estivesse com canal errado na base, exemplo B2B gravado como B2C,
+   a busca por malha podia retornar zero CT-es mesmo quando a rota existia na tabela.
+
+3. Agora a busca da malha funciona assim:
+   - primeiro tenta CANAL|IBGE_ORIGEM-IBGE_DESTINO;
+   - se o canal divergir, usa IBGE_ORIGEM-IBGE_DESTINO;
+   - o motor de cálculo depois escolhe a tabela correta da transportadora simulada.
+
+4. Mantém a regra:
+   B2B / B 2 B / CANTU / CANTU PNEUS / ATACADO = ATACADO.
+
+5. Inclui SQL opcional e seguro:
+   supabase/CTES_AJUSTE_SIMULACAO_ROTA_IBGE.sql
+
+Esse SQL não apaga dados e não exige subir CTes novamente. Ele apenas padroniza chave_rota_ibge,
+corrige canal B2B para ATACADO na base existente e cria índices.
+
+Arquivos principais alterados:
+- src/services/realizadoLocalDb.js
+- src/services/ctesLocalFallbackDb.js
+- src/pages/RealizadoLocalPage.jsx
+- src/utils/realizadoLocalEngine.js
+- src/utils/realizadoCtes.js
+- src/workers/realizadoLocalSimulationWorker.js
+
+Build validado com npm run build.

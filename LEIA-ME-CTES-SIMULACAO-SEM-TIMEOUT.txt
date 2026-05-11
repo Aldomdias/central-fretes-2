@@ -1,0 +1,24 @@
+PATCH CTes - Simulação sem timeout
+
+Objetivo:
+- Corrigir o erro: canceling statement due to statement timeout.
+- Fazer a simulação CTes x tabelas buscar somente as rotas IBGE da transportadora selecionada.
+- Evitar varrer a tabela inteira realizado_local_ctes.
+
+O que mudou:
+1) A simulação não faz mais SELECT amplo na base CTes para depois filtrar no navegador.
+2) Agora ela consulta o Supabase por chunks usando:
+   - chave_rota_ibge
+   - fallback por ibge_origem + ibge_destino
+3) Canal B2B/B 2 B/CANTU/ATACADO continua sendo tratado como ATACADO antes de B2C.
+4) O SQL CTES_AJUSTE_SIMULACAO_SEM_TIMEOUT.sql cria/garante índices e padroniza chave_rota_ibge.
+
+Importante:
+- Rode o SQL no Supabase antes de testar a simulação.
+- O SQL não apaga dados e não exige subir CTes novamente.
+- A base oficial continua sendo public.realizado_local_ctes.
+
+Arquivos alterados:
+- src/services/realizadoLocalDb.js
+- supabase/CTES_AJUSTE_SIMULACAO_SEM_TIMEOUT.sql
+- supabase/CTES_AJUSTE_SIMULACAO_ROTA_IBGE.sql
