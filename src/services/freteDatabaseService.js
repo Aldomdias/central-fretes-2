@@ -1571,9 +1571,19 @@ async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', tra
   if (Array.isArray(transportadoraIds) && transportadoraIds.length) {
     query = query.in('transportadora_id', transportadoraIds);
   }
+
+  // CORRIGIDO: empurra filtro de origem para o banco quando possível,
+  // evitando trazer todas as origens para depois filtrar em JS (causa timeout com base grande).
+  // Usa ilike com a cidade sem UF para busca case-insensitive e tolerante.
+  const cidadeFiltro = cidadeSemUfDb(origem);
+  if (cidadeFiltro) {
+    query = query.ilike('cidade', `%${cidadeFiltro}%`);
+  }
+
   const { data, error } = await query;
   if (error) throw error;
 
+  // Filtragem JS refinada (ilike é amplo, pode trazer extras com nome similar)
   return (data || [])
     .filter((item) => canalCompativelDb(item.canal, canal))
     .filter((item) => origemCompativelDb(item.cidade, origem));

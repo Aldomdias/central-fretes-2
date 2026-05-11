@@ -75,8 +75,14 @@ function CidadeIbgeSelect({
 
   function handleSelect(municipio) {
     const label = municipio.uf ? `${municipio.cidade}/${municipio.uf}` : municipio.cidade;
-    if (onSelect) onSelect(municipio);
-    if (onChange) onChange(label);
+    // CORRIGIDO: quando onSelect é fornecido, ele é o responsável por atualizar o estado
+    // (ex: setOrigem(m.cidade) ou setDestino(m.ibge)). Chamar onChange DEPOIS sobrescreve
+    // o valor correto com "Cidade/UF", quebrando o matching nas tabelas.
+    if (onSelect) {
+      onSelect(municipio);
+    } else if (onChange) {
+      onChange(label);
+    }
     setTerm('');
     setOpen(false);
   }
@@ -1076,7 +1082,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
 
     const baseOnline = await carregarBaseOnline({
-      origem: origemSimples,
+      // CORRIGIDO: limpar origem remove sufixo "/UF" que pode ter ficado de digitação manual
+      origem: limparCidadeDigitada(origemSimples),
       canal: canalSimples,
       destinoCodigo: destinoFinal,
     });
@@ -1090,7 +1097,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setResultadoSimples(simularSimples({
       transportadoras: baseOnline,
-      origem: origemSimples,
+      origem: limparCidadeDigitada(origemSimples),
       canal: canalSimples,
       peso: Number(pesoSimples || 0),
       valorNF: Number(nfSimples || 0),
@@ -1121,7 +1128,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     atualizarProcessamentoUi('Buscando concorrentes no Supabase...', 36);
 
     const baseOnline = await carregarBaseOnline({
-      origem: origemTransportadora,
+      origem: limparCidadeDigitada(origemTransportadora),
       canal: canalTransportadora,
       destinoCodigos: codigos,
       nomeTransportadora: transportadora,
@@ -1144,7 +1151,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       transportadoras: baseOnline,
       nomeTransportadora: transportadora,
       canal: canalTransportadora,
-      origem: origemTransportadora,
+      origem: limparCidadeDigitada(origemTransportadora),
       destinoCodigos: codigos,
       peso: Number(pesoTransportadora || 0),
       valorNF: Number(nfTransportadora || 0),
@@ -1195,7 +1202,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       const baseOnline = await carregarBaseOnline({
         canal: canalAnalise,
-        origem: origemAnalise,
+        origem: limparCidadeDigitada(origemAnalise),
         nomeTransportadora: transportadoraAnalise,
         ufDestino: ufAnalise,
       });
@@ -1219,7 +1226,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadoras: baseOnline,
         nomeTransportadora: transportadoraAnalise,
         canal: canalAnalise,
-        origem: origemAnalise,
+        origem: limparCidadeDigitada(origemAnalise),
         ufDestino: ufAnalise,
         grade: grade[canalAnalise] || grade.ATACADO || [],
         cidadePorIbge: mapaCidades,

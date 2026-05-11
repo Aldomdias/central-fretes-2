@@ -43,6 +43,18 @@ function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+// Remove sufixo "/UF" ou "-UF" do nome da cidade para comparação robusta.
+// Ex: "Itajaí/SC" → "Itajaí", "São Paulo - SP" → "São Paulo"
+function cidadeSemUf(texto = '') {
+  return String(texto || '').replace(/\s*(?:\/|-)\s*[A-Z]{2}\s*$/i, '').trim();
+}
+
+function normalizarOrigem(valor = '') {
+  return normalizeText(cidadeSemUf(valor))
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
 function escapeCsv(value) {
   const text = String(value ?? '');
   return /[";,\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -114,13 +126,34 @@ function getTaxaDestino(origem, ibgeDestino) {
 }
 
 function getCotacaoPorRota(origem, rotaNome, peso) {
-  return (origem.cotacoes || []).find((item) => {
-    const mesmaRota = normalizeText(item.rota) === normalizeText(rotaNome);
+  const normRota = normalizeText(rotaNome);
+  const cotacoes = origem.cotacoes || [];
+
+  const porPeso = (item) => {
     const pesoMin = toNumber(item.pesoMin);
     const pesoMaxRaw = item.pesoMax ?? item.pesoLimite;
     const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined ? Number.POSITIVE_INFINITY : toNumber(pesoMaxRaw);
-    return mesmaRota && peso >= pesoMin && peso <= pesoMax;
+    return peso >= pesoMin && peso <= pesoMax;
+  };
+
+  // 1. Tentativa exata: nome da rota bate com o nome da cotação
+  const exato = cotacoes.find((item) => normalizeText(item.rota) === normRota && porPeso(item));
+  if (exato) return exato;
+
+  // 2. CORRIGIDO: fallback — quando a origem tem uma única cotação (padrão em tabelas simples),
+  // usa essa cotação independente do nome, desde que o peso encaixe.
+  // Isso cobre casos onde o nome da rota na tabela diverge do nome na cotação (ex: "ATACADO" vs "Padrão").
+  const unicaRota = cotacoes.filter(porPeso);
+  if (unicaRota.length === 1) return unicaRota[0];
+
+  // 3. Fallback parcial: nome da cotação contém o nome da rota ou vice-versa
+  const parcial = cotacoes.find((item) => {
+    const nomeItem = normalizeText(item.rota);
+    return (nomeItem.includes(normRota) || normRota.includes(nomeItem)) && porPeso(item);
   });
+  if (parcial) return parcial;
+
+  return undefined;
 }
 
 
@@ -275,7 +308,19 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
   const fatorCubagem = toNumber(origem?.generalidades?.cubagem);
   const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem });
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado);
-  if (!cotacao) return null;
+  if (!cotacao) {
+    // DIAGNÓSTICO: ajuda a identificar rotas sem cotação correspondente
+    if (typeof window !== 'undefined' && window.__DEBUG_SIMULADOR__) {
+      console.warn('[Simulador] Sem cotação para rota:', {
+        transportadora: transportadora.nome,
+        origem: origem.cidade,
+        rota: rota.nomeRota,
+        pesoConsiderado: pesosAplicados.pesoConsiderado,
+        cotacoesDisponiveis: (origem.cotacoes || []).map((c) => ({ rota: c.rota, pesoMin: c.pesoMin, pesoMax: c.pesoMax })),
+      });
+    }
+    return null;
+  }
 
   const valorNFManualInformado = toNumber(valorNF);
   const valorNFUtilizado = valorNFManualInformado > 0 ? valorNFManualInformado : toNumber(gradeLinha?.valorNF);
@@ -348,11 +393,14 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
   const valorNF = toNumber(filtros.valorNF);
   const cubagem = toNumber(filtros.cubagem);
   const destinoNormalizado = normalizeText(filtros.destinoCodigo);
+  // CORRIGIDO: normaliza a origem antes de comparar — remove "/UF" e acento
+  // Evita falha quando o estado chega como "Itajaí/SC" mas a tabela tem "Itajaí"
+  const origemNormalizada = normalizarOrigem(filtros.origem);
 
   return (transportadoras || []).flatMap((transportadora) =>
     (transportadora.origens || [])
       .filter((origem) => !filtros.canal || origem.canal === filtros.canal)
-      .filter((origem) => !filtros.origem || origem.cidade === filtros.origem)
+      .filter((origem) => !origemNormalizada || normalizarOrigem(origem.cidade) === origemNormalizada)
       .flatMap((origem) =>
         (origem.rotas || [])
           .filter((rota) => {
@@ -368,8 +416,14 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
 
 export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
   const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge);
+  const origemNorm = normalizarOrigem(origem);
+  // CORRIGIDO: usa comparação normalizada na origem (aceita "Itajaí/SC" e "Itajaí")
+  // e compara IBGE como string pura para o destino
   return rankearPorChave(resultados)
-    .filter((item) => item.origem === origem && String(item.ibgeDestino) === String(destinoCodigo))
+    .filter((item) =>
+      (!origemNorm || normalizarOrigem(item.origem) === origemNorm) &&
+      (!destinoCodigo || String(item.ibgeDestino) === String(destinoCodigo))
+    )
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
