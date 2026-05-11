@@ -62,3 +62,17 @@ O que foi corrigido:
 2. Campo Transportadora virou dropdown com busca — digita para filtrar
    (antes era datalist nativo do browser que não filtrava bem no Chrome)
 3. Cobertura de tabela: mesmo fix do unaccent resolve a origem
+
+PATCH 4 - Campos de cidade unificados por IBGE
+===============================================
+Arquivo: src/pages/SimuladorPage.jsx
+
+O que mudou:
+- Todos os campos de Origem e Destino agora usam o componente CidadeIbgeSelect
+- Digitando "itajai" (sem acento) mostra "Itajaí/SC" com código 4208203
+- Digitando o código IBGE diretamente também filtra
+- Origens: filtradas às cidades que têm tabela cadastrada no sistema
+- Destinos: todos os 5570 municípios brasileiros
+- O código IBGE aparece visível no dropdown de cada cidade
+- Destinos passam o IBGE diretamente para a query (mais preciso)
+- Origens passam o nome canônico do IBGE (sem erro de acento)

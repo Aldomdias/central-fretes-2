@@ -14,15 +14,112 @@ import {
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
 import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
-// ── Dropdown com busca para listas grandes (ex: 384 transportadoras) ──────────
+// ── Utilitário: remove acentos para comparação ───────────────────────────────
+function semAcento(texto) {
+  return String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+
+// ── CidadeIbgeSelect: campo de cidade unificado baseado em IBGE ───────────────
+// Uso origem: options = municipiosDisponiveis filtrados ao canal/sistema
+// Uso destino: options = municipiosDisponiveis (todos os 5570)
+// Retorna: { ibge, cidade, uf } via onSelect, ou string via onChange (retrocompat)
+function CidadeIbgeSelect({
+  value = '',          // texto exibido no input
+  onSelect,           // ({ ibge, cidade, uf }) => void — preferencial
+  onChange,           // (string) => void — retrocompat
+  options = [],       // municipiosDisponiveis (filtrado ou completo)
+  placeholder = 'Digite cidade ou código IBGE',
+  disabled = false,
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [term, setTerm] = React.useState('');
+  const ref = React.useRef(null);
+
+  React.useEffect(() => { if (!open) setTerm(''); }, [open]);
+
+  React.useEffect(() => {
+    function handleClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const filtered = React.useMemo(() => {
+    const q = semAcento(term);
+    if (!q) return options.slice(0, 100);
+    const isIbge = /^\d+$/.test(q);
+    return options.filter((m) =>
+      isIbge
+        ? String(m.ibge || '').startsWith(q)
+        : semAcento(m.cidade).includes(q) || semAcento(`${m.cidade}/${m.uf}`).includes(q)
+    ).slice(0, 80);
+  }, [term, options]);
+
+  const displayValue = open ? term : value;
+
+  function handleSelect(municipio) {
+    const label = municipio.uf ? `${municipio.cidade}/${municipio.uf}` : municipio.cidade;
+    if (onSelect) onSelect(municipio);
+    if (onChange) onChange(label);
+    setOpen(false);
+  }
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <input
+        value={displayValue}
+        disabled={disabled}
+        onChange={(e) => { setTerm(e.target.value); setOpen(true); if (onChange && !onSelect) onChange(e.target.value); }}
+        onFocus={() => setOpen(true)}
+        placeholder={value || placeholder}
+        autoComplete="off"
+        style={{ width: '100%' }}
+      />
+      {open && !disabled && (
+        <div style={{
+          position: 'absolute', zIndex: 1000, background: 'var(--bg, #fff)',
+          border: '1px solid var(--border, #e2e8f0)', borderRadius: 6,
+          maxHeight: 260, overflowY: 'auto', width: '100%',
+          boxShadow: '0 4px 16px rgba(0,0,0,.14)', top: '100%', left: 0,
+        }}>
+          {filtered.length === 0 && (
+            <div style={{ padding: '10px 12px', color: '#94a3b8', fontSize: 13 }}>Nenhuma cidade encontrada</div>
+          )}
+          {filtered.map((m) => (
+            <div
+              key={m.ibge}
+              onMouseDown={() => handleSelect(m)}
+              style={{
+                padding: '7px 12px', cursor: 'pointer', fontSize: 13,
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                background: `${m.cidade}/${m.uf}` === value || m.cidade === value ? 'var(--primary-soft,#e0f2fe)' : 'transparent',
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = '#f1f5f9'}
+              onMouseLeave={(e) => e.currentTarget.style.background = `${m.cidade}/${m.uf}` === value ? 'var(--primary-soft,#e0f2fe)' : 'transparent'}
+            >
+              <span><strong>{m.cidade}</strong>{m.uf ? `/${m.uf}` : ''}</span>
+              <span style={{ color: '#94a3b8', fontSize: 11, marginLeft: 8 }}>{m.ibge}</span>
+            </div>
+          ))}
+          {filtered.length === 80 && (
+            <div style={{ padding: '6px 12px', color: '#94a3b8', fontSize: 12, borderTop: '1px solid #f1f5f9' }}>
+              Continue digitando para refinar
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SearchableSelect: dropdown com busca para listas de texto (transportadoras) 
 function SearchableSelect({ value, onChange, options = [], placeholder = 'Digite para filtrar...' }) {
   const [open, setOpen] = React.useState(false);
   const [term, setTerm] = React.useState('');
   const ref = React.useRef(null);
 
-  React.useEffect(() => {
-    if (!open) setTerm('');
-  }, [open]);
+  React.useEffect(() => { if (!open) setTerm(''); }, [open]);
 
   React.useEffect(() => {
     function handleClick(e) {
@@ -33,7 +130,7 @@ function SearchableSelect({ value, onChange, options = [], placeholder = 'Digite
   }, []);
 
   const filtered = term
-    ? options.filter((o) => o.toLowerCase().includes(term.toLowerCase()))
+    ? options.filter((o) => semAcento(o).includes(semAcento(term)))
     : options;
 
   return (
@@ -50,26 +147,20 @@ function SearchableSelect({ value, onChange, options = [], placeholder = 'Digite
         <div style={{
           position: 'absolute', zIndex: 999, background: 'var(--bg, #fff)',
           border: '1px solid var(--border, #e2e8f0)', borderRadius: 6,
-          maxHeight: 240, overflowY: 'auto', width: '100%', boxShadow: '0 4px 16px rgba(0,0,0,.12)',
-          top: '100%', left: 0,
+          maxHeight: 240, overflowY: 'auto', width: '100%',
+          boxShadow: '0 4px 16px rgba(0,0,0,.12)', top: '100%', left: 0,
         }}>
           {filtered.slice(0, 80).map((item) => (
-            <div
-              key={item}
-              onMouseDown={() => { onChange(item); setOpen(false); }}
-              style={{
-                padding: '8px 12px', cursor: 'pointer', fontSize: 13,
-                background: item === value ? 'var(--primary-soft, #e0f2fe)' : 'transparent',
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--hover, #f1f5f9)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = item === value ? 'var(--primary-soft, #e0f2fe)' : 'transparent'}
-            >
-              {item}
-            </div>
+            <div key={item} onMouseDown={() => { onChange(item); setOpen(false); }}
+              style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13,
+                background: item === value ? 'var(--primary-soft,#e0f2fe)' : 'transparent' }}
+              onMouseEnter={(e) => e.currentTarget.style.background = '#f1f5f9'}
+              onMouseLeave={(e) => e.currentTarget.style.background = item === value ? 'var(--primary-soft,#e0f2fe)' : 'transparent'}
+            >{item}</div>
           ))}
           {filtered.length > 80 && (
             <div style={{ padding: '6px 12px', color: '#94a3b8', fontSize: 12 }}>
-              +{filtered.length - 80} — continue digitando para filtrar
+              +{filtered.length - 80} — continue digitando
             </div>
           )}
         </div>
@@ -1346,20 +1437,22 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <h2>Simulação simples</h2>
           <div className="sim-form-grid sim-grid-5">
             <label>Origem
-              <input list="origens-simples-lista" value={origemSimples} onChange={(e) => setOrigemSimples(e.target.value)} placeholder="Clique ou digite a origem" />
-              <datalist id="origens-simples-lista">
-                {origensPorCanalSimples.map((item) => <option key={item} value={item} />)}
-              </datalist>
+              <CidadeIbgeSelect
+                value={origemSimples}
+                options={municipiosDisponiveis.filter((m) => origensPorCanalSimples.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                placeholder="Clique ou digite a origem"
+                onSelect={(m) => setOrigemSimples(m.cidade)}
+                onChange={(v) => setOrigemSimples(v)}
+              />
             </label>
             <label>Destino (CEP ou IBGE)
-              <input list="destinos-lista" value={destinoCodigo} onChange={(e) => setDestinoCodigo(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
-              <datalist id="destinos-lista">
-                {todosDestinosComCidade.map((item) => (
-                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf} · ${item.ibge}` : item.ibge}>
-                    {item.ibge}
-                  </option>
-                ))}
-              </datalist>
+              <CidadeIbgeSelect
+                value={destinoCodigo}
+                options={todosDestinosComCidade}
+                placeholder="Digite cidade ou código IBGE"
+                onSelect={(m) => setDestinoCodigo(m.ibge)}
+                onChange={(v) => setDestinoCodigo(v)}
+              />
               {destinoIdentificado && <small style={{ color: '#64748b' }}>Destino identificado: {destinoIdentificado}</small>}
             </label>
             <label>Canal
@@ -1404,20 +1497,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <select value={canalTransportadora} onChange={(e) => { setCanalTransportadora(e.target.value); setOrigemTransportadora(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Origem (opcional)
-              <input list="origens-transportadora-lista" value={origemTransportadora} onChange={(e) => setOrigemTransportadora(e.target.value)} placeholder="Todas ou digite a origem" />
-              <datalist id="origens-transportadora-lista">
-                {origensTransportadora.map((item) => <option key={item} value={item} />)}
-              </datalist>
+              <CidadeIbgeSelect
+                value={origemTransportadora}
+                options={municipiosDisponiveis.filter((m) => !origensTransportadora.length || origensTransportadora.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                placeholder="Todas ou digite a origem"
+                onSelect={(m) => setOrigemTransportadora(m.cidade)}
+                onChange={(v) => setOrigemTransportadora(v)}
+              />
             </label>
             <label>Destino opcional (cidade, CEP ou IBGE)
-              <input disabled={modoLista} list="destinos-lista-transportadora" value={destinoTransportadora} onChange={(e) => setDestinoTransportadora(e.target.value)} placeholder="Digite cidade, IBGE ou CEP" />
-              <datalist id="destinos-lista-transportadora">
-                {todosDestinosComCidade.map((item) => (
-                  <option key={item.ibge} value={item.cidade && item.uf ? `${item.cidade}/${item.uf} · ${item.ibge}` : item.ibge}>
-                    {item.ibge}
-                  </option>
-                ))}
-              </datalist>
+              <CidadeIbgeSelect
+                value={destinoTransportadora}
+                options={todosDestinosComCidade}
+                placeholder="Digite cidade ou código IBGE"
+                disabled={modoLista}
+                onSelect={(m) => setDestinoTransportadora(m.ibge)}
+                onChange={(v) => setDestinoTransportadora(v)}
+              />
               {destinoTransportadoraIdentificado && <small style={{ color: '#64748b' }}>Destino identificado: {destinoTransportadoraIdentificado}</small>}
             </label>
             <label>Peso
@@ -1465,10 +1561,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <select value={canalAnalise} onChange={(e) => { setCanalAnalise(e.target.value); setOrigemAnalise(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Origem
-              <input list="origens-analise-lista" value={origemAnalise} onChange={(e) => setOrigemAnalise(e.target.value)} placeholder="Obrigatório para B2C grande" />
-              <datalist id="origens-analise-lista">
-                {origensAnaliseDisponiveis.map((item) => <option key={item} value={item} />)}
-              </datalist>
+              <CidadeIbgeSelect
+                value={origemAnalise}
+                options={municipiosDisponiveis.filter((m) => origensAnaliseDisponiveis.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                placeholder="Obrigatório para B2C grande"
+                onSelect={(m) => setOrigemAnalise(m.cidade)}
+                onChange={(v) => setOrigemAnalise(v)}
+              />
               <small style={{ color: '#64748b' }}>Quebre por origem: Itajaí, Itupeva, Campo Grande...</small>
             </label>
             <label>UF destino
@@ -1516,7 +1615,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>Origem
-              <input list="origens-origem-lista" value={origemOrigem} onChange={(e) => setOrigemOrigem(e.target.value)} placeholder="Ex.: Itajaí" />
+              <CidadeIbgeSelect
+                value={origemOrigem}
+                options={municipiosDisponiveis.filter((m) => origensOrigemDisponiveis.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                placeholder="Ex.: Itajaí"
+                onSelect={(m) => setOrigemOrigem(m.cidade)}
+                onChange={(v) => setOrigemOrigem(v)}
+              />
               <datalist id="origens-origem-lista">
                 {origensOrigemDisponiveis.map((item) => <option key={item} value={item} />)}
               </datalist>
@@ -1690,7 +1795,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-resultado-topo compact-top"><h2 style={{ margin: 0 }}>Cobertura de tabela</h2><button className="sim-tab" type="button" onClick={exportarCobertura}>Exportar faltantes</button></div>
           <div className="sim-form-grid sim-grid-4" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
             <label>Canal<select value={canalCobertura} onChange={(e) => setCanalCobertura(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select></label>
-            <label>Origem<input list="origens-cobertura-lista" value={origemCobertura} onChange={(e) => setOrigemCobertura(e.target.value)} placeholder="Todas ou digite a origem" /><datalist id="origens-cobertura-lista">{todasOrigens.map((item) => <option key={item} value={item} />)}</datalist></label>
+            <label>Origem<CidadeIbgeSelect
+  value={origemCobertura}
+  options={municipiosDisponiveis.filter((m) => !todasOrigens.length || todasOrigens.some((o) => semAcento(o) === semAcento(m.cidade)))}
+  placeholder="Todas ou digite a origem"
+  onSelect={(m) => setOrigemCobertura(m.cidade)}
+  onChange={(v) => setOrigemCobertura(v)}
+/></label>
             <label>Transportadora<input list="transportadoras-cobertura-lista" value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)} placeholder="Todas ou digite a transportadora" /><datalist id="transportadoras-cobertura-lista">{transportadorasPorCanalCobertura.map((item) => <option key={item} value={item} />)}</datalist></label>
             <label>UF destino<select value={ufCobertura} onChange={(e) => setUfCobertura(e.target.value)}>{UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}</select></label>
           </div>
