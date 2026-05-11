@@ -1,4 +1,4 @@
-import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine';
+import { calcularFreteFaixaPeso, calcularFretePercentual, inferirTipoCalculoFrete } from '../services/freteCalcEngine';
 import { toNumberRealizado, normalizeTextRealizado } from './realizadoCtes';
 import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete } from './gradeFreteConfig';
 
@@ -604,7 +604,7 @@ function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = []
   if (!cotacao) return null;
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
-  const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  const tipoCalculo = inferirTipoCalculoFrete({ generalidades: origem.generalidades, cotacao });
   const icmsInfo = inferirAliquotaIcmsRealizado(origem, rota, cte);
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),

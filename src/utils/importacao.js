@@ -333,10 +333,14 @@ function inferTipoCalculoCotacao(row) {
   const freteMinimo = toNumber(firstFilled(row, ['frete minimo', 'minimo']));
   const excesso = toNumber(firstFilled(row, ['excesso de peso', 'excesso']));
 
+  // Regra operacional definida: Taxa aplicada = 0 => Percentual; Taxa aplicada > 0 => Faixa de peso.
+  if (valorFaixa > 0) return 'FAIXA_DE_PESO';
+  if (valorFaixa === 0) return 'PERCENTUAL';
+
   if (regraCalculo.includes('MAIOR VALOR')) return 'PERCENTUAL';
   if (regraCalculo.includes('SEM REGRA') && valorFaixa > 0) return 'FAIXA_DE_PESO';
   if (freteMinimo > 0 || percentual > 0) return 'PERCENTUAL';
-  if (valorFaixa > 0 || excesso > 0) return 'FAIXA_DE_PESO';
+  if (excesso > 0) return 'FAIXA_DE_PESO';
   return 'PERCENTUAL';
 }
 

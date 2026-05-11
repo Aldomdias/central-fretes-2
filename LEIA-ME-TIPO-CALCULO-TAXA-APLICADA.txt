@@ -1,0 +1,21 @@
+Correção aplicada — Tipo de cálculo automático por Taxa Aplicada
+
+Regra implantada:
+- Taxa aplicada = 0 ou vazia: PERCENTUAL
+- Taxa aplicada > 0: FAIXA_DE_PESO
+
+Arquivos alterados:
+- src/services/freteCalcEngine.js
+  Adiciona inferirTipoCalculoFrete() e normalizarTipoCalculo().
+
+- src/utils/calculoFrete.js
+  Simulador principal passa a decidir o tipo de cálculo pela cotação/taxa aplicada, não apenas pela generalidade.
+
+- src/utils/realizadoLocalEngine.js
+  Realizado local passa a usar a mesma regra do simulador.
+
+- src/utils/importacao.js
+  Importação de cotações passa a classificar o tipo conforme Taxa Aplicada.
+
+Build testado com sucesso:
+- npm run build

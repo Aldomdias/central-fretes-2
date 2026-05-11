@@ -19,6 +19,51 @@ function calcularPedagioFracao100Kg(pesoKg, valorPorFracao) {
   return Math.ceil(peso / 100) * pedagioUnitario;
 }
 
+
+export function normalizarTipoCalculo(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, '_');
+
+  if (
+    normalized.includes('FAIXA') ||
+    normalized.includes('PESO') ||
+    normalized === 'FAIXA_DE_PESO' ||
+    normalized === 'FAIXA_PESO'
+  ) {
+    return 'FAIXA_DE_PESO';
+  }
+
+  return 'PERCENTUAL';
+}
+
+export function inferirTipoCalculoFrete({ generalidades = {}, cotacao = {} } = {}) {
+  const taxaAplicadaRaw =
+    cotacao.valorFixo ??
+    cotacao.taxaAplicada ??
+    cotacao.valor_fixo ??
+    cotacao.taxa_aplicada ??
+    cotacao.valorFaixa ??
+    cotacao.valor_faixa;
+
+  // Regra operacional definida: Taxa aplicada = 0 => Percentual; Taxa aplicada > 0 => Faixa de peso.
+  // Assim o sistema não depende de preencher manualmente o tipo de cálculo nas generalidades.
+  if (taxaAplicadaRaw !== undefined && taxaAplicadaRaw !== null && taxaAplicadaRaw !== '') {
+    return toNumber(taxaAplicadaRaw) > 0 ? 'FAIXA_DE_PESO' : 'PERCENTUAL';
+  }
+
+  const tipoCotacao = cotacao.tipoCalculo ?? cotacao.tipo_calculo;
+  if (tipoCotacao) return normalizarTipoCalculo(tipoCotacao);
+
+  const excesso = toNumber(cotacao.excesso ?? cotacao.excessoPeso ?? cotacao.excesso_peso);
+  if (excesso > 0) return 'FAIXA_DE_PESO';
+
+  return normalizarTipoCalculo(generalidades.tipoCalculo ?? generalidades.tipo_calculo ?? 'PERCENTUAL');
+}
+
 function toBooleanFlag(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value === 1;

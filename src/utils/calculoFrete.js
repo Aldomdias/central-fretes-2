@@ -1,4 +1,4 @@
-import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine';
+import { calcularFreteFaixaPeso, calcularFretePercentual, inferirTipoCalculoFrete } from '../services/freteCalcEngine';
 
 const UF_POR_CODIGO = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -282,7 +282,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
   const valorNFOrigem = valorNFManualInformado > 0 ? 'manual' : 'grade';
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
-  const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  const tipoCalculo = inferirTipoCalculoFrete({ generalidades: origem.generalidades, cotacao });
   const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge);
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),
