@@ -49,6 +49,27 @@ function cleanDigits(value) {
   return String(value ?? '').replace(/\D/g, '');
 }
 
+function normalizeChaveRotaIbge(rawValue = '', ibgeOrigemRaw = '', ibgeDestinoRaw = '') {
+  const origem = cleanDigits(ibgeOrigemRaw).slice(0, 7);
+  const destino = cleanDigits(ibgeDestinoRaw).slice(0, 7);
+  if (origem && destino) return `${origem}-${destino}`;
+
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+
+  const partes = raw
+    .split(/[^0-9]+/g)
+    .map((item) => cleanDigits(item).slice(0, 7))
+    .filter((item) => item.length >= 6);
+
+  if (partes.length >= 2) return `${partes[0]}-${partes[1]}`;
+
+  const digits = cleanDigits(raw);
+  if (digits.length >= 14) return `${digits.slice(0, 7)}-${digits.slice(7, 14)}`;
+
+  return '';
+}
+
 function dataToDb(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -101,7 +122,7 @@ function fromDbRow(row = {}) {
     cidadeDestino: cleanText(row.cidade_destino ?? row.cidadeDestino),
     ufDestino: cleanUf(row.uf_destino ?? row.ufDestino),
     ibgeDestino,
-    chaveRotaIbge: cleanText(row.chave_rota_ibge ?? row.chaveRotaIbge) || (ibgeOrigem && ibgeDestino ? `${ibgeOrigem}|${ibgeDestino}` : ''),
+    chaveRotaIbge: normalizeChaveRotaIbge(row.chave_rota_ibge ?? row.chaveRotaIbge, ibgeOrigem, ibgeDestino),
     peso,
     pesoDeclarado: toNumber(row.peso_declarado ?? row.pesoDeclarado ?? peso),
     pesoCubado: toNumber(row.peso_cubado ?? row.pesoCubado),
@@ -121,7 +142,7 @@ function fromDbRow(row = {}) {
 function toDbRow(row = {}) {
   const ibgeOrigem = cleanText(row.ibgeOrigem ?? row.ibge_origem);
   const ibgeDestino = cleanText(row.ibgeDestino ?? row.ibge_destino);
-  const chaveRotaIbge = cleanText(row.chaveRotaIbge ?? row.chave_rota_ibge) || (ibgeOrigem && ibgeDestino ? `${ibgeOrigem}|${ibgeDestino}` : null);
+  const chaveRotaIbge = normalizeChaveRotaIbge(row.chaveRotaIbge ?? row.chave_rota_ibge, ibgeOrigem, ibgeDestino) || null;
   const pesoDeclarado = toNumber(row.pesoDeclarado ?? row.peso_declarado ?? row.peso);
   const pesoCubado = toNumber(row.pesoCubado ?? row.peso_cubado);
   const peso = toNumber(row.peso ?? Math.max(pesoDeclarado, pesoCubado));
@@ -169,11 +190,33 @@ function matchesPeso(row, filtros = {}) {
   return true;
 }
 
+function getCanalServerVariants(value) {
+  const canal = normalizeCanalParaMalha(value);
+  if (!canal) return [];
+
+  if (canal === 'ATACADO') {
+    return ['ATACADO', 'B2B', 'CANTU', 'CANTU PNEUS'];
+  }
+
+  if (canal === 'B2C') {
+    return [
+      'B2C', 'Via Varejo', 'VIA VAREJO', 'Mercado Livre', 'MERCADO LIVRE',
+      'Mercador Livre', 'MERCADOR LIVRE', 'B2W', 'Magazine Luiza', 'MAGAZINE LUIZA',
+      'Carrefour', 'CARREFOUR', 'GPA', 'Colombo', 'COLOMBO', 'Amazon', 'AMAZON',
+      'Inter', 'INTER', 'AnyMarket', 'ANYMARKET', 'Bradesco Shop', 'BRADESCO SHOP',
+      'Itaú Shop', 'ITAU SHOP', 'Shopee', 'SHOPEE', 'Livelo', 'LIVELO',
+      'Marketplace/E-commerce', 'MARKETPLACE', 'E-COMMERCE', 'ECOMMERCE',
+    ];
+  }
+
+  return [value];
+}
+
 export function filtrarCteLocal(row = {}, filtros = {}) {
   if (filtros.competencia && row.competencia !== filtros.competencia) return false;
   if (filtros.inicio && (!row.dataEmissao || row.dataEmissao.slice(0, 10) < filtros.inicio)) return false;
   if (filtros.fim && (!row.dataEmissao || row.dataEmissao.slice(0, 10) > filtros.fim)) return false;
-  if (filtros.canal && normalize(row.canal) !== normalize(filtros.canal)) return false;
+  if (filtros.canal && normalizeCanalParaMalha(row.canal) !== normalizeCanalParaMalha(filtros.canal)) return false;
   if (filtros.excluirEbazar && isTransportadoraEbazar(row.transportadora)) return false;
   if (filtros.transportadoraRealizada && !normalizeLoose(row.transportadora).includes(normalizeLoose(filtros.transportadoraRealizada))) return false;
   if (filtros.ufOrigem && normalize(row.ufOrigem) !== normalize(filtros.ufOrigem)) return false;
@@ -190,7 +233,11 @@ function applyServerFilters(query, filtros = {}) {
   if (filtros.competencia) q = q.eq('competencia', filtros.competencia);
   if (filtros.inicio) q = q.gte('data_emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) q = q.lte('data_emissao', `${filtros.fim}T23:59:59`);
-  if (filtros.canal) q = q.eq('canal', filtros.canal);
+  if (filtros.canal) {
+    const variantesCanal = getCanalServerVariants(filtros.canal);
+    if (variantesCanal.length > 1) q = q.in('canal', variantesCanal);
+    else if (variantesCanal.length === 1) q = q.eq('canal', variantesCanal[0]);
+  }
   if (filtros.transportadoraRealizada) q = q.ilike('transportadora', `%${filtros.transportadoraRealizada}%`);
   if (filtros.ufOrigem) q = q.eq('uf_origem', cleanUf(filtros.ufOrigem));
   if (filtros.ufDestino) q = q.eq('uf_destino', cleanUf(filtros.ufDestino));
@@ -245,6 +292,7 @@ function normalizeCanalParaMalha(value) {
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
+  if (canal.includes('CANTU')) return 'ATACADO';
   if (['ATACADO', 'B2B'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
   if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'CANTU PNEUS', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO', 'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE'].some((item) => canal === item || canal.includes(item))) return 'B2C';
   return canal;
@@ -252,7 +300,7 @@ function normalizeCanalParaMalha(value) {
 
 function chaveMalhaCte(row = {}) {
   const canal = normalizeCanalParaMalha(row.canal);
-  const rota = String(row.chaveRotaIbge || '').trim();
+  const rota = normalizeChaveRotaIbge(row.chaveRotaIbge, row.ibgeOrigem, row.ibgeDestino);
   return canal && rota ? `${canal}|${rota}` : '';
 }
 
