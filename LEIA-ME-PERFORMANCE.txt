@@ -1,0 +1,37 @@
+PATCH - Correção de Performance Supabase
+=========================================
+
+Problema corrigido:
+- Lentidão generalizada em todas as telas que batem no Supabase
+- 500k+ registros sem índices = varredura completa a cada consulta
+- Simulador fazendo 6-8 chamadas HTTP em cascata ao invés de 1
+- Loop de origens sequencial (N chamadas uma por vez)
+- Sem cache: cada clique rebuscava tudo do zero
+
+ORDEM DE APLICAÇÃO:
+-------------------
+
+1. SUPABASE - Índices (maior ganho, faça primeiro):
+   Abra o SQL Editor do Supabase e rode:
+   supabase/01_PERFORMANCE_INDEXES.sql
+   ⚠️  Pode demorar 2-10 min. Não interrompa. Não bloqueia leitura.
+
+2. SUPABASE - RPC de simulação:
+   Rode no SQL Editor do Supabase:
+   supabase/02_RPC_BUSCAR_BASE_SIMULACAO.sql
+
+3. CÓDIGO - Serviço JS atualizado:
+   Substitua no projeto:
+   src/services/freteDatabaseService.js
+
+4. Publique novamente no Vercel.
+
+O que muda no comportamento:
+- Simulador: primeira busca usa RPC (1 chamada) em vez de cascata (6-8)
+- Repetição dos mesmos filtros: retorna do cache instantaneamente (3 min TTL)
+- Loop de transportadoras: paralelo com 5 simultâneas em vez de sequencial
+- Todas as buscas por origem_id, ibge, canal: usam índice em vez de full scan
+
+Nova função exportada (opcional):
+- limparCacheSimulacao() — chame após importar novas tabelas para forçar
+  o simulador a rebuscar a base atualizada.

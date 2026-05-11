@@ -6,6 +6,36 @@ const PAGE_SIZE = 1000;
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// ─── Cache de simulação em memória (TTL 3 min) ────────────────────────────────
+// Evita rebuscar a mesma combinação origem/canal/destino enquanto o usuário
+// alterna transportadoras ou ajusta parâmetros na mesma sessão.
+const _simCache = new Map();
+const _SIM_CACHE_TTL = 3 * 60 * 1000; // 3 minutos
+
+function _simCacheKey(params) {
+  const { origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '' } = params;
+  const destinos = [...(Array.isArray(destinoCodigos) ? destinoCodigos : []), destinoCodigo]
+    .map((d) => String(d || '').trim()).filter(Boolean).sort().join(',');
+  return `${String(origem).toLowerCase()}|${String(canal).toLowerCase()}|${destinos}|${String(ufDestino).toUpperCase()}|${String(nomeTransportadora).toLowerCase()}`;
+}
+
+function _simCacheGet(key) {
+  const entry = _simCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > _SIM_CACHE_TTL) { _simCache.delete(key); return null; }
+  return entry.value;
+}
+
+function _simCacheSet(key, value) {
+  // Limita o cache a 20 entradas para não vazar memória
+  if (_simCache.size >= 20) _simCache.delete(_simCache.keys().next().value);
+  _simCache.set(key, { value, ts: Date.now() });
+}
+
+/** Limpa o cache manualmente (chamar após importação ou atualização de tabelas) */
+export function limparCacheSimulacao() { _simCache.clear(); }
+// ─────────────────────────────────────────────────────────────────────────────
+
 function ensureClient() {
   const client = getSupabaseClient();
   if (!client) {
@@ -1916,7 +1946,14 @@ export async function carregarOpcoesSimuladorDb() {
 
 export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '' } = {}) {
   // Fonte da verdade do simulador: Supabase.
-  // Não depende da tela Transportadoras estar aberta ou atualizada.
+  // 1. Tenta cache em memória (evita rebuscar para mesmos parâmetros em < 3 min)
+  // 2. Tenta RPC server-side (1 chamada HTTP no lugar de 6-8)
+  // 3. Fallback para o fluxo JS original caso a RPC não exista ainda
+
+  const params = { origem, canal, destinoCodigo, destinoCodigos, nomeTransportadora, ufDestino };
+  const cacheKey = _simCacheKey(params);
+  const cached = _simCacheGet(cacheKey);
+  if (cached) return cached;
 
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
@@ -1931,15 +1968,41 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
     destinoCodigo,
   ].map((item) => String(item || '').trim()).filter(Boolean)));
 
+  // ── Tenta RPC server-side (1 chamada vs 6-8) ──────────────────────────────
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('buscar_base_simulacao', {
+      p_origem:         origem || '',
+      p_canal:          canal || '',
+      p_destinos:       destinos.length ? destinos : [],
+      p_uf_destino:     ufDestino || '',
+      p_transportadora: nomeTransportadora || '',
+    });
+    const rpcIndisponivel = rpcError && (rpcError.code === 'PGRST202' || (rpcError.message || '').includes('does not exist'));
+    if (!rpcIndisponivel) {
+      if (rpcError) throw rpcError;
+      const resultado = transportadorasFromDbRows({
+        transportadoras: rpcData?.transportadoras || [],
+        origens:         rpcData?.origens || [],
+        generalidades:   rpcData?.generalidades || [],
+        rotas:           rpcData?.rotas || [],
+        cotacoes:        rpcData?.cotacoes || [],
+        taxas:           rpcData?.taxas || [],
+      });
+      _simCacheSet(cacheKey, resultado);
+      return resultado;
+    }
+  } catch (rpcErr) {
+    if (!String(rpcErr?.message || '').includes('does not exist') &&
+        String(rpcErr?.code || '') !== 'PGRST202') throw rpcErr;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // Caso análise de transportadora por origem.
-  // Quando a tela pede malha por UF, carregamos a origem/UF inteira. Isso é mais robusto
-  // para tabelas onde o IBGE da rota veio vazio/incorreto, mas o nome da cidade está certo.
+  // Quando a tela pede malha por UF, carregamos a origem/UF inteira.
   if (nomeTransportadora && origem) {
-    // Para simulação em cima do realizado, quando há UF destino carregamos a malha
-    // da origem/UF inteira. É mais robusto do que filtrar por IBGE antes, porque
-    // algumas tabelas têm IBGE ausente/divergente, mas a rota está correta pelo nome.
     if (ufDestino) {
-      return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino });
+      const res = await buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino });
+      _simCacheSet(cacheKey, res); return res;
     }
 
     const destinosAlvo = destinos.length
@@ -1948,13 +2011,15 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
 
     if (!destinosAlvo.length) return [];
 
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo, ufDestino });
+    const res = await buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo, ufDestino });
+    _simCacheSet(cacheKey, res); return res;
   }
 
   // Caso principal: simulação simples ou lista com destino informado.
   // Busca todos os concorrentes da mesma origem/canal/destino.
   if (origem || destinos.length) {
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino });
+    const resOD = await buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino });
+    _simCacheSet(cacheKey, resOD); return resOD;
   }
 
   // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora
@@ -1996,14 +2061,21 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
       new Map(pares.map((par) => [`${par.origem}||${par.canal}`, par])).values()
     );
 
-    for (const par of paresUnicos) {
-      const parcial = await buscarBasePorOrigemDestino({ supabase, origem: par.origem, canal: par.canal, destinos: [], ufDestino });
-      bases.push(...parcial);
+    // Executa em paralelo (até 5 ao mesmo tempo) para reduzir latência total
+    const CONCURRENCY = 5;
+    for (let i = 0; i < paresUnicos.length; i += CONCURRENCY) {
+      const batch = paresUnicos.slice(i, i + CONCURRENCY);
+      const resultados = await Promise.all(
+        batch.map((par) => buscarBasePorOrigemDestino({ supabase, origem: par.origem, canal: par.canal, destinos: [], ufDestino }))
+      );
+      resultados.forEach((parcial) => bases.push(...parcial));
     }
 
     const byId = new Map();
     bases.forEach((item) => byId.set(String(item.id), item));
-    return [...byId.values()];
+    const res = [...byId.values()];
+    _simCacheSet(cacheKey, res);
+    return res;
   }
 
   return [];
