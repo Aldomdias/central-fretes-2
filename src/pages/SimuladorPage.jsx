@@ -12,7 +12,7 @@ import {
   simularSimples,
 } from '../utils/calculoFrete';
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
-import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb, limparCacheSimulacao } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 // ── Utilitário: remove acentos para comparação ───────────────────────────────
@@ -691,14 +691,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   // Quando a tabela IBGE ainda não carregou (timeout ou primeiro acesso),
   // constrói uma lista mínima a partir das cidades já cadastradas no sistema.
-  // Isso garante que os campos de origem funcionem mesmo sem a tabela ibge_municipios.
+  // Nota: usa opcoesOnline.origens diretamente (origensLocal é declarada depois)
   const municipiosDisponiveis = useMemo(() => {
     if (municipiosDisponiveisRaw.length > 0) return municipiosDisponiveisRaw;
-    // Fallback: cidades do sistema sem código IBGE (funciona para origem, não para destino)
-    const cidadesDoSistema = new Set([
-      ...(opcoesOnline.origens || []),
-      ...origensLocal,
-    ]);
+    const cidadesDoSistema = new Set(opcoesOnline.origens || []);
     return [...cidadesDoSistema]
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b, 'pt-BR'))
@@ -706,7 +702,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         const partes = cidade.split('/');
         return { ibge: '', cidade: partes[0].trim(), uf: partes[1]?.trim() || '' };
       });
-  }, [municipiosDisponiveisRaw, opcoesOnline.origens, origensLocal]);
+  }, [municipiosDisponiveisRaw, opcoesOnline.origens]);
 
   const cidadePorIbgeCompleto = useMemo(() => {
     const mapa = new Map(cidadePorIbge || []);
