@@ -35,3 +35,18 @@ O que muda no comportamento:
 Nova função exportada (opcional):
 - limparCacheSimulacao() — chame após importar novas tabelas para forçar
   o simulador a rebuscar a base atualizada.
+
+PATCH 2 - Correções de lógica (simulador)
+==========================================
+Aplicado junto com o patch de performance.
+
+Arquivos adicionados:
+- src/utils/calculoFrete.js
+- src/pages/SimuladorPage.jsx
+
+O que foi corrigido:
+1. Análise por transportadora: concorrentes agora são buscados corretamente
+   (a RPC não é usada nesse modo para não filtrar só a transportadora selecionada)
+2. Cobertura de tabela - Faltantes: mostra cidade E código IBGE sempre
+3. Cobertura de tabela - Destinos com tabela: mostra TODAS as transportadoras
+   que cobrem o destino, com quantidade (ex: "MOVVI, JAMEF (+1) • 3 transp")

@@ -1642,8 +1642,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Cobertura</span><strong>{formatPercent(resultadoCobertura.percentualCobertura)}</strong></div>
               </div>
               <div className="sim-grid-2" style={{ display: 'grid', gap: 16, marginTop: 12 }}>
-                <div><strong>Faltantes</strong><div className="sim-cobertura-lista">{resultadoCobertura.faltantes.slice(0, 40).map((item, idx) => <div key={`${item.ibge}-${idx}`}>{item.origem} • {item.cidade || `IBGE ${item.ibge}`} • {item.uf}</div>)}</div></div>
-                <div><strong>Exemplos com tabela</strong><div className="sim-cobertura-lista">{resultadoCobertura.cobertas.slice(0, 40).map((item, idx) => <div key={`${item.ibge}-${idx}`}>{item.origem} • {item.cidade || `IBGE ${item.ibge}`} • {item.uf} • {item.transportadora}</div>)}</div></div>
+                <div><strong>Faltantes</strong><div className="sim-cobertura-lista">{resultadoCobertura.faltantes.slice(0, 40).map((item, idx) => <div key={`${item.ibge}-${idx}`}>{item.origem} • {item.cidade || 'Sem nome'} ({item.ibge}) • {item.uf}</div>)}</div></div>
+                <div><strong>Destinos com tabela (transportadoras)</strong><div className="sim-cobertura-lista">{resultadoCobertura.cobertas.slice(0, 40).map((item, idx) => <div key={`${item.ibge}-${idx}`}>{item.cidade || 'Sem nome'} ({item.ibge}) • {item.uf} • {item.qtdTransportadoras} transp: {item.transportadoraResumo}</div>)}</div></div>
               </div>
             </div>
           )}

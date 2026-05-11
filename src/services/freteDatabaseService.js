@@ -1969,13 +1969,19 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   ].map((item) => String(item || '').trim()).filter(Boolean)));
 
   // ── Tenta RPC server-side (1 chamada vs 6-8) ──────────────────────────────
+  // Quando nomeTransportadora está presente, a RPC filtraria apenas essa transportadora.
+  // Mas a análise precisa de TODAS as concorrentes nos mesmos destinos para ranquear.
+  // Nesse caso pulamos a RPC e usamos o fluxo JS (que busca destinos da transportadora
+  // e depois carrega todos os concorrentes).
+  const usarRpc = !nomeTransportadora;
   try {
+    if (!usarRpc) throw Object.assign(new Error('does not exist'), { code: 'PGRST202' });
     const { data: rpcData, error: rpcError } = await supabase.rpc('buscar_base_simulacao', {
       p_origem:         origem || '',
       p_canal:          canal || '',
       p_destinos:       destinos.length ? destinos : [],
       p_uf_destino:     ufDestino || '',
-      p_transportadora: nomeTransportadora || '',
+      p_transportadora: '',
     });
     const rpcIndisponivel = rpcError && (rpcError.code === 'PGRST202' || (rpcError.message || '').includes('does not exist'));
     if (!rpcIndisponivel) {

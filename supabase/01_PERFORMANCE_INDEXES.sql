@@ -6,20 +6,20 @@
 
 -- origens
 -- Usado em: carregarTransportadoraCompletaDb, buscarOrigensFiltradasDb
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_origens_transportadora_id
+CREATE INDEX IF NOT EXISTS idx_origens_transportadora_id
   ON public.origens (transportadora_id);
 
 -- Usado em: buscarOrigensFiltradasDb (ILIKE cidade)
 -- text_pattern_ops habilita LIKE/ILIKE com índice (somente prefixo; mas ajuda bastante)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_origens_cidade_lower
+CREATE INDEX IF NOT EXISTS idx_origens_cidade_lower
   ON public.origens (lower(cidade) text_pattern_ops);
 
 -- Usado em: filtros canal
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_origens_canal
+CREATE INDEX IF NOT EXISTS idx_origens_canal
   ON public.origens (canal);
 
 -- Composto: transportadora + canal (busca mais comum no simulador)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_origens_transportadora_canal
+CREATE INDEX IF NOT EXISTS idx_origens_transportadora_canal
   ON public.origens (transportadora_id, canal);
 
 -- ============================================================
@@ -27,15 +27,15 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_origens_transportadora_canal
 -- ============================================================
 
 -- Usado em: fetchRowsByOrigemIds, fetchRotasByOrigemIds (mais chamado do sistema)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rotas_origem_id
+CREATE INDEX IF NOT EXISTS idx_rotas_origem_id
   ON public.rotas (origem_id);
 
 -- Usado em: fetchRotasByIbgePairs (simulação por par IBGE)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rotas_ibge_par
+CREATE INDEX IF NOT EXISTS idx_rotas_ibge_par
   ON public.rotas (ibge_origem, ibge_destino);
 
 -- Usado em: fetchRotasByOrigemIds com filtro IBGE destino
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rotas_origem_ibge_destino
+CREATE INDEX IF NOT EXISTS idx_rotas_origem_ibge_destino
   ON public.rotas (origem_id, ibge_destino);
 
 -- ============================================================
@@ -43,11 +43,11 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_rotas_origem_ibge_destino
 -- ============================================================
 
 -- Usado em: fetchRowsByOrigemIds (mais chamado do sistema)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cotacoes_origem_id
+CREATE INDEX IF NOT EXISTS idx_cotacoes_origem_id
   ON public.cotacoes (origem_id);
 
 -- Usado em: fetchCotacoesByOrigemIdsAndRotas (filtro origem + nome rota)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cotacoes_origem_rota
+CREATE INDEX IF NOT EXISTS idx_cotacoes_origem_rota
   ON public.cotacoes (origem_id, rota);
 
 -- ============================================================
@@ -55,11 +55,11 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cotacoes_origem_rota
 -- ============================================================
 
 -- Usado em: fetchRowsByOrigemIds
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_taxas_origem_id
+CREATE INDEX IF NOT EXISTS idx_taxas_origem_id
   ON public.taxas_especiais (origem_id);
 
 -- Usado em: fetchTaxasByOrigemIdsAndDestinos
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_taxas_origem_ibge
+CREATE INDEX IF NOT EXISTS idx_taxas_origem_ibge
   ON public.taxas_especiais (origem_id, ibge_destino);
 
 -- ============================================================
@@ -67,7 +67,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_taxas_origem_ibge
 -- ============================================================
 
 -- Usado em: fetchRowsByOrigemIds
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_generalidades_origem_id
+CREATE INDEX IF NOT EXISTS idx_generalidades_origem_id
   ON public.generalidades (origem_id);
 
 -- ============================================================
@@ -75,7 +75,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_generalidades_origem_id
 -- ============================================================
 
 -- Usado em: busca por nome (ILIKE)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transportadoras_nome_lower
+CREATE INDEX IF NOT EXISTS idx_transportadoras_nome_lower
   ON public.transportadoras (lower(nome) text_pattern_ops);
 
 -- ============================================================
@@ -83,7 +83,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transportadoras_nome_lower
 -- ============================================================
 
 -- Filtros mais comuns na tela Realizado CT-e
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_realizado_ctes_filtros_simulacao
+CREATE INDEX IF NOT EXISTS idx_realizado_ctes_filtros_simulacao
   ON public.realizado_ctes (transportadora, canal, cidade_origem, uf_destino);
 
 -- ============================================================

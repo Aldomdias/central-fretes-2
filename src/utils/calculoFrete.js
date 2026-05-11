@@ -711,6 +711,7 @@ export function analisarCoberturaTabela({ transportadoras, canal, origem, transp
 
   const destinosUniverso = [...universoDestinos.values()].sort((a, b) => (a.uf || '').localeCompare(b.uf || '') || (a.cidade || '').localeCompare(b.cidade || '') || a.ibge.localeCompare(b.ibge));
 
+  // Agrupa por destino: permite múltiplas transportadoras por rota
   const coberturaMap = new Map();
   origensFiltradas.forEach(({ transportadora: nomeTransportadora, origem: origemItem }) => {
     (origemItem.rotas || []).forEach((rota) => {
@@ -718,14 +719,21 @@ export function analisarCoberturaTabela({ transportadoras, canal, origem, transp
       const uf = getUfByIbge(ibge);
       if (ufDestino && uf !== ufDestino) return;
       const key = `${origemItem.cidade}|${ibge}`;
-      coberturaMap.set(key, {
-        origem: origemItem.cidade,
-        transportadora: nomeTransportadora,
-        ibge,
-        cidade: getCidadeByIbge(ibge, cidadePorIbge),
-        uf,
-        rota: rota.nomeRota,
-      });
+      if (!coberturaMap.has(key)) {
+        coberturaMap.set(key, {
+          origem: origemItem.cidade,
+          ibge,
+          cidade: getCidadeByIbge(ibge, cidadePorIbge),
+          uf,
+          transportadoras: [],
+          rotas: 0,
+        });
+      }
+      const entry = coberturaMap.get(key);
+      if (!entry.transportadoras.includes(nomeTransportadora)) {
+        entry.transportadoras.push(nomeTransportadora);
+      }
+      entry.rotas += 1;
     });
   });
 
@@ -737,7 +745,15 @@ export function analisarCoberturaTabela({ transportadoras, canal, origem, transp
     destinosUniverso.forEach((destino) => {
       const key = `${cidadeOrigem}|${destino.ibge}`;
       if (coberturaMap.has(key)) {
-        cobertas.push(coberturaMap.get(key));
+        const entry = coberturaMap.get(key);
+        cobertas.push({
+          ...entry,
+          // Resumo legível: "MOVVI, JAMEF (+1)"
+          transportadoraResumo: entry.transportadoras.length <= 2
+            ? entry.transportadoras.join(', ')
+            : `${entry.transportadoras.slice(0, 2).join(', ')} (+${entry.transportadoras.length - 2})`,
+          qtdTransportadoras: entry.transportadoras.length,
+        });
       } else {
         faltantes.push({
           origem: cidadeOrigem,
