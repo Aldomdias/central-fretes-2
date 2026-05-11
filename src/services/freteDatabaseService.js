@@ -1997,39 +1997,36 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   ].map((item) => String(item || '').trim()).filter(Boolean)));
 
   // ── Tenta RPC server-side (1 chamada vs 6-8) ──────────────────────────────
-  // Quando nomeTransportadora está presente, a RPC filtraria apenas essa transportadora.
-  // Mas a análise precisa de TODAS as concorrentes nos mesmos destinos para ranquear.
-  // Nesse caso pulamos a RPC e usamos o fluxo JS (que busca destinos da transportadora
-  // e depois carrega todos os concorrentes).
-  const usarRpc = !nomeTransportadora;
-  try {
-    if (!usarRpc) throw Object.assign(new Error('does not exist'), { code: 'PGRST202' });
-    const { data: rpcData, error: rpcError } = await supabase.rpc('buscar_base_simulacao', {
-      p_origem:         origem || '',
-      p_canal:          canal || '',
-      p_destinos:       destinos.length ? destinos : [],
-      p_uf_destino:     ufDestino || '',
-      p_transportadora: '',
-    });
-    const rpcIndisponivel = rpcError && (rpcError.code === 'PGRST202' || (rpcError.message || '').includes('does not exist'));
-    if (!rpcIndisponivel) {
-      if (rpcError) throw rpcError;
-      const resultado = transportadorasFromDbRows({
-        transportadoras: rpcData?.transportadoras || [],
-        origens:         rpcData?.origens || [],
-        generalidades:   rpcData?.generalidades || [],
-        rotas:           rpcData?.rotas || [],
-        cotacoes:        rpcData?.cotacoes || [],
-        taxas:           rpcData?.taxas || [],
+  // Quando nomeTransportadora está presente, pula a RPC (retornaria só essa
+  // transportadora) e usa o fluxo JS que busca todos os concorrentes.
+  if (!nomeTransportadora) {
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('buscar_base_simulacao', {
+        p_origem:         origem || '',
+        p_canal:          canal || '',
+        p_destinos:       destinos.length ? destinos : [],
+        p_uf_destino:     ufDestino || '',
+        p_transportadora: '',
       });
-      _simCacheSet(cacheKey, resultado);
-      return resultado;
+      // Só usa o resultado se sem erro — qualquer falha (timeout, RPC inexistente) cai no JS
+      if (!rpcError && rpcData) {
+        const resultado = transportadorasFromDbRows({
+          transportadoras: rpcData?.transportadoras || [],
+          origens:         rpcData?.origens || [],
+          generalidades:   rpcData?.generalidades || [],
+          rotas:           rpcData?.rotas || [],
+          cotacoes:        rpcData?.cotacoes || [],
+          taxas:           rpcData?.taxas || [],
+        });
+        _simCacheSet(cacheKey, resultado);
+        return resultado;
+      }
+    } catch {
+      // RPC falhou (timeout, não existe, etc.) → fluxo JS abaixo
     }
-  } catch (rpcErr) {
-    if (!String(rpcErr?.message || '').includes('does not exist') &&
-        String(rpcErr?.code || '') !== 'PGRST202') throw rpcErr;
   }
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+
 
   // Caso análise de transportadora por origem.
   // Quando a tela pede malha por UF, carregamos a origem/UF inteira.
