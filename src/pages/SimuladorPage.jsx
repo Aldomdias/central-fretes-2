@@ -20,14 +20,15 @@ function semAcento(texto) {
 }
 
 // ── CidadeIbgeSelect: campo de cidade unificado baseado em IBGE ───────────────
-// Uso origem: options = municipiosDisponiveis filtrados ao canal/sistema
-// Uso destino: options = municipiosDisponiveis (todos os 5570)
-// Retorna: { ibge, cidade, uf } via onSelect, ou string via onChange (retrocompat)
+// options    = municipiosDisponiveis (todos os 5570 municípios)
+// withTable  = Set de nomes normalizados que têm tabela no sistema (opcional)
+//              → cidade COM tabela aparece normal; SEM tabela aparece em cinza
 function CidadeIbgeSelect({
-  value = '',          // texto exibido no input
-  onSelect,           // ({ ibge, cidade, uf }) => void — preferencial
-  onChange,           // (string) => void — retrocompat
-  options = [],       // municipiosDisponiveis (filtrado ou completo)
+  value = '',
+  onSelect,
+  onChange,
+  options = [],
+  withTable = null,   // Set<string> de semAcento(cidade) que têm tabela
   placeholder = 'Digite cidade ou código IBGE',
   disabled = false,
 }) {
@@ -47,14 +48,20 @@ function CidadeIbgeSelect({
 
   const filtered = React.useMemo(() => {
     const q = semAcento(term);
-    if (!q) return options.slice(0, 100);
+    if (!q) {
+      // Sem filtro: mostra primeiro as que têm tabela, depois as demais
+      if (!withTable) return options.slice(0, 100);
+      const comTabela = options.filter((m) => withTable.has(semAcento(m.cidade)));
+      const semTabela = options.filter((m) => !withTable.has(semAcento(m.cidade)));
+      return [...comTabela.slice(0, 80), ...semTabela.slice(0, 20)];
+    }
     const isIbge = /^\d+$/.test(q);
     return options.filter((m) =>
       isIbge
         ? String(m.ibge || '').startsWith(q)
         : semAcento(m.cidade).includes(q) || semAcento(`${m.cidade}/${m.uf}`).includes(q)
     ).slice(0, 80);
-  }, [term, options]);
+  }, [term, options, withTable]);
 
   const displayValue = open ? term : value;
 
@@ -78,31 +85,39 @@ function CidadeIbgeSelect({
       />
       {open && !disabled && (
         <div style={{
-          position: 'absolute', zIndex: 1000, background: 'var(--bg, #fff)',
-          border: '1px solid var(--border, #e2e8f0)', borderRadius: 6,
-          maxHeight: 260, overflowY: 'auto', width: '100%',
+          position: 'absolute', zIndex: 1000, background: 'var(--bg,#fff)',
+          border: '1px solid var(--border,#e2e8f0)', borderRadius: 6,
+          maxHeight: 280, overflowY: 'auto', width: '100%',
           boxShadow: '0 4px 16px rgba(0,0,0,.14)', top: '100%', left: 0,
         }}>
           {filtered.length === 0 && (
             <div style={{ padding: '10px 12px', color: '#94a3b8', fontSize: 13 }}>Nenhuma cidade encontrada</div>
           )}
-          {filtered.map((m) => (
-            <div
-              key={m.ibge}
-              onMouseDown={() => handleSelect(m)}
-              style={{
-                padding: '7px 12px', cursor: 'pointer', fontSize: 13,
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                background: `${m.cidade}/${m.uf}` === value || m.cidade === value ? 'var(--primary-soft,#e0f2fe)' : 'transparent',
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.background = '#f1f5f9'}
-              onMouseLeave={(e) => e.currentTarget.style.background = `${m.cidade}/${m.uf}` === value ? 'var(--primary-soft,#e0f2fe)' : 'transparent'}
-            >
-              <span><strong>{m.cidade}</strong>{m.uf ? `/${m.uf}` : ''}</span>
-              <span style={{ color: '#94a3b8', fontSize: 11, marginLeft: 8 }}>{m.ibge}</span>
-            </div>
-          ))}
-          {filtered.length === 80 && (
+          {filtered.map((m) => {
+            const temTabela = !withTable || withTable.has(semAcento(m.cidade));
+            const isSelected = `${m.cidade}/${m.uf}` === value || m.cidade === value;
+            return (
+              <div
+                key={m.ibge}
+                onMouseDown={() => handleSelect(m)}
+                style={{
+                  padding: '7px 12px', cursor: 'pointer', fontSize: 13,
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  background: isSelected ? 'var(--primary-soft,#e0f2fe)' : 'transparent',
+                  opacity: temTabela ? 1 : 0.45,
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#f1f5f9'}
+                onMouseLeave={(e) => e.currentTarget.style.background = isSelected ? 'var(--primary-soft,#e0f2fe)' : 'transparent'}
+              >
+                <span>
+                  <strong>{m.cidade}</strong>{m.uf ? `/${m.uf}` : ''}
+                  {!temTabela && <span style={{ fontSize: 10, marginLeft: 6, color: '#94a3b8' }}>sem tabela</span>}
+                </span>
+                <span style={{ color: '#94a3b8', fontSize: 11, marginLeft: 8 }}>{m.ibge}</span>
+              </div>
+            );
+          })}
+          {filtered.length >= 80 && (
             <div style={{ padding: '6px 12px', color: '#94a3b8', fontSize: 12, borderTop: '1px solid #f1f5f9' }}>
               Continue digitando para refinar
             </div>
@@ -1439,7 +1454,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem
               <CidadeIbgeSelect
                 value={origemSimples}
-                options={municipiosDisponiveis.filter((m) => origensPorCanalSimples.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                options={municipiosDisponiveis}
+                withTable={new Set(origensPorCanalSimples.map(semAcento))}
                 placeholder="Clique ou digite a origem"
                 onSelect={(m) => setOrigemSimples(m.cidade)}
                 onChange={(v) => setOrigemSimples(v)}
@@ -1499,7 +1515,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem (opcional)
               <CidadeIbgeSelect
                 value={origemTransportadora}
-                options={municipiosDisponiveis.filter((m) => !origensTransportadora.length || origensTransportadora.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                options={municipiosDisponiveis}
+                withTable={origensTransportadora.length ? new Set(origensTransportadora.map(semAcento)) : null}
                 placeholder="Todas ou digite a origem"
                 onSelect={(m) => setOrigemTransportadora(m.cidade)}
                 onChange={(v) => setOrigemTransportadora(v)}
@@ -1563,7 +1580,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem
               <CidadeIbgeSelect
                 value={origemAnalise}
-                options={municipiosDisponiveis.filter((m) => origensAnaliseDisponiveis.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                options={municipiosDisponiveis}
+                withTable={new Set(origensAnaliseDisponiveis.map(semAcento))}
                 placeholder="Obrigatório para B2C grande"
                 onSelect={(m) => setOrigemAnalise(m.cidade)}
                 onChange={(v) => setOrigemAnalise(v)}
@@ -1617,7 +1635,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem
               <CidadeIbgeSelect
                 value={origemOrigem}
-                options={municipiosDisponiveis.filter((m) => origensOrigemDisponiveis.some((o) => semAcento(o) === semAcento(m.cidade)))}
+                options={municipiosDisponiveis}
+                withTable={new Set(origensOrigemDisponiveis.map(semAcento))}
                 placeholder="Ex.: Itajaí"
                 onSelect={(m) => setOrigemOrigem(m.cidade)}
                 onChange={(v) => setOrigemOrigem(v)}
@@ -1797,7 +1816,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Canal<select value={canalCobertura} onChange={(e) => setCanalCobertura(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Origem<CidadeIbgeSelect
   value={origemCobertura}
-  options={municipiosDisponiveis.filter((m) => !todasOrigens.length || todasOrigens.some((o) => semAcento(o) === semAcento(m.cidade)))}
+  options={municipiosDisponiveis}
+  withTable={todasOrigens.length ? new Set(todasOrigens.map(semAcento)) : null}
   placeholder="Todas ou digite a origem"
   onSelect={(m) => setOrigemCobertura(m.cidade)}
   onChange={(v) => setOrigemCobertura(v)}
