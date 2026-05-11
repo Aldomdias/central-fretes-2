@@ -1183,7 +1183,73 @@ function ufFromIbgeLike(value) {
   return map[prefix] || '';
 }
 
-async function buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino = '' }) {
+
+function limparIbgeOrigemDb(value = '') {
+  return String(value || '').replace(/\D/g, '').slice(0, 7);
+}
+
+function dedupeRowsByIdDb(rows = []) {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const id = String(row?.id || '');
+    if (id && !map.has(id)) map.set(id, row);
+  });
+  return [...map.values()];
+}
+
+function filtrarRotasPorIbgeOrigemFallbackDb(rotas = [], ibgeOrigem = '', origem = '') {
+  const ibge = limparIbgeOrigemDb(ibgeOrigem);
+  if (!ibge) return rotas || [];
+
+  const exatas = (rotas || []).filter((rota) => limparIbgeOrigemDb(rota.ibge_origem || rota.ibgeOrigem) === ibge);
+
+  // Se a origem foi informada pelo nome, preservamos também rotas antigas sem IBGE
+  // para manter a lógica da main funcionando. Se nada bate por IBGE, volta para a
+  // malha original da origem em vez de zerar a simulação.
+  if (origem) {
+    if (!exatas.length) return rotas || [];
+    const semIbge = (rotas || []).filter((rota) => !limparIbgeOrigemDb(rota.ibge_origem || rota.ibgeOrigem));
+    const byId = new Map();
+    [...exatas, ...semIbge].forEach((rota, index) => {
+      const key = String(rota.id || `${rota.origem_id || ''}-${rota.ibge_destino || rota.ibgeDestino || ''}-${rota.nome_rota || rota.nomeRota || ''}-${index}`);
+      if (!byId.has(key)) byId.set(key, rota);
+    });
+    return [...byId.values()];
+  }
+
+  return exatas.length ? exatas : (rotas || []);
+}
+
+async function buscarOrigensPorIbgeOrigemDb({ supabase, ibgeOrigem = '', canal = '', transportadoraIds = [] } = {}) {
+  const ibge = limparIbgeOrigemDb(ibgeOrigem);
+  if (!ibge) return [];
+
+  const { data: rotasComIbge, error: rotasErr } = await supabase
+    .from('rotas')
+    .select('origem_id')
+    .eq('ibge_origem', ibge);
+
+  if (rotasErr) throw rotasErr;
+
+  const idsViaIbge = Array.from(new Set((rotasComIbge || []).map((r) => r.origem_id).filter(Boolean)));
+  if (!idsViaIbge.length) return [];
+
+  let queryOrigens = supabase
+    .from('origens')
+    .select('id, transportadora_id, cidade, canal, status')
+    .in('id', idsViaIbge);
+
+  if (Array.isArray(transportadoraIds) && transportadoraIds.length) {
+    queryOrigens = queryOrigens.in('transportadora_id', transportadoraIds);
+  }
+
+  const { data: origensViaIbge, error: origensErr } = await queryOrigens;
+  if (origensErr) throw origensErr;
+
+  return (origensViaIbge || []).filter((item) => canalCompativelDb(item.canal, canal));
+}
+
+async function buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino = '', ibgeOrigem = '' }) {
   let { data: transportadorasAlvo, error: transportadoraError } = await supabase
     .from('transportadoras')
     .select('id, nome, status')
@@ -1204,17 +1270,17 @@ async function buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora
   const alvoIds = (transportadorasAlvo || []).map((item) => item.id);
   if (!alvoIds.length) return [];
 
-  const origensAlvo = await buscarOrigensFiltradasDb({
-    supabase,
-    origem,
-    canal,
-    transportadoraIds: alvoIds,
-  });
+  const [origensPorNome, origensPorIbge] = await Promise.all([
+    buscarOrigensFiltradasDb({ supabase, origem, canal, transportadoraIds: alvoIds }),
+    buscarOrigensPorIbgeOrigemDb({ supabase, ibgeOrigem, canal, transportadoraIds: alvoIds }),
+  ]);
 
+  const origensAlvo = dedupeRowsByIdDb([...(origensPorNome || []), ...(origensPorIbge || [])]);
   const origemIds = (origensAlvo || []).map((item) => item.id);
   if (!origemIds.length) return [];
 
-  const rotasAlvo = await fetchRotasByOrigemIds(supabase, origemIds, []);
+  const rotasAlvoRaw = await fetchRotasByOrigemIds(supabase, origemIds, []);
+  const rotasAlvo = filtrarRotasPorIbgeOrigemFallbackDb(rotasAlvoRaw, ibgeOrigem, origem);
   const uf = String(ufDestino || '').trim().toUpperCase();
 
   return Array.from(new Set(
@@ -1267,59 +1333,31 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
 
 async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '', ibgeOrigem = '' }) {
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
-  const ibgeOrigemLimpo = String(ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
 
-  let origemIdsBase;
+  const [origensPorNome, origensPorIbge] = await Promise.all([
+    buscarOrigensFiltradasDb({ supabase, origem, canal }),
+    buscarOrigensPorIbgeOrigemDb({ supabase, ibgeOrigem, canal }),
+  ]);
 
-  if (ibgeOrigemLimpo) {
-    // ESTRATÉGIA IBGE: busca as origens cujas ROTAS têm ibge_origem = ibgeOrigemLimpo.
-    // Isso ignora completamente o nome cadastrado na transportadora ("itajai", "ITAJAI", "Itajaí")
-    // e usa o código IBGE da rota como fonte da verdade — comportamento assertivo e sem ambiguidade.
-    const { data: rotasComIbge, error: rotasErr } = await supabase
-      .from('rotas')
-      .select('origem_id')
-      .eq('ibge_origem', ibgeOrigemLimpo);
-
-    if (rotasErr) throw rotasErr;
-
-    const idsViaIbge = Array.from(new Set((rotasComIbge || []).map((r) => r.origem_id).filter(Boolean)));
-    if (!idsViaIbge.length) return [];
-
-    // Filtra pelo canal dentro dos IDs encontrados via IBGE
-    let queryOrigens = supabase
-      .from('origens')
-      .select('id, transportadora_id, cidade, canal, status')
-      .in('id', idsViaIbge);
-
-    const { data: origensViaIbge, error: origensErr } = await queryOrigens;
-    if (origensErr) throw origensErr;
-
-    origemIdsBase = (origensViaIbge || []).filter((item) => canalCompativelDb(item.canal, canal));
-  } else {
-    // ESTRATÉGIA NOME: fallback quando o IBGE da origem não foi informado (digitação manual)
-    origemIdsBase = await buscarOrigensFiltradasDb({ supabase, origem, canal });
-  }
-
+  // A versão main funcionava por nome de cidade. A versão cloud/claude adicionou IBGE,
+  // mas algumas tabelas não possuem ibge_origem preenchido. Por isso unimos as duas
+  // estratégias: IBGE quando existir + fallback por cidade para não zerar a simulação.
+  const origensBase = dedupeRowsByIdDb([...(origensPorNome || []), ...(origensPorIbge || [])]);
+  const origemIdsBase = (origensBase || []).map((item) => item.id);
   if (!origemIdsBase.length) return [];
-  const origemIds = origemIdsBase.map((item) => item.id);
 
-  const rotasRaw = await fetchRotasByOrigemIds(supabase, origemIds, destinosNormalizados, ufDestino);
-  const rotas = await enriquecerRotasComIbgeDestinoPorCepDb(rotasRaw);
+  const rotasRaw = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados, ufDestino);
+  const rotasEnriquecidas = await enriquecerRotasComIbgeDestinoPorCepDb(rotasRaw);
+  const rotas = filtrarRotasPorIbgeOrigemFallbackDb(rotasEnriquecidas, ibgeOrigem, origem);
 
-  // Quando buscamos por IBGE de origem, restringe as rotas ao ibge_origem correto
-  // (uma origem pode ter rotas de múltiplos ibge_origem se o cadastro estiver inconsistente)
-  const rotasFiltradas = ibgeOrigemLimpo
-    ? rotas.filter((r) => String(r.ibge_origem || '').replace(/\D/g, '') === ibgeOrigemLimpo)
-    : rotas;
-
-  const origemIdsComRota = Array.from(new Set((rotasFiltradas || []).map((item) => item.origem_id)));
+  const origemIdsComRota = Array.from(new Set((rotas || []).map((item) => item.origem_id)));
   if (!origemIdsComRota.length) return [];
 
-  const origens = origemIdsBase.filter((item) => origemIdsComRota.includes(item.id));
+  const origens = (origensBase || []).filter((item) => origemIdsComRota.includes(item.id));
   const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
 
-  const rotaNomes = Array.from(new Set((rotasFiltradas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
-  const destinosIbgeDasRotas = Array.from(new Set((rotasFiltradas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
+  const rotaNomes = Array.from(new Set((rotas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
+  const destinosIbgeDasRotas = Array.from(new Set((rotas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
 
   const [
     transportadorasRows,
@@ -1337,7 +1375,7 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
     transportadoras: transportadorasRows || [],
     origens,
     generalidades,
-    rotas: rotasFiltradas || [],
+    rotas: rotas || [],
     cotacoes,
     taxas,
   });

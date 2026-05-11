@@ -55,6 +55,47 @@ function normalizarOrigem(valor = '') {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+function limparIbge(value = '') {
+  return String(value || '').replace(/\D/g, '').slice(0, 7);
+}
+
+function mesmaOrigemPorNome(origemItem, origemFiltroNormalizada) {
+  if (!origemFiltroNormalizada) return true;
+  return normalizarOrigem(origemItem?.cidade) === origemFiltroNormalizada;
+}
+
+function origemCompativelPorNomeOuIbge(origemItem, origemFiltroNormalizada = '', ibgeOrigemFiltro = '') {
+  const nomeOk = mesmaOrigemPorNome(origemItem, origemFiltroNormalizada);
+  if (!ibgeOrigemFiltro) return nomeOk;
+
+  const algumaRotaComIbge = (origemItem?.rotas || []).some((rota) => limparIbge(rota?.ibgeOrigem) === ibgeOrigemFiltro);
+
+  // Regra de segurança: o IBGE ajuda quando existe, mas não pode zerar a simulação.
+  // Muitas tabelas antigas não possuem ibge_origem nas rotas; nesses casos a lógica
+  // estável da main, por nome da origem, continua valendo.
+  return algumaRotaComIbge || nomeOk;
+}
+
+function rotaCompativelComOrigem(rota, origemItem, origemFiltroNormalizada = '', ibgeOrigemFiltro = '') {
+  if (!ibgeOrigemFiltro) return true;
+
+  const ibgeRota = limparIbge(rota?.ibgeOrigem);
+  if (ibgeRota === ibgeOrigemFiltro) return true;
+
+  // Se a rota não tem IBGE de origem, ou se veio divergente por cadastro antigo,
+  // preserva a simulação quando a origem da transportadora bate pelo nome.
+  return Boolean(origemFiltroNormalizada && mesmaOrigemPorNome(origemItem, origemFiltroNormalizada));
+}
+
+function itemResultadoCompativelComOrigem(item, origemFiltroNormalizada = '', ibgeOrigemFiltro = '') {
+  const nomeOk = !origemFiltroNormalizada || normalizarOrigem(item?.origem) === origemFiltroNormalizada;
+  if (!ibgeOrigemFiltro) return nomeOk;
+
+  const ibgeItem = limparIbge(item?.ibgeOrigem);
+  if (ibgeItem === ibgeOrigemFiltro) return true;
+  return Boolean(origemFiltroNormalizada && nomeOk);
+}
+
 function escapeCsv(value) {
   const text = String(value ?? '');
   return /[";,\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -395,27 +436,19 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
   const cubagem = toNumber(filtros.cubagem);
   const destinoNormalizado = normalizeText(filtros.destinoCodigo);
   const origemNormalizada = normalizarOrigem(filtros.origem);
-  // ibgeOrigem: quando fornecido, filtra rotas por rota.ibgeOrigem em vez do nome da cidade.
-  // Elimina falhas por capitalização ("itajai", "ITAJAI", "Itajaí") — usa o IBGE como chave.
-  const ibgeOrigemFiltro = String(filtros.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+  const ibgeOrigemFiltro = limparIbge(filtros.ibgeOrigem);
 
   return (transportadoras || []).flatMap((transportadora) =>
     (transportadora.origens || [])
       .filter((origem) => !filtros.canal || origem.canal === filtros.canal)
-      // Filtro de cidade: só aplica quando NÃO há IBGE de origem (o IBGE filtra no nível de rota)
-      .filter((origem) => ibgeOrigemFiltro || !origemNormalizada || normalizarOrigem(origem.cidade) === origemNormalizada)
+      .filter((origem) => origemCompativelPorNomeOuIbge(origem, origemNormalizada, ibgeOrigemFiltro))
       .flatMap((origem) =>
         (origem.rotas || [])
           .filter((rota) => {
-            // Filtro IBGE origem: usa o código IBGE da rota como chave — assertivo e sem ambiguidade
-            if (ibgeOrigemFiltro) {
-              const ibgeRota = String(rota.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
-              if (ibgeRota !== ibgeOrigemFiltro) return false;
-            }
-            // Filtro IBGE destino
+            if (!rotaCompativelComOrigem(rota, origem, origemNormalizada, ibgeOrigemFiltro)) return false;
             if (destinoNormalizado) {
               const cidade = normalizeText(getCidadeByIbge(rota.ibgeDestino, cidadePorIbge));
-              return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
+              return String(rota.ibgeDestino) === String(filtros.destinoCodigo) || cidade === destinoNormalizado;
             }
             return true;
           })
@@ -427,14 +460,11 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
 
 export function simularSimples({ transportadoras, ibgeOrigem = '', origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
   const resultados = listarCenarios(transportadoras, { ibgeOrigem, origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge);
-  const ibgeOrigemFiltro = String(ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+  const ibgeOrigemFiltro = limparIbge(ibgeOrigem);
   const origemNorm = normalizarOrigem(origem);
   return rankearPorChave(resultados)
     .filter((item) => {
-      // Valida origem pelo IBGE da rota quando disponível, fallback para nome normalizado
-      const origemOk = ibgeOrigemFiltro
-        ? String(item.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7) === ibgeOrigemFiltro
-        : (!origemNorm || normalizarOrigem(item.origem) === origemNorm);
+      const origemOk = itemResultadoCompativelComOrigem(item, origemNorm, ibgeOrigemFiltro);
       const destinoOk = !destinoCodigo || String(item.ibgeDestino) === String(destinoCodigo);
       return origemOk && destinoOk;
     })
@@ -463,7 +493,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
   const todosResultados = [];
 
   const origemFiltro = normalizarOrigem(origem);
-  const ibgeOrigemFiltro = String(ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+  const ibgeOrigemFiltro = limparIbge(ibgeOrigem);
   const ufFiltro = String(ufDestino || '').trim().toUpperCase();
 
   const destinosDaTransportadora = new Set();
@@ -473,14 +503,10 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
 
     (transportadora.origens || [])
       .filter((origemItem) => !canal || origemItem.canal === canal)
-      .filter((origemItem) => {
-        if (ibgeOrigemFiltro) return true; // filtro por IBGE aplicado no nível de rota
-        return !origemFiltro || normalizarOrigem(origemItem.cidade) === origemFiltro;
-      })
+      .filter((origemItem) => origemCompativelPorNomeOuIbge(origemItem, origemFiltro, ibgeOrigemFiltro))
       .forEach((origemItem) => {
         (origemItem.rotas || []).forEach((rota) => {
-          // Filtro IBGE origem: usa o código da rota como chave — ignora nome cadastrado
-          if (ibgeOrigemFiltro && String(rota.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7) !== ibgeOrigemFiltro) return;
+          if (!rotaCompativelComOrigem(rota, origemItem, origemFiltro, ibgeOrigemFiltro)) return;
           const ibge = String(rota.ibgeDestino || '');
           if (!ibge) return;
           if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
@@ -511,9 +537,10 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
     (transportadoras || []).forEach((transportadora) => {
       (transportadora.origens || [])
         .filter((origemItem) => !canal || origemItem.canal === canal)
-        .filter((origemItem) => ibgeOrigemFiltro || !origemFiltro || normalizarOrigem(origemItem.cidade) === origemFiltro)
+        .filter((origemItem) => origemCompativelPorNomeOuIbge(origemItem, origemFiltro, ibgeOrigemFiltro))
         .forEach((origemItem) => {
           (origemItem.rotas || []).forEach((rota) => {
+            if (!rotaCompativelComOrigem(rota, origemItem, origemFiltro, ibgeOrigemFiltro)) return;
             const ibge = String(rota.ibgeDestino || '');
             if (!ibge) return;
             if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
@@ -590,7 +617,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
 
 export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', ufDestino = '', grade = [], cidadePorIbge }) {
   const pesoValorPairs = Array.isArray(grade) ? grade : [];
-  const origemFiltro = String(origem || '').trim();
+  const origemFiltro = normalizarOrigem(origem);
   const ufFiltro = String(ufDestino || '').trim().toUpperCase();
   const detalhes = [];
 
@@ -602,7 +629,7 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
     (transportadoras || []).forEach((transportadora) => {
       (transportadora.origens || [])
         .filter((origemItem) => !canal || origemItem.canal === canal)
-        .filter((origemItem) => ibgeOrigemFiltro || !origemFiltro || normalizarOrigem(origemItem.cidade) === origemFiltro)
+        .filter((origemItem) => origemCompativelPorNomeOuIbge(origemItem, origemFiltro, ''))
         .forEach((origemItem) => {
           (origemItem.rotas || []).forEach((rota) => {
             const ibge = String(rota.ibgeDestino || '');
@@ -701,7 +728,7 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
   (transportadoras || []).forEach((transportadora) => {
     (transportadora.origens || [])
       .filter((origemItem) => !canal || origemItem.canal === canal)
-      .filter((origemItem) => ibgeOrigemFiltro || !origemFiltro || normalizarOrigem(origemItem.cidade) === origemFiltro)
+      .filter((origemItem) => origemCompativelPorNomeOuIbge(origemItem, origemFiltro, ''))
       .forEach((origemItem) => {
         (origemItem.rotas || []).forEach((rota) => {
           const ibge = String(rota.ibgeDestino || '');
@@ -735,7 +762,7 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
   const freteSegundoTotal = segundos.reduce((acc, item) => acc + Number(item.total || 0), 0);
 
   return {
-    origem: origemFiltro || 'Todas',
+    origem: origem || 'Todas',
     canal,
     ufDestino: ufFiltro,
     cenariosAvaliados: detalhes.length,

@@ -1004,12 +1004,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
     if (transportadora && transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
       setTransportadora('');
       setOrigemTransportadora('');
+      setOrigemTransportadoraIbge('');
     }
   }, [transportadorasPorCanalTransportadora, transportadora]);
 
   useEffect(() => {
     if (transportadoraAnalise && transportadorasPorCanalAnalise.length && !transportadorasPorCanalAnalise.includes(transportadoraAnalise)) {
       setTransportadoraAnalise('');
+      setOrigemAnalise('');
+      setOrigemAnaliseIbge('');
     }
   }, [transportadorasPorCanalAnalise, transportadoraAnalise]);
 
@@ -1542,6 +1545,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 onChange={(nome) => {
                   setTransportadora(nome);
                   setOrigemTransportadora('');
+                  setOrigemTransportadoraIbge('');
                   const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canalTransportadora || canais[0] || 'ATACADO';
                   if (opcoesOnline.canaisPorTransportadora?.[nome]?.length && !opcoesOnline.canaisPorTransportadora[nome].includes(canalTransportadora)) {
                     setCanalTransportadora(primeiroCanal);
@@ -1550,7 +1554,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               />
             </label>
             <label>Canal
-              <select value={canalTransportadora} onChange={(e) => { setCanalTransportadora(e.target.value); setOrigemTransportadora(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={canalTransportadora} onChange={(e) => { setCanalTransportadora(e.target.value); setOrigemTransportadora(''); setOrigemTransportadoraIbge(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Origem (opcional)
               <CidadeIbgeSelect
@@ -1608,12 +1612,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 value={transportadoraAnalise}
                 options={transportadorasPorCanalAnalise}
                 placeholder="Digite para filtrar..."
-                onChange={(nome) => { setTransportadoraAnalise(nome); setOrigemAnalise(''); }}
+                onChange={(nome) => { setTransportadoraAnalise(nome); setOrigemAnalise(''); setOrigemAnaliseIbge(''); }}
               />
               {!transportadorasPorCanalAnalise.length ? <small>Nenhuma transportadora cadastrada neste canal.</small> : null}
             </label>
             <label>Canal
-              <select value={canalAnalise} onChange={(e) => { setCanalAnalise(e.target.value); setOrigemAnalise(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={canalAnalise} onChange={(e) => { setCanalAnalise(e.target.value); setOrigemAnalise(''); setOrigemAnaliseIbge(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Origem
               <CidadeIbgeSelect
