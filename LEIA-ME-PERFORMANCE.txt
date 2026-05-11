@@ -50,3 +50,15 @@ O que foi corrigido:
 2. Cobertura de tabela - Faltantes: mostra cidade E código IBGE sempre
 3. Cobertura de tabela - Destinos com tabela: mostra TODAS as transportadoras
    que cobrem o destino, com quantidade (ex: "MOVVI, JAMEF (+1) • 3 transp")
+
+PATCH 3 - Fix busca por acento + campo transportadora
+======================================================
+Arquivos:
+- supabase/03_RPC_FIX_UNACCENT.sql  → rodar no Supabase SQL Editor
+- src/pages/SimuladorPage.jsx         → substituir no projeto
+
+O que foi corrigido:
+1. "Itajai" agora casa com "Itajaí" no banco (unaccent no Postgres)
+2. Campo Transportadora virou dropdown com busca — digita para filtrar
+   (antes era datalist nativo do browser que não filtrava bem no Chrome)
+3. Cobertura de tabela: mesmo fix do unaccent resolve a origem

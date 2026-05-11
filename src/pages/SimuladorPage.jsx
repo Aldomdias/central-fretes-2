@@ -14,6 +14,71 @@ import {
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
 import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
+// ── Dropdown com busca para listas grandes (ex: 384 transportadoras) ──────────
+function SearchableSelect({ value, onChange, options = [], placeholder = 'Digite para filtrar...' }) {
+  const [open, setOpen] = React.useState(false);
+  const [term, setTerm] = React.useState('');
+  const ref = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!open) setTerm('');
+  }, [open]);
+
+  React.useEffect(() => {
+    function handleClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const filtered = term
+    ? options.filter((o) => o.toLowerCase().includes(term.toLowerCase()))
+    : options;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <input
+        value={open ? term : value}
+        onChange={(e) => { setTerm(e.target.value); if (!open) setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        placeholder={value || placeholder}
+        style={{ width: '100%' }}
+        autoComplete="off"
+      />
+      {open && filtered.length > 0 && (
+        <div style={{
+          position: 'absolute', zIndex: 999, background: 'var(--bg, #fff)',
+          border: '1px solid var(--border, #e2e8f0)', borderRadius: 6,
+          maxHeight: 240, overflowY: 'auto', width: '100%', boxShadow: '0 4px 16px rgba(0,0,0,.12)',
+          top: '100%', left: 0,
+        }}>
+          {filtered.slice(0, 80).map((item) => (
+            <div
+              key={item}
+              onMouseDown={() => { onChange(item); setOpen(false); }}
+              style={{
+                padding: '8px 12px', cursor: 'pointer', fontSize: 13,
+                background: item === value ? 'var(--primary-soft, #e0f2fe)' : 'transparent',
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--hover, #f1f5f9)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = item === value ? 'var(--primary-soft, #e0f2fe)' : 'transparent'}
+            >
+              {item}
+            </div>
+          ))}
+          {filtered.length > 80 && (
+            <div style={{ padding: '6px 12px', color: '#94a3b8', fontSize: 12 }}>
+              +{filtered.length - 80} — continue digitando para filtrar
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
 const GRADE_PADRAO = {
@@ -1321,11 +1386,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-form-grid sim-grid-6">
             <label>Transportadora
-              <input
-                list="transportadoras-canal-lista"
+              <SearchableSelect
                 value={transportadora}
-                onChange={(e) => {
-                  const nome = e.target.value;
+                options={transportadorasPorCanalTransportadora}
+                placeholder="Digite para filtrar..."
+                onChange={(nome) => {
                   setTransportadora(nome);
                   setOrigemTransportadora('');
                   const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canalTransportadora || canais[0] || 'ATACADO';
@@ -1333,11 +1398,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     setCanalTransportadora(primeiroCanal);
                   }
                 }}
-                placeholder="Digite a transportadora"
               />
-              <datalist id="transportadoras-canal-lista">
-                {transportadorasPorCanalTransportadora.map((item) => <option key={item} value={item} />)}
-              </datalist>
             </label>
             <label>Canal
               <select value={canalTransportadora} onChange={(e) => { setCanalTransportadora(e.target.value); setOrigemTransportadora(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
@@ -1392,10 +1453,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-form-grid sim-grid-5">
             <label>Transportadora
-              <input list="transportadoras-analise-lista" value={transportadoraAnalise} onChange={(e) => { setTransportadoraAnalise(e.target.value); setOrigemAnalise(''); }} placeholder="Digite a transportadora" />
-              <datalist id="transportadoras-analise-lista">
-                {transportadorasPorCanalAnalise.map((item) => <option key={item} value={item} />)}
-              </datalist>
+              <SearchableSelect
+                value={transportadoraAnalise}
+                options={transportadorasPorCanalAnalise}
+                placeholder="Digite para filtrar..."
+                onChange={(nome) => { setTransportadoraAnalise(nome); setOrigemAnalise(''); }}
+              />
               {!transportadorasPorCanalAnalise.length ? <small>Nenhuma transportadora cadastrada neste canal.</small> : null}
             </label>
             <label>Canal
