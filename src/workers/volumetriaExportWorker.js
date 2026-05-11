@@ -546,7 +546,7 @@ async function carregarMunicipiosSeguro({ permitirOnline = false } = {}) {
       return resultado.municipios;
     }
   } catch {
-    // Se não conseguir buscar a base oficial, segue com a base local/Supabase que estiver disponível.
+    // Se não conseguir buscar a base oficial, segue com a base CTes/Supabase que estiver disponível.
   }
 
   return municipiosDb;

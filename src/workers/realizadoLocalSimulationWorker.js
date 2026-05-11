@@ -6,7 +6,7 @@ function postProgress(payload) {
 
 self.onmessage = async (event) => {
   const msg = event.data || {};
-  if (msg.type !== 'simular-realizado-local') return;
+  if (msg.type !== 'simular-ctes') return;
 
   try {
     const result = await simularRealizadoLocalRapido({
@@ -20,6 +20,6 @@ self.onmessage = async (event) => {
     });
     self.postMessage({ type: 'done', result });
   } catch (error) {
-    self.postMessage({ type: 'error', message: error?.message || 'Erro ao simular realizado local.' });
+    self.postMessage({ type: 'error', message: error?.message || 'Erro ao simular CTes.' });
   }
 };

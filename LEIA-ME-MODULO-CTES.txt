@@ -1,0 +1,53 @@
+MÓDULO CTes - AJUSTE APLICADO
+
+Objetivo
+- Remover do menu os módulos separados "Realizado Local" e "Realizado CT-e".
+- Criar um único módulo "CTes".
+- Usar a tabela public.realizado_local_ctes do Supabase como base oficial dos CTes.
+- Fazer os módulos que já consumiam o realizado local passarem a consumir essa mesma base CTes via o serviço src/services/realizadoLocalDb.js.
+
+Arquivos principais alterados
+- src/components/Sidebar.jsx
+  - Removeu Realizado Local e Realizado CT-e.
+  - Incluiu CTes no menu.
+
+- src/App.jsx
+  - Removeu rota do Realizado CT-e antigo.
+  - Removeu rota realizado-local.
+  - Incluiu rota ctes apontando para a tela de CTes.
+
+- src/utils/authLocal.js
+  - Perfil CONSULTA ganhou acesso ao módulo ctes.
+
+- src/services/realizadoLocalDb.js
+  - Agora usa Supabase como fonte principal.
+  - Tabela oficial: public.realizado_local_ctes.
+  - Mantém os nomes antigos das funções para não quebrar Simulador, Reajustes, Ferramentas e workers.
+  - Usa fallback local somente se Supabase não estiver configurado.
+
+- src/services/ctesLocalFallbackDb.js
+  - Cópia do mecanismo antigo IndexedDB, usada apenas como contingência sem Supabase.
+
+- src/pages/RealizadoLocalPage.jsx
+  - Tela reaproveitada como módulo CTes.
+  - Textos principais ajustados para CTes.
+  - Importação passa a gravar na tabela realizado_local_ctes via serviço.
+  - Pesquisa, resumo, exportação, limpeza, reprocessamento de IBGE e simulação usam a base CTes.
+
+- src/pages/ReajustesPage.jsx, src/pages/SimuladorPage.jsx, src/pages/FerramentasPage.jsx
+  - Textos ajustados para CTes.
+  - Continuam usando exportarRealizadoLocal, que agora lê a tabela realizado_local_ctes no Supabase.
+
+- src/workers/realizadoLocalImportWorker.js e src/workers/realizadoLocalSimulationWorker.js
+  - Mensagens e tipo interno ajustados para CTes.
+
+- supabase/CTES_MODULO_AJUSTES.sql
+  - Índices recomendados para a tabela realizado_local_ctes.
+  - Query de conferência do volume da base.
+
+Observação importante
+- O arquivo mantém nomes internos como RealizadoLocalPage e realizadoLocalDb para reduzir risco de quebra e evitar refatoração desnecessária em todos os módulos.
+- Na tela e no menu, o usuário passa a ver apenas CTes.
+
+Build
+- npm run build executado com sucesso.

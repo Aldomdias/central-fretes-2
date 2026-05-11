@@ -90,7 +90,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
       totalPendencias += pendencias.length;
 
       postProgress({
-        etapa: 'Gravando base local',
+        etapa: 'Gravando base CTes',
         atual: 0,
         total: rows.length,
         percentual: calcularPercentualArquivo(index, totalArquivos, 65),
@@ -102,7 +102,7 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
         onProgress: ({ salvos, total }) => {
           const interno = 65 + Math.round(pct(salvos, total) * 0.30);
           postProgress({
-            etapa: 'Gravando base local',
+            etapa: 'Gravando base CTes',
             atual: salvos,
             total,
             percentual: calcularPercentualArquivo(index, totalArquivos, interno),
@@ -146,12 +146,12 @@ async function importarRealizadoLocal({ files = [], municipios = [], competencia
 
 self.onmessage = async (event) => {
   const msg = event.data || {};
-  if (msg.type !== 'importar-realizado-local') return;
+  if (msg.type !== 'importar-ctes') return;
 
   try {
     const result = await importarRealizadoLocal(msg);
     self.postMessage({ type: 'done', result });
   } catch (error) {
-    self.postMessage({ type: 'error', message: error?.message || 'Erro ao importar realizado local.' });
+    self.postMessage({ type: 'error', message: error?.message || 'Erro ao importar CTes.' });
   }
 };

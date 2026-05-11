@@ -1135,7 +1135,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       let realizado = null;
       if (usarRealizadoOrigem) {
-        atualizarProcessamentoUi('Lendo volumetria do Realizado Local...', 78);
+        atualizarProcessamentoUi('Lendo volumetria dos CTes...', 78);
         const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
           canal: canalOrigem,
           origem: origemOrigem,
@@ -1471,7 +1471,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             <label className="sim-flag" style={{ justifyContent: 'end' }}>
               <input type="checkbox" checked={usarRealizadoOrigem} onChange={(e) => setUsarRealizadoOrigem(e.target.checked)} />
-              Usar Realizado Local
+              Usar CTes
             </label>
           </div>
 
@@ -1489,7 +1489,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Rotas com 1 transp.</span><strong>{resultadoOrigem.tabela.rotasComUmaTransportadora}</strong></div>
                 <div><span>Saving vs 2º menor</span><strong>{formatMoney(resultadoOrigem.tabela.savingVsSegundo)}</strong></div>
                 <div><span>Frete médio ganhador</span><strong>{formatMoney(resultadoOrigem.tabela.freteMedioVencedor)}</strong></div>
-                <div><span>Realizado local</span><strong>{resultadoOrigem.realizado ? `${resultadoOrigem.realizado.ctes} CT-es` : 'Não usado'}</strong></div>
+                <div><span>CTes</span><strong>{resultadoOrigem.realizado ? `${resultadoOrigem.realizado.ctes} CT-es` : 'Não usado'}</strong></div>
               </div>
 
               {resultadoOrigem.realizado && (
@@ -1527,7 +1527,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </div>
 
                 <div className="sim-parametros-box">
-                  <div className="sim-parametros-header"><div><strong>Quem carrega no realizado</strong><p>Participação real da origem, vindo da base local.</p></div></div>
+                  <div className="sim-parametros-header"><div><strong>Quem carrega no realizado</strong><p>Participação real da origem, vindo da base CTes.</p></div></div>
                   <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                     <table className="sim-analise-tabela">
                       <thead><tr><th>Transportadora</th><th>CT-es</th><th>% CT-es</th><th>Frete</th><th>% Frete</th></tr></thead>
@@ -1541,7 +1541,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             <td>{formatPercent(item.pctFrete)}</td>
                           </tr>
                         ))}
-                        {!resultadoOrigem.realizado && <tr><td colSpan="5">Ative “Usar Realizado Local” para ver a volumetria carregada.</td></tr>}
+                        {!resultadoOrigem.realizado && <tr><td colSpan="5">Ative “Usar CTes” para ver a volumetria carregada.</td></tr>}
                       </tbody>
                     </table>
                   </div>
@@ -1552,7 +1552,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div className="sim-parametros-box">
                   <div className="sim-parametros-header">
                     <div>
-                      <strong>Simulação sobre realizado local</strong>
+                      <strong>Simulação sobre CTes</strong>
                       <p>Usa peso, valor NF e volumes reais. A cubagem vem da linha realizada quando existir; se não existir, usa a cubagem da faixa da grade do canal.</p>
                     </div>
                   </div>

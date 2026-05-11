@@ -393,7 +393,7 @@ function PainelVinculo({
     <section className="panel-card" style={{ border: '2px solid #0b1f52' }}>
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Editar vínculo no Realizado Local</div>
+          <div className="panel-title">Editar vínculo no CTes</div>
           <p className="compact">
             Transportadora da planilha: <strong>{item.transportadoraInformada}</strong>. Marque uma ou mais variações do nome usado na base realizada.
           </p>
@@ -411,7 +411,7 @@ function PainelVinculo({
       </div>
 
       <div className="form-grid two">
-        <label className="field">Buscar no Realizado Local
+        <label className="field">Buscar no CTes
           <input
             value={busca || ''}
             onChange={(event) => onBusca(event.target.value)}
@@ -453,7 +453,7 @@ function PainelVinculo({
           <thead>
             <tr>
               <th>Usar</th>
-              <th>Nome no Realizado Local</th>
+              <th>Nome no CTes</th>
               <th>CT-es</th>
               <th>Frete realizado</th>
             </tr>
@@ -695,16 +695,16 @@ export default function ReajustesPage() {
     if (exibirMensagem) {
       setCarregando(true);
       setErro('');
-      setMensagem('Carregando nomes de transportadoras do Realizado Local...');
+      setMensagem('Carregando nomes de transportadoras do CTes...');
     }
     try {
       const { rows } = await exportarRealizadoLocal({}, { limit: 500000 });
       const nomes = nomesUnicosRealizado(rows || []);
       setOpcoesRealizado(nomes);
-      if (exibirMensagem) setMensagem(`Transportadoras carregadas do Realizado Local: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
+      if (exibirMensagem) setMensagem(`Transportadoras carregadas do CTes: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
       return nomes;
     } catch (error) {
-      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do Realizado Local.');
+      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do CTes.');
       return [];
     } finally {
       if (exibirMensagem) setCarregando(false);
@@ -755,7 +755,7 @@ export default function ReajustesPage() {
     const novos = aplicarVinculoAutomatico(itens, nomes.map((item) => item.nome));
     persistir(novos);
     setVinculoAtivoId(null);
-    setMensagem('Vínculo automático atualizado com base nos nomes do Realizado Local.');
+    setMensagem('Vínculo automático atualizado com base nos nomes do CTes.');
     setErro('');
   }
 
@@ -769,7 +769,7 @@ export default function ReajustesPage() {
       return;
     }
 
-    setMensagem(`Buscando Realizado Local a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
+    setMensagem(`Buscando CTes a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
     try {
       const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
         inicio: consulta.inicio,
@@ -785,7 +785,7 @@ export default function ReajustesPage() {
         + `Realizado: da Data_Inicio até ${formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base'}${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao calcular impacto pelo Realizado Local.');
+      setErro(error.message || 'Erro ao calcular impacto pelo CTes.');
     } finally {
       setCarregando(false);
     }
@@ -869,7 +869,7 @@ export default function ReajustesPage() {
       persistir([novo, ...itens]);
       setManual(FORM_MANUAL_VAZIO);
       setMostrarManual(false);
-      setMensagem('Reajuste manual incluído. Agora faça o vínculo com o Realizado Local.');
+      setMensagem('Reajuste manual incluído. Agora faça o vínculo com o CTes.');
       setErro('');
     } catch (error) {
       setErro(error.message || 'Erro ao incluir reajuste manual.');
@@ -908,7 +908,7 @@ export default function ReajustesPage() {
       <div className="page-header">
         <div className="amd-mini-brand">AMD Log • Reajustes</div>
         <h1>Controle de reajustes</h1>
-        <p>Gestão de solicitações, vínculos com o Realizado Local e cálculo de impacto previsto e realizado.</p>
+        <p>Gestão de solicitações, vínculos com o CTes e cálculo de impacto previsto e realizado.</p>
       </div>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}

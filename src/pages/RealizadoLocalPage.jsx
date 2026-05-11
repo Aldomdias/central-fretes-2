@@ -60,7 +60,7 @@ const DEFAULT_FILTROS = {
   transportadora: '',
 };
 
-const ECONOMIA_SUPABASE_LOCAL_KEY = 'amd-realizado-local-economia-supabase';
+const ECONOMIA_SUPABASE_LOCAL_KEY = 'amd-ctes-economia-supabase';
 
 const DEFAULT_VOLUMETRIA_CONFIG = {
   canal: '',
@@ -602,16 +602,16 @@ function simularRealizadoLocalWorker(payload, onProgress) {
       }
       if (msg.type === 'error') {
         worker.terminate();
-        reject(new Error(msg.message || 'Erro ao simular realizado local.'));
+        reject(new Error(msg.message || 'Erro ao simular CTes.'));
       }
     };
 
     worker.onerror = (event) => {
       worker.terminate();
-      reject(new Error(event?.message || 'Erro no processamento em segundo plano da simulação local.'));
+      reject(new Error(event?.message || 'Erro no processamento em segundo plano da simulação CTes.'));
     };
 
-    worker.postMessage({ type: 'simular-realizado-local', ...payload });
+    worker.postMessage({ type: 'simular-ctes', ...payload });
   });
 }
 
@@ -621,7 +621,7 @@ function pct(atual, total) {
 }
 
 function makeFileKey() {
-  return `realizado-local-${Date.now()}`;
+  return `ctes-${Date.now()}`;
 }
 
 function rankingLabel(item, rankingCalculado) {
@@ -841,7 +841,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         });
         await pesquisar(DEFAULT_FILTROS, false);
       } catch (error) {
-        if (ativo) setErro(error.message || 'Erro ao iniciar realizado local.');
+        if (ativo) setErro(error.message || 'Erro ao iniciar CTes.');
       } finally {
         if (ativo) setCarregando(false);
       }
@@ -874,7 +874,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setCarregando(true);
     setErro('');
     try {
-      if (mostrarMensagem) setFeedback('Pesquisando base local...');
+      if (mostrarMensagem) setFeedback('Pesquisando base CTes...');
       const [resumoLocal, lista] = await Promise.all([
         resumirRealizadoLocal(filtrosBusca, { top: 10 }),
         listarRealizadoLocal(filtrosBusca, { limit: 50 }),
@@ -886,11 +886,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setFiltrosAplicados({ ...DEFAULT_FILTROS, ...filtrosBusca });
       setFeedback(
         resumoLocal.total
-          ? `Filtro carregado da base local: ${resumoLocal.total.toLocaleString('pt-BR')} CT-e(s), ${resumoLocal.comIbge.toLocaleString('pt-BR')} com IBGE e ${resumoLocal.pendenciasIbge.toLocaleString('pt-BR')} pendência(s).`
-          : 'Nenhum CT-e encontrado na base local para os filtros atuais.'
+          ? `Filtro carregado da base CTes: ${resumoLocal.total.toLocaleString('pt-BR')} CT-e(s), ${resumoLocal.comIbge.toLocaleString('pt-BR')} com IBGE e ${resumoLocal.pendenciasIbge.toLocaleString('pt-BR')} pendência(s).`
+          : 'Nenhum CT-e encontrado na base CTes para os filtros atuais.'
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao pesquisar base local.');
+      setErro(error.message || 'Erro ao pesquisar base CTes.');
     } finally {
       setCarregando(false);
     }
@@ -925,7 +925,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
     const enriquecidos = enriquecerMunicipiosComTabelas(baseMunicipios, tabelas || transportadoras || []);
     if (!enriquecidos.length) {
-      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base local não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.');
+      throw new Error('Não foi possível carregar nenhuma referência de IBGE. Sem IBGE, a base CTes não consegue simular. Confira a tela Consulta IBGE ou as rotas/tabelas cadastradas.');
     }
 
     setMunicipios(enriquecidos);
@@ -947,11 +947,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
         if (msg.type === 'progress') {
           setProgress({
-            etapa: msg.etapa || 'Importando base local',
+            etapa: msg.etapa || 'Importando base CTes',
             atual: msg.atual || 0,
             total: msg.total || files.length,
             percentual: msg.percentual || 0,
-            mensagem: msg.mensagem || 'Processando arquivo local...',
+            mensagem: msg.mensagem || 'Processando arquivo CTes...',
           });
           if (msg.feedback) setFeedback(msg.feedback);
         }
@@ -963,17 +963,17 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
         if (msg.type === 'error') {
           worker.terminate();
-          reject(new Error(msg.message || 'Erro ao processar arquivo local.'));
+          reject(new Error(msg.message || 'Erro ao processar arquivo CTes.'));
         }
       };
 
       worker.onerror = (event) => {
         worker.terminate();
-        reject(new Error(event.message || 'Erro no processador local de arquivos.'));
+        reject(new Error(event.message || 'Erro no processador de arquivos CTes.'));
       };
 
       worker.postMessage({
-        type: 'importar-realizado-local',
+        type: 'importar-ctes',
         files,
         municipios: municipiosResolucao,
         competencia: filtros.competencia,
@@ -1008,15 +1008,15 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         atual: result.totalPreparados || 0,
         total: result.totalPreparados || 0,
         percentual: 100,
-        mensagem: 'Atualizando resumo local...',
+        mensagem: 'Atualizando resumo CTes...',
       });
       setFeedback(
-        `Importação local concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) considerados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
+        `Importação CTes concluída: ${Number(result.totalPreparados || 0).toLocaleString('pt-BR')} CT-e(s) considerados de ${Number(result.totalLidos || 0).toLocaleString('pt-BR')} lidos. Ignorados por tomador: ${Number(result.totalIgnoradosTomador || 0).toLocaleString('pt-BR')}. Pendências IBGE: ${Number(result.totalPendencias || 0).toLocaleString('pt-BR')}.`
       );
       setFileKey(makeFileKey());
       await pesquisar(filtros, false);
     } catch (error) {
-      setErro(error.message || 'Erro ao importar arquivos locais.');
+      setErro(error.message || 'Erro ao importar arquivos CTes.');
     } finally {
       setImportando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -1025,19 +1025,19 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function reprocessarIbgeLocal() {
-    const texto = window.prompt('Para reprocessar cidade/UF/IBGE da base local, digite REPROCESSAR IBGE');
+    const texto = window.prompt('Para reprocessar cidade/UF/IBGE da base CTes, digite REPROCESSAR IBGE');
     if (texto !== 'REPROCESSAR IBGE') return;
 
     setCarregando(true);
     setErro('');
-    setFeedback('Reprocessando IBGE da base local com a referência atual...');
-    setProgress({ etapa: 'Reprocessando IBGE', atual: 0, total: stats.total || 0, percentual: 5, mensagem: 'Lendo base local já importada...' });
+    setFeedback('Reprocessando IBGE da base CTes com a referência atual...');
+    setProgress({ etapa: 'Reprocessando IBGE', atual: 0, total: stats.total || 0, percentual: 5, mensagem: 'Lendo base CTes já importada...' });
 
     try {
       const baseAtual = await exportarRealizadoLocal({}, { limit: 500000 });
       const rowsAtuais = baseAtual.rows || [];
       if (!rowsAtuais.length) {
-        setFeedback('Não há base local para reprocessar.');
+        setFeedback('Não há base CTes para reprocessar.');
         return;
       }
 
@@ -1048,7 +1048,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         ...row,
         emissao: row.dataEmissao || row.emissao || '',
         volume: row.qtdVolumes || row.volume || 0,
-        arquivoOrigem: row.arquivoOrigem || 'base-local-reprocessada',
+        arquivoOrigem: row.arquivoOrigem || 'base-ctes-reprocessada',
       }));
 
       const { rows, pendencias } = prepararRegistrosRealizadoLocal(registros, municipios, {});
@@ -1067,10 +1067,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       });
 
       await pesquisar(filtros, false);
-      setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Base local reprocessada.' });
-      setFeedback(`IBGE local reprocessado: ${rows.length.toLocaleString('pt-BR')} CT-e(s). Pendências atuais: ${pendencias.length.toLocaleString('pt-BR')}.`);
+      setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Base CTes reprocessada.' });
+      setFeedback(`IBGE dos CTes reprocessado: ${rows.length.toLocaleString('pt-BR')} CT-e(s). Pendências atuais: ${pendencias.length.toLocaleString('pt-BR')}.`);
     } catch (error) {
-      setErro(error.message || 'Erro ao reprocessar IBGE da base local.');
+      setErro(error.message || 'Erro ao reprocessar IBGE da base CTes.');
     } finally {
       setCarregando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -1078,7 +1078,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function limparNaoTomadoresLocal() {
-    const ok = window.confirm(`Deseja remover da base local todos os CT-e(s) cujo Tomador de Serviço não contenha: ${regraTomadorServicoRealizadoTexto()}?`);
+    const ok = window.confirm(`Deseja remover da base CTes todos os CT-e(s) cujo Tomador de Serviço não contenha: ${regraTomadorServicoRealizadoTexto()}?`);
     if (!ok) return;
 
     setCarregando(true);
@@ -1101,7 +1101,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setFeedback(`Limpeza concluída: ${result.mantidos.toLocaleString('pt-BR')} mantidos e ${result.removidos.toLocaleString('pt-BR')} removidos pela regra de tomador.`);
       await pesquisar(filtros, false);
     } catch (error) {
-      setErro(error.message || 'Erro ao limpar tomadores da base local.');
+      setErro(error.message || 'Erro ao limpar tomadores da base CTes.');
     } finally {
       setCarregando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -1109,8 +1109,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   }
 
   async function limparBase() {
-    const texto = window.prompt('Para limpar a base local deste navegador, digite LIMPAR LOCAL');
-    if (texto !== 'LIMPAR LOCAL') return;
+    const texto = window.prompt('Para limpar a base CTes no Supabase, digite LIMPAR CTES');
+    if (texto !== 'LIMPAR CTES') return;
     setCarregando(true);
     setErro('');
     try {
@@ -1119,9 +1119,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       setAmostra([]);
       setResultado(null);
       setDiagnostico(await diagnosticarRealizadoLocal());
-      setFeedback('Base local limpa neste navegador. O Supabase não foi alterado.');
+      setFeedback('Base CTes limpa no Supabase com sucesso.');
     } catch (error) {
-      setErro(error.message || 'Erro ao limpar base local.');
+      setErro(error.message || 'Erro ao limpar base CTes.');
     } finally {
       setCarregando(false);
     }
@@ -1629,7 +1629,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         percentual: 18,
         mensagem: usarMalhaAutomatica
           ? `Aplicando malha automática da ${escopo.transportadora}: ${escopo.totalRotas.toLocaleString('pt-BR')} rota(s), ${escopo.origens.length.toLocaleString('pt-BR')} origem(ns).`
-          : 'Buscando CT-e(s) filtrados na base local...',
+          : 'Buscando CT-e(s) filtrados na base CTes...',
       });
       await nextFrame();
 
@@ -1641,8 +1641,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       if (!rows.length) {
         setErro(
           usarMalhaAutomatica
-            ? 'Nenhum CT-e da base local caiu dentro da malha da transportadora selecionada para o período/filtros atuais. Tente ampliar o período ou remover canal/peso/transportadora realizada.'
-            : 'Nenhum CT-e encontrado na base local para simular nos filtros pesquisados.'
+            ? 'Nenhum CT-e da base CTes caiu dentro da malha da transportadora selecionada para o período/filtros atuais. Tente ampliar o período ou remover canal/peso/transportadora realizada.'
+            : 'Nenhum CT-e encontrado na base CTes para simular nos filtros pesquisados.'
         );
         return;
       }
@@ -1688,14 +1688,14 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       });
 
       setResultado(analise);
-      setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Simulação local concluída.' });
+      setProgress({ etapa: 'Concluído', atual: rows.length, total: rows.length, percentual: 100, mensagem: 'Simulação CTes concluída.' });
       setFeedback(
         analise.resumo.rankingCalculado
           ? `Simulação completa concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) avaliados, ${analise.resumo.ctesGanharia.toLocaleString('pt-BR')} sairia(m) pela transportadora e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha.`
           : `Simulação rápida concluída: ${analise.resumo.ctesComSimulacao.toLocaleString('pt-BR')} CT-e(s) com frete simulado, ${analise.resumo.ctesGanharia.toLocaleString('pt-BR')} com saving e ${analise.resumo.ctesForaMalha.toLocaleString('pt-BR')} fora da malha.`
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao simular realizado local.');
+      setErro(error.message || 'Erro ao simular CTes.');
     } finally {
       setSimulando(false);
       setTimeout(() => setProgress(null), 2500);
@@ -1812,7 +1812,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         setErro('Não existe base filtrada para exportar. Pesquise primeiro.');
         return;
       }
-      baixarXlsx(`realizado-local-base-filtrada-${Date.now()}.xlsx`, {
+      baixarXlsx(`ctes-base-filtrada-${Date.now()}.xlsx`, {
         Base_Filtrada: rows.map(cteToExportRow),
       });
       setFeedback(`Base filtrada exportada: ${rows.length.toLocaleString('pt-BR')} linha(s)${totalCompativel > limit ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontradas` : ''}.`);
@@ -1825,7 +1825,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
   function exportarResultadoSimulacao() {
     if (!resultado) return;
-    baixarXlsx(`realizado-local-simulacao-${Date.now()}.xlsx`, {
+    baixarXlsx(`ctes-simulacao-${Date.now()}.xlsx`, {
       Resultado: (resultado.detalhes || []).map(simToExportRow),
       Saving_Mes: (resultado.analises?.porMes || []).map(analiseToExportRow),
       Saving_Rotas: (resultado.analises?.porRota || []).map(analiseToExportRow),
@@ -1849,27 +1849,27 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     <div className="page-shell realizado-page">
       <div className="page-top between">
         <div className="page-header">
-          <div className="amd-mini-brand">AMD Log • Realizado local</div>
-          <h1>Realizado CT-e Local</h1>
+          <div className="amd-mini-brand">AMD Log • CTes</div>
+          <h1>CTes</h1>
           <p>
-            Carregue CT-e(s) da sua máquina, gere base enxuta local com IBGE e simule sem gravar o realizado no Supabase.
+            Consulte, importe e simule CT-e(s) usando a tabela realizado_local_ctes do Supabase como base oficial do módulo CTes.
           </p>
         </div>
         <div className="actions-right wrap">
           <button className="btn-secondary" onClick={() => pesquisar(filtros)} disabled={carregando || importando || simulando}>
-            {carregando ? 'Pesquisando...' : 'Pesquisar base local'}
+            {carregando ? 'Pesquisando...' : 'Pesquisar CTes'}
           </button>
           <button className="btn-secondary" onClick={exportarBaseSelecionada} disabled={exportando || carregando || importando || simulando || !stats.total}>
             {exportando ? 'Exportando...' : 'Exportar base filtrada'}
           </button>
           <button className="btn-secondary" onClick={reprocessarIbgeLocal} disabled={carregando || importando || simulando || !diagnostico?.total || !municipios.length}>
-            Reprocessar IBGE local
+            Reprocessar IBGE
           </button>
           <button className="btn-secondary" onClick={limparNaoTomadoresLocal} disabled={carregando || importando || simulando || !diagnostico?.total}>
             Limpar não tomadores
           </button>
           <button className="btn-danger" onClick={limparBase} disabled={carregando || importando || simulando || !diagnostico?.total}>
-            Limpar base local
+            Limpar CTes
           </button>
         </div>
       </div>
@@ -1877,10 +1877,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
       <div className={ibgeInfo.total ? 'sim-alert success' : 'sim-alert'}>
-        <strong>Referência IBGE local:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação local usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se o Supabase estiver vazio.
+        <strong>Referência IBGE:</strong> {ibgeInfo.total.toLocaleString('pt-BR')} município(s) • fonte: {ibgeInfo.fonte}. A importação dos CTes usa cidade/UF normalizadas com e sem acento; confira a tela Consulta IBGE se o Supabase estiver vazio.
       </div>
       <div className="sim-alert info">
-        <strong>Regra de limpeza do realizado:</strong> entram na base apenas CT-e(s) cujo Tomador de Serviço contenha {regraTomadorServicoRealizadoTexto()}. Use “Limpar não tomadores” para reprocessar uma base antiga já importada.
+        <strong>Regra de limpeza dos CTes:</strong> entram na base apenas CT-e(s) cujo Tomador de Serviço contenha {regraTomadorServicoRealizadoTexto()}. Use “Limpar não tomadores” para reprocessar uma base antiga já importada.
       </div>
       <div className={filtrosAplicados.excluirEbazar ? 'sim-alert info' : 'sim-alert success'}>
         <strong>Filtro EBAZAR:</strong> {filtrosAplicados.excluirEbazar ? 'EBAZAR está fora da base pesquisada/análise atual.' : 'EBAZAR está incluída na base pesquisada/análise atual.'}
@@ -1984,7 +1984,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
       <div className="summary-strip">
         <SummaryCard title="CT-e(s) filtrados" value={stats.total.toLocaleString('pt-BR')} subtitle={`${formatDateBr(stats.periodoInicio)} até ${formatDateBr(stats.periodoFim)}`} />
-        <SummaryCard title="Frete realizado" value={formatCurrency(stats.valorCte)} subtitle="Soma do Valor CT-e local" />
+        <SummaryCard title="Frete realizado" value={formatCurrency(stats.valorCte)} subtitle="Soma do Valor CT-e" />
         <SummaryCard title="Valor NF" value={formatCurrency(stats.valorNF)} subtitle="Base para % de frete" />
         <SummaryCard title="% frete realizado" value={formatPercent(stats.percentualFrete)} subtitle="Frete realizado / NF" />
         <SummaryCard title="Pendências IBGE" value={stats.pendenciasIbge.toLocaleString('pt-BR')} subtitle={`${stats.comIbge.toLocaleString('pt-BR')} CT-e(s) com rota IBGE`} />
@@ -1992,8 +1992,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
       <div className="feature-grid three">
         <section className="panel-card">
-          <div className="panel-title">1. Carregar base local</div>
-          <p>Selecione um ou mais arquivos mensais. O sistema grava uma base enxuta apenas neste navegador, sem ocupar Supabase.</p>
+          <div className="panel-title">1. Carregar CTes</div>
+          <p>Selecione um ou mais arquivos mensais. O sistema grava a base enxuta na tabela realizado_local_ctes do Supabase.</p>
           <input
             key={fileKey}
             ref={fileInputRef}
@@ -2004,10 +2004,10 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             disabled={importando || simulando}
           />
           <button className="btn-primary full" onClick={() => fileInputRef.current?.click()} disabled={importando || simulando}>
-            {importando ? 'Importando local...' : 'Selecionar arquivos locais'}
+            {importando ? 'Importando CTes...' : 'Selecionar arquivos CTes'}
           </button>
           <div className="import-meta-box">
-            Base local neste navegador: <strong>{Number(diagnostico?.total || 0).toLocaleString('pt-BR')}</strong> CT-e(s)
+            Base CTes no Supabase: <strong>{Number(diagnostico?.total || 0).toLocaleString('pt-BR')}</strong> CT-e(s)
           </div>
         </section>
 
@@ -2036,7 +2036,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         </section>
 
         <section className="panel-card">
-          <div className="panel-title">3. Simular local</div>
+          <div className="panel-title">3. Simular com CTes</div>
           <p>Use modo rápido para impacto financeiro. Use completo apenas quando precisar ranking/ganhadores contra concorrentes.</p>
           <div className="field">
             <label>Transportadora simulada</label>
@@ -2153,7 +2153,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             </div>
           ) : null}
           <button className="btn-primary full" onClick={simular} disabled={simulando || importando || carregando || !stats.total}>
-            {simulando ? 'Simulando local...' : 'Simular no realizado local'}
+            {simulando ? 'Simulando CTes...' : 'Simular na base CTes'}
           </button>
         </section>
       </div>
@@ -2161,8 +2161,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <section className="sim-card">
         <div className="sim-parametros-header">
           <div>
-            <h2>Painel da base local</h2>
-            <p>Visão rápida da última pesquisa local, sem puxar CT-e do Supabase.</p>
+            <h2>Painel CTes</h2>
+            <p>Visão rápida da última pesquisa na tabela realizado_local_ctes.</p>
           </div>
           <span className="status-pill">{amostra.length.toLocaleString('pt-BR')} linha(s) na amostra</span>
         </div>
@@ -2306,7 +2306,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       <section className="table-card">
         <div className="sim-parametros-header">
           <div>
-            <div className="panel-title">Amostra da base local enxuta</div>
+            <div className="panel-title">Amostra da base CTes enxuta</div>
             <p>Mostrando até 50 CT-e(s) da última pesquisa.</p>
           </div>
           <span className="status-pill">{amostra.length.toLocaleString('pt-BR')} linha(s)</span>

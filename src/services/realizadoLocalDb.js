@@ -1,61 +1,17 @@
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { isTomadorServicoValidoRealizado } from '../utils/realizadoCtes';
-const DB_NAME = 'amd-realizado-local-db';
-const DB_VERSION = 3;
-const STORE_CTES = 'ctes_enxutos';
-const STORE_META = 'meta';
+import * as localFallback from './ctesLocalFallbackDb';
 
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+const TABELA_CTES = 'realizado_local_ctes';
+const DEFAULT_PAGE_SIZE = 1000;
 
-    req.onupgradeneeded = () => {
-      const db = req.result;
-
-      if (!db.objectStoreNames.contains(STORE_CTES)) {
-        const store = db.createObjectStore(STORE_CTES, { keyPath: 'chaveCte' });
-        store.createIndex('competencia', 'competencia', { unique: false });
-        store.createIndex('dataEmissao', 'dataEmissao', { unique: false });
-        store.createIndex('canal', 'canal', { unique: false });
-        store.createIndex('transportadora', 'transportadora', { unique: false });
-        store.createIndex('ufOrigem', 'ufOrigem', { unique: false });
-        store.createIndex('ufDestino', 'ufDestino', { unique: false });
-        store.createIndex('chaveRotaIbge', 'chaveRotaIbge', { unique: false });
-        store.createIndex('tomadorServico', 'tomadorServico', { unique: false });
-      } else {
-        const store = req.transaction.objectStore(STORE_CTES);
-        if (!store.indexNames.contains('competencia')) store.createIndex('competencia', 'competencia', { unique: false });
-        if (!store.indexNames.contains('dataEmissao')) store.createIndex('dataEmissao', 'dataEmissao', { unique: false });
-        if (!store.indexNames.contains('canal')) store.createIndex('canal', 'canal', { unique: false });
-        if (!store.indexNames.contains('transportadora')) store.createIndex('transportadora', 'transportadora', { unique: false });
-        if (!store.indexNames.contains('ufOrigem')) store.createIndex('ufOrigem', 'ufOrigem', { unique: false });
-        if (!store.indexNames.contains('ufDestino')) store.createIndex('ufDestino', 'ufDestino', { unique: false });
-        if (!store.indexNames.contains('chaveRotaIbge')) store.createIndex('chaveRotaIbge', 'chaveRotaIbge', { unique: false });
-        if (!store.indexNames.contains('tomadorServico')) store.createIndex('tomadorServico', 'tomadorServico', { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains(STORE_META)) {
-        db.createObjectStore(STORE_META, { keyPath: 'key' });
-      }
-    };
-
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('Erro ao abrir base local.'));
-  });
+function getClient() {
+  if (!isSupabaseConfigured()) return null;
+  return getSupabaseClient();
 }
 
-function requestToPromise(req) {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('Erro na operação local.'));
-  });
-}
-
-function txComplete(tx) {
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error || new Error('Erro na transação local.'));
-    tx.onabort = () => reject(tx.error || new Error('Transação local cancelada.'));
-  });
+function shouldUseFallback() {
+  return !getClient();
 }
 
 function normalize(value) {
@@ -70,14 +26,138 @@ function normalizeLoose(value) {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function isTransportadoraEbazar(value) {
-  const nome = normalizeLoose(value);
-  return nome.includes('EBAZAR');
-}
-
 function toNumber(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function toBool(value) {
+  if (typeof value === 'boolean') return value;
+  if (value === null || value === undefined) return false;
+  return ['true', '1', 'sim', 's', 'yes'].includes(String(value).trim().toLowerCase());
+}
+
+function cleanText(value) {
+  return String(value ?? '').trim().replace(/\s+/g, ' ');
+}
+
+function cleanUf(value) {
+  return String(value ?? '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+}
+
+function cleanDigits(value) {
+  return String(value ?? '').replace(/\D/g, '');
+}
+
+function dataToDb(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00:00`;
+  return raw;
+}
+
+function getDataRef(row = {}) {
+  return row.dataEmissao || row.data_emissao || row.emissao || row.created_at || '';
+}
+
+function getChaveCte(row = {}) {
+  const chave = cleanText(row.chaveCte ?? row.chave_cte);
+  if (chave) return chave;
+  const fallback = [
+    row.numeroCte ?? row.numero_cte,
+    getDataRef(row),
+    row.transportadora,
+    row.cidadeOrigem ?? row.cidade_origem,
+    row.cidadeDestino ?? row.cidade_destino,
+    row.valorCte ?? row.valor_cte,
+  ]
+    .map((item) => cleanText(item).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-'))
+    .filter(Boolean)
+    .join('-')
+    .slice(0, 180);
+  return fallback ? `cte-sem-chave-${fallback}` : '';
+}
+
+function fromDbRow(row = {}) {
+  const ibgeOrigem = cleanText(row.ibge_origem ?? row.ibgeOrigem);
+  const ibgeDestino = cleanText(row.ibge_destino ?? row.ibgeDestino);
+  const dataEmissao = getDataRef(row);
+  const peso = toNumber(row.peso ?? Math.max(toNumber(row.peso_declarado), toNumber(row.peso_cubado)));
+  return {
+    id: row.id,
+    arquivoOrigem: row.arquivo_origem ?? row.arquivoOrigem ?? '',
+    competencia: cleanText(row.competencia),
+    dataEmissao,
+    emissao: dataEmissao,
+    chaveCte: getChaveCte(row),
+    numeroCte: cleanText(row.numero_cte ?? row.numeroCte),
+    transportadora: cleanText(row.transportadora),
+    cnpjTransportadora: cleanText(row.cnpj_transportadora ?? row.cnpjTransportadora),
+    canal: cleanText(row.canal),
+    canalOriginal: cleanText(row.canal_original ?? row.canalOriginal),
+    cidadeOrigem: cleanText(row.cidade_origem ?? row.cidadeOrigem),
+    ufOrigem: cleanUf(row.uf_origem ?? row.ufOrigem),
+    ibgeOrigem,
+    cidadeDestino: cleanText(row.cidade_destino ?? row.cidadeDestino),
+    ufDestino: cleanUf(row.uf_destino ?? row.ufDestino),
+    ibgeDestino,
+    chaveRotaIbge: cleanText(row.chave_rota_ibge ?? row.chaveRotaIbge) || (ibgeOrigem && ibgeDestino ? `${ibgeOrigem}|${ibgeDestino}` : ''),
+    peso,
+    pesoDeclarado: toNumber(row.peso_declarado ?? row.pesoDeclarado ?? peso),
+    pesoCubado: toNumber(row.peso_cubado ?? row.pesoCubado),
+    cubagem: toNumber(row.cubagem),
+    qtdVolumes: toNumber(row.qtd_volumes ?? row.qtdVolumes),
+    valorCte: toNumber(row.valor_cte ?? row.valorCte),
+    valorNF: toNumber(row.valor_nf ?? row.valorNF),
+    ibgeOk: row.ibge_ok === undefined || row.ibge_ok === null ? Boolean(ibgeOrigem && ibgeDestino) : toBool(row.ibge_ok),
+    ibgeCorrigidoOrigem: toBool(row.ibge_corrigido_origem ?? row.ibgeCorrigidoOrigem),
+    ibgeCorrigidoDestino: toBool(row.ibge_corrigido_destino ?? row.ibgeCorrigidoDestino),
+    tomadorServico: cleanText(row.tomador_servico ?? row.tomadorServico),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toDbRow(row = {}) {
+  const ibgeOrigem = cleanText(row.ibgeOrigem ?? row.ibge_origem);
+  const ibgeDestino = cleanText(row.ibgeDestino ?? row.ibge_destino);
+  const chaveRotaIbge = cleanText(row.chaveRotaIbge ?? row.chave_rota_ibge) || (ibgeOrigem && ibgeDestino ? `${ibgeOrigem}|${ibgeDestino}` : null);
+  const pesoDeclarado = toNumber(row.pesoDeclarado ?? row.peso_declarado ?? row.peso);
+  const pesoCubado = toNumber(row.pesoCubado ?? row.peso_cubado);
+  const peso = toNumber(row.peso ?? Math.max(pesoDeclarado, pesoCubado));
+  return {
+    arquivo_origem: cleanText(row.arquivoOrigem ?? row.arquivo_origem),
+    competencia: cleanText(row.competencia),
+    data_emissao: dataToDb(row.dataEmissao ?? row.data_emissao ?? row.emissao),
+    chave_cte: getChaveCte(row),
+    numero_cte: cleanText(row.numeroCte ?? row.numero_cte),
+    transportadora: cleanText(row.transportadora),
+    cnpj_transportadora: cleanText(row.cnpjTransportadora ?? row.cnpj_transportadora),
+    canal: cleanText(row.canal),
+    canal_original: cleanText(row.canalOriginal ?? row.canal_original),
+    cidade_origem: cleanText(row.cidadeOrigem ?? row.cidade_origem),
+    uf_origem: cleanUf(row.ufOrigem ?? row.uf_origem),
+    ibge_origem: ibgeOrigem || null,
+    cidade_destino: cleanText(row.cidadeDestino ?? row.cidade_destino),
+    uf_destino: cleanUf(row.ufDestino ?? row.uf_destino),
+    ibge_destino: ibgeDestino || null,
+    chave_rota_ibge: chaveRotaIbge,
+    peso,
+    peso_declarado: pesoDeclarado,
+    peso_cubado: pesoCubado,
+    cubagem: toNumber(row.cubagem),
+    qtd_volumes: toNumber(row.qtdVolumes ?? row.qtd_volumes ?? row.volume),
+    valor_cte: toNumber(row.valorCte ?? row.valor_cte),
+    valor_nf: toNumber(row.valorNF ?? row.valor_nf),
+    ibge_ok: row.ibgeOk === undefined || row.ibgeOk === null ? Boolean(ibgeOrigem && ibgeDestino) : Boolean(row.ibgeOk),
+    ibge_corrigido_origem: Boolean(row.ibgeCorrigidoOrigem ?? row.ibge_corrigido_origem),
+    ibge_corrigido_destino: Boolean(row.ibgeCorrigidoDestino ?? row.ibge_corrigido_destino),
+    tomador_servico: cleanText(row.tomadorServico ?? row.tomador_servico),
+  };
+}
+
+function isTransportadoraEbazar(value) {
+  return normalizeLoose(value).includes('EBAZAR');
 }
 
 function matchesPeso(row, filtros = {}) {
@@ -105,56 +185,59 @@ export function filtrarCteLocal(row = {}, filtros = {}) {
   return true;
 }
 
-export async function salvarRealizadoLocal(registros = [], options = {}) {
-  const db = await openDb();
-  const chunkSize = options.chunkSize || 1000;
-  let salvos = 0;
-
-  for (let index = 0; index < registros.length; index += chunkSize) {
-    const chunk = registros.slice(index, index + chunkSize);
-    const tx = db.transaction([STORE_CTES, STORE_META], 'readwrite');
-    const store = tx.objectStore(STORE_CTES);
-    chunk.forEach((row) => store.put(row));
-    tx.objectStore(STORE_META).put({
-      key: 'ultimaAtualizacao',
-      value: new Date().toISOString(),
-    });
-    await txComplete(tx);
-    salvos += chunk.length;
-    options.onProgress?.({ salvos, total: registros.length });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  db.close();
-  return { salvos };
+function applyServerFilters(query, filtros = {}) {
+  let q = query;
+  if (filtros.competencia) q = q.eq('competencia', filtros.competencia);
+  if (filtros.inicio) q = q.gte('data_emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) q = q.lte('data_emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.canal) q = q.eq('canal', filtros.canal);
+  if (filtros.transportadoraRealizada) q = q.ilike('transportadora', `%${filtros.transportadoraRealizada}%`);
+  if (filtros.ufOrigem) q = q.eq('uf_origem', cleanUf(filtros.ufOrigem));
+  if (filtros.ufDestino) q = q.eq('uf_destino', cleanUf(filtros.ufDestino));
+  if (filtros.origem) q = q.ilike('cidade_origem', `%${filtros.origem}%`);
+  if (filtros.destino) q = q.ilike('cidade_destino', `%${filtros.destino}%`);
+  if (filtros.somentePendenciasIbge) q = q.eq('ibge_ok', false);
+  if (filtros.pesoMin !== '' && filtros.pesoMin !== null && filtros.pesoMin !== undefined) q = q.gte('peso', Number(filtros.pesoMin));
+  if (filtros.pesoMax !== '' && filtros.pesoMax !== null && filtros.pesoMax !== undefined) q = q.lte('peso', Number(filtros.pesoMax));
+  return q;
 }
 
-export async function listarRealizadoLocal(filtros = {}, options = {}) {
-  const db = await openDb();
-  const limit = Number(options.limit || 200);
+async function fetchRowsSupabase(filtros = {}, options = {}) {
+  const supabase = getClient();
+  if (!supabase) return localFallback.exportarRealizadoLocal(filtros, options);
+
+  const limit = Math.max(1, Number(options.limit || 100000));
+  const pageSize = Math.max(100, Math.min(Number(options.pageSize || DEFAULT_PAGE_SIZE), 1000));
   const rows = [];
   let avaliados = 0;
 
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_CTES, 'readonly');
-    const store = tx.objectStore(STORE_CTES);
-    const req = store.openCursor(null, 'prev');
-    req.onerror = () => reject(req.error || new Error('Erro ao listar base local.'));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor || rows.length >= limit) {
-        resolve();
-        return;
-      }
-      avaliados += 1;
-      const row = cursor.value;
-      if (filtrarCteLocal(row, filtros)) rows.push(row);
-      cursor.continue();
-    };
-  });
+  for (let from = 0; rows.length < limit; from += pageSize) {
+    const to = from + pageSize - 1;
+    let query = supabase
+      .from(TABELA_CTES)
+      .select('*')
+      .order('data_emissao', { ascending: false, nullsFirst: false })
+      .range(from, to);
 
-  db.close();
-  return { rows, avaliados };
+    query = applyServerFilters(query, filtros);
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`Erro ao consultar CTes no Supabase (${TABELA_CTES}). Detalhe: ${error.message}`);
+    }
+
+    const page = (data || []).map(fromDbRow);
+    avaliados += page.length;
+    for (const row of page) {
+      if (filtrarCteLocal(row, filtros)) {
+        rows.push(row);
+        if (rows.length >= limit) break;
+      }
+    }
+    if ((data || []).length < pageSize) break;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return { rows, totalCompativel: rows.length, limit, avaliados };
 }
 
 function normalizeCanalParaMalha(value) {
@@ -173,73 +256,7 @@ function chaveMalhaCte(row = {}) {
   return canal && rota ? `${canal}|${rota}` : '';
 }
 
-export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [], options = {}) {
-  const keys = malhaKeys instanceof Set ? malhaKeys : new Set(malhaKeys || []);
-  if (!keys.size) return { rows: [], totalCompativel: 0, limit: Number(options.limit || 5000), malhaKeys: 0, avaliados: 0 };
-
-  const db = await openDb();
-  const limit = Number(options.limit || 5000);
-  const rows = [];
-  let totalCompativel = 0;
-  let avaliados = 0;
-
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_CTES, 'readonly');
-    const store = tx.objectStore(STORE_CTES);
-    const req = store.openCursor(null, 'prev');
-    req.onerror = () => reject(req.error || new Error('Erro ao buscar base local pela malha da transportadora.'));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) {
-        resolve();
-        return;
-      }
-      avaliados += 1;
-      const row = cursor.value;
-      if (keys.has(chaveMalhaCte(row)) && filtrarCteLocal(row, filtros)) {
-        totalCompativel += 1;
-        if (rows.length < limit) rows.push(row);
-      }
-      cursor.continue();
-    };
-  });
-
-  db.close();
-  return { rows, totalCompativel, limit, malhaKeys: keys.size, avaliados };
-}
-
-export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {
-  const db = await openDb();
-  const limit = Number(options.limit || 5000);
-  const rows = [];
-  let totalCompativel = 0;
-
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_CTES, 'readonly');
-    const store = tx.objectStore(STORE_CTES);
-    const req = store.openCursor(null, 'prev');
-    req.onerror = () => reject(req.error || new Error('Erro ao buscar base local para simulação.'));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) {
-        resolve();
-        return;
-      }
-      const row = cursor.value;
-      if (filtrarCteLocal(row, filtros)) {
-        totalCompativel += 1;
-        if (rows.length < limit) rows.push(row);
-      }
-      cursor.continue();
-    };
-  });
-
-  db.close();
-  return { rows, totalCompativel, limit };
-}
-
-export async function resumirRealizadoLocal(filtros = {}, options = {}) {
-  const db = await openDb();
+function resumoFromRows(rows = [], options = {}) {
   const resumo = {
     total: 0,
     comIbge: 0,
@@ -269,44 +286,27 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
     map.set(safeKey, atual);
   };
 
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_CTES, 'readonly');
-    const store = tx.objectStore(STORE_CTES);
-    const req = store.openCursor();
-    req.onerror = () => reject(req.error || new Error('Erro ao resumir base local.'));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) {
-        resolve();
-        return;
-      }
-      const row = cursor.value;
-      if (filtrarCteLocal(row, filtros)) {
-        resumo.total += 1;
-        if (row.ibgeOk) resumo.comIbge += 1;
-        else resumo.pendenciasIbge += 1;
-        resumo.valorCte += toNumber(row.valorCte);
-        resumo.valorNF += toNumber(row.valorNF);
-        resumo.peso += toNumber(row.peso);
-        resumo.cubagem += toNumber(row.cubagem);
-        resumo.volumes += toNumber(row.qtdVolumes);
-        const data = row.dataEmissao || '';
-        if (data) {
-          if (!resumo.periodoInicio || data < resumo.periodoInicio) resumo.periodoInicio = data;
-          if (!resumo.periodoFim || data > resumo.periodoFim) resumo.periodoFim = data;
-        }
-        addGroup(resumo.porTransportadora, row.transportadora, row);
-        addGroup(resumo.porCanal, row.canal, row);
-        addGroup(resumo.porOrigem, `${row.cidadeOrigem}/${row.ufOrigem}`, row);
-        addGroup(resumo.porDestino, `${row.cidadeDestino}/${row.ufDestino}`, row);
-        addGroup(resumo.porUfDestino, row.ufDestino || 'Sem UF', row);
-        addGroup(resumo.porMes, row.competencia || data.slice(0, 7), row);
-      }
-      cursor.continue();
-    };
+  rows.forEach((row) => {
+    resumo.total += 1;
+    if (row.ibgeOk) resumo.comIbge += 1;
+    else resumo.pendenciasIbge += 1;
+    resumo.valorCte += toNumber(row.valorCte);
+    resumo.valorNF += toNumber(row.valorNF);
+    resumo.peso += toNumber(row.peso);
+    resumo.cubagem += toNumber(row.cubagem);
+    resumo.volumes += toNumber(row.qtdVolumes);
+    const data = row.dataEmissao || '';
+    if (data) {
+      if (!resumo.periodoInicio || data < resumo.periodoInicio) resumo.periodoInicio = data;
+      if (!resumo.periodoFim || data > resumo.periodoFim) resumo.periodoFim = data;
+    }
+    addGroup(resumo.porTransportadora, row.transportadora, row);
+    addGroup(resumo.porCanal, row.canal, row);
+    addGroup(resumo.porOrigem, `${row.cidadeOrigem}/${row.ufOrigem}`, row);
+    addGroup(resumo.porDestino, `${row.cidadeDestino}/${row.ufDestino}`, row);
+    addGroup(resumo.porUfDestino, row.ufDestino || 'Sem UF', row);
+    addGroup(resumo.porMes, row.competencia || data.slice(0, 7), row);
   });
-
-  db.close();
 
   const finalize = (map) => [...map.values()]
     .map((item) => ({ ...item, percentual: item.nf > 0 ? (item.frete / item.nf) * 100 : 0 }))
@@ -325,95 +325,146 @@ export async function resumirRealizadoLocal(filtros = {}, options = {}) {
   };
 }
 
-export async function exportarRealizadoLocal(filtros = {}, options = {}) {
-  const db = await openDb();
-  const limit = Number(options.limit || 100000);
-  const rows = [];
-  let totalCompativel = 0;
+export async function salvarRealizadoLocal(registros = [], options = {}) {
+  if (shouldUseFallback()) return localFallback.salvarRealizadoLocal(registros, options);
+  const supabase = getClient();
+  const chunkSize = Math.max(100, Math.min(Number(options.chunkSize || 500), 1000));
+  const byKey = new Map();
 
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_CTES, 'readonly');
-    const store = tx.objectStore(STORE_CTES);
-    const req = store.openCursor(null, 'prev');
-    req.onerror = () => reject(req.error || new Error('Erro ao exportar base local.'));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) {
-        resolve();
-        return;
-      }
-      const row = cursor.value;
-      if (filtrarCteLocal(row, filtros)) {
-        totalCompativel += 1;
-        if (rows.length < limit) rows.push(row);
-      }
-      cursor.continue();
-    };
+  (registros || []).forEach((row) => {
+    const dbRow = toDbRow(row);
+    if (dbRow.chave_cte) byKey.set(dbRow.chave_cte, dbRow);
   });
 
-  db.close();
-  return { rows, totalCompativel, limit };
+  const payload = [...byKey.values()];
+  let salvos = 0;
+
+  for (let index = 0; index < payload.length; index += chunkSize) {
+    const chunk = payload.slice(index, index + chunkSize);
+    const chaves = chunk.map((row) => row.chave_cte).filter(Boolean);
+    if (chaves.length) {
+      const { error: deleteError } = await supabase.from(TABELA_CTES).delete().in('chave_cte', chaves);
+      if (deleteError) {
+        throw new Error(`Erro ao substituir CT-e(s) existentes em ${TABELA_CTES}. Detalhe: ${deleteError.message}`);
+      }
+    }
+    const { error } = await supabase.from(TABELA_CTES).insert(chunk);
+    if (error) {
+      throw new Error(`Erro ao salvar CTes no Supabase (${TABELA_CTES}). Detalhe: ${error.message}`);
+    }
+    salvos += chunk.length;
+    options.onProgress?.({ salvos, total: payload.length });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return { salvos };
+}
+
+export async function listarRealizadoLocal(filtros = {}, options = {}) {
+  if (shouldUseFallback()) return localFallback.listarRealizadoLocal(filtros, options);
+  const result = await fetchRowsSupabase(filtros, { ...options, limit: Number(options.limit || 200) });
+  return { rows: result.rows, avaliados: result.avaliados || result.rows.length };
+}
+
+export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [], options = {}) {
+  if (shouldUseFallback()) return localFallback.buscarRealizadoLocalPorMalha(filtros, malhaKeys, options);
+  const keys = malhaKeys instanceof Set ? malhaKeys : new Set(malhaKeys || []);
+  if (!keys.size) return { rows: [], totalCompativel: 0, limit: Number(options.limit || 5000), malhaKeys: 0, avaliados: 0 };
+  const limiteSaida = Number(options.limit || 5000);
+  const base = await fetchRowsSupabase(filtros, { limit: Number(options.maxScan || 200000) });
+  const compativeis = base.rows.filter((row) => keys.has(chaveMalhaCte(row)));
+  return {
+    rows: compativeis.slice(0, limiteSaida),
+    totalCompativel: compativeis.length,
+    limit: limiteSaida,
+    malhaKeys: keys.size,
+    avaliados: base.avaliados || base.rows.length,
+  };
+}
+
+export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {
+  if (shouldUseFallback()) return localFallback.buscarRealizadoLocalParaSimulacao(filtros, options);
+  const result = await fetchRowsSupabase(filtros, { ...options, limit: Number(options.limit || 5000) });
+  return { rows: result.rows, totalCompativel: result.totalCompativel, limit: result.limit };
+}
+
+export async function resumirRealizadoLocal(filtros = {}, options = {}) {
+  if (shouldUseFallback()) return localFallback.resumirRealizadoLocal(filtros, options);
+  const supabase = getClient();
+  const params = {
+    p_competencia: filtros.competencia || null,
+    p_inicio: filtros.inicio || null,
+    p_fim: filtros.fim || null,
+    p_canal: filtros.canal || null,
+    p_transportadora: filtros.transportadoraRealizada || null,
+    p_uf_origem: filtros.ufOrigem || null,
+    p_uf_destino: filtros.ufDestino || null,
+    p_origem: filtros.origem || null,
+    p_destino: filtros.destino || null,
+    p_excluir_ebazar: filtros.excluirEbazar !== false,
+    p_somente_pendencias_ibge: Boolean(filtros.somentePendenciasIbge),
+    p_peso_min: filtros.pesoMin === '' || filtros.pesoMin === null || filtros.pesoMin === undefined ? null : Number(filtros.pesoMin),
+    p_peso_max: filtros.pesoMax === '' || filtros.pesoMax === null || filtros.pesoMax === undefined ? null : Number(filtros.pesoMax),
+    p_top: Number(options.top || 10),
+  };
+
+  const { data, error } = await supabase.rpc('resumir_realizado_local_ctes', params);
+  if (!error && data) return data;
+
+  const fallback = await fetchRowsSupabase(filtros, { limit: Number(options.limit || 50000) });
+  return resumoFromRows(fallback.rows, options);
+}
+
+export async function exportarRealizadoLocal(filtros = {}, options = {}) {
+  if (shouldUseFallback()) return localFallback.exportarRealizadoLocal(filtros, options);
+  return fetchRowsSupabase(filtros, { ...options, limit: Number(options.limit || 100000) });
 }
 
 export async function diagnosticarRealizadoLocal() {
-  const db = await openDb();
-  const tx = db.transaction([STORE_CTES, STORE_META], 'readonly');
-  const count = await requestToPromise(tx.objectStore(STORE_CTES).count());
-  const meta = await requestToPromise(tx.objectStore(STORE_META).get('ultimaAtualizacao')).catch(() => null);
-  db.close();
-  return { total: count || 0, ultimaAtualizacao: meta?.value || '' };
+  if (shouldUseFallback()) return localFallback.diagnosticarRealizadoLocal();
+  const supabase = getClient();
+  const { data, error } = await supabase.rpc('diagnosticar_realizado_local_ctes');
+  if (!error && data) return data;
+
+  const { count, error: countError } = await supabase
+    .from(TABELA_CTES)
+    .select('id', { count: 'exact', head: true });
+  if (countError) {
+    throw new Error(`Erro ao diagnosticar CTes no Supabase. Detalhe: ${countError.message}`);
+  }
+  return { total: count || 0, ultimaAtualizacao: '', periodoInicio: '', periodoFim: '' };
 }
 
 export async function limparNaoTomadoresRealizadoLocal(options = {}) {
-  const db = await openDb();
-  let avaliados = 0;
+  if (shouldUseFallback()) return localFallback.limparNaoTomadoresRealizadoLocal(options);
+  const supabase = getClient();
+  const { data, error } = await supabase.rpc('limpar_nao_tomadores_realizado_local', {
+    p_confirmacao: 'LIMPAR NAO TOMADORES',
+  });
+  if (!error && data) return data;
+
+  const base = await fetchRowsSupabase({}, { limit: Number(options.limit || 500000) });
+  const remover = base.rows.filter((row) => !isTomadorServicoValidoRealizado(row.tomadorServico));
   let removidos = 0;
-  let mantidos = 0;
-
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_CTES, 'readwrite');
-    const store = tx.objectStore(STORE_CTES);
-    const req = store.openCursor();
-
-    req.onerror = () => reject(req.error || new Error('Erro ao limpar tomadores da base local.'));
-    tx.onerror = () => reject(tx.error || new Error('Erro na transação de limpeza de tomadores.'));
-    tx.oncomplete = () => resolve();
-
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return;
-      avaliados += 1;
-      const row = cursor.value || {};
-      if (!isTomadorServicoValidoRealizado(row.tomadorServico)) {
-        cursor.delete();
-        removidos += 1;
-      } else {
-        mantidos += 1;
-      }
-      if (avaliados % 1000 === 0) options.onProgress?.({ avaliados, removidos, mantidos });
-      cursor.continue();
-    };
-  });
-
-  const txMeta = db.transaction(STORE_META, 'readwrite');
-  txMeta.objectStore(STORE_META).put({
-    key: 'ultimaLimpezaTomador',
-    value: new Date().toISOString(),
-    avaliados,
-    removidos,
-    mantidos,
-  });
-  await txComplete(txMeta);
-  db.close();
-  return { avaliados, removidos, mantidos };
+  for (let index = 0; index < remover.length; index += 500) {
+    const chaves = remover.slice(index, index + 500).map((row) => row.chaveCte).filter(Boolean);
+    if (!chaves.length) continue;
+    const { error: deleteError } = await supabase.from(TABELA_CTES).delete().in('chave_cte', chaves);
+    if (deleteError) throw new Error(`Erro ao limpar tomadores na base CTes. Detalhe: ${deleteError.message}`);
+    removidos += chaves.length;
+    options.onProgress?.({ avaliados: Math.min(index + 500, base.rows.length), removidos, mantidos: base.rows.length - removidos });
+  }
+  return { avaliados: base.rows.length, removidos, mantidos: base.rows.length - removidos };
 }
 
 export async function limparRealizadoLocal() {
-  const db = await openDb();
-  const tx = db.transaction([STORE_CTES, STORE_META], 'readwrite');
-  tx.objectStore(STORE_CTES).clear();
-  tx.objectStore(STORE_META).put({ key: 'ultimaAtualizacao', value: '' });
-  await txComplete(tx);
-  db.close();
-  return { ok: true };
+  if (shouldUseFallback()) return localFallback.limparRealizadoLocal();
+  const supabase = getClient();
+  const { data, error } = await supabase.rpc('limpar_realizado_local_ctes', {
+    p_confirmacao: 'APAGAR REALIZADO ONLINE',
+  });
+  if (error) {
+    throw new Error(`Erro ao limpar a tabela ${TABELA_CTES}. Detalhe: ${error.message}`);
+  }
+  return { ok: true, removidos: Number(data || 0) };
 }

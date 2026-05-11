@@ -580,7 +580,7 @@ export default function FerramentasPage() {
   const salvarGradeAtual = () => {
     const normalizada = salvarGradeFrete(grade);
     setGrade(normalizada);
-    setMensagem('Grade salva. O simulador e o Realizado Local passam a usar estes pesos, valores de NF e cubagens.');
+    setMensagem('Grade salva. O simulador e o CTes passam a usar estes pesos, valores de NF e cubagens.');
     setErro('');
   };
 
@@ -632,7 +632,7 @@ export default function FerramentasPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Manutenção da grade de peso, NF e cubagem</div>
-            <p>Essa grade é usada pelo Simulador e pelo Realizado Local. Para cubagem, o cálculo usa somente a cubagem cadastrada aqui por faixa; a cubagem realizada é ignorada.</p>
+            <p>Essa grade é usada pelo Simulador e pelo CTes. Para cubagem, o cálculo usa somente a cubagem cadastrada aqui por faixa; a cubagem realizada é ignorada.</p>
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={restaurarGradePadrao}>Restaurar padrão</button>

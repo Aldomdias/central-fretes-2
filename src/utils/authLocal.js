@@ -27,7 +27,7 @@ export const PERFIS_USUARIO = {
   CONSULTA: {
     nome: 'Consulta',
     descricao: 'Acesso de consulta sem gestão de usuários.',
-    paginas: ['dashboard', 'lotacao', 'lotacao-operacao', 'consulta-ibge', 'ferramentas', 'tracking', 'torre-controle', 'reajustes'],
+    paginas: ['dashboard', 'lotacao', 'lotacao-operacao', 'consulta-ibge', 'ferramentas', 'ctes', 'tracking', 'torre-controle', 'reajustes'],
   },
 };
 
