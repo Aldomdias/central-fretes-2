@@ -12,32 +12,33 @@ import {
   simularSimples,
 } from '../utils/calculoFrete';
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
-import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb, limparCacheSimulacao } from '../services/freteDatabaseService';
+import { consultarMunicipiosIbge } from '../services/ibgeService';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 // ── Utilitário: remove acentos para comparação ───────────────────────────────
 function semAcento(texto) {
   return String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
-// ── CidadeIbgeSelect: campo de cidade unificado baseado em IBGE ───────────────
-// options    = municipiosDisponiveis (todos os 5570 municípios)
-// withTable  = Set de nomes normalizados que têm tabela no sistema (opcional)
-//              → cidade COM tabela aparece normal; SEM tabela aparece em cinza
+// ── CidadeIbgeSelect: busca assíncrona de cidade via ibgeService ─────────────
+// Mesmo motor da tela "Consulta IBGE": busca no Supabase + fallback API oficial
+// withTable = Set<string> de semAcento(cidade) com tabela no sistema (opcional)
 function CidadeIbgeSelect({
   value = '',
   onSelect,
   onChange,
-  options = [],
-  withTable = null,   // Set<string> de semAcento(cidade) que têm tabela
+  withTable = null,
   placeholder = 'Digite cidade ou código IBGE',
   disabled = false,
 }) {
   const [open, setOpen] = React.useState(false);
   const [term, setTerm] = React.useState('');
+  const [results, setResults] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
   const ref = React.useRef(null);
+  const debounceRef = React.useRef(null);
 
-  React.useEffect(() => { if (!open) setTerm(''); }, [open]);
-
+  // Fecha ao clicar fora
   React.useEffect(() => {
     function handleClick(e) {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
@@ -46,38 +47,48 @@ function CidadeIbgeSelect({
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  const filtered = React.useMemo(() => {
-    const q = semAcento(term);
-    if (!q) {
-      // Sem filtro: mostra primeiro as que têm tabela, depois as demais
-      if (!withTable) return options.slice(0, 100);
-      const comTabela = options.filter((m) => withTable.has(semAcento(m.cidade)));
-      const semTabela = options.filter((m) => !withTable.has(semAcento(m.cidade)));
-      return [...comTabela.slice(0, 80), ...semTabela.slice(0, 20)];
-    }
-    const isIbge = /^\d+$/.test(q);
-    return options.filter((m) =>
-      isIbge
-        ? String(m.ibge || '').startsWith(q)
-        : semAcento(m.cidade).includes(q) || semAcento(`${m.cidade}/${m.uf}`).includes(q)
-    ).slice(0, 80);
-  }, [term, options, withTable]);
-
-  const displayValue = open ? term : value;
+  // Busca assíncrona com debounce de 300ms
+  React.useEffect(() => {
+    if (!open) return;
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const rows = await consultarMunicipiosIbge({ termo: term, limite: 30, usarOficialSeVazio: true });
+        // Ordena: com tabela primeiro
+        if (withTable) {
+          rows.sort((a, b) => {
+            const aT = withTable.has(semAcento(a.cidade)) ? 0 : 1;
+            const bT = withTable.has(semAcento(b.cidade)) ? 0 : 1;
+            return aT - bT || `${a.uf}/${a.cidade}`.localeCompare(`${b.uf}/${b.cidade}`, 'pt-BR');
+          });
+        }
+        setResults(rows);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(debounceRef.current);
+  }, [term, open, withTable]);
 
   function handleSelect(municipio) {
     const label = municipio.uf ? `${municipio.cidade}/${municipio.uf}` : municipio.cidade;
     if (onSelect) onSelect(municipio);
     if (onChange) onChange(label);
+    setTerm('');
     setOpen(false);
   }
+
+  const displayValue = open ? term : value;
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <input
         value={displayValue}
         disabled={disabled}
-        onChange={(e) => { setTerm(e.target.value); setOpen(true); if (onChange && !onSelect) onChange(e.target.value); }}
+        onChange={(e) => { setTerm(e.target.value); }}
         onFocus={() => setOpen(true)}
         placeholder={value || placeholder}
         autoComplete="off"
@@ -88,17 +99,23 @@ function CidadeIbgeSelect({
           position: 'absolute', zIndex: 1000, background: 'var(--bg,#fff)',
           border: '1px solid var(--border,#e2e8f0)', borderRadius: 6,
           maxHeight: 280, overflowY: 'auto', width: '100%',
-          boxShadow: '0 4px 16px rgba(0,0,0,.14)', top: '100%', left: 0,
+          boxShadow: '0 4px 16px rgba(0,0,0,.14)', top: '100%', left: 0, minWidth: 260,
         }}>
-          {filtered.length === 0 && (
+          {loading && (
+            <div style={{ padding: '10px 12px', color: '#94a3b8', fontSize: 13 }}>Buscando...</div>
+          )}
+          {!loading && results.length === 0 && term.length >= 2 && (
             <div style={{ padding: '10px 12px', color: '#94a3b8', fontSize: 13 }}>Nenhuma cidade encontrada</div>
           )}
-          {filtered.map((m) => {
+          {!loading && results.length === 0 && term.length < 2 && (
+            <div style={{ padding: '10px 12px', color: '#94a3b8', fontSize: 13 }}>Digite pelo menos 2 letras</div>
+          )}
+          {!loading && results.map((m) => {
             const temTabela = !withTable || withTable.has(semAcento(m.cidade));
             const isSelected = `${m.cidade}/${m.uf}` === value || m.cidade === value;
             return (
               <div
-                key={m.ibge}
+                key={m.ibge || `${m.cidade}-${m.uf}`}
                 onMouseDown={() => handleSelect(m)}
                 style={{
                   padding: '7px 12px', cursor: 'pointer', fontSize: 13,
@@ -110,18 +127,13 @@ function CidadeIbgeSelect({
                 onMouseLeave={(e) => e.currentTarget.style.background = isSelected ? 'var(--primary-soft,#e0f2fe)' : 'transparent'}
               >
                 <span>
-                  <strong>{m.cidade}</strong>{m.uf ? `/${m.uf}` : ''}
+                  <strong>{m.cidade}</strong>/{m.uf}
                   {!temTabela && <span style={{ fontSize: 10, marginLeft: 6, color: '#94a3b8' }}>sem tabela</span>}
                 </span>
                 <span style={{ color: '#94a3b8', fontSize: 11, marginLeft: 8 }}>{m.ibge}</span>
               </div>
             );
           })}
-          {filtered.length >= 80 && (
-            <div style={{ padding: '6px 12px', color: '#94a3b8', fontSize: 12, borderTop: '1px solid #f1f5f9' }}>
-              Continue digitando para refinar
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -668,7 +680,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const lookup = useMemo(() => buildLookupTables(transportadoras), [transportadoras]);
   const { cidadePorIbge, destinosDisponiveis } = lookup;
 
-  const municipiosDisponiveis = useMemo(() => {
+  const municipiosDisponiveisRaw = useMemo(() => {
     const fonte = municipiosIbge.length ? municipiosIbge : opcoesOnline.municipiosIbge || [];
     const porIbge = new Map();
     (fonte || []).forEach((item) => {
@@ -676,6 +688,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     });
     return [...porIbge.values()].sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
   }, [municipiosIbge, opcoesOnline.municipiosIbge]);
+
+  // Quando a tabela IBGE ainda não carregou (timeout ou primeiro acesso),
+  // constrói uma lista mínima a partir das cidades já cadastradas no sistema.
+  // Isso garante que os campos de origem funcionem mesmo sem a tabela ibge_municipios.
+  const municipiosDisponiveis = useMemo(() => {
+    if (municipiosDisponiveisRaw.length > 0) return municipiosDisponiveisRaw;
+    // Fallback: cidades do sistema sem código IBGE (funciona para origem, não para destino)
+    const cidadesDoSistema = new Set([
+      ...(opcoesOnline.origens || []),
+      ...origensLocal,
+    ]);
+    return [...cidadesDoSistema]
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+      .map((cidade) => {
+        const partes = cidade.split('/');
+        return { ibge: '', cidade: partes[0].trim(), uf: partes[1]?.trim() || '' };
+      });
+  }, [municipiosDisponiveisRaw, opcoesOnline.origens, origensLocal]);
 
   const cidadePorIbgeCompleto = useMemo(() => {
     const mapa = new Map(cidadePorIbge || []);
@@ -1454,7 +1485,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem
               <CidadeIbgeSelect
                 value={origemSimples}
-                options={municipiosDisponiveis}
                 withTable={new Set(origensPorCanalSimples.map(semAcento))}
                 placeholder="Clique ou digite a origem"
                 onSelect={(m) => setOrigemSimples(m.cidade)}
@@ -1464,7 +1494,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Destino (CEP ou IBGE)
               <CidadeIbgeSelect
                 value={destinoCodigo}
-                options={todosDestinosComCidade}
                 placeholder="Digite cidade ou código IBGE"
                 onSelect={(m) => setDestinoCodigo(m.ibge)}
                 onChange={(v) => setDestinoCodigo(v)}
@@ -1515,7 +1544,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem (opcional)
               <CidadeIbgeSelect
                 value={origemTransportadora}
-                options={municipiosDisponiveis}
                 withTable={origensTransportadora.length ? new Set(origensTransportadora.map(semAcento)) : null}
                 placeholder="Todas ou digite a origem"
                 onSelect={(m) => setOrigemTransportadora(m.cidade)}
@@ -1525,7 +1553,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Destino opcional (cidade, CEP ou IBGE)
               <CidadeIbgeSelect
                 value={destinoTransportadora}
-                options={todosDestinosComCidade}
                 placeholder="Digite cidade ou código IBGE"
                 disabled={modoLista}
                 onSelect={(m) => setDestinoTransportadora(m.ibge)}
@@ -1580,7 +1607,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem
               <CidadeIbgeSelect
                 value={origemAnalise}
-                options={municipiosDisponiveis}
                 withTable={new Set(origensAnaliseDisponiveis.map(semAcento))}
                 placeholder="Obrigatório para B2C grande"
                 onSelect={(m) => setOrigemAnalise(m.cidade)}
@@ -1635,7 +1661,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Origem
               <CidadeIbgeSelect
                 value={origemOrigem}
-                options={municipiosDisponiveis}
                 withTable={new Set(origensOrigemDisponiveis.map(semAcento))}
                 placeholder="Ex.: Itajaí"
                 onSelect={(m) => setOrigemOrigem(m.cidade)}
@@ -1816,7 +1841,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Canal<select value={canalCobertura} onChange={(e) => setCanalCobertura(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Origem<CidadeIbgeSelect
   value={origemCobertura}
-  options={municipiosDisponiveis}
   withTable={todasOrigens.length ? new Set(todasOrigens.map(semAcento)) : null}
   placeholder="Todas ou digite a origem"
   onSelect={(m) => setOrigemCobertura(m.cidade)}

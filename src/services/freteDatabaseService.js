@@ -1690,7 +1690,21 @@ async function enriquecerRotasComIbgeDestinoPorCepDb(rotas = []) {
   return resultado;
 }
 
+const _IBGE_CACHE_KEY = 'ibge-municipios-cache-v1';
+const _IBGE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 dias
+
 export async function carregarMunicipiosIbgeDb() {
+  // 1. Tenta o cache do localStorage primeiro (evita query ao Supabase a cada acesso)
+  try {
+    const cached = localStorage.getItem(_IBGE_CACHE_KEY);
+    if (cached) {
+      const { ts, data: cachedData } = JSON.parse(cached);
+      if (Date.now() - ts < _IBGE_CACHE_TTL && Array.isArray(cachedData) && cachedData.length > 100) {
+        return cachedData;
+      }
+    }
+  } catch { /* ignora erro de parse */ }
+
   if (!isSupabaseConfigured()) return [];
 
   const supabase = ensureClient();
@@ -1698,15 +1712,29 @@ export async function carregarMunicipiosIbgeDb() {
   try {
     const { data, error } = await supabase
       .from('ibge_municipios')
-      .select('*')
+      .select('codigo_municipio_completo, nome_municipio, nome_municipio_sem_acento, nome_busca, sigla_uf')
+      .eq('ativo', true)
       .limit(7000);
 
     if (error) return [];
 
-    return (data || [])
-      .map(normalizeMunicipioIbgeRow)
+    const result = (data || [])
+      .map((row) => {
+        const ibge = String(row.codigo_municipio_completo || '').replace(/\D/g, '').slice(0, 7);
+        const cidade = row.nome_municipio || '';
+        const uf = row.sigla_uf || row.uf || '';
+        if (!ibge || !cidade) return null;
+        return { ibge, cidade, uf, semAcento: row.nome_municipio_sem_acento || '', nomeBusca: row.nome_busca || '' };
+      })
       .filter(Boolean)
       .sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
+
+    // Salva no cache para as próximas sessões
+    try {
+      localStorage.setItem(_IBGE_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: result }));
+    } catch { /* ignora se localStorage estiver cheio */ }
+
+    return result;
   } catch {
     return [];
   }
