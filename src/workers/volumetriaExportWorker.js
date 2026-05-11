@@ -247,13 +247,14 @@ function normalizarCanalVolumetria(row = {}) {
     row.transportadoraContratada,
   ].map(normalizarCanalTexto).filter(Boolean);
 
-  // Primeiro respeita a lista oficial B2C enviada. Isso evita Cantu Pneus cair como Atacado.
-  if (fontesFortes.some((canal) => contemCanalVolumetria(canal, CANAIS_B2C_VOLUMETRIA))) return 'B2C';
+  // B2B/ATACADO tem prioridade. Se qualquer campo forte trouxer B2B,
+  // não deixa cair como B2C por causa de descrição de marketplace/e-commerce em outro campo.
   if (fontesFortes.some((canal) => contemCanalVolumetria(canal, CANAIS_ATACADO_VOLUMETRIA))) return 'ATACADO';
+  if (fontesFortes.some((canal) => contemCanalVolumetria(canal, CANAIS_B2C_VOLUMETRIA))) return 'B2C';
 
   const canalAtual = normalizarCanalTexto(row.canal);
-  if (contemCanalVolumetria(canalAtual, CANAIS_B2C_VOLUMETRIA)) return 'B2C';
   if (contemCanalVolumetria(canalAtual, CANAIS_ATACADO_VOLUMETRIA)) return 'ATACADO';
+  if (contemCanalVolumetria(canalAtual, CANAIS_B2C_VOLUMETRIA)) return 'B2C';
   return row.canal || '';
 }
 

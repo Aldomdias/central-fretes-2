@@ -330,10 +330,26 @@ function normalizeCanalParaMalha(value) {
   return canal;
 }
 
+function chaveRotaCte(row = {}) {
+  return normalizeChaveRotaIbge(row.chaveRotaIbge, row.ibgeOrigem, row.ibgeDestino);
+}
+
 function chaveMalhaCte(row = {}) {
   const canal = normalizeCanalParaMalha(row.canal);
-  const rota = normalizeChaveRotaIbge(row.chaveRotaIbge, row.ibgeOrigem, row.ibgeDestino);
+  const rota = chaveRotaCte(row);
   return canal && rota ? `${canal}|${rota}` : '';
+}
+
+function extrairRotasDaMalha(malhaKeys = []) {
+  const rotas = new Set();
+  for (const key of malhaKeys || []) {
+    const raw = String(key || '').trim();
+    if (!raw) continue;
+    const rota = raw.includes('|') ? raw.split('|').pop() : raw;
+    const normalizada = normalizeChaveRotaIbge(rota);
+    if (normalizada) rotas.add(normalizada);
+  }
+  return rotas;
 }
 
 function resumoFromRows(rows = [], options = {}) {
@@ -450,14 +466,27 @@ export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [],
   if (shouldUseFallback()) return localFallback.buscarRealizadoLocalPorMalha(filtros, malhaKeys, options);
   const keys = malhaKeys instanceof Set ? malhaKeys : new Set(malhaKeys || []);
   if (!keys.size) return { rows: [], totalCompativel: 0, limit: Number(options.limit || 5000), malhaKeys: 0, avaliados: 0 };
+
+  // A base CTes já existe no Supabase e pode ter registros antigos com canal gravado errado
+  // (ex.: B2B salvo como B2C). Por isso a busca da malha NÃO pode depender só de CANAL|ROTA.
+  // Primeiro tentamos a chave completa; se o canal divergir, mantemos o CT-e pela rota IBGE.
+  // O motor de cálculo também usa fallback por rota para escolher a tabela correta da transportadora.
+  const rotaKeys = extrairRotasDaMalha([...keys]);
   const limiteSaida = Number(options.limit || 5000);
   const base = await fetchRowsSupabase(filtros, { limit: Number(options.maxScan || 200000) });
-  const compativeis = base.rows.filter((row) => keys.has(chaveMalhaCte(row)));
+  const compativeis = base.rows.filter((row) => {
+    const chaveCompleta = chaveMalhaCte(row);
+    if (chaveCompleta && keys.has(chaveCompleta)) return true;
+    const rota = chaveRotaCte(row);
+    return Boolean(rota && rotaKeys.has(rota));
+  });
+
   return {
     rows: compativeis.slice(0, limiteSaida),
     totalCompativel: compativeis.length,
     limit: limiteSaida,
     malhaKeys: keys.size,
+    rotaKeys: rotaKeys.size,
     avaliados: base.avaliados || base.rows.length,
   };
 }

@@ -66,6 +66,10 @@ function normalize(value) {
     .toUpperCase();
 }
 
+function onlyDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
 function normalizeLoose(value) {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -179,16 +183,50 @@ function normalizeCanalParaMalha(value) {
   return canal;
 }
 
+function normalizeChaveRotaIbge(rawValue = '', ibgeOrigemRaw = '', ibgeDestinoRaw = '') {
+  const origem = onlyDigits(ibgeOrigemRaw).slice(0, 7);
+  const destino = onlyDigits(ibgeDestinoRaw).slice(0, 7);
+  if (origem && destino) return `${origem}-${destino}`;
+
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+  const partes = raw
+    .split(/[^0-9]+/g)
+    .map((item) => onlyDigits(item).slice(0, 7))
+    .filter((item) => item.length >= 6);
+  if (partes.length >= 2) return `${partes[0]}-${partes[1]}`;
+  const digits = onlyDigits(raw);
+  if (digits.length >= 14) return `${digits.slice(0, 7)}-${digits.slice(7, 14)}`;
+  return '';
+}
+
+function chaveRotaCte(row = {}) {
+  return normalizeChaveRotaIbge(row.chaveRotaIbge, row.ibgeOrigem, row.ibgeDestino);
+}
+
 function chaveMalhaCte(row = {}) {
   const canal = normalizeCanalParaMalha(row.canal);
-  const rota = String(row.chaveRotaIbge || '').trim();
+  const rota = chaveRotaCte(row);
   return canal && rota ? `${canal}|${rota}` : '';
+}
+
+function extrairRotasDaMalha(malhaKeys = []) {
+  const rotas = new Set();
+  for (const key of malhaKeys || []) {
+    const raw = String(key || '').trim();
+    if (!raw) continue;
+    const rota = raw.includes('|') ? raw.split('|').pop() : raw;
+    const normalizada = normalizeChaveRotaIbge(rota);
+    if (normalizada) rotas.add(normalizada);
+  }
+  return rotas;
 }
 
 export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [], options = {}) {
   const keys = malhaKeys instanceof Set ? malhaKeys : new Set(malhaKeys || []);
   if (!keys.size) return { rows: [], totalCompativel: 0, limit: Number(options.limit || 5000), malhaKeys: 0, avaliados: 0 };
 
+  const rotaKeys = extrairRotasDaMalha([...keys]);
   const db = await openDb();
   const limit = Number(options.limit || 5000);
   const rows = [];
@@ -208,7 +246,10 @@ export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [],
       }
       avaliados += 1;
       const row = cursor.value;
-      if (keys.has(chaveMalhaCte(row)) && filtrarCteLocal(row, filtros)) {
+      const chaveCompleta = chaveMalhaCte(row);
+      const rota = chaveRotaCte(row);
+      const bateMalha = (chaveCompleta && keys.has(chaveCompleta)) || (rota && rotaKeys.has(rota));
+      if (bateMalha && filtrarCteLocal(row, filtros)) {
         totalCompativel += 1;
         if (rows.length < limit) rows.push(row);
       }
@@ -217,7 +258,7 @@ export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [],
   });
 
   db.close();
-  return { rows, totalCompativel, limit, malhaKeys: keys.size, avaliados };
+  return { rows, totalCompativel, limit, malhaKeys: keys.size, rotaKeys: rotaKeys.size, avaliados };
 }
 
 export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {
