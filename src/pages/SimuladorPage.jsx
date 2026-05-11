@@ -759,6 +759,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   }, [destinosDisponiveis, cidadePorIbgeCompleto, municipiosDisponiveis]);
 
   const [origemSimples, setOrigemSimples] = useState('');
+  const [origemSimplesIbge, setOrigemSimplesIbge] = useState('');
   const [destinoCodigo, setDestinoCodigo] = useState('');
   const [canalSimples, setCanalSimples] = useState(canais[0] || 'ATACADO');
   const [pesoSimples, setPesoSimples] = useState('');
@@ -768,6 +769,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [transportadora, setTransportadora] = useState('');
   const [canalTransportadora, setCanalTransportadora] = useState(canais[0] || 'ATACADO');
   const [origemTransportadora, setOrigemTransportadora] = useState('');
+  const [origemTransportadoraIbge, setOrigemTransportadoraIbge] = useState('');
   const [destinoTransportadora, setDestinoTransportadora] = useState('');
   const [pesoTransportadora, setPesoTransportadora] = useState('');
   const [nfTransportadora, setNfTransportadora] = useState('');
@@ -778,6 +780,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [transportadoraAnalise, setTransportadoraAnalise] = useState('');
   const [canalAnalise, setCanalAnalise] = useState(canais[0] || 'ATACADO');
   const [origemAnalise, setOrigemAnalise] = useState('');
+  const [origemAnaliseIbge, setOrigemAnaliseIbge] = useState('');
   const [ufAnalise, setUfAnalise] = useState('');
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
 
@@ -1082,7 +1085,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
 
     const baseOnline = await carregarBaseOnline({
-      // CORRIGIDO: limpar origem remove sufixo "/UF" que pode ter ficado de digitação manual
+      ibgeOrigem: origemSimplesIbge,
       origem: limparCidadeDigitada(origemSimples),
       canal: canalSimples,
       destinoCodigo: destinoFinal,
@@ -1097,6 +1100,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setResultadoSimples(simularSimples({
       transportadoras: baseOnline,
+      ibgeOrigem: origemSimplesIbge,
       origem: limparCidadeDigitada(origemSimples),
       canal: canalSimples,
       peso: Number(pesoSimples || 0),
@@ -1128,6 +1132,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     atualizarProcessamentoUi('Buscando concorrentes no Supabase...', 36);
 
     const baseOnline = await carregarBaseOnline({
+      ibgeOrigem: origemTransportadoraIbge,
       origem: limparCidadeDigitada(origemTransportadora),
       canal: canalTransportadora,
       destinoCodigos: codigos,
@@ -1151,6 +1156,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       transportadoras: baseOnline,
       nomeTransportadora: transportadora,
       canal: canalTransportadora,
+      ibgeOrigem: origemTransportadoraIbge,
       origem: limparCidadeDigitada(origemTransportadora),
       destinoCodigos: codigos,
       peso: Number(pesoTransportadora || 0),
@@ -1202,6 +1208,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       const baseOnline = await carregarBaseOnline({
         canal: canalAnalise,
+        ibgeOrigem: origemAnaliseIbge,
         origem: limparCidadeDigitada(origemAnalise),
         nomeTransportadora: transportadoraAnalise,
         ufDestino: ufAnalise,
@@ -1226,6 +1233,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadoras: baseOnline,
         nomeTransportadora: transportadoraAnalise,
         canal: canalAnalise,
+        ibgeOrigem: origemAnaliseIbge,
         origem: limparCidadeDigitada(origemAnalise),
         ufDestino: ufAnalise,
         grade: grade[canalAnalise] || grade.ATACADO || [],
@@ -1490,8 +1498,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 value={origemSimples}
                 withTable={new Set(origensPorCanalSimples.map(semAcento))}
                 placeholder="Clique ou digite a origem"
-                onSelect={(m) => setOrigemSimples(m.cidade)}
-                onChange={(v) => setOrigemSimples(v)}
+                onSelect={(m) => { setOrigemSimples(m.cidade); setOrigemSimplesIbge(String(m.ibge || '')); }}
+                onChange={(v) => { setOrigemSimples(v); setOrigemSimplesIbge(''); }}
               />
             </label>
             <label>Destino (CEP ou IBGE)
@@ -1504,7 +1512,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {destinoIdentificado && <small style={{ color: '#64748b' }}>Destino identificado: {destinoIdentificado}</small>}
             </label>
             <label>Canal
-              <select value={canalSimples} onChange={(e) => { setCanalSimples(e.target.value); setOrigemSimples(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
+              <select value={canalSimples} onChange={(e) => { setCanalSimples(e.target.value); setOrigemSimples(''); setOrigemSimplesIbge(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
             </label>
             <label>Peso
               <input value={pesoSimples} onChange={(e) => setPesoSimples(e.target.value)} placeholder="Ex: 150" />
@@ -1549,8 +1557,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 value={origemTransportadora}
                 withTable={origensTransportadora.length ? new Set(origensTransportadora.map(semAcento)) : null}
                 placeholder="Todas ou digite a origem"
-                onSelect={(m) => setOrigemTransportadora(m.cidade)}
-                onChange={(v) => setOrigemTransportadora(v)}
+                onSelect={(m) => { setOrigemTransportadora(m.cidade); setOrigemTransportadoraIbge(String(m.ibge || '')); }}
+                onChange={(v) => { setOrigemTransportadora(v); setOrigemTransportadoraIbge(''); }}
               />
             </label>
             <label>Destino opcional (cidade, CEP ou IBGE)
@@ -1612,8 +1620,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 value={origemAnalise}
                 withTable={new Set(origensAnaliseDisponiveis.map(semAcento))}
                 placeholder="Obrigatório para B2C grande"
-                onSelect={(m) => setOrigemAnalise(m.cidade)}
-                onChange={(v) => setOrigemAnalise(v)}
+                onSelect={(m) => { setOrigemAnalise(m.cidade); setOrigemAnaliseIbge(String(m.ibge || '')); }}
+                onChange={(v) => { setOrigemAnalise(v); setOrigemAnaliseIbge(''); }}
               />
               <small style={{ color: '#64748b' }}>Quebre por origem: Itajaí, Itupeva, Campo Grande...</small>
             </label>

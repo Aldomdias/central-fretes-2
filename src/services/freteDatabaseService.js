@@ -1265,29 +1265,61 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
   })).filter((item) => item.origens.length);
 }
 
-async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '' }) {
+async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '', ibgeOrigem = '' }) {
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
+  const ibgeOrigemLimpo = String(ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
 
-  const origensBase = await buscarOrigensFiltradasDb({
-    supabase,
-    origem,
-    canal,
-  });
+  let origemIdsBase;
 
-  const origemIdsBase = (origensBase || []).map((item) => item.id);
+  if (ibgeOrigemLimpo) {
+    // ESTRATÉGIA IBGE: busca as origens cujas ROTAS têm ibge_origem = ibgeOrigemLimpo.
+    // Isso ignora completamente o nome cadastrado na transportadora ("itajai", "ITAJAI", "Itajaí")
+    // e usa o código IBGE da rota como fonte da verdade — comportamento assertivo e sem ambiguidade.
+    const { data: rotasComIbge, error: rotasErr } = await supabase
+      .from('rotas')
+      .select('origem_id')
+      .eq('ibge_origem', ibgeOrigemLimpo);
+
+    if (rotasErr) throw rotasErr;
+
+    const idsViaIbge = Array.from(new Set((rotasComIbge || []).map((r) => r.origem_id).filter(Boolean)));
+    if (!idsViaIbge.length) return [];
+
+    // Filtra pelo canal dentro dos IDs encontrados via IBGE
+    let queryOrigens = supabase
+      .from('origens')
+      .select('id, transportadora_id, cidade, canal, status')
+      .in('id', idsViaIbge);
+
+    const { data: origensViaIbge, error: origensErr } = await queryOrigens;
+    if (origensErr) throw origensErr;
+
+    origemIdsBase = (origensViaIbge || []).filter((item) => canalCompativelDb(item.canal, canal));
+  } else {
+    // ESTRATÉGIA NOME: fallback quando o IBGE da origem não foi informado (digitação manual)
+    origemIdsBase = await buscarOrigensFiltradasDb({ supabase, origem, canal });
+  }
+
   if (!origemIdsBase.length) return [];
+  const origemIds = origemIdsBase.map((item) => item.id);
 
-  const rotasRaw = await fetchRotasByOrigemIds(supabase, origemIdsBase, destinosNormalizados, ufDestino);
+  const rotasRaw = await fetchRotasByOrigemIds(supabase, origemIds, destinosNormalizados, ufDestino);
   const rotas = await enriquecerRotasComIbgeDestinoPorCepDb(rotasRaw);
 
-  const origemIdsComRota = Array.from(new Set((rotas || []).map((item) => item.origem_id)));
+  // Quando buscamos por IBGE de origem, restringe as rotas ao ibge_origem correto
+  // (uma origem pode ter rotas de múltiplos ibge_origem se o cadastro estiver inconsistente)
+  const rotasFiltradas = ibgeOrigemLimpo
+    ? rotas.filter((r) => String(r.ibge_origem || '').replace(/\D/g, '') === ibgeOrigemLimpo)
+    : rotas;
+
+  const origemIdsComRota = Array.from(new Set((rotasFiltradas || []).map((item) => item.origem_id)));
   if (!origemIdsComRota.length) return [];
 
-  const origens = (origensBase || []).filter((item) => origemIdsComRota.includes(item.id));
+  const origens = origemIdsBase.filter((item) => origemIdsComRota.includes(item.id));
   const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
 
-  const rotaNomes = Array.from(new Set((rotas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
-  const destinosIbgeDasRotas = Array.from(new Set((rotas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
+  const rotaNomes = Array.from(new Set((rotasFiltradas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
+  const destinosIbgeDasRotas = Array.from(new Set((rotasFiltradas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
 
   const [
     transportadorasRows,
@@ -1305,7 +1337,7 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
     transportadoras: transportadorasRows || [],
     origens,
     generalidades,
-    rotas: rotas || [],
+    rotas: rotasFiltradas || [],
     cotacoes,
     taxas,
   });
@@ -1954,9 +1986,10 @@ export async function carregarOpcoesSimuladorDb() {
   };
 }
 
-export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '' } = {}) {
+export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCodigo = '', destinoCodigos = [], nomeTransportadora = '', ufDestino = '', ibgeOrigem = '' } = {}) {
   // Fonte da verdade do simulador: Supabase.
-  // Não depende da tela Transportadoras estar aberta ou atualizada.
+  // ibgeOrigem: quando fornecido, usa o IBGE da origem (da tabela rotas) como chave de busca
+  // em vez do nome da cidade — elimina problemas de capitalização ("itajai" vs "ITAJAI").
 
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
@@ -1972,29 +2005,23 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   ].map((item) => String(item || '').trim()).filter(Boolean)));
 
   // Caso análise de transportadora por origem.
-  // Quando a tela pede malha por UF, carregamos a origem/UF inteira. Isso é mais robusto
-  // para tabelas onde o IBGE da rota veio vazio/incorreto, mas o nome da cidade está certo.
-  if (nomeTransportadora && origem) {
-    // Para simulação em cima do realizado, quando há UF destino carregamos a malha
-    // da origem/UF inteira. É mais robusto do que filtrar por IBGE antes, porque
-    // algumas tabelas têm IBGE ausente/divergente, mas a rota está correta pelo nome.
+  if (nomeTransportadora && (origem || ibgeOrigem)) {
     if (ufDestino) {
-      return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino });
+      return buscarBasePorOrigemDestino({ supabase, ibgeOrigem, origem, canal, destinos: [], ufDestino });
     }
 
     const destinosAlvo = destinos.length
       ? destinos
-      : await buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino });
+      : await buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, ibgeOrigem, origem, canal, ufDestino });
 
     if (!destinosAlvo.length) return [];
 
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo, ufDestino });
+    return buscarBasePorOrigemDestino({ supabase, ibgeOrigem, origem, canal, destinos: destinosAlvo, ufDestino });
   }
 
   // Caso principal: simulação simples ou lista com destino informado.
-  // Busca todos os concorrentes da mesma origem/canal/destino.
-  if (origem || destinos.length) {
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino });
+  if (ibgeOrigem || origem || destinos.length) {
+    return buscarBasePorOrigemDestino({ supabase, ibgeOrigem, origem, canal, destinos, ufDestino });
   }
 
   // Caso análise de transportadora sem destino/origem: busca as rotas da transportadora
