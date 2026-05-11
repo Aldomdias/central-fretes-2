@@ -577,6 +577,41 @@ function nextFrame() {
   });
 }
 
+
+function normalizarChaveRotaCtePage(rawValue = '', ibgeOrigemRaw = '', ibgeDestinoRaw = '') {
+  const limpar = (value) => String(value || '').replace(/\D/g, '').slice(0, 7);
+  const origem = limpar(ibgeOrigemRaw);
+  const destino = limpar(ibgeDestinoRaw);
+  if (origem && destino) return `${origem}-${destino}`;
+
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+
+  const partes = raw
+    .split(/[^0-9]+/g)
+    .map((item) => limpar(item))
+    .filter((item) => item.length >= 6);
+
+  if (partes.length >= 2) return `${partes[0]}-${partes[1]}`;
+
+  const digits = String(raw).replace(/\D/g, '');
+  if (digits.length >= 14) return `${digits.slice(0, 7)}-${digits.slice(7, 14)}`;
+
+  return '';
+}
+
+function normalizarCteParaSimulacao(row = {}) {
+  const canal = categoriaCanalRealizado(row.canal || row.canalOriginal || row.canal_original || '') || row.canal || '';
+  const chaveRotaIbge = normalizarChaveRotaCtePage(row.chaveRotaIbge || row.chave_rota_ibge, row.ibgeOrigem || row.ibge_origem, row.ibgeDestino || row.ibge_destino);
+  return {
+    ...row,
+    canal,
+    chaveRotaIbge,
+    ibgeOrigem: String(row.ibgeOrigem || row.ibge_origem || '').replace(/\D/g, '').slice(0, 7),
+    ibgeDestino: String(row.ibgeDestino || row.ibge_destino || '').replace(/\D/g, '').slice(0, 7),
+  };
+}
+
 function simularRealizadoLocalWorker(payload, onProgress) {
   if (typeof Worker === 'undefined') {
     return simularRealizadoLocalRapido({ ...payload, onProgress });
@@ -797,8 +832,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [transportadorasTabela, setTransportadorasTabela] = useState(null);
   const [transportadoraSimuladaCache, setTransportadoraSimuladaCache] = useState({});
   const [tabelasLocais, setTabelasLocais] = useState([]);
-  const [usarTabelaSalvaLocal, setUsarTabelaSalvaLocal] = useState(true);
-  const [economizarSupabase, setEconomizarSupabase] = useState(readPreferenciaEconomiaSupabase);
+  const [usarTabelaSalvaLocal, setUsarTabelaSalvaLocal] = useState(false);
+  const [economizarSupabase, setEconomizarSupabase] = useState(false);
   const [salvandoTabelaLocal, setSalvandoTabelaLocal] = useState(false);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
   const [modoSimulacao, setModoSimulacao] = useState('rapido');
@@ -1129,12 +1164,13 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
   async function carregarTabelaTransportadoraSelecionada(nomeTransportadora, options = {}) {
     const nome = String(nomeTransportadora || '').trim();
-    const forcarLocal = Boolean(options.forcarLocal || usarTabelaSalvaLocal || economizarSupabase);
+    const forcarLocal = Boolean(options.forcarLocal);
+    const preferirLocal = Boolean(usarTabelaSalvaLocal || economizarSupabase || forcarLocal);
     if (!nome) return [];
-    if (!forcarLocal && transportadoraSimuladaCache[nome]?.length) return transportadoraSimuladaCache[nome];
+    if (!preferirLocal && transportadoraSimuladaCache[nome]?.length) return transportadoraSimuladaCache[nome];
 
     const snapshot = await buscarTabelaTransportadoraLocal(nome).catch(() => null);
-    if (snapshot?.payload && (forcarLocal || economizarSupabase)) {
+    if (snapshot?.payload && preferirLocal) {
       setProgress((prev) => ({
         ...(prev || {}),
         etapa: 'Carregando tabela local',
@@ -1147,15 +1183,25 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       return baseLocal;
     }
 
-    if (forcarLocal || economizarSupabase) {
-      throw new Error(`A tabela da ${nome} ainda não está salva neste navegador. Para economizar Supabase, importe um pacote JSON local ou desmarque o modo economia apenas para baixar uma vez.`);
+    if (forcarLocal && !snapshot?.payload) {
+      throw new Error(`A tabela da ${nome} ainda não está salva neste navegador. Desmarque “Forçar tabela salva localmente” para buscar no Supabase ou clique em Atualizar/Salvar selecionada.`);
+    }
+
+    if (economizarSupabase && !snapshot?.payload) {
+      setProgress((prev) => ({
+        ...(prev || {}),
+        etapa: 'Tabela local não encontrada',
+        percentual: 11,
+        mensagem: `Não achei tabela local da ${nome}; vou buscar no Supabase uma vez para não travar a simulação.`,
+      }));
+      await nextFrame();
     }
 
     setProgress((prev) => ({
       ...(prev || {}),
       etapa: 'Carregando tabela simulada',
       percentual: 12,
-      mensagem: `Carregando somente a tabela da ${nome} no Supabase uma vez. Depois salvo localmente para reutilizar.`,
+      mensagem: `Carregando a tabela completa da ${nome} no Supabase, com rotas, faixas, taxas e generalidades.`,
     }));
     await nextFrame();
 
@@ -1524,9 +1570,9 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     const routeKeys = Array.from(new Set(
       rows
         .map((row) => {
-          const rota = String(row.chaveRotaIbge || '').trim();
+          const rota = normalizarChaveRotaCtePage(row.chaveRotaIbge, row.ibgeOrigem, row.ibgeDestino);
           if (!rota) return '';
-          return `${categoriaCanalRealizado(row.canal)}|${rota}`;
+          return `${categoriaCanalRealizado(row.canal || row.canalOriginal)}|${rota}`;
         })
         .filter(Boolean)
     ));
@@ -1637,7 +1683,8 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         ? await buscarRealizadoLocalPorMalha(filtrosBase, escopo.routeKeys, { limit: 10000 })
         : await buscarRealizadoLocalParaSimulacao(filtrosBase, { limit: 10000 });
 
-      const { rows, totalCompativel, limit } = buscaRealizado;
+      const rows = (buscaRealizado.rows || []).map(normalizarCteParaSimulacao).filter((row) => row.chaveRotaIbge || !usarMalhaAutomatica);
+      const { totalCompativel, limit } = buscaRealizado;
       if (!rows.length) {
         setErro(
           usarMalhaAutomatica
@@ -1886,7 +1933,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         <strong>Filtro EBAZAR:</strong> {filtrosAplicados.excluirEbazar ? 'EBAZAR está fora da base pesquisada/análise atual.' : 'EBAZAR está incluída na base pesquisada/análise atual.'}
       </div>
       <div className={economizarSupabase ? 'sim-alert success' : 'sim-alert info'}>
-        <strong>Modo economia Supabase:</strong> {economizarSupabase ? 'ativo — simulações tentam usar tabelas salvas/importadas localmente antes de consultar o banco.' : 'desativado — o sistema pode consultar o Supabase para baixar tabelas que ainda não estão locais.'}
+        <strong>Modo economia Supabase:</strong> {economizarSupabase ? 'ativo — usa tabela local quando existir, mas busca no Supabase se ainda não estiver salva.' : 'desativado — o sistema consulta o Supabase quando a tabela ainda não está local.'}
       </div>
 
       {modalVolumetriaAberto ? (
@@ -2070,7 +2117,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
               <input type="checkbox" checked={economizarSupabase} onChange={(e) => setEconomizarSupabase(e.target.checked)} />
               <span>
                 Economizar Supabase: usar local sempre que existir
-                <small style={{ display: 'block' }}>Com essa opção marcada, o rápido usa a tabela local e o completo usa apenas as tabelas locais importadas. Desmarque só quando quiser baixar do Supabase.</small>
+                <small style={{ display: 'block' }}>Com essa opção marcada, o sistema tenta usar a tabela local primeiro. Se a selecionada não existir localmente, busca no Supabase uma vez para não travar a simulação.</small>
               </span>
             </label>
             <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>

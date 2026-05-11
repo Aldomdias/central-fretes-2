@@ -4,12 +4,12 @@ import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete 
 
 const CANAIS_B2C = [
   'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
-  'CARREFOUR', 'CANTU PNEUS', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET',
+  'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET',
   'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO', 'COOPERA', 'MARKETPLACE',
-  'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE',
+  'MARKET PLACE', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE',
 ];
 
-const CANAIS_ATACADO = ['ATACADO', 'B2B'];
+const CANAIS_ATACADO = ['ATACADO', 'B2B', 'B 2 B', 'CANTU', 'CANTU PNEUS', 'CANTU STORE'];
 
 const UF_POR_CODIGO = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -34,6 +34,27 @@ function normalizeKey(value) {
 
 function onlyDigits(value) {
   return String(value || '').replace(/\D/g, '');
+}
+
+function normalizeChaveRotaRealizado(rawValue = '', ibgeOrigemRaw = '', ibgeDestinoRaw = '') {
+  const origem = onlyDigits(ibgeOrigemRaw).slice(0, 7);
+  const destino = onlyDigits(ibgeDestinoRaw).slice(0, 7);
+  if (origem && destino) return `${origem}-${destino}`;
+
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+
+  const partes = raw
+    .split(/[^0-9]+/g)
+    .map((item) => onlyDigits(item).slice(0, 7))
+    .filter((item) => item.length >= 6);
+
+  if (partes.length >= 2) return `${partes[0]}-${partes[1]}`;
+
+  const digits = onlyDigits(raw);
+  if (digits.length >= 14) return `${digits.slice(0, 7)}-${digits.slice(7, 14)}`;
+
+  return '';
 }
 
 function toNumber(value) {
@@ -81,10 +102,11 @@ function sleepFrame() {
 }
 
 export function categoriaCanalRealizado(value) {
-  const canal = normalize(value);
+  const canal = normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
+  if (canal.includes('CANTU')) return 'ATACADO';
   if (CANAIS_ATACADO.some((item) => canal === item || canal.includes(item))) return 'ATACADO';
   if (CANAIS_B2C.some((item) => canal === item || canal.includes(item))) return 'B2C';
   return canal;
@@ -332,7 +354,7 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
     const canal = categoriaCanalRealizado(row.canal || row.canalVendas || row.canais);
     const dataEmissao = row.emissao || '';
     const competencia = competenciaSelecionada || row.competencia || getCompetencia(dataEmissao, row.arquivoOrigem);
-    const chaveRotaIbge = ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '';
+    const chaveRotaIbge = normalizeChaveRotaRealizado('', ibgeOrigem, ibgeDestino);
 
     return {
       chaveCte,
@@ -695,6 +717,7 @@ function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = []
 export function construirIndiceFretesPorRota(transportadoras = [], municipios = []) {
   const mapasIbge = montarMapasIbge(municipios);
   const index = new Map();
+  const indexPorRota = new Map();
   const stats = { transportadoras: 0, origens: 0, rotas: 0, rotasComIbge: 0, rotasSemIbge: 0, rotasCepSemIbge: 0, chavesRota: 0 };
 
   (transportadoras || []).forEach((transportadora) => {
@@ -702,7 +725,7 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
     stats.transportadoras += 1;
     (transportadora.origens || []).forEach((origem) => {
       stats.origens += 1;
-      const canal = categoriaCanalRealizado(origem.canal || '');
+      const canal = categoriaCanalRealizado(origem.canal || origem.canalOriginal || 'ATACADO');
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;
       const origemUfPelaRota = getUfByIbge(origem.rotas?.[0]?.ibgeOrigem || '');
       const ibgeOrigemFallback = resolverIbgeLocal(origemCidade, origemUfPelaRota, mapasIbge);
@@ -717,16 +740,22 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
           return;
         }
         stats.rotasComIbge += 1;
-        const key = `${canal}|${ibgeOrigem}-${ibgeDestino}`;
+        const chaveRota = `${ibgeOrigem}-${ibgeDestino}`;
+        const key = `${canal}|${chaveRota}`;
+        const itemIndex = { transportadora, origem, rota: { ...rota, ibgeOrigem, ibgeDestino } };
         const list = index.get(key) || [];
-        list.push({ transportadora, origem, rota: { ...rota, ibgeOrigem, ibgeDestino } });
+        list.push(itemIndex);
         index.set(key, list);
+
+        const listRota = indexPorRota.get(chaveRota) || [];
+        listRota.push(itemIndex);
+        indexPorRota.set(chaveRota, listRota);
       });
     });
   });
 
   stats.chavesRota = index.size;
-  return { index, stats };
+  return { index, indexPorRota, stats };
 }
 
 function transportadoraMatch(nomeTabela, nomeFiltro, options = {}) {
@@ -760,7 +789,7 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
     transportadoraEncontrada = transportadora?.nome || transportadoraEncontrada;
 
     (transportadora.origens || []).forEach((origem) => {
-      const canal = categoriaCanalRealizado(origem.canal || '');
+      const canal = categoriaCanalRealizado(origem.canal || origem.canalOriginal || 'ATACADO');
       const canalFiltroNormalizado = categoriaCanalRealizado(canalFiltro || '');
       if (canalFiltroNormalizado && canal !== canalFiltroNormalizado) return;
 
@@ -1042,7 +1071,7 @@ export async function simularRealizadoLocalRapido({
   const modo = modoSimulacao === 'completo' ? 'completo' : 'rapido';
   const rankingCalculado = modo === 'completo';
   const gradeNormalizada = normalizarGradeFrete(gradeFrete);
-  const { index, stats } = construirIndiceFretesPorRota(transportadoras, municipios);
+  const { index, indexPorRota, stats } = construirIndiceFretesPorRota(transportadoras, municipios);
   const detalhes = [];
   const foraMalha = [];
   const porUfMap = new Map();
@@ -1063,11 +1092,13 @@ export async function simularRealizadoLocalRapido({
     const cte = realizados[i];
     const canalCte = categoriaCanalRealizado(cte.canal);
     const gradeCanal = gradeNormalizada[normalizarCanalGrade(canalCte)] || [];
-    const key = `${canalCte}|${cte.chaveRotaIbge}`;
-    const candidatos = index.get(key) || [];
+    const chaveRotaNormalizada = normalizeChaveRotaRealizado(cte.chaveRotaIbge, cte.ibgeOrigem, cte.ibgeDestino);
+    const key = `${canalCte}|${chaveRotaNormalizada}`;
+    const candidatosDiretos = index.get(key) || [];
+    const candidatos = candidatosDiretos.length ? candidatosDiretos : (indexPorRota.get(chaveRotaNormalizada) || []);
 
-    if (!cte.chaveRotaIbge || !candidatos.length) {
-      foraMalha.push({ ...cte, motivo: cte.chaveRotaIbge ? 'Rota não encontrada nas tabelas cadastradas' : 'CT-e sem chave IBGE origem-destino' });
+    if (!chaveRotaNormalizada || !candidatos.length) {
+      foraMalha.push({ ...cte, chaveRotaIbge: chaveRotaNormalizada || cte.chaveRotaIbge, motivo: chaveRotaNormalizada ? 'Rota não encontrada nas tabelas cadastradas' : 'CT-e sem chave IBGE origem-destino' });
     } else {
       const candidatosDaSimulada = candidatos.filter((item) => transportadoraMatch(item.transportadora?.nome, nomeTransportadora, { exato: true }));
 

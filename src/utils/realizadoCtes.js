@@ -227,14 +227,34 @@ function pick(row, keys) {
   return '';
 }
 
+const CANAIS_ATACADO_REALIZADO = ['ATACADO', 'B2B', 'B 2 B', 'CANTU', 'CANTU PNEUS', 'CANTU STORE'];
+
+const CANAIS_B2C_REALIZADO = [
+  'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
+  'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET',
+  'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO',
+  'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE',
+];
+
+function contemCanalNormalizado(texto, lista = []) {
+  return lista.some((item) => texto === item || texto.includes(item));
+}
+
 function normalizeCanal(row = {}) {
-  const canal = pick(row, ['canalVendas', 'canal', 'canais']);
-  const text = normalizeTextRealizado(canal).toUpperCase();
-  if (text.includes('B2C')) return 'B2C';
-  if (text.includes('B2B')) return 'B2B';
-  if (text.includes('ATACADO')) return 'ATACADO';
-  if (text.includes('INTERCOMPANY')) return 'INTERCOMPANY';
-  return text || '';
+  const textos = ['canalVendas', 'canal', 'canais']
+    .map((key) => normalizeTextRealizado(row[key]).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  if (!textos.length) return '';
+
+  // Prioridade da regra: tudo que vier como B2B/Atacado deve ser ATACADO,
+  // mesmo que outro campo da mesma linha tenha uma descrição genérica de B2C/marketplace.
+  if (textos.some((text) => text.includes('INTERCOMPANY'))) return 'INTERCOMPANY';
+  if (textos.some((text) => text.includes('REVERSA'))) return 'REVERSA';
+  if (textos.some((text) => contemCanalNormalizado(text, CANAIS_ATACADO_REALIZADO))) return 'ATACADO';
+  if (textos.some((text) => contemCanalNormalizado(text, CANAIS_B2C_REALIZADO))) return 'B2C';
+
+  return textos[0] || '';
 }
 
 function normalizeRowObject(row = {}) {
@@ -313,6 +333,7 @@ function normalizeRegistro(row = {}, arquivoOrigem = '') {
     volume: toNumberRealizado(item.volume),
     canais: normalizeTextRealizado(item.canais),
     canalVendas: normalizeTextRealizado(item.canalVendas),
+    canalOriginal: normalizeTextRealizado(item.canal || item.canalVendas || item.canais),
     canal: normalizeCanal(item),
     valorNF: toNumberRealizado(item.valorNF),
     percentualFrete: toNumberRealizado(item.percentualFrete),

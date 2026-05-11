@@ -956,9 +956,13 @@ function parseRouteKeysDb(routeKeys = []) {
     const texto = String(raw || '').trim();
     if (!texto) return;
     const [canalRaw, rotaRaw] = texto.includes('|') ? texto.split('|') : ['', texto];
-    const [origemRaw, destinoRaw] = String(rotaRaw || '').split('-');
-    const ibgeOrigem = String(origemRaw || '').replace(/\D/g, '');
-    const ibgeDestino = String(destinoRaw || '').replace(/\D/g, '');
+    const partes = String(rotaRaw || '')
+      .split(/[^0-9]+/g)
+      .map((item) => String(item || '').replace(/\D/g, '').slice(0, 7))
+      .filter((item) => item.length >= 6);
+    const digits = String(rotaRaw || '').replace(/\D/g, '');
+    const ibgeOrigem = partes[0] || (digits.length >= 14 ? digits.slice(0, 7) : '');
+    const ibgeDestino = partes[1] || (digits.length >= 14 ? digits.slice(7, 14) : '');
     if (!ibgeOrigem || !ibgeDestino) return;
     const canal = categoriaCanalDb(canalRaw);
     const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
@@ -1424,7 +1428,6 @@ const CANAIS_B2C_DB = [
   'B2W',
   'MAGAZINE LUIZA',
   'CARREFOUR',
-  'CANTU PNEUS',
   'GPA',
   'COLOMBO',
   'AMAZON',
@@ -1442,12 +1445,17 @@ const CANAIS_B2C_DB = [
   'MARKETPLACE',
   'MARKET PLACE',
   'ECOMMERCE',
+  'E COMMERCE',
   'E-COMMERCE',
 ];
 
 const CANAIS_ATACADO_DB = [
   'ATACADO',
   'B2B',
+  'B 2 B',
+  'CANTU',
+  'CANTU PNEUS',
+  'CANTU STORE',
 ];
 
 function contemCanalDb(canal, lista = []) {
@@ -1455,7 +1463,7 @@ function contemCanalDb(canal, lista = []) {
 }
 
 function categoriaCanalDb(value) {
-  const canal = normalizarCanalDb(value);
+  const canal = normalizarCanalDb(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';

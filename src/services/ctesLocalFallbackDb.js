@@ -157,13 +157,25 @@ export async function listarRealizadoLocal(filtros = {}, options = {}) {
   return { rows, avaliados };
 }
 
+const CANAIS_ATACADO_CTES = ['ATACADO', 'B2B', 'B 2 B', 'CANTU', 'CANTU PNEUS', 'CANTU STORE'];
+const CANAIS_B2C_CTES = [
+  'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
+  'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET',
+  'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO',
+  'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE',
+];
+
+function canalContem(canal, lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
+}
+
 function normalizeCanalParaMalha(value) {
-  const canal = normalize(value);
+  const canal = normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (['ATACADO', 'B2B'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
-  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'CANTU PNEUS', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO', 'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE'].some((item) => canal === item || canal.includes(item))) return 'B2C';
+  if (canalContem(canal, CANAIS_ATACADO_CTES)) return 'ATACADO';
+  if (canalContem(canal, CANAIS_B2C_CTES)) return 'B2C';
   return canal;
 }
 

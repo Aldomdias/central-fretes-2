@@ -99,11 +99,28 @@ function getChaveCte(row = {}) {
   return fallback ? `cte-sem-chave-${fallback}` : '';
 }
 
+function resolverCanalDbRow(row = {}) {
+  const canalOriginal = cleanText(row.canal_original ?? row.canalOriginal ?? row.raw?.canal_original ?? row.raw?.canalOriginal ?? row.raw?.canalVendas ?? row.raw?.canais);
+  const canalAtual = cleanText(row.canal);
+  const normalOriginal = normalizeCanalParaMalha(canalOriginal);
+  const normalAtual = normalizeCanalParaMalha(canalAtual);
+
+  // Prioridade para B2B/ATACADO quando algum campo forte trouxer essa informação.
+  // Isso corrige bases antigas onde o canal gravado ficou B2C, mas o original era B2B.
+  if (normalOriginal === 'ATACADO' || normalAtual === 'ATACADO') return 'ATACADO';
+  if (normalOriginal === 'INTERCOMPANY' || normalAtual === 'INTERCOMPANY') return 'INTERCOMPANY';
+  if (normalOriginal === 'REVERSA' || normalAtual === 'REVERSA') return 'REVERSA';
+  if (normalOriginal === 'B2C' || normalAtual === 'B2C') return 'B2C';
+  return normalAtual || normalOriginal || canalAtual || canalOriginal || '';
+}
+
 function fromDbRow(row = {}) {
   const ibgeOrigem = cleanText(row.ibge_origem ?? row.ibgeOrigem);
   const ibgeDestino = cleanText(row.ibge_destino ?? row.ibgeDestino);
   const dataEmissao = getDataRef(row);
   const peso = toNumber(row.peso ?? Math.max(toNumber(row.peso_declarado), toNumber(row.peso_cubado)));
+  const canalOriginal = cleanText(row.canal_original ?? row.canalOriginal ?? row.canal);
+  const canalClassificado = resolverCanalDbRow(row);
   return {
     id: row.id,
     arquivoOrigem: row.arquivo_origem ?? row.arquivoOrigem ?? '',
@@ -114,8 +131,8 @@ function fromDbRow(row = {}) {
     numeroCte: cleanText(row.numero_cte ?? row.numeroCte),
     transportadora: cleanText(row.transportadora),
     cnpjTransportadora: cleanText(row.cnpj_transportadora ?? row.cnpjTransportadora),
-    canal: cleanText(row.canal),
-    canalOriginal: cleanText(row.canal_original ?? row.canalOriginal),
+    canal: canalClassificado,
+    canalOriginal,
     cidadeOrigem: cleanText(row.cidade_origem ?? row.cidadeOrigem),
     ufOrigem: cleanUf(row.uf_origem ?? row.ufOrigem),
     ibgeOrigem,
@@ -154,7 +171,7 @@ function toDbRow(row = {}) {
     numero_cte: cleanText(row.numeroCte ?? row.numero_cte),
     transportadora: cleanText(row.transportadora),
     cnpj_transportadora: cleanText(row.cnpjTransportadora ?? row.cnpj_transportadora),
-    canal: cleanText(row.canal),
+    canal: normalizeCanalParaMalha(row.canal || row.canalOriginal || row.canal_original),
     canal_original: cleanText(row.canalOriginal ?? row.canal_original),
     cidade_origem: cleanText(row.cidadeOrigem ?? row.cidade_origem),
     uf_origem: cleanUf(row.ufOrigem ?? row.uf_origem),
@@ -195,7 +212,7 @@ function getCanalServerVariants(value) {
   if (!canal) return [];
 
   if (canal === 'ATACADO') {
-    return ['ATACADO', 'B2B', 'CANTU', 'CANTU PNEUS'];
+    return ['ATACADO', 'B2B', 'B 2 B', 'CANTU', 'CANTU PNEUS', 'CANTU STORE'];
   }
 
   if (canal === 'B2C') {
@@ -205,7 +222,7 @@ function getCanalServerVariants(value) {
       'Carrefour', 'CARREFOUR', 'GPA', 'Colombo', 'COLOMBO', 'Amazon', 'AMAZON',
       'Inter', 'INTER', 'AnyMarket', 'ANYMARKET', 'Bradesco Shop', 'BRADESCO SHOP',
       'Itaú Shop', 'ITAU SHOP', 'Shopee', 'SHOPEE', 'Livelo', 'LIVELO',
-      'Marketplace/E-commerce', 'MARKETPLACE', 'E-COMMERCE', 'ECOMMERCE',
+      'Marketplace/E-commerce', 'MARKETPLACE', 'MARKET PLACE', 'E-COMMERCE', 'E COMMERCE', 'ECOMMERCE',
     ];
   }
 
@@ -234,9 +251,12 @@ function applyServerFilters(query, filtros = {}) {
   if (filtros.inicio) q = q.gte('data_emissao', `${filtros.inicio}T00:00:00`);
   if (filtros.fim) q = q.lte('data_emissao', `${filtros.fim}T23:59:59`);
   if (filtros.canal) {
-    const variantesCanal = getCanalServerVariants(filtros.canal);
-    if (variantesCanal.length > 1) q = q.in('canal', variantesCanal);
-    else if (variantesCanal.length === 1) q = q.eq('canal', variantesCanal[0]);
+    const canalNormalizado = normalizeCanalParaMalha(filtros.canal);
+    // Para ATACADO/B2C, não filtramos só no banco: bases antigas podem estar com canal errado
+    // e canal_original correto. O filtro final é aplicado em filtrarCteLocal após normalizar.
+    if (canalNormalizado && !['ATACADO', 'B2C'].includes(canalNormalizado)) {
+      q = q.eq('canal', filtros.canal);
+    }
   }
   if (filtros.transportadoraRealizada) q = q.ilike('transportadora', `%${filtros.transportadoraRealizada}%`);
   if (filtros.ufOrigem) q = q.eq('uf_origem', cleanUf(filtros.ufOrigem));
@@ -287,14 +307,26 @@ async function fetchRowsSupabase(filtros = {}, options = {}) {
   return { rows, totalCompativel: rows.length, limit, avaliados };
 }
 
+const CANAIS_ATACADO_CTES = ['ATACADO', 'B2B', 'B 2 B', 'CANTU', 'CANTU PNEUS', 'CANTU STORE'];
+const CANAIS_B2C_CTES = [
+  'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
+  'CARREFOUR', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET',
+  'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO',
+  'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E COMMERCE', 'E-COMMERCE',
+];
+
+function canalContem(canal, lista = []) {
+  return lista.some((item) => canal === item || canal.includes(item));
+}
+
 function normalizeCanalParaMalha(value) {
-  const canal = normalize(value);
+  const canal = normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!canal) return '';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
-  if (canal.includes('CANTU')) return 'ATACADO';
-  if (['ATACADO', 'B2B'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';
-  if (['B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA', 'CARREFOUR', 'CANTU PNEUS', 'GPA', 'COLOMBO', 'AMAZON', 'INTER', 'ANYMARKET', 'ANY MARKET', 'BRADESCO SHOP', 'ITAU SHOP', 'ITAÚ SHOP', 'SHOPEE', '99', 'MUSTANG', 'LIVELO', 'COOPERA', 'MARKETPLACE', 'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE'].some((item) => canal === item || canal.includes(item))) return 'B2C';
+  // B2B é sempre ATACADO no CTes. Essa regra vem antes de qualquer B2C.
+  if (canalContem(canal, CANAIS_ATACADO_CTES)) return 'ATACADO';
+  if (canalContem(canal, CANAIS_B2C_CTES)) return 'B2C';
   return canal;
 }
 
@@ -439,6 +471,13 @@ export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = 
 export async function resumirRealizadoLocal(filtros = {}, options = {}) {
   if (shouldUseFallback()) return localFallback.resumirRealizadoLocal(filtros, options);
   const supabase = getClient();
+
+  const canalNormalizado = normalizeCanalParaMalha(filtros.canal);
+  if (canalNormalizado && ['ATACADO', 'B2C'].includes(canalNormalizado)) {
+    const base = await fetchRowsSupabase(filtros, { limit: Number(options.limit || 50000) });
+    return resumoFromRows(base.rows, options);
+  }
+
   const params = {
     p_competencia: filtros.competencia || null,
     p_inicio: filtros.inicio || null,
