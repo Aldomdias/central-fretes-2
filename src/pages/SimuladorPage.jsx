@@ -19,12 +19,21 @@ async function buscarRealizadoLocalCtes(filtros = {}) {
   if (!isSupabaseConfigured()) return [];
   const supabase = getSupabaseClient();
   const limit = Math.min(Number(filtros.limit) || 5000, 50000);
-  let query = supabase.from('realizado_local_ctes').select('*').limit(limit);
+  let query = supabase
+    .from('realizado_local_ctes')
+    .select('*')
+    .order('data_emissao', { ascending: false })
+    .limit(limit);
+
+  if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
   if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem + '%');
+  if (filtros.destino) query = query.ilike('cidade_destino', filtros.destino + '%');
+  if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+
   const { data, error } = await query;
   if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
   return (data || []).map(r => ({
@@ -507,6 +516,352 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
   };
 }
 
+function normalizarChaveSimulador(valor = '') {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function periodoRealizadoDias(rows = [], inicio = '', fim = '') {
+  const datas = rows
+    .map((row) => String(row.dataEmissao || '').slice(0, 10))
+    .filter(Boolean)
+    .sort();
+  const dataInicio = inicio || datas[0];
+  const dataFim = fim || datas[datas.length - 1];
+  if (!dataInicio || !dataFim) return 1;
+  const ini = new Date(`${dataInicio}T00:00:00`);
+  const end = new Date(`${dataFim}T00:00:00`);
+  const dias = Math.round((end - ini) / 86400000) + 1;
+  return Math.max(Number.isFinite(dias) ? dias : 1, 1);
+}
+
+function periodoRealizadoMeses(rows = [], inicio = '', fim = '') {
+  const datas = rows
+    .map((row) => String(row.dataEmissao || '').slice(0, 10))
+    .filter(Boolean)
+    .sort();
+  const dataInicio = inicio || datas[0];
+  const dataFim = fim || datas[datas.length - 1];
+  if (!dataInicio || !dataFim) return 1;
+  const ini = new Date(`${dataInicio}T00:00:00`);
+  const end = new Date(`${dataFim}T00:00:00`);
+  const meses = (end.getFullYear() - ini.getFullYear()) * 12 + (end.getMonth() - ini.getMonth()) + 1;
+  return Math.max(Number.isFinite(meses) ? meses : 1, 1);
+}
+
+function criarResumoRotaRealizado(row, itemSelecionada, vencedor, resultado, economiaSelecionadaVsReal, reducaoNecessaria, diferencaVencedor) {
+  return {
+    origem: row.cidadeOrigem || '',
+    ufOrigem: row.ufOrigem || '',
+    destino: row.cidadeDestino || '',
+    ufDestino: row.ufDestino || '',
+    ibgeDestino: row.ibgeDestino || '',
+    tipo: getTipoVeiculo(row),
+    ctes: 0,
+    volumes: 0,
+    peso: 0,
+    valorNF: 0,
+    freteRealizado: 0,
+    freteSelecionada: 0,
+    freteVencedor: 0,
+    savingSelecionada: 0,
+    savingVencedor: 0,
+    diferencaParaVencedor: 0,
+    reducaoNecessariaSoma: 0,
+    qtdComSelecionada: 0,
+    qtdPerdidasSelecionada: 0,
+    qtdGanhasSelecionada: 0,
+    qtdSemTabelaSelecionada: 0,
+    qtdSemTabelaGeral: 0,
+    concorrentesSoma: 0,
+    vencedores: new Map(),
+    exemploVencedor: vencedor?.transportadora || '',
+    exemploRankingSelecionada: itemSelecionada?.ranking || '',
+    exemploReducao: reducaoNecessaria,
+    exemploDiferenca: diferencaVencedor,
+  };
+}
+
+function finalizarResumoRotaRealizado(item) {
+  const vencedores = [...item.vencedores.entries()]
+    .map(([transportadora, qtd]) => ({ transportadora, qtd }))
+    .sort((a, b) => b.qtd - a.qtd);
+
+  const mediaReducao = item.qtdPerdidasSelecionada
+    ? item.reducaoNecessariaSoma / item.qtdPerdidasSelecionada
+    : 0;
+
+  return {
+    ...item,
+    rota: `${item.origem}${item.ufOrigem ? `/${item.ufOrigem}` : ''} → ${item.destino}${item.ufDestino ? `/${item.ufDestino}` : ''}`,
+    percentualFreteRealizado: item.valorNF ? (item.freteRealizado / item.valorNF) * 100 : 0,
+    ticketMedioRealizado: item.ctes ? item.freteRealizado / item.ctes : 0,
+    ticketMedioSelecionada: item.qtdComSelecionada ? item.freteSelecionada / item.qtdComSelecionada : 0,
+    ticketMedioVencedor: item.ctes ? item.freteVencedor / item.ctes : 0,
+    reducaoMediaNecessaria: mediaReducao,
+    concorrentesMedio: item.ctes ? item.concorrentesSoma / item.ctes : 0,
+    principalVencedor: vencedores[0]?.transportadora || item.exemploVencedor || '-',
+    oportunidade: Math.max(item.savingSelecionada, 0) + Math.max(item.diferencaParaVencedor, 0),
+    vencedores,
+  };
+}
+
+function gerarLaudoTextoRealizado(resumo, transportadora) {
+  if (!resumo) return [];
+  const linhas = [];
+  linhas.push(`A transportadora ${transportadora || 'selecionada'} participou da simulação em ${resumo.ctesComTabelaSelecionada} CT-es de ${resumo.ctesAnalisados} analisados.`);
+  linhas.push(`Ela ganharia ${resumo.ctesGanhariaSelecionada} CT-es (${formatPercent(resumo.aderenciaSelecionada)}) e perderia ${resumo.ctesPerdidosSelecionada} CT-es para concorrentes mais baratos.`);
+  linhas.push(`A projeção de faturamento pela tabela selecionada é ${formatMoney(resumo.faturamentoSelecionadaMes)} por mês e ${formatMoney(resumo.faturamentoSelecionadaAno)} em 12 meses.`);
+  linhas.push(`O saving potencial contra o frete realizado é ${formatMoney(resumo.savingSelecionadaVsReal)} no período, projetando ${formatMoney(resumo.savingSelecionadaVsRealAno)} em 12 meses.`);
+  linhas.push(`Nas rotas perdidas, a redução média necessária para virar ganhadora é de ${formatPercent(resumo.reducaoMediaNecessaria)}.`);
+  return linhas;
+}
+
+function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade }) {
+  const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
+  const rotasMap = new Map();
+  const transportadorasMap = new Map();
+  const ctesDetalhes = [];
+  const dias = periodoRealizadoDias(rows, filtros.inicio, filtros.fim);
+  const meses = periodoRealizadoMeses(rows, filtros.inicio, filtros.fim);
+
+  let ctesAnalisados = 0;
+  let ctesSimulados = 0;
+  let ctesComTabelaSelecionada = 0;
+  let ctesGanhariaSelecionada = 0;
+  let ctesPerdidosSelecionada = 0;
+  let ctesSemTabelaSelecionada = 0;
+  let ctesSemTabelaGeral = 0;
+  let freteRealizado = 0;
+  let freteRealizadoComTabelaSelecionada = 0;
+  let freteSelecionada = 0;
+  let freteVencedor = 0;
+  let valorNF = 0;
+  let peso = 0;
+  let volumes = 0;
+  let savingSelecionadaVsReal = 0;
+  let savingVencedorVsReal = 0;
+  let diferencaSelecionadaVsVencedor = 0;
+  let reducaoNecessariaSoma = 0;
+
+  (rows || []).forEach((row) => {
+    ctesAnalisados += 1;
+    const valorCte = numeroRealizado(row.valorCte);
+    const nf = numeroRealizado(row.valorNF);
+    const pesoLinha = pesoRealizado(row);
+    const vol = numeroRealizado(row.qtdVolumes);
+    const origem = row.cidadeOrigem || filtros.origem || '';
+    const canal = row.canal || filtros.canal || 'ATACADO';
+    let destino = String(row.ibgeDestino || '').trim();
+
+    if (!destino && municipioPorCidade) {
+      const cidadeNorm = normalizeBuscaIbge(row.cidadeDestino || '');
+      const cidadeUfNorm = normalizeBuscaIbge(`${row.cidadeDestino || ''}/${row.ufDestino || ''}`);
+      const municipio = municipioPorCidade.get(cidadeUfNorm) || municipioPorCidade.get(cidadeNorm);
+      destino = municipio?.ibge || '';
+    }
+
+    freteRealizado += valorCte;
+    valorNF += nf;
+    peso += pesoLinha;
+    volumes += vol;
+
+    const chaveTransportadoraReal = normalizarChaveSimulador(row.transportadora || 'Sem transportadora');
+    if (!transportadorasMap.has(chaveTransportadoraReal)) {
+      transportadorasMap.set(chaveTransportadoraReal, {
+        transportadora: row.transportadora || 'Sem transportadora',
+        ctes: 0,
+        frete: 0,
+        valorNF: 0,
+        peso: 0,
+        volumes: 0,
+      });
+    }
+    const metricaReal = transportadorasMap.get(chaveTransportadoraReal);
+    metricaReal.ctes += 1;
+    metricaReal.frete += valorCte;
+    metricaReal.valorNF += nf;
+    metricaReal.peso += pesoLinha;
+    metricaReal.volumes += vol;
+
+    if (!destino) {
+      ctesSemTabelaGeral += 1;
+      return;
+    }
+
+    const gradeCanal = gradePorCanal[canal] || gradePorCanal.ATACADO || [];
+    const resultado = simularSimples({
+      transportadoras: baseOnline,
+      origem,
+      canal,
+      peso: pesoLinha,
+      valorNF: nf,
+      cubagem: cubagemRealizado(row),
+      destinoCodigo: destino,
+      cidadePorIbge,
+      gradeCanal,
+    }) || [];
+
+    const vencedor = resultado[0] || null;
+    if (!vencedor) {
+      ctesSemTabelaGeral += 1;
+      return;
+    }
+
+    ctesSimulados += 1;
+    const itemSelecionada = resultado.find((item) => normalizarTransportadoraSimulador(item.transportadora) === nomeSelecionadoNorm) || null;
+    const freteVenc = numeroRealizado(vencedor.total);
+    freteVencedor += freteVenc;
+    savingVencedorVsReal += Math.max(valorCte - freteVenc, 0);
+
+    let freteSel = 0;
+    let economiaSelecionadaVsReal = 0;
+    let diferencaVencedor = 0;
+    let reducaoNecessaria = 0;
+    let statusSelecionada = 'Sem tabela';
+
+    if (itemSelecionada) {
+      ctesComTabelaSelecionada += 1;
+      freteSel = numeroRealizado(itemSelecionada.total);
+      freteSelecionada += freteSel;
+      freteRealizadoComTabelaSelecionada += valorCte;
+      economiaSelecionadaVsReal = Math.max(valorCte - freteSel, 0);
+      savingSelecionadaVsReal += economiaSelecionadaVsReal;
+
+      if (Number(itemSelecionada.ranking) === 1) {
+        ctesGanhariaSelecionada += 1;
+        statusSelecionada = 'Ganharia';
+      } else {
+        ctesPerdidosSelecionada += 1;
+        statusSelecionada = 'Perderia';
+        diferencaVencedor = Math.max(freteSel - freteVenc, 0);
+        diferencaSelecionadaVsVencedor += diferencaVencedor;
+        reducaoNecessaria = freteSel ? (diferencaVencedor / freteSel) * 100 : 0;
+        reducaoNecessariaSoma += reducaoNecessaria;
+      }
+    } else {
+      ctesSemTabelaSelecionada += 1;
+    }
+
+    const chaveRota = [origem, row.ufOrigem, row.cidadeDestino, row.ufDestino, getTipoVeiculo(row)].map(normalizarChaveSimulador).join('|');
+    const rota = rotasMap.get(chaveRota) || criarResumoRotaRealizado(row, itemSelecionada, vencedor, resultado, economiaSelecionadaVsReal, reducaoNecessaria, diferencaVencedor);
+    rota.ctes += 1;
+    rota.volumes += vol;
+    rota.peso += pesoLinha;
+    rota.valorNF += nf;
+    rota.freteRealizado += valorCte;
+    rota.freteSelecionada += freteSel;
+    rota.freteVencedor += freteVenc;
+    rota.savingSelecionada += economiaSelecionadaVsReal;
+    rota.savingVencedor += Math.max(valorCte - freteVenc, 0);
+    rota.diferencaParaVencedor += diferencaVencedor;
+    rota.concorrentesSoma += resultado.length;
+
+    if (itemSelecionada) {
+      rota.qtdComSelecionada += 1;
+      if (Number(itemSelecionada.ranking) === 1) rota.qtdGanhasSelecionada += 1;
+      else rota.qtdPerdidasSelecionada += 1;
+    } else {
+      rota.qtdSemTabelaSelecionada += 1;
+    }
+
+    if (!resultado.length) rota.qtdSemTabelaGeral += 1;
+    if (reducaoNecessaria) rota.reducaoNecessariaSoma += reducaoNecessaria;
+    const vencedorNome = vencedor?.transportadora || 'Sem vencedor';
+    rota.vencedores.set(vencedorNome, (rota.vencedores.get(vencedorNome) || 0) + 1);
+    rotasMap.set(chaveRota, rota);
+
+    ctesDetalhes.push({
+      cte: row.numeroCte || row.chaveCte || '',
+      data: row.dataEmissao || '',
+      origem,
+      ufOrigem: row.ufOrigem || '',
+      destino: row.cidadeDestino || vencedor?.cidadeDestino || '',
+      ufDestino: row.ufDestino || vencedor?.ufDestino || '',
+      canal,
+      transportadoraReal: row.transportadora || '',
+      freteRealizado: valorCte,
+      freteSelecionada: freteSel,
+      vencedor: vencedor?.transportadora || '',
+      freteVencedor: freteVenc,
+      statusSelecionada,
+      rankingSelecionada: itemSelecionada?.ranking || '',
+      reducaoNecessaria,
+      savingSelecionada: economiaSelecionadaVsReal,
+      diferencaParaVencedor: diferencaVencedor,
+      concorrentes: resultado.length,
+    });
+  });
+
+  const rotas = [...rotasMap.values()]
+    .map(finalizarResumoRotaRealizado)
+    .sort((a, b) => b.oportunidade - a.oportunidade || b.ctes - a.ctes || b.freteRealizado - a.freteRealizado);
+
+  const porTransportadoraReal = [...transportadorasMap.values()]
+    .map((item) => ({
+      ...item,
+      pctCtes: ctesAnalisados ? (item.ctes / ctesAnalisados) * 100 : 0,
+      pctFrete: freteRealizado ? (item.frete / freteRealizado) * 100 : 0,
+      percentualFrete: item.valorNF ? (item.frete / item.valorNF) * 100 : 0,
+    }))
+    .sort((a, b) => b.frete - a.frete || b.ctes - a.ctes);
+
+  const reducaoMediaNecessaria = ctesPerdidosSelecionada ? reducaoNecessariaSoma / ctesPerdidosSelecionada : 0;
+  const aderenciaSelecionada = ctesComTabelaSelecionada ? (ctesGanhariaSelecionada / ctesComTabelaSelecionada) * 100 : 0;
+  const faturamentoSelecionadaMes = meses ? freteSelecionada / meses : freteSelecionada;
+  const faturamentoSelecionadaAno = faturamentoSelecionadaMes * 12;
+  const savingSelecionadaVsRealMes = meses ? savingSelecionadaVsReal / meses : savingSelecionadaVsReal;
+  const savingSelecionadaVsRealAno = savingSelecionadaVsRealMes * 12;
+  const freteRealizadoMes = meses ? freteRealizado / meses : freteRealizado;
+  const freteRealizadoAno = freteRealizadoMes * 12;
+
+  const resumo = {
+    ctesAnalisados,
+    ctesSimulados,
+    ctesComTabelaSelecionada,
+    ctesGanhariaSelecionada,
+    ctesPerdidosSelecionada,
+    ctesSemTabelaSelecionada,
+    ctesSemTabelaGeral,
+    freteRealizado,
+    freteRealizadoComTabelaSelecionada,
+    freteSelecionada,
+    freteVencedor,
+    valorNF,
+    peso,
+    volumes,
+    dias,
+    meses,
+    cargasDia: ctesAnalisados / dias,
+    volumesDia: volumes / dias,
+    freteRealizadoMes,
+    freteRealizadoAno,
+    faturamentoSelecionadaMes,
+    faturamentoSelecionadaAno,
+    savingSelecionadaVsReal,
+    savingSelecionadaVsRealMes,
+    savingSelecionadaVsRealAno,
+    savingVencedorVsReal,
+    diferencaSelecionadaVsVencedor,
+    reducaoMediaNecessaria,
+    aderenciaSelecionada,
+    percentualFreteRealizado: valorNF ? (freteRealizado / valorNF) * 100 : 0,
+    percentualSavingSelecionada: freteRealizadoComTabelaSelecionada ? (savingSelecionadaVsReal / freteRealizadoComTabelaSelecionada) * 100 : 0,
+    rotas,
+    porTransportadoraReal,
+    ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor).slice(0, 300),
+  };
+
+  return {
+    ...resumo,
+    laudo: gerarLaudoTextoRealizado(resumo, transportadoraSelecionada),
+  };
+}
+
 export default function SimuladorPage({ transportadoras = [] }) {
   const [aba, setAba] = useState('simples');
   const [grade, setGrade] = useState(getGradeInicial());
@@ -622,6 +977,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [fimOrigem, setFimOrigem] = useState('');
   const [usarRealizadoOrigem, setUsarRealizadoOrigem] = useState(true);
   const [resultadoOrigem, setResultadoOrigem] = useState(null);
+
+  const [transportadoraRealizado, setTransportadoraRealizado] = useState('');
+  const [canalRealizado, setCanalRealizado] = useState(canais[0] || 'ATACADO');
+  const [modoRealizado, setModoRealizado] = useState('malha');
+  const [origemRealizado, setOrigemRealizado] = useState('');
+  const [destinoRealizado, setDestinoRealizado] = useState('');
+  const [ufOrigemRealizado, setUfOrigemRealizado] = useState('');
+  const [ufDestinoRealizado, setUfDestinoRealizado] = useState('');
+  const [inicioRealizado, setInicioRealizado] = useState('');
+  const [fimRealizado, setFimRealizado] = useState('');
+  const [limiteRealizado, setLimiteRealizado] = useState(10000);
+  const [resultadoRealizado, setResultadoRealizado] = useState(null);
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
@@ -776,7 +1143,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
     if (!canalAnalise && canais[0]) setCanalAnalise(canais[0]);
     if (!canalCobertura && canais[0]) setCanalCobertura(canais[0]);
     if (!canalOrigem && canais[0]) setCanalOrigem(canais[0]);
-  }, [canalSimples, canalTransportadora, canalAnalise, canalCobertura, canalOrigem, canais]);
+    if (!canalRealizado && canais[0]) setCanalRealizado(canais[0]);
+  }, [canalSimples, canalTransportadora, canalAnalise, canalCobertura, canalOrigem, canalRealizado, canais]);
 
   const todasTransportadorasDisponiveis = useMemo(() => (
     opcoesOnline.transportadoras?.length ? opcoesOnline.transportadoras : transportadoras.map((item) => item.nome).sort()
@@ -797,6 +1165,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const transportadorasPorCanalCobertura = useMemo(
     () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras),
     [todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras]
+  );
+
+  const transportadorasPorCanalRealizado = useMemo(
+    () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalRealizado, opcoesOnline, transportadoras),
+    [todasTransportadorasDisponiveis, canalRealizado, opcoesOnline, transportadoras]
   );
 
   const origensAnaliseDisponiveis = useMemo(() => {
@@ -825,6 +1198,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return todasOrigens;
   }, [opcoesOnline.origensPorCanal, canalOrigem, todasOrigens]);
 
+  const origensRealizadoDisponiveis = useMemo(() => {
+    const porTransportadora = opcoesOnline.origensPorTransportadora?.[transportadoraRealizado];
+    if (porTransportadora?.length) return porTransportadora;
+
+    const porCanal = opcoesOnline.origensPorCanal?.[canalRealizado];
+    if (porCanal?.length) return porCanal;
+
+    const selecionada = transportadoras.find((item) => item.nome === transportadoraRealizado);
+    if (selecionada) {
+      return [...new Set((selecionada.origens || [])
+        .filter((origem) => !canalRealizado || (origem.canal || 'ATACADO') === canalRealizado)
+        .map((origem) => origem.cidade)
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    }
+
+    return todasOrigens;
+  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraRealizado, canalRealizado, transportadoras, todasOrigens]);
+
   useEffect(() => {
     if (transportadora && transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
       setTransportadora('');
@@ -843,6 +1235,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       setTransportadoraCobertura('');
     }
   }, [transportadorasPorCanalCobertura, transportadoraCobertura]);
+
+  useEffect(() => {
+    if (transportadoraRealizado && transportadorasPorCanalRealizado.length && !transportadorasPorCanalRealizado.includes(transportadoraRealizado)) {
+      setTransportadoraRealizado('');
+      setOrigemRealizado('');
+    }
+  }, [transportadorasPorCanalRealizado, transportadoraRealizado]);
 
 
   const origensTransportadora = useMemo(() => {
@@ -1136,6 +1535,157 @@ export default function SimuladorPage({ transportadoras = [] }) {
     downloadCsv(nomeArquivo, csv);
   };
 
+  const onSimularRealizado = async () => {
+    if (!transportadoraRealizado) {
+      setErroSimulacao('Selecione a transportadora/tabela que será simulada no realizado.');
+      return;
+    }
+
+    if (!inicioRealizado && !fimRealizado && !origemRealizado && !ufDestinoRealizado && modoRealizado !== 'malha') {
+      setErroSimulacao('Informe pelo menos período, origem ou UF destino para evitar uma busca muito ampla no realizado.');
+      return;
+    }
+
+    iniciarProcessamentoUi('Simulador do realizado', 'Buscando malha da transportadora e concorrentes...', 8);
+
+    try {
+      const filtrosBase = {
+        nomeTransportadora: transportadoraRealizado,
+        canal: canalRealizado,
+        origem: modoRealizado === 'filtros' ? origemRealizado : '',
+        ufDestino: ufDestinoRealizado,
+      };
+
+      const baseOnline = await carregarBaseOnline(filtrosBase);
+      if (!baseOnline.length) {
+        setErroSimulacao('Não encontrei tabela/malha para a transportadora selecionada com esses filtros.');
+        finalizarProcessamentoUi('Sem base de tabela', 'A transportadora não possui malha compatível nos filtros.', 100);
+        return;
+      }
+
+      const lookupOnline = buildLookupTables(baseOnline);
+      const mapaCidades = new Map(cidadePorIbgeCompleto);
+      (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
+
+      atualizarProcessamentoUi('Buscando CT-es realizados conforme período e filtros...', 35);
+      const rowsBrutos = await buscarRealizadoLocalCtes({
+        canal: canalRealizado,
+        origem: origemRealizado,
+        destino: destinoRealizado,
+        ufOrigem: ufOrigemRealizado,
+        ufDestino: ufDestinoRealizado,
+        inicio: inicioRealizado,
+        fim: fimRealizado,
+        limit: limiteRealizado,
+      });
+
+      const origensMalha = new Set(
+        baseOnline.flatMap((t) => (t.origens || []).map((o) => normalizarChaveSimulador(o.cidade))).filter(Boolean)
+      );
+
+      const rowsFiltrados = modoRealizado === 'malha'
+        ? rowsBrutos.filter((row) => origensMalha.has(normalizarChaveSimulador(row.cidadeOrigem)))
+        : rowsBrutos;
+
+      const vinculosSalvos = (() => {
+        try { return JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]'); } catch { return []; }
+      })();
+      const mapaVinculos = new Map(
+        vinculosSalvos.map(v => [
+          String(v.nomeCte || '').trim().toUpperCase(),
+          String(v.nomeTabela || '').trim()
+        ])
+      );
+
+      atualizarProcessamentoUi('Resolvendo IBGE e aplicando vínculos de transportadora...', 55);
+      const rowsComIbge = rowsFiltrados.map((row) => {
+        let ibgeDestino = row.ibgeDestino || '';
+        if (!ibgeDestino) {
+          const cidadeNorm = normalizeBuscaIbge(row.cidadeDestino || '');
+          const cidadeUfNorm = normalizeBuscaIbge((row.cidadeDestino || '') + '/' + (row.ufDestino || ''));
+          const municipio = municipioPorCidade.get(cidadeUfNorm) || municipioPorCidade.get(cidadeNorm);
+          ibgeDestino = municipio?.ibge || '';
+        }
+
+        const nomeOriginal = String(row.transportadora || '').trim();
+        const nomeVinculado = mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
+        return { ...row, ibgeDestino, transportadora: nomeVinculado };
+      });
+
+      atualizarProcessamentoUi('Simulando CT-e a CT-e contra a tabela selecionada...', 74);
+      const resultado = simularRealizadoComTabela({
+        rows: rowsComIbge,
+        baseOnline,
+        transportadoraSelecionada: transportadoraRealizado,
+        filtros: {
+          canal: canalRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufDestinoRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          modo: modoRealizado,
+        },
+        cidadePorIbge: mapaCidades,
+        gradePorCanal: grade,
+        municipioPorCidade,
+      });
+
+      setResultadoRealizado({
+        ...resultado,
+        filtros: {
+          transportadora: transportadoraRealizado,
+          canal: canalRealizado,
+          modo: modoRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufDestinoRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          ctesBrutos: rowsBrutos.length,
+          ctesNaMalha: rowsComIbge.length,
+        },
+      });
+
+      finalizarProcessamentoUi('Simulação do realizado concluída', 'Dossiê gerado com projeção, saving e rotas prioritárias.', 100);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao simular realizado.');
+      finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
+    }
+  };
+
+  const exportarSimuladorRealizado = () => {
+    if (!resultadoRealizado?.rotas?.length) return;
+    const linhas = [
+      ['Resumo', 'Valor'],
+      ['Transportadora simulada', resultadoRealizado.filtros?.transportadora || ''],
+      ['CT-es analisados', resultadoRealizado.ctesAnalisados],
+      ['CT-es simulados', resultadoRealizado.ctesSimulados],
+      ['CT-es com tabela selecionada', resultadoRealizado.ctesComTabelaSelecionada],
+      ['CT-es que ganharia', resultadoRealizado.ctesGanhariaSelecionada],
+      ['CT-es perdidos', resultadoRealizado.ctesPerdidosSelecionada],
+      ['Aderência %', resultadoRealizado.aderenciaSelecionada.toFixed(2)],
+      ['Frete realizado', resultadoRealizado.freteRealizado.toFixed(2)],
+      ['Faturamento tabela selecionada', resultadoRealizado.freteSelecionada.toFixed(2)],
+      ['Faturamento mensal projetado', resultadoRealizado.faturamentoSelecionadaMes.toFixed(2)],
+      ['Faturamento 12 meses projetado', resultadoRealizado.faturamentoSelecionadaAno.toFixed(2)],
+      ['Saving vs realizado', resultadoRealizado.savingSelecionadaVsReal.toFixed(2)],
+      ['Saving 12 meses', resultadoRealizado.savingSelecionadaVsRealAno.toFixed(2)],
+      [],
+      ['Rotas', 'Origem', 'Destino', 'Tipo', 'CT-es', 'Volumes', 'Peso', 'Valor NF', 'Frete realizado', 'Frete tabela selecionada', 'Frete vencedor', 'Saving selecionada', 'Diferença para vencedor', 'Redução média necessária %', 'Principal vencedor', 'Concorrentes médio'],
+      ...resultadoRealizado.rotas.map((item) => [
+        'Rota', item.origem, item.destino, item.tipo, item.ctes, item.volumes, item.peso.toFixed(2), item.valorNF.toFixed(2), item.freteRealizado.toFixed(2), item.freteSelecionada.toFixed(2), item.freteVencedor.toFixed(2), item.savingSelecionada.toFixed(2), item.diferencaParaVencedor.toFixed(2), item.reducaoMediaNecessaria.toFixed(2), item.principalVencedor, item.concorrentesMedio.toFixed(2),
+      ]),
+    ];
+
+    const nomeBase = (resultadoRealizado.filtros?.transportadora || 'realizado').toLowerCase().replace(/[^a-z0-9]+/gi, '-');
+    const { nomeArquivo, csv } = exportarLinhasCsv(`simulador-realizado-${nomeBase}.csv`, linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
 
   const atualizarGradePadrao = () => {
     const novaGrade = restaurarGradeFretePadrao();
@@ -1276,6 +1826,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ['transportadora', 'Simulação por transportadora'],
           ['analise', 'Análise de transportadora'],
           ['origem', 'Análise por origem'],
+          ['realizado', 'Simulador do realizado'],
           ['cobertura', 'Cobertura de tabela'],
         ].map(([id, label]) => (
           <button key={id} className={`sim-tab ${aba === id ? 'active' : ''}`} onClick={() => setAba(id)}>
@@ -1698,6 +2249,249 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </div>
           )}
         </section>
+      )}
+
+      {aba === 'realizado' && (
+        <div className="sim-card">
+          <div className="sim-resultado-topo compact-top">
+            <div>
+              <h2 style={{ margin: 0 }}>Simulador do realizado</h2>
+              <p>
+                Simule uma tabela sobre os CT-es realizados para medir projeção de faturamento, saving, rotas perdidas e redução necessária por rota.
+              </p>
+            </div>
+            <button className="sim-tab" type="button" onClick={exportarSimuladorRealizado} disabled={!resultadoRealizado?.rotas?.length}>
+              Exportar laudo
+            </button>
+          </div>
+
+          <div className="sim-form-grid sim-grid-5">
+            <label>
+              Transportadora / tabela
+              <select value={transportadoraRealizado} onChange={(event) => setTransportadoraRealizado(event.target.value)}>
+                <option value="">Selecione</option>
+                {transportadorasPorCanalRealizado.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+              </select>
+            </label>
+            <label>
+              Canal
+              <select value={canalRealizado} onChange={(event) => setCanalRealizado(event.target.value)}>
+                {canais.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
+              </select>
+            </label>
+            <label>
+              Modo
+              <select value={modoRealizado} onChange={(event) => setModoRealizado(event.target.value)}>
+                <option value="malha">Usar malha da transportadora</option>
+                <option value="filtros">Usar apenas filtros informados</option>
+              </select>
+            </label>
+            <label>
+              Emissão início
+              <input type="date" value={inicioRealizado} onChange={(event) => setInicioRealizado(event.target.value)} />
+            </label>
+            <label>
+              Emissão fim
+              <input type="date" value={fimRealizado} onChange={(event) => setFimRealizado(event.target.value)} />
+            </label>
+          </div>
+
+          <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
+            <label>
+              Origem
+              <input list="origens-realizado-list" value={origemRealizado} onChange={(event) => setOrigemRealizado(event.target.value)} placeholder="Opcional" />
+              <datalist id="origens-realizado-list">
+                {origensRealizadoDisponiveis.map((origem) => <option key={origem} value={origem} />)}
+              </datalist>
+            </label>
+            <label>
+              Destino
+              <input value={destinoRealizado} onChange={(event) => setDestinoRealizado(event.target.value)} placeholder="Cidade opcional" />
+            </label>
+            <label>
+              UF origem
+              <select value={ufOrigemRealizado} onChange={(event) => setUfOrigemRealizado(event.target.value)}>
+                {UF_OPTIONS.map((uf) => <option key={uf || 'todas'} value={uf}>{uf || 'Todas'}</option>)}
+              </select>
+            </label>
+            <label>
+              UF destino
+              <select value={ufDestinoRealizado} onChange={(event) => setUfDestinoRealizado(event.target.value)}>
+                {UF_OPTIONS.map((uf) => <option key={uf || 'todas'} value={uf}>{uf || 'Todas'}</option>)}
+              </select>
+            </label>
+            <label>
+              Limite CT-es
+              <select value={limiteRealizado} onChange={(event) => setLimiteRealizado(Number(event.target.value))}>
+                <option value={3000}>3.000</option>
+                <option value={5000}>5.000</option>
+                <option value={10000}>10.000</option>
+                <option value={20000}>20.000</option>
+                <option value={50000}>50.000</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="sim-actions" style={{ marginTop: 14 }}>
+            <button className="primary" type="button" onClick={onSimularRealizado} disabled={carregandoSimulacao || !transportadoraRealizado}>
+              {carregandoSimulacao ? 'Simulando...' : 'Simular realizado'}
+            </button>
+            <button className="sim-tab" type="button" onClick={() => setResultadoRealizado(null)}>
+              Limpar resultado
+            </button>
+          </div>
+
+          <div className="sim-alert info" style={{ marginTop: 14 }}>
+            <strong>Regra:</strong> no modo malha, o sistema busca o realizado dentro das origens cobertas pela transportadora selecionada e simula CT-e a CT-e contra a tabela dela e contra os concorrentes da mesma malha.
+          </div>
+
+          {resultadoRealizado && (
+            <div style={{ marginTop: 18, display: 'grid', gap: 16 }}>
+              <div className="sim-analise-resumo">
+                <div><span>CT-es analisados</span><strong>{resultadoRealizado.ctesAnalisados}</strong></div>
+                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong></div>
+                <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
+                <div><span>Aderência da tabela</span><strong>{formatPercent(resultadoRealizado.aderenciaSelecionada)}</strong></div>
+                <div><span>Ganharia</span><strong>{resultadoRealizado.ctesGanhariaSelecionada}</strong></div>
+                <div><span>Perderia</span><strong>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
+              </div>
+
+              <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
+                <div className="summary-card"><span>Frete realizado</span><strong>{formatMoney(resultadoRealizado.freteRealizado)}</strong><small>{formatPercent(resultadoRealizado.percentualFreteRealizado)} sobre NF</small></div>
+                <div className="summary-card"><span>Faturamento tabela</span><strong>{formatMoney(resultadoRealizado.freteSelecionada)}</strong><small>nos CT-es com tabela</small></div>
+                <div className="summary-card"><span>Projeção mensal</span><strong>{formatMoney(resultadoRealizado.faturamentoSelecionadaMes)}</strong><small>{resultadoRealizado.meses} mês(es) base</small></div>
+                <div className="summary-card"><span>Projeção 12 meses</span><strong>{formatMoney(resultadoRealizado.faturamentoSelecionadaAno)}</strong><small>faturamento potencial</small></div>
+                <div className="summary-card"><span>Saving vs realizado</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsReal)}</strong><small>{formatPercent(resultadoRealizado.percentualSavingSelecionada)}</small></div>
+                <div className="summary-card"><span>Saving 12 meses</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsRealAno)}</strong><small>projeção anual</small></div>
+                <div className="summary-card"><span>Cargas/dia</span><strong>{Number(resultadoRealizado.cargasDia || 0).toFixed(1)}</strong><small>{resultadoRealizado.dias} dia(s)</small></div>
+                <div className="summary-card"><span>Volumes/dia</span><strong>{Number(resultadoRealizado.volumesDia || 0).toFixed(1)}</strong><small>{Number(resultadoRealizado.volumes || 0).toLocaleString('pt-BR')} volumes</small></div>
+                <div className="summary-card"><span>Redução média p/ ganhar</span><strong>{formatPercent(resultadoRealizado.reducaoMediaNecessaria)}</strong><small>rotas perdidas</small></div>
+                <div className="summary-card"><span>Perda para concorrentes</span><strong>{formatMoney(resultadoRealizado.diferencaSelecionadaVsVencedor)}</strong><small>diferença nas perdidas</small></div>
+              </div>
+
+              <div className="sim-parametros-box">
+                <div className="sim-parametros-header">
+                  <div>
+                    <strong>Laudo executivo</strong>
+                    <p>Resumo pronto para diretoria ou devolutiva estratégica.</p>
+                  </div>
+                </div>
+                <ul style={{ marginTop: 12 }}>
+                  {(resultadoRealizado.laudo || []).map((linha, index) => <li key={index}>{linha}</li>)}
+                </ul>
+              </div>
+
+              <div className="feature-grid import-grid">
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Transportadoras atuais no realizado</strong><p>Quem está carregando nos CT-es filtrados.</p></div></div>
+                  <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                    <table className="sim-analise-tabela">
+                      <thead><tr><th>Transportadora</th><th>CT-es</th><th>Frete</th><th>% frete</th><th>% NF</th></tr></thead>
+                      <tbody>
+                        {(resultadoRealizado.porTransportadoraReal || []).slice(0, 20).map((item) => (
+                          <tr key={item.transportadora}>
+                            <td><strong>{item.transportadora}</strong></td>
+                            <td>{item.ctes}</td>
+                            <td>{formatMoney(item.frete)}</td>
+                            <td>{formatPercent(item.pctFrete)}</td>
+                            <td>{formatPercent(item.percentualFrete)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Rotas onde perde faturamento</strong><p>Maiores diferenças contra o vencedor da simulação.</p></div></div>
+                  <div className="sim-cobertura-lista" style={{ marginTop: 12 }}>
+                    {(resultadoRealizado.rotas || []).filter((item) => item.diferencaParaVencedor > 0).slice(0, 12).map((item) => (
+                      <div key={`${item.rota}-${item.tipo}`}>
+                        <strong>{item.rota}</strong> · {item.ctes} CT-es · perde para {item.principalVencedor} · reduzir média {formatPercent(item.reducaoMediaNecessaria)}
+                      </div>
+                    ))}
+                    {!(resultadoRealizado.rotas || []).some((item) => item.diferencaParaVencedor > 0) && <div>Nenhuma rota perdida encontrada com os filtros atuais.</div>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="sim-parametros-box">
+                <div className="sim-parametros-header">
+                  <div>
+                    <strong>Rotas prioritárias para ajuste</strong>
+                    <p>Ordenado por oportunidade: saving contra realizado + diferença para o vencedor + volume.</p>
+                  </div>
+                </div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                  <table className="sim-analise-tabela">
+                    <thead>
+                      <tr>
+                        <th>Rota</th>
+                        <th>Tipo</th>
+                        <th>CT-es</th>
+                        <th>Volumes</th>
+                        <th>Realizado</th>
+                        <th>Tabela selecionada</th>
+                        <th>Vencedor</th>
+                        <th>Saving</th>
+                        <th>Dif. vencedor</th>
+                        <th>Redução média</th>
+                        <th>Principal vencedor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(resultadoRealizado.rotas || []).slice(0, 80).map((item) => (
+                        <tr key={`${item.rota}-${item.tipo}`}>
+                          <td><strong>{item.rota}</strong></td>
+                          <td>{item.tipo}</td>
+                          <td>{item.ctes}</td>
+                          <td>{Number(item.volumes || 0).toLocaleString('pt-BR')}</td>
+                          <td>{formatMoney(item.freteRealizado)}</td>
+                          <td>{formatMoney(item.freteSelecionada)}</td>
+                          <td>{formatMoney(item.freteVencedor)}</td>
+                          <td className={item.savingSelecionada > 0 ? 'positivo' : ''}>{formatMoney(item.savingSelecionada)}</td>
+                          <td className={item.diferencaParaVencedor > 0 ? 'negativo' : ''}>{formatMoney(item.diferencaParaVencedor)}</td>
+                          <td>{formatPercent(item.reducaoMediaNecessaria)}</td>
+                          <td>{item.principalVencedor}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="sim-parametros-box">
+                <div className="sim-parametros-header">
+                  <div>
+                    <strong>Amostra CT-e a CT-e</strong>
+                    <p>Maiores oportunidades individuais para conferência.</p>
+                  </div>
+                </div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>CT-e</th><th>Origem</th><th>Destino</th><th>Real</th><th>Realizado</th><th>Tabela</th><th>Vencedor</th><th>Status</th><th>Redução</th><th>Saving</th></tr></thead>
+                    <tbody>
+                      {(resultadoRealizado.ctesDetalhes || []).slice(0, 100).map((item, index) => (
+                        <tr key={`${item.cte}-${index}`}>
+                          <td>{item.cte || '-'}</td>
+                          <td>{item.origem}/{item.ufOrigem}</td>
+                          <td>{item.destino}/{item.ufDestino}</td>
+                          <td>{item.transportadoraReal}</td>
+                          <td>{formatMoney(item.freteRealizado)}</td>
+                          <td>{item.freteSelecionada ? formatMoney(item.freteSelecionada) : '-'}</td>
+                          <td>{item.vencedor} · {formatMoney(item.freteVencedor)}</td>
+                          <td><span className="status-pill">{item.statusSelecionada}</span></td>
+                          <td>{formatPercent(item.reducaoNecessaria)}</td>
+                          <td>{formatMoney(item.savingSelecionada)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {aba === 'cobertura' && (
