@@ -13,7 +13,38 @@ import {
 } from '../utils/calculoFrete';
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
 import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
-import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+
+async function buscarRealizadoLocalCtes(filtros = {}) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = getSupabaseClient();
+  const limit = Math.min(Number(filtros.limit) || 5000, 50000);
+  let query = supabase.from('realizado_local_ctes').select('*').limit(limit);
+  if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem + '%');
+  if (filtros.canal) query = query.eq('canal', filtros.canal);
+  if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
+  if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
+  if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+  const { data, error } = await query;
+  if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
+  return (data || []).map(r => ({
+    transportadora: r.transportadora || '',
+    valorCte: Number(r.valor_cte) || 0,
+    valorNF: Number(r.valor_nf) || 0,
+    cidadeDestino: r.cidade_destino || '',
+    ufDestino: r.uf_destino || '',
+    cidadeOrigem: r.cidade_origem || '',
+    ufOrigem: r.uf_origem || '',
+    canal: r.canal || '',
+    numeroCte: r.numero_cte || '',
+    chaveCte: r.chave_cte || '',
+    pesoDeclarado: Number(r.peso_declarado || r.peso) || 0,
+    qtdVolumes: Number(r.volume || r.qtd_volumes) || 0,
+    ibgeDestino: r.ibge_destino || '',
+    competencia: r.competencia || '',
+    dataEmissao: r.data_emissao || '',
+  }));
+}
 
 const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
 const GRADE_PADRAO = {
@@ -585,6 +616,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [canalOrigem, setCanalOrigem] = useState(canais[0] || 'ATACADO');
   const [origemOrigem, setOrigemOrigem] = useState('');
+  const [buscarOrigemOrigem, setBuscarOrigemOrigem] = useState('');
   const [ufDestinoOrigem, setUfDestinoOrigem] = useState('');
   const [inicioOrigem, setInicioOrigem] = useState('');
   const [fimOrigem, setFimOrigem] = useState('');
@@ -1073,15 +1105,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
     ]);
     downloadCsv(nomeArquivo, csv);
   };
-  const onAnalisarCobertura = () => {
-    setResultadoCobertura(analisarCoberturaTabela({
-      transportadoras,
-      canal: canalCobertura,
-      origem: origemCobertura,
-      transportadora: transportadoraCobertura,
-      ufDestino: ufCobertura,
-      cidadePorIbge: cidadePorIbgeCompleto,
-    }));
+  const onAnalisarCobertura = async () => {
+    iniciarProcessamentoUi('Cobertura de tabela', 'Buscando base online no Supabase...', 15);
+    try {
+      const baseOnline = await carregarBaseOnline({
+        canal: canalCobertura,
+        origem: origemCobertura,
+      });
+      const base = baseOnline.length ? baseOnline : transportadoras;
+      setResultadoCobertura(analisarCoberturaTabela({
+        transportadoras: base,
+        canal: canalCobertura,
+        origem: origemCobertura,
+        transportadora: transportadoraCobertura,
+        ufDestino: ufCobertura,
+        cidadePorIbge: cidadePorIbgeCompleto,
+      }));
+      finalizarProcessamentoUi('Cobertura analisada', 'Resultado carregado.', 100);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao analisar cobertura.');
+      finalizarProcessamentoUi('Erro', 'Não foi possível analisar a cobertura.', 100);
+    }
   };
   const exportarCobertura = () => {
     if (!resultadoCobertura?.faltantes?.length) return;
@@ -1136,17 +1180,26 @@ export default function SimuladorPage({ transportadoras = [] }) {
       let realizado = null;
       if (usarRealizadoOrigem) {
         atualizarProcessamentoUi('Lendo volumetria do Realizado Local...', 78);
-        const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
+        const rowsBrutos = await buscarRealizadoLocalCtes({
           canal: canalOrigem,
           origem: origemOrigem,
           ufDestino: ufDestinoOrigem,
           inicio: inicioOrigem,
           fim: fimOrigem,
-        }, { limit: 5000 });
+          limit: 5000,
+        });
+        // Resolve ibgeDestino pelo nome da cidade quando não vier preenchido
+        const rowsComIbge = rowsBrutos.map((row) => {
+          if (row.ibgeDestino) return row;
+          const cidadeNorm = normalizeBuscaIbge(row.cidadeDestino || '');
+          const cidadeUfNorm = normalizeBuscaIbge((row.cidadeDestino || "") + "/" + (row.ufDestino || ""));
+          const municipio = municipioPorCidade.get(cidadeUfNorm) || municipioPorCidade.get(cidadeNorm);
+          return { ...row, ibgeDestino: municipio?.ibge || '' };
+        });
         realizado = {
-          totalCompativel,
-          limit,
-          ...resumirRealizadoPorOrigem(rows, baseOnline, { canal: canalOrigem, origem: origemOrigem }, mapaCidades, grade[canalOrigem] || grade.ATACADO || []),
+          totalCompativel: rowsComIbge.length,
+          limit: 5000,
+          ...resumirRealizadoPorOrigem(rowsComIbge, baseOnline, { canal: canalOrigem, origem: origemOrigem }, mapaCidades, grade[canalOrigem] || grade.ATACADO || []),
         };
       }
 
@@ -1453,10 +1506,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
             </label>
             <label>Origem
-              <input list="origens-origem-lista" value={origemOrigem} onChange={(e) => setOrigemOrigem(e.target.value)} placeholder="Ex.: Itajaí" />
+              <input
+                value={origemOrigem}
+                onChange={(e) => setOrigemOrigem(e.target.value)}
+                placeholder="Digite a origem"
+                list="origens-origem-lista"
+              />
               <datalist id="origens-origem-lista">
                 {origensOrigemDisponiveis.map((item) => <option key={item} value={item} />)}
               </datalist>
+              {origemOrigem && <small style={{ color: '#64748b' }}>Busca por: {origemOrigem}</small>}
             </label>
             <label>UF destino
               <select value={ufDestinoOrigem} onChange={(e) => setUfDestinoOrigem(e.target.value)}>
@@ -1471,7 +1530,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             <label className="sim-flag" style={{ justifyContent: 'end' }}>
               <input type="checkbox" checked={usarRealizadoOrigem} onChange={(e) => setUsarRealizadoOrigem(e.target.checked)} />
-              Usar Realizado Local
+              Usar CT-e Online (Supabase)
             </label>
           </div>
 
@@ -1541,7 +1600,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             <td>{formatPercent(item.pctFrete)}</td>
                           </tr>
                         ))}
-                        {!resultadoOrigem.realizado && <tr><td colSpan="5">Ative “Usar Realizado Local” para ver a volumetria carregada.</td></tr>}
+                        {!resultadoOrigem.realizado && <tr><td colSpan="5">Ative “Usar CT-e Online (Supabase)” para ver a volumetria carregada.</td></tr>}
                       </tbody>
                     </table>
                   </div>
@@ -1631,7 +1690,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Transportadora<input list="transportadoras-cobertura-lista" value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)} placeholder="Todas ou digite a transportadora" /><datalist id="transportadoras-cobertura-lista">{transportadorasPorCanalCobertura.map((item) => <option key={item} value={item} />)}</datalist></label>
             <label>UF destino<select value={ufCobertura} onChange={(e) => setUfCobertura(e.target.value)}>{UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}</select></label>
           </div>
-          <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura}>Analisar cobertura</button></div>
+          <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Analisando..." : "Analisar cobertura"}</button></div>
           {resultadoCobertura && (
             <div className="sim-cobertura-box">
               <p>{resultadoCobertura.explicacao}</p>
