@@ -31,7 +31,6 @@ function toNumber(value) {
   );
 }
 
-
 function formatTaxValue(value) {
   const number = toNumber(value);
   if (!number) return '';
@@ -165,16 +164,13 @@ export function gerarArquivosVerum(transportadora, origem = null) {
   return { rotas: rotasVerum, cotacoes: cotacoesVerum };
 }
 
-
 function sheetRowsForTipoVerum(tipo, rows = []) {
   if (tipo === 'rotas') {
     return rows.map((item) => ({
       'Nome da transportadora': item.transportadora || '',
       'Código da unidade':
         item.codigoUnidade ||
-        (String(item.canal || '').toUpperCase() === 'B2C'
-          ? '0001 - B2C'
-          : '0001 - B2B'),
+        (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
       Cotação: item.nomeRota || item.cotacao || '',
       'Código IBGE Origem': item.ibgeOrigem || '',
       'Código IBGE Destino': item.ibgeDestino || '',
@@ -192,9 +188,7 @@ function sheetRowsForTipoVerum(tipo, rows = []) {
       'Nome da transportadora': item.transportadora || '',
       'Código da unidade':
         item.codigoUnidade ||
-        (String(item.canal || '').toUpperCase() === 'B2C'
-          ? '0001 - B2C'
-          : '0001 - B2B'),
+        (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
       'Regra de cálculo': item.regraCalculo || 'Sem regra',
       'Rota do frete': item.rota || '',
       'Peso mínimo': item.pesoMin ?? '',
@@ -252,7 +246,6 @@ function inferFromFilename(filename = '') {
     .split(' - ')
     .map((item) => item.trim())
     .filter(Boolean);
-
   return {
     origem: parts[0] || '',
     transportadora: parts[1] || '',
@@ -308,11 +301,7 @@ function buildRowsFromSheet(ws, tipo) {
 function firstFilled(row, keys) {
   for (const key of keys) {
     const normalized = normalizeHeader(key);
-    if (
-      row[normalized] !== undefined &&
-      row[normalized] !== null &&
-      row[normalized] !== ''
-    ) {
+    if (row[normalized] !== undefined && row[normalized] !== null && row[normalized] !== '') {
       return row[normalized];
     }
   }
@@ -320,15 +309,10 @@ function firstFilled(row, keys) {
 }
 
 function inferTipoCalculoCotacao(row) {
-  const regraCalculo = String(
-    firstFilled(row, ['regra de calculo', 'regra cálculo'])
-  )
+  const regraCalculo = String(firstFilled(row, ['regra de calculo', 'regra cálculo']))
     .trim()
     .toUpperCase();
-
-  const valorFaixa = toNumber(
-    firstFilled(row, ['taxa aplicada', 'valor faixa', 'valor fixo'])
-  );
+  const valorFaixa = toNumber(firstFilled(row, ['taxa aplicada', 'valor faixa', 'valor fixo']));
   const percentual = toNumber(firstFilled(row, ['frete percentual', 'percentual']));
   const freteMinimo = toNumber(firstFilled(row, ['frete minimo', 'minimo']));
   const excesso = toNumber(firstFilled(row, ['excesso de peso', 'excesso']));
@@ -344,15 +328,8 @@ function mapCommon(row, meta, overrides = {}) {
   const transportadoraPlanilha = String(
     firstFilled(row, ['nome da transportadora', 'transportadora', 'nome transportadora'])
   ).trim();
-
-  const origemPlanilha = String(
-    firstFilled(row, ['origem', 'cidade origem'])
-  ).trim();
-
-  const unidade = String(
-    firstFilled(row, ['codigo da unidade', 'unidade', 'codigo unidade'])
-  ).trim();
-
+  const origemPlanilha = String(firstFilled(row, ['origem', 'cidade origem'])).trim();
+  const unidade = String(firstFilled(row, ['codigo da unidade', 'unidade', 'codigo unidade'])).trim();
   const canalPlanilha = String(firstFilled(row, ['canal'])).trim().toUpperCase();
   const canalInferido = canalFromUnit(unidade);
 
@@ -372,13 +349,7 @@ function mapCommon(row, meta, overrides = {}) {
     String(overrides.canal || '').trim().toUpperCase() ||
     'ATACADO';
 
-  return {
-    transportadora,
-    origem,
-    canal: canalFinal,
-    status: 'Ativa',
-    unidade,
-  };
+  return { transportadora, origem, canal: canalFinal, status: 'Ativa', unidade };
 }
 
 export function parseFileToRows(file, tipo) {
@@ -391,7 +362,6 @@ export function parseFileToRows(file, tipo) {
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const { rows, headerIndex } = buildRowsFromSheet(sheet, tipo);
-
         resolve({
           rows,
           meta: {
@@ -419,16 +389,11 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
   function ensureTransportadora(common) {
     const key = `${common.transportadora}__${common.origem}__${common.canal}`;
     if (!common.transportadora) {
-      throw new Error(
-        'Transportadora não identificada. Padronize o nome do arquivo como "Origem - Transportadora - Tipo".'
-      );
+      throw new Error('Transportadora não identificada. Padronize o nome do arquivo como "Origem - Transportadora - Tipo".');
     }
     if (!common.origem) {
-      throw new Error(
-        'Origem não identificada. Padronize o nome do arquivo como "Origem - Transportadora - Tipo".'
-      );
+      throw new Error('Origem não identificada. Padronize o nome do arquivo como "Origem - Transportadora - Tipo".');
     }
-
     if (!transportadoras.has(key)) {
       transportadoras.set(key, {
         nome: common.transportadora,
@@ -444,7 +409,6 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
         },
       });
     }
-
     return transportadoras.get(key);
   }
 
@@ -454,66 +418,44 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
       const container = ensureTransportadora(common);
 
       if (tipo === 'rotas') {
-        const ibgeDestino = String(
-          firstFilled(row, ['codigo ibge destino', 'ibge destino'])
-        ).trim();
-        const cotacao = String(
-          firstFilled(row, ['cotacao', 'rota', 'nome rota'])
-        ).trim();
-
+        const ibgeDestino = String(firstFilled(row, ['codigo ibge destino', 'ibge destino'])).trim();
+        const cotacao = String(firstFilled(row, ['cotacao', 'rota', 'nome rota'])).trim();
         if (!ibgeDestino) throw new Error('Código IBGE Destino inválido ou vazio.');
         if (!cotacao) throw new Error('Cotação/rota não informada.');
-
         container.origem.rotas.push({
           nomeRota: cotacao,
           cotacao,
-          ibgeOrigem: String(
-            firstFilled(row, ['codigo ibge origem', 'ibge origem'])
-          ).trim(),
+          ibgeOrigem: String(firstFilled(row, ['codigo ibge origem', 'ibge origem'])).trim(),
           ibgeDestino,
           cepInicial: String(firstFilled(row, ['cep inicial'])).trim(),
           cepFinal: String(firstFilled(row, ['cep final'])).trim(),
           metodoEnvio: String(firstFilled(row, ['metodo de envio'])).trim(),
           canal: common.canal,
           prazoEntregaDias: toNumber(firstFilled(row, ['prazo de entrega', 'prazo'])),
-          valorMinimoFrete: toNumber(
-            firstFilled(row, ['frete minimo', 'valor minimo frete', 'minimo'])
-          ),
+          valorMinimoFrete: toNumber(firstFilled(row, ['frete minimo', 'valor minimo frete', 'minimo'])),
           inicioVigencia: String(firstFilled(row, ['inicio da vigencia'])).trim(),
-          fimVigencia: String(
-            firstFilled(row, ['termino da vigencia', 'fim da vigencia'])
-          ).trim(),
+          fimVigencia: String(firstFilled(row, ['termino da vigencia', 'fim da vigencia'])).trim(),
         });
         inseridos += 1;
       }
 
       if (tipo === 'cotacoes') {
-        const rota = String(
-          firstFilled(row, ['rota do frete', 'rota', 'nome rota', 'cotacao'])
-        ).trim();
-
+        const rota = String(firstFilled(row, ['rota do frete', 'rota', 'nome rota', 'cotacao'])).trim();
         if (!rota) throw new Error('Rota do frete não informada.');
-
         container.origem.cotacoes.push({
           rota,
           regraCalculo: String(firstFilled(row, ['regra de calculo'])).trim(),
           tipoCalculo: inferTipoCalculoCotacao(row),
           pesoMin: toNumber(firstFilled(row, ['peso minimo', 'peso min'])),
-          pesoMax: toNumber(
-            firstFilled(row, ['peso limite', 'peso maximo', 'peso max'])
-          ),
+          pesoMax: toNumber(firstFilled(row, ['peso limite', 'peso maximo', 'peso max'])),
           excesso: toNumber(firstFilled(row, ['excesso de peso', 'excesso'])),
           rsKg: 0,
-          valorFixo: toNumber(
-            firstFilled(row, ['taxa aplicada', 'valor faixa', 'valor fixo'])
-          ),
+          valorFixo: toNumber(firstFilled(row, ['taxa aplicada', 'valor faixa', 'valor fixo'])),
           percentual: toNumber(firstFilled(row, ['frete percentual', 'percentual'])),
           freteMinimo: toNumber(firstFilled(row, ['frete minimo', 'minimo'])),
           canal: common.canal,
           inicioVigencia: String(firstFilled(row, ['inicio da vigencia'])).trim(),
-          fimVigencia: String(
-            firstFilled(row, ['fim da vigencia', 'termino da vigencia'])
-          ).trim(),
+          fimVigencia: String(firstFilled(row, ['fim da vigencia', 'termino da vigencia'])).trim(),
         });
         inseridos += 1;
       }
@@ -521,7 +463,6 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
       if (tipo === 'taxas') {
         const ibgeDestino = String(firstFilled(row, ['ibge destino'])).trim();
         if (!ibgeDestino) throw new Error('IBGE destino é obrigatório.');
-
         container.origem.taxasEspeciais.push({
           ibgeDestino,
           tda: toNumber(firstFilled(row, ['tda r$', 'tda'])),
@@ -529,57 +470,27 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
           trt: toNumber(firstFilled(row, ['trt r$', 'trt'])),
           suframa: toNumber(firstFilled(row, ['suframa r$', 'suframa'])),
           outras: toNumber(firstFilled(row, ['outras r$', 'outras'])),
-          gris:
-            firstFilled(row, ['gris %', 'gris']) === ''
-              ? null
-              : toNumber(firstFilled(row, ['gris %', 'gris'])),
-          grisMinimo:
-            firstFilled(row, ['gris minimo r$', 'gris minimo']) === ''
-              ? null
-              : toNumber(firstFilled(row, ['gris minimo r$', 'gris minimo'])),
-          adVal:
-            firstFilled(row, ['ad valorem %', 'ad val %', 'ad valorem']) === ''
-              ? null
-              : toNumber(firstFilled(row, ['ad valorem %', 'ad val %', 'ad valorem'])),
-          adValMinimo:
-            firstFilled(
-              row,
-              ['ad valorem minimo r$', 'ad val minimo r$', 'ad valorem minimo']
-            ) === ''
-              ? null
-              : toNumber(
-                  firstFilled(row, [
-                    'ad valorem minimo r$',
-                    'ad val minimo r$',
-                    'ad valorem minimo',
-                  ])
-                ),
+          gris: firstFilled(row, ['gris %', 'gris']) === '' ? null : toNumber(firstFilled(row, ['gris %', 'gris'])),
+          grisMinimo: firstFilled(row, ['gris minimo r$', 'gris minimo']) === '' ? null : toNumber(firstFilled(row, ['gris minimo r$', 'gris minimo'])),
+          adVal: firstFilled(row, ['ad valorem %', 'ad val %', 'ad valorem']) === '' ? null : toNumber(firstFilled(row, ['ad valorem %', 'ad val %', 'ad valorem'])),
+          adValMinimo: firstFilled(row, ['ad valorem minimo r$', 'ad val minimo r$', 'ad valorem minimo']) === '' ? null : toNumber(firstFilled(row, ['ad valorem minimo r$', 'ad val minimo r$', 'ad valorem minimo'])),
         });
         inseridos += 1;
       }
 
       if (tipo === 'generalidades') {
         container.origem.generalidades = {
-          incideIcms: ['sim', 's', 'true', '1'].includes(
-            String(firstFilled(row, ['incide icms', 'icms']))
-              .trim()
-              .toLowerCase()
-          ),
+          incideIcms: ['sim', 's', 'true', '1'].includes(String(firstFilled(row, ['incide icms', 'icms'])).trim().toLowerCase()),
           aliquotaIcms: toNumber(firstFilled(row, ['aliquota icms', 'icms %'])),
           adValorem: toNumber(firstFilled(row, ['ad valorem %', 'ad valorem'])),
-          adValoremMinimo: toNumber(
-            firstFilled(row, ['ad valorem minimo r$', 'ad valorem minimo'])
-          ),
+          adValoremMinimo: toNumber(firstFilled(row, ['ad valorem minimo r$', 'ad valorem minimo'])),
           pedagio: toNumber(firstFilled(row, ['pedagio r$ 100kg', 'pedagio'])),
           gris: toNumber(firstFilled(row, ['gris %', 'gris'])),
           grisMinimo: toNumber(firstFilled(row, ['gris minimo r$', 'gris minimo'])),
           tas: toNumber(firstFilled(row, ['tas r$', 'tas'])),
           ctrc: toNumber(firstFilled(row, ['ctrc emitido r$', 'ctrc'])),
           cubagem: toNumber(firstFilled(row, ['cubagem kg m3', 'cubagem'])),
-          tipoCalculo:
-            String(firstFilled(row, ['tipo de calculo', 'tipo calculo']))
-              .trim()
-              .toUpperCase() || 'PERCENTUAL',
+          tipoCalculo: String(firstFilled(row, ['tipo de calculo', 'tipo calculo'])).trim().toUpperCase() || 'PERCENTUAL',
           observacoes: String(firstFilled(row, ['observacoes'])).trim(),
         };
         inseridos += 1;
@@ -587,12 +498,7 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
     } catch (error) {
       erros.push({
         linha: row.__rowNum || '-',
-        coluna:
-          tipo === 'rotas'
-            ? 'layout de rotas'
-            : tipo === 'cotacoes'
-              ? 'layout de fretes'
-              : 'layout',
+        coluna: tipo === 'rotas' ? 'layout de rotas' : tipo === 'cotacoes' ? 'layout de fretes' : 'layout',
         valor: '',
         mensagem: error.message || 'Erro ao interpretar linha.',
       });
@@ -606,11 +512,7 @@ function sheetRowsForTipo(tipo, rows = []) {
   if (tipo === 'rotas') {
     return rows.map((item) => ({
       'Nome da transportadora': item.transportadora || '',
-      'Código da unidade':
-        item.codigoUnidade ||
-        (String(item.canal || '').toUpperCase() === 'B2C'
-          ? '0001 - B2C'
-          : '0001 - B2B'),
+      'Código da unidade': item.codigoUnidade || (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
       Canal: item.canal || '',
       Cotação: item.nomeRota || item.cotacao || '',
       'Código IBGE Origem': item.ibgeOrigem || '',
@@ -627,11 +529,7 @@ function sheetRowsForTipo(tipo, rows = []) {
   if (tipo === 'cotacoes') {
     return rows.map((item) => ({
       'Nome da transportadora': item.transportadora || '',
-      'Código da unidade':
-        item.codigoUnidade ||
-        (String(item.canal || '').toUpperCase() === 'B2C'
-          ? '0001 - B2C'
-          : '0001 - B2B'),
+      'Código da unidade': item.codigoUnidade || (String(item.canal || '').toUpperCase() === 'B2C' ? '0001 - B2C' : '0001 - B2B'),
       Canal: item.canal || '',
       'Regra de cálculo': item.regraCalculo || 'Sem regra',
       'Tipo de cálculo': item.tipoCalculo || '',
@@ -686,94 +584,39 @@ function sheetRowsForTipo(tipo, rows = []) {
 
 function prepModelRows(tipo) {
   if (tipo === 'rotas') {
-    return sheetRowsForTipo(tipo, [
-      {
-        transportadora: 'ALFA',
-        canal: 'ATACADO',
-        codigoUnidade: '0001 - B2B',
-        nomeRota: 'CAPITAL - SP',
-        ibgeOrigem: '3505708',
-        ibgeDestino: '3550308',
-        cepInicial: '01000000',
-        cepFinal: '05999999',
-        metodoEnvio: 'Normal',
-        prazoEntregaDias: 2,
-        inicioVigencia: '2025-01-01',
-        fimVigencia: '2025-12-31',
-      },
-    ]);
+    return sheetRowsForTipo(tipo, [{
+      transportadora: 'ALFA', canal: 'ATACADO', codigoUnidade: '0001 - B2B',
+      nomeRota: 'CAPITAL - SP', ibgeOrigem: '3505708', ibgeDestino: '3550308',
+      cepInicial: '01000000', cepFinal: '05999999', metodoEnvio: 'Normal',
+      prazoEntregaDias: 2, inicioVigencia: '2025-01-01', fimVigencia: '2025-12-31',
+    }]);
   }
-
   if (tipo === 'cotacoes') {
-    return sheetRowsForTipo(tipo, [
-      {
-        transportadora: 'ALFA',
-        canal: 'ATACADO',
-        codigoUnidade: '0001 - B2B',
-        regraCalculo: 'Maior valor',
-        tipoCalculo: 'PERCENTUAL',
-        rota: 'CAPITAL - SP',
-        pesoMin: 0,
-        pesoMax: 999999999,
-        excesso: 0.62,
-        valorFixo: 0,
-        percentual: 1.95,
-        freteMinimo: 38,
-        inicioVigencia: '2025-01-01',
-        fimVigencia: '2025-12-31',
-      },
-    ]);
+    return sheetRowsForTipo(tipo, [{
+      transportadora: 'ALFA', canal: 'ATACADO', codigoUnidade: '0001 - B2B',
+      regraCalculo: 'Maior valor', tipoCalculo: 'PERCENTUAL', rota: 'CAPITAL - SP',
+      pesoMin: 0, pesoMax: 999999999, excesso: 0.62, valorFixo: 0,
+      percentual: 1.95, freteMinimo: 38, inicioVigencia: '2025-01-01', fimVigencia: '2025-12-31',
+    }]);
   }
-
   if (tipo === 'taxas') {
-    return sheetRowsForTipo(tipo, [
-      {
-        transportadora: 'ALFA',
-        origem: 'CAMPINAS',
-        canal: 'ATACADO',
-        ibgeDestino: '3106200',
-        tda: 10,
-        tdr: 0,
-        trt: 5,
-        suframa: 0,
-        outras: 0,
-        gris: 0.35,
-        grisMinimo: 2.5,
-        adVal: 0.2,
-        adValMinimo: 3,
-      },
-    ]);
+    return sheetRowsForTipo(tipo, [{
+      transportadora: 'ALFA', origem: 'CAMPINAS', canal: 'ATACADO', ibgeDestino: '3106200',
+      tda: 10, tdr: 0, trt: 5, suframa: 0, outras: 0, gris: 0.35, grisMinimo: 2.5, adVal: 0.2, adValMinimo: 3,
+    }]);
   }
-
-  return sheetRowsForTipo(tipo, [
-    {
-      transportadora: 'ALFA',
-      origem: 'Barueri',
-      canal: 'ATACADO',
-      incideIcms: false,
-      aliquotaIcms: 0,
-      adValorem: 0.25,
-      adValoremMinimo: 3,
-      pedagio: 12,
-      gris: 0.3,
-      grisMinimo: 2,
-      tas: 2.5,
-      ctrc: 1.8,
-      cubagem: 300,
-      tipoCalculo: 'PERCENTUAL',
-      observacoes: 'Modelo de generalidades',
-    },
-  ]);
+  return sheetRowsForTipo(tipo, [{
+    transportadora: 'ALFA', origem: 'Barueri', canal: 'ATACADO', incideIcms: false,
+    aliquotaIcms: 0, adValorem: 0.25, adValoremMinimo: 3, pedagio: 12, gris: 0.3,
+    grisMinimo: 2, tas: 2.5, ctrc: 1.8, cubagem: 300, tipoCalculo: 'PERCENTUAL',
+    observacoes: 'Modelo de generalidades',
+  }]);
 }
 
 export function downloadWorkbook({ tipo, rows, fileName }) {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  XLSX.utils.book_append_sheet(
-    wb,
-    ws,
-    tipo === 'cotacoes' ? 'Valores de frete' : tipo === 'rotas' ? 'Prazos de frete' : 'Dados'
-  );
+  XLSX.utils.book_append_sheet(wb, ws, tipo === 'cotacoes' ? 'Valores de frete' : tipo === 'rotas' ? 'Prazos de frete' : 'Dados');
   XLSX.writeFile(wb, fileName);
 }
 
@@ -790,15 +633,10 @@ export function analisarCoberturaOrigem(origem) {
   const cotacoes = Array.isArray(origem?.cotacoes) ? origem.cotacoes : [];
 
   const chavesRotas = new Set(
-    rotas
-      .map((item) => normalizeRouteName(item?.cotacao || item?.nomeRota || item?.rota))
-      .filter(Boolean)
+    rotas.map((item) => normalizeRouteName(item?.cotacao || item?.nomeRota || item?.rota)).filter(Boolean)
   );
-
   const chavesCotacoes = new Set(
-    cotacoes
-      .map((item) => normalizeRouteName(item?.rota || item?.nomeRota || item?.cotacao))
-      .filter(Boolean)
+    cotacoes.map((item) => normalizeRouteName(item?.rota || item?.nomeRota || item?.cotacao)).filter(Boolean)
   );
 
   const rotasSemFrete = [...chavesRotas].filter((chave) => !chavesCotacoes.has(chave));
@@ -807,29 +645,15 @@ export function analisarCoberturaOrigem(origem) {
   let cobertura = 'Completa';
   let severidade = 'ok';
 
-  if (!rotas.length && !cotacoes.length) {
-    cobertura = 'Sem tabela';
-    severidade = 'warn';
-  } else if (!rotas.length || !cotacoes.length) {
-    cobertura = 'Parcial';
-    severidade = 'warn';
-  } else if (rotasSemFrete.length || fretesSemRota.length) {
-    cobertura = 'Inconsistente';
-    severidade = 'error';
-  }
+  if (!rotas.length && !cotacoes.length) { cobertura = 'Sem tabela'; severidade = 'warn'; }
+  else if (!rotas.length || !cotacoes.length) { cobertura = 'Parcial'; severidade = 'warn'; }
+  else if (rotasSemFrete.length || fretesSemRota.length) { cobertura = 'Inconsistente'; severidade = 'error'; }
 
   return {
-    cobertura,
-    label: cobertura,
-    status: cobertura.toLowerCase(),
-    severidade,
-    totalRotas: rotas.length,
-    totalCotacoes: cotacoes.length,
-    rotasSemFrete,
-    fretesSemRota,
-    rotasSemCotacao: rotasSemFrete,
-    cotacoesSemRota: fretesSemRota,
-    possuiProblema: severidade !== 'ok',
+    cobertura, label: cobertura, status: cobertura.toLowerCase(), severidade,
+    totalRotas: rotas.length, totalCotacoes: cotacoes.length,
+    rotasSemFrete, fretesSemRota, rotasSemCotacao: rotasSemFrete,
+    cotacoesSemRota: fretesSemRota, possuiProblema: severidade !== 'ok',
   };
 }
 
@@ -840,11 +664,8 @@ export function buildCoberturaReport(transportadoras) {
     (transportadora.origens || []).forEach((origem) => {
       const analise = analisarCoberturaOrigem(origem);
       const destinos = new Set(
-        (origem.rotas || [])
-          .map((rota) => String(rota.ibgeDestino || '').trim())
-          .filter(Boolean)
+        (origem.rotas || []).map((rota) => String(rota.ibgeDestino || '').trim()).filter(Boolean)
       );
-
       detalhes.push({
         transportadora: transportadora.nome,
         origem: origem.cidade,
@@ -860,26 +681,18 @@ export function buildCoberturaReport(transportadoras) {
   });
 
   const resumoTransportadora = Array.from(
-    detalhes
-      .reduce((acc, item) => {
-        const current =
-          acc.get(item.transportadora) || {
-            transportadora: item.transportadora,
-            origens: 0,
-            destinos: 0,
-            rotas: 0,
-            cotacoes: 0,
-            pendencias: 0,
-          };
-        current.origens += 1;
-        current.destinos += item.destinos;
-        current.rotas += item.totalRotas;
-        current.cotacoes += item.totalCotacoes;
-        current.pendencias += item.cobertura === 'Completa' ? 0 : 1;
-        acc.set(item.transportadora, current);
-        return acc;
-      }, new Map())
-      .values()
+    detalhes.reduce((acc, item) => {
+      const current = acc.get(item.transportadora) || {
+        transportadora: item.transportadora, origens: 0, destinos: 0, rotas: 0, cotacoes: 0, pendencias: 0,
+      };
+      current.origens += 1;
+      current.destinos += item.destinos;
+      current.rotas += item.totalRotas;
+      current.cotacoes += item.totalCotacoes;
+      current.pendencias += item.cobertura === 'Completa' ? 0 : 1;
+      acc.set(item.transportadora, current);
+      return acc;
+    }, new Map()).values()
   ).sort((a, b) => b.pendencias - a.pendencias || a.transportadora.localeCompare(b.transportadora));
 
   return {
@@ -913,13 +726,7 @@ export function exportarControlePasta(rows = [], fileName = 'controle-pasta-impo
   );
 
   ws['!cols'] = [
-    { wch: 36 },
-    { wch: 60 },
-    { wch: 18 },
-    { wch: 18 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 22 },
+    { wch: 36 }, { wch: 60 }, { wch: 18 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 22 },
   ];
 
   XLSX.utils.book_append_sheet(wb, ws, 'Controle da pasta');
