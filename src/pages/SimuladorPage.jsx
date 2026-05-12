@@ -15,6 +15,28 @@ import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from 
 import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
+const CANAL_VENDAS_MAP_SIM = {
+  'B2C': 'B2C', 'B2B': 'ATACADO', 'MERCADO LIVRE': 'B2C', 'SHOPEE': 'B2C',
+  'MAGAZINE LUIZA': 'B2C', 'AMAZON': 'B2C', 'VIA VAREJO': 'B2C', 'CARREFOUR': 'B2C',
+  'LIVELO': 'B2C', 'CANTU PNEUS': 'B2C', 'PITSTOP': 'B2C', 'INTER': 'B2C',
+  'ITAU SHOP': 'B2C', '99': 'B2C', 'COOPERA': 'B2C', 'BRADESCO SHOP': 'B2C', 'MUSTANG': 'B2C',
+};
+const MARCADORES_ATACADO_SIM = ['AT-AG', 'AT-TR', 'ECM-B2B', 'ECC-SALES', 'ECA-SALES'];
+
+function normalizarCanalSim(r) {
+  const norm = (s) => String(s || '').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const cv = norm(r.canal_vendas);
+  if (cv && CANAL_VENDAS_MAP_SIM[cv]) return CANAL_VENDAS_MAP_SIM[cv];
+  const marc = norm(r.marcadores);
+  if (marc) {
+    if (MARCADORES_ATACADO_SIM.some((t) => marc.includes(t))) return 'ATACADO';
+    if (marc.length > 0) return 'B2C';
+  }
+  if (!String(r.documento_destinatario || '').trim()) return 'B2C';
+  const cl = norm(r.canal);
+  return cl || 'B2C';
+}
+
 async function buscarRealizadoLocalCtes(filtros = {}) {
   if (!isSupabaseConfigured()) return [];
   const supabase = getSupabaseClient();
@@ -44,7 +66,7 @@ async function buscarRealizadoLocalCtes(filtros = {}) {
     ufDestino: r.uf_destino || '',
     cidadeOrigem: r.cidade_origem || '',
     ufOrigem: r.uf_origem || '',
-    canal: r.canal || '',
+    canal: normalizarCanalSim(r),
     numeroCte: r.numero_cte || '',
     chaveCte: r.chave_cte || '',
     pesoDeclarado: Number(r.peso_declarado || r.peso) || 0,
@@ -52,6 +74,7 @@ async function buscarRealizadoLocalCtes(filtros = {}) {
     ibgeDestino: r.ibge_destino || '',
     competencia: r.competencia || '',
     dataEmissao: r.data_emissao || '',
+    tipo_veiculo: r.tipo_veiculo || '',
   }));
 }
 
@@ -523,6 +546,16 @@ function normalizarChaveSimulador(valor = '') {
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase();
+}
+
+function getTipoVeiculo(row) {
+  return (
+    row?.tipo_veiculo ||
+    row?.tipoVeiculo ||
+    row?.tipo ||
+    row?.veiculo ||
+    ''
+  ).trim() || 'Não informado';
 }
 
 function periodoRealizadoDias(rows = [], inicio = '', fim = '') {

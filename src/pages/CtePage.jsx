@@ -7,6 +7,61 @@ const PAGE_SIZE = 100;
 const ANALISE_BATCH_SIZE = 1000;
 const ANALISE_MAX_REGISTROS = 20000;
 
+// Tomadores permitidos – apenas esses ficam na base
+const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GP PNEUS', 'SPEEDMAX'];
+
+// Mapeamento de Canal de Vendas → canal normalizado
+const CANAL_VENDAS_MAP = {
+  'B2C': 'B2C',
+  'B2B': 'ATACADO',
+  'MERCADO LIVRE': 'B2C',
+  'SHOPEE': 'B2C',
+  'MAGAZINE LUIZA': 'B2C',
+  'AMAZON': 'B2C',
+  'VIA VAREJO': 'B2C',
+  'CARREFOUR': 'B2C',
+  'LIVELO': 'B2C',
+  'CANTU PNEUS': 'B2C',
+  'PITSTOP': 'B2C',
+  'INTER': 'B2C',
+  'ITAU SHOP': 'B2C',
+  '99': 'B2C',
+  'COOPERA': 'B2C',
+  'BRADESCO SHOP': 'B2C',
+  'MUSTANG': 'B2C',
+};
+
+// Tokens que indicam canal ATACADO nos marcadores
+const MARCADORES_ATACADO = ['AT-AG', 'AT-TR', 'ECM-B2B', 'ECC-SALES', 'ECA-SALES'];
+
+function normalizarCanalRow(row) {
+  // Prioridade 1 – Canal de Vendas
+  const canalVendas = String(row?.canal_vendas || row?.canalVendas || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (canalVendas) {
+    const mapped = CANAL_VENDAS_MAP[canalVendas];
+    if (mapped) return mapped;
+  }
+
+  // Prioridade 2 – Marcadores
+  const marcadores = String(row?.marcadores || row?.marcador || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (marcadores) {
+    const ehAtacado = MARCADORES_ATACADO.some((tok) => marcadores.includes(tok));
+    if (ehAtacado) return 'ATACADO';
+    // Se tem marcador mas não é ATACADO → B2C
+    if (marcadores.length > 0) return 'B2C';
+  }
+
+  // Prioridade 3 – Documento Destinatário (se em branco → B2C)
+  const docDest = String(row?.documento_destinatario || row?.documentoDestinatario || '').trim();
+  if (!docDest) return 'B2C';
+
+  // Fallback: usa campo canal legado
+  const canalLegado = String(row?.canal || '').trim().toUpperCase();
+  return canalLegado || 'B2C';
+}
+
 function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
@@ -84,7 +139,7 @@ function getUfDestino(row) {
 }
 
 function getCanal(row) {
-  return campo(row, 'canal', 'canal_vendas', 'canais');
+  return normalizarCanalRow(row) || campo(row, 'canal', 'canal_vendas', 'canais') || '';
 }
 
 function getValorCte(row) {
@@ -224,6 +279,9 @@ function agrupar(rows, keyGetter, extra = {}) {
 }
 
 function aplicarFiltros(query, filtros = {}) {
+  // Sempre filtra pelos tomadores permitidos
+  query = query.or(TOMADORES_PERMITIDOS.map((t) => `tomador.ilike.%${t}%`).join(','));
+
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
@@ -594,6 +652,7 @@ export default function CtePage() {
     fim: '',
     canal: '',
   });
+  const [ocultarEbazar, setOcultarEbazar] = useState(true);
   const [rows, setRows] = useState(null);
   const [rowsAnalise, setRowsAnalise] = useState([]);
   const [pagina, setPagina] = useState(1);
@@ -652,13 +711,25 @@ export default function CtePage() {
   };
 
   const analise = useMemo(
-    () => montarAnalise(rowsAnalise, filtros),
-    [rowsAnalise, filtros]
+    () => {
+      const base = ocultarEbazar
+        ? (rowsAnalise || []).filter((r) => !normalizarTexto(getTransportadora(r)).includes('EBAZAR'))
+        : rowsAnalise;
+      return montarAnalise(base, filtros);
+    },
+    [rowsAnalise, filtros, ocultarEbazar]
   );
 
+  const rowsFiltradas = useMemo(() => {
+    if (!rows) return null;
+    return ocultarEbazar
+      ? rows.filter((r) => !normalizarTexto(getTransportadora(r)).includes('EBAZAR'))
+      : rows;
+  }, [rows, ocultarEbazar]);
+
   const avisoAnaliseLimitada = rowsAnalise.length >= ANALISE_MAX_REGISTROS;
-  const inicioExibicao = rows ? (pagina - 1) * PAGE_SIZE + 1 : 0;
-  const fimExibicao = rows ? inicioExibicao + rows.length - 1 : 0;
+  const inicioExibicao = rowsFiltradas ? (pagina - 1) * PAGE_SIZE + 1 : 0;
+  const fimExibicao = rowsFiltradas ? inicioExibicao + rowsFiltradas.length - 1 : 0;
 
   return (
     <div className="page-shell cte-page">
@@ -697,8 +768,6 @@ export default function CtePage() {
               <option value="">Todos</option>
               <option value="ATACADO">ATACADO</option>
               <option value="B2C">B2C</option>
-              <option value="REVERSA">REVERSA</option>
-              <option value="INTERCOMPANY">INTERCOMPANY</option>
             </select>
           </div>
 
@@ -761,8 +830,17 @@ export default function CtePage() {
           >
             Limpar filtros
           </button>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={ocultarEbazar}
+              onChange={(e) => setOcultarEbazar(e.target.checked)}
+              style={{ width: 15, height: 15 }}
+            />
+            Ocultar EBAZAR
+          </label>
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-            Para evitar timeout, a busca só roda com pelo menos um filtro. A lista exibe 100 CT-es por página.
+            Base filtrada por tomadores: {TOMADORES_PERMITIDOS.join(', ')}. A busca só roda com pelo menos um filtro.
           </span>
         </div>
 
@@ -817,6 +895,7 @@ export default function CtePage() {
                 <div className="panel-title">CT-es filtrados</div>
                 <p className="compact">
                   Exibindo {fmtN(inicioExibicao)} a {fmtN(fimExibicao)}. Página {fmtN(pagina)}{temProximaPagina ? ' · há mais registros' : ''}.
+                  {ocultarEbazar && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>EBAZAR ocultado.</span>}
                 </p>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -839,6 +918,7 @@ export default function CtePage() {
                     <th>Data</th>
                     <th>Competência</th>
                     <th>Transportadora</th>
+                    <th>Tomador</th>
                     <th>Origem</th>
                     <th>Destino</th>
                     <th>Nº CT-e</th>
@@ -852,17 +932,18 @@ export default function CtePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.length === 0 && (
+                  {(!rowsFiltradas || rowsFiltradas.length === 0) && (
                     <tr>
-                      <td colSpan={13} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
+                      <td colSpan={14} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
                         Nenhum CT-e encontrado. Ajuste os filtros.
                       </td>
                     </tr>
                   )}
 
-                  {rows.map((row, idx) => {
+                  {(rowsFiltradas || []).map((row, idx) => {
                     const dataEmissao = getDataEmissao(row);
                     const transp = getTransportadora(row);
+                    const tomador = campo(row, 'tomador') || '-';
                     const cidOrig = getOrigem(row);
                     const ufOrig = getUfOrigem(row);
                     const cidDest = getDestino(row);
@@ -882,6 +963,7 @@ export default function CtePage() {
                         <td>{fmtDate(dataEmissao)}</td>
                         <td>{competencia ? fmtMes(competencia) : '-'}</td>
                         <td><strong>{transp || '-'}</strong></td>
+                        <td style={{ fontSize: 12 }}>{tomador}</td>
                         <td>{cidOrig ? `${cidOrig}${ufOrig ? `/${ufOrig}` : ''}` : ufOrig || '-'}</td>
                         <td>{cidDest ? `${cidDest}${ufDest ? `/${ufDest}` : ''}` : ufDest || '-'}</td>
                         <td>{nroCte || '-'}</td>
@@ -890,7 +972,11 @@ export default function CtePage() {
                         <td>{valNf > 0 ? fmtPct(percentual) : '-'}</td>
                         <td>{peso ? `${fmtN(peso)} kg` : '-'}</td>
                         <td>{volumes ? fmtN(volumes) : '-'}</td>
-                        <td>{canal || '-'}</td>
+                        <td>
+                          <span className={`coverage-badge ${canal === 'ATACADO' ? '' : 'ok'}`}>
+                            {canal || '-'}
+                          </span>
+                        </td>
                         <td>
                           <span className={`coverage-badge ${normalizarTexto(situacao).includes('AUTORIZ') ? 'ok' : 'warn'}`}>
                             {situacao || '-'}
