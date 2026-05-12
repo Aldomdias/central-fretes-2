@@ -282,7 +282,12 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
   const valorNFOrigem = valorNFManualInformado > 0 ? 'manual' : 'grade';
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
-  const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  // Prioriza o tipoCalculo da cotação individual — permite transportadoras com origens mistas
+  const tipoCalculoCotacao = String(cotacao?.tipoCalculo || '').toUpperCase();
+  const tipoCalculoGeneralidades = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  const tipoCalculo = tipoCalculoCotacao === 'FAIXA_DE_PESO' || tipoCalculoCotacao === 'PERCENTUAL'
+    ? tipoCalculoCotacao
+    : tipoCalculoGeneralidades;
   const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge);
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),

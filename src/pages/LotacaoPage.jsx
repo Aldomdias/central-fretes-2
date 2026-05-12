@@ -29,6 +29,7 @@ import {
   obterInfoLotacaoSupabase,
   removerTabelaLotacaoSupabase,
   salvarTabelaLotacaoSupabase,
+  resumoRotasLotacaoSupabase,
 } from '../services/lotacaoSupabaseService';
 
 function formatarData(valor) {
@@ -864,6 +865,278 @@ function ListaTabelas({ tabelas, onRemover }) {
   );
 }
 
+
+function normLot(v) {
+  return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+}
+
+function fmt(v) { return Number(v||0).toLocaleString('pt-BR', {style:'currency',currency:'BRL'}); }
+function fmtPct(v) { return `${Number(v||0).toFixed(1)}%`; }
+
+function ExportBtn({ icon, title, sub, onClick }) {
+  return (
+    <button onClick={onClick} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',border:'0.5px solid var(--color-border-secondary)',borderRadius:'var(--border-radius-md)',background:'var(--color-background-primary)',cursor:'pointer',textAlign:'left'}}>
+      <i className={`ti ti-${icon}`} style={{fontSize:20,color:'var(--color-text-secondary)'}} aria-hidden="true" />
+      <div>
+        <div style={{fontSize:13,fontWeight:500,color:'var(--color-text-primary)'}}>{title}</div>
+        <div style={{fontSize:11,color:'var(--color-text-secondary)'}}>{sub}</div>
+      </div>
+    </button>
+  );
+}
+
+function ExpandCard({ icon, title, badge, defaultOpen=false, children }) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <div style={{border:'0.5px solid var(--color-border-tertiary)',borderRadius:'var(--border-radius-lg)',overflow:'hidden'}}>
+      <button onClick={()=>setOpen(!open)} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 16px',background:'var(--color-background-secondary)',border:'none',cursor:'pointer',textAlign:'left'}}>
+        <span style={{display:'flex',alignItems:'center',gap:8,fontSize:13,fontWeight:500,color:'var(--color-text-primary)'}}>
+          <i className={`ti ti-${icon}`} style={{fontSize:15}} aria-hidden="true" />
+          {title}
+        </span>
+        <span style={{display:'flex',alignItems:'center',gap:8,fontSize:11,color:'var(--color-text-secondary)'}}>
+          {badge}
+          <i className={`ti ti-chevron-${open?'up':'down'}`} style={{fontSize:13}} aria-hidden="true" />
+        </span>
+      </button>
+      {open && <div style={{padding:'14px 16px'}}>{children}</div>}
+    </div>
+  );
+}
+
+function FiltroBtn({ active, onClick, children }) {
+  return (
+    <button onClick={onClick} style={{fontSize:11,padding:'4px 10px',borderRadius:'var(--border-radius-md)',border:'0.5px solid var(--color-border-secondary)',background:active?'var(--color-text-primary)':'var(--color-background-primary)',color:active?'var(--color-background-primary)':'var(--color-text-primary)',cursor:'pointer'}}>
+      {children}
+    </button>
+  );
+}
+
+function PainelTransportadora({ tabela, resumoRealizado, comparativo, analiseAntt, periodo, setPeriodo }) {
+  const [filtroRota, setFiltroRota] = React.useState('todas');
+
+  const linhasTabela = tabela?.linhas || [];
+
+  const mapaReal = React.useMemo(() => {
+    const m = new Map();
+    (resumoRealizado || []).forEach(r => {
+      const k = `${normLot(r.origem)}|${normLot(r.destino)}|${normLot(r.tipo_veiculo)}`;
+      const prev = m.get(k);
+      if (!prev || r.total_cargas > prev.total_cargas) m.set(k, r);
+    });
+    return m;
+  }, [resumoRealizado]);
+
+  const linhas = React.useMemo(() => {
+    return linhasTabela.map(linha => {
+      const k = `${normLot(linha.origem)}|${normLot(linha.destino)}|${normLot(linha.tipo)}`;
+      const real = mapaReal.get(k) || null;
+      const detComp = (comparativo?.detalhes || []).find(d =>
+        normLot(d.origem) === normLot(linha.origem) &&
+        normLot(d.destino) === normLot(linha.destino) &&
+        normLot(d.tipo) === normLot(linha.tipo)
+      );
+      const detAntt = (analiseAntt?.detalhes || []).find(d =>
+        normLot(d.origem) === normLot(linha.origem) &&
+        normLot(d.destino) === normLot(linha.destino) &&
+        normLot(d.tipo) === normLot(linha.tipo)
+      );
+      const nossaTabela = Number(linha.target || linha.valorOtimizado || linha.valor || 0);
+      const melhorConc = Number(detComp?.valorReferencia || 0);
+      const ganhouTabela = detComp ? detComp.diferenca <= 0.01 : null;
+      const pctParaGanhar = (!ganhouTabela && melhorConc > 0 && nossaTabela > 0)
+        ? ((nossaTabela - melhorConc) / nossaTabela) * 100 : 0;
+      const realizadoMedio = real ? Number(real.frete_medio) : null;
+      const cargasMes = real ? Number(real.total_cargas) : 0;
+      return { ...linha, real, nossaTabela, melhorConc, ganhouTabela, pctParaGanhar, realizadoMedio, cargasMes,
+        concorrente: detComp?.melhorTabelaNome || '-', statusAntt: detAntt?.status || null,
+        variacaoAntt: detAntt?.variacaoNovoAntt || null };
+    }).sort((a,b) => b.cargasMes - a.cargasMes);
+  }, [linhasTabela, mapaReal, comparativo, analiseAntt]);
+
+  const ganhouN = linhas.filter(l => l.ganhouTabela === true).length;
+  const perdeuN = linhas.filter(l => l.ganhouTabela === false).length;
+  const comReal = linhas.filter(l => l.real != null).length;
+  const totalCargas = linhas.reduce((a,l) => a + l.cargasMes, 0);
+  const savingPotencial = linhas.filter(l => !l.ganhouTabela && l.nossaTabela > l.melhorConc)
+    .reduce((a,l) => a + ((l.nossaTabela - l.melhorConc) * Math.max(l.cargasMes,1)), 0);
+  const abaixoAntt = (analiseAntt?.detalhes||[]).filter(d=>d.status?.includes('Abaixo')).length;
+  const acimaAntt = (analiseAntt?.detalhes||[]).filter(d=>d.status?.includes('Acima')).length;
+
+  // Pareto: top rotas por volume
+  const topRotas = [...linhas].sort((a,b) => b.cargasMes - a.cargasMes).slice(0,8);
+  const maxCargas = topRotas[0]?.cargasMes || 1;
+
+  const linhasFiltradas = linhas.filter(l => {
+    if (filtroRota === 'ganhou') return l.ganhouTabela === true;
+    if (filtroRota === 'perdeu') return l.ganhouTabela === false;
+    if (filtroRota === 'comReal') return l.real != null;
+    if (filtroRota === 'semReal') return l.real == null;
+    return true;
+  });
+
+  const exportarDiretoria = () => {
+    import('xlsx').then(XLSX => {
+      const rows = linhas.map(l => ({
+        Origem: l.origem, Destino: l.destino, Tipo: l.tipo, KM: l.km,
+        'Nossa tabela': l.nossaTabela, 'Melhor concorrente': l.melhorConc,
+        Concorrente: l.concorrente, '% para ganhar': l.pctParaGanhar.toFixed(1),
+        'Realizado médio': l.realizadoMedio, 'Cargas/mês': l.cargasMes,
+        Status: l.ganhouTabela === true ? 'Ganhou' : l.ganhouTabela === false ? 'Perdeu' : 'Sem comparativo',
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Análise');
+      XLSX.writeFile(wb, `analise-${tabela?.nome||'transportadora'}.xlsx`);
+    }).catch(()=>alert('Erro ao exportar'));
+  };
+
+  const exportarDevolucao = () => {
+    import('xlsx').then(XLSX => {
+      const rows = linhas.filter(l => l.ganhouTabela === false && l.pctParaGanhar > 0)
+        .sort((a,b) => b.cargasMes - a.cargasMes)
+        .map(l => ({
+          Origem: l.origem, Destino: l.destino, Tipo: l.tipo, KM: l.km,
+          'Nossa tabela': l.nossaTabela, 'Melhor concorrente': l.melhorConc,
+          '% necessário de redução': `-${l.pctParaGanhar.toFixed(1)}%`,
+          'Cargas/mês': l.cargasMes,
+          'Saving mensal potencial': ((l.nossaTabela - l.melhorConc) * Math.max(l.cargasMes,1)).toFixed(2),
+          Prioridade: l.cargasMes >= 10 ? 'Alta' : l.cargasMes >= 3 ? 'Média' : 'Baixa',
+        }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Devolução');
+      XLSX.writeFile(wb, `devolucao-${tabela?.nome||'transportadora'}.xlsx`);
+    }).catch(()=>alert('Erro ao exportar'));
+  };
+
+  if (!tabela) return (
+    <div className="panel-card"><div className="panel-title">Selecione uma transportadora para ver a análise</div></div>
+  );
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+
+      {/* KPIs */}
+      <div className="summary-strip lotacao-kpis" style={{gridTemplateColumns:'repeat(auto-fit,minmax(100px,1fr))'}}>
+        <div className="summary-card"><span>Total rotas</span><strong>{linhas.length}</strong></div>
+        <div className="summary-card"><span>Ganhou</span><strong style={{color:'#1D9E75'}}>{ganhouN}</strong><span>{linhas.length ? `${((ganhouN/linhas.length)*100).toFixed(0)}%` : '-'}</span></div>
+        <div className="summary-card"><span>Perdeu</span><strong style={{color:'#D85A30'}}>{perdeuN}</strong><span>{linhas.length ? `${((perdeuN/linhas.length)*100).toFixed(0)}%` : '-'}</span></div>
+        <div className="summary-card"><span>Cargas/mês</span><strong>{totalCargas || '-'}</strong><span>{comReal} rotas c/ realizado</span></div>
+        <div className="summary-card"><span>Saving potencial</span><strong style={{fontSize:16,color:'#D85A30'}}>{fmt(savingPotencial)}</strong><span>se ganhar rotas perdidas</span></div>
+        {analiseAntt && <div className="summary-card"><span>ANTT</span><strong>{abaixoAntt} abaixo</strong><span>{acimaAntt} acima</span></div>}
+      </div>
+
+      {/* Top rotas por volume */}
+      <ExpandCard icon="chart-bar" title="Top rotas por volume" badge={`${topRotas.length} principais`} defaultOpen={true}>
+        <div style={{overflowX:'auto'}}>
+          <table className="sim-analise-tabela" style={{fontSize:12}}>
+            <thead><tr>
+              <th>Rota</th><th>Tipo</th><th>Cargas/mês</th><th>Volume</th>
+              <th>Nossa tabela</th><th>Realizado médio</th><th>% p/ ganhar</th><th>Status</th>
+            </tr></thead>
+            <tbody>
+              {topRotas.map((l,i) => (
+                <tr key={i}>
+                  <td style={{whiteSpace:'nowrap'}}>{l.origem}/{l.ufOrigem} → {l.destino}/{l.ufDestino}</td>
+                  <td>{l.tipo}</td>
+                  <td style={{fontWeight:500}}>{l.cargasMes || '-'}</td>
+                  <td>
+                    <div style={{height:6,borderRadius:3,background:'var(--color-background-secondary)',width:80,overflow:'hidden'}}>
+                      <div style={{height:'100%',borderRadius:3,width:`${(l.cargasMes/maxCargas)*100}%`,background:l.ganhouTabela===true?'#1D9E75':'#D85A30'}}/>
+                    </div>
+                  </td>
+                  <td>{fmt(l.nossaTabela)}</td>
+                  <td style={{color:l.realizadoMedio!=null&&l.realizadoMedio>=l.nossaTabela?'#185FA5':'inherit'}}>
+                    {l.realizadoMedio!=null ? fmt(l.realizadoMedio) : <span style={{color:'var(--color-text-secondary)',fontSize:11}}>sem dados</span>}
+                  </td>
+                  <td style={{color:'#D85A30'}}>{l.pctParaGanhar>0 ? `-${fmtPct(l.pctParaGanhar)}` : '—'}</td>
+                  <td>
+                    {l.ganhouTabela===true && <span className="coverage-badge ok">Ganhou</span>}
+                    {l.ganhouTabela===false && <span className="coverage-badge warn">Perdeu</span>}
+                    {l.ganhouTabela===null && <span className="coverage-badge">Sem comp.</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </ExpandCard>
+
+      {/* Tabela completa */}
+      <ExpandCard icon="route" title="Todas as rotas — tabela vs concorrentes vs realizado" badge={`${linhas.length} rotas`}>
+        <div style={{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
+          {[['todas','Todas'],['ganhou',`Ganhou (${ganhouN})`],['perdeu',`Perdeu (${perdeuN})`],['comReal',`Com realizado (${comReal})`],['semReal','Sem realizado']].map(([v,l])=>(
+            <FiltroBtn key={v} active={filtroRota===v} onClick={()=>setFiltroRota(v)}>{l}</FiltroBtn>
+          ))}
+        </div>
+        <div style={{overflowX:'auto'}}>
+          <table className="sim-analise-tabela" style={{fontSize:11}}>
+            <thead><tr>
+              <th>Origem → Destino</th><th>Tipo</th><th>KM</th>
+              <th>Nossa tabela</th><th>Concorrente</th><th>Quem</th>
+              <th>% p/ ganhar</th><th>Realizado</th><th>Cargas/mês</th><th>Status</th>
+            </tr></thead>
+            <tbody>
+              {linhasFiltradas.slice(0,200).map((l,i)=>(
+                <tr key={i}>
+                  <td style={{whiteSpace:'nowrap'}}>{l.origem}/{l.ufOrigem} → {l.destino}/{l.ufDestino}</td>
+                  <td>{l.tipo}</td><td>{l.km||'-'}</td>
+                  <td>{fmt(l.nossaTabela)}</td>
+                  <td>{l.melhorConc>0?fmt(l.melhorConc):'-'}</td>
+                  <td style={{fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'}}>{l.concorrente!=='-'?l.concorrente:'-'}</td>
+                  <td style={{color:'#D85A30'}}>{l.pctParaGanhar>0?`-${fmtPct(l.pctParaGanhar)}`:'—'}</td>
+                  <td style={{color:l.realizadoMedio!=null&&l.realizadoMedio>=l.nossaTabela?'#185FA5':'inherit'}}>
+                    {l.realizadoMedio!=null?fmt(l.realizadoMedio):<span style={{color:'var(--color-text-secondary)'}}>—</span>}
+                  </td>
+                  <td style={{fontWeight:l.cargasMes>10?500:'normal'}}>{l.cargasMes||'-'}</td>
+                  <td>
+                    {l.ganhouTabela===true&&<span className="coverage-badge ok">Ganhou</span>}
+                    {l.ganhouTabela===false&&<span className="coverage-badge warn">Perdeu</span>}
+                    {l.ganhouTabela===null&&<span className="coverage-badge" style={{background:'var(--color-background-secondary)'}}>—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {linhasFiltradas.length>200&&<div style={{marginTop:8,fontSize:11,color:'var(--color-text-secondary)'}}>Exibindo 200 de {linhasFiltradas.length} rotas</div>}
+        </div>
+      </ExpandCard>
+
+      {/* ANTT colapsada */}
+      {analiseAntt && (
+        <ExpandCard icon="scale" title="Análise ANTT" badge={`${abaixoAntt} abaixo · ${acimaAntt} acima`}>
+          <div style={{overflowX:'auto'}}>
+            <table className="sim-analise-tabela" style={{fontSize:11}}>
+              <thead><tr><th>Origem</th><th>Destino</th><th>Tipo</th><th>Nossa tabela</th><th>ANTT</th><th>Diferença</th><th>%</th><th>Status</th></tr></thead>
+              <tbody>
+                {(analiseAntt.detalhes||[]).slice(0,100).map((d,i)=>(
+                  <tr key={i}>
+                    <td>{d.origem}/{d.ufOrigem}</td><td>{d.destino}/{d.ufDestino}</td><td>{d.tipo}</td>
+                    <td>{fmt(d.valorTabela)}</td><td>{fmt(d.valorAntt)}</td>
+                    <td style={{color:d.diferenca<0?'#D85A30':'#1D9E75'}}>{fmt(d.diferenca)}</td>
+                    <td style={{color:d.diferenca<0?'#D85A30':'#1D9E75'}}>{fmtPct(d.variacaoNovoAntt*100)}</td>
+                    <td><span className={`coverage-badge ${d.status?.includes('Abaixo')?'warn':'ok'}`}>{d.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </ExpandCard>
+      )}
+
+      {/* Exportações */}
+      <div className="panel-card" style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+        <div style={{flex:1,minWidth:160}}>
+          <div style={{fontSize:13,fontWeight:500}}>Exportar para análise</div>
+          <div style={{fontSize:12,color:'var(--color-text-secondary)'}}>Excel com visão executiva ou devolução ao transportador</div>
+        </div>
+        <ExportBtn icon="chart-pie" title="Relatório diretoria" sub="KPIs + top rotas + saving" onClick={exportarDiretoria} />
+        <ExportBtn icon="send" title="Devolução transportador" sub="Rotas perdidas por volume" onClick={exportarDevolucao} />
+      </div>
+
+    </div>
+  );
+}
+
 export default function LotacaoPage() {
   const [tabelas, setTabelas] = useState([]);
   const [selecionadaId, setSelecionadaId] = useState('');
@@ -876,6 +1149,7 @@ export default function LotacaoPage() {
 
   const usarSupabase = lotacaoSupabaseConfigurado();
   const supabaseInfo = obterInfoLotacaoSupabase();
+  const [resumoRealizado, setResumoRealizado] = useState([]);
 
   const recarregarDados = useCallback(async ({ silencioso = false } = {}) => {
     if (!silencioso) setCarregando(true);
@@ -905,6 +1179,11 @@ export default function LotacaoPage() {
   useEffect(() => {
     recarregarDados({ silencioso: true });
   }, [recarregarDados]);
+
+  useEffect(() => {
+    if (!usarSupabase) return;
+    resumoRotasLotacaoSupabase({}).then(d => setResumoRealizado(d||[])).catch(()=>{});
+  }, [usarSupabase]);
 
   useEffect(() => {
     if (!usarSupabase && fonteDados !== 'carregando') {
@@ -1183,12 +1462,10 @@ export default function LotacaoPage() {
       </div>
 
       <div className="feature-grid import-grid">
-        <ResumoMelhorPreco comparativo={comparativoMelhorPreco} />
-        <ResumoAntt titulo="Transportadora selecionada versus ANTT" analise={analiseAnttSelecionada} />
+        <PainelTransportadora tabela={tabelaSelecionada} resumoRealizado={resumoRealizado} comparativo={comparativoMelhorPreco} analiseAntt={analiseAnttSelecionada} />
       </div>
 
       <div className="feature-grid import-grid">
-        <TabelaDetalhesMelhorPreco comparativo={comparativoMelhorPreco} />
         <TabelaDetalhesAntt titulo="Maiores diferenças da selecionada versus ANTT" analise={analiseAnttSelecionada} />
       </div>
 

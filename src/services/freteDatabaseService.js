@@ -150,11 +150,14 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       id: item.id,
       rota: item.rota || '',
       pesoMin: item.peso_min ?? 0,
-      pesoMax: item.peso_max ?? 0,
+      pesoMax: item.peso_max ?? item.peso_limite ?? 0,
       rsKg: item.rs_kg ?? 0,
       excesso: item.excesso ?? 0,
       percentual: item.percentual ?? 0,
-      valorFixo: item.valor_fixo ?? 0,
+      valorFixo: item.valor_fixo ?? item.taxa_aplicada ?? 0,
+      freteMinimo: item.frete_minimo ?? 0,
+      tipoCalculo: item.tipo_calculo || item.tipoCalculo || '',
+      regraCalculo: item.regra_calculo || item.regraCalculo || '',
       ...(item.extra || {}),
     })),
     taxasEspeciais: taxasEspeciais.map((item) => ({
@@ -815,6 +818,7 @@ async function fetchRowsByOrigemIds(supabase, table, origemIds = []) {
         .from(table)
         .select('*')
         .in('origem_id', chunk)
+        .order('origem_id', { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
 
       if (error) throw error;
@@ -851,6 +855,7 @@ async function fetchCotacoesByOrigemIdsAndRotas(supabase, origemIds = [], rotaNo
             .select('*')
             .in('origem_id', origemChunk)
             .in('rota', rotaChunk)
+            .order('origem_id', { ascending: true })
             .range(from, from + PAGE_SIZE - 1);
 
           if (error) throw error;
@@ -866,7 +871,16 @@ async function fetchCotacoesByOrigemIdsAndRotas(supabase, origemIds = [], rotaNo
   }
 
   // Se a base usa nome de cotação diferente do nome da rota, volta para o modo robusto.
+  // Também faz fallback se encontrou menos cotações que o esperado (pode ter perdido registros).
   if (!rows.length) return fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+
+  // Verifica se pode ter perdido cotações — busca pelo total de registros para comparar
+  // Se robusto retornar mais, usa o robusto
+  try {
+    const robusto = await fetchRowsByOrigemIds(supabase, 'cotacoes', ids);
+    if (robusto.length > rows.length) return robusto;
+  } catch {}
+
   return rows;
 }
 
@@ -892,6 +906,7 @@ async function fetchTaxasByOrigemIdsAndDestinos(supabase, origemIds = [], destin
             .select('*')
             .in('origem_id', origemChunk)
             .in('ibge_destino', destinoChunk)
+            .order('origem_id', { ascending: true })
             .range(from, from + PAGE_SIZE - 1);
 
           if (error) throw error;
@@ -1069,11 +1084,10 @@ async function fetchRotasByOrigemIds(supabase, origemIds = [], destinos = [], uf
       let query = supabase
         .from('rotas')
         .select('*')
-        .in('origem_id', chunk);
+        .in('origem_id', chunk)
+        .order('origem_id', { ascending: true });
 
       // Quando há UF destino, é mais seguro buscar a malha da origem/UF e casar no front.
-      // Isso evita perder cidades quando o IBGE da tabela veio diferente, vazio ou quando
-      // a rota está cadastrada pelo nome da cidade.
       if (usarFiltroIbgeNoBanco) {
         query = query.in('ibge_destino', destinosIbge);
       }
@@ -1469,8 +1483,17 @@ function canalCompativelDb(canalBase = '', canalFiltro = '') {
   if (!filtro) return true;
   const base = normalizarCanalDb(canalBase);
   if (!base) return false;
+  // Canal AMBOS ou múltiplos canais separados por + atendem qualquer canal
+  if (base === 'AMBOS') return true;
   if (base === filtro) return true;
-
+  // Verifica se filtro está entre os canais da origem (ex: "ATACADO+B2C")
+  const canaisBase = base.split('+').map(c => c.trim()).filter(Boolean);
+  if (canaisBase.length > 1) {
+    return canaisBase.some(c => {
+      if (c === filtro) return true;
+      return categoriaCanalDb(c) === categoriaCanalDb(filtro);
+    });
+  }
   const categoriaBase = categoriaCanalDb(base);
   const categoriaFiltro = categoriaCanalDb(filtro);
   return Boolean(categoriaBase && categoriaFiltro && categoriaBase === categoriaFiltro);
@@ -1491,17 +1514,43 @@ function origemCompativelDb(cidadeBase = '', origemFiltro = '') {
 }
 
 async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', transportadoraIds = [] } = {}) {
-  let query = supabase
-    .from('origens')
-    .select('id, transportadora_id, cidade, canal, status');
+  // Busca paginada — resolve o problema do limite de 1000 linhas do Supabase
+  const PAGE = 1000;
+  let todas = [];
+  let pagina = 0;
+  let continuar = true;
 
-  if (Array.isArray(transportadoraIds) && transportadoraIds.length) {
-    query = query.in('transportadora_id', transportadoraIds);
+  // Monta prefixos para o ilike: usa o nome original E a versão sem acento
+  // Ex: "Itajaí" → tenta "Itaja" para pegar variações com/sem acento
+  const origemRaw = cidadeSemUfDb(origem).trim();
+  const origemPrefix = origemRaw.length >= 4 ? origemRaw.slice(0, 5) : origemRaw;
+
+  while (continuar) {
+    let query = supabase
+      .from('origens')
+      .select('id, transportadora_id, cidade, canal, status')
+      .order('cidade', { ascending: true })
+      .range(pagina * PAGE, (pagina + 1) * PAGE - 1);
+
+    if (Array.isArray(transportadoraIds) && transportadoraIds.length) {
+      query = query.in('transportadora_id', transportadoraIds);
+    }
+
+    // Filtra no banco com prefixo amplo (ignora acento usando primeiras letras)
+    if (origemPrefix) {
+      query = query.ilike('cidade', `${origemPrefix}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    todas = todas.concat(data || []);
+    continuar = (data || []).length === PAGE;
+    pagina++;
+    if (pagina > 20) break;
   }
-  const { data, error } = await query;
-  if (error) throw error;
 
-  return (data || [])
+  return todas
     .filter((item) => canalCompativelDb(item.canal, canal))
     .filter((item) => origemCompativelDb(item.cidade, origem));
 }

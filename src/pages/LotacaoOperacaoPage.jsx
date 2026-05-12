@@ -23,6 +23,10 @@ import {
   carregarTabelasLotacao,
   pesquisarRotaLotacao,
 } from '../utils/lotacaoTables';
+import {
+  salvarCargasLotacaoSupabase,
+  carregarCargasLotacaoSupabase,
+} from '../services/lotacaoSupabaseService';
 
 function arquivosValidos(files = []) {
   return Array.from(files || []).filter((file) => /\.xls[xm]?$/i.test(file.name || ''));
@@ -58,6 +62,18 @@ function ImportarFluxoCard({ onImportado, resumo }) {
       const novaBase = mesclarFluxoCargas(baseAtual, resultado.resultados, { modo, aliquotaIcmsPadrao: aliquota });
       setMensagem({ tipo: 'ok', texto: 'Cargas lidas. Salvando histórico da operação...' });
       const salvamento = await salvarFluxoCargasLotacaoCompleto(novaBase);
+
+      // Salva também no Supabase para compartilhar entre usuários
+      const todasCargas = resultado.resultados.flatMap(r => r.cargas || []);
+      const nomeArquivo = lista.map(f => f.name).join(', ');
+      console.log('[Lotação] Salvando no Supabase:', todasCargas.length, 'cargas');
+      try {
+        const resSupabase = await salvarCargasLotacaoSupabase(todasCargas, nomeArquivo);
+        console.log('[Lotação] Supabase resultado:', resSupabase);
+      } catch (erroSupabase) {
+        console.warn('[Lotação] Erro Supabase:', erroSupabase.message, erroSupabase);
+      }
+
       onImportado(novaBase);
       setArquivos([]);
       const total = resultado.resultados.reduce((acc, item) => acc + (item.cargas?.length || 0), 0);
@@ -65,7 +81,7 @@ function ImportarFluxoCard({ onImportado, resumo }) {
       const armazenamentoTexto = salvamento.armazenamento === 'indexedDB'
         ? ' Base grande salva no armazenamento local ampliado do navegador.'
         : '';
-      setMensagem({ tipo: 'ok', texto: `${total} carga(s) importada(s) no histórico de lotação.${erroTexto}${armazenamentoTexto}` });
+      setMensagem({ tipo: 'ok', texto: `${total} carga(s) importada(s) e salva(s) no Supabase.${erroTexto}${armazenamentoTexto}` });
     } catch (error) {
       setMensagem({ tipo: 'erro', texto: error.message || String(error) });
     } finally {
@@ -505,16 +521,25 @@ export default function LotacaoOperacaoPage() {
     setTabelas(carregarTabelasLotacao());
     let cancelado = false;
     setCarregandoHistorico(true);
-    carregarFluxoCargasLotacaoCompleto()
-      .then((base) => {
-        if (!cancelado) setBaseFluxo(base);
-      })
-      .catch((error) => {
-        console.error('Erro ao carregar histórico de lotação:', error);
-      })
-      .finally(() => {
-        if (!cancelado) setCarregandoHistorico(false);
-      });
+    (async () => {
+      try {
+        // Tenta carregar do Supabase primeiro
+        const cargasSupabase = await carregarCargasLotacaoSupabase({});
+        if (!cancelado && cargasSupabase.length > 0) {
+          const baseSupabase = { cargas: cargasSupabase, armazenamento: 'supabase' };
+          setBaseFluxo(baseSupabase);
+          setCarregandoHistorico(false);
+          return;
+        }
+      } catch (erroSupabase) {
+        console.warn('Supabase indisponível, usando local:', erroSupabase.message);
+      }
+      // Fallback para local
+      carregarFluxoCargasLotacaoCompleto()
+        .then((base) => { if (!cancelado) setBaseFluxo(base); })
+        .catch((error) => { console.error('Erro ao carregar histórico de lotação:', error); })
+        .finally(() => { if (!cancelado) setCarregandoHistorico(false); });
+    })();
     return () => {
       cancelado = true;
     };

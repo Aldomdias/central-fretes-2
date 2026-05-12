@@ -196,3 +196,178 @@ export async function diagnosticarLotacaoSupabase() {
   if (rotas.error) throw new Error(detalheErroSupabase(rotas.error));
   return { ok: true, configured: true, info: getSupabaseInfo(), tabelas: tabelas.count || 0, rotas: rotas.count || 0 };
 }
+
+// ============================================================
+// CARGAS DE LOTAÇÃO — salvar e carregar do Supabase
+// ============================================================
+
+function parseDateSafe(valor) {
+  if (!valor) return null;
+  if (valor instanceof Date) return isNaN(valor.getTime()) ? null : valor.toISOString();
+  const s = String(valor).trim();
+  if (!s) return null;
+  // Tenta parse direto
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d.toISOString();
+  // Tenta formato BR: dd/mm/yyyy ou dd/mm/yy
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
+  if (m) {
+    const ano = m[3] ? (m[3].length === 2 ? '20' + m[3] : m[3]) : new Date().getFullYear();
+    const d2 = new Date(`${ano}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`);
+    if (!isNaN(d2.getTime())) return d2.toISOString();
+  }
+  return null;
+}
+
+function numSafe(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+function cargaParaDb(carga = {}, arquivoOrigem = '') {
+  return {
+    dist:              String(carga.dist              || '').slice(0, 200),
+    referencia:        String(carga.referencia        || '').slice(0, 200),
+    operacao:          String(carga.operacao          || '').slice(0, 100),
+    origem:            String(carga.origem            || '').slice(0, 200),
+    uf_origem:         String(carga.ufOrigem          || '').slice(0, 10),
+    destino:           String(carga.destino           || '').slice(0, 200),
+    uf_destino:        String(carga.ufDestino         || '').slice(0, 10),
+    status:            String(carga.status            || '').slice(0, 100),
+    transportadora:    String(carga.transportadora    || '').slice(0, 200),
+    placa_cavalo:      String(carga.placaCavalo       || '').slice(0, 20),
+    placa_carreta:     String(carga.placaCarreta      || '').slice(0, 20),
+    tipo_veiculo:      String(carga.tipoVeiculo       || '').slice(0, 100),
+    eixos:             String(carga.eixos             || '').slice(0, 20),
+    cubagem:           numSafe(carga.cubagem),
+    coleta_planejada:  parseDateSafe(carga.coletaPlanejada),
+    coleta_realizada:  parseDateSafe(carga.coletaRealizada),
+    emissao_nf:        parseDateSafe(carga.emissaoNf),
+    frete_cantu:       numSafe(carga.freteCantu),
+    frete_transp:      numSafe(carga.freteTransp),
+    valor_comparacao:  numSafe(carga.valorComparacao),
+    pedagio:           numSafe(carga.pedagio),
+    seguro:            String(carga.seguro            || '').slice(0, 200),
+    cte:               (Array.isArray(carga.ctes) ? carga.ctes.join(';') : (carga.cte || '')).slice(0, 500),
+    liberado:          Boolean(carga.liberado),
+    descarga:          Boolean(carga.descarga),
+    finalizado:        Boolean(carga.finalizado),
+    ocorrencia:        String(carga.ocorrencia        || '').slice(0, 500),
+    arquivo_origem:    String(arquivoOrigem || '').slice(0, 200),
+  };
+}
+
+function dbParaCarga(row = {}) {
+  return {
+    id:              row.id,
+    dist:            row.dist            || '',
+    referencia:      row.referencia      || '',
+    operacao:        row.operacao        || '',
+    origem:          row.origem          || '',
+    ufOrigem:        row.uf_origem       || '',
+    destino:         row.destino         || '',
+    ufDestino:       row.uf_destino      || '',
+    status:          row.status          || '',
+    transportadora:  row.transportadora  || '',
+    placaCavalo:     row.placa_cavalo    || '',
+    placaCarreta:    row.placa_carreta   || '',
+    tipoVeiculo:     row.tipo_veiculo    || '',
+    eixos:           row.eixos           || '',
+    cubagem:         row.cubagem         != null ? Number(row.cubagem)         : null,
+    coletaPlanejada: row.coleta_planejada || null,
+    coletaRealizada: row.coleta_realizada || null,
+    emissaoNf:       row.emissao_nf      || null,
+    freteCantu:      row.frete_cantu     != null ? Number(row.frete_cantu)     : null,
+    freteTransp:     row.frete_transp    != null ? Number(row.frete_transp)    : null,
+    valorComparacao: row.valor_comparacao!= null ? Number(row.valor_comparacao): null,
+    pedagio:         row.pedagio         != null ? Number(row.pedagio)         : null,
+    seguro:          row.seguro          || '',
+    ctes:            row.cte ? row.cte.split(';').filter(Boolean) : [],
+    liberado:        Boolean(row.liberado),
+    descarga:        Boolean(row.descarga),
+    finalizado:      Boolean(row.finalizado),
+    ocorrencia:      row.ocorrencia      || '',
+    arquivoOrigem:   row.arquivo_origem  || '',
+    importadoEm:     row.importado_em    || '',
+  };
+}
+
+export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '') {
+  if (!isSupabaseConfigured()) return { ok: false, modo: 'local', total: 0 };
+  if (!cargas.length) return { ok: true, modo: 'supabase', total: 0 };
+
+  const supabase = ensureClient();
+  const rows = cargas.map(c => cargaParaDb(c, arquivoOrigem));
+  const CHUNK = 500;
+  let total = 0;
+
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const { error } = await supabase.from('lotacao_cargas').insert(chunk);
+    if (error) throw new Error(detalheErroSupabase(error));
+    total += chunk.length;
+  }
+
+  return { ok: true, modo: 'supabase', total };
+}
+
+export async function carregarCargasLotacaoSupabase(filtros = {}) {
+  if (!isSupabaseConfigured()) return [];
+
+  const supabase = ensureClient();
+  const PAGE = 1000;
+  let todas = [];
+  let pagina = 0;
+  let continuar = true;
+
+  while (continuar) {
+    let query = supabase
+      .from('lotacao_cargas')
+      .select('*')
+      .order('coleta_realizada', { ascending: false })
+      .range(pagina * PAGE, (pagina + 1) * PAGE - 1);
+
+    if (filtros.origem)         query = query.ilike('origem', `%${filtros.origem}%`);
+    if (filtros.destino)        query = query.ilike('destino', `%${filtros.destino}%`);
+    if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
+    if (filtros.tipoVeiculo)    query = query.ilike('tipo_veiculo', `%${filtros.tipoVeiculo}%`);
+    if (filtros.inicio)         query = query.gte('coleta_realizada', filtros.inicio);
+    if (filtros.fim)            query = query.lte('coleta_realizada', filtros.fim);
+    if (filtros.limit)          { query = query.limit(filtros.limit); continuar = false; }
+
+    const { data, error } = await query;
+    if (error) throw new Error(detalheErroSupabase(error));
+
+    todas = todas.concat((data || []).map(dbParaCarga));
+    if (!filtros.limit) {
+      continuar = (data || []).length === PAGE;
+      pagina++;
+      if (pagina > 50) break;
+    }
+  }
+
+  return todas;
+}
+
+export async function resumoRotasLotacaoSupabase(filtros = {}) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+
+  let query = supabase.from('vw_lotacao_resumo_rotas').select('*').order('total_cargas', { ascending: false });
+  if (filtros.origem)      query = query.ilike('origem', `%${filtros.origem}%`);
+  if (filtros.destino)     query = query.ilike('destino', `%${filtros.destino}%`);
+  if (filtros.tipoVeiculo) query = query.ilike('tipo_veiculo', `%${filtros.tipoVeiculo}%`);
+
+  const { data, error } = await query.limit(5000);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+export async function limparCargasLotacaoSupabase() {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { error } = await supabase.from('lotacao_cargas').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}

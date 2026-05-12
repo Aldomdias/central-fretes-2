@@ -219,12 +219,24 @@ export function useFreteStore() {
 
     async function carregar() {
       setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
-      try {
-        if (bancoConfigurado()) {
+
+      if (!bancoConfigurado()) {
+        const cacheLocal = readLocalState();
+        if (cancelled) return;
+        setTransportadoras((cacheLocal || []).map(normalizeTransportadora));
+        loadedRef.current = true;
+        setSyncStatus((prev) => ({ ...prev, carregando: false, fonte: 'local' }));
+        return;
+      }
+
+      const MAX_TENTATIVAS = 3;
+      let ultimoErro = null;
+      for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+        if (cancelled) return;
+        try {
           const resumo = await carregarResumoBaseDb();
           const conferencia = await carregarConferenciaBaseDb().catch(() => null);
           if (cancelled) return;
-
           setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
           loadedRef.current = true;
           setSyncStatus((prev) => ({
@@ -233,29 +245,31 @@ export function useFreteStore() {
             fonte: 'supabase-resumo',
             resumoBase: resumo.resumo,
             conferenciaBase: conferencia,
+            erro: '',
           }));
           return;
+        } catch (error) {
+          ultimoErro = error;
+          if (tentativa < MAX_TENTATIVAS) {
+            setSyncStatus((prev) => ({
+              ...prev,
+              erro: `Tentativa ${tentativa}/${MAX_TENTATIVAS} falhou. Reconectando em 2s...`,
+            }));
+            await new Promise((res) => setTimeout(res, 2000));
+          }
         }
-
-        const cacheLocal = readLocalState();
-        if (cancelled) return;
-
-        setTransportadoras((cacheLocal || []).map(normalizeTransportadora));
-        loadedRef.current = true;
-        setSyncStatus((prev) => ({
-          ...prev,
-          carregando: false,
-          fonte: 'local',
-        }));
-      } catch (error) {
-        if (cancelled) return;
-        loadedRef.current = true;
-        setSyncStatus((prev) => ({
-          ...prev,
-          carregando: false,
-          erro: error.message || 'Erro ao carregar resumo da base.',
-        }));
       }
+
+      if (cancelled) return;
+      const cacheLocal = readLocalState();
+      setTransportadoras((cacheLocal || []).map(normalizeTransportadora));
+      loadedRef.current = true;
+      setSyncStatus((prev) => ({
+        ...prev,
+        carregando: false,
+        fonte: cacheLocal.length ? 'local-fallback' : 'local',
+        erro: ultimoErro?.message || 'Falha ao conectar ao Supabase. Usando cache local.',
+      }));
     }
 
     carregar();

@@ -663,6 +663,7 @@ export default function FerramentasPage({ transportadoras = [] }) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'vinculos-transportadoras.json'; a.click();
   };
   const [sugestoes, setSugestoes] = useState([]);
+  const [semVinculo, setSemVinculo] = useState([]);
   const [carregandoSugestoes, setCarregandoSugestoes] = useState(false);
   const [erroSugestoes, setErroSugestoes] = useState('');
 
@@ -673,9 +674,25 @@ export default function FerramentasPage({ transportadoras = [] }) {
     try {
       if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
       const supabase = getSupabaseClient();
-      const { data, error } = await supabase.from('realizado_local_ctes').select('transportadora').limit(10000);
-      if (error) throw new Error(error.message);
-      const nomesCte = [...new Set((data || []).map(r => (r.transportadora || '').trim()).filter(Boolean))].sort();
+      // Busca paginada com order para consistência (Supabase limita 1000 por chamada)
+      const PAGE_SIZE = 1000;
+      let page = 0;
+      let todosNomes = new Set();
+      let continuar = true;
+      while (continuar) {
+        const { data: pagina, error } = await supabase
+          .from('realizado_local_ctes')
+          .select('transportadora')
+          .order('transportadora', { ascending: true })
+          .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+        if (error) throw new Error(error.message);
+        const nesta = pagina || [];
+        nesta.forEach(r => { if (r.transportadora?.trim()) todosNomes.add(r.transportadora.trim()); });
+        continuar = nesta.length === PAGE_SIZE;
+        page++;
+        if (page > 50) break; // segurança: no máximo 50.000 registros
+      }
+      const nomesCte = [...todosNomes].sort();
       const nomesTabela = transportadoras.map(t => t.nome).filter(Boolean);
       if (!nomesTabela.length) throw new Error('Nenhuma transportadora na tabela de fretes. Carregue a base primeiro.');
       const jaVinculados = new Set(vinculos.map(v => normalizarNomeTransp(v.nomeCte)));
@@ -695,7 +712,10 @@ export default function FerramentasPage({ transportadoras = [] }) {
           score: melhorScore,
         });
       }
-      setSugestoes(sugs.sort((a, b) => b.score - a.score));
+      const comSugestao = sugs.filter(s => s.nomeTabela).sort((a, b) => b.score - a.score);
+      const semSugestao = sugs.filter(s => !s.nomeTabela).sort((a, b) => a.nomeCte.localeCompare(b.nomeCte));
+      setSugestoes(comSugestao);
+      setSemVinculo(semSugestao);
       if (!sugs.length) setErroSugestoes('Todas as transportadoras do CT-e já estão vinculadas.');
     } catch (err) {
       setErroSugestoes(err.message || 'Erro ao gerar sugestões.');
@@ -722,6 +742,14 @@ export default function FerramentasPage({ transportadoras = [] }) {
     salvarVinculos([...vinculos, ...novas]);
     setSugestoes([]);
   };
+  const editarSemVinculo = (id, valor) => setSemVinculo(prev => prev.map(s => s.id === id ? {...s, nomeTabela: valor} : s));
+  const confirmarSemVinculo = (id) => {
+    const item = semVinculo.find(s => s.id === id);
+    if (!item || !item.nomeTabela.trim()) return;
+    salvarVinculos([...vinculos, { id: Date.now(), nomeCte: item.nomeCte, nomeTabela: item.nomeTabela }]);
+    setSemVinculo(prev => prev.filter(s => s.id !== id));
+  };
+  const descartarSemVinculo = (id) => setSemVinculo(prev => prev.filter(s => s.id !== id));
 
   const importarVinculosJson = (e) => {
     const file = e.target.files?.[0]; if (!file) return;
@@ -862,6 +890,33 @@ export default function FerramentasPage({ transportadoras = [] }) {
             </div>
 
             {erroSugestoes && <div style={{color:'#9b2323',fontSize:13,padding:'8px 12px',background:'#fff1f1',borderRadius:8}}>{erroSugestoes}</div>}
+
+            {semVinculo.length > 0 && (
+              <div style={{display:'grid',gap:8}}>
+                <div style={{fontSize:13,fontWeight:600,color:'#87640d',padding:'8px 12px',background:'#fff7df',borderRadius:8,border:'1px solid #ead28c'}}>
+                  ⚠ {semVinculo.length} transportadora(s) sem sugestão — preencha o nome da tabela:
+                </div>
+                {semVinculo.map(s => (
+                  <div key={s.id} style={{display:'grid',gridTemplateColumns:'1fr 1fr auto auto',gap:8,alignItems:'center',padding:'8px 12px',border:'1px solid #ead28c',borderRadius:10,background:'#fffbf0'}}>
+                    <div style={{fontSize:13,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={s.nomeCte}>{s.nomeCte}</div>
+                    <div>
+                      <input
+                        value={s.nomeTabela||''}
+                        onChange={e=>editarSemVinculo(s.id,e.target.value)}
+                        style={{fontSize:13,width:'100%'}}
+                        placeholder="Digite ou selecione..."
+                        list={`sv-list-${s.id}`}
+                      />
+                      <datalist id={`sv-list-${s.id}`}>
+                        {transportadoras.map(t=><option key={t.id||t.nome} value={t.nome}/>)}
+                      </datalist>
+                    </div>
+                    <button className="btn-primary" style={{minHeight:32,padding:'0 12px',fontSize:12}} disabled={!s.nomeTabela} onClick={()=>confirmarSemVinculo(s.id)}>✓</button>
+                    <button className="btn-secondary" style={{minHeight:32,padding:'0 12px',fontSize:12}} onClick={()=>descartarSemVinculo(s.id)}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {sugestoes.length > 0 && (
               <div style={{display:'grid',gap:8}}>

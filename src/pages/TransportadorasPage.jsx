@@ -19,6 +19,14 @@ function uniqueCities(items) {
   )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
+const CANAIS_DISPONIVEIS = ['ATACADO', 'B2C'];
+
+function adicionarCanalDisponivel(canal) {
+  if (canal && !CANAIS_DISPONIVEIS.includes(canal)) {
+    CANAIS_DISPONIVEIS.push(canal);
+  }
+}
+
 function uniqueCanals(items) {
   return Array.from(new Set(
     items.flatMap((item) => (item.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))
@@ -127,7 +135,7 @@ function OrigemModal({ open, initialValue, onSave, onClose }) {
     <Modal open={open} title={initialValue?.id ? 'Editar Origem' : 'Nova Origem'} onClose={onClose}>
       <div className="form-grid three">
         <div className="field"><label>Cidade</label><input value={form.cidade} onChange={(e) => setForm((f) => ({ ...f, cidade: e.target.value }))} /></div>
-        <div className="field"><label>Canal</label><select value={form.canal} onChange={(e) => setForm((f) => ({ ...f, canal: e.target.value }))}><option>ATACADO</option><option>B2C</option></select></div>
+        <div className="field"><label>Canal</label><select value={form.canal} onChange={(e) => setForm((f) => ({ ...f, canal: e.target.value }))}><option>ATACADO</option><option>B2C</option><option value="AMBOS">AMBOS (ATACADO + B2C)</option></select></div>
         <div className="field"><label>Status</label><select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}><option>Ativa</option><option>Inativa</option></select></div>
       </div>
       <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave(form)}>Salvar</button></div>
@@ -387,7 +395,7 @@ function TransportadorasList({ items, onOpen, store }) {
       const resumo = buildResumoTransportadora(item);
       const nomeMatch = !termoBusca || normalizeText(item.nome).includes(termoBusca);
       const cidadeMatch = !cidadeNormalizada || (item.origens || []).some((origem) => normalizeText(origem.cidade) === cidadeNormalizada);
-      const canalMatch = !canalNormalizado || (item.origens || []).some((origem) => normalizeText(origem.canal || 'ATACADO') === canalNormalizado);
+      const canalMatch = !canalNormalizado || (item.origens || []).some((origem) => { const c = normalizeText(origem.canal || 'ATACADO'); return c === canalNormalizado || c === 'ambos'; });
       const coberturaMatch = !coberturaNormalizada || normalizeFiltroStatus(resumo.cobertura) === coberturaNormalizada;
       return nomeMatch && cidadeMatch && canalMatch && coberturaMatch;
     });
@@ -511,7 +519,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title">{item.nome}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).map(o=>o.canal||'ATACADO'))]; const temAtacado = cs.some(c=>c==='ATACADO'||c.includes('ATACADO')||c.toUpperCase()==='AMBOS'); const temB2c = cs.some(c=>c==='B2C'||c.includes('B2C')||c.toUpperCase()==='AMBOS'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
@@ -588,7 +596,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title">{origem.cidade} —</div><div className="list-subtitle">{origem.rotas.length} rota(s) · {origem.cotacoes.length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: origem.canal==='B2C'?'#dbeafe': (origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#ede9fe':'#dcfce7',color:origem.canal==='B2C'?'#1d4ed8':(origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#6d28d9':'#166534'}}>{(origem.canal||'ATACADO').replace('+',' + ')}</span></div><div className="list-subtitle">{origem.rotas.length} rota(s) · {origem.cotacoes.length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
                 <button className="btn-link inline-btn" onClick={() => setInconsistenciasOpen(origem.id)}>Ver inconsistências</button>
@@ -604,6 +612,76 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
       <div className="footer-note">{transportadora.origens.length} origem(ns) no total</div>
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
       <InconsistenciasModal open={!!inconsistenciasOpen} title={typeof inconsistenciasOpen === 'number' ? 'Inconsistências da origem' : 'Inconsistências da transportadora'} transportadora={transportadora} origem={typeof inconsistenciasOpen === 'number' ? transportadora.origens.find((item) => item.id === inconsistenciasOpen) : null} onClose={() => setInconsistenciasOpen(false)} />
+    </div>
+  );
+}
+
+function CanalTab({ transportadoraId, origem, store }) {
+  const canaisAtivos = Array.isArray(origem.canal)
+    ? origem.canal
+    : (origem.canal || 'ATACADO').split('+').map(c => c.trim()).filter(Boolean);
+
+  const [selecionados, setSelecionados] = useState(canaisAtivos);
+  const [novoCanal, setNovoCanal] = useState('');
+
+  const toggle = (canal) => {
+    setSelecionados(prev =>
+      prev.includes(canal) ? prev.filter(c => c !== canal) : [...prev, canal]
+    );
+  };
+
+  const adicionarNovo = () => {
+    const c = novoCanal.trim().toUpperCase();
+    if (!c) return;
+    adicionarCanalDisponivel(c);
+    setSelecionados(prev => prev.includes(c) ? prev : [...prev, c]);
+    setNovoCanal('');
+  };
+
+  const salvar = () => {
+    const canalFinal = selecionados.length === 1 ? selecionados[0] : selecionados.join('+');
+    store.salvarOrigem(transportadoraId, { ...origem, canal: canalFinal });
+  };
+
+  return (
+    <div className="panel-card">
+      <div className="tab-panel-header">
+        <p>Defina quais canais esta origem atende. Origens com múltiplos canais participam das simulações de todos eles.</p>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {CANAIS_DISPONIVEIS.map(canal => (
+          <label key={canal} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', border: '1px solid var(--border-soft)', borderRadius: 10, cursor: 'pointer', background: selecionados.includes(canal) ? '#edf2ff' : '#fff' }}>
+            <input
+              type="checkbox"
+              checked={selecionados.includes(canal)}
+              onChange={() => toggle(canal)}
+              style={{ width: 16, height: 16 }}
+            />
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{canal}</span>
+            {selecionados.includes(canal) && <span style={{ marginLeft: 'auto', fontSize: 12, color: '#3b82f6' }}>✓ ativo</span>}
+          </label>
+        ))}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+          <input
+            value={novoCanal}
+            onChange={e => setNovoCanal(e.target.value.toUpperCase())}
+            placeholder="Novo canal (ex: CROSS)"
+            onKeyDown={e => e.key === 'Enter' && adicionarNovo()}
+            style={{ flex: 1 }}
+          />
+          <button className="btn-secondary" onClick={adicionarNovo} disabled={!novoCanal.trim()}>
+            Adicionar canal
+          </button>
+        </div>
+      </div>
+      <div className="actions-right top-space">
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginRight: 'auto' }}>
+          Canal atual: <strong>{selecionados.join(' + ') || 'nenhum'}</strong>
+        </div>
+        <button className="btn-primary" onClick={salvar} disabled={!selecionados.length}>
+          Salvar Canal
+        </button>
+      </div>
     </div>
   );
 }
@@ -637,8 +715,9 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← {transportadora.nome}</button>
-      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{origem.canal}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><span className="status-pill dark">{origem.status}</span></div></div>
-      <div className="tabs-row"><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
+      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{(origem.canal||'ATACADO').split('+').join(' + ')}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><span className="status-pill dark">{origem.status}</span></div></div>
+      <div className="tabs-row"><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
+      {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
       {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}

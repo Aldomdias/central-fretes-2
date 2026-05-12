@@ -1188,14 +1188,33 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimOrigem,
           limit: 5000,
         });
-        // Resolve ibgeDestino pelo nome da cidade quando não vier preenchido
+        // Carrega vínculos de transportadoras do localStorage
+        const vinculosSalvos = (() => {
+          try { return JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]'); } catch { return []; }
+        })();
+        const mapaVinculos = new Map(
+          vinculosSalvos.map(v => [
+            String(v.nomeCte || '').trim().toUpperCase(),
+            String(v.nomeTabela || '').trim()
+          ])
+        );
+
+        // Resolve ibgeDestino e aplica vínculos de nome de transportadora
         const rowsComIbge = rowsBrutos.map((row) => {
-          if (row.ibgeDestino) return row;
-          const cidadeNorm = normalizeBuscaIbge(row.cidadeDestino || '');
-          const cidadeUfNorm = normalizeBuscaIbge((row.cidadeDestino || "") + "/" + (row.ufDestino || ""));
-          const municipio = municipioPorCidade.get(cidadeUfNorm) || municipioPorCidade.get(cidadeNorm);
-          return { ...row, ibgeDestino: municipio?.ibge || '' };
+          // Resolve IBGE
+          let ibgeDestino = row.ibgeDestino || '';
+          if (!ibgeDestino) {
+            const cidadeNorm = normalizeBuscaIbge(row.cidadeDestino || '');
+            const cidadeUfNorm = normalizeBuscaIbge((row.cidadeDestino || '') + '/' + (row.ufDestino || ''));
+            const municipio = municipioPorCidade.get(cidadeUfNorm) || municipioPorCidade.get(cidadeNorm);
+            ibgeDestino = municipio?.ibge || '';
+          }
+          // Aplica vínculo de transportadora
+          const nomeOriginal = String(row.transportadora || '').trim();
+          const nomeVinculado = mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
+          return { ...row, ibgeDestino, transportadora: nomeVinculado };
         });
+
         realizado = {
           totalCompativel: rowsComIbge.length,
           limit: 5000,
