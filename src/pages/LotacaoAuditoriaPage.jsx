@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buscarCargaPorDistOuCte,
   carregarFluxoCargasLotacao,
@@ -21,6 +21,13 @@ import {
   totalAutorizadoCarga,
   totalLancadoCarga,
 } from '../utils/lotacaoFluxoCargas';
+import {
+  carregarCargasLotacaoSupabase,
+  carregarLancamentosAuditoriaSupabase,
+  carregarSolicitacoesSupabase,
+  salvarLancamentoAuditoriaSupabase,
+  salvarSolicitacaoSupabase,
+} from '../services/lotacaoSupabaseService';
 
 function classeSaldo(valor) {
   if (valor < -0.01) return 'negativo';
@@ -92,42 +99,33 @@ function ResumoCarga({ carga, lancamentos, solicitacoes }) {
       </div>
 
       <div className="sim-analise-resumo top-space-sm">
-        <div>
-          <span>Frete Cantu</span>
-          <strong>{formatarMoeda(carga.freteCantu)}</strong>
-        </div>
-        <div>
-          <span>Frete Transportadora</span>
-          <strong>{formatarMoeda(carga.freteTransp)}</strong>
-        </div>
-        <div>
-          <span>ICMS removido</span>
-          <strong>{formatarMoeda(carga.icmsRemovido)}</strong>
-        </div>
-        <div>
-          <span>Pedágio separado</span>
-          <strong>{formatarMoeda(carga.pedagio)}</strong>
-        </div>
-        <div>
-          <span>Tipo de veículo</span>
-          <strong>{carga.tipoVeiculo}</strong>
-        </div>
-        <div>
-          <span>CT-e(s)</span>
-          <strong>{carga.cteRaw || '-'}</strong>
-        </div>
+        <div><span>Frete Cantu</span><strong>{formatarMoeda(carga.freteCantu)}</strong></div>
+        <div><span>Frete Transportadora</span><strong>{formatarMoeda(carga.freteTransp)}</strong></div>
+        <div><span>ICMS removido</span><strong>{formatarMoeda(carga.icmsRemovido)}</strong></div>
+        <div><span>Pedágio separado</span><strong>{formatarMoeda(carga.pedagio)}</strong></div>
+        <div><span>Tipo de veículo</span><strong>{carga.tipoVeiculo}</strong></div>
+        <div><span>CT-e(s)</span><strong>{carga.cteRaw || (carga.ctes || []).join('; ') || '-'}</strong></div>
       </div>
 
       <div className="hint-box compact top-space-sm">
-        Regra aplicada: {carga.regraCalculo}. {carga.icmsEstimado ? `Alíquota usada: ${carga.aliquotaIcmsUsada}%.` : 'Quando V e W estavam diferentes, o sistema usou o valor sem ICMS informado.'}
+        Regra aplicada: {carga.regraCalculo}.{' '}
+        {carga.icmsEstimado
+          ? `Alíquota usada: ${carga.aliquotaIcmsUsada}%.`
+          : 'Quando V e W estavam diferentes, o sistema usou o valor sem ICMS informado.'}
       </div>
     </div>
   );
 }
 
-function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
+function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvando }) {
   const ctes = carga?.ctes?.length ? carga.ctes : separarCtes(carga?.cteRaw || '');
-  const [form, setForm] = useState({ cte: ctes[0] || '', cteOutro: '', valorLancado: '', fatura: '', observacao: '' });
+  const [form, setForm] = useState({
+    cte: ctes[0] || '',
+    cteOutro: '',
+    valorLancado: '',
+    fatura: '',
+    observacao: '',
+  });
 
   if (!carga) return null;
 
@@ -142,7 +140,13 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
   const registrar = () => {
     if (!valorDigitado || valorDigitado <= 0 || duplicado) return;
     onRegistrar({ ...form, cte: cteEfetivo });
-    setForm({ cte: ctes.find((cte) => !cteJaLancado(lancamentos, carga, cte)) || 'OUTRO', cteOutro: '', valorLancado: '', fatura: '', observacao: '' });
+    setForm({
+      cte: ctes.find((c) => !cteJaLancado(lancamentos, carga, c)) || 'OUTRO',
+      cteOutro: '',
+      valorLancado: '',
+      fatura: '',
+      observacao: '',
+    });
   };
 
   const atualizar = (campo, valor) => setForm((prev) => ({ ...prev, [campo]: valor }));
@@ -160,24 +164,34 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
         <label className="field">
           CT-e auditado
           {ctes.length ? (
-            <select value={form.cte} onChange={(event) => atualizar('cte', event.target.value)}>
+            <select value={form.cte} onChange={(e) => atualizar('cte', e.target.value)}>
               {ctes.map((cte) => {
                 const usado = cteJaLancado(lancamentos, carga, cte);
-                return <option key={cte} value={cte} disabled={usado}>{cte}{usado ? ' · já lançado' : ''}</option>;
+                return (
+                  <option key={cte} value={cte} disabled={usado}>
+                    {cte}{usado ? ' · já lançado' : ''}
+                  </option>
+                );
               })}
               <option value="DIST">Lançamento pela DIST</option>
               <option value="OUTRO">Outro CT-e</option>
             </select>
           ) : (
-            <input value={form.cte} onChange={(event) => atualizar('cte', event.target.value)} placeholder="CT-e ou DIST" />
+            <input value={form.cte} onChange={(e) => atualizar('cte', e.target.value)} placeholder="CT-e ou DIST" />
           )}
         </label>
+
         {form.cte === 'OUTRO' && (
           <label className="field">
             Informar outro CT-e
-            <input value={form.cteOutro} onChange={(event) => atualizar('cteOutro', event.target.value)} placeholder="Número do CT-e" />
+            <input
+              value={form.cteOutro}
+              onChange={(e) => atualizar('cteOutro', e.target.value)}
+              placeholder="Número do CT-e"
+            />
           </label>
         )}
+
         <label className="field">
           Valor lançado
           <input
@@ -185,38 +199,38 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
             min="0"
             step="0.01"
             value={form.valorLancado}
-            onChange={(event) => atualizar('valorLancado', event.target.value)}
+            onChange={(e) => atualizar('valorLancado', e.target.value)}
             placeholder="Ex.: 5000"
           />
         </label>
+
         <label className="field">
           Fatura
-          <input value={form.fatura} onChange={(event) => atualizar('fatura', event.target.value)} placeholder="Número da fatura" />
+          <input
+            value={form.fatura}
+            onChange={(e) => atualizar('fatura', e.target.value)}
+            placeholder="Número da fatura"
+          />
         </label>
       </div>
 
       <label className="field">
         Observação
-        <textarea value={form.observacao} onChange={(event) => atualizar('observacao', event.target.value)} placeholder="Observação da auditoria ou justificativa" />
+        <textarea
+          value={form.observacao}
+          onChange={(e) => atualizar('observacao', e.target.value)}
+          placeholder="Observação da auditoria ou justificativa"
+        />
       </label>
 
       <div className="sim-analise-resumo">
-        <div>
-          <span>Saldo antes do lançamento</span>
-          <strong>{formatarMoeda(saldo)}</strong>
-        </div>
-        <div>
-          <span>Valor digitado</span>
-          <strong>{formatarMoeda(valorDigitado)}</strong>
-        </div>
+        <div><span>Saldo antes do lançamento</span><strong>{formatarMoeda(saldo)}</strong></div>
+        <div><span>Valor digitado</span><strong>{formatarMoeda(valorDigitado)}</strong></div>
         <div>
           <span>Excedente previsto</span>
           <strong className={excedentePrevisto > 0 ? 'negativo' : ''}>{formatarMoeda(excedentePrevisto)}</strong>
         </div>
-        <div>
-          <span>Total já lançado</span>
-          <strong>{formatarMoeda(totalLancado)}</strong>
-        </div>
+        <div><span>Total já lançado</span><strong>{formatarMoeda(totalLancado)}</strong></div>
       </div>
 
       {ctesLancados.length > 0 && (
@@ -224,13 +238,11 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
           CT-e(s) já lançados nesta DIST: <strong>{ctesLancados.join(', ')}</strong>.
         </div>
       )}
-
       {duplicado && (
         <div className="hint-box compact error-text">
           Este CT-e já foi lançado nesta DIST. Não é permitido registrar o mesmo CT-e duas vezes.
         </div>
       )}
-
       {excedentePrevisto > 0 && !duplicado && (
         <div className="hint-box compact error-text">
           Este lançamento passa do saldo da DIST. Ao registrar, o sistema cria uma solicitação pendente na tela Lotação Operação para aprovação.
@@ -238,8 +250,23 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
       )}
 
       <div className="actions-right">
-        <button type="button" className="btn-primary" disabled={!valorDigitado || valorDigitado <= 0 || duplicado || (form.cte === 'OUTRO' && !form.cteOutro.trim())} onClick={registrar}>
-          {excedentePrevisto > 0 ? 'Registrar e abrir solicitação' : 'Registrar auditado'}
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={
+            salvando ||
+            !valorDigitado ||
+            valorDigitado <= 0 ||
+            duplicado ||
+            (form.cte === 'OUTRO' && !form.cteOutro.trim())
+          }
+          onClick={registrar}
+        >
+          {salvando
+            ? 'Salvando...'
+            : excedentePrevisto > 0
+            ? 'Registrar e abrir solicitação'
+            : 'Registrar auditado'}
         </button>
       </div>
     </div>
@@ -249,7 +276,9 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar }) {
 function HistoricoLancamentos({ carga, lancamentos }) {
   if (!carga) return null;
   const lista = lancamentosDaCarga(lancamentos, carga);
-  if (!lista.length) return <div className="hint-box compact">Nenhum lançamento auditado para esta DIST.</div>;
+  if (!lista.length) {
+    return <div className="hint-box compact">Nenhum lançamento auditado para esta DIST.</div>;
+  }
 
   return (
     <div className="table-card lotacao-table-card">
@@ -303,7 +332,9 @@ function MovimentosAutorizacao({ carga, solicitacoes }) {
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Autorizações e custos da operação</div>
-          <p className="compact">Aprovações ficam na tela Lotação Operação e, quando aprovadas, aumentam o saldo disponível para auditoria.</p>
+          <p className="compact">
+            Aprovações ficam na tela Lotação Operação e, quando aprovadas, aumentam o saldo disponível para auditoria.
+          </p>
         </div>
       </div>
       <div className="sim-analise-tabela-wrap">
@@ -338,71 +369,138 @@ function MovimentosAutorizacao({ carga, solicitacoes }) {
   );
 }
 
+// ─── Página principal ────────────────────────────────────────────────────────
+
 export default function LotacaoAuditoriaPage() {
+  const mounted = useRef(true);
+
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
+  const [fonteCargas, setFonteCargas] = useState('local');
+
   const [busca, setBusca] = useState('');
   const [selecionada, setSelecionada] = useState(null);
+
   const [lancamentos, setLancamentos] = useState(() => carregarLancamentosAuditoria());
   const [solicitacoes, setSolicitacoes] = useState(() => carregarSolicitacoesPagamento());
+  const [carregandoAuditoria, setCarregandoAuditoria] = useState(false);
+
+  const [salvando, setSalvando] = useState(false);
   const [mensagem, setMensagem] = useState('');
 
+  // ── Carrega cargas (Supabase > local) ──────────────────────────────────────
   useEffect(() => {
-    let cancelado = false;
+    mounted.current = true;
     setCarregandoHistorico(true);
-    carregarFluxoCargasLotacaoCompleto()
-      .then((base) => {
-        if (!cancelado) setBaseFluxo(base);
-      })
-      .catch((error) => {
-        console.error('Erro ao carregar histórico de lotação na auditoria:', error);
-      })
-      .finally(() => {
-        if (!cancelado) setCarregandoHistorico(false);
-      });
-    return () => {
-      cancelado = true;
-    };
+
+    (async () => {
+      // Tenta Supabase primeiro
+      try {
+        const cargasSupabase = await carregarCargasLotacaoSupabase({});
+        if (mounted.current && cargasSupabase.length > 0) {
+          setBaseFluxo({ cargas: cargasSupabase, armazenamento: 'supabase' });
+          setFonteCargas('supabase');
+          return;
+        }
+      } catch (err) {
+        console.warn('[Auditoria] Supabase indisponível para cargas, usando local:', err.message);
+      }
+
+      // Fallback localStorage / IndexedDB
+      try {
+        const base = await carregarFluxoCargasLotacaoCompleto();
+        if (mounted.current) {
+          setBaseFluxo(base);
+          setFonteCargas('local');
+        }
+      } catch (err) {
+        console.error('[Auditoria] Erro ao carregar histórico local:', err);
+      }
+    })().finally(() => {
+      if (mounted.current) setCarregandoHistorico(false);
+    });
+
+    return () => { mounted.current = false; };
   }, []);
 
-  const resultados = useMemo(() => buscarCargaPorDistOuCte(baseFluxo.cargas, busca), [baseFluxo.cargas, busca]);
+  // ── Carrega lançamentos e solicitações (Supabase > local) ───────────────────
+  useEffect(() => {
+    setCarregandoAuditoria(true);
 
-  const pesquisar = () => {
-    setSolicitacoes(carregarSolicitacoesPagamento());
-    setLancamentos(carregarLancamentosAuditoria());
+    (async () => {
+      try {
+        const [lancs, sols] = await Promise.all([
+          carregarLancamentosAuditoriaSupabase(),
+          carregarSolicitacoesSupabase(),
+        ]);
+        if (lancs !== null) {
+          setLancamentos(lancs);
+          salvarLancamentosAuditoria(lancs); // espelha no cache local
+        }
+        if (sols !== null) {
+          setSolicitacoes(sols);
+          salvarSolicitacoesPagamento(sols);
+        }
+      } catch (err) {
+        console.warn('[Auditoria] Usando localStorage para lançamentos/solicitações:', err.message);
+      } finally {
+        setCarregandoAuditoria(false);
+      }
+    })();
+  }, []);
+
+  const resultados = useMemo(
+    () => buscarCargaPorDistOuCte(baseFluxo.cargas, busca),
+    [baseFluxo.cargas, busca],
+  );
+
+  const pesquisar = useCallback(() => {
     if (!resultados.length) {
       setSelecionada(null);
-      setMensagem('Nenhuma DIST ou CT-e encontrado no histórico local. Importe o fluxo de carga na tela Lotação Operação.');
+      setMensagem('Nenhuma DIST ou CT-e encontrado no histórico. Importe o fluxo de carga na tela Lotação Operação.');
       return;
     }
     setSelecionada(resultados[0]);
     setMensagem('');
-  };
+  }, [resultados]);
 
-  const registrarLancamento = (form) => {
+  // ── Registra lançamento ───────────────────────────────────────────────────
+  const registrarLancamento = useCallback(async (form) => {
     if (!selecionada) return;
+    setSalvando(true);
+    setMensagem('');
+
     try {
-      const solicitacoesAtuais = carregarSolicitacoesPagamento();
-      const lancamentosAtuais = carregarLancamentosAuditoria();
-      const lancamento = criarLancamentoAuditoria(selecionada, form, lancamentosAtuais, solicitacoesAtuais);
-      const novosLancamentos = [lancamento, ...lancamentosAtuais];
+      const lancamento = criarLancamentoAuditoria(selecionada, form, lancamentos, solicitacoes);
+      const novosLancamentos = [lancamento, ...lancamentos];
+
+      // 1. Salva no Supabase (fonte de verdade)
+      await salvarLancamentoAuditoriaSupabase(lancamento);
+
+      // 2. Espelha no localStorage
       salvarLancamentosAuditoria(novosLancamentos);
       setLancamentos(novosLancamentos);
 
       if (lancamento.excedente > 0) {
         const solicitacao = criarSolicitacaoPagamento(selecionada, lancamento);
-        const novasSolicitacoes = [solicitacao, ...solicitacoesAtuais];
+        const novasSolicitacoes = [solicitacao, ...solicitacoes];
+
+        await salvarSolicitacaoSupabase(solicitacao);
         salvarSolicitacoesPagamento(novasSolicitacoes);
         setSolicitacoes(novasSolicitacoes);
-        setMensagem('Lançamento registrado e solicitação criada para aprovação em Lotação Operação.');
+
+        setMensagem('✓ Lançamento registrado no Supabase e solicitação criada para aprovação em Lotação Operação.');
       } else {
-        setSolicitacoes(solicitacoesAtuais);
-        setMensagem('Lançamento auditado registrado com sucesso.');
+        setMensagem('✓ Lançamento auditado registrado no Supabase com sucesso.');
       }
     } catch (error) {
-      setMensagem(error.message || String(error));
+      setMensagem(`Erro ao registrar: ${error.message || String(error)}`);
+    } finally {
+      setSalvando(false);
     }
-  };
+  }, [selecionada, lancamentos, solicitacoes]);
+
+  const totalCargas = baseFluxo.cargas?.length || 0;
 
   return (
     <div className="page-shell lotacao-page lotacao-auditoria-page">
@@ -411,13 +509,30 @@ export default function LotacaoAuditoriaPage() {
           <span className="amd-mini-brand">Lotação · Auditoria</span>
           <h1>Auditoria de CT-e por DIST</h1>
           <p>
-            Digite a DIST ou o CT-e para localizar a carga, validar o frete auditável e controlar o saldo lançado quando houver mais de um CT-e vinculado.
+            Digite a DIST ou o CT-e para localizar a carga, validar o frete auditável e controlar o
+            saldo lançado quando houver mais de um CT-e vinculado.
           </p>
         </div>
       </header>
 
-      {carregandoHistorico && (
-        <div className="hint-box compact">Carregando histórico de cargas da Lotação...</div>
+      {/* Status de carregamento */}
+      {(carregandoHistorico || carregandoAuditoria) && (
+        <div className="hint-box compact">
+          {carregandoHistorico && 'Carregando histórico de cargas do Supabase...'}
+          {!carregandoHistorico && carregandoAuditoria && 'Carregando lançamentos e solicitações...'}
+        </div>
+      )}
+
+      {/* Badge de fonte dos dados */}
+      {!carregandoHistorico && !carregandoAuditoria && (
+        <div
+          className="hint-box compact"
+          style={{ background: fonteCargas === 'supabase' ? '#e8f5e9' : '#fff8e1' }}
+        >
+          {fonteCargas === 'supabase'
+            ? `✓ ${totalCargas} cargas carregadas do Supabase. Lançamentos e solicitações salvos na nuvem.`
+            : `⚠ ${totalCargas} cargas carregadas localmente. Conecte ao Supabase para compartilhar entre usuários.`}
+        </div>
       )}
 
       <div className="panel-card">
@@ -426,7 +541,7 @@ export default function LotacaoAuditoriaPage() {
             <div className="panel-title">Pesquisar carga</div>
             <p>Use o número da coluna B/DIST ou um dos CT-es da coluna CTE TRANSP.</p>
           </div>
-          <span className="status-pill dark">{baseFluxo.cargas.length} cargas no histórico</span>
+          <span className="status-pill dark">{totalCargas} cargas no histórico</span>
         </div>
 
         <div className="form-grid three">
@@ -434,23 +549,30 @@ export default function LotacaoAuditoriaPage() {
             DIST ou CT-e
             <input
               value={busca}
-              onChange={(event) => setBusca(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') pesquisar();
-              }}
+              onChange={(e) => setBusca(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') pesquisar(); }}
               placeholder="Ex.: DIST-9372 ou 19379"
             />
           </label>
         </div>
         <div className="actions-right">
-          <button type="button" className="btn-primary" onClick={pesquisar}>Pesquisar</button>
+          <button type="button" className="btn-primary" onClick={pesquisar}>
+            Pesquisar
+          </button>
         </div>
         {mensagem && <div className="hint-box compact">{mensagem}</div>}
         <ListaResultados resultados={resultados} selecionada={selecionada} onSelecionar={setSelecionada} />
       </div>
 
       <ResumoCarga carga={selecionada} lancamentos={lancamentos} solicitacoes={solicitacoes} />
-      <FormLancamento key={selecionada?.id || 'sem-carga'} carga={selecionada} lancamentos={lancamentos} solicitacoes={solicitacoes} onRegistrar={registrarLancamento} />
+      <FormLancamento
+        key={selecionada?.id || 'sem-carga'}
+        carga={selecionada}
+        lancamentos={lancamentos}
+        solicitacoes={solicitacoes}
+        onRegistrar={registrarLancamento}
+        salvando={salvando}
+      />
       <HistoricoLancamentos carga={selecionada} lancamentos={lancamentos} />
       <MovimentosAutorizacao carga={selecionada} solicitacoes={solicitacoes} />
     </div>

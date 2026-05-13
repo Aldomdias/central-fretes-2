@@ -26,6 +26,9 @@ import {
 import {
   salvarCargasLotacaoSupabase,
   carregarCargasLotacaoSupabase,
+  carregarSolicitacoesSupabase,
+  salvarSolicitacaoSupabase,
+  atualizarSolicitacaoSupabase,
 } from '../services/lotacaoSupabaseService';
 
 function arquivosValidos(files = []) {
@@ -517,32 +520,43 @@ export default function LotacaoOperacaoPage() {
   const [filtros, setFiltros] = useState({ origem: '', destino: '', tipo: '', transportadora: '' });
   const [solicitacoes, setSolicitacoes] = useState(() => carregarSolicitacoesPagamento());
 
+  // Carrega cargas (Supabase > local)
   useEffect(() => {
     setTabelas(carregarTabelasLotacao());
     let cancelado = false;
     setCarregandoHistorico(true);
     (async () => {
       try {
-        // Tenta carregar do Supabase primeiro
         const cargasSupabase = await carregarCargasLotacaoSupabase({});
         if (!cancelado && cargasSupabase.length > 0) {
-          const baseSupabase = { cargas: cargasSupabase, armazenamento: 'supabase' };
-          setBaseFluxo(baseSupabase);
+          setBaseFluxo({ cargas: cargasSupabase, armazenamento: 'supabase' });
           setCarregandoHistorico(false);
           return;
         }
       } catch (erroSupabase) {
-        console.warn('Supabase indisponível, usando local:', erroSupabase.message);
+        console.warn('Supabase indisponível para cargas, usando local:', erroSupabase.message);
       }
-      // Fallback para local
       carregarFluxoCargasLotacaoCompleto()
         .then((base) => { if (!cancelado) setBaseFluxo(base); })
         .catch((error) => { console.error('Erro ao carregar histórico de lotação:', error); })
         .finally(() => { if (!cancelado) setCarregandoHistorico(false); });
     })();
-    return () => {
-      cancelado = true;
-    };
+    return () => { cancelado = true; };
+  }, []);
+
+  // Carrega solicitações do Supabase (fonte de verdade)
+  useEffect(() => {
+    (async () => {
+      try {
+        const sols = await carregarSolicitacoesSupabase();
+        if (sols !== null) {
+          setSolicitacoes(sols);
+          salvarSolicitacoesPagamento(sols); // espelha no cache local
+        }
+      } catch (err) {
+        console.warn('[Operação] Usando localStorage para solicitações:', err.message);
+      }
+    })();
   }, []);
 
   const resumo = useMemo(() => resumirFluxoCargas(baseFluxo), [baseFluxo]);
@@ -551,13 +565,28 @@ export default function LotacaoOperacaoPage() {
   const rankingHistorico = useMemo(() => rankingHistoricoPorTransportadora(resultadosHistorico), [resultadosHistorico]);
 
   const atualizarFiltro = (campo, valor) => setFiltros((prev) => ({ ...prev, [campo]: valor }));
-  const atualizarSolicitacao = (id, status, observacao) => {
+
+  const atualizarSolicitacao = async (id, status, observacao) => {
+    // Atualiza no Supabase primeiro
+    try {
+      await atualizarSolicitacaoSupabase(id, status, observacao);
+    } catch (err) {
+      console.warn('[Operação] Falha ao atualizar solicitação no Supabase:', err.message);
+    }
+    // Atualiza estado local e cache
     const base = carregarSolicitacoesPagamento();
     const atualizadas = atualizarStatusSolicitacao(base, id, status, observacao);
     salvarSolicitacoesPagamento(atualizadas);
     setSolicitacoes(atualizadas);
   };
-  const criarCustoAdicional = (custo) => {
+
+  const criarCustoAdicional = async (custo) => {
+    // Salva no Supabase primeiro
+    try {
+      await salvarSolicitacaoSupabase(custo);
+    } catch (err) {
+      console.warn('[Operação] Falha ao salvar custo no Supabase:', err.message);
+    }
     const base = carregarSolicitacoesPagamento();
     const novas = [custo, ...base];
     salvarSolicitacoesPagamento(novas);

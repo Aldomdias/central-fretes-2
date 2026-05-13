@@ -873,13 +873,37 @@ function normLot(v) {
 function fmt(v) { return Number(v||0).toLocaleString('pt-BR', {style:'currency',currency:'BRL'}); }
 function fmtPct(v) { return `${Number(v||0).toFixed(1)}%`; }
 
-function ExportBtn({ icon, title, sub, onClick }) {
+function ExportBtn({ icon, title, sub, onClick, accent = '#185FA5' }) {
+  const [hover, setHover] = useState(false);
   return (
-    <button onClick={onClick} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',border:'0.5px solid var(--color-border-secondary)',borderRadius:'var(--border-radius-md)',background:'var(--color-background-primary)',cursor:'pointer',textAlign:'left'}}>
-      <i className={`ti ti-${icon}`} style={{fontSize:20,color:'var(--color-text-secondary)'}} aria-hidden="true" />
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 9,
+        padding: '8px 13px',
+        border: `1.5px solid ${hover ? accent : '#D8D8E0'}`,
+        borderRadius: 10,
+        background: hover ? '#F0F6FF' : '#FAFAFA',
+        cursor: 'pointer', textAlign: 'left',
+        boxShadow: hover ? `0 0 0 3px ${accent}22` : '0 1px 3px rgba(0,0,0,0.07)',
+        transition: 'all 0.14s ease',
+        minWidth: 130,
+        outline: 'none',
+      }}
+    >
+      <span style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: 30, height: 30, borderRadius: 7, flexShrink: 0,
+        background: hover ? accent : '#E8EDF5',
+        transition: 'background 0.14s ease',
+      }}>
+        <i className={`ti ti-${icon}`} style={{ fontSize: 15, color: hover ? '#fff' : accent }} aria-hidden="true" />
+      </span>
       <div>
-        <div style={{fontSize:13,fontWeight:500,color:'var(--color-text-primary)'}}>{title}</div>
-        <div style={{fontSize:11,color:'var(--color-text-secondary)'}}>{sub}</div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#1A1A2E', lineHeight: 1.3 }}>{title}</div>
+        <div style={{ fontSize: 10, color: '#6B7280', lineHeight: 1.3, marginTop: 1 }}>{sub}</div>
       </div>
     </button>
   );
@@ -1141,6 +1165,350 @@ function PainelTransportadora({
       .catch(() => alert('Erro ao exportar'));
   };
 
+  // ── helpers compartilhados entre os dois relatórios ──────────────────
+  // ── paleta AMD Log ────────────────────────────────────────────────────
+  const AMD = {
+    navy:    '1E3A5F',
+    azul:    '185FA5',
+    azulCl:  'D6E8FA',
+    verde:   '1D9E75',
+    verdeCl: 'D4F0E7',
+    lrnj:    'D85A30',
+    lrnjCl:  'FBE6DE',
+    branco:  'FFFFFF',
+    cinzaCl: 'F5F7FA',
+    cinzaMd: 'E2E6ED',
+    cinzaTx: '6B7280',
+    texto:   '1A1A2E',
+  };
+
+  // ── aplica estilo em range de células ─────────────────────────────────
+  const _styleRange = (ws, XLSX, r1, r2, c1, c2, s) => {
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        const a = XLSX.utils.encode_cell({ r, c });
+        if (!ws[a]) ws[a] = { v: '', t: 's' };
+        ws[a].s = s;
+      }
+    }
+  };
+
+  // ── aplica estilo em células individuais ─────────────────────────────
+  const _styleCell = (ws, XLSX, r, c, s) => {
+    const a = XLSX.utils.encode_cell({ r, c });
+    if (!ws[a]) ws[a] = { v: '', t: 's' };
+    ws[a].s = s;
+  };
+
+  // ── estilos base ─────────────────────────────────────────────────────
+  const _S = {
+    brd: (rgb = 'D0D5DD') => ({
+      top:    { style: 'thin', color: { rgb } },
+      bottom: { style: 'thin', color: { rgb } },
+      left:   { style: 'thin', color: { rgb } },
+      right:  { style: 'thin', color: { rgb } },
+    }),
+    navy:  (sz = 11) => ({ font: { bold: true,  sz, color: { rgb: 'FFFFFF' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: '1E3A5F' } }, alignment: { horizontal: 'left', vertical: 'center' } }),
+    azul:  (sz = 10) => ({ font: { bold: true,  sz, color: { rgb: 'FFFFFF' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: '185FA5' } }, alignment: { horizontal: 'left', vertical: 'center' } }),
+    th:    ()        => ({ font: { bold: true,  sz: 10, color: { rgb: 'FFFFFF' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: '1E3A5F' } }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true } }),
+    lbl:   ()        => ({ font: { bold: false, sz: 10, color: { rgb: '1A1A2E' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } }, alignment: { horizontal: 'left', vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+    val:   (rgb = '1E3A5F') => ({ font: { bold: true, sz: 11, color: { rgb }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } }, alignment: { horizontal: 'right', vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+    note:  ()        => ({ font: { italic: true, sz: 9, color: { rgb: '6B7280' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } }, alignment: { horizontal: 'left', vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+    sep:   ()        => ({ font: { sz: 3, color: { rgb: 'E2E6ED' } }, fill: { patternType: 'solid', fgColor: { rgb: 'E2E6ED' } } }),
+    foot:  ()        => ({ font: { italic: true, sz: 9, color: { rgb: '6B7280' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: 'E2E6ED' } }, alignment: { horizontal: 'left', vertical: 'center' } }),
+    tdL:   (par)     => ({ font: { sz: 10, color: { rgb: '1A1A2E' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: par ? 'F5F7FA' : 'FFFFFF' } }, alignment: { horizontal: 'left',   vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+    tdR:   (par)     => ({ font: { sz: 10, color: { rgb: '1A1A2E' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: par ? 'F5F7FA' : 'FFFFFF' } }, alignment: { horizontal: 'right',  vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+    tdC:   (par, rgb)=> ({ font: { bold: true, sz: 10, color: { rgb }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: par ? 'F5F7FA' : 'FFFFFF' } }, alignment: { horizontal: 'center', vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+    numRed:(par)     => ({ font: { bold: true, sz: 10, color: { rgb: 'D85A30' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: par ? 'F5F7FA' : 'FFFFFF' } }, alignment: { horizontal: 'right',  vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+    numGrn:(par)     => ({ font: { bold: true, sz: 10, color: { rgb: '1D9E75' }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: par ? 'F5F7FA' : 'FFFFFF' } }, alignment: { horizontal: 'right',  vertical: 'center' }, border: { top: { style: 'thin', color: { rgb: 'E2E6ED' } }, bottom: { style: 'thin', color: { rgb: 'E2E6ED' } }, left: { style: 'thin', color: { rgb: 'E2E6ED' } }, right: { style: 'thin', color: { rgb: 'E2E6ED' } } } }),
+  };
+
+  // ── helper: estiliza tabela de dados (linha 0 = header) ──────────────
+  const _styledTable = (ws, XLSX, data, colColors) => {
+    const nCols = data[0]?.length || 0;
+    // header row
+    for (let c = 0; c < nCols; c++) _styleCell(ws, XLSX, 0, c, _S.th());
+    // data rows
+    for (let r = 1; r < data.length; r++) {
+      const par = r % 2 === 0;
+      for (let c = 0; c < nCols; c++) {
+        const spec = colColors?.[c];
+        const val = data[r][c];
+        if (spec === 'right')   _styleCell(ws, XLSX, r, c, _S.tdR(par));
+        else if (spec === 'center') _styleCell(ws, XLSX, r, c, _S.tdC(par, '1A1A2E'));
+        else                    _styleCell(ws, XLSX, r, c, _S.tdL(par));
+      }
+    }
+  };
+
+  // ── cálculos compartilhados ───────────────────────────────────────────
+  const _calcRelatorio = () => {
+    const nomeArq      = tabela?.nome || 'transportadora';
+    const dataRel      = new Date().toLocaleDateString('pt-BR');
+    const periodoLabel = { '1m': 'Último mês', '3m': 'Últimos 3 meses', '6m': 'Últimos 6 meses', '12m': 'Últimos 12 meses', all: 'Todo período' }[periodo] || periodo;
+    const totalRotas   = linhas.length;
+    const ganhouLst    = linhas.filter((l) => l.ganhouTabela === true);
+    const perdeuLst    = linhas.filter((l) => l.ganhouTabela === false);
+    const pctGanhou    = totalRotas ? ((ganhouLst.length / totalRotas) * 100).toFixed(1) : '0.0';
+    const pctPerdeu    = totalRotas ? ((perdeuLst.length  / totalRotas) * 100).toFixed(1) : '0.0';
+    const volumeTop80  = topRotas.reduce((a, l) => a + Number(l.cargasMes || 0), 0);
+    const pctVol80     = totalCargas ? ((volumeTop80 / totalCargas) * 100).toFixed(1) : '0.0';
+    const fmtBRL       = (v) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const fatPrevisto  = ganhouLst.reduce((a, l) => a + Number(l.nossaTabela || 0) * Math.max(Number(l.cargasMes || 0), 0), 0);
+    const fatPerdido   = perdeuLst.reduce((a, l) => a + Number(l.nossaTabela || 0) * Math.max(Number(l.cargasMes || 0), 0), 0);
+    const savingGanhou = ganhouLst.filter((l) => l.melhorConc > 0).reduce((a, l) => a + (Number(l.melhorConc || 0) - Number(l.nossaTabela || 0)) * Math.max(Number(l.cargasMes || 1), 1), 0);
+    return { nomeArq, dataRel, periodoLabel, totalRotas, ganhouLst, perdeuLst, pctGanhou, pctPerdeu, volumeTop80, pctVol80, fmtBRL, fatPrevisto, fatPerdido, savingGanhou };
+  };
+
+  // ── RELATÓRIO FORNECEDOR ──────────────────────────────────────────────
+  const exportarFornecedor = () => {
+    import('xlsx').then((XLSX) => {
+      const { nomeArq, dataRel, periodoLabel, totalRotas, ganhouLst, perdeuLst, pctGanhou, pctPerdeu, volumeTop80, pctVol80 } = _calcRelatorio();
+      const top80G = topRotas.filter((l) => l.ganhouTabela === true).length;
+      const top80P = topRotas.filter((l) => l.ganhouTabela === false).length;
+
+      // ── Sheet 1: Resumo ───────────────────────────────────────────────
+      const sep = ['', '', '', ''];
+      const resumoAOA = [
+        /* 0  */ ['PROPOSTA DE NEGOCIAÇÃO DE FRETE — LOTAÇÃO', '', '', ''],
+        /* 1  */ ['Transportadora: ' + nomeArq, '', 'Período: ' + periodoLabel, 'Data: ' + dataRel],
+        /* 2  */ sep,
+        /* 3  */ ['COBERTURA DA TABELA', '', '', ''],
+        /* 4  */ ['Total de rotas cadastradas', totalRotas, 'rotas', ''],
+        /* 5  */ ['Volume total (cargas/mês)', totalCargas, 'embarques', ''],
+        /* 6  */ sep,
+        /* 7  */ ['RESULTADO COMPETITIVO', '', '', ''],
+        /* 8  */ ['Rotas em que somos competitivos', ganhouLst.length + ' rotas', pctGanhou + '%', ''],
+        /* 9  */ ['Rotas onde precisamos de ajuste', perdeuLst.length + ' rotas', pctPerdeu + '%', ''],
+        /* 10 */ sep,
+        /* 11 */ ['VOLUME CRÍTICO — PARETO 80%', '', '', ''],
+        /* 12 */ ['Rotas que concentram 80% do volume', topRotas.length + ' rotas', pctVol80 + '% do volume total', ''],
+        /* 13 */ ['Embarques/mês nessas rotas críticas', volumeTop80, 'de ' + totalCargas + ' totais', ''],
+        /* 14 */ ['  · Competitivos nessas rotas', top80G + ' de ' + topRotas.length, '', ''],
+        /* 15 */ ['  · Precisam de ajuste nessas rotas', top80P + ' de ' + topRotas.length, '', ''],
+        /* 16 */ sep,
+        /* 17 */ ['PRÓXIMOS PASSOS', '', '', ''],
+        /* 18 */ ['1', 'Revisar aba "Top 80% Volume"', 'PRIORIDADE MÁXIMA', 'Rotas com maior volume — maior impacto'],
+        /* 19 */ ['2', 'Revisar aba "Rotas a Negociar"', 'PRIORIDADE ALTA', 'Todas as rotas onde precisamos de ajuste'],
+        /* 20 */ ['3', 'Focar em linhas "Prioridade Alta"', '≥ 10 cargas/mês', 'Maior retorno volumétrico'],
+        /* 21 */ ['4', 'Observar coluna "% de Ajuste"', 'Por rota', 'Variação necessária para competir'],
+        /* 22 */ sep,
+        /* 23 */ ['Gerado por Central de Fretes · Lotação — ' + dataRel, '', '', ''],
+      ];
+      const ws1 = XLSX.utils.aoa_to_sheet(resumoAOA);
+      ws1['!cols'] = [{ wch: 42 }, { wch: 22 }, { wch: 28 }, { wch: 38 }];
+      ws1['!rows'] = [{ hpt: 28 }, { hpt: 14 }];
+      // aplicar estilos linha a linha
+      _styleRange(ws1, XLSX, 0, 0, 0, 3, _S.navy(14));
+      _styleRange(ws1, XLSX, 1, 1, 0, 3, { font: { sz: 9, color: { rgb: AMD.azulCl }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: AMD.navy } } });
+      _styleRange(ws1, XLSX, 2, 2, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 3, 3, 0, 3, _S.azul());
+      _styleCell(ws1, XLSX, 4, 0, _S.lbl());  _styleCell(ws1, XLSX, 4, 1, _S.val());  _styleCell(ws1, XLSX, 4, 2, _S.note());  _styleCell(ws1, XLSX, 4, 3, _S.note());
+      _styleCell(ws1, XLSX, 5, 0, _S.lbl());  _styleCell(ws1, XLSX, 5, 1, _S.val());  _styleCell(ws1, XLSX, 5, 2, _S.note());  _styleCell(ws1, XLSX, 5, 3, _S.note());
+      _styleRange(ws1, XLSX, 6, 6, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 7, 7, 0, 3, _S.azul());
+      _styleCell(ws1, XLSX, 8, 0, _S.lbl());  _styleCell(ws1, XLSX, 8, 1, _S.val(AMD.verde));  _styleCell(ws1, XLSX, 8, 2, _S.val(AMD.verde));  _styleCell(ws1, XLSX, 8, 3, _S.note());
+      _styleCell(ws1, XLSX, 9, 0, _S.lbl());  _styleCell(ws1, XLSX, 9, 1, _S.val(AMD.lrnj));   _styleCell(ws1, XLSX, 9, 2, _S.val(AMD.lrnj));   _styleCell(ws1, XLSX, 9, 3, _S.note());
+      _styleRange(ws1, XLSX, 10, 10, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 11, 11, 0, 3, _S.azul());
+      _styleRange(ws1, XLSX, 12, 15, 0, 0, _S.lbl());
+      _styleRange(ws1, XLSX, 12, 15, 1, 1, _S.val());
+      _styleRange(ws1, XLSX, 12, 15, 2, 3, _S.note());
+      _styleRange(ws1, XLSX, 16, 16, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 17, 17, 0, 3, _S.azul());
+      for (let r = 18; r <= 21; r++) {
+        _styleCell(ws1, XLSX, r, 0, { font: { bold: true, sz: 11, color: { rgb: AMD.azul }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: AMD.azulCl } }, alignment: { horizontal: 'center', vertical: 'center' } });
+        _styleCell(ws1, XLSX, r, 1, { font: { bold: true, sz: 10, color: { rgb: AMD.texto }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: AMD.cinzaCl } }, alignment: { horizontal: 'left', vertical: 'center' } });
+        _styleCell(ws1, XLSX, r, 2, { font: { bold: true, sz: 10, color: { rgb: AMD.azul  }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: AMD.cinzaCl } }, alignment: { horizontal: 'left', vertical: 'center' } });
+        _styleCell(ws1, XLSX, r, 3, _S.note());
+      }
+      _styleRange(ws1, XLSX, 22, 22, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 23, 23, 0, 3, _S.foot());
+
+      // ── Sheet 2: Top 80% Volume ───────────────────────────────────────
+      const top80Hdr = ['Origem', 'Destino', 'Tipo', 'Cargas/mês', '% do Volume', 'Proposta', '% de Ajuste', 'Situação'];
+      const top80Data = [top80Hdr, ...topRotas.map((l) => {
+        const pctVol = totalCargas ? ((l.cargasMes / totalCargas) * 100).toFixed(1) + '%' : '-';
+        const sit = l.ganhouTabela === true ? 'Competitivo' : l.ganhouTabela === false ? 'Precisa ajuste' : 'Sem comparativo';
+        return [l.origem, l.destino, l.tipo, l.cargasMes || 0, pctVol, Number(l.nossaTabela || 0), l.pctParaGanhar > 0 ? '-' + Number(l.pctParaGanhar).toFixed(1) + '%' : '—', sit];
+      })];
+      const ws2 = XLSX.utils.aoa_to_sheet(top80Data);
+      ws2['!cols'] = [{ wch: 16 }, { wch: 22 }, { wch: 14 }, { wch: 13 }, { wch: 13 }, { wch: 16 }, { wch: 13 }, { wch: 18 }];
+      ws2['!rows'] = [{ hpt: 28 }];
+      // header
+      for (let c = 0; c < top80Hdr.length; c++) _styleCell(ws2, XLSX, 0, c, _S.th());
+      // data rows
+      for (let r = 1; r < top80Data.length; r++) {
+        const par = r % 2 === 0;
+        const l = topRotas[r - 1];
+        [0, 1, 2].forEach((c) => _styleCell(ws2, XLSX, r, c, _S.tdL(par)));
+        [3, 4, 5].forEach((c) => _styleCell(ws2, XLSX, r, c, _S.tdR(par)));
+        _styleCell(ws2, XLSX, r, 6, l?.pctParaGanhar > 0 ? _S.numRed(par) : _S.tdR(par));
+        const sitCor = l?.ganhouTabela === true ? AMD.verde : l?.ganhouTabela === false ? AMD.lrnj : AMD.cinzaTx;
+        _styleCell(ws2, XLSX, r, 7, _S.tdC(par, sitCor));
+      }
+
+      // ── Sheet 3: Rotas a Negociar ─────────────────────────────────────
+      const negHdr = ['Origem', 'Destino', 'Tipo', 'KM', 'Cargas/mês', 'Proposta', 'Frete Vencedor', '% de Ajuste', 'Prioridade'];
+      const perdSorted = [...perdeuLst].sort((a, b) => (b.cargasMes || 0) - (a.cargasMes || 0));
+      const negData = [negHdr, ...perdSorted.map((l) => {
+        const prio = (l.cargasMes || 0) >= 10 ? 'Alta' : (l.cargasMes || 0) >= 3 ? 'Média' : 'Baixa';
+        return [l.origem, l.destino, l.tipo, l.km || '', l.cargasMes || 0, Number(l.nossaTabela || 0), l.melhorConc > 0 ? Number(l.melhorConc) : '', l.pctParaGanhar > 0 ? '-' + Number(l.pctParaGanhar).toFixed(1) + '%' : '—', prio];
+      })];
+      const ws3 = XLSX.utils.aoa_to_sheet(negData);
+      ws3['!cols'] = [{ wch: 14 }, { wch: 22 }, { wch: 13 }, { wch: 7 }, { wch: 13 }, { wch: 16 }, { wch: 16 }, { wch: 13 }, { wch: 12 }];
+      ws3['!rows'] = [{ hpt: 28 }];
+      for (let c = 0; c < negHdr.length; c++) _styleCell(ws3, XLSX, 0, c, _S.th());
+      for (let r = 1; r < negData.length; r++) {
+        const par = r % 2 === 0;
+        const l = perdSorted[r - 1];
+        [0, 1, 2, 3].forEach((c) => _styleCell(ws3, XLSX, r, c, _S.tdL(par)));
+        [4, 5, 6].forEach((c) => _styleCell(ws3, XLSX, r, c, _S.tdR(par)));
+        _styleCell(ws3, XLSX, r, 7, _S.numRed(par));
+        const prio = (l.cargasMes || 0) >= 10 ? 'Alta' : (l.cargasMes || 0) >= 3 ? 'Média' : 'Baixa';
+        const prioCor = prio === 'Alta' ? AMD.lrnj : prio === 'Média' ? AMD.azul : AMD.cinzaTx;
+        _styleCell(ws3, XLSX, r, 8, _S.tdC(par, prioCor));
+      }
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws1, 'Resumo');
+      XLSX.utils.book_append_sheet(wb, ws2, 'Top 80% Volume');
+      XLSX.utils.book_append_sheet(wb, ws3, 'Rotas a Negociar');
+      XLSX.writeFile(wb, 'proposta-negociacao-' + nomeArq + '.xlsx', { cellStyles: true });
+    }).catch((err) => { console.error('FORNECEDOR ERR', err); alert('Erro: ' + (err?.message || String(err))); });
+  };
+
+  // ── RELATÓRIO GESTÃO ──────────────────────────────────────────────────
+  const exportarGestao = () => {
+    import('xlsx').then((XLSX) => {
+      const { nomeArq, dataRel, periodoLabel, totalRotas, ganhouLst, perdeuLst, pctGanhou, pctPerdeu, volumeTop80, pctVol80, fmtBRL, fatPrevisto, fatPerdido, savingGanhou } = _calcRelatorio();
+      const top80G = topRotas.filter((l) => l.ganhouTabela === true).length;
+      const top80P = topRotas.filter((l) => l.ganhouTabela === false).length;
+
+      // ── Sheet 1: Resumo Executivo ─────────────────────────────────────
+      const sep = ['', '', '', ''];
+      const resumoAOA = [
+        /* 0  */ ['RELATÓRIO DE GESTÃO — LOTAÇÃO', '', '', ''],
+        /* 1  */ ['Transportadora: ' + nomeArq, '', 'Período: ' + periodoLabel, 'Data: ' + dataRel],
+        /* 2  */ sep,
+        /* 3  */ ['COBERTURA DA TABELA', '', '', ''],
+        /* 4  */ ['Total de rotas cadastradas', totalRotas, 'rotas', ''],
+        /* 5  */ ['Volume total (cargas/mês)', totalCargas, 'embarques', ''],
+        /* 6  */ sep,
+        /* 7  */ ['RESULTADO COMPETITIVO', '', '', ''],
+        /* 8  */ ['Rotas ganhas', ganhouLst.length + ' rotas', pctGanhou + '% do total', ''],
+        /* 9  */ ['Rotas perdidas', perdeuLst.length + ' rotas', pctPerdeu + '% do total', ''],
+        /* 10 */ sep,
+        /* 11 */ ['VOLUME CRÍTICO — PARETO 80%', '', '', ''],
+        /* 12 */ ['Rotas que concentram 80% do volume', topRotas.length + ' rotas', pctVol80 + '% do volume', ''],
+        /* 13 */ ['Embarques/mês nessas rotas', volumeTop80, 'de ' + totalCargas + ' totais', ''],
+        /* 14 */ ['  · Ganhamos nessas rotas', top80G + ' de ' + topRotas.length, '', ''],
+        /* 15 */ ['  · Perdemos nessas rotas', top80P + ' de ' + topRotas.length, '', ''],
+        /* 16 */ sep,
+        /* 17 */ ['IMPACTO FINANCEIRO', '', '', ''],
+        /* 18 */ ['Faturamento previsto (rotas ganhas)', fmtBRL(fatPrevisto), 'proposta × cargas/mês', ''],
+        /* 19 */ ['Volume em risco (rotas perdidas)', fmtBRL(fatPerdido), 'nossa tabela × cargas das rotas perdidas', ''],
+        /* 20 */ ['Saving das rotas ganhas (vs concorrente)', fmtBRL(savingGanhou), 'vantagem competitiva por mês', ''],
+        /* 21 */ ['Saving potencial (se ganhar todas perdidas)', fmtBRL(savingPotencial), 'estimativa acumulada', ''],
+        /* 22 */ sep,
+        /* 23 */ ['Gerado por Central de Fretes · Lotação — ' + dataRel, '', '', ''],
+      ];
+      const ws1 = XLSX.utils.aoa_to_sheet(resumoAOA);
+      ws1['!cols'] = [{ wch: 46 }, { wch: 26 }, { wch: 36 }, { wch: 10 }];
+      ws1['!rows'] = [{ hpt: 28 }, { hpt: 14 }];
+      _styleRange(ws1, XLSX, 0, 0, 0, 3, _S.navy(14));
+      _styleRange(ws1, XLSX, 1, 1, 0, 3, { font: { sz: 9, color: { rgb: AMD.azulCl }, name: 'Calibri' }, fill: { patternType: 'solid', fgColor: { rgb: AMD.navy } } });
+      _styleRange(ws1, XLSX, 2, 2, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 3, 3, 0, 3, _S.navy());
+      _styleRange(ws1, XLSX, 4, 5, 0, 0, _S.lbl()); _styleRange(ws1, XLSX, 4, 5, 1, 1, _S.val()); _styleRange(ws1, XLSX, 4, 5, 2, 3, _S.note());
+      _styleRange(ws1, XLSX, 6, 6, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 7, 7, 0, 3, _S.navy());
+      _styleCell(ws1, XLSX, 8, 0, _S.lbl()); _styleCell(ws1, XLSX, 8, 1, _S.val(AMD.verde)); _styleCell(ws1, XLSX, 8, 2, _S.val(AMD.verde)); _styleCell(ws1, XLSX, 8, 3, _S.note());
+      _styleCell(ws1, XLSX, 9, 0, _S.lbl()); _styleCell(ws1, XLSX, 9, 1, _S.val(AMD.lrnj));  _styleCell(ws1, XLSX, 9, 2, _S.val(AMD.lrnj));  _styleCell(ws1, XLSX, 9, 3, _S.note());
+      _styleRange(ws1, XLSX, 10, 10, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 11, 11, 0, 3, _S.navy());
+      _styleRange(ws1, XLSX, 12, 15, 0, 0, _S.lbl()); _styleRange(ws1, XLSX, 12, 15, 1, 1, _S.val()); _styleRange(ws1, XLSX, 12, 15, 2, 3, _S.note());
+      _styleRange(ws1, XLSX, 16, 16, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 17, 17, 0, 3, _S.navy());
+      _styleCell(ws1, XLSX, 18, 0, _S.lbl()); _styleCell(ws1, XLSX, 18, 1, _S.val(AMD.verde)); _styleCell(ws1, XLSX, 18, 2, _S.note()); _styleCell(ws1, XLSX, 18, 3, _S.note());
+      _styleCell(ws1, XLSX, 19, 0, _S.lbl()); _styleCell(ws1, XLSX, 19, 1, _S.val(AMD.lrnj));  _styleCell(ws1, XLSX, 19, 2, _S.note()); _styleCell(ws1, XLSX, 19, 3, _S.note());
+      _styleCell(ws1, XLSX, 20, 0, _S.lbl()); _styleCell(ws1, XLSX, 20, 1, _S.val(AMD.verde)); _styleCell(ws1, XLSX, 20, 2, _S.note()); _styleCell(ws1, XLSX, 20, 3, _S.note());
+      _styleCell(ws1, XLSX, 21, 0, _S.lbl()); _styleCell(ws1, XLSX, 21, 1, _S.val(AMD.azul));  _styleCell(ws1, XLSX, 21, 2, _S.note()); _styleCell(ws1, XLSX, 21, 3, _S.note());
+      _styleRange(ws1, XLSX, 22, 22, 0, 3, _S.sep());
+      _styleRange(ws1, XLSX, 23, 23, 0, 3, _S.foot());
+
+      // ── Sheet 2: Top 80% Volume ───────────────────────────────────────
+      const top80Hdr = ['Origem', 'Destino', 'Tipo', 'Cargas/mês', '% Volume', 'Nossa Tabela', 'Frete Vencedor', 'Realizado Médio', '% p/ Ganhar', 'Status'];
+      const top80Data = [top80Hdr, ...topRotas.map((l) => {
+        const pctVol = totalCargas ? ((l.cargasMes / totalCargas) * 100).toFixed(1) + '%' : '-';
+        return [l.origem, l.destino, l.tipo, l.cargasMes || 0, pctVol, Number(l.nossaTabela || 0), l.melhorConc > 0 ? Number(l.melhorConc) : '', l.realizadoMedio != null ? Number(l.realizadoMedio) : '', l.pctParaGanhar > 0 ? '-' + Number(l.pctParaGanhar).toFixed(1) + '%' : '—', l.ganhouTabela === true ? 'Ganhou' : l.ganhouTabela === false ? 'Perdeu' : '—'];
+      })];
+      const ws2 = XLSX.utils.aoa_to_sheet(top80Data);
+      ws2['!cols'] = [{ wch: 14 }, { wch: 18 }, { wch: 13 }, { wch: 13 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 12 }];
+      ws2['!rows'] = [{ hpt: 28 }];
+      for (let c = 0; c < top80Hdr.length; c++) _styleCell(ws2, XLSX, 0, c, _S.th());
+      for (let r = 1; r < top80Data.length; r++) {
+        const par = r % 2 === 0;
+        const l = topRotas[r - 1];
+        [0, 1, 2].forEach((c) => _styleCell(ws2, XLSX, r, c, _S.tdL(par)));
+        [3, 4, 5, 6, 7].forEach((c) => _styleCell(ws2, XLSX, r, c, _S.tdR(par)));
+        _styleCell(ws2, XLSX, r, 8, l?.pctParaGanhar > 0 ? _S.numRed(par) : _S.tdR(par));
+        _styleCell(ws2, XLSX, r, 9, _S.tdC(par, l?.ganhouTabela === true ? AMD.verde : l?.ganhouTabela === false ? AMD.lrnj : AMD.cinzaTx));
+      }
+
+      // ── Sheet 3: Rotas Perdidas ───────────────────────────────────────
+      const perdHdr = ['Origem', 'Destino', 'Tipo', 'KM', 'Cargas/mês', 'Nossa Tabela', 'Frete Vencedor', '% p/ Ganhar', 'Saving Mensal', 'Prioridade'];
+      const perdSorted = [...perdeuLst].sort((a, b) => (b.cargasMes || 0) - (a.cargasMes || 0));
+      const perdData = [perdHdr, ...perdSorted.map((l) => {
+        const sav = l.melhorConc > 0 ? (Number(l.nossaTabela || 0) - Number(l.melhorConc || 0)) * Math.max(Number(l.cargasMes || 1), 1) : 0;
+        const prio = (l.cargasMes || 0) >= 10 ? 'Alta' : (l.cargasMes || 0) >= 3 ? 'Média' : 'Baixa';
+        return [l.origem, l.destino, l.tipo, l.km || '', l.cargasMes || 0, Number(l.nossaTabela || 0), l.melhorConc > 0 ? Number(l.melhorConc) : '', l.pctParaGanhar > 0 ? '-' + Number(l.pctParaGanhar).toFixed(1) + '%' : '—', sav > 0 ? Number(sav.toFixed(2)) : '', prio];
+      })];
+      const ws3 = XLSX.utils.aoa_to_sheet(perdData);
+      ws3['!cols'] = [{ wch: 14 }, { wch: 18 }, { wch: 13 }, { wch: 7 }, { wch: 13 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 12 }];
+      ws3['!rows'] = [{ hpt: 28 }];
+      for (let c = 0; c < perdHdr.length; c++) _styleCell(ws3, XLSX, 0, c, _S.th());
+      for (let r = 1; r < perdData.length; r++) {
+        const par = r % 2 === 0;
+        const l = perdSorted[r - 1];
+        [0, 1, 2, 3].forEach((c) => _styleCell(ws3, XLSX, r, c, _S.tdL(par)));
+        [4, 5, 6].forEach((c) => _styleCell(ws3, XLSX, r, c, _S.tdR(par)));
+        _styleCell(ws3, XLSX, r, 7, _S.numRed(par));
+        _styleCell(ws3, XLSX, r, 8, _S.numRed(par));
+        const prio = (l.cargasMes || 0) >= 10 ? 'Alta' : (l.cargasMes || 0) >= 3 ? 'Média' : 'Baixa';
+        _styleCell(ws3, XLSX, r, 9, _S.tdC(par, prio === 'Alta' ? AMD.lrnj : prio === 'Média' ? AMD.azul : AMD.cinzaTx));
+      }
+
+      // ── Sheet 4: Rotas Ganhas ─────────────────────────────────────────
+      const ganHdr = ['Origem', 'Destino', 'Tipo', 'KM', 'Cargas/mês', 'Nossa Tabela', 'Frete Concorrente', 'Realizado Médio', 'Fat. Previsto (mês)', 'Saving vs Conc.'];
+      const ganSorted = [...ganhouLst].sort((a, b) => (b.cargasMes || 0) - (a.cargasMes || 0));
+      const ganData = [ganHdr, ...ganSorted.map((l) => {
+        const fat = Number(l.nossaTabela || 0) * Math.max(Number(l.cargasMes || 0), 0);
+        const sav = l.melhorConc > 0 ? (Number(l.melhorConc || 0) - Number(l.nossaTabela || 0)) * Math.max(Number(l.cargasMes || 1), 1) : 0;
+        return [l.origem, l.destino, l.tipo, l.km || '', l.cargasMes || 0, Number(l.nossaTabela || 0), l.melhorConc > 0 ? Number(l.melhorConc) : '', l.realizadoMedio != null ? Number(l.realizadoMedio) : '', fat > 0 ? Number(fat.toFixed(2)) : '', sav > 0 ? Number(sav.toFixed(2)) : ''];
+      })];
+      const ws4 = XLSX.utils.aoa_to_sheet(ganData);
+      ws4['!cols'] = [{ wch: 14 }, { wch: 18 }, { wch: 13 }, { wch: 7 }, { wch: 13 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 20 }, { wch: 18 }];
+      ws4['!rows'] = [{ hpt: 28 }];
+      for (let c = 0; c < ganHdr.length; c++) _styleCell(ws4, XLSX, 0, c, _S.th());
+      for (let r = 1; r < ganData.length; r++) {
+        const par = r % 2 === 0;
+        [0, 1, 2, 3].forEach((c) => _styleCell(ws4, XLSX, r, c, _S.tdL(par)));
+        [4, 5, 6, 7].forEach((c) => _styleCell(ws4, XLSX, r, c, _S.tdR(par)));
+        _styleCell(ws4, XLSX, r, 8, _S.numGrn(par));
+        _styleCell(ws4, XLSX, r, 9, _S.numGrn(par));
+      }
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws1, 'Resumo Executivo');
+      XLSX.utils.book_append_sheet(wb, ws2, 'Top 80% Volume');
+      XLSX.utils.book_append_sheet(wb, ws3, 'Rotas Perdidas');
+      XLSX.utils.book_append_sheet(wb, ws4, 'Rotas Ganhas');
+      XLSX.writeFile(wb, 'gestao-lotacao-' + nomeArq + '.xlsx', { cellStyles: true });
+    }).catch((err) => { console.error('GESTAO ERR', err); alert('Erro: ' + (err?.message || String(err))); });
+  };
+
+
   if (!tabela) {
     return (
       <div className="panel-card">
@@ -1151,12 +1519,12 @@ function PainelTransportadora({
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
-      <div className="panel-card" style={{ gap: 16 }}>
+      <div className="panel-card" style={{ gap: 12 }}>
         <div
           style={{
             display: 'flex',
             justifyContent: 'space-between',
-            gap: 16,
+            gap: 12,
             flexWrap: 'wrap',
             alignItems: 'flex-end',
           }}
@@ -1193,22 +1561,38 @@ function PainelTransportadora({
               </select>
             </label>
           </div>
+        </div>
 
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', borderTop: '1px solid #EAECF0', paddingTop: 12 }}>
             <ExportBtn
               icon="file-export"
               title="Exportar diretoria"
               sub="Visão executiva"
               onClick={exportarDiretoria}
+              accent="#6B7280"
             />
             <ExportBtn
               icon="send"
               title="Devolução transp."
               sub="Rotas perdidas"
               onClick={exportarDevolucao}
+              accent="#D85A30"
+            />
+            <ExportBtn
+              icon="report-analytics"
+              title="Relatório fornecedor"
+              sub="80% + resumo geral"
+              onClick={exportarFornecedor}
+              accent="#185FA5"
+            />
+            <ExportBtn
+              icon="chart-line"
+              title="Relatório gestão"
+              sub="Saving + faturamento"
+              onClick={exportarGestao}
+              accent="#1E3A5F"
             />
           </div>
-        </div>
 
         <div
           className="summary-strip lotacao-kpis"

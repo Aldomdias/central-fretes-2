@@ -371,3 +371,154 @@ export async function limparCargasLotacaoSupabase() {
   if (error) throw new Error(detalheErroSupabase(error));
   return { ok: true };
 }
+
+// ============================================================
+// LANÇAMENTOS DE AUDITORIA — Supabase
+// ============================================================
+
+function lancamentoParaDb(item = {}) {
+  return {
+    id:                          String(item.id || ''),
+    carga_id:                    String(item.cargaId || item.carga_id || ''),
+    dist:                        String(item.dist || ''),
+    dist_key:                    String(item.distKey || item.dist_key || ''),
+    cte:                         String(item.cte || ''),
+    cte_key:                     String(item.cteKey || item.cte_key || ''),
+    fatura:                      String(item.fatura || ''),
+    valor_lancado:               Number(item.valorLancado ?? item.valor_lancado ?? 0),
+    valor_autorizado_carga:      item.valorAutorizadoCarga      != null ? Number(item.valorAutorizadoCarga)      : null,
+    total_autorizado_no_momento: item.totalAutorizadoNoMomento  != null ? Number(item.totalAutorizadoNoMomento)  : null,
+    total_anterior:              item.totalAnterior             != null ? Number(item.totalAnterior)             : null,
+    saldo_anterior:              item.saldoAnterior             != null ? Number(item.saldoAnterior)             : null,
+    excedente:                   Number(item.excedente ?? 0),
+    status:                      String(item.status || 'OK'),
+    observacao:                  String(item.observacao || ''),
+    criado_em:                   item.criadoEm || item.criado_em || new Date().toISOString(),
+  };
+}
+
+function dbParaLancamento(row = {}) {
+  return {
+    id:                        row.id,
+    cargaId:                   row.carga_id              || '',
+    dist:                      row.dist                  || '',
+    distKey:                   row.dist_key              || '',
+    cte:                       row.cte                   || '',
+    cteKey:                    row.cte_key               || '',
+    fatura:                    row.fatura                || '',
+    valorLancado:              row.valor_lancado         != null ? Number(row.valor_lancado)         : 0,
+    valorAutorizadoCarga:      row.valor_autorizado_carga!= null ? Number(row.valor_autorizado_carga): null,
+    totalAutorizadoNoMomento:  row.total_autorizado_no_momento != null ? Number(row.total_autorizado_no_momento) : null,
+    totalAnterior:             row.total_anterior        != null ? Number(row.total_anterior)        : null,
+    saldoAnterior:             row.saldo_anterior        != null ? Number(row.saldo_anterior)        : null,
+    excedente:                 row.excedente             != null ? Number(row.excedente)             : 0,
+    status:                    row.status                || 'OK',
+    observacao:                row.observacao            || '',
+    criadoEm:                  row.criado_em             || '',
+  };
+}
+
+export async function carregarLancamentosAuditoriaSupabase() {
+  if (!isSupabaseConfigured()) return null; // null = usar localStorage como fallback
+  const supabase = ensureClient();
+  const rows = await fetchAllRows(supabase, 'lotacao_lancamentos', 'criado_em', false);
+  return rows.map(dbParaLancamento);
+}
+
+export async function salvarLancamentoAuditoriaSupabase(lancamento) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const row = lancamentoParaDb(lancamento);
+  const { error } = await supabase.from('lotacao_lancamentos').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+// ============================================================
+// SOLICITAÇÕES DE PAGAMENTO — Supabase
+// ============================================================
+
+function solicitacaoParaDb(item = {}) {
+  return {
+    id:                     String(item.id || ''),
+    tipo:                   String(item.tipo || 'EXCEDENTE_AUDITORIA'),
+    origem_solicitacao:     String(item.origemSolicitacao || item.origem_solicitacao || ''),
+    carga_id:               String(item.cargaId || item.carga_id || ''),
+    dist:                   String(item.dist || ''),
+    dist_key:               String(item.distKey || item.dist_key || ''),
+    cte:                    String(item.cte || ''),
+    fatura:                 String(item.fatura || ''),
+    transportadora:         String(item.transportadora || ''),
+    origem:                 String(item.origem || ''),
+    destino:                String(item.destino || ''),
+    tipo_veiculo:           String(item.tipoVeiculo || item.tipo_veiculo || ''),
+    valor_autorizado_carga: item.valorAutorizadoCarga != null ? Number(item.valorAutorizadoCarga) : null,
+    total_anterior:         item.totalAnterior        != null ? Number(item.totalAnterior)        : null,
+    saldo_anterior:         item.saldoAnterior        != null ? Number(item.saldoAnterior)        : null,
+    valor_lancado:          item.valorLancado         != null ? Number(item.valorLancado)         : null,
+    excedente:              item.excedente            != null ? Number(item.excedente)            : null,
+    valor_adicional:        item.valorAdicional       != null ? Number(item.valorAdicional)       : null,
+    tipo_custo:             String(item.tipoCusto || item.tipo_custo || ''),
+    status:                 String(item.status || 'PENDENTE'),
+    observacao:             String(item.observacao || ''),
+    resposta:               String(item.resposta || ''),
+    criado_em:              item.criadoEm  || item.criado_em  || new Date().toISOString(),
+    atualizado_em:          item.atualizadoEm || item.atualizado_em || null,
+  };
+}
+
+function dbParaSolicitacao(row = {}) {
+  return {
+    id:                   row.id,
+    tipo:                 row.tipo                  || 'EXCEDENTE_AUDITORIA',
+    origemSolicitacao:    row.origem_solicitacao    || '',
+    cargaId:              row.carga_id              || '',
+    dist:                 row.dist                  || '',
+    distKey:              row.dist_key              || '',
+    cte:                  row.cte                   || '',
+    fatura:               row.fatura                || '',
+    transportadora:       row.transportadora        || '',
+    origem:               row.origem                || '',
+    destino:              row.destino               || '',
+    tipoVeiculo:          row.tipo_veiculo          || '',
+    valorAutorizadoCarga: row.valor_autorizado_carga!= null ? Number(row.valor_autorizado_carga) : null,
+    totalAnterior:        row.total_anterior        != null ? Number(row.total_anterior)        : null,
+    saldoAnterior:        row.saldo_anterior        != null ? Number(row.saldo_anterior)        : null,
+    valorLancado:         row.valor_lancado         != null ? Number(row.valor_lancado)         : null,
+    excedente:            row.excedente             != null ? Number(row.excedente)             : null,
+    valorAdicional:       row.valor_adicional       != null ? Number(row.valor_adicional)       : null,
+    tipoCusto:            row.tipo_custo            || '',
+    status:               row.status                || 'PENDENTE',
+    observacao:           row.observacao            || '',
+    resposta:             row.resposta              || '',
+    criadoEm:             row.criado_em             || '',
+    atualizadoEm:         row.atualizado_em         || '',
+  };
+}
+
+export async function carregarSolicitacoesSupabase() {
+  if (!isSupabaseConfigured()) return null; // null = usar localStorage como fallback
+  const supabase = ensureClient();
+  const rows = await fetchAllRows(supabase, 'lotacao_solicitacoes', 'criado_em', false);
+  return rows.map(dbParaSolicitacao);
+}
+
+export async function salvarSolicitacaoSupabase(solicitacao) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const row = solicitacaoParaDb(solicitacao);
+  const { error } = await supabase.from('lotacao_solicitacoes').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+export async function atualizarSolicitacaoSupabase(id, status, resposta = '') {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { error } = await supabase
+    .from('lotacao_solicitacoes')
+    .update({ status, resposta, atualizado_em: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
