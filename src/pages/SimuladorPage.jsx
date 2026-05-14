@@ -87,8 +87,13 @@ async function buscarRealizadoLocalCtes(filtros = {}) {
     canal: normalizarCanalSim(r),
     numeroCte: pickRealizadoField(r, ['numero_cte', 'numeroCte', 'cte', 'n_cte']) || '',
     chaveCte: pickRealizadoField(r, ['chave_cte', 'chaveCte', 'chave']) || '',
+    chaveNfe: pickRealizadoField(r, ['chave_nfe', 'chaveNfe', 'chave_nf', 'chaveNf', 'chave_nota', 'chaveNota']) || '',
+    notaFiscal: pickRealizadoField(r, ['nota_fiscal', 'notaFiscal', 'nf', 'numero_nf', 'numeroNf', 'nfe_numero']) || '',
     pesoDeclarado: Number(pickRealizadoField(r, ['peso_declarado', 'pesoDeclarado', 'peso', 'peso_real', 'pesoReal'])) || 0,
     qtdVolumes: Number(pickRealizadoField(r, ['qtd_volumes', 'qtdVolumes', 'volume', 'volumes', 'quantidade_volumes'])) || 0,
+    cubagemUnitaria: Number(pickRealizadoField(r, ['cubagem_unitaria', 'cubagemUnitaria', 'cubagem'])) || 0,
+    cubagemTotal: Number(pickRealizadoField(r, ['cubagem_total', 'cubagemTotal'])) || 0,
+    pesoCubado: Number(pickRealizadoField(r, ['peso_cubado', 'pesoCubado'])) || 0,
     ibgeOrigem: onlyDigitsRealizado(pickRealizadoField(r, ['ibge_origem', 'ibgeOrigem', 'codigo_ibge_origem', 'codigoMunicipioOrigem', 'cod_mun_origem'])).slice(0, 7),
     ibgeDestino: onlyDigitsRealizado(pickRealizadoField(r, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'codigoMunicipioDestino', 'cod_mun_destino'])).slice(0, 7),
     competencia: pickRealizadoField(r, ['competencia', 'mes_competencia']) || '',
@@ -317,9 +322,142 @@ function pesoRealizado(row = {}) {
   return declarado > 0 ? declarado : numeroRealizado(row.peso);
 }
 
-function cubagemRealizado() {
-  // Cubagem do realizado não é usada na simulação. A regra usa somente a cubagem da grade.
-  return 0;
+function cubagemRealizado(row = {}) {
+  const total = numeroRealizado(row.cubagemTotal || row.cubagem_total);
+  if (total > 0) return total;
+  const unitaria = numeroRealizado(row.cubagemUnitaria || row.cubagem_unitaria || row.cubagem);
+  const volumes = numeroRealizado(row.qtdVolumes || row.volumes || row.volume);
+  if (unitaria > 0 && volumes > 0) return unitaria * volumes;
+  return unitaria > 0 ? unitaria : 0;
+}
+
+
+function normalizarChaveTracking(value = '') {
+  return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function apenasDigitosTracking(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function chunksTracking(lista = [], tamanho = 400) {
+  const saida = [];
+  for (let i = 0; i < lista.length; i += tamanho) saida.push(lista.slice(i, i + tamanho));
+  return saida;
+}
+
+async function buscarTrackingParaRealizado(rows = []) {
+  const vazio = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
+  if (!isSupabaseConfigured() || !rows?.length) return vazio;
+
+  const chavesCte = [...new Set(rows.map((r) => normalizarChaveTracking(r.chaveCte)).filter(Boolean))];
+  const chavesNfe = [...new Set(rows.map((r) => normalizarChaveTracking(r.chaveNfe)).filter(Boolean))];
+  const notas = [...new Set(rows.map((r) => normalizarChaveTracking(r.notaFiscal)).filter(Boolean))];
+  const numerosCte = [...new Set(rows.map((r) => apenasDigitosTracking(r.numeroCte)).filter(Boolean))];
+
+  if (!chavesCte.length && !chavesNfe.length && !notas.length && !numerosCte.length) return vazio;
+
+  const supabase = getSupabaseClient();
+  const encontrados = [];
+  const addRows = (data = []) => {
+    (data || []).forEach((item) => {
+      if (!item) return;
+      encontrados.push(item);
+    });
+  };
+
+  async function consultarPorColuna(coluna, valores) {
+    for (const parte of chunksTracking(valores, 400)) {
+      if (!parte.length) continue;
+      const { data, error } = await supabase
+        .from('tracking_rows')
+        .select('chave_nfe,chave_cte,cte_numero,nota_fiscal,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes,data_transporte,data_entrega,previsao_transportadora')
+        .in(coluna, parte);
+      if (error) throw error;
+      addRows(data || []);
+    }
+  }
+
+  try {
+    await consultarPorColuna('chave_cte', chavesCte);
+    await consultarPorColuna('chave_nfe', chavesNfe);
+    await consultarPorColuna('nota_fiscal', notas);
+    await consultarPorColuna('cte_numero', numerosCte);
+  } catch (error) {
+    console.warn('Tracking no Supabase indisponível para enriquecer realizado.', error?.message || error);
+    return { ...vazio, erro: error?.message || String(error || '') };
+  }
+
+  const mapaChaveCte = new Map();
+  const mapaChaveNfe = new Map();
+  const mapaNota = new Map();
+  const mapaNumeroCte = new Map();
+  encontrados.forEach((item) => {
+    const chaveCte = normalizarChaveTracking(item.chave_cte);
+    const chaveNfe = normalizarChaveTracking(item.chave_nfe);
+    const nota = normalizarChaveTracking(item.nota_fiscal);
+    const numeroCte = apenasDigitosTracking(item.cte_numero);
+    if (chaveCte && !mapaChaveCte.has(chaveCte)) mapaChaveCte.set(chaveCte, item);
+    if (chaveNfe && !mapaChaveNfe.has(chaveNfe)) mapaChaveNfe.set(chaveNfe, item);
+    if (nota && !mapaNota.has(nota)) mapaNota.set(nota, item);
+    if (numeroCte && !mapaNumeroCte.has(numeroCte)) mapaNumeroCte.set(numeroCte, item);
+  });
+
+  return { mapaChaveCte, mapaChaveNfe, mapaNota, mapaNumeroCte, total: encontrados.length, erro: '' };
+}
+
+function obterTrackingDaLinha(row = {}, mapas) {
+  if (!mapas) return null;
+  const chaveCte = normalizarChaveTracking(row.chaveCte);
+  const chaveNfe = normalizarChaveTracking(row.chaveNfe);
+  const nota = normalizarChaveTracking(row.notaFiscal);
+  const numeroCte = apenasDigitosTracking(row.numeroCte);
+  return (chaveCte && mapas.mapaChaveCte?.get(chaveCte))
+    || (chaveNfe && mapas.mapaChaveNfe?.get(chaveNfe))
+    || (nota && mapas.mapaNota?.get(nota))
+    || (numeroCte && mapas.mapaNumeroCte?.get(numeroCte))
+    || null;
+}
+
+function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
+  let vinculados = 0;
+  let volumesTracking = 0;
+  let cubagemTracking = 0;
+
+  const linhas = (rows || []).map((row) => {
+    const tracking = obterTrackingDaLinha(row, mapasTracking);
+    if (!tracking) return row;
+
+    vinculados += 1;
+    const qtdVolumesTracking = numeroRealizado(tracking.qtd_volumes);
+    const cubagemUnitariaTracking = numeroRealizado(tracking.cubagem_unitaria);
+    const cubagemTotalTracking = numeroRealizado(tracking.cubagem_total) || (cubagemUnitariaTracking * Math.max(qtdVolumesTracking || 1, 1));
+    if (qtdVolumesTracking > 0) volumesTracking += qtdVolumesTracking;
+    if (cubagemTotalTracking > 0) cubagemTracking += cubagemTotalTracking;
+
+    return {
+      ...row,
+      trackingMatch: true,
+      trackingTransportadora: tracking.transportadora || '',
+      chaveNfe: row.chaveNfe || tracking.chave_nfe || '',
+      notaFiscal: row.notaFiscal || tracking.nota_fiscal || '',
+      qtdVolumes: qtdVolumesTracking > 0 ? qtdVolumesTracking : row.qtdVolumes,
+      cubagemUnitaria: cubagemUnitariaTracking > 0 ? cubagemUnitariaTracking : row.cubagemUnitaria,
+      cubagemTotal: cubagemTotalTracking > 0 ? cubagemTotalTracking : row.cubagemTotal,
+      pesoDeclarado: numeroRealizado(tracking.peso_declarado) || row.pesoDeclarado,
+      pesoCubado: numeroRealizado(tracking.peso_cubado) || row.pesoCubado,
+      valorNF: numeroRealizado(row.valorNF) || numeroRealizado(tracking.valor_nf),
+      canal: row.canal || tracking.canal || '',
+      ibgeOrigem: row.ibgeOrigem || String(tracking.ibge_origem || '').replace(/\D/g, '').slice(0, 7),
+      ibgeDestino: row.ibgeDestino || String(tracking.ibge_destino || '').replace(/\D/g, '').slice(0, 7),
+      cidadeOrigem: row.cidadeOrigem || tracking.cidade_origem || '',
+      ufOrigem: row.ufOrigem || String(tracking.uf_origem || '').toUpperCase(),
+      cidadeDestino: row.cidadeDestino || tracking.cidade_destino || '',
+      ufDestino: row.ufDestino || String(tracking.uf_destino || '').toUpperCase(),
+    };
+  });
+
+  return { linhas, vinculados, volumesTracking, cubagemTracking, erroTracking: mapasTracking?.erro || '' };
 }
 
 function normalizarTransportadoraSimulador(nome = '') {
@@ -820,6 +958,7 @@ function criarResumoRotaRealizado(row, itemSelecionada, vencedor, resultado, eco
     freteSelecionada: 0,
     freteVencedor: 0,
     savingSelecionada: 0,
+    savingTabelaSelecionadaBruto: 0,
     savingVencedor: 0,
     diferencaParaVencedor: 0,
     reducaoNecessariaSoma: 0,
@@ -853,11 +992,62 @@ function finalizarResumoRotaRealizado(item) {
     ticketMedioRealizado: item.ctes ? item.freteRealizado / item.ctes : 0,
     ticketMedioSelecionada: item.qtdComSelecionada ? item.freteSelecionada / item.qtdComSelecionada : 0,
     ticketMedioVencedor: item.ctes ? item.freteVencedor / item.ctes : 0,
+    percentualFreteSelecionada: item.valorNF ? (item.freteSelecionada / item.valorNF) * 100 : 0,
+    percentualFreteVencedor: item.valorNF ? (item.freteVencedor / item.valorNF) * 100 : 0,
+    savingTabelaSelecionadaBruto: item.savingTabelaSelecionadaBruto || 0,
     reducaoMediaNecessaria: mediaReducao,
     concorrentesMedio: item.ctes ? item.concorrentesSoma / item.ctes : 0,
     principalVencedor: vencedores[0]?.transportadora || item.exemploVencedor || '-',
     oportunidade: Math.max(item.savingSelecionada, 0) + Math.max(item.diferencaParaVencedor, 0),
     vencedores,
+  };
+}
+
+
+function calcularPareto80Volume(rotas = []) {
+  const ordenadas = [...(rotas || [])]
+    .map((item) => ({ ...item, volumePareto: numeroRealizado(item.volumes) || numeroRealizado(item.ctes) }))
+    .filter((item) => item.volumePareto > 0)
+    .sort((a, b) => b.volumePareto - a.volumePareto || b.ctes - a.ctes || b.freteRealizado - a.freteRealizado);
+
+  const totalVolume = ordenadas.reduce((acc, item) => acc + item.volumePareto, 0);
+  let acumulado = 0;
+  const selecionadas = [];
+  for (const item of ordenadas) {
+    if (acumulado >= totalVolume * 0.8 && selecionadas.length) break;
+    acumulado += item.volumePareto;
+    selecionadas.push({
+      ...item,
+      pctVolume: totalVolume ? (item.volumePareto / totalVolume) * 100 : 0,
+      pctAcumulado: totalVolume ? (acumulado / totalVolume) * 100 : 0,
+    });
+  }
+
+  const total = selecionadas.reduce((acc, item) => {
+    acc.ctes += numeroRealizado(item.ctes);
+    acc.volumes += numeroRealizado(item.volumes);
+    acc.peso += numeroRealizado(item.peso);
+    acc.valorNF += numeroRealizado(item.valorNF);
+    acc.freteRealizado += numeroRealizado(item.freteRealizado);
+    acc.freteSelecionada += numeroRealizado(item.freteSelecionada);
+    acc.freteVencedor += numeroRealizado(item.freteVencedor);
+    acc.savingSelecionada += numeroRealizado(item.savingSelecionada);
+    acc.savingTabelaSelecionadaBruto += numeroRealizado(item.savingTabelaSelecionadaBruto);
+    acc.savingVencedor += numeroRealizado(item.savingVencedor);
+    acc.diferencaParaVencedor += numeroRealizado(item.diferencaParaVencedor);
+    acc.perdidas += numeroRealizado(item.qtdPerdidasSelecionada);
+    acc.reducaoSoma += numeroRealizado(item.reducaoMediaNecessaria) * numeroRealizado(item.qtdPerdidasSelecionada);
+    return acc;
+  }, { ctes: 0, volumes: 0, peso: 0, valorNF: 0, freteRealizado: 0, freteSelecionada: 0, freteVencedor: 0, savingSelecionada: 0, savingTabelaSelecionadaBruto: 0, savingVencedor: 0, diferencaParaVencedor: 0, perdidas: 0, reducaoSoma: 0 });
+
+  return {
+    rotas: selecionadas,
+    totalVolume,
+    volumeCoberto: acumulado,
+    pctCoberto: totalVolume ? (acumulado / totalVolume) * 100 : 0,
+    qtdRotas: selecionadas.length,
+    reducaoMediaNecessaria: total.perdidas ? total.reducaoSoma / total.perdidas : 0,
+    ...total,
   };
 }
 
@@ -867,7 +1057,8 @@ function gerarLaudoTextoRealizado(resumo, transportadora) {
   linhas.push(`A transportadora ${transportadora || 'selecionada'} participou da simulação em ${resumo.ctesComTabelaSelecionada} CT-es de ${resumo.ctesAnalisados} analisados.`);
   linhas.push(`Ela ganharia ${resumo.ctesGanhariaSelecionada} CT-es (${formatPercent(resumo.aderenciaSelecionada)}) e perderia ${resumo.ctesPerdidosSelecionada} CT-es para concorrentes mais baratos.`);
   linhas.push(`A projeção de faturamento pela tabela selecionada é ${formatMoney(resumo.faturamentoSelecionadaMes)} por mês e ${formatMoney(resumo.faturamentoSelecionadaAno)} em 12 meses.`);
-  linhas.push(`O saving potencial contra o frete realizado é ${formatMoney(resumo.savingSelecionadaVsReal)} no período, projetando ${formatMoney(resumo.savingSelecionadaVsRealAno)} em 12 meses.`);
+  linhas.push(`O saving da tabela ganhadora contra o frete realizado é ${formatMoney(resumo.savingSelecionadaVsReal)} no período, considerando somente os CT-es em que a tabela selecionada ficaria em 1º lugar.`);
+  linhas.push(`Como referência de mercado, o melhor preço entre todas as tabelas geraria ${formatMoney(resumo.savingVencedorVsReal)} de saving potencial no mesmo recorte.`);
   linhas.push(`Nas rotas perdidas, a redução média necessária para virar ganhadora é de ${formatPercent(resumo.reducaoMediaNecessaria)}.`);
   return linhas;
 }
@@ -894,8 +1085,14 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
   let valorNF = 0;
   let peso = 0;
   let volumes = 0;
+  let cubagemTotal = 0;
+  let linhasComTracking = 0;
   let savingSelecionadaVsReal = 0;
+  let savingTabelaSelecionadaVsRealBruto = 0;
   let savingVencedorVsReal = 0;
+  let freteRealizadoGanhariaSelecionada = 0;
+  let freteSelecionadaGanhadora = 0;
+  let valorNFGanhariaSelecionada = 0;
   let diferencaSelecionadaVsVencedor = 0;
   let reducaoNecessariaSoma = 0;
   const diagnostico = {
@@ -912,6 +1109,9 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     const nf = numeroRealizado(row.valorNF);
     const pesoLinha = pesoRealizado(row);
     const vol = numeroRealizado(row.qtdVolumes);
+    const cubagemLinha = cubagemRealizado(row);
+    if (row.trackingMatch) linhasComTracking += 1;
+    cubagemTotal += cubagemLinha;
     const origem = row.cidadeOrigem || filtros.origem || '';
     const canal = filtros.canal || row.canal || 'ATACADO';
     const canalDiag = String(canal || 'SEM CANAL').toUpperCase();
@@ -986,6 +1186,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
 
     let freteSel = 0;
     let economiaSelecionadaVsReal = 0;
+    let economiaTabelaSelecionadaVsRealBruto = 0;
     let diferencaVencedor = 0;
     let reducaoNecessaria = 0;
     let statusSelecionada = 'Sem tabela';
@@ -995,12 +1196,17 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       freteSel = numeroRealizado(itemSelecionada.total);
       freteSelecionada += freteSel;
       freteRealizadoComTabelaSelecionada += valorCte;
-      economiaSelecionadaVsReal = Math.max(valorCte - freteSel, 0);
-      savingSelecionadaVsReal += economiaSelecionadaVsReal;
+      economiaTabelaSelecionadaVsRealBruto = Math.max(valorCte - freteSel, 0);
+      savingTabelaSelecionadaVsRealBruto += economiaTabelaSelecionadaVsRealBruto;
 
       if (Number(itemSelecionada.ranking) === 1) {
         ctesGanhariaSelecionada += 1;
         statusSelecionada = 'Ganharia';
+        economiaSelecionadaVsReal = economiaTabelaSelecionadaVsRealBruto;
+        savingSelecionadaVsReal += economiaSelecionadaVsReal;
+        freteRealizadoGanhariaSelecionada += valorCte;
+        freteSelecionadaGanhadora += freteSel;
+        valorNFGanhariaSelecionada += nf;
       } else {
         ctesPerdidosSelecionada += 1;
         statusSelecionada = 'Perderia';
@@ -1024,6 +1230,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     rota.freteSelecionada += freteSel;
     rota.freteVencedor += freteVenc;
     rota.savingSelecionada += economiaSelecionadaVsReal;
+    rota.savingTabelaSelecionadaBruto += economiaTabelaSelecionadaVsRealBruto;
     rota.savingVencedor += Math.max(valorCte - freteVenc, 0);
     rota.diferencaParaVencedor += diferencaVencedor;
     rota.concorrentesSoma += resultado.length;
@@ -1055,6 +1262,18 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       freteSelecionada: freteSel,
       vencedor: vencedor?.transportadora || '',
       freteVencedor: freteVenc,
+      volumes: vol,
+      peso: pesoLinha,
+      cubagem: cubagemLinha,
+      valorNF: nf,
+      percentualFreteRealizado: nf ? (valorCte / nf) * 100 : 0,
+      percentualFreteSelecionada: nf && freteSel ? (freteSel / nf) * 100 : 0,
+      percentualFreteVencedor: nf && freteVenc ? (freteVenc / nf) * 100 : 0,
+      variacaoPctFreteSelecionada: nf && valorCte && freteSel ? (((freteSel / nf) / (valorCte / nf)) - 1) * 100 : 0,
+      savingTabelaSelecionadaBruto: economiaTabelaSelecionadaVsRealBruto,
+      savingVencedor: Math.max(valorCte - freteVenc, 0),
+      trackingMatch: Boolean(row.trackingMatch),
+      chaveNfe: row.chaveNfe || '',
       statusSelecionada,
       rankingSelecionada: itemSelecionada?.ranking || '',
       reducaoNecessaria,
@@ -1085,6 +1304,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
   const faturamentoSelecionadaAno = faturamentoSelecionadaMes * 12;
   const savingSelecionadaVsRealMes = meses ? savingSelecionadaVsReal / meses : savingSelecionadaVsReal;
   const savingSelecionadaVsRealAno = savingSelecionadaVsRealMes * 12;
+  const pareto80Volume = calcularPareto80Volume(rotas);
   const freteRealizadoMes = meses ? freteRealizado / meses : freteRealizado;
   const freteRealizadoAno = freteRealizadoMes * 12;
 
@@ -1103,6 +1323,8 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     valorNF,
     peso,
     volumes,
+    cubagemTotal,
+    linhasComTracking,
     dias,
     meses,
     cargasDia: ctesAnalisados / dias,
@@ -1114,14 +1336,24 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     savingSelecionadaVsReal,
     savingSelecionadaVsRealMes,
     savingSelecionadaVsRealAno,
+    savingTabelaSelecionadaVsRealBruto,
     savingVencedorVsReal,
+    freteRealizadoGanhariaSelecionada,
+    freteSelecionadaGanhadora,
+    valorNFGanhariaSelecionada,
     diferencaSelecionadaVsVencedor,
     reducaoMediaNecessaria,
     aderenciaSelecionada,
     percentualFreteRealizado: valorNF ? (freteRealizado / valorNF) * 100 : 0,
-    percentualSavingSelecionada: freteRealizadoComTabelaSelecionada ? (savingSelecionadaVsReal / freteRealizadoComTabelaSelecionada) * 100 : 0,
+    percentualFreteRealizadoGanharia: valorNFGanhariaSelecionada ? (freteRealizadoGanhariaSelecionada / valorNFGanhariaSelecionada) * 100 : 0,
+    percentualFreteTabelaGanharia: valorNFGanhariaSelecionada ? (freteSelecionadaGanhadora / valorNFGanhariaSelecionada) * 100 : 0,
+    variacaoPercentualFreteGanharia: freteRealizadoGanhariaSelecionada && valorNFGanhariaSelecionada ? (((freteSelecionadaGanhadora / valorNFGanhariaSelecionada) / (freteRealizadoGanhariaSelecionada / valorNFGanhariaSelecionada)) - 1) * 100 : 0,
+    percentualSavingSelecionada: freteRealizadoGanhariaSelecionada ? (savingSelecionadaVsReal / freteRealizadoGanhariaSelecionada) * 100 : 0,
+    percentualSavingSelecionadaBruto: freteRealizadoComTabelaSelecionada ? (savingTabelaSelecionadaVsRealBruto / freteRealizadoComTabelaSelecionada) * 100 : 0,
+    percentualSavingVencedor: freteRealizado ? (savingVencedorVsReal / freteRealizado) * 100 : 0,
     rotas,
     porTransportadoraReal,
+    pareto80Volume,
     ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor).slice(0, 300),
     diagnostico: {
       linhasSemIbgeDestino: diagnostico.linhasSemIbgeDestino,
@@ -1876,6 +2108,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
         return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
       });
 
+      atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 42);
+      const mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
+      const trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
+      const rowsComIbge = trackingEnriquecido.linhas;
+
       atualizarProcessamentoUi('Buscando malha da transportadora/tabela selecionada...', 46);
       const baseSelecionada = await carregarBaseOnline({
         nomeTransportadora: nomeTabelaSelecionada,
@@ -1891,8 +2128,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
       );
 
       const rowsFiltrados = modoRealizado === 'malha' && origensMalha.size
-        ? rowsComIbgeBase.filter((row) => origensMalha.has(normalizarChaveSimulador(row.cidadeOrigem)))
-        : rowsComIbgeBase;
+        ? rowsComIbge.filter((row) => origensMalha.has(normalizarChaveSimulador(row.cidadeOrigem)))
+        : rowsComIbge;
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
       const basesParaMesclar = [baseSelecionada];
@@ -1996,6 +2233,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
           limite: limiteRealizado,
           ctesBrutos: rowsBrutos.length,
           ctesNaMalha: rowsFiltrados.length,
+          trackingVinculados: trackingEnriquecido.vinculados,
+          trackingTotalEncontrado: mapasTracking.total,
+          trackingErro: trackingEnriquecido.erroTracking,
+          volumesTracking: trackingEnriquecido.volumesTracking,
+          cubagemTracking: trackingEnriquecido.cubagemTracking,
           rotasReaisComIbge: routeKeysRealizado.length,
           tabelasCarregadas: baseParaSimulacao.length,
           tabelasBaseSelecionada: baseSelecionada.length,
@@ -2028,8 +2270,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ['Faturamento tabela selecionada', resultadoRealizado.freteSelecionada.toFixed(2)],
       ['Faturamento mensal projetado', resultadoRealizado.faturamentoSelecionadaMes.toFixed(2)],
       ['Faturamento 12 meses projetado', resultadoRealizado.faturamentoSelecionadaAno.toFixed(2)],
-      ['Saving vs realizado', resultadoRealizado.savingSelecionadaVsReal.toFixed(2)],
-      ['Saving 12 meses', resultadoRealizado.savingSelecionadaVsRealAno.toFixed(2)],
+      ['Saving ganhadora vs realizado', resultadoRealizado.savingSelecionadaVsReal.toFixed(2)],
+      ['Saving tabela amplo', Number(resultadoRealizado.savingTabelaSelecionadaVsRealBruto || 0).toFixed(2)],
+      ['Saving mercado', Number(resultadoRealizado.savingVencedorVsReal || 0).toFixed(2)],
+      ['Saving 12 meses ganhadora', resultadoRealizado.savingSelecionadaVsRealAno.toFixed(2)],
+      ['Tracking vinculados', Number(resultadoRealizado.linhasComTracking || 0).toFixed(0)],
       [],
       ['Rotas', 'Origem', 'Destino', 'Tipo', 'CT-es', 'Volumes', 'Peso', 'Valor NF', 'Frete realizado', 'Frete tabela selecionada', 'Frete vencedor', 'Saving selecionada', 'Diferença para vencedor', 'Redução média necessária %', 'Principal vencedor', 'Concorrentes médio'],
       ...resultadoRealizado.rotas.map((item) => [
@@ -2773,13 +3018,24 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div className="summary-card"><span>Faturamento tabela</span><strong>{formatMoney(resultadoRealizado.freteSelecionada)}</strong><small>nos CT-es com tabela</small></div>
                 <div className="summary-card"><span>Projeção mensal</span><strong>{formatMoney(resultadoRealizado.faturamentoSelecionadaMes)}</strong><small>{resultadoRealizado.meses} mês(es) base</small></div>
                 <div className="summary-card"><span>Projeção 12 meses</span><strong>{formatMoney(resultadoRealizado.faturamentoSelecionadaAno)}</strong><small>faturamento potencial</small></div>
-                <div className="summary-card"><span>Saving vs realizado</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsReal)}</strong><small>{formatPercent(resultadoRealizado.percentualSavingSelecionada)}</small></div>
-                <div className="summary-card"><span>Saving 12 meses</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsRealAno)}</strong><small>projeção anual</small></div>
+                <div className="summary-card"><span>Saving ganhadora vs realizado</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsReal)}</strong><small>{formatPercent(resultadoRealizado.percentualSavingSelecionada)} só CT-es que ganharia</small></div>
+                <div className="summary-card"><span>Saving mercado</span><strong>{formatMoney(resultadoRealizado.savingVencedorVsReal)}</strong><small>{formatPercent(resultadoRealizado.percentualSavingVencedor)} melhor tabela geral</small></div>
+                <div className="summary-card"><span>Saving tabela amplo</span><strong>{formatMoney(resultadoRealizado.savingTabelaSelecionadaVsRealBruto)}</strong><small>{formatPercent(resultadoRealizado.percentualSavingSelecionadaBruto)} todos CT-es com tabela</small></div>
+                <div className="summary-card"><span>Saving 12 meses</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsRealAno)}</strong><small>projeção só nas ganhas</small></div>
+                <div className="summary-card"><span>% NF realizado nas ganhas</span><strong>{formatPercent(resultadoRealizado.percentualFreteRealizadoGanharia)}</strong><small>antes, nas cargas que ganharia</small></div>
+                <div className="summary-card"><span>% NF tabela ganhadora</span><strong>{formatPercent(resultadoRealizado.percentualFreteTabelaGanharia)}</strong><small>{formatPercent(resultadoRealizado.variacaoPercentualFreteGanharia)} vs realizado</small></div>
                 <div className="summary-card"><span>Cargas/dia</span><strong>{Number(resultadoRealizado.cargasDia || 0).toFixed(1)}</strong><small>{resultadoRealizado.dias} dia(s)</small></div>
-                <div className="summary-card"><span>Volumes/dia</span><strong>{Number(resultadoRealizado.volumesDia || 0).toFixed(1)}</strong><small>{Number(resultadoRealizado.volumes || 0).toLocaleString('pt-BR')} volumes</small></div>
+                <div className="summary-card"><span>Volumes/dia</span><strong>{Number(resultadoRealizado.volumesDia || 0).toFixed(1)}</strong><small>{Number(resultadoRealizado.volumes || 0).toLocaleString('pt-BR')} volumes • tracking {Number(resultadoRealizado.linhasComTracking || 0).toLocaleString('pt-BR')} CT-es</small></div>
+                <div className="summary-card"><span>Cubagem tracking</span><strong>{Number(resultadoRealizado.cubagemTotal || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</strong><small>m³ cruzado por NF/CT-e</small></div>
                 <div className="summary-card"><span>Redução média p/ ganhar</span><strong>{formatPercent(resultadoRealizado.reducaoMediaNecessaria)}</strong><small>rotas perdidas</small></div>
                 <div className="summary-card"><span>Perda para concorrentes</span><strong>{formatMoney(resultadoRealizado.diferencaSelecionadaVsVencedor)}</strong><small>diferença nas perdidas</small></div>
               </div>
+
+              {resultadoRealizado.filtros?.trackingErro && (
+                <div className="sim-alert warning">
+                  <strong>Tracking não foi cruzado.</strong> {resultadoRealizado.filtros.trackingErro}. Os volumes/cubagem ficarão apenas com o que existir no CT-e.
+                </div>
+              )}
 
               {resultadoRealizado.ctesSimulados === 0 && (
                 <div className="sim-alert warning">
@@ -2848,6 +3104,43 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <div className="sim-parametros-box">
                 <div className="sim-parametros-header">
                   <div>
+                    <strong>Pareto 80% do volume</strong>
+                    <p>Rotas que concentram aproximadamente 80% do volume/CT-es. Use esta visão para priorizar onde negociar primeiro.</p>
+                  </div>
+                </div>
+                <div className="sim-analise-resumo" style={{ marginTop: 12 }}>
+                  <div><span>Rotas no 80%</span><strong>{resultadoRealizado.pareto80Volume?.qtdRotas || 0}</strong></div>
+                  <div><span>Volume coberto</span><strong>{formatPercent(resultadoRealizado.pareto80Volume?.pctCoberto || 0)}</strong></div>
+                  <div><span>Saving ganhadora 80%</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.savingSelecionada || 0)}</strong></div>
+                  <div><span>Saving mercado 80%</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.savingVencedor || 0)}</strong></div>
+                  <div><span>Redução média 80%</span><strong>{formatPercent(resultadoRealizado.pareto80Volume?.reducaoMediaNecessaria || 0)}</strong></div>
+                </div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>Rota</th><th>CT-es</th><th>Volumes</th><th>% volume</th><th>% acum.</th><th>Realizado</th><th>Tabela</th><th>Vencedor</th><th>Saving ganhadora</th><th>Saving mercado</th></tr></thead>
+                    <tbody>
+                      {(resultadoRealizado.pareto80Volume?.rotas || []).slice(0, 30).map((item) => (
+                        <tr key={`pareto-${item.rota}-${item.tipo}`}>
+                          <td><strong>{item.rota}</strong></td>
+                          <td>{item.ctes}</td>
+                          <td>{Number(item.volumes || item.ctes || 0).toLocaleString('pt-BR')}</td>
+                          <td>{formatPercent(item.pctVolume)}</td>
+                          <td>{formatPercent(item.pctAcumulado)}</td>
+                          <td>{formatMoney(item.freteRealizado)}</td>
+                          <td>{formatMoney(item.freteSelecionada)}</td>
+                          <td>{formatMoney(item.freteVencedor)}</td>
+                          <td>{formatMoney(item.savingSelecionada)}</td>
+                          <td>{formatMoney(item.savingVencedor)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="sim-parametros-box">
+                <div className="sim-parametros-header">
+                  <div>
                     <strong>Rotas prioritárias para ajuste</strong>
                     <p>Ordenado por oportunidade: saving contra realizado + diferença para o vencedor + volume.</p>
                   </div>
@@ -2863,7 +3156,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
                         <th>Realizado</th>
                         <th>Tabela selecionada</th>
                         <th>Vencedor</th>
-                        <th>Saving</th>
+                        <th>% NF real</th>
+                        <th>% NF tabela</th>
+                        <th>% NF vencedor</th>
+                        <th>Saving ganhadora</th>
+                        <th>Saving tabela amplo</th>
                         <th>Dif. vencedor</th>
                         <th>Redução média</th>
                         <th>Principal vencedor</th>
@@ -2879,7 +3176,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
                           <td>{formatMoney(item.freteRealizado)}</td>
                           <td>{formatMoney(item.freteSelecionada)}</td>
                           <td>{formatMoney(item.freteVencedor)}</td>
+                          <td>{formatPercent(item.percentualFreteRealizado)}</td>
+                          <td>{formatPercent(item.percentualFreteSelecionada)}</td>
+                          <td>{formatPercent(item.percentualFreteVencedor)}</td>
                           <td className={item.savingSelecionada > 0 ? 'positivo' : ''}>{formatMoney(item.savingSelecionada)}</td>
+                          <td>{formatMoney(item.savingTabelaSelecionadaBruto || 0)}</td>
                           <td className={item.diferencaParaVencedor > 0 ? 'negativo' : ''}>{formatMoney(item.diferencaParaVencedor)}</td>
                           <td>{formatPercent(item.reducaoMediaNecessaria)}</td>
                           <td>{item.principalVencedor}</td>
@@ -2899,7 +3200,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </div>
                 <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                   <table className="sim-analise-tabela">
-                    <thead><tr><th>CT-e</th><th>Origem</th><th>Destino</th><th>Real</th><th>Realizado</th><th>Tabela</th><th>Vencedor</th><th>Status</th><th>Redução</th><th>Saving</th></tr></thead>
+                    <thead><tr><th>CT-e</th><th>Origem</th><th>Destino</th><th>Real</th><th>Vol.</th><th>Realizado</th><th>% NF real</th><th>Tabela</th><th>% NF tabela</th><th>Vencedor</th><th>% NF vencedor</th><th>Status</th><th>Redução</th><th>Saving ganhadora</th><th>Saving mercado</th></tr></thead>
                     <tbody>
                       {(resultadoRealizado.ctesDetalhes || []).slice(0, 100).map((item, index) => (
                         <tr key={`${item.cte}-${index}`}>
@@ -2907,12 +3208,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
                           <td>{item.origem}/{item.ufOrigem}</td>
                           <td>{item.destino}/{item.ufDestino}</td>
                           <td>{item.transportadoraReal}</td>
+                          <td>{Number(item.volumes || 0).toLocaleString('pt-BR')}{item.trackingMatch ? ' ✓' : ''}</td>
                           <td>{formatMoney(item.freteRealizado)}</td>
+                          <td>{formatPercent(item.percentualFreteRealizado)}</td>
                           <td>{item.freteSelecionada ? formatMoney(item.freteSelecionada) : '-'}</td>
+                          <td>{item.freteSelecionada ? formatPercent(item.percentualFreteSelecionada) : '-'}</td>
                           <td>{item.vencedor} · {formatMoney(item.freteVencedor)}</td>
+                          <td>{formatPercent(item.percentualFreteVencedor)}</td>
                           <td><span className="status-pill">{item.statusSelecionada}</span></td>
                           <td>{formatPercent(item.reducaoNecessaria)}</td>
                           <td>{formatMoney(item.savingSelecionada)}</td>
+                          <td>{formatMoney(item.savingVencedor)}</td>
                         </tr>
                       ))}
                     </tbody>
