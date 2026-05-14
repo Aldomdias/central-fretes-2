@@ -96,6 +96,7 @@ export async function criarTabelaNegociacao(payload = {}) {
     observacao: texto(payload.observacao),
     saving_projetado: numero(payload.saving_projetado),
     aderencia_projetada: numero(payload.aderencia_projetada),
+    origem_importacao: texto(payload.origem_importacao),
   };
 
   if (!novo.transportadora) throw new Error('Informe a transportadora.');
@@ -210,6 +211,8 @@ export async function substituirItensTabelaNegociacao(tabela, itens = []) {
 
     tipo_veiculo: texto(item.tipo_veiculo),
     valor_lotacao: numero(item.valor_lotacao),
+    km: numero(item.km),
+    icms: numero(item.icms),
 
     gris: numero(item.gris),
     advalorem: numero(item.advalorem),
@@ -219,8 +222,9 @@ export async function substituirItensTabelaNegociacao(tabela, itens = []) {
     tde: numero(item.tde),
     outras_taxas: numero(item.outras_taxas),
 
+    origem_importacao: texto(item.origem_importacao),
     observacao: texto(item.observacao),
-    dados_originais: item,
+    dados_originais: item.dados_originais ?? item,
   }));
 
   const { error: deleteError } = await supabase
