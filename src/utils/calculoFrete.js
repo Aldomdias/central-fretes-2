@@ -43,6 +43,57 @@ function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function normalizeCompare(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s*[/\-]\s*[a-z]{2}\s*$/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function canalCategoria(value) {
+  const canal = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+  if (!canal) return '';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (canal.includes('ATACADO') || canal === 'B2B' || canal.includes(' B2B')) return 'ATACADO';
+  if (canal.includes('B2C') || canal.includes('MERCADO LIVRE') || canal.includes('SHOPEE') || canal.includes('MAGAZINE') || canal.includes('AMAZON') || canal.includes('MARKETPLACE') || canal.includes('ECOMMERCE')) return 'B2C';
+  return canal;
+}
+
+function canalCompativel(canalTabela, canalFiltro) {
+  if (!canalFiltro) return true;
+  const tabela = canalCategoria(canalTabela);
+  const filtro = canalCategoria(canalFiltro);
+  return Boolean(tabela && filtro && (tabela === filtro || tabela.includes(filtro) || filtro.includes(tabela)));
+}
+
+function origemCompativel(origemTabela, origemFiltro) {
+  if (!origemFiltro) return true;
+  const tabela = normalizeCompare(origemTabela);
+  const filtro = normalizeCompare(origemFiltro);
+  if (!tabela || !filtro) return false;
+  return tabela === filtro || (tabela.length >= 5 && filtro.includes(tabela)) || (filtro.length >= 5 && tabela.includes(filtro));
+}
+
+function transportadoraCompativel(nomeTabela, nomeFiltro) {
+  const tabela = normalizeCompare(nomeTabela);
+  const filtro = normalizeCompare(nomeFiltro);
+  if (!tabela || !filtro) return false;
+  return tabela === filtro || (tabela.length >= 5 && filtro.includes(tabela)) || (filtro.length >= 5 && tabela.includes(filtro));
+}
+
+function rotaKeyComparavel(origem, ibge) {
+  return `${normalizeCompare(origem)}|${String(ibge || '').trim()}`;
+}
+
 function escapeCsv(value) {
   const text = String(value ?? '');
   return /[";,\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -324,7 +375,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
 function rankearPorChave(resultados = []) {
   const grupos = new Map();
   resultados.forEach((item) => {
-    const chave = `${item.origem}|${item.ibgeDestino}|${item.canal}|${item.detalhes?.frete?.pesoInformado || 0}|${item.detalhes?.frete?.valorNFInformado || 0}`;
+    const chave = `${normalizeCompare(item.origem)}|${item.ibgeDestino}|${canalCategoria(item.canal)}|${item.detalhes?.frete?.pesoInformado || 0}|${item.detalhes?.frete?.valorNFInformado || 0}`;
     if (!grupos.has(chave)) grupos.set(chave, []);
     grupos.get(chave).push(item);
   });
@@ -356,8 +407,8 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
 
   return (transportadoras || []).flatMap((transportadora) =>
     (transportadora.origens || [])
-      .filter((origem) => !filtros.canal || origem.canal === filtros.canal)
-      .filter((origem) => !filtros.origem || origem.cidade === filtros.origem)
+      .filter((origem) => canalCompativel(origem.canal, filtros.canal))
+      .filter((origem) => origemCompativel(origem.cidade, filtros.origem))
       .flatMap((origem) =>
         (origem.rotas || [])
           .filter((rota) => {
@@ -374,7 +425,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
 export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
   const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge);
   return rankearPorChave(resultados)
-    .filter((item) => item.origem === origem && String(item.ibgeDestino) === String(destinoCodigo))
+    .filter((item) => origemCompativel(item.origem, origem) && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
@@ -390,7 +441,7 @@ export function simularPorTransportadora({ transportadoras, nomeTransportadora, 
   }, cidadePorIbge).filter((item) => !destinoCodigos?.length || destinoCodigos.includes(String(item.ibgeDestino)) || destinoCodigos.includes(normalizeText(item.cidadeDestino)));
 
   return rankearPorChave(resultados)
-    .filter((item) => item.transportadora === nomeTransportadora)
+    .filter((item) => transportadoraCompativel(item.transportadora, nomeTransportadora))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
@@ -408,17 +459,17 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
   const destinosDaTransportadora = new Set();
 
   (transportadoras || []).forEach((transportadora) => {
-    if (transportadora.nome !== nomeTransportadora) return;
+    if (!transportadoraCompativel(transportadora.nome, nomeTransportadora)) return;
 
     (transportadora.origens || [])
-      .filter((origemItem) => !canal || origemItem.canal === canal)
-      .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+      .filter((origemItem) => canalCompativel(origemItem.canal, canal))
+      .filter((origemItem) => origemCompativel(origemItem.cidade, origemFiltro))
       .forEach((origemItem) => {
         (origemItem.rotas || []).forEach((rota) => {
           const ibge = String(rota.ibgeDestino || '');
           if (!ibge) return;
           if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
-          destinosDaTransportadora.add(`${origemItem.cidade}|${ibge}`);
+          destinosDaTransportadora.add(rotaKeyComparavel(origemItem.cidade, ibge));
         });
       });
   });
@@ -444,14 +495,14 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
 
     (transportadoras || []).forEach((transportadora) => {
       (transportadora.origens || [])
-        .filter((origemItem) => !canal || origemItem.canal === canal)
-        .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+        .filter((origemItem) => canalCompativel(origemItem.canal, canal))
+        .filter((origemItem) => origemCompativel(origemItem.cidade, origemFiltro))
         .forEach((origemItem) => {
           (origemItem.rotas || []).forEach((rota) => {
             const ibge = String(rota.ibgeDestino || '');
             if (!ibge) return;
             if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
-            if (!destinosDaTransportadora.has(`${origemItem.cidade}|${ibge}`)) return;
+            if (!destinosDaTransportadora.has(rotaKeyComparavel(origemItem.cidade, ibge))) return;
 
             const item = calcularItem({
               transportadora,
@@ -469,7 +520,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
     });
 
     rankearPorChave(resultados)
-      .filter((item) => item.transportadora === nomeTransportadora)
+      .filter((item) => transportadoraCompativel(item.transportadora, nomeTransportadora))
       .forEach((item) => {
         todosResultados.push({
           ...item,
@@ -535,8 +586,8 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
 
     (transportadoras || []).forEach((transportadora) => {
       (transportadora.origens || [])
-        .filter((origemItem) => !canal || origemItem.canal === canal)
-        .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+        .filter((origemItem) => canalCompativel(origemItem.canal, canal))
+        .filter((origemItem) => origemCompativel(origemItem.cidade, origemFiltro))
         .forEach((origemItem) => {
           (origemItem.rotas || []).forEach((rota) => {
             const ibge = String(rota.ibgeDestino || '');
@@ -572,7 +623,7 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
 
   const gruposRota = new Map();
   detalhes.forEach((item) => {
-    const chave = `${item.origem}|${item.ibgeDestino}|${item.gradePeso}|${item.gradeValorNF}`;
+    const chave = `${normalizeCompare(item.origem)}|${item.ibgeDestino}|${item.gradePeso}|${item.gradeValorNF}`;
     if (!gruposRota.has(chave)) gruposRota.set(chave, []);
     gruposRota.get(chave).push(item);
   });
@@ -634,14 +685,14 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
   const coberturaMap = new Map();
   (transportadoras || []).forEach((transportadora) => {
     (transportadora.origens || [])
-      .filter((origemItem) => !canal || origemItem.canal === canal)
-      .filter((origemItem) => !origemFiltro || origemItem.cidade === origemFiltro)
+      .filter((origemItem) => canalCompativel(origemItem.canal, canal))
+      .filter((origemItem) => origemCompativel(origemItem.cidade, origemFiltro))
       .forEach((origemItem) => {
         (origemItem.rotas || []).forEach((rota) => {
           const ibge = String(rota.ibgeDestino || '');
           if (!ibge) return;
           if (ufFiltro && getUfByIbge(ibge) !== ufFiltro) return;
-          const key = `${origemItem.cidade}|${ibge}`;
+          const key = `${normalizeCompare(origemItem.cidade)}|${ibge}`;
           const atual = coberturaMap.get(key) || {
             origem: origemItem.cidade,
             ibgeDestino: ibge,
@@ -688,17 +739,17 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
 }
 
 export function analisarCoberturaTabela({ transportadoras, canal, origem, transportadora, ufDestino, cidadePorIbge }) {
-  const baseTransportadoras = (transportadoras || []).filter((item) => !transportadora || item.nome === transportadora);
+  const baseTransportadoras = (transportadoras || []).filter((item) => !transportadora || transportadoraCompativel(item.nome, transportadora));
   const origensFiltradas = baseTransportadoras.flatMap((item) =>
     (item.origens || [])
-      .filter((origemItem) => (!canal || origemItem.canal === canal) && (!origem || origemItem.cidade === origem))
+      .filter((origemItem) => canalCompativel(origemItem.canal, canal) && origemCompativel(origemItem.cidade, origem))
       .map((origemItem) => ({ transportadora: item.nome, origem: origemItem })),
   );
 
   const universoDestinos = new Map();
   (transportadoras || []).forEach((item) => {
     (item.origens || []).forEach((origemItem) => {
-      if (canal && origemItem.canal !== canal) return;
+      if (!canalCompativel(origemItem.canal, canal)) return;
       (origemItem.rotas || []).forEach((rota) => {
         const uf = getUfByIbge(rota.ibgeDestino);
         if (ufDestino && uf !== ufDestino) return;
@@ -722,7 +773,7 @@ export function analisarCoberturaTabela({ transportadoras, canal, origem, transp
       const ibge = String(rota.ibgeDestino);
       const uf = getUfByIbge(ibge);
       if (ufDestino && uf !== ufDestino) return;
-      const key = `${origemItem.cidade}|${ibge}`;
+      const key = `${normalizeCompare(origemItem.cidade)}|${ibge}`;
       coberturaMap.set(key, {
         origem: origemItem.cidade,
         transportadora: nomeTransportadora,
@@ -740,7 +791,7 @@ export function analisarCoberturaTabela({ transportadoras, canal, origem, transp
 
   origensSelecionadas.forEach((cidadeOrigem) => {
     destinosUniverso.forEach((destino) => {
-      const key = `${cidadeOrigem}|${destino.ibge}`;
+      const key = `${normalizeCompare(cidadeOrigem)}|${destino.ibge}`;
       if (coberturaMap.has(key)) {
         cobertas.push(coberturaMap.get(key));
       } else {

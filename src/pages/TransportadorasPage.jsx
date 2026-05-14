@@ -309,6 +309,8 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
+  const [salvando, setSalvando] = useState(false);
+  const [feedbackSalvar, setFeedbackSalvar] = useState('');
   const [feedback, setFeedback] = useState(null);
   const rows = origem[secao] || [];
   const inputRef = useRef(null);
@@ -411,32 +413,9 @@ function TransportadorasList({ items, onOpen, store }) {
   }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
 
   useEffect(() => {
-    if (!store?.carregarTransportadoraCompleta) return;
-
-    let cancelado = false;
-    const candidatos = visiveis.filter((item) => {
-      const resumo = buildResumoTransportadora(item);
-      return !item.detalheCarregado && (resumo.resumo || resumo.cobertura === 'Sem validação');
-    }).slice(0, 5);
-
-    if (!candidatos.length) return;
-
-    const carregarVisiveis = async () => {
-      setAutoAtualizando(true);
-      for (const item of candidatos) {
-        if (cancelado) break;
-        if (String(store.syncStatus?.carregandoDetalheId || '') === String(item.id)) continue;
-        await store.carregarTransportadoraCompleta(item.id);
-      }
-      if (!cancelado) setAutoAtualizando(false);
-    };
-
-    carregarVisiveis();
-
-    return () => {
-      cancelado = true;
-    };
-  }, [visiveis, store]);
+    // Não carrega automaticamente para evitar sobrescrever campos enquanto o usuário edita.
+    setAutoAtualizando(false);
+  }, [visiveis]);
 
   const saveTransportadora = (form) => {
     store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
@@ -449,6 +428,12 @@ function TransportadorasList({ items, onOpen, store }) {
     setCidadeFiltro('');
     setCanalFiltro('');
     setCoberturaFiltro('');
+  };
+
+  const confirmarRemocaoTransportadora = (item) => {
+    const ok = window.confirm(`Tem certeza que deseja excluir a transportadora ${item?.nome || ''}? Essa ação remove o cadastro da base principal.`);
+    if (!ok) return;
+    store.removerTransportadora(item.id);
   };
 
   return (
@@ -524,7 +509,7 @@ function TransportadorasList({ items, onOpen, store }) {
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
                 <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
-                <ActionIcon danger onClick={() => store.removerTransportadora(item.id)}>🗑</ActionIcon>
+                <ActionIcon danger onClick={() => confirmarRemocaoTransportadora(item)}>🗑</ActionIcon>
               </div>
             </div>
           );
@@ -553,18 +538,41 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
-  const origens = transportadora.origens.filter((origem) => origem.cidade.toLowerCase().includes(busca.toLowerCase()));
+  const [salvando, setSalvando] = useState(false);
+  const [feedbackSalvar, setFeedbackSalvar] = useState('');
+  const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
+  const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
   const saveOrigem = (form) => {
-    const origem = { ...editing, ...form, id: editing?.id ?? nextId(transportadora.origens) };
+    const origem = { ...editing, ...form, id: editing?.id ?? nextId(origensBase) };
     store.salvarOrigem(transportadora.id, origem);
     setModalOpen(false);
     setEditing(null);
   };
 
+  const atualizarDadosTransportadora = async () => {
+    setFeedbackSalvar('Atualizando dados da transportadora...');
+    const ok = await store.carregarTransportadoraCompleta?.(transportadora.id);
+    setFeedbackSalvar(ok ? 'Dados atualizados pelo Supabase.' : 'Não foi possível atualizar os dados.');
+  };
+
+  const salvarTransportadoraAtual = async () => {
+    setSalvando(true);
+    setFeedbackSalvar('Salvando alterações no Supabase...');
+    const resultado = await store.salvarTransportadoraCompleta?.(transportadora.id);
+    setSalvando(false);
+    setFeedbackSalvar(resultado?.ok ? (resultado.mensagem || 'Transportadora salva no Supabase.') : (resultado?.erro?.message || 'Não foi possível salvar a transportadora.'));
+  };
+
+  const confirmarRemocaoOrigem = (origem) => {
+    const ok = window.confirm(`Tem certeza que deseja excluir a origem ${origem?.cidade || ''}?`);
+    if (!ok) return;
+    store.removerOrigem(transportadora.id, origem.id);
+  };
+
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← Transportadoras</button>
-      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{transportadora.origens.length} origem(ns)</span></div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div></div>
+      <div className="page-top between"><div><h1 className="detail-title">{transportadora.nome}</h1><div className="inline-meta"><span className="status-pill dark">{transportadora.status}</span><span>{origensBase.length} origem(ns)</span>{store.syncStatus?.rascunhoLocal ? <span className="status-pill light">Rascunho local</span> : null}</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={atualizarDadosTransportadora} disabled={store.syncStatus?.carregandoDetalheId === transportadora.id}>Atualizar dados</button><button className="btn-primary" onClick={salvarTransportadoraAtual} disabled={salvando || store.syncStatus?.carregandoDetalheId === transportadora.id}>{salvando ? 'Salvando...' : 'Salvar alterações'}</button><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora)}>Gerar arquivo Verum</button><button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Origem</button></div></div>
       {store.syncStatus?.carregandoDetalheId === transportadora.id ? (
         <div className="hint-box top-space">
           <strong>Carregando detalhes da transportadora...</strong><br />
@@ -576,6 +584,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
           Abrindo os detalhes desta transportadora para buscar fretes e cotações no Supabase.
         </div>
       ) : null}
+      {feedbackSalvar ? <div className="mini-feedback info top-space">{feedbackSalvar}</div> : null}
+      {store.syncStatus?.mensagemLocal ? <div className="mini-feedback info top-space">{store.syncStatus.mensagemLocal}</div> : null}
       {store.syncStatus?.erro ? (
         <div className="mini-feedback error top-space">
           {store.syncStatus.erro}
@@ -585,7 +595,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
         </div>
       ) : null}
       <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cidade de origem..." />
-      <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{transportadora.origens.length} origem(ns)</span></div></div>
+      <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{origensBase.length} origem(ns)</span></div></div>
       <div className="list-stack">
         {origens.map((origem) => {
           const analise = analisarCoberturaOrigem(origem);
@@ -596,22 +606,22 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: origem.canal==='B2C'?'#dbeafe': (origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#ede9fe':'#dcfce7',color:origem.canal==='B2C'?'#1d4ed8':(origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#6d28d9':'#166534'}}>{(origem.canal||'ATACADO').replace('+',' + ')}</span></div><div className="list-subtitle">{origem.rotas.length} rota(s) · {origem.cotacoes.length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: origem.canal==='B2C'?'#dbeafe': (origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#ede9fe':'#dcfce7',color:origem.canal==='B2C'?'#1d4ed8':(origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#6d28d9':'#166534'}}>{(origem.canal||'ATACADO').replace('+',' + ')}</span></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
                 <button className="btn-link inline-btn" onClick={() => setInconsistenciasOpen(origem.id)}>Ver inconsistências</button>
                 <button className="btn-link inline-btn" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar Verum</button>
                 <span className="status-pill light">{origem.status}</span>
                 <ActionIcon onClick={() => { setEditing(origem); setModalOpen(true); }}>✎</ActionIcon>
-                <ActionIcon danger onClick={() => store.removerOrigem(transportadora.id, origem.id)}>🗑</ActionIcon>
+                <ActionIcon danger onClick={() => confirmarRemocaoOrigem(origem)}>🗑</ActionIcon>
               </div>
             </div>
           );
         })}
       </div>
-      <div className="footer-note">{transportadora.origens.length} origem(ns) no total</div>
+      <div className="footer-note">{origensBase.length} origem(ns) no total</div>
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
-      <InconsistenciasModal open={!!inconsistenciasOpen} title={typeof inconsistenciasOpen === 'number' ? 'Inconsistências da origem' : 'Inconsistências da transportadora'} transportadora={transportadora} origem={typeof inconsistenciasOpen === 'number' ? transportadora.origens.find((item) => item.id === inconsistenciasOpen) : null} onClose={() => setInconsistenciasOpen(false)} />
+      <InconsistenciasModal open={!!inconsistenciasOpen} title={typeof inconsistenciasOpen === 'number' ? 'Inconsistências da origem' : 'Inconsistências da transportadora'} transportadora={transportadora} origem={typeof inconsistenciasOpen === 'number' ? origensBase.find((item) => item.id === inconsistenciasOpen) : null} onClose={() => setInconsistenciasOpen(false)} />
     </div>
   );
 }
@@ -729,14 +739,11 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
 
 export default function TransportadorasPage({ transportadoras, transportadoraSelecionadaId, origemSelecionadaId, onOpenTransportadora, onOpenOrigem, onVoltar, store }) {
   const transportadora = useMemo(() => transportadoras.find((item) => String(item.id) === String(transportadoraSelecionadaId)), [transportadoras, transportadoraSelecionadaId]);
-  const origem = useMemo(() => transportadora?.origens.find((item) => String(item.id) === String(origemSelecionadaId)), [transportadora, origemSelecionadaId]);
+  const origem = useMemo(() => (transportadora?.origens || []).find((item) => String(item.id) === String(origemSelecionadaId)), [transportadora, origemSelecionadaId]);
 
   React.useEffect(() => {
-    if (!transportadoraSelecionadaId || !transportadora || !store?.carregarTransportadoraCompleta) return;
-    if (!precisaCarregarDetalhes(transportadora)) return;
-    if (String(store.syncStatus?.carregandoDetalheId || '') === String(transportadoraSelecionadaId)) return;
-
-    store.carregarTransportadoraCompleta(transportadoraSelecionadaId);
+    // O carregamento completo agora é manual pelo botão "Atualizar dados".
+    // Isso evita que a tela recarregue do Supabase e reverta uma edição em andamento.
   }, [transportadoraSelecionadaId, transportadora, store]);
 
   if (!transportadora) return <TransportadorasList items={transportadoras} onOpen={onOpenTransportadora} store={store} />;

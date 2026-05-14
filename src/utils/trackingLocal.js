@@ -143,6 +143,12 @@ function text(value) {
   return String(value ?? '').trim();
 }
 
+function cubagemTotalTracking(row = {}) {
+  const cubagemUnitaria = toNumber(row.cubagem);
+  const volumes = toNumber(row.qtdVolumes || row.volume || row.volumes);
+  return cubagemUnitaria * Math.max(volumes || 1, 1);
+}
+
 function parseDate(value) {
   if (!value) return '';
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
@@ -629,7 +635,7 @@ export async function resumirTrackingLocal(filtros = {}) {
     acc.notas += 1;
     acc.valorNF += toNumber(row.valorNF);
     acc.peso += toNumber(row.peso);
-    acc.cubagem += toNumber(row.cubagem);
+    acc.cubagem += cubagemTotalTracking(row);
     acc.volumes += toNumber(row.qtdVolumes);
     if (row.ibgeOk) acc.comIbge += 1;
     else acc.semIbge += 1;

@@ -731,16 +731,21 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
 
 function transportadoraMatch(nomeTabela, nomeFiltro, options = {}) {
   const tabela = normalizeKey(nomeTabela);
-  const filtro = normalizeKey(nomeFiltro);
-  if (!filtro) return false;
+  const filtros = Array.isArray(nomeFiltro) ? nomeFiltro : [nomeFiltro];
+  if (!tabela || !filtros.length) return false;
 
-  // Quando o usuário escolhe uma opção da lista de transportadoras,
-  // a simulação precisa usar exatamente aquela tabela cadastrada.
-  // Isso evita misturar nomes parecidos, exemplo:
-  // TOTAL EXPRESS x TOTAL EXPRESS SIMULAR x TOTAL EXPRESSHUB SIMULAR.
-  if (options.exato) return tabela === filtro;
+  return filtros.some((item) => {
+    const filtro = normalizeKey(item);
+    if (!filtro) return false;
 
-  return tabela === filtro || tabela.includes(filtro) || filtro.includes(tabela);
+    // Respeita os vínculos CT-e → tabela de fretes, mas permite pequenas diferenças
+    // de cadastro como LTDA, TRANSPORTES, pontuação ou abreviações.
+    if (options.exato) {
+      return tabela === filtro || (tabela.length >= 5 && filtro.includes(tabela)) || (filtro.length >= 5 && tabela.includes(filtro));
+    }
+
+    return tabela === filtro || tabela.includes(filtro) || filtro.includes(tabela);
+  });
 }
 
 export function construirEscopoTransportadoraSimulada({ transportadoras = [], nomeTransportadora = '', municipios = [], canalFiltro = '' }) {
@@ -802,7 +807,7 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
   };
 }
 
-function montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado }) {
+function montarDetalhe({ cte, escolhido, lider, substituta, ranking, rankingCalculado }) {
   const valorRealizado = toNumber(cte.valorCte);
   const valorSimulado = toNumber(escolhido.total);
   const valorNF = toNumber(cte.valorNF);
@@ -873,7 +878,8 @@ function montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado }) {
     ganhaRanking,
     ganharia,
     liderTransportadora: lider?.transportadora || '',
-    freteSubstituta: rankingCalculado && ranking === 1 ? 0 : (lider?.total || 0),
+    transportadoraSubstituta: substituta?.transportadora || '',
+    freteSubstituta: rankingCalculado ? (substituta?.total || 0) : 0,
     percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
     percentualSimulado: valorNF > 0 ? (valorSimulado / valorNF) * 100 : 0,
     detalhes: escolhido.detalhes,
@@ -1085,6 +1091,8 @@ export async function simularRealizadoLocalRapido({
 
         escolhido = calculadosSimulada[0] || null;
 
+        let substituta = null;
+
         if (rankingCalculado && escolhido) {
           lider = escolhido;
           let menoresQueEscolhido = 0;
@@ -1093,6 +1101,13 @@ export async function simularRealizadoLocalRapido({
             if (transportadoraMatch(candidato.transportadora?.nome, nomeTransportadora, { exato: true })) continue;
             const calculado = calcularItemTabela({ ...candidato, cte, gradeCanal });
             if (!calculado) continue;
+
+            if (
+              calculado.total < (substituta?.total ?? Infinity) ||
+              (calculado.total === substituta?.total && calculado.prazo < (substituta?.prazo ?? Infinity))
+            ) {
+              substituta = calculado;
+            }
 
             if (
               calculado.total < (lider?.total ?? Infinity) ||
@@ -1115,7 +1130,7 @@ export async function simularRealizadoLocalRapido({
         if (!escolhido) {
           foraMalha.push({ ...cte, motivo: 'Sem cotação/faixa de peso válida para a transportadora simulada' });
         } else {
-          const detalhe = montarDetalhe({ cte, escolhido, lider, ranking, rankingCalculado });
+          const detalhe = montarDetalhe({ cte, escolhido, lider, substituta, ranking, rankingCalculado });
           const ganharia = detalhe.ganharia;
 
           ctesComSimulacao += 1;

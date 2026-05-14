@@ -5,7 +5,9 @@ import {
   limparTrackingLocal,
   listarTrackingLocal,
   resumirTrackingLocal,
+  exportarTrackingLocal,
 } from '../utils/trackingLocal';
+import { subirTrackingSupabase } from '../services/trackingSupabaseService';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 
 function formatarNumero(value, casas = 0) {
@@ -79,6 +81,27 @@ export default function TrackingPage() {
     }
   }
 
+  async function enviarSupabase() {
+    if (!diagnostico.total) {
+      setErro('Importe o Tracking local antes de enviar para o Supabase.');
+      return;
+    }
+    setCarregando(true);
+    setErro('');
+    setMensagem('Preparando Tracking local para enviar ao Supabase...');
+    try {
+      const { rows } = await exportarTrackingLocal({}, { limit: 500000 });
+      const resultado = await subirTrackingSupabase(rows, ({ enviados, total, percentual }) => {
+        setMensagem(`${percentual}% - ${formatarNumero(enviados)} de ${formatarNumero(total)} linha(s) enviadas ao Supabase...`);
+      });
+      setMensagem(`Tracking enviado ao Supabase: ${formatarNumero(resultado.enviados)} linha(s) gravadas/atualizadas.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao enviar Tracking ao Supabase.');
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   async function limparBase() {
     if (!window.confirm('Deseja limpar a base local de Tracking deste navegador?')) return;
     setCarregando(true);
@@ -101,7 +124,7 @@ export default function TrackingPage() {
         <h1>Tracking local</h1>
         <p>
           Importe a base de notas fiscais/tracking para gerar volumetria para transportadores e, depois, evoluir para torre de controle de performance.
-          Neste primeiro momento a base fica local no navegador, sem enviar para o servidor.
+Agora a base pode ficar local para conferência e também ser enviada ao Supabase pelo botão Enviar para Supabase.
         </p>
       </div>
 
@@ -116,6 +139,7 @@ export default function TrackingPage() {
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={atualizarTela} disabled={carregando}>Atualizar</button>
+            <button className="btn-primary" type="button" onClick={enviarSupabase} disabled={carregando || !diagnostico.total}>Enviar para Supabase</button>
             <button className="btn-danger" type="button" onClick={limparBase} disabled={carregando || !diagnostico.total}>Limpar base local</button>
           </div>
         </div>
@@ -183,7 +207,8 @@ export default function TrackingPage() {
                 <th>Destino</th>
                 <th>IBGE Destino</th>
                 <th>Peso</th>
-                <th>Cubagem</th>
+                <th>Cubagem unit.</th>
+                <th>Cubagem total</th>
                 <th>Valor NF</th>
                 <th>Volumes</th>
               </tr>
@@ -202,11 +227,12 @@ export default function TrackingPage() {
                   <td>{row.ibgeDestino || '-'}</td>
                   <td>{formatarNumero(row.peso, 2)}</td>
                   <td>{formatarNumero(row.cubagem, 4)}</td>
+                  <td>{formatarNumero(Number(row.cubagem || 0) * Math.max(Number(row.qtdVolumes || 0) || 1, 1), 4)}</td>
                   <td>{formatarMoeda(row.valorNF)}</td>
                   <td>{formatarNumero(row.qtdVolumes)}</td>
                 </tr>
               ))}
-              {!amostra.length && <tr><td colSpan="13">Nenhuma linha de Tracking importada ainda.</td></tr>}
+              {!amostra.length && <tr><td colSpan="14">Nenhuma linha de Tracking importada ainda.</td></tr>}
             </tbody>
           </table>
         </div>
