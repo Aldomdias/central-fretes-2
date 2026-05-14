@@ -51,16 +51,7 @@ function onlyDigitsRealizado(value = '') {
   return String(value || '').replace(/\D/g, '');
 }
 
-async function buscarRealizadoLocalCtes(filtros = {}) {
-  if (!isSupabaseConfigured()) return [];
-  const supabase = getSupabaseClient();
-  const limit = Math.min(Number(filtros.limit) || 5000, 50000);
-  let query = supabase
-    .from('realizado_local_ctes')
-    .select('*')
-    .order('data_emissao', { ascending: false })
-    .limit(limit);
-
+function aplicarFiltrosRealizadoQuery(query, filtros) {
   if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
   if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem + '%');
   if (filtros.destino) query = query.ilike('cidade_destino', filtros.destino + '%');
@@ -73,11 +64,38 @@ async function buscarRealizadoLocalCtes(filtros = {}) {
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+  return query;
+}
 
-  const { data, error } = await query;
-  if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
+async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = getSupabaseClient();
+  const totalMax = Math.min(Number(filtros.limit) || 100000, 200000);
+  const PAGE_SIZE = 1000; // Supabase PostgREST retorna no máximo 1000 por página
+  let allRows = [];
+  let from = 0;
 
-  return (data || []).map(r => ({
+  while (allRows.length < totalMax) {
+    const to = from + PAGE_SIZE - 1;
+    let query = supabase
+      .from('realizado_local_ctes')
+      .select('*')
+      .order('data_emissao', { ascending: false })
+      .range(from, to);
+    query = aplicarFiltrosRealizadoQuery(query, filtros);
+
+    const { data, error } = await query;
+    if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
+    if (!data || data.length === 0) break;
+
+    allRows = allRows.concat(data);
+    if (onProgresso) onProgresso(allRows.length);
+    if (data.length < PAGE_SIZE) break; // última página
+    from += PAGE_SIZE;
+  }
+
+  const rows = allRows.slice(0, totalMax);
+  return rows.map(r => ({
     transportadora: pickRealizadoField(r, ['transportadora', 'nome_transportadora', 'transportador']) || '',
     valorCte: Number(pickRealizadoField(r, ['valor_cte', 'valorCte', 'frete_realizado', 'freteRealizado', 'valor_frete'])) || 0,
     valorNF: Number(pickRealizadoField(r, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota', 'valor_mercadoria'])) || 0,
@@ -555,7 +573,7 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
   let ganhoRealizado = 0;
   let ctesSimulados = 0;
 
-  (rows || []).slice(0, 5000).forEach((row) => {
+  (rows || []).forEach((row) => {
     const transportadora = String(row.transportadora || 'Sem transportadora').trim() || 'Sem transportadora';
     const transportadoraKey = normalizarTransportadoraSimulador(transportadora);
     const valorCte = numeroRealizado(row.valorCte);
@@ -1283,6 +1301,17 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       concorrentes: resultado.length,
       origemUsada,
       fallbackOrigem: fallback,
+      // Detalhes completos do cálculo para auditoria
+      vencedorDetalhes: vencedor?.detalhes || null,
+      selecionadaDetalhes: itemSelecionada?.detalhes || null,
+      ganhouRealizado: freteSel > 0 && valorCte > 0 && freteSel < valorCte,
+      todosResultados: resultado.slice(0, 8).map((r) => ({
+        transportadora: r.transportadora,
+        total: r.total,
+        ranking: r.ranking,
+        origem: r.origem,
+        detalhes: r.detalhes || null,
+      })),
     });
   });
 
@@ -1369,6 +1398,17 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     ...resumo,
     laudo: gerarLaudoTextoRealizado(resumo, transportadoraSelecionada),
   };
+}
+
+function statusCombinadoCte(item) {
+  const ganhaTabelas = item.statusSelecionada === 'Ganharia';
+  const ganhaRealizado = item.ganhouRealizado === true || (item.freteSelecionada > 0 && item.freteRealizado > 0 && item.freteSelecionada < item.freteRealizado);
+  const semTabela = !item.freteSelecionada || item.statusSelecionada === 'Sem tabela';
+  if (semTabela) return { label: 'Sem tabela', bg: '#f1f5f9', color: '#64748b', icon: '—' };
+  if (ganhaTabelas && ganhaRealizado) return { label: 'Ganha tudo', bg: '#dcfce7', color: '#15803d', icon: '✅' };
+  if (ganhaTabelas && !ganhaRealizado) return { label: 'Ganha concorrência', bg: '#dbeafe', color: '#1d4ed8', icon: '🏆' };
+  if (!ganhaTabelas && ganhaRealizado) return { label: 'Ganha realizado', bg: '#fef3c7', color: '#b45309', icon: '💰' };
+  return { label: 'Perde tudo', bg: '#fee2e2', color: '#dc2626', icon: '❌' };
 }
 
 export default function SimuladorPage({ transportadoras = [] }) {
@@ -1505,6 +1545,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [filtroDetalhe, setFiltroDetalhe] = useState('');
   const [paginaDetalhe, setPaginaDetalhe] = useState(0);
   const DETALHE_POR_PAGINA = 50;
+<<<<<<< HEAD
+=======
+  const [linhasExpandidas, setLinhasExpandidas] = useState(new Set());
+  const [abaDetalheRealizado, setAbaDetalheRealizado] = useState('ctes'); // 'ctes' | 'uf'
+  const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box']));
+  const toggleSecao = (id) => setSecoesFechadas((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const secaoAberta = (id) => !secoesFechadas.has(id);
+>>>>>>> 1ab04ad (feat: simulador realizado melhorias)
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
@@ -2100,6 +2148,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setFiltroDetalhe('');
     setPaginaDetalhe(0);
+<<<<<<< HEAD
+=======
+    setLinhasExpandidas(new Set());
+>>>>>>> 1ab04ad (feat: simulador realizado melhorias)
     iniciarProcessamentoUi('Simulador do realizado', 'Carregando vínculos, CT-es e tabelas...', 8);
 
     try {
@@ -2109,7 +2161,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase())
         || transportadoraRealizado;
 
-      atualizarProcessamentoUi('Buscando CT-es realizados conforme período e filtros...', 24);
+      atualizarProcessamentoUi('Buscando CT-es realizados — página 1...', 24);
       const rowsBrutos = await buscarRealizadoLocalCtes({
         canal: canalRealizado,
         origem: origemRealizado,
@@ -2119,6 +2171,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
         inicio: inicioRealizado,
         fim: fimRealizado,
         limit: limiteRealizado,
+      }, (qtd) => {
+        atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(38, 24 + Math.floor(qtd / 500)));
       });
 
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 36);
@@ -2317,6 +2371,254 @@ export default function SimuladorPage({ transportadoras = [] }) {
     downloadCsv(nomeArquivo, csv);
   };
 
+  // ── Relatório Fornecedor: Tabela Selecionada × Realizado (SEM concorrentes) ──
+  const exportarRelatorioFornecedorVsRealizado = () => {
+    if (!resultadoRealizado?.ctesAnalisados) return;
+    const r = resultadoRealizado;
+    const transp = r.filtros?.transportadora || 'Transportadora';
+    const periodo = `${r.filtros?.inicio || ''} a ${r.filtros?.fim || ''}`;
+
+    // Métricas globais tabela vs realizado
+    const cteComTabela = (r.ctesDetalhes || []).filter((i) => i.freteSelecionada > 0);
+    const totalRealizado = cteComTabela.reduce((acc, i) => acc + (i.freteRealizado || 0), 0);
+    const totalTabela = cteComTabela.reduce((acc, i) => acc + (i.freteSelecionada || 0), 0);
+    const totalDiferenca = totalRealizado - totalTabela;
+    const qtdMaisBarata = cteComTabela.filter((i) => i.ganhouRealizado).length;
+    const qtdMaisCara = cteComTabela.filter((i) => !i.ganhouRealizado).length;
+
+    // Rotas: agrupa por rota usando ctesDetalhes
+    const rotaMap = new Map();
+    cteComTabela.forEach((item) => {
+      const chave = `${item.origem}/${item.ufOrigem} → ${item.destino}/${item.ufDestino}`;
+      const d = rotaMap.get(chave) || { rota: chave, ctes: 0, realizado: 0, tabela: 0, maisBarata: 0, maisCara: 0, volumesTotais: 0, pesoTotal: 0 };
+      d.ctes += 1;
+      d.realizado += item.freteRealizado || 0;
+      d.tabela += item.freteSelecionada || 0;
+      d.volumesTotais += item.volumes || 0;
+      d.pesoTotal += item.peso || 0;
+      if (item.ganhouRealizado) d.maisBarata += 1; else d.maisCara += 1;
+      rotaMap.set(chave, d);
+    });
+    const rotasFornecedor = [...rotaMap.values()]
+      .map((d) => ({ ...d, diferenca: d.realizado - d.tabela, pctDiferenca: d.realizado > 0 ? ((d.realizado - d.tabela) / d.realizado) * 100 : 0 }))
+      .sort((a, b) => b.tabela - a.tabela);
+
+    const linhas = [
+      ['ANÁLISE DE TABELA DE FRETE — COMPARATIVO COM REALIZADO'],
+      ['Empresa:', 'Central Fretes'],
+      ['Transportadora:', transp],
+      ['Tabela usada:', r.filtros?.transportadoraTabelaUsada || transp],
+      ['Canal:', r.filtros?.canal || ''],
+      ['Período:', periodo],
+      ['Data do relatório:', new Date().toLocaleDateString('pt-BR')],
+      [],
+      ['VISÃO GERAL'],
+      ['CT-es com tabela para comparação', cteComTabela.length],
+      ['CT-es em que a tabela é mais competitiva que o praticado', qtdMaisBarata],
+      ['CT-es em que a tabela é menos competitiva que o praticado', qtdMaisCara],
+      ['Percentual de rotas competitivas (%)', cteComTabela.length ? ((qtdMaisBarata / cteComTabela.length) * 100).toFixed(2) : 0],
+      [],
+      ['VALORES TOTAIS'],
+      ['Frete total praticado no período (realizado)', totalRealizado.toFixed(2)],
+      ['Frete total pela tabela simulada', totalTabela.toFixed(2)],
+      ['Diferença total (positivo = tabela mais barata)', totalDiferenca.toFixed(2)],
+      ['Diferença % sobre realizado', totalRealizado > 0 ? ((totalDiferenca / totalRealizado) * 100).toFixed(2) + '%' : ''],
+      ['Faturamento mensal projetado (tabela)', r.meses ? (totalTabela / r.meses).toFixed(2) : totalTabela.toFixed(2)],
+      ['Faturamento 12 meses projetado (tabela)', r.meses ? ((totalTabela / r.meses) * 12).toFixed(2) : ''],
+      [],
+      ['RESUMO POR ROTA'],
+      ['Rota', 'CT-es', 'Volumes', 'Peso (kg)', 'Frete realizado', 'Frete tabela', 'Diferença', 'Diferença %', 'CT-es tabela mais competitiva', 'CT-es tabela menos competitiva'],
+      ...rotasFornecedor.map((d) => [
+        d.rota, d.ctes,
+        Number(d.volumesTotais).toLocaleString('pt-BR'),
+        d.pesoTotal.toFixed(2),
+        d.realizado.toFixed(2),
+        d.tabela.toFixed(2),
+        d.diferenca.toFixed(2),
+        d.pctDiferenca.toFixed(2) + '%',
+        d.maisBarata,
+        d.maisCara,
+      ]),
+      [],
+      ['DETALHE CT-E A CT-E'],
+      ['CT-e', 'Data', 'Origem', 'Destino', 'Transp. atual', 'Peso (kg)', 'Cubagem (m³)', 'Valor NF', 'Volumes', 'Frete realizado', '% NF realizado', 'Frete tabela', '% NF tabela', 'Diferença', 'Diferença %', 'Resultado'],
+      ...cteComTabela.map((item) => {
+        const diferenca = (item.freteRealizado || 0) - (item.freteSelecionada || 0);
+        const pctDif = item.freteRealizado > 0 ? (diferenca / item.freteRealizado) * 100 : 0;
+        return [
+          item.cte || '',
+          item.data ? String(item.data).slice(0, 10) : '',
+          `${item.origemUsada || item.origem}/${item.ufOrigem}`,
+          `${item.destino}/${item.ufDestino}`,
+          item.transportadoraReal || '',
+          (item.peso || 0).toFixed(2),
+          (item.cubagem || 0).toFixed(4),
+          (item.valorNF || 0).toFixed(2),
+          Number(item.volumes || 0).toLocaleString('pt-BR'),
+          (item.freteRealizado || 0).toFixed(2),
+          item.percentualFreteRealizado ? item.percentualFreteRealizado.toFixed(2) + '%' : '',
+          (item.freteSelecionada || 0).toFixed(2),
+          item.percentualFreteSelecionada ? item.percentualFreteSelecionada.toFixed(2) + '%' : '',
+          diferenca.toFixed(2),
+          pctDif.toFixed(2) + '%',
+          item.ganhouRealizado ? 'Tabela mais competitiva' : 'Tabela menos competitiva',
+        ];
+      }),
+    ];
+
+    const nomeBase = transp.toLowerCase().replace(/[^a-z0-9]+/gi, '-');
+    const { nomeArquivo, csv } = exportarLinhasCsv(`fornecedor-vs-realizado-${nomeBase}.csv`, linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+  const exportarRelatorioTransportadora = () => {
+    if (!resultadoRealizado?.ctesAnalisados) return;
+    const r = resultadoRealizado;
+    const transp = r.filtros?.transportadora || 'Transportadora';
+    const linhas = [
+      ['DEVOLUTIVA DE ANÁLISE DE TABELA DE FRETE'],
+      ['Preparado por:', 'Central Fretes'],
+      ['Transportadora analisada:', transp],
+      ['Tabela usada na simulação:', r.filtros?.transportadoraTabelaUsada || transp],
+      ['Canal:', r.filtros?.canal || ''],
+      ['Período analisado:', `${r.filtros?.inicio || 'início'} a ${r.filtros?.fim || 'fim'}`],
+      ['Data do relatório:', new Date().toLocaleDateString('pt-BR')],
+      [],
+      ['RESUMO EXECUTIVO'],
+      ['CT-es analisados', r.ctesAnalisados],
+      ['CT-es com sua tabela coberta', r.ctesComTabelaSelecionada],
+      ['CT-es que você ganharia (melhor preço)', r.ctesGanhariaSelecionada],
+      ['CT-es que você perderia para concorrentes', r.ctesPerdidosSelecionada],
+      ['Aderência da tabela (%)', r.aderenciaSelecionada?.toFixed(2)],
+      ['Período base (meses)', r.meses],
+      [],
+      ['PROJEÇÃO DE FATURAMENTO'],
+      ['Faturamento projetado mensal (tabela)', r.faturamentoSelecionadaMes?.toFixed(2)],
+      ['Faturamento projetado 12 meses (tabela)', r.faturamentoSelecionadaAno?.toFixed(2)],
+      ['Faturamento nas rotas ganhas (período)', r.freteSelecionadaGanhadora?.toFixed(2)],
+      ['Faturamento nas rotas perdidas (período)', (r.freteSelecionada - r.freteSelecionadaGanhadora)?.toFixed(2)],
+      ['Redução média necessária para virar ganhadora (%)', r.reducaoMediaNecessaria?.toFixed(2)],
+      [],
+      ['ROTAS ONDE VOCÊ GANHA (oportunidade de crescimento)'],
+      ['Rota', 'CT-es', 'Volumes', 'Faturamento tabela (período)', '% sobre NF', 'Faturamento mensal projetado'],
+      ...(r.rotas || [])
+        .filter((item) => item.savingSelecionada > 0 || item.qtdGanhasSelecionada > 0)
+        .sort((a, b) => b.freteSelecionada - a.freteSelecionada)
+        .map((item) => [
+          item.rota, item.ctes, Number(item.volumes || 0).toLocaleString('pt-BR'),
+          item.freteSelecionada?.toFixed(2),
+          item.percentualFreteSelecionada?.toFixed(2) + '%',
+          r.meses ? (item.freteSelecionada / r.meses)?.toFixed(2) : '',
+        ]),
+      [],
+      ['ROTAS ONDE VOCÊ PERDE (oportunidade de ajuste)'],
+      ['Rota', 'CT-es', 'Volumes', 'Faturamento tabela', 'Faturamento vencedor', 'Redução necessária (%)', 'Principal concorrente vencedor'],
+      ...(r.rotas || [])
+        .filter((item) => item.diferencaParaVencedor > 0)
+        .sort((a, b) => b.diferencaParaVencedor - a.diferencaParaVencedor)
+        .map((item) => [
+          item.rota, item.ctes, Number(item.volumes || 0).toLocaleString('pt-BR'),
+          item.freteSelecionada?.toFixed(2),
+          item.freteVencedor?.toFixed(2),
+          item.reducaoMediaNecessaria?.toFixed(2) + '%',
+          item.principalVencedor || '-',
+        ]),
+      [],
+      ['PARETO 80% — ROTAS PRIORITÁRIAS'],
+      ['Rota', 'CT-es', 'Volumes', '% do volume total', '% acumulado', 'Faturamento tabela', 'Redução necessária (%)', 'Principal vencedor'],
+      ...(r.pareto80Volume?.rotas || []).map((item) => [
+        item.rota, item.ctes, Number(item.volumes || item.ctes || 0).toLocaleString('pt-BR'),
+        item.pctVolume?.toFixed(2) + '%', item.pctAcumulado?.toFixed(2) + '%',
+        item.freteSelecionada?.toFixed(2),
+        item.reducaoMediaNecessaria?.toFixed(2) + '%',
+        item.principalVencedor || '-',
+      ]),
+    ];
+    const nomeBase = transp.toLowerCase().replace(/[^a-z0-9]+/gi, '-');
+    const { nomeArquivo, csv } = exportarLinhasCsv(`devolutiva-transportadora-${nomeBase}.csv`, linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
+  // ── Relatório para Diretoria (COM saving, linguagem estratégica) ──────────────
+  const exportarRelatorioDiretoria = () => {
+    if (!resultadoRealizado?.ctesAnalisados) return;
+    const r = resultadoRealizado;
+    const transp = r.filtros?.transportadora || 'Transportadora';
+    const linhas = [
+      ['ANÁLISE DE OPORTUNIDADE DE FRETE — USO INTERNO'],
+      ['Transportadora analisada:', transp],
+      ['Canal:', r.filtros?.canal || ''],
+      ['Período:', `${r.filtros?.inicio || ''} a ${r.filtros?.fim || ''}`],
+      ['Data:', new Date().toLocaleDateString('pt-BR')],
+      [],
+      ['VISÃO GERAL'],
+      ['CT-es analisados', r.ctesAnalisados],
+      ['Frete realizado total (período)', r.freteRealizado?.toFixed(2)],
+      ['Frete realizado mensal', r.freteRealizadoMes?.toFixed(2)],
+      ['% frete sobre NF', r.percentualFreteRealizado?.toFixed(2) + '%'],
+      [],
+      ['RESULTADO DA SIMULAÇÃO'],
+      ['CT-es com tabela selecionada', r.ctesComTabelaSelecionada],
+      ['CT-es que ganharia (melhor preço)', r.ctesGanhariaSelecionada],
+      ['CT-es que perderia para concorrentes', r.ctesPerdidosSelecionada],
+      ['Aderência (%)', r.aderenciaSelecionada?.toFixed(2) + '%'],
+      [],
+      ['IMPACTO FINANCEIRO'],
+      ['Saving se ficarmos só nas rotas ganhas (período)', r.savingSelecionadaVsReal?.toFixed(2)],
+      ['Saving mensal projetado (rotas ganhas)', r.savingSelecionadaVsRealMes?.toFixed(2)],
+      ['Saving 12 meses projetado (rotas ganhas)', r.savingSelecionadaVsRealAno?.toFixed(2)],
+      ['Saving tabela geral (todos CT-es com tabela)', r.savingTabelaSelecionadaVsRealBruto?.toFixed(2)],
+      ['Saving mercado (melhor tabela disponível)', r.savingVencedorVsReal?.toFixed(2)],
+      ['Perda para concorrentes (diferença)', r.diferencaSelecionadaVsVencedor?.toFixed(2)],
+      ['Redução média necessária para virar ganhador (%)', r.reducaoMediaNecessaria?.toFixed(2) + '%'],
+      [],
+      ['PARETO 80% — PRIORIZAÇÃO DE NEGOCIAÇÃO'],
+      ['Rota', 'CT-es', 'Volumes', '% vol.', '% acum.', 'Frete realizado', 'Frete tabela', 'Frete vencedor', 'Saving ganhadora', 'Saving mercado', 'Redução necessária (%)', 'Principal vencedor'],
+      ...(r.pareto80Volume?.rotas || []).map((item) => [
+        item.rota, item.ctes, Number(item.volumes || item.ctes || 0).toLocaleString('pt-BR'),
+        item.pctVolume?.toFixed(2) + '%', item.pctAcumulado?.toFixed(2) + '%',
+        item.freteRealizado?.toFixed(2), item.freteSelecionada?.toFixed(2),
+        item.freteVencedor?.toFixed(2), item.savingSelecionada?.toFixed(2),
+        item.savingVencedor?.toFixed(2), item.reducaoMediaNecessaria?.toFixed(2) + '%',
+        item.principalVencedor || '-',
+      ]),
+      [],
+      ['TODAS AS ROTAS — DETALHE COMPLETO'],
+      ['Rota', 'Tipo', 'CT-es', 'Volumes', 'Frete realizado', 'Frete tabela', 'Frete vencedor', '% NF real', '% NF tabela', '% NF vencedor', 'Saving ganhadora', 'Saving tabela amplo', 'Saving mercado', 'Dif. vencedor', 'Redução média (%)', 'Principal vencedor', 'Concorrentes médio'],
+      ...(r.rotas || []).map((item) => [
+        item.rota, item.tipo, item.ctes, Number(item.volumes || 0).toLocaleString('pt-BR'),
+        item.freteRealizado?.toFixed(2), item.freteSelecionada?.toFixed(2),
+        item.freteVencedor?.toFixed(2),
+        item.percentualFreteRealizado?.toFixed(2) + '%',
+        item.percentualFreteSelecionada?.toFixed(2) + '%',
+        item.percentualFreteVencedor?.toFixed(2) + '%',
+        item.savingSelecionada?.toFixed(2), (item.savingTabelaSelecionadaBruto || 0)?.toFixed(2),
+        item.savingVencedor?.toFixed(2), item.diferencaParaVencedor?.toFixed(2),
+        item.reducaoMediaNecessaria?.toFixed(2) + '%', item.principalVencedor || '-',
+        item.concorrentesMedio?.toFixed(2),
+      ]),
+      [],
+      ['CT-E A CT-E — AMOSTRA COMPLETA'],
+      ['CT-e', 'Data', 'Canal', 'Origem', 'Destino', 'Transp. real', 'Peso', 'Cubagem', 'Valor NF', 'Volumes', 'Frete realizado', '% NF real', 'Frete tabela', '% NF tabela', 'Vencedor', 'Frete vencedor', 'Status', 'Ranking', 'Redução (%)', 'Saving ganhadora', 'Saving mercado', 'Concorrentes', 'Fallback origem'],
+      ...(r.ctesDetalhes || []).map((item) => [
+        item.cte, item.data?.slice(0, 10) || '', item.canal,
+        `${item.origemUsada || item.origem}/${item.ufOrigem}`,
+        `${item.destino}/${item.ufDestino}`,
+        item.transportadoraReal, item.peso?.toFixed(2), item.cubagem?.toFixed(4),
+        item.valorNF?.toFixed(2), Number(item.volumes || 0).toLocaleString('pt-BR'),
+        item.freteRealizado?.toFixed(2), item.percentualFreteRealizado?.toFixed(2) + '%',
+        item.freteSelecionada ? item.freteSelecionada?.toFixed(2) : '',
+        item.freteSelecionada ? item.percentualFreteSelecionada?.toFixed(2) + '%' : '',
+        item.vencedor, item.freteVencedor?.toFixed(2),
+        item.statusSelecionada, item.rankingSelecionada || '',
+        item.reducaoNecessaria > 0 ? item.reducaoNecessaria?.toFixed(2) + '%' : '',
+        item.savingSelecionada?.toFixed(2), item.savingVencedor?.toFixed(2),
+        item.concorrentes, item.fallbackOrigem ? 'Sim' : 'Não',
+      ]),
+    ];
+    const nomeBase = transp.toLowerCase().replace(/[^a-z0-9]+/gi, '-');
+    const { nomeArquivo, csv } = exportarLinhasCsv(`relatorio-diretoria-${nomeBase}.csv`, linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
 
   const atualizarGradePadrao = async () => {
     setSalvandoGrade(true);
@@ -2976,6 +3278,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <button className="sim-tab" type="button" onClick={exportarSimuladorRealizado} disabled={!resultadoRealizado?.rotas?.length}>
               Exportar laudo
             </button>
+            <button className="sim-tab" type="button"
+              onClick={exportarRelatorioTransportadora}
+              disabled={!resultadoRealizado?.ctesAnalisados}
+              title="Relatório sem saving — para enviar à transportadora"
+              style={{ background: '#dbeafe', color: '#1d4ed8', border: '1px solid #93c5fd' }}>
+              📄 Relatório Transportadora
+            </button>
+            <button className="sim-tab" type="button"
+              onClick={exportarRelatorioFornecedorVsRealizado}
+              disabled={!resultadoRealizado?.ctesDetalhes?.length}
+              title="Comparativo tabela × realizado — sem concorrentes, foco no que foi pago vs tabela"
+              style={{ background: '#f3e8ff', color: '#7c3aed', border: '1px solid #c4b5fd' }}>
+              📋 Fornecedor × Realizado
+            </button>
+            <button className="sim-tab" type="button"
+              onClick={exportarRelatorioDiretoria}
+              disabled={!resultadoRealizado?.ctesAnalisados}
+              title="Relatório completo com saving — uso interno/diretoria"
+              style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }}>
+              📊 Relatório Diretoria
+            </button>
           </div>
 
           <div className="sim-form-grid sim-grid-5">
@@ -3073,6 +3396,42 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Perderia</span><strong style={{color:'#dc2626'}}>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
               </div>
 
+<<<<<<< HEAD
+=======
+              {/* 4 estados */}
+              {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
+                const ganhaTabGanhaReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Ganharia' && i.ganhouRealizado).length;
+                const ganhaTabPerdeReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Ganharia' && !i.ganhouRealizado && i.freteSelecionada > 0).length;
+                const perdeTabGanhaReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Perderia' && i.ganhouRealizado).length;
+                const perdeTabPerdeReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Perderia' && !i.ganhouRealizado && i.freteSelecionada > 0).length;
+                const totalComTabela = ganhaTabGanhaReal + ganhaTabPerdeReal + perdeTabGanhaReal + perdeTabPerdeReal;
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                    <div style={{ background: '#dcfce7', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#15803d' }}>{ganhaTabGanhaReal}</div>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#15803d' }}>✅ Ganha tudo</div>
+                      <div style={{ fontSize: '0.7rem', color: '#166534' }}>1º + mais barato que realizado</div>
+                    </div>
+                    <div style={{ background: '#dbeafe', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#1d4ed8' }}>{ganhaTabPerdeReal}</div>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#1d4ed8' }}>🏆 Ganha concorrência</div>
+                      <div style={{ fontSize: '0.7rem', color: '#1e40af' }}>1º mas mais caro que realizado</div>
+                    </div>
+                    <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#b45309' }}>{perdeTabGanhaReal}</div>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#b45309' }}>💰 Ganha realizado</div>
+                      <div style={{ fontSize: '0.7rem', color: '#92400e' }}>Mais barato que real, perde concorrência</div>
+                    </div>
+                    <div style={{ background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#dc2626' }}>{perdeTabPerdeReal}</div>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#dc2626' }}>❌ Perde tudo</div>
+                      <div style={{ fontSize: '0.7rem', color: '#b91c1c' }}>Mais caro que real + perde concorrência</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+>>>>>>> 1ab04ad (feat: simulador realizado melhorias)
               {(() => {
                 const brutos = resultadoRealizado.filtros?.ctesBrutos ?? 0;
                 const naMalha = resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados;
@@ -3113,6 +3472,30 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div className="summary-card"><span>Perda para concorrentes</span><strong>{formatMoney(resultadoRealizado.diferencaSelecionadaVsVencedor)}</strong><small>diferença nas perdidas</small></div>
               </div>
 
+              {/* Botões colapso + alerta de discrepância */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="sim-tab" onClick={() => setSecoesFechadas(new Set())} style={{ fontSize: '0.8rem' }}>📂 Abrir tudo</button>
+                <button className="sim-tab" onClick={() => setSecoesFechadas(new Set(['laudo', 'ganho-perdido', 'pareto', 'transp-realizado', 'rotas-perda-box', 'rotas-prioritarias', 'detalhes']))} style={{ fontSize: '0.8rem' }}>📁 Fechar tudo</button>
+              </div>
+
+              {/* Alerta de discrepância extrema de valores */}
+              {(() => {
+                const rotasDiscrepantes = (resultadoRealizado.rotas || []).filter((r) => r.freteSelecionada > 0 && r.freteVencedor > 0 && r.freteSelecionada / r.freteVencedor > 5);
+                if (!rotasDiscrepantes.length) return null;
+                const maxRatio = Math.max(...rotasDiscrepantes.map((r) => r.freteSelecionada / r.freteVencedor));
+                return (
+                  <div className="sim-alert warning" style={{ borderColor: '#dc2626', background: '#fff1f2' }}>
+                    <strong>🚨 Atenção: discrepância suspeita nos valores calculados</strong>
+                    <p style={{ margin: '6px 0 0', fontSize: '0.85rem' }}>
+                      {rotasDiscrepantes.length} rota(s) têm o faturamento da tabela selecionada {maxRatio.toFixed(0)}× maior que o vencedor do mercado — o que não faz sentido competitivo.
+                      <strong> Causa mais provável: o campo "valor_nf" nos CT-es importados está com valor incorreto (talvez o valor total da fatura do cliente em vez do valor da mercadoria por entrega).</strong>
+                      Rotas afetadas: {rotasDiscrepantes.slice(0, 3).map((r) => `${r.rota} (${(r.freteSelecionada / r.freteVencedor).toFixed(0)}×)`).join(', ')}.
+                      Clique em um CT-e na aba de detalhes para ver o "Valor NF utilizado" e confirmar.
+                    </p>
+                  </div>
+                );
+              })()}
+
               {resultadoRealizado.filtros?.trackingErro && (
                 <div className="sim-alert warning">
                   <strong>Tracking não foi cruzado.</strong> {resultadoRealizado.filtros.trackingErro}. Os volumes/cubagem ficarão apenas com o que existir no CT-e.
@@ -3138,20 +3521,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
               )}
 
               <div className="sim-parametros-box">
-                <div className="sim-parametros-header">
+                <div className="sim-parametros-header" onClick={() => toggleSecao('laudo')} style={{ cursor: 'pointer', userSelect: 'none' }}>
                   <div>
                     <strong>Laudo executivo</strong>
                     <p>Resumo pronto para diretoria ou devolutiva estratégica.</p>
                   </div>
+                  <span style={{ fontSize: '1.2rem', color: '#64748b' }}>{secaoAberta('laudo') ? '▲' : '▼'}</span>
                 </div>
+                {secaoAberta('laudo') && (
                 <ul style={{ marginTop: 12 }}>
                   {(resultadoRealizado.laudo || []).map((linha, index) => <li key={index}>{linha}</li>)}
                 </ul>
+                )}
               </div>
 
               <div className="feature-grid import-grid">
                 <div className="sim-parametros-box">
-                  <div className="sim-parametros-header"><div><strong>Transportadoras atuais no realizado</strong><p>Quem está carregando nos CT-es filtrados.</p></div></div>
+                  <div className="sim-parametros-header" onClick={() => toggleSecao('transp-realizado')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                    <div><strong>Transportadoras atuais no realizado</strong><p>Quem está carregando nos CT-es filtrados.</p></div>
+                    <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('transp-realizado') ? '▲' : '▼'}</span>
+                  </div>
+                  {secaoAberta('transp-realizado') && (
                   <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                     <table className="sim-analise-tabela">
                       <thead><tr><th>Transportadora</th><th>CT-es</th><th>Frete</th><th>% frete</th><th>% NF</th></tr></thead>
@@ -3168,10 +3558,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       </tbody>
                     </table>
                   </div>
+                  )}
                 </div>
 
                 <div className="sim-parametros-box">
-                  <div className="sim-parametros-header"><div><strong>Rotas onde perde faturamento</strong><p>Maiores diferenças contra o vencedor da simulação.</p></div></div>
+                  <div className="sim-parametros-header" onClick={() => toggleSecao('rotas-perda-box')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                    <div><strong>Rotas onde perde faturamento</strong><p>Maiores diferenças contra o vencedor da simulação.</p></div>
+                    <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('rotas-perda-box') ? '▲' : '▼'}</span>
+                  </div>
+                  {secaoAberta('rotas-perda-box') && (
                   <div className="sim-cobertura-lista" style={{ marginTop: 12 }}>
                     {(resultadoRealizado.rotas || []).filter((item) => item.diferencaParaVencedor > 0).slice(0, 12).map((item) => (
                       <div key={`${item.rota}-${item.tipo}`}>
@@ -3180,53 +3575,126 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     ))}
                     {!(resultadoRealizado.rotas || []).some((item) => item.diferencaParaVencedor > 0) && <div>Nenhuma rota perdida encontrada com os filtros atuais.</div>}
                   </div>
+                  )}
                 </div>
               </div>
 
               <div className="sim-parametros-box">
-                <div className="sim-parametros-header">
+                <div className="sim-parametros-header" onClick={() => toggleSecao('ganho-perdido')} style={{ cursor: 'pointer', userSelect: 'none' }}>
                   <div>
-                    <strong>Pareto 80% do volume</strong>
-                    <p>Rotas que concentram aproximadamente 80% do volume/CT-es. Use esta visão para priorizar onde negociar primeiro.</p>
+                    <strong>💰 Faturamento Ganho × Perdido</strong>
+                    <p>Visão consolidada do que a tabela ganha e perde no período analisado.</p>
+                  </div>
+                  <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('ganho-perdido') ? '▲' : '▼'}</span>
+                </div>
+                {secaoAberta('ganho-perdido') && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 12 }}>
+                  <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: 16 }}>
+                    <div style={{ fontWeight: 700, color: '#15803d', marginBottom: 8 }}>✅ Rotas GANHAS</div>
+                    <div style={{ display: 'grid', gap: 6, fontSize: '0.88rem' }}>
+                      <div>CT-es ganharia: <strong>{resultadoRealizado.ctesGanhariaSelecionada}</strong></div>
+                      <div>Faturamento tabela (período): <strong>{formatMoney(resultadoRealizado.freteSelecionadaGanhadora)}</strong></div>
+                      <div>Faturamento mensal projetado: <strong style={{ fontSize: '1.05em' }}>{formatMoney(resultadoRealizado.meses ? resultadoRealizado.freteSelecionadaGanhadora / resultadoRealizado.meses : 0)}</strong></div>
+                      <div>Faturamento 12 meses projetado: <strong style={{ fontSize: '1.05em' }}>{formatMoney(resultadoRealizado.meses ? (resultadoRealizado.freteSelecionadaGanhadora / resultadoRealizado.meses) * 12 : 0)}</strong></div>
+                      <div>% NF nas rotas ganhas: <strong>{formatPercent(resultadoRealizado.percentualFreteTabelaGanharia)}</strong></div>
+                    </div>
+                  </div>
+                  <div style={{ background: '#fff7f0', border: '1px solid #fed7aa', borderRadius: 8, padding: 16 }}>
+                    <div style={{ fontWeight: 700, color: '#c2410c', marginBottom: 8 }}>❌ Rotas PERDIDAS</div>
+                    <div style={{ display: 'grid', gap: 6, fontSize: '0.88rem' }}>
+                      <div>CT-es perderia: <strong>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
+                      <div>Faturamento tabela (perdidas): <strong>{formatMoney((resultadoRealizado.freteSelecionada || 0) - (resultadoRealizado.freteSelecionadaGanhadora || 0))}</strong></div>
+                      <div>Faturamento mensal nas perdidas: <strong style={{ fontSize: '1.05em' }}>{formatMoney(resultadoRealizado.meses ? ((resultadoRealizado.freteSelecionada || 0) - (resultadoRealizado.freteSelecionadaGanhadora || 0)) / resultadoRealizado.meses : 0)}</strong></div>
+                      <div>Diferença para o vencedor: <strong style={{ color: '#dc2626' }}>{formatMoney(resultadoRealizado.diferencaSelecionadaVsVencedor)}</strong></div>
+                      <div>Redução média necessária: <strong style={{ color: '#dc2626' }}>{formatPercent(resultadoRealizado.reducaoMediaNecessaria)}</strong></div>
+                    </div>
                   </div>
                 </div>
+                )}
+              </div>
+
+              <div className="sim-parametros-box">
+                <div className="sim-parametros-header" onClick={() => toggleSecao('pareto')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                  <div>
+                    <strong>🎯 Pareto 80% — Rotas Prioritárias com Redução Necessária</strong>
+                    <p>Rotas que concentram ~80% do volume. Linha a linha com quanto precisa reduzir para virar ganhadora. <strong>Use para negociação e devolutiva ao transportador.</strong></p>
+                  </div>
+                  <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('pareto') ? '▲' : '▼'}</span>
+                </div>
+                {secaoAberta('pareto') && (<>
                 <div className="sim-analise-resumo" style={{ marginTop: 12 }}>
                   <div><span>Rotas no 80%</span><strong>{resultadoRealizado.pareto80Volume?.qtdRotas || 0}</strong></div>
                   <div><span>Volume coberto</span><strong>{formatPercent(resultadoRealizado.pareto80Volume?.pctCoberto || 0)}</strong></div>
-                  <div><span>Saving ganhadora 80%</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.savingSelecionada || 0)}</strong></div>
-                  <div><span>Saving mercado 80%</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.savingVencedor || 0)}</strong></div>
-                  <div><span>Redução média 80%</span><strong>{formatPercent(resultadoRealizado.pareto80Volume?.reducaoMediaNecessaria || 0)}</strong></div>
+                  <div><span>Faturamento tabela (80%)</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.freteSelecionada || 0)}</strong></div>
+                  <div><span>Faturamento perdido (80%)</span><strong style={{color:'#dc2626'}}>{formatMoney(resultadoRealizado.pareto80Volume?.diferencaParaVencedor || 0)}</strong></div>
+                  <div><span>Redução média (80%)</span><strong style={{color:'#c2410c'}}>{formatPercent(resultadoRealizado.pareto80Volume?.reducaoMediaNecessaria || 0)}</strong></div>
                 </div>
                 <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
-                  <table className="sim-analise-tabela">
-                    <thead><tr><th>Rota</th><th>CT-es</th><th>Volumes</th><th>% volume</th><th>% acum.</th><th>Realizado</th><th>Tabela</th><th>Vencedor</th><th>Saving ganhadora</th><th>Saving mercado</th></tr></thead>
+                  <table className="sim-analise-tabela" style={{ fontSize: '0.8rem' }}>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Rota</th>
+                        <th>CT-es</th>
+                        <th>Volumes</th>
+                        <th>% vol.</th>
+                        <th>% acum.</th>
+                        <th>Frete realizado</th>
+                        <th>Faturamento tabela</th>
+                        <th>Frete vencedor</th>
+                        <th>% NF tabela</th>
+                        <th>% NF vencedor</th>
+                        <th>Status predominante</th>
+                        <th style={{color:'#dc2626'}}>⬇ Redução necessária</th>
+                        <th>Principal vencedor</th>
+                      </tr>
+                    </thead>
                     <tbody>
-                      {(resultadoRealizado.pareto80Volume?.rotas || []).slice(0, 30).map((item) => (
-                        <tr key={`pareto-${item.rota}-${item.tipo}`}>
-                          <td><strong>{item.rota}</strong></td>
-                          <td>{item.ctes}</td>
-                          <td>{Number(item.volumes || item.ctes || 0).toLocaleString('pt-BR')}</td>
-                          <td>{formatPercent(item.pctVolume)}</td>
-                          <td>{formatPercent(item.pctAcumulado)}</td>
-                          <td>{formatMoney(item.freteRealizado)}</td>
-                          <td>{formatMoney(item.freteSelecionada)}</td>
-                          <td>{formatMoney(item.freteVencedor)}</td>
-                          <td>{formatMoney(item.savingSelecionada)}</td>
-                          <td>{formatMoney(item.savingVencedor)}</td>
-                        </tr>
-                      ))}
+                      {(resultadoRealizado.pareto80Volume?.rotas || []).map((item, idx) => {
+                        const statusPred = item.qtdGanhasSelecionada >= item.qtdPerdidasSelecionada ? 'Ganharia' : 'Perderia';
+                        return (
+                          <tr key={`pareto-${item.rota}-${item.tipo}`}
+                            style={{ background: statusPred === 'Ganharia' ? '#f0fdf4' : item.reducaoMediaNecessaria > 0 ? '#fff7f0' : undefined }}>
+                            <td style={{ color: '#94a3b8' }}>{idx + 1}</td>
+                            <td><strong>{item.rota}</strong></td>
+                            <td>{item.ctes}</td>
+                            <td>{Number(item.volumes || item.ctes || 0).toLocaleString('pt-BR')}</td>
+                            <td>{formatPercent(item.pctVolume)}</td>
+                            <td>{formatPercent(item.pctAcumulado)}</td>
+                            <td>{formatMoney(item.freteRealizado)}</td>
+                            <td>{formatMoney(item.freteSelecionada)}</td>
+                            <td>{formatMoney(item.freteVencedor)}</td>
+                            <td>{formatPercent(item.percentualFreteSelecionada)}</td>
+                            <td>{formatPercent(item.percentualFreteVencedor)}</td>
+                            <td>
+                              <span style={{
+                                padding: '2px 7px', borderRadius: 10, fontSize: '0.75rem', fontWeight: 600,
+                                background: statusPred === 'Ganharia' ? '#dcfce7' : '#fee2e2',
+                                color: statusPred === 'Ganharia' ? '#15803d' : '#dc2626',
+                              }}>{statusPred}</span>
+                            </td>
+                            <td style={{ textAlign: 'right', fontWeight: 700, color: item.reducaoMediaNecessaria > 0 ? '#dc2626' : '#15803d' }}>
+                              {item.reducaoMediaNecessaria > 0 ? `↓ ${formatPercent(item.reducaoMediaNecessaria)}` : '✓ Ganhador'}
+                            </td>
+                            <td style={{ color: '#64748b' }}>{item.principalVencedor || '-'}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+                </>)}
               </div>
 
               <div className="sim-parametros-box">
-                <div className="sim-parametros-header">
+                <div className="sim-parametros-header" onClick={() => toggleSecao('rotas-prioritarias')} style={{ cursor: 'pointer', userSelect: 'none' }}>
                   <div>
                     <strong>Rotas prioritárias para ajuste</strong>
                     <p>Ordenado por oportunidade: saving contra realizado + diferença para o vencedor + volume.</p>
                   </div>
+                  <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('rotas-prioritarias') ? '▲' : '▼'}</span>
                 </div>
+                {secaoAberta('rotas-prioritarias') && (
                 <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                   <table className="sim-analise-tabela">
                     <thead>
@@ -3271,11 +3739,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     </tbody>
                   </table>
                 </div>
+                )}
               </div>
 
               <div className="sim-parametros-box">
-                <div className="sim-parametros-header">
+                <div className="sim-parametros-header" onClick={() => toggleSecao('detalhes')} style={{ cursor: 'pointer', userSelect: 'none' }}>
                   <div>
+<<<<<<< HEAD
                     <strong>Detalhes CT-e a CT-e</strong>
                     <p>
                       {(resultadoRealizado.ctesDetalhes || []).length} CT-es disponíveis para conferência
@@ -3283,9 +3753,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
                         ? ` (${resultadoRealizado.ctesAnalisados - (resultadoRealizado.ctesDetalhes || []).length} sem tabela concorrente não aparecem aqui)`
                         : ''}.
                       Use o filtro para encontrar um CT-e específico.
+=======
+                    <strong>Análise Detalhada</strong>
+                    <p>
+                      {(resultadoRealizado.ctesDetalhes || []).length} CT-es com detalhes de cálculo disponíveis.
+                      Clique em qualquer linha para ver o cálculo completo.
+>>>>>>> 1ab04ad (feat: simulador realizado melhorias)
                     </p>
                   </div>
+                  <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('detalhes') ? '▲' : '▼'}</span>
                 </div>
+<<<<<<< HEAD
                 <div style={{ display: 'flex', gap: 8, marginTop: 12, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <input
                     value={filtroDetalhe}
@@ -3419,10 +3897,281 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       </span>
                       <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => setPaginaDetalhe((p) => Math.min(totalPaginas - 1, p + 1))}>Próxima ›</button>
                       <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => setPaginaDetalhe(totalPaginas - 1)}>Final »</button>
+=======
+                {secaoAberta('detalhes') && (<>
+                {/* Mini-abas */}
+                <div style={{ display: 'flex', gap: 8, margin: '12px 0 0', borderBottom: '2px solid #e2e8f0', paddingBottom: 0 }}>
+                  {[['ctes', '📋 CT-e a CT-e'], ['uf', '🗺 Por Estado (UF)']].map(([id, label]) => (
+                    <button key={id}
+                      onClick={() => setAbaDetalheRealizado(id)}
+                      style={{
+                        padding: '6px 14px', border: 'none', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600,
+                        background: 'none', borderBottom: abaDetalheRealizado === id ? '2px solid #3b82f6' : '2px solid transparent',
+                        color: abaDetalheRealizado === id ? '#2563eb' : '#64748b', marginBottom: -2,
+                      }}>{label}</button>
+                  ))}
+                </div>
+
+                {/* ── ABA: POR UF ── */}
+                {abaDetalheRealizado === 'uf' && (() => {
+                  const porUf = new Map();
+                  (resultadoRealizado.ctesDetalhes || []).forEach((item) => {
+                    const uf = item.ufDestino || 'N/A';
+                    const d = porUf.get(uf) || { uf, ctes: 0, ganhou: 0, perdeu: 0, semTabela: 0, freteRealizado: 0, freteSelecionada: 0, freteVencedor: 0, valorNF: 0, diferencaTotal: 0, reducaoSoma: 0, reducaoQtd: 0 };
+                    d.ctes += 1;
+                    d.freteRealizado += item.freteRealizado || 0;
+                    d.freteSelecionada += item.freteSelecionada || 0;
+                    d.freteVencedor += item.freteVencedor || 0;
+                    d.valorNF += item.valorNF || 0;
+                    if (item.statusSelecionada === 'Ganharia') d.ganhou += 1;
+                    else if (item.statusSelecionada === 'Perderia') { d.perdeu += 1; d.diferencaTotal += item.diferencaParaVencedor || 0; if (item.reducaoNecessaria > 0) { d.reducaoSoma += item.reducaoNecessaria; d.reducaoQtd += 1; } }
+                    else d.semTabela += 1;
+                    porUf.set(uf, d);
+                  });
+                  const lista = [...porUf.values()].sort((a, b) => b.ctes - a.ctes);
+                  return (
+                    <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                      <table className="sim-analise-tabela" style={{ fontSize: '0.8rem' }}>
+                        <thead>
+                          <tr>
+                            <th>UF Destino</th><th>CT-es</th><th>Ganharia</th><th>Perderia</th><th>Aderência</th>
+                            <th>Frete realizado</th><th>Faturamento tabela</th><th>Frete vencedor</th>
+                            <th>% NF tabela</th><th>% NF vencedor</th>
+                            <th style={{color:'#dc2626'}}>Dif. total vencedor</th>
+                            <th style={{color:'#dc2626'}}>Redução média</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lista.map((d) => {
+                            const aderencia = (d.ganhou + d.perdeu) > 0 ? (d.ganhou / (d.ganhou + d.perdeu)) * 100 : 0;
+                            const pctNFTabela = d.valorNF > 0 ? (d.freteSelecionada / d.valorNF) * 100 : 0;
+                            const pctNFVencedor = d.valorNF > 0 ? (d.freteVencedor / d.valorNF) * 100 : 0;
+                            const reducaoMedia = d.reducaoQtd > 0 ? d.reducaoSoma / d.reducaoQtd : 0;
+                            return (
+                              <tr key={d.uf} style={{ background: aderencia > 60 ? '#f0fdf4' : aderencia > 0 ? '#fff7f0' : undefined }}>
+                                <td><strong>{d.uf}</strong></td>
+                                <td>{d.ctes}</td>
+                                <td style={{ color: '#15803d', fontWeight: 600 }}>{d.ganhou}</td>
+                                <td style={{ color: '#dc2626', fontWeight: 600 }}>{d.perdeu}</td>
+                                <td style={{ fontWeight: 700, color: aderencia > 60 ? '#15803d' : aderencia > 30 ? '#c2410c' : '#dc2626' }}>{aderencia > 0 ? formatPercent(aderencia) : '-'}</td>
+                                <td>{formatMoney(d.freteRealizado)}</td>
+                                <td>{d.freteSelecionada > 0 ? formatMoney(d.freteSelecionada) : '-'}</td>
+                                <td>{formatMoney(d.freteVencedor)}</td>
+                                <td>{pctNFTabela > 0 ? formatPercent(pctNFTabela) : '-'}</td>
+                                <td>{formatPercent(pctNFVencedor)}</td>
+                                <td style={{ color: '#dc2626', fontWeight: d.diferencaTotal > 0 ? 600 : undefined }}>{d.diferencaTotal > 0 ? formatMoney(d.diferencaTotal) : '-'}</td>
+                                <td style={{ color: '#dc2626' }}>{reducaoMedia > 0 ? `↓ ${formatPercent(reducaoMedia)}` : <span style={{ color: '#15803d' }}>✓</span>}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+>>>>>>> 1ab04ad (feat: simulador realizado melhorias)
                     </div>
                   );
                 })()}
 
+<<<<<<< HEAD
+=======
+                {/* ── ABA: CT-E A CT-E ── */}
+                {abaDetalheRealizado === 'ctes' && (
+                  <>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 12, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <input
+                        value={filtroDetalhe}
+                        onChange={(e) => { setFiltroDetalhe(e.target.value); setPaginaDetalhe(0); }}
+                        placeholder="Filtrar por CT-e, transportadora, origem, destino, status..."
+                        style={{ flex: 1, minWidth: 220, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.85rem' }}
+                      />
+                      <button className="sim-tab" onClick={() => setLinhasExpandidas(new Set())} style={{ fontSize: '0.8rem' }}>Fechar todos</button>
+                      <span style={{ fontSize: '0.8rem', color: '#64748b', whiteSpace: 'nowrap' }}>
+                        {(() => {
+                          const q = filtroDetalhe.toLowerCase();
+                          return `${(resultadoRealizado.ctesDetalhes || []).filter((item) => !q || [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino].some((v) => String(v || '').toLowerCase().includes(q))).length} CT-e(s)`;
+                        })()}
+                      </span>
+                    </div>
+                    <div className="sim-analise-tabela-wrap" style={{ marginTop: 4 }}>
+                      <table className="sim-analise-tabela" style={{ fontSize: '0.78rem' }}>
+                        <thead>
+                          <tr>
+                            <th></th><th>#</th><th>CT-e</th><th>Data</th><th>Origem</th><th>Destino/UF</th>
+                            <th>Transp. real</th><th>Peso</th><th>Cubagem</th><th>Valor NF</th><th>Vol.</th>
+                            <th>Frete realizado</th><th>% NF real</th>
+                            <th>Tabela selecionada</th><th>% NF tabela</th>
+                            <th>Vencedor</th><th>Frete vencedor</th><th>% NF venc.</th>
+                            <th>Status</th><th>Rank</th><th>Redução</th><th>Conc.</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(() => {
+                            const todos = resultadoRealizado.ctesDetalhes || [];
+                            const q = filtroDetalhe.toLowerCase();
+                            const filtrados = q ? todos.filter((item) => [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino, item.ufOrigem].some((v) => String(v || '').toLowerCase().includes(q))) : todos;
+                            const totalPaginas = Math.ceil(filtrados.length / DETALHE_POR_PAGINA);
+                            const pagina = Math.min(paginaDetalhe, Math.max(0, totalPaginas - 1));
+                            const slice = filtrados.slice(pagina * DETALHE_POR_PAGINA, (pagina + 1) * DETALHE_POR_PAGINA);
+                            return slice.map((item, index) => {
+                              const key = `${item.cte}-${pagina * DETALHE_POR_PAGINA + index}`;
+                              const expandido = linhasExpandidas.has(key);
+                              const statusC = statusCombinadoCte(item);
+                              const bgRow = statusC.label === 'Ganha tudo' ? '#f0fdf4' : statusC.label === 'Ganha realizado' ? '#fffbeb' : statusC.label === 'Ganha concorrência' ? '#eff6ff' : statusC.label === 'Perde tudo' ? '#fff7f0' : undefined;
+                              return (
+                                <>
+                                  <tr key={key}
+                                    onClick={() => setLinhasExpandidas((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; })}
+                                    style={{ background: bgRow, cursor: 'pointer' }}
+                                    title="Clique para ver detalhes do cálculo">
+                                    <td style={{ textAlign: 'center', color: '#3b82f6', fontSize: '1em' }}>{expandido ? '▼' : '▶'}</td>
+                                    <td style={{ color: '#94a3b8' }}>{pagina * DETALHE_POR_PAGINA + index + 1}</td>
+                                    <td style={{ fontFamily: 'monospace', fontSize: '0.73rem' }}>{item.cte || '-'}{item.fallbackOrigem ? ' ⚡' : ''}</td>
+                                    <td>{item.data ? String(item.data).slice(0, 10) : '-'}</td>
+                                    <td>{item.origemUsada || item.origem}/{item.ufOrigem}</td>
+                                    <td><strong>{item.destino}</strong>/{item.ufDestino}</td>
+                                    <td>{item.transportadoraReal}</td>
+                                    <td style={{ textAlign: 'right' }}>{Number(item.peso || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</td>
+                                    <td style={{ textAlign: 'right' }}>{Number(item.cubagem || 0).toFixed(4)}</td>
+                                    <td style={{ textAlign: 'right' }}>{formatMoney(item.valorNF)}</td>
+                                    <td style={{ textAlign: 'right' }}>{Number(item.volumes || 0).toLocaleString('pt-BR')}{item.trackingMatch ? ' ✓' : ''}</td>
+                                    <td style={{ textAlign: 'right' }}><strong>{formatMoney(item.freteRealizado)}</strong></td>
+                                    <td style={{ textAlign: 'right', color: item.percentualFreteRealizado < 1 ? '#dc2626' : undefined }}>{formatPercent(item.percentualFreteRealizado)}</td>
+                                    <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatMoney(item.freteSelecionada) : <span style={{ color: '#94a3b8' }}>—</span>}</td>
+                                    <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatPercent(item.percentualFreteSelecionada) : '—'}</td>
+                                    <td style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.vencedor || '-'}</td>
+                                    <td style={{ textAlign: 'right' }}>{formatMoney(item.freteVencedor)}</td>
+                                    <td style={{ textAlign: 'right' }}>{formatPercent(item.percentualFreteVencedor)}</td>
+                                    <td><span style={{ padding: '2px 6px', borderRadius: 10, fontSize: '0.72rem', fontWeight: 700, background: statusC.bg, color: statusC.color, whiteSpace: 'nowrap' }}>{statusC.icon} {statusC.label}</span></td>
+                                    <td style={{ textAlign: 'center' }}>{item.rankingSelecionada || '—'}</td>
+                                    <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: 600 }}>{item.reducaoNecessaria > 0 ? `↓${formatPercent(item.reducaoNecessaria)}` : ''}</td>
+                                    <td style={{ textAlign: 'center' }}>{item.concorrentes}</td>
+                                  </tr>
+                                  {expandido && (
+                                    <tr key={`${key}-detail`} style={{ background: '#f8fafc' }}>
+                                      <td colSpan={22} style={{ padding: '12px 16px', borderTop: '2px solid #3b82f6' }}>
+                                        {/* Painel de cálculo detalhado */}
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+
+                                          {/* Bloco: Vencedor da simulação */}
+                                          {item.vencedorDetalhes && (
+                                            <div style={{ background: '#fff', border: '1px solid #bbf7d0', borderRadius: 8, padding: 12 }}>
+                                              <div style={{ fontWeight: 700, color: '#15803d', marginBottom: 8, fontSize: '0.85rem' }}>
+                                                🏆 Vencedor: {item.vencedor} — {formatMoney(item.freteVencedor)}
+                                              </div>
+                                              {/* Status combinado em destaque */}
+                                              {item.freteSelecionada > 0 && (() => { const s = statusCombinadoCte(item); return (
+                                                <div style={{ marginBottom: 8, padding: '4px 8px', borderRadius: 6, background: s.bg, color: s.color, fontSize: '0.78rem', fontWeight: 700 }}>
+                                                  {s.icon} {s.label}
+                                                  {item.ganhouRealizado && <span style={{ fontWeight: 400, marginLeft: 6 }}>— economia de {formatMoney(item.freteRealizado - item.freteSelecionada)} vs realizado</span>}
+                                                  {!item.ganhouRealizado && item.freteSelecionada > 0 && <span style={{ fontWeight: 400, marginLeft: 6 }}>— tabela {formatPercent(((item.freteSelecionada - item.freteRealizado) / item.freteRealizado) * 100)} acima do realizado</span>}
+                                                </div>
+                                              ); })()}
+                                              <div style={{ display: 'grid', gap: 3, fontSize: '0.78rem', color: '#334155' }}>
+                                                <div>Tipo de cálculo: <strong>{item.vencedorDetalhes?.frete?.tipoCalculo || '—'}</strong></div>
+                                                <div>Prazo: <strong>{item.vencedorDetalhes?.prazo} dia(s)</strong></div>
+                                                <div>Faixa aplicada: <strong>{item.vencedorDetalhes?.frete?.faixaPeso || '—'}</strong></div>
+                                                <div>Peso considerado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
+                                                <div>Peso cubado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong> (fator {item.vencedorDetalhes?.frete?.fatorCubagem})</div>
+                                                <div>Cubagem usada: <strong>{Number(item.vencedorDetalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
+                                                <div>R$/kg: <strong>{Number(item.vencedorDetalhes?.frete?.rsKgAplicado || 0).toFixed(4)}</strong></div>
+                                                <div>% aplicado: <strong style={{ color: Number(item.vencedorDetalhes?.frete?.percentualAplicado || 0) < 1 ? '#dc2626' : undefined }}>{formatPercent(item.vencedorDetalhes?.frete?.percentualAplicado)}</strong></div>
+                                                <div>Valor NF usado: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorNFInformado)}</strong></div>
+                                                <div>Valor fixo/faixa: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorFixoAplicado)}</strong></div>
+                                                <div>Mínimo rota: <strong>{formatMoney(item.vencedorDetalhes?.frete?.minimoRota)}</strong></div>
+                                                <div>Valor base: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorBase)}</strong></div>
+                                                <div>Ad Valorem: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.adValorem)}</strong> ({formatPercent(item.vencedorDetalhes?.taxas?.adValPct)})</div>
+                                                <div>GRIS: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.gris)}</strong> ({formatPercent(item.vencedorDetalhes?.taxas?.grisPct)})</div>
+                                                <div>Pedágio: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.pedagio)}</strong></div>
+                                                <div>Subtotal: <strong>{formatMoney(item.vencedorDetalhes?.frete?.subtotal)}</strong></div>
+                                                <div>ICMS ({formatPercent(item.vencedorDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.vencedorDetalhes?.frete?.icms)}</strong> <span style={{ color: '#64748b' }}>({item.vencedorDetalhes?.frete?.origemAliquotaIcms})</span></div>
+                                                <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 4, marginTop: 4 }}>Total: <strong style={{ fontSize: '1.05em', color: '#15803d' }}>{formatMoney(item.freteVencedor)}</strong></div>
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          {/* Bloco: Tabela Selecionada (se diferente do vencedor) */}
+                                          {item.selecionadaDetalhes && item.vencedor !== (item.rankingSelecionada === 1 ? item.vencedor : 'outro') && (
+                                            <div style={{ background: '#fff', border: '1px solid #bfdbfe', borderRadius: 8, padding: 12 }}>
+                                              <div style={{ fontWeight: 700, color: '#1d4ed8', marginBottom: 8, fontSize: '0.85rem' }}>
+                                                📋 Tabela selecionada — {formatMoney(item.freteSelecionada)} (rank {item.rankingSelecionada})
+                                              </div>
+                                              <div style={{ display: 'grid', gap: 3, fontSize: '0.78rem', color: '#334155' }}>
+                                                <div>Tipo de cálculo: <strong>{item.selecionadaDetalhes?.frete?.tipoCalculo || '—'}</strong></div>
+                                                <div>Prazo: <strong>{item.selecionadaDetalhes?.prazo} dia(s)</strong></div>
+                                                <div>Faixa: <strong>{item.selecionadaDetalhes?.frete?.faixaPeso || '—'}</strong></div>
+                                                <div>Peso considerado: <strong>{Number(item.selecionadaDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
+                                                <div>% aplicado: <strong style={{ color: Number(item.selecionadaDetalhes?.frete?.percentualAplicado || 0) < 1 ? '#dc2626' : undefined }}>{formatPercent(item.selecionadaDetalhes?.frete?.percentualAplicado)}</strong></div>
+                                                <div>Valor NF usado: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorNFInformado)}</strong></div>
+                                                <div>Valor base: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorBase)}</strong></div>
+                                                <div>Ad Valorem: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.adValorem)}</strong></div>
+                                                <div>GRIS: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.gris)}</strong></div>
+                                                <div>Subtotal: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.subtotal)}</strong></div>
+                                                <div>ICMS ({formatPercent(item.selecionadaDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.icms)}</strong></div>
+                                                <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 4, marginTop: 4 }}>Total: <strong style={{ fontSize: '1.05em', color: '#1d4ed8' }}>{formatMoney(item.freteSelecionada)}</strong></div>
+                                                {item.reducaoNecessaria > 0 && <div style={{ color: '#dc2626', fontWeight: 700 }}>⬇ Precisa reduzir {formatPercent(item.reducaoNecessaria)} para ganhar</div>}
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          {/* Bloco: Ranking de todos concorrentes */}
+                                          {(item.todosResultados || []).length > 0 && (
+                                            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
+                                              <div style={{ fontWeight: 700, color: '#475569', marginBottom: 8, fontSize: '0.85rem' }}>
+                                                🏁 Ranking completo ({item.concorrentes} tabelas)
+                                              </div>
+                                              <table style={{ width: '100%', fontSize: '0.76rem', borderCollapse: 'collapse' }}>
+                                                <thead><tr style={{ color: '#64748b' }}><th style={{ textAlign: 'left', paddingBottom: 4 }}>Pos.</th><th style={{ textAlign: 'left' }}>Transportadora</th><th style={{ textAlign: 'right' }}>Total</th><th style={{ textAlign: 'right' }}>% NF</th></tr></thead>
+                                                <tbody>
+                                                  {(item.todosResultados || []).map((r, ri) => (
+                                                    <tr key={ri} style={{ background: ri === 0 ? '#f0fdf4' : undefined }}>
+                                                      <td style={{ padding: '2px 4px', color: ri === 0 ? '#15803d' : '#64748b', fontWeight: ri === 0 ? 700 : undefined }}>{ri + 1}º</td>
+                                                      <td style={{ padding: '2px 4px', fontWeight: ri === 0 ? 700 : undefined }}>{r.transportadora}</td>
+                                                      <td style={{ textAlign: 'right', padding: '2px 4px' }}>{formatMoney(r.total)}</td>
+                                                      <td style={{ textAlign: 'right', padding: '2px 4px', color: item.valorNF > 0 && (r.total / item.valorNF) * 100 < 1 ? '#dc2626' : undefined }}>{item.valorNF > 0 ? formatPercent((r.total / item.valorNF) * 100) : '—'}</td>
+                                                    </tr>
+                                                  ))}
+                                                </tbody>
+                                              </table>
+                                              {/* Alerta de % muito baixo */}
+                                              {item.vencedorDetalhes?.frete?.percentualAplicado > 0 && item.vencedorDetalhes.frete.percentualAplicado < 1 && (
+                                                <div style={{ marginTop: 8, padding: '6px 8px', background: '#fef3c7', borderRadius: 6, fontSize: '0.75rem', color: '#78350f' }}>
+                                                  ⚠ % aplicado ({formatPercent(item.vencedorDetalhes.frete.percentualAplicado)}) abaixo de 1% — verifique se o valor da NF ({formatMoney(item.vencedorDetalhes.frete.valorNFInformado)}) está correto na tabela.
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </>
+                              );
+                            });
+                          })()}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Paginação */}
+                    {(() => {
+                      const q = filtroDetalhe.toLowerCase();
+                      const filtrados = q ? (resultadoRealizado.ctesDetalhes || []).filter((item) => [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada].some((v) => String(v || '').toLowerCase().includes(q))) : (resultadoRealizado.ctesDetalhes || []);
+                      const totalPaginas = Math.ceil(filtrados.length / DETALHE_POR_PAGINA);
+                      if (totalPaginas <= 1) return null;
+                      const pagina = Math.min(paginaDetalhe, Math.max(0, totalPaginas - 1));
+                      return (
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+                          <button className="sim-tab" disabled={pagina === 0} onClick={() => { setPaginaDetalhe(0); setLinhasExpandidas(new Set()); }}>« Início</button>
+                          <button className="sim-tab" disabled={pagina === 0} onClick={() => { setPaginaDetalhe((p) => Math.max(0, p - 1)); setLinhasExpandidas(new Set()); }}>‹ Anterior</button>
+                          <span style={{ fontSize: '0.85rem', color: '#64748b' }}>Página {pagina + 1} de {totalPaginas} ({filtrados.length} CT-es)</span>
+                          <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => { setPaginaDetalhe((p) => Math.min(totalPaginas - 1, p + 1)); setLinhasExpandidas(new Set()); }}>Próxima ›</button>
+                          <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => { setPaginaDetalhe(totalPaginas - 1); setLinhasExpandidas(new Set()); }}>Final »</button>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
+
+>>>>>>> 1ab04ad (feat: simulador realizado melhorias)
                 {/* CT-es sem tabela concorrente */}
                 {resultadoRealizado.ctesSemTabelaGeral > 0 && (
                   <div style={{ marginTop: 16, padding: 12, background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
@@ -3437,7 +4186,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     </p>
                   </div>
                 )}
+<<<<<<< HEAD
+=======
+                </>)}
+>>>>>>> 1ab04ad (feat: simulador realizado melhorias)
               </div>
+
             </div>
           )}
         </div>
