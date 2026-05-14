@@ -151,146 +151,150 @@ function lerFichaCadastro(ws) {
  *    INTERIOR 1| 0.70 | 55.00 | ...
  *    ...
  */
+/**
+ * parseCantUPercentual — Estrutura real do template B2B/B2C Percentual:
+ *
+ * Linha 1: [vazio, 'CAPITAL', vazio, 'INTERIOR 1', vazio, 'INTERIOR 2', ...]
+ *           → regiões nas colunas 1, 3, 5... (cells mescladas, a próxima é vazia)
+ * Linha 2: ['ESTADO DESTINO', 'FRETE (%)', 'MÍNIMO (R$)', 'FRETE (%)', 'MÍNIMO (R$)', ...]
+ *           → sub-cabeçalho: cada região tem par (%, mínimo)
+ * Linha 3: vazia (separador)
+ * Linha 4+: [UF, %_capital, min_capital, %_int1, min_int1, %_int2, min_int2, ...]
+ *            → LINHA = UF destino, COLUNAS = regiões
+ */
 function parseCantUPercentual(matrix, ficha, canal, origem) {
   const itens = [];
 
-  // 1. Encontrar linha de cabeçalho com UFs
-  let cabecalhoIdx = -1;
-  let ufCols = []; // { colIdx, uf, colFrete, colMinimo }
+  // ── 1. Localizar a linha de regiões (CAPITAL, INTERIOR 1...) ──────────────
+  // Procuramos a linha que contém pelo menos "CAPITAL"
+  let regiaoRowIdx = -1;
+  let subCabRowIdx = -1;
 
-  for (let i = 0; i < Math.min(matrix.length, 20); i++) {
-    const row = matrix[i];
-    const ufsNaLinha = row.filter((cell) => cell && (isUF(cell) || norm(cell).length === 2));
-    if (ufsNaLinha.length >= 2) {
-      cabecalhoIdx = i;
-      break;
-    }
-    // tenta por nome de estado
-    const estadosNaLinha = row.filter((cell) => {
-      if (!cell) return false;
-      const n = norm(cell);
-      return n.length > 2 && n.length < 30 && !n.includes('TRANSPORTADORA') && !n.includes('FRETE');
-    });
-    if (estadosNaLinha.length >= 5) {
-      cabecalhoIdx = i;
+  for (let i = 0; i < Math.min(matrix.length, 15); i++) {
+    const row = matrix[i] || [];
+    const temCapital = row.some((c) => c && norm(c).includes('CAPITAL'));
+    const temInterior = row.some((c) => c && norm(c).includes('INTERIOR'));
+
+    if (temCapital || temInterior) {
+      regiaoRowIdx = i;
+      // Sub-cabeçalho é a linha seguinte
+      subCabRowIdx = i + 1;
       break;
     }
   }
 
-  if (cabecalhoIdx < 0) {
-    throw new Error('Não foi possível identificar a linha de estados/UF na aba TABELA. Verifique se o modelo está correto.');
+  if (regiaoRowIdx < 0) {
+    throw new Error(
+      'Linha de regiões (CAPITAL, INTERIOR 1...) não encontrada na aba TABELA. ' +
+      'Verifique se o arquivo é o template B2B/B2C Percentual correto.',
+    );
   }
 
-  const cabRow = matrix[cabecalhoIdx];
+  const regiaoRow = matrix[regiaoRowIdx] || [];
+  const subCabRow = matrix[subCabRowIdx] || [];
 
-  // Mapear colunas: para cada UF, espera-se par (%, mínimo)
-  let currentUF = null;
-  let currentCol = null;
-  for (let c = 1; c < cabRow.length; c++) {
-    const cell = txt(cabRow[c]);
+  // ── 2. Mapear colunas: { regiao, colPerc, colMin } ────────────────────────
+  // Cada região ocupa 2 colunas: (FRETE %, MÍNIMO).
+  // A linha de regiões tem o nome na primeira coluna do par e null/vazio na segunda
+  // (células mescladas no Excel viram: [nome, null]).
+  const colMap = []; // [{ regiao, colPerc, colMin }]
+
+  for (let c = 1; c < regiaoRow.length; c++) {
+    const cell = regiaoRow[c];
     if (!cell) continue;
-    if (isUF(cell) || norm(cell).length === 2) {
-      currentUF = norm(cell);
-      currentCol = c;
-    } else if (currentUF) {
-      // primeira coluna após UF: % frete
-      // segunda coluna após UF: mínimo
+
+    const regiao = detectarRegiao(cell);
+    if (!regiao) continue;
+
+    // A coluna c é a primeira do par (FRETE %)
+    // A coluna c+1 é a segunda (MÍNIMO)
+    // Confirmamos pelo sub-cabeçalho se existir
+    let colPerc = c;
+    let colMin = c + 1;
+
+    const subC = norm(subCabRow[c] || '');
+    const subC1 = norm(subCabRow[c + 1] || '');
+
+    if (subC.includes('MIN') || subC.includes('MÍN')) {
+      // invertido: mín vem antes de %
+      colMin = c;
+      colPerc = c + 1;
     }
+    // Se sub-cabeçalho confirma normalmente (% na col c, mín na col c+1), mantém
+
+    colMap.push({ regiao, colPerc, colMin });
   }
 
-  // Estratégia simplificada: encontrar pares de colunas por posição
-  // Detectar sub-cabeçalho (linha logo abaixo do cabeçalho de UFs)
-  let subCabIdx = cabecalhoIdx + 1;
-  const subCab = matrix[subCabIdx] || [];
-
-  // Mapear cada UF às suas colunas de frete% e mínimo
-  const mapeamentoColunas = [];
-  let i = 1;
-  while (i < cabRow.length) {
-    const ufCell = txt(cabRow[i]);
-    if (!ufCell) { i++; continue; }
-
-    // Encontrar quantas colunas pertencem a esta UF (até a próxima UF)
-    let j = i + 1;
-    while (j < cabRow.length && !txt(cabRow[j])) j++;
-
-    // Colunas i até j-1 pertencem à UF
-    const colsUF = [];
-    for (let k = i; k < j; k++) colsUF.push(k);
-
-    // detectar qual coluna é % e qual é mínimo pelo sub-cabeçalho
-    let colPerc = colsUF[0];
-    let colMin = colsUF[1] !== undefined ? colsUF[1] : null;
-
-    for (const c of colsUF) {
-      const sub = norm(subCab[c] || '');
-      if (sub.includes('MIN') || sub.includes('MÍN') || sub.includes('MINIMO')) colMin = c;
-      if (sub.includes('%') || sub.includes('PERC') || sub.includes('FRETE')) colPerc = c;
-    }
-
-    mapeamentoColunas.push({ uf: norm(ufCell), colPerc, colMin });
-    i = j;
+  if (!colMap.length) {
+    throw new Error(
+      'Nenhuma região (CAPITAL, INTERIOR 1...) encontrada no cabeçalho. ' +
+      'Verifique se a aba TABELA está no formato correto.',
+    );
   }
 
-  if (!mapeamentoColunas.length) {
-    throw new Error('Não foram encontrados estados/UF na tabela. Verifique o formato do arquivo.');
-  }
+  // ── 3. Encontrar início dos dados ─────────────────────────────────────────
+  // Dados começam na primeira linha após o sub-cabeçalho onde col[0] é uma UF
+  let dataStart = subCabRowIdx + 1;
 
-  // 2. Ler linhas de dados (abaixo do sub-cabeçalho)
-  const dataStart = subCabIdx + 1;
+  // ── 4. Ler dados (linha = UF destino) ─────────────────────────────────────
+  for (let r = dataStart; r < matrix.length; r++) {
+    const row = matrix[r] || [];
+    if (!row[0]) continue;
 
-  for (let row = dataStart; row < matrix.length; row++) {
-    const linha = matrix[row];
-    if (!linha || !linha[0]) continue;
+    const uf = norm(row[0]);
+    if (!isUF(uf)) continue; // ignora linhas que não são UF
 
-    const regiao = detectarRegiao(linha[0]);
-    if (!regiao) continue; // linha não reconhecida
+    for (const { regiao, colPerc, colMin } of colMap) {
+      const percRaw = colPerc < row.length ? row[colPerc] : null;
+      const minRaw  = colMin < row.length  ? row[colMin]  : null;
 
-    for (const { uf, colPerc, colMin } of mapeamentoColunas) {
-      const percRaw = colPerc !== null ? linha[colPerc] : null;
-      const minRaw = colMin !== null ? linha[colMin] : null;
+      // Pular se ambos null ou string '-'
+      const percStr = txt(percRaw);
+      const minStr  = txt(minRaw);
+      if ((!percStr || percStr === '-') && (!minStr || minStr === '-')) continue;
 
-      const frete_percentual = num(percRaw);
-      const frete_minimo = num(minRaw);
-
-      if (frete_percentual === null && frete_minimo === null) continue;
+      const frete_percentual = num(percRaw) ?? 0;
+      const frete_minimo     = num(minRaw)  ?? 0;
 
       itens.push({
-        cidade_origem: origem || '',
-        uf_origem: '',
-        ibge_origem: '',
-        cidade_destino: '',
-        uf_destino: uf,
-        ibge_destino: '',
-        faixa_peso: regiao,
-        peso_inicial: 0,
-        peso_final: 999999,
-        frete_minimo: frete_minimo ?? 0,
-        taxa_aplicada: 0,
-        frete_percentual: frete_percentual ?? 0,
-        excesso_kg: 0,
-        valor_excedente: 0,
-        prazo: numOrZero(ficha.prazo),
-        gris: numOrZero(ficha.gris),
-        advalorem: numOrZero(ficha.advalorem),
-        pedagio: numOrZero(ficha.pedagio),
-        tas: numOrZero(ficha.tas),
-        tda: numOrZero(ficha.tda),
-        observacao: `${regiao} → ${uf}`,
+        cidade_origem:    origem || '',
+        uf_origem:        '',
+        ibge_origem:      '',
+        cidade_destino:   '',
+        uf_destino:       uf,
+        ibge_destino:     '',
+        faixa_peso:       regiao,          // 'CAPITAL', 'INTERIOR 1', etc.
+        peso_inicial:     0,
+        peso_final:       999999,
+        frete_minimo,
+        taxa_aplicada:    0,
+        frete_percentual,
+        excesso_kg:       0,
+        valor_excedente:  0,
+        prazo:            numOrZero(ficha.prazo),
+        gris:             numOrZero(ficha.gris),
+        advalorem:        numOrZero(ficha.advalorem),
+        pedagio:          numOrZero(ficha.pedagio),
+        tas:              numOrZero(ficha.tas),
+        tda:              numOrZero(ficha.tda),
+        observacao:       `${uf} → ${regiao}`,
         dados_originais: {
+          uf_destino:       uf,
           regiao,
-          uf_destino: uf,
           frete_percentual: percRaw,
-          frete_minimo: minRaw,
+          frete_minimo:     minRaw,
           canal,
-          tipo: 'PERCENTUAL',
+          tipo:             'PERCENTUAL',
         },
       });
     }
   }
 
   if (!itens.length) {
-    throw new Error('Nenhum item foi extraído da tabela. Verifique se o arquivo está no formato correto.');
+    throw new Error(
+      `Nenhum item extraído. Colunas mapeadas: ${colMap.map((c) => c.regiao).join(', ')}. ` +
+      'Verifique se a planilha foi preenchida (valores diferentes de null e "-").',
+    );
   }
 
   return itens;
