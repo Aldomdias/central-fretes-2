@@ -3,12 +3,12 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 const TABELA = 'realizado_local_ctes';
-const PAGE_SIZE = 100;
-const ANALISE_BATCH_SIZE = 1000;
-const ANALISE_MAX_REGISTROS = 20000;
+const PAGE_SIZE = 50;
+const ANALISE_BATCH_SIZE = 300;
+const ANALISE_MAX_REGISTROS = 5000;
 
 // Tomadores permitidos – apenas esses ficam na base
-const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GP PNEUS', 'SPEEDMAX'];
+const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GRIP', 'GP PNEUS', 'SPEEDMAX'];
 
 // Mapeamento de Canal de Vendas → canal normalizado
 const CANAL_VENDAS_MAP = {
@@ -166,6 +166,10 @@ function getSituacao(row) {
   return campo(row, 'situacao', 'status', 'status_cte');
 }
 
+function getTomador(row) {
+  return campo(row, 'tomador_servico', 'tomadorServico', 'tomador', 'nome_tomador', 'razao_social_tomador') || '-';
+}
+
 function getCompetencia(row) {
   const competencia = campo(row, 'competencia', 'mes_competencia');
   if (competencia) return competencia;
@@ -279,9 +283,9 @@ function agrupar(rows, keyGetter, extra = {}) {
 }
 
 function aplicarFiltros(query, filtros = {}) {
-  // Sempre filtra pelos tomadores permitidos
-  query = query.or(TOMADORES_PERMITIDOS.map((t) => `tomador.ilike.%${t}%`).join(','));
-
+  // Não aplicamos filtro de tomador no Supabase porque a tabela realizado_local_ctes
+  // pode não ter essa coluna em algumas bases. O filtro por tomador deve ser tratado
+  // na importação/limpeza da base, evitando erro de coluna inexistente na consulta.
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
@@ -306,6 +310,7 @@ async function buscarCtesPagina(filtros = {}, pagina = 1) {
   let query = supabase
     .from(TABELA)
     .select('*')
+    .order('data_emissao', { ascending: false, nullsFirst: false })
     .range(inicio, fim);
 
   query = aplicarFiltros(query, filtros);
@@ -336,6 +341,7 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
     let query = supabase
       .from(TABELA)
       .select('*')
+      .order('data_emissao', { ascending: false, nullsFirst: false })
       .range(inicio, fim);
 
     query = aplicarFiltros(query, filtros);
@@ -943,7 +949,7 @@ export default function CtePage() {
                   {(rowsFiltradas || []).map((row, idx) => {
                     const dataEmissao = getDataEmissao(row);
                     const transp = getTransportadora(row);
-                    const tomador = campo(row, 'tomador') || '-';
+                    const tomador = getTomador(row);
                     const cidOrig = getOrigem(row);
                     const ufOrig = getUfOrigem(row);
                     const cidDest = getDestino(row);

@@ -62,6 +62,34 @@ const DEFAULT_FILTROS = {
 
 const ECONOMIA_SUPABASE_LOCAL_KEY = 'amd-realizado-local-economia-supabase';
 
+function normalizarNomeVinculo(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+function obterAliasesTransportadoraRealizado(nomeTabela = '') {
+  const aliases = new Set([nomeTabela].filter(Boolean));
+  try {
+    const vinculos = JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]');
+    const alvo = normalizarNomeVinculo(nomeTabela);
+    (Array.isArray(vinculos) ? vinculos : []).forEach((item) => {
+      const nomeCte = String(item?.nomeCte || '').trim();
+      const nomeTabelaVinculo = String(item?.nomeTabela || '').trim();
+      if (!nomeCte || !nomeTabelaVinculo) return;
+      if (normalizarNomeVinculo(nomeTabelaVinculo) === alvo || normalizarNomeVinculo(nomeCte) === alvo) {
+        aliases.add(nomeTabelaVinculo);
+        aliases.add(nomeCte);
+      }
+    });
+  } catch {
+    // Sem vínculos locais.
+  }
+  return [...aliases].filter(Boolean);
+}
+
 const DEFAULT_VOLUMETRIA_CONFIG = {
   canal: '',
   inicio: '',
@@ -397,6 +425,7 @@ function DetalheSimulacao({ item, rankingCalculado }) {
             <div className="mini-list-row"><span>% realizado/NF</span><strong>{formatPercent(item.percentualRealizado || 0)}</strong></div>
             <div className="mini-list-row"><span>% simulado/NF</span><strong>{formatPercent(item.percentualSimulado || 0)}</strong></div>
             <div className="mini-list-row"><span>Líder no ranking</span><strong>{item.liderTransportadora || (rankingCalculado ? '—' : 'ranking não calculado')}</strong></div>
+            <div className="mini-list-row"><span>Substituta mais barata</span><strong>{item.transportadoraSubstituta ? `${item.transportadoraSubstituta} · ${formatCurrency(item.freteSubstituta || 0)}` : (rankingCalculado ? 'Sem concorrente na rota' : 'ranking não calculado')}</strong></div>
           </div>
         </div>
       </div>
@@ -732,6 +761,7 @@ function simToExportRow(item = {}) {
       ? 'Modo completo: Sim quando é 1º menor preço entre tabelas e reduz custo vs realizado'
       : 'Modo rápido: Sim quando Valor_Simulado é menor que Valor_Realizado. Cargas acima do realizado não são alocadas.',
     Lider_Transportadora: item.liderTransportadora || '',
+    Transportadora_Substituta: item.transportadoraSubstituta || '',
     Frete_Substituta: rankingCalculado ? (item.freteSubstituta || 0) : '',
   };
 }
@@ -801,7 +831,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [economizarSupabase, setEconomizarSupabase] = useState(readPreferenciaEconomiaSupabase);
   const [salvandoTabelaLocal, setSalvandoTabelaLocal] = useState(false);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
-  const [modoSimulacao, setModoSimulacao] = useState('rapido');
+  const [modoSimulacao, setModoSimulacao] = useState('completo');
   const [gradeFrete, setGradeFrete] = useState(() => carregarGradeFrete());
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const [grupoDetalhe, setGrupoDetalhe] = useState(null);
@@ -1583,6 +1613,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
     setProgress({ etapa: 'Carregando malha', atual: 0, total: 0, percentual: 5, mensagem: 'Carregando tabelas e montando escopo da transportadora...' });
 
     try {
+      const aliasesTransportadora = obterAliasesTransportadoraRealizado(filtros.transportadora);
       const tabelaSelecionada = await carregarTabelaTransportadoraSelecionada(filtros.transportadora, { forcarLocal: usarTabelaSalvaLocal });
       if (!tabelaSelecionada?.length) {
         setErro('Não encontrei a tabela dessa transportadora no Supabase. Confira se a tabela está cadastrada e se o nome selecionado é exatamente o mesmo.');
@@ -1591,7 +1622,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
       const escopo = construirEscopoTransportadoraSimulada({
         transportadoras: tabelaSelecionada,
-        nomeTransportadora: filtros.transportadora,
+        nomeTransportadora: aliasesTransportadora,
         municipios,
         canalFiltro: filtrosAplicados.canal || filtros.canal,
       });
@@ -1674,7 +1705,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         realizados: rows,
         transportadoras: baseTabelas,
         municipios,
-        nomeTransportadora: filtros.transportadora,
+        nomeTransportadora: aliasesTransportadora,
         modoSimulacao,
         gradeFrete: gradeAtual,
       }, ({ atual = 0, total = rows.length, etapa = 'Calculando frete local' }) => {
@@ -2037,7 +2068,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
 
         <section className="panel-card">
           <div className="panel-title">3. Simular local</div>
-          <p>Use modo rápido para impacto financeiro. Use completo apenas quando precisar ranking/ganhadores contra concorrentes.</p>
+          <p>Use completo como padrão para buscar substituta/ranking contra as demais tabelas da rota. Use rápido somente para validar a transportadora escolhida sem concorrentes.</p>
           <div className="field">
             <label>Transportadora simulada</label>
             <select value={filtros.transportadora} onChange={(e) => alterarFiltro('transportadora', e.target.value)}>
@@ -2051,11 +2082,11 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           <div className="field">
             <label>Modo da simulação</label>
             <select value={modoSimulacao} onChange={(e) => setModoSimulacao(e.target.value)}>
-              <option value="rapido">Rápido — impacto financeiro</option>
-              <option value="completo">Completo — ranking e ganhadores</option>
+              <option value="completo">Completo — ranking, substituta e ganhadores</option>
+              <option value="rapido">Rápido — só transportadora escolhida</option>
             </select>
             <small>
-              Rápido calcula somente a transportadora escolhida. Completo otimizado compara apenas concorrentes das mesmas rotas IBGE filtradas.
+              Completo compara concorrentes das mesmas rotas IBGE filtradas e preenche líder/substituta. Rápido não calcula substituta.
             </small>
           </div>
           <div className="sim-parametros-box subtle top-space-sm">

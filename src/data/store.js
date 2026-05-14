@@ -279,40 +279,19 @@ export function useFreteStore() {
   }, []);
 
   function salvarAutomaticamente(next, acao = 'alteração', secao = 'cadastros') {
-    if (!loadedRef.current || !bancoConfigurado()) return;
-
-    const tipoSecao = {
-      rotas: 'rotas',
-      cotacoes: 'cotacoes',
-      taxasEspeciais: 'taxas',
-      taxas: 'taxas',
-      generalidades: 'generalidades',
-      transportadora: 'cadastros',
-      origem: 'cadastros',
-      cadastros: 'cadastros',
-    }[secao] || 'cadastros';
-
-    setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
-
-    salvarSecaoDb(next, tipoSecao, undefined, { atualizarSnapshot: false })
-      .then(async (result) => {
-        const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
-
-        setSyncStatus((prev) => ({
-          ...prev,
-          sincronizando: false,
-          ultimaSincronizacao: result?.updated_at || new Date().toISOString(),
-          fonte: 'supabase-resumo',
-          resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
-        }));
-      })
-      .catch((error) => {
-        setSyncStatus((prev) => ({
-          ...prev,
-          sincronizando: false,
-          erro: error.message || `Erro ao salvar ${acao}.`,
-        }));
-      });
+    // As alterações na tela de Transportadoras ficam como rascunho local.
+    // O envio ao Supabase agora acontece somente pelo botão "Salvar alterações"
+    // para evitar sobrescrever campos enquanto a transportadora ainda está carregando.
+    persistLocalState(next);
+    setSyncStatus((prev) => ({
+      ...prev,
+      sincronizando: false,
+      erro: '',
+      rascunhoLocal: true,
+      ultimaAlteracaoLocal: new Date().toISOString(),
+      mensagemLocal: `${acao} mantida localmente. Clique em Salvar alterações para enviar ao Supabase.`,
+      secaoRascunho: secao,
+    }));
   }
 
   const aplicarAlteracao = (updater, acao = 'alteração', secao = 'cadastros') => {

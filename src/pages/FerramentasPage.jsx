@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
 
 function normalizarNomeTransp(nome = '') {
   return String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -235,6 +236,12 @@ function exportarVolumetriaEmWorker(payload, onProgress) {
 
 function pesoConsiderado(row = {}) {
   return Math.max(toNumber(row.peso), toNumber(row.pesoDeclarado), toNumber(row.pesoCubado));
+}
+
+function cubagemTotalTracking(row = {}) {
+  const cubagemUnitaria = toNumber(row.cubagem);
+  const volumes = toNumber(row.qtdVolumes || row.volume || row.volumes);
+  return cubagemUnitaria * Math.max(volumes || 1, 1);
 }
 
 function faixaVolumetria(canal, peso, grade = {}) {
@@ -504,7 +511,7 @@ function montarVolumetria(rows = [], config = {}, grade = {}) {
     item.Peso_Declarado += toNumber(row.pesoDeclarado);
     item.Peso_Cubado += toNumber(row.pesoCubado);
     item.Peso_Considerado += peso;
-    item.Cubagem_m3 += toNumber(row.cubagem);
+    item.Cubagem_m3 += cubagemTotalTracking(row);
     item.Valor_NF += toNumber(row.valorNF);
   });
 
@@ -541,7 +548,8 @@ function detalheTrackingRow(row = {}, grade = {}) {
     Peso_Declarado: toNumber(row.pesoDeclarado),
     Peso_Cubado: toNumber(row.pesoCubado),
     Peso_Considerado: peso,
-    Cubagem_m3: toNumber(row.cubagem),
+    Cubagem_Unitaria_m3: toNumber(row.cubagem),
+    Cubagem_Total_m3: cubagemTotalTracking(row),
     Valor_NF: toNumber(row.valorNF),
     Complementado_CTE: row.enderecoComplementadoPorCte ? 'Sim' : 'Não',
     Complementado_Recorrencia: row.enderecoComplementadoPorRecorrencia ? 'Sim' : 'Não',
@@ -635,29 +643,73 @@ export default function FerramentasPage({ transportadoras = [] }) {
   }
 
   // Accordion
-  const [abaAberta, setAbaAberta] = useState('grade');
+  const [abaAberta, setAbaAberta] = useState(null);
   const toggleAba = (aba) => setAbaAberta(prev => prev === aba ? null : aba);
 
-  // Vínculos de transportadoras (localStorage)
+  // Vínculos de transportadoras (Supabase + fallback local)
   const [vinculos, setVinculos] = useState(() => {
     try { return JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]'); } catch { return []; }
   });
   const [novoNomeCte, setNovoNomeCte] = useState('');
   const [novoNomeTabela, setNovoNomeTabela] = useState('');
   const [buscaVinculo, setBuscaVinculo] = useState('');
+  const [salvandoVinculos, setSalvandoVinculos] = useState(false);
+  const [fonteVinculos, setFonteVinculos] = useState('local');
 
-  const salvarVinculos = (lista) => {
-    setVinculos(lista);
-    localStorage.setItem('vinculos-transportadoras', JSON.stringify(lista));
+  const carregarVinculosOnline = async () => {
+    setErroSugestoes('');
+    try {
+      const lista = await carregarVinculosTransportadoras();
+      setVinculos(lista);
+      setFonteVinculos(isSupabaseConfigured() ? 'supabase' : 'local');
+    } catch (err) {
+      setErroSugestoes(err.message || 'Erro ao carregar vínculos.');
+    }
   };
+
+  useEffect(() => {
+    carregarVinculosOnline();
+  }, []);
+
+  const salvarVinculos = async (lista) => {
+    const proximaLista = (lista || []).filter(v => String(v.nomeCte || '').trim() && String(v.nomeTabela || '').trim());
+    setVinculos(proximaLista);
+    setSalvandoVinculos(true);
+    setErroSugestoes('');
+    try {
+      const resultado = await salvarVinculosTransportadoras(proximaLista);
+      setFonteVinculos(resultado.modo || (isSupabaseConfigured() ? 'supabase' : 'local'));
+      setMensagem(`Vínculos salvos em ${resultado.modo === 'supabase' ? 'Supabase' : 'localStorage'}: ${resultado.total || proximaLista.length}.`);
+    } catch (err) {
+      setErroSugestoes(err.message || 'Erro ao salvar vínculos no Supabase.');
+    } finally {
+      setSalvandoVinculos(false);
+    }
+  };
+
   const adicionarVinculo = () => {
     if (!novoNomeCte.trim() || !novoNomeTabela.trim()) return;
-    salvarVinculos([...vinculos, { id: Date.now(), nomeCte: novoNomeCte.trim(), nomeTabela: novoNomeTabela.trim() }]);
+    salvarVinculos([...vinculos, { id: Date.now(), nomeCte: novoNomeCte.trim(), nomeTabela: novoNomeTabela.trim(), origem: 'manual' }]);
     setNovoNomeCte(''); setNovoNomeTabela('');
   };
-  const removerVinculo = (id) => salvarVinculos(vinculos.filter(v => v.id !== id));
-  const editarVinculo = (id, campo, valor) => salvarVinculos(vinculos.map(v => v.id === id ? {...v, [campo]: valor} : v));
-  const vinclosFiltrados = vinculos.filter(v => !buscaVinculo || v.nomeCte.toLowerCase().includes(buscaVinculo.toLowerCase()) || v.nomeTabela.toLowerCase().includes(buscaVinculo.toLowerCase()));
+  const removerVinculo = async (id) => {
+    try {
+      setSalvandoVinculos(true);
+      const novaLista = await removerVinculoTransportadora(id, vinculos);
+      setVinculos(novaLista);
+      setMensagem('Vínculo removido.');
+    } catch (err) {
+      setErroSugestoes(err.message || 'Erro ao remover vínculo.');
+    } finally {
+      setSalvandoVinculos(false);
+    }
+  };
+  const editarVinculo = (id, campo, valor) => {
+    const novaLista = vinculos.map(v => v.id === id ? {...v, [campo]: valor} : v);
+    setVinculos(novaLista);
+  };
+  const salvarEdicaoVinculos = () => salvarVinculos(vinculos);
+  const vinclosFiltrados = vinculos.filter(v => !buscaVinculo || String(v.nomeCte || '').toLowerCase().includes(buscaVinculo.toLowerCase()) || String(v.nomeTabela || '').toLowerCase().includes(buscaVinculo.toLowerCase()));
   const exportarVinculosJson = () => {
     const blob = new Blob([JSON.stringify(vinculos, null, 2)], {type: 'application/json'});
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'vinculos-transportadoras.json'; a.click();
@@ -875,15 +927,22 @@ export default function FerramentasPage({ transportadoras = [] }) {
             <div className="hint-box compact">
               Use quando o nome da transportadora no CT-e for diferente do nome na tabela de fretes.<br/>
               Ex: <strong>"3G TRANSPORTE LTDA"</strong> no CT-e → <strong>"3G TRANSPORTE"</strong> na tabela.<br/>
-              Os vínculos são salvos localmente e usados na Análise por origem.
+              Os vínculos agora são salvos no Supabase e também ficam em cache local. Eles são usados no Simulador do realizado e na Análise por origem.
             </div>
 
             <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-              <button className="btn-primary" onClick={gerarSugestoes} disabled={carregandoSugestoes}>
-                {carregandoSugestoes ? 'Carregando...' : '📋 Listar transportadoras do CT-e'}
+              <button className="btn-primary" onClick={gerarSugestoes} disabled={carregandoSugestoes || salvandoVinculos}>
+                {carregandoSugestoes ? 'Atualizando...' : '🔄 Atualizar transportadoras sem vínculo'}
               </button>
+              <button className="btn-secondary" type="button" onClick={carregarVinculosOnline} disabled={salvandoVinculos}>
+                Recarregar vínculos do Supabase
+              </button>
+              <button className="btn-secondary" type="button" onClick={salvarEdicaoVinculos} disabled={salvandoVinculos}>
+                {salvandoVinculos ? 'Salvando...' : 'Salvar vínculos'}
+              </button>
+              <span style={{fontSize:12,color:'var(--muted)'}}>Fonte: {fonteVinculos === 'supabase' ? 'Supabase' : 'local/cache'}</span>
               {sugestoes.length > 0 && (
-                <button className="btn-secondary" onClick={confirmarTodasSugestoes}>
+                <button className="btn-secondary" onClick={confirmarTodasSugestoes} disabled={salvandoVinculos}>
                   Vincular todas com sugestão ({sugestoes.filter(s=>s.nomeTabela).length})
                 </button>
               )}
@@ -951,7 +1010,7 @@ export default function FerramentasPage({ transportadoras = [] }) {
                 <label>Nome na tabela de fretes</label>
                 <input value={novoNomeTabela} onChange={e=>setNovoNomeTabela(e.target.value)} placeholder="Ex.: 3G TRANSPORTE" onKeyDown={e=>e.key==='Enter'&&adicionarVinculo()} />
               </div>
-              <button className="btn-primary" onClick={adicionarVinculo} disabled={!novoNomeCte.trim()||!novoNomeTabela.trim()}>Adicionar</button>
+              <button className="btn-primary" onClick={adicionarVinculo} disabled={!novoNomeCte.trim()||!novoNomeTabela.trim()||salvandoVinculos}>Adicionar</button>
             </div>
             {vinculos.length > 0 && (
               <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
