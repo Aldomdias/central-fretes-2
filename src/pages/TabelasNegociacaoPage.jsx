@@ -540,7 +540,7 @@ export default function TabelasNegociacaoPage() {
               </div>
               <div className="sim-actions" style={{ marginTop: 12 }}>
                 <button className="primary" type="button" onClick={processarCantu} disabled={!arquivoCantu}>Ler modelo Cantu</button>
-                <button className="sim-tab" type="button" onClick={() => exportarXlsx(resultadoCantu?.itens?.map((i) => ({ 'UF Destino': i.uf_destino, 'Faixa/Região': i.faixa_peso, 'Peso Ini': i.peso_inicial, 'Peso Fim': i.peso_final, 'Taxa': i.taxa_aplicada, '% NF': i.frete_percentual, 'Mín': i.frete_minimo, 'Prazo': i.prazo })), `cantu-prev-${normalizarTexto(selecionada?.transportadora || 'transp')}.xlsx`, 'Prévia')} disabled={!resultadoCantu}>Exportar prévia</button>
+                <button className="sim-tab" type="button" onClick={() => exportarXlsx(resultadoCantu?.itens?.map((i) => ({ 'IBGE': i.ibge_destino, 'Cidade': i.cidade_destino, 'UF Destino': i.uf_destino, 'Região/Faixa': i.faixa_peso, '% NF': i.frete_percentual, 'Frete Mín': i.frete_minimo, 'TDA': i.tda, 'Prazo': i.prazo })), `cantu-prev-${normalizarTexto(selecionada?.transportadora || 'transp')}.xlsx`, 'Prévia')} disabled={!resultadoCantu}>Exportar prévia</button>
                 <button className="primary" type="button" onClick={() => salvarItens(resultadoCantu?.itens || [], 'CANTU_MODELO_UNICO', { canal: resultadoCantu?.meta?.canal })} disabled={!resultadoCantu || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
               </div>
               {resultadoCantu && (
@@ -549,6 +549,14 @@ export default function TabelasNegociacaoPage() {
                     <div className="summary-card"><span>Itens extraídos</span><strong>{resultadoCantu.meta.totalItens}</strong></div>
                     <div className="summary-card"><span>Canal</span><strong>{resultadoCantu.meta.canal}</strong></div>
                     <div className="summary-card"><span>Subtipo</span><strong>{subtipoCantu.replace('_', ' ')}</strong></div>
+                    {resultadoCantu.meta.temAtendimento && (
+                      <>
+                        <div className="summary-card"><span>Cidades na cobertura</span><strong>{resultadoCantu.meta.totalCidades}</strong></div>
+                        <div className="summary-card"><span>Com tarifa</span><strong>{resultadoCantu.meta.cidadesComTarifa}</strong></div>
+                        <div className="summary-card"><span>Sem região</span><strong>{resultadoCantu.meta.cidadesSemRegiao}</strong><small>não têm tarifa ainda</small></div>
+                        <div className="summary-card"><span>Tarifas UF (TABELA)</span><strong>{resultadoCantu.meta.itensTarifaUF}</strong></div>
+                      </>
+                    )}
                     <div className="summary-card"><span>Ficha lida</span><strong>{resultadoCantu.meta.fichaLida ? 'Sim' : 'Não'}</strong></div>
                     {resultadoCantu.ficha?.transportadora && <div className="summary-card"><span>Transportadora</span><strong>{resultadoCantu.ficha.transportadora}</strong></div>}
                   </div>
@@ -556,15 +564,18 @@ export default function TabelasNegociacaoPage() {
                     <div className="sim-parametros-header"><div><strong>Prévia dos itens</strong></div></div>
                     <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                       <table className="sim-analise-tabela">
-                        <thead><tr><th>UF Dest</th><th>Faixa / Região</th><th>Peso Ini</th><th>Peso Fim</th><th>Taxa/Frete</th><th>% NF</th><th>Frete Mín</th><th>GRIS</th><th>ADV</th><th>Prazo</th></tr></thead>
+                        <thead><tr><th>IBGE</th><th>Cidade</th><th>UF Dest</th><th>Região / Faixa</th><th>% NF</th><th>Frete Mín</th><th>TDA</th><th>Prazo</th></tr></thead>
                         <tbody>
                           {resultadoCantu.itens.slice(0, 150).map((item, i) => (
                             <tr key={i}>
-                              <td><strong>{item.uf_destino}</strong></td><td>{item.faixa_peso}</td>
-                              <td>{item.peso_inicial}</td><td>{item.peso_final >= 999990 ? '∞' : item.peso_final}</td>
-                              <td>{formatMoney(item.taxa_aplicada)}</td><td>{Number(item.frete_percentual || 0).toFixed(4)}%</td>
-                              <td>{formatMoney(item.frete_minimo)}</td><td>{Number(item.gris || 0).toFixed(4)}%</td>
-                              <td>{Number(item.advalorem || 0).toFixed(4)}%</td><td>{item.prazo || '-'}</td>
+                              <td style={{ fontSize: 11, color: '#64748b' }}>{item.ibge_destino || '-'}</td>
+                              <td>{item.cidade_destino || '-'}</td>
+                              <td><strong>{item.uf_destino}</strong></td>
+                              <td>{item.faixa_peso}</td>
+                              <td>{Number(item.frete_percentual || 0).toFixed(4)}%</td>
+                              <td>{formatMoney(item.frete_minimo)}</td>
+                              <td>{item.tda ? formatMoney(item.tda) : '-'}</td>
+                              <td>{item.prazo || '-'}</td>
                             </tr>
                           ))}
                         </tbody>

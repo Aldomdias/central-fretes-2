@@ -647,14 +647,177 @@ function parseLotacao(matrix, ficha) {
   return itens;
 }
 
+// ─── ATENDIMENTO (roteamento por cidade) ─────────────────────────────────────
+
+/**
+ * Lê a aba ATENDIMENTO e retorna mapa de rotas por cidade.
+ * Estrutura esperada:
+ *   IBGE DESTINO | UF DESTINO | CIDADE DE DESTINO | CEP INICIAL | CEP FINAL
+ *   | PRAZO (NÚMERO) | REGIÃO (IGUAL ABA TABELA) | TDA (R$) | TRT (R$)
+ *   | SUFRAMA (R$) | OUTRAS TAXAS
+ *
+ * Retorna array de objetos com os dados por cidade.
+ * Inclui linhas COM e SEM região preenchida (a tarifa é buscada depois).
+ */
+function parseAtendimento(ws) {
+  if (!ws) return [];
+
+  const matrix = sheetParaMatrix(ws);
+  if (!matrix.length) return [];
+
+  // Encontrar linha de cabeçalho
+  let cabIdx = -1;
+  for (let i = 0; i < Math.min(matrix.length, 5); i++) {
+    const row = matrix[i] || [];
+    const temIBGE = row.some((c) => c && norm(c).includes('IBGE'));
+    const temUF = row.some((c) => c && norm(c).includes('UF'));
+    if (temIBGE && temUF) { cabIdx = i; break; }
+  }
+
+  if (cabIdx < 0) return []; // aba sem cabeçalho reconhecível
+
+  const cab = (matrix[cabIdx] || []).map((c) => norm(c || ''));
+
+  function col(chaves) {
+    for (const chave of chaves) {
+      const idx = cab.findIndex((c) => c.includes(chave));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  }
+
+  const cIBGE    = col(['IBGE']);
+  const cUF      = col(['UF DESTINO', 'UF']);
+  const cCidade  = col(['CIDADE DE DESTINO', 'CIDADE']);
+  const cCepIni  = col(['CEP INICIAL', 'CEP_INI']);
+  const cCepFim  = col(['CEP FINAL', 'CEP_FIM']);
+  const cPrazo   = col(['PRAZO']);
+  const cRegiao  = col(['REGIAO', 'REGIÃO']);
+  const cTDA     = col(['TDA']);
+  const cTRT     = col(['TRT']);
+  const cSuframa = col(['SUFRAMA']);
+  const cOutras  = col(['OUTRAS']);
+
+  const cidades = [];
+
+  for (let r = cabIdx + 1; r < matrix.length; r++) {
+    const row = matrix[r] || [];
+
+    const ibge   = cIBGE >= 0 ? row[cIBGE] : null;
+    const uf     = cUF >= 0 ? norm(row[cUF] || '') : '';
+    const cidade = cCidade >= 0 ? txt(row[cCidade] || '') : '';
+
+    // Linha válida deve ter pelo menos IBGE ou cidade
+    if (!ibge && !cidade) continue;
+    // Ignorar linha de rodapé com hífens
+    if (txt(uf) === '-' || txt(ibge) === '-') continue;
+    if (!UF_LISTA.includes(uf)) continue;
+
+    const regiaoRaw = cRegiao >= 0 ? txt(row[cRegiao] || '') : '';
+    const regiao    = detectarRegiao(regiaoRaw) || null;
+
+    cidades.push({
+      ibge_destino:   ibge ? String(ibge).trim() : '',
+      uf_destino:     uf,
+      cidade_destino: cidade,
+      cep_inicial:    cCepIni >= 0 ? (row[cCepIni] ?? '') : '',
+      cep_final:      cCepFim >= 0 ? (row[cCepFim] ?? '') : '',
+      prazo:          cPrazo >= 0 ? (num(row[cPrazo]) ?? 0) : 0,
+      regiao,          // null se não preenchida
+      tda:            cTDA >= 0 ? (num(row[cTDA]) ?? 0) : 0,
+      trt:            cTRT >= 0 ? (num(row[cTRT]) ?? 0) : 0,
+      suframa:        cSuframa >= 0 ? (num(row[cSuframa]) ?? 0) : 0,
+      outras_taxas:   cOutras >= 0 ? (num(row[cOutras]) ?? 0) : 0,
+    });
+  }
+
+  return cidades;
+}
+
+// ─── Cruzamento TABELA + ATENDIMENTO (Percentual) ────────────────────────────
+
+/**
+ * Cruza as tarifas da TABELA com as cidades da ATENDIMENTO.
+ *
+ * Resultado: um item por cidade com IBGE, CEP, prazo e tarifa buscada pelo
+ * par (UF destino, Região) na TABELA.
+ *
+ * Cidades sem região preenchida são importadas sem tarifa (frete% = 0).
+ * Cidades com região mas sem tarifa correspondente na TABELA também entram.
+ */
+function cruzarTabelaAtendimentoPercentual(itensTarifa, cidades, ficha, canal, origem) {
+  // Mapa de tarifas: uf → regiao → { frete_percentual, frete_minimo }
+  const mapaUF = new Map(); // key: `${uf}||${regiao}`
+  for (const item of itensTarifa) {
+    const key = `${item.uf_destino}||${item.faixa_peso}`;
+    mapaUF.set(key, { frete_percentual: item.frete_percentual, frete_minimo: item.frete_minimo });
+  }
+
+  const itens = [];
+
+  for (const cidade of cidades) {
+    const tarifa = cidade.regiao
+      ? (mapaUF.get(`${cidade.uf_destino}||${cidade.regiao}`) || null)
+      : null;
+
+    itens.push({
+      cidade_origem:    origem || '',
+      uf_origem:        '',
+      ibge_origem:      '',
+      cidade_destino:   cidade.cidade_destino,
+      uf_destino:       cidade.uf_destino,
+      ibge_destino:     cidade.ibge_destino,
+      faixa_peso:       cidade.regiao || 'SEM REGIÃO',
+      peso_inicial:     0,
+      peso_final:       999999,
+      frete_minimo:     tarifa?.frete_minimo ?? 0,
+      taxa_aplicada:    0,
+      frete_percentual: tarifa?.frete_percentual ?? 0,
+      excesso_kg:       0,
+      valor_excedente:  0,
+      prazo:            cidade.prazo || numOrZero(ficha.prazo),
+      gris:             numOrZero(ficha.gris),
+      advalorem:        numOrZero(ficha.advalorem),
+      pedagio:          numOrZero(ficha.pedagio),
+      tas:              numOrZero(ficha.tas),
+      tda:              cidade.tda || 0,
+      tde:              cidade.trt || 0,   // TRT mapeado como TDE
+      outras_taxas:     cidade.outras_taxas || 0,
+      observacao:       `${cidade.uf_destino} - ${cidade.cidade_destino}${cidade.regiao ? ' (' + cidade.regiao + ')' : ''}`,
+      dados_originais: {
+        ibge_destino:     cidade.ibge_destino,
+        cidade_destino:   cidade.cidade_destino,
+        uf_destino:       cidade.uf_destino,
+        cep_inicial:      cidade.cep_inicial,
+        cep_final:        cidade.cep_final,
+        regiao:           cidade.regiao,
+        tda:              cidade.tda,
+        trt:              cidade.trt,
+        suframa:          cidade.suframa,
+        tarifa_aplicada:  tarifa,
+        canal,
+        tipo:             'PERCENTUAL_CIDADE',
+      },
+    });
+  }
+
+  return itens;
+}
+
 // ─── API PÚBLICA ──────────────────────────────────────────────────────────────
 
 /**
  * Importa template Cantu (B2B ou B2C, Percentual ou Faixa de Peso).
  *
+ * Para modelos Percentual: cruza aba TABELA (tarifas por UF+Região) com aba
+ * ATENDIMENTO (roteamento por cidade com IBGE, CEP, prazo e região).
+ * Resultado: um item por cidade com tarifa completa.
+ *
+ * Para modelos Faixa de Peso: usa apenas a aba TABELA.
+ *
  * @param {File} arquivo - arquivo xlsx enviado pelo usuário
  * @param {'B2B_PERCENTUAL'|'B2B_FAIXA_PESO'|'B2C_PERCENTUAL'|'B2C_FAIXA_PESO'} subtipo
- * @param {string} origem - cidade de origem (opcional, vem da tabela de negociação)
+ * @param {string} origem - cidade de origem (opcional)
  * @returns {{ itens: Array, ficha: Object, meta: Object }}
  */
 export async function importarTemplateCantu(arquivo, subtipo, origem = '') {
@@ -663,28 +826,54 @@ export async function importarTemplateCantu(arquivo, subtipo, origem = '') {
   const wb = await lerArquivo(arquivo);
   const abas = wb.SheetNames;
 
-  // Ler ficha de cadastro (metadados)
+  // Ficha de cadastro (metadados da transportadora)
   const wsFicha = encontrarAba(wb, ['FICHA DE CADASTRO', 'FICHA', 'CADASTRO', 'DADOS']);
   const ficha = lerFichaCadastro(wsFicha);
 
-  // Ler aba de tabela
+  // Aba de tarifas (obrigatória)
   const wsTabela = encontrarAba(wb, ['TABELA', 'TABLE', 'FRETES', 'FRETE']);
   if (!wsTabela) {
     throw new Error(`Aba "TABELA" não encontrada. Abas disponíveis: ${abas.join(', ')}`);
   }
 
-  const matrix = sheetParaMatrix(wsTabela);
+  const matrixTabela = sheetParaMatrix(wsTabela);
   const isPercentual = subtipo.includes('PERCENTUAL');
   const canal = subtipo.startsWith('B2B') ? 'ATACADO' : 'B2C';
 
-  let itens;
+  // ── Parsear tarifas da TABELA ──────────────────────────────────────────────
+  let itensTarifa;
   if (isPercentual) {
-    itens = parseCantUPercentual(matrix, ficha, canal, origem);
+    itensTarifa = parseCantUPercentual(matrixTabela, ficha, canal, origem);
   } else {
-    itens = parseCantUFaixaPeso(matrix, ficha, canal, origem);
+    itensTarifa = parseCantUFaixaPeso(matrixTabela, ficha, canal, origem);
   }
 
-  // adicionar canal e tipo a todos os itens
+  // ── Para modelos PERCENTUAL: cruzar com aba ATENDIMENTO ───────────────────
+  let itens;
+  let totalCidades = 0;
+  let cidadesSemRegiao = 0;
+  let cidadesComTarifa = 0;
+
+  if (isPercentual) {
+    const wsAtendimento = encontrarAba(wb, ['ATENDIMENTO', 'ROTAS', 'CIDADES', 'COVERAGE']);
+    const cidades = parseAtendimento(wsAtendimento);
+    totalCidades = cidades.length;
+    cidadesSemRegiao = cidades.filter((c) => !c.regiao).length;
+
+    if (cidades.length > 0) {
+      // Temos cidade-a-cidade: gerar itens cruzados
+      itens = cruzarTabelaAtendimentoPercentual(itensTarifa, cidades, ficha, canal, origem);
+      cidadesComTarifa = itens.filter((i) => i.frete_percentual > 0 || i.frete_minimo > 0).length;
+    } else {
+      // Sem ATENDIMENTO: usar itens de UF (comportamento anterior)
+      itens = itensTarifa;
+    }
+  } else {
+    // Faixa de peso: usa apenas TABELA
+    itens = itensTarifa;
+  }
+
+  // Adicionar canal, tipo e origem_importacao a todos os itens
   itens = itens.map((item) => ({
     ...item,
     canal,
@@ -699,12 +888,17 @@ export async function importarTemplateCantu(arquivo, subtipo, origem = '') {
   }));
 
   const meta = {
-    transportadora: ficha.transportadora || '',
+    transportadora:    ficha.transportadora || '',
     canal,
     subtipo,
-    totalItens: itens.length,
-    abasEncontradas: abas,
-    fichaLida: Object.keys(ficha).length > 0,
+    totalItens:        itens.length,
+    totalCidades,
+    cidadesSemRegiao,
+    cidadesComTarifa,
+    abasEncontradas:   abas,
+    fichaLida:         Object.keys(ficha).length > 0,
+    temAtendimento:    totalCidades > 0,
+    itensTarifaUF:     itensTarifa.length,
   };
 
   return { itens, ficha, meta };
