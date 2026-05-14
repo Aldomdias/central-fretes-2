@@ -11,7 +11,8 @@ import {
   simularPorTransportadora,
   simularSimples,
 } from '../utils/calculoFrete';
-import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
+import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig';
+import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
@@ -1373,6 +1374,9 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
 export default function SimuladorPage({ transportadoras = [] }) {
   const [aba, setAba] = useState('simples');
   const [grade, setGrade] = useState(getGradeInicial());
+  const [gradeFonte, setGradeFonte] = useState('local');
+  const [gradeStatus, setGradeStatus] = useState('Grade carregada do navegador.');
+  const [salvandoGrade, setSalvandoGrade] = useState(false);
   const [opcoesOnline, setOpcoesOnline] = useState({
     transportadoras: [],
     origens: [],
@@ -1618,6 +1622,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   useEffect(() => {
     atualizarOpcoesSimulador();
+  }, []);
+
+  useEffect(() => {
+    let ativo = true;
+    async function carregarGradeCentral() {
+      const resultado = await carregarGradeFreteCentralizada();
+      if (!ativo) return;
+      setGrade(resultado.grade);
+      setGradeFonte(resultado.fonte || 'local');
+      setGradeStatus(resultado.mensagem || 'Grade carregada.');
+    }
+    carregarGradeCentral();
+    return () => { ativo = false; };
   }, []);
 
 
@@ -2288,14 +2305,40 @@ export default function SimuladorPage({ transportadoras = [] }) {
   };
 
 
-  const atualizarGradePadrao = () => {
-    const novaGrade = restaurarGradeFretePadrao();
-    setGrade(novaGrade);
+  const atualizarGradePadrao = async () => {
+    setSalvandoGrade(true);
+    setGradeStatus('Restaurando grade padrão...');
+    try {
+      const resultado = await restaurarGradeFreteCentralizadaPadrao();
+      setGrade(resultado.grade);
+      setGradeFonte(resultado.fonte || 'local');
+      setGradeStatus(resultado.mensagem || 'Grade padrão restaurada.');
+    } catch (error) {
+      const gradeLocal = salvarGradeFrete(grade);
+      setGrade(gradeLocal);
+      setGradeFonte('local');
+      setGradeStatus(`Não foi possível salvar no Supabase. Grade mantida localmente. ${error.message || ''}`);
+    } finally {
+      setSalvandoGrade(false);
+    }
   };
 
-  const salvarGradeAtual = () => {
-    const gradeSalva = salvarGradeFrete(grade);
-    setGrade(gradeSalva);
+  const salvarGradeAtual = async () => {
+    setSalvandoGrade(true);
+    setGradeStatus('Salvando grade no Supabase...');
+    try {
+      const resultado = await salvarGradeFreteCentralizada(grade);
+      setGrade(resultado.grade);
+      setGradeFonte(resultado.fonte || 'local');
+      setGradeStatus(resultado.mensagem || 'Grade salva.');
+    } catch (error) {
+      const gradeLocal = salvarGradeFrete(grade);
+      setGrade(gradeLocal);
+      setGradeFonte('local');
+      setGradeStatus(`Erro ao salvar no Supabase. Grade salva apenas localmente. ${error.message || ''}`);
+    } finally {
+      setSalvandoGrade(false);
+    }
   };
 
   const onAnalisarOrigem = async () => {
@@ -2431,7 +2474,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       <div className="sim-alert info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <span>
-          Base do simulador: <strong>{opcoesOnline.fonte === 'supabase' ? 'Supabase online' : 'carregando opções'}</strong>
+          Base do simulador: <strong>{carregandoOpcoes ? 'carregando opções' : (opcoesOnline.fonte === 'supabase' ? 'Supabase online' : 'sem conexão/fallback local')}</strong>
           {opcoesOnline.transportadoras?.length ? ` · ${opcoesOnline.transportadoras.length} transportadoras` : ''}
           {opcoesOnline.origens?.length ? ` · ${opcoesOnline.origens.length} origens` : ''}{municipiosDisponiveis.length ? ` · ${municipiosDisponiveis.length} municípios IBGE` : ''}
         </span>
@@ -2439,10 +2482,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <button className="sim-tab" type="button" onClick={atualizarOpcoesSimulador} disabled={carregandoOpcoes}>
             {carregandoOpcoes ? 'Atualizando opções...' : 'Atualizar opções'}
           </button>
-          <button className="sim-tab" type="button" onClick={salvarGradeAtual}>
-            Salvar grade atual
+          <button className="sim-tab" type="button" onClick={salvarGradeAtual} disabled={salvandoGrade}>
+            {salvandoGrade ? 'Salvando grade...' : 'Salvar grade atual'}
           </button>
-          <button className="sim-tab" type="button" onClick={atualizarGradePadrao}>
+          <button className="sim-tab" type="button" onClick={atualizarGradePadrao} disabled={salvandoGrade}>
             Restaurar grade padrão
           </button>
         </div>
@@ -2451,7 +2494,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
 
       <div className="sim-alert info" style={{ display: 'grid', gap: 8 }}>
-        <strong>Grade em uso no simulador</strong>
+        <strong>Grade em uso no simulador <small style={{ fontWeight: 600, color: '#64748b' }}>({gradeFonte === 'supabase' ? 'Supabase' : 'local'})</small></strong>
+        <small style={{ color: gradeFonte === 'supabase' ? '#047857' : '#92400e' }}>{gradeStatus}</small>
         <span>
           ATACADO: {(grade.ATACADO || []).map((item) => `${item.peso}kg`).join(' · ') || '-'}
         </span>
