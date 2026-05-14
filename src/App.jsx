@@ -18,15 +18,32 @@ import TrackingPage from './pages/TrackingPage';
 import TorreControlePage from './pages/TorreControlePage';
 import ReajustesPage from './pages/ReajustesPage';
 import CtePage from './pages/CtePage';
+import TabelasNegociacaoPage from './pages/TabelasNegociacaoPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
 function primeiraPaginaPermitida(usuario) {
   const candidatas = [
-    'dashboard', 'simulador', 'cte', 'tracking', 'torre-controle', 'reajustes',
-    'importacao', 'formatacao', 'importar-template', 'lotacao', 'lotacao-operacao',
-    'lotacao-auditoria', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+    'dashboard',
+    'simulador',
+    'tabelas-negociacao',
+    'cte',
+    'tracking',
+    'torre-controle',
+    'reajustes',
+    'importacao',
+    'formatacao',
+    'importar-template',
+    'lotacao',
+    'lotacao-operacao',
+    'lotacao-auditoria',
+    'consulta-ibge',
+    'ferramentas',
+    'transportadoras',
+    'usuarios',
+    'minha-senha',
   ];
+
   return candidatas.find((pagina) => usuarioTemAcesso(usuario, pagina)) || 'dashboard';
 }
 
@@ -50,7 +67,9 @@ export default function App() {
 
   const mudarPagina = (pagina) => {
     if (!usuarioTemAcesso(sessao, pagina)) return;
+
     setPaginaAtual(pagina);
+
     if (pagina !== 'transportadoras') {
       setTransportadoraSelecionadaId(null);
       setOrigemSelecionadaId(null);
@@ -91,7 +110,7 @@ export default function App() {
   const voltarTransportadoras = () => {
     if (origemSelecionadaId) return setOrigemSelecionadaId(null);
     if (transportadoraSelecionadaId) return setTransportadoraSelecionadaId(null);
-    mudarPagina('dashboard');
+    return mudarPagina('dashboard');
   };
 
   let content = null;
@@ -112,7 +131,16 @@ export default function App() {
   }
 
   if (paginaAtual === 'simulador') {
-    content = <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
+    content = (
+      <SimuladorPage
+        transportadoras={transportadorasMemo}
+        onAbrirTransportadoras={abrirTransportadoras}
+      />
+    );
+  }
+
+  if (paginaAtual === 'tabelas-negociacao') {
+    content = <TabelasNegociacaoPage />;
   }
 
   if (paginaAtual === 'cte') {
@@ -120,7 +148,13 @@ export default function App() {
   }
 
   if (paginaAtual === 'importacao') {
-    content = <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />;
+    content = (
+      <ImportacaoPage
+        store={store}
+        transportadoras={transportadorasMemo}
+        onAbrirTransportadoras={abrirTransportadoras}
+      />
+    );
   }
 
   if (paginaAtual === 'formatacao') {

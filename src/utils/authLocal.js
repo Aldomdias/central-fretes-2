@@ -14,6 +14,24 @@ export const PERFIS_USUARIO = {
     descricao: 'Acesso total ao sistema e gestão de usuários.',
     paginas: ['*'],
   },
+  NEGOCIACAO_FRETES: {
+    nome: 'Negociação de Fretes',
+    descricao: 'Acesso ao simulador, reajustes, transportadoras e tabelas em negociação.',
+    paginas: [
+      'dashboard',
+      'simulador',
+      'tabelas-negociacao',
+      'cte',
+      'tracking',
+      'torre-controle',
+      'reajustes',
+      'formatacao',
+      'importar-template',
+      'consulta-ibge',
+      'ferramentas',
+      'transportadoras',
+    ],
+  },
   OPERACAO_LOTACAO: {
     nome: 'Operação Lotação',
     descricao: 'Consulta lotação, histórico de cargas, custos adicionais e aprovações.',
@@ -27,7 +45,16 @@ export const PERFIS_USUARIO = {
   CONSULTA: {
     nome: 'Consulta',
     descricao: 'Acesso de consulta sem gestão de usuários.',
-    paginas: ['dashboard', 'lotacao', 'lotacao-operacao', 'consulta-ibge', 'ferramentas', 'tracking', 'torre-controle', 'reajustes'],
+    paginas: [
+      'dashboard',
+      'lotacao',
+      'lotacao-operacao',
+      'consulta-ibge',
+      'ferramentas',
+      'tracking',
+      'torre-controle',
+      'reajustes',
+    ],
   },
 };
 
@@ -68,6 +95,7 @@ function montarSessao(usuario) {
     perfil: usuario.perfil,
     loginEm: new Date().toISOString(),
   };
+
   localStorage.setItem(SESSION_KEY, JSON.stringify(sessao));
   return sessao;
 }
@@ -79,6 +107,7 @@ export function carregarUsuarios() {
   } catch {
     // segue para seed
   }
+
   salvarUsuariosInterno(DEFAULT_USERS);
   return DEFAULT_USERS;
 }
@@ -97,8 +126,10 @@ export async function carregarUsuariosAsync({ migrarLocal = true } = {}) {
 
   try {
     const remotos = await listarUsuariosSupabase();
+
     if (remotos.length) {
       salvarUsuariosInterno(remotos);
+
       return {
         usuarios: remotos,
         origem: 'supabase',
@@ -110,6 +141,7 @@ export async function carregarUsuariosAsync({ migrarLocal = true } = {}) {
     if (migrarLocal && locais.length) {
       await salvarUsuariosSupabase(locais);
       salvarUsuariosInterno(locais);
+
       return {
         usuarios: locais,
         origem: 'supabase',
@@ -153,6 +185,7 @@ export async function salvarUsuariosAsync(usuarios = []) {
 
   try {
     await salvarUsuariosSupabase(usuarios);
+
     return {
       origem: 'supabase',
       sincronizado: true,
@@ -171,8 +204,11 @@ export async function salvarUsuariosAsync(usuarios = []) {
 export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
   if (pagina === 'minha-senha') return true;
+
   const perfil = PERFIS_USUARIO[usuario.perfil] || PERFIS_USUARIO.CONSULTA;
+
   if (perfil.paginas.includes('*')) return true;
+
   return perfil.paginas.includes(pagina);
 }
 
@@ -180,9 +216,11 @@ export function loginLocal(email, senha) {
   const usuarios = carregarUsuarios();
   const emailNorm = normalizarEmail(email);
   const usuario = usuarios.find((item) => normalizarEmail(item.email) === emailNorm && item.ativo !== false);
+
   if (!usuario || String(usuario.senha || '') !== String(senha || '')) {
     throw new Error('E-mail ou senha inválidos.');
   }
+
   return montarSessao(usuario);
 }
 
@@ -216,9 +254,13 @@ export async function loginCentral(email, senha) {
 export function carregarSessao() {
   try {
     const parsed = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+
     if (!parsed?.id) return null;
+
     const usuarioAtual = carregarUsuarios().find((item) => item.id === parsed.id && item.ativo !== false);
+
     if (!usuarioAtual) return null;
+
     return {
       id: usuarioAtual.id,
       nome: usuarioAtual.nome,
@@ -237,12 +279,15 @@ export function sairLocal() {
 
 export function criarUsuario(dados, usuariosAtuais = carregarUsuarios()) {
   const email = normalizarEmail(dados.email);
+
   if (!dados.nome?.trim()) throw new Error('Informe o nome do usuário.');
   if (!email) throw new Error('Informe o e-mail do usuário.');
   if (!dados.senha?.trim()) throw new Error('Informe uma senha inicial.');
+
   if (usuariosAtuais.some((item) => normalizarEmail(item.email) === email)) {
     throw new Error('Já existe um usuário com este e-mail.');
   }
+
   const novo = {
     id: uid('user'),
     nome: limparTexto(dados.nome),
@@ -253,6 +298,7 @@ export function criarUsuario(dados, usuariosAtuais = carregarUsuarios()) {
     criadoEm: new Date().toISOString(),
     atualizadoEm: new Date().toISOString(),
   };
+
   return [novo, ...usuariosAtuais];
 }
 
@@ -264,11 +310,14 @@ export async function criarUsuarioAsync(dados, usuariosAtuais = carregarUsuarios
 
 export function atualizarUsuario(usuarios = [], id, alteracoes = {}) {
   const emailNovo = alteracoes.email !== undefined ? normalizarEmail(alteracoes.email) : null;
+
   if (emailNovo && usuarios.some((item) => item.id !== id && normalizarEmail(item.email) === emailNovo)) {
     throw new Error('Já existe outro usuário com este e-mail.');
   }
+
   return usuarios.map((item) => {
     if (item.id !== id) return item;
+
     return {
       ...item,
       ...alteracoes,
@@ -286,7 +335,6 @@ export async function atualizarUsuarioAsync(usuarios = [], id, alteracoes = {}) 
   return lista;
 }
 
-
 export async function alterarSenhaUsuarioLogado({ usuarioId, senhaAtual, novaSenha, confirmarSenha }) {
   const senhaAtualLimpa = limparTexto(senhaAtual);
   const novaSenhaLimpa = limparTexto(novaSenha);
@@ -303,6 +351,7 @@ export async function alterarSenhaUsuarioLogado({ usuarioId, senhaAtual, novaSen
   const usuario = usuarios.find((item) => item.id === usuarioId && item.ativo !== false);
 
   if (!usuario) throw new Error('Usuário não encontrado ou inativo.');
+
   if (String(usuario.senha || '') !== String(senhaAtualLimpa)) {
     throw new Error('Senha atual inválida.');
   }
