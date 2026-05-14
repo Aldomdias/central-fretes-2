@@ -12,8 +12,9 @@ import {
   simularSimples,
 } from '../utils/calculoFrete';
 import { carregarGradeFrete, salvarGradeFrete, restaurarGradeFretePadrao } from '../utils/gradeFreteConfig';
-import { buscarBaseSimulacaoDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 
 const CANAL_VENDAS_MAP_SIM = {
   'B2C': 'B2C', 'B2B': 'ATACADO', 'MERCADO LIVRE': 'B2C', 'SHOPEE': 'B2C',
@@ -37,6 +38,18 @@ function normalizarCanalSim(r) {
   return cl || 'B2C';
 }
 
+function pickRealizadoField(row = {}, keys = []) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+}
+
+function onlyDigitsRealizado(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
 async function buscarRealizadoLocalCtes(filtros = {}) {
   if (!isSupabaseConfigured()) return [];
   const supabase = getSupabaseClient();
@@ -51,30 +64,36 @@ async function buscarRealizadoLocalCtes(filtros = {}) {
   if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem + '%');
   if (filtros.destino) query = query.ilike('cidade_destino', filtros.destino + '%');
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
-  if (filtros.canal) query = query.eq('canal', filtros.canal);
+  if (filtros.canal) {
+    const canalNorm = String(filtros.canal || '').toUpperCase();
+    if (canalNorm === 'ATACADO' || canalNorm === 'B2B') query = query.in('canal', ['ATACADO', 'B2B', 'Atacado', 'b2b']);
+    else query = query.eq('canal', filtros.canal);
+  }
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
 
   const { data, error } = await query;
   if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
+
   return (data || []).map(r => ({
-    transportadora: r.transportadora || '',
-    valorCte: Number(r.valor_cte) || 0,
-    valorNF: Number(r.valor_nf) || 0,
-    cidadeDestino: r.cidade_destino || '',
-    ufDestino: r.uf_destino || '',
-    cidadeOrigem: r.cidade_origem || '',
-    ufOrigem: r.uf_origem || '',
+    transportadora: pickRealizadoField(r, ['transportadora', 'nome_transportadora', 'transportador']) || '',
+    valorCte: Number(pickRealizadoField(r, ['valor_cte', 'valorCte', 'frete_realizado', 'freteRealizado', 'valor_frete'])) || 0,
+    valorNF: Number(pickRealizadoField(r, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota', 'valor_mercadoria'])) || 0,
+    cidadeDestino: pickRealizadoField(r, ['cidade_destino', 'cidadeDestino', 'destino', 'municipio_destino']) || '',
+    ufDestino: String(pickRealizadoField(r, ['uf_destino', 'ufDestino', 'estado_destino']) || '').toUpperCase(),
+    cidadeOrigem: pickRealizadoField(r, ['cidade_origem', 'cidadeOrigem', 'origem', 'municipio_origem']) || '',
+    ufOrigem: String(pickRealizadoField(r, ['uf_origem', 'ufOrigem', 'estado_origem']) || '').toUpperCase(),
     canal: normalizarCanalSim(r),
-    numeroCte: r.numero_cte || '',
-    chaveCte: r.chave_cte || '',
-    pesoDeclarado: Number(r.peso_declarado || r.peso) || 0,
-    qtdVolumes: Number(r.volume || r.qtd_volumes) || 0,
-    ibgeDestino: r.ibge_destino || '',
-    competencia: r.competencia || '',
-    dataEmissao: r.data_emissao || '',
-    tipo_veiculo: r.tipo_veiculo || '',
+    numeroCte: pickRealizadoField(r, ['numero_cte', 'numeroCte', 'cte', 'n_cte']) || '',
+    chaveCte: pickRealizadoField(r, ['chave_cte', 'chaveCte', 'chave']) || '',
+    pesoDeclarado: Number(pickRealizadoField(r, ['peso_declarado', 'pesoDeclarado', 'peso', 'peso_real', 'pesoReal'])) || 0,
+    qtdVolumes: Number(pickRealizadoField(r, ['qtd_volumes', 'qtdVolumes', 'volume', 'volumes', 'quantidade_volumes'])) || 0,
+    ibgeOrigem: onlyDigitsRealizado(pickRealizadoField(r, ['ibge_origem', 'ibgeOrigem', 'codigo_ibge_origem', 'codigoMunicipioOrigem', 'cod_mun_origem'])).slice(0, 7),
+    ibgeDestino: onlyDigitsRealizado(pickRealizadoField(r, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'codigoMunicipioDestino', 'cod_mun_destino'])).slice(0, 7),
+    competencia: pickRealizadoField(r, ['competencia', 'mes_competencia']) || '',
+    dataEmissao: pickRealizadoField(r, ['data_emissao', 'dataEmissao', 'emissao']) || '',
+    tipo_veiculo: pickRealizadoField(r, ['tipo_veiculo', 'tipoVeiculo', 'veiculo', 'tipo']) || '',
   }));
 }
 
@@ -312,6 +331,17 @@ function normalizarTransportadoraSimulador(nome = '') {
     .toUpperCase();
 }
 
+function transportadoraCompativelSimulador(nomeTabela = '', nomeFiltro = '') {
+  const tabela = normalizarTransportadoraSimulador(nomeTabela);
+  const filtro = normalizarTransportadoraSimulador(nomeFiltro);
+  if (!tabela || !filtro) return false;
+  if (tabela === filtro) return true;
+  // Nomes vindos do CT-e e da tabela raramente são idênticos.
+  // Ex.: CPS LOG x CPS LOG TRANSPORTES LTDA.
+  // Para o simulador do realizado, aceita correspondência parcial segura.
+  return (tabela.length >= 5 && filtro.includes(tabela)) || (filtro.length >= 5 && tabela.includes(filtro));
+}
+
 function criarMetricaRealizadoTransportadora(nome) {
   return {
     transportadora: nome || 'Sem transportadora',
@@ -327,6 +357,8 @@ function criarMetricaRealizadoTransportadora(nome) {
     valorNF: 0,
     peso: 0,
     volumes: 0,
+    exemplosCarregadas: [],
+    exemplosGanharia: [],
   };
 }
 
@@ -335,6 +367,36 @@ function obterMetricaRealizado(mapa, nome) {
   const chave = normalizarTransportadoraSimulador(nomeLimpo);
   if (!mapa.has(chave)) mapa.set(chave, criarMetricaRealizadoTransportadora(nomeLimpo));
   return mapa.get(chave);
+}
+
+function montarExemploSimulacaoOrigem({ row, transportadoraReal, valorCte, vencedor, resultado, itemTabela, tipo = 'carregada' }) {
+  const freteMelhor = numeroRealizado(vencedor?.total);
+  const freteTabela = numeroRealizado(itemTabela?.total);
+  const economiaMelhor = valorCte - freteMelhor;
+  return {
+    tipo,
+    cte: row.numeroCte || row.chaveCte || '',
+    data: row.dataEmissao || '',
+    origem: row.cidadeOrigem || '',
+    ufOrigem: row.ufOrigem || '',
+    destino: row.cidadeDestino || vencedor?.cidadeDestino || '',
+    ufDestino: row.ufDestino || vencedor?.ufDestino || '',
+    transportadoraReal,
+    freteRealizado: valorCte,
+    vencedor: vencedor?.transportadora || '',
+    freteMelhor,
+    transportadoraTabela: itemTabela?.transportadora || '',
+    freteTabela,
+    diferencaPotencial: economiaMelhor,
+    savingPositivo: Math.max(economiaMelhor, 0),
+    rankingTabela: itemTabela?.ranking || '',
+    concorrentes: resultado.length,
+    topConcorrentes: resultado.slice(0, 3).map((concorrente) => ({
+      transportadora: concorrente.transportadora,
+      frete: numeroRealizado(concorrente.total),
+      ranking: concorrente.ranking,
+    })),
+  };
 }
 
 function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cidadePorIbge, gradeCanal = []) {
@@ -420,7 +482,9 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       const metrica = obterMetricaRealizado(simulacaoTransportadoraMap, nomeTabela);
       metrica.ctesConcorreu += 1;
       d.concorrentesTabela.add(nomeTabela);
-      if (Number(item.ranking) === 1) metrica.ctesGanharia += 1;
+      if (Number(item.ranking) === 1) {
+        metrica.ctesGanharia += 1;
+      }
     });
 
     const vencedor = resultado[0];
@@ -440,6 +504,28 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
     }
 
     metricaReal.freteMelhorParaCargasCarregadas += numeroRealizado(vencedor.total);
+
+    const exemploCarregada = montarExemploSimulacaoOrigem({
+      row,
+      transportadoraReal: transportadora,
+      valorCte,
+      vencedor,
+      resultado,
+      itemTabela: resultadoReal,
+      tipo: 'carregada',
+    });
+    metricaReal.exemplosCarregadas.push(exemploCarregada);
+
+    const metricaVencedor = obterMetricaRealizado(simulacaoTransportadoraMap, vencedor.transportadora || 'Sem transportadora');
+    metricaVencedor.exemplosGanharia.push(montarExemploSimulacaoOrigem({
+      row,
+      transportadoraReal: transportadora,
+      valorCte,
+      vencedor,
+      resultado,
+      itemTabela: vencedor,
+      tipo: 'ganharia',
+    }));
 
     const economia = valorCte - numeroRealizado(vencedor.total);
     diferencaPotencialTotal += economia;
@@ -490,6 +576,12 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       diferencaPotencial,
       economiaPotencial: Math.max(diferencaPotencial, 0),
       percentualEconomiaPotencial: item.freteRealizado ? (Math.max(diferencaPotencial, 0) / item.freteRealizado) * 100 : 0,
+      exemplosCarregadas: [...(item.exemplosCarregadas || [])]
+        .sort((a, b) => Math.abs(b.diferencaPotencial) - Math.abs(a.diferencaPotencial))
+        .slice(0, 10),
+      exemplosGanharia: [...(item.exemplosGanharia || [])]
+        .sort((a, b) => Math.abs(b.diferencaPotencial) - Math.abs(a.diferencaPotencial))
+        .slice(0, 10),
     };
   }).sort((a, b) => b.economiaPotencial - a.economiaPotencial || b.ctesCarregou - a.ctesCarregou || b.ctesGanharia - a.ctesGanharia);
 
@@ -543,6 +635,8 @@ function normalizarChaveSimulador(valor = '') {
   return String(valor || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s*[/\-]\s*[A-Z]{2}\s*$/i, '')
+    .replace(/[^A-Z0-9]+/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase();
@@ -584,6 +678,130 @@ function periodoRealizadoMeses(rows = [], inicio = '', fim = '') {
   const end = new Date(`${dataFim}T00:00:00`);
   const meses = (end.getFullYear() - ini.getFullYear()) * 12 + (end.getMonth() - ini.getMonth()) + 1;
   return Math.max(Number.isFinite(meses) ? meses : 1, 1);
+}
+
+function resolverIbgeRealizadoPorCidade(row = {}, tipo = 'destino', municipioPorCidade) {
+  const campoIbge = tipo === 'origem' ? 'ibgeOrigem' : 'ibgeDestino';
+  const atual = String(row?.[campoIbge] || '').replace(/\D/g, '').slice(0, 7);
+  if (atual) return atual;
+
+  const cidade = tipo === 'origem' ? row.cidadeOrigem : row.cidadeDestino;
+  const uf = tipo === 'origem' ? row.ufOrigem : row.ufDestino;
+  const cidadeNorm = normalizeBuscaIbge(cidade || '');
+  const cidadeUfNorm = normalizeBuscaIbge(`${cidade || ''}/${uf || ''}`);
+  const municipio = municipioPorCidade?.get(cidadeUfNorm) || municipioPorCidade?.get(cidadeNorm);
+  return municipio?.ibge || '';
+}
+
+function criarRouteKeysRealizado(rows = [], canalPadrao = '') {
+  const keys = new Set();
+  (rows || []).forEach((row) => {
+    const origem = String(row.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+    const destino = String(row.ibgeDestino || '').replace(/\D/g, '').slice(0, 7);
+    if (!origem || !destino) return;
+    keys.add(`${row.canal || canalPadrao || ''}|${origem}-${destino}`);
+  });
+  return [...keys];
+}
+
+function mesclarBasesTransportadorasSimulador(bases = []) {
+  const mapa = new Map();
+
+  (bases || []).flat().filter(Boolean).forEach((transportadora) => {
+    const nome = String(transportadora?.nome || '').trim();
+    if (!nome) return;
+    const chave = normalizarTransportadoraSimulador(nome);
+    const atual = mapa.get(chave) || {
+      ...transportadora,
+      nome,
+      origens: [],
+    };
+
+    const origemKeys = new Set((atual.origens || []).map((origem) => {
+      const ibge = String(origem?.rotas?.[0]?.ibgeOrigem || origem?.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+      return [normalizarChaveSimulador(origem?.cidade), String(origem?.canal || '').toUpperCase(), ibge].join('|');
+    }));
+
+    (transportadora.origens || []).forEach((origem) => {
+      const ibge = String(origem?.rotas?.[0]?.ibgeOrigem || origem?.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+      const chaveOrigem = [normalizarChaveSimulador(origem?.cidade), String(origem?.canal || '').toUpperCase(), ibge].join('|');
+      if (!origemKeys.has(chaveOrigem)) {
+        atual.origens.push(origem);
+        origemKeys.add(chaveOrigem);
+      }
+    });
+
+    mapa.set(chave, atual);
+  });
+
+  return [...mapa.values()].filter((item) => (item.origens || []).length);
+}
+
+function valoresUnicosValidos(lista = []) {
+  const vistos = new Set();
+  const saida = [];
+  (lista || []).forEach((item) => {
+    const texto = String(item || '').trim();
+    const chave = normalizarChaveSimulador(texto);
+    if (!texto || !chave || vistos.has(chave)) return;
+    vistos.add(chave);
+    saida.push(texto);
+  });
+  return saida;
+}
+
+function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '', pesoLinha = 0, nf = 0, destino = '', cidadePorIbge, gradeCanal = [], filtros = {} }) {
+  const origemLinha = String(row.cidadeOrigem || '').trim();
+  const ufOrigem = String(row.ufOrigem || '').trim().toUpperCase();
+  const canalLinha = canal || filtros.canal || row.canal || 'ATACADO';
+
+  const origensTentativa = valoresUnicosValidos([
+    origemLinha,
+    origemLinha && ufOrigem ? `${origemLinha}/${ufOrigem}` : '',
+    filtros.origem,
+  ]);
+
+  for (const origemTentativa of origensTentativa) {
+    const resultado = simularSimples({
+      transportadoras: baseOnline,
+      origem: origemTentativa,
+      canal: canalLinha,
+      peso: pesoLinha,
+      valorNF: nf,
+      cubagem: cubagemRealizado(row),
+      destinoCodigo: destino,
+      cidadePorIbge,
+      gradeCanal,
+    }) || [];
+    if (resultado.length) return { resultado, origemUsada: origemTentativa, fallback: false };
+  }
+
+  // Fallback controlado: quando o CT-e vem com origem escrita diferente da tabela
+  // ou sem IBGE de origem, simula pelo destino e depois tenta manter apenas a mesma origem textual.
+  const resultadoDestino = simularSimples({
+    transportadoras: baseOnline,
+    origem: '',
+    canal: canalLinha,
+    peso: pesoLinha,
+    valorNF: nf,
+    cubagem: cubagemRealizado(row),
+    destinoCodigo: destino,
+    cidadePorIbge,
+    gradeCanal,
+  }) || [];
+
+  if (!resultadoDestino.length) return { resultado: [], origemUsada: origemLinha || filtros.origem || '', fallback: true };
+
+  const origemNorm = normalizarChaveSimulador(origemLinha || filtros.origem || '');
+  const resultadoMesmaOrigem = origemNorm
+    ? resultadoDestino.filter((item) => normalizarChaveSimulador(item.origem) === origemNorm || normalizarChaveSimulador(item.origem).includes(origemNorm) || origemNorm.includes(normalizarChaveSimulador(item.origem)))
+    : resultadoDestino;
+
+  return {
+    resultado: resultadoMesmaOrigem.length ? resultadoMesmaOrigem : resultadoDestino,
+    origemUsada: origemLinha || filtros.origem || '',
+    fallback: true,
+  };
 }
 
 function criarResumoRotaRealizado(row, itemSelecionada, vencedor, resultado, economiaSelecionadaVsReal, reducaoNecessaria, diferencaVencedor) {
@@ -680,6 +898,13 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
   let savingVencedorVsReal = 0;
   let diferencaSelecionadaVsVencedor = 0;
   let reducaoNecessariaSoma = 0;
+  const diagnostico = {
+    linhasSemIbgeDestino: 0,
+    linhasSemResultado: 0,
+    canaisUsados: new Map(),
+    origensUsadas: new Map(),
+    destinosSemResultado: new Map(),
+  };
 
   (rows || []).forEach((row) => {
     ctesAnalisados += 1;
@@ -688,7 +913,11 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     const pesoLinha = pesoRealizado(row);
     const vol = numeroRealizado(row.qtdVolumes);
     const origem = row.cidadeOrigem || filtros.origem || '';
-    const canal = row.canal || filtros.canal || 'ATACADO';
+    const canal = filtros.canal || row.canal || 'ATACADO';
+    const canalDiag = String(canal || 'SEM CANAL').toUpperCase();
+    diagnostico.canaisUsados.set(canalDiag, (diagnostico.canaisUsados.get(canalDiag) || 0) + 1);
+    const origemDiag = String(origem || 'SEM ORIGEM').trim();
+    diagnostico.origensUsadas.set(origemDiag, (diagnostico.origensUsadas.get(origemDiag) || 0) + 1);
     let destino = String(row.ibgeDestino || '').trim();
 
     if (!destino && municipioPorCidade) {
@@ -722,31 +951,35 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     metricaReal.volumes += vol;
 
     if (!destino) {
+      diagnostico.linhasSemIbgeDestino += 1;
       ctesSemTabelaGeral += 1;
       return;
     }
 
     const gradeCanal = gradePorCanal[canal] || gradePorCanal.ATACADO || [];
-    const resultado = simularSimples({
-      transportadoras: baseOnline,
-      origem,
+    const { resultado, origemUsada, fallback } = simularLinhaRealizadoComFallback({
+      baseOnline,
+      row,
       canal,
-      peso: pesoLinha,
-      valorNF: nf,
-      cubagem: cubagemRealizado(row),
-      destinoCodigo: destino,
+      pesoLinha,
+      nf,
+      destino,
       cidadePorIbge,
       gradeCanal,
-    }) || [];
+      filtros,
+    });
 
     const vencedor = resultado[0] || null;
     if (!vencedor) {
+      diagnostico.linhasSemResultado += 1;
+      const destinoLabelDiag = `${row.cidadeDestino || ''}/${row.ufDestino || ''} ${destino}`.trim();
+      diagnostico.destinosSemResultado.set(destinoLabelDiag, (diagnostico.destinosSemResultado.get(destinoLabelDiag) || 0) + 1);
       ctesSemTabelaGeral += 1;
       return;
     }
 
     ctesSimulados += 1;
-    const itemSelecionada = resultado.find((item) => normalizarTransportadoraSimulador(item.transportadora) === nomeSelecionadoNorm) || null;
+    const itemSelecionada = resultado.find((item) => transportadoraCompativelSimulador(item.transportadora, transportadoraSelecionada) || normalizarTransportadoraSimulador(item.transportadora) === nomeSelecionadoNorm) || null;
     const freteVenc = numeroRealizado(vencedor.total);
     freteVencedor += freteVenc;
     savingVencedorVsReal += Math.max(valorCte - freteVenc, 0);
@@ -780,7 +1013,8 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       ctesSemTabelaSelecionada += 1;
     }
 
-    const chaveRota = [origem, row.ufOrigem, row.cidadeDestino, row.ufDestino, getTipoVeiculo(row)].map(normalizarChaveSimulador).join('|');
+    const origemResumo = origemUsada || origem;
+    const chaveRota = [origemResumo, row.ufOrigem, row.cidadeDestino, row.ufDestino, getTipoVeiculo(row)].map(normalizarChaveSimulador).join('|');
     const rota = rotasMap.get(chaveRota) || criarResumoRotaRealizado(row, itemSelecionada, vencedor, resultado, economiaSelecionadaVsReal, reducaoNecessaria, diferencaVencedor);
     rota.ctes += 1;
     rota.volumes += vol;
@@ -811,7 +1045,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     ctesDetalhes.push({
       cte: row.numeroCte || row.chaveCte || '',
       data: row.dataEmissao || '',
-      origem,
+      origem: origemResumo,
       ufOrigem: row.ufOrigem || '',
       destino: row.cidadeDestino || vencedor?.cidadeDestino || '',
       ufDestino: row.ufDestino || vencedor?.ufDestino || '',
@@ -827,6 +1061,8 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       savingSelecionada: economiaSelecionadaVsReal,
       diferencaParaVencedor: diferencaVencedor,
       concorrentes: resultado.length,
+      origemUsada,
+      fallbackOrigem: fallback,
     });
   });
 
@@ -887,6 +1123,13 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     rotas,
     porTransportadoraReal,
     ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor).slice(0, 300),
+    diagnostico: {
+      linhasSemIbgeDestino: diagnostico.linhasSemIbgeDestino,
+      linhasSemResultado: diagnostico.linhasSemResultado,
+      canaisUsados: [...diagnostico.canaisUsados.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
+      origensUsadas: [...diagnostico.origensUsadas.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
+      destinosSemResultado: [...diagnostico.destinosSemResultado.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
+    },
   };
 
   return {
@@ -1010,6 +1253,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [fimOrigem, setFimOrigem] = useState('');
   const [usarRealizadoOrigem, setUsarRealizadoOrigem] = useState(true);
   const [resultadoOrigem, setResultadoOrigem] = useState(null);
+  const [detalheOrigemAberto, setDetalheOrigemAberto] = useState('');
 
   const [transportadoraRealizado, setTransportadoraRealizado] = useState('');
   const [canalRealizado, setCanalRealizado] = useState(canais[0] || 'ATACADO');
@@ -1157,12 +1401,35 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setErroSimulacao('');
     try {
       const base = await executarComTimeout(buscarBaseSimulacaoDb(filtros), 120000);
-      return Array.isArray(base) ? base : [];
+      if (Array.isArray(base) && base.length) return base;
+
+      // Fallback para evitar cenário zero por divergência de canal/origem digitada
+      // Ex.: origem digitada sem acento ou canal salvo como B2B em vez de ATACADO.
+      if (filtros?.origem || filtros?.canal) {
+        const fallbackSemCanal = await executarComTimeout(buscarBaseSimulacaoDb({ ...filtros, canal: '' }), 120000);
+        if (Array.isArray(fallbackSemCanal) && fallbackSemCanal.length) return fallbackSemCanal;
+      }
+
+      return [];
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao buscar base online do Supabase.');
       return [];
     } finally {
       setCarregandoSimulacao(false);
+    }
+  };
+
+  const carregarMapaVinculosSimulador = async () => {
+    try {
+      const vinculos = await carregarVinculosTransportadoras();
+      return criarMapaVinculosTransportadoras(vinculos);
+    } catch (err) {
+      try {
+        const locais = JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]');
+        return criarMapaVinculosTransportadoras(Array.isArray(locais) ? locais : []);
+      } catch {
+        return new Map();
+      }
     }
   };
 
@@ -1579,28 +1846,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
-    iniciarProcessamentoUi('Simulador do realizado', 'Buscando malha da transportadora e concorrentes...', 8);
+    iniciarProcessamentoUi('Simulador do realizado', 'Carregando vínculos, CT-es e tabelas...', 8);
 
     try {
-      const filtrosBase = {
-        nomeTransportadora: transportadoraRealizado,
-        canal: canalRealizado,
-        origem: modoRealizado === 'filtros' ? origemRealizado : '',
-        ufDestino: ufDestinoRealizado,
-      };
+      atualizarProcessamentoUi('Carregando vínculos de transportadoras...', 14);
+      const mapaVinculos = await carregarMapaVinculosSimulador();
+      const nomeTabelaSelecionada = mapaVinculos.get(normalizarChaveSimulador(transportadoraRealizado))
+        || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase())
+        || transportadoraRealizado;
 
-      const baseOnline = await carregarBaseOnline(filtrosBase);
-      if (!baseOnline.length) {
-        setErroSimulacao('Não encontrei tabela/malha para a transportadora selecionada com esses filtros.');
-        finalizarProcessamentoUi('Sem base de tabela', 'A transportadora não possui malha compatível nos filtros.', 100);
-        return;
-      }
-
-      const lookupOnline = buildLookupTables(baseOnline);
-      const mapaCidades = new Map(cidadePorIbgeCompleto);
-      (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
-
-      atualizarProcessamentoUi('Buscando CT-es realizados conforme período e filtros...', 35);
+      atualizarProcessamentoUi('Buscando CT-es realizados conforme período e filtros...', 24);
       const rowsBrutos = await buscarRealizadoLocalCtes({
         canal: canalRealizado,
         origem: origemRealizado,
@@ -1612,44 +1867,104 @@ export default function SimuladorPage({ transportadoras = [] }) {
         limit: limiteRealizado,
       });
 
-      const origensMalha = new Set(
-        baseOnline.flatMap((t) => (t.origens || []).map((o) => normalizarChaveSimulador(o.cidade))).filter(Boolean)
-      );
-
-      const rowsFiltrados = modoRealizado === 'malha'
-        ? rowsBrutos.filter((row) => origensMalha.has(normalizarChaveSimulador(row.cidadeOrigem)))
-        : rowsBrutos;
-
-      const vinculosSalvos = (() => {
-        try { return JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]'); } catch { return []; }
-      })();
-      const mapaVinculos = new Map(
-        vinculosSalvos.map(v => [
-          String(v.nomeCte || '').trim().toUpperCase(),
-          String(v.nomeTabela || '').trim()
-        ])
-      );
-
-      atualizarProcessamentoUi('Resolvendo IBGE e aplicando vínculos de transportadora...', 55);
-      const rowsComIbge = rowsFiltrados.map((row) => {
-        let ibgeDestino = row.ibgeDestino || '';
-        if (!ibgeDestino) {
-          const cidadeNorm = normalizeBuscaIbge(row.cidadeDestino || '');
-          const cidadeUfNorm = normalizeBuscaIbge((row.cidadeDestino || '') + '/' + (row.ufDestino || ''));
-          const municipio = municipioPorCidade.get(cidadeUfNorm) || municipioPorCidade.get(cidadeNorm);
-          ibgeDestino = municipio?.ibge || '';
-        }
-
+      atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 36);
+      const rowsComIbgeBase = rowsBrutos.map((row) => {
+        const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
+        const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', municipioPorCidade);
         const nomeOriginal = String(row.transportadora || '').trim();
-        const nomeVinculado = mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
-        return { ...row, ibgeDestino, transportadora: nomeVinculado };
+        const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
+        return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
       });
 
-      atualizarProcessamentoUi('Simulando CT-e a CT-e contra a tabela selecionada...', 74);
+      atualizarProcessamentoUi('Buscando malha da transportadora/tabela selecionada...', 46);
+      const baseSelecionada = await carregarBaseOnline({
+        nomeTransportadora: nomeTabelaSelecionada,
+        canal: canalRealizado,
+        origem: modoRealizado === 'filtros' ? origemRealizado : '',
+        ufDestino: ufDestinoRealizado,
+      });
+
+      const origensMalha = new Set(
+        baseSelecionada
+          .flatMap((t) => (t.origens || []).map((o) => normalizarChaveSimulador(o.cidade)))
+          .filter(Boolean)
+      );
+
+      const rowsFiltrados = modoRealizado === 'malha' && origensMalha.size
+        ? rowsComIbgeBase.filter((row) => origensMalha.has(normalizarChaveSimulador(row.cidadeOrigem)))
+        : rowsComIbgeBase;
+
+      const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
+      const basesParaMesclar = [baseSelecionada];
+      let baseRotas = [];
+
+      if (routeKeysRealizado.length) {
+        atualizarProcessamentoUi(`Buscando concorrentes por ${routeKeysRealizado.length.toLocaleString('pt-BR')} rota(s) reais...`, 58);
+        baseRotas = await buscarBaseSimulacaoPorRotasDb({
+          routeKeys: routeKeysRealizado.slice(0, 5000),
+          canal: canalRealizado,
+        });
+        if (Array.isArray(baseRotas) && baseRotas.length) basesParaMesclar.push(baseRotas);
+      }
+
+      // Fallback principal: usa o mesmo caminho que já funcionou na Análise por Origem.
+      // Isso evita zerar quando o CT-e não possui IBGE de origem ou quando a busca por rota exata não acha concorrentes.
+      const origensParaBuscar = valoresUnicosValidos([
+        origemRealizado,
+        ...rowsFiltrados.map((row) => row.cidadeOrigem),
+        ...baseSelecionada.flatMap((t) => (t.origens || []).map((o) => o.cidade)),
+      ]).slice(0, 20);
+
+      let basesOrigemCarregadas = 0;
+      for (let idx = 0; idx < origensParaBuscar.length; idx += 1) {
+        const origemBusca = origensParaBuscar[idx];
+        atualizarProcessamentoUi(`Buscando tabelas concorrentes da origem ${origemBusca}...`, Math.min(72, 60 + idx));
+        const baseOrigem = await carregarBaseOnline({
+          canal: canalRealizado,
+          origem: origemBusca,
+          ufDestino: ufDestinoRealizado,
+        });
+        if (Array.isArray(baseOrigem) && baseOrigem.length) {
+          basesOrigemCarregadas += baseOrigem.length;
+          basesParaMesclar.push(baseOrigem);
+        }
+      }
+
+      let baseParaSimulacao = mesclarBasesTransportadorasSimulador(basesParaMesclar);
+
+      if (!baseParaSimulacao.length) {
+        setErroSimulacao('Não encontrei nenhuma tabela compatível para simular. Confira se as tabelas estão no Supabase e se a origem/canal existem no cadastro.');
+        setResultadoRealizado(simularRealizadoComTabela({
+          rows: rowsFiltrados,
+          baseOnline: [],
+          transportadoraSelecionada: nomeTabelaSelecionada,
+          filtros: {
+            canal: canalRealizado,
+            origem: origemRealizado,
+            destino: destinoRealizado,
+            ufOrigem: ufOrigemRealizado,
+            ufDestino: ufDestinoRealizado,
+            inicio: inicioRealizado,
+            fim: fimRealizado,
+            modo: modoRealizado,
+          },
+          cidadePorIbge: cidadePorIbgeCompleto,
+          gradePorCanal: grade,
+          municipioPorCidade,
+        }));
+        finalizarProcessamentoUi('Sem tabelas para simular', 'O realizado foi carregado, mas não há tabela concorrente disponível.', 100);
+        return;
+      }
+
+      const lookupOnline = buildLookupTables(baseParaSimulacao);
+      const mapaCidades = new Map(cidadePorIbgeCompleto);
+      (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
+
+      atualizarProcessamentoUi('Simulando CT-e a CT-e contra a tabela selecionada e concorrentes...', 82);
       const resultado = simularRealizadoComTabela({
-        rows: rowsComIbge,
-        baseOnline,
-        transportadoraSelecionada: transportadoraRealizado,
+        rows: rowsFiltrados,
+        baseOnline: baseParaSimulacao,
+        transportadoraSelecionada: nomeTabelaSelecionada,
         filtros: {
           canal: canalRealizado,
           origem: origemRealizado,
@@ -1669,6 +1984,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ...resultado,
         filtros: {
           transportadora: transportadoraRealizado,
+          transportadoraTabelaUsada: nomeTabelaSelecionada,
           canal: canalRealizado,
           modo: modoRealizado,
           origem: origemRealizado,
@@ -1679,7 +1995,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimRealizado,
           limite: limiteRealizado,
           ctesBrutos: rowsBrutos.length,
-          ctesNaMalha: rowsComIbge.length,
+          ctesNaMalha: rowsFiltrados.length,
+          rotasReaisComIbge: routeKeysRealizado.length,
+          tabelasCarregadas: baseParaSimulacao.length,
+          tabelasBaseSelecionada: baseSelecionada.length,
+          tabelasBaseRotas: Array.isArray(baseRotas) ? baseRotas.length : 0,
+          tabelasBaseOrigem: basesOrigemCarregadas,
+          origensBuscadas: origensParaBuscar.join(', '),
+          fonteTabela: 'selecionada_rotas_origens',
         },
       });
 
@@ -1771,16 +2094,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimOrigem,
           limit: 5000,
         });
-        // Carrega vínculos de transportadoras do localStorage
-        const vinculosSalvos = (() => {
-          try { return JSON.parse(localStorage.getItem('vinculos-transportadoras') || '[]'); } catch { return []; }
-        })();
-        const mapaVinculos = new Map(
-          vinculosSalvos.map(v => [
-            String(v.nomeCte || '').trim().toUpperCase(),
-            String(v.nomeTabela || '').trim()
-          ])
-        );
+        // Carrega vínculos de transportadoras do Supabase com fallback local
+        const mapaVinculos = await carregarMapaVinculosSimulador();
 
         // Resolve ibgeDestino e aplica vínculos de nome de transportadora
         const rowsComIbge = rowsBrutos.map((row) => {
@@ -1794,7 +2109,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           }
           // Aplica vínculo de transportadora
           const nomeOriginal = String(row.transportadora || '').trim();
-          const nomeVinculado = mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
+          const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
           return { ...row, ibgeDestino, transportadora: nomeVinculado };
         });
 
@@ -1805,6 +2120,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         };
       }
 
+      setDetalheOrigemAberto('');
       setResultadoOrigem({
         tabela: resultadoTabela,
         realizado,
@@ -2232,23 +2548,85 @@ export default function SimuladorPage({ transportadoras = [] }) {
                           <th>Frete realizado</th>
                           <th>Frete melhor</th>
                           <th>Dif. potencial</th>
+                          <th>Detalhes</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {((resultadoOrigem.realizado?.simulacaoPorTransportadora || []).slice(0, 30)).map((item) => (
-                          <tr key={item.transportadora}>
-                            <td><strong>{item.transportadora}</strong></td>
-                            <td>{item.ctesConcorreu}</td>
-                            <td>{item.ctesGanharia}</td>
-                            <td>{formatPercent(item.pctGanharia)}</td>
-                            <td>{item.ctesCarregou}</td>
-                            <td>{formatPercent(item.pctCarregou)}</td>
-                            <td>{formatPercent(item.acertoOperacional)}</td>
-                            <td>{formatMoney(item.freteRealizado)}</td>
-                            <td>{formatMoney(item.freteMelhorParaCargasCarregadas)}</td>
-                            <td>{formatMoney(item.diferencaPotencial)}</td>
-                          </tr>
-                        ))}
+                        {((resultadoOrigem.realizado?.simulacaoPorTransportadora || []).slice(0, 30)).map((item) => {
+                          const aberto = detalheOrigemAberto === item.transportadora;
+                          const exemplos = aberto
+                            ? ((item.exemplosCarregadas || []).length ? item.exemplosCarregadas : item.exemplosGanharia || [])
+                            : [];
+                          return (
+                            <React.Fragment key={item.transportadora}>
+                              <tr>
+                                <td><strong>{item.transportadora}</strong></td>
+                                <td>{item.ctesConcorreu}</td>
+                                <td>{item.ctesGanharia}</td>
+                                <td>{formatPercent(item.pctGanharia)}</td>
+                                <td>{item.ctesCarregou}</td>
+                                <td>{formatPercent(item.pctCarregou)}</td>
+                                <td>{formatPercent(item.acertoOperacional)}</td>
+                                <td>{formatMoney(item.freteRealizado)}</td>
+                                <td>{formatMoney(item.freteMelhorParaCargasCarregadas)}</td>
+                                <td>{formatMoney(item.diferencaPotencial)}</td>
+                                <td>
+                                  <button
+                                    className="sim-tab"
+                                    type="button"
+                                    onClick={() => setDetalheOrigemAberto(aberto ? '' : item.transportadora)}
+                                    disabled={!(item.exemplosCarregadas?.length || item.exemplosGanharia?.length)}
+                                  >
+                                    {aberto ? 'Fechar' : 'Ver 10 casos'}
+                                  </button>
+                                </td>
+                              </tr>
+                              {aberto && (
+                                <tr>
+                                  <td colSpan="11" style={{ background: '#f8fafc' }}>
+                                    <div style={{ display: 'grid', gap: 10 }}>
+                                      <div style={{ fontSize: 13 }}>
+                                        <strong>Como ler a Dif. potencial:</strong> soma do frete realizado nos CT-es carregados pela transportadora menos o melhor frete simulado para esses mesmos CT-es. Se ficar positivo, existia saving potencial; se ficar negativo, o realizado estava abaixo da melhor tabela encontrada.
+                                      </div>
+                                      <div className="sim-analise-tabela-wrap">
+                                        <table className="sim-analise-tabela">
+                                          <thead>
+                                            <tr>
+                                              <th>CT-e</th>
+                                              <th>Destino</th>
+                                              <th>Real</th>
+                                              <th>Frete realizado</th>
+                                              <th>Melhor tabela</th>
+                                              <th>Frete melhor</th>
+                                              <th>Diferença</th>
+                                              <th>Tabela da transp.</th>
+                                              <th>Concorrentes</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {exemplos.slice(0, 10).map((exemplo, idx) => (
+                                              <tr key={`${exemplo.cte}-${idx}`}>
+                                                <td>{exemplo.cte || '-'}</td>
+                                                <td>{exemplo.destino}/{exemplo.ufDestino}</td>
+                                                <td>{exemplo.transportadoraReal}</td>
+                                                <td>{formatMoney(exemplo.freteRealizado)}</td>
+                                                <td>{exemplo.vencedor || '-'}</td>
+                                                <td>{formatMoney(exemplo.freteMelhor)}</td>
+                                                <td className={exemplo.diferencaPotencial > 0 ? 'positivo' : exemplo.diferencaPotencial < 0 ? 'negativo' : ''}>{formatMoney(exemplo.diferencaPotencial)}</td>
+                                                <td>{exemplo.freteTabela ? formatMoney(exemplo.freteTabela) : '-'}</td>
+                                                <td>{exemplo.concorrentes}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -2390,6 +2768,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </div>
 
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
+                <div className="summary-card"><span>Fonte tabela</span><strong>{resultadoRealizado.filtros?.fonteTabela === 'rotas_realizadas' ? 'Rotas realizadas' : 'Malha selecionada'}</strong><small>{Number(resultadoRealizado.filtros?.tabelasCarregadas || 0).toLocaleString('pt-BR')} tabela(s) carregada(s) • {Number(resultadoRealizado.filtros?.rotasReaisComIbge || 0).toLocaleString('pt-BR')} rota(s) reais</small></div>
                 <div className="summary-card"><span>Frete realizado</span><strong>{formatMoney(resultadoRealizado.freteRealizado)}</strong><small>{formatPercent(resultadoRealizado.percentualFreteRealizado)} sobre NF</small></div>
                 <div className="summary-card"><span>Faturamento tabela</span><strong>{formatMoney(resultadoRealizado.freteSelecionada)}</strong><small>nos CT-es com tabela</small></div>
                 <div className="summary-card"><span>Projeção mensal</span><strong>{formatMoney(resultadoRealizado.faturamentoSelecionadaMes)}</strong><small>{resultadoRealizado.meses} mês(es) base</small></div>
@@ -2401,6 +2780,24 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div className="summary-card"><span>Redução média p/ ganhar</span><strong>{formatPercent(resultadoRealizado.reducaoMediaNecessaria)}</strong><small>rotas perdidas</small></div>
                 <div className="summary-card"><span>Perda para concorrentes</span><strong>{formatMoney(resultadoRealizado.diferencaSelecionadaVsVencedor)}</strong><small>diferença nas perdidas</small></div>
               </div>
+
+              {resultadoRealizado.ctesSimulados === 0 && (
+                <div className="sim-alert warning">
+                  <strong>Nenhum CT-e foi simulado.</strong> O sistema encontrou o realizado, mas não achou tabela compatível por origem/destino/canal. Confira abaixo o diagnóstico para saber onde travou.
+                  <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
+                    <div>Sem IBGE destino: <strong>{resultadoRealizado.diagnostico?.linhasSemIbgeDestino || 0}</strong></div>
+                    <div>Com IBGE, mas sem tabela encontrada: <strong>{resultadoRealizado.diagnostico?.linhasSemResultado || 0}</strong></div>
+                    <div>Canais usados na simulação: <strong>{(resultadoRealizado.diagnostico?.canaisUsados || []).map(([c, q]) => `${c}: ${q}`).join(' | ') || '-'}</strong></div>
+                    <div>Origens mais usadas: <strong>{(resultadoRealizado.diagnostico?.origensUsadas || []).map(([o, q]) => `${o}: ${q}`).join(' | ') || '-'}</strong></div>
+                    <div>Destinos sem tabela: <strong>{(resultadoRealizado.diagnostico?.destinosSemResultado || []).map(([d, q]) => `${d}: ${q}`).join(' | ') || '-'}</strong></div>
+                  </div>
+                </div>
+              )}
+              {resultadoRealizado.ctesSimulados > 0 && resultadoRealizado.ctesComTabelaSelecionada === 0 && (
+                <div className="sim-alert warning">
+                  <strong>Concorrentes foram simulados, mas a tabela selecionada não apareceu nas rotas.</strong> Isso indica que a transportadora escolhida não tem tabela para esses CT-es ou o nome da tabela/vínculo está diferente.
+                </div>
+              )}
 
               <div className="sim-parametros-box">
                 <div className="sim-parametros-header">
