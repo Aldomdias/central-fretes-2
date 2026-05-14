@@ -1355,7 +1355,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     rotas,
     porTransportadoraReal,
     pareto80Volume,
-    ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor).slice(0, 300),
+    ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor).slice(0, 1000),
     diagnostico: {
       linhasSemIbgeDestino: diagnostico.linhasSemIbgeDestino,
       linhasSemResultado: diagnostico.linhasSemResultado,
@@ -1502,6 +1502,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [fimRealizado, setFimRealizado] = useState('');
   const [limiteRealizado, setLimiteRealizado] = useState(10000);
   const [resultadoRealizado, setResultadoRealizado] = useState(null);
+  const [filtroDetalhe, setFiltroDetalhe] = useState('');
+  const [paginaDetalhe, setPaginaDetalhe] = useState(0);
+  const DETALHE_POR_PAGINA = 50;
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
@@ -2095,6 +2098,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
+    setFiltroDetalhe('');
+    setPaginaDetalhe(0);
     iniciarProcessamentoUi('Simulador do realizado', 'Carregando vínculos, CT-es e tabelas...', 8);
 
     try {
@@ -2144,8 +2149,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
           .filter(Boolean)
       );
 
+      // Diagnóstico de normalização da malha
+      const origemMalhaNaoReconhecida = new Set();
       const rowsFiltrados = modoRealizado === 'malha' && origensMalha.size
-        ? rowsComIbge.filter((row) => origensMalha.has(normalizarChaveSimulador(row.cidadeOrigem)))
+        ? rowsComIbge.filter((row) => {
+            const origemNorm = normalizarChaveSimulador(row.cidadeOrigem);
+            const ok = origensMalha.has(origemNorm);
+            if (!ok && row.cidadeOrigem) origemMalhaNaoReconhecida.add(row.cidadeOrigem);
+            return ok;
+          })
         : rowsComIbge;
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
@@ -2250,6 +2262,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           limite: limiteRealizado,
           ctesBrutos: rowsBrutos.length,
           ctesNaMalha: rowsFiltrados.length,
+          origemMalhaNaoReconhecida: [...origemMalhaNaoReconhecida].slice(0, 20),
           trackingVinculados: trackingEnriquecido.vinculados,
           trackingTotalEncontrado: mapasTracking.total,
           trackingErro: trackingEnriquecido.erroTracking,
@@ -3048,13 +3061,38 @@ export default function SimuladorPage({ transportadoras = [] }) {
           {resultadoRealizado && (
             <div style={{ marginTop: 18, display: 'grid', gap: 16 }}>
               <div className="sim-analise-resumo">
+                <div><span>Buscados do banco</span><strong>{resultadoRealizado.filtros?.ctesBrutos ?? resultadoRealizado.ctesAnalisados}</strong></div>
+                <div><span>{resultadoRealizado.filtros?.modo === 'malha' ? 'Na malha (filtro)' : 'Após filtros'}</span><strong>{resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>CT-es analisados</span><strong>{resultadoRealizado.ctesAnalisados}</strong></div>
-                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong></div>
+                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>com tabela concorrente</small></div>
+                <div><span>Sem tabela geral</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
                 <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
+                <div><span>Sem tabela selecionada</span><strong>{resultadoRealizado.ctesSemTabelaSelecionada}</strong></div>
                 <div><span>Aderência da tabela</span><strong>{formatPercent(resultadoRealizado.aderenciaSelecionada)}</strong></div>
-                <div><span>Ganharia</span><strong>{resultadoRealizado.ctesGanhariaSelecionada}</strong></div>
-                <div><span>Perderia</span><strong>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
+                <div><span>Ganharia</span><strong style={{color:'#15803d'}}>{resultadoRealizado.ctesGanhariaSelecionada}</strong></div>
+                <div><span>Perderia</span><strong style={{color:'#dc2626'}}>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
               </div>
+
+              {(() => {
+                const brutos = resultadoRealizado.filtros?.ctesBrutos ?? 0;
+                const naMalha = resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados;
+                const descartados = brutos - naMalha;
+                const pctDescartados = brutos > 0 ? (descartados / brutos) * 100 : 0;
+                const origemNaoRec = resultadoRealizado.filtros?.origemMalhaNaoReconhecida || [];
+                if (descartados > 0 && pctDescartados > 5) {
+                  return (
+                    <div className="sim-alert warning">
+                      <strong>⚠ Atenção ao filtro de malha:</strong> {brutos.toLocaleString('pt-BR')} CT-es foram buscados do banco, mas apenas {naMalha.toLocaleString('pt-BR')} ({(100 - pctDescartados).toFixed(1)}%) têm a cidade de origem cadastrada na malha da transportadora selecionada. Os outros {descartados.toLocaleString('pt-BR')} CT-es foram excluídos da simulação por não terem origem reconhecida na malha. Para ver todos os CT-es do período, mude para o modo <strong>"Usar apenas filtros informados"</strong>.
+                      {origemNaoRec.length > 0 && (
+                        <div style={{ marginTop: 6, fontSize: '0.82rem' }}>
+                          Origens do realizado não encontradas na malha: <strong>{origemNaoRec.join(', ')}</strong>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
                 <div className="summary-card"><span>Fonte tabela</span><strong>{resultadoRealizado.filtros?.fonteTabela === 'rotas_realizadas' ? 'Rotas realizadas' : 'Malha selecionada'}</strong><small>{Number(resultadoRealizado.filtros?.tabelasCarregadas || 0).toLocaleString('pt-BR')} tabela(s) carregada(s) • {Number(resultadoRealizado.filtros?.rotasReaisComIbge || 0).toLocaleString('pt-BR')} rota(s) reais</small></div>
@@ -3238,36 +3276,167 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <div className="sim-parametros-box">
                 <div className="sim-parametros-header">
                   <div>
-                    <strong>Amostra CT-e a CT-e</strong>
-                    <p>Maiores oportunidades individuais para conferência.</p>
+                    <strong>Detalhes CT-e a CT-e</strong>
+                    <p>
+                      {(resultadoRealizado.ctesDetalhes || []).length} CT-es disponíveis para conferência
+                      {resultadoRealizado.ctesAnalisados > (resultadoRealizado.ctesDetalhes || []).length
+                        ? ` (${resultadoRealizado.ctesAnalisados - (resultadoRealizado.ctesDetalhes || []).length} sem tabela concorrente não aparecem aqui)`
+                        : ''}.
+                      Use o filtro para encontrar um CT-e específico.
+                    </p>
                   </div>
                 </div>
-                <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
-                  <table className="sim-analise-tabela">
-                    <thead><tr><th>CT-e</th><th>Origem</th><th>Destino</th><th>Real</th><th>Vol.</th><th>Realizado</th><th>% NF real</th><th>Tabela</th><th>% NF tabela</th><th>Vencedor</th><th>% NF vencedor</th><th>Status</th><th>Redução</th><th>Saving ganhadora</th><th>Saving mercado</th></tr></thead>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <input
+                    value={filtroDetalhe}
+                    onChange={(e) => { setFiltroDetalhe(e.target.value); setPaginaDetalhe(0); }}
+                    placeholder="Filtrar por CT-e, transportadora, origem, destino, status..."
+                    style={{ flex: 1, minWidth: 220, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.85rem' }}
+                  />
+                  <span style={{ fontSize: '0.8rem', color: '#64748b', whiteSpace: 'nowrap' }}>
+                    {(() => {
+                      const filtrados = (resultadoRealizado.ctesDetalhes || []).filter((item) => {
+                        if (!filtroDetalhe) return true;
+                        const q = filtroDetalhe.toLowerCase();
+                        return [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino, item.ufOrigem]
+                          .some((v) => String(v || '').toLowerCase().includes(q));
+                      });
+                      return `${filtrados.length} CT-e(s) encontrado(s)`;
+                    })()}
+                  </span>
+                </div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 4 }}>
+                  <table className="sim-analise-tabela" style={{ fontSize: '0.78rem' }}>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>CT-e</th>
+                        <th>Data</th>
+                        <th>Canal</th>
+                        <th>Origem usada</th>
+                        <th title="⚡ = origem fallback (não bateu exato na malha)">Fallback?</th>
+                        <th>Destino</th>
+                        <th>Transp. real</th>
+                        <th>Peso (kg)</th>
+                        <th>Cubagem (m³)</th>
+                        <th>Valor NF</th>
+                        <th>Volumes</th>
+                        <th>Frete realizado</th>
+                        <th>% NF real</th>
+                        <th>Tabela selecionada</th>
+                        <th>% NF tabela</th>
+                        <th>Vencedor simulação</th>
+                        <th>Frete vencedor</th>
+                        <th>% NF vencedor</th>
+                        <th>Status</th>
+                        <th>Ranking tabela</th>
+                        <th>Redução p/ ganhar</th>
+                        <th>Saving ganhadora</th>
+                        <th>Diferença p/ vencedor</th>
+                        <th>Concorrentes</th>
+                        <th>Tracking ✓</th>
+                      </tr>
+                    </thead>
                     <tbody>
-                      {(resultadoRealizado.ctesDetalhes || []).slice(0, 100).map((item, index) => (
-                        <tr key={`${item.cte}-${index}`}>
-                          <td>{item.cte || '-'}</td>
-                          <td>{item.origem}/{item.ufOrigem}</td>
-                          <td>{item.destino}/{item.ufDestino}</td>
-                          <td>{item.transportadoraReal}</td>
-                          <td>{Number(item.volumes || 0).toLocaleString('pt-BR')}{item.trackingMatch ? ' ✓' : ''}</td>
-                          <td>{formatMoney(item.freteRealizado)}</td>
-                          <td>{formatPercent(item.percentualFreteRealizado)}</td>
-                          <td>{item.freteSelecionada ? formatMoney(item.freteSelecionada) : '-'}</td>
-                          <td>{item.freteSelecionada ? formatPercent(item.percentualFreteSelecionada) : '-'}</td>
-                          <td>{item.vencedor} · {formatMoney(item.freteVencedor)}</td>
-                          <td>{formatPercent(item.percentualFreteVencedor)}</td>
-                          <td><span className="status-pill">{item.statusSelecionada}</span></td>
-                          <td>{formatPercent(item.reducaoNecessaria)}</td>
-                          <td>{formatMoney(item.savingSelecionada)}</td>
-                          <td>{formatMoney(item.savingVencedor)}</td>
-                        </tr>
-                      ))}
+                      {(() => {
+                        const todos = (resultadoRealizado.ctesDetalhes || []);
+                        const filtrados = filtroDetalhe
+                          ? todos.filter((item) => {
+                              const q = filtroDetalhe.toLowerCase();
+                              return [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino, item.ufOrigem]
+                                .some((v) => String(v || '').toLowerCase().includes(q));
+                            })
+                          : todos;
+                        const totalPaginas = Math.ceil(filtrados.length / DETALHE_POR_PAGINA);
+                        const pagina = Math.min(paginaDetalhe, Math.max(0, totalPaginas - 1));
+                        const slice = filtrados.slice(pagina * DETALHE_POR_PAGINA, (pagina + 1) * DETALHE_POR_PAGINA);
+                        return (
+                          <>
+                            {slice.map((item, index) => (
+                              <tr key={`${item.cte}-${pagina * DETALHE_POR_PAGINA + index}`}
+                                style={{ background: item.statusSelecionada === 'Ganharia' ? '#f0fdf4' : item.statusSelecionada === 'Perderia' ? '#fff7f0' : undefined }}>
+                                <td style={{ color: '#94a3b8' }}>{pagina * DETALHE_POR_PAGINA + index + 1}</td>
+                                <td style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{item.cte || '-'}</td>
+                                <td>{item.data ? String(item.data).slice(0, 10) : '-'}</td>
+                                <td>{item.canal || '-'}</td>
+                                <td>{item.origemUsada || item.origem}/{item.ufOrigem}</td>
+                                <td style={{ textAlign: 'center' }} title={item.fallbackOrigem ? 'Origem não bateu exato — usou fallback' : 'Origem OK'}>
+                                  {item.fallbackOrigem ? <span style={{ color: '#d97706' }}>⚡ sim</span> : <span style={{ color: '#16a34a' }}>✓</span>}
+                                </td>
+                                <td>{item.destino}/{item.ufDestino}</td>
+                                <td>{item.transportadoraReal}</td>
+                                <td style={{ textAlign: 'right' }}>{Number(item.peso || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</td>
+                                <td style={{ textAlign: 'right' }}>{Number(item.cubagem || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })}</td>
+                                <td style={{ textAlign: 'right' }}>{formatMoney(item.valorNF)}</td>
+                                <td style={{ textAlign: 'right' }}>{Number(item.volumes || 0).toLocaleString('pt-BR')}{item.trackingMatch ? ' ✓' : ''}</td>
+                                <td style={{ textAlign: 'right' }}><strong>{formatMoney(item.freteRealizado)}</strong></td>
+                                <td style={{ textAlign: 'right' }}>{formatPercent(item.percentualFreteRealizado)}</td>
+                                <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatMoney(item.freteSelecionada) : <span style={{ color: '#94a3b8' }}>sem tabela</span>}</td>
+                                <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatPercent(item.percentualFreteSelecionada) : '-'}</td>
+                                <td>{item.vencedor || '-'}</td>
+                                <td style={{ textAlign: 'right' }}>{formatMoney(item.freteVencedor)}</td>
+                                <td style={{ textAlign: 'right' }}>{formatPercent(item.percentualFreteVencedor)}</td>
+                                <td>
+                                  <span style={{
+                                    padding: '2px 7px', borderRadius: 10, fontSize: '0.75rem', fontWeight: 600,
+                                    background: item.statusSelecionada === 'Ganharia' ? '#dcfce7' : item.statusSelecionada === 'Perderia' ? '#fee2e2' : '#f1f5f9',
+                                    color: item.statusSelecionada === 'Ganharia' ? '#15803d' : item.statusSelecionada === 'Perderia' ? '#dc2626' : '#64748b',
+                                  }}>{item.statusSelecionada}</span>
+                                </td>
+                                <td style={{ textAlign: 'center' }}>{item.rankingSelecionada || '-'}</td>
+                                <td style={{ textAlign: 'right', color: item.reducaoNecessaria > 0 ? '#dc2626' : undefined }}>{item.reducaoNecessaria > 0 ? formatPercent(item.reducaoNecessaria) : '-'}</td>
+                                <td style={{ textAlign: 'right', color: item.savingSelecionada > 0 ? '#15803d' : undefined }}>{formatMoney(item.savingSelecionada)}</td>
+                                <td style={{ textAlign: 'right', color: item.diferencaParaVencedor > 0 ? '#dc2626' : undefined }}>{item.diferencaParaVencedor > 0 ? formatMoney(item.diferencaParaVencedor) : '-'}</td>
+                                <td style={{ textAlign: 'center' }}>{item.concorrentes}</td>
+                                <td style={{ textAlign: 'center' }}>{item.trackingMatch ? '✓' : ''}</td>
+                              </tr>
+                            ))}
+                          </>
+                        );
+                      })()}
                     </tbody>
                   </table>
                 </div>
+                {/* Paginação */}
+                {(() => {
+                  const todos = (resultadoRealizado.ctesDetalhes || []);
+                  const filtrados = filtroDetalhe
+                    ? todos.filter((item) => {
+                        const q = filtroDetalhe.toLowerCase();
+                        return [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino, item.ufOrigem]
+                          .some((v) => String(v || '').toLowerCase().includes(q));
+                      })
+                    : todos;
+                  const totalPaginas = Math.ceil(filtrados.length / DETALHE_POR_PAGINA);
+                  if (totalPaginas <= 1) return null;
+                  const pagina = Math.min(paginaDetalhe, Math.max(0, totalPaginas - 1));
+                  return (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+                      <button className="sim-tab" disabled={pagina === 0} onClick={() => setPaginaDetalhe(0)}>« Início</button>
+                      <button className="sim-tab" disabled={pagina === 0} onClick={() => setPaginaDetalhe((p) => Math.max(0, p - 1))}>‹ Anterior</button>
+                      <span style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                        Página {pagina + 1} de {totalPaginas} ({filtrados.length} CT-es)
+                      </span>
+                      <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => setPaginaDetalhe((p) => Math.min(totalPaginas - 1, p + 1))}>Próxima ›</button>
+                      <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => setPaginaDetalhe(totalPaginas - 1)}>Final »</button>
+                    </div>
+                  );
+                })()}
+
+                {/* CT-es sem tabela concorrente */}
+                {resultadoRealizado.ctesSemTabelaGeral > 0 && (
+                  <div style={{ marginTop: 16, padding: 12, background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
+                    <strong>⚠ {resultadoRealizado.ctesSemTabelaGeral} CT-e(s) sem tabela concorrente</strong>
+                    <p style={{ margin: '4px 0 0', fontSize: '0.82rem', color: '#78350f' }}>
+                      Esses CT-es foram analisados mas não encontraram nenhuma tabela de frete compatível (sem IBGE destino ou sem cobertura nas transportadoras carregadas).
+                      Detalhes: {resultadoRealizado.diagnostico?.linhasSemIbgeDestino || 0} sem IBGE destino,
+                      {' '}{resultadoRealizado.diagnostico?.linhasSemResultado || 0} com IBGE mas sem tabela cobrindo o destino.
+                      {(resultadoRealizado.diagnostico?.destinosSemResultado || []).length > 0 && (
+                        <> Destinos sem cobertura: {(resultadoRealizado.diagnostico.destinosSemResultado || []).slice(0, 5).map(([d, q]) => `${d} (${q}x)`).join(', ')}.</>
+                      )}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           )}
