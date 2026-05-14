@@ -1545,14 +1545,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [filtroDetalhe, setFiltroDetalhe] = useState('');
   const [paginaDetalhe, setPaginaDetalhe] = useState(0);
   const DETALHE_POR_PAGINA = 50;
-<<<<<<< HEAD
-=======
   const [linhasExpandidas, setLinhasExpandidas] = useState(new Set());
   const [abaDetalheRealizado, setAbaDetalheRealizado] = useState('ctes'); // 'ctes' | 'uf'
   const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box']));
   const toggleSecao = (id) => setSecoesFechadas((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const secaoAberta = (id) => !secoesFechadas.has(id);
->>>>>>> 1ab04ad (feat: simulador realizado melhorias)
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
@@ -2148,10 +2145,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setFiltroDetalhe('');
     setPaginaDetalhe(0);
-<<<<<<< HEAD
-=======
     setLinhasExpandidas(new Set());
->>>>>>> 1ab04ad (feat: simulador realizado melhorias)
     iniciarProcessamentoUi('Simulador do realizado', 'Carregando vínculos, CT-es e tabelas...', 8);
 
     try {
@@ -3396,8 +3390,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Perderia</span><strong style={{color:'#dc2626'}}>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
               </div>
 
-<<<<<<< HEAD
-=======
               {/* 4 estados */}
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
                 const ganhaTabGanhaReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Ganharia' && i.ganhouRealizado).length;
@@ -3431,7 +3423,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 );
               })()}
 
->>>>>>> 1ab04ad (feat: simulador realizado melhorias)
               {(() => {
                 const brutos = resultadoRealizado.filtros?.ctesBrutos ?? 0;
                 const naMalha = resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados;
@@ -3745,159 +3736,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <div className="sim-parametros-box">
                 <div className="sim-parametros-header" onClick={() => toggleSecao('detalhes')} style={{ cursor: 'pointer', userSelect: 'none' }}>
                   <div>
-<<<<<<< HEAD
-                    <strong>Detalhes CT-e a CT-e</strong>
-                    <p>
-                      {(resultadoRealizado.ctesDetalhes || []).length} CT-es disponíveis para conferência
-                      {resultadoRealizado.ctesAnalisados > (resultadoRealizado.ctesDetalhes || []).length
-                        ? ` (${resultadoRealizado.ctesAnalisados - (resultadoRealizado.ctesDetalhes || []).length} sem tabela concorrente não aparecem aqui)`
-                        : ''}.
-                      Use o filtro para encontrar um CT-e específico.
-=======
                     <strong>Análise Detalhada</strong>
                     <p>
                       {(resultadoRealizado.ctesDetalhes || []).length} CT-es com detalhes de cálculo disponíveis.
                       Clique em qualquer linha para ver o cálculo completo.
->>>>>>> 1ab04ad (feat: simulador realizado melhorias)
                     </p>
                   </div>
                   <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('detalhes') ? '▲' : '▼'}</span>
                 </div>
-<<<<<<< HEAD
-                <div style={{ display: 'flex', gap: 8, marginTop: 12, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <input
-                    value={filtroDetalhe}
-                    onChange={(e) => { setFiltroDetalhe(e.target.value); setPaginaDetalhe(0); }}
-                    placeholder="Filtrar por CT-e, transportadora, origem, destino, status..."
-                    style={{ flex: 1, minWidth: 220, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.85rem' }}
-                  />
-                  <span style={{ fontSize: '0.8rem', color: '#64748b', whiteSpace: 'nowrap' }}>
-                    {(() => {
-                      const filtrados = (resultadoRealizado.ctesDetalhes || []).filter((item) => {
-                        if (!filtroDetalhe) return true;
-                        const q = filtroDetalhe.toLowerCase();
-                        return [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino, item.ufOrigem]
-                          .some((v) => String(v || '').toLowerCase().includes(q));
-                      });
-                      return `${filtrados.length} CT-e(s) encontrado(s)`;
-                    })()}
-                  </span>
-                </div>
-                <div className="sim-analise-tabela-wrap" style={{ marginTop: 4 }}>
-                  <table className="sim-analise-tabela" style={{ fontSize: '0.78rem' }}>
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>CT-e</th>
-                        <th>Data</th>
-                        <th>Canal</th>
-                        <th>Origem usada</th>
-                        <th title="⚡ = origem fallback (não bateu exato na malha)">Fallback?</th>
-                        <th>Destino</th>
-                        <th>Transp. real</th>
-                        <th>Peso (kg)</th>
-                        <th>Cubagem (m³)</th>
-                        <th>Valor NF</th>
-                        <th>Volumes</th>
-                        <th>Frete realizado</th>
-                        <th>% NF real</th>
-                        <th>Tabela selecionada</th>
-                        <th>% NF tabela</th>
-                        <th>Vencedor simulação</th>
-                        <th>Frete vencedor</th>
-                        <th>% NF vencedor</th>
-                        <th>Status</th>
-                        <th>Ranking tabela</th>
-                        <th>Redução p/ ganhar</th>
-                        <th>Saving ganhadora</th>
-                        <th>Diferença p/ vencedor</th>
-                        <th>Concorrentes</th>
-                        <th>Tracking ✓</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(() => {
-                        const todos = (resultadoRealizado.ctesDetalhes || []);
-                        const filtrados = filtroDetalhe
-                          ? todos.filter((item) => {
-                              const q = filtroDetalhe.toLowerCase();
-                              return [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino, item.ufOrigem]
-                                .some((v) => String(v || '').toLowerCase().includes(q));
-                            })
-                          : todos;
-                        const totalPaginas = Math.ceil(filtrados.length / DETALHE_POR_PAGINA);
-                        const pagina = Math.min(paginaDetalhe, Math.max(0, totalPaginas - 1));
-                        const slice = filtrados.slice(pagina * DETALHE_POR_PAGINA, (pagina + 1) * DETALHE_POR_PAGINA);
-                        return (
-                          <>
-                            {slice.map((item, index) => (
-                              <tr key={`${item.cte}-${pagina * DETALHE_POR_PAGINA + index}`}
-                                style={{ background: item.statusSelecionada === 'Ganharia' ? '#f0fdf4' : item.statusSelecionada === 'Perderia' ? '#fff7f0' : undefined }}>
-                                <td style={{ color: '#94a3b8' }}>{pagina * DETALHE_POR_PAGINA + index + 1}</td>
-                                <td style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{item.cte || '-'}</td>
-                                <td>{item.data ? String(item.data).slice(0, 10) : '-'}</td>
-                                <td>{item.canal || '-'}</td>
-                                <td>{item.origemUsada || item.origem}/{item.ufOrigem}</td>
-                                <td style={{ textAlign: 'center' }} title={item.fallbackOrigem ? 'Origem não bateu exato — usou fallback' : 'Origem OK'}>
-                                  {item.fallbackOrigem ? <span style={{ color: '#d97706' }}>⚡ sim</span> : <span style={{ color: '#16a34a' }}>✓</span>}
-                                </td>
-                                <td>{item.destino}/{item.ufDestino}</td>
-                                <td>{item.transportadoraReal}</td>
-                                <td style={{ textAlign: 'right' }}>{Number(item.peso || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</td>
-                                <td style={{ textAlign: 'right' }}>{Number(item.cubagem || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })}</td>
-                                <td style={{ textAlign: 'right' }}>{formatMoney(item.valorNF)}</td>
-                                <td style={{ textAlign: 'right' }}>{Number(item.volumes || 0).toLocaleString('pt-BR')}{item.trackingMatch ? ' ✓' : ''}</td>
-                                <td style={{ textAlign: 'right' }}><strong>{formatMoney(item.freteRealizado)}</strong></td>
-                                <td style={{ textAlign: 'right' }}>{formatPercent(item.percentualFreteRealizado)}</td>
-                                <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatMoney(item.freteSelecionada) : <span style={{ color: '#94a3b8' }}>sem tabela</span>}</td>
-                                <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatPercent(item.percentualFreteSelecionada) : '-'}</td>
-                                <td>{item.vencedor || '-'}</td>
-                                <td style={{ textAlign: 'right' }}>{formatMoney(item.freteVencedor)}</td>
-                                <td style={{ textAlign: 'right' }}>{formatPercent(item.percentualFreteVencedor)}</td>
-                                <td>
-                                  <span style={{
-                                    padding: '2px 7px', borderRadius: 10, fontSize: '0.75rem', fontWeight: 600,
-                                    background: item.statusSelecionada === 'Ganharia' ? '#dcfce7' : item.statusSelecionada === 'Perderia' ? '#fee2e2' : '#f1f5f9',
-                                    color: item.statusSelecionada === 'Ganharia' ? '#15803d' : item.statusSelecionada === 'Perderia' ? '#dc2626' : '#64748b',
-                                  }}>{item.statusSelecionada}</span>
-                                </td>
-                                <td style={{ textAlign: 'center' }}>{item.rankingSelecionada || '-'}</td>
-                                <td style={{ textAlign: 'right', color: item.reducaoNecessaria > 0 ? '#dc2626' : undefined }}>{item.reducaoNecessaria > 0 ? formatPercent(item.reducaoNecessaria) : '-'}</td>
-                                <td style={{ textAlign: 'right', color: item.savingSelecionada > 0 ? '#15803d' : undefined }}>{formatMoney(item.savingSelecionada)}</td>
-                                <td style={{ textAlign: 'right', color: item.diferencaParaVencedor > 0 ? '#dc2626' : undefined }}>{item.diferencaParaVencedor > 0 ? formatMoney(item.diferencaParaVencedor) : '-'}</td>
-                                <td style={{ textAlign: 'center' }}>{item.concorrentes}</td>
-                                <td style={{ textAlign: 'center' }}>{item.trackingMatch ? '✓' : ''}</td>
-                              </tr>
-                            ))}
-                          </>
-                        );
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Paginação */}
-                {(() => {
-                  const todos = (resultadoRealizado.ctesDetalhes || []);
-                  const filtrados = filtroDetalhe
-                    ? todos.filter((item) => {
-                        const q = filtroDetalhe.toLowerCase();
-                        return [item.cte, item.transportadoraReal, item.origem, item.destino, item.vencedor, item.statusSelecionada, item.canal, item.ufDestino, item.ufOrigem]
-                          .some((v) => String(v || '').toLowerCase().includes(q));
-                      })
-                    : todos;
-                  const totalPaginas = Math.ceil(filtrados.length / DETALHE_POR_PAGINA);
-                  if (totalPaginas <= 1) return null;
-                  const pagina = Math.min(paginaDetalhe, Math.max(0, totalPaginas - 1));
-                  return (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: 12, flexWrap: 'wrap' }}>
-                      <button className="sim-tab" disabled={pagina === 0} onClick={() => setPaginaDetalhe(0)}>« Início</button>
-                      <button className="sim-tab" disabled={pagina === 0} onClick={() => setPaginaDetalhe((p) => Math.max(0, p - 1))}>‹ Anterior</button>
-                      <span style={{ fontSize: '0.85rem', color: '#64748b' }}>
-                        Página {pagina + 1} de {totalPaginas} ({filtrados.length} CT-es)
-                      </span>
-                      <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => setPaginaDetalhe((p) => Math.min(totalPaginas - 1, p + 1))}>Próxima ›</button>
-                      <button className="sim-tab" disabled={pagina >= totalPaginas - 1} onClick={() => setPaginaDetalhe(totalPaginas - 1)}>Final »</button>
-=======
                 {secaoAberta('detalhes') && (<>
                 {/* Mini-abas */}
                 <div style={{ display: 'flex', gap: 8, margin: '12px 0 0', borderBottom: '2px solid #e2e8f0', paddingBottom: 0 }}>
@@ -3966,13 +3812,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
                           })}
                         </tbody>
                       </table>
->>>>>>> 1ab04ad (feat: simulador realizado melhorias)
                     </div>
                   );
                 })()}
 
-<<<<<<< HEAD
-=======
                 {/* ── ABA: CT-E A CT-E ── */}
                 {abaDetalheRealizado === 'ctes' && (
                   <>
@@ -4171,7 +4014,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   </>
                 )}
 
->>>>>>> 1ab04ad (feat: simulador realizado melhorias)
                 {/* CT-es sem tabela concorrente */}
                 {resultadoRealizado.ctesSemTabelaGeral > 0 && (
                   <div style={{ marginTop: 16, padding: 12, background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
@@ -4186,10 +4028,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     </p>
                   </div>
                 )}
-<<<<<<< HEAD
-=======
                 </>)}
->>>>>>> 1ab04ad (feat: simulador realizado melhorias)
               </div>
 
             </div>
