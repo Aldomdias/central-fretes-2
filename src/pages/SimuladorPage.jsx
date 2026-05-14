@@ -342,12 +342,19 @@ function pesoRealizado(row = {}) {
 }
 
 function cubagemRealizado(row = {}) {
+  // Regra do realizado:
+  // cubagem só é confiável quando veio do Tracking.
+  // O CT-e pode trazer cubagem divergente, então não usamos cubagem do CT-e como fallback.
+  if (!row.trackingMatch) return 0;
+
   const total = numeroRealizado(row.cubagemTotal || row.cubagem_total);
   if (total > 0) return total;
-  const unitaria = numeroRealizado(row.cubagemUnitaria || row.cubagem_unitaria || row.cubagem);
+
+  const unitaria = numeroRealizado(row.cubagemUnitaria || row.cubagem_unitaria);
   const volumes = numeroRealizado(row.qtdVolumes || row.volumes || row.volume);
+
   if (unitaria > 0 && volumes > 0) return unitaria * volumes;
-  return unitaria > 0 ? unitaria : 0;
+  return 0;
 }
 
 
@@ -440,32 +447,68 @@ function obterTrackingDaLinha(row = {}, mapas) {
 
 function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
   let vinculados = 0;
+  let semTracking = 0;
   let volumesTracking = 0;
   let cubagemTracking = 0;
 
   const linhas = (rows || []).map((row) => {
     const tracking = obterTrackingDaLinha(row, mapasTracking);
-    if (!tracking) return row;
+
+    // Regra do realizado:
+    // cubagem e volumes devem vir obrigatoriamente do Tracking.
+    // Se não houver vínculo, zera esses campos para não contaminar cálculo e capacidade.
+    if (!tracking) {
+      semTracking += 1;
+      return {
+        ...row,
+        trackingMatch: false,
+        trackingPendente: true,
+        qtdVolumes: 0,
+        cubagemUnitaria: 0,
+        cubagemTotal: 0,
+        pesoCubado: 0,
+      };
+    }
 
     vinculados += 1;
+
     const qtdVolumesTracking = numeroRealizado(tracking.qtd_volumes);
     const cubagemUnitariaTracking = numeroRealizado(tracking.cubagem_unitaria);
-    const cubagemTotalTracking = numeroRealizado(tracking.cubagem_total) || (cubagemUnitariaTracking * Math.max(qtdVolumesTracking || 1, 1));
+    const cubagemTotalDiretaTracking = numeroRealizado(tracking.cubagem_total);
+    const cubagemTotalTracking = cubagemTotalDiretaTracking > 0
+      ? cubagemTotalDiretaTracking
+      : cubagemUnitariaTracking > 0 && qtdVolumesTracking > 0
+        ? cubagemUnitariaTracking * qtdVolumesTracking
+        : 0;
+
+    const pesoCubadoTracking = numeroRealizado(tracking.peso_cubado);
+
     if (qtdVolumesTracking > 0) volumesTracking += qtdVolumesTracking;
     if (cubagemTotalTracking > 0) cubagemTracking += cubagemTotalTracking;
 
     return {
       ...row,
       trackingMatch: true,
+      trackingPendente: false,
       trackingTransportadora: tracking.transportadora || '',
+
+      chaveCte: row.chaveCte || tracking.chave_cte || '',
       chaveNfe: row.chaveNfe || tracking.chave_nfe || '',
       notaFiscal: row.notaFiscal || tracking.nota_fiscal || '',
-      qtdVolumes: qtdVolumesTracking > 0 ? qtdVolumesTracking : row.qtdVolumes,
-      cubagemUnitaria: cubagemUnitariaTracking > 0 ? cubagemUnitariaTracking : row.cubagemUnitaria,
-      cubagemTotal: cubagemTotalTracking > 0 ? cubagemTotalTracking : row.cubagemTotal,
-      pesoDeclarado: numeroRealizado(tracking.peso_declarado) || row.pesoDeclarado,
-      pesoCubado: numeroRealizado(tracking.peso_cubado) || row.pesoCubado,
+      numeroCte: row.numeroCte || tracking.cte_numero || '',
+
+      // Campos de capacidade e cubagem: sempre do Tracking.
+      qtdVolumes: qtdVolumesTracking,
+      cubagemUnitaria: cubagemUnitariaTracking,
+      cubagemTotal: cubagemTotalTracking,
+      pesoCubado: pesoCubadoTracking,
+
+      // Peso pode ser complementado pelo Tracking, mas mantém CT-e se o Tracking não trouxer peso.
+      pesoDeclarado: numeroRealizado(tracking.peso_declarado) || numeroRealizado(tracking.peso) || row.pesoDeclarado,
+
+      // Valor NF continua priorizando o CT-e por enquanto para não misturar regras nesta entrega.
       valorNF: numeroRealizado(row.valorNF) || numeroRealizado(tracking.valor_nf),
+
       canal: row.canal || tracking.canal || '',
       ibgeOrigem: row.ibgeOrigem || String(tracking.ibge_origem || '').replace(/\D/g, '').slice(0, 7),
       ibgeDestino: row.ibgeDestino || String(tracking.ibge_destino || '').replace(/\D/g, '').slice(0, 7),
@@ -476,8 +519,16 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
     };
   });
 
-  return { linhas, vinculados, volumesTracking, cubagemTracking, erroTracking: mapasTracking?.erro || '' };
+  return {
+    linhas,
+    vinculados,
+    semTracking,
+    volumesTracking,
+    cubagemTracking,
+    erroTracking: mapasTracking?.erro || '',
+  };
 }
+
 
 function normalizarTransportadoraSimulador(nome = '') {
   return String(nome || '')
@@ -2312,6 +2363,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ctesNaMalha: rowsFiltrados.length,
           origemMalhaNaoReconhecida: [...origemMalhaNaoReconhecida].slice(0, 20),
           trackingVinculados: trackingEnriquecido.vinculados,
+          trackingSemVinculo: trackingEnriquecido.semTracking,
           trackingTotalEncontrado: mapasTracking.total,
           trackingErro: trackingEnriquecido.erroTracking,
           volumesTracking: trackingEnriquecido.volumesTracking,
@@ -3129,7 +3181,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div className="sim-parametros-header">
                     <div>
                       <strong>Simulação sobre realizado local</strong>
-                      <p>Usa peso, valor NF e volumes reais. A cubagem vem da linha realizada quando existir; se não existir, usa a cubagem da faixa da grade do canal.</p>
+                      <p>Usa peso e valor NF do realizado, mas volumes e cubagem vêm obrigatoriamente do Tracking. CT-es sem vínculo com Tracking ficam com volume/cubagem zerados para não contaminar capacidade e cálculo.</p>
                     </div>
                   </div>
                   <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
@@ -3457,7 +3509,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div className="summary-card"><span>% NF realizado nas ganhas</span><strong>{formatPercent(resultadoRealizado.percentualFreteRealizadoGanharia)}</strong><small>antes, nas cargas que ganharia</small></div>
                 <div className="summary-card"><span>% NF tabela ganhadora</span><strong>{formatPercent(resultadoRealizado.percentualFreteTabelaGanharia)}</strong><small>{formatPercent(resultadoRealizado.variacaoPercentualFreteGanharia)} vs realizado</small></div>
                 <div className="summary-card"><span>Cargas/dia</span><strong>{Number(resultadoRealizado.cargasDia || 0).toFixed(1)}</strong><small>{resultadoRealizado.dias} dia(s)</small></div>
-                <div className="summary-card"><span>Volumes/dia</span><strong>{Number(resultadoRealizado.volumesDia || 0).toFixed(1)}</strong><small>{Number(resultadoRealizado.volumes || 0).toLocaleString('pt-BR')} volumes • tracking {Number(resultadoRealizado.linhasComTracking || 0).toLocaleString('pt-BR')} CT-es</small></div>
+                <div className="summary-card"><span>Volumes/dia</span><strong>{Number(resultadoRealizado.volumesDia || 0).toFixed(1)}</strong><small>{Number(resultadoRealizado.volumes || 0).toLocaleString('pt-BR')} volumes via Tracking • {Number(resultadoRealizado.linhasComTracking || 0).toLocaleString('pt-BR')} CT-es vinculados</small></div>
                 <div className="summary-card"><span>Cubagem tracking</span><strong>{Number(resultadoRealizado.cubagemTotal || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</strong><small>m³ cruzado por NF/CT-e</small></div>
                 <div className="summary-card"><span>Redução média p/ ganhar</span><strong>{formatPercent(resultadoRealizado.reducaoMediaNecessaria)}</strong><small>rotas perdidas</small></div>
                 <div className="summary-card"><span>Perda para concorrentes</span><strong>{formatMoney(resultadoRealizado.diferencaSelecionadaVsVencedor)}</strong><small>diferença nas perdidas</small></div>
@@ -3489,7 +3541,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
               {resultadoRealizado.filtros?.trackingErro && (
                 <div className="sim-alert warning">
-                  <strong>Tracking não foi cruzado.</strong> {resultadoRealizado.filtros.trackingErro}. Os volumes/cubagem ficarão apenas com o que existir no CT-e.
+                  <strong>Tracking não foi cruzado.</strong> {resultadoRealizado.filtros.trackingErro}. Volumes e cubagem do CT-e foram desconsiderados; CT-es sem Tracking ficam com volume/cubagem zerados.
+                </div>
+              )}
+
+              {Number(resultadoRealizado.filtros?.trackingSemVinculo || 0) > 0 && (
+                <div className="sim-alert warning">
+                  <strong>Tracking incompleto:</strong> {Number(resultadoRealizado.filtros.trackingSemVinculo || 0).toLocaleString('pt-BR')} CT-e(s) não encontraram vínculo no Tracking por chave do CT-e, chave da NF, número da NF ou número do CT-e. Para esses casos, volumes e cubagem foram zerados no cálculo.
                 </div>
               )}
 
