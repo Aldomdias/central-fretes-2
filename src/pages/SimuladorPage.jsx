@@ -2338,14 +2338,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
         : rowsComIbge;
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
+      const deveCompararConcorrentes = !ehNegociacaoSelecionada || compararConcorrentesRealizado;
       const basesParaMesclar = [baseSelecionada];
 
       if (incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length && deveCompararConcorrentes) {
         basesParaMesclar.push(transportadorasNegociacaoRealizado);
       }
       let baseRotas = [];
-
-      const deveCompararConcorrentes = !ehNegociacaoSelecionada || compararConcorrentesRealizado;
 
       if (deveCompararConcorrentes && routeKeysRealizado.length) {
         atualizarProcessamentoUi(`Buscando concorrentes por ${routeKeysRealizado.length.toLocaleString('pt-BR')} rota(s) reais...`, 58);
