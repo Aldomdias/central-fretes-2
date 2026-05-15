@@ -355,3 +355,126 @@ export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
   if (error) throw new Error(error.message || 'Erro ao buscar tabelas para simulação.');
   return data || [];
 }
+
+
+export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
+  const supabase = supabaseOrThrow();
+
+  if (!id) {
+    throw new Error('Negociação inválida para salvar resultado.');
+  }
+
+  const payload = {
+    saving_projetado: numero(
+      resultado.saving_projetado ??
+      resultado.savingSelecionadaVsRealMes ??
+      resultado.savingSelecionadaVsReal ??
+      0
+    ),
+
+    aderencia_projetada: numero(
+      resultado.aderencia_projetada ??
+      resultado.aderenciaSelecionada ??
+      0
+    ),
+
+    faturamento_projetado: numero(
+      resultado.faturamento_projetado ??
+      resultado.faturamentoSelecionadaMes ??
+      resultado.freteSelecionada ??
+      0
+    ),
+
+    impacto_projetado: numero(
+      resultado.impacto_projetado ??
+      resultado.diferencaSelecionadaVsVencedor ??
+      0
+    ),
+
+    percentual_frete_projetado: numero(
+      resultado.percentual_frete_projetado ??
+      resultado.percentualFreteTabelaGanharia ??
+      resultado.percentualFreteSelecionada ??
+      0
+    ),
+
+    volumetria_dia: numero(
+      resultado.volumetria_dia ??
+      resultado.cargasDia ??
+      0
+    ),
+
+    ctes_analisados: inteiro(
+      resultado.ctes_analisados ??
+      resultado.ctesAnalisados ??
+      0
+    ),
+
+    ctes_atendidos: inteiro(
+      resultado.ctes_atendidos ??
+      resultado.ctesComTabelaSelecionada ??
+      0
+    ),
+
+    rotas_sem_cobertura: inteiro(
+      resultado.rotas_sem_cobertura ??
+      resultado.ctesSemTabelaSelecionada ??
+      0
+    ),
+
+    resumo_simulacao: {
+      salvo_em: new Date().toISOString(),
+      filtros: resultado.filtros || {},
+
+      ctesAnalisados: resultado.ctesAnalisados || 0,
+      ctesSimulados: resultado.ctesSimulados || 0,
+      ctesComTabelaSelecionada: resultado.ctesComTabelaSelecionada || 0,
+      ctesGanhariaSelecionada: resultado.ctesGanhariaSelecionada || 0,
+      ctesPerdidosSelecionada: resultado.ctesPerdidosSelecionada || 0,
+      ctesSemTabelaSelecionada: resultado.ctesSemTabelaSelecionada || 0,
+      ctesSemTabelaGeral: resultado.ctesSemTabelaGeral || 0,
+
+      freteRealizado: resultado.freteRealizado || 0,
+      freteSelecionada: resultado.freteSelecionada || 0,
+      freteVencedor: resultado.freteVencedor || 0,
+
+      faturamentoSelecionadaMes: resultado.faturamentoSelecionadaMes || 0,
+      faturamentoSelecionadaAno: resultado.faturamentoSelecionadaAno || 0,
+
+      savingSelecionadaVsReal: resultado.savingSelecionadaVsReal || 0,
+      savingSelecionadaVsRealMes: resultado.savingSelecionadaVsRealMes || 0,
+      savingSelecionadaVsRealAno: resultado.savingSelecionadaVsRealAno || 0,
+      savingTabelaSelecionadaVsRealBruto: resultado.savingTabelaSelecionadaVsRealBruto || 0,
+      savingVencedorVsReal: resultado.savingVencedorVsReal || 0,
+
+      aderenciaSelecionada: resultado.aderenciaSelecionada || 0,
+      percentualSavingSelecionada: resultado.percentualSavingSelecionada || 0,
+      percentualFreteRealizado: resultado.percentualFreteRealizado || 0,
+      percentualFreteTabelaGanharia: resultado.percentualFreteTabelaGanharia || 0,
+      reducaoMediaNecessaria: resultado.reducaoMediaNecessaria || 0,
+
+      cargasDia: resultado.cargasDia || 0,
+      volumesDia: resultado.volumesDia || 0,
+      volumes: resultado.volumes || 0,
+      peso: resultado.peso || 0,
+      valorNF: resultado.valorNF || 0,
+
+      rotas: (resultado.rotas || []).slice(0, 100),
+      pareto80Volume: resultado.pareto80Volume || null,
+      diagnostico: resultado.diagnostico || {},
+    },
+  };
+
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message || 'Erro ao salvar resultado da simulação na negociação.');
+  }
+
+  return data;
+}
