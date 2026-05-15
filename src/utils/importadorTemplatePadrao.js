@@ -11,6 +11,57 @@ function normalizarTexto(valor) {
     .replace(/\s+/g, ' ');
 }
 
+
+function ufPorIbge(ibge) {
+  const codigo = String(ibge || '').replace(/\D/g, '').slice(0, 2);
+  const mapa = {
+    '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
+    '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL',
+    '28': 'SE', '29': 'BA', '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
+    '41': 'PR', '42': 'SC', '43': 'RS', '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
+  };
+  return mapa[codigo] || '';
+}
+
+function normalizarComparacao(valor) {
+  return String(valor || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+}
+
+function removerUfDaCotacao(valor, ufDestino) {
+  let texto = String(valor || '').trim();
+  const uf = String(ufDestino || '').trim().toUpperCase();
+
+  if (uf && texto.toUpperCase().startsWith(uf + ' - ')) {
+    texto = texto.slice(uf.length + 3).trim();
+  } else {
+    texto = texto.replace(/^[A-Z]{2}\s*[-–]\s*/i, '').trim();
+  }
+
+  return texto;
+}
+
+function cotacaoCompativel(frete, rota) {
+  const ufFrete = String(frete.ufDestino || '').trim().toUpperCase();
+  const ufRota = String(rota.ufDestino || '').trim().toUpperCase();
+
+  if (ufFrete && ufRota && ufFrete !== ufRota) return false;
+
+  const cotacaoFrete = normalizarComparacao(removerUfDaCotacao(frete.cotacao || frete.cotacaoFinal, ufFrete));
+  const candidatosRota = [
+    rota.cotacaoBase,
+    rota.cotacao,
+    rota.cotacaoFinal,
+  ].map(normalizarComparacao).filter(Boolean);
+
+  return candidatosRota.includes(cotacaoFrete);
+}
+
 function limparTexto(valor) {
   return String(valor ?? '').trim();
 }
@@ -205,7 +256,7 @@ function normalizarRota(linha, indice) {
     ufOrigem,
     cidadeDestino,
     destino: cidadeDestino,
-    ufDestino,
+    ufDestino: ufDestino || ufPorIbge(ibgeDestino),
     ibgeOrigem,
     ibgeDestino,
     prazo,
@@ -240,7 +291,10 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Cotacao Final',
     'Cotação',
     'Cotacao',
+    'COTAÇÃO',
     'Rota',
+    'Rota do Frete',
+    'ROTA DO FRETE',
     'Nome Rota',
     'Nome da Rota',
     'Código Rota',
@@ -263,11 +317,27 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'UF Orig',
   ], rota ? rota.ufOrigem : '')).toUpperCase();
 
+  const cidadeDestino = limparTexto(valorPorAlias(mapa, [
+    'Destino',
+    'Cidade Destino',
+    'Cidade de Destino',
+    'Cidade_Destino',
+    'Cidade Dest',
+  ], rota ? rota.cidadeDestino : ''));
+
   const ufDestino = limparTexto(valorPorAlias(mapa, [
     'UF Destino',
     'UF_DESTINO',
     'UF Dest',
   ], rota ? rota.ufDestino : '')).toUpperCase();
+
+  const ibgeDestino = limparTexto(valorPorAlias(mapa, [
+    'IBGE Destino',
+    'Código IBGE Destino',
+    'Codigo IBGE Destino',
+    'Cod IBGE Destino',
+    'IBGE_DESTINO',
+  ], rota ? rota.ibgeDestino : ''));
 
   const cotacaoBase = limparTexto(valorPorAlias(mapa, [
     'Cotação Base',
@@ -308,29 +378,38 @@ function normalizarFrete(linha, indice, rotasPorChave) {
 
   const taxaAplicada = numero(valorPorAlias(mapa, [
     'Taxa Aplicada',
+    'TAXA APLICADA',
     'Taxa',
     'Valor Faixa',
     'Valor',
     'Frete Valor',
     'Frete',
     'Frete Peso',
+    'Frete R$',
+    'FRETE (R$)',
   ]), '');
 
   const excedente = numero(valorPorAlias(mapa, [
     'Excedente',
+    'EXCEDENTE',
     'Excesso',
     'Excesso Kg',
     'Valor Excedente',
     'Kg Excedente',
+    'R$ Kg Excedente',
+    'Valor Kg Excedente',
   ]), '');
 
   const fretePercentual = numero(valorPorAlias(mapa, [
     'Frete Percentual',
     'Percentual',
+    '%',
+    '% ',
     '% NF',
     'Percentual NF',
     'Frete %',
     '% Frete',
+    'Frete (%)',
   ]), '');
 
   const freteMinimo = numero(valorPorAlias(mapa, [
@@ -342,6 +421,22 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Valor Minimo',
   ]), '');
 
+  const advalorem = numero(valorPorAlias(mapa, [
+    'AD Valorem',
+    'AD Valorem %',
+    'AD VALOREM %',
+    'Advalorem',
+    'ADV',
+    'ADV %',
+  ]), '');
+
+  const pesoFinalCalculo =
+    Number(excedente || 0) > 0 &&
+    Number(pesoInicial || 0) > 0 &&
+    Number(pesoFinal || 0) >= 999998
+      ? pesoInicial
+      : pesoFinal;
+
   const frete = {
     id: `frete-${indice + 1}`,
     cotacao: cotacaoInformada || (rota ? rota.cotacao : ''),
@@ -349,15 +444,18 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     cotacaoBase,
     origem,
     ufOrigem,
+    cidadeDestino,
     ufDestino,
+    ibgeDestino,
     faixaPeso,
     pesoInicial,
-    pesoFinal,
+    pesoFinal: pesoFinalCalculo,
     taxaAplicada,
     freteValor: taxaAplicada,
     excedente,
     fretePercentual,
     freteMinimo,
+    advalorem,
     dadosOriginais: linha,
   };
 
@@ -372,6 +470,48 @@ function normalizarFrete(linha, indice, rotasPorChave) {
 
   return temAlgumValor ? frete : null;
 }
+
+
+function expandirFretesPorRotas(fretes, rotas) {
+  const resultado = [];
+
+  (fretes || []).forEach((frete, indiceFrete) => {
+    const rotasCompativeis = (rotas || []).filter((rota) => cotacaoCompativel(frete, rota));
+
+    if (!rotasCompativeis.length) {
+      resultado.push(frete);
+      return;
+    }
+
+    rotasCompativeis.forEach((rota, indiceRota) => {
+      resultado.push({
+        ...frete,
+        id: `${frete.id || 'frete'}-rota-${indiceFrete}-${indiceRota}`,
+        cotacao: rota.cotacaoFinal || rota.cotacao || frete.cotacao,
+        cotacaoFinal: rota.cotacaoFinal || rota.cotacao || frete.cotacaoFinal,
+        cotacaoBase: rota.cotacaoBase || frete.cotacaoBase,
+
+        origem: frete.origem || rota.origem || rota.cidadeOrigem || '',
+        ufOrigem: frete.ufOrigem || rota.ufOrigem || '',
+
+        cidadeDestino: rota.cidadeDestino || frete.cidadeDestino || '',
+        ufDestino: rota.ufDestino || frete.ufDestino || '',
+        ibgeDestino: rota.ibgeDestino || frete.ibgeDestino || '',
+
+        prazo: rota.prazo || frete.prazo || '',
+
+        dadosOriginais: {
+          ...(frete.dadosOriginais || {}),
+          rota_expandida: rota,
+          origem_expansao: 'ROTAS_FRETES_SIMPLIFICADO',
+        },
+      });
+    });
+  });
+
+  return resultado;
+}
+
 
 function montarQuebrasFaixa(fretes) {
   const mapa = new Map();
@@ -430,9 +570,11 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     });
   });
 
-  const fretes = linhasFretes
+  const fretesLidos = linhasFretes
     .map((linha, indice) => normalizarFrete(linha, indice, rotasPorChave))
     .filter(Boolean);
+
+  const fretes = expandirFretesPorRotas(fretesLidos, rotas);
 
   const quebrasFaixa = montarQuebrasFaixa(fretes);
 

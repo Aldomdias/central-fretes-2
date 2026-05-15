@@ -86,14 +86,16 @@ function exportarXlsx(linhas, nomeArquivo, aba) {
   XLSX.writeFile(wb, nomeArquivo);
 }
 
-function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigencia, fimVigencia }) {
+function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigencia, fimVigencia, origemFallback, ufOrigemFallback }) {
   const nomeT = normalizarTexto(transportadora);
   const c = normalizarTexto(canal || 'ATACADO').toUpperCase();
   const rotas = (resultado.rotas || []).map(function(item) {
     return {
       id: gerarId('rota'),
       nomeRota: item.cotacaoFinal || item.cotacao || (item.origem + ' - ' + item.ufDestino + ' - ' + item.cotacaoBase),
-      ibgeOrigem: item.ibgeOrigem || '', cidadeOrigem: item.origem || '', ufOrigem: item.ufOrigem || '',
+      ibgeOrigem: item.ibgeOrigem || '',
+      cidadeOrigem: item.origem || origemFallback || '',
+      ufOrigem: item.ufOrigem || ufOrigemFallback || '',
       ibgeDestino: item.ibgeDestino || '', cidadeDestino: item.cidadeDestino || '', ufDestino: item.ufDestino || '',
       canal: c, prazoEntregaDias: item.prazo || '', cotacaoBase: item.cotacaoBase || '',
       cotacaoFinal: item.cotacaoFinal || item.cotacao || '', inicioVigencia: inicioVigencia, fimVigencia: fimVigencia,
@@ -103,7 +105,11 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
     return {
       id: gerarId('cotacao'),
       rota: item.cotacaoFinal || item.cotacao || (item.origem + ' - ' + item.ufDestino + ' - ' + item.cotacaoBase),
-      origem: item.origem || '', ufOrigem: item.ufOrigem || '', ufDestino: item.ufDestino || '',
+      origem: item.origem || origemFallback || '',
+      ufOrigem: item.ufOrigem || ufOrigemFallback || '',
+      cidadeDestino: item.cidadeDestino || '',
+      ufDestino: item.ufDestino || '',
+      ibgeDestino: item.ibgeDestino || '',
       cotacaoBase: item.cotacaoBase || '', faixaPeso: item.faixaPeso || '',
       pesoMin: item.pesoInicial != null ? item.pesoInicial : '',
       pesoMax: item.pesoFinal != null ? item.pesoFinal : '',
@@ -111,6 +117,8 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
       excesso: item.excedente != null ? item.excedente : '',
       percentual: item.fretePercentual != null ? item.fretePercentual : '',
       freteMinimo: item.freteMinimo != null ? item.freteMinimo : '',
+      advalorem: item.advalorem != null ? item.advalorem : '',
+      prazo: item.prazo != null ? item.prazo : '',
       canal: c, inicioVigencia: inicioVigencia, fimVigencia: fimVigencia,
     };
   });
@@ -140,16 +148,18 @@ function montarItensVerum(formatado) {
       item_tipo: 'COTACAO', cidade_origem: cotacao.origem || (rota ? rota.cidadeOrigem : '') || '',
       uf_origem: cotacao.ufOrigem || (rota ? rota.ufOrigem : '') || '',
       ibge_origem: rota ? (rota.ibgeOrigem || '') : '',
-      cidade_destino: rota ? (rota.cidadeDestino || '') : '',
+      cidade_destino: cotacao.cidadeDestino || (rota ? (rota.cidadeDestino || '') : ''),
       uf_destino: cotacao.ufDestino || (rota ? rota.ufDestino : '') || '',
-      ibge_destino: rota ? (rota.ibgeDestino || '') : '',
+      ibge_destino: cotacao.ibgeDestino || (rota ? (rota.ibgeDestino || '') : ''),
       faixa_peso: cotacao.faixaPeso || '', peso_inicial: cotacao.pesoMin != null ? cotacao.pesoMin : '',
       peso_final: cotacao.pesoMax != null ? cotacao.pesoMax : '',
       frete_minimo: cotacao.freteMinimo != null ? cotacao.freteMinimo : '',
       taxa_aplicada: cotacao.taxaAplicada != null ? cotacao.taxaAplicada : '',
       frete_percentual: cotacao.percentual != null ? cotacao.percentual : '',
       excesso_kg: cotacao.excesso != null ? cotacao.excesso : '',
-      prazo: rota ? (rota.prazoEntregaDias || '') : '', observacao: cotacao.rota || '',
+      advalorem: cotacao.advalorem != null ? cotacao.advalorem : '',
+      prazo: cotacao.prazo || (rota ? (rota.prazoEntregaDias || '') : ''),
+      observacao: cotacao.rota || '',
       origem_importacao: 'VERUM_ROTAS_FRETES',
       dados_originais: { tipo_item: 'COTACAO', ...cotacao },
     };
@@ -355,6 +365,7 @@ export default function TabelasNegociacaoPage() {
     var f = montarLinhasFormatadas({
       resultado: resultadoTemplate, transportadora: selecionada.transportadora,
       canal: selecionada.canal, inicioVigencia: inicioVigencia, fimVigencia: fimVigencia,
+      origemFallback: selecionada.origem || '', ufOrigemFallback: selecionada.uf_origem || '',
     });
     setFormatado(f); setMostrarPreview(true);
     setSucesso('Formatado: ' + f.rotas.length + ' rota(s) e ' + f.cotacoes.length + ' cotação(ões).');
