@@ -10,11 +10,34 @@ function numero(value) {
   if (value === null || value === undefined || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
 
-  const limpo = String(value)
-    .replace(/\./g, '')
-    .replace(',', '.')
-    .replace(/[^\d.-]/g, '');
+  let texto = String(value)
+    .replace(/R\$/gi, '')
+    .replace(/%/g, '')
+    .trim();
 
+  if (!texto) return 0;
+
+  texto = texto.replace(/\s/g, '');
+
+  const temVirgula = texto.includes(',');
+  const temPonto = texto.includes('.');
+
+  if (temVirgula && temPonto) {
+    texto = texto.replace(/\./g, '').replace(',', '.');
+  } else if (temVirgula) {
+    texto = texto.replace(',', '.');
+  } else if (temPonto) {
+    const partes = texto.split('.');
+    const pareceMilhar =
+      partes.length > 1 &&
+      partes.slice(1).every((p) => p.length === 3) &&
+      partes[0].length <= 3 &&
+      Number(partes[0]) >= 1;
+
+    if (pareceMilhar) texto = texto.replace(/\./g, '');
+  }
+
+  const limpo = texto.replace(/[^\d.-]/g, '');
   const n = Number(limpo);
   return Number.isFinite(n) ? n : 0;
 }
@@ -108,9 +131,18 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   const excessoKg = numero(item.excesso_kg);
   const valorExcedente = numero(item.valor_excedente);
 
-  const tipoCalculoItem = percentual > 0 && taxaAplicada <= 0
+  const temEstruturaFaixa =
+    taxaAplicada > 0 ||
+    pesoInicial > 0 ||
+    pesoFinalInformado > 0 ||
+    excessoKg > 0 ||
+    valorExcedente > 0;
+
+  const tipoCalculoItem = percentual > 0 && !temEstruturaFaixa
     ? 'PERCENTUAL'
-    : normalizarTipoCalculo(generalidades.tipoCalculo);
+    : temEstruturaFaixa
+      ? 'FAIXA_DE_PESO'
+      : normalizarTipoCalculo(generalidades.tipoCalculo);
 
   return {
     id: item.id || `cotacao-neg-${indice}`,

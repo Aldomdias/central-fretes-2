@@ -164,7 +164,10 @@ function montarItensVerum(formatado) {
       dados_originais: { tipo_item: 'COTACAO', ...cotacao },
     };
   });
-  return itensRotas.concat(itensCotacoes);
+  // Para negociação/simulação, a saída deve seguir o mesmo padrão do arquivo único Cantu:
+  // uma linha por destino/faixa/cotação. As rotas técnicas são usadas apenas para expandir
+  // IBGE, prazo e UF, mas não precisam ser salvas como itens separados.
+  return itensCotacoes;
 }
 
 function getTipoItem(item) {
