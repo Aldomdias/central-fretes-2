@@ -1,332 +1,460 @@
-import * as XLSX from "xlsx";
+import * as XLSX from 'xlsx';
 
-function limpar(valor) {
-  return String(valor ?? "").trim();
+export { importarTemplateCantu, importarModeloLotacao, baixarModeloLotacao } from './importadorTemplatesCantu';
+
+function normalizarTexto(valor) {
+  return String(valor ?? '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
 }
 
-function normalizar(valor) {
-  return limpar(valor)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .toUpperCase();
+function limparTexto(valor) {
+  return String(valor ?? '').trim();
 }
 
-function paraNumero(valor) {
-  if (valor === null || valor === undefined || valor === "") return null;
-  if (typeof valor === "number") return Number.isFinite(valor) ? valor : null;
+function numero(valor, padrao = '') {
+  if (valor === null || valor === undefined || valor === '') return padrao;
 
-  const texto = String(valor).trim();
-  if (!texto) return null;
+  if (typeof valor === 'number') {
+    return Number.isFinite(valor) ? valor : padrao;
+  }
 
-  const somenteNumero = texto
-    .replace(/R\$/gi, "")
-    .replace(/%/g, "")
-    .replace(/kg/gi, "")
-    .trim();
+  let texto = String(valor).trim();
+  if (!texto) return padrao;
 
-  const temVirgula = somenteNumero.includes(",");
-  let preparado = somenteNumero.replace(/\s/g, "");
-  if (temVirgula) preparado = preparado.replace(/\./g, "").replace(",", ".");
+  texto = texto
+    .replace(/\s/g, '')
+    .replace(/R\$/gi, '')
+    .replace(/%/g, '');
 
-  const n = Number(preparado);
-  return Number.isFinite(n) ? n : null;
+  const temVirgula = texto.includes(',');
+  const temPonto = texto.includes('.');
+
+  if (temVirgula && temPonto) {
+    texto = texto.replace(/\./g, '').replace(',', '.');
+  } else if (temVirgula) {
+    texto = texto.replace(',', '.');
+  }
+
+  const n = Number(texto);
+  return Number.isFinite(n) ? n : padrao;
 }
 
-function extrairFaixa(texto) {
-  const bruto = limpar(texto);
-  if (!bruto) {
-    return { faixaPeso: "", pesoInicial: null, pesoFinal: null, excedente: null };
+function criarMapaLinha(linha) {
+  const mapa = new Map();
+
+  Object.keys(linha || {}).forEach((chave) => {
+    mapa.set(normalizarTexto(chave), linha[chave]);
+  });
+
+  return mapa;
+}
+
+function valorPorAlias(mapa, aliases, padrao = '') {
+  for (const alias of aliases) {
+    const chaveNormalizada = normalizarTexto(alias);
+    if (mapa.has(chaveNormalizada)) {
+      const valor = mapa.get(chaveNormalizada);
+      if (valor !== null && valor !== undefined && String(valor).trim() !== '') {
+        return valor;
+      }
+    }
   }
 
-  const textoNormalizado = bruto
-    .replace(/\s+/g, " ")
-    .replace(/kgs?/gi, "kg")
-    .trim();
+  return padrao;
+}
 
-  const acimaDe = textoNormalizado.match(/(?:acima\s+de|maior\s+que|>\s*)\s*(\d+(?:[.,]\d+)?)/i);
-  if (acimaDe) {
-    const inicio = paraNumero(acimaDe[1]);
-    return {
-      faixaPeso: bruto,
-      pesoInicial: inicio,
-      pesoFinal: 999999999,
-      excedente: inicio,
-    };
+async function lerWorkbook(arquivo) {
+  if (!arquivo) {
+    throw new Error('Arquivo não informado.');
   }
 
-  // Aceita formatos como:
-  // 0 a 2
-  // 0 kg a 2 kg
-  // 0 kG A 2 kg
-  // 2kg-5kg
-  // 5 até 10 kg
-  const match = textoNormalizado.match(
-    /(\d+(?:[.,]\d+)?)\s*(?:kg)?\s*(?:a|ate|até|-|\/)\s*(\d+(?:[.,]\d+)?)\s*(?:kg)?/i
-  );
+  const buffer = await arquivo.arrayBuffer();
+  return XLSX.read(buffer, {
+    type: 'array',
+    cellDates: true,
+    raw: false,
+  });
+}
 
-  if (!match) {
-    return { faixaPeso: bruto, pesoInicial: null, pesoFinal: null, excedente: null };
+function selecionarAba(workbook, termosPreferidos) {
+  const nomes = workbook.SheetNames || [];
+
+  if (!nomes.length) {
+    throw new Error('Nenhuma aba encontrada no arquivo.');
   }
 
-  return {
-    faixaPeso: bruto,
-    pesoInicial: paraNumero(match[1]),
-    pesoFinal: paraNumero(match[2]),
-    excedente: null,
+  const abaPreferida = nomes.find((nome) => {
+    const nomeNorm = normalizarTexto(nome);
+    return termosPreferidos.some((termo) => nomeNorm.includes(normalizarTexto(termo)));
+  });
+
+  return workbook.Sheets[abaPreferida || nomes[0]];
+}
+
+function sheetParaLinhas(sheet) {
+  return XLSX.utils.sheet_to_json(sheet, {
+    defval: '',
+    raw: false,
+  });
+}
+
+function montarChaveRota(valor) {
+  return normalizarTexto(valor);
+}
+
+function montarNomeRota(rota) {
+  const partes = [
+    rota.origem || rota.cidadeOrigem || '',
+    rota.ufOrigem || '',
+    rota.cidadeDestino || rota.destino || '',
+    rota.ufDestino || '',
+  ].filter(Boolean);
+
+  return partes.join(' - ');
+}
+
+function normalizarRota(linha, indice) {
+  const mapa = criarMapaLinha(linha);
+
+  const origem = limparTexto(valorPorAlias(mapa, [
+    'Origem',
+    'Cidade Origem',
+    'Cidade de Origem',
+    'Cidade_Origem',
+    'Cidade Orig',
+  ]));
+
+  const ufOrigem = limparTexto(valorPorAlias(mapa, [
+    'UF Origem',
+    'UF_ORIGEM',
+    'UF Orig',
+    'Estado Origem',
+  ])).toUpperCase();
+
+  const cidadeDestino = limparTexto(valorPorAlias(mapa, [
+    'Destino',
+    'Cidade Destino',
+    'Cidade de Destino',
+    'Cidade_Destino',
+    'Cidade Dest',
+  ]));
+
+  const ufDestino = limparTexto(valorPorAlias(mapa, [
+    'UF Destino',
+    'UF_DESTINO',
+    'UF Dest',
+    'Estado Destino',
+  ])).toUpperCase();
+
+  const ibgeOrigem = limparTexto(valorPorAlias(mapa, [
+    'IBGE Origem',
+    'Código IBGE Origem',
+    'Codigo IBGE Origem',
+    'Cod IBGE Origem',
+    'IBGE_ORIGEM',
+  ]));
+
+  const ibgeDestino = limparTexto(valorPorAlias(mapa, [
+    'IBGE Destino',
+    'Código IBGE Destino',
+    'Codigo IBGE Destino',
+    'Cod IBGE Destino',
+    'IBGE_DESTINO',
+  ]));
+
+  const cotacaoBase = limparTexto(valorPorAlias(mapa, [
+    'Cotação Base',
+    'Cotacao Base',
+    'Cotação',
+    'Cotacao',
+    'Rota',
+    'Nome Rota',
+    'Nome da Rota',
+    'Código Rota',
+    'Codigo Rota',
+    'ID Rota',
+  ]));
+
+  const cotacaoFinal = limparTexto(valorPorAlias(mapa, [
+    'Cotação Final',
+    'Cotacao Final',
+    'Cotação Sistema',
+    'Cotacao Sistema',
+    'Rota Final',
+    'Nome Final',
+    'Nome Rota',
+    'Rota',
+  ], cotacaoBase));
+
+  const prazo = numero(valorPorAlias(mapa, [
+    'Prazo',
+    'Prazo Entrega',
+    'Prazo de Entrega',
+    'Prazo Dias',
+    'Dias',
+  ]), '');
+
+  const rota = {
+    id: `rota-${indice + 1}`,
+    origem,
+    cidadeOrigem: origem,
+    ufOrigem,
+    cidadeDestino,
+    destino: cidadeDestino,
+    ufDestino,
+    ibgeOrigem,
+    ibgeDestino,
+    prazo,
+    cotacaoBase,
+    cotacao: cotacaoFinal || cotacaoBase || montarNomeRota({
+      origem,
+      ufOrigem,
+      cidadeDestino,
+      ufDestino,
+    }),
+    cotacaoFinal: cotacaoFinal || cotacaoBase || montarNomeRota({
+      origem,
+      ufOrigem,
+      cidadeDestino,
+      ufDestino,
+    }),
+    dadosOriginais: linha,
   };
-}
 
-function montarCotacaoFinal({ origem, ufDestino, cotacaoBase }) {
-  return [limpar(origem), limpar(ufDestino).toUpperCase(), limpar(cotacaoBase).toUpperCase()]
-    .filter(Boolean)
-    .join(" - ");
-}
-
-function detectarCotacaoBase(valorRegiao) {
-  const texto = normalizar(valorRegiao);
-  if (!texto) return "";
-  if (texto.includes("CAPITAL")) return "CAPITAL";
-  if (texto.includes("INTERIOR 1")) return "INTERIOR 1";
-  if (texto.includes("INTERIOR 2")) return "INTERIOR 2";
-  if (texto.includes("INTERIOR 3")) return "INTERIOR 3";
-  if (texto.includes("INTERIOR 4")) return "INTERIOR 4";
-  if (texto.includes("INTERIOR 5")) return "INTERIOR 5";
-  if (texto.includes("INTERIOR 6")) return "INTERIOR 6";
-  if (texto.includes("INTERIOR 7")) return "INTERIOR 7";
-  if (texto.includes("INTERIOR 8")) return "INTERIOR 8";
-  if (texto.includes("INTERIOR 9")) return "INTERIOR 9";
-  if (texto.includes("METROP")) return "METROPOLITANA";
-  return limpar(valorRegiao).toUpperCase();
-}
-
-function detectarBlocoFreteFlat(cabecalho) {
-  const texto = normalizar(cabecalho);
-  const regioes = [
-    "METROPOLITANA",
-    "CAPITAL",
-    "INTERIOR 1",
-    "INTERIOR 2",
-    "INTERIOR 3",
-    "INTERIOR 4",
-    "INTERIOR 5",
-    "INTERIOR 6",
-    "INTERIOR 7",
-    "INTERIOR 8",
-    "INTERIOR 9",
-  ];
-
-  const cotacaoBase = regioes.find((regiao) => texto.includes(regiao));
-  if (!cotacaoBase) return null;
-
-  if (texto.includes("AD VALOREM") || texto.includes("ADVALOREM")) {
-    return { cotacaoBase, tipo: "adValorem" };
+  if (!rota.origem && !rota.cidadeDestino && !rota.ufDestino && !rota.cotacaoFinal) {
+    return null;
   }
 
-  if (texto.includes("FRETE") || texto.includes("TAXA") || texto.includes("VALOR")) {
-    return { cotacaoBase, tipo: "frete" };
-  }
-
-  return null;
+  return rota;
 }
 
-async function lerArquivoExcel(file) {
-  const buffer = await file.arrayBuffer();
-  return XLSX.read(buffer, { type: "array" });
+function normalizarFrete(linha, indice, rotasPorChave) {
+  const mapa = criarMapaLinha(linha);
+
+  const cotacaoInformada = limparTexto(valorPorAlias(mapa, [
+    'Cotação Final',
+    'Cotacao Final',
+    'Cotação',
+    'Cotacao',
+    'Rota',
+    'Nome Rota',
+    'Nome da Rota',
+    'Código Rota',
+    'Codigo Rota',
+    'ID Rota',
+  ]));
+
+  const rota = rotasPorChave.get(montarChaveRota(cotacaoInformada)) || null;
+
+  const origem = limparTexto(valorPorAlias(mapa, [
+    'Origem',
+    'Cidade Origem',
+    'Cidade de Origem',
+    'Cidade_Origem',
+  ], rota ? rota.origem : ''));
+
+  const ufOrigem = limparTexto(valorPorAlias(mapa, [
+    'UF Origem',
+    'UF_ORIGEM',
+    'UF Orig',
+  ], rota ? rota.ufOrigem : '')).toUpperCase();
+
+  const ufDestino = limparTexto(valorPorAlias(mapa, [
+    'UF Destino',
+    'UF_DESTINO',
+    'UF Dest',
+  ], rota ? rota.ufDestino : '')).toUpperCase();
+
+  const cotacaoBase = limparTexto(valorPorAlias(mapa, [
+    'Cotação Base',
+    'Cotacao Base',
+    'Base',
+  ], rota ? rota.cotacaoBase : ''));
+
+  const faixaPeso = limparTexto(valorPorAlias(mapa, [
+    'Faixa Peso',
+    'Faixa de Peso',
+    'Faixa',
+    'Peso',
+    'Descrição Faixa',
+    'Descricao Faixa',
+  ]));
+
+  const pesoInicial = numero(valorPorAlias(mapa, [
+    'Peso Inicial',
+    'Peso Min',
+    'Peso Mínimo',
+    'Peso Minimo',
+    'Peso De',
+    'De',
+    'Kg Inicial',
+  ]), '');
+
+  const pesoFinal = numero(valorPorAlias(mapa, [
+    'Peso Final',
+    'Peso Max',
+    'Peso Máximo',
+    'Peso Maximo',
+    'Peso Até',
+    'Peso Ate',
+    'Até',
+    'Ate',
+    'Kg Final',
+  ]), '');
+
+  const taxaAplicada = numero(valorPorAlias(mapa, [
+    'Taxa Aplicada',
+    'Taxa',
+    'Valor Faixa',
+    'Valor',
+    'Frete Valor',
+    'Frete',
+    'Frete Peso',
+  ]), '');
+
+  const excedente = numero(valorPorAlias(mapa, [
+    'Excedente',
+    'Excesso',
+    'Excesso Kg',
+    'Valor Excedente',
+    'Kg Excedente',
+  ]), '');
+
+  const fretePercentual = numero(valorPorAlias(mapa, [
+    'Frete Percentual',
+    'Percentual',
+    '% NF',
+    'Percentual NF',
+    'Frete %',
+    '% Frete',
+  ]), '');
+
+  const freteMinimo = numero(valorPorAlias(mapa, [
+    'Frete Mínimo',
+    'Frete Minimo',
+    'Mínimo',
+    'Minimo',
+    'Valor Mínimo',
+    'Valor Minimo',
+  ]), '');
+
+  const frete = {
+    id: `frete-${indice + 1}`,
+    cotacao: cotacaoInformada || (rota ? rota.cotacao : ''),
+    cotacaoFinal: cotacaoInformada || (rota ? rota.cotacaoFinal : ''),
+    cotacaoBase,
+    origem,
+    ufOrigem,
+    ufDestino,
+    faixaPeso,
+    pesoInicial,
+    pesoFinal,
+    taxaAplicada,
+    freteValor: taxaAplicada,
+    excedente,
+    fretePercentual,
+    freteMinimo,
+    dadosOriginais: linha,
+  };
+
+  const temAlgumValor =
+    frete.cotacao ||
+    frete.origem ||
+    frete.ufDestino ||
+    frete.faixaPeso ||
+    frete.taxaAplicada !== '' ||
+    frete.fretePercentual !== '' ||
+    frete.freteMinimo !== '';
+
+  return temAlgumValor ? frete : null;
 }
 
-function primeiraAba(workbook) {
-  const nome = workbook.SheetNames?.[0];
-  return nome ? workbook.Sheets[nome] : null;
-}
+function montarQuebrasFaixa(fretes) {
+  const mapa = new Map();
 
-function procurarIndice(header, nomes) {
-  const opcoes = nomes.map((nome) => normalizar(nome));
-  return header.findIndex((h) => opcoes.some((opcao) => h === opcao || h.includes(opcao)));
+  fretes.forEach((frete) => {
+    const chave = [
+      frete.faixaPeso || '',
+      frete.pesoInicial ?? '',
+      frete.pesoFinal ?? '',
+    ].join('|');
+
+    if (!mapa.has(chave)) {
+      mapa.set(chave, {
+        faixaPeso: frete.faixaPeso || '',
+        pesoInicial: frete.pesoInicial ?? '',
+        pesoFinal: frete.pesoFinal ?? '',
+      });
+    }
+  });
+
+  return Array.from(mapa.values());
 }
 
 export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes }) {
-  if (!arquivoRotas || !arquivoFretes) {
-    throw new Error("Selecione os arquivos de Rotas e Fretes.");
+  if (!arquivoRotas) {
+    throw new Error('Selecione o arquivo de Rotas.');
   }
 
-  const wbRotas = await lerArquivoExcel(arquivoRotas);
-  const wbFretes = await lerArquivoExcel(arquivoFretes);
-
-  const sheetRotas = primeiraAba(wbRotas);
-  const sheetFretes = primeiraAba(wbFretes);
-
-  if (!sheetRotas || !sheetFretes) {
-    throw new Error("Não foi possível ler as planilhas enviadas.");
+  if (!arquivoFretes) {
+    throw new Error('Selecione o arquivo de Fretes.');
   }
 
-  const rowsRotas = XLSX.utils.sheet_to_json(sheetRotas, { header: 1, defval: "" });
-  const rowsFretes = XLSX.utils.sheet_to_json(sheetFretes, { header: 1, defval: "" });
+  const workbookRotas = await lerWorkbook(arquivoRotas);
+  const workbookFretes = await lerWorkbook(arquivoFretes);
 
-  const headerRotas = (rowsRotas[0] || []).map((v) => normalizar(v));
+  const sheetRotas = selecionarAba(workbookRotas, ['ROTAS', 'ROTA']);
+  const sheetFretes = selecionarAba(workbookFretes, ['FRETES', 'FRETE', 'COTACOES', 'COTAÇÕES', 'TABELA']);
 
-  const idx = {
-    ibgeOrigem: procurarIndice(headerRotas, ["IBGE ORIGEM"]),
-    cidadeOrigem: procurarIndice(headerRotas, ["CIDADE DE ORIGEM", "CIDADE ORIGEM", "ORIGEM"]),
-    ufOrigem: procurarIndice(headerRotas, ["UF ORIGEM"]),
-    ibgeDestino: procurarIndice(headerRotas, ["IBGE DESTINO"]),
-    cidadeDestino: procurarIndice(headerRotas, ["CIDADE DE DESTINO", "CIDADE DESTINO", "DESTINO"]),
-    ufDestino: procurarIndice(headerRotas, ["UF DESTINO"]),
-    cepInicial: procurarIndice(headerRotas, ["CEP INICIAL"]),
-    cepFinal: procurarIndice(headerRotas, ["CEP FINAL"]),
-    prazo: procurarIndice(headerRotas, ["PRAZO"]),
-    regiao: procurarIndice(headerRotas, ["REGIAO", "REGIÃO", "COTACAO", "COTAÇÃO"]),
+  const linhasRotas = sheetParaLinhas(sheetRotas);
+  const linhasFretes = sheetParaLinhas(sheetFretes);
+
+  const rotas = linhasRotas
+    .map((linha, indice) => normalizarRota(linha, indice))
+    .filter(Boolean);
+
+  const rotasPorChave = new Map();
+
+  rotas.forEach((rota) => {
+    [
+      rota.cotacao,
+      rota.cotacaoFinal,
+      rota.cotacaoBase,
+      montarNomeRota(rota),
+    ].filter(Boolean).forEach((chave) => {
+      rotasPorChave.set(montarChaveRota(chave), rota);
+    });
+  });
+
+  const fretes = linhasFretes
+    .map((linha, indice) => normalizarFrete(linha, indice, rotasPorChave))
+    .filter(Boolean);
+
+  const quebrasFaixa = montarQuebrasFaixa(fretes);
+
+  return {
+    rotas,
+    fretes,
+    quebrasFaixa,
+    meta: {
+      totalRotas: rotas.length,
+      totalFretes: fretes.length,
+      totalQuebrasFaixa: quebrasFaixa.length,
+      arquivoRotas: arquivoRotas.name || '',
+      arquivoFretes: arquivoFretes.name || '',
+    },
   };
-
-  if (idx.cidadeOrigem < 0 || idx.ufDestino < 0 || idx.regiao < 0) {
-    throw new Error(
-      "Arquivo de Rotas fora do modelo. Verifique se existem as colunas Cidade de Origem, UF Destino e Região/Cotação."
-    );
-  }
-
-  const rotas = [];
-  const quebrasFaixa = [];
-
-  for (let i = 1; i < rowsRotas.length; i++) {
-    const row = rowsRotas[i] || [];
-    const origem = limpar(row[idx.cidadeOrigem]);
-    const ufDestino = limpar(row[idx.ufDestino]).toUpperCase();
-    const cotacaoBase = detectarCotacaoBase(row[idx.regiao]);
-
-    const registro = {
-      ibgeOrigem: idx.ibgeOrigem >= 0 ? limpar(row[idx.ibgeOrigem]) : "",
-      origem,
-      ufOrigem: idx.ufOrigem >= 0 ? limpar(row[idx.ufOrigem]).toUpperCase() : "",
-      ibgeDestino: idx.ibgeDestino >= 0 ? limpar(row[idx.ibgeDestino]) : "",
-      cidadeDestino: idx.cidadeDestino >= 0 ? limpar(row[idx.cidadeDestino]) : "",
-      ufDestino,
-      prazo: idx.prazo >= 0 ? limpar(row[idx.prazo]) : "",
-      cotacaoBase,
-      cotacao: montarCotacaoFinal({ origem, ufDestino, cotacaoBase }),
-      cotacaoFinal: montarCotacaoFinal({ origem, ufDestino, cotacaoBase }),
-    };
-
-    if (!registro.origem && !registro.ufDestino && !registro.cotacaoBase) continue;
-    rotas.push(registro);
-
-    const cepInicial = idx.cepInicial >= 0 ? limpar(row[idx.cepInicial]) : "";
-    const cepFinal = idx.cepFinal >= 0 ? limpar(row[idx.cepFinal]) : "";
-    if (cepInicial || cepFinal) {
-      quebrasFaixa.push({ ...registro, cepInicial, cepFinal });
-    }
-  }
-
-  const header1 = (rowsFretes[0] || []).map((v) => limpar(v));
-  const header2 = (rowsFretes[1] || []).map((v) => limpar(v));
-  const header1Norm = header1.map((v) => normalizar(v));
-  const header2Norm = header2.map((v) => normalizar(v));
-  const cols = Math.max(header1.length, header2.length);
-
-  const fixed = {
-    cidadeOrigem: procurarIndice(header1Norm, ["CIDADE DE ORIGEM", "CIDADE ORIGEM", "ORIGEM"]),
-    ufOrigem: procurarIndice(header1Norm, ["UF ORIGEM"]),
-    ufDestino: procurarIndice(header1Norm, ["UF DESTINO"]),
-    faixaPeso: procurarIndice(header1Norm, ["FAIXA PESO", "FAIXA DE PESO", "PESO"]),
-  };
-
-  if (fixed.cidadeOrigem < 0 || fixed.ufDestino < 0 || fixed.faixaPeso < 0) {
-    throw new Error(
-      "Arquivo de Fretes fora do modelo. Verifique se existem as colunas Cidade de Origem, UF Destino e Faixa Peso."
-    );
-  }
-
-  const blocos = [];
-  const cotacoesJaMapeadas = new Set();
-  const temSegundoCabecalho = header2Norm.some(
-    (h) => h.includes("FRETE") || h.includes("AD VALOREM") || h.includes("ADVALOREM")
-  );
-
-  for (let c = 0; c < cols; c++) {
-    const h1 = normalizar(header1[c]);
-    const h2 = normalizar(header2[c]);
-
-    if (h1 && h2 && (h2.includes("FRETE") || h2.includes("TAXA") || h2.includes("VALOR"))) {
-      const cotacaoBase = detectarCotacaoBase(header1[c]);
-      if (cotacaoBase) {
-        const chave = `${cotacaoBase}|${c}`;
-        if (!cotacoesJaMapeadas.has(chave)) {
-          blocos.push({
-            cotacaoBase,
-            freteCol: c,
-            adValoremCol: c + 1,
-          });
-          cotacoesJaMapeadas.add(chave);
-        }
-      }
-    }
-
-    const flat = detectarBlocoFreteFlat(header1[c]);
-    if (flat?.tipo === "frete") {
-      const adValoremCol = header1.findIndex((cab) => {
-        const bloco = detectarBlocoFreteFlat(cab);
-        return bloco?.tipo === "adValorem" && bloco.cotacaoBase === flat.cotacaoBase;
-      });
-
-      const chave = `${flat.cotacaoBase}|${c}`;
-      if (!cotacoesJaMapeadas.has(chave)) {
-        blocos.push({
-          cotacaoBase: flat.cotacaoBase,
-          freteCol: c,
-          adValoremCol: adValoremCol >= 0 ? adValoremCol : -1,
-        });
-        cotacoesJaMapeadas.add(chave);
-      }
-    }
-  }
-
-  if (!blocos.length) {
-    throw new Error(
-      "Não encontrei colunas de frete no arquivo de Fretes. Use colunas como 'CAPITAL Frete kg (R$)' e 'CAPITAL Ad Valorem(%)'."
-    );
-  }
-
-  const fretes = [];
-  const linhaInicialFretes = temSegundoCabecalho ? 2 : 1;
-
-  for (let r = linhaInicialFretes; r < rowsFretes.length; r++) {
-    const row = rowsFretes[r] || [];
-    const origem = limpar(row[fixed.cidadeOrigem]);
-    const ufOrigem = fixed.ufOrigem >= 0 ? limpar(row[fixed.ufOrigem]).toUpperCase() : "";
-    const ufDestino = limpar(row[fixed.ufDestino]).toUpperCase();
-    const faixa = extrairFaixa(row[fixed.faixaPeso]);
-
-    if (!origem && !ufDestino && !faixa.faixaPeso) continue;
-
-    for (const bloco of blocos) {
-      const freteValor = paraNumero(row[bloco.freteCol]);
-      const fretePercentual = bloco.adValoremCol >= 0 ? paraNumero(row[bloco.adValoremCol]) : null;
-      if (freteValor === null && fretePercentual === null) continue;
-
-      const cotacaoFinal = montarCotacaoFinal({
-        origem,
-        ufDestino,
-        cotacaoBase: bloco.cotacaoBase,
-      });
-
-      fretes.push({
-        origem,
-        ufOrigem,
-        ufDestino,
-        cotacaoBase: bloco.cotacaoBase,
-        cotacao: cotacaoFinal,
-        cotacaoFinal,
-        faixaPeso: faixa.faixaPeso,
-        pesoInicial: faixa.pesoInicial,
-        pesoFinal: faixa.pesoFinal,
-        freteValor,
-        fretePercentual,
-        freteMinimo: null,
-        taxaAplicada: freteValor,
-        excedente: faixa.excedente,
-        origemImportacao: "template_padrao_separado",
-      });
-    }
-  }
-
-  return { rotas, quebrasFaixa, fretes };
 }
+
+export async function importarTemplatePadrao(args) {
+  return importarTemplatePadraoSeparado(args);
+}
+
+export default {
+  importarTemplatePadraoSeparado,
+  importarTemplatePadrao,
+};
