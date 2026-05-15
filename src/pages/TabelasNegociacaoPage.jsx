@@ -229,6 +229,7 @@ export default function TabelasNegociacaoPage() {
 
   const [arquivoLotacao, setArquivoLotacao] = useState(null);
   const [resultadoLotacao, setResultadoLotacao] = useState(null);
+  const [filtroItens, setFiltroItens] = useState('COTACAO');
 
   const [inicioVigencia, setInicioVigencia] = useState(hojeISO());
   const [fimVigencia, setFimVigencia] = useState(fimTresAnosISO());
@@ -253,6 +254,57 @@ export default function TabelasNegociacaoPage() {
     var ufs = new Set(itensSelecionada.map(function(i) { return i.uf_destino; }).filter(Boolean));
     return { rotas: rotas.length, cotacoes: cotacoes.length, ufs: ufs.size };
   }, [itensSelecionada]);
+
+  const itensVisualizacao = useMemo(function() {
+    return [].concat(itensSelecionada || []).sort(function(a, b) {
+      var tipoA = getTipoItem(a) === 'ROTA' ? 1 : 0;
+      var tipoB = getTipoItem(b) === 'ROTA' ? 1 : 0;
+      if (tipoA !== tipoB) return tipoA - tipoB;
+
+      var ufA = String(a.uf_destino || '');
+      var ufB = String(b.uf_destino || '');
+      if (ufA !== ufB) return ufA.localeCompare(ufB, 'pt-BR');
+
+      var ibgeA = String(a.ibge_destino || '');
+      var ibgeB = String(b.ibge_destino || '');
+      if (ibgeA !== ibgeB) return ibgeA.localeCompare(ibgeB, 'pt-BR');
+
+      return Number(a.peso_inicial || 0) - Number(b.peso_inicial || 0);
+    });
+  }, [itensSelecionada]);
+
+  const itensFiltrados = useMemo(function() {
+    if (filtroItens === 'TODOS') return itensVisualizacao;
+    if (filtroItens === 'ROTA') return itensVisualizacao.filter(function(i) { return getTipoItem(i) === 'ROTA'; });
+    return itensVisualizacao.filter(function(i) { return getTipoItem(i) !== 'ROTA'; });
+  }, [itensVisualizacao, filtroItens]);
+
+  function labelTipoItem(item) {
+    return getTipoItem(item) === 'ROTA' ? 'ROTA' : 'COTAÇÃO/FAIXA';
+  }
+
+  function destinoItem(item) {
+    var cidade = normalizarTexto(item.cidade_destino);
+    var uf = normalizarTexto(item.uf_destino);
+    var ibge = normalizarTexto(item.ibge_destino);
+
+    if (cidade) {
+      return cidade + (uf ? '/' + uf : '') + (ibge ? ' · IBGE ' + ibge : '');
+    }
+
+    if (ibge) {
+      return 'IBGE ' + ibge + (uf ? '/' + uf : '');
+    }
+
+    return uf || '-';
+  }
+
+  function origemItem(item) {
+    var cidade = normalizarTexto(item.cidade_origem);
+    var uf = normalizarTexto(item.uf_origem);
+    if (!cidade && !uf) return '-';
+    return cidade + (uf ? '/' + uf : '');
+  }
 
   function limparImport() {
     setResultadoTemplate(null); setFormatado(null); setMostrarPreview(false);
@@ -1024,30 +1076,85 @@ export default function TabelasNegociacaoPage() {
                 <div className="summary-card"><span>Cotações/Faixas</span><strong>{resumoItens.cotacoes}</strong></div>
                 <div className="summary-card"><span>UF destino</span><strong>{resumoItens.ufs}</strong></div>
               </div>
+
+              <div className="sim-actions" style={{ marginBottom: 12 }}>
+                <button
+                  className="sim-tab"
+                  type="button"
+                  onClick={function() { setFiltroItens('COTACAO'); }}
+                  style={filtroItens === 'COTACAO' ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
+                >
+                  Cotações/Faixas ({resumoItens.cotacoes})
+                </button>
+                <button
+                  className="sim-tab"
+                  type="button"
+                  onClick={function() { setFiltroItens('ROTA'); }}
+                  style={filtroItens === 'ROTA' ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
+                >
+                  Rotas ({resumoItens.rotas})
+                </button>
+                <button
+                  className="sim-tab"
+                  type="button"
+                  onClick={function() { setFiltroItens('TODOS'); }}
+                  style={filtroItens === 'TODOS' ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
+                >
+                  Todos ({itensSelecionada.length})
+                </button>
+              </div>
+
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
-                  <thead><tr><th>Tipo</th><th>Origem</th><th>Destino</th><th>Faixa/Rota</th><th>Frete Mín</th><th>Taxa</th><th>% NF</th><th>KM</th><th>Prazo</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th>Tipo</th>
+                      <th>Origem</th>
+                      <th>Destino</th>
+                      <th>Faixa/Rota</th>
+                      <th>Peso inicial</th>
+                      <th>Peso final</th>
+                      <th>Taxa</th>
+                      <th>% NF</th>
+                      <th>ADV %</th>
+                      <th>Excedente</th>
+                      <th>Prazo</th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    {itensSelecionada.slice(0, 120).map(function(item) {
+                    {itensFiltrados.slice(0, 120).map(function(item) {
                       return (
                         <tr key={item.id}>
-                          <td>{getTipoItem(item)}</td>
-                          <td>{item.cidade_origem}/{item.uf_origem}</td>
-                          <td>{item.cidade_destino ? item.cidade_destino + '/' + item.uf_destino : item.uf_destino}</td>
+                          <td>
+                            <strong>{labelTipoItem(item)}</strong>
+                            {getTipoItem(item) === 'ROTA' ? (
+                              <div style={{ fontSize: 11, color: '#64748b' }}>linha técnica</div>
+                            ) : null}
+                          </td>
+                          <td>{origemItem(item)}</td>
+                          <td>{destinoItem(item)}</td>
                           <td>{item.faixa_peso || '-'}</td>
-                          <td>{formatMoney(item.frete_minimo)}</td>
+                          <td>{Number(item.peso_inicial || 0).toLocaleString('pt-BR')}</td>
+                          <td>{Number(item.peso_final || 0).toLocaleString('pt-BR')}</td>
                           <td>{formatMoney(item.taxa_aplicada)}</td>
                           <td>{Number(item.frete_percentual || 0).toFixed(4)}</td>
-                          <td>{item.km || '-'}</td>
+                          <td>{Number(item.advalorem || 0).toFixed(4)}</td>
+                          <td>{Number(item.excesso_kg || 0) > 0 || Number(item.valor_excedente || 0) > 0 ? (
+                            <span>{Number(item.excesso_kg || 0).toLocaleString('pt-BR')} kg · {formatMoney(item.valor_excedente)}</span>
+                          ) : '-'}</td>
                           <td>{item.prazo || '-'}</td>
                         </tr>
                       );
                     })}
-                    {!itensSelecionada.length ? <tr><td colSpan="9">Nenhum item salvo ainda.</td></tr> : null}
+                    {!itensFiltrados.length ? <tr><td colSpan="11">Nenhum item encontrado para este filtro.</td></tr> : null}
                   </tbody>
                 </table>
               </div>
-              {itensSelecionada.length > 120 ? <div className="empty-note">Mostrando 120 de {itensSelecionada.length} itens.</div> : null}
+              {itensFiltrados.length > 120 ? (
+                <div className="empty-note">
+                  Mostrando 120 de {itensFiltrados.length} itens filtrados. Total salvo: {itensSelecionada.length}.
+                </div>
+              ) : null}
             </div>
           ) : null}
 
