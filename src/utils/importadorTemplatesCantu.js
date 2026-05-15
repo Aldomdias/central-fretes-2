@@ -716,13 +716,18 @@ function parseAtendimento(ws) {
     const regiaoRaw = cRegiao >= 0 ? txt(row[cRegiao] || '') : '';
     const regiao    = detectarRegiao(regiaoRaw) || null;
 
+    const prazo = cPrazo >= 0 ? (num(row[cPrazo]) ?? 0) : 0;
+
+    // Importar apenas cidades com prazo preenchido
+    if (!prazo || prazo <= 0) continue;
+
     cidades.push({
       ibge_destino:   ibge ? String(ibge).trim() : '',
       uf_destino:     uf,
       cidade_destino: cidade,
       cep_inicial:    cCepIni >= 0 ? (row[cCepIni] ?? '') : '',
       cep_final:      cCepFim >= 0 ? (row[cCepFim] ?? '') : '',
-      prazo:          cPrazo >= 0 ? (num(row[cPrazo]) ?? 0) : 0,
+      prazo,
       regiao,          // null se não preenchida
       tda:            cTDA >= 0 ? (num(row[cTDA]) ?? 0) : 0,
       trt:            cTRT >= 0 ? (num(row[cTRT]) ?? 0) : 0,
