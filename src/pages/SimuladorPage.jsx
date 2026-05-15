@@ -1492,6 +1492,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [carregandoNegociacoesSimulador, setCarregandoNegociacoesSimulador] = useState(false);
   const [erroNegociacoesSimulador, setErroNegociacoesSimulador] = useState('');
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(true);
+  const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
   const [municipiosIbge, setMunicipiosIbge] = useState([]);
@@ -2339,12 +2340,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
       const basesParaMesclar = [baseSelecionada];
 
-      if (incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length) {
+      if (incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length && deveCompararConcorrentes) {
         basesParaMesclar.push(transportadorasNegociacaoRealizado);
       }
       let baseRotas = [];
 
-      if (routeKeysRealizado.length) {
+      const deveCompararConcorrentes = !ehNegociacaoSelecionada || compararConcorrentesRealizado;
+
+      if (deveCompararConcorrentes && routeKeysRealizado.length) {
         atualizarProcessamentoUi(`Buscando concorrentes por ${routeKeysRealizado.length.toLocaleString('pt-BR')} rota(s) reais...`, 58);
         baseRotas = await buscarBaseSimulacaoPorRotasDb({
           routeKeys: routeKeysRealizado.slice(0, 5000),
@@ -2362,18 +2365,22 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ]).slice(0, 20);
 
       let basesOrigemCarregadas = 0;
-      for (let idx = 0; idx < origensParaBuscar.length; idx += 1) {
-        const origemBusca = origensParaBuscar[idx];
-        atualizarProcessamentoUi(`Buscando tabelas concorrentes da origem ${origemBusca}...`, Math.min(72, 60 + idx));
-        const baseOrigem = await carregarBaseOnline({
-          canal: canalRealizado,
-          origem: origemBusca,
-          ufDestino: ufDestinoRealizado,
-        });
-        if (Array.isArray(baseOrigem) && baseOrigem.length) {
-          basesOrigemCarregadas += baseOrigem.length;
-          basesParaMesclar.push(baseOrigem);
+      if (deveCompararConcorrentes) {
+        for (let idx = 0; idx < origensParaBuscar.length; idx += 1) {
+          const origemBusca = origensParaBuscar[idx];
+          atualizarProcessamentoUi(`Buscando tabelas concorrentes da origem ${origemBusca}...`, Math.min(72, 60 + idx));
+          const baseOrigem = await carregarBaseOnline({
+            canal: canalRealizado,
+            origem: origemBusca,
+            ufDestino: ufDestinoRealizado,
+          });
+          if (Array.isArray(baseOrigem) && baseOrigem.length) {
+            basesOrigemCarregadas += baseOrigem.length;
+            basesParaMesclar.push(baseOrigem);
+          }
         }
+      } else {
+        atualizarProcessamentoUi('Simulando somente a negociação selecionada contra o realizado...', 72);
       }
 
       let baseParaSimulacao = mesclarBasesTransportadorasSimulador(basesParaMesclar);
@@ -3527,6 +3534,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 Atualizar negociações
               </button>
             </div>
+
+            <label className="sim-flag">
+              <input
+                type="checkbox"
+                checked={compararConcorrentesRealizado}
+                onChange={(event) => setCompararConcorrentesRealizado(event.target.checked)}
+              />
+              Comparar com tabelas oficiais/concorrentes
+            </label>
+
+            <small style={{ color: '#64748b' }}>
+              Para testar uma negociação rapidamente, deixe desmarcado. Assim o sistema simula só a tabela selecionada contra os CT-es realizados.
+            </small>
 
             {erroNegociacoesSimulador ? <span style={{ color: '#dc2626' }}>{erroNegociacoesSimulador}</span> : null}
           </div>
