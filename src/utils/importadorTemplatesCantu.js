@@ -324,7 +324,177 @@ function parseCantUPercentual(matrix, ficha, canal, origem) {
  *    INTERIOR 1|
  *    0-10      | ...
  */
+
+function detectarFormatoFaixaPesoRegiaoTripla(matrix) {
+  for (let i = 0; i < Math.min(matrix.length, 20); i++) {
+    const row = matrix[i] || [];
+    const normRow = row.map((c) => norm(c || ''));
+
+    const temEstadoDestino = normRow.some((c) => c.includes('ESTADO DESTINO'));
+    const temFaixaPeso = normRow.some((c) => c.includes('FAIXA PESO'));
+
+    if (!temEstadoDestino || !temFaixaPeso) continue;
+
+    const regiaoRowIdx = i - 1;
+    if (regiaoRowIdx < 0) continue;
+
+    const regiaoRow = matrix[regiaoRowIdx] || [];
+    const temRegiao = regiaoRow.some((c) => detectarRegiao(c || ''));
+
+    if (temRegiao) {
+      return {
+        regiaoRowIdx,
+        cabRowIdx: i,
+      };
+    }
+  }
+
+  return null;
+}
+
+function parseFaixaPesoRegiaoTripla(matrix, formato, ficha, canal, origem) {
+  const itens = [];
+  const regiaoRow = matrix[formato.regiaoRowIdx] || [];
+  const cabRow = matrix[formato.cabRowIdx] || [];
+
+  const colMap = [];
+
+  for (let c = 0; c < regiaoRow.length; c++) {
+    const regiao = detectarRegiao(regiaoRow[c] || '');
+    if (!regiao) continue;
+
+    let colFrete = -1;
+    let colAdValorem = -1;
+    let colAdValoremMinimo = -1;
+
+    // Cada região ocupa normalmente 3 colunas:
+    // FRETE (R$), AD VALOREM (%), AD VALOREM MÍNIMO (%)
+    for (let cc = c; cc < Math.min(c + 3, cabRow.length); cc++) {
+      const sub = norm(cabRow[cc] || '');
+
+      if (sub.includes('FRETE')) {
+        colFrete = cc;
+      } else if (sub.includes('AD VALOREM') && (sub.includes('MINIMO') || sub.includes('MÍNIMO') || sub.includes('MIN'))) {
+        colAdValoremMinimo = cc;
+      } else if (sub.includes('AD VALOREM')) {
+        colAdValorem = cc;
+      }
+    }
+
+    if (colFrete >= 0) {
+      colMap.push({
+        regiao,
+        colFrete,
+        colAdValorem,
+        colAdValoremMinimo,
+      });
+    }
+  }
+
+  if (!colMap.length) {
+    throw new Error('Nenhuma coluna de região/frete foi encontrada na TABELA de faixa de peso.');
+  }
+
+  const ultimoFreteFixo = new Map();
+  const dataStart = formato.cabRowIdx + 1;
+
+  for (let r = dataStart; r < matrix.length; r++) {
+    const row = matrix[r] || [];
+
+    const uf = norm(row[0] || '');
+    if (!isUF(uf)) continue;
+
+    const faixa = detectarFaixaPeso(row[1]);
+    if (!faixa) continue;
+
+    const isExcedente = faixa.max >= 999998;
+
+    for (const map of colMap) {
+      const valorFreteRaw = map.colFrete >= 0 ? row[map.colFrete] : null;
+      const adValoremRaw = map.colAdValorem >= 0 ? row[map.colAdValorem] : null;
+      const adValoremMinimoRaw = map.colAdValoremMinimo >= 0 ? row[map.colAdValoremMinimo] : null;
+
+      const valorFrete = num(valorFreteRaw);
+      const advalorem = num(adValoremRaw) ?? 0;
+      const advalorem_minimo = num(adValoremMinimoRaw) ?? 0;
+
+      if (valorFrete === null && advalorem === 0 && advalorem_minimo === 0) continue;
+
+      const chaveUltimo = `${uf}||${map.regiao}`;
+
+      let taxa_aplicada = valorFrete ?? 0;
+      let excesso_kg = 0;
+      let valor_excedente = 0;
+
+      if (isExcedente) {
+        // Para a faixa excedente, o valor da coluna FRETE é o R$/kg excedente.
+        // A taxa fixa precisa repetir a última faixa fixa da mesma UF/região.
+        taxa_aplicada = ultimoFreteFixo.get(chaveUltimo) || 0;
+        excesso_kg = faixa.min;
+        valor_excedente = valorFrete ?? 0;
+      } else if (valorFrete !== null) {
+        ultimoFreteFixo.set(chaveUltimo, valorFrete);
+      }
+
+      itens.push({
+        cidade_origem: origem || '',
+        uf_origem: '',
+        ibge_origem: '',
+
+        cidade_destino: '',
+        uf_destino: uf,
+        ibge_destino: '',
+
+        faixa_peso: `${map.regiao} | ${faixa.label}`,
+        peso_inicial: faixa.min,
+        peso_final: faixa.max,
+
+        frete_minimo: 0,
+        taxa_aplicada,
+        frete_percentual: 0,
+        excesso_kg,
+        valor_excedente,
+
+        prazo: numOrZero(ficha.prazo),
+
+        gris: numOrZero(ficha.gris),
+        advalorem,
+        pedagio: numOrZero(ficha.pedagio),
+        tas: numOrZero(ficha.tas),
+        tda: numOrZero(ficha.tda),
+        tde: 0,
+        outras_taxas: 0,
+
+        observacao: `${uf} → ${map.regiao} | ${faixa.label}`,
+        dados_originais: {
+          uf_destino: uf,
+          regiao: map.regiao,
+          faixa: faixa.label,
+          frete: valorFreteRaw,
+          advalorem: adValoremRaw,
+          advalorem_minimo: adValoremMinimoRaw,
+          canal,
+          tipo: 'FAIXA_DE_PESO',
+          excedente: isExcedente,
+        },
+      });
+    }
+  }
+
+  if (!itens.length) {
+    throw new Error('Nenhum item extraído da TABELA de faixa de peso. Verifique UF, faixa e valores de frete.');
+  }
+
+  return itens;
+}
+
+
 function parseCantUFaixaPeso(matrix, ficha, canal, origem) {
+  const formatoTriplo = detectarFormatoFaixaPesoRegiaoTripla(matrix);
+  if (formatoTriplo) {
+    return parseFaixaPesoRegiaoTripla(matrix, formatoTriplo, ficha, canal, origem);
+  }
+
   const itens = [];
 
   // Encontrar linha de cabeçalho com UFs
@@ -809,6 +979,93 @@ function cruzarTabelaAtendimentoPercentual(itensTarifa, cidades, ficha, canal, o
   return itens;
 }
 
+
+// ─── Cruzamento TABELA + ATENDIMENTO (Faixa de Peso) ─────────────────────────
+
+function cruzarTabelaAtendimentoFaixaPeso(itensTarifa, cidades, ficha, canal, origem) {
+  const mapaUFRegiao = new Map();
+
+  for (const item of itensTarifa || []) {
+    const regiao =
+      item?.dados_originais?.regiao ||
+      detectarRegiao(String(item.faixa_peso || '').split('|')[0]) ||
+      detectarRegiao(item.faixa_peso) ||
+      null;
+
+    const uf = norm(item.uf_destino || item?.dados_originais?.uf_destino || '');
+    if (!uf || !regiao) continue;
+
+    const key = `${uf}||${regiao}`;
+    if (!mapaUFRegiao.has(key)) mapaUFRegiao.set(key, []);
+    mapaUFRegiao.get(key).push(item);
+  }
+
+  const itens = [];
+
+  for (const cidade of cidades || []) {
+    const regiaoCidade = cidade.regiao || null;
+    const ufCidade = norm(cidade.uf_destino || '');
+
+    if (!regiaoCidade || !ufCidade) continue;
+
+    const tarifas = mapaUFRegiao.get(`${ufCidade}||${regiaoCidade}`) || [];
+    if (!tarifas.length) continue;
+
+    for (const tarifa of tarifas) {
+      itens.push({
+        cidade_origem: origem || '',
+        uf_origem: tarifa.uf_origem || '',
+        ibge_origem: tarifa.ibge_origem || '',
+
+        cidade_destino: cidade.cidade_destino,
+        uf_destino: cidade.uf_destino,
+        ibge_destino: cidade.ibge_destino,
+
+        faixa_peso: tarifa.faixa_peso,
+        peso_inicial: tarifa.peso_inicial || 0,
+        peso_final: tarifa.peso_final || 0,
+
+        frete_minimo: tarifa.frete_minimo || 0,
+        taxa_aplicada: tarifa.taxa_aplicada || 0,
+        frete_percentual: 0,
+        excesso_kg: tarifa.excesso_kg || 0,
+        valor_excedente: tarifa.valor_excedente || 0,
+
+        prazo: cidade.prazo || tarifa.prazo || numOrZero(ficha.prazo),
+
+        gris: tarifa.gris || numOrZero(ficha.gris),
+        advalorem: tarifa.advalorem || numOrZero(ficha.advalorem),
+        pedagio: tarifa.pedagio || numOrZero(ficha.pedagio),
+        tas: tarifa.tas || numOrZero(ficha.tas),
+
+        tda: cidade.tda || tarifa.tda || 0,
+        tde: cidade.trt || tarifa.tde || 0,
+        outras_taxas: cidade.outras_taxas || tarifa.outras_taxas || 0,
+
+        observacao: `${cidade.uf_destino} - ${cidade.cidade_destino} (${regiaoCidade}) | ${tarifa.faixa_peso}`,
+        dados_originais: {
+          ...(tarifa.dados_originais || {}),
+          ibge_destino: cidade.ibge_destino,
+          cidade_destino: cidade.cidade_destino,
+          uf_destino: cidade.uf_destino,
+          cep_inicial: cidade.cep_inicial,
+          cep_final: cidade.cep_final,
+          regiao: regiaoCidade,
+          tda: cidade.tda,
+          trt: cidade.trt,
+          suframa: cidade.suframa,
+          tarifa_aplicada: tarifa,
+          canal,
+          tipo: 'FAIXA_DE_PESO_CIDADE',
+        },
+      });
+    }
+  }
+
+  return itens;
+}
+
+
 // ─── API PÚBLICA ──────────────────────────────────────────────────────────────
 
 /**
@@ -874,8 +1131,20 @@ export async function importarTemplateCantu(arquivo, subtipo, origem = '') {
       itens = itensTarifa;
     }
   } else {
-    // Faixa de peso: usa apenas TABELA
-    itens = itensTarifa;
+    // Faixa de peso: quando existir ATENDIMENTO, cruza TABELA + ATENDIMENTO
+    // para gerar uma linha por cidade + faixa, com IBGE, prazo e região.
+    const wsAtendimento = encontrarAba(wb, ['ATENDIMENTO', 'ROTAS', 'CIDADES', 'COVERAGE']);
+    const cidades = parseAtendimento(wsAtendimento);
+
+    totalCidades = cidades.length;
+    cidadesSemRegiao = cidades.filter((c) => !c.regiao).length;
+
+    if (cidades.length > 0) {
+      itens = cruzarTabelaAtendimentoFaixaPeso(itensTarifa, cidades, ficha, canal, origem);
+      cidadesComTarifa = itens.filter((i) => Number(i.taxa_aplicada || 0) > 0 || Number(i.valor_excedente || 0) > 0).length;
+    } else {
+      itens = itensTarifa;
+    }
   }
 
   // Adicionar canal, tipo e origem_importacao a todos os itens
