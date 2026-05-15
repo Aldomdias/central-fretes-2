@@ -289,11 +289,11 @@ export default function TabelasNegociacaoPage() {
     var ibge = normalizarTexto(item.ibge_destino);
 
     if (cidade) {
-      return cidade + (uf ? '/' + uf : '') + (ibge ? ' · IBGE ' + ibge : '');
+      return cidade + (uf ? '/' + uf : '') + (ibge ? ' · ' + ibge : '');
     }
 
     if (ibge) {
-      return 'IBGE ' + ibge + (uf ? '/' + uf : '');
+      return ibge + (uf ? '/' + uf : '');
     }
 
     return uf || '-';

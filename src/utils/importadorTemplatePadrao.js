@@ -210,6 +210,10 @@ function normalizarRota(linha, indice) {
   ]));
 
   const ibgeDestino = limparTexto(valorPorAlias(mapa, [
+    'IBGE',
+    'Código IBGE',
+    'Codigo IBGE',
+    'Cod IBGE',
     'IBGE Destino',
     'Código IBGE Destino',
     'Codigo IBGE Destino',
@@ -332,6 +336,10 @@ function normalizarFrete(linha, indice, rotasPorChave) {
   ], rota ? rota.ufDestino : '')).toUpperCase();
 
   const ibgeDestino = limparTexto(valorPorAlias(mapa, [
+    'IBGE',
+    'Código IBGE',
+    'Codigo IBGE',
+    'Cod IBGE',
     'IBGE Destino',
     'Código IBGE Destino',
     'Codigo IBGE Destino',
