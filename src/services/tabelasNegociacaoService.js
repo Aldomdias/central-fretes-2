@@ -38,7 +38,40 @@ function texto(value) { return String(value || '').trim(); }
 function upper(value) { return texto(value).toUpperCase(); }
 function numero(value) {
   if (value === null || value === undefined || value === '') return 0;
-  const limpo = String(value).replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '');
+
+  // Quando vem do Excel/SheetJS como número, preserva decimal.
+  // Antes, 2.5 virava texto "2.5", o ponto era removido e salvava 25.
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  let texto = String(value)
+    .replace(/R\$/gi, '')
+    .replace(/%/g, '')
+    .trim();
+
+  if (!texto) return 0;
+
+  texto = texto.replace(/\s/g, '');
+
+  const temVirgula = texto.includes(',');
+  const temPonto = texto.includes('.');
+
+  if (temVirgula && temPonto) {
+    // Ex.: 1.234,56
+    texto = texto.replace(/\./g, '').replace(',', '.');
+  } else if (temVirgula) {
+    // Ex.: 2,5
+    texto = texto.replace(',', '.');
+  } else if (temPonto) {
+    // Ex.: 2.5 ou 0.025: mantém como decimal.
+    // Só trata como milhar quando o padrão for claramente 1.234 ou 12.345.
+    const partes = texto.split('.');
+    const pareceMilhar = partes.length > 1 && partes.slice(1).every((p) => p.length === 3) && partes[0].length <= 3 && Number(partes[0]) >= 1;
+    if (pareceMilhar) texto = texto.replace(/\./g, '');
+  }
+
+  const limpo = texto.replace(/[^\d.-]/g, '');
   const n = Number(limpo);
   return Number.isFinite(n) ? n : 0;
 }
