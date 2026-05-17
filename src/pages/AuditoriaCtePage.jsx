@@ -11,8 +11,11 @@ import {
   salvarMetaAuditoria,
   TOGGLE_TABELAS_KEY,
 } from '../services/auditoriaService';
-
-// ─── helpers ──────────────────────────────────────────────────────────────────
+import {
+  carregarResultadosAuditoriaMes,
+  carregarResumoAuditoriaMensal,
+  processarESalvarAuditoriaMes,
+} from '../services/auditoriaCteProcessamentoService';
 
 function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -160,7 +163,54 @@ function DiagnosticoFontes({ diagnostico = [] }) {
   );
 }
 
-// ─── componente principal ─────────────────────────────────────────────────────
+function ResumoMensalAuditoria({ resumoMensal = [] }) {
+  if (!resumoMensal.length) return null;
+
+  return (
+    <section className="sim-card">
+      <h2>Resumo mensal salvo</h2>
+      <p style={{ color: '#64748b', marginTop: -4 }}>
+        Comparativo mês a mês carregado da tabela <code>auditoria_cte_resumo_mensal</code>.
+      </p>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th>Competência</th>
+              <th>Total CTes</th>
+              <th>Calculados</th>
+              <th>Sem cálculo</th>
+              <th>Assertivos</th>
+              <th>Divergentes</th>
+              <th>% Cálculo</th>
+              <th>% Assertividade</th>
+              <th>Valor CT-e</th>
+              <th>Valor calculado</th>
+              <th>Divergência</th>
+            </tr>
+          </thead>
+          <tbody>
+            {resumoMensal.map((item) => (
+              <tr key={item.competencia}>
+                <td><strong>{item.competencia}</strong></td>
+                <td>{fmtN(item.total_ctes)}</td>
+                <td>{fmtN(item.calculados)}</td>
+                <td>{fmtN(item.sem_calculo)}</td>
+                <td>{fmtN(item.assertivos)}</td>
+                <td>{fmtN(item.divergentes)}</td>
+                <td>{fmtP(item.taxa_calculo)}</td>
+                <td>{fmtP(item.taxa_assertividade)}</td>
+                <td>{fmt(item.valor_total_cte)}</td>
+                <td>{fmt(item.valor_total_calculado)}</td>
+                <td>{fmt(item.valor_total_divergencia)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
 
 export default function AuditoriaCtePage() {
   const [competencia, setCompetencia] = useState('');
@@ -169,6 +219,9 @@ export default function AuditoriaCtePage() {
   const [diagnostico, setDiagnostico] = useState([]);
   const [avisos, setAvisos] = useState([]);
   const [carregando, setCarregando] = useState(false);
+  const [processando, setProcessando] = useState(false);
+  const [progressoProcessamento, setProgressoProcessamento] = useState(null);
+  const [resumoMensal, setResumoMensal] = useState([]);
   const [erro, setErro] = useState('');
   const [sucesso, setSucesso] = useState('');
 
@@ -184,8 +237,6 @@ export default function AuditoriaCtePage() {
   const [editandoMeta, setEditandoMeta] = useState(false);
   const [metaTemp, setMetaTemp] = useState(meta);
 
-  // ─── computed ───────────────────────────────────────────────────────────────
-
   const metricas = useMemo(() => calcularMetricasAuditoria(registros), [registros]);
   const porTransportadora = useMemo(() => agruparPorTransportadora(registros), [registros]);
   const ondeAtacar = useMemo(() => calcularOndeAtacar(porTransportadora, meta), [porTransportadora, meta]);
@@ -195,10 +246,7 @@ export default function AuditoriaCtePage() {
   const semaforoCalculo = semaforo(metricas.taxaCalculo, meta.taxaCalculoMeta);
   const semaforoAssert = semaforo(metricas.taxaAssertividade, meta.taxaAssertividadeMeta);
   const estiloAvaliacaoMeta = metaStatusStyle(avaliacaoMeta.status);
-
   const temDados = registros.length > 0;
-
-  // ─── ações ──────────────────────────────────────────────────────────────────
 
   async function carregar() {
     if (!competencia) {
@@ -212,6 +260,7 @@ export default function AuditoriaCtePage() {
     setAvisos([]);
     setDiagnostico([]);
     setFonteAuditoria(null);
+    setProgressoProcessamento(null);
 
     try {
       const resposta = await carregarDadosAuditoria({ competencia });
@@ -235,12 +284,114 @@ export default function AuditoriaCtePage() {
     }
   }
 
+  async function carregarResultadoSalvo() {
+    if (!competencia) {
+      setErro('Informe a competência antes de carregar o resultado salvo.');
+      return;
+    }
+
+    setCarregando(true);
+    setErro('');
+    setSucesso('');
+    setAvisos([]);
+    setDiagnostico([]);
+    setFonteAuditoria(null);
+    setProgressoProcessamento(null);
+
+    try {
+      const dados = await carregarResultadosAuditoriaMes({
+        competencia,
+        onProgress: setProgressoProcessamento,
+      });
+
+      setRegistros(dados || []);
+      setFonteAuditoria({
+        id: 'auditoria_cte_resultados',
+        tabela: 'auditoria_cte_resultados',
+        label: 'Auditoria processada / auditoria_cte_resultados',
+      });
+
+      if (!dados.length) {
+        setSucesso('Nenhum resultado processado salvo para esta competência. Clique em Processar e salvar auditoria do mês.');
+      } else {
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} resultado(s) processado(s) carregados da auditoria salva.`);
+      }
+    } catch (error) {
+      setRegistros([]);
+      setErro(error.message || 'Erro ao carregar resultado salvo.');
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function processarSalvarMes() {
+    if (!competencia) {
+      setErro('Informe a competência antes de processar a auditoria.');
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `Processar a auditoria de ${competencia}? Se já existir resultado salvo para este mês, ele será substituído.`
+    );
+
+    if (!confirmar) return;
+
+    setProcessando(true);
+    setErro('');
+    setSucesso('');
+    setAvisos([]);
+    setDiagnostico([]);
+    setProgressoProcessamento(null);
+
+    try {
+      const resposta = await processarESalvarAuditoriaMes({
+        competencia,
+        onProgress: setProgressoProcessamento,
+      });
+
+      const dados = resposta?.registros || [];
+      setRegistros(dados);
+      setFonteAuditoria(resposta?.fonte || {
+        id: 'auditoria_cte_resultados',
+        tabela: 'auditoria_cte_resultados',
+        label: 'Auditoria processada / auditoria_cte_resultados',
+      });
+
+      const resumo = await carregarResumoAuditoriaMensal();
+      setResumoMensal(resumo || []);
+
+      setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) processados e salvos para ${competencia}.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao processar auditoria do mês.');
+    } finally {
+      setProcessando(false);
+    }
+  }
+
+  async function carregarResumoMensal() {
+    setCarregando(true);
+    setErro('');
+    setSucesso('');
+
+    try {
+      const resumo = await carregarResumoAuditoriaMensal();
+      setResumoMensal(resumo || []);
+      setSucesso(`${(resumo || []).length.toLocaleString('pt-BR')} mês(es) encontrados no resumo mensal.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao carregar resumo mensal.');
+    } finally {
+      setCarregando(false);
+    }
+  }
+
   function limpar() {
     setCompetencia('');
     setRegistros([]);
     setFonteAuditoria(null);
     setDiagnostico([]);
     setAvisos([]);
+    setResumoMensal([]);
+    setProgressoProcessamento(null);
     setErro('');
     setSucesso('');
   }
@@ -272,7 +423,7 @@ export default function AuditoriaCtePage() {
         <h1>Auditoria de CTes</h1>
         <p>
           Cobertura de cálculo, assertividade e priorização de divergências. Fonte principal: <code>realizado_local_ctes</code>.
-          Se não encontrar dados por data, a tela tenta competência e bases fallback automaticamente.
+          O processamento mensal grava o resultado em <code>auditoria_cte_resultados</code> e o resumo em <code>auditoria_cte_resumo_mensal</code>.
         </p>
       </div>
 
@@ -284,10 +435,9 @@ export default function AuditoriaCtePage() {
         </div>
       ) : null}
 
-      {/* ─── Filtros ──────────────────────────────────────────────────────── */}
       <section className="sim-card">
         <div className="sim-alert info" style={{ marginBottom: 14 }}>
-          <strong>Filtro de período obrigatório.</strong> Informe a competência para evitar timeout. A tela verifica data de emissão e, se necessário, o campo competência.
+          <strong>Fluxo recomendado.</strong> Primeiro carregue os CT-es para conferir a base. Depois processe e salve a auditoria do mês. Nos próximos acessos, use o resultado salvo.
         </div>
 
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
@@ -300,14 +450,34 @@ export default function AuditoriaCtePage() {
             />
           </label>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="primary" type="button" onClick={carregar} disabled={carregando || !competencia}>
-              {carregando ? 'Carregando...' : 'Carregar dados'}
+            <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !competencia}>
+              {carregando ? 'Carregando...' : 'Carregar CT-es do mês'}
             </button>
-            <button className="sim-tab" type="button" onClick={limpar} disabled={carregando}>
+            <button className="sim-tab" type="button" onClick={carregarResultadoSalvo} disabled={carregando || processando || !competencia}>
+              Carregar resultado salvo
+            </button>
+            <button className="primary" type="button" onClick={processarSalvarMes} disabled={carregando || processando || !competencia}>
+              {processando ? 'Processando...' : 'Processar e salvar auditoria do mês'}
+            </button>
+            <button className="sim-tab" type="button" onClick={carregarResumoMensal} disabled={carregando || processando}>
+              Carregar resumo mensal
+            </button>
+            <button className="sim-tab" type="button" onClick={limpar} disabled={carregando || processando}>
               Limpar
             </button>
           </div>
         </div>
+
+        {progressoProcessamento ? (
+          <div className="sim-alert info" style={{ marginTop: 12 }}>
+            <strong>Processamento:</strong> {progressoProcessamento.etapa}
+            {' · '}
+            {Number(progressoProcessamento.carregados || 0).toLocaleString('pt-BR')}
+            {progressoProcessamento.total
+              ? ` de ${Number(progressoProcessamento.total).toLocaleString('pt-BR')}`
+              : ''}
+          </div>
+        ) : null}
 
         {fonteAuditoria ? (
           <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', fontSize: 13 }}>
@@ -323,13 +493,12 @@ export default function AuditoriaCtePage() {
             sublabel={
               usarTabelas
                 ? `Ativo — ${fmtN(metricas.totalSemCalculo)} CTe(s) sem cálculo elegíveis para análise de cobertura`
-                : 'Desligado — use para destacar potencial de cobertura quando houver tabelas cadastradas.'
+                : 'Desligado — o processamento mensal já usa as tabelas cadastradas para calcular a auditoria.'
             }
           />
         </div>
       </section>
 
-      {/* ─── KPIs ─────────────────────────────────────────────────────────── */}
       {temDados ? (
         <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
           <div className="summary-card">
@@ -369,7 +538,6 @@ export default function AuditoriaCtePage() {
         </div>
       ) : null}
 
-      {/* ─── Status da Meta ───────────────────────────────────────────────── */}
       {temDados ? (
         <section className="sim-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
@@ -489,7 +657,6 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      {/* ─── Onde Atacar ──────────────────────────────────────────────────── */}
       {temDados && ondeAtacar.length > 0 ? (
         <section className="sim-card">
           <h2>🎯 Onde Atacar</h2>
@@ -552,7 +719,6 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      {/* ─── Tabela completa ──────────────────────────────────────────────── */}
       {temDados ? (
         <section className="sim-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
@@ -606,17 +772,16 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      {/* ─── Diagnóstico ──────────────────────────────────────────────────── */}
+      <ResumoMensalAuditoria resumoMensal={resumoMensal} />
       <DiagnosticoFontes diagnostico={diagnostico} />
 
-      {/* ─── Estado vazio ─────────────────────────────────────────────────── */}
-      {!temDados && !carregando ? (
+      {!temDados && !carregando && !processando && !resumoMensal.length ? (
         <section className="sim-card" style={{ textAlign: 'center', padding: 48 }}>
           <div style={{ fontSize: 48, marginBottom: 12 }}>📋</div>
           <h3>Selecione a competência e carregue os dados</h3>
           <p style={{ color: '#64748b', maxWidth: 620, margin: '0 auto' }}>
-            Os dados vêm primeiro de <code>realizado_local_ctes</code>. Se não houver retorno por <code>data_emissao</code>,
-            a tela também consulta por <code>competencia</code> e tenta bases fallback para evitar falso vazio.
+            Use <strong>Carregar CT-es do mês</strong> para conferir a base bruta ou <strong>Carregar resultado salvo</strong> para abrir uma auditoria já processada.
+            Para criar o resultado da auditoria, clique em <strong>Processar e salvar auditoria do mês</strong>.
           </p>
         </section>
       ) : null}
