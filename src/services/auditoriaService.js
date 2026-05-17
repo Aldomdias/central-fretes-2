@@ -1,3 +1,15 @@
+/**
+ * auditoriaService.js
+ *
+ * Serviço da tela Auditoria de CTes.
+ *
+ * Objetivo:
+ * - Priorizar a base do módulo CT-e: realizado_local_ctes.
+ * - Carregar o mês inteiro usando paginação, sem travar em 1.000 linhas.
+ * - Evitar timeout buscando primeiro por competência.
+ * - Salvar o mês carregado em auditoria_cte_resultados e auditoria_cte_resumo_mensal.
+ */
+
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
@@ -5,9 +17,9 @@ export const DIVERGENCIA_THRESHOLD = 0.05;
 export const META_STORAGE_KEY = 'central_fretes_auditoria_meta_v1';
 export const TOGGLE_TABELAS_KEY = 'central_fretes_auditoria_tabelas_v1';
 
-const LIMITE_CONSULTA = 100000;
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK_SIZE = 500;
+const MAX_REGISTROS_POR_COMPETENCIA = 400000;
 
 const FONTES_AUDITORIA = [
   {
@@ -18,17 +30,17 @@ const FONTES_AUDITORIA = [
     prioridade: 1,
   },
   {
-    id: 'realizado_ctes',
-    tabela: 'realizado_ctes',
-    label: 'Realizado legado / realizado_ctes',
-    campoData: 'emissao',
-    prioridade: 2,
-  },
-  {
     id: 'realizado_ctes_enxuta',
     tabela: 'realizado_ctes_enxuta',
     label: 'Base enxuta mensal / realizado_ctes_enxuta',
     campoData: 'data_emissao',
+    prioridade: 2,
+  },
+  {
+    id: 'realizado_ctes',
+    tabela: 'realizado_ctes',
+    label: 'Realizado legado / realizado_ctes',
+    campoData: 'emissao',
     prioridade: 3,
   },
 ];
@@ -36,9 +48,7 @@ const FONTES_AUDITORIA = [
 export function carregarMetaAuditoria() {
   try {
     const parsed = JSON.parse(localStorage.getItem(META_STORAGE_KEY) || 'null');
-    if (parsed && typeof parsed === 'object') {
-      return normalizarMetaAuditoria(parsed);
-    }
+    if (parsed && typeof parsed === 'object') return normalizarMetaAuditoria(parsed);
   } catch {
     // mantém meta padrão
   }
@@ -101,6 +111,7 @@ function toNumber(value) {
 
   let text = String(value).trim();
   if (!text) return 0;
+
   text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
 
   const hasComma = text.includes(',');
@@ -149,6 +160,8 @@ function normalizarRegistroAuditoria(row = {}, fonte = {}) {
     'freteCalculado',
     'valor_tabela',
     'valorTabela',
+    'valor_simulado',
+    'valorSimulado',
   ]));
 
   const diferencaInformada = pick(row, ['diferenca', 'diferença', 'diferenca_calculada', 'diferencaCalculada']);
@@ -186,7 +199,7 @@ function erroTabelaInexistente(error) {
     || msg.includes('column');
 }
 
-function montarResumoFonte({ fonte, filtro, data = [], error = null }) {
+function montarResumoFonte({ fonte, filtro, data = [], error = null, parcial = false, limiteAtingido = false }) {
   const registros = (data || []).map((row) => normalizarRegistroAuditoria(row, fonte));
   const registrosValidos = registros.filter((row) => !isEbazar(row));
   const metricas = calcularMetricasAuditoria(registrosValidos);
@@ -203,53 +216,46 @@ function montarResumoFonte({ fonte, filtro, data = [], error = null }) {
     divergentes: metricas.totalDivergentes,
     taxaCalculo: metricas.taxaCalculo,
     erro: error?.message || '',
+    parcial,
+    limiteAtingido,
   };
 }
 
-async function consultarFontePorData({ supabase, fonte, datas }) {
-  let query = supabase
-    .from(fonte.tabela)
-    .select('*')
-    .gte(fonte.campoData, datas.inicio)
-    .lte(fonte.campoData, datas.fim)
-    .limit(LIMITE_CONSULTA);
-
-  if (fonte.campoData) {
-    query = query.order(fonte.campoData, { ascending: false, nullsFirst: false });
-  }
-
-  return query;
-}
-
-async function consultarFontePorCompetencia({ supabase, fonte, competencia }) {
-  return supabase
-    .from(fonte.tabela)
-    .select('*')
-    .eq('competencia', competencia)
-    .limit(LIMITE_CONSULTA);
-}
-
-async function buscarRealizadoLocalCompletoPorCompetencia({ supabase, competencia, onProgress }) {
+async function consultarFontePaginada({ supabase, fonte, competencia, datas, filtro = 'competencia', onProgress }) {
   const registros = [];
   let from = 0;
 
-  while (true) {
-    const { data, error } = await supabase
-      .from('realizado_local_ctes')
-      .select('*')
-      .eq('competencia', competencia)
-      .order('id', { ascending: true })
-      .range(from, from + PAGE_SIZE - 1);
+  while (from < MAX_REGISTROS_POR_COMPETENCIA) {
+    let query = supabase.from(fonte.tabela).select('*');
+
+    if (filtro === 'competencia') {
+      query = query.eq('competencia', competencia);
+    } else {
+      query = query.gte(fonte.campoData, datas.inicio).lte(fonte.campoData, datas.fim);
+    }
+
+    query = query.range(from, from + PAGE_SIZE - 1);
+
+    if (fonte.campoData) {
+      query = query.order(fonte.campoData, { ascending: false, nullsFirst: false });
+    }
+
+    const { data, error } = await query;
 
     if (error) {
-      throw new Error(`Erro ao buscar CT-es da competência ${competencia}: ${error.message}`);
+      return {
+        data: registros,
+        error,
+        parcial: registros.length > 0,
+        limiteAtingido: false,
+      };
     }
 
     const lote = data || [];
     registros.push(...lote);
 
     onProgress?.({
-      etapa: 'carregando_ctes_para_salvar',
+      etapa: `carregando_${fonte.tabela}_${filtro}`,
       carregados: registros.length,
       total: null,
     });
@@ -258,7 +264,116 @@ async function buscarRealizadoLocalCompletoPorCompetencia({ supabase, competenci
     from += PAGE_SIZE;
   }
 
-  return registros
+  return {
+    data: registros,
+    error: null,
+    parcial: false,
+    limiteAtingido: registros.length >= MAX_REGISTROS_POR_COMPETENCIA,
+  };
+}
+
+export async function carregarDadosAuditoria({ competencia = '', onProgress } = {}) {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
+  }
+
+  const datas = competenciaParaDatas(competencia);
+  if (!datas) {
+    throw new Error('Informe a competência (mês) no formato YYYY-MM.');
+  }
+
+  const supabase = getSupabaseClient();
+  const diagnostico = [];
+  const avisos = [];
+
+  for (const fonte of FONTES_AUDITORIA) {
+    const porCompetencia = await consultarFontePaginada({
+      supabase,
+      fonte,
+      competencia,
+      datas,
+      filtro: 'competencia',
+      onProgress,
+    });
+
+    diagnostico.push(montarResumoFonte({
+      fonte,
+      filtro: `competencia = ${competencia}`,
+      data: porCompetencia.data || [],
+      error: porCompetencia.error,
+      parcial: porCompetencia.parcial,
+      limiteAtingido: porCompetencia.limiteAtingido,
+    }));
+
+    if (porCompetencia.error) {
+      if (!erroTabelaInexistente(porCompetencia.error)) {
+        avisos.push(`${fonte.label}: ${porCompetencia.error.message}`);
+      }
+    } else if ((porCompetencia.data || []).length > 0) {
+      const registros = (porCompetencia.data || [])
+        .map((row) => normalizarRegistroAuditoria(row, fonte))
+        .filter((row) => !isEbazar(row));
+
+      if (porCompetencia.limiteAtingido) {
+        avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
+      }
+
+      return { registros, fonte, diagnostico, avisos };
+    }
+
+    const porData = await consultarFontePaginada({
+      supabase,
+      fonte,
+      competencia,
+      datas,
+      filtro: 'data',
+      onProgress,
+    });
+
+    diagnostico.push(montarResumoFonte({
+      fonte,
+      filtro: `${fonte.campoData} entre ${datas.inicio} e ${datas.fim}`,
+      data: porData.data || [],
+      error: porData.error,
+      parcial: porData.parcial,
+      limiteAtingido: porData.limiteAtingido,
+    }));
+
+    if (porData.error) {
+      if (!erroTabelaInexistente(porData.error)) {
+        avisos.push(`${fonte.label}: ${porData.error.message}`);
+      }
+    } else if ((porData.data || []).length > 0) {
+      const registros = (porData.data || [])
+        .map((row) => normalizarRegistroAuditoria(row, fonte))
+        .filter((row) => !isEbazar(row));
+
+      if (porData.limiteAtingido) {
+        avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
+      }
+
+      return { registros, fonte, diagnostico, avisos };
+    }
+  }
+
+  return { registros: [], fonte: null, diagnostico, avisos };
+}
+
+async function buscarRealizadoLocalCompletoPorCompetencia({ supabase, competencia, onProgress }) {
+  const resposta = await consultarFontePaginada({
+    supabase,
+    fonte: FONTES_AUDITORIA[0],
+    competencia,
+    datas: competenciaParaDatas(competencia),
+    filtro: 'competencia',
+    onProgress,
+  });
+
+  if (resposta.error) {
+    throw new Error(`Erro ao buscar CT-es para salvar: ${resposta.error.message}`);
+  }
+
+  return (resposta.data || [])
     .map((row) => normalizarRegistroAuditoria(row, FONTES_AUDITORIA[0]))
     .filter((row) => !isEbazar(row));
 }
@@ -346,67 +461,6 @@ function montarResumoMensalAuditoria(registros = [], competencia = '') {
   };
 }
 
-export async function carregarDadosAuditoria({ competencia = '' } = {}) {
-  if (!isSupabaseConfigured()) {
-    throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
-  }
-
-  const datas = competenciaParaDatas(competencia);
-  if (!datas) {
-    throw new Error('Informe a competência (mês) no formato YYYY-MM.');
-  }
-
-  const supabase = getSupabaseClient();
-  const diagnostico = [];
-  const avisos = [];
-
-  for (const fonte of FONTES_AUDITORIA) {
-    const porData = await consultarFontePorData({ supabase, fonte, datas });
-
-    diagnostico.push(montarResumoFonte({
-      fonte,
-      filtro: `${fonte.campoData} entre ${datas.inicio} e ${datas.fim}`,
-      data: porData.data || [],
-      error: porData.error,
-    }));
-
-    if (porData.error) {
-      if (!erroTabelaInexistente(porData.error)) {
-        avisos.push(`${fonte.label}: ${porData.error.message}`);
-      }
-    } else if ((porData.data || []).length > 0) {
-      const registros = (porData.data || [])
-        .map((row) => normalizarRegistroAuditoria(row, fonte))
-        .filter((row) => !isEbazar(row));
-
-      return { registros, fonte, diagnostico, avisos };
-    }
-
-    const porCompetencia = await consultarFontePorCompetencia({ supabase, fonte, competencia });
-
-    diagnostico.push(montarResumoFonte({
-      fonte,
-      filtro: `competencia = ${competencia}`,
-      data: porCompetencia.data || [],
-      error: porCompetencia.error,
-    }));
-
-    if (porCompetencia.error) {
-      if (!erroTabelaInexistente(porCompetencia.error)) {
-        avisos.push(`${fonte.label}: ${porCompetencia.error.message}`);
-      }
-    } else if ((porCompetencia.data || []).length > 0) {
-      const registros = (porCompetencia.data || [])
-        .map((row) => normalizarRegistroAuditoria(row, fonte))
-        .filter((row) => !isEbazar(row));
-
-      return { registros, fonte, diagnostico, avisos };
-    }
-  }
-
-  return { registros: [], fonte: null, diagnostico, avisos };
-}
-
 export async function salvarMesCarregadoAuditoria({ competencia = '', onProgress } = {}) {
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
@@ -429,328 +483,3 @@ export async function salvarMesCarregadoAuditoria({ competencia = '', onProgress
   onProgress?.({ etapa: 'limpando_resultado_anterior', carregados: 0, total: linhasResultado.length });
 
   const { error: deleteError } = await supabase
-    .from('auditoria_cte_resultados')
-    .delete()
-    .eq('competencia', competencia);
-
-  if (deleteError) {
-    throw new Error(`Erro ao limpar resultado anterior da auditoria: ${deleteError.message}`);
-  }
-
-  for (let index = 0; index < linhasResultado.length; index += INSERT_CHUNK_SIZE) {
-    const chunk = linhasResultado.slice(index, index + INSERT_CHUNK_SIZE);
-    const { error } = await supabase
-      .from('auditoria_cte_resultados')
-      .insert(chunk);
-
-    if (error) {
-      throw new Error(`Erro ao salvar resultado detalhado da auditoria: ${error.message}`);
-    }
-
-    onProgress?.({
-      etapa: 'salvando_resultado_detalhado',
-      carregados: Math.min(index + INSERT_CHUNK_SIZE, linhasResultado.length),
-      total: linhasResultado.length,
-    });
-  }
-
-  const { error: resumoError } = await supabase
-    .from('auditoria_cte_resumo_mensal')
-    .upsert(resumo, { onConflict: 'competencia' });
-
-  if (resumoError) {
-    throw new Error(`Erro ao salvar resumo mensal da auditoria: ${resumoError.message}`);
-  }
-
-  onProgress?.({ etapa: 'concluido', carregados: linhasResultado.length, total: linhasResultado.length });
-
-  return {
-    registros: linhasResultado,
-    resumo,
-    fonte: {
-      id: 'auditoria_cte_resultados',
-      tabela: 'auditoria_cte_resultados',
-      label: 'Auditoria salva / auditoria_cte_resultados',
-    },
-  };
-}
-
-export function calcularMetricasAuditoria(registros = []) {
-  let total = 0;
-  let totalCalculados = 0;
-  let totalSemCalculo = 0;
-  let totalDivergentes = 0;
-  let totalAssertivos = 0;
-  let valorTotalCte = 0;
-  let valorTotalDivergencia = 0;
-  let valorExcessivo = 0;
-  let valorInsuficiente = 0;
-
-  for (const r of registros) {
-    total += 1;
-    const valCalc = toNumber(r.valor_calculado ?? r.valorCalculado);
-    const dif = toNumber(r.diferenca);
-    const valCte = toNumber(r.valor_cte ?? r.valorCte);
-    const temCalculo = valCalc > 0;
-    const temDiv = temCalculo && Math.abs(dif) > DIVERGENCIA_THRESHOLD;
-
-    valorTotalCte += valCte;
-
-    if (temCalculo) {
-      totalCalculados += 1;
-      if (temDiv) {
-        totalDivergentes += 1;
-        valorTotalDivergencia += Math.abs(dif);
-        if (dif > 0) valorExcessivo += dif;
-        else valorInsuficiente += Math.abs(dif);
-      } else {
-        totalAssertivos += 1;
-      }
-    } else {
-      totalSemCalculo += 1;
-    }
-  }
-
-  return {
-    total,
-    totalCalculados,
-    totalSemCalculo,
-    totalDivergentes,
-    totalAssertivos,
-    taxaCalculo: total > 0 ? (totalCalculados / total) * 100 : 0,
-    taxaAssertividade: totalCalculados > 0 ? (totalAssertivos / totalCalculados) * 100 : 0,
-    taxaDivergencia: totalCalculados > 0 ? (totalDivergentes / totalCalculados) * 100 : 0,
-    valorTotalCte,
-    valorTotalDivergencia,
-    valorExcessivo,
-    valorInsuficiente,
-  };
-}
-
-export function agruparPorTransportadora(registros = []) {
-  const mapa = new Map();
-
-  for (const r of registros) {
-    const nome = String(r.transportadora || 'Não informado').trim() || 'Não informado';
-    if (!mapa.has(nome)) {
-      mapa.set(nome, {
-        transportadora: nome,
-        total: 0,
-        calculados: 0,
-        semCalculo: 0,
-        divergentes: 0,
-        assertivos: 0,
-        valorCte: 0,
-        valorDivergencia: 0,
-        valorExcessivo: 0,
-        valorInsuficiente: 0,
-      });
-    }
-
-    const it = mapa.get(nome);
-    const valCalc = toNumber(r.valor_calculado ?? r.valorCalculado);
-    const dif = toNumber(r.diferenca);
-    const temCalculo = valCalc > 0;
-    const temDiv = temCalculo && Math.abs(dif) > DIVERGENCIA_THRESHOLD;
-
-    it.total += 1;
-    it.valorCte += toNumber(r.valor_cte ?? r.valorCte);
-
-    if (temCalculo) {
-      it.calculados += 1;
-      if (temDiv) {
-        it.divergentes += 1;
-        it.valorDivergencia += Math.abs(dif);
-        if (dif > 0) it.valorExcessivo += dif;
-        else it.valorInsuficiente += Math.abs(dif);
-      } else {
-        it.assertivos += 1;
-      }
-    } else {
-      it.semCalculo += 1;
-    }
-  }
-
-  return Array.from(mapa.values())
-    .map((it) => ({
-      ...it,
-      taxaCalculo: it.total > 0 ? (it.calculados / it.total) * 100 : 0,
-      taxaAssertividade: it.calculados > 0 ? (it.assertivos / it.calculados) * 100 : 0,
-    }))
-    .sort((a, b) => b.valorDivergencia - a.valorDivergencia || b.semCalculo - a.semCalculo || b.total - a.total);
-}
-
-export function calcularOndeAtacar(porTransportadora = [], meta = {}) {
-  const metaAssert = Number(meta.taxaAssertividadeMeta || 98);
-
-  return porTransportadora
-    .filter((it) => it.divergentes > 0 || it.semCalculo > 0)
-    .map((it) => {
-      const valorMedioCte = it.total > 0 ? it.valorCte / it.total : 0;
-      const prioridade = it.valorDivergencia * 2 + it.semCalculo * valorMedioCte;
-      let acaoSugerida;
-      let severidade;
-
-      if (it.semCalculo > 0 && it.calculados === 0) {
-        acaoSugerida = 'Cadastrar tabela — sem cobertura';
-        severidade = 'critico';
-      } else if (it.semCalculo > it.calculados) {
-        acaoSugerida = 'Ampliar cobertura — muitos CTes sem cálculo';
-        severidade = 'alto';
-      } else if (it.taxaAssertividade < metaAssert * 0.8) {
-        acaoSugerida = 'Revisar tabela — alta divergência';
-        severidade = 'alto';
-      } else if (it.divergentes > 0) {
-        acaoSugerida = 'Monitorar — divergências pontuais';
-        severidade = 'medio';
-      } else {
-        acaoSugerida = 'Verificar cobertura de cálculo';
-        severidade = 'baixo';
-      }
-
-      return { ...it, prioridade, acaoSugerida, severidade };
-    })
-    .sort((a, b) => b.prioridade - a.prioridade)
-    .slice(0, 15);
-}
-
-export function sugerirNovaMeta(metricas = {}) {
-  const total = Number(metricas.total || 0);
-  const calculados = Number(metricas.totalCalculados || 0);
-  const taxaCalcAtual = Number(metricas.taxaCalculo || 0);
-  const taxaAssertAtual = Number(metricas.taxaAssertividade || 0);
-
-  if (total <= 0) {
-    return {
-      taxaCalculoMeta: 95,
-      taxaAssertividadeMeta: 98,
-      descricao: 'Meta recomendada: 95% dos CTes com cálculo e 98% de assertividade nos CTes calculados.',
-    };
-  }
-
-  let metaCalcSugerida;
-  if (taxaCalcAtual < 60) metaCalcSugerida = Math.min(80, Math.round(taxaCalcAtual + 20));
-  else if (taxaCalcAtual < 90) metaCalcSugerida = Math.min(95, Math.round(taxaCalcAtual + 10));
-  else metaCalcSugerida = Math.min(99, Math.round(taxaCalcAtual + 3));
-
-  let metaAssertSugerida;
-  if (calculados <= 0) metaAssertSugerida = 95;
-  else if (taxaAssertAtual < 85) metaAssertSugerida = Math.min(95, Math.round(taxaAssertAtual + 10));
-  else if (taxaAssertAtual < 96) metaAssertSugerida = Math.min(98, Math.round(taxaAssertAtual + 3));
-  else metaAssertSugerida = 98;
-
-  metaCalcSugerida = Math.max(0, Math.min(99, metaCalcSugerida));
-  metaAssertSugerida = Math.max(0, Math.min(99, metaAssertSugerida));
-
-  return {
-    taxaCalculoMeta: metaCalcSugerida,
-    taxaAssertividadeMeta: metaAssertSugerida,
-    descricao: `Meta ajustada: ${metaCalcSugerida}% dos CTes com cálculo e ${metaAssertSugerida}% de assertividade nos calculados.`,
-  };
-}
-
-export function avaliarMetaAuditoria(metricas = {}, meta = {}) {
-  const metaNorm = normalizarMetaAuditoria(meta);
-  const atingiuCalculo = Number(metricas.taxaCalculo || 0) >= metaNorm.taxaCalculoMeta;
-  const atingiuAssertividade = Number(metricas.taxaAssertividade || 0) >= metaNorm.taxaAssertividadeMeta;
-
-  if (metricas.total <= 0) {
-    return {
-      status: 'sem_dados',
-      titulo: 'Sem base carregada',
-      mensagem: 'Carregue uma competência para avaliar a meta da área.',
-    };
-  }
-
-  if (metricas.totalCalculados <= 0) {
-    return {
-      status: 'critico',
-      titulo: 'Sem cobertura de cálculo',
-      mensagem: 'A prioridade é cadastrar ou corrigir tabelas para começar a calcular os CTes.',
-    };
-  }
-
-  if (atingiuCalculo && atingiuAssertividade) {
-    return {
-      status: 'ok',
-      titulo: 'Meta atingida',
-      mensagem: 'A base carregada está dentro da meta configurada para cobertura e assertividade.',
-    };
-  }
-
-  if (!atingiuCalculo && atingiuAssertividade) {
-    return {
-      status: 'cobertura',
-      titulo: 'Assertividade boa, cobertura baixa',
-      mensagem: 'Os CTes calculados estão aderentes, mas ainda há muita carga sem cálculo.',
-    };
-  }
-
-  if (atingiuCalculo && !atingiuAssertividade) {
-    return {
-      status: 'assertividade',
-      titulo: 'Cobertura boa, divergência alta',
-      mensagem: 'A base está calculando bem em volume, mas as tabelas precisam ser revisadas para reduzir divergências.',
-    };
-  }
-
-  return {
-    status: 'critico',
-    titulo: 'Abaixo da meta',
-    mensagem: 'A cobertura e a assertividade estão abaixo do alvo. Priorize transportadoras com maior impacto financeiro.',
-  };
-}
-
-export function exportarAuditoriaExcel(porTransportadora = [], metricas = {}, competencia = '', diagnostico = []) {
-  const wb = XLSX.utils.book_new();
-
-  const resumo = [{
-    Competência: competencia || 'Todas',
-    'Total CTes': metricas.total,
-    'Com cálculo': metricas.totalCalculados,
-    'Sem cálculo': metricas.totalSemCalculo,
-    Assertivos: metricas.totalAssertivos,
-    Divergentes: metricas.totalDivergentes,
-    'Taxa cálculo %': Number(metricas.taxaCalculo || 0).toFixed(2),
-    'Taxa assertividade %': Number(metricas.taxaAssertividade || 0).toFixed(2),
-    'Taxa divergência %': Number(metricas.taxaDivergencia || 0).toFixed(2),
-    'Valor total CTe': Number(metricas.valorTotalCte || 0).toFixed(2),
-    'Valor divergência': Number(metricas.valorTotalDivergencia || 0).toFixed(2),
-    'Cobrança excessiva': Number(metricas.valorExcessivo || 0).toFixed(2),
-    'Cobrança insuficiente': Number(metricas.valorInsuficiente || 0).toFixed(2),
-  }];
-
-  const detalhes = porTransportadora.map((it) => ({
-    Transportadora: it.transportadora,
-    'Total CTes': it.total,
-    'Com cálculo': it.calculados,
-    'Sem cálculo': it.semCalculo,
-    Assertivos: it.assertivos,
-    Divergentes: it.divergentes,
-    'Taxa cálculo %': Number(it.taxaCalculo || 0).toFixed(2),
-    'Taxa assertividade %': Number(it.taxaAssertividade || 0).toFixed(2),
-    'Valor CTe': Number(it.valorCte || 0).toFixed(2),
-    'Valor divergência': Number(it.valorDivergencia || 0).toFixed(2),
-    'Cobrança excessiva': Number(it.valorExcessivo || 0).toFixed(2),
-    'Cobrança insuficiente': Number(it.valorInsuficiente || 0).toFixed(2),
-  }));
-
-  const diag = (diagnostico || []).map((item) => ({
-    Fonte: item.label || item.fonte,
-    Tabela: item.tabela,
-    Filtro: item.filtro,
-    'Total bruto': item.totalBruto,
-    'Total útil': item.total,
-    Calculados: item.calculados,
-    'Sem cálculo': item.semCalculo,
-    Divergentes: item.divergentes,
-    'Taxa cálculo %': Number(item.taxaCalculo || 0).toFixed(2),
-    Erro: item.erro || '',
-  }));
-
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), 'Resumo');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalhes), 'Por Transportadora');
-  if (diag.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(diag), 'Diagnóstico');
-
-  XLSX.writeFile(wb, `auditoria-ctes-${competencia || 'geral'}.xlsx`);
-}
