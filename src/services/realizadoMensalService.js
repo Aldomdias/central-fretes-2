@@ -1,6 +1,8 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
-const TMP_CHUNK_SIZE = 1000;
+const TMP_CHUNK_SIZE = 200;
+const TMP_INSERT_RETRIES = 3;
+const TMP_RETRY_DELAY_MS = 800;
 
 function ensureSupabase() {
   const client = getSupabaseClient();
@@ -77,6 +79,33 @@ function getChaveCte(row = {}) {
     .slice(0, 180);
 
   return fallback ? `cte-sem-chave-${fallback}` : '';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function insertChunkWithRetry({ supabase, chunk, tentativa = 1 }) {
+  const { error } = await supabase.from('realizado_ctes_import_tmp').insert(chunk);
+
+  if (!error) return;
+
+  const mensagem = String(error.message || error.details || '').toLowerCase();
+  const podeTentarNovamente = tentativa < TMP_INSERT_RETRIES
+    && (
+      mensagem.includes('timeout')
+      || mensagem.includes('canceling statement')
+      || mensagem.includes('network')
+      || mensagem.includes('fetch')
+      || mensagem.includes('temporarily')
+    );
+
+  if (!podeTentarNovamente) {
+    throw error;
+  }
+
+  await sleep(TMP_RETRY_DELAY_MS * tentativa);
+  return insertChunkWithRetry({ supabase, chunk, tentativa: tentativa + 1 });
 }
 
 export function montarLinhaTemporariaRealizado(row = {}, competencia = '', arquivoOrigem = '') {
@@ -191,13 +220,16 @@ export async function subirTemporariaRealizadoMensal({ competencia, arquivoOrige
   let enviados = 0;
   for (let index = 0; index < payload.length; index += TMP_CHUNK_SIZE) {
     const chunk = payload.slice(index, index + TMP_CHUNK_SIZE);
-    const { error } = await supabase.from('realizado_ctes_import_tmp').insert(chunk);
-    if (error) {
-      throw new Error(`Erro ao salvar temporária no Supabase. Detalhe: ${error.message}`);
+
+    try {
+      await insertChunkWithRetry({ supabase, chunk });
+    } catch (error) {
+      throw new Error(`Erro ao salvar temporária no Supabase após ${enviados.toLocaleString('pt-BR')} CT-e(s). Detalhe: ${error.message}`);
     }
+
     enviados += chunk.length;
     onProgress?.({ enviados, total: payload.length });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await sleep(25);
   }
 
   return { enviados, total: payload.length };
