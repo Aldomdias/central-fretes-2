@@ -6,7 +6,7 @@ export const META_STORAGE_KEY = 'central_fretes_auditoria_meta_v1';
 export const TOGGLE_TABELAS_KEY = 'central_fretes_auditoria_tabelas_v1';
 
 const PAGE_SIZE = 1000;
-const MAX_REGISTROS_MES = 300000;
+const MAX_REGISTROS_POR_COMPETENCIA = 300000;
 
 const FONTES_AUDITORIA = [
   {
@@ -14,33 +14,31 @@ const FONTES_AUDITORIA = [
     tabela: 'realizado_local_ctes',
     label: 'CT-e / realizado_local_ctes',
     campoData: 'data_emissao',
+    prioridade: 1,
   },
   {
     id: 'realizado_ctes',
     tabela: 'realizado_ctes',
     label: 'Realizado legado / realizado_ctes',
     campoData: 'emissao',
+    prioridade: 2,
   },
   {
     id: 'realizado_ctes_enxuta',
     tabela: 'realizado_ctes_enxuta',
     label: 'Base enxuta mensal / realizado_ctes_enxuta',
     campoData: 'data_emissao',
+    prioridade: 3,
   },
 ];
 
 const COLUNAS_VALOR_CTE = [
   'valor_cte',
   'valorCte',
-  'valor_frete',
-  'valorFrete',
   'frete_realizado',
   'freteRealizado',
+  'valor_frete',
   'frete',
-  'total_cte',
-  'totalCte',
-  'valor_total_cte',
-  'valorTotalCte',
 ];
 
 const COLUNAS_VALOR_CALCULADO = [
@@ -50,60 +48,34 @@ const COLUNAS_VALOR_CALCULADO = [
   'freteCalculado',
   'valor_tabela',
   'valorTabela',
-  'frete_tabela',
-  'freteTabela',
   'valor_simulado',
   'valorSimulado',
   'frete_simulado',
   'freteSimulado',
-  'valor_auditado',
-  'valorAuditado',
-  'valor_auditoria',
-  'valorAuditoria',
-  'custo_calculado',
-  'custoCalculado',
-  'custo_tabela',
-  'custoTabela',
-  'total_calculado',
-  'totalCalculado',
-  'total_geral_calculado',
-  'totalGeralCalculado',
-  'frete_previsto',
-  'fretePrevisto',
-  'valor_previsto',
-  'valorPrevisto',
-  'menor_preco',
-  'menorPreco',
-  'valor_menor_preco',
-  'valorMenorPreco',
 ];
 
 const COLUNAS_DIFERENCA = [
   'diferenca',
+  'diferença',
   'diferenca_calculada',
   'diferencaCalculada',
-  'divergencia',
   'valor_divergencia',
   'valorDivergencia',
 ];
-
-export function getColunasValorCalculadoAuditadas() {
-  return [...COLUNAS_VALOR_CALCULADO];
-}
 
 export function carregarMetaAuditoria() {
   try {
     const parsed = JSON.parse(localStorage.getItem(META_STORAGE_KEY) || 'null');
     if (parsed && typeof parsed === 'object') return normalizarMetaAuditoria(parsed);
-  } catch (error) {
-    console.warn('Não foi possível carregar a meta de auditoria:', error);
+  } catch {
+    // mantém meta padrão
   }
 
-  return normalizarMetaAuditoria({
+  return {
     taxaCalculoMeta: 95,
     taxaAssertividadeMeta: 98,
     descricao: 'Meta recomendada: 95% dos CTes com cálculo e 98% de assertividade nos CTes calculados.',
-  });
+  };
 }
 
 export function salvarMetaAuditoria(meta = {}) {
@@ -163,6 +135,7 @@ function toNumber(value) {
 
   let text = String(value).trim();
   if (!text) return 0;
+
   text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
 
   const hasComma = text.includes(',');
@@ -241,6 +214,7 @@ function erroTabelaInexistente(error) {
 function mapearColunas(data = []) {
   const primeira = data.find((row) => row && typeof row === 'object') || {};
   const colunas = Object.keys(primeira);
+
   return {
     colunasDisponiveis: colunas,
     colunasValorCteEncontradas: colunas.filter((col) => COLUNAS_VALOR_CTE.includes(col)),
@@ -273,18 +247,20 @@ function montarResumoFonte({ fonte, filtro, data = [], error = null, parcial = f
   };
 }
 
-async function consultarFontePaginada({ supabase, fonte, filtro, competencia, datas, onProgress }) {
+async function consultarFontePaginada({ supabase, fonte, filtro, competencia, datas }) {
   let acumulado = [];
   let offset = 0;
 
-  while (offset < MAX_REGISTROS_MES) {
-    const to = Math.min(offset + PAGE_SIZE - 1, MAX_REGISTROS_MES - 1);
+  while (offset < MAX_REGISTROS_POR_COMPETENCIA) {
+    const to = Math.min(offset + PAGE_SIZE - 1, MAX_REGISTROS_POR_COMPETENCIA - 1);
     let query = supabase.from(fonte.tabela).select('*').range(offset, to);
 
     if (filtro === 'data') {
       query = query.gte(fonte.campoData, datas.inicio).lte(fonte.campoData, datas.fim);
-    } else if (filtro === 'competencia') {
+      query = query.order(fonte.campoData, { ascending: false, nullsFirst: false });
+    } else {
       query = query.eq('competencia', competencia);
+      if (fonte.campoData) query = query.order(fonte.campoData, { ascending: false, nullsFirst: false });
     }
 
     const { data, error } = await query;
@@ -300,12 +276,8 @@ async function consultarFontePaginada({ supabase, fonte, filtro, competencia, da
 
     const lote = data || [];
     acumulado = acumulado.concat(lote);
-    onProgress?.({ fonte, filtro, carregados: acumulado.length, limite: MAX_REGISTROS_MES });
 
-    if (lote.length < PAGE_SIZE) {
-      break;
-    }
-
+    if (lote.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }
 
@@ -313,31 +285,32 @@ async function consultarFontePaginada({ supabase, fonte, filtro, competencia, da
     data: acumulado,
     error: null,
     parcial: false,
-    limiteAtingido: acumulado.length >= MAX_REGISTROS_MES,
+    limiteAtingido: acumulado.length >= MAX_REGISTROS_POR_COMPETENCIA,
   };
 }
 
-function normalizarResultadoConsulta({ data = [], fonte }) {
-  return (data || [])
-    .map((row) => normalizarRegistroAuditoria(row, fonte))
-    .filter((row) => !isEbazar(row));
-}
+function criarAvisosRegistros({ registros = [], diagnostico = [] }) {
+  const avisos = [];
 
-function criarAvisoColunaCalculo(registros = [], diagnostico = []) {
-  if (!registros.length) return '';
-  const colunasUsadas = new Set(registros.map((row) => row.__coluna_valor_calculado).filter(Boolean));
-  if (colunasUsadas.size > 0) {
-    return `Coluna(s) usada(s) como valor calculado: ${Array.from(colunasUsadas).join(', ')}.`;
+  if (!registros.length) return avisos;
+
+  const colunasUsadasCalculo = new Set(registros.map((row) => row.__coluna_valor_calculado).filter(Boolean));
+  if (colunasUsadasCalculo.size > 0) {
+    avisos.push(`Coluna(s) usada(s) como valor calculado: ${Array.from(colunasUsadasCalculo).join(', ')}.`);
+  } else {
+    const ultimoDiag = [...diagnostico].reverse().find((item) => item.totalBruto > 0);
+    const colunas = ultimoDiag?.colunasDisponiveis || [];
+    const amostraColunas = colunas.slice(0, 50).join(', ');
+
+    avisos.push(
+      `Nenhuma coluna de valor calculado foi encontrada na base carregada. A auditoria procurou por: ${COLUNAS_VALOR_CALCULADO.join(', ')}. Colunas encontradas na amostra: ${amostraColunas || 'sem amostra'}.`
+    );
   }
 
-  const ultimoDiag = [...diagnostico].reverse().find((item) => item.totalBruto > 0);
-  const colunas = ultimoDiag?.colunasDisponiveis || [];
-  const amostraColunas = colunas.slice(0, 40).join(', ');
-
-  return `Nenhuma coluna de valor calculado foi encontrada na base carregada. A auditoria procurou por: ${COLUNAS_VALOR_CALCULADO.join(', ')}. Colunas encontradas na amostra: ${amostraColunas || 'sem amostra'}. Se o cálculo vem do simulador, será necessário resimular e gravar o valor calculado ou integrar a auditoria com o motor de cálculo.`;
+  return avisos;
 }
 
-export async function carregarDadosAuditoria({ competencia = '', onProgress = null } = {}) {
+export async function carregarDadosAuditoria({ competencia = '' } = {}) {
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
   }
@@ -352,63 +325,67 @@ export async function carregarDadosAuditoria({ competencia = '', onProgress = nu
   const avisos = [];
 
   for (const fonte of FONTES_AUDITORIA) {
-    const consultaPorData = await consultarFontePaginada({
+    const porData = await consultarFontePaginada({
       supabase,
       fonte,
       filtro: 'data',
       competencia,
       datas,
-      onProgress,
     });
 
     diagnostico.push(montarResumoFonte({
       fonte,
       filtro: `${fonte.campoData} entre ${datas.inicio} e ${datas.fim}`,
-      data: consultaPorData.data || [],
-      error: consultaPorData.error,
-      parcial: consultaPorData.parcial,
-      limiteAtingido: consultaPorData.limiteAtingido,
+      data: porData.data || [],
+      error: porData.error,
+      parcial: porData.parcial,
+      limiteAtingido: porData.limiteAtingido,
     }));
 
-    if (consultaPorData.error) {
-      if (!erroTabelaInexistente(consultaPorData.error)) {
-        avisos.push(`${fonte.label}: ${consultaPorData.error.message}`);
+    if (porData.error) {
+      if (!erroTabelaInexistente(porData.error)) avisos.push(`${fonte.label}: ${porData.error.message}`);
+    } else if ((porData.data || []).length > 0) {
+      const registros = (porData.data || [])
+        .map((row) => normalizarRegistroAuditoria(row, fonte))
+        .filter((row) => !isEbazar(row));
+
+      avisos.push(...criarAvisosRegistros({ registros, diagnostico }));
+      if (porData.limiteAtingido) {
+        avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
       }
-    } else if ((consultaPorData.data || []).length > 0) {
-      const registros = normalizarResultadoConsulta({ data: consultaPorData.data, fonte });
-      const avisoColuna = criarAvisoColunaCalculo(registros, diagnostico);
-      if (avisoColuna) avisos.push(avisoColuna);
-      if (consultaPorData.limiteAtingido) avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_MES.toLocaleString('pt-BR')} registros no mês. Aumente MAX_REGISTROS_MES se necessário.`);
+
       return { registros, fonte, diagnostico, avisos };
     }
 
-    const consultaPorCompetencia = await consultarFontePaginada({
+    const porCompetencia = await consultarFontePaginada({
       supabase,
       fonte,
       filtro: 'competencia',
       competencia,
       datas,
-      onProgress,
     });
 
     diagnostico.push(montarResumoFonte({
       fonte,
       filtro: `competencia = ${competencia}`,
-      data: consultaPorCompetencia.data || [],
-      error: consultaPorCompetencia.error,
-      parcial: consultaPorCompetencia.parcial,
-      limiteAtingido: consultaPorCompetencia.limiteAtingido,
+      data: porCompetencia.data || [],
+      error: porCompetencia.error,
+      parcial: porCompetencia.parcial,
+      limiteAtingido: porCompetencia.limiteAtingido,
     }));
 
-    if (consultaPorCompetencia.error) {
-      if (!erroTabelaInexistente(consultaPorCompetencia.error)) {
-        avisos.push(`${fonte.label}: ${consultaPorCompetencia.error.message}`);
+    if (porCompetencia.error) {
+      if (!erroTabelaInexistente(porCompetencia.error)) avisos.push(`${fonte.label}: ${porCompetencia.error.message}`);
+    } else if ((porCompetencia.data || []).length > 0) {
+      const registros = (porCompetencia.data || [])
+        .map((row) => normalizarRegistroAuditoria(row, fonte))
+        .filter((row) => !isEbazar(row));
+
+      avisos.push(...criarAvisosRegistros({ registros, diagnostico }));
+      if (porCompetencia.limiteAtingido) {
+        avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
       }
-    } else if ((consultaPorCompetencia.data || []).length > 0) {
-      const registros = normalizarResultadoConsulta({ data: consultaPorCompetencia.data, fonte });
-      const avisoColuna = criarAvisoColunaCalculo(registros, diagnostico);
-      if (avisoColuna) avisos.push(avisoColuna);
-      if (consultaPorCompetencia.limiteAtingido) avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_MES.toLocaleString('pt-BR')} registros no mês. Aumente MAX_REGISTROS_MES se necessário.`);
+
       return { registros, fonte, diagnostico, avisos };
     }
   }
@@ -607,7 +584,7 @@ export function avaliarMetaAuditoria(metricas = {}, meta = {}) {
     return {
       status: 'critico',
       titulo: 'Sem cobertura de cálculo',
-      mensagem: 'A base carregou, mas não encontrou coluna de valor calculado. Verifique se o valor calculado foi gravado na base ou se precisa resimular com as tabelas cadastradas.',
+      mensagem: 'A base carregou, mas não encontrou valor calculado. Verifique a importação do CTS ou o preenchimento da coluna valor_calculado.',
     };
   }
 
@@ -686,7 +663,7 @@ export function exportarAuditoriaExcel(porTransportadora = [], metricas = {}, co
     'Sem cálculo': item.semCalculo,
     Divergentes: item.divergentes,
     'Taxa cálculo %': Number(item.taxaCalculo || 0).toFixed(2),
-    'Parcial': item.parcial ? 'Sim' : 'Não',
+    Parcial: item.parcial ? 'Sim' : 'Não',
     'Limite atingido': item.limiteAtingido ? 'Sim' : 'Não',
     'Colunas valor CT-e': (item.colunasValorCteEncontradas || []).join(', '),
     'Colunas valor calculado': (item.colunasValorCalculadoEncontradas || []).join(', '),
