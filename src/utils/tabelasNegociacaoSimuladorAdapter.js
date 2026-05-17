@@ -128,6 +128,8 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   const freteMinimo = numero(item.frete_minimo);
   const pesoInicial = numero(item.peso_inicial);
   const pesoFinalInformado = numero(item.peso_final);
+  // excesso_kg  = limiar kg onde começa a cobrança de excedente (ex.: 100)
+  // valor_excedente = valor R$/kg acima do limiar (ex.: 0.50)
   const excessoKg = numero(item.excesso_kg);
   const valorExcedente = numero(item.valor_excedente);
 
@@ -156,8 +158,10 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
     percentual,
     fretePercentual: percentual,
     freteMinimo,
-    excesso: valorExcedente || excessoKg,
-    excessoPeso: valorExcedente || excessoKg,
+    // excesso     = R$/kg cobrado acima do limiar (valor_excedente)
+    // excessoPeso = limiar kg onde começa a cobrar (excesso_kg)
+    excesso: valorExcedente,
+    excessoPeso: excessoKg,
     tipoCalculo: tipoCalculoItem,
     origemNegociacao: true,
   };

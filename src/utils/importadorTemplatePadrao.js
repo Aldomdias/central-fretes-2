@@ -11,7 +11,6 @@ function normalizarTexto(valor) {
     .replace(/\s+/g, ' ');
 }
 
-
 function ufPorIbge(ibge) {
   const codigo = String(ibge || '').replace(/\D/g, '').slice(0, 2);
   const mapa = {
@@ -92,6 +91,15 @@ function numero(valor, padrao = '') {
 
   const n = Number(texto);
   return Number.isFinite(n) ? n : padrao;
+}
+
+// Detecta se uma faixa de peso é do tipo "excedente" (acima de X kg).
+// Usada para separar corretamente excesso_kg (limiar) de valor_excedente (R$/kg).
+function ehFaixaExcedente(faixaTexto, pesoFinal) {
+  const t = normalizarTexto(String(faixaTexto || ''));
+  if (t.includes('EXCEDENTE') || t.includes('ACIMA')) return true;
+  if (Number(pesoFinal || 0) >= 999998) return true;
+  return false;
 }
 
 function criarMapaLinha(linha) {
@@ -427,6 +435,8 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Minimo',
     'Valor Mínimo',
     'Valor Minimo',
+    'FRETE MINIMO',
+    'FRETE MÍNIMO',
   ]), '');
 
   const advalorem = numero(valorPorAlias(mapa, [
@@ -438,12 +448,15 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'ADV %',
   ]), '');
 
-  const pesoFinalCalculo =
-    Number(excedente || 0) > 0 &&
-    Number(pesoInicial || 0) > 0 &&
-    Number(pesoFinal || 0) >= 999998
-      ? pesoInicial
-      : pesoFinal;
+  // ── Excedente: separar limiar kg do valor R$/kg ───────────────────────────
+  // isExcedente = true quando a faixa representa cobrança por kg acima de um limiar.
+  // excessoKg   = o peso inicial (limiar) onde começa a cobrar por excedente.
+  // valorExcedente = o R$/kg cobrado acima do limiar.
+  // pesoFinalNorm  = sempre 999999 para faixas excedentes (para o simulador).
+  const isExcedente = ehFaixaExcedente(faixaPeso, pesoFinal);
+  const excessoKg       = isExcedente ? Number(pesoInicial || 0) : 0;
+  const valorExcedente  = isExcedente ? Number(excedente  || 0) : 0;
+  const pesoFinalNorm   = isExcedente ? 999999 : pesoFinal;
 
   const frete = {
     id: `frete-${indice + 1}`,
@@ -457,10 +470,13 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     ibgeDestino,
     faixaPeso,
     pesoInicial,
-    pesoFinal: pesoFinalCalculo,
+    pesoFinal: pesoFinalNorm,
     taxaAplicada,
     freteValor: taxaAplicada,
-    excedente,
+    excedente,        // valor bruto lido da coluna EXCEDENTE
+    excessoKg,        // limiar kg (onde começa o excedente)
+    valorExcedente,   // R$/kg cobrado acima do limiar
+    isExcedente,
     fretePercentual,
     freteMinimo,
     advalorem,

@@ -77,7 +77,6 @@ const FORM_VAZIO = {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-
 function exportarXlsx(linhas, nomeArquivo, aba) {
   if (!linhas || !linhas.length) return;
   const ws = XLSX.utils.json_to_sheet(linhas);
@@ -86,6 +85,9 @@ function exportarXlsx(linhas, nomeArquivo, aba) {
   XLSX.writeFile(wb, nomeArquivo);
 }
 
+// Monta as linhas intermediárias de rotas e cotações a partir do resultado
+// bruto do importador. A saída é usada apenas para preview e para alimentar
+// montarItensVerum — não é salva diretamente no banco.
 function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigencia, fimVigencia, origemFallback, ufOrigemFallback }) {
   const nomeT = normalizarTexto(transportadora);
   const c = normalizarTexto(canal || 'ATACADO').toUpperCase();
@@ -104,6 +106,7 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
   const cotacoes = (resultado.fretes || []).map(function(item) {
     return {
       id: gerarId('cotacao'),
+      // rota = nome limpo da cotação (após expansão, já sem prefixo UF)
       rota: item.cotacaoFinal || item.cotacao || (item.origem + ' - ' + item.ufDestino + ' - ' + item.cotacaoBase),
       origem: item.origem || origemFallback || '',
       ufOrigem: item.ufOrigem || ufOrigemFallback || '',
@@ -114,7 +117,9 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
       pesoMin: item.pesoInicial != null ? item.pesoInicial : '',
       pesoMax: item.pesoFinal != null ? item.pesoFinal : '',
       taxaAplicada: item.taxaAplicada != null ? item.taxaAplicada : (item.freteValor != null ? item.freteValor : ''),
-      excesso: item.excedente != null ? item.excedente : '',
+      // excesso = limiar kg (ex.: 100); valorExcedente = R$/kg acima do limiar
+      excesso: item.excessoKg != null ? item.excessoKg : (item.excedente != null ? item.excedente : ''),
+      valorExcedente: item.valorExcedente != null ? item.valorExcedente : '',
       percentual: item.fretePercentual != null ? item.fretePercentual : '',
       freteMinimo: item.freteMinimo != null ? item.freteMinimo : '',
       advalorem: item.advalorem != null ? item.advalorem : '',
@@ -125,48 +130,49 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
   return { rotas: rotas, cotacoes: cotacoes };
 }
 
+// Converte as cotações formatadas para itens prontos para salvar em
+// tabelas_negociacao_itens. Gera SOMENTE linhas COTAÇÃO/FAIXA (igual ao Cantu),
+// sem linhas técnicas de ROTA.
 function montarItensVerum(formatado) {
   if (!formatado) return [];
-  var rotasPorNome = new Map();
-  (formatado.rotas || []).forEach(function(rota) {
-    [rota.nomeRota, rota.cotacaoFinal].filter(Boolean).forEach(function(k) {
-      rotasPorNome.set(String(k), rota);
-    });
-  });
-  var itensRotas = (formatado.rotas || []).map(function(rota) {
-    return {
-      item_tipo: 'ROTA', cidade_origem: rota.cidadeOrigem || '', uf_origem: rota.ufOrigem || '',
-      ibge_origem: rota.ibgeOrigem || '', cidade_destino: rota.cidadeDestino || '',
-      uf_destino: rota.ufDestino || '', ibge_destino: rota.ibgeDestino || '',
-      faixa_peso: 'ROTA', prazo: rota.prazoEntregaDias || 0, observacao: rota.nomeRota || '',
-      origem_importacao: 'VERUM_ROTAS_FRETES', dados_originais: { tipo_item: 'ROTA', ...rota },
-    };
-  });
+
   var itensCotacoes = (formatado.cotacoes || []).map(function(cotacao) {
-    var rota = rotasPorNome.get(String(cotacao.rota || '')) || null;
+    // ── faixa_peso: "COTAÇÃO | FAIXA" ou "COTAÇÃO" (igual ao padrão Cantu) ──
+    // Exemplos:
+    //   faixa de peso : "CAPITAL | 0 a 2"
+    //   percentual    : "CAPITAL"
+    var cotNome  = String(cotacao.rota || '').toUpperCase().trim();
+    var faixaRaw = String(cotacao.faixaPeso || '').trim();
+    var faixaPesoFormatada = faixaRaw
+      ? (cotNome ? cotNome + ' | ' + faixaRaw : faixaRaw)
+      : cotNome || '';
+
     return {
-      item_tipo: 'COTACAO', cidade_origem: cotacao.origem || (rota ? rota.cidadeOrigem : '') || '',
-      uf_origem: cotacao.ufOrigem || (rota ? rota.ufOrigem : '') || '',
-      ibge_origem: rota ? (rota.ibgeOrigem || '') : '',
-      cidade_destino: cotacao.cidadeDestino || (rota ? (rota.cidadeDestino || '') : ''),
-      uf_destino: cotacao.ufDestino || (rota ? rota.ufDestino : '') || '',
-      ibge_destino: cotacao.ibgeDestino || (rota ? (rota.ibgeDestino || '') : ''),
-      faixa_peso: cotacao.faixaPeso || '', peso_inicial: cotacao.pesoMin != null ? cotacao.pesoMin : '',
+      // dados_originais.tipo_item = 'COTACAO' para que getTipoItem() funcione
+      cidade_origem: cotacao.origem || '',
+      uf_origem: cotacao.ufOrigem || '',
+      ibge_origem: '',
+      cidade_destino: cotacao.cidadeDestino || '',
+      uf_destino: cotacao.ufDestino || '',
+      ibge_destino: cotacao.ibgeDestino || '',
+      faixa_peso: faixaPesoFormatada,
+      peso_inicial: cotacao.pesoMin != null ? cotacao.pesoMin : '',
       peso_final: cotacao.pesoMax != null ? cotacao.pesoMax : '',
       frete_minimo: cotacao.freteMinimo != null ? cotacao.freteMinimo : '',
       taxa_aplicada: cotacao.taxaAplicada != null ? cotacao.taxaAplicada : '',
       frete_percentual: cotacao.percentual != null ? cotacao.percentual : '',
+      // excesso_kg  = limiar kg onde começa a cobrar excedente (ex.: 100)
+      // valor_excedente = R$/kg acima do limiar (ex.: 0.50)
       excesso_kg: cotacao.excesso != null ? cotacao.excesso : '',
+      valor_excedente: cotacao.valorExcedente != null ? cotacao.valorExcedente : '',
       advalorem: cotacao.advalorem != null ? cotacao.advalorem : '',
-      prazo: cotacao.prazo || (rota ? (rota.prazoEntregaDias || '') : ''),
+      prazo: cotacao.prazo || '',
       observacao: cotacao.rota || '',
       origem_importacao: 'VERUM_ROTAS_FRETES',
       dados_originais: { tipo_item: 'COTACAO', ...cotacao },
     };
   });
-  // Para negociação/simulação, a saída deve seguir o mesmo padrão do arquivo único Cantu:
-  // uma linha por destino/faixa/cotação. As rotas técnicas são usadas apenas para expandir
-  // IBGE, prazo e UF, mas não precisam ser salvas como itens separados.
+
   return itensCotacoes;
 }
 
@@ -423,7 +429,7 @@ export default function TabelasNegociacaoPage() {
       origemFallback: selecionada.origem || '', ufOrigemFallback: selecionada.uf_origem || '',
     });
     setFormatado(f); setMostrarPreview(true);
-    setSucesso('Formatado: ' + f.rotas.length + ' rota(s) e ' + f.cotacoes.length + ' cotação(ões).');
+    setSucesso('Formatado: ' + f.cotacoes.length + ' cotação(ões) prontas para salvar.');
   }
 
   async function processarCantu() {
@@ -804,13 +810,31 @@ export default function TabelasNegociacaoPage() {
                   ) : null}
                   {formatado && mostrarPreview ? (
                     <div className="sim-parametros-box" style={{ marginTop: 14 }}>
-                      <div className="sim-parametros-header"><div><strong>Revisão</strong><p>{formatado.rotas.length} rota(s) e {formatado.cotacoes.length} cotação(ões).</p></div></div>
+                      <div className="sim-parametros-header"><div><strong>Revisão</strong><p>{formatado.cotacoes.length} cotação(ões) prontas.</p></div></div>
                       <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                         <table className="sim-analise-tabela">
-                          <thead><tr><th>Rota</th><th>Origem</th><th>UF dest</th><th>Faixa</th><th>Taxa</th><th>% NF</th><th>Mín</th></tr></thead>
+                          <thead><tr><th>Faixa/Rota</th><th>Origem</th><th>Destino</th><th>IBGE</th><th>Peso ini</th><th>Peso fim</th><th>Taxa</th><th>% NF</th><th>Mín</th><th>ADV%</th><th>Excedente</th><th>Prazo</th></tr></thead>
                           <tbody>
                             {formatado.cotacoes.slice(0, 100).map(function(item) {
-                              return <tr key={item.id}><td>{item.rota}</td><td>{item.origem}</td><td>{item.ufDestino}</td><td>{item.faixaPeso}</td><td>{numeroOuVazio(item.taxaAplicada)}</td><td>{numeroOuVazio(item.percentual)}</td><td>{numeroOuVazio(item.freteMinimo)}</td></tr>;
+                              var cotNome  = String(item.rota || '').toUpperCase().trim();
+                              var faixaRaw = String(item.faixaPeso || '').trim();
+                              var faixaLabel = faixaRaw ? (cotNome ? cotNome + ' | ' + faixaRaw : faixaRaw) : cotNome || '-';
+                              return (
+                                <tr key={item.id}>
+                                  <td>{faixaLabel}</td>
+                                  <td>{item.origem}</td>
+                                  <td>{item.cidadeDestino || item.ufDestino || '-'}</td>
+                                  <td style={{ fontSize: 11, color: '#64748b' }}>{item.ibgeDestino || '-'}</td>
+                                  <td>{numeroOuVazio(item.pesoMin)}</td>
+                                  <td>{numeroOuVazio(item.pesoMax)}</td>
+                                  <td>{numeroOuVazio(item.taxaAplicada)}</td>
+                                  <td>{numeroOuVazio(item.percentual)}</td>
+                                  <td>{numeroOuVazio(item.freteMinimo)}</td>
+                                  <td>{numeroOuVazio(item.advalorem)}</td>
+                                  <td>{Number(item.excesso || 0) > 0 ? item.excesso + ' kg · R$ ' + (item.valorExcedente || 0) : '-'}</td>
+                                  <td>{item.prazo || '-'}</td>
+                                </tr>
+                              );
                             })}
                           </tbody>
                         </table>
