@@ -1,10 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   carregarDadosAuditoria,
   calcularMetricasAuditoria,
   agruparPorTransportadora,
   calcularOndeAtacar,
   sugerirNovaMeta,
+  avaliarMetaAuditoria,
   exportarAuditoriaExcel,
   carregarMetaAuditoria,
   salvarMetaAuditoria,
@@ -16,25 +17,38 @@ import {
 function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
+
 function fmtN(v, d = 0) {
   return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
 }
+
 function fmtP(v, d = 1) {
-  return Number(v || 0).toFixed(d) + '%';
+  return `${Number(v || 0).toFixed(d).replace('.', ',')}%`;
 }
 
 function semaforo(atual, meta) {
-  if (atual >= meta)           return { cor: '#16a34a', bg: '#dcfce7', label: '✓ Meta atingida' };
-  if (atual >= meta * 0.9)     return { cor: '#d97706', bg: '#fef3c7', label: '⚠ Próximo da meta' };
-  return                              { cor: '#dc2626', bg: '#fee2e2', label: '✗ Abaixo da meta' };
+  if (atual >= meta) return { cor: '#16a34a', bg: '#dcfce7', label: '✓ Meta atingida' };
+  if (atual >= meta * 0.9) return { cor: '#d97706', bg: '#fef3c7', label: '⚠ Próximo da meta' };
+  return { cor: '#dc2626', bg: '#fee2e2', label: '✗ Abaixo da meta' };
+}
+
+function metaStatusStyle(status) {
+  const map = {
+    ok: { bg: '#dcfce7', color: '#166534', border: '#86efac' },
+    cobertura: { bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' },
+    assertividade: { bg: '#fef3c7', color: '#92400e', border: '#fde68a' },
+    critico: { bg: '#fee2e2', color: '#991b1b', border: '#fecaca' },
+    sem_dados: { bg: '#f8fafc', color: '#475569', border: '#e2e8f0' },
+  };
+  return map[status] || map.sem_dados;
 }
 
 function BadgeSeveridade({ severidade }) {
   const map = {
     critico: { bg: '#fee2e2', color: '#dc2626', label: 'Crítico' },
-    alto:    { bg: '#fef3c7', color: '#b45309', label: 'Alto' },
-    medio:   { bg: '#e0f2fe', color: '#0369a1', label: 'Médio' },
-    baixo:   { bg: '#f0fdf4', color: '#16a34a', label: 'Baixo' },
+    alto: { bg: '#fef3c7', color: '#b45309', label: 'Alto' },
+    medio: { bg: '#e0f2fe', color: '#0369a1', label: 'Médio' },
+    baixo: { bg: '#f0fdf4', color: '#16a34a', label: 'Baixo' },
   };
   const s = map[severidade] || map.baixo;
   return (
@@ -48,26 +62,46 @@ function ToggleSwitch({ ativo, onChange, label, sublabel }) {
   return (
     <div
       style={{
-        padding: '12px 16px', borderRadius: 10, cursor: 'pointer',
+        padding: '12px 16px',
+        borderRadius: 10,
+        cursor: 'pointer',
         background: ativo ? '#eff6ff' : '#f8fafc',
         border: `2px solid ${ativo ? '#3b82f6' : '#e2e8f0'}`,
-        display: 'flex', alignItems: 'center', gap: 14, userSelect: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        userSelect: 'none',
       }}
       onClick={onChange}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') onChange();
+      }}
     >
       <div style={{
-        width: 44, height: 24, borderRadius: 12,
+        width: 44,
+        height: 24,
+        borderRadius: 12,
         background: ativo ? '#3b82f6' : '#cbd5e1',
-        position: 'relative', flexShrink: 0, transition: 'background 0.2s',
+        position: 'relative',
+        flexShrink: 0,
+        transition: 'background 0.2s',
       }}>
         <div style={{
-          width: 18, height: 18, borderRadius: '50%', background: '#fff',
-          position: 'absolute', top: 3, left: ativo ? 23 : 3, transition: 'left 0.2s',
+          width: 18,
+          height: 18,
+          borderRadius: '50%',
+          background: '#fff',
+          position: 'absolute',
+          top: 3,
+          left: ativo ? 23 : 3,
+          transition: 'left 0.2s',
         }} />
       </div>
       <div>
         <div style={{ fontWeight: 700, color: ativo ? '#1d4ed8' : '#374151', fontSize: 14 }}>{label}</div>
-        {sublabel && <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{sublabel}</div>}
+        {sublabel ? <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{sublabel}</div> : null}
       </div>
     </div>
   );
@@ -82,33 +116,87 @@ function BarraMeta({ atual, meta, cor }) {
   );
 }
 
+function DiagnosticoFontes({ diagnostico = [] }) {
+  if (!diagnostico.length) return null;
+
+  return (
+    <section className="sim-card">
+      <h2>Diagnóstico da consulta</h2>
+      <p style={{ color: '#64748b', marginTop: -4 }}>
+        A tela tenta primeiro a base do módulo CT-e e, se não encontrar dados, usa fallback por competência e bases legadas/enxutas.
+      </p>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th>Fonte</th>
+              <th>Filtro</th>
+              <th>Total</th>
+              <th>Calculados</th>
+              <th>Sem cálculo</th>
+              <th>Erro</th>
+            </tr>
+          </thead>
+          <tbody>
+            {diagnostico.map((item, index) => (
+              <tr key={`${item.fonte}-${item.filtro}-${index}`}>
+                <td>
+                  <strong>{item.label || item.tabela}</strong>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>{item.tabela}</div>
+                </td>
+                <td>{item.filtro}</td>
+                <td>{fmtN(item.total)}</td>
+                <td>{fmtN(item.calculados)}</td>
+                <td style={{ color: item.semCalculo > 0 ? '#dc2626' : '#94a3b8', fontWeight: item.semCalculo > 0 ? 700 : 400 }}>
+                  {fmtN(item.semCalculo)}
+                </td>
+                <td style={{ color: item.erro ? '#dc2626' : '#94a3b8' }}>{item.erro || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 // ─── componente principal ─────────────────────────────────────────────────────
 
 export default function AuditoriaCtePage() {
   const [competencia, setCompetencia] = useState('');
-  const [registros, setRegistros]     = useState([]);
-  const [carregando, setCarregando]   = useState(false);
-  const [erro, setErro]               = useState('');
-  const [sucesso, setSucesso]         = useState('');
+  const [registros, setRegistros] = useState([]);
+  const [fonteAuditoria, setFonteAuditoria] = useState(null);
+  const [diagnostico, setDiagnostico] = useState([]);
+  const [avisos, setAvisos] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [erro, setErro] = useState('');
+  const [sucesso, setSucesso] = useState('');
 
   const [usarTabelas, setUsarTabelas] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(TOGGLE_TABELAS_KEY) || 'false'); }
-    catch { return false; }
+    try {
+      return JSON.parse(localStorage.getItem(TOGGLE_TABELAS_KEY) || 'false');
+    } catch {
+      return false;
+    }
   });
 
-  const [meta, setMeta]               = useState(carregarMetaAuditoria);
+  const [meta, setMeta] = useState(carregarMetaAuditoria);
   const [editandoMeta, setEditandoMeta] = useState(false);
-  const [metaTemp, setMetaTemp]       = useState(meta);
+  const [metaTemp, setMetaTemp] = useState(meta);
 
   // ─── computed ───────────────────────────────────────────────────────────────
 
-  const metricas          = useMemo(() => calcularMetricasAuditoria(registros),          [registros]);
-  const porTransportadora = useMemo(() => agruparPorTransportadora(registros),           [registros]);
-  const ondeAtacar        = useMemo(() => calcularOndeAtacar(porTransportadora, meta),   [porTransportadora, meta]);
-  const sugestaoMeta      = useMemo(() => sugerirNovaMeta(metricas),                     [metricas]);
+  const metricas = useMemo(() => calcularMetricasAuditoria(registros), [registros]);
+  const porTransportadora = useMemo(() => agruparPorTransportadora(registros), [registros]);
+  const ondeAtacar = useMemo(() => calcularOndeAtacar(porTransportadora, meta), [porTransportadora, meta]);
+  const sugestaoMeta = useMemo(() => sugerirNovaMeta(metricas), [metricas]);
+  const avaliacaoMeta = useMemo(() => avaliarMetaAuditoria(metricas, meta), [metricas, meta]);
 
-  const semaforoCalculo = semaforo(metricas.taxaCalculo,       meta.taxaCalculoMeta);
-  const semaforoAssert  = semaforo(metricas.taxaAssertividade, meta.taxaAssertividadeMeta);
+  const semaforoCalculo = semaforo(metricas.taxaCalculo, meta.taxaCalculoMeta);
+  const semaforoAssert = semaforo(metricas.taxaAssertividade, meta.taxaAssertividadeMeta);
+  const estiloAvaliacaoMeta = metaStatusStyle(avaliacaoMeta.status);
+
+  const temDados = registros.length > 0;
 
   // ─── ações ──────────────────────────────────────────────────────────────────
 
@@ -121,19 +209,40 @@ export default function AuditoriaCtePage() {
     setCarregando(true);
     setErro('');
     setSucesso('');
+    setAvisos([]);
+    setDiagnostico([]);
+    setFonteAuditoria(null);
+
     try {
-      const dados = await carregarDadosAuditoria({ competencia });
+      const resposta = await carregarDadosAuditoria({ competencia });
+      const dados = resposta?.registros || [];
       setRegistros(dados);
+      setFonteAuditoria(resposta?.fonte || null);
+      setDiagnostico(resposta?.diagnostico || []);
+      setAvisos(resposta?.avisos || []);
+
       if (!dados.length) {
-        setSucesso('Nenhum CTe encontrado para este período. Verifique se os dados foram importados na tela CT-e.');
+        setSucesso('Nenhum CTe encontrado para esta competência nas bases verificadas. Veja o diagnóstico abaixo para identificar se o problema é data, competência ou tabela vazia.');
       } else {
-        setSucesso(`${dados.length.toLocaleString('pt-BR')} CTe(s) carregados da base Supabase.`);
+        const fonte = resposta?.fonte?.label || resposta?.fonte?.tabela || 'Supabase';
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} CTe(s) carregados da fonte ${fonte}.`);
       }
     } catch (e) {
+      setRegistros([]);
       setErro(e.message || 'Erro ao carregar dados do Supabase.');
     } finally {
       setCarregando(false);
     }
+  }
+
+  function limpar() {
+    setCompetencia('');
+    setRegistros([]);
+    setFonteAuditoria(null);
+    setDiagnostico([]);
+    setAvisos([]);
+    setErro('');
+    setSucesso('');
   }
 
   function toggleUsarTabelas() {
@@ -148,7 +257,13 @@ export default function AuditoriaCtePage() {
     setEditandoMeta(false);
   }
 
-  const temDados = registros.length > 0;
+  function usarSugestaoMeta() {
+    setMetaTemp({ ...sugestaoMeta });
+  }
+
+  function exportarExcel() {
+    exportarAuditoriaExcel(porTransportadora, metricas, competencia, diagnostico);
+  }
 
   return (
     <div className="simulador-shell">
@@ -156,18 +271,23 @@ export default function AuditoriaCtePage() {
         <div className="simulador-subtitulo">Central Fretes • Auditoria</div>
         <h1>Auditoria de CTes</h1>
         <p>
-          Cobertura de cálculo e assertividade. Base: Supabase <code>realizado_ctes</code>.
-          Tomadores <strong>CPX, ITR, GP Pneus</strong> — eBazar excluído automaticamente.
+          Cobertura de cálculo, assertividade e priorização de divergências. Fonte principal: <code>realizado_local_ctes</code>.
+          Se não encontrar dados por data, a tela tenta competência e bases fallback automaticamente.
         </p>
       </div>
 
-      {erro    && <div className="sim-alert error">{erro}</div>}
-      {sucesso && <div className="sim-alert success">{sucesso}</div>}
+      {erro ? <div className="sim-alert error">{erro}</div> : null}
+      {sucesso ? <div className="sim-alert success">{sucesso}</div> : null}
+      {avisos.length > 0 ? (
+        <div className="sim-alert info">
+          <strong>Avisos da consulta:</strong> {avisos.join(' | ')}
+        </div>
+      ) : null}
 
       {/* ─── Filtros ──────────────────────────────────────────────────────── */}
       <section className="sim-card">
         <div className="sim-alert info" style={{ marginBottom: 14 }}>
-          <strong>Filtro de período obrigatório.</strong> A base <code>realizado_ctes</code> pode ser grande. Informe a competência para evitar timeout.
+          <strong>Filtro de período obrigatório.</strong> Informe a competência para evitar timeout. A tela verifica data de emissão e, se necessário, o campo competência.
         </div>
 
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
@@ -179,15 +299,21 @@ export default function AuditoriaCtePage() {
               onChange={(e) => setCompetencia(e.target.value)}
             />
           </label>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="primary" type="button" onClick={carregar} disabled={carregando || !competencia}>
               {carregando ? 'Carregando...' : 'Carregar dados'}
             </button>
-            <button className="sim-tab" type="button" onClick={() => { setCompetencia(''); setRegistros([]); setErro(''); setSucesso(''); }}>
+            <button className="sim-tab" type="button" onClick={limpar} disabled={carregando}>
               Limpar
             </button>
           </div>
         </div>
+
+        {fonteAuditoria ? (
+          <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', fontSize: 13 }}>
+            Fonte carregada: <strong>{fonteAuditoria.label || fonteAuditoria.tabela}</strong>
+          </div>
+        ) : null}
 
         <div style={{ marginTop: 16 }}>
           <ToggleSwitch
@@ -196,15 +322,15 @@ export default function AuditoriaCtePage() {
             label="Resimular com tabelas cadastradas"
             sublabel={
               usarTabelas
-                ? `Ativo — ${fmtN(metricas.totalSemCalculo)} CTe(s) sem cálculo elegíveis para resimulação`
-                : 'Desligado — tabelas ainda em cadastro. Ligue para ver potencial de cobertura.'
+                ? `Ativo — ${fmtN(metricas.totalSemCalculo)} CTe(s) sem cálculo elegíveis para análise de cobertura`
+                : 'Desligado — use para destacar potencial de cobertura quando houver tabelas cadastradas.'
             }
           />
         </div>
       </section>
 
       {/* ─── KPIs ─────────────────────────────────────────────────────────── */}
-      {temDados && (
+      {temDados ? (
         <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
           <div className="summary-card">
             <span>Total CTes</span>
@@ -241,22 +367,27 @@ export default function AuditoriaCtePage() {
             <small style={{ color: '#dc2626' }}>excessivo: {fmt(metricas.valorExcessivo)}</small>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* ─── Status da Meta ───────────────────────────────────────────────── */}
-      {temDados && (
+      {temDados ? (
         <section className="sim-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>📊 Status da Meta da Área</h2>
-            {!editandoMeta && (
+            {!editandoMeta ? (
               <button className="sim-tab" type="button" onClick={() => { setMetaTemp({ ...meta }); setEditandoMeta(true); }}>
                 Editar meta
               </button>
-            )}
+            ) : null}
           </div>
 
-          {!editandoMeta && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div style={{ padding: 14, borderRadius: 10, background: estiloAvaliacaoMeta.bg, border: `1px solid ${estiloAvaliacaoMeta.border}`, color: estiloAvaliacaoMeta.color, marginBottom: 16 }}>
+            <strong>{avaliacaoMeta.titulo}</strong>
+            <div style={{ fontSize: 13, marginTop: 4 }}>{avaliacaoMeta.mensagem}</div>
+          </div>
+
+          {!editandoMeta ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
               <div style={{ padding: 16, borderRadius: 12, background: semaforoCalculo.bg }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontWeight: 700, fontSize: 14 }}>Taxa de cálculo</span>
@@ -268,7 +399,7 @@ export default function AuditoriaCtePage() {
                   <span style={{ fontSize: 36, fontWeight: 900, color: semaforoCalculo.cor, lineHeight: 1 }}>
                     {fmtP(metricas.taxaCalculo)}
                   </span>
-                  <span style={{ color: '#94a3b8', fontSize: 13, marginBottom: 4 }}>meta: {fmtP(meta.taxaCalculoMeta)}</span>
+                  <span style={{ color: '#64748b', fontSize: 13, marginBottom: 4 }}>meta: {fmtP(meta.taxaCalculoMeta)}</span>
                 </div>
                 <BarraMeta atual={metricas.taxaCalculo} meta={meta.taxaCalculoMeta} cor={semaforoCalculo.cor} />
                 <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>
@@ -287,7 +418,7 @@ export default function AuditoriaCtePage() {
                   <span style={{ fontSize: 36, fontWeight: 900, color: semaforoAssert.cor, lineHeight: 1 }}>
                     {metricas.totalCalculados > 0 ? fmtP(metricas.taxaAssertividade) : '—'}
                   </span>
-                  <span style={{ color: '#94a3b8', fontSize: 13, marginBottom: 4 }}>meta: {fmtP(meta.taxaAssertividadeMeta)}</span>
+                  <span style={{ color: '#64748b', fontSize: 13, marginBottom: 4 }}>meta: {fmtP(meta.taxaAssertividadeMeta)}</span>
                 </div>
                 <BarraMeta atual={metricas.taxaAssertividade} meta={meta.taxaAssertividadeMeta} cor={semaforoAssert.cor} />
                 <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>
@@ -295,57 +426,71 @@ export default function AuditoriaCtePage() {
                 </div>
               </div>
             </div>
-          )}
+          ) : null}
 
-          {editandoMeta && (
+          {editandoMeta ? (
             <div>
               <div className="sim-alert info" style={{ marginBottom: 14 }}>
-                <strong>Meta atual:</strong> 95% dos CTes calculados com 100% de assertividade.<br />
-                <strong>Problema:</strong> 100% de assertividade é muito difícil de sustentar e pode ser uma meta injusta.<br />
-                <strong>Proposta:</strong> Revisar para 98% de acurácia ou 95% sem erro crítico.
+                <strong>Meta configurada agora:</strong> {fmtP(meta.taxaCalculoMeta, 0)} dos CTes com cálculo e {fmtP(meta.taxaAssertividadeMeta, 0)} de assertividade.<br />
+                <strong>Recomendação:</strong> evitar meta de 100% de assertividade como régua principal. Ela pode virar meta injusta por arredondamento, imposto, generalidade e diferença de tabela.
               </div>
               <div className="sim-form-grid sim-grid-3" style={{ marginBottom: 14 }}>
                 <label>
                   Meta taxa de cálculo (%)
-                  <input type="number" min="0" max="100" step="1" value={metaTemp.taxaCalculoMeta}
-                    onChange={(e) => setMetaTemp((p) => ({ ...p, taxaCalculoMeta: Number(e.target.value) }))} />
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={metaTemp.taxaCalculoMeta}
+                    onChange={(e) => setMetaTemp((p) => ({ ...p, taxaCalculoMeta: Number(e.target.value) }))}
+                  />
                 </label>
                 <label>
                   Meta assertividade (%)
-                  <input type="number" min="0" max="100" step="0.5" value={metaTemp.taxaAssertividadeMeta}
-                    onChange={(e) => setMetaTemp((p) => ({ ...p, taxaAssertividadeMeta: Number(e.target.value) }))} />
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.5"
+                    value={metaTemp.taxaAssertividadeMeta}
+                    onChange={(e) => setMetaTemp((p) => ({ ...p, taxaAssertividadeMeta: Number(e.target.value) }))}
+                  />
                 </label>
                 <label>
                   Descrição da meta
-                  <input value={metaTemp.descricao} placeholder="Ex: 95% calculados com 98% de acurácia"
-                    onChange={(e) => setMetaTemp((p) => ({ ...p, descricao: e.target.value }))} />
+                  <input
+                    value={metaTemp.descricao}
+                    placeholder="Ex: 95% calculados com 98% de assertividade"
+                    onChange={(e) => setMetaTemp((p) => ({ ...p, descricao: e.target.value }))}
+                  />
                 </label>
               </div>
-              {metricas.total > 0 && (
+              {metricas.total > 0 ? (
                 <div style={{ padding: '10px 14px', borderRadius: 8, background: '#f0fdf4', border: '1px solid #86efac', marginBottom: 14 }}>
                   <span style={{ fontSize: 13, color: '#15803d' }}>
-                    💡 <strong>Sugestão baseada nos dados:</strong> cálculo {fmtP(sugestaoMeta.taxaCalculoMeta, 0)}, assertividade {fmtP(sugestaoMeta.taxaAssertividadeMeta, 0)}
+                    💡 <strong>Sugestão baseada nos dados carregados:</strong> cálculo {fmtP(sugestaoMeta.taxaCalculoMeta, 0)}, assertividade {fmtP(sugestaoMeta.taxaAssertividadeMeta, 0)}
                   </span>
-                  <button className="sim-tab" type="button" onClick={() => setMetaTemp({ ...sugestaoMeta })} style={{ marginLeft: 12, padding: '3px 10px', fontSize: 12 }}>
+                  <button className="sim-tab" type="button" onClick={usarSugestaoMeta} style={{ marginLeft: 12, padding: '3px 10px', fontSize: 12 }}>
                     Usar sugestão
                   </button>
                 </div>
-              )}
+              ) : null}
               <div className="sim-actions">
                 <button className="primary" type="button" onClick={salvarMeta}>Salvar meta</button>
                 <button className="sim-tab" type="button" onClick={() => { setMetaTemp({ ...meta }); setEditandoMeta(false); }}>Cancelar</button>
               </div>
             </div>
-          )}
+          ) : null}
 
-          {meta.descricao && !editandoMeta && (
+          {meta.descricao && !editandoMeta ? (
             <div style={{ marginTop: 12, color: '#64748b', fontSize: 13 }}>📌 {meta.descricao}</div>
-          )}
+          ) : null}
         </section>
-      )}
+      ) : null}
 
       {/* ─── Onde Atacar ──────────────────────────────────────────────────── */}
-      {temDados && ondeAtacar.length > 0 && (
+      {temDados && ondeAtacar.length > 0 ? (
         <section className="sim-card">
           <h2>🎯 Onde Atacar</h2>
           <p style={{ color: '#64748b', marginBottom: 16 }}>Priorizado por impacto financeiro × volume. Ação sugerida automática por situação detectada.</p>
@@ -353,10 +498,16 @@ export default function AuditoriaCtePage() {
             <table className="sim-analise-tabela">
               <thead>
                 <tr>
-                  <th>#</th><th>Transportadora</th><th>Severidade</th>
-                  <th>Sem cálculo</th><th>Divergentes</th><th>Assertividade</th>
-                  <th>Valor divergência</th><th>Cobrança excessiva</th><th>Ação sugerida</th>
-                  {usarTabelas && <th>Elegíveis resimular</th>}
+                  <th>#</th>
+                  <th>Transportadora</th>
+                  <th>Severidade</th>
+                  <th>Sem cálculo</th>
+                  <th>Divergentes</th>
+                  <th>Assertividade</th>
+                  <th>Valor divergência</th>
+                  <th>Cobrança excessiva</th>
+                  <th>Ação sugerida</th>
+                  {usarTabelas ? <th>Elegíveis resimular</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -380,28 +531,33 @@ export default function AuditoriaCtePage() {
                     </td>
                     <td>
                       <span style={{
-                        padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700,
-                        background: it.acaoSugerida.includes('Cadastrar') ? '#fee2e2' : it.acaoSugerida.includes('Revisar') ? '#fef3c7' : '#f0fdf4',
-                        color: it.acaoSugerida.includes('Cadastrar') ? '#dc2626' : it.acaoSugerida.includes('Revisar') ? '#b45309' : '#16a34a',
-                      }}>{it.acaoSugerida}</span>
+                        padding: '3px 8px',
+                        borderRadius: 6,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        background: it.acaoSugerida.includes('Cadastrar') ? '#fee2e2' : it.acaoSugerida.includes('Revisar') || it.acaoSugerida.includes('Ampliar') ? '#fef3c7' : '#f0fdf4',
+                        color: it.acaoSugerida.includes('Cadastrar') ? '#dc2626' : it.acaoSugerida.includes('Revisar') || it.acaoSugerida.includes('Ampliar') ? '#b45309' : '#16a34a',
+                      }}>
+                        {it.acaoSugerida}
+                      </span>
                     </td>
-                    {usarTabelas && (
+                    {usarTabelas ? (
                       <td><span style={{ padding: '2px 7px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: '#eff6ff', color: '#1d4ed8' }}>{fmtN(it.semCalculo)} CTes</span></td>
-                    )}
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         </section>
-      )}
+      ) : null}
 
       {/* ─── Tabela completa ──────────────────────────────────────────────── */}
-      {temDados && (
+      {temDados ? (
         <section className="sim-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>Por transportadora</h2>
-            <button className="sim-tab" type="button" onClick={() => exportarAuditoriaExcel(porTransportadora, metricas, competencia)}>
+            <button className="sim-tab" type="button" onClick={exportarExcel}>
               Exportar Excel
             </button>
           </div>
@@ -409,9 +565,18 @@ export default function AuditoriaCtePage() {
             <table className="sim-analise-tabela">
               <thead>
                 <tr>
-                  <th>Transportadora</th><th>Total</th><th>Calculados</th><th>Sem cálculo</th>
-                  <th>Assertivos</th><th>Divergentes</th><th>% Cálculo</th><th>% Assertividade</th>
-                  <th>Valor CTe</th><th>Divergência</th><th>Excessivo</th><th>Insuficiente</th>
+                  <th>Transportadora</th>
+                  <th>Total</th>
+                  <th>Calculados</th>
+                  <th>Sem cálculo</th>
+                  <th>Assertivos</th>
+                  <th>Divergentes</th>
+                  <th>% Cálculo</th>
+                  <th>% Assertividade</th>
+                  <th>Valor CTe</th>
+                  <th>Divergência</th>
+                  <th>Excessivo</th>
+                  <th>Insuficiente</th>
                 </tr>
               </thead>
               <tbody>
@@ -431,27 +596,30 @@ export default function AuditoriaCtePage() {
                     <td style={{ color: it.valorInsuficiente > 0 ? '#f59e0b' : '#94a3b8' }}>{it.valorInsuficiente > 0 ? fmt(it.valorInsuficiente) : '—'}</td>
                   </tr>
                 ))}
-                {!porTransportadora.length && <tr><td colSpan="12" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum dado. Carregue a base primeiro.</td></tr>}
+                {!porTransportadora.length ? <tr><td colSpan="12" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum dado. Carregue a base primeiro.</td></tr> : null}
               </tbody>
             </table>
           </div>
-          {porTransportadora.length > 100 && (
+          {porTransportadora.length > 100 ? (
             <div className="empty-note">Mostrando 100 de {porTransportadora.length} transportadoras. Exporte o Excel para ver todas.</div>
-          )}
+          ) : null}
         </section>
-      )}
+      ) : null}
+
+      {/* ─── Diagnóstico ──────────────────────────────────────────────────── */}
+      <DiagnosticoFontes diagnostico={diagnostico} />
 
       {/* ─── Estado vazio ─────────────────────────────────────────────────── */}
-      {!temDados && !carregando && (
+      {!temDados && !carregando ? (
         <section className="sim-card" style={{ textAlign: 'center', padding: 48 }}>
           <div style={{ fontSize: 48, marginBottom: 12 }}>📋</div>
           <h3>Selecione a competência e carregue os dados</h3>
-          <p style={{ color: '#64748b', maxWidth: 520, margin: '0 auto' }}>
-            Os dados vêm do Supabase (<code>realizado_ctes</code>). Filtre por mês para evitar timeout.
-            O filtro de tomador (CPX, ITR, GP Pneus) é aplicado na importação. O eBazar é excluído automaticamente pelo nome da transportadora.
+          <p style={{ color: '#64748b', maxWidth: 620, margin: '0 auto' }}>
+            Os dados vêm primeiro de <code>realizado_local_ctes</code>. Se não houver retorno por <code>data_emissao</code>,
+            a tela também consulta por <code>competencia</code> e tenta bases fallback para evitar falso vazio.
           </p>
         </section>
-      )}
+      ) : null}
     </div>
   );
 }
