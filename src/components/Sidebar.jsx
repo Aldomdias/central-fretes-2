@@ -5,6 +5,7 @@ const ICONS = {
   simulador: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />,
   'tabelas-negociacao': <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h6l6 6v10a2 2 0 01-2 2zM14 3v5a1 1 0 001 1h5M8 8h2m-2 4h8m-8 4h8" />,
   cte: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />,
+  'auditoria-cte': <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />,
   'realizado-local': <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />,
   tracking: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />,
   'torre-controle': <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />,
@@ -24,26 +25,27 @@ const ICONS = {
 };
 
 const menuPrincipal = [
-  { chave: 'dashboard', label: 'Dashboard' },
-  { chave: 'simulador', label: 'Simulador' },
+  { chave: 'dashboard',          label: 'Dashboard' },
+  { chave: 'simulador',          label: 'Simulador' },
   { chave: 'tabelas-negociacao', label: 'Tabelas em Negociação' },
-  { chave: 'cte', label: 'CT-e' },
-  { chave: 'tracking', label: 'Tracking' },
-  { chave: 'torre-controle', label: 'Torre de Controle' },
-  { chave: 'reajustes', label: 'Reajustes' },
-  { chave: 'importacao', label: 'Importação' },
-  { chave: 'formatacao', label: 'Formatação de Tabelas' },
-  { chave: 'importar-template', label: 'Importar Template' },
-  { chave: 'lotacao', label: 'Lotação Tabelas' },
-  { chave: 'lotacao-operacao', label: 'Lotação Operação' },
-  { chave: 'lotacao-auditoria', label: 'Auditoria Lotação' },
-  { chave: 'consulta-ibge', label: 'Consulta IBGE' },
-  { chave: 'ferramentas', label: 'Ferramentas' },
+  { chave: 'cte',                label: 'CT-e' },
+  { chave: 'auditoria-cte',      label: 'Auditoria CTe' },
+  { chave: 'tracking',           label: 'Tracking' },
+  { chave: 'torre-controle',     label: 'Torre de Controle' },
+  { chave: 'reajustes',          label: 'Reajustes' },
+  { chave: 'importacao',         label: 'Importação' },
+  { chave: 'formatacao',         label: 'Formatação de Tabelas' },
+  { chave: 'importar-template',  label: 'Importar Template' },
+  { chave: 'lotacao',            label: 'Lotação Tabelas' },
+  { chave: 'lotacao-operacao',   label: 'Lotação Operação' },
+  { chave: 'lotacao-auditoria',  label: 'Auditoria Lotação' },
+  { chave: 'consulta-ibge',      label: 'Consulta IBGE' },
+  { chave: 'ferramentas',        label: 'Ferramentas' },
 ];
 
 const menuCadastros = [
   { chave: 'transportadoras', label: 'Transportadoras' },
-  { chave: 'usuarios', label: 'Gestão de Usuários' },
+  { chave: 'usuarios',        label: 'Gestão de Usuários' },
 ];
 
 const menuConta = [
@@ -119,9 +121,9 @@ function SecaoLabel({ texto }) {
 
 export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout }) {
   const principais = menuPrincipal.filter((i) => usuarioTemAcesso(usuario, i.chave));
-  const cadastros = menuCadastros.filter((i) => usuarioTemAcesso(usuario, i.chave));
-  const conta = menuConta.filter((i) => usuarioTemAcesso(usuario, i.chave));
-  const inicial = (usuario?.nome || 'A')[0].toUpperCase();
+  const cadastros  = menuCadastros.filter((i) => usuarioTemAcesso(usuario, i.chave));
+  const conta      = menuConta.filter((i) => usuarioTemAcesso(usuario, i.chave));
+  const inicial    = (usuario?.nome || 'A')[0].toUpperCase();
 
   return (
     <aside
@@ -237,12 +239,8 @@ export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout 
                 color: 'rgba(255,255,255,0.35)',
                 cursor: 'pointer',
               }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = '#ff8080';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'rgba(255,255,255,0.35)';
-              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#ff8080'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)'; }}
             >
               Sair do sistema
             </button>

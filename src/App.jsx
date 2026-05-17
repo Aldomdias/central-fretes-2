@@ -19,6 +19,7 @@ import TorreControlePage from './pages/TorreControlePage';
 import ReajustesPage from './pages/ReajustesPage';
 import CtePage from './pages/CtePage';
 import TabelasNegociacaoPage from './pages/TabelasNegociacaoPage';
+import AuditoriaCtePage from './pages/AuditoriaCtePage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
@@ -28,6 +29,7 @@ function primeiraPaginaPermitida(usuario) {
     'simulador',
     'tabelas-negociacao',
     'cte',
+    'auditoria-cte',
     'tracking',
     'torre-controle',
     'reajustes',
@@ -145,6 +147,10 @@ export default function App() {
 
   if (paginaAtual === 'cte') {
     content = <CtePage transportadoras={transportadorasMemo} />;
+  }
+
+  if (paginaAtual === 'auditoria-cte') {
+    content = <AuditoriaCtePage />;
   }
 
   if (paginaAtual === 'importacao') {
