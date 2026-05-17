@@ -1,5 +1,11 @@
 import { useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
+import {
+  importarRealizadoMensalEnxuto,
+  listarPendenciasIbgeRealizadoMensal,
+  verificarCompetenciaRealizadoMensal,
+} from '../services/realizadoMensalService';
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 const TABELA = 'realizado_local_ctes';
@@ -7,57 +13,57 @@ const PAGE_SIZE = 50;
 const ANALISE_BATCH_SIZE = 300;
 const ANALISE_MAX_REGISTROS = 5000;
 
-// Tomadores permitidos – apenas esses ficam na base
 const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GRIP', 'GP PNEUS', 'SPEEDMAX'];
 
-// Mapeamento de Canal de Vendas → canal normalizado
 const CANAL_VENDAS_MAP = {
-  'B2C': 'B2C',
-  'B2B': 'ATACADO',
+  B2C: 'B2C',
+  B2B: 'ATACADO',
   'MERCADO LIVRE': 'B2C',
-  'SHOPEE': 'B2C',
+  SHOPEE: 'B2C',
   'MAGAZINE LUIZA': 'B2C',
-  'AMAZON': 'B2C',
+  AMAZON: 'B2C',
   'VIA VAREJO': 'B2C',
-  'CARREFOUR': 'B2C',
-  'LIVELO': 'B2C',
+  CARREFOUR: 'B2C',
+  LIVELO: 'B2C',
   'CANTU PNEUS': 'B2C',
-  'PITSTOP': 'B2C',
-  'INTER': 'B2C',
+  PITSTOP: 'B2C',
+  INTER: 'B2C',
+  ITAU: 'B2C',
   'ITAU SHOP': 'B2C',
   '99': 'B2C',
-  'COOPERA': 'B2C',
+  COOPERA: 'B2C',
   'BRADESCO SHOP': 'B2C',
-  'MUSTANG': 'B2C',
+  MUSTANG: 'B2C',
 };
 
-// Tokens que indicam canal ATACADO nos marcadores
 const MARCADORES_ATACADO = ['AT-AG', 'AT-TR', 'ECM-B2B', 'ECC-SALES', 'ECA-SALES'];
 
+function monthNow() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
 function normalizarCanalRow(row) {
-  // Prioridade 1 – Canal de Vendas
   const canalVendas = String(row?.canal_vendas || row?.canalVendas || '').trim().toUpperCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
   if (canalVendas) {
     const mapped = CANAL_VENDAS_MAP[canalVendas];
     if (mapped) return mapped;
   }
 
-  // Prioridade 2 – Marcadores
   const marcadores = String(row?.marcadores || row?.marcador || '').trim().toUpperCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
   if (marcadores) {
     const ehAtacado = MARCADORES_ATACADO.some((tok) => marcadores.includes(tok));
     if (ehAtacado) return 'ATACADO';
-    // Se tem marcador mas não é ATACADO → B2C
     if (marcadores.length > 0) return 'B2C';
   }
 
-  // Prioridade 3 – Documento Destinatário (se em branco → B2C)
   const docDest = String(row?.documento_destinatario || row?.documentoDestinatario || '').trim();
   if (!docDest) return 'B2C';
 
-  // Fallback: usa campo canal legado
   const canalLegado = String(row?.canal || '').trim().toUpperCase();
   return canalLegado || 'B2C';
 }
@@ -66,8 +72,11 @@ function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function fmtN(v) {
-  return Number(v || 0).toLocaleString('pt-BR');
+function fmtN(v, casas = 0) {
+  return Number(v || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: casas,
+    maximumFractionDigits: casas,
+  });
 }
 
 function fmtPct(v, casas = 1) {
@@ -98,7 +107,7 @@ function safeNumber(v) {
 function normalizarTexto(valor) {
   return String(valor || '')
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toUpperCase();
 }
@@ -144,6 +153,17 @@ function getCanal(row) {
 
 function getValorCte(row) {
   return safeNumber(campo(row, 'valor_cte', 'valorCte', 'valor_frete', 'frete'));
+}
+
+function getValorCalculado(row) {
+  return safeNumber(campo(row, 'valor_calculado', 'valorCalculado', 'frete_calculado', 'freteCalculado'));
+}
+
+function getDiferenca(row) {
+  const informada = campo(row, 'diferenca', 'diferenca_calculada', 'diferencaCalculada');
+  if (informada !== '') return safeNumber(informada);
+  const calculado = getValorCalculado(row);
+  return calculado > 0 ? getValorCte(row) - calculado : 0;
 }
 
 function getValorNf(row) {
@@ -200,7 +220,7 @@ function getRotaLabel(row) {
 function getRegiaoPorUf(uf) {
   const u = String(uf || '').toUpperCase();
   if (['AC', 'AP', 'AM', 'PA', 'RO', 'RR', 'TO'].includes(u)) return 'Norte';
-  if (['AL', 'BA', 'CE', 'MA', 'PB', 'PE', 'PI', 'RN', 'SE'].includes(u)) return 'Nordeste';
+  if (['AL', 'BA', 'CE', 'MA', 'PB', 'PE', 'PI', 'PR', 'RN', 'SE'].includes(u)) return 'Nordeste';
   if (['DF', 'GO', 'MT', 'MS'].includes(u)) return 'Centro-Oeste';
   if (['ES', 'MG', 'RJ', 'SP'].includes(u)) return 'Sudeste';
   if (['PR', 'RS', 'SC'].includes(u)) return 'Sul';
@@ -251,6 +271,8 @@ function agrupar(rows, keyGetter, extra = {}) {
       label: key,
       ctes: 0,
       valorCte: 0,
+      valorCalculado: 0,
+      diferenca: 0,
       valorNf: 0,
       peso: 0,
       volumes: 0,
@@ -262,6 +284,8 @@ function agrupar(rows, keyGetter, extra = {}) {
 
     atual.ctes += 1;
     atual.valorCte += getValorCte(row);
+    atual.valorCalculado += getValorCalculado(row);
+    atual.diferenca += getDiferenca(row);
     atual.valorNf += getValorNf(row);
     atual.peso += getPeso(row);
     atual.volumes += getVolumes(row);
@@ -283,9 +307,6 @@ function agrupar(rows, keyGetter, extra = {}) {
 }
 
 function aplicarFiltros(query, filtros = {}) {
-  // Não aplicamos filtro de tomador no Supabase porque a tabela realizado_local_ctes
-  // pode não ter essa coluna em algumas bases. O filtro por tomador deve ser tratado
-  // na importação/limpeza da base, evitando erro de coluna inexistente na consulta.
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
@@ -567,10 +588,13 @@ function PainelGestaoTransportador({ analise, filtros }) {
 
 function montarAnalise(rows = [], filtros = {}) {
   const totalCte = rows.reduce((a, r) => a + getValorCte(r), 0);
+  const totalCalculado = rows.reduce((a, r) => a + getValorCalculado(r), 0);
+  const totalDiferenca = rows.reduce((a, r) => a + getDiferenca(r), 0);
   const totalNf = rows.reduce((a, r) => a + getValorNf(r), 0);
   const totalPeso = rows.reduce((a, r) => a + getPeso(r), 0);
   const totalVolumes = rows.reduce((a, r) => a + getVolumes(r), 0);
   const totalCtes = rows.length;
+  const comCalculo = rows.filter((r) => getValorCalculado(r) > 0).length;
   const dias = diasEntre(filtros.inicio, filtros.fim, rows);
   const meses = mesesEntre(filtros.inicio, filtros.fim, rows);
 
@@ -601,6 +625,8 @@ function montarAnalise(rows = [], filtros = {}) {
       ufDestino: getUfDestino(row),
       ctes: 0,
       valorCte: 0,
+      valorCalculado: 0,
+      diferenca: 0,
       valorNf: 0,
       peso: 0,
       volumes: 0,
@@ -609,6 +635,8 @@ function montarAnalise(rows = [], filtros = {}) {
 
     atual.ctes += 1;
     atual.valorCte += getValorCte(row);
+    atual.valorCalculado += getValorCalculado(row);
+    atual.diferenca += getDiferenca(row);
     atual.valorNf += getValorNf(row);
     atual.peso += getPeso(row);
     atual.volumes += getVolumes(row);
@@ -625,7 +653,10 @@ function montarAnalise(rows = [], filtros = {}) {
 
   return {
     totalCtes,
+    comCalculo,
     totalCte,
+    totalCalculado,
+    totalDiferenca,
     totalNf,
     totalPeso,
     totalVolumes,
@@ -647,6 +678,43 @@ function montarAnalise(rows = [], filtros = {}) {
   };
 }
 
+function ValidacaoUpload({ validacao }) {
+  if (!validacao) return null;
+
+  const linhas = [
+    ['Registros lidos', validacao.total],
+    ['Com valor calculado', validacao.comValorCalculado],
+    ['Sem valor calculado', validacao.semValorCalculado],
+    ['Sem chave CT-e', validacao.semChave],
+    ['Sem transportadora', validacao.semTransportadora],
+    ['Sem origem', validacao.semOrigem],
+    ['Sem destino', validacao.semDestino],
+    ['Sem valor CT-e', validacao.semValorCte],
+    ['Sem valor NF', validacao.semValorNf],
+  ];
+
+  return (
+    <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+      <table className="sim-analise-tabela">
+        <thead>
+          <tr>
+            <th>Validação</th>
+            <th>Qtd.</th>
+          </tr>
+        </thead>
+        <tbody>
+          {linhas.map(([label, value]) => (
+            <tr key={label}>
+              <td>{label}</td>
+              <td>{fmtN(value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function CtePage() {
   const [filtros, setFiltros] = useState({
     transportadoraRealizada: '',
@@ -658,6 +726,18 @@ export default function CtePage() {
     fim: '',
     canal: '',
   });
+
+  const [competenciaUpload, setCompetenciaUpload] = useState(monthNow());
+  const [arquivoUpload, setArquivoUpload] = useState(null);
+  const [statusCompetencia, setStatusCompetencia] = useState(null);
+  const [validacaoUpload, setValidacaoUpload] = useState(null);
+  const [metaUpload, setMetaUpload] = useState(null);
+  const [progressoUpload, setProgressoUpload] = useState(null);
+  const [resultadoUpload, setResultadoUpload] = useState(null);
+  const [substituirCompetencia, setSubstituirCompetencia] = useState(false);
+  const [importando, setImportando] = useState(false);
+  const [pendencias, setPendencias] = useState([]);
+
   const [ocultarEbazar, setOcultarEbazar] = useState(true);
   const [rows, setRows] = useState(null);
   const [rowsAnalise, setRowsAnalise] = useState([]);
@@ -668,10 +748,159 @@ export default function CtePage() {
   const [carregandoAnalise, setCarregandoAnalise] = useState(false);
   const [progressoAnalise, setProgressoAnalise] = useState(null);
   const [erro, setErro] = useState('');
+  const [feedback, setFeedback] = useState('');
+
+  const podeImportar = Boolean(competenciaUpload && arquivoUpload && !importando);
 
   const set = (nomeCampo, valor) => {
     setFiltros((prev) => ({ ...prev, [nomeCampo]: valor }));
   };
+
+  async function consultarCompetenciaUpload() {
+    if (!competenciaUpload) {
+      setErro('Selecione uma competência para consultar.');
+      return null;
+    }
+
+    setErro('');
+    setFeedback(`Consultando competência ${competenciaUpload}...`);
+
+    try {
+      const status = await verificarCompetenciaRealizadoMensal(competenciaUpload);
+      setStatusCompetencia(status);
+      setFeedback(
+        `Competência ${competenciaUpload}: ${fmtN(status.detalhado)} CT-e(s) na base, ${fmtN(status.consolidado)} rota(s) consolidadas e ${fmtN(status.pendencias)} pendência(s).`
+      );
+      return status;
+    } catch (error) {
+      setErro(error.message || 'Erro ao consultar competência.');
+      return null;
+    }
+  }
+
+  async function carregarPendenciasUpload() {
+    if (!competenciaUpload) return;
+    setErro('');
+
+    try {
+      const data = await listarPendenciasIbgeRealizadoMensal(competenciaUpload, 100);
+      setPendencias(data);
+      setFeedback(`${fmtN(data.length)} pendência(s) de IBGE carregada(s) para conferência.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao carregar pendências.');
+    }
+  }
+
+  async function importarArquivoCte({ forcarSubstituir = false } = {}) {
+    if (!competenciaUpload || !arquivoUpload) {
+      setErro('Selecione a competência e o arquivo CT-e para subir.');
+      return;
+    }
+
+    setImportando(true);
+    setErro('');
+    setFeedback('Lendo arquivo e validando colunas...');
+    setResultadoUpload(null);
+    setValidacaoUpload(null);
+    setMetaUpload(null);
+    setPendencias([]);
+    setProgressoUpload({ etapa: 'leitura', mensagem: 'Lendo arquivo...', percentual: 5 });
+
+    try {
+      const statusAtual = await verificarCompetenciaRealizadoMensal(competenciaUpload);
+      setStatusCompetencia(statusAtual);
+
+      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0;
+      const substituir = Boolean(forcarSubstituir || substituirCompetencia);
+
+      if (jaTemBase && !substituir) {
+        setErro(
+          `A competência ${competenciaUpload} já possui ${fmtN(statusAtual.detalhado)} CT-e(s). Para subir novamente, marque "Substituir competência existente" ou clique em "Reimportar e substituir".`
+        );
+        setFeedback('Upload bloqueado para evitar duplicidade.');
+        return;
+      }
+
+      if (jaTemBase && substituir) {
+        const confirmou = window.confirm(
+          `A competência ${competenciaUpload} já tem ${fmtN(statusAtual.detalhado)} CT-e(s). Deseja apagar essa competência e subir novamente?`
+        );
+        if (!confirmou) {
+          setFeedback('Reimportação cancelada. Nenhum dado foi alterado.');
+          return;
+        }
+      }
+
+      const { registros, meta } = await parseRealizadoCtesFile(arquivoUpload);
+      setMetaUpload(meta);
+      setProgressoUpload({ etapa: 'validacao', mensagem: `${fmtN(registros.length)} CT-e(s) lidos. Validando campos...`, percentual: 15 });
+
+      const resposta = await importarRealizadoMensalEnxuto({
+        competencia: competenciaUpload,
+        arquivoOrigem: arquivoUpload.name,
+        registros,
+        substituir,
+        onProgress: (event) => {
+          if (event.etapa === 'validacao') {
+            setValidacaoUpload(event.validacao);
+            setProgressoUpload({ etapa: 'validacao', mensagem: event.mensagem, percentual: 20 });
+          }
+
+          if (event.etapa === 'temporaria') {
+            const total = Number(event.total || registros.length || 1);
+            const enviados = Number(event.enviados || 0);
+            const pct = total ? 20 + Math.round((enviados / total) * 45) : 25;
+            setProgressoUpload({
+              etapa: 'temporaria',
+              mensagem: `${fmtN(enviados)} de ${fmtN(total)} CT-e(s) enviados para a temporária...`,
+              percentual: Math.min(65, pct),
+            });
+          }
+
+          if (event.etapa === 'processamento') {
+            setProgressoUpload({ etapa: 'processamento', mensagem: event.mensagem, percentual: 75 });
+          }
+
+          if (event.etapa === 'concluido') {
+            setProgressoUpload({ etapa: 'concluido', mensagem: event.mensagem, percentual: 100 });
+          }
+        },
+      });
+
+      setResultadoUpload(resposta);
+      setStatusCompetencia(resposta.statusFinal);
+
+      if (Number(resposta.statusFinal?.pendencias || 0) > 0) {
+        const lista = await listarPendenciasIbgeRealizadoMensal(competenciaUpload, 100);
+        setPendencias(lista);
+      }
+
+      setFeedback(
+        `${substituir ? 'Reimportação' : 'Importação'} concluída: ${fmtN(resposta.statusFinal?.detalhado)} CT-e(s) na base, ${fmtN(resposta.statusFinal?.consolidado)} rota(s) consolidadas e ${fmtN(resposta.statusFinal?.pendencias)} pendência(s).`
+      );
+
+      if (filtros.inicio || filtros.fim || filtros.canal || filtros.transportadoraRealizada || filtros.origem || filtros.destino || filtros.ufOrigem || filtros.ufDestino) {
+        await buscar(1, filtros);
+      }
+    } catch (error) {
+      setErro(error.message || 'Erro ao importar CT-e.');
+    } finally {
+      setImportando(false);
+    }
+  }
+
+  function limparUpload() {
+    setArquivoUpload(null);
+    setValidacaoUpload(null);
+    setMetaUpload(null);
+    setResultadoUpload(null);
+    setProgressoUpload(null);
+    setPendencias([]);
+    setErro('');
+    setFeedback('Seleção de arquivo limpa.');
+    const input = document.getElementById('cte-upload-file-input');
+    if (input) input.value = '';
+  }
 
   const buscar = async (paginaSolicitada = 1, filtrosBusca = filtros) => {
     setCarregando(true);
@@ -745,6 +974,161 @@ export default function CtePage() {
           <p>Base online · Supabase ({TABELA})</p>
         </div>
       </div>
+
+      {erro && (
+        <div style={{ padding: '10px 14px', background: '#fff1f1', border: '1px solid #efc4c4', borderRadius: 10, color: '#9b2323', fontSize: 13, marginBottom: 12 }}>
+          {erro}
+        </div>
+      )}
+
+      {feedback && (
+        <div className="sim-alert info" style={{ marginBottom: 12 }}>
+          {feedback}
+        </div>
+      )}
+
+      <ExpandCard
+        title="Subir / reimportar CT-es"
+        subtitle="Use aqui para subir novamente uma competência e preservar valor calculado, diferença, status e dados de conciliação."
+        badge={statusCompetencia ? `${fmtN(statusCompetencia.detalhado)} CT-es na competência` : 'Upload CTS'}
+        defaultOpen
+      >
+        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
+          <div className="field">
+            <label>Competência</label>
+            <input
+              type="month"
+              value={competenciaUpload}
+              onChange={(event) => setCompetenciaUpload(event.target.value)}
+              disabled={importando}
+            />
+          </div>
+
+          <div className="field">
+            <label>Arquivo CT-e completo</label>
+            <input
+              id="cte-upload-file-input"
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={(event) => setArquivoUpload(event.target.files?.[0] || null)}
+              disabled={importando}
+            />
+          </div>
+
+          <div className="field">
+            <label>Ação</label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn-secondary" type="button" onClick={consultarCompetenciaUpload} disabled={importando || !competenciaUpload}>
+                Consultar
+              </button>
+              <button className="btn-secondary" type="button" onClick={carregarPendenciasUpload} disabled={importando || !competenciaUpload}>
+                Pendências
+              </button>
+              <button className="btn-secondary" type="button" onClick={limparUpload} disabled={importando}>
+                Limpar
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <label
+          style={{
+            display: 'flex',
+            gap: 10,
+            alignItems: 'flex-start',
+            padding: 12,
+            borderRadius: 12,
+            background: substituirCompetencia ? '#fff7ed' : '#f8fafc',
+            border: `1px solid ${substituirCompetencia ? '#fdba74' : '#e2e8f0'}`,
+            margin: '12px 0',
+            cursor: 'pointer',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={substituirCompetencia}
+            onChange={(event) => setSubstituirCompetencia(event.target.checked)}
+            disabled={importando}
+            style={{ marginTop: 3 }}
+          />
+          <span>
+            <strong>Substituir competência existente</strong>
+            <br />
+            <small>Use para subir novamente janeiro/fevereiro etc. O sistema apaga a competência atual e grava o novo arquivo, evitando duplicidade.</small>
+          </span>
+        </label>
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn-primary" type="button" onClick={() => importarArquivoCte({ forcarSubstituir: false })} disabled={!podeImportar || substituirCompetencia}>
+            {importando ? 'Importando...' : 'Importar mês novo'}
+          </button>
+          <button className="btn-primary" type="button" onClick={() => importarArquivoCte({ forcarSubstituir: true })} disabled={!podeImportar}>
+            {importando ? 'Reimportando...' : 'Reimportar e substituir'}
+          </button>
+          {arquivoUpload ? <span style={{ fontSize: 13, color: 'var(--muted)' }}>Arquivo: <strong>{arquivoUpload.name}</strong></span> : null}
+        </div>
+
+        {progressoUpload ? (
+          <div className="sim-alert info" style={{ marginTop: 12 }}>
+            <div className="sim-parametros-header">
+              <div>
+                <strong>Upload: {progressoUpload.etapa}</strong>
+                <p>{progressoUpload.mensagem}</p>
+              </div>
+              <span>{Number(progressoUpload.percentual || 0).toLocaleString('pt-BR')}%</span>
+            </div>
+            <div style={{ height: 10, borderRadius: 999, background: 'rgba(0,0,0,0.08)', overflow: 'hidden', marginTop: 10 }}>
+              <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, Number(progressoUpload.percentual || 0)))}%`, borderRadius: 999, background: '#9153F0', transition: 'width 180ms ease' }} />
+            </div>
+          </div>
+        ) : null}
+
+        {metaUpload ? (
+          <div className="hint-box" style={{ marginTop: 12 }}>
+            Leitura: aba <strong>{metaUpload.aba || '—'}</strong> · {fmtN(metaUpload.registrosValidos)} CT-e(s) válido(s) · {fmtN(metaUpload.linhasOriginais)} linha(s).
+          </div>
+        ) : null}
+
+        <ValidacaoUpload validacao={validacaoUpload} />
+
+        {resultadoUpload ? (
+          <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginTop: 12 }}>
+            <SummaryCard title="Temporária enviada" value={fmtN(resultadoUpload.temporaria?.enviados)} subtitle="linhas processadas" />
+            <SummaryCard title="Base oficial" value={fmtN(resultadoUpload.statusFinal?.detalhado)} subtitle="CT-e(s) na competência" />
+            <SummaryCard title="Consolidado" value={fmtN(resultadoUpload.statusFinal?.consolidado)} subtitle="rotas geradas" />
+            <SummaryCard title="Pendências" value={fmtN(resultadoUpload.statusFinal?.pendencias)} subtitle="sem IBGE" />
+          </div>
+        ) : null}
+
+        {pendencias.length ? (
+          <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>CT-e</th>
+                  <th>Emissão</th>
+                  <th>Transportadora</th>
+                  <th>Origem</th>
+                  <th>Destino</th>
+                  <th>Motivo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendencias.map((item) => (
+                  <tr key={item.id || `${item.chave_cte}-${item.motivo}`}>
+                    <td>{item.numero_cte || item.chave_cte}</td>
+                    <td>{fmtDate(item.data_emissao)}</td>
+                    <td>{item.transportadora}</td>
+                    <td>{item.cidade_origem}/{item.uf_origem}</td>
+                    <td>{item.cidade_destino}/{item.uf_destino}</td>
+                    <td>{item.motivo}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </ExpandCard>
 
       <div className="panel-card">
         <div className="panel-title">Filtros</div>
@@ -828,6 +1212,7 @@ export default function CtePage() {
               setRows(null);
               setRowsAnalise([]);
               setErro('');
+              setFeedback('');
               setPagina(1);
               setTemProximaPagina(false);
               setUltimaBuscaTemFiltro(false);
@@ -849,12 +1234,6 @@ export default function CtePage() {
             Base filtrada por tomadores: {TOMADORES_PERMITIDOS.join(', ')}. A busca só roda com pelo menos um filtro.
           </span>
         </div>
-
-        {erro && (
-          <div style={{ padding: '10px 14px', background: '#fff1f1', border: '1px solid #efc4c4', borderRadius: 10, color: '#9b2323', fontSize: 13 }}>
-            {erro}
-          </div>
-        )}
       </div>
 
       {!rows && !erro && (
@@ -873,11 +1252,13 @@ export default function CtePage() {
         <>
           <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
             <SummaryCard title="CT-es analisados" value={fmtN(analise.totalCtes)} subtitle={avisoAnaliseLimitada ? `limitado a ${fmtN(ANALISE_MAX_REGISTROS)}` : 'conforme filtros'} />
+            <SummaryCard title="Com cálculo" value={fmtN(analise.comCalculo)} subtitle={`${fmtPct(analise.totalCtes > 0 ? (analise.comCalculo / analise.totalCtes) * 100 : 0)} da base`} />
             <SummaryCard title="Valor total CT-e" value={fmt(analise.totalCte)} subtitle={carregandoAnalise ? 'calculando análise...' : 'base filtrada'} />
+            <SummaryCard title="Valor calculado" value={fmt(analise.totalCalculado)} subtitle="campo valor_calculado" />
+            <SummaryCard title="Diferença" value={fmt(analise.totalDiferenca)} subtitle="CT-e - calculado" />
             <SummaryCard title="Frete sobre NF" value={fmtPct(analise.percentualFrete)} subtitle={`${fmt(analise.totalNf)} em NF`} />
             <SummaryCard title="Transportadoras" value={fmtN(analise.transportadoras.length)} subtitle="distintas" />
             <SummaryCard title="Rotas" value={fmtN(analise.rotasUnicas)} subtitle="origem + destino + tipo" />
-            <SummaryCard title="Cargas/dia" value={fmtN(analise.cargasDia)} subtitle={`${fmtN(analise.dias)} dias analisados`} />
           </div>
 
           {carregandoAnalise && (
@@ -929,6 +1310,8 @@ export default function CtePage() {
                     <th>Destino</th>
                     <th>Nº CT-e</th>
                     <th>Valor CT-e</th>
+                    <th>Valor calculado</th>
+                    <th>Diferença</th>
                     <th>Valor NF</th>
                     <th>% Frete</th>
                     <th>Peso</th>
@@ -940,7 +1323,7 @@ export default function CtePage() {
                 <tbody>
                   {(!rowsFiltradas || rowsFiltradas.length === 0) && (
                     <tr>
-                      <td colSpan={14} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
+                      <td colSpan={16} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
                         Nenhum CT-e encontrado. Ajuste os filtros.
                       </td>
                     </tr>
@@ -956,6 +1339,8 @@ export default function CtePage() {
                     const ufDest = getUfDestino(row);
                     const nroCte = getNumeroCte(row);
                     const valCte = getValorCte(row);
+                    const valCalc = getValorCalculado(row);
+                    const diferenca = getDiferenca(row);
                     const valNf = getValorNf(row);
                     const percentual = valNf > 0 ? (valCte / valNf) * 100 : 0;
                     const canal = getCanal(row);
@@ -974,6 +1359,10 @@ export default function CtePage() {
                         <td>{cidDest ? `${cidDest}${ufDest ? `/${ufDest}` : ''}` : ufDest || '-'}</td>
                         <td>{nroCte || '-'}</td>
                         <td>{fmt(valCte)}</td>
+                        <td>{valCalc > 0 ? fmt(valCalc) : '-'}</td>
+                        <td style={{ color: Math.abs(diferenca) > 0.05 ? '#D85A30' : 'inherit', fontWeight: Math.abs(diferenca) > 0.05 ? 700 : 400 }}>
+                          {valCalc > 0 ? fmt(diferenca) : '-'}
+                        </td>
                         <td>{fmt(valNf)}</td>
                         <td>{valNf > 0 ? fmtPct(percentual) : '-'}</td>
                         <td>{peso ? `${fmtN(peso)} kg` : '-'}</td>
