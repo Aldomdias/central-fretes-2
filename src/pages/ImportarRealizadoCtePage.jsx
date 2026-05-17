@@ -27,8 +27,11 @@ function StatusCard({ label, value, subtitle }) {
 
 function ValidacaoLista({ validacao }) {
   if (!validacao) return null;
+
   const itens = [
     ['Registros lidos', validacao.total],
+    ['Com valor calculado', validacao.comValorCalculado],
+    ['Sem valor calculado', validacao.semValorCalculado],
     ['Sem chave CT-e', validacao.semChave],
     ['Sem transportadora', validacao.semTransportadora],
     ['Sem origem', validacao.semOrigem],
@@ -75,16 +78,20 @@ export default function ImportarRealizadoCtePage() {
   const [statusCompetencia, setStatusCompetencia] = useState(null);
   const [pendencias, setPendencias] = useState([]);
   const [progresso, setProgresso] = useState(null);
+  const [modoSubstituir, setModoSubstituir] = useState(false);
 
   const podeImportar = useMemo(() => Boolean(competencia && arquivo && !processando), [competencia, arquivo, processando]);
+  const possuiBaseNaCompetencia = Number(statusCompetencia?.detalhado || 0) > 0;
 
   async function consultarCompetencia() {
     if (!competencia) {
       setErro('Selecione uma competência/mês.');
       return null;
     }
+
     setErro('');
     setFeedback(`Consultando competência ${competencia}...`);
+
     try {
       const status = await verificarCompetenciaRealizadoMensal(competencia);
       setStatusCompetencia(status);
@@ -100,7 +107,9 @@ export default function ImportarRealizadoCtePage() {
 
   async function carregarPendencias() {
     if (!competencia) return;
+
     setErro('');
+
     try {
       const data = await listarPendenciasIbgeRealizadoMensal(competencia, 100);
       setPendencias(data);
@@ -110,7 +119,7 @@ export default function ImportarRealizadoCtePage() {
     }
   }
 
-  async function importar() {
+  async function importar({ forcarSubstituir = false } = {}) {
     if (!competencia || !arquivo) {
       setErro('Selecione a competência e o arquivo de CT-e.');
       return;
@@ -120,20 +129,33 @@ export default function ImportarRealizadoCtePage() {
     setErro('');
     setResultado(null);
     setPendencias([]);
+    setValidacao(null);
+    setMeta(null);
     setProgresso({ etapa: 'leitura', mensagem: 'Lendo arquivo...', percentual: 5 });
     setFeedback('Lendo arquivo e validando colunas...');
 
     try {
       const statusAtual = await verificarCompetenciaRealizadoMensal(competencia);
       setStatusCompetencia(statusAtual);
-      let substituir = false;
 
-      if (Number(statusAtual?.detalhado || 0) > 0) {
-        substituir = window.confirm(
-          `A competência ${competencia} já tem ${formatInt(statusAtual.detalhado)} CT-e(s) na base enxuta. Deseja substituir essa competência?`
+      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0;
+      let substituir = Boolean(forcarSubstituir || modoSubstituir);
+
+      if (jaTemBase && !substituir) {
+        setErro(
+          `A competência ${competencia} já possui ${formatInt(statusAtual.detalhado)} CT-e(s). Para subir novamente, marque "Substituir competência existente" ou clique em "Reimportar e substituir competência".`
         );
-        if (!substituir) {
-          setFeedback('Importação cancelada para evitar duplicidade de competência.');
+        setFeedback('Importação bloqueada para evitar duplicidade.');
+        return;
+      }
+
+      if (jaTemBase && substituir) {
+        const confirmou = window.confirm(
+          `A competência ${competencia} já tem ${formatInt(statusAtual.detalhado)} CT-e(s). Deseja apagar e subir novamente esta competência?`
+        );
+
+        if (!confirmou) {
+          setFeedback('Reimportação cancelada. Nenhum dado foi alterado.');
           return;
         }
       }
@@ -152,15 +174,22 @@ export default function ImportarRealizadoCtePage() {
             setValidacao(event.validacao);
             setProgresso({ etapa: 'validacao', mensagem: event.mensagem, percentual: 20 });
           }
+
           if (event.etapa === 'temporaria') {
             const total = Number(event.total || registros.length || 1);
             const enviados = Number(event.enviados || 0);
             const pct = total ? 20 + Math.round((enviados / total) * 45) : 25;
-            setProgresso({ etapa: 'temporaria', mensagem: `${formatInt(enviados)} de ${formatInt(total)} CT-e(s) enviados para a temporária...`, percentual: Math.min(65, pct) });
+            setProgresso({
+              etapa: 'temporaria',
+              mensagem: `${formatInt(enviados)} de ${formatInt(total)} CT-e(s) enviados para a temporária...`,
+              percentual: Math.min(65, pct),
+            });
           }
+
           if (event.etapa === 'processamento') {
             setProgresso({ etapa: 'processamento', mensagem: event.mensagem, percentual: 75 });
           }
+
           if (event.etapa === 'concluido') {
             setProgresso({ etapa: 'concluido', mensagem: event.mensagem, percentual: 100 });
           }
@@ -176,13 +205,27 @@ export default function ImportarRealizadoCtePage() {
       }
 
       setFeedback(
-        `Importação mensal concluída: ${formatInt(resposta.statusFinal?.detalhado)} CT-e(s) na base enxuta, ${formatInt(resposta.statusFinal?.consolidado)} rota(s) consolidadas e ${formatInt(resposta.statusFinal?.pendencias)} pendência(s) de IBGE.`
+        `${substituir ? 'Reimportação' : 'Importação'} concluída: ${formatInt(resposta.statusFinal?.detalhado)} CT-e(s) na base enxuta, ${formatInt(resposta.statusFinal?.consolidado)} rota(s) consolidadas e ${formatInt(resposta.statusFinal?.pendencias)} pendência(s) de IBGE.`
       );
     } catch (error) {
       setErro(error.message || 'Erro ao importar realizado mensal.');
     } finally {
       setProcessando(false);
     }
+  }
+
+  function limparSelecao() {
+    setArquivo(null);
+    setMeta(null);
+    setValidacao(null);
+    setResultado(null);
+    setPendencias([]);
+    setProgresso(null);
+    setErro('');
+    setFeedback('Seleção limpa. Escolha novamente o arquivo para subir.');
+
+    const input = document.getElementById('realizado-cte-file-input');
+    if (input) input.value = '';
   }
 
   return (
@@ -192,15 +235,18 @@ export default function ImportarRealizadoCtePage() {
           <div className="amd-mini-brand">AMD Log • Realizado CT-e</div>
           <h1>Importar Realizado CT-e</h1>
           <p>
-            Importe o arquivo completo de CT-e por competência, gere uma base oficial enxuta com IBGE e consolide por rota/mês. A temporária é limpa automaticamente após o processamento.
+            Importe ou reimporte o arquivo completo de CT-e por competência. A subida agora preserva valor calculado, diferença, status e campos de conciliação quando existirem no arquivo.
           </p>
         </div>
         <div className="actions-right wrap">
-          <button className="btn-secondary" onClick={consultarCompetencia} disabled={processando || !competencia}>
+          <button className="btn-secondary" type="button" onClick={consultarCompetencia} disabled={processando || !competencia}>
             Consultar competência
           </button>
-          <button className="btn-secondary" onClick={carregarPendencias} disabled={processando || !competencia}>
+          <button className="btn-secondary" type="button" onClick={carregarPendencias} disabled={processando || !competencia}>
             Ver pendências IBGE
+          </button>
+          <button className="btn-secondary" type="button" onClick={limparSelecao} disabled={processando}>
+            Limpar seleção
           </button>
         </div>
       </div>
@@ -224,7 +270,7 @@ export default function ImportarRealizadoCtePage() {
       ) : null}
 
       <div className="summary-strip">
-        <StatusCard title="Competência" label="Competência" value={competencia || '—'} subtitle="Importação mensal" />
+        <StatusCard label="Competência" value={competencia || '—'} subtitle="Importação mensal" />
         <StatusCard label="Base enxuta" value={formatInt(statusCompetencia?.detalhado)} subtitle="CT-e(s) oficiais" />
         <StatusCard label="Consolidado" value={formatInt(statusCompetencia?.consolidado)} subtitle="rotas/mês" />
         <StatusCard label="Pendências IBGE" value={formatInt(statusCompetencia?.pendencias)} subtitle="fora da base enxuta" />
@@ -234,8 +280,11 @@ export default function ImportarRealizadoCtePage() {
         <section className="panel-card">
           <div>
             <div className="panel-title">1. Selecionar competência e arquivo</div>
-            <p>O arquivo completo fica apenas na temporária. Depois de gerar as bases oficiais, a temporária é limpa automaticamente.</p>
+            <p>
+              Use importação normal para mês novo. Para subir novamente um mês já existente, marque substituição ou use o botão de reimportação.
+            </p>
           </div>
+
           <div className="form-grid">
             <div className="field">
               <label>Competência</label>
@@ -243,16 +292,67 @@ export default function ImportarRealizadoCtePage() {
             </div>
             <div className="field">
               <label>Arquivo CT-e completo</label>
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setArquivo(event.target.files?.[0] || null)} disabled={processando} />
+              <input
+                id="realizado-cte-file-input"
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(event) => setArquivo(event.target.files?.[0] || null)}
+                disabled={processando}
+              />
             </div>
           </div>
-          <button className="btn-primary full" onClick={importar} disabled={!podeImportar}>
-            {processando ? 'Processando realizado...' : 'Importar e gerar base enxuta'}
-          </button>
+
+          <label
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+              padding: 12,
+              borderRadius: 12,
+              background: modoSubstituir ? '#fff7ed' : '#f8fafc',
+              border: `1px solid ${modoSubstituir ? '#fdba74' : '#e2e8f0'}`,
+              margin: '12px 0',
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={modoSubstituir}
+              onChange={(event) => setModoSubstituir(event.target.checked)}
+              disabled={processando}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <strong>Substituir competência existente</strong>
+              <br />
+              <small>
+                Use para subir novamente janeiro/fevereiro etc. O sistema apaga a competência atual e grava o novo arquivo, evitando duplicidade.
+              </small>
+            </span>
+          </label>
+
+          <div className="actions-right wrap" style={{ justifyContent: 'stretch' }}>
+            <button className="btn-primary full" type="button" onClick={() => importar({ forcarSubstituir: false })} disabled={!podeImportar || modoSubstituir}>
+              {processando ? 'Processando realizado...' : 'Importar mês novo'}
+            </button>
+            <button className="btn-primary full" type="button" onClick={() => importar({ forcarSubstituir: true })} disabled={!podeImportar}>
+              {processando ? 'Reimportando...' : 'Reimportar e substituir competência'}
+            </button>
+          </div>
+
+          {possuiBaseNaCompetencia ? (
+            <div className="sim-alert info" style={{ marginTop: 12 }}>
+              A competência {competencia} já possui <strong>{formatInt(statusCompetencia?.detalhado)}</strong> CT-e(s). Para subir novamente, use <strong>Reimportar e substituir competência</strong>.
+            </div>
+          ) : null}
+
           {arquivo ? <div className="import-meta-box">Arquivo selecionado: <strong>{arquivo.name}</strong></div> : null}
           {meta ? (
             <div className="import-meta-box">
               Leitura: aba {meta.aba || '—'} • {formatInt(meta.registrosValidos)} CT-e(s) válido(s) • {formatInt(meta.linhasOriginais)} linha(s)
+              {typeof validacao?.comValorCalculado === 'number' ? (
+                <> • {formatInt(validacao.comValorCalculado)} com valor calculado</>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -260,12 +360,12 @@ export default function ImportarRealizadoCtePage() {
         <section className="panel-card">
           <div>
             <div className="panel-title">2. Resultado esperado</div>
-            <p>O processamento gera duas bases oficiais e uma lista de pendências para corrigir cidade/UF sem IBGE.</p>
+            <p>O processamento gera base oficial com os campos necessários para auditoria e resumo mensal.</p>
           </div>
           <div className="sim-analise-resumo top-space">
             <div><span>Base temporária</span><strong>limpa ao final</strong></div>
-            <div><span>Base enxuta</span><strong>1 linha por CT-e</strong></div>
-            <div><span>Chave rota</span><strong>IBGE origem-destino</strong></div>
+            <div><span>Base enxuta/local</span><strong>1 linha por CT-e</strong></div>
+            <div><span>Cálculo</span><strong>valor calculado + diferença</strong></div>
             <div><span>Consolidado</span><strong>mês + transportadora + rota</strong></div>
           </div>
         </section>
@@ -275,7 +375,7 @@ export default function ImportarRealizadoCtePage() {
         <div className="sim-parametros-header">
           <div>
             <div className="panel-title">Validação do arquivo</div>
-            <p>Antes de gravar na base oficial, o sistema valida campos mínimos e envia tudo para a temporária.</p>
+            <p>Antes de gravar na base oficial, o sistema valida campos mínimos e mostra se o arquivo contém valor calculado.</p>
           </div>
         </div>
         <ValidacaoLista validacao={validacao} />
