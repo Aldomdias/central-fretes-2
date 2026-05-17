@@ -1,8 +1,8 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
-const TMP_CHUNK_SIZE = 200;
+const TMP_CHUNK_SIZE = 500;
 const TMP_INSERT_RETRIES = 3;
-const TMP_RETRY_DELAY_MS = 800;
+const TMP_RETRY_DELAY_MS = 900;
 
 function ensureSupabase() {
   const client = getSupabaseClient();
@@ -100,12 +100,20 @@ async function insertChunkWithRetry({ supabase, chunk, tentativa = 1 }) {
       || mensagem.includes('temporarily')
     );
 
-  if (!podeTentarNovamente) {
-    throw error;
-  }
+  if (!podeTentarNovamente) throw error;
 
   await sleep(TMP_RETRY_DELAY_MS * tentativa);
   return insertChunkWithRetry({ supabase, chunk, tentativa: tentativa + 1 });
+}
+
+async function safeCountByCompetencia(supabase, tabela, coluna, competencia) {
+  const { count, error } = await supabase
+    .from(tabela)
+    .select(coluna, { count: 'exact', head: true })
+    .eq('competencia', competencia);
+
+  if (error) return 0;
+  return count || 0;
 }
 
 export function montarLinhaTemporariaRealizado(row = {}, competencia = '', arquivoOrigem = '') {
@@ -189,20 +197,27 @@ export function validarRegistrosRealizadoMensal(registros = []) {
 
 export async function verificarCompetenciaRealizadoMensal(competencia) {
   const supabase = ensureSupabase();
-  const { data, error } = await supabase.rpc('status_realizado_cte_competencia', {
-    p_competencia: competencia,
-  });
-  if (error) throw new Error(`Erro ao consultar competência ${competencia}. Detalhe: ${error.message}`);
-  return data || { competencia, detalhado: 0, consolidado: 0, pendencias: 0, temporaria: 0 };
+
+  const [detalhado, consolidado, pendencias, temporaria] = await Promise.all([
+    safeCountByCompetencia(supabase, 'realizado_local_ctes', 'id', competencia),
+    safeCountByCompetencia(supabase, 'realizado_ctes_consolidado', 'id', competencia),
+    safeCountByCompetencia(supabase, 'realizado_ctes_pendencias_ibge', 'id', competencia),
+    safeCountByCompetencia(supabase, 'realizado_ctes_import_tmp', 'id', competencia),
+  ]);
+
+  return { competencia, detalhado, consolidado, pendencias, temporaria };
 }
 
 export async function limparTemporariaRealizadoMensal(competencia) {
   const supabase = ensureSupabase();
-  const { data, error } = await supabase.rpc('limpar_realizado_ctes_import_tmp', {
-    p_competencia: competencia,
-  });
+
+  const { error } = await supabase
+    .from('realizado_ctes_import_tmp')
+    .delete()
+    .eq('competencia', competencia);
+
   if (error) throw new Error(`Erro ao limpar temporária. Detalhe: ${error.message}`);
-  return Number(data || 0);
+  return 0;
 }
 
 export async function subirTemporariaRealizadoMensal({ competencia, arquivoOrigem, registros, onProgress }) {
@@ -229,7 +244,7 @@ export async function subirTemporariaRealizadoMensal({ competencia, arquivoOrige
 
     enviados += chunk.length;
     onProgress?.({ enviados, total: payload.length });
-    await sleep(25);
+    await sleep(20);
   }
 
   return { enviados, total: payload.length };
@@ -251,11 +266,13 @@ export async function importarRealizadoMensalEnxuto({ competencia, arquivoOrigem
   const validacao = validarRegistrosRealizadoMensal(registros);
   onProgress?.({ etapa: 'validacao', mensagem: 'Colunas validadas.', validacao });
 
-  const status = await verificarCompetenciaRealizadoMensal(competencia);
-  if (!substituir && Number(status?.detalhado || 0) > 0) {
-    const erro = new Error(`A competência ${competencia} já possui ${Number(status.detalhado).toLocaleString('pt-BR')} CT-e(s) na base enxuta.`);
-    erro.statusCompetencia = status;
-    throw erro;
+  if (!substituir) {
+    const status = await verificarCompetenciaRealizadoMensal(competencia);
+    if (Number(status?.detalhado || 0) > 0) {
+      const erro = new Error(`A competência ${competencia} já possui ${Number(status.detalhado).toLocaleString('pt-BR')} CT-e(s) na base enxuta.`);
+      erro.statusCompetencia = status;
+      throw erro;
+    }
   }
 
   onProgress?.({ etapa: 'temporaria', mensagem: 'Enviando arquivo para tabela temporária...' });
@@ -269,7 +286,13 @@ export async function importarRealizadoMensalEnxuto({ competencia, arquivoOrigem
   onProgress?.({ etapa: 'processamento', mensagem: 'Gerando base enxuta, pendências e consolidado...' });
   const processamento = await processarRealizadoMensalEnxuto({ competencia, substituir });
 
-  const statusFinal = await verificarCompetenciaRealizadoMensal(competencia);
+  let statusFinal = null;
+  try {
+    statusFinal = await verificarCompetenciaRealizadoMensal(competencia);
+  } catch {
+    statusFinal = { competencia, detalhado: 0, consolidado: 0, pendencias: 0, temporaria: 0 };
+  }
+
   onProgress?.({ etapa: 'concluido', mensagem: 'Processamento concluído.', status: statusFinal });
 
   return { validacao, temporaria, processamento, statusFinal };
