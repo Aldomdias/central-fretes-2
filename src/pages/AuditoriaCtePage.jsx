@@ -9,12 +9,12 @@ import {
   exportarAuditoriaExcel,
   carregarMetaAuditoria,
   salvarMetaAuditoria,
+  salvarMesCarregadoAuditoria,
   TOGGLE_TABELAS_KEY,
 } from '../services/auditoriaService';
 import {
   carregarResultadosAuditoriaMes,
   carregarResumoAuditoriaMensal,
-  processarESalvarAuditoriaMes,
 } from '../services/auditoriaCteProcessamentoService';
 
 function fmt(v) {
@@ -250,7 +250,7 @@ export default function AuditoriaCtePage() {
 
   async function carregar() {
     if (!competencia) {
-      setErro('Informe a competência (mês) antes de carregar. A base é grande e requer um filtro de período para não dar timeout.');
+      setErro('Informe a competência (mês) antes de carregar.');
       return;
     }
 
@@ -271,7 +271,7 @@ export default function AuditoriaCtePage() {
       setAvisos(resposta?.avisos || []);
 
       if (!dados.length) {
-        setSucesso('Nenhum CTe encontrado para esta competência nas bases verificadas. Veja o diagnóstico abaixo para identificar se o problema é data, competência ou tabela vazia.');
+        setSucesso('Nenhum CTe encontrado para esta competência nas bases verificadas.');
       } else {
         const fonte = resposta?.fonte?.label || resposta?.fonte?.tabela || 'Supabase';
         setSucesso(`${dados.length.toLocaleString('pt-BR')} CTe(s) carregados da fonte ${fonte}.`);
@@ -308,13 +308,13 @@ export default function AuditoriaCtePage() {
       setFonteAuditoria({
         id: 'auditoria_cte_resultados',
         tabela: 'auditoria_cte_resultados',
-        label: 'Auditoria processada / auditoria_cte_resultados',
+        label: 'Auditoria salva / auditoria_cte_resultados',
       });
 
       if (!dados.length) {
-        setSucesso('Nenhum resultado processado salvo para esta competência. Clique em Processar e salvar auditoria do mês.');
+        setSucesso('Nenhum resultado salvo para esta competência. Use Salvar mês carregado.');
       } else {
-        setSucesso(`${dados.length.toLocaleString('pt-BR')} resultado(s) processado(s) carregados da auditoria salva.`);
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} resultado(s) salvo(s) carregado(s).`);
       }
     } catch (error) {
       setRegistros([]);
@@ -324,14 +324,14 @@ export default function AuditoriaCtePage() {
     }
   }
 
-  async function processarSalvarMes() {
+  async function salvarMesCarregado() {
     if (!competencia) {
-      setErro('Informe a competência antes de processar a auditoria.');
+      setErro('Informe a competência antes de salvar o mês.');
       return;
     }
 
     const confirmar = window.confirm(
-      `Processar a auditoria de ${competencia}? Se já existir resultado salvo para este mês, ele será substituído.`
+      `Salvar a auditoria de ${competencia}? O resultado salvo e o resumo mensal desse mês serão substituídos.`
     );
 
     if (!confirmar) return;
@@ -340,11 +340,10 @@ export default function AuditoriaCtePage() {
     setErro('');
     setSucesso('');
     setAvisos([]);
-    setDiagnostico([]);
     setProgressoProcessamento(null);
 
     try {
-      const resposta = await processarESalvarAuditoriaMes({
+      const resposta = await salvarMesCarregadoAuditoria({
         competencia,
         onProgress: setProgressoProcessamento,
       });
@@ -354,15 +353,15 @@ export default function AuditoriaCtePage() {
       setFonteAuditoria(resposta?.fonte || {
         id: 'auditoria_cte_resultados',
         tabela: 'auditoria_cte_resultados',
-        label: 'Auditoria processada / auditoria_cte_resultados',
+        label: 'Auditoria salva / auditoria_cte_resultados',
       });
 
       const resumo = await carregarResumoAuditoriaMensal();
       setResumoMensal(resumo || []);
 
-      setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) processados e salvos para ${competencia}.`);
+      setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) salvos na auditoria e resumo mensal atualizado para ${competencia}.`);
     } catch (error) {
-      setErro(error.message || 'Erro ao processar auditoria do mês.');
+      setErro(error.message || 'Erro ao salvar mês carregado.');
     } finally {
       setProcessando(false);
     }
@@ -423,7 +422,7 @@ export default function AuditoriaCtePage() {
         <h1>Auditoria de CTes</h1>
         <p>
           Cobertura de cálculo, assertividade e priorização de divergências. Fonte principal: <code>realizado_local_ctes</code>.
-          O processamento mensal grava o resultado em <code>auditoria_cte_resultados</code> e o resumo em <code>auditoria_cte_resumo_mensal</code>.
+          O botão <strong>Salvar mês carregado</strong> grava o resultado em <code>auditoria_cte_resultados</code> e o resumo em <code>auditoria_cte_resumo_mensal</code>.
         </p>
       </div>
 
@@ -437,7 +436,7 @@ export default function AuditoriaCtePage() {
 
       <section className="sim-card">
         <div className="sim-alert info" style={{ marginBottom: 14 }}>
-          <strong>Fluxo recomendado.</strong> Primeiro carregue os CT-es para conferir a base. Depois processe e salve a auditoria do mês. Nos próximos acessos, use o resultado salvo.
+          <strong>Fluxo recomendado.</strong> Carregue os CT-es do mês para conferir. Depois clique em <strong>Salvar mês carregado</strong>. Nos próximos acessos, use <strong>Carregar resultado salvo</strong> ou <strong>Carregar resumo mensal</strong>.
         </div>
 
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
@@ -453,11 +452,11 @@ export default function AuditoriaCtePage() {
             <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !competencia}>
               {carregando ? 'Carregando...' : 'Carregar CT-es do mês'}
             </button>
+            <button className="primary" type="button" onClick={salvarMesCarregado} disabled={carregando || processando || !competencia}>
+              {processando ? 'Salvando...' : 'Salvar mês carregado'}
+            </button>
             <button className="sim-tab" type="button" onClick={carregarResultadoSalvo} disabled={carregando || processando || !competencia}>
               Carregar resultado salvo
-            </button>
-            <button className="primary" type="button" onClick={processarSalvarMes} disabled={carregando || processando || !competencia}>
-              {processando ? 'Processando...' : 'Processar e salvar auditoria do mês'}
             </button>
             <button className="sim-tab" type="button" onClick={carregarResumoMensal} disabled={carregando || processando}>
               Carregar resumo mensal
@@ -493,7 +492,7 @@ export default function AuditoriaCtePage() {
             sublabel={
               usarTabelas
                 ? `Ativo — ${fmtN(metricas.totalSemCalculo)} CTe(s) sem cálculo elegíveis para análise de cobertura`
-                : 'Desligado — o processamento mensal já usa as tabelas cadastradas para calcular a auditoria.'
+                : 'Desligado — mantenha desligado enquanto a auditoria estiver usando o cálculo já gravado no CTS.'
             }
           />
         </div>
@@ -577,7 +576,7 @@ export default function AuditoriaCtePage() {
 
               <div style={{ padding: 16, borderRadius: 12, background: semaforoAssert.bg }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 700, fontSize: 14 }}>Assertividade</span>
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>Assertividade dos calculados</span>
                   <span style={{ padding: '3px 10px', borderRadius: 999, background: semaforoAssert.cor, color: '#fff', fontSize: 12, fontWeight: 700 }}>
                     {semaforoAssert.label}
                   </span>
@@ -590,7 +589,7 @@ export default function AuditoriaCtePage() {
                 </div>
                 <BarraMeta atual={metricas.taxaAssertividade} meta={meta.taxaAssertividadeMeta} cor={semaforoAssert.cor} />
                 <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>
-                  {fmtN(metricas.totalAssertivos)} assertivos · {fmtN(metricas.totalDivergentes)} divergentes
+                  {fmtN(metricas.totalAssertivos)} assertivos · {fmtN(metricas.totalDivergentes)} divergentes · sem cálculo fora da assertividade
                 </div>
               </div>
             </div>
@@ -780,8 +779,7 @@ export default function AuditoriaCtePage() {
           <div style={{ fontSize: 48, marginBottom: 12 }}>📋</div>
           <h3>Selecione a competência e carregue os dados</h3>
           <p style={{ color: '#64748b', maxWidth: 620, margin: '0 auto' }}>
-            Use <strong>Carregar CT-es do mês</strong> para conferir a base bruta ou <strong>Carregar resultado salvo</strong> para abrir uma auditoria já processada.
-            Para criar o resultado da auditoria, clique em <strong>Processar e salvar auditoria do mês</strong>.
+            Use <strong>Carregar CT-es do mês</strong> para conferir a base CTS. Depois use <strong>Salvar mês carregado</strong> para gravar o histórico da auditoria.
           </p>
         </section>
       ) : null}
