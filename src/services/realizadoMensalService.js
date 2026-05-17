@@ -44,13 +44,15 @@ function cidadeSemUf(cidade = '', uf = '') {
 function getPesoFinal(row = {}) {
   const declarado = toSafeNumber(row.pesoDeclarado ?? row.peso_declarado);
   const cubado = toSafeNumber(row.pesoCubado ?? row.peso_cubado);
-  return Math.max(declarado, cubado, 0);
+  const peso = toSafeNumber(row.peso);
+  return Math.max(declarado, cubado, peso, 0);
 }
 
 function getCubagem(row = {}) {
   const metros = toSafeNumber(row.metrosCubicos ?? row.metros_cubicos);
+  const cubagem = toSafeNumber(row.cubagem);
   const cubado = toSafeNumber(row.pesoCubado ?? row.peso_cubado);
-  return metros > 0 ? metros : cubado;
+  return metros > 0 ? metros : (cubagem > 0 ? cubagem : cubado);
 }
 
 function getVolumes(row = {}) {
@@ -60,9 +62,10 @@ function getVolumes(row = {}) {
 function getChaveCte(row = {}) {
   const chave = cleanDigits(row.chaveCte ?? row.chave_cte);
   if (chave) return chave;
+
   const fallback = [
     row.numeroCte ?? row.numero_cte,
-    row.emissao,
+    row.emissao ?? row.data_emissao,
     row.transportadora,
     row.cidadeOrigem ?? row.cidade_origem,
     row.cidadeDestino ?? row.cidade_destino,
@@ -72,12 +75,19 @@ function getChaveCte(row = {}) {
     .filter(Boolean)
     .join('-')
     .slice(0, 180);
+
   return fallback ? `cte-sem-chave-${fallback}` : '';
 }
 
 export function montarLinhaTemporariaRealizado(row = {}, competencia = '', arquivoOrigem = '') {
   const ufOrigem = cleanUf(row.ufOrigem ?? row.uf_origem);
   const ufDestino = cleanUf(row.ufDestino ?? row.uf_destino);
+  const valorCte = toSafeNumber(row.valorCte ?? row.valor_cte);
+  const valorCalculado = toSafeNumber(row.valorCalculado ?? row.valor_calculado);
+  const diferencaInformada = row.diferenca ?? row.diferenca_calculada;
+  const diferenca = diferencaInformada !== undefined && diferencaInformada !== null && String(diferencaInformada).trim() !== ''
+    ? toSafeNumber(diferencaInformada)
+    : (valorCalculado > 0 ? valorCte - valorCalculado : 0);
 
   return {
     competencia,
@@ -87,17 +97,29 @@ export function montarLinhaTemporariaRealizado(row = {}, competencia = '', arqui
     numero_cte: cleanText(row.numeroCte ?? row.numero_cte),
     transportadora: cleanText(row.transportadora),
     cnpj_transportadora: cleanDigits(row.cnpjTransportadora ?? row.cnpj_transportadora),
+    tomador_servico: cleanText(row.tomadorServico ?? row.tomador_servico),
     cidade_origem: cidadeSemUf(row.cidadeOrigem ?? row.cidade_origem, ufOrigem),
     uf_origem: ufOrigem,
     cidade_destino: cidadeSemUf(row.cidadeDestino ?? row.cidade_destino, ufDestino),
     uf_destino: ufDestino,
+    ibge_origem: cleanDigits(row.ibgeOrigem ?? row.ibge_origem).slice(0, 7),
+    ibge_destino: cleanDigits(row.ibgeDestino ?? row.ibge_destino).slice(0, 7),
     peso: getPesoFinal(row),
+    peso_declarado: toSafeNumber(row.pesoDeclarado ?? row.peso_declarado),
+    peso_cubado: toSafeNumber(row.pesoCubado ?? row.peso_cubado),
     cubagem: getCubagem(row),
     valor_nf: toSafeNumber(row.valorNF ?? row.valor_nf),
-    valor_cte: toSafeNumber(row.valorCte ?? row.valor_cte),
+    valor_cte: valorCte,
+    valor_calculado: valorCalculado,
+    diferenca,
+    situacao: cleanText(row.situacao),
+    status: cleanText(row.status),
+    status_conciliacao: cleanText(row.statusConciliacao ?? row.status_conciliacao),
+    status_erp: cleanText(row.statusErp ?? row.status_erp),
+    percentual_frete: toSafeNumber(row.percentualFrete ?? row.percentual_frete),
     qtd_volumes: getVolumes(row),
     canal: cleanText(row.canal || row.canalVendas || row.canais),
-    raw: row.raw || {},
+    raw: row.raw || row || {},
   };
 }
 
@@ -114,6 +136,8 @@ export function validarRegistrosRealizadoMensal(registros = []) {
     semValorCte: 0,
     semValorNf: 0,
     semCanal: 0,
+    semValorCalculado: 0,
+    comValorCalculado: 0,
   };
 
   registros.forEach((row) => {
@@ -127,6 +151,8 @@ export function validarRegistrosRealizadoMensal(registros = []) {
     if (toSafeNumber(row.valorCte ?? row.valor_cte) <= 0) resumo.semValorCte += 1;
     if (toSafeNumber(row.valorNF ?? row.valor_nf) <= 0) resumo.semValorNf += 1;
     if (!cleanText(row.canal || row.canalVendas || row.canais)) resumo.semCanal += 1;
+    if (toSafeNumber(row.valorCalculado ?? row.valor_calculado) > 0) resumo.comValorCalculado += 1;
+    else resumo.semValorCalculado += 1;
   });
 
   return resumo;
