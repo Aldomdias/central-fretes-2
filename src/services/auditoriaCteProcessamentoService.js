@@ -1,790 +1,547 @@
-import React, { useMemo, useState } from 'react';
-import {
-  carregarDadosAuditoria,
-  calcularMetricasAuditoria,
-  agruparPorTransportadora,
-  calcularOndeAtacar,
-  sugerirNovaMeta,
-  avaliarMetaAuditoria,
-  exportarAuditoriaExcel,
-  carregarMetaAuditoria,
-  salvarMetaAuditoria,
-  TOGGLE_TABELAS_KEY,
-} from '../services/auditoriaService';
-import {
-  carregarResultadosAuditoriaMes,
-  carregarResumoAuditoriaMensal,
-  processarESalvarAuditoriaMes,
-} from '../services/auditoriaCteProcessamentoService';
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { carregarBaseCompletaDb } from './freteDatabaseService';
+import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
 
-function fmt(v) {
-  return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const PAGE_SIZE = 1000;
+const INSERT_CHUNK = 500;
+const TABELA_CTES = 'realizado_local_ctes';
+const TABELA_RESULTADOS = 'auditoria_cte_resultados';
+const TABELA_RESUMO = 'auditoria_cte_resumo_mensal';
+const LIMITE_DIVERGENCIA_ASSERTIVO = 0.05;
+
+function ensureSupabase() {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error('Cliente Supabase indisponível.');
+  }
+
+  return supabase;
 }
 
-function fmtN(v, d = 0) {
-  return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  const text = String(value).trim();
+  if (!text) return 0;
+
+  const normalized = text.includes(',')
+    ? text.replace(/\./g, '').replace(',', '.')
+    : text;
+
+  const parsed = Number(normalized.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function fmtP(v, d = 1) {
-  return `${Number(v || 0).toFixed(d).replace('.', ',')}%`;
+function onlyDigits(value) {
+  return String(value || '').replace(/\D/g, '');
 }
 
-function semaforo(atual, meta) {
-  if (atual >= meta) return { cor: '#16a34a', bg: '#dcfce7', label: '✓ Meta atingida' };
-  if (atual >= meta * 0.9) return { cor: '#d97706', bg: '#fef3c7', label: '⚠ Próximo da meta' };
-  return { cor: '#dc2626', bg: '#fee2e2', label: '✗ Abaixo da meta' };
+function normalizeText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
 }
 
-function metaStatusStyle(status) {
-  const map = {
-    ok: { bg: '#dcfce7', color: '#166534', border: '#86efac' },
-    cobertura: { bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' },
-    assertividade: { bg: '#fef3c7', color: '#92400e', border: '#fde68a' },
-    critico: { bg: '#fee2e2', color: '#991b1b', border: '#fecaca' },
-    sem_dados: { bg: '#f8fafc', color: '#475569', border: '#e2e8f0' },
-  };
-  return map[status] || map.sem_dados;
+function normalizeCompare(value) {
+  return normalizeText(value).toLowerCase();
 }
 
-function BadgeSeveridade({ severidade }) {
-  const map = {
-    critico: { bg: '#fee2e2', color: '#dc2626', label: 'Crítico' },
-    alto: { bg: '#fef3c7', color: '#b45309', label: 'Alto' },
-    medio: { bg: '#e0f2fe', color: '#0369a1', label: 'Médio' },
-    baixo: { bg: '#f0fdf4', color: '#16a34a', label: 'Baixo' },
-  };
-  const s = map[severidade] || map.baixo;
-  return (
-    <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700, background: s.bg, color: s.color }}>
-      {s.label}
-    </span>
-  );
-}
-
-function ToggleSwitch({ ativo, onChange, label, sublabel }) {
-  return (
-    <div
-      style={{
-        padding: '12px 16px',
-        borderRadius: 10,
-        cursor: 'pointer',
-        background: ativo ? '#eff6ff' : '#f8fafc',
-        border: `2px solid ${ativo ? '#3b82f6' : '#e2e8f0'}`,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 14,
-        userSelect: 'none',
-      }}
-      onClick={onChange}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') onChange();
-      }}
-    >
-      <div style={{
-        width: 44,
-        height: 24,
-        borderRadius: 12,
-        background: ativo ? '#3b82f6' : '#cbd5e1',
-        position: 'relative',
-        flexShrink: 0,
-        transition: 'background 0.2s',
-      }}>
-        <div style={{
-          width: 18,
-          height: 18,
-          borderRadius: '50%',
-          background: '#fff',
-          position: 'absolute',
-          top: 3,
-          left: ativo ? 23 : 3,
-          transition: 'left 0.2s',
-        }} />
-      </div>
-      <div>
-        <div style={{ fontWeight: 700, color: ativo ? '#1d4ed8' : '#374151', fontSize: 14 }}>{label}</div>
-        {sublabel ? <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{sublabel}</div> : null}
-      </div>
-    </div>
-  );
-}
-
-function BarraMeta({ atual, meta, cor }) {
-  return (
-    <div style={{ marginTop: 8, background: '#e2e8f0', borderRadius: 4, height: 8, position: 'relative' }}>
-      <div style={{ position: 'absolute', top: -4, left: `${Math.min(meta, 100)}%`, width: 2, height: 16, background: '#64748b', borderRadius: 1 }} />
-      <div style={{ width: `${Math.min(atual, 100)}%`, background: cor, borderRadius: 4, height: 8, transition: 'width 0.5s' }} />
-    </div>
-  );
-}
-
-function DiagnosticoFontes({ diagnostico = [] }) {
-  if (!diagnostico.length) return null;
-
-  return (
-    <section className="sim-card">
-      <h2>Diagnóstico da consulta</h2>
-      <p style={{ color: '#64748b', marginTop: -4 }}>
-        A tela tenta primeiro a base do módulo CT-e e, se não encontrar dados, usa fallback por competência e bases legadas/enxutas.
-      </p>
-      <div className="sim-analise-tabela-wrap">
-        <table className="sim-analise-tabela">
-          <thead>
-            <tr>
-              <th>Fonte</th>
-              <th>Filtro</th>
-              <th>Total</th>
-              <th>Calculados</th>
-              <th>Sem cálculo</th>
-              <th>Erro</th>
-            </tr>
-          </thead>
-          <tbody>
-            {diagnostico.map((item, index) => (
-              <tr key={`${item.fonte}-${item.filtro}-${index}`}>
-                <td>
-                  <strong>{item.label || item.tabela}</strong>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>{item.tabela}</div>
-                </td>
-                <td>{item.filtro}</td>
-                <td>{fmtN(item.total)}</td>
-                <td>{fmtN(item.calculados)}</td>
-                <td style={{ color: item.semCalculo > 0 ? '#dc2626' : '#94a3b8', fontWeight: item.semCalculo > 0 ? 700 : 400 }}>
-                  {fmtN(item.semCalculo)}
-                </td>
-                <td style={{ color: item.erro ? '#dc2626' : '#94a3b8' }}>{item.erro || '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function ResumoMensalAuditoria({ resumoMensal = [] }) {
-  if (!resumoMensal.length) return null;
-
-  return (
-    <section className="sim-card">
-      <h2>Resumo mensal salvo</h2>
-      <p style={{ color: '#64748b', marginTop: -4 }}>
-        Comparativo mês a mês carregado da tabela <code>auditoria_cte_resumo_mensal</code>.
-      </p>
-      <div className="sim-analise-tabela-wrap">
-        <table className="sim-analise-tabela">
-          <thead>
-            <tr>
-              <th>Competência</th>
-              <th>Total CTes</th>
-              <th>Calculados</th>
-              <th>Sem cálculo</th>
-              <th>Assertivos</th>
-              <th>Divergentes</th>
-              <th>% Cálculo</th>
-              <th>% Assertividade</th>
-              <th>Valor CT-e</th>
-              <th>Valor calculado</th>
-              <th>Divergência</th>
-            </tr>
-          </thead>
-          <tbody>
-            {resumoMensal.map((item) => (
-              <tr key={item.competencia}>
-                <td><strong>{item.competencia}</strong></td>
-                <td>{fmtN(item.total_ctes)}</td>
-                <td>{fmtN(item.calculados)}</td>
-                <td>{fmtN(item.sem_calculo)}</td>
-                <td>{fmtN(item.assertivos)}</td>
-                <td>{fmtN(item.divergentes)}</td>
-                <td>{fmtP(item.taxa_calculo)}</td>
-                <td>{fmtP(item.taxa_assertividade)}</td>
-                <td>{fmt(item.valor_total_cte)}</td>
-                <td>{fmt(item.valor_total_calculado)}</td>
-                <td>{fmt(item.valor_total_divergencia)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-export default function AuditoriaCtePage() {
-  const [competencia, setCompetencia] = useState('');
-  const [registros, setRegistros] = useState([]);
-  const [fonteAuditoria, setFonteAuditoria] = useState(null);
-  const [diagnostico, setDiagnostico] = useState([]);
-  const [avisos, setAvisos] = useState([]);
-  const [carregando, setCarregando] = useState(false);
-  const [processando, setProcessando] = useState(false);
-  const [progressoProcessamento, setProgressoProcessamento] = useState(null);
-  const [resumoMensal, setResumoMensal] = useState([]);
-  const [erro, setErro] = useState('');
-  const [sucesso, setSucesso] = useState('');
-
-  const [usarTabelas, setUsarTabelas] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem(TOGGLE_TABELAS_KEY) || 'false');
-    } catch {
-      return false;
+function pick(row = {}, keys = []) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return value;
     }
+  }
+  return '';
+}
+
+function competenciaParaDatas(competencia = '') {
+  if (!competencia || !/^\d{4}-\d{2}$/.test(competencia)) return null;
+
+  const [ano, mes] = competencia.split('-').map(Number);
+  const inicio = `${ano}-${String(mes).padStart(2, '0')}-01`;
+  const ultimoDia = new Date(ano, mes, 0).getDate();
+  const fim = `${ano}-${String(mes).padStart(2, '0')}-${ultimoDia}`;
+
+  return { inicio, fim };
+}
+
+function canalCategoria(value) {
+  const canal = normalizeText(value);
+  if (!canal) return '';
+  if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (canal.includes('REVERSA')) return 'REVERSA';
+  if (canal.includes('ATACADO') || canal === 'B2B' || canal.includes(' B2B')) return 'ATACADO';
+  if (canal.includes('B2C') || canal.includes('MARKETPLACE') || canal.includes('ECOMMERCE')) return 'B2C';
+  return canal;
+}
+
+function canalCompativel(canalTabela, canalCte) {
+  const tabela = canalCategoria(canalTabela);
+  const cte = canalCategoria(canalCte);
+
+  if (!cte) return true;
+  if (!tabela) return true;
+
+  return tabela === cte || tabela.includes(cte) || cte.includes(tabela);
+}
+
+function nomeCompativel(nomeTabela, nomeCte) {
+  const tabela = normalizeCompare(nomeTabela);
+  const cte = normalizeCompare(nomeCte);
+
+  if (!tabela || !cte) return false;
+
+  return tabela === cte
+    || (tabela.length >= 5 && cte.includes(tabela))
+    || (cte.length >= 5 && tabela.includes(cte));
+}
+
+function cidadeCompativel(cidadeTabela, cidadeCte) {
+  const tabela = normalizeCompare(cidadeTabela);
+  const cte = normalizeCompare(cidadeCte);
+
+  if (!cte) return true;
+  if (!tabela) return false;
+
+  return tabela === cte
+    || (tabela.length >= 5 && cte.includes(tabela))
+    || (cte.length >= 5 && tabela.includes(cte));
+}
+
+function getTaxaDestino(origem, ibgeDestino) {
+  const destino = onlyDigits(ibgeDestino).slice(0, 7);
+
+  return (origem?.taxasEspeciais || []).find((item) => (
+    onlyDigits(item.ibgeDestino).slice(0, 7) === destino
+  )) || {};
+}
+
+function getCotacaoPorRota(origem, nomeRota, peso) {
+  const rotaNorm = normalizeCompare(nomeRota);
+  const pesoFinal = toNumber(peso);
+
+  const cotacoes = (origem?.cotacoes || []).filter((item) => {
+    const rotaCotacao = normalizeCompare(item.rota);
+    const rotaOk = !rotaCotacao
+      || rotaCotacao === rotaNorm
+      || rotaCotacao.includes(rotaNorm)
+      || rotaNorm.includes(rotaCotacao);
+
+    if (!rotaOk) return false;
+
+    const pesoMin = toNumber(item.pesoMin ?? item.peso_min ?? 0);
+    const pesoMaxRaw = item.pesoMax ?? item.pesoLimite ?? item.peso_max ?? item.peso_limite;
+    const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined
+      ? Number.POSITIVE_INFINITY
+      : toNumber(pesoMaxRaw);
+
+    return pesoFinal >= pesoMin && pesoFinal <= (pesoMax || Number.POSITIVE_INFINITY);
   });
 
-  const [meta, setMeta] = useState(carregarMetaAuditoria);
-  const [editandoMeta, setEditandoMeta] = useState(false);
-  const [metaTemp, setMetaTemp] = useState(meta);
+  if (!cotacoes.length) return null;
 
-  const metricas = useMemo(() => calcularMetricasAuditoria(registros), [registros]);
-  const porTransportadora = useMemo(() => agruparPorTransportadora(registros), [registros]);
-  const ondeAtacar = useMemo(() => calcularOndeAtacar(porTransportadora, meta), [porTransportadora, meta]);
-  const sugestaoMeta = useMemo(() => sugerirNovaMeta(metricas), [metricas]);
-  const avaliacaoMeta = useMemo(() => avaliarMetaAuditoria(metricas, meta), [metricas, meta]);
+  return cotacoes.sort((a, b) => (
+    toNumber(a.pesoMax ?? a.pesoLimite ?? a.peso_max ?? a.peso_limite)
+    - toNumber(b.pesoMax ?? b.pesoLimite ?? b.peso_max ?? b.peso_limite)
+  ))[0];
+}
 
-  const semaforoCalculo = semaforo(metricas.taxaCalculo, meta.taxaCalculoMeta);
-  const semaforoAssert = semaforo(metricas.taxaAssertividade, meta.taxaAssertividadeMeta);
-  const estiloAvaliacaoMeta = metaStatusStyle(avaliacaoMeta.status);
-  const temDados = registros.length > 0;
+function getTipoCalculo(origem = {}, cotacao = {}) {
+  const tipoCotacao = normalizeText(cotacao.tipoCalculo || cotacao.tipo_calculo);
+  if (tipoCotacao.includes('FAIXA')) return 'FAIXA_DE_PESO';
+  if (tipoCotacao.includes('PERCENT')) return 'PERCENTUAL';
 
-  async function carregar() {
-    if (!competencia) {
-      setErro('Informe a competência (mês) antes de carregar. A base é grande e requer um filtro de período para não dar timeout.');
-      return;
-    }
+  const tipoOrigem = normalizeText(origem.generalidades?.tipoCalculo || origem.generalidades?.tipo_calculo || 'PERCENTUAL');
+  if (tipoOrigem.includes('FAIXA')) return 'FAIXA_DE_PESO';
 
-    setCarregando(true);
-    setErro('');
-    setSucesso('');
-    setAvisos([]);
-    setDiagnostico([]);
-    setFonteAuditoria(null);
-    setProgressoProcessamento(null);
+  return 'PERCENTUAL';
+}
 
-    try {
-      const resposta = await carregarDadosAuditoria({ competencia });
-      const dados = resposta?.registros || [];
-      setRegistros(dados);
-      setFonteAuditoria(resposta?.fonte || null);
-      setDiagnostico(resposta?.diagnostico || []);
-      setAvisos(resposta?.avisos || []);
+function normalizarTransportadoras(transportadoras = []) {
+  return (transportadoras || []).map((transportadora) => ({
+    ...transportadora,
+    __nomeNorm: normalizeCompare(transportadora.nome),
+    origens: (transportadora.origens || []).map((origem) => ({
+      ...origem,
+      __cidadeNorm: normalizeCompare(origem.cidade),
+      rotas: origem.rotas || [],
+      cotacoes: origem.cotacoes || [],
+      taxasEspeciais: origem.taxasEspeciais || [],
+    })),
+  }));
+}
 
-      if (!dados.length) {
-        setSucesso('Nenhum CTe encontrado para esta competência nas bases verificadas. Veja o diagnóstico abaixo para identificar se o problema é data, competência ou tabela vazia.');
+function localizarTransportadora(transportadoras = [], nomeCte = '') {
+  const nomeNorm = normalizeCompare(nomeCte);
+  if (!nomeNorm) return null;
+
+  return transportadoras.find((item) => item.__nomeNorm === nomeNorm)
+    || transportadoras.find((item) => nomeCompativel(item.nome, nomeCte))
+    || null;
+}
+
+function localizarOrigem(transportadora, cte = {}) {
+  const ibgeOrigem = onlyDigits(pick(cte, ['ibge_corrigido_origem', 'ibge_origem'])).slice(0, 7);
+  const cidadeOrigem = pick(cte, ['cidade_origem', 'origem']);
+  const canal = pick(cte, ['canal', 'canal_original']);
+
+  const candidatas = (transportadora?.origens || []).filter((origem) => canalCompativel(origem.canal, canal));
+
+  if (ibgeOrigem) {
+    const porIbge = candidatas.find((origem) => (
+      (origem.rotas || []).some((rota) => onlyDigits(rota.ibgeOrigem).slice(0, 7) === ibgeOrigem)
+    ));
+    if (porIbge) return porIbge;
+  }
+
+  return candidatas.find((origem) => cidadeCompativel(origem.cidade, cidadeOrigem))
+    || candidatas[0]
+    || null;
+}
+
+function localizarRota(origem, cte = {}) {
+  const ibgeDestino = onlyDigits(pick(cte, ['ibge_corrigido_destino', 'ibge_destino'])).slice(0, 7);
+  const ibgeOrigem = onlyDigits(pick(cte, ['ibge_corrigido_origem', 'ibge_origem'])).slice(0, 7);
+
+  if (!ibgeDestino) return null;
+
+  const rotasDestino = (origem?.rotas || []).filter((rota) => (
+    onlyDigits(rota.ibgeDestino).slice(0, 7) === ibgeDestino
+  ));
+
+  if (!rotasDestino.length) return null;
+
+  if (ibgeOrigem) {
+    return rotasDestino.find((rota) => (
+      !rota.ibgeOrigem || onlyDigits(rota.ibgeOrigem).slice(0, 7) === ibgeOrigem
+    )) || rotasDestino[0];
+  }
+
+  return rotasDestino[0];
+}
+
+function montarResultadoBase(cte, status, motivo, extras = {}) {
+  const valorCte = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
+  const valorNf = toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota']));
+
+  return {
+    competencia: String(pick(cte, ['competencia', 'mes_competencia']) || '').slice(0, 7),
+    data_emissao: pick(cte, ['data_emissao', 'emissao', 'dataEmissao']) || null,
+    chave_cte: pick(cte, ['chave_cte', 'chaveCte', 'chave']) || null,
+    numero_cte: pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || null,
+    transportadora: pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']) || null,
+    cnpj_transportadora: pick(cte, ['cnpj_transportadora', 'cnpjTransportadora']) || null,
+    tomador_servico: pick(cte, ['tomador_servico', 'tomadorServico', 'tomador']) || null,
+    cidade_origem: pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']) || null,
+    uf_origem: String(pick(cte, ['uf_origem', 'ufOrigem']) || '').toUpperCase() || null,
+    ibge_origem: onlyDigits(pick(cte, ['ibge_corrigido_origem', 'ibge_origem'])).slice(0, 7) || null,
+    cidade_destino: pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']) || null,
+    uf_destino: String(pick(cte, ['uf_destino', 'ufDestino']) || '').toUpperCase() || null,
+    ibge_destino: onlyDigits(pick(cte, ['ibge_corrigido_destino', 'ibge_destino'])).slice(0, 7) || null,
+    canal: pick(cte, ['canal', 'canal_original']) || null,
+    peso: toNumber(pick(cte, ['peso', 'peso_final', 'pesoFinal'])),
+    peso_declarado: toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
+    peso_cubado: toNumber(pick(cte, ['peso_cubado', 'pesoCubado'])),
+    cubagem: toNumber(pick(cte, ['cubagem', 'cubagem_total', 'cubagemTotal'])),
+    qtd_volumes: toNumber(pick(cte, ['qtd_volumes', 'qtdVolumes', 'volumes'])),
+    valor_nf: valorNf,
+    valor_cte: valorCte,
+    valor_calculado: 0,
+    diferenca: 0,
+    diferenca_abs: 0,
+    percentual_diferenca: 0,
+    status_calculo: status,
+    motivo_sem_calculo: motivo,
+    transportadora_tabela: extras.transportadora_tabela || null,
+    tipo_calculo: extras.tipo_calculo || null,
+    detalhes_calculo: extras.detalhes_calculo || null,
+  };
+}
+
+function processarCte(cte, transportadoras = []) {
+  const transportadoraNome = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
+  const transportadora = localizarTransportadora(transportadoras, transportadoraNome);
+
+  if (!transportadora) {
+    return montarResultadoBase(cte, 'SEM_TABELA', 'Transportadora não encontrada no cadastro de tabelas.');
+  }
+
+  const origem = localizarOrigem(transportadora, cte);
+  if (!origem) {
+    return montarResultadoBase(cte, 'SEM_ORIGEM', 'Origem/canal não encontrados para a transportadora.', {
+      transportadora_tabela: transportadora.nome,
+    });
+  }
+
+  const rota = localizarRota(origem, cte);
+  if (!rota) {
+    return montarResultadoBase(cte, 'SEM_ROTA', 'Rota de destino não encontrada para a origem da transportadora.', {
+      transportadora_tabela: transportadora.nome,
+    });
+  }
+
+  const pesoDeclarado = toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso']));
+  const pesoCubado = toNumber(pick(cte, ['peso_cubado', 'pesoCubado']));
+  const peso = Math.max(pesoDeclarado, pesoCubado, toNumber(pick(cte, ['peso'])));
+  const valorNf = toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota']));
+  const cotacao = getCotacaoPorRota(origem, rota.nomeRota, peso);
+
+  if (!cotacao) {
+    return montarResultadoBase(cte, 'SEM_FAIXA', 'Faixa/cotação não encontrada para a rota e peso do CT-e.', {
+      transportadora_tabela: transportadora.nome,
+    });
+  }
+
+  const tipoCalculo = getTipoCalculo(origem, cotacao);
+  const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
+  const generalidades = origem.generalidades || {};
+
+  try {
+    const calculo = tipoCalculo === 'FAIXA_DE_PESO'
+      ? calcularFreteFaixaPeso({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf })
+      : calcularFretePercentual({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf });
+
+    const base = montarResultadoBase(cte, 'CALCULADO', '', {
+      transportadora_tabela: transportadora.nome,
+      tipo_calculo: tipoCalculo,
+      detalhes_calculo: {
+        origem_id: origem.id || null,
+        origem_cidade: origem.cidade || null,
+        rota_id: rota.id || null,
+        rota_nome: rota.nomeRota || null,
+        cotacao_id: cotacao.id || null,
+        peso_considerado: peso,
+        valor_base: calculo.valorBase,
+        subtotal: calculo.subtotal,
+        icms: calculo.icms,
+        taxas: calculo.taxas,
+        componentes_base: calculo.componentesBase,
+        componente_base: calculo.componenteBase,
+      },
+    });
+
+    const valorCalculado = toNumber(calculo.total);
+    const diferenca = base.valor_cte - valorCalculado;
+    const diferencaAbs = Math.abs(diferenca);
+    const percentualDiferenca = valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0;
+
+    return {
+      ...base,
+      valor_calculado: valorCalculado,
+      diferenca,
+      diferenca_abs: diferencaAbs,
+      percentual_diferenca: percentualDiferenca,
+      motivo_sem_calculo: '',
+    };
+  } catch (error) {
+    return montarResultadoBase(cte, 'ERRO_CALCULO', error.message || 'Erro ao calcular frete.', {
+      transportadora_tabela: transportadora.nome,
+      tipo_calculo: tipoCalculo,
+    });
+  }
+}
+
+async function buscarCtesMesBruto({ supabase, competencia, onProgress }) {
+  const datas = competenciaParaDatas(competencia);
+  if (!datas) throw new Error('Competência inválida. Use o formato YYYY-MM.');
+
+  const carregarPorFiltro = async (modo) => {
+    const acumulado = [];
+    let from = 0;
+
+    while (true) {
+      let query = supabase
+        .from(TABELA_CTES)
+        .select('*')
+        .order('id', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (modo === 'data') {
+        query = query.gte('data_emissao', datas.inicio).lte('data_emissao', datas.fim);
       } else {
-        const fonte = resposta?.fonte?.label || resposta?.fonte?.tabela || 'Supabase';
-        setSucesso(`${dados.length.toLocaleString('pt-BR')} CTe(s) carregados da fonte ${fonte}.`);
+        query = query.eq('competencia', competencia);
       }
-    } catch (e) {
-      setRegistros([]);
-      setErro(e.message || 'Erro ao carregar dados do Supabase.');
-    } finally {
-      setCarregando(false);
+
+      const { data, error } = await query;
+      if (error) throw new Error(`Erro ao buscar CT-es por ${modo}: ${error.message}`);
+
+      const lote = data || [];
+      acumulado.push(...lote);
+      onProgress?.({ etapa: `carregando_ctes_${modo}`, carregados: acumulado.length, total: null });
+
+      if (lote.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+
+    return acumulado;
+  };
+
+  const porData = await carregarPorFiltro('data');
+  if (porData.length > 0) return porData;
+
+  return carregarPorFiltro('competencia');
+}
+
+function calcularResumo(registros = [], competencia = '') {
+  const total = registros.length;
+  const calculados = registros.filter((row) => toNumber(row.valor_calculado) > 0).length;
+  const semCalculo = total - calculados;
+  const divergentes = registros.filter((row) => (
+    toNumber(row.valor_calculado) > 0 && Math.abs(toNumber(row.diferenca)) > LIMITE_DIVERGENCIA_ASSERTIVO
+  )).length;
+  const assertivos = calculados - divergentes;
+  const valorTotalCte = registros.reduce((acc, row) => acc + toNumber(row.valor_cte), 0);
+  const valorTotalCalculado = registros.reduce((acc, row) => acc + toNumber(row.valor_calculado), 0);
+  const valorTotalDivergencia = registros.reduce((acc, row) => acc + Math.abs(toNumber(row.diferenca)), 0);
+  const valorExcessivo = registros.reduce((acc, row) => acc + Math.max(toNumber(row.diferenca), 0), 0);
+  const valorInsuficiente = registros.reduce((acc, row) => acc + Math.abs(Math.min(toNumber(row.diferenca), 0)), 0);
+
+  return {
+    competencia,
+    total_ctes: total,
+    calculados,
+    sem_calculo: semCalculo,
+    assertivos,
+    divergentes,
+    valor_total_cte: valorTotalCte,
+    valor_total_calculado: valorTotalCalculado,
+    valor_total_divergencia: valorTotalDivergencia,
+    valor_excessivo: valorExcessivo,
+    valor_insuficiente: valorInsuficiente,
+    taxa_calculo: total > 0 ? (calculados / total) * 100 : 0,
+    taxa_assertividade: calculados > 0 ? (assertivos / calculados) * 100 : 0,
+    taxa_divergencia: calculados > 0 ? (divergentes / calculados) * 100 : 0,
+    processado_em: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress }) {
+  const { error: deleteError } = await supabase
+    .from(TABELA_RESULTADOS)
+    .delete()
+    .eq('competencia', competencia);
+
+  if (deleteError) {
+    throw new Error(`Erro ao limpar resultado anterior: ${deleteError.message}`);
+  }
+
+  for (let index = 0; index < registros.length; index += INSERT_CHUNK) {
+    const chunk = registros.slice(index, index + INSERT_CHUNK);
+    const { error } = await supabase.from(TABELA_RESULTADOS).insert(chunk);
+
+    if (error) {
+      throw new Error(`Erro ao salvar resultados da auditoria: ${error.message}`);
+    }
+
+    onProgress?.({
+      etapa: 'salvando_resultados',
+      carregados: Math.min(index + INSERT_CHUNK, registros.length),
+      total: registros.length,
+    });
+  }
+
+  const { error: resumoError } = await supabase
+    .from(TABELA_RESUMO)
+    .upsert(resumo, { onConflict: 'competencia' });
+
+  if (resumoError) {
+    throw new Error(`Erro ao salvar resumo mensal: ${resumoError.message}`);
+  }
+}
+
+export async function carregarResultadosAuditoriaMes({ competencia, onProgress } = {}) {
+  if (!competencia) throw new Error('Informe a competência para carregar o resultado salvo.');
+
+  const supabase = ensureSupabase();
+  const acumulado = [];
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from(TABELA_RESULTADOS)
+      .select('*')
+      .eq('competencia', competencia)
+      .order('data_emissao', { ascending: true, nullsFirst: false })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) throw new Error(`Erro ao carregar auditoria salva: ${error.message}`);
+
+    const lote = data || [];
+    acumulado.push(...lote);
+    onProgress?.({ etapa: 'carregando_resultado_salvo', carregados: acumulado.length, total: null });
+
+    if (lote.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return acumulado;
+}
+
+export async function carregarResumoAuditoriaMensal() {
+  const supabase = ensureSupabase();
+
+  const { data, error } = await supabase
+    .from(TABELA_RESUMO)
+    .select('*')
+    .order('competencia', { ascending: true });
+
+  if (error) throw new Error(`Erro ao carregar resumo mensal: ${error.message}`);
+
+  return data || [];
+}
+
+export async function processarESalvarAuditoriaMes({ competencia, onProgress } = {}) {
+  if (!competencia) throw new Error('Informe a competência para processar a auditoria.');
+
+  const supabase = ensureSupabase();
+
+  onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
+  const transportadoras = normalizarTransportadoras(await carregarBaseCompletaDb());
+
+  if (!transportadoras.length) {
+    throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para processar a auditoria.');
+  }
+
+  const ctes = await buscarCtesMesBruto({ supabase, competencia, onProgress });
+
+  if (!ctes.length) {
+    throw new Error(`Nenhum CT-e encontrado para a competência ${competencia}.`);
+  }
+
+  const registros = [];
+
+  for (let index = 0; index < ctes.length; index += 1) {
+    registros.push(processarCte(ctes[index], transportadoras));
+
+    if (index % 500 === 0 || index === ctes.length - 1) {
+      onProgress?.({ etapa: 'processando_ctes', carregados: index + 1, total: ctes.length });
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 
-  async function carregarResultadoSalvo() {
-    if (!competencia) {
-      setErro('Informe a competência antes de carregar o resultado salvo.');
-      return;
-    }
+  const resumo = calcularResumo(registros, competencia);
+  await salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress });
 
-    setCarregando(true);
-    setErro('');
-    setSucesso('');
-    setAvisos([]);
-    setDiagnostico([]);
-    setFonteAuditoria(null);
-    setProgressoProcessamento(null);
+  onProgress?.({ etapa: 'concluido', carregados: registros.length, total: registros.length });
 
-    try {
-      const dados = await carregarResultadosAuditoriaMes({
-        competencia,
-        onProgress: setProgressoProcessamento,
-      });
-
-      setRegistros(dados || []);
-      setFonteAuditoria({
-        id: 'auditoria_cte_resultados',
-        tabela: 'auditoria_cte_resultados',
-        label: 'Auditoria processada / auditoria_cte_resultados',
-      });
-
-      if (!dados.length) {
-        setSucesso('Nenhum resultado processado salvo para esta competência. Clique em Processar e salvar auditoria do mês.');
-      } else {
-        setSucesso(`${dados.length.toLocaleString('pt-BR')} resultado(s) processado(s) carregados da auditoria salva.`);
-      }
-    } catch (error) {
-      setRegistros([]);
-      setErro(error.message || 'Erro ao carregar resultado salvo.');
-    } finally {
-      setCarregando(false);
-    }
-  }
-
-  async function processarSalvarMes() {
-    if (!competencia) {
-      setErro('Informe a competência antes de processar a auditoria.');
-      return;
-    }
-
-    const confirmar = window.confirm(
-      `Processar a auditoria de ${competencia}? Se já existir resultado salvo para este mês, ele será substituído.`
-    );
-
-    if (!confirmar) return;
-
-    setProcessando(true);
-    setErro('');
-    setSucesso('');
-    setAvisos([]);
-    setDiagnostico([]);
-    setProgressoProcessamento(null);
-
-    try {
-      const resposta = await processarESalvarAuditoriaMes({
-        competencia,
-        onProgress: setProgressoProcessamento,
-      });
-
-      const dados = resposta?.registros || [];
-      setRegistros(dados);
-      setFonteAuditoria(resposta?.fonte || {
-        id: 'auditoria_cte_resultados',
-        tabela: 'auditoria_cte_resultados',
-        label: 'Auditoria processada / auditoria_cte_resultados',
-      });
-
-      const resumo = await carregarResumoAuditoriaMensal();
-      setResumoMensal(resumo || []);
-
-      setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) processados e salvos para ${competencia}.`);
-    } catch (error) {
-      setErro(error.message || 'Erro ao processar auditoria do mês.');
-    } finally {
-      setProcessando(false);
-    }
-  }
-
-  async function carregarResumoMensal() {
-    setCarregando(true);
-    setErro('');
-    setSucesso('');
-
-    try {
-      const resumo = await carregarResumoAuditoriaMensal();
-      setResumoMensal(resumo || []);
-      setSucesso(`${(resumo || []).length.toLocaleString('pt-BR')} mês(es) encontrados no resumo mensal.`);
-    } catch (error) {
-      setErro(error.message || 'Erro ao carregar resumo mensal.');
-    } finally {
-      setCarregando(false);
-    }
-  }
-
-  function limpar() {
-    setCompetencia('');
-    setRegistros([]);
-    setFonteAuditoria(null);
-    setDiagnostico([]);
-    setAvisos([]);
-    setResumoMensal([]);
-    setProgressoProcessamento(null);
-    setErro('');
-    setSucesso('');
-  }
-
-  function toggleUsarTabelas() {
-    const novo = !usarTabelas;
-    setUsarTabelas(novo);
-    localStorage.setItem(TOGGLE_TABELAS_KEY, JSON.stringify(novo));
-  }
-
-  function salvarMeta() {
-    salvarMetaAuditoria(metaTemp);
-    setMeta(metaTemp);
-    setEditandoMeta(false);
-  }
-
-  function usarSugestaoMeta() {
-    setMetaTemp({ ...sugestaoMeta });
-  }
-
-  function exportarExcel() {
-    exportarAuditoriaExcel(porTransportadora, metricas, competencia, diagnostico);
-  }
-
-  return (
-    <div className="simulador-shell">
-      <div className="simulador-header compact-top">
-        <div className="simulador-subtitulo">Central Fretes • Auditoria</div>
-        <h1>Auditoria de CTes</h1>
-        <p>
-          Cobertura de cálculo, assertividade e priorização de divergências. Fonte principal: <code>realizado_local_ctes</code>.
-          O processamento mensal grava o resultado em <code>auditoria_cte_resultados</code> e o resumo em <code>auditoria_cte_resumo_mensal</code>.
-        </p>
-      </div>
-
-      {erro ? <div className="sim-alert error">{erro}</div> : null}
-      {sucesso ? <div className="sim-alert success">{sucesso}</div> : null}
-      {avisos.length > 0 ? (
-        <div className="sim-alert info">
-          <strong>Avisos da consulta:</strong> {avisos.join(' | ')}
-        </div>
-      ) : null}
-
-      <section className="sim-card">
-        <div className="sim-alert info" style={{ marginBottom: 14 }}>
-          <strong>Fluxo recomendado.</strong> Primeiro carregue os CT-es para conferir a base. Depois processe e salve a auditoria do mês. Nos próximos acessos, use o resultado salvo.
-        </div>
-
-        <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
-          <label>
-            Competência (mês) <span style={{ color: '#dc2626' }}>*</span>
-            <input
-              type="month"
-              value={competencia}
-              onChange={(e) => setCompetencia(e.target.value)}
-            />
-          </label>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !competencia}>
-              {carregando ? 'Carregando...' : 'Carregar CT-es do mês'}
-            </button>
-            <button className="sim-tab" type="button" onClick={carregarResultadoSalvo} disabled={carregando || processando || !competencia}>
-              Carregar resultado salvo
-            </button>
-            <button className="primary" type="button" onClick={processarSalvarMes} disabled={carregando || processando || !competencia}>
-              {processando ? 'Processando...' : 'Processar e salvar auditoria do mês'}
-            </button>
-            <button className="sim-tab" type="button" onClick={carregarResumoMensal} disabled={carregando || processando}>
-              Carregar resumo mensal
-            </button>
-            <button className="sim-tab" type="button" onClick={limpar} disabled={carregando || processando}>
-              Limpar
-            </button>
-          </div>
-        </div>
-
-        {progressoProcessamento ? (
-          <div className="sim-alert info" style={{ marginTop: 12 }}>
-            <strong>Processamento:</strong> {progressoProcessamento.etapa}
-            {' · '}
-            {Number(progressoProcessamento.carregados || 0).toLocaleString('pt-BR')}
-            {progressoProcessamento.total
-              ? ` de ${Number(progressoProcessamento.total).toLocaleString('pt-BR')}`
-              : ''}
-          </div>
-        ) : null}
-
-        {fonteAuditoria ? (
-          <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', fontSize: 13 }}>
-            Fonte carregada: <strong>{fonteAuditoria.label || fonteAuditoria.tabela}</strong>
-          </div>
-        ) : null}
-
-        <div style={{ marginTop: 16 }}>
-          <ToggleSwitch
-            ativo={usarTabelas}
-            onChange={toggleUsarTabelas}
-            label="Resimular com tabelas cadastradas"
-            sublabel={
-              usarTabelas
-                ? `Ativo — ${fmtN(metricas.totalSemCalculo)} CTe(s) sem cálculo elegíveis para análise de cobertura`
-                : 'Desligado — o processamento mensal já usa as tabelas cadastradas para calcular a auditoria.'
-            }
-          />
-        </div>
-      </section>
-
-      {temDados ? (
-        <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
-          <div className="summary-card">
-            <span>Total CTes</span>
-            <strong>{fmtN(metricas.total)}</strong>
-            <small>base filtrada</small>
-          </div>
-          <div className="summary-card" style={{ borderLeft: '3px solid #3b82f6' }}>
-            <span>Com cálculo</span>
-            <strong>{fmtN(metricas.totalCalculados)}</strong>
-            <small style={{ color: '#3b82f6', fontWeight: 700 }}>{fmtP(metricas.taxaCalculo)} do total</small>
-          </div>
-          <div className="summary-card" style={{ borderLeft: '3px solid #94a3b8' }}>
-            <span>Sem cálculo</span>
-            <strong>{fmtN(metricas.totalSemCalculo)}</strong>
-            <small style={{ color: metricas.totalSemCalculo > 0 ? '#dc2626' : '#94a3b8', fontWeight: 700 }}>
-              {fmtP(100 - metricas.taxaCalculo)} do total
-            </small>
-          </div>
-          <div className="summary-card" style={{ borderLeft: '3px solid #16a34a' }}>
-            <span>Assertivos</span>
-            <strong>{fmtN(metricas.totalAssertivos)}</strong>
-            <small style={{ color: '#16a34a', fontWeight: 700 }}>{fmtP(metricas.taxaAssertividade)} dos calculados</small>
-          </div>
-          <div className="summary-card" style={{ borderLeft: '3px solid #f59e0b' }}>
-            <span>Com divergência</span>
-            <strong>{fmtN(metricas.totalDivergentes)}</strong>
-            <small style={{ color: metricas.totalDivergentes > 0 ? '#f59e0b' : '#94a3b8', fontWeight: 700 }}>
-              {fmtP(metricas.taxaDivergencia)} dos calculados
-            </small>
-          </div>
-          <div className="summary-card" style={{ borderLeft: '3px solid #dc2626' }}>
-            <span>Valor divergência</span>
-            <strong style={{ fontSize: 15 }}>{fmt(metricas.valorTotalDivergencia)}</strong>
-            <small style={{ color: '#dc2626' }}>excessivo: {fmt(metricas.valorExcessivo)}</small>
-          </div>
-        </div>
-      ) : null}
-
-      {temDados ? (
-        <section className="sim-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0 }}>📊 Status da Meta da Área</h2>
-            {!editandoMeta ? (
-              <button className="sim-tab" type="button" onClick={() => { setMetaTemp({ ...meta }); setEditandoMeta(true); }}>
-                Editar meta
-              </button>
-            ) : null}
-          </div>
-
-          <div style={{ padding: 14, borderRadius: 10, background: estiloAvaliacaoMeta.bg, border: `1px solid ${estiloAvaliacaoMeta.border}`, color: estiloAvaliacaoMeta.color, marginBottom: 16 }}>
-            <strong>{avaliacaoMeta.titulo}</strong>
-            <div style={{ fontSize: 13, marginTop: 4 }}>{avaliacaoMeta.mensagem}</div>
-          </div>
-
-          {!editandoMeta ? (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
-              <div style={{ padding: 16, borderRadius: 12, background: semaforoCalculo.bg }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 700, fontSize: 14 }}>Taxa de cálculo</span>
-                  <span style={{ padding: '3px 10px', borderRadius: 999, background: semaforoCalculo.cor, color: '#fff', fontSize: 12, fontWeight: 700 }}>
-                    {semaforoCalculo.label}
-                  </span>
-                </div>
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-                  <span style={{ fontSize: 36, fontWeight: 900, color: semaforoCalculo.cor, lineHeight: 1 }}>
-                    {fmtP(metricas.taxaCalculo)}
-                  </span>
-                  <span style={{ color: '#64748b', fontSize: 13, marginBottom: 4 }}>meta: {fmtP(meta.taxaCalculoMeta)}</span>
-                </div>
-                <BarraMeta atual={metricas.taxaCalculo} meta={meta.taxaCalculoMeta} cor={semaforoCalculo.cor} />
-                <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>
-                  {fmtN(metricas.totalCalculados)} de {fmtN(metricas.total)} CTes calculados
-                </div>
-              </div>
-
-              <div style={{ padding: 16, borderRadius: 12, background: semaforoAssert.bg }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 700, fontSize: 14 }}>Assertividade</span>
-                  <span style={{ padding: '3px 10px', borderRadius: 999, background: semaforoAssert.cor, color: '#fff', fontSize: 12, fontWeight: 700 }}>
-                    {semaforoAssert.label}
-                  </span>
-                </div>
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-                  <span style={{ fontSize: 36, fontWeight: 900, color: semaforoAssert.cor, lineHeight: 1 }}>
-                    {metricas.totalCalculados > 0 ? fmtP(metricas.taxaAssertividade) : '—'}
-                  </span>
-                  <span style={{ color: '#64748b', fontSize: 13, marginBottom: 4 }}>meta: {fmtP(meta.taxaAssertividadeMeta)}</span>
-                </div>
-                <BarraMeta atual={metricas.taxaAssertividade} meta={meta.taxaAssertividadeMeta} cor={semaforoAssert.cor} />
-                <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>
-                  {fmtN(metricas.totalAssertivos)} assertivos · {fmtN(metricas.totalDivergentes)} divergentes
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {editandoMeta ? (
-            <div>
-              <div className="sim-alert info" style={{ marginBottom: 14 }}>
-                <strong>Meta configurada agora:</strong> {fmtP(meta.taxaCalculoMeta, 0)} dos CTes com cálculo e {fmtP(meta.taxaAssertividadeMeta, 0)} de assertividade.<br />
-                <strong>Recomendação:</strong> evitar meta de 100% de assertividade como régua principal. Ela pode virar meta injusta por arredondamento, imposto, generalidade e diferença de tabela.
-              </div>
-              <div className="sim-form-grid sim-grid-3" style={{ marginBottom: 14 }}>
-                <label>
-                  Meta taxa de cálculo (%)
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={metaTemp.taxaCalculoMeta}
-                    onChange={(e) => setMetaTemp((p) => ({ ...p, taxaCalculoMeta: Number(e.target.value) }))}
-                  />
-                </label>
-                <label>
-                  Meta assertividade (%)
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.5"
-                    value={metaTemp.taxaAssertividadeMeta}
-                    onChange={(e) => setMetaTemp((p) => ({ ...p, taxaAssertividadeMeta: Number(e.target.value) }))}
-                  />
-                </label>
-                <label>
-                  Descrição da meta
-                  <input
-                    value={metaTemp.descricao}
-                    placeholder="Ex: 95% calculados com 98% de assertividade"
-                    onChange={(e) => setMetaTemp((p) => ({ ...p, descricao: e.target.value }))}
-                  />
-                </label>
-              </div>
-              {metricas.total > 0 ? (
-                <div style={{ padding: '10px 14px', borderRadius: 8, background: '#f0fdf4', border: '1px solid #86efac', marginBottom: 14 }}>
-                  <span style={{ fontSize: 13, color: '#15803d' }}>
-                    💡 <strong>Sugestão baseada nos dados carregados:</strong> cálculo {fmtP(sugestaoMeta.taxaCalculoMeta, 0)}, assertividade {fmtP(sugestaoMeta.taxaAssertividadeMeta, 0)}
-                  </span>
-                  <button className="sim-tab" type="button" onClick={usarSugestaoMeta} style={{ marginLeft: 12, padding: '3px 10px', fontSize: 12 }}>
-                    Usar sugestão
-                  </button>
-                </div>
-              ) : null}
-              <div className="sim-actions">
-                <button className="primary" type="button" onClick={salvarMeta}>Salvar meta</button>
-                <button className="sim-tab" type="button" onClick={() => { setMetaTemp({ ...meta }); setEditandoMeta(false); }}>Cancelar</button>
-              </div>
-            </div>
-          ) : null}
-
-          {meta.descricao && !editandoMeta ? (
-            <div style={{ marginTop: 12, color: '#64748b', fontSize: 13 }}>📌 {meta.descricao}</div>
-          ) : null}
-        </section>
-      ) : null}
-
-      {temDados && ondeAtacar.length > 0 ? (
-        <section className="sim-card">
-          <h2>🎯 Onde Atacar</h2>
-          <p style={{ color: '#64748b', marginBottom: 16 }}>Priorizado por impacto financeiro × volume. Ação sugerida automática por situação detectada.</p>
-          <div className="sim-analise-tabela-wrap">
-            <table className="sim-analise-tabela">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Transportadora</th>
-                  <th>Severidade</th>
-                  <th>Sem cálculo</th>
-                  <th>Divergentes</th>
-                  <th>Assertividade</th>
-                  <th>Valor divergência</th>
-                  <th>Cobrança excessiva</th>
-                  <th>Ação sugerida</th>
-                  {usarTabelas ? <th>Elegíveis resimular</th> : null}
-                </tr>
-              </thead>
-              <tbody>
-                {ondeAtacar.map((it, i) => (
-                  <tr key={it.transportadora}>
-                    <td style={{ color: '#94a3b8', fontSize: 12 }}>{i + 1}</td>
-                    <td><strong>{it.transportadora}</strong><div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtN(it.total)} CTes</div></td>
-                    <td><BadgeSeveridade severidade={it.severidade} /></td>
-                    <td>{it.semCalculo > 0 ? <span style={{ color: '#dc2626', fontWeight: 700 }}>{fmtN(it.semCalculo)}</span> : <span style={{ color: '#94a3b8' }}>—</span>}</td>
-                    <td>{it.divergentes > 0 ? <span style={{ color: '#f59e0b', fontWeight: 700 }}>{fmtN(it.divergentes)}</span> : <span style={{ color: '#94a3b8' }}>—</span>}</td>
-                    <td>
-                      <span style={{ fontWeight: 700, color: it.calculados === 0 ? '#94a3b8' : it.taxaAssertividade >= meta.taxaAssertividadeMeta ? '#16a34a' : it.taxaAssertividade >= 80 ? '#d97706' : '#dc2626' }}>
-                        {it.calculados > 0 ? fmtP(it.taxaAssertividade) : '—'}
-                      </span>
-                    </td>
-                    <td style={{ color: it.valorDivergencia > 0 ? '#dc2626' : '#94a3b8', fontWeight: it.valorDivergencia > 0 ? 700 : 400 }}>
-                      {it.valorDivergencia > 0 ? fmt(it.valorDivergencia) : '—'}
-                    </td>
-                    <td style={{ color: it.valorExcessivo > 0 ? '#dc2626' : '#94a3b8' }}>
-                      {it.valorExcessivo > 0 ? fmt(it.valorExcessivo) : '—'}
-                    </td>
-                    <td>
-                      <span style={{
-                        padding: '3px 8px',
-                        borderRadius: 6,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        background: it.acaoSugerida.includes('Cadastrar') ? '#fee2e2' : it.acaoSugerida.includes('Revisar') || it.acaoSugerida.includes('Ampliar') ? '#fef3c7' : '#f0fdf4',
-                        color: it.acaoSugerida.includes('Cadastrar') ? '#dc2626' : it.acaoSugerida.includes('Revisar') || it.acaoSugerida.includes('Ampliar') ? '#b45309' : '#16a34a',
-                      }}>
-                        {it.acaoSugerida}
-                      </span>
-                    </td>
-                    {usarTabelas ? (
-                      <td><span style={{ padding: '2px 7px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: '#eff6ff', color: '#1d4ed8' }}>{fmtN(it.semCalculo)} CTes</span></td>
-                    ) : null}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
-
-      {temDados ? (
-        <section className="sim-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0 }}>Por transportadora</h2>
-            <button className="sim-tab" type="button" onClick={exportarExcel}>
-              Exportar Excel
-            </button>
-          </div>
-          <div className="sim-analise-tabela-wrap">
-            <table className="sim-analise-tabela">
-              <thead>
-                <tr>
-                  <th>Transportadora</th>
-                  <th>Total</th>
-                  <th>Calculados</th>
-                  <th>Sem cálculo</th>
-                  <th>Assertivos</th>
-                  <th>Divergentes</th>
-                  <th>% Cálculo</th>
-                  <th>% Assertividade</th>
-                  <th>Valor CTe</th>
-                  <th>Divergência</th>
-                  <th>Excessivo</th>
-                  <th>Insuficiente</th>
-                </tr>
-              </thead>
-              <tbody>
-                {porTransportadora.slice(0, 100).map((it) => (
-                  <tr key={it.transportadora}>
-                    <td><strong>{it.transportadora}</strong></td>
-                    <td>{fmtN(it.total)}</td>
-                    <td>{fmtN(it.calculados)}</td>
-                    <td style={{ color: it.semCalculo > 0 ? '#dc2626' : '#94a3b8', fontWeight: it.semCalculo > 0 ? 700 : 400 }}>{fmtN(it.semCalculo)}</td>
-                    <td style={{ color: '#16a34a' }}>{fmtN(it.assertivos)}</td>
-                    <td style={{ color: it.divergentes > 0 ? '#f59e0b' : '#94a3b8', fontWeight: it.divergentes > 0 ? 700 : 400 }}>{fmtN(it.divergentes)}</td>
-                    <td><span style={{ fontWeight: 700, color: it.taxaCalculo >= meta.taxaCalculoMeta ? '#16a34a' : '#dc2626' }}>{fmtP(it.taxaCalculo)}</span></td>
-                    <td><span style={{ fontWeight: 700, color: it.calculados === 0 ? '#94a3b8' : it.taxaAssertividade >= meta.taxaAssertividadeMeta ? '#16a34a' : it.taxaAssertividade >= 80 ? '#d97706' : '#dc2626' }}>{it.calculados > 0 ? fmtP(it.taxaAssertividade) : '—'}</span></td>
-                    <td>{fmt(it.valorCte)}</td>
-                    <td style={{ color: it.valorDivergencia > 0 ? '#dc2626' : '#94a3b8', fontWeight: it.valorDivergencia > 0 ? 700 : 400 }}>{it.valorDivergencia > 0 ? fmt(it.valorDivergencia) : '—'}</td>
-                    <td style={{ color: it.valorExcessivo > 0 ? '#dc2626' : '#94a3b8' }}>{it.valorExcessivo > 0 ? fmt(it.valorExcessivo) : '—'}</td>
-                    <td style={{ color: it.valorInsuficiente > 0 ? '#f59e0b' : '#94a3b8' }}>{it.valorInsuficiente > 0 ? fmt(it.valorInsuficiente) : '—'}</td>
-                  </tr>
-                ))}
-                {!porTransportadora.length ? <tr><td colSpan="12" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum dado. Carregue a base primeiro.</td></tr> : null}
-              </tbody>
-            </table>
-          </div>
-          {porTransportadora.length > 100 ? (
-            <div className="empty-note">Mostrando 100 de {porTransportadora.length} transportadoras. Exporte o Excel para ver todas.</div>
-          ) : null}
-        </section>
-      ) : null}
-
-      <ResumoMensalAuditoria resumoMensal={resumoMensal} />
-      <DiagnosticoFontes diagnostico={diagnostico} />
-
-      {!temDados && !carregando && !processando && !resumoMensal.length ? (
-        <section className="sim-card" style={{ textAlign: 'center', padding: 48 }}>
-          <div style={{ fontSize: 48, marginBottom: 12 }}>📋</div>
-          <h3>Selecione a competência e carregue os dados</h3>
-          <p style={{ color: '#64748b', maxWidth: 620, margin: '0 auto' }}>
-            Use <strong>Carregar CT-es do mês</strong> para conferir a base bruta ou <strong>Carregar resultado salvo</strong> para abrir uma auditoria já processada.
-            Para criar o resultado da auditoria, clique em <strong>Processar e salvar auditoria do mês</strong>.
-          </p>
-        </section>
-      ) : null}
-    </div>
-  );
+  return {
+    registros,
+    resumo,
+    fonte: {
+      id: TABELA_RESULTADOS,
+      tabela: TABELA_RESULTADOS,
+      label: 'Auditoria processada / auditoria_cte_resultados',
+    },
+  };
 }
