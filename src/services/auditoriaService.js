@@ -1,22 +1,19 @@
 /**
  * auditoriaService.js
  *
- * Lê dados de auditoria da tabela realizado_ctes no Supabase.
- * A tabela tem os campos valor_calculado e diferenca.
- *
- * Filtros:
- * - competencia (YYYY-MM): converte para inicio/fim do mês
- * - eBazar: excluído client-side pelo nome da transportadora
- * - Tomador (CPX, ITR, GP Pneus): aplicado na importação dos dados;
- *   a tabela realizado_ctes pode não ter essa coluna.
+ * Lê dados de auditoria da tabela realizado_local_ctes (mesma do CT-e).
+ * Campo de data: data_emissao (não emissao).
+ * Filtros: eBazar excluído por nome da transportadora (client-side).
+ * Tomador (CPX, ITR, GP Pneus): aplicado na importação — coluna pode não existir.
  */
 
-import { listarRealizadoCtes } from './freteDatabaseService';
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 
+const TABELA = 'realizado_local_ctes';
 export const DIVERGENCIA_THRESHOLD = 0.05;
-export const META_STORAGE_KEY      = 'central_fretes_auditoria_meta_v1';
-export const TOGGLE_TABELAS_KEY    = 'central_fretes_auditoria_tabelas_v1';
+export const META_STORAGE_KEY   = 'central_fretes_auditoria_meta_v1';
+export const TOGGLE_TABELAS_KEY = 'central_fretes_auditoria_tabelas_v1';
 
 // ─── Meta ─────────────────────────────────────────────────────────────────────
 
@@ -38,8 +35,8 @@ export function salvarMetaAuditoria(meta = {}) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function competenciaParaFiltros(competencia = '') {
-  if (!competencia || !/^\d{4}-\d{2}$/.test(competencia)) return {};
+function competenciaParaDatas(competencia = '') {
+  if (!competencia || !/^\d{4}-\d{2}$/.test(competencia)) return null;
   const [ano, mes] = competencia.split('-').map(Number);
   const inicio = `${ano}-${String(mes).padStart(2, '0')}-01`;
   const ultimoDia = new Date(ano, mes, 0).getDate();
@@ -56,44 +53,37 @@ function normNome(valor) {
     .trim();
 }
 
-function isEbazar(transportadora) {
-  return normNome(transportadora).includes('EBAZAR');
+function isEbazar(row) {
+  const nome = row.transportadora || row.transportadora_realizada || '';
+  return normNome(nome).includes('EBAZAR');
 }
 
-function getTransportadora(r) {
-  return r.transportadora || r.transportadoraRealizada || '';
-}
+// ─── Carregamento ─────────────────────────────────────────────────────────────
 
-function getValorCte(r) {
-  return Number(r.valorCte ?? r.valor_cte ?? 0);
-}
+export async function carregarDadosAuditoria({ competencia = '' } = {}) {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
+  }
 
-function getValorCalculado(r) {
-  return Number(r.valorCalculado ?? r.valor_calculado ?? 0);
-}
+  const datas = competenciaParaDatas(competencia);
+  if (!datas) {
+    throw new Error('Informe a competência (mês) no formato YYYY-MM.');
+  }
 
-function getDiferenca(r) {
-  return Number(r.diferenca ?? 0);
-}
+  const supabase = getSupabaseClient();
 
-// ─── Carregamento do Supabase ─────────────────────────────────────────────────
+  const { data, error } = await supabase
+    .from(TABELA)
+    .select('transportadora, valor_cte, valor_calculado, diferenca, data_emissao, competencia')
+    .gte('data_emissao', datas.inicio)
+    .lte('data_emissao', datas.fim)
+    .limit(100000);
 
-export async function carregarDadosAuditoria(filtros = {}) {
-  const { competencia, ...outrosFiltros } = filtros;
-  const filtrosData = competenciaParaFiltros(competencia);
+  if (error) {
+    throw new Error(`Erro ao consultar ${TABELA}: ${error.message}`);
+  }
 
-  // listarRealizadoCtes exige filtro para não dar timeout em bases grandes.
-  // Sempre passamos ao menos o filtro de período (ou inicio vazio como fallback).
-  const filtrosFinal = {
-    ...outrosFiltros,
-    ...filtrosData,
-    limit: 50000,
-  };
-
-  // Se não houver período, avisamos mas tentamos mesmo assim com limit baixo
-  const rows = await listarRealizadoCtes(filtrosFinal);
-
-  return (rows || []).filter((r) => !isEbazar(getTransportadora(r)));
+  return (data || []).filter((r) => !isEbazar(r));
 }
 
 // ─── Métricas ─────────────────────────────────────────────────────────────────
@@ -106,12 +96,13 @@ export function calcularMetricasAuditoria(registros = []) {
 
   for (const r of registros) {
     total++;
-    const valCalc = getValorCalculado(r);
-    const dif     = getDiferenca(r);
+    const valCalc = Number(r.valor_calculado ?? r.valorCalculado ?? 0);
+    const dif     = Number(r.diferenca ?? 0);
+    const valCte  = Number(r.valor_cte  ?? r.valorCte  ?? 0);
     const temCalculo = valCalc > 0;
     const temDiv     = temCalculo && Math.abs(dif) > DIVERGENCIA_THRESHOLD;
 
-    valorTotalCte += getValorCte(r);
+    valorTotalCte += valCte;
 
     if (temCalculo) {
       totalCalculados++;
@@ -130,21 +121,20 @@ export function calcularMetricasAuditoria(registros = []) {
 
   return {
     total, totalCalculados, totalSemCalculo, totalDivergentes, totalAssertivos,
-    taxaCalculo:        total > 0           ? (totalCalculados / total)            * 100 : 0,
-    taxaAssertividade:  totalCalculados > 0 ? (totalAssertivos / totalCalculados)  * 100 : 0,
-    taxaDivergencia:    totalCalculados > 0 ? (totalDivergentes / totalCalculados) * 100 : 0,
+    taxaCalculo:       total > 0           ? (totalCalculados / total)            * 100 : 0,
+    taxaAssertividade: totalCalculados > 0 ? (totalAssertivos / totalCalculados)  * 100 : 0,
+    taxaDivergencia:   totalCalculados > 0 ? (totalDivergentes / totalCalculados) * 100 : 0,
     valorTotalCte, valorTotalDivergencia, valorExcessivo, valorInsuficiente,
   };
 }
 
-// ─── Agrupamento por transportadora ───────────────────────────────────────────
+// ─── Agrupamento ──────────────────────────────────────────────────────────────
 
 export function agruparPorTransportadora(registros = []) {
   const mapa = new Map();
 
   for (const r of registros) {
-    const nome = String(getTransportadora(r) || 'Não informado').trim() || 'Não informado';
-
+    const nome = String(r.transportadora || 'Não informado').trim() || 'Não informado';
     if (!mapa.has(nome)) {
       mapa.set(nome, {
         transportadora: nome, total: 0, calculados: 0, semCalculo: 0,
@@ -152,15 +142,14 @@ export function agruparPorTransportadora(registros = []) {
         valorDivergencia: 0, valorExcessivo: 0, valorInsuficiente: 0,
       });
     }
-
     const it      = mapa.get(nome);
-    const valCalc = getValorCalculado(r);
-    const dif     = getDiferenca(r);
+    const valCalc = Number(r.valor_calculado ?? 0);
+    const dif     = Number(r.diferenca ?? 0);
     const temCalculo = valCalc > 0;
     const temDiv     = temCalculo && Math.abs(dif) > DIVERGENCIA_THRESHOLD;
 
     it.total++;
-    it.valorCte += getValorCte(r);
+    it.valorCte += Number(r.valor_cte ?? 0);
 
     if (temCalculo) {
       it.calculados++;
@@ -196,7 +185,6 @@ export function calcularOndeAtacar(porTransportadora = [], meta = {}) {
     .map((it) => {
       const valorMedioCte = it.total > 0 ? it.valorCte / it.total : 0;
       const prioridade    = it.valorDivergencia * 2 + it.semCalculo * valorMedioCte;
-
       let acaoSugerida, severidade;
       if (it.semCalculo > it.calculados) {
         acaoSugerida = 'Cadastrar tabela — sem cobertura'; severidade = 'critico';
@@ -207,7 +195,6 @@ export function calcularOndeAtacar(porTransportadora = [], meta = {}) {
       } else {
         acaoSugerida = 'Verificar cobertura de cálculo'; severidade = 'baixo';
       }
-
       return { ...it, prioridade, acaoSugerida, severidade };
     })
     .sort((a, b) => b.prioridade - a.prioridade)
@@ -217,8 +204,8 @@ export function calcularOndeAtacar(porTransportadora = [], meta = {}) {
 // ─── Sugestão de meta ─────────────────────────────────────────────────────────
 
 export function sugerirNovaMeta(metricas = {}) {
-  const taxaCalcAtual   = metricas.taxaCalculo        || 0;
-  const taxaAssertAtual = metricas.taxaAssertividade  || 0;
+  const taxaCalcAtual   = metricas.taxaCalculo       || 0;
+  const taxaAssertAtual = metricas.taxaAssertividade || 0;
   const metaCalcSugerida    = Math.min(Math.round(taxaCalcAtual + 5), 99);
   const metaAssertSugerida  = taxaAssertAtual >= 95 ? 98 : Math.min(Math.round(taxaAssertAtual + 3), 99);
   return {
@@ -240,12 +227,12 @@ export function exportarAuditoriaExcel(porTransportadora = [], metricas = {}, co
     'Sem cálculo': metricas.totalSemCalculo,
     'Assertivos': metricas.totalAssertivos,
     'Divergentes': metricas.totalDivergentes,
-    'Taxa cálculo %': Number(metricas.taxaCalculo || 0).toFixed(2),
+    'Taxa cálculo %': Number(metricas.taxaCalculo        || 0).toFixed(2),
     'Taxa assertividade %': Number(metricas.taxaAssertividade || 0).toFixed(2),
-    'Taxa divergência %': Number(metricas.taxaDivergencia || 0).toFixed(2),
-    'Valor total CTe': Number(metricas.valorTotalCte || 0).toFixed(2),
+    'Taxa divergência %': Number(metricas.taxaDivergencia    || 0).toFixed(2),
+    'Valor total CTe': Number(metricas.valorTotalCte          || 0).toFixed(2),
     'Valor divergência': Number(metricas.valorTotalDivergencia || 0).toFixed(2),
-    'Cobrança excessiva': Number(metricas.valorExcessivo || 0).toFixed(2),
+    'Cobrança excessiva': Number(metricas.valorExcessivo      || 0).toFixed(2),
     'Cobrança insuficiente': Number(metricas.valorInsuficiente || 0).toFixed(2),
   }];
 
@@ -256,15 +243,15 @@ export function exportarAuditoriaExcel(porTransportadora = [], metricas = {}, co
     'Sem cálculo': it.semCalculo,
     'Assertivos': it.assertivos,
     'Divergentes': it.divergentes,
-    'Taxa cálculo %': Number(it.taxaCalculo || 0).toFixed(2),
+    'Taxa cálculo %': Number(it.taxaCalculo        || 0).toFixed(2),
     'Taxa assertividade %': Number(it.taxaAssertividade || 0).toFixed(2),
-    'Valor CTe': Number(it.valorCte || 0).toFixed(2),
-    'Valor divergência': Number(it.valorDivergencia || 0).toFixed(2),
-    'Cobrança excessiva': Number(it.valorExcessivo || 0).toFixed(2),
+    'Valor CTe': Number(it.valorCte          || 0).toFixed(2),
+    'Valor divergência': Number(it.valorDivergencia   || 0).toFixed(2),
+    'Cobrança excessiva': Number(it.valorExcessivo    || 0).toFixed(2),
     'Cobrança insuficiente': Number(it.valorInsuficiente || 0).toFixed(2),
   }));
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), 'Resumo');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo),   'Resumo');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalhes), 'Por Transportadora');
   XLSX.writeFile(wb, `auditoria-ctes-${competencia || 'geral'}.xlsx`);
 }
