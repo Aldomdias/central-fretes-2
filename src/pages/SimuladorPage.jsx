@@ -33,6 +33,33 @@ const CANAL_VENDAS_MAP_SIM = {
 };
 const MARCADORES_ATACADO_SIM = ['AT-AG', 'AT-TR', 'ECM-B2B', 'ECC-SALES', 'ECA-SALES'];
 
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isFetchNetworkError(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('fetch failed') || msg.includes('timeout') || msg.includes('aborted');
+}
+
+async function executarQueryRealizadoComRetry(montarQuery, contexto = 'consulta realizado_local_ctes', tentativas = 3) {
+  let ultimoErro = null;
+
+  for (let tentativa = 1; tentativa <= tentativas; tentativa += 1) {
+    try {
+      return await montarQuery();
+    } catch (error) {
+      ultimoErro = error;
+      if (!isFetchNetworkError(error) || tentativa >= tentativas) break;
+      await sleep(600 * tentativa);
+    }
+  }
+
+  const detalhe = ultimoErro?.message || String(ultimoErro || 'erro desconhecido');
+  throw new Error(`${contexto}: ${detalhe}`);
+}
+
 function normalizarCanalSim(r) {
   const norm = (s) => String(s || '').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const cv = norm(r.canal_vendas);
@@ -79,7 +106,7 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   if (!isSupabaseConfigured()) return [];
   const supabase = getSupabaseClient();
   const totalMax = Math.min(Number(filtros.limit) || 100000, 200000);
-  const PAGE_SIZE = 1000; // Supabase PostgREST retorna no máximo 1000 por página
+  const PAGE_SIZE = 500; // menor para evitar Failed to fetch em bases grandes
   let allRows = [];
   let from = 0;
 
@@ -92,7 +119,8 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
       .range(from, to);
     query = aplicarFiltrosRealizadoQuery(query, filtros);
 
-    const { data, error } = await query;
+    const resposta = await executarQueryRealizadoComRetry(async () => query, `Erro ao buscar realizado_local_ctes (${from + 1}-${to + 1})`);
+    const { data, error } = resposta || {};
     if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
     if (!data || data.length === 0) break;
 

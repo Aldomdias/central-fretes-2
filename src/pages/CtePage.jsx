@@ -306,6 +306,33 @@ function agrupar(rows, keyGetter, extra = {}) {
   }));
 }
 
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isFetchNetworkError(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('fetch failed') || msg.includes('timeout') || msg.includes('aborted');
+}
+
+async function executarQuerySupabaseComRetry(montarQuery, contexto = 'consulta Supabase', tentativas = 3) {
+  let ultimoErro = null;
+
+  for (let tentativa = 1; tentativa <= tentativas; tentativa += 1) {
+    try {
+      return await montarQuery();
+    } catch (error) {
+      ultimoErro = error;
+      if (!isFetchNetworkError(error) || tentativa >= tentativas) break;
+      await sleep(500 * tentativa);
+    }
+  }
+
+  const detalhe = ultimoErro?.message || String(ultimoErro || 'erro desconhecido');
+  throw new Error(`${contexto}: ${detalhe}`);
+}
+
 function aplicarFiltros(query, filtros = {}) {
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
@@ -326,17 +353,20 @@ async function buscarCtesPagina(filtros = {}, pagina = 1) {
 
   const supabase = getSupabaseClient();
   const inicio = (Number(pagina || 1) - 1) * PAGE_SIZE;
-  const fim = inicio + PAGE_SIZE;
+  const fim = inicio + PAGE_SIZE - 1;
 
-  let query = supabase
-    .from(TABELA)
-    .select('*')
-    .order('data_emissao', { ascending: false, nullsFirst: false })
-    .range(inicio, fim);
+  const resposta = await executarQuerySupabaseComRetry(async () => {
+    let query = supabase
+      .from(TABELA)
+      .select('*')
+      .order('data_emissao', { ascending: false, nullsFirst: false })
+      .range(inicio, fim + 1);
 
-  query = aplicarFiltros(query, filtros);
+    query = aplicarFiltros(query, filtros);
+    return query;
+  }, `Erro Supabase (${TABELA}) ao buscar página de CT-es`);
 
-  const { data, error } = await query;
+  const { data, error } = resposta || {};
   if (error) throw new Error(`Erro Supabase (${TABELA}): ${error.message}`);
 
   const linhas = data || [];
@@ -359,15 +389,18 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
   for (let inicio = 0; inicio < ANALISE_MAX_REGISTROS; inicio += ANALISE_BATCH_SIZE) {
     const fim = Math.min(inicio + ANALISE_BATCH_SIZE - 1, ANALISE_MAX_REGISTROS - 1);
 
-    let query = supabase
-      .from(TABELA)
-      .select('*')
-      .order('data_emissao', { ascending: false, nullsFirst: false })
-      .range(inicio, fim);
+    const resposta = await executarQuerySupabaseComRetry(async () => {
+      let query = supabase
+        .from(TABELA)
+        .select('*')
+        .order('data_emissao', { ascending: false, nullsFirst: false })
+        .range(inicio, fim);
 
-    query = aplicarFiltros(query, filtros);
+      query = aplicarFiltros(query, filtros);
+      return query;
+    }, `Erro Supabase (${TABELA}) ao montar análise de CT-es`);
 
-    const { data, error } = await query;
+    const { data, error } = resposta || {};
     if (error) throw new Error(`Erro Supabase (${TABELA}): ${error.message}`);
 
     const lote = data || [];
@@ -914,14 +947,22 @@ export default function CtePage() {
       setRows(paginaResposta.data);
       setTemProximaPagina(paginaResposta.hasNext);
       setPagina(paginaResposta.pagina);
-
-      const dadosAnalise = await buscarCtesParaAnalise(filtrosBusca, setProgressoAnalise);
-      setRowsAnalise(dadosAnalise);
     } catch (error) {
       setErro(error.message || String(error));
       setRows(null);
       setRowsAnalise([]);
       setTemProximaPagina(false);
+      setCarregando(false);
+      setCarregandoAnalise(false);
+      return;
+    }
+
+    try {
+      const dadosAnalise = await buscarCtesParaAnalise(filtrosBusca, setProgressoAnalise);
+      setRowsAnalise(dadosAnalise);
+    } catch (error) {
+      setRowsAnalise([]);
+      setErro(`Lista carregada, mas a análise resumida falhou. Tente filtros menores ou buscar novamente. Detalhe: ${error.message || String(error)}`);
     } finally {
       setCarregando(false);
       setCarregandoAnalise(false);
