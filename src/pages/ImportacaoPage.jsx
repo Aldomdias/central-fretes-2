@@ -44,6 +44,30 @@ const STATUS_IMPORTACAO_INICIAL = {
   cancelado: false,
 };
 
+function numeroOuNulo(valor) {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const numero = Number(valor);
+  return Number.isFinite(numero) ? numero : null;
+}
+
+function textoLimpo(valor) {
+  return String(valor ?? '').trim();
+}
+
+function formatarFaixaCotacao(cotacao = {}) {
+  const rota = textoLimpo(cotacao.rota || cotacao.nomeRota || cotacao.cotacao);
+  const pesoMin = numeroOuNulo(cotacao.pesoMin);
+  const pesoMax = numeroOuNulo(cotacao.pesoMax);
+
+  const temFaixa = pesoMin !== null || pesoMax !== null;
+  const faixa = temFaixa
+    ? `${pesoMin !== null ? pesoMin : 0} A ${pesoMax !== null && pesoMax > 0 ? pesoMax : '∞'} KG`
+    : '';
+
+  if (rota && faixa) return `${rota} | ${faixa}`;
+  return rota || faixa;
+}
+
 function montarItensParaNegociacao(resultado, tipoNegociacao = 'fretes') {
   const fretes = Array.isArray(resultado?.fretes) ? resultado.fretes : [];
   const rotas = Array.isArray(resultado?.rotas) ? resultado.rotas : [];
@@ -100,6 +124,129 @@ function montarItensParaNegociacao(resultado, tipoNegociacao = 'fretes') {
       dados_originais: { tipo_item: 'COTACAO', ...frete },
     };
   });
+}
+
+function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabelaNegociacao = null) {
+  const itens = [];
+  const transportadorasPayload = Array.isArray(payload?.transportadoras) ? payload.transportadoras : [];
+
+  transportadorasPayload.forEach((transportadoraPayload) => {
+    const origem = transportadoraPayload?.origem || {};
+    const cidadeOrigem = origem.cidade || tabelaNegociacao?.origem || '';
+    const ufOrigem = tabelaNegociacao?.uf_origem || '';
+    const ufDestinoPadrao = tabelaNegociacao?.uf_destino || '';
+    const canal = origem.canal || tabelaNegociacao?.canal || '';
+
+    if (tipoNegociacao === 'rotas') {
+      (origem.rotas || []).forEach((rota) => {
+        itens.push({
+          cidade_origem: cidadeOrigem,
+          uf_origem: ufOrigem,
+          ibge_origem: rota.ibgeOrigem || '',
+          cidade_destino: '',
+          uf_destino: ufDestinoPadrao,
+          ibge_destino: rota.ibgeDestino || '',
+          prazo: rota.prazoEntregaDias || rota.prazo || null,
+          faixa_peso: rota.cotacao || rota.nomeRota || '',
+          origem_importacao: 'IMPORTACAO_ROTAS',
+          dados_originais: {
+            tipo_item: 'ROTA',
+            transportadora: transportadoraPayload?.nome || tabelaNegociacao?.transportadora || '',
+            origem: cidadeOrigem,
+            canal,
+            ...rota,
+          },
+        });
+      });
+      return;
+    }
+
+    (origem.cotacoes || []).forEach((cotacao) => {
+      itens.push({
+        cidade_origem: cidadeOrigem,
+        uf_origem: ufOrigem,
+        ibge_origem: '',
+        cidade_destino: '',
+        uf_destino: ufDestinoPadrao,
+        ibge_destino: '',
+        faixa_peso: formatarFaixaCotacao(cotacao),
+        peso_inicial: cotacao.pesoMin != null ? cotacao.pesoMin : null,
+        peso_final: cotacao.pesoMax != null ? cotacao.pesoMax : null,
+        frete_minimo: cotacao.freteMinimo != null ? cotacao.freteMinimo : null,
+        taxa_aplicada: cotacao.valorFixo != null ? cotacao.valorFixo : null,
+        frete_percentual: cotacao.percentual != null ? cotacao.percentual : null,
+        excesso_kg: cotacao.excesso != null ? cotacao.excesso : null,
+        valor_excedente: cotacao.rsKg != null ? cotacao.rsKg : null,
+        prazo: null,
+        origem_importacao: 'IMPORTACAO_FRETES',
+        dados_originais: {
+          tipo_item: 'COTACAO',
+          transportadora: transportadoraPayload?.nome || tabelaNegociacao?.transportadora || '',
+          origem: cidadeOrigem,
+          canal,
+          ...cotacao,
+        },
+      });
+    });
+  });
+
+  return itens;
+}
+
+async function montarPayloadNegociacao(file, tipoNegociacao, canalImportacao, tabelaNegociacao) {
+  if (tipoNegociacao === 'fretes' || tipoNegociacao === 'rotas') {
+    const tipoPadrao = tipoNegociacao === 'fretes' ? 'cotacoes' : 'rotas';
+    const parsed = await parseFileToRows(file, tipoPadrao);
+    const payloadPadrao = buildImportPayload(parsed, tipoPadrao, { canal: canalImportacao });
+    const itens = montarItensNegociacaoDePayload(payloadPadrao, tipoNegociacao, tabelaNegociacao);
+
+    if (!itens.length) {
+      const primeiroErro = payloadPadrao.erros?.[0]?.mensagem;
+      throw new Error(primeiroErro || `Nenhum item válido encontrado para ${tipoNegociacao === 'fretes' ? 'Fretes/Cotações' : 'Rotas'}.`);
+    }
+
+    return {
+      itensNegociacao: itens,
+      inseridos: itens.length,
+      erros: payloadPadrao.erros || [],
+      meta: {
+        ...(payloadPadrao.meta || {}),
+        tipoNegociacao,
+        tipoPadrao,
+        rotas: tipoNegociacao === 'rotas' ? itens.length : 0,
+        fretes: tipoNegociacao === 'fretes' ? itens.length : 0,
+        itens: itens.length,
+        origemParser: 'importacao_padrao',
+      },
+    };
+  }
+
+  try {
+    const resultado = await importarTabelaPronta(file);
+    const itens = montarItensParaNegociacao(resultado, 'ambos');
+
+    if (!itens.length) {
+      throw new Error('Nenhum item válido encontrado nas abas "Rotas" e "Fretes".');
+    }
+
+    return {
+      itensNegociacao: itens,
+      inseridos: itens.length,
+      erros: [],
+      meta: {
+        tipoNegociacao,
+        rotas: resultado.rotas?.length || 0,
+        fretes: resultado.fretes?.length || 0,
+        itens: itens.length,
+        origemParser: 'importador_tabela_pronta',
+      },
+    };
+  } catch (error) {
+    if (String(error?.message || '').includes('Arquivo sem abas')) {
+      throw new Error('Para importar Rotas + Fretes juntos, use um arquivo com abas chamadas "Rotas" e "Fretes". Se estiver usando o modelo normal da tela de Importação, selecione "Só Fretes" ou "Só Rotas".');
+    }
+    throw error;
+  }
 }
 
 function SummaryCard({ title, value, subtitle }) {
@@ -381,19 +528,13 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
             etapa: `Lendo planilha de negociação (${tipoNegociacao})...`,
             duracaoMs: Date.now() - inicioLote,
           }));
-          const resultado = await importarTabelaPronta(file);
-          const itens = montarItensParaNegociacao(resultado, tipoNegociacao);
-          payload = {
-            itensNegociacao: itens,
-            inseridos: itens.length,
-            erros: [],
-            meta: {
-              tipoNegociacao,
-              rotas: resultado.rotas?.length || 0,
-              fretes: resultado.fretes?.length || 0,
-              itens: itens.length,
-            },
-          };
+          payload = await montarPayloadNegociacao(
+            file,
+            tipoNegociacao,
+            canalImportacao,
+            tabelaNegociacaoSelecionada
+          );
+          erros = [...(payload.erros || [])];
         } else {
           const parsed = await parseFileToRows(file, tipo);
           if (processoCancelado()) break;
@@ -708,9 +849,9 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                   </button>
                 </div>
                 <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
-                  {tipoNegociacao === 'fretes' && 'Lê apenas a aba Fretes. Ideal quando o arquivo contém somente as faixas e valores.'}
-                  {tipoNegociacao === 'rotas' && 'Lê apenas a aba Rotas. Importa rota, prazo e códigos IBGE, sem valores de frete.'}
-                  {tipoNegociacao === 'ambos' && 'Lê Fretes e usa Rotas para enriquecer destino, prazo e IBGE quando houver correspondência.'}
+                  {tipoNegociacao === 'fretes' && 'Usa o mesmo importador padrão de Fretes/Cotações da tela de Transportadoras, lendo a primeira aba do arquivo.'}
+                  {tipoNegociacao === 'rotas' && 'Usa o mesmo importador padrão de Rotas da tela de Transportadoras, lendo a primeira aba do arquivo.'}
+                  {tipoNegociacao === 'ambos' && 'Usa o importador de tabela pronta e exige abas chamadas Rotas e Fretes no mesmo arquivo.'}
                 </div>
               </div>
 
