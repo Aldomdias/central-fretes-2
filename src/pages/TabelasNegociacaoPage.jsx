@@ -103,8 +103,22 @@ function origemTabelaLabel(tabela) {
   var origem = normalizarTexto(tabela && tabela.origem);
   var ufOrigem = normalizarTexto(tabela && tabela.uf_origem);
   var ufDestino = normalizarTexto(tabela && tabela.uf_destino);
+  var resumo = getResumoTabela(tabela);
+  var origensDetectadas = Array.isArray(resumo.origens_detectadas) ? resumo.origens_detectadas : [];
   var partes = [];
-  if (origem || ufOrigem) partes.push('Origem: ' + (origem || 'Todas') + (ufOrigem ? '/' + ufOrigem : ''));
+
+  if (origem || ufOrigem) {
+    partes.push('Origem: ' + (origem || 'Todas') + (ufOrigem ? '/' + ufOrigem : ''));
+  } else if (origensDetectadas.length) {
+    var principais = origensDetectadas.slice(0, 2).map(function(o) {
+      var cidade = normalizarTexto(o.cidade);
+      var uf = normalizarTexto(o.uf);
+      return (cidade || 'Origem') + (uf ? '/' + uf : '');
+    }).join(', ');
+    var extra = origensDetectadas.length > 2 ? ' +' + (origensDetectadas.length - 2) : '';
+    partes.push('Origem detectada: ' + principais + extra);
+  }
+
   if (ufDestino) partes.push('Destino: ' + ufDestino);
   return partes.join(' · ') || '-';
 }
@@ -1322,7 +1336,7 @@ export default function TabelasNegociacaoPage() {
               <div>
                 <h3 style={{ margin: '0 0 12px' }}>Histórico de rodadas e análises</h3>
                 <div className="sim-alert info" style={{ marginBottom: 14 }}>
-                  Cada nova proposta pode gerar uma nova rodada. Os itens atuais ficam ativos para simulação, enquanto os resultados salvos continuam guardados aqui para comparação entre rodadas.
+                  Rotas e fretes da mesma proposta ficam na mesma rodada. Uma nova rodada deve ser aberta somente quando chegar uma nova proposta/tabela do transportador; os resultados salvos continuam guardados para comparação.
                 </div>
 
                 {simulacoes.length > 1 ? (

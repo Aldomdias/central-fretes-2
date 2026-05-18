@@ -129,6 +129,27 @@ function resumirItensPorTipo(itens = []) {
   }, { total: 0, rotas: 0, cotacoes: 0 });
 }
 
+function resumirOrigensItens(itens = []) {
+  const mapa = new Map();
+  (itens || []).forEach((item) => {
+    const cidade = texto(item.cidade_origem || item.origem);
+    const uf = upper(item.uf_origem);
+    if (!cidade && !uf) return;
+    const chave = `${upper(cidade)}|${uf}`;
+    if (!mapa.has(chave)) {
+      mapa.set(chave, { cidade, uf, total: 0, rotas: 0, cotacoes: 0 });
+    }
+    const registro = mapa.get(chave);
+    registro.total += 1;
+    if (normalizarTipoItem(item) === 'ROTA') registro.rotas += 1;
+    else registro.cotacoes += 1;
+  });
+
+  return Array.from(mapa.values())
+    .sort((a, b) => b.total - a.total || upper(a.cidade).localeCompare(upper(b.cidade)))
+    .slice(0, 20);
+}
+
 function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
   const tipoItem = normalizarTipoItem(item);
   const dadosOriginaisBase = item.dados_originais && typeof item.dados_originais === 'object'
@@ -314,15 +335,19 @@ export async function excluirTabelaNegociacao(id) {
 // ─── ITENS (rotas / cotações / faixas) ───────────────────────────────────────
 
 export async function listarItensTabelaNegociacao(tabelaId) {
-  const supabase = supabaseOrThrow();
-  const { data, error } = await supabase
-    .from('tabelas_negociacao_itens')
-    .select('*')
-    .eq('tabela_negociacao_id', tabelaId)
-    .order('uf_destino', { ascending: true })
-    .order('cidade_destino', { ascending: true });
-  if (error) throw new Error(error.message || 'Erro ao listar itens da tabela.');
-  return data || [];
+  const itens = await listarTodosItensTabelaNegociacao(tabelaId);
+  return itens.sort((a, b) => {
+    const tipoA = normalizarTipoItem(a) === 'ROTA' ? 0 : 1;
+    const tipoB = normalizarTipoItem(b) === 'ROTA' ? 0 : 1;
+    if (tipoA !== tipoB) return tipoA - tipoB;
+    const ufA = upper(a.uf_destino);
+    const ufB = upper(b.uf_destino);
+    if (ufA !== ufB) return ufA.localeCompare(ufB);
+    const cidadeA = upper(a.cidade_destino);
+    const cidadeB = upper(b.cidade_destino);
+    if (cidadeA !== cidadeB) return cidadeA.localeCompare(cidadeB);
+    return upper(a.faixa_peso).localeCompare(upper(b.faixa_peso));
+  });
 }
 
 export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes = {}) {
@@ -340,9 +365,11 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
   const tiposEntrada = [...new Set(itensEntrada.map(normalizarTipoItem))];
   const substituirTudo = modo === 'total' || tiposEntrada.length > 1 || opcoes.substituirTudo === true;
   const tiposSubstituidos = substituirTudo ? ['ROTA', 'COTACAO'] : (tiposEntrada.length ? tiposEntrada : ['COTACAO']);
-  const haviaTipoSubstituido = itensAtuais.some((item) => tiposSubstituidos.includes(normalizarTipoItem(item)));
-
-  const abrirNovaRodada = opcoes.novaRodada === true || (opcoes.novaRodada !== false && haviaTipoSubstituido);
+  // Rodada não deve aumentar automaticamente a cada reimportação.
+  // Rotas e fretes da mesma proposta podem ser importados em momentos diferentes
+  // e continuam pertencendo à rodada atual. Uma nova rodada só nasce quando a UI
+  // passar explicitamente novaRodada/abrirNovaRodada como true.
+  const abrirNovaRodada = opcoes.novaRodada === true || opcoes.abrirNovaRodada === true;
   const rodadaNumero = calcularProximaRodada(tabela, abrirNovaRodada);
 
   const preservados = substituirTudo
@@ -374,6 +401,7 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
   const historico = getHistoricoRodadas(tabela);
   const totaisSalvos = resumirItensPorTipo(salvos);
   const totaisImportados = resumirItensPorTipo(itensEntrada);
+  const origensDetectadas = resumirOrigensItens(salvos);
   const agora = dataISO();
 
   const entradaImportacao = {
@@ -388,6 +416,7 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     observacao: opcoes.observacao || '',
     itens_importados: totaisImportados,
     itens_salvos_apos_importacao: totaisSalvos,
+    origens_detectadas: origensDetectadas,
   };
 
   const resumoAtualizado = {
@@ -395,6 +424,8 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     rodada_atual: rodadaNumero,
     ultima_importacao_em: agora,
     ultima_importacao: entradaImportacao,
+    totais_itens: totaisSalvos,
+    origens_detectadas: origensDetectadas,
     historico_rodadas: historico.concat([entradaImportacao]).slice(-30),
   };
 
