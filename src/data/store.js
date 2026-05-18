@@ -193,15 +193,6 @@ function montarMensagemContagem(contagem = {}) {
   return `${contagem.origens || 0} origem(ns), ${contagem.rotas || 0} rota(s), ${contagem.cotacoes || 0} frete(s), ${contagem.taxasEspeciais || 0} taxa(s) e ${contagem.generalidades || 0} generalidade(s)`;
 }
 
-function withTimeout(promise, ms = 12000, mensagem = 'Tempo limite ao carregar dados do Supabase.') {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(mensagem)), ms);
-    }),
-  ]);
-}
-
 export function useFreteStore() {
   const [transportadoras, setTransportadoras] = useState([]);
   const [syncStatus, setSyncStatus] = useState({
@@ -243,8 +234,8 @@ export function useFreteStore() {
       for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
         if (cancelled) return;
         try {
-          const resumo = await withTimeout(carregarResumoBaseDb(), 12000, 'Tempo limite ao carregar resumo da base no Supabase.');
-          const conferencia = await withTimeout(carregarConferenciaBaseDb(), 12000, 'Tempo limite ao conferir base no Supabase.').catch(() => null);
+          const resumo = await carregarResumoBaseDb();
+          const conferencia = await carregarConferenciaBaseDb().catch(() => null);
           if (cancelled) return;
           setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
           loadedRef.current = true;
@@ -347,8 +338,8 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
 
         try {
-          const resumo = await withTimeout(carregarResumoBaseDb(), 12000, 'Tempo limite ao carregar resumo da base no Supabase.');
-          const conferencia = await withTimeout(carregarConferenciaBaseDb(), 12000, 'Tempo limite ao conferir base no Supabase.').catch(() => null);
+          const resumo = await carregarResumoBaseDb();
+          const conferencia = await carregarConferenciaBaseDb().catch(() => null);
 
           setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
 
@@ -383,7 +374,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
 
         try {
-          const conferencia = await withTimeout(carregarConferenciaBaseDb(), 12000, 'Tempo limite ao conferir base no Supabase.');
+          const conferencia = await carregarConferenciaBaseDb();
 
           setSyncStatus((prev) => ({
             ...prev,
@@ -428,7 +419,7 @@ export function useFreteStore() {
         if (!bancoConfigurado()) return false;
         setSyncStatus((prev) => ({ ...prev, carregando: true, erro: '' }));
         try {
-          const snapshot = await withTimeout(carregarSnapshotFretesDb(), 12000, 'Tempo limite ao carregar snapshot do Supabase.');
+          const snapshot = await carregarSnapshotFretesDb();
           const base = snapshot?.payload?.transportadoras || [];
           setTransportadoras((base || []).map(normalizeTransportadora));
           setSyncStatus((prev) => ({

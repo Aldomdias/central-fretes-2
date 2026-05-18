@@ -553,20 +553,64 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
   return data;
 }
 
+async function listarTodasTaxasDestinoTabela(tabelaId) {
+  const supabase = supabaseOrThrow();
+  const pageSize = 1000;
+  let inicio = 0;
+  let todos = [];
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('tabelas_negociacao_taxas_destino')
+      .select('*')
+      .eq('tabela_negociacao_id', tabelaId)
+      .range(inicio, inicio + pageSize - 1);
+
+    if (error) throw new Error(error.message || 'Erro ao listar taxas da negociação para simulação.');
+
+    const lote = data || [];
+    todos = todos.concat(lote);
+    if (lote.length < pageSize) break;
+    inicio += pageSize;
+  }
+
+  return todos;
+}
+
 export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
   const supabase = supabaseOrThrow();
+
+  // Não usar select aninhado com todos os itens aqui.
+  // Quando a negociação tem mais de 1000 rotas/fretes, o Supabase pode demorar muito
+  // ou devolver dados incompletos. Primeiro buscamos só as capas das negociações e,
+  // depois, carregamos itens/taxas paginados por tabela.
   let query = supabase
     .from('tabelas_negociacao')
-    .select(`*, tabelas_negociacao_itens (*), tabelas_negociacao_taxas_destino (*)`)
+    .select('*')
     .eq('incluir_simulacao', true)
-    .in('status', ['EM NEGOCIAÇÃO', 'EM TESTE', 'APROVADA']);
+    .in('status', ['EM NEGOCIAÇÃO', 'EM TESTE', 'APROVADA'])
+    .order('criado_em', { ascending: false });
 
   if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
 
-  const { data, error } = await query;
+  const { data: tabelas, error } = await query;
   if (error) throw new Error(error.message || 'Erro ao buscar tabelas para simulação.');
-  return data || [];
+
+  const lista = tabelas || [];
+  const completas = [];
+
+  for (const tabela of lista) {
+    const itens = await listarTodosItensTabelaNegociacao(tabela.id);
+    const taxasDestino = await listarTodasTaxasDestinoTabela(tabela.id);
+    completas.push({
+      ...tabela,
+      tabelas_negociacao_itens: itens,
+      tabelas_negociacao_taxas_destino: taxasDestino,
+    });
+  }
+
+  return completas;
 }
 
 
