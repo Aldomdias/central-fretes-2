@@ -387,18 +387,12 @@ function prepararItensNegociacaoParaSalvar({ tipoNegociacao, novosItens, itensEx
   return removerDuplicadosNegociacao([...outrosExistentes, ...rotasExistentes, ...cotacoesComRotas]);
 }
 
-function validarItensNegociacaoAntesSalvar({ tipoNegociacao, itensParaSalvar, itensExistentes }) {
-  if (tipoNegociacao !== 'fretes') return null;
-
-  const rotasExistentes = (itensExistentes || []).filter(itemEhRotaNegociacao);
-  const cotacoesSemDestino = (itensParaSalvar || []).filter(
-    (item) => itemEhCotacaoNegociacao(item) && itemTemPreco(item) && !itemTemDestino(item)
-  );
-
-  if (cotacoesSemDestino.length && !rotasExistentes.length) {
-    return 'Fretes importados sem rota/destino correspondente. Importe as Rotas primeiro ou use a opção "Rotas + Fretes" com as duas abas no mesmo arquivo.';
-  }
-
+function validarItensNegociacaoAntesSalvar() {
+  // No modo Negociação, a importação precisa aceitar o mesmo arquivo que já funciona
+  // no fluxo normal de Transportadoras. Por isso não bloqueamos Fretes/Cotações
+  // quando ainda não houver Rotas salvas na negociação.
+  // As Rotas podem ser importadas antes ou depois; quando existirem, o sistema cruza
+  // automaticamente os fretes com destino, IBGE e prazo.
   return null;
 }
 
@@ -1085,7 +1079,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                   </button>
                 </div>
                 <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
-                  {tipoNegociacao === 'fretes' && 'Lê Fretes/Cotações e preserva as Rotas já salvas. Se houver rota correspondente, o sistema preenche destino, IBGE e prazo automaticamente.'}
+                  {tipoNegociacao === 'fretes' && 'Lê Fretes/Cotações usando o mesmo layout da importação normal. Pode importar antes ou depois das Rotas; quando houver rota correspondente, o sistema preenche destino, IBGE e prazo automaticamente.'}
                   {tipoNegociacao === 'rotas' && 'Lê Rotas, preserva Fretes já salvos e tenta cruzar as cotações existentes com os destinos das rotas.'}
                   {tipoNegociacao === 'ambos' && 'Lê as abas Rotas e Fretes juntas e já grava os fretes cruzados por destino, IBGE e prazo.'}
                 </div>
