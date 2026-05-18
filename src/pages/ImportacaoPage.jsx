@@ -194,6 +194,63 @@ function montarItemFreteDeImportador(frete = {}) {
   };
 }
 
+
+function nomesCompativeis(a, b) {
+  const na = normalizarChave(a);
+  const nb = normalizarChave(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+function montarItemRotaOficialNegociacao(rota = {}, origem = {}, transportadora = {}, tabelaNegociacao = {}) {
+  const cidadeOrigem = origem.cidade || origem.origem || tabelaNegociacao.origem || '';
+  const ufOrigem = rota.ufOrigem || rota.uf_origem || origem.uf || origem.ufOrigem || tabelaNegociacao.uf_origem || '';
+
+  return {
+    cidade_origem: cidadeOrigem,
+    uf_origem: ufOrigem,
+    ibge_origem: rota.ibgeOrigem || rota.ibge_origem || origem.ibgeOrigem || origem.ibge_origem || '',
+    cidade_destino: rota.cidadeDestino || rota.cidade_destino || rota.destino || '',
+    uf_destino: rota.ufDestino || rota.uf_destino || tabelaNegociacao.uf_destino || '',
+    ibge_destino: rota.ibgeDestino || rota.ibge_destino || rota.codigoIbgeDestino || rota.codigo_ibge_destino || '',
+    prazo: rota.prazoEntregaDias || rota.prazo || null,
+    faixa_peso: rota.cotacao || rota.nomeRota || rota.rota || rota.faixa_peso || '',
+    origem_importacao: 'ROTAS_OFICIAIS_TRANSPORTADORA',
+    dados_originais: {
+      tipo_item: 'ROTA',
+      fonte_rota: 'CADASTRO_TRANSPORTADORAS',
+      transportadora: transportadora.nome || tabelaNegociacao.transportadora || '',
+      origem: cidadeOrigem,
+      canal: origem.canal || tabelaNegociacao.canal || '',
+      ...rota,
+    },
+  };
+}
+
+function obterRotasOficiaisParaTabelaNegociacao(tabelaNegociacao = {}, transportadoras = []) {
+  const nomeTabela = tabelaNegociacao.transportadora || '';
+  const origemTabela = tabelaNegociacao.origem || tabelaNegociacao.cidade_origem || '';
+  const canalTabela = upperLimpo(tabelaNegociacao.canal || '');
+  const rotas = [];
+
+  (transportadoras || []).forEach((transportadora) => {
+    if (nomeTabela && !nomesCompativeis(transportadora?.nome, nomeTabela)) return;
+
+    (transportadora?.origens || []).forEach((origem) => {
+      const canalOrigem = upperLimpo(origem?.canal || '');
+      if (canalTabela && canalOrigem && canalTabela !== canalOrigem) return;
+      if (origemTabela && !nomesCompativeis(origem?.cidade || origem?.origem, origemTabela)) return;
+
+      (origem?.rotas || []).forEach((rota) => {
+        const item = montarItemRotaOficialNegociacao(rota, origem, transportadora, tabelaNegociacao);
+        if (item.ibge_destino || item.cidade_destino) rotas.push(item);
+      });
+    });
+  });
+
+  return removerDuplicadosNegociacao(rotas);
+}
+
 function encontrarRotasParaCotacao(cotacao = {}, rotas = []) {
   const nomeCotacao = normalizarChave(nomeCotacaoDoItem(cotacao));
   const ufCotacao = ufDestinoDoItem(cotacao);
@@ -366,11 +423,12 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
   return removerDuplicadosNegociacao(itens);
 }
 
-function prepararItensNegociacaoParaSalvar({ tipoNegociacao, novosItens, itensExistentes }) {
+function prepararItensNegociacaoParaSalvar({ tipoNegociacao, novosItens, itensExistentes, rotasReferencia = [] }) {
   const existentes = Array.isArray(itensExistentes) ? itensExistentes : [];
   const rotasExistentes = existentes.filter(itemEhRotaNegociacao);
   const cotacoesExistentes = existentes.filter(itemEhCotacaoNegociacao);
   const outrosExistentes = existentes.filter((item) => !itemEhRotaNegociacao(item) && !itemEhCotacaoNegociacao(item));
+  const rotasReferenciaValidas = removerDuplicadosNegociacao((rotasReferencia || []).filter(itemEhRotaNegociacao));
 
   if (tipoNegociacao === 'ambos') {
     return removerDuplicadosNegociacao(novosItens);
@@ -383,8 +441,9 @@ function prepararItensNegociacaoParaSalvar({ tipoNegociacao, novosItens, itensEx
   }
 
   const novasCotacoes = novosItens.filter(itemEhCotacaoNegociacao);
-  const cotacoesComRotas = expandirCotacoesComRotas(novasCotacoes, rotasExistentes);
-  return removerDuplicadosNegociacao([...outrosExistentes, ...rotasExistentes, ...cotacoesComRotas]);
+  const rotasBase = rotasExistentes.length ? rotasExistentes : rotasReferenciaValidas;
+  const cotacoesComRotas = expandirCotacoesComRotas(novasCotacoes, rotasBase);
+  return removerDuplicadosNegociacao([...outrosExistentes, ...rotasBase, ...cotacoesComRotas]);
 }
 
 function validarItensNegociacaoAntesSalvar() {
@@ -855,10 +914,14 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           const itensExistentes = tipoNegociacao === 'ambos'
             ? []
             : await listarItensTabelaNegociacao(tabelaNegociacaoSelecionada.id);
+          const rotasReferencia = tipoNegociacao === 'fretes'
+            ? obterRotasOficiaisParaTabelaNegociacao(tabelaNegociacaoSelecionada, transportadoras)
+            : [];
           const todosItens = prepararItensNegociacaoParaSalvar({
             tipoNegociacao,
             novosItens,
             itensExistentes,
+            rotasReferencia,
           });
           const erroValidacaoNegociacao = validarItensNegociacaoAntesSalvar({
             tipoNegociacao,
@@ -880,6 +943,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                 ...(e.meta || {}),
                 itensNovos: novosItens.length,
                 itensExistentesPreservados: itensExistentes.length,
+                rotasReferenciaOficial: rotasReferencia.length,
                 itensSalvosNaTabela: todosItens.length,
               };
             }
