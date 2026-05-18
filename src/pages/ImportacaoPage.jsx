@@ -13,6 +13,7 @@ import {
 } from '../services/freteDatabaseService';
 import { importarTabelaPronta } from '../utils/importadorTabelaPronta';
 import {
+  listarItensTabelaNegociacao,
   listarTabelasNegociacao,
   substituirItensTabelaNegociacao,
 } from '../services/tabelasNegociacaoService';
@@ -54,6 +55,76 @@ function textoLimpo(valor) {
   return String(valor ?? '').trim();
 }
 
+function upperLimpo(valor) {
+  return textoLimpo(valor).toUpperCase();
+}
+
+function normalizarChave(valor) {
+  return textoLimpo(valor)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function nomeAntesDaFaixa(valor) {
+  return textoLimpo(valor).split('|')[0].trim();
+}
+
+function getTipoItemNegociacao(item = {}) {
+  return (
+    item?.dados_originais?.tipo_item ||
+    item?.item_tipo ||
+    (item?.faixa_peso === 'ROTA' ? 'ROTA' : 'COTACAO')
+  );
+}
+
+function itemEhRotaNegociacao(item = {}) {
+  return getTipoItemNegociacao(item) === 'ROTA';
+}
+
+function itemEhCotacaoNegociacao(item = {}) {
+  return getTipoItemNegociacao(item) !== 'ROTA';
+}
+
+function itemTemPreco(item = {}) {
+  return [
+    item.frete_minimo,
+    item.taxa_aplicada,
+    item.frete_percentual,
+    item.excesso_kg,
+    item.valor_excedente,
+    item.valor_lotacao,
+  ].some((valor) => Number(valor || 0) > 0);
+}
+
+function itemTemDestino(item = {}) {
+  return Boolean(textoLimpo(item.ibge_destino) || textoLimpo(item.cidade_destino));
+}
+
+function nomeCotacaoDoItem(item = {}) {
+  const dados = item.dados_originais || {};
+  return (
+    textoLimpo(dados.cotacaoFinal) ||
+    textoLimpo(dados.cotacao) ||
+    textoLimpo(dados.rota) ||
+    textoLimpo(dados.nomeRota) ||
+    nomeAntesDaFaixa(item.faixa_peso) ||
+    textoLimpo(item.observacao)
+  );
+}
+
+function ufDestinoDoItem(item = {}) {
+  const dados = item.dados_originais || {};
+  return upperLimpo(item.uf_destino || dados.ufDestino || dados.uf_destino);
+}
+
+function origemDoItem(item = {}) {
+  const dados = item.dados_originais || {};
+  return normalizarChave(item.cidade_origem || dados.origem || dados.cidadeOrigem);
+}
+
 function formatarFaixaCotacao(cotacao = {}) {
   const rota = textoLimpo(cotacao.rota || cotacao.nomeRota || cotacao.cotacao);
   const pesoMin = numeroOuNulo(cotacao.pesoMin);
@@ -68,62 +139,164 @@ function formatarFaixaCotacao(cotacao = {}) {
   return rota || faixa;
 }
 
+function montarFaixaFretePronto(frete = {}) {
+  const cotNome = upperLimpo(frete.cotacaoFinal || frete.cotacao || frete.rota || frete.nomeRota);
+  const faixaRaw = textoLimpo(frete.faixaPeso || frete.faixa_peso);
+  if (faixaRaw) return cotNome ? `${cotNome} | ${faixaRaw}` : faixaRaw;
+  return cotNome || '';
+}
+
+function montarItemRotaDeImportador(rota = {}) {
+  return {
+    cidade_origem: rota.origem || rota.cidadeOrigem || '',
+    uf_origem: rota.ufOrigem || rota.uf_origem || '',
+    ibge_origem: rota.ibgeOrigem || rota.ibge_origem || '',
+    cidade_destino: rota.cidadeDestino || rota.cidade_destino || '',
+    uf_destino: rota.ufDestino || rota.uf_destino || '',
+    ibge_destino: rota.ibgeDestino || rota.ibge_destino || '',
+    prazo: rota.prazo || rota.prazoEntregaDias || null,
+    faixa_peso: rota.cotacaoFinal || rota.cotacao || rota.nomeRota || rota.faixa_peso || '',
+    origem_importacao: 'IMPORTACAO_ROTAS',
+    dados_originais: { tipo_item: 'ROTA', ...rota },
+  };
+}
+
+function montarItemFreteDeImportador(frete = {}) {
+  return {
+    cidade_origem: frete.origem || frete.cidadeOrigem || '',
+    uf_origem: frete.ufOrigem || frete.uf_origem || '',
+    ibge_origem: frete.ibgeOrigem || frete.ibge_origem || '',
+    cidade_destino: frete.cidadeDestino || frete.cidade_destino || '',
+    uf_destino: frete.ufDestino || frete.uf_destino || '',
+    ibge_destino: frete.ibgeDestino || frete.ibge_destino || '',
+    faixa_peso: montarFaixaFretePronto(frete),
+    peso_inicial: frete.pesoInicial != null ? frete.pesoInicial : frete.peso_inicial ?? null,
+    peso_final: frete.pesoFinal != null ? frete.pesoFinal : frete.peso_final ?? null,
+    frete_minimo: frete.freteMinimo != null ? frete.freteMinimo : frete.frete_minimo ?? null,
+    taxa_aplicada:
+      frete.taxaAplicada != null
+        ? frete.taxaAplicada
+        : frete.freteValor != null
+          ? frete.freteValor
+          : frete.taxa_aplicada ?? null,
+    frete_percentual: frete.fretePercentual != null ? frete.fretePercentual : frete.frete_percentual ?? null,
+    excesso_kg:
+      frete.excessoKg != null
+        ? frete.excessoKg
+        : frete.excedente != null
+          ? frete.excedente
+          : frete.excesso_kg ?? null,
+    valor_excedente: frete.valorExcedente != null ? frete.valorExcedente : frete.valor_excedente ?? null,
+    advalorem: frete.advalorem != null ? frete.advalorem : frete.adValorem ?? null,
+    prazo: frete.prazo || null,
+    origem_importacao: 'IMPORTACAO_FRETES',
+    dados_originais: { tipo_item: 'COTACAO', ...frete },
+  };
+}
+
+function encontrarRotasParaCotacao(cotacao = {}, rotas = []) {
+  const nomeCotacao = normalizarChave(nomeCotacaoDoItem(cotacao));
+  const ufCotacao = ufDestinoDoItem(cotacao);
+  const origemCotacao = origemDoItem(cotacao);
+
+  if (!nomeCotacao) return [];
+
+  return (rotas || []).filter((rota) => {
+    const nomeRota = normalizarChave(nomeCotacaoDoItem(rota));
+    if (!nomeRota) return false;
+
+    const ufRota = ufDestinoDoItem(rota);
+    const origemRota = origemDoItem(rota);
+
+    const nomeBate = nomeRota === nomeCotacao || nomeRota.includes(nomeCotacao) || nomeCotacao.includes(nomeRota);
+    const ufBate = !ufCotacao || !ufRota || ufCotacao === ufRota;
+    const origemBate = !origemCotacao || !origemRota || origemCotacao === origemRota;
+
+    return nomeBate && ufBate && origemBate;
+  });
+}
+
+function enriquecerCotacaoComRota(cotacao = {}, rota = {}, indice = 0) {
+  const origemImportacao = textoLimpo(cotacao.origem_importacao) || 'IMPORTACAO_FRETES';
+  return {
+    ...cotacao,
+    cidade_origem: cotacao.cidade_origem || rota.cidade_origem || '',
+    uf_origem: cotacao.uf_origem || rota.uf_origem || '',
+    ibge_origem: cotacao.ibge_origem || rota.ibge_origem || '',
+    cidade_destino: rota.cidade_destino || cotacao.cidade_destino || '',
+    uf_destino: rota.uf_destino || cotacao.uf_destino || '',
+    ibge_destino: rota.ibge_destino || cotacao.ibge_destino || '',
+    prazo: rota.prazo || cotacao.prazo || null,
+    origem_importacao: origemImportacao.includes('COM_ROTAS') ? origemImportacao : `${origemImportacao}_COM_ROTAS`,
+    dados_originais: {
+      ...(cotacao.dados_originais || {}),
+      tipo_item: 'COTACAO',
+      rota_match_indice: indice,
+      rota_match: rota.dados_originais || rota,
+    },
+  };
+}
+
+function expandirCotacoesComRotas(cotacoes = [], rotas = []) {
+  const rotasValidas = (rotas || []).filter(itemEhRotaNegociacao);
+
+  return (cotacoes || []).flatMap((cotacao) => {
+    if (!itemEhCotacaoNegociacao(cotacao)) return [];
+
+    if (itemTemDestino(cotacao)) return [cotacao];
+
+    const matches = encontrarRotasParaCotacao(cotacao, rotasValidas);
+    if (!matches.length) return [cotacao];
+
+    return matches.map((rota, indice) => enriquecerCotacaoComRota(cotacao, rota, indice));
+  });
+}
+
+function chaveDeduplicacaoItem(item = {}) {
+  return [
+    getTipoItemNegociacao(item),
+    normalizarChave(item.cidade_origem),
+    upperLimpo(item.uf_origem),
+    textoLimpo(item.ibge_origem),
+    normalizarChave(item.cidade_destino),
+    upperLimpo(item.uf_destino),
+    textoLimpo(item.ibge_destino),
+    normalizarChave(item.faixa_peso),
+    Number(item.peso_inicial || 0),
+    Number(item.peso_final || 0),
+    Number(item.taxa_aplicada || 0),
+    Number(item.frete_percentual || 0),
+    Number(item.excesso_kg || 0),
+    Number(item.valor_excedente || 0),
+    Number(item.prazo || 0),
+  ].join('|');
+}
+
+function removerDuplicadosNegociacao(itens = []) {
+  const vistos = new Set();
+  const saida = [];
+
+  (itens || []).forEach((item) => {
+    const chave = chaveDeduplicacaoItem(item);
+    if (vistos.has(chave)) return;
+    vistos.add(chave);
+    saida.push(item);
+  });
+
+  return saida;
+}
+
 function montarItensParaNegociacao(resultado, tipoNegociacao = 'fretes') {
   const fretes = Array.isArray(resultado?.fretes) ? resultado.fretes : [];
   const rotas = Array.isArray(resultado?.rotas) ? resultado.rotas : [];
+  const itensRotas = rotas.map(montarItemRotaDeImportador);
+  const itensFretes = fretes.map(montarItemFreteDeImportador);
 
-  if (tipoNegociacao === 'rotas') {
-    return rotas.map((rota) => ({
-      cidade_origem: rota.origem || '',
-      uf_origem: rota.ufOrigem || '',
-      ibge_origem: rota.ibgeOrigem || '',
-      cidade_destino: rota.cidadeDestino || '',
-      uf_destino: rota.ufDestino || '',
-      ibge_destino: rota.ibgeDestino || '',
-      prazo: rota.prazo || null,
-      faixa_peso: rota.cotacaoFinal || rota.cotacao || '',
-      origem_importacao: 'IMPORTACAO_ROTAS',
-      dados_originais: { tipo_item: 'ROTA', ...rota },
-    }));
+  if (tipoNegociacao === 'rotas') return removerDuplicadosNegociacao(itensRotas);
+  if (tipoNegociacao === 'ambos') {
+    return removerDuplicadosNegociacao(expandirCotacoesComRotas(itensFretes, itensRotas));
   }
-
-  const usarRotasParaEnriquecer = tipoNegociacao === 'ambos';
-
-  return fretes.map((frete) => {
-    const rotaMatch = usarRotasParaEnriquecer
-      ? rotas.find(
-          (r) =>
-            r.ufDestino === frete.ufDestino &&
-            (r.cotacaoBase === frete.cotacaoBase || r.origem === frete.origem)
-        )
-      : null;
-
-    const cotNome = String(frete.cotacaoFinal || frete.cotacao || '').toUpperCase().trim();
-    const faixaRaw = String(frete.faixaPeso || '').trim();
-    const faixaPesoFormatada = faixaRaw
-      ? (cotNome ? `${cotNome} | ${faixaRaw}` : faixaRaw)
-      : cotNome || '';
-
-    return {
-      cidade_origem: frete.origem || '',
-      uf_origem: frete.ufOrigem || '',
-      ibge_origem: rotaMatch?.ibgeOrigem || '',
-      cidade_destino: rotaMatch?.cidadeDestino || '',
-      uf_destino: frete.ufDestino || '',
-      ibge_destino: rotaMatch?.ibgeDestino || '',
-      faixa_peso: faixaPesoFormatada,
-      peso_inicial: frete.pesoInicial != null ? frete.pesoInicial : null,
-      peso_final: frete.pesoFinal != null ? frete.pesoFinal : null,
-      frete_minimo: frete.freteMinimo != null ? frete.freteMinimo : null,
-      taxa_aplicada: frete.freteValor != null ? frete.freteValor : null,
-      frete_percentual: frete.fretePercentual != null ? frete.fretePercentual : null,
-      excesso_kg: frete.excedente != null ? frete.excedente : null,
-      valor_excedente: frete.valorExcedente != null ? frete.valorExcedente : null,
-      prazo: rotaMatch?.prazo || null,
-      origem_importacao: tipoNegociacao === 'ambos' ? 'IMPORTACAO_DIRETA' : 'IMPORTACAO_FRETES',
-      dados_originais: { tipo_item: 'COTACAO', ...frete },
-    };
-  });
+  return removerDuplicadosNegociacao(itensFretes);
 }
 
 function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabelaNegociacao = null) {
@@ -133,7 +306,7 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
   transportadorasPayload.forEach((transportadoraPayload) => {
     const origem = transportadoraPayload?.origem || {};
     const cidadeOrigem = origem.cidade || tabelaNegociacao?.origem || '';
-    const ufOrigem = tabelaNegociacao?.uf_origem || '';
+    const ufOrigemPadrao = tabelaNegociacao?.uf_origem || '';
     const ufDestinoPadrao = tabelaNegociacao?.uf_destino || '';
     const canal = origem.canal || tabelaNegociacao?.canal || '';
 
@@ -141,10 +314,10 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
       (origem.rotas || []).forEach((rota) => {
         itens.push({
           cidade_origem: cidadeOrigem,
-          uf_origem: ufOrigem,
+          uf_origem: rota.ufOrigem || ufOrigemPadrao,
           ibge_origem: rota.ibgeOrigem || '',
-          cidade_destino: '',
-          uf_destino: ufDestinoPadrao,
+          cidade_destino: rota.cidadeDestino || '',
+          uf_destino: rota.ufDestino || ufDestinoPadrao,
           ibge_destino: rota.ibgeDestino || '',
           prazo: rota.prazoEntregaDias || rota.prazo || null,
           faixa_peso: rota.cotacao || rota.nomeRota || '',
@@ -164,11 +337,11 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
     (origem.cotacoes || []).forEach((cotacao) => {
       itens.push({
         cidade_origem: cidadeOrigem,
-        uf_origem: ufOrigem,
-        ibge_origem: '',
-        cidade_destino: '',
-        uf_destino: ufDestinoPadrao,
-        ibge_destino: '',
+        uf_origem: cotacao.ufOrigem || ufOrigemPadrao,
+        ibge_origem: cotacao.ibgeOrigem || '',
+        cidade_destino: cotacao.cidadeDestino || '',
+        uf_destino: cotacao.ufDestino || ufDestinoPadrao,
+        ibge_destino: cotacao.ibgeDestino || '',
         faixa_peso: formatarFaixaCotacao(cotacao),
         peso_inicial: cotacao.pesoMin != null ? cotacao.pesoMin : null,
         peso_final: cotacao.pesoMax != null ? cotacao.pesoMax : null,
@@ -176,8 +349,8 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
         taxa_aplicada: cotacao.valorFixo != null ? cotacao.valorFixo : null,
         frete_percentual: cotacao.percentual != null ? cotacao.percentual : null,
         excesso_kg: cotacao.excesso != null ? cotacao.excesso : null,
-        valor_excedente: cotacao.rsKg != null ? cotacao.rsKg : null,
-        prazo: null,
+        valor_excedente: cotacao.rsKg != null ? cotacao.rsKg : cotacao.valorExcedente ?? null,
+        prazo: cotacao.prazo || null,
         origem_importacao: 'IMPORTACAO_FRETES',
         dados_originais: {
           tipo_item: 'COTACAO',
@@ -190,7 +363,43 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
     });
   });
 
-  return itens;
+  return removerDuplicadosNegociacao(itens);
+}
+
+function prepararItensNegociacaoParaSalvar({ tipoNegociacao, novosItens, itensExistentes }) {
+  const existentes = Array.isArray(itensExistentes) ? itensExistentes : [];
+  const rotasExistentes = existentes.filter(itemEhRotaNegociacao);
+  const cotacoesExistentes = existentes.filter(itemEhCotacaoNegociacao);
+  const outrosExistentes = existentes.filter((item) => !itemEhRotaNegociacao(item) && !itemEhCotacaoNegociacao(item));
+
+  if (tipoNegociacao === 'ambos') {
+    return removerDuplicadosNegociacao(novosItens);
+  }
+
+  if (tipoNegociacao === 'rotas') {
+    const novasRotas = novosItens.filter(itemEhRotaNegociacao);
+    const cotacoesPreservadas = expandirCotacoesComRotas(cotacoesExistentes, novasRotas);
+    return removerDuplicadosNegociacao([...outrosExistentes, ...novasRotas, ...cotacoesPreservadas]);
+  }
+
+  const novasCotacoes = novosItens.filter(itemEhCotacaoNegociacao);
+  const cotacoesComRotas = expandirCotacoesComRotas(novasCotacoes, rotasExistentes);
+  return removerDuplicadosNegociacao([...outrosExistentes, ...rotasExistentes, ...cotacoesComRotas]);
+}
+
+function validarItensNegociacaoAntesSalvar({ tipoNegociacao, itensParaSalvar, itensExistentes }) {
+  if (tipoNegociacao !== 'fretes') return null;
+
+  const rotasExistentes = (itensExistentes || []).filter(itemEhRotaNegociacao);
+  const cotacoesSemDestino = (itensParaSalvar || []).filter(
+    (item) => itemEhCotacaoNegociacao(item) && itemTemPreco(item) && !itemTemDestino(item)
+  );
+
+  if (cotacoesSemDestino.length && !rotasExistentes.length) {
+    return 'Fretes importados sem rota/destino correspondente. Importe as Rotas primeiro ou use a opção "Rotas + Fretes" com as duas abas no mesmo arquivo.';
+  }
+
+  return null;
 }
 
 async function montarPayloadNegociacao(file, tipoNegociacao, canalImportacao, tabelaNegociacao) {
@@ -611,11 +820,38 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
       setStatusImportacao((prev) => ({ ...prev, etapa: 'Gravando na base...' }));
       try {
         if (modoNegociacao) {
-          const todosItens = payloadsValidos.flatMap((p) => p.itensNegociacao || []);
+          const novosItens = payloadsValidos.flatMap((p) => p.itensNegociacao || []);
+          const itensExistentes = tipoNegociacao === 'ambos'
+            ? []
+            : await listarItensTabelaNegociacao(tabelaNegociacaoSelecionada.id);
+          const todosItens = prepararItensNegociacaoParaSalvar({
+            tipoNegociacao,
+            novosItens,
+            itensExistentes,
+          });
+          const erroValidacaoNegociacao = validarItensNegociacaoAntesSalvar({
+            tipoNegociacao,
+            itensParaSalvar: todosItens,
+            itensExistentes,
+          });
+
+          if (erroValidacaoNegociacao) {
+            throw new Error(erroValidacaoNegociacao);
+          }
+
           await substituirItensTabelaNegociacao(tabelaNegociacaoSelecionada, todosItens);
           totalInseridos = todosItens.length;
           novasEntradas.forEach((e) => {
-            if (e.status !== 'erro') { e.inseridos = totalInseridos; e.etapaAtual = 'Finalizado'; }
+            if (e.status !== 'erro') {
+              e.inseridos = totalInseridos;
+              e.etapaAtual = 'Finalizado';
+              e.meta = {
+                ...(e.meta || {}),
+                itensNovos: novosItens.length,
+                itensExistentesPreservados: itensExistentes.length,
+                itensSalvosNaTabela: todosItens.length,
+              };
+            }
           });
         } else if (typeof store.importarLoteESalvar === 'function') {
           resultado = await store.importarLoteESalvar(payloadsValidos, tipo);
@@ -849,16 +1085,16 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                   </button>
                 </div>
                 <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
-                  {tipoNegociacao === 'fretes' && 'Usa o mesmo importador padrão de Fretes/Cotações da tela de Transportadoras, lendo a primeira aba do arquivo.'}
-                  {tipoNegociacao === 'rotas' && 'Usa o mesmo importador padrão de Rotas da tela de Transportadoras, lendo a primeira aba do arquivo.'}
-                  {tipoNegociacao === 'ambos' && 'Usa o importador de tabela pronta e exige abas chamadas Rotas e Fretes no mesmo arquivo.'}
+                  {tipoNegociacao === 'fretes' && 'Lê Fretes/Cotações e preserva as Rotas já salvas. Se houver rota correspondente, o sistema preenche destino, IBGE e prazo automaticamente.'}
+                  {tipoNegociacao === 'rotas' && 'Lê Rotas, preserva Fretes já salvos e tenta cruzar as cotações existentes com os destinos das rotas.'}
+                  {tipoNegociacao === 'ambos' && 'Lê as abas Rotas e Fretes juntas e já grava os fretes cruzados por destino, IBGE e prazo.'}
                 </div>
               </div>
 
               {tabelaNegociacaoSelecionada && (
                 <div style={{ marginTop: 10, padding: '6px 10px', background: '#e1f5ee', borderRadius: 6, fontSize: 12, color: '#085041' }}>
                   ✓ Destino: <strong>{tabelaNegociacaoSelecionada.transportadora}</strong>
-                  {tabelaNegociacaoSelecionada.descricao ? ` — ${tabelaNegociacaoSelecionada.descricao}` : ''}. Os itens existentes desta tabela serão substituídos.
+                  {tabelaNegociacaoSelecionada.descricao ? ` — ${tabelaNegociacaoSelecionada.descricao}` : ''}. Em Fretes ou Rotas, o outro tipo já salvo será preservado; em Rotas + Fretes, a tabela será recalculada com o arquivo completo.
                 </div>
               )}
             </div>
@@ -882,7 +1118,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
 
           <p>
             {modoNegociacao
-              ? 'Escolha se a importação da negociação deve ler só Fretes, só Rotas ou as duas abas. Os itens existentes na tabela selecionada serão substituídos pelos do novo arquivo.'
+              ? 'Escolha se a importação da negociação deve ler só Fretes, só Rotas ou as duas abas. Fretes e Rotas podem ser importados separados sem apagar o outro tipo já salvo.'
               : 'Use os modelos para não errar o layout. O importador já tenta ler o cabeçalho real mesmo quando ele começa algumas linhas abaixo.'}
           </p>
 
