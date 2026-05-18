@@ -46,6 +46,68 @@ function formatMoney(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 function formatPercent(v) { return Number(v || 0).toFixed(2) + '%'; }
+function formatNumber(v, casas = 0) {
+  return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
+}
+function formatDateBR(v) {
+  if (!v) return '-';
+  var d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleDateString('pt-BR');
+}
+function getResumoTabela(tabela) {
+  return tabela && tabela.resumo_simulacao && typeof tabela.resumo_simulacao === 'object' && !Array.isArray(tabela.resumo_simulacao)
+    ? tabela.resumo_simulacao
+    : {};
+}
+function getHistoricoRodadasTabela(tabela) {
+  var resumo = getResumoTabela(tabela);
+  if (Array.isArray(resumo.historico_rodadas)) return resumo.historico_rodadas;
+  if (Array.isArray(resumo.rodadas)) return resumo.rodadas;
+  return [];
+}
+function getRodadaAtualTabela(tabela) {
+  var resumo = getResumoTabela(tabela);
+  var hist = getHistoricoRodadasTabela(tabela);
+  return Number(resumo.rodada_atual || (hist.length ? hist[hist.length - 1].rodada : 1) || 1);
+}
+function getIndicadoresTabela(tabela) {
+  var resumo = getResumoTabela(tabela);
+  var ultimaSim = resumo.ultima_simulacao && resumo.ultima_simulacao.indicadores ? resumo.ultima_simulacao.indicadores : {};
+  var savingMes = Number(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || resumo.savingSelecionadaVsReal || 0);
+  var savingAno = Number(ultimaSim.saving_ano || resumo.savingSelecionadaVsRealAno || (savingMes * 12) || 0);
+  var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
+  var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
+  var pedidosDia = Number(tabela.volumetria_dia || ultimaSim.pedidos_dia || resumo.cargasDia || 0);
+  var pedidosMes = pedidosDia * 22;
+  var pedidosAno = pedidosMes * 12;
+  var volumesDia = Number(ultimaSim.volumes_dia || resumo.volumesDia || 0);
+  var volumesMes = volumesDia * 22;
+  var volumesAno = volumesMes * 12;
+  var percentualReal = Number(ultimaSim.percentual_frete_realizado || resumo.percentualFreteRealizado || 0);
+  var percentualTabela = Number(tabela.percentual_frete_projetado || ultimaSim.percentual_frete_simulado || resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada || 0);
+  return {
+    temSimulacao: Boolean(resumo.ultima_simulacao || resumo.salvo_em || tabela.aderencia_projetada || tabela.saving_projetado || tabela.faturamento_projetado),
+    rodada: getRodadaAtualTabela(tabela),
+    aderencia: Number(tabela.aderencia_projetada || ultimaSim.aderencia || resumo.aderenciaSelecionada || 0),
+    savingMes: savingMes, savingAno: savingAno, faturamentoMes: faturamentoMes, faturamentoAno: faturamentoAno,
+    pedidosDia: pedidosDia, pedidosMes: pedidosMes, pedidosAno: pedidosAno,
+    volumesDia: volumesDia, volumesMes: volumesMes, volumesAno: volumesAno,
+    percentualReal: percentualReal, percentualTabela: percentualTabela, reducaoPercentual: percentualReal && percentualTabela ? percentualReal - percentualTabela : 0,
+    ctesAnalisados: Number(tabela.ctes_analisados || resumo.ctesAnalisados || 0),
+    ctesAtendidos: Number(tabela.ctes_atendidos || resumo.ctesComTabelaSelecionada || 0),
+    rotasSemCobertura: Number(tabela.rotas_sem_cobertura || resumo.ctesSemTabelaSelecionada || 0),
+  };
+}
+function origemTabelaLabel(tabela) {
+  var origem = normalizarTexto(tabela && tabela.origem);
+  var ufOrigem = normalizarTexto(tabela && tabela.uf_origem);
+  var ufDestino = normalizarTexto(tabela && tabela.uf_destino);
+  var partes = [];
+  if (origem || ufOrigem) partes.push('Origem: ' + (origem || 'Todas') + (ufOrigem ? '/' + ufOrigem : ''));
+  if (ufDestino) partes.push('Destino: ' + ufDestino);
+  return partes.join(' · ') || '-';
+}
 
 // ─── constantes ───────────────────────────────────────────────────────────────
 
@@ -566,6 +628,7 @@ export default function TabelasNegociacaoPage() {
     { key: 'generalidades', label: '⚙️ Generalidades' },
     { key: 'taxas', label: '🏷️ Taxas por Destino' },
     { key: 'itens', label: '📋 Itens (' + itensSelecionada.length + ')' },
+    { key: 'rodadas', label: '🔁 Rodadas' },
   ];
 
   return (
@@ -684,34 +747,81 @@ export default function TabelasNegociacaoPage() {
           <table className="sim-analise-tabela">
             <thead>
               <tr>
-                <th>Transportadora</th><th>Canal</th><th>Tipo</th><th>Status</th>
-                <th>Recebimento</th><th>Simulação</th><th>Saving proj.</th><th>Aderência</th><th>Ações</th>
+                <th>Negociação</th>
+                <th>Status</th>
+                <th>Rodada</th>
+                <th>Simulação</th>
+                <th>Indicadores principais</th>
+                <th>Operação</th>
+                <th>Frete % NF</th>
+                <th>Ações</th>
               </tr>
             </thead>
             <tbody>
               {tabelas.map(function(tabela) {
+                var ind = getIndicadoresTabela(tabela);
+                var historicoRodadas = getHistoricoRodadasTabela(tabela);
                 return (
                   <tr key={tabela.id}>
-                    <td>
+                    <td style={{ minWidth: 230 }}>
                       <strong>{tabela.transportadora}</strong>
                       <BadgeImportacao tipo={tabela.origem_importacao} />
-                      <div style={{ fontSize: 12, color: '#64748b' }}>{tabela.descricao || tabela.regiao || '-'}</div>
+                      <div style={{ fontSize: 12, color: '#334155', marginTop: 3 }}>{origemTabelaLabel(tabela)}</div>
+                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
+                        {tabela.descricao || tabela.regiao || 'Sem descrição'}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
+                        {tabela.tipo_tabela} · {tabela.canal} · Recebida em {formatDateBR(tabela.data_recebimento)}
+                      </div>
                     </td>
-                    <td>{tabela.canal}</td>
-                    <td>{tabela.tipo_tabela}</td>
                     <td>
                       <span style={Object.assign({}, statusStyle(tabela.status), { borderRadius: 999, padding: '4px 8px', fontSize: 12, fontWeight: 700 })}>
                         {tabela.status}
                       </span>
                     </td>
-                    <td>{tabela.data_recebimento || '-'}</td>
+                    <td>
+                      <strong>{ind.rodada}ª</strong>
+                      <div style={{ fontSize: 11, color: '#64748b' }}>{historicoRodadas.length} registro(s)</div>
+                    </td>
                     <td>
                       <button className="sim-tab" type="button" onClick={function() { alternarSimulacao(tabela); }}>
                         {tabela.incluir_simulacao ? 'Sim' : 'Não'}
                       </button>
+                      <div style={{ fontSize: 11, color: ind.temSimulacao ? '#15803d' : '#64748b', marginTop: 4 }}>
+                        {ind.temSimulacao ? 'Com análise salva' : 'Ainda sem simulação'}
+                      </div>
                     </td>
-                    <td>{formatMoney(tabela.saving_projetado)}</td>
-                    <td>{formatPercent(tabela.aderencia_projetada)}</td>
+                    <td style={{ minWidth: 240 }}>
+                      {ind.temSimulacao ? (
+                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                          <div><strong>Aderência:</strong> {formatPercent(ind.aderencia)}</div>
+                          <div><strong>Saving mês:</strong> {formatMoney(ind.savingMes)} · <strong>ano:</strong> {formatMoney(ind.savingAno)}</div>
+                          <div><strong>Faturamento mês:</strong> {formatMoney(ind.faturamentoMes)} · <strong>ano:</strong> {formatMoney(ind.faturamentoAno)}</div>
+                        </div>
+                      ) : (
+                        <span style={{ color: '#64748b', fontSize: 12 }}>Execute o Simulador Realizado e salve o resultado.</span>
+                      )}
+                    </td>
+                    <td style={{ minWidth: 180 }}>
+                      {ind.temSimulacao ? (
+                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                          <div><strong>NF/dia:</strong> {formatNumber(ind.pedidosDia, 1)} · <strong>mês:</strong> {formatNumber(ind.pedidosMes, 0)}</div>
+                          <div><strong>Volumes/dia:</strong> {formatNumber(ind.volumesDia, 1)} · <strong>ano:</strong> {formatNumber(ind.volumesAno, 0)}</div>
+                          <div style={{ color: '#64748b' }}>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</div>
+                        </div>
+                      ) : '-' }
+                    </td>
+                    <td style={{ minWidth: 150 }}>
+                      {ind.temSimulacao ? (
+                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                          <div>Realizado: <strong>{formatPercent(ind.percentualReal)}</strong></div>
+                          <div>Tabela: <strong>{formatPercent(ind.percentualTabela)}</strong></div>
+                          <div style={{ color: ind.reducaoPercentual >= 0 ? '#15803d' : '#dc2626' }}>
+                            {ind.reducaoPercentual >= 0 ? 'Redução' : 'Aumento'}: {formatPercent(Math.abs(ind.reducaoPercentual))}
+                          </div>
+                        </div>
+                      ) : '-' }
+                    </td>
                     <td>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
@@ -725,7 +835,7 @@ export default function TabelasNegociacaoPage() {
                   </tr>
                 );
               })}
-              {!tabelas.length && <tr><td colSpan="9">Nenhuma tabela encontrada.</td></tr>}
+              {!tabelas.length && <tr><td colSpan="8">Nenhuma tabela encontrada.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -740,10 +850,29 @@ export default function TabelasNegociacaoPage() {
                 {selecionada.transportadora}
                 <BadgeImportacao tipo={selecionada.origem_importacao} />
               </h2>
-              <p>{selecionada.tipo_tabela} · {selecionada.canal} · {selecionada.status}</p>
+              <p>{selecionada.tipo_tabela} · {selecionada.canal} · {selecionada.status} · Rodada {getRodadaAtualTabela(selecionada)}ª</p>
+              <p style={{ marginTop: 4, color: '#475569' }}>{origemTabelaLabel(selecionada)}{selecionada.descricao ? ' · ' + selecionada.descricao : ''}</p>
             </div>
             <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada); }}>Recarregar</button>
           </div>
+
+          {selecionada ? (function() {
+            var ind = getIndicadoresTabela(selecionada);
+            return ind.temSimulacao ? (
+              <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
+                <div className="summary-card"><span>Aderência</span><strong>{formatPercent(ind.aderencia)}</strong><small>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</small></div>
+                <div className="summary-card"><span>Saving mês</span><strong>{formatMoney(ind.savingMes)}</strong><small>Ano: {formatMoney(ind.savingAno)}</small></div>
+                <div className="summary-card"><span>Faturamento mês</span><strong>{formatMoney(ind.faturamentoMes)}</strong><small>Ano: {formatMoney(ind.faturamentoAno)}</small></div>
+                <div className="summary-card"><span>Pedidos</span><strong>{formatNumber(ind.pedidosDia, 1)}/dia</strong><small>{formatNumber(ind.pedidosMes, 0)}/mês</small></div>
+                <div className="summary-card"><span>Volumes</span><strong>{formatNumber(ind.volumesDia, 1)}/dia</strong><small>{formatNumber(ind.volumesAno, 0)}/ano</small></div>
+                <div className="summary-card"><span>Frete % NF</span><strong>{formatPercent(ind.percentualTabela)}</strong><small>Real: {formatPercent(ind.percentualReal)} · Redução: {formatPercent(ind.reducaoPercentual)}</small></div>
+              </div>
+            ) : (
+              <div className="sim-alert info" style={{ marginBottom: 18 }}>
+                Esta negociação ainda não tem simulação salva. Execute o Simulador Realizado, selecione esta tabela e salve o resultado para alimentar aderência, saving, faturamento, pedidos e volumes.
+              </div>
+            );
+          })() : null}
 
           {/* abas */}
           <div style={{ display: 'flex', gap: 0, flexWrap: 'wrap', marginBottom: 20, borderBottom: '2px solid #e2e8f0' }}>
@@ -1184,6 +1313,75 @@ export default function TabelasNegociacaoPage() {
               ) : null}
             </div>
           ) : null}
+
+          {/* ABA: RODADAS */}
+          {abaNegoc === 'rodadas' ? (function() {
+            var historico = getHistoricoRodadasTabela(selecionada).slice().reverse();
+            var simulacoes = historico.filter(function(r) { return r.tipo_registro === 'SIMULACAO'; });
+            return (
+              <div>
+                <h3 style={{ margin: '0 0 12px' }}>Histórico de rodadas e análises</h3>
+                <div className="sim-alert info" style={{ marginBottom: 14 }}>
+                  Cada nova proposta pode gerar uma nova rodada. Os itens atuais ficam ativos para simulação, enquanto os resultados salvos continuam guardados aqui para comparação entre rodadas.
+                </div>
+
+                {simulacoes.length > 1 ? (
+                  <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', marginBottom: 14 }}>
+                    {simulacoes.slice(0, 4).map(function(rodada) {
+                      var ind = rodada.indicadores || {};
+                      return (
+                        <div className="summary-card" key={rodada.id || rodada.criado_em}>
+                          <span>{rodada.rodada}ª rodada</span>
+                          <strong>{formatPercent(ind.aderencia || 0)}</strong>
+                          <small>Saving mês: {formatMoney(ind.saving_mes || 0)}</small>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                <div className="sim-analise-tabela-wrap">
+                  <table className="sim-analise-tabela">
+                    <thead>
+                      <tr>
+                        <th>Rodada</th>
+                        <th>Tipo</th>
+                        <th>Data</th>
+                        <th>Aderência</th>
+                        <th>Saving mês/ano</th>
+                        <th>Faturamento mês/ano</th>
+                        <th>Pedidos/Volumes</th>
+                        <th>Frete % NF</th>
+                        <th>Observação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historico.map(function(rodada, idx) {
+                        var ind = rodada.indicadores || {};
+                        var imp = rodada.itens_importados || {};
+                        var salvos = rodada.itens_salvos_apos_importacao || {};
+                        var isSim = rodada.tipo_registro === 'SIMULACAO';
+                        return (
+                          <tr key={rodada.id || rodada.criado_em || idx}>
+                            <td><strong>{rodada.rodada || '-' }ª</strong></td>
+                            <td>{isSim ? 'SIMULAÇÃO' : 'IMPORTAÇÃO'}</td>
+                            <td>{formatDateBR(rodada.criado_em)}</td>
+                            <td>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
+                            <td>{isSim ? <span>{formatMoney(ind.saving_mes || 0)}<br /><small>{formatMoney(ind.saving_ano || 0)}</small></span> : '-'}</td>
+                            <td>{isSim ? <span>{formatMoney(ind.faturamento_mes || 0)}<br /><small>{formatMoney(ind.faturamento_ano || 0)}</small></span> : '-'}</td>
+                            <td>{isSim ? <span>{formatNumber(ind.pedidos_dia || 0, 1)} NF/dia<br /><small>{formatNumber(ind.volumes_dia || 0, 1)} vol/dia</small></span> : <span>{imp.rotas || 0} rotas · {imp.cotacoes || 0} fretes<br /><small>Ativo: {salvos.rotas || 0} rotas · {salvos.cotacoes || 0} fretes</small></span>}</td>
+                            <td>{isSim ? <span>Real: {formatPercent(ind.percentual_frete_realizado || 0)}<br /><small>Tabela: {formatPercent(ind.percentual_frete_simulado || 0)}</small></span> : '-'}</td>
+                            <td style={{ fontSize: 12, color: '#475569' }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
+                          </tr>
+                        );
+                      })}
+                      {!historico.length ? <tr><td colSpan="9">Nenhuma rodada registrada ainda.</td></tr> : null}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })() : null}
 
         </section>
       ) : null}
