@@ -546,6 +546,43 @@ function calcularControlePasta(files = [], historico = [], tipo = '') {
     });
 }
 
+
+function formatarOrigemTabelaNegociacao(tabela = {}) {
+  const origem = textoLimpo(tabela.origem);
+  const ufOrigem = upperLimpo(tabela.uf_origem);
+  if (origem && ufOrigem) return `${origem}/${ufOrigem}`;
+  if (origem) return origem;
+  if (ufOrigem) return `UF origem ${ufOrigem}`;
+  return 'Origem não informada';
+}
+
+function formatarContextoTabelaNegociacao(tabela = {}) {
+  const partes = [];
+  const ufDestino = upperLimpo(tabela.uf_destino);
+  const regiao = textoLimpo(tabela.regiao);
+  const descricao = textoLimpo(tabela.descricao);
+
+  if (ufDestino) partes.push(`UF destino ${ufDestino}`);
+  if (regiao) partes.push(`Região ${regiao}`);
+  if (descricao) partes.push(descricao);
+
+  return partes.join(' · ');
+}
+
+function formatarOpcaoTabelaNegociacao(tabela = {}) {
+  const partes = [
+    tabela.transportadora || 'Sem transportadora',
+    `Origem: ${formatarOrigemTabelaNegociacao(tabela)}`,
+    tabela.canal || 'Sem canal',
+    tabela.status || 'Sem status',
+  ];
+
+  const contexto = formatarContextoTabelaNegociacao(tabela);
+  if (contexto) partes.push(contexto);
+
+  return partes.join(' — ');
+}
+
 function mapImportacaoRemota(item) {
   return {
     arquivo: item.arquivo || 'Arquivo sem nome',
@@ -1041,7 +1078,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                     {!carregandoNegociacoes && tabelasNegociacao.length === 0 && <option value="">Nenhuma tabela encontrada</option>}
                     {tabelasNegociacao.map((tabela) => (
                       <option key={tabela.id} value={tabela.id}>
-                        {`${tabela.transportadora || 'Sem transportadora'} — ${tabela.canal || 'Sem canal'} — ${tabela.status || 'Sem status'}${tabela.descricao ? ` — ${tabela.descricao}` : ''}`}
+                        {formatarOpcaoTabelaNegociacao(tabela)}
                       </option>
                     ))}
                   </select>
@@ -1086,9 +1123,14 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
               </div>
 
               {tabelaNegociacaoSelecionada && (
-                <div style={{ marginTop: 10, padding: '6px 10px', background: '#e1f5ee', borderRadius: 6, fontSize: 12, color: '#085041' }}>
-                  ✓ Destino: <strong>{tabelaNegociacaoSelecionada.transportadora}</strong>
-                  {tabelaNegociacaoSelecionada.descricao ? ` — ${tabelaNegociacaoSelecionada.descricao}` : ''}. Em Fretes ou Rotas, o outro tipo já salvo será preservado; em Rotas + Fretes, a tabela será recalculada com o arquivo completo.
+                <div style={{ marginTop: 10, padding: '8px 10px', background: '#e1f5ee', borderRadius: 6, fontSize: 12, color: '#085041', lineHeight: 1.45 }}>
+                  ✓ Destino: <strong>{tabelaNegociacaoSelecionada.transportadora}</strong><br />
+                  <strong>Origem cadastrada:</strong> {formatarOrigemTabelaNegociacao(tabelaNegociacaoSelecionada)}
+                  {formatarContextoTabelaNegociacao(tabelaNegociacaoSelecionada) ? (
+                    <> · <strong>Complemento:</strong> {formatarContextoTabelaNegociacao(tabelaNegociacaoSelecionada)}</>
+                  ) : null}
+                  <br />
+                  Em Fretes ou Rotas, o outro tipo já salvo será preservado; em Rotas + Fretes, a tabela será recalculada com o arquivo completo.
                 </div>
               )}
             </div>
