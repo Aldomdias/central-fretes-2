@@ -610,6 +610,35 @@ export default function FerramentasPage({ transportadoras = [] }) {
       return;
     }
 
+    const normalizarCanalMedia = (value = '') => {
+      const texto = String(value || '').toUpperCase();
+      return texto.includes('B2C') || texto.includes('ECOM') || texto.includes('MARKET') ? 'B2C' : 'ATACADO';
+    };
+
+    const chaveMedia = (canal, limite) => `${normalizarCanalMedia(canal)}|${Number(toNumber(limite)).toFixed(3)}`;
+
+    const encontrarMediaFaixa = (lista = [], canal, limitePeso) => {
+      const canalNormalizado = normalizarCanalMedia(canal);
+      const limite = toNumber(limitePeso);
+      if (!limite) return null;
+
+      const mesmaChave = lista.find((item) => item.chave === chaveMedia(canalNormalizado, limite));
+      if (mesmaChave) return mesmaChave;
+
+      const mesmoCanal = lista.filter((item) => item.canal === canalNormalizado);
+      const aproximada = mesmoCanal.find((item) => Math.abs(toNumber(item.limite_kg) - limite) <= 0.001);
+      if (aproximada) return aproximada;
+
+      const porIntervalo = mesmoCanal.find((item) => {
+        const inicial = toNumber(item.peso_inicial);
+        const final = toNumber(item.limite_kg);
+        return limite > inicial && limite <= final;
+      });
+      if (porIntervalo) return porIntervalo;
+
+      return null;
+    };
+
     setAtualizandoCubagemGrade(true);
     setErro('');
     setMensagem('Calculando médias de cubagem por faixa com base no Tracking...');
@@ -618,7 +647,7 @@ export default function FerramentasPage({ transportadoras = [] }) {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('vw_tracking_grade_cubagem_media')
-        .select('canal,peso_inicial,limite_kg,qtd_registros,cubagem_media_m3,cubagem_mediana_m3,volumes_medios')
+        .select('canal,peso_inicial,limite_kg,qtd_registros,cubagem_media_m3,cubagem_mediana_m3,volumes_medios,cubagem_min_m3,cubagem_max_m3,origem_media')
         .order('canal', { ascending: true })
         .order('limite_kg', { ascending: true });
 
@@ -626,35 +655,49 @@ export default function FerramentasPage({ transportadoras = [] }) {
 
       const linhasMedia = Array.isArray(data) ? data : [];
       if (!linhasMedia.length) {
-        throw new Error('A view vw_tracking_grade_cubagem_media não retornou dados. Confirme se o Tracking possui peso e cubagem_total preenchidos.');
+        throw new Error('A view vw_tracking_grade_cubagem_media não retornou dados para o aplicativo. Rode o SQL de GRANT/RLS da view ou confirme se a view existe no Supabase.');
       }
 
-      const mediasPorChave = new Map();
-      linhasMedia.forEach((linha) => {
-        const canal = String(linha.canal || '').toUpperCase() === 'B2C' ? 'B2C' : 'ATACADO';
-        const limite = toNumber(linha.limite_kg);
-        const cubagemMediana = toNumber(linha.cubagem_mediana_m3);
-        const cubagemMedia = toNumber(linha.cubagem_media_m3);
-        const cubagem = cubagemMediana > 0 ? cubagemMediana : cubagemMedia;
-        mediasPorChave.set(`${canal}|${limite}`, {
-          cubagem,
-          qtd: Number(linha.qtd_registros || 0),
-          volumesMedios: toNumber(linha.volumes_medios),
-        });
-      });
+      const mediasNormalizadas = linhasMedia
+        .map((linha) => {
+          const canal = normalizarCanalMedia(linha.canal);
+          const limite = toNumber(linha.limite_kg);
+          const cubagemMediana = toNumber(linha.cubagem_mediana_m3);
+          const cubagemMedia = toNumber(linha.cubagem_media_m3);
+          const cubagem = cubagemMediana > 0 ? cubagemMediana : cubagemMedia;
+          return {
+            ...linha,
+            canal,
+            limite_kg: limite,
+            peso_inicial: toNumber(linha.peso_inicial),
+            cubagem,
+            qtd: Number(linha.qtd_registros || 0),
+            volumesMedios: toNumber(linha.volumes_medios),
+            chave: chaveMedia(canal, limite),
+          };
+        })
+        .filter((linha) => linha.canal && linha.limite_kg > 0 && linha.cubagem > 0);
+
+      if (!mediasNormalizadas.length) {
+        throw new Error('A view retornou linhas, mas nenhuma possui cubagem média/mediana maior que zero. Verifique cubagem_total no Tracking.');
+      }
 
       let faixasAtualizadas = 0;
+      const detalheAtualizacao = [];
       const proximaGrade = { ...grade };
 
       CANAIS_GRADE.forEach((canal) => {
         proximaGrade[canal] = (grade[canal] || []).map((linha) => {
           const limite = toNumber(linha.peso);
-          const media = mediasPorChave.get(`${canal}|${limite}`);
+          const media = encontrarMediaFaixa(mediasNormalizadas, canal, limite);
           if (!media || media.cubagem <= 0) return linha;
+
           faixasAtualizadas += 1;
+          detalheAtualizacao.push(`${canal} até ${limite}kg = ${media.cubagem.toFixed(6)}m³`);
+
           return {
             ...linha,
-            cubagem: Number(media.cubagem.toFixed(6)),
+            cubagem: media.cubagem.toFixed(6),
             cubagemFonte: 'tracking_media',
             cubagemAmostra: media.qtd,
             volumesMediosTracking: media.volumesMedios,
@@ -663,11 +706,12 @@ export default function FerramentasPage({ transportadoras = [] }) {
       });
 
       if (!faixasAtualizadas) {
-        throw new Error('Nenhuma faixa da grade atual encontrou média correspondente no Tracking. Confira os limites de peso cadastrados.');
+        const amostra = mediasNormalizadas.slice(0, 6).map((m) => `${m.canal}|${m.limite_kg}`).join(', ');
+        throw new Error(`A view retornou ${linhasMedia.length} linha(s), mas nenhuma faixa da grade atual casou com as médias. Amostra da view: ${amostra}`);
       }
 
       setGrade(proximaGrade);
-      setMensagem(`Cubagem padrão atualizada pelo Tracking em ${faixasAtualizadas} faixa(s). Revise os valores e clique em Salvar grade para usar no simulador.`);
+      setMensagem(`Cubagem padrão atualizada pelo Tracking em ${faixasAtualizadas} faixa(s), usando ${linhasMedia.length} linha(s) da view. Revise os valores e clique em Salvar grade. ${detalheAtualizacao.slice(0, 3).join(' · ')}`);
       setErro('');
     } catch (error) {
       setErro(error.message || 'Erro ao atualizar cubagens pela média do Tracking.');
