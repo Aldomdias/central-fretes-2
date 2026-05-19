@@ -568,6 +568,7 @@ export default function FerramentasPage({ transportadoras = [] }) {
   const [erro, setErro] = useState('');
   const [grade, setGrade] = useState(() => carregarGradeFrete());
   const [canalGrade, setCanalGrade] = useState('ATACADO');
+  const [atualizandoCubagemGrade, setAtualizandoCubagemGrade] = useState(false);
 
   const alterar = (campo, valor) => setConfig((prev) => ({ ...prev, [campo]: valor }));
 
@@ -600,6 +601,80 @@ export default function FerramentasPage({ transportadoras = [] }) {
       ...prev,
       [canalGrade]: (prev[canalGrade] || []).filter((_, i) => i !== index),
     }));
+  };
+
+  const atualizarCubagemGradePeloTracking = async () => {
+    if (!isSupabaseConfigured()) {
+      setErro('Supabase não configurado. Não foi possível calcular médias do Tracking.');
+      setMensagem('');
+      return;
+    }
+
+    setAtualizandoCubagemGrade(true);
+    setErro('');
+    setMensagem('Calculando médias de cubagem por faixa com base no Tracking...');
+
+    try {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('vw_tracking_grade_cubagem_media')
+        .select('canal,peso_inicial,limite_kg,qtd_registros,cubagem_media_m3,cubagem_mediana_m3,volumes_medios')
+        .order('canal', { ascending: true })
+        .order('limite_kg', { ascending: true });
+
+      if (error) throw error;
+
+      const linhasMedia = Array.isArray(data) ? data : [];
+      if (!linhasMedia.length) {
+        throw new Error('A view vw_tracking_grade_cubagem_media não retornou dados. Confirme se o Tracking possui peso e cubagem_total preenchidos.');
+      }
+
+      const mediasPorChave = new Map();
+      linhasMedia.forEach((linha) => {
+        const canal = String(linha.canal || '').toUpperCase() === 'B2C' ? 'B2C' : 'ATACADO';
+        const limite = toNumber(linha.limite_kg);
+        const cubagemMediana = toNumber(linha.cubagem_mediana_m3);
+        const cubagemMedia = toNumber(linha.cubagem_media_m3);
+        const cubagem = cubagemMediana > 0 ? cubagemMediana : cubagemMedia;
+        mediasPorChave.set(`${canal}|${limite}`, {
+          cubagem,
+          qtd: Number(linha.qtd_registros || 0),
+          volumesMedios: toNumber(linha.volumes_medios),
+        });
+      });
+
+      let faixasAtualizadas = 0;
+      const proximaGrade = { ...grade };
+
+      CANAIS_GRADE.forEach((canal) => {
+        proximaGrade[canal] = (grade[canal] || []).map((linha) => {
+          const limite = toNumber(linha.peso);
+          const media = mediasPorChave.get(`${canal}|${limite}`);
+          if (!media || media.cubagem <= 0) return linha;
+          faixasAtualizadas += 1;
+          return {
+            ...linha,
+            cubagem: Number(media.cubagem.toFixed(6)),
+            cubagemFonte: 'tracking_media',
+            cubagemAmostra: media.qtd,
+            volumesMediosTracking: media.volumesMedios,
+          };
+        });
+      });
+
+      if (!faixasAtualizadas) {
+        throw new Error('Nenhuma faixa da grade atual encontrou média correspondente no Tracking. Confira os limites de peso cadastrados.');
+      }
+
+      setGrade(proximaGrade);
+      setMensagem(`Cubagem padrão atualizada pelo Tracking em ${faixasAtualizadas} faixa(s). Revise os valores e clique em Salvar grade para usar no simulador.`);
+      setErro('');
+    } catch (error) {
+      setErro(error.message || 'Erro ao atualizar cubagens pela média do Tracking.');
+      setMensagem('');
+    } finally {
+      setAtualizandoCubagemGrade(false);
+    }
   };
 
   const salvarGradeAtual = () => {
@@ -839,8 +914,11 @@ export default function FerramentasPage({ transportadoras = [] }) {
                 ))}
               </div>
               <div className="actions-right gap-row">
-                <button className="btn-secondary" type="button" onClick={restaurarGradePadrao}>Restaurar padrão</button>
-                <button className="btn-primary" type="button" onClick={salvarGradeAtual}>Salvar grade</button>
+                <button className="btn-secondary" type="button" onClick={atualizarCubagemGradePeloTracking} disabled={atualizandoCubagemGrade}>
+                  {atualizandoCubagemGrade ? 'Calculando médias...' : 'Atualizar médias pelo Tracking'}
+                </button>
+                <button className="btn-secondary" type="button" onClick={restaurarGradePadrao} disabled={atualizandoCubagemGrade}>Restaurar padrão</button>
+                <button className="btn-primary" type="button" onClick={salvarGradeAtual} disabled={atualizandoCubagemGrade}>Salvar grade</button>
               </div>
             </div>
             <div className="sim-analise-tabela-wrap">
@@ -852,7 +930,15 @@ export default function FerramentasPage({ transportadoras = [] }) {
                       <td><input value={linha.peso ?? ''} onChange={(e) => alterarGrade(index, 'peso', e.target.value)} placeholder="Ex.: 50" /></td>
                       <td><input value={linha.valorNF ?? ''} onChange={(e) => alterarGrade(index, 'valorNF', e.target.value)} placeholder="Ex.: 2000" /></td>
                       <td><input value={linha.cubagem ?? ''} onChange={(e) => alterarGrade(index, 'cubagem', e.target.value)} placeholder="Ex.: 0,320" /></td>
-                      <td>Usa esta cubagem para pesos até {linha.peso || '...'} kg.</td>
+                      <td>
+                        Usa esta cubagem para pesos até {linha.peso || '...'} kg.
+                        {linha.cubagemFonte === 'tracking_media' && (
+                          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
+                            Média Tracking: {Number(linha.cubagemAmostra || 0).toLocaleString('pt-BR')} registro(s)
+                            {Number(linha.volumesMediosTracking || 0) > 0 ? ` · ${Number(linha.volumesMediosTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} vol. médios` : ''}
+                          </div>
+                        )}
+                      </td>
                       <td><button className="btn-secondary" type="button" onClick={() => removerFaixaGrade(index)}>Remover</button></td>
                     </tr>
                   ))}
@@ -863,7 +949,11 @@ export default function FerramentasPage({ transportadoras = [] }) {
             <div className="actions-right">
               <button className="btn-secondary" type="button" onClick={adicionarFaixaGrade}>Adicionar faixa</button>
             </div>
-            <div className="hint-box compact">A regra usa a primeira faixa com limite maior ou igual ao peso informado.</div>
+            <div className="hint-box compact">
+              A regra usa a primeira faixa com limite maior ou igual ao peso informado.
+              Se o CT-e não encontrar cubagem no Tracking, o simulador usa esta cubagem padrão como estimativa para calcular peso cubado.
+              O botão de médias usa a mediana do Tracking por canal/faixa para reduzir distorções por outliers.
+            </div>
           </div>
         )}
       </div>
