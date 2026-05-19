@@ -1519,7 +1519,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [negociacoesSimulador, setNegociacoesSimulador] = useState([]);
   const [carregandoNegociacoesSimulador, setCarregandoNegociacoesSimulador] = useState(false);
   const [erroNegociacoesSimulador, setErroNegociacoesSimulador] = useState('');
-  const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(true);
+  const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
@@ -1783,9 +1783,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
     atualizarOpcoesSimulador();
   }, []);
 
+  // Não carregue negociações automaticamente ao abrir o simulador.
+  // Algumas negociações possuem milhares de itens e isso deixava a tela pesada
+  // mesmo quando o usuário queria simular apenas a tabela selecionada vs realizado.
+  // Use o botão "Atualizar negociações" ou marque a opção de incluir negociações.
+
   useEffect(() => {
-    carregarNegociacoesSimulador();
-  }, []);
+    if (aba === 'realizado' && incluirNegociacoesRealizado && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
+      carregarNegociacoesSimulador();
+    }
+  }, [aba, incluirNegociacoesRealizado]);
 
   useEffect(() => {
     let ativo = true;
@@ -2366,10 +2373,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
         : rowsComIbge;
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
-      const deveCompararConcorrentes = !ehNegociacaoSelecionada || compararConcorrentesRealizado;
-      const basesParaMesclar = [baseSelecionada];
+      const deveCompararConcorrentes = Boolean(compararConcorrentesRealizado);
+      const basesParaMesclar = [baseSelecionada].filter((base) => Array.isArray(base) ? base.length : Boolean(base));
 
-      if (incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length && deveCompararConcorrentes) {
+      // Só adiciona negociações como concorrentes quando os dois flags estiverem marcados.
+      // Com "Comparar com tabelas oficiais/concorrentes" desmarcado, a simulação fica leve:
+      // tabela selecionada x CT-es realizados.
+      if (deveCompararConcorrentes && incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length) {
         basesParaMesclar.push(transportadorasNegociacaoRealizado);
       }
       let baseRotas = [];
@@ -2440,7 +2450,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const mapaCidades = new Map(cidadePorIbgeCompleto);
       (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
 
-      atualizarProcessamentoUi('Simulando CT-e a CT-e contra a tabela selecionada e concorrentes...', 82);
+      atualizarProcessamentoUi(deveCompararConcorrentes ? 'Simulando CT-e a CT-e contra a tabela selecionada e concorrentes...' : 'Simulando CT-e a CT-e contra a tabela selecionada e o realizado...', 82);
       const resultado = simularRealizadoComTabela({
         rows: rowsFiltrados,
         baseOnline: baseParaSimulacao,
@@ -2981,7 +2991,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       </div>
 
       {carregandoSimulacao ? (
-        <div className="sim-alert info">Buscando concorrentes no Supabase para esta simulação...</div>
+        <div className="sim-alert info">Consultando o Supabase para esta simulação...</div>
       ) : null}
       {processamentoUi.ativo ? (
         <div className="sim-alert info" style={{ display: 'grid', gap: 10 }}>
@@ -3541,7 +3551,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <input
                 type="checkbox"
                 checked={incluirNegociacoesRealizado}
-                onChange={(event) => setIncluirNegociacoesRealizado(event.target.checked)}
+                onChange={(event) => {
+                  const marcado = event.target.checked;
+                  setIncluirNegociacoesRealizado(marcado);
+                  if (marcado && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
+                    carregarNegociacoesSimulador();
+                  }
+                }}
               />
               Incluir tabelas em negociação marcadas como “Simulação = Sim”
             </label>
@@ -3572,7 +3588,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
 
             <small style={{ color: '#64748b' }}>
-              Para testar uma negociação rapidamente, deixe desmarcado. Assim o sistema simula só a tabela selecionada contra os CT-es realizados.
+              Para simular rápido, deixe as duas opções desmarcadas. Assim o sistema compara somente a tabela selecionada contra os CT-es realizados, sem buscar concorrentes no Supabase.
             </small>
 
             {erroNegociacoesSimulador ? <span style={{ color: '#dc2626' }}>{erroNegociacoesSimulador}</span> : null}
@@ -3588,7 +3604,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
-            <strong>Regra:</strong> no modo malha, o sistema busca o realizado dentro das origens cobertas pela transportadora selecionada e simula CT-e a CT-e contra a tabela dela e contra os concorrentes da mesma malha.
+            <strong>Regra:</strong> no modo malha, o sistema busca o realizado dentro das origens cobertas pela transportadora selecionada. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
           </div>
 
           {resultadoRealizado && (
@@ -3597,7 +3613,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Buscados do banco</span><strong>{resultadoRealizado.filtros?.ctesBrutos ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>{resultadoRealizado.filtros?.modo === 'malha' ? 'Na malha (filtro)' : 'Após filtros'}</span><strong>{resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>CT-es analisados</span><strong>{resultadoRealizado.ctesAnalisados}</strong></div>
-                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>com tabela concorrente</small></div>
+                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>{compararConcorrentesRealizado ? 'com tabela concorrente' : 'vs realizado'}</small></div>
                 <div><span>Sem tabela geral</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
                 <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
                 <div><span>Sem tabela selecionada</span><strong>{resultadoRealizado.ctesSemTabelaSelecionada}</strong></div>
