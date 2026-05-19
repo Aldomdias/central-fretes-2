@@ -402,83 +402,194 @@ function apenasDigitosTracking(value = '') {
   return String(value || '').replace(/\D/g, '');
 }
 
-function chunksTracking(lista = [], tamanho = 400) {
+function normalizarChaveLongaTracking(value = '') {
+  // Para CT-e/NF-e, a comparação precisa ser pela chave limpa, apenas dígitos.
+  // Isso evita perder vínculo quando uma base traz máscara/espaços e a outra não.
+  return apenasDigitosTracking(value);
+}
+
+function chunksTracking(lista = [], tamanho = 300) {
   const saida = [];
   for (let i = 0; i < lista.length; i += tamanho) saida.push(lista.slice(i, i + tamanho));
   return saida;
+}
+
+function numeroTracking(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function criarTrackingAgregado(item = {}, origem = 'raw') {
+  const qtdVolumes = numeroTracking(item.qtd_volumes ?? item.volumes ?? item.volume ?? 0);
+  const cubagemUnitaria = numeroTracking(item.cubagem_unitaria ?? 0);
+  const cubagemTotalDireta = numeroTracking(item.cubagem_total ?? item.cubagem ?? 0);
+  const cubagemTotal = cubagemTotalDireta > 0
+    ? cubagemTotalDireta
+    : cubagemUnitaria > 0 && qtdVolumes > 0
+      ? cubagemUnitaria * qtdVolumes
+      : 0;
+
+  return {
+    ...item,
+    origem_vinculo_tracking: origem,
+    linhas_tracking: Number(item.linhas_tracking || 1),
+    qtd_volumes: qtdVolumes,
+    cubagem_unitaria: cubagemUnitaria,
+    cubagem_total: cubagemTotal,
+    peso: numeroTracking(item.peso ?? item.peso_tracking ?? 0),
+    peso_declarado: numeroTracking(item.peso_declarado ?? 0),
+    peso_cubado: numeroTracking(item.peso_cubado ?? 0),
+    valor_nf: numeroTracking(item.valor_nf ?? 0),
+  };
+}
+
+function somarTrackingAgregado(atual, proximo) {
+  if (!atual) return criarTrackingAgregado(proximo);
+  const item = criarTrackingAgregado(proximo);
+  return {
+    ...atual,
+    ...Object.fromEntries(
+      Object.entries(atual).filter(([, value]) => value !== undefined && value !== null && String(value) !== '')
+    ),
+    linhas_tracking: numeroTracking(atual.linhas_tracking) + numeroTracking(item.linhas_tracking || 1),
+    qtd_volumes: numeroTracking(atual.qtd_volumes) + numeroTracking(item.qtd_volumes),
+    cubagem_unitaria: numeroTracking(atual.cubagem_unitaria) || numeroTracking(item.cubagem_unitaria),
+    cubagem_total: numeroTracking(atual.cubagem_total) + numeroTracking(item.cubagem_total),
+    peso: numeroTracking(atual.peso) + numeroTracking(item.peso),
+    peso_declarado: numeroTracking(atual.peso_declarado) || numeroTracking(item.peso_declarado),
+    peso_cubado: numeroTracking(atual.peso_cubado) || numeroTracking(item.peso_cubado),
+    valor_nf: numeroTracking(atual.valor_nf) || numeroTracking(item.valor_nf),
+    origem_vinculo_tracking: atual.origem_vinculo_tracking || item.origem_vinculo_tracking || 'raw',
+  };
+}
+
+function adicionarTrackingNoMapa(mapa, chave, item) {
+  if (!chave) return;
+  const atual = mapa.get(chave);
+  mapa.set(chave, somarTrackingAgregado(atual, item));
 }
 
 async function buscarTrackingParaRealizado(rows = []) {
   const vazio = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
   if (!isSupabaseConfigured() || !rows?.length) return vazio;
 
-  const chavesCte = [...new Set(rows.map((r) => normalizarChaveTracking(r.chaveCte)).filter(Boolean))];
-  const chavesNfe = [...new Set(rows.map((r) => normalizarChaveTracking(r.chaveNfe)).filter(Boolean))];
-  const notas = [...new Set(rows.map((r) => normalizarChaveTracking(r.notaFiscal)).filter(Boolean))];
-  const numerosCte = [...new Set(rows.map((r) => apenasDigitosTracking(r.numeroCte)).filter(Boolean))];
+  const chavesCte = [...new Set(rows.map((r) => normalizarChaveLongaTracking(r.chaveCte)).filter((v) => v.length >= 20))];
+  const chavesNfe = [...new Set(rows.map((r) => normalizarChaveLongaTracking(r.chaveNfe)).filter((v) => v.length >= 20))];
+  const notas = [...new Set(rows.map((r) => apenasDigitosTracking(r.notaFiscal)).filter(Boolean))];
 
-  if (!chavesCte.length && !chavesNfe.length && !notas.length && !numerosCte.length) return vazio;
+  // Número de CT-e fica como último recurso. Não deve ser usado quando a linha possui chave.
+  const numerosCteFallback = [...new Set(
+    rows
+      .filter((r) => !normalizarChaveLongaTracking(r.chaveCte) && !normalizarChaveLongaTracking(r.chaveNfe) && !apenasDigitosTracking(r.notaFiscal))
+      .map((r) => apenasDigitosTracking(r.numeroCte))
+      .filter(Boolean)
+  )];
+
+  if (!chavesCte.length && !chavesNfe.length && !notas.length && !numerosCteFallback.length) return vazio;
 
   const supabase = getSupabaseClient();
-  const encontrados = [];
-  const addRows = (data = []) => {
-    (data || []).forEach((item) => {
-      if (!item) return;
-      encontrados.push(item);
-    });
-  };
+  const mapaChaveCte = new Map();
+  const mapaChaveNfe = new Map();
+  const mapaNota = new Map();
+  const mapaNumeroCte = new Map();
+  let totalEncontrado = 0;
+  let erroView = '';
 
-  async function consultarPorColuna(coluna, valores) {
-    for (const parte of chunksTracking(valores, 400)) {
+  async function consultarViewAgregadaPorChaveCte() {
+    if (!chavesCte.length) return false;
+    let consultou = false;
+    for (const parte of chunksTracking(chavesCte, 300)) {
+      if (!parte.length) continue;
+      const { data, error } = await supabase
+        .from('vw_tracking_cte_agregado')
+        .select('chave_cte_limpa,chave_cte,chave_nfe,cte_numero,nota_fiscal,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes,linhas_tracking,data_transporte,data_entrega,previsao_transportadora')
+        .in('chave_cte_limpa', parte);
+
+      if (error) {
+        erroView = error.message || String(error);
+        return false;
+      }
+
+      consultou = true;
+      (data || []).forEach((item) => {
+        const chave = normalizarChaveLongaTracking(item.chave_cte_limpa || item.chave_cte);
+        adicionarTrackingNoMapa(mapaChaveCte, chave, criarTrackingAgregado(item, 'VIEW_CHAVE_CTE'));
+        totalEncontrado += Number(item.linhas_tracking || 1);
+      });
+    }
+    return consultou;
+  }
+
+  async function consultarRawPorColuna(coluna, valores, tipo) {
+    for (const parte of chunksTracking(valores, 300)) {
       if (!parte.length) continue;
       const { data, error } = await supabase
         .from('tracking_rows')
         .select('chave_nfe,chave_cte,cte_numero,nota_fiscal,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes,data_transporte,data_entrega,previsao_transportadora')
         .in(coluna, parte);
       if (error) throw error;
-      addRows(data || []);
+
+      (data || []).forEach((item) => {
+        totalEncontrado += 1;
+        if (tipo === 'CHAVE_CTE') adicionarTrackingNoMapa(mapaChaveCte, normalizarChaveLongaTracking(item.chave_cte), criarTrackingAgregado(item, 'RAW_CHAVE_CTE'));
+        if (tipo === 'CHAVE_NFE') adicionarTrackingNoMapa(mapaChaveNfe, normalizarChaveLongaTracking(item.chave_nfe), criarTrackingAgregado(item, 'RAW_CHAVE_NFE'));
+        if (tipo === 'NOTA') adicionarTrackingNoMapa(mapaNota, apenasDigitosTracking(item.nota_fiscal), criarTrackingAgregado(item, 'RAW_NOTA_FISCAL'));
+        if (tipo === 'NUMERO_CTE') adicionarTrackingNoMapa(mapaNumeroCte, apenasDigitosTracking(item.cte_numero), criarTrackingAgregado(item, 'RAW_NUMERO_CTE'));
+      });
     }
   }
 
   try {
-    await consultarPorColuna('chave_cte', chavesCte);
-    await consultarPorColuna('chave_nfe', chavesNfe);
-    await consultarPorColuna('nota_fiscal', notas);
-    await consultarPorColuna('cte_numero', numerosCte);
+    const viewOk = await consultarViewAgregadaPorChaveCte();
+
+    // Fallback: mantém compatibilidade se a view ainda não existir ou se alguma chave vier exatamente igual na tabela raw.
+    // Mesmo quando a view existe, as demais buscas complementam NF/nota em casos sem chave CT-e.
+    if (!viewOk && chavesCte.length) {
+      await consultarRawPorColuna('chave_cte', chavesCte, 'CHAVE_CTE');
+    }
+
+    if (chavesNfe.length) await consultarRawPorColuna('chave_nfe', chavesNfe, 'CHAVE_NFE');
+    if (notas.length) await consultarRawPorColuna('nota_fiscal', notas, 'NOTA');
+    if (numerosCteFallback.length) await consultarRawPorColuna('cte_numero', numerosCteFallback, 'NUMERO_CTE');
   } catch (error) {
     console.warn('Tracking no Supabase indisponível para enriquecer realizado.', error?.message || error);
     return { ...vazio, erro: error?.message || String(error || '') };
   }
 
-  const mapaChaveCte = new Map();
-  const mapaChaveNfe = new Map();
-  const mapaNota = new Map();
-  const mapaNumeroCte = new Map();
-  encontrados.forEach((item) => {
-    const chaveCte = normalizarChaveTracking(item.chave_cte);
-    const chaveNfe = normalizarChaveTracking(item.chave_nfe);
-    const nota = normalizarChaveTracking(item.nota_fiscal);
-    const numeroCte = apenasDigitosTracking(item.cte_numero);
-    if (chaveCte && !mapaChaveCte.has(chaveCte)) mapaChaveCte.set(chaveCte, item);
-    if (chaveNfe && !mapaChaveNfe.has(chaveNfe)) mapaChaveNfe.set(chaveNfe, item);
-    if (nota && !mapaNota.has(nota)) mapaNota.set(nota, item);
-    if (numeroCte && !mapaNumeroCte.has(numeroCte)) mapaNumeroCte.set(numeroCte, item);
-  });
-
-  return { mapaChaveCte, mapaChaveNfe, mapaNota, mapaNumeroCte, total: encontrados.length, erro: '' };
+  return {
+    mapaChaveCte,
+    mapaChaveNfe,
+    mapaNota,
+    mapaNumeroCte,
+    total: totalEncontrado,
+    erro: '',
+    aviso: erroView ? `View agregada indisponível, usado fallback raw: ${erroView}` : '',
+  };
 }
 
 function obterTrackingDaLinha(row = {}, mapas) {
   if (!mapas) return null;
-  const chaveCte = normalizarChaveTracking(row.chaveCte);
-  const chaveNfe = normalizarChaveTracking(row.chaveNfe);
-  const nota = normalizarChaveTracking(row.notaFiscal);
+  const chaveCte = normalizarChaveLongaTracking(row.chaveCte);
+  const chaveNfe = normalizarChaveLongaTracking(row.chaveNfe);
+  const nota = apenasDigitosTracking(row.notaFiscal);
   const numeroCte = apenasDigitosTracking(row.numeroCte);
-  return (chaveCte && mapas.mapaChaveCte?.get(chaveCte))
-    || (chaveNfe && mapas.mapaChaveNfe?.get(chaveNfe))
-    || (nota && mapas.mapaNota?.get(nota))
-    || (numeroCte && mapas.mapaNumeroCte?.get(numeroCte))
-    || null;
+
+  const porChaveCte = chaveCte ? mapas.mapaChaveCte?.get(chaveCte) : null;
+  if (porChaveCte) return porChaveCte;
+
+  const porChaveNfe = chaveNfe ? mapas.mapaChaveNfe?.get(chaveNfe) : null;
+  if (porChaveNfe) return porChaveNfe;
+
+  const porNota = nota ? mapas.mapaNota?.get(nota) : null;
+  if (porNota) return porNota;
+
+  // Número CT-e é fallback de segurança somente quando não há chaves/NF na linha do realizado.
+  // Isso evita falso vínculo quando o número aparece dentro de outra chave CT-e.
+  if (!chaveCte && !chaveNfe && !nota && numeroCte) {
+    return mapas.mapaNumeroCte?.get(numeroCte) || null;
+  }
+
+  return null;
 }
 
 function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
@@ -527,6 +638,8 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
       trackingMatch: true,
       trackingPendente: false,
       trackingTransportadora: tracking.transportadora || '',
+      trackingLinhas: Number(tracking.linhas_tracking || 1),
+      trackingOrigemVinculo: tracking.origem_vinculo_tracking || '',
 
       chaveCte: row.chaveCte || tracking.chave_cte || '',
       chaveNfe: row.chaveNfe || tracking.chave_nfe || '',
@@ -562,6 +675,7 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
     volumesTracking,
     cubagemTracking,
     erroTracking: mapasTracking?.erro || '',
+    avisoTracking: mapasTracking?.aviso || '',
   };
 }
 
