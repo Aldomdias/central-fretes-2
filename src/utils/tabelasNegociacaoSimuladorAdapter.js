@@ -55,9 +55,30 @@ function normalizarTipoCalculo(value) {
   return 'PERCENTUAL';
 }
 
+function getRodadaTabelaNegociacao(tabela = {}) {
+  const resumo = tabela.resumo_simulacao && typeof tabela.resumo_simulacao === 'object'
+    ? tabela.resumo_simulacao
+    : {};
+  const rodada = Number(resumo.rodada_atual || tabela.rodada_atual || 1);
+  return Number.isFinite(rodada) && rodada > 0 ? rodada : 1;
+}
+
+function origemTabelaNegociacaoLabel(tabela = {}) {
+  const origem = texto(tabela.origem || tabela.cidade_origem);
+  const ufOrigem = upper(tabela.uf_origem || tabela.ufOrigem);
+
+  if (origem && ufOrigem) return `${origem}/${ufOrigem}`;
+  if (origem) return origem;
+  if (ufOrigem) return `UF ${ufOrigem}`;
+  return '';
+}
+
 export function labelTabelaNegociacaoSimulador(tabela = {}) {
   const nome = texto(tabela.transportadora) || 'Tabela em negociação';
-  return `${nome} (NEGOCIAÇÃO)`;
+  const origem = origemTabelaNegociacaoLabel(tabela);
+  const rodada = getRodadaTabelaNegociacao(tabela);
+  const sufixo = `NEGOCIAÇÃO R${rodada}`;
+  return `${nome}${origem ? ` — ${origem}` : ''} (${sufixo})`;
 }
 
 function montarGeneralidades(generalidades = {}) {
@@ -179,9 +200,9 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
   itens.forEach((item, indice) => {
     if (getTipoItem(item) === 'ROTA' && !itemTemPreco(item)) return;
 
-    const cidadeOrigem = texto(item.cidade_origem || item.origem || tabela.origem);
-    const ufOrigem = upper(item.uf_origem || tabela.uf_origem);
-    const ibgeOrigem = texto(item.ibge_origem);
+    const cidadeOrigem = texto(tabela.origem || tabela.cidade_origem || item.cidade_origem || item.origem);
+    const ufOrigem = upper(tabela.uf_origem || tabela.ufOrigem || item.uf_origem);
+    const ibgeOrigem = texto(tabela.ibge_origem || tabela.ibgeOrigem || item.ibge_origem);
     const cidadeDestino = texto(item.cidade_destino || item.destino);
     const ufDestino = upper(item.uf_destino || tabela.uf_destino);
     const ibgeDestino = texto(item.ibge_destino);

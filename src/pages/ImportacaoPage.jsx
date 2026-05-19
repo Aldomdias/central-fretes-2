@@ -68,6 +68,71 @@ function normalizarChave(valor) {
     .toUpperCase();
 }
 
+
+function getContextoTabelaNegociacao(tabela = {}) {
+  return {
+    transportadora: textoLimpo(tabela.transportadora),
+    cidadeOrigem: textoLimpo(tabela.origem || tabela.cidade_origem),
+    ufOrigem: upperLimpo(tabela.uf_origem || tabela.ufOrigem),
+    ibgeOrigem: textoLimpo(tabela.ibge_origem || tabela.ibgeOrigem),
+    canal: upperLimpo(tabela.canal),
+  };
+}
+
+function aplicarContextoTabelaNegociacaoItem(item = {}, tabelaNegociacao = null) {
+  const contexto = getContextoTabelaNegociacao(tabelaNegociacao || {});
+
+  if (!contexto.cidadeOrigem && !contexto.ufOrigem && !contexto.ibgeOrigem && !contexto.canal && !contexto.transportadora) {
+    return item;
+  }
+
+  const dadosOriginais = item.dados_originais && typeof item.dados_originais === 'object'
+    ? item.dados_originais
+    : {};
+
+  const origemArquivo = textoLimpo(
+    dadosOriginais.origem_arquivo ||
+    dadosOriginais.origemOriginal ||
+    dadosOriginais.origem ||
+    dadosOriginais.cidadeOrigem ||
+    item.cidade_origem ||
+    item.origem
+  );
+
+  const ufOrigemArquivo = upperLimpo(
+    dadosOriginais.uf_origem_arquivo ||
+    dadosOriginais.ufOrigemOriginal ||
+    dadosOriginais.ufOrigem ||
+    item.uf_origem
+  );
+
+  return {
+    ...item,
+    cidade_origem: contexto.cidadeOrigem || item.cidade_origem || item.origem || '',
+    uf_origem: contexto.ufOrigem || item.uf_origem || '',
+    ibge_origem: contexto.ibgeOrigem || item.ibge_origem || '',
+    canal: contexto.canal || item.canal || dadosOriginais.canal || '',
+    dados_originais: {
+      ...dadosOriginais,
+      transportadora: contexto.transportadora || dadosOriginais.transportadora || '',
+      origem_arquivo: origemArquivo,
+      uf_origem_arquivo: ufOrigemArquivo,
+      origem_negociacao: contexto.cidadeOrigem || dadosOriginais.origem_negociacao || '',
+      uf_origem_negociacao: contexto.ufOrigem || dadosOriginais.uf_origem_negociacao || '',
+      ibge_origem_negociacao: contexto.ibgeOrigem || dadosOriginais.ibge_origem_negociacao || '',
+      canal_negociacao: contexto.canal || dadosOriginais.canal_negociacao || '',
+      origem: contexto.cidadeOrigem || dadosOriginais.origem || '',
+      cidadeOrigem: contexto.cidadeOrigem || dadosOriginais.cidadeOrigem || '',
+      ufOrigem: contexto.ufOrigem || dadosOriginais.ufOrigem || '',
+      canal: contexto.canal || dadosOriginais.canal || '',
+    },
+  };
+}
+
+function aplicarContextoTabelaNegociacaoItens(itens = [], tabelaNegociacao = null) {
+  return (itens || []).map((item) => aplicarContextoTabelaNegociacaoItem(item, tabelaNegociacao));
+}
+
 function nomeAntesDaFaixa(valor) {
   return textoLimpo(valor).split('|')[0].trim();
 }
@@ -343,11 +408,11 @@ function removerDuplicadosNegociacao(itens = []) {
   return saida;
 }
 
-function montarItensParaNegociacao(resultado, tipoNegociacao = 'fretes') {
+function montarItensParaNegociacao(resultado, tipoNegociacao = 'fretes', tabelaNegociacao = null) {
   const fretes = Array.isArray(resultado?.fretes) ? resultado.fretes : [];
   const rotas = Array.isArray(resultado?.rotas) ? resultado.rotas : [];
-  const itensRotas = rotas.map(montarItemRotaDeImportador);
-  const itensFretes = fretes.map(montarItemFreteDeImportador);
+  const itensRotas = aplicarContextoTabelaNegociacaoItens(rotas.map(montarItemRotaDeImportador), tabelaNegociacao);
+  const itensFretes = aplicarContextoTabelaNegociacaoItens(fretes.map(montarItemFreteDeImportador), tabelaNegociacao);
 
   if (tipoNegociacao === 'rotas') return removerDuplicadosNegociacao(itensRotas);
   if (tipoNegociacao === 'ambos') {
@@ -362,10 +427,11 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
 
   transportadorasPayload.forEach((transportadoraPayload) => {
     const origem = transportadoraPayload?.origem || {};
-    const cidadeOrigem = origem.cidade || tabelaNegociacao?.origem || '';
-    const ufOrigemPadrao = tabelaNegociacao?.uf_origem || '';
+    const contextoTabela = getContextoTabelaNegociacao(tabelaNegociacao || {});
+    const cidadeOrigem = contextoTabela.cidadeOrigem || origem.cidade || tabelaNegociacao?.origem || '';
+    const ufOrigemPadrao = contextoTabela.ufOrigem || tabelaNegociacao?.uf_origem || origem.uf || '';
     const ufDestinoPadrao = tabelaNegociacao?.uf_destino || '';
-    const canal = origem.canal || tabelaNegociacao?.canal || '';
+    const canal = contextoTabela.canal || origem.canal || tabelaNegociacao?.canal || '';
 
     if (tipoNegociacao === 'rotas') {
       (origem.rotas || []).forEach((rota) => {
@@ -420,7 +486,7 @@ function montarItensNegociacaoDePayload(payload, tipoNegociacao = 'fretes', tabe
     });
   });
 
-  return removerDuplicadosNegociacao(itens);
+  return removerDuplicadosNegociacao(aplicarContextoTabelaNegociacaoItens(itens, tabelaNegociacao));
 }
 
 function prepararItensNegociacaoParaSalvar({ tipoNegociacao, novosItens, itensExistentes, rotasReferencia = [] }) {
@@ -485,7 +551,7 @@ async function montarPayloadNegociacao(file, tipoNegociacao, canalImportacao, ta
 
   try {
     const resultado = await importarTabelaPronta(file);
-    const itens = montarItensParaNegociacao(resultado, 'ambos');
+    const itens = montarItensParaNegociacao(resultado, 'ambos', tabelaNegociacao);
 
     if (!itens.length) {
       throw new Error('Nenhum item válido encontrado nas abas "Rotas" e "Fretes".');
