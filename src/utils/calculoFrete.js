@@ -219,16 +219,23 @@ function getLinhaGradeMaisProxima(gradeCanal = [], pesoInformado = 0) {
 }
 
 function calcularPesosComCubagem({ pesoInformado, cubagemInformada = 0, gradeLinha, fatorCubagem }) {
+  const pesoReal = toNumber(pesoInformado);
   const cubagemReal = toNumber(cubagemInformada);
   const cubagemGrade = toNumber(gradeLinha?.cubagem);
-  // Regra operacional: a cubagem informada no realizado/tracking pode vir inconsistente.
-  // Para simulação, a cubagem considerada deve ser exclusivamente a da grade configurada.
-  const cubagemAplicada = cubagemGrade;
-  const origemCubagem = cubagemGrade > 0 ? 'grade' : 'sem cubagem';
-  const pesoCubado = cubagemAplicada > 0 && fatorCubagem > 0 ? cubagemAplicada * fatorCubagem : 0;
-  const pesoConsiderado = Math.max(toNumber(pesoInformado), pesoCubado);
+  const fator = toNumber(fatorCubagem);
+
+  // Regra operacional do Simulador Realizado:
+  // quando houver cubagem vinda do Tracking, ela deve ser a base para cálculo do peso cubado.
+  // A cubagem da grade fica apenas como fallback para simulações manuais/sem Tracking.
+  const cubagemAplicada = cubagemReal > 0 ? cubagemReal : cubagemGrade;
+  const origemCubagem = cubagemReal > 0 ? 'tracking' : cubagemGrade > 0 ? 'grade' : 'sem cubagem';
+  const pesoCubado = cubagemAplicada > 0 && fator > 0 ? cubagemAplicada * fator : 0;
+  const pesoConsiderado = Math.max(pesoReal, pesoCubado);
+
   return {
-    pesoGrade: toNumber(gradeLinha?.peso || gradeLinha?.pesoMax) || toNumber(pesoInformado),
+    pesoGrade: toNumber(gradeLinha?.peso || gradeLinha?.pesoMax) || pesoReal,
+    cubagemReal,
+    cubagemRealizadaInformada: cubagemReal,
     cubagemGrade,
     cubagemAplicada,
     origemCubagem,
@@ -323,7 +330,12 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
 
 function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
-  const fatorCubagem = toNumber(origem?.generalidades?.cubagem);
+  const fatoresCubagem = [
+    origem?.generalidades?.cubagem,
+    origem?.generalidades?.fatorCubagem,
+    origem?.generalidades?.fator_cubagem,
+  ].map(toNumber);
+  const fatorCubagem = fatoresCubagem.find((valor) => valor > 0) || 0;
   const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem });
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado);
   if (!cotacao) return null;
