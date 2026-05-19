@@ -144,13 +144,48 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
 export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades = {}, taxaDestino = {}, pesoKg = 0, valorNf = 0 }) {
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
+
+  // pesoMax/pesoLimite é o teto da faixa selecionada. Em faixas finais abertas
+  // normalmente vem 999999999, então ele NÃO pode ser usado como base para
+  // calcular excedente. O limiar correto vem em excessoPeso/excesso_kg,
+  // exemplo: faixa 300,001 a 999999999 com excesso_kg = 300 e valor excedente
+  // R$/kg. Nesse caso, um CT-e de 699 kg precisa cobrar 399 kg excedentes.
   const pesoLimite = toNumber(cotacao.pesoMax || cotacao.pesoLimite);
-  const excessoPorKg = toNumber(cotacao.excesso || cotacao.excessoPeso);
+  const pesoMin = toNumber(cotacao.pesoMin || cotacao.pesoInicial || cotacao.peso_inicial);
+  const pesoLimiteExcedenteInformado = toNumber(
+    cotacao.excessoPeso ??
+    cotacao.excesso_kg ??
+    cotacao.pesoLimiteExcedente ??
+    cotacao.limiteExcedente ??
+    0
+  );
+
+  // No cadastro oficial, cotacao.excesso já representa R$/kg do excedente.
+  // Na negociação, o adapter converte valor_excedente para cotacao.excesso
+  // e excesso_kg para cotacao.excessoPeso.
+  const excessoPorKg = toNumber(
+    cotacao.excesso ??
+    cotacao.valorExcedente ??
+    cotacao.valor_excedente ??
+    0
+  );
+
   const valorFaixa = toNumber(cotacao.valorFixo || cotacao.taxaAplicada);
   const valorPercentual = nf * toPercent(cotacao.percentual || cotacao.fretePercentual);
   const valorKg = toNumber(cotacao.rsKg) * peso;
-  const excedenteKg = Math.max(0, peso - pesoLimite);
+
+  const faixaAberta = pesoLimite >= 999998 || pesoLimite === 0;
+  const pesoLimiteExcedente = pesoLimiteExcedenteInformado > 0
+    ? pesoLimiteExcedenteInformado
+    : faixaAberta && pesoMin > 0
+      ? pesoMin
+      : pesoLimite;
+
+  const excedenteKg = excessoPorKg > 0 && pesoLimiteExcedente > 0
+    ? Math.max(0, peso - pesoLimiteExcedente)
+    : 0;
   const valorExcedente = excedenteKg * excessoPorKg;
+
   const { minimoRota, minimoCotacao, minimoGeneralidade, minimoAplicavel } = resolverMinimoFrete({ rota, cotacao, generalidades });
   const valorFaixaComExcedente = valorFaixa + valorExcedente + valorPercentual;
   const componenteBase = escolherComponenteBase({
@@ -171,6 +206,8 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     icms,
     total: subtotal + icms,
     valorExcedente,
+    pesoLimiteExcedente,
+    excedenteKg,
     componenteBase: componenteBase.nome,
     componentesBase: {
       valorFaixa,
@@ -182,6 +219,9 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
       minimoCotacao,
       minimoGeneralidade,
       minimoAplicavel,
+      excessoPorKg,
+      pesoLimiteExcedente,
+      excedenteKg,
     },
     taxas,
   };
