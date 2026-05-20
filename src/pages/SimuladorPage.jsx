@@ -4271,6 +4271,24 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>% aplicado: <strong style={{ color: Number(item.vencedorDetalhes?.frete?.percentualAplicado || 0) < 1 ? '#dc2626' : undefined }}>{formatPercent(item.vencedorDetalhes?.frete?.percentualAplicado)}</strong></div>
                                                 <div>Valor NF usado: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorNFInformado)}</strong></div>
                                                 <div>Valor fixo/faixa: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorFixoAplicado)}</strong></div>
+                                                {(() => {
+                                                  const frete = item.vencedorDetalhes?.frete || {};
+                                                  const limiteExcedente = Number(frete.pesoLimiteExcedente || 0);
+                                                  const pesoExcedente = Number(frete.pesoExcedente || 0);
+                                                  const valorExcedente = Number(frete.valorExcedente || 0);
+                                                  const valorExcedenteUnitario = Number(frete.valorExcedenteUnitario || (pesoExcedente > 0 ? valorExcedente / pesoExcedente : 0));
+                                                  const valorFaixaSemExcedente = Number(frete.valorFaixaSemExcedente ?? frete.valorFixoAplicado ?? 0);
+                                                  const valorFaixaComExcedente = Number(frete.valorFaixaComExcedente ?? (valorFaixaSemExcedente + valorExcedente));
+                                                  return (
+                                                    <>
+                                                      <div>Limite para excedente: <strong>{limiteExcedente > 0 ? `${limiteExcedente.toFixed(0)} kg` : '—'}</strong></div>
+                                                      <div>Peso excedente: <strong>{pesoExcedente.toFixed(2)} kg</strong></div>
+                                                      <div>R$/kg excedente: <strong>{valorExcedenteUnitario > 0 ? formatMoney(valorExcedenteUnitario) : '—'}</strong></div>
+                                                      <div>Valor excedente: <strong>{formatMoney(valorExcedente)}</strong></div>
+                                                      <div>Base faixa + excedente: <strong>{formatMoney(valorFaixaSemExcedente)}</strong> + <strong>{formatMoney(valorExcedente)}</strong> = <strong>{formatMoney(valorFaixaComExcedente)}</strong></div>
+                                                    </>
+                                                  );
+                                                })()}
                                                 <div>Mínimo rota: <strong>{formatMoney(item.vencedorDetalhes?.frete?.minimoRota)}</strong></div>
                                                 <div>Valor base: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorBase)}</strong></div>
                                                 <div>Ad Valorem: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.adValorem)}</strong> ({formatPercent(item.vencedorDetalhes?.taxas?.adValPct)})</div>
@@ -4296,6 +4314,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>Peso considerado: <strong>{Number(item.selecionadaDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
                                                 <div>% aplicado: <strong style={{ color: Number(item.selecionadaDetalhes?.frete?.percentualAplicado || 0) < 1 ? '#dc2626' : undefined }}>{formatPercent(item.selecionadaDetalhes?.frete?.percentualAplicado)}</strong></div>
                                                 <div>Valor NF usado: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorNFInformado)}</strong></div>
+                                                {(() => {
+                                                  const frete = item.selecionadaDetalhes?.frete || {};
+                                                  const limiteExcedente = Number(frete.pesoLimiteExcedente || 0);
+                                                  const pesoExcedente = Number(frete.pesoExcedente || 0);
+                                                  const valorExcedente = Number(frete.valorExcedente || 0);
+                                                  const valorExcedenteUnitario = Number(frete.valorExcedenteUnitario || (pesoExcedente > 0 ? valorExcedente / pesoExcedente : 0));
+                                                  const valorFaixaSemExcedente = Number(frete.valorFaixaSemExcedente ?? frete.valorFixoAplicado ?? 0);
+                                                  const valorFaixaComExcedente = Number(frete.valorFaixaComExcedente ?? (valorFaixaSemExcedente + valorExcedente));
+                                                  return (
+                                                    <>
+                                                      <div>Valor fixo/faixa: <strong>{formatMoney(frete.valorFixoAplicado)}</strong></div>
+                                                      <div>Limite para excedente: <strong>{limiteExcedente > 0 ? `${limiteExcedente.toFixed(0)} kg` : '—'}</strong></div>
+                                                      <div>Peso excedente: <strong>{pesoExcedente.toFixed(2)} kg</strong></div>
+                                                      <div>R$/kg excedente: <strong>{valorExcedenteUnitario > 0 ? formatMoney(valorExcedenteUnitario) : '—'}</strong></div>
+                                                      <div>Valor excedente: <strong>{formatMoney(valorExcedente)}</strong></div>
+                                                      <div>Base faixa + excedente: <strong>{formatMoney(valorFaixaSemExcedente)}</strong> + <strong>{formatMoney(valorExcedente)}</strong> = <strong>{formatMoney(valorFaixaComExcedente)}</strong></div>
+                                                    </>
+                                                  );
+                                                })()}
                                                 <div>Valor base: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorBase)}</strong></div>
                                                 <div>Ad Valorem: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.adValorem)}</strong></div>
                                                 <div>GRIS: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.gris)}</strong></div>
