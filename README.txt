@@ -1,17 +1,15 @@
-Ajuste: Simulador Realizado com base padrão somente em CT-es com Tracking vinculado.
+Correção: excedente em faixa aberta
 
-Arquivo alterado:
-- src/pages/SimuladorPage.jsx
+Substitui:
+src/services/freteCalcEngine.js
 
-Como aplicar:
-1) Extrair este ZIP na raiz do projeto central-fretes-2.
-2) Rodar npm run build.
-3) Commitar e enviar.
+Resolve casos onde a tabela importada trouxe o R$/kg excedente no campo excesso_kg e valor_excedente ficou zerado.
+Exemplo:
+Faixa 300.001 até 999999999
+excesso_kg = 1,04
+peso considerado = 1941 kg
 
-Comandos sugeridos:
-unzip -o fix-base-tracking-simulador-completo.zip
-npm run build
-git restore dist && git clean -fd dist/assets
-git add src/pages/SimuladorPage.jsx
-git commit -m "feat: simular realizado somente com tracking por padrao"
-git push origin main
+Agora o sistema entende:
+limite excedente = 300 kg
+R$/kg excedente = 1,04
+peso excedente = 1641 kg

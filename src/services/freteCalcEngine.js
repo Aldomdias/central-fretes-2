@@ -1,6 +1,6 @@
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0;
-  if (typeof value === 'number') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
   return Number(String(value).replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '')) || 0;
 }
 
@@ -102,6 +102,79 @@ function escolherComponenteBase(componentes = {}) {
   );
 }
 
+function normalizarLimiteExcedentePorPesoMinimo(pesoMin = 0) {
+  const minimo = toNumber(pesoMin);
+  if (minimo <= 0) return 0;
+
+  // Nas tabelas por faixa, a faixa final costuma vir como 300.001 até 999999999.
+  // O excedente, operacionalmente, começa acima de 300 kg. Por isso usamos floor
+  // quando o início da faixa é decimal.
+  return Number.isInteger(minimo) ? minimo : Math.floor(minimo);
+}
+
+function resolverRegraExcedente({ cotacao = {}, pesoMin = 0, pesoLimite = 0, faixaAberta = false }) {
+  const limiteInformado = toNumber(
+    cotacao.excessoPeso ??
+    cotacao.excesso_kg ??
+    cotacao.pesoLimiteExcedente ??
+    cotacao.limiteExcedente ??
+    0
+  );
+
+  const valorInformado = toNumber(
+    cotacao.excesso ??
+    cotacao.valorExcedente ??
+    cotacao.valor_excedente ??
+    0
+  );
+
+  const limitePadraoFaixaAberta = normalizarLimiteExcedentePorPesoMinimo(pesoMin);
+
+  // Existem dois formatos na base:
+  // 1) formato correto: excesso_kg = limite, valor_excedente = R$/kg;
+  // 2) formato importado de algumas tabelas: excesso_kg veio como R$/kg e valor_excedente veio zerado.
+  //    Ex.: faixa 300.001 até 999999999, excesso_kg = 1,04. Nesse caso o limite correto é 300 kg
+  //    e o valor do excedente é 1,04 por kg.
+  const excessoKgPareceValorUnitario =
+    faixaAberta &&
+    valorInformado <= 0 &&
+    limiteInformado > 0 &&
+    limitePadraoFaixaAberta > 0 &&
+    limiteInformado < limitePadraoFaixaAberta;
+
+  if (excessoKgPareceValorUnitario) {
+    return {
+      pesoLimiteExcedente: limitePadraoFaixaAberta,
+      excessoPorKg: limiteInformado,
+      origemRegraExcedente: 'excesso_kg_como_valor_unitario',
+    };
+  }
+
+  if (valorInformado > 0) {
+    return {
+      pesoLimiteExcedente:
+        limiteInformado > 0
+          ? limiteInformado
+          : faixaAberta && limitePadraoFaixaAberta > 0
+            ? limitePadraoFaixaAberta
+            : pesoLimite,
+      excessoPorKg: valorInformado,
+      origemRegraExcedente: 'valor_excedente',
+    };
+  }
+
+  return {
+    pesoLimiteExcedente:
+      limiteInformado > 0
+        ? limiteInformado
+        : faixaAberta && limitePadraoFaixaAberta > 0
+          ? limitePadraoFaixaAberta
+          : pesoLimite,
+    excessoPorKg: 0,
+    origemRegraExcedente: 'sem_excedente',
+  };
+}
+
 export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades = {}, taxaDestino = {}, pesoKg = 0, valorNf = 0 }) {
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
@@ -145,41 +218,19 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
 
-  // pesoMax/pesoLimite é o teto da faixa selecionada. Em faixas finais abertas
-  // normalmente vem 999999999, então ele NÃO pode ser usado como base para
-  // calcular excedente. O limiar correto vem em excessoPeso/excesso_kg,
-  // exemplo: faixa 300,001 a 999999999 com excesso_kg = 300 e valor excedente
-  // R$/kg. Nesse caso, um CT-e de 699 kg precisa cobrar 399 kg excedentes.
   const pesoLimite = toNumber(cotacao.pesoMax || cotacao.pesoLimite);
   const pesoMin = toNumber(cotacao.pesoMin || cotacao.pesoInicial || cotacao.peso_inicial);
-  const pesoLimiteExcedenteInformado = toNumber(
-    cotacao.excessoPeso ??
-    cotacao.excesso_kg ??
-    cotacao.pesoLimiteExcedente ??
-    cotacao.limiteExcedente ??
-    0
-  );
+  const faixaAberta = pesoLimite >= 999998 || pesoLimite === 0;
 
-  // No cadastro oficial, cotacao.excesso já representa R$/kg do excedente.
-  // Na negociação, o adapter converte valor_excedente para cotacao.excesso
-  // e excesso_kg para cotacao.excessoPeso.
-  const excessoPorKg = toNumber(
-    cotacao.excesso ??
-    cotacao.valorExcedente ??
-    cotacao.valor_excedente ??
-    0
-  );
+  const {
+    pesoLimiteExcedente,
+    excessoPorKg,
+    origemRegraExcedente,
+  } = resolverRegraExcedente({ cotacao, pesoMin, pesoLimite, faixaAberta });
 
   const valorFaixa = toNumber(cotacao.valorFixo || cotacao.taxaAplicada);
   const valorPercentual = nf * toPercent(cotacao.percentual || cotacao.fretePercentual);
   const valorKg = toNumber(cotacao.rsKg) * peso;
-
-  const faixaAberta = pesoLimite >= 999998 || pesoLimite === 0;
-  const pesoLimiteExcedente = pesoLimiteExcedenteInformado > 0
-    ? pesoLimiteExcedenteInformado
-    : faixaAberta && pesoMin > 0
-      ? pesoMin
-      : pesoLimite;
 
   const excedenteKg = excessoPorKg > 0 && pesoLimiteExcedente > 0
     ? Math.max(0, peso - pesoLimiteExcedente)
@@ -222,6 +273,7 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
       excessoPorKg,
       pesoLimiteExcedente,
       excedenteKg,
+      origemRegraExcedente,
     },
     taxas,
   };
