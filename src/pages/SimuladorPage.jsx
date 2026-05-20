@@ -706,15 +706,45 @@ function isTomadorPermitidoRealizadoSim(row = {}) {
   return TOMADORES_REALIZADO_PADRAO_SIM.some((permitido) => tomador.includes(normalizarTransportadoraSimulador(permitido)));
 }
 
+function registroTemCpsLogSimulador(row = {}) {
+  const campos = [
+    row.transportadora,
+    row.transportadoraReal,
+    row.transportadora_real,
+    row.nomeTransportadora,
+    row.nome_transportadora,
+    row.transportador,
+    row.tomador,
+    row.tomadorServico,
+    row.tomador_servico,
+    row.nomeTomador,
+    row.nome_tomador,
+    row.raw?.transportadora,
+    row.raw?.nome_transportadora,
+    row.raw?.tomador,
+    row.raw?.tomador_servico,
+  ];
+
+  return campos.some((campo) => isCpsLogSimulador(campo));
+}
+
+function filtrarCpsLogRealizadoSim(rows = [], incluirCpsLog = false) {
+  const lista = Array.isArray(rows) ? rows : [];
+  if (incluirCpsLog) return lista;
+  return lista.filter((row) => !registroTemCpsLogSimulador(row));
+}
+
 function aplicarFiltrosPadraoRealizadoSim(rows = [], { incluirCpsLog = false } = {}) {
-  return (rows || []).filter((row) => {
-    const transportadora = row.transportadora || '';
-    const tomador = row.tomador || '';
-    if (!isTomadorPermitidoRealizadoSim(row)) return false;
-    if (isEbazarSimulador(transportadora) || isEbazarSimulador(tomador)) return false;
-    if (!incluirCpsLog && (isCpsLogSimulador(transportadora) || isCpsLogSimulador(tomador))) return false;
-    return true;
-  });
+  return filtrarCpsLogRealizadoSim(
+    (rows || []).filter((row) => {
+      const transportadora = row.transportadora || '';
+      const tomador = row.tomador || '';
+      if (!isTomadorPermitidoRealizadoSim(row)) return false;
+      if (isEbazarSimulador(transportadora) || isEbazarSimulador(tomador)) return false;
+      return true;
+    }),
+    incluirCpsLog
+  );
 }
 
 function transportadoraCompativelSimulador(nomeTabela = '', nomeFiltro = '') {
@@ -2505,7 +2535,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       });
 
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 36);
-      const rowsComIbgeBase = rowsBrutosFiltrados.map((row) => {
+      const rowsComIbgeBaseAntesCps = rowsBrutosFiltrados.map((row) => {
         const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
         const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', municipioPorCidade);
         const nomeOriginal = String(row.transportadora || '').trim();
@@ -2513,14 +2543,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
         return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
       });
 
+      // Segunda barreira: depois dos vínculos, a transportadora pode virar CPS LOG.
+      // Por isso filtramos novamente antes do cruzamento com Tracking e antes da simulação.
+      const rowsComIbgeBase = filtrarCpsLogRealizadoSim(rowsComIbgeBaseAntesCps, incluirCpsLogRealizado);
+
       atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 42);
       const mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
       const trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
 
-      const rowsComTracking = (trackingEnriquecido.linhas || []).filter((row) => row.trackingMatch);
+      // Terceira barreira: garante que CPS LOG não entre mesmo se vier enriquecido/vinculado no Tracking.
+      const linhasEnriquecidasFiltradas = filtrarCpsLogRealizadoSim(trackingEnriquecido.linhas || [], incluirCpsLogRealizado);
+      const rowsComTracking = linhasEnriquecidasFiltradas.filter((row) => row.trackingMatch);
       const rowsComIbge = baseRealizadoTracking === 'com_tracking'
         ? rowsComTracking
-        : trackingEnriquecido.linhas;
+        : linhasEnriquecidasFiltradas;
 
       if (baseRealizadoTracking === 'com_tracking' && !rowsComIbge.length) {
         setErroSimulacao('Nenhum CT-e encontrou vínculo com o Tracking nos filtros informados. Revise período, origem, UF ou a carga do Tracking.');
@@ -2672,8 +2708,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimRealizado,
           limite: limiteRealizado,
           ctesBrutos: rowsBrutos.length,
-          ctesAposFiltroPadrao: rowsBrutosFiltrados.length,
-          ctesRemovidosFiltroPadrao: Math.max(0, rowsBrutos.length - rowsBrutosFiltrados.length),
+          ctesAposFiltroPadrao: rowsComIbgeBase.length,
+          ctesRemovidosFiltroPadrao: Math.max(0, rowsBrutos.length - rowsComIbgeBase.length),
+          ctesRemovidosCpsAposVinculo: Math.max(0, rowsComIbgeBaseAntesCps.length - rowsComIbgeBase.length),
           incluirCpsLog: incluirCpsLogRealizado,
           baseRealizadoTracking,
           ctesComTracking: trackingEnriquecido.vinculados,

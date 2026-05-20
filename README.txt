@@ -1,12 +1,16 @@
-Ajuste: CPS LOG excluído por padrão em qualquer modo do Simulador Realizado.
+Correção: CPS LOG ainda aparecia no Simulador Realizado porque o filtro rodava antes da aplicação dos vínculos de transportadoras.
 
-Arquivo alterado:
-- src/pages/SimuladorPage.jsx
+Ajuste aplicado em src/pages/SimuladorPage.jsx:
+- Mantém CPS LOG excluído por padrão.
+- Filtra CPS LOG antes da aplicação dos vínculos.
+- Filtra novamente depois dos vínculos, pois uma transportadora pode virar CPS LOG após o mapa de vínculos.
+- Filtra novamente depois do cruzamento com Tracking, antes de montar a base simulada.
+- CPS LOG só entra quando a opção "Incluir CPS LOG nesta análise" estiver marcada.
 
-Regras:
-- Base padrão continua: Somente CT-es com Tracking vinculado.
-- CPS LOG fica fora por padrão, mesmo se tiver Tracking.
-- CPS LOG só entra quando marcar: "Incluir CPS LOG nesta análise".
-- Mantém correção do status vencedor vs realizado.
-
-Build validado com sucesso via npm run build.
+Aplicação:
+unzip -o fix-simulador-cps-log-pos-vinculo.zip
+npm run build
+git restore dist && git clean -fd dist/assets
+git add src/pages/SimuladorPage.jsx
+git commit -m "fix: remover CPS LOG apos vinculo no simulador"
+git push origin main
