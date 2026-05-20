@@ -97,7 +97,8 @@ function aplicarFiltrosRealizadoQuery(query, filtros) {
     if (canalNorm === 'ATACADO' || canalNorm === 'B2B') query = query.in('canal', ['ATACADO', 'B2B', 'Atacado', 'b2b']);
     else query = query.eq('canal', filtros.canal);
   }
-  if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
+  if (Array.isArray(filtros.ufDestino) && filtros.ufDestino.length) query = query.in('uf_destino', filtros.ufDestino);
+  else if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
   return query;
@@ -1812,6 +1813,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [negociacoesSimulador, setNegociacoesSimulador] = useState([]);
   const [carregandoNegociacoesSimulador, setCarregandoNegociacoesSimulador] = useState(false);
   const [erroNegociacoesSimulador, setErroNegociacoesSimulador] = useState('');
+  const [negociacoesAtualizadasEm, setNegociacoesAtualizadasEm] = useState('');
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
@@ -1927,6 +1929,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [destinoRealizado, setDestinoRealizado] = useState('');
   const [ufOrigemRealizado, setUfOrigemRealizado] = useState('');
   const [ufDestinoRealizado, setUfDestinoRealizado] = useState('');
+  const [ufsDestinoRealizado, setUfsDestinoRealizado] = useState([]);
+  const [ufDestinoRealizadoAberto, setUfDestinoRealizadoAberto] = useState(false);
   const [inicioRealizado, setInicioRealizado] = useState('');
   const [fimRealizado, setFimRealizado] = useState('');
   const [limiteRealizado, setLimiteRealizado] = useState(10000);
@@ -2065,10 +2069,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
     try {
       const dados = await buscarTabelasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO' });
       setNegociacoesSimulador(dados || []);
+      setNegociacoesAtualizadasEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
       return dados || [];
     } catch (error) {
       setErroNegociacoesSimulador(error.message || 'Erro ao carregar tabelas em negociação para simulação.');
       setNegociacoesSimulador([]);
+      setNegociacoesAtualizadasEm('');
       return [];
     } finally {
       setCarregandoNegociacoesSimulador(false);
@@ -2079,16 +2085,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
     atualizarOpcoesSimulador();
   }, []);
 
-  // Não carregue negociações automaticamente ao abrir o simulador.
-  // Algumas negociações possuem milhares de itens e isso deixava a tela pesada
-  // mesmo quando o usuário queria simular apenas a tabela selecionada vs realizado.
-  // Use o botão "Atualizar negociações" ou marque a opção de incluir negociações.
-
+  // Carrega as negociações automaticamente ao entrar no Simulador Realizado.
+  // Assim o usuário não precisa expandir opções só para atualizar a lista.
   useEffect(() => {
-    if (aba === 'realizado' && incluirNegociacoesRealizado && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
+    if (aba === 'realizado' && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
       carregarNegociacoesSimulador();
     }
-  }, [aba, incluirNegociacoesRealizado]);
+  }, [aba, negociacoesSimulador.length, carregandoNegociacoesSimulador]);
 
   useEffect(() => {
     let ativo = true;
@@ -2132,6 +2135,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
     } finally {
       setCarregandoSimulacao(false);
     }
+  };
+
+
+  const carregarBaseOnlinePorUfDestino = async (filtros = {}) => {
+    const ufs = Array.isArray(filtros.ufDestino)
+      ? filtros.ufDestino.map((uf) => String(uf || '').trim().toUpperCase()).filter(Boolean)
+      : String(filtros.ufDestino || '').split(',').map((uf) => uf.trim().toUpperCase()).filter(Boolean);
+
+    if (ufs.length <= 1) {
+      return carregarBaseOnline({ ...filtros, ufDestino: ufs[0] || '' });
+    }
+
+    const bases = [];
+    for (const uf of ufs) {
+      const baseUf = await carregarBaseOnline({ ...filtros, ufDestino: uf });
+      if (Array.isArray(baseUf) && baseUf.length) bases.push(baseUf);
+    }
+
+    return mesclarBasesTransportadorasSimulador(bases);
   };
 
   const carregarMapaVinculosSimulador = async () => {
@@ -2296,11 +2318,48 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return lista.length ? ['', ...lista] : UF_OPTIONS;
   }, [transportadoraRealizado, transportadorasNegociacaoRealizado, transportadoras, canalRealizado, origemRealizado]);
 
-  useEffect(() => {
-    if (ufDestinoRealizado && !ufsDestinoRealizadoDisponiveis.includes(ufDestinoRealizado)) {
+  const ufsDestinoFiltroRealizado = useMemo(() => {
+    const disponiveis = new Set((ufsDestinoRealizadoDisponiveis || []).filter(Boolean));
+    return (ufsDestinoRealizado || [])
+      .map((uf) => String(uf || '').trim().toUpperCase())
+      .filter((uf, index, arr) => uf && arr.indexOf(uf) === index)
+      .filter((uf) => !disponiveis.size || disponiveis.has(uf));
+  }, [ufsDestinoRealizado, ufsDestinoRealizadoDisponiveis]);
+
+  const ufDestinoRealizadoLabel = useMemo(() => {
+    if (!ufsDestinoFiltroRealizado.length) return 'Todas';
+    if (ufsDestinoFiltroRealizado.length <= 3) return ufsDestinoFiltroRealizado.join(', ');
+    return `${ufsDestinoFiltroRealizado.length} UFs selecionadas`;
+  }, [ufsDestinoFiltroRealizado]);
+
+  const toggleUfDestinoRealizado = (uf) => {
+    const ufNorm = String(uf || '').trim().toUpperCase();
+    if (!ufNorm) {
+      setUfsDestinoRealizado([]);
       setUfDestinoRealizado('');
+      return;
     }
-  }, [ufsDestinoRealizadoDisponiveis, ufDestinoRealizado]);
+
+    setUfsDestinoRealizado((prev) => {
+      const atual = new Set((prev || []).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean));
+      if (atual.has(ufNorm)) atual.delete(ufNorm);
+      else atual.add(ufNorm);
+      const lista = [...atual].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      setUfDestinoRealizado(lista.length === 1 ? lista[0] : '');
+      return lista;
+    });
+  };
+
+  useEffect(() => {
+    const permitidas = new Set((ufsDestinoRealizadoDisponiveis || []).filter(Boolean));
+    setUfsDestinoRealizado((prev) => {
+      const filtradas = (prev || []).filter((uf) => permitidas.has(uf));
+      if (filtradas.length !== (prev || []).length) {
+        setUfDestinoRealizado(filtradas.length === 1 ? filtradas[0] : '');
+      }
+      return filtradas;
+    });
+  }, [ufsDestinoRealizadoDisponiveis]);
 
   useEffect(() => {
     if (transportadora && transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
@@ -2626,7 +2685,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
-    if (!inicioRealizado && !fimRealizado && !origemRealizado && !ufDestinoRealizado && modoRealizado !== 'malha') {
+    if (!inicioRealizado && !fimRealizado && !origemRealizado && !ufsDestinoFiltroRealizado.length && modoRealizado !== 'malha') {
       setErroSimulacao('Informe pelo menos período, origem ou UF destino para evitar uma busca muito ampla no realizado.');
       return;
     }
@@ -2652,7 +2711,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         origem: origemRealizado,
         destino: destinoRealizado,
         ufOrigem: ufOrigemRealizado,
-        ufDestino: ufDestinoRealizado,
+        ufDestino: ufsDestinoFiltroRealizado,
         inicio: inicioRealizado,
         fim: fimRealizado,
         limit: limiteRealizado,
@@ -2703,11 +2762,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
             normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(nomeTabelaSelecionada)
             || transportadoraCompativelSimulador(item.nome, nomeTabelaSelecionada)
           )
-        : await carregarBaseOnline({
+        : await carregarBaseOnlinePorUfDestino({
             nomeTransportadora: nomeTabelaSelecionada,
             canal: canalRealizado,
             origem: modoRealizado === 'filtros' ? origemRealizado : '',
-            ufDestino: ufDestinoRealizado,
+            ufDestino: ufsDestinoFiltroRealizado,
           });
 
       const origensMalha = new Set(
@@ -2761,10 +2820,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
         for (let idx = 0; idx < origensParaBuscar.length; idx += 1) {
           const origemBusca = origensParaBuscar[idx];
           atualizarProcessamentoUi(`Buscando tabelas concorrentes da origem ${origemBusca}...`, Math.min(72, 60 + idx));
-          const baseOrigem = await carregarBaseOnline({
+          const baseOrigem = await carregarBaseOnlinePorUfDestino({
             canal: canalRealizado,
             origem: origemBusca,
-            ufDestino: ufDestinoRealizado,
+            ufDestino: ufsDestinoFiltroRealizado,
           });
           if (Array.isArray(baseOrigem) && baseOrigem.length) {
             basesOrigemCarregadas += baseOrigem.length;
@@ -2788,7 +2847,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             origem: origemRealizado,
             destino: destinoRealizado,
             ufOrigem: ufOrigemRealizado,
-            ufDestino: ufDestinoRealizado,
+            ufDestino: ufsDestinoFiltroRealizado,
             inicio: inicioRealizado,
             fim: fimRealizado,
             modo: modoRealizado,
@@ -2815,7 +2874,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origem: origemRealizado,
           destino: destinoRealizado,
           ufOrigem: ufOrigemRealizado,
-          ufDestino: ufDestinoRealizado,
+          ufDestino: ufsDestinoFiltroRealizado,
           inicio: inicioRealizado,
           fim: fimRealizado,
           modo: modoRealizado,
@@ -2835,7 +2894,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origem: origemRealizado,
           destino: destinoRealizado,
           ufOrigem: ufOrigemRealizado,
-          ufDestino: ufDestinoRealizado,
+          ufDestino: ufsDestinoFiltroRealizado,
           inicio: inicioRealizado,
           fim: fimRealizado,
           limite: limiteRealizado,
@@ -3892,12 +3951,111 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 {UF_OPTIONS.map((uf) => <option key={uf || 'todas'} value={uf}>{uf || 'Todas'}</option>)}
               </select>
             </label>
-            <label>
-              UF destino
-              <select value={ufDestinoRealizado} onChange={(event) => setUfDestinoRealizado(event.target.value)}>
-                {ufsDestinoRealizadoDisponiveis.map((uf) => <option key={uf || 'todas'} value={uf}>{uf || 'Todas'}</option>)}
-              </select>
-            </label>
+            <div style={{ position: 'relative' }}>
+              <label style={{ display: 'grid', gap: 6 }}>
+                UF destino
+                <button
+                  type="button"
+                  className="sim-tab"
+                  onClick={() => setUfDestinoRealizadoAberto((aberto) => !aberto)}
+                  style={{
+                    width: '100%',
+                    minHeight: 36,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    textAlign: 'left',
+                    padding: '0.55rem 0.75rem',
+                    background: '#fff',
+                  }}
+                >
+                  <span>{ufDestinoRealizadoLabel}</span>
+                  <span>{ufDestinoRealizadoAberto ? '▲' : '▼'}</span>
+                </button>
+              </label>
+
+              {ufDestinoRealizadoAberto && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    zIndex: 60,
+                    top: 'calc(100% + 4px)',
+                    left: 0,
+                    right: 0,
+                    maxHeight: 300,
+                    overflow: 'auto',
+                    background: '#fff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: 10,
+                    boxShadow: '0 14px 34px rgba(15, 23, 42, 0.18)',
+                    padding: 10,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleUfDestinoRealizado('')}
+                    style={{
+                      width: '100%',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: 8,
+                      background: !ufsDestinoFiltroRealizado.length ? '#dbeafe' : '#f8fafc',
+                      color: '#0f172a',
+                      padding: '7px 9px',
+                      textAlign: 'left',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      marginBottom: 8,
+                    }}
+                  >
+                    {!ufsDestinoFiltroRealizado.length ? '☑' : '☐'} Todas
+                  </button>
+
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    {(ufsDestinoRealizadoDisponiveis || []).filter(Boolean).map((uf) => {
+                      const marcado = ufsDestinoFiltroRealizado.includes(uf);
+                      return (
+                        <button
+                          key={uf}
+                          type="button"
+                          onClick={() => toggleUfDestinoRealizado(uf)}
+                          style={{
+                            width: '100%',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: 8,
+                            background: marcado ? '#e0f2fe' : '#fff',
+                            color: '#0f172a',
+                            padding: '7px 9px',
+                            textAlign: 'left',
+                            fontWeight: marcado ? 700 : 500,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {marcado ? '☑' : '☐'} {uf}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 10, borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>
+                    <button
+                      type="button"
+                      className="sim-tab"
+                      onClick={() => toggleUfDestinoRealizado('')}
+                    >
+                      Limpar UFs
+                    </button>
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => setUfDestinoRealizadoAberto(false)}
+                      style={{ padding: '0.45rem 0.9rem' }}
+                    >
+                      Aplicar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             <label>
               Limite CT-es
               <select value={limiteRealizado} onChange={(event) => setLimiteRealizado(Number(event.target.value))}>
@@ -3915,7 +4073,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <div>
                 <strong>Base da simulação: {baseRealizadoTracking === 'com_tracking' ? 'somente CT-es com Tracking' : 'todos os CT-es'}</strong>
                 <div style={{ color: '#64748b', fontSize: '0.82rem', marginTop: 3 }}>
-                  CPS LOG excluído por padrão • Concorrentes {compararConcorrentesRealizado ? 'ativos' : 'desativados'} • Negociações {incluirNegociacoesRealizado ? 'ativas' : 'desativadas'}
+                  CPS LOG excluído por padrão • Concorrentes {compararConcorrentesRealizado ? 'ativos' : 'desativados'} • Negociações {incluirNegociacoesRealizado ? 'ativas' : 'desativadas'} • {carregandoNegociacoesSimulador ? 'atualizando negociações...' : negociacoesAtualizadasEm ? `negociações atualizadas às ${negociacoesAtualizadasEm}` : 'negociações aguardando atualização'}
                 </div>
               </div>
               <button
@@ -3944,20 +4102,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   Incluir tabelas em negociação marcadas como “Simulação = Sim”
                 </label>
 
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', color: '#475569' }}>
                   <span>
                     Negociações disponíveis no canal atual: <strong>{nomesNegociacaoRealizado.length}</strong>
-                    {carregandoNegociacoesSimulador ? ' · carregando...' : ''}
+                    {carregandoNegociacoesSimulador
+                      ? ' · atualizando automaticamente...'
+                      : negociacoesAtualizadasEm
+                        ? ` · atualizado às ${negociacoesAtualizadasEm}`
+                        : ' · aguardando atualização automática'}
                   </span>
-
-                  <button
-                    className="sim-tab"
-                    type="button"
-                    onClick={carregarNegociacoesSimulador}
-                    disabled={carregandoNegociacoesSimulador}
-                  >
-                    Atualizar negociações
-                  </button>
                 </div>
 
                 <div style={{ display: 'grid', gap: 6 }}>

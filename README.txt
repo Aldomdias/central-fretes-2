@@ -1,13 +1,12 @@
-Ajuste: Simulador Realizado - UF destino com múltipla seleção
+Ajuste do Simulador Realizado
 
 Arquivo alterado:
 - src/pages/SimuladorPage.jsx
 
-O que muda:
-- UF destino deixa de ser seleção única e vira seletor com checkboxes.
-- Permite selecionar 1, 2, 3 ou mais UFs, ou deixar Todas.
-- A busca de CT-es no realizado filtra por todas as UFs selecionadas.
-- A busca da base/tabelas no Supabase também respeita as UFs selecionadas.
-- Mantém as melhorias anteriores: opções avançadas recolhidas, base por Tracking, CPS LOG excluído por padrão, visão de negociação e tratamento de cubagem outlier.
+Inclui:
+1. UF destino múltipla com seleção visual por botão/checklist, permitindo marcar uma, duas ou mais UFs.
+2. Negociações carregadas automaticamente ao abrir o Simulador Realizado, sem precisar expandir opções.
+3. Aviso de status indicando quando as negociações foram atualizadas.
+4. Mantém melhorias anteriores: base com Tracking, CPS LOG excluído por padrão, visão da negociação e tratamento de cubagem outlier.
 
 Build validado com npm run build.
