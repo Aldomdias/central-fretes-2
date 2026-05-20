@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { importarTemplatePadraoSeparado } from '../utils/importadorTemplatePadrao';
 import { baixarModeloTemplateFretes, baixarModeloTemplateRotas } from '../utils/modelosTemplateFormatacao';
@@ -12,7 +12,6 @@ import {
   TIPOS_TABELA_NEGOCIACAO,
   DEFAULT_GENERALIDADES,
   alternarTabelaNegociacaoNaSimulacao,
-  abrirNovaRodadaTabelaNegociacao,
   aprovarTabelaNegociacao,
   atualizarTabelaNegociacao,
   criarTabelaNegociacao,
@@ -123,60 +122,6 @@ function origemTabelaLabel(tabela) {
   if (ufDestino) partes.push('Destino: ' + ufDestino);
   return partes.join(' · ') || '-';
 }
-
-function parseOrigensMultiplas(origemTexto, ufPadrao) {
-  const origem = normalizarTexto(origemTexto);
-  const ufDefault = normalizarTexto(ufPadrao).toUpperCase();
-  if (!origem) return [{ origem: '', uf_origem: ufDefault }];
-
-  return origem
-    .split(/[;\n]+/g)
-    .map(function(parte) { return normalizarTexto(parte); })
-    .filter(Boolean)
-    .map(function(parte) {
-      var partes = parte.split('/');
-      var cidade = normalizarTexto(partes[0]);
-      var uf = normalizarTexto(partes[1] || ufDefault).toUpperCase();
-      return { origem: cidade, uf_origem: uf };
-    });
-}
-
-function chaveGrupoNegociacao(tabela) {
-  return [
-    normalizarTexto(tabela.transportadora).toUpperCase(),
-    normalizarTexto(tabela.canal).toUpperCase(),
-    normalizarTexto(tabela.tipo_tabela).toUpperCase(),
-  ].join('|');
-}
-
-function agruparNegociacoesPorTransportadora(tabelas) {
-  const mapa = new Map();
-  (tabelas || []).forEach(function(tabela) {
-    const chave = chaveGrupoNegociacao(tabela);
-    if (!mapa.has(chave)) {
-      mapa.set(chave, {
-        chave,
-        transportadora: tabela.transportadora || 'Sem transportadora',
-        canal: tabela.canal || '',
-        tipo_tabela: tabela.tipo_tabela || '',
-        tabelas: [],
-      });
-    }
-    mapa.get(chave).tabelas.push(tabela);
-  });
-
-  return Array.from(mapa.values()).map(function(grupo) {
-    return {
-      ...grupo,
-      tabelas: grupo.tabelas.sort(function(a, b) {
-        const oa = (a.origem || '').localeCompare(b.origem || '', 'pt-BR');
-        if (oa !== 0) return oa;
-        return (a.uf_origem || '').localeCompare(b.uf_origem || '', 'pt-BR');
-      }),
-    };
-  });
-}
-
 
 // ─── constantes ───────────────────────────────────────────────────────────────
 
@@ -335,6 +280,103 @@ function BadgeImportacao({ tipo }) {
   }, s.label);
 }
 
+function normalizarCabecalhoTaxa(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+}
+
+function normalizarLinhaModeloTaxa(row) {
+  var normalizado = {};
+  Object.keys(row || {}).forEach(function(key) {
+    normalizado[normalizarCabecalhoTaxa(key)] = row[key];
+  });
+  return normalizado;
+}
+
+function pegarCampoModeloTaxa(row, aliases) {
+  var normalizado = normalizarLinhaModeloTaxa(row);
+  for (var i = 0; i < aliases.length; i += 1) {
+    var chave = normalizarCabecalhoTaxa(aliases[i]);
+    if (normalizado[chave] !== undefined && normalizado[chave] !== null && String(normalizado[chave]).trim() !== '') {
+      return normalizado[chave];
+    }
+  }
+  return '';
+}
+
+function numeroModeloTaxa(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'number') return Number.isFinite(value) ? value : '';
+  var texto = String(value).replace(/R\$/gi, '').replace(/%/g, '').trim();
+  if (!texto) return '';
+  texto = texto.replace(/\s/g, '');
+  if (texto.includes(',') && texto.includes('.')) texto = texto.replace(/\./g, '').replace(',', '.');
+  else if (texto.includes(',')) texto = texto.replace(',', '.');
+  var n = Number(texto.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(n) ? n : '';
+}
+
+function montarTaxaDestinoDoModelo(row) {
+  return {
+    ibge_destino: normalizarTexto(pegarCampoModeloTaxa(row, ['IBGE Destino', 'IBGE', 'Código IBGE', 'Codigo IBGE', 'Código IBGE Destino', 'Codigo IBGE Destino'])),
+    uf_destino: normalizarTexto(pegarCampoModeloTaxa(row, ['UF Destino', 'UF', 'Estado Destino', 'Estado'])).toUpperCase(),
+    cidade_destino: normalizarTexto(pegarCampoModeloTaxa(row, ['Cidade Destino', 'Cidade', 'Município Destino', 'Municipio Destino', 'Destino'])),
+    tda: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['TDA (R$)', 'TDA', 'Taxa TDA'])),
+    tdr: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['TDR (R$)', 'TDR', 'Taxa TDR'])),
+    trt: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['TRT (R$)', 'TRT', 'TDE (R$)', 'TDE', 'Taxa TRT', 'Taxa TDE'])),
+    suframa: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['SUFRAMA (R$)', 'SUFRAMA'])),
+    outras_taxas: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['Outras (R$)', 'Outras', 'Outras Taxas', 'Outras Taxas (R$)'])),
+    gris: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['GRIS %', 'GRIS', '% GRIS'])),
+    gris_minimo: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['GRIS mín (R$)', 'GRIS min (R$)', 'GRIS mínimo', 'GRIS minimo', 'GRIS Mínimo (R$)', 'GRIS Minimo (R$)'])),
+    advalorem: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['Ad Valorem %', 'ADV %', 'AdValorem %', 'Ad Valorem', 'ADV', '% NF', 'Ad Val'])),
+    advalorem_minimo: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['Ad Val mín (R$)', 'Ad Val min (R$)', 'Ad Val mínimo', 'Ad Val minimo', 'Ad Valorem mín (R$)', 'Ad Valorem min (R$)', 'ADV mín (R$)', 'ADV min (R$)'])),
+    observacao: normalizarTexto(pegarCampoModeloTaxa(row, ['Observação', 'Observacao', 'Obs'])),
+  };
+}
+
+function baixarModeloTaxasDestinoNegociacao() {
+  var linhas = [
+    {
+      'IBGE Destino': '3550308',
+      'UF Destino': 'SP',
+      'Cidade Destino': 'SÃO PAULO',
+      'TDA (R$)': 0,
+      'TDR (R$)': 0,
+      'TRT (R$)': 0,
+      'SUFRAMA (R$)': 0,
+      'Outras (R$)': 0,
+      'GRIS %': 0.2,
+      'GRIS mín (R$)': 0,
+      'Ad Valorem %': 0.15,
+      'Ad Val mín (R$)': 0,
+      'Observação': 'Exemplo: preencha uma linha por IBGE/cidade',
+    },
+    {
+      'IBGE Destino': '3106200',
+      'UF Destino': 'MG',
+      'Cidade Destino': 'BELO HORIZONTE',
+      'TDA (R$)': 25,
+      'TDR (R$)': 0,
+      'TRT (R$)': 0,
+      'SUFRAMA (R$)': 0,
+      'Outras (R$)': 0,
+      'GRIS %': '',
+      'GRIS mín (R$)': '',
+      'Ad Valorem %': '',
+      'Ad Val mín (R$)': '',
+      'Observação': 'Campos vazios usam a generalidade da tabela',
+    },
+  ];
+  var ws = XLSX.utils.json_to_sheet(linhas);
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Taxas por Destino');
+  XLSX.writeFile(wb, 'modelo_taxas_por_destino_negociacao.xlsx');
+}
+
 // ─── componente principal ─────────────────────────────────────────────────────
 
 export default function TabelasNegociacaoPage() {
@@ -354,6 +396,7 @@ export default function TabelasNegociacaoPage() {
   const [sucesso, setSucesso] = useState('');
   const [filtros, setFiltros] = useState({ status: '', tipoTabela: '', canal: '', transportadora: '' });
   const [form, setForm] = useState(Object.assign({}, FORM_VAZIO));
+  const inputTaxasDestinoRef = useRef(null);
 
   const [tipoImportacao, setTipoImportacao] = useState('VERUM_ROTAS_FRETES');
   const [subtipoCantu, setSubtipoCantu] = useState('B2B_FAIXA_PESO');
@@ -418,10 +461,6 @@ export default function TabelasNegociacaoPage() {
     if (filtroItens === 'ROTA') return itensVisualizacao.filter(function(i) { return getTipoItem(i) === 'ROTA'; });
     return itensVisualizacao.filter(function(i) { return getTipoItem(i) !== 'ROTA'; });
   }, [itensVisualizacao, filtroItens]);
-
-  const tabelasAgrupadas = useMemo(function() {
-    return agruparNegociacoesPorTransportadora(tabelas);
-  }, [tabelas]);
 
   function labelTipoItem(item) {
     return getTipoItem(item) === 'ROTA' ? 'ROTA' : 'COTAÇÃO/FAIXA';
@@ -488,23 +527,11 @@ export default function TabelasNegociacaoPage() {
   async function salvarNovaTabela() {
     setSalvando(true); setErro(''); setSucesso('');
     try {
-      var origens = parseOrigensMultiplas(form.origem, form.uf_origem);
-      var criadas = [];
-
-      for (var i = 0; i < origens.length; i += 1) {
-        var origemInfo = origens[i];
-        var payload = Object.assign({}, form, {
-          origem: origemInfo.origem,
-          uf_origem: origemInfo.uf_origem,
-          descricao: form.descricao || (origens.length > 1 ? 'Origem ' + (origemInfo.origem || 'não informada') + (origemInfo.uf_origem ? '/' + origemInfo.uf_origem : '') : form.descricao),
-        });
-        criadas.push(await criarTabelaNegociacao(payload));
-      }
-
-      setSucesso(criadas.length > 1 ? criadas.length + ' origens criadas para ' + form.transportadora + '.' : 'Tabela criada com sucesso.');
+      var nova = await criarTabelaNegociacao(form);
+      setSucesso('Tabela criada com sucesso.');
       setForm(Object.assign({}, FORM_VAZIO));
       await carregar();
-      if (criadas[0]) await abrirTabela(criadas[0]);
+      await abrirTabela(nova);
     } catch (e) { setErro(e.message || 'Erro ao salvar.'); }
     finally { setSalvando(false); }
   }
@@ -538,52 +565,6 @@ export default function TabelasNegociacaoPage() {
       await carregar();
       setSucesso('Tabela excluída.');
     } catch (e) { setErro(e.message || 'Erro.'); }
-  }
-
-  async function abrirNovaRodada(tabela) {
-    var atual = getRodadaAtualTabela(tabela);
-    if (!window.confirm('Abrir ' + (atual + 1) + 'ª rodada para ' + tabela.transportadora + ' ' + origemTabelaLabel(tabela) + '?')) return;
-    setErro(''); setSucesso(''); setSalvando(true);
-    try {
-      var at = await abrirNovaRodadaTabelaNegociacao(tabela.id, { observacao: 'Nova proposta recebida para análise.' });
-      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      if (selecionada && selecionada.id === at.id) setSelecionada(at);
-      await abrirTabela(at);
-      setAbaNegoc('importacao');
-      setSucesso('Nova rodada aberta. Importe rotas/fretes da nova proposta.');
-    } catch (e) { setErro(e.message || 'Erro ao abrir nova rodada.'); }
-    finally { setSalvando(false); }
-  }
-
-  async function criarNovaOrigemDaTabela(tabela) {
-    var resposta = window.prompt('Informe a nova origem no formato Cidade/UF. Exemplo: Joinville/SC');
-    if (!resposta) return;
-    var origemInfo = parseOrigensMultiplas(resposta, tabela.uf_origem || form.uf_origem || '')[0];
-    if (!origemInfo || !origemInfo.origem) return setErro('Informe uma cidade de origem válida.');
-
-    setErro(''); setSucesso(''); setSalvando(true);
-    try {
-      var nova = await criarTabelaNegociacao({
-        transportadora: tabela.transportadora,
-        canal: tabela.canal,
-        tipo_tabela: tabela.tipo_tabela,
-        status: 'EM NEGOCIAÇÃO',
-        descricao: tabela.descricao,
-        regiao: tabela.regiao,
-        origem: origemInfo.origem,
-        uf_origem: origemInfo.uf_origem,
-        uf_destino: tabela.uf_destino,
-        data_recebimento: hojeISO(),
-        data_inicio_prevista: tabela.data_inicio_prevista || '',
-        incluir_simulacao: false,
-        observacao: 'Criada a partir da negociação ' + tabela.transportadora,
-        generalidades: tabela.generalidades || DEFAULT_GENERALIDADES,
-      });
-      await carregar();
-      await abrirTabela(nova);
-      setSucesso('Nova origem criada para ' + tabela.transportadora + '.');
-    } catch (e) { setErro(e.message || 'Erro ao criar nova origem.'); }
-    finally { setSalvando(false); }
   }
 
   async function salvarItens(itens, origemImportacao, extraUpdate) {
@@ -725,9 +706,45 @@ export default function TabelasNegociacaoPage() {
       .finally(function() { setSalvandoTaxa(false); });
   }
 
+  async function handleImportarModeloTaxasDestino(event) {
+    var file = event && event.target && event.target.files ? event.target.files[0] : null;
+    if (event && event.target) event.target.value = '';
+    if (!file) return;
+    if (!selecionada) return setErro('Abra uma negociação antes de importar taxas.');
+
+    setSalvandoTaxa(true); setErro(''); setSucesso('');
+    try {
+      var buffer = await file.arrayBuffer();
+      var wb = XLSX.read(buffer, { type: 'array' });
+      var sheetName = wb.SheetNames[0];
+      var sheet = wb.Sheets[sheetName];
+      var rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      var novas = rows
+        .map(montarTaxaDestinoDoModelo)
+        .filter(function(taxa) {
+          return taxa.ibge_destino || taxa.cidade_destino || taxa.uf_destino;
+        });
+
+      if (!novas.length) throw new Error('Nenhuma taxa válida encontrada no arquivo. Verifique o modelo.');
+
+      var mensagem = taxasDestino.length
+        ? 'Importar ' + novas.length + ' taxa(s) e substituir as ' + taxasDestino.length + ' taxa(s) atuais desta negociação?'
+        : 'Importar ' + novas.length + ' taxa(s) para esta negociação?';
+      if (!window.confirm(mensagem)) return;
+
+      var salvas = await substituirTaxasDestino(selecionada.id, novas);
+      setTaxasDestino(salvas);
+      setSucesso(salvas.length + ' taxa(s) importada(s) pelo modelo.');
+    } catch (e) {
+      setErro(e.message || 'Erro ao importar modelo de taxas.');
+    } finally {
+      setSalvandoTaxa(false);
+    }
+  }
+
   function abrirModalAprovacao(tabela) {
     setModalAprovacao(tabela);
-    setAprovacao({ data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, justificativa_aprovacao: '', promover_para_oficial: true, transportadora_oficial_nome: tabela.transportadora || '' });
+    setAprovacao({ data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, justificativa_aprovacao: '' });
   }
 
   async function confirmarAprovacao() {
@@ -809,9 +826,8 @@ export default function TabelasNegociacaoPage() {
           </label>
         </div>
         <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
-          <label>Origem(s)
-            <input value={form.origem} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { origem: e.target.value }); }); }} placeholder="Ex: Itajaí/SC; Joinville/SC" />
-            <small style={{ color: '#64748b' }}>Separe múltiplas origens por ponto e vírgula.</small>
+          <label>Origem
+            <input value={form.origem} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { origem: e.target.value }); }); }} placeholder="Ex: Itajaí" />
           </label>
           <label>UF origem
             <select value={form.uf_origem} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { uf_origem: e.target.value }); }); }}>
@@ -890,97 +906,81 @@ export default function TabelasNegociacaoPage() {
               </tr>
             </thead>
             <tbody>
-              {tabelasAgrupadas.map(function(grupo) {
+              {tabelas.map(function(tabela) {
+                var ind = getIndicadoresTabela(tabela);
+                var historicoRodadas = getHistoricoRodadasTabela(tabela);
                 return (
-                  <React.Fragment key={grupo.chave}>
-                    <tr style={{ background: '#f8fafc' }}>
-                      <td colSpan="8" style={{ fontWeight: 800, color: '#0f172a' }}>
-                        {grupo.transportadora} · {grupo.tipo_tabela} · {grupo.canal}
-                        <span style={{ marginLeft: 8, color: '#64748b', fontSize: 12, fontWeight: 500 }}>
-                          {grupo.tabelas.length} origem(ns) / rodada(s)
-                        </span>
-                      </td>
-                    </tr>
-                    {grupo.tabelas.map(function(tabela) {
-                      var ind = getIndicadoresTabela(tabela);
-                      var historicoRodadas = getHistoricoRodadasTabela(tabela);
-                      return (
-                        <tr key={tabela.id}>
-                          <td style={{ minWidth: 230, paddingLeft: 28 }}>
-                            <strong>{tabela.transportadora}</strong>
-                            <BadgeImportacao tipo={tabela.origem_importacao} />
-                            <div style={{ fontSize: 12, color: '#334155', marginTop: 3 }}>{origemTabelaLabel(tabela)}</div>
-                            <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
-                              {tabela.descricao || tabela.regiao || 'Sem descrição'}
-                            </div>
-                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
-                              {tabela.tipo_tabela} · {tabela.canal} · Recebida em {formatDateBR(tabela.data_recebimento)}
-                            </div>
-                          </td>
-                          <td>
-                            <span style={Object.assign({}, statusStyle(tabela.status), { borderRadius: 999, padding: '4px 8px', fontSize: 12, fontWeight: 700 })}>
-                              {tabela.status}
-                            </span>
-                          </td>
-                          <td>
-                            <strong>{ind.rodada}ª</strong>
-                            <div style={{ fontSize: 11, color: '#64748b' }}>{historicoRodadas.length} registro(s)</div>
-                          </td>
-                          <td>
-                            <button className="sim-tab" type="button" onClick={function() { alternarSimulacao(tabela); }}>
-                              {tabela.incluir_simulacao ? 'Sim' : 'Não'}
-                            </button>
-                            <div style={{ fontSize: 11, color: ind.temSimulacao ? '#15803d' : '#64748b', marginTop: 4 }}>
-                              {ind.temSimulacao ? 'Com análise salva' : 'Ainda sem simulação'}
-                            </div>
-                          </td>
-                          <td style={{ minWidth: 240 }}>
-                            {ind.temSimulacao ? (
-                              <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                                <div><strong>Aderência:</strong> {formatPercent(ind.aderencia)}</div>
-                                <div><strong>Saving mês:</strong> {formatMoney(ind.savingMes)} · <strong>ano:</strong> {formatMoney(ind.savingAno)}</div>
-                                <div><strong>Faturamento mês:</strong> {formatMoney(ind.faturamentoMes)} · <strong>ano:</strong> {formatMoney(ind.faturamentoAno)}</div>
-                              </div>
-                            ) : (
-                              <span style={{ color: '#64748b', fontSize: 12 }}>Execute o Simulador Realizado e salve o resultado.</span>
-                            )}
-                          </td>
-                          <td style={{ minWidth: 180 }}>
-                            {ind.temSimulacao ? (
-                              <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                                <div><strong>NF/dia:</strong> {formatNumber(ind.pedidosDia, 1)} · <strong>mês:</strong> {formatNumber(ind.pedidosMes, 0)}</div>
-                                <div><strong>Volumes/dia:</strong> {formatNumber(ind.volumesDia, 1)} · <strong>ano:</strong> {formatNumber(ind.volumesAno, 0)}</div>
-                                <div style={{ color: '#64748b' }}>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</div>
-                              </div>
-                            ) : '-' }
-                          </td>
-                          <td style={{ minWidth: 150 }}>
-                            {ind.temSimulacao ? (
-                              <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                                <div>Realizado: <strong>{formatPercent(ind.percentualReal)}</strong></div>
-                                <div>Tabela: <strong>{formatPercent(ind.percentualTabela)}</strong></div>
-                                <div style={{ color: ind.reducaoPercentual >= 0 ? '#15803d' : '#dc2626' }}>
-                                  {ind.reducaoPercentual >= 0 ? 'Redução' : 'Aumento'}: {formatPercent(Math.abs(ind.reducaoPercentual))}
-                                </div>
-                              </div>
-                            ) : '-' }
-                          </td>
-                          <td>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
-                              <button className="sim-tab" type="button" onClick={function() { criarNovaOrigemDaTabela(tabela); }}>Nova origem</button>
-                              <button className="sim-tab" type="button" onClick={function() { abrirNovaRodada(tabela); }}>Nova rodada</button>
-                              <select value={tabela.status} onChange={function(e) { atualizarStatus(tabela, e.target.value); }}>
-                                {STATUS_TABELA_NEGOCIACAO.map(function(s) { return <option key={s}>{s}</option>; })}
-                              </select>
-                              <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(tabela); }}>Aprovar</button>
-                              <button className="sim-tab" type="button" onClick={function() { excluirTabela(tabela); }}>Excluir</button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </React.Fragment>
+                  <tr key={tabela.id}>
+                    <td style={{ minWidth: 230 }}>
+                      <strong>{tabela.transportadora}</strong>
+                      <BadgeImportacao tipo={tabela.origem_importacao} />
+                      <div style={{ fontSize: 12, color: '#334155', marginTop: 3 }}>{origemTabelaLabel(tabela)}</div>
+                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
+                        {tabela.descricao || tabela.regiao || 'Sem descrição'}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
+                        {tabela.tipo_tabela} · {tabela.canal} · Recebida em {formatDateBR(tabela.data_recebimento)}
+                      </div>
+                    </td>
+                    <td>
+                      <span style={Object.assign({}, statusStyle(tabela.status), { borderRadius: 999, padding: '4px 8px', fontSize: 12, fontWeight: 700 })}>
+                        {tabela.status}
+                      </span>
+                    </td>
+                    <td>
+                      <strong>{ind.rodada}ª</strong>
+                      <div style={{ fontSize: 11, color: '#64748b' }}>{historicoRodadas.length} registro(s)</div>
+                    </td>
+                    <td>
+                      <button className="sim-tab" type="button" onClick={function() { alternarSimulacao(tabela); }}>
+                        {tabela.incluir_simulacao ? 'Sim' : 'Não'}
+                      </button>
+                      <div style={{ fontSize: 11, color: ind.temSimulacao ? '#15803d' : '#64748b', marginTop: 4 }}>
+                        {ind.temSimulacao ? 'Com análise salva' : 'Ainda sem simulação'}
+                      </div>
+                    </td>
+                    <td style={{ minWidth: 240 }}>
+                      {ind.temSimulacao ? (
+                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                          <div><strong>Aderência:</strong> {formatPercent(ind.aderencia)}</div>
+                          <div><strong>Saving mês:</strong> {formatMoney(ind.savingMes)} · <strong>ano:</strong> {formatMoney(ind.savingAno)}</div>
+                          <div><strong>Faturamento mês:</strong> {formatMoney(ind.faturamentoMes)} · <strong>ano:</strong> {formatMoney(ind.faturamentoAno)}</div>
+                        </div>
+                      ) : (
+                        <span style={{ color: '#64748b', fontSize: 12 }}>Execute o Simulador Realizado e salve o resultado.</span>
+                      )}
+                    </td>
+                    <td style={{ minWidth: 180 }}>
+                      {ind.temSimulacao ? (
+                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                          <div><strong>NF/dia:</strong> {formatNumber(ind.pedidosDia, 1)} · <strong>mês:</strong> {formatNumber(ind.pedidosMes, 0)}</div>
+                          <div><strong>Volumes/dia:</strong> {formatNumber(ind.volumesDia, 1)} · <strong>ano:</strong> {formatNumber(ind.volumesAno, 0)}</div>
+                          <div style={{ color: '#64748b' }}>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</div>
+                        </div>
+                      ) : '-' }
+                    </td>
+                    <td style={{ minWidth: 150 }}>
+                      {ind.temSimulacao ? (
+                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                          <div>Realizado: <strong>{formatPercent(ind.percentualReal)}</strong></div>
+                          <div>Tabela: <strong>{formatPercent(ind.percentualTabela)}</strong></div>
+                          <div style={{ color: ind.reducaoPercentual >= 0 ? '#15803d' : '#dc2626' }}>
+                            {ind.reducaoPercentual >= 0 ? 'Redução' : 'Aumento'}: {formatPercent(Math.abs(ind.reducaoPercentual))}
+                          </div>
+                        </div>
+                      ) : '-' }
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
+                        <select value={tabela.status} onChange={function(e) { atualizarStatus(tabela, e.target.value); }}>
+                          {STATUS_TABELA_NEGOCIACAO.map(function(s) { return <option key={s}>{s}</option>; })}
+                        </select>
+                        <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(tabela); }}>Aprovar</button>
+                        <button className="sim-tab" type="button" onClick={function() { excluirTabela(tabela); }}>Excluir</button>
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
               {!tabelas.length && <tr><td colSpan="8">Nenhuma tabela encontrada.</td></tr>}
@@ -1000,10 +1000,6 @@ export default function TabelasNegociacaoPage() {
               </h2>
               <p>{selecionada.tipo_tabela} · {selecionada.canal} · {selecionada.status} · Rodada {getRodadaAtualTabela(selecionada)}ª</p>
               <p style={{ marginTop: 4, color: '#475569' }}>{origemTabelaLabel(selecionada)}{selecionada.descricao ? ' · ' + selecionada.descricao : ''}</p>
-              <div className="sim-actions" style={{ marginTop: 8 }}>
-                <button className="sim-tab" type="button" onClick={function() { criarNovaOrigemDaTabela(selecionada); }}>+ Nova origem</button>
-                <button className="sim-tab" type="button" onClick={function() { abrirNovaRodada(selecionada); }}>+ Nova rodada</button>
-              </div>
             </div>
             <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada); }}>Recarregar</button>
           </div>
@@ -1294,6 +1290,28 @@ export default function TabelasNegociacaoPage() {
               <h3 style={{ margin: '0 0 8px' }}>Taxas por Destino (IBGE)</h3>
               <p style={{ color: '#64748b', marginBottom: 16 }}>Taxas específicas por IBGE/cidade. Prevalecem sobre as generalidades. GRIS e Ad Valorem específicos têm prioridade no cálculo.</p>
 
+              <div className="sim-alert info" style={{ marginBottom: 16, display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                <div>
+                  <strong>Importação em massa de taxas por destino</strong>
+                  <div style={{ fontSize: 12, color: '#475569', marginTop: 3 }}>
+                    Baixe o modelo, preencha uma linha por IBGE/cidade e importe para substituir as taxas especiais desta negociação.
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="sim-tab" type="button" onClick={baixarModeloTaxasDestinoNegociacao}>Baixar modelo</button>
+                  <button className="primary" type="button" onClick={function() { if (inputTaxasDestinoRef.current) inputTaxasDestinoRef.current.click(); }} disabled={salvandoTaxa || !selecionada}>
+                    {salvandoTaxa ? 'Importando...' : 'Importar modelo'}
+                  </button>
+                  <input
+                    ref={inputTaxasDestinoRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    style={{ display: 'none' }}
+                    onChange={handleImportarModeloTaxasDestino}
+                  />
+                </div>
+              </div>
+
               {itensSelecionada.some(function(i) { return i.ibge_destino && (Number(i.tda) > 0 || Number(i.tde) > 0); }) ? (
                 <div className="sim-alert info" style={{ marginBottom: 16 }}>
                   Itens importados contêm TDA/TRT por cidade.
@@ -1473,7 +1491,6 @@ export default function TabelasNegociacaoPage() {
             return (
               <div>
                 <h3 style={{ margin: '0 0 12px' }}>Histórico de rodadas e análises</h3>
-                <div className="sim-actions" style={{ marginBottom: 12 }}><button className="primary" type="button" onClick={function() { abrirNovaRodada(selecionada); }}>Abrir nova rodada</button></div>
                 <div className="sim-alert info" style={{ marginBottom: 14 }}>
                   Rotas e fretes da mesma proposta ficam na mesma rodada. Uma nova rodada deve ser aberta somente quando chegar uma nova proposta/tabela do transportador; os resultados salvos continuam guardados para comparação.
                 </div>
@@ -1544,7 +1561,7 @@ export default function TabelasNegociacaoPage() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 9999, display: 'grid', placeItems: 'center', padding: 20 }}>
           <div className="sim-card" style={{ width: 'min(720px,100%)', maxHeight: '90vh', overflow: 'auto' }}>
             <h2>Aprovar tabela</h2>
-            <p>A tabela de <strong>{modalAprovacao.transportadora}</strong> será aprovada e, se marcado, promovida automaticamente para o cadastro oficial.</p>
+            <p>A tabela de <strong>{modalAprovacao.transportadora}</strong> será marcada como aprovada.</p>
             <div className="sim-form-grid sim-grid-2">
               <label>Data início de vigência
                 <input type="date" value={aprovacao.data_inicio_vigencia} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { data_inicio_vigencia: e.target.value }); }); }} />
@@ -1554,20 +1571,6 @@ export default function TabelasNegociacaoPage() {
                 Substitui tabela anterior
               </label>
             </div>
-            <label className="sim-flag" style={{ marginTop: 12, justifyContent: 'flex-start' }}>
-              <input type="checkbox" checked={Boolean(aprovacao.promover_para_oficial)} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { promover_para_oficial: e.target.checked }); }); }} />
-              Promover automaticamente para cadastro oficial de transportadoras
-            </label>
-            {aprovacao.promover_para_oficial ? (
-              <div className="sim-form-grid sim-grid-2" style={{ marginTop: 12 }}>
-                <label>Transportadora oficial
-                  <input value={aprovacao.transportadora_oficial_nome || ''} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { transportadora_oficial_nome: e.target.value }); }); }} placeholder={modalAprovacao.transportadora} />
-                </label>
-                <div className="sim-alert info" style={{ margin: 0 }}>
-                  Ao confirmar, a última tabela da negociação será gravada em Transportadoras, Origens, Rotas, Cotações e Taxas oficiais.
-                </div>
-              </div>
-            ) : null}
             <label style={{ marginTop: 12 }}>Justificativa
               <textarea value={aprovacao.justificativa_aprovacao} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { justificativa_aprovacao: e.target.value }); }); }} placeholder="Explique o motivo da aprovação..." style={{ minHeight: 100 }} />
             </label>
