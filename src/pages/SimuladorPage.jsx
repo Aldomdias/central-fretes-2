@@ -1664,6 +1664,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
+  const [baseRealizadoTracking, setBaseRealizadoTracking] = useState('com_tracking'); // 'com_tracking' | 'todos'
   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
   const [municipiosIbge, setMunicipiosIbge] = useState([]);
@@ -2471,7 +2472,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
         atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(38, 24 + Math.floor(qtd / 500)));
       });
 
-      const rowsBrutosFiltrados = aplicarFiltrosPadraoRealizadoSim(rowsBrutos, { incluirCpsLog: incluirCpsLogRealizado });
+      const rowsBrutosFiltrados = aplicarFiltrosPadraoRealizadoSim(rowsBrutos, {
+        // Quando a base é somente CT-es com Tracking, CPS LOG não deve ser excluído por nome.
+        // Se CPS LOG tiver vínculo real no Tracking, significa que faz parte da operação analisada.
+        incluirCpsLog: baseRealizadoTracking === 'com_tracking' ? true : incluirCpsLogRealizado,
+      });
 
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 36);
       const rowsComIbgeBase = rowsBrutosFiltrados.map((row) => {
@@ -2485,7 +2490,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
       atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 42);
       const mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
       const trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
-      const rowsComIbge = trackingEnriquecido.linhas;
+
+      const rowsComTracking = (trackingEnriquecido.linhas || []).filter((row) => row.trackingMatch);
+      const rowsComIbge = baseRealizadoTracking === 'com_tracking'
+        ? rowsComTracking
+        : trackingEnriquecido.linhas;
+
+      if (baseRealizadoTracking === 'com_tracking' && !rowsComIbge.length) {
+        setErroSimulacao('Nenhum CT-e encontrou vínculo com o Tracking nos filtros informados. Revise período, origem, UF ou a carga do Tracking.');
+        setResultadoRealizado(null);
+        finalizarProcessamentoUi('Sem CT-es com Tracking', 'A base foi carregada, mas nenhum CT-e teve vínculo com Tracking.', 100);
+        return;
+      }
 
       atualizarProcessamentoUi('Buscando malha da transportadora/tabela selecionada...', 46);
       const baseSelecionada = ehNegociacaoSelecionada
@@ -2633,6 +2649,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ctesAposFiltroPadrao: rowsBrutosFiltrados.length,
           ctesRemovidosFiltroPadrao: Math.max(0, rowsBrutos.length - rowsBrutosFiltrados.length),
           incluirCpsLog: incluirCpsLogRealizado,
+          baseRealizadoTracking,
+          ctesComTracking: trackingEnriquecido.vinculados,
+          ctesSemTracking: trackingEnriquecido.semTracking,
+          ctesBaseSimulada: rowsComIbge.length,
           ctesNaMalha: rowsFiltrados.length,
           origemMalhaNaoReconhecida: [...origemMalhaNaoReconhecida].slice(0, 20),
           trackingVinculados: trackingEnriquecido.vinculados,
@@ -3726,14 +3746,41 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </button>
             </div>
 
-            <label className="sim-flag">
-              <input
-                type="checkbox"
-                checked={incluirCpsLogRealizado}
-                onChange={(event) => setIncluirCpsLogRealizado(event.target.checked)}
-              />
-              Incluir CPS LOG nesta análise
-            </label>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <strong>Base da simulação</strong>
+              <label className="sim-flag">
+                <input
+                  type="radio"
+                  name="base-realizado-tracking"
+                  checked={baseRealizadoTracking === 'com_tracking'}
+                  onChange={() => setBaseRealizadoTracking('com_tracking')}
+                />
+                Somente CT-es com Tracking vinculado
+              </label>
+              <label className="sim-flag">
+                <input
+                  type="radio"
+                  name="base-realizado-tracking"
+                  checked={baseRealizadoTracking === 'todos'}
+                  onChange={() => setBaseRealizadoTracking('todos')}
+                />
+                Todos os CT-es encontrados
+              </label>
+              <small style={{ color: '#64748b' }}>
+                Recomendado: usar somente CT-es com Tracking para garantir NF, volume e cubagem reais na simulação.
+              </small>
+            </div>
+
+            {baseRealizadoTracking === 'todos' && (
+              <label className="sim-flag">
+                <input
+                  type="checkbox"
+                  checked={incluirCpsLogRealizado}
+                  onChange={(event) => setIncluirCpsLogRealizado(event.target.checked)}
+                />
+                Incluir CPS LOG nesta análise ampla
+              </label>
+            )}
 
             <label className="sim-flag">
               <input
@@ -3745,7 +3792,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
 
             <small style={{ color: '#64748b' }}>
-              Padrão do realizado: tomadores CPX, ITR e GP PNEUS, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador. Para simular rápido, deixe negociações e concorrentes desmarcados.
+              Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Na análise ampla, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e permite incluir CPS LOG manualmente.
             </small>
 
             {erroNegociacoesSimulador ? <span style={{ color: '#dc2626' }}>{erroNegociacoesSimulador}</span> : null}
@@ -3761,7 +3808,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
-            <strong>Regra:</strong> no modo malha, o sistema busca o realizado dentro das origens cobertas pela transportadora selecionada. A base padrão usa tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e exclui CPS LOG. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
+            <strong>Regra:</strong> por padrão, o sistema simula somente CT-es vinculados ao Tracking, garantindo NF, volumes e cubagem rastreáveis. Se CPS LOG aparecer com Tracking, ele é considerado parte válida da operação. No modo “Todos os CT-es”, a simulação considera também CT-es sem Tracking. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
           </div>
 
           {resultadoRealizado && (
@@ -3770,6 +3817,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Buscados do banco</span><strong>{resultadoRealizado.filtros?.ctesBrutos ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>{resultadoRealizado.filtros?.modo === 'malha' ? 'Na malha (filtro)' : 'Após filtros'}</span><strong>{resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>CT-es analisados</span><strong>{resultadoRealizado.ctesAnalisados}</strong></div>
+                <div><span>Com Tracking</span><strong>{resultadoRealizado.filtros?.ctesComTracking ?? resultadoRealizado.linhasComTracking ?? 0}</strong></div>
+                <div><span>Sem Tracking</span><strong>{resultadoRealizado.filtros?.ctesSemTracking ?? 0}</strong></div>
+                <div><span>Base simulada</span><strong>{resultadoRealizado.filtros?.ctesBaseSimulada ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>{compararConcorrentesRealizado ? 'com tabela concorrente' : 'vs realizado'}</small></div>
                 <div><span>Sem tabela geral</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
                 <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
