@@ -32,6 +32,7 @@ const CANAL_VENDAS_MAP_SIM = {
   'ITAU SHOP': 'B2C', '99': 'B2C', 'COOPERA': 'B2C', 'BRADESCO SHOP': 'B2C', 'MUSTANG': 'B2C',
 };
 const MARCADORES_ATACADO_SIM = ['AT-AG', 'AT-TR', 'ECM-B2B', 'ECC-SALES', 'ECA-SALES'];
+const TOMADORES_REALIZADO_PADRAO_SIM = ['CPX', 'ITR', 'GP PNEUS'];
 
 
 function sleep(ms) {
@@ -133,6 +134,7 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   const rows = allRows.slice(0, totalMax);
   return rows.map(r => ({
     transportadora: pickRealizadoField(r, ['transportadora', 'nome_transportadora', 'transportador']) || '',
+    tomador: pickRealizadoField(r, ['tomador_servico', 'tomadorServico', 'tomador', 'nome_tomador', 'razao_social_tomador']) || '',
     valorCte: Number(pickRealizadoField(r, ['valor_cte', 'valorCte', 'frete_realizado', 'freteRealizado', 'valor_frete'])) || 0,
     valorNF: Number(pickRealizadoField(r, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota', 'valor_mercadoria'])) || 0,
     cidadeDestino: pickRealizadoField(r, ['cidade_destino', 'cidadeDestino', 'destino', 'municipio_destino']) || '',
@@ -687,6 +689,32 @@ function normalizarTransportadoraSimulador(nome = '') {
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase();
+}
+
+function isCpsLogSimulador(nome = '') {
+  const texto = normalizarTransportadoraSimulador(nome);
+  return texto.includes('CPS LOG') || texto.includes('CPSLOG');
+}
+
+function isEbazarSimulador(nome = '') {
+  return normalizarTransportadoraSimulador(nome).includes('EBAZAR');
+}
+
+function isTomadorPermitidoRealizadoSim(row = {}) {
+  const tomador = normalizarTransportadoraSimulador(row.tomador || row.tomadorServico || row.tomador_servico || row.nomeTomador || '');
+  if (!tomador) return true;
+  return TOMADORES_REALIZADO_PADRAO_SIM.some((permitido) => tomador.includes(normalizarTransportadoraSimulador(permitido)));
+}
+
+function aplicarFiltrosPadraoRealizadoSim(rows = [], { incluirCpsLog = false } = {}) {
+  return (rows || []).filter((row) => {
+    const transportadora = row.transportadora || '';
+    const tomador = row.tomador || '';
+    if (!isTomadorPermitidoRealizadoSim(row)) return false;
+    if (isEbazarSimulador(transportadora) || isEbazarSimulador(tomador)) return false;
+    if (!incluirCpsLog && (isCpsLogSimulador(transportadora) || isCpsLogSimulador(tomador))) return false;
+    return true;
+  });
 }
 
 function transportadoraCompativelSimulador(nomeTabela = '', nomeFiltro = '') {
@@ -1635,6 +1663,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [erroNegociacoesSimulador, setErroNegociacoesSimulador] = useState('');
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
+  const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
   const [municipiosIbge, setMunicipiosIbge] = useState([]);
@@ -2442,8 +2471,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
         atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(38, 24 + Math.floor(qtd / 500)));
       });
 
+      const rowsBrutosFiltrados = aplicarFiltrosPadraoRealizadoSim(rowsBrutos, { incluirCpsLog: incluirCpsLogRealizado });
+
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 36);
-      const rowsComIbgeBase = rowsBrutos.map((row) => {
+      const rowsComIbgeBase = rowsBrutosFiltrados.map((row) => {
         const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
         const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', municipioPorCidade);
         const nomeOriginal = String(row.transportadora || '').trim();
@@ -2599,6 +2630,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimRealizado,
           limite: limiteRealizado,
           ctesBrutos: rowsBrutos.length,
+          ctesAposFiltroPadrao: rowsBrutosFiltrados.length,
+          ctesRemovidosFiltroPadrao: Math.max(0, rowsBrutos.length - rowsBrutosFiltrados.length),
+          incluirCpsLog: incluirCpsLogRealizado,
           ctesNaMalha: rowsFiltrados.length,
           origemMalhaNaoReconhecida: [...origemMalhaNaoReconhecida].slice(0, 20),
           trackingVinculados: trackingEnriquecido.vinculados,
@@ -3695,6 +3729,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label className="sim-flag">
               <input
                 type="checkbox"
+                checked={incluirCpsLogRealizado}
+                onChange={(event) => setIncluirCpsLogRealizado(event.target.checked)}
+              />
+              Incluir CPS LOG nesta análise
+            </label>
+
+            <label className="sim-flag">
+              <input
+                type="checkbox"
                 checked={compararConcorrentesRealizado}
                 onChange={(event) => setCompararConcorrentesRealizado(event.target.checked)}
               />
@@ -3702,7 +3745,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
 
             <small style={{ color: '#64748b' }}>
-              Para simular rápido, deixe as duas opções desmarcadas. Assim o sistema compara somente a tabela selecionada contra os CT-es realizados, sem buscar concorrentes no Supabase.
+              Padrão do realizado: tomadores CPX, ITR e GP PNEUS, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador. Para simular rápido, deixe negociações e concorrentes desmarcados.
             </small>
 
             {erroNegociacoesSimulador ? <span style={{ color: '#dc2626' }}>{erroNegociacoesSimulador}</span> : null}
@@ -3718,7 +3761,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
-            <strong>Regra:</strong> no modo malha, o sistema busca o realizado dentro das origens cobertas pela transportadora selecionada. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
+            <strong>Regra:</strong> no modo malha, o sistema busca o realizado dentro das origens cobertas pela transportadora selecionada. A base padrão usa tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e exclui CPS LOG. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
           </div>
 
           {resultadoRealizado && (

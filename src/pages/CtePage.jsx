@@ -13,7 +13,7 @@ const PAGE_SIZE = 50;
 const ANALISE_BATCH_SIZE = 300;
 const ANALISE_MAX_REGISTROS = 5000;
 
-const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GRIP', 'GP PNEUS', 'SPEEDMAX'];
+const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GP PNEUS'];
 
 const CANAL_VENDAS_MAP = {
   B2C: 'B2C',
@@ -110,6 +110,35 @@ function normalizarTexto(valor) {
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toUpperCase();
+}
+
+function transportadoraOuTomadorContem(row, termo) {
+  const alvo = `${getTransportadora(row)} ${getTomador(row)}`;
+  return normalizarTexto(alvo).includes(normalizarTexto(termo));
+}
+
+function isEbazarCte(row) {
+  return transportadoraOuTomadorContem(row, 'EBAZAR');
+}
+
+function isCpsLogCte(row) {
+  const texto = normalizarTexto(`${getTransportadora(row)} ${getTomador(row)}`);
+  return texto.includes('CPS LOG') || texto.includes('CPSLOG');
+}
+
+function isTomadorPermitidoCte(row) {
+  const tomador = normalizarTexto(getTomador(row));
+  if (!tomador || tomador === '-') return true;
+  return TOMADORES_PERMITIDOS.some((permitido) => tomador.includes(normalizarTexto(permitido)));
+}
+
+function aplicarFiltrosPadraoCte(rows = [], { ocultarEbazar = true, incluirCpsLog = false } = {}) {
+  return (rows || []).filter((row) => {
+    if (!isTomadorPermitidoCte(row)) return false;
+    if (ocultarEbazar && isEbazarCte(row)) return false;
+    if (!incluirCpsLog && isCpsLogCte(row)) return false;
+    return true;
+  });
 }
 
 function temFiltroAtivo(filtros = {}) {
@@ -772,6 +801,7 @@ export default function CtePage() {
   const [pendencias, setPendencias] = useState([]);
 
   const [ocultarEbazar, setOcultarEbazar] = useState(true);
+  const [incluirCpsLog, setIncluirCpsLog] = useState(false);
   const [rows, setRows] = useState(null);
   const [rowsAnalise, setRowsAnalise] = useState([]);
   const [pagina, setPagina] = useState(1);
@@ -988,20 +1018,16 @@ export default function CtePage() {
 
   const analise = useMemo(
     () => {
-      const base = ocultarEbazar
-        ? (rowsAnalise || []).filter((r) => !normalizarTexto(getTransportadora(r)).includes('EBAZAR'))
-        : rowsAnalise;
+      const base = aplicarFiltrosPadraoCte(rowsAnalise || [], { ocultarEbazar, incluirCpsLog });
       return montarAnalise(base, filtros);
     },
-    [rowsAnalise, filtros, ocultarEbazar]
+    [rowsAnalise, filtros, ocultarEbazar, incluirCpsLog]
   );
 
   const rowsFiltradas = useMemo(() => {
     if (!rows) return null;
-    return ocultarEbazar
-      ? rows.filter((r) => !normalizarTexto(getTransportadora(r)).includes('EBAZAR'))
-      : rows;
-  }, [rows, ocultarEbazar]);
+    return aplicarFiltrosPadraoCte(rows, { ocultarEbazar, incluirCpsLog });
+  }, [rows, ocultarEbazar, incluirCpsLog]);
 
   const avisoAnaliseLimitada = rowsAnalise.length >= ANALISE_MAX_REGISTROS;
   const inicioExibicao = rowsFiltradas ? (pagina - 1) * PAGE_SIZE + 1 : 0;
@@ -1271,8 +1297,17 @@ export default function CtePage() {
             />
             Ocultar EBAZAR
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={incluirCpsLog}
+              onChange={(e) => setIncluirCpsLog(e.target.checked)}
+              style={{ width: 15, height: 15 }}
+            />
+            Incluir CPS LOG
+          </label>
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-            Base filtrada por tomadores: {TOMADORES_PERMITIDOS.join(', ')}. A busca só roda com pelo menos um filtro.
+            Base padrão: tomadores {TOMADORES_PERMITIDOS.join(', ')}, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador.
           </span>
         </div>
       </div>
@@ -1324,6 +1359,7 @@ export default function CtePage() {
                 <p className="compact">
                   Exibindo {fmtN(inicioExibicao)} a {fmtN(fimExibicao)}. Página {fmtN(pagina)}{temProximaPagina ? ' · há mais registros' : ''}.
                   {ocultarEbazar && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>EBAZAR ocultado.</span>}
+                    {!incluirCpsLog && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>CPS LOG ocultado.</span>}
                 </p>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
