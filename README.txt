@@ -1,26 +1,33 @@
-Pacote: Tabelas em Negociação V2
+Ajuste: Taxas por Destino em massa na negociação
 
-Arquivos alterados:
+Arquivo alterado:
 - src/pages/TabelasNegociacaoPage.jsx
-- src/pages/ImportacaoPage.jsx
-- src/services/tabelasNegociacaoService.js
 
-Principais melhorias:
-1) Negociações agrupadas visualmente por transportadora/canal/tipo.
-2) Criação de várias origens na mesma transportadora usando o campo Origem(s), separado por ponto e vírgula. Ex.: Itajaí/SC; Joinville/SC.
-3) Botão Nova origem para criar outra origem dentro da mesma transportadora.
-4) Botão Nova rodada para abrir nova rodada da origem selecionada.
-5) Importação passa a mostrar origem e rodada no seletor de negociação.
-6) Ao salvar resultado da simulação, a negociação sai automaticamente da simulação (incluir_simulacao = false).
-7) Aprovação permite promover automaticamente a tabela aprovada para o cadastro oficial de transportadoras, origens, rotas, cotações e taxas.
+O que foi incluído:
+- Botão "Baixar modelo" na aba Taxas por Destino.
+- Botão "Importar modelo" para subir XLSX/XLS/CSV.
+- A importação lê colunas por nome e substitui as taxas atuais da negociação após confirmação.
+- Mantém o cadastro manual individual e a opção de importar taxas dos itens salvos.
 
-Aplicação:
-unzip -o fix-tabelas-negociacao-v2-completo.zip
+Colunas aceitas no modelo:
+- IBGE Destino
+- UF Destino
+- Cidade Destino
+- TDA (R$)
+- TDR (R$)
+- TRT (R$) ou TDE (R$)
+- SUFRAMA (R$)
+- Outras (R$)
+- GRIS %
+- GRIS mín (R$)
+- Ad Valorem %
+- Ad Val mín (R$)
+- Observação
+
+Comandos:
+unzip -o fix-negociacao-taxas-destino-importacao.zip
 npm run build
-
 git restore dist && git clean -fd dist/assets
-git add src/pages/TabelasNegociacaoPage.jsx src/pages/ImportacaoPage.jsx src/services/tabelasNegociacaoService.js
-git commit -m "feat: estruturar rodadas e origens em negociacao"
+git add src/pages/TabelasNegociacaoPage.jsx
+git commit -m "feat: importar taxas por destino na negociacao"
 git push origin main
-
-Build testado com sucesso neste pacote.
