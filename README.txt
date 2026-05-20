@@ -1,15 +1,17 @@
-Correção: excedente em faixa aberta
+Correção completa — SimuladorPage.jsx
 
-Substitui:
-src/services/freteCalcEngine.js
+Arquivo incluído:
+- src/pages/SimuladorPage.jsx
 
-Resolve casos onde a tabela importada trouxe o R$/kg excedente no campo excesso_kg e valor_excedente ficou zerado.
-Exemplo:
-Faixa 300.001 até 999999999
-excesso_kg = 1,04
-peso considerado = 1941 kg
+Ajustes:
+- Mantém a base padrão do Simulador Realizado como "Somente CT-es com Tracking vinculado".
+- Corrige status/vencedores para não marcar como ganho quando a tabela está acima do realizado.
+- Renomeia a leitura do ranking para "Melhor tabela simulada" quando aplicável.
 
-Agora o sistema entende:
-limite excedente = 300 kg
-R$/kg excedente = 1,04
-peso excedente = 1641 kg
+Aplicar na raiz do projeto:
+unzip -o fix-vencedores-realizado-completo.zip
+npm run build
+git restore dist && git clean -fd dist/assets
+git add src/pages/SimuladorPage.jsx
+git commit -m "fix: corrigir status vencedor vs realizado"
+git push origin main

@@ -1447,7 +1447,17 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       economiaTabelaSelecionadaVsRealBruto = Math.max(valorCte - freteSel, 0);
       savingTabelaSelecionadaVsRealBruto += economiaTabelaSelecionadaVsRealBruto;
 
-      if (Number(itemSelecionada.ranking) === 1) {
+      const temConcorrenteTabela = resultado.length > 1;
+      const ganhaVsRealizado = freteSel > 0 && valorCte > 0 && freteSel < valorCte;
+      const ganhaVsConcorrencia = Number(itemSelecionada.ranking) === 1;
+
+      // Regra corrigida de vencedor:
+      // a tabela só "ganha" se for mais barata que o realizado.
+      // Se estiver acima do realizado, mesmo sendo 1ª entre as tabelas carregadas,
+      // ela deve entrar como perda/acima do realizado.
+      const ganhaTudoOuRealizado = ganhaVsRealizado && (!temConcorrenteTabela || ganhaVsConcorrencia);
+
+      if (ganhaTudoOuRealizado) {
         ctesGanhariaSelecionada += 1;
         statusSelecionada = 'Ganharia';
         economiaSelecionadaVsReal = economiaTabelaSelecionadaVsRealBruto;
@@ -1458,7 +1468,14 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       } else {
         ctesPerdidosSelecionada += 1;
         statusSelecionada = 'Perderia';
-        diferencaVencedor = Math.max(freteSel - freteVenc, 0);
+
+        const referenciasPerda = [
+          valorCte > 0 ? valorCte : null,
+          temConcorrenteTabela && freteVenc > 0 ? freteVenc : null,
+        ].filter((valor) => Number(valor) > 0);
+        const referenciaPerda = referenciasPerda.length ? Math.min(...referenciasPerda) : freteVenc;
+
+        diferencaVencedor = Math.max(freteSel - referenciaPerda, 0);
         diferencaSelecionadaVsVencedor += diferencaVencedor;
         reducaoNecessaria = freteSel ? (diferencaVencedor / freteSel) * 100 : 0;
         reducaoNecessariaSoma += reducaoNecessaria;
@@ -1630,17 +1647,26 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
 }
 
 function statusCombinadoCte(item) {
+  const temTabela = Number(item?.freteSelecionada || 0) > 0 && item?.statusSelecionada !== 'Sem tabela';
+  if (!temTabela) return { label: 'Sem tabela', bg: '#f1f5f9', color: '#64748b', icon: '—' };
+
+  const ganhaRealizado = item.ganhouRealizado === true || (Number(item.freteSelecionada || 0) > 0 && Number(item.freteRealizado || 0) > 0 && Number(item.freteSelecionada || 0) < Number(item.freteRealizado || 0));
   const ganhaTabelas = item.statusSelecionada === 'Ganharia';
-  const ganhaRealizado = item.ganhouRealizado === true || (item.freteSelecionada > 0 && item.freteRealizado > 0 && item.freteSelecionada < item.freteRealizado);
-  const semTabela = !item.freteSelecionada || item.statusSelecionada === 'Sem tabela';
-  if (semTabela) return { label: 'Sem tabela', bg: '#f1f5f9', color: '#64748b', icon: '—' };
-  if (ganhaTabelas && ganhaRealizado) return { label: 'Ganha tudo', bg: '#dcfce7', color: '#15803d', icon: '✅' };
-  if (ganhaTabelas && !ganhaRealizado) return { label: 'Ganha concorrência', bg: '#dbeafe', color: '#1d4ed8', icon: '🏆' };
-  if (!ganhaTabelas && ganhaRealizado) return { label: 'Ganha realizado', bg: '#fef3c7', color: '#b45309', icon: '💰' };
-  return { label: 'Perde tudo', bg: '#fee2e2', color: '#dc2626', icon: '❌' };
+  const temConcorrencia = Number(item.concorrentes || 0) > 1;
+
+  // Regra corrigida:
+  // "Ganharia" só pode ser usado quando a tabela também é mais barata que o realizado.
+  // Quando a tabela fica em 1º entre as tabelas, mas está acima do frete realizado,
+  // o status correto é "Acima do realizado", não "Ganha concorrência".
+  if (ganhaRealizado && ganhaTabelas) return { label: 'Ganha tudo', bg: '#dcfce7', color: '#15803d', icon: '✅' };
+  if (ganhaRealizado && !ganhaTabelas) return { label: 'Ganha realizado', bg: '#fef3c7', color: '#b45309', icon: '💰' };
+  if (!ganhaRealizado && ganhaTabelas && temConcorrencia) return { label: 'Acima do realizado', bg: '#dbeafe', color: '#1d4ed8', icon: '⚠️' };
+  if (!ganhaRealizado) return { label: 'Acima do realizado', bg: '#fee2e2', color: '#dc2626', icon: '❌' };
+
+  return { label: 'Perde para concorrente', bg: '#fff7f0', color: '#c2410c', icon: '⚠️' };
 }
 
-export default function SimuladorPage({ transportadoras = [] }) {
+export default function SimuladorPageexport default function SimuladorPage({ transportadoras = [] }) {
   const [aba, setAba] = useState('simples');
   const [grade, setGrade] = useState(getGradeInicial());
   const [gradeFonte, setGradeFonte] = useState('local');
@@ -3845,8 +3871,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     </div>
                     <div style={{ background: '#dbeafe', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
                       <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#1d4ed8' }}>{ganhaTabPerdeReal}</div>
-                      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#1d4ed8' }}>🏆 Ganha concorrência</div>
-                      <div style={{ fontSize: '0.7rem', color: '#1e40af' }}>1º mas mais caro que realizado</div>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#1d4ed8' }}>⚠️ Acima do realizado</div>
+                      <div style={{ fontSize: '0.7rem', color: '#1e40af' }}>Tabela acima do frete realizado</div>
                     </div>
                     <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
                       <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#b45309' }}>{perdeTabGanhaReal}</div>
@@ -3999,7 +4025,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
                 <div className="sim-parametros-box">
                   <div className="sim-parametros-header" onClick={() => toggleSecao('rotas-perda-box')} style={{ cursor: 'pointer', userSelect: 'none' }}>
-                    <div><strong>Rotas onde perde faturamento</strong><p>Maiores diferenças contra o vencedor da simulação.</p></div>
+                    <div><strong>Rotas acima do realizado / perdidas</strong><p>Maiores diferenças contra o realizado e, quando houver concorrentes, contra a melhor tabela.</p></div>
                     <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('rotas-perda-box') ? '▲' : '▼'}</span>
                   </div>
                   {secaoAberta('rotas-perda-box') && (
@@ -4077,12 +4103,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
                         <th>% acum.</th>
                         <th>Frete realizado</th>
                         <th>Faturamento tabela</th>
-                        <th>Frete vencedor</th>
+                        <th>Frete melhor tabela</th>
                         <th>% NF tabela</th>
-                        <th>% NF vencedor</th>
+                        <th>% NF melhor</th>
                         <th>Status predominante</th>
                         <th style={{color:'#dc2626'}}>⬇ Redução necessária</th>
-                        <th>Principal vencedor</th>
+                        <th>Principal melhor tabela</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -4141,15 +4167,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
                         <th>Volumes</th>
                         <th>Realizado</th>
                         <th>Tabela selecionada</th>
-                        <th>Vencedor</th>
+                        <th>Melhor tabela</th>
                         <th>% NF real</th>
                         <th>% NF tabela</th>
-                        <th>% NF vencedor</th>
+                        <th>% NF melhor</th>
                         <th>Saving ganhadora</th>
                         <th>Saving tabela amplo</th>
                         <th>Dif. vencedor</th>
                         <th>Redução média</th>
-                        <th>Principal vencedor</th>
+                        <th>Principal melhor tabela</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -4226,8 +4252,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                         <thead>
                           <tr>
                             <th>UF Destino</th><th>CT-es</th><th>Ganharia</th><th>Perderia</th><th>Aderência</th>
-                            <th>Frete realizado</th><th>Faturamento tabela</th><th>Frete vencedor</th>
-                            <th>% NF tabela</th><th>% NF vencedor</th>
+                            <th>Frete realizado</th><th>Faturamento tabela</th><th>Frete melhor tabela</th>
+                            <th>% NF tabela</th><th>% NF melhor</th>
                             <th style={{color:'#dc2626'}}>Dif. total vencedor</th>
                             <th style={{color:'#dc2626'}}>Redução média</th>
                           </tr>
@@ -4287,7 +4313,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             <th>Transp. real</th><th>Peso</th><th>Cubagem</th><th>Valor NF</th><th>Vol.</th>
                             <th>Frete realizado</th><th>% NF real</th>
                             <th>Tabela selecionada</th><th>% NF tabela</th>
-                            <th>Vencedor</th><th>Frete vencedor</th><th>% NF venc.</th>
+                            <th>Melhor tabela</th><th>Frete melhor tabela</th><th>% NF melhor</th>
                             <th>Status</th><th>Rank</th><th>Redução</th><th>Conc.</th>
                           </tr>
                         </thead>
@@ -4303,7 +4329,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                               const key = `${item.cte}-${pagina * DETALHE_POR_PAGINA + index}`;
                               const expandido = linhasExpandidas.has(key);
                               const statusC = statusCombinadoCte(item);
-                              const bgRow = statusC.label === 'Ganha tudo' ? '#f0fdf4' : statusC.label === 'Ganha realizado' ? '#fffbeb' : statusC.label === 'Ganha concorrência' ? '#eff6ff' : statusC.label === 'Perde tudo' ? '#fff7f0' : undefined;
+                              const bgRow = statusC.label === 'Ganha tudo' ? '#f0fdf4' : statusC.label === 'Ganha realizado' ? '#fffbeb' : statusC.label === 'Acima do realizado' ? '#fff7f0' : statusC.label === 'Perde tudo' ? '#fff7f0' : undefined;
                               return (
                                 <>
                                   <tr key={key}
@@ -4343,7 +4369,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                           {item.vencedorDetalhes && (
                                             <div style={{ background: '#fff', border: '1px solid #bbf7d0', borderRadius: 8, padding: 12 }}>
                                               <div style={{ fontWeight: 700, color: '#15803d', marginBottom: 8, fontSize: '0.85rem' }}>
-                                                🏆 Vencedor: {item.vencedor} — {formatMoney(item.freteVencedor)}
+                                                🏆 Melhor tabela simulada: {item.vencedor} — {formatMoney(item.freteVencedor)}
                                               </div>
                                               {/* Status combinado em destaque */}
                                               {item.freteSelecionada > 0 && (() => { const s = statusCombinadoCte(item); return (
