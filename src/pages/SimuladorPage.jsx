@@ -2499,9 +2499,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
       });
 
       const rowsBrutosFiltrados = aplicarFiltrosPadraoRealizadoSim(rowsBrutos, {
-        // Quando a base é somente CT-es com Tracking, CPS LOG não deve ser excluído por nome.
-        // Se CPS LOG tiver vínculo real no Tracking, significa que faz parte da operação analisada.
-        incluirCpsLog: baseRealizadoTracking === 'com_tracking' ? true : incluirCpsLogRealizado,
+        // CPS LOG fica excluído por padrão em qualquer base.
+        // Marque a opção na tela somente quando quiser analisar CPS LOG.
+        incluirCpsLog: incluirCpsLogRealizado,
       });
 
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 36);
@@ -3797,16 +3797,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </small>
             </div>
 
-            {baseRealizadoTracking === 'todos' && (
-              <label className="sim-flag">
-                <input
-                  type="checkbox"
-                  checked={incluirCpsLogRealizado}
-                  onChange={(event) => setIncluirCpsLogRealizado(event.target.checked)}
-                />
-                Incluir CPS LOG nesta análise ampla
-              </label>
-            )}
+            <label className="sim-flag">
+              <input
+                type="checkbox"
+                checked={incluirCpsLogRealizado}
+                onChange={(event) => setIncluirCpsLogRealizado(event.target.checked)}
+              />
+              Incluir CPS LOG nesta análise
+            </label>
 
             <label className="sim-flag">
               <input
@@ -3818,7 +3816,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
 
             <small style={{ color: '#64748b' }}>
-              Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Na análise ampla, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e permite incluir CPS LOG manualmente.
+              Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e exclui CPS LOG por padrão. Marque CPS LOG somente quando quiser analisar esse operador.
             </small>
 
             {erroNegociacoesSimulador ? <span style={{ color: '#dc2626' }}>{erroNegociacoesSimulador}</span> : null}
@@ -3834,7 +3832,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
-            <strong>Regra:</strong> por padrão, o sistema simula somente CT-es vinculados ao Tracking, garantindo NF, volumes e cubagem rastreáveis. Se CPS LOG aparecer com Tracking, ele é considerado parte válida da operação. No modo “Todos os CT-es”, a simulação considera também CT-es sem Tracking. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
+            <strong>Regra:</strong> por padrão, o sistema simula somente CT-es vinculados ao Tracking, garantindo NF, volumes e cubagem rastreáveis. CPS LOG fica excluído por padrão em qualquer modo e só entra quando a opção "Incluir CPS LOG nesta análise" estiver marcada. No modo “Todos os CT-es”, a simulação considera também CT-es sem Tracking. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
           </div>
 
           {resultadoRealizado && (

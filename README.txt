@@ -1,12 +1,12 @@
-Correção emergencial do build do Vercel.
+Ajuste: CPS LOG excluído por padrão em qualquer modo do Simulador Realizado.
 
 Arquivo alterado:
 - src/pages/SimuladorPage.jsx
 
-Correção aplicada:
-- Removido texto duplicado na declaração do componente:
-  export default function SimuladorPageexport default function SimuladorPage(...)
-  para:
-  export default function SimuladorPage(...)
+Regras:
+- Base padrão continua: Somente CT-es com Tracking vinculado.
+- CPS LOG fica fora por padrão, mesmo se tiver Tracking.
+- CPS LOG só entra quando marcar: "Incluir CPS LOG nesta análise".
+- Mantém correção do status vencedor vs realizado.
 
-Build validado com npm run build.
+Build validado com sucesso via npm run build.
