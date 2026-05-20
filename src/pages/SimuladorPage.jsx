@@ -1666,7 +1666,7 @@ function statusCombinadoCte(item) {
   return { label: 'Perde para concorrente', bg: '#fff7f0', color: '#c2410c', icon: '⚠️' };
 }
 
-export default function SimuladorPageexport default function SimuladorPage({ transportadoras = [] }) {
+export default function SimuladorPage({ transportadoras = [] }) {
   const [aba, setAba] = useState('simples');
   const [grade, setGrade] = useState(getGradeInicial());
   const [gradeFonte, setGradeFonte] = useState('local');
