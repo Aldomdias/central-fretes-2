@@ -421,6 +421,31 @@ function numeroTracking(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function validarCubagemTracking({ cubagemTotal = 0, qtdVolumes = 0, peso = 0 }) {
+  const cubagem = numeroTracking(cubagemTotal);
+  const volumes = numeroTracking(qtdVolumes);
+  const pesoRef = numeroTracking(peso);
+
+  if (cubagem <= 0) {
+    return { cubagemTotal: 0, cubagemOriginal: 0, outlier: false, limiteCubagem: 0 };
+  }
+
+  // Proteção contra cubagem claramente fora de escala no Tracking.
+  // Ex.: 2.500 kg com 398 m³ faz o frete explodir e não representa a operação.
+  // Quando estourar o limite, desconsideramos a cubagem e calculamos pelo peso real.
+  const limitePorPeso = pesoRef > 0 ? Math.max(8, (pesoRef / 250) * 4) : 0;
+  const limitePorVolume = volumes > 0 ? Math.max(5, volumes * 0.35) : 0;
+  const limiteCubagem = Math.max(30, limitePorPeso, limitePorVolume);
+  const outlier = cubagem > 20 && limiteCubagem > 0 && cubagem > limiteCubagem;
+
+  return {
+    cubagemTotal: outlier ? 0 : cubagem,
+    cubagemOriginal: cubagem,
+    outlier,
+    limiteCubagem,
+  };
+}
+
 function criarTrackingAgregado(item = {}, origem = 'raw') {
   const qtdVolumes = numeroTracking(item.qtd_volumes ?? item.volumes ?? item.volume ?? 0);
   const cubagemUnitaria = numeroTracking(item.cubagem_unitaria ?? 0);
@@ -599,6 +624,7 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
   let semTracking = 0;
   let volumesTracking = 0;
   let cubagemTracking = 0;
+  let cubagemOutliers = 0;
 
   const linhas = (rows || []).map((row) => {
     const tracking = obterTrackingDaLinha(row, mapasTracking);
@@ -630,10 +656,17 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
         ? cubagemUnitariaTracking * qtdVolumesTracking
         : 0;
 
-    const pesoCubadoTracking = numeroRealizado(tracking.peso_cubado);
+    const pesoRefTracking = numeroRealizado(tracking.peso) || numeroRealizado(tracking.peso_declarado) || numeroRealizado(row.pesoDeclarado);
+    const cubagemValidada = validarCubagemTracking({
+      cubagemTotal: cubagemTotalTracking,
+      qtdVolumes: qtdVolumesTracking,
+      peso: pesoRefTracking,
+    });
+    const pesoCubadoTracking = cubagemValidada.outlier ? 0 : numeroRealizado(tracking.peso_cubado);
 
+    if (cubagemValidada.outlier) cubagemOutliers += 1;
     if (qtdVolumesTracking > 0) volumesTracking += qtdVolumesTracking;
-    if (cubagemTotalTracking > 0) cubagemTracking += cubagemTotalTracking;
+    if (cubagemValidada.cubagemTotal > 0) cubagemTracking += cubagemValidada.cubagemTotal;
 
     return {
       ...row,
@@ -649,9 +682,13 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
       numeroCte: row.numeroCte || tracking.cte_numero || '',
 
       // Campos de capacidade e cubagem: sempre do Tracking.
+      // Se a cubagem do Tracking vier fora de escala, ela é zerada para o cálculo usar peso real.
       qtdVolumes: qtdVolumesTracking,
       cubagemUnitaria: cubagemUnitariaTracking,
-      cubagemTotal: cubagemTotalTracking,
+      cubagemTotal: cubagemValidada.cubagemTotal,
+      cubagemTotalOriginalTracking: cubagemValidada.cubagemOriginal,
+      cubagemOutlierTracking: cubagemValidada.outlier,
+      limiteCubagemTracking: cubagemValidada.limiteCubagem,
       pesoCubado: pesoCubadoTracking,
 
       // Peso pode ser complementado pelo Tracking, mas mantém CT-e se o Tracking não trouxer peso.
@@ -676,6 +713,7 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
     semTracking,
     volumesTracking,
     cubagemTracking,
+    cubagemOutliers,
     erroTracking: mapasTracking?.erro || '',
     avisoTracking: mapasTracking?.aviso || '',
   };
@@ -1341,6 +1379,55 @@ function gerarLaudoTextoRealizado(resumo, transportadora) {
   return linhas;
 }
 
+
+function calcularResumoGanhasNegociacao(resultado = {}) {
+  const detalhes = Array.isArray(resultado.ctesDetalhes) ? resultado.ctesDetalhes : [];
+  const comTabela = detalhes.filter((item) => Number(item.freteSelecionada || 0) > 0);
+  const ganhas = comTabela.filter((item) => item.ganhouRealizado === true || item.statusSelecionada === 'Ganharia');
+  const dias = Math.max(1, Number(resultado.dias || 1));
+  const meses = Math.max(1, Number(resultado.meses || 1));
+
+  const soma = (lista, campo) => lista.reduce((acc, item) => acc + Number(item?.[campo] || 0), 0);
+  const ctesGanhas = ganhas.length;
+  const ctesComTabela = comTabela.length || Number(resultado.ctesComTabelaSelecionada || 0);
+  const freteRealizadoGanhas = soma(ganhas, 'freteRealizado');
+  const freteTabelaGanhas = soma(ganhas, 'freteSelecionada');
+  const valorNFGanhas = soma(ganhas, 'valorNF');
+  const volumesGanhas = soma(ganhas, 'volumes');
+  const cubagemGanhas = soma(ganhas, 'cubagem');
+  const pesoGanhas = soma(ganhas, 'peso');
+  const savingGanhas = Math.max(0, freteRealizadoGanhas - freteTabelaGanhas);
+
+  return {
+    ctesComTabela,
+    ctesGanhas,
+    ctesPerdidas: Math.max(0, ctesComTabela - ctesGanhas),
+    aderencia: ctesComTabela ? (ctesGanhas / ctesComTabela) * 100 : 0,
+    freteRealizadoGanhas,
+    freteTabelaGanhas,
+    faturamentoMes: freteTabelaGanhas / meses,
+    faturamentoAno: (freteTabelaGanhas / meses) * 12,
+    savingGanhas,
+    savingMes: savingGanhas / meses,
+    savingAno: (savingGanhas / meses) * 12,
+    valorNFGanhas,
+    percentualRealizadoGanhas: valorNFGanhas ? (freteRealizadoGanhas / valorNFGanhas) * 100 : 0,
+    percentualTabelaGanhas: valorNFGanhas ? (freteTabelaGanhas / valorNFGanhas) * 100 : 0,
+    variacaoPercentual: freteRealizadoGanhas && valorNFGanhas
+      ? (((freteTabelaGanhas / valorNFGanhas) / (freteRealizadoGanhas / valorNFGanhas)) - 1) * 100
+      : 0,
+    cargasDia: ctesGanhas / dias,
+    cargasMes: ctesGanhas / meses,
+    volumesGanhas,
+    volumesDia: volumesGanhas / dias,
+    volumesMes: volumesGanhas / meses,
+    cubagemGanhas,
+    cubagemDia: cubagemGanhas / dias,
+    cubagemMes: cubagemGanhas / meses,
+    pesoGanhas,
+  };
+}
+
 function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
   const rotasMap = new Map();
@@ -1560,6 +1647,9 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       volumes: vol,
       peso: pesoLinha,
       cubagem: cubagemLinha,
+      cubagemOriginalTracking: numeroRealizado(row.cubagemTotalOriginalTracking),
+      cubagemOutlierTracking: Boolean(row.cubagemOutlierTracking),
+      limiteCubagemTracking: numeroRealizado(row.limiteCubagemTracking),
       valorNF: nf,
       percentualFreteRealizado: nf ? (valorCte / nf) * 100 : 0,
       percentualFreteSelecionada: nf && freteSel ? (freteSel / nf) * 100 : 0,
@@ -1684,6 +1774,11 @@ function statusCombinadoCte(item) {
   const ganhaTabelas = item.statusSelecionada === 'Ganharia';
   const temConcorrencia = Number(item.concorrentes || 0) > 1;
 
+  if (!temConcorrencia) {
+    if (ganhaRealizado) return { label: 'Vencedor', bg: '#dcfce7', color: '#15803d', icon: '✅' };
+    return { label: 'Acima do realizado', bg: '#fee2e2', color: '#dc2626', icon: '❌' };
+  }
+
   // Regra corrigida:
   // "Ganharia" só pode ser usado quando a tabela também é mais barata que o realizado.
   // Quando a tabela fica em 1º entre as tabelas, mas está acima do frete realizado,
@@ -1721,6 +1816,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
   const [baseRealizadoTracking, setBaseRealizadoTracking] = useState('com_tracking'); // 'com_tracking' | 'todos'
+  const [opcoesAvancadasRealizadoAberto, setOpcoesAvancadasRealizadoAberto] = useState(false);
   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
   const [municipiosIbge, setMunicipiosIbge] = useState([]);
@@ -2169,6 +2265,42 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     return todasOrigens;
   }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraRealizado, canalRealizado, transportadoras, todasOrigens]);
+
+
+  const ufsDestinoRealizadoDisponiveis = useMemo(() => {
+    if (!transportadoraRealizado) return UF_OPTIONS;
+
+    const bases = [];
+    const negociacao = transportadorasNegociacaoRealizado.find((item) => item.nome === transportadoraRealizado);
+    if (negociacao) bases.push(negociacao);
+
+    const oficial = transportadoras.find((item) => item.nome === transportadoraRealizado);
+    if (oficial) bases.push(oficial);
+
+    if (!bases.length) return UF_OPTIONS;
+
+    const ufs = new Set();
+    bases.forEach((base) => {
+      (base.origens || [])
+        .filter((origem) => !canalRealizado || (origem.canal || 'ATACADO') === canalRealizado)
+        .filter((origem) => !origemRealizado || normalizarChaveSimulador(origem.cidade) === normalizarChaveSimulador(origemRealizado))
+        .forEach((origem) => {
+          (origem.rotas || []).forEach((rota) => {
+            const uf = String(rota.ufDestino || getUfByIbge(rota.ibgeDestino) || '').toUpperCase();
+            if (uf) ufs.add(uf);
+          });
+        });
+    });
+
+    const lista = [...ufs].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return lista.length ? ['', ...lista] : UF_OPTIONS;
+  }, [transportadoraRealizado, transportadorasNegociacaoRealizado, transportadoras, canalRealizado, origemRealizado]);
+
+  useEffect(() => {
+    if (ufDestinoRealizado && !ufsDestinoRealizadoDisponiveis.includes(ufDestinoRealizado)) {
+      setUfDestinoRealizado('');
+    }
+  }, [ufsDestinoRealizadoDisponiveis, ufDestinoRealizado]);
 
   useEffect(() => {
     if (transportadora && transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
@@ -2720,6 +2852,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origemMalhaNaoReconhecida: [...origemMalhaNaoReconhecida].slice(0, 20),
           trackingVinculados: trackingEnriquecido.vinculados,
           trackingSemVinculo: trackingEnriquecido.semTracking,
+          trackingCubagemOutliers: trackingEnriquecido.cubagemOutliers,
           trackingTotalEncontrado: mapasTracking.total,
           trackingErro: trackingEnriquecido.erroTracking,
           volumesTracking: trackingEnriquecido.volumesTracking,
@@ -3762,7 +3895,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>
               UF destino
               <select value={ufDestinoRealizado} onChange={(event) => setUfDestinoRealizado(event.target.value)}>
-                {UF_OPTIONS.map((uf) => <option key={uf || 'todas'} value={uf}>{uf || 'Todas'}</option>)}
+                {ufsDestinoRealizadoDisponiveis.map((uf) => <option key={uf || 'todas'} value={uf}>{uf || 'Todas'}</option>)}
               </select>
             </label>
             <label>
@@ -3778,83 +3911,103 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14, display: 'grid', gap: 8 }}>
-            <label className="sim-flag">
-              <input
-                type="checkbox"
-                checked={incluirNegociacoesRealizado}
-                onChange={(event) => {
-                  const marcado = event.target.checked;
-                  setIncluirNegociacoesRealizado(marcado);
-                  if (marcado && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
-                    carregarNegociacoesSimulador();
-                  }
-                }}
-              />
-              Incluir tabelas em negociação marcadas como “Simulação = Sim”
-            </label>
-
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span>
-                Negociações disponíveis no canal atual: <strong>{nomesNegociacaoRealizado.length}</strong>
-                {carregandoNegociacoesSimulador ? ' · carregando...' : ''}
-              </span>
-
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div>
+                <strong>Base da simulação: {baseRealizadoTracking === 'com_tracking' ? 'somente CT-es com Tracking' : 'todos os CT-es'}</strong>
+                <div style={{ color: '#64748b', fontSize: '0.82rem', marginTop: 3 }}>
+                  CPS LOG excluído por padrão • Concorrentes {compararConcorrentesRealizado ? 'ativos' : 'desativados'} • Negociações {incluirNegociacoesRealizado ? 'ativas' : 'desativadas'}
+                </div>
+              </div>
               <button
                 className="sim-tab"
                 type="button"
-                onClick={carregarNegociacoesSimulador}
-                disabled={carregandoNegociacoesSimulador}
+                onClick={() => setOpcoesAvancadasRealizadoAberto((valor) => !valor)}
               >
-                Atualizar negociações
+                {opcoesAvancadasRealizadoAberto ? 'Recolher opções' : 'Expandir opções'}
               </button>
             </div>
 
-            <div style={{ display: 'grid', gap: 6 }}>
-              <strong>Base da simulação</strong>
-              <label className="sim-flag">
-                <input
-                  type="radio"
-                  name="base-realizado-tracking"
-                  checked={baseRealizadoTracking === 'com_tracking'}
-                  onChange={() => setBaseRealizadoTracking('com_tracking')}
-                />
-                Somente CT-es com Tracking vinculado
-              </label>
-              <label className="sim-flag">
-                <input
-                  type="radio"
-                  name="base-realizado-tracking"
-                  checked={baseRealizadoTracking === 'todos'}
-                  onChange={() => setBaseRealizadoTracking('todos')}
-                />
-                Todos os CT-es encontrados
-              </label>
-              <small style={{ color: '#64748b' }}>
-                Recomendado: usar somente CT-es com Tracking para garantir NF, volume e cubagem reais na simulação.
-              </small>
-            </div>
+            {opcoesAvancadasRealizadoAberto && (
+              <div style={{ display: 'grid', gap: 10, paddingTop: 10, borderTop: '1px solid #cbd5e1' }}>
+                <label className="sim-flag">
+                  <input
+                    type="checkbox"
+                    checked={incluirNegociacoesRealizado}
+                    onChange={(event) => {
+                      const marcado = event.target.checked;
+                      setIncluirNegociacoesRealizado(marcado);
+                      if (marcado && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
+                        carregarNegociacoesSimulador();
+                      }
+                    }}
+                  />
+                  Incluir tabelas em negociação marcadas como “Simulação = Sim”
+                </label>
 
-            <label className="sim-flag">
-              <input
-                type="checkbox"
-                checked={incluirCpsLogRealizado}
-                onChange={(event) => setIncluirCpsLogRealizado(event.target.checked)}
-              />
-              Incluir CPS LOG nesta análise
-            </label>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span>
+                    Negociações disponíveis no canal atual: <strong>{nomesNegociacaoRealizado.length}</strong>
+                    {carregandoNegociacoesSimulador ? ' · carregando...' : ''}
+                  </span>
 
-            <label className="sim-flag">
-              <input
-                type="checkbox"
-                checked={compararConcorrentesRealizado}
-                onChange={(event) => setCompararConcorrentesRealizado(event.target.checked)}
-              />
-              Comparar com tabelas oficiais/concorrentes
-            </label>
+                  <button
+                    className="sim-tab"
+                    type="button"
+                    onClick={carregarNegociacoesSimulador}
+                    disabled={carregandoNegociacoesSimulador}
+                  >
+                    Atualizar negociações
+                  </button>
+                </div>
 
-            <small style={{ color: '#64748b' }}>
-              Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e exclui CPS LOG por padrão. Marque CPS LOG somente quando quiser analisar esse operador.
-            </small>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <strong>Base da simulação</strong>
+                  <label className="sim-flag">
+                    <input
+                      type="radio"
+                      name="base-realizado-tracking"
+                      checked={baseRealizadoTracking === 'com_tracking'}
+                      onChange={() => setBaseRealizadoTracking('com_tracking')}
+                    />
+                    Somente CT-es com Tracking vinculado
+                  </label>
+                  <label className="sim-flag">
+                    <input
+                      type="radio"
+                      name="base-realizado-tracking"
+                      checked={baseRealizadoTracking === 'todos'}
+                      onChange={() => setBaseRealizadoTracking('todos')}
+                    />
+                    Todos os CT-es encontrados
+                  </label>
+                  <small style={{ color: '#64748b' }}>
+                    Recomendado: usar somente CT-es com Tracking para garantir NF, volume e cubagem reais na simulação.
+                  </small>
+                </div>
+
+                <label className="sim-flag">
+                  <input
+                    type="checkbox"
+                    checked={incluirCpsLogRealizado}
+                    onChange={(event) => setIncluirCpsLogRealizado(event.target.checked)}
+                  />
+                  Incluir CPS LOG nesta análise
+                </label>
+
+                <label className="sim-flag">
+                  <input
+                    type="checkbox"
+                    checked={compararConcorrentesRealizado}
+                    onChange={(event) => setCompararConcorrentesRealizado(event.target.checked)}
+                  />
+                  Comparar com tabelas oficiais/concorrentes
+                </label>
+
+                <small style={{ color: '#64748b' }}>
+                  Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e exclui CPS LOG por padrão. Marque CPS LOG somente quando quiser analisar esse operador.
+                </small>
+              </div>
+            )}
 
             {erroNegociacoesSimulador ? <span style={{ color: '#dc2626' }}>{erroNegociacoesSimulador}</span> : null}
           </div>
@@ -3892,6 +4045,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
               {/* 4 estados */}
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
+                const detalhesStatus = resultadoRealizado.ctesDetalhes || [];
+                if (!compararConcorrentesRealizado) {
+                  const vencedor = detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && i.ganhouRealizado).length;
+                  const perdedor = detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && !i.ganhouRealizado).length;
+                  const total = vencedor + perdedor;
+                  const aderencia = total ? (vencedor / total) * 100 : 0;
+                  return (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 8 }}>
+                      <div style={{ background: '#dcfce7', border: '1px solid #bbf7d0', borderRadius: 8, padding: '12px 16px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#15803d' }}>{vencedor}</div>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#15803d' }}>✅ Vencedor vs realizado</div>
+                        <div style={{ fontSize: '0.72rem', color: '#166534' }}>Tabela menor que o frete realizado</div>
+                      </div>
+                      <div style={{ background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, padding: '12px 16px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#dc2626' }}>{perdedor}</div>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#dc2626' }}>❌ Perdedor / acima do realizado</div>
+                        <div style={{ fontSize: '0.72rem', color: '#b91c1c' }}>Aderência: {formatPercent(aderencia)} sobre {total.toLocaleString('pt-BR')} CT-e(s) comparados</div>
+                      </div>
+                    </div>
+                  );
+                }
                 const ganhaTabGanhaReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Ganharia' && i.ganhouRealizado).length;
                 const ganhaTabPerdeReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Ganharia' && !i.ganhouRealizado && i.freteSelecionada > 0).length;
                 const perdeTabGanhaReal = (resultadoRealizado.ctesDetalhes || []).filter((i) => i.statusSelecionada === 'Perderia' && i.ganhouRealizado).length;
@@ -3944,6 +4118,36 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 return null;
               })()}
 
+              {(() => {
+                const resumoGanhas = calcularResumoGanhasNegociacao(resultadoRealizado);
+                return (
+                  <div className="sim-parametros-box" style={{ border: '1px solid #bfdbfe', background: '#f8fbff' }}>
+                    <div className="sim-parametros-header">
+                      <div>
+                        <strong>🎯 Resultado da negociação — somente rotas/CT-es que a tabela ganha</strong>
+                        <p>Essa é a visão principal para negociar: mostra apenas o que a transportadora realmente carregaria por estar abaixo do realizado.</p>
+                      </div>
+                    </div>
+                    <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', marginTop: 12 }}>
+                      <div className="summary-card"><span>CT-es que ganha</span><strong>{resumoGanhas.ctesGanhas}</strong><small>{formatPercent(resumoGanhas.aderencia)} de aderência • {resumoGanhas.ctesComTabela.toLocaleString('pt-BR')} comparados</small></div>
+                      <div className="summary-card"><span>Faturamento no período</span><strong>{formatMoney(resumoGanhas.freteTabelaGanhas)}</strong><small>só nas rotas/CT-es vencedores</small></div>
+                      <div className="summary-card"><span>Faturamento mensal</span><strong>{formatMoney(resumoGanhas.faturamentoMes)}</strong><small>{resultadoRealizado.meses} mês(es) base</small></div>
+                      <div className="summary-card"><span>Faturamento 12 meses</span><strong>{formatMoney(resumoGanhas.faturamentoAno)}</strong><small>projeção só das ganhas</small></div>
+                      <div className="summary-card"><span>Saving no período</span><strong>{formatMoney(resumoGanhas.savingGanhas)}</strong><small>realizado − tabela nas ganhas</small></div>
+                      <div className="summary-card"><span>Saving mensal</span><strong>{formatMoney(resumoGanhas.savingMes)}</strong><small>projeção mensal das ganhas</small></div>
+                      <div className="summary-card"><span>Saving 12 meses</span><strong>{formatMoney(resumoGanhas.savingAno)}</strong><small>projeção anual das ganhas</small></div>
+                      <div className="summary-card"><span>% NF antes</span><strong>{formatPercent(resumoGanhas.percentualRealizadoGanhas)}</strong><small>frete realizado nas cargas ganhas</small></div>
+                      <div className="summary-card"><span>% NF tabela</span><strong>{formatPercent(resumoGanhas.percentualTabelaGanhas)}</strong><small>{formatPercent(resumoGanhas.variacaoPercentual)} vs realizado</small></div>
+                      <div className="summary-card"><span>Cargas/dia</span><strong>{Number(resumoGanhas.cargasDia || 0).toFixed(1)}</strong><small>{Number(resumoGanhas.cargasMes || 0).toFixed(0)} cargas/mês</small></div>
+                      <div className="summary-card"><span>Volumes/dia</span><strong>{Number(resumoGanhas.volumesDia || 0).toFixed(1)}</strong><small>{Number(resumoGanhas.volumesMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} volumes/mês</small></div>
+                      <div className="summary-card"><span>Cubagem/dia</span><strong>{Number(resumoGanhas.cubagemDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</strong><small>{Number(resumoGanhas.cubagemMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} m³/mês</small></div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="sim-parametros-box">
+                <div className="sim-parametros-header"><div><strong>📌 Visão geral do recorte analisado</strong><p>Base total simulada. Use como contexto; a visão da negociação fica no quadro acima.</p></div></div>
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
                 <div className="summary-card"><span>Fonte tabela</span><strong>{resultadoRealizado.filtros?.fonteTabela === 'rotas_realizadas' ? 'Rotas realizadas' : 'Malha selecionada'}</strong><small>{Number(resultadoRealizado.filtros?.tabelasCarregadas || 0).toLocaleString('pt-BR')} tabela(s) carregada(s) • {Number(resultadoRealizado.filtros?.rotasReaisComIbge || 0).toLocaleString('pt-BR')} rota(s) reais</small></div>
                 <div className="summary-card"><span>Frete realizado</span><strong>{formatMoney(resultadoRealizado.freteRealizado)}</strong><small>{formatPercent(resultadoRealizado.percentualFreteRealizado)} sobre NF</small></div>
@@ -3961,6 +4165,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div className="summary-card"><span>Cubagem tracking</span><strong>{Number(resultadoRealizado.cubagemTotal || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</strong><small>m³ cruzado por NF/CT-e</small></div>
                 <div className="summary-card"><span>Redução média p/ ganhar</span><strong>{formatPercent(resultadoRealizado.reducaoMediaNecessaria)}</strong><small>rotas perdidas</small></div>
                 <div className="summary-card"><span>Perda para concorrentes</span><strong>{formatMoney(resultadoRealizado.diferencaSelecionadaVsVencedor)}</strong><small>diferença nas perdidas</small></div>
+              </div>
               </div>
 
               {/* Botões colapso + alerta de discrepância */}
@@ -3996,6 +4201,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {Number(resultadoRealizado.filtros?.trackingSemVinculo || 0) > 0 && (
                 <div className="sim-alert warning">
                   <strong>Tracking incompleto:</strong> {Number(resultadoRealizado.filtros.trackingSemVinculo || 0).toLocaleString('pt-BR')} CT-e(s) não encontraram vínculo no Tracking por chave do CT-e, chave da NF, número da NF ou número do CT-e. Para esses casos, volumes e cubagem foram zerados no cálculo.
+                </div>
+              )}
+
+              {Number(resultadoRealizado.filtros?.trackingCubagemOutliers || 0) > 0 && (
+                <div className="sim-alert warning">
+                  <strong>Cubagem fora do padrão:</strong> {Number(resultadoRealizado.filtros.trackingCubagemOutliers || 0).toLocaleString('pt-BR')} CT-e(s) vieram do Tracking com cubagem muito acima do limite operacional estimado. Para evitar distorção, a cubagem desses casos foi desconsiderada e o cálculo usou o peso real.
                 </div>
               )}
 
@@ -4421,6 +4632,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>Peso considerado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
                                                 <div>Peso cubado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong> (fator {item.vencedorDetalhes?.frete?.fatorCubagem})</div>
                                                 <div>Cubagem usada: <strong>{Number(item.vencedorDetalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
+                                                {item.cubagemOutlierTracking && (
+                                                  <div style={{ color: '#b45309', fontWeight: 700 }}>
+                                                    ⚠ Cubagem do Tracking desconsiderada: {Number(item.cubagemOriginalTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³ acima do limite estimado de {Number(item.limiteCubagemTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} m³. Cálculo feito pelo peso real.
+                                                  </div>
+                                                )}
                                                 <div>R$/kg: <strong>{Number(item.vencedorDetalhes?.frete?.rsKgAplicado || 0).toFixed(4)}</strong></div>
                                                 <div>% aplicado: <strong style={{ color: Number(item.vencedorDetalhes?.frete?.percentualAplicado || 0) < 1 ? '#dc2626' : undefined }}>{formatPercent(item.vencedorDetalhes?.frete?.percentualAplicado)}</strong></div>
                                                 <div>Valor NF usado: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorNFInformado)}</strong></div>
