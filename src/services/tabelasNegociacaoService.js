@@ -1,4 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { salvarSecaoDb } from './freteDatabaseService';
+import { converterTabelaNegociacaoParaSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
 
 export const STATUS_TABELA_NEGOCIACAO = [
   'EM NEGOCIAÇÃO',
@@ -538,14 +540,154 @@ export async function alternarTabelaNegociacaoNaSimulacao(id, incluir) {
   return atualizarTabelaNegociacao(id, { incluir_simulacao: incluir });
 }
 
+
+export async function abrirNovaRodadaTabelaNegociacao(id, dados = {}) {
+  const supabase = supabaseOrThrow();
+
+  const { data: tabelaAtual, error: tabelaError } = await supabase
+    .from('tabelas_negociacao')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (tabelaError) throw new Error(tabelaError.message || 'Erro ao buscar negociação para nova rodada.');
+
+  const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
+  const historicoAnterior = getHistoricoRodadas(tabelaAtual);
+  const rodadaAtual = inteiro(resumoAnterior.rodada_atual || tabelaAtual.rodada_atual || 1) || 1;
+  const proximaRodada = rodadaAtual + 1;
+  const agora = dataISO();
+
+  const entradaRodada = {
+    id: `${proximaRodada}-ABERTURA-${Date.now()}`,
+    tipo_registro: 'NOVA_RODADA',
+    rodada: proximaRodada,
+    criado_em: agora,
+    observacao: texto(dados.observacao) || `Nova rodada aberta para ${tabelaAtual.transportadora || 'negociação'}`,
+    origem_importacao: 'NOVA_RODADA',
+  };
+
+  const resumoAtualizado = {
+    ...resumoAnterior,
+    rodada_atual: proximaRodada,
+    rodada_aberta_em: agora,
+    ultima_rodada_aberta: entradaRodada,
+    historico_rodadas: historicoAnterior.concat([entradaRodada]).slice(-30),
+  };
+
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update({
+      resumo_simulacao: resumoAtualizado,
+      incluir_simulacao: true,
+      status: tabelaAtual.status === 'APROVADA' || tabelaAtual.status === 'PROMOVIDA PARA OFICIAL'
+        ? 'EM NEGOCIAÇÃO'
+        : tabelaAtual.status,
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) throw new Error(error.message || 'Erro ao abrir nova rodada.');
+  return data;
+}
+
+async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
+  const tabela = await obterTabelaNegociacao(id);
+  const itens = await listarTodosItensTabelaNegociacao(id);
+  const taxasDestino = await listarTodasTaxasDestinoTabela(id);
+
+  if (!itens.length) {
+    throw new Error('Não há itens salvos para promover a negociação para a base oficial.');
+  }
+
+  const tabelaCompleta = {
+    ...tabela,
+    transportadora: texto(dados.transportadora_oficial_nome || dados.transportadoraOficialNome) || tabela.transportadora,
+    tabelas_negociacao_itens: itens,
+    tabelas_negociacao_taxas_destino: taxasDestino,
+  };
+
+  const transportadoraOficial = converterTabelaNegociacaoParaSimulador(tabelaCompleta);
+  if (!transportadoraOficial?.origens?.length) {
+    throw new Error('Não foi possível montar origem/rotas/cotações para cadastro oficial. Revise os itens da negociação.');
+  }
+
+  const baseOficial = [{
+    ...transportadoraOficial,
+    nome: tabelaCompleta.transportadora,
+    status: 'Ativa',
+    origens: (transportadoraOficial.origens || []).map((origem) => ({
+      ...origem,
+      status: 'Ativa',
+      canal: origem.canal || tabela.canal || 'ATACADO',
+      generalidades: {
+        ...(origem.generalidades || {}),
+        ...(tabela.generalidades || {}),
+      },
+      rotas: (origem.rotas || []).map((rota) => ({
+        ...rota,
+        inicioVigencia: dados.data_inicio_vigencia || tabela.data_inicio_vigencia || tabela.data_inicio_prevista || '',
+      })),
+    })),
+  }];
+
+  await salvarSecaoDb(baseOficial, 'generalidades');
+  await salvarSecaoDb(baseOficial, 'rotas');
+  await salvarSecaoDb(baseOficial, 'cotacoes');
+  await salvarSecaoDb(baseOficial, 'taxas');
+
+  return {
+    transportadora: baseOficial[0].nome,
+    origens: baseOficial[0].origens.length,
+    rotas: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.rotas || []).length, 0),
+    cotacoes: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.cotacoes || []).length, 0),
+    taxas: baseOficial[0].origens.reduce((acc, origem) => acc + (origem.taxasEspeciais || []).length, 0),
+  };
+}
+
 export async function aprovarTabelaNegociacao(id, dados = {}) {
   const supabase = supabaseOrThrow();
-  const payload = {
-    status: 'APROVADA',
+  let promocaoOficial = null;
+
+  if (dados.promover_para_oficial || dados.promoverParaOficial) {
+    promocaoOficial = await promoverTabelaNegociacaoParaOficialInterno(id, dados);
+  }
+
+  const { data: tabelaAtual } = await supabase
+    .from('tabelas_negociacao')
+    .select('resumo_simulacao')
+    .eq('id', id)
+    .maybeSingle();
+
+  const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual || {});
+  const historicoAnterior = getHistoricoRodadas(tabelaAtual || {});
+  const agora = new Date().toISOString();
+
+  const entradaAprovacao = {
+    id: `APROVACAO-${Date.now()}`,
+    tipo_registro: promocaoOficial ? 'PROMOCAO_OFICIAL' : 'APROVACAO',
+    rodada: inteiro(resumoAnterior.rodada_atual || 1) || 1,
+    criado_em: agora,
     data_inicio_vigencia: dados.data_inicio_vigencia || null,
-    data_aprovacao: new Date().toISOString(),
+    observacao: dados.justificativa_aprovacao || '',
+    promocao_oficial: promocaoOficial,
+  };
+
+  const payload = {
+    status: promocaoOficial ? 'PROMOVIDA PARA OFICIAL' : 'APROVADA',
+    data_inicio_vigencia: dados.data_inicio_vigencia || null,
+    data_aprovacao: agora,
     justificativa_aprovacao: dados.justificativa_aprovacao || '',
     substituir_tabela_anterior: Boolean(dados.substituir_tabela_anterior),
+    incluir_simulacao: false,
+    resumo_simulacao: {
+      ...resumoAnterior,
+      aprovada_em: agora,
+      promocao_oficial: promocaoOficial,
+      ultima_aprovacao: entradaAprovacao,
+      historico_rodadas: historicoAnterior.concat([entradaAprovacao]).slice(-30),
+    },
   };
   const { data, error } = await supabase
     .from('tabelas_negociacao').update(payload).eq('id', id).select().single();
@@ -758,6 +900,8 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       resultado.ctesSemTabelaSelecionada ??
       0
     ),
+
+    incluir_simulacao: false,
 
     resumo_simulacao: {
       ...resumoAnterior,

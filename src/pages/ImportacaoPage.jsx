@@ -694,10 +694,21 @@ function formatarContextoTabelaNegociacao(tabela = {}) {
   return partes.join(' · ');
 }
 
+function getRodadaAtualNegociacaoImportacao(tabela = {}) {
+  const resumo = tabela && tabela.resumo_simulacao && typeof tabela.resumo_simulacao === 'object'
+    ? tabela.resumo_simulacao
+    : {};
+  const historico = Array.isArray(resumo.historico_rodadas) ? resumo.historico_rodadas : [];
+  return Number(resumo.rodada_atual || (historico.length ? historico[historico.length - 1].rodada : 1) || 1);
+}
+
+
 function formatarOpcaoTabelaNegociacao(tabela = {}) {
+  const rodada = getRodadaAtualNegociacaoImportacao(tabela);
   const partes = [
     tabela.transportadora || 'Sem transportadora',
     `Origem: ${formatarOrigemTabelaNegociacao(tabela)}`,
+    `Rodada ${rodada}ª`,
     tabela.canal || 'Sem canal',
     tabela.status || 'Sem status',
   ];
@@ -751,9 +762,19 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
     setCarregandoNegociacoes(true);
     setErroNegociacoes('');
     try {
-      const lista = await listarTabelasNegociacao({ tipoTabela: 'FRACIONADO' });
+      const listaRaw = await listarTabelasNegociacao({ tipoTabela: 'FRACIONADO' });
+      const lista = (listaRaw || []).slice().sort((a, b) => {
+        const ta = String(a.transportadora || '').localeCompare(String(b.transportadora || ''), 'pt-BR');
+        if (ta !== 0) return ta;
+        const oa = String(a.origem || '').localeCompare(String(b.origem || ''), 'pt-BR');
+        if (oa !== 0) return oa;
+        return getRodadaAtualNegociacaoImportacao(b) - getRodadaAtualNegociacaoImportacao(a);
+      });
       setTabelasNegociacao(lista);
-      if (lista.length && !tabelaNegociacaoId) setTabelaNegociacaoId(lista[0].id);
+      if (lista.length && !tabelaNegociacaoId) {
+        const primeiraSimulacao = lista.find((item) => item.incluir_simulacao) || lista[0];
+        setTabelaNegociacaoId(primeiraSimulacao.id);
+      }
     } catch (e) {
       setErroNegociacoes(e.message || 'Erro ao carregar tabelas de negociação.');
     } finally {
@@ -926,7 +947,7 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
           etapaAtual: 'Aguardando gravação do lote',
           destino,
           tabelaNegociacaoNome: modoNegociacao
-            ? `${tabelaNegociacaoSelecionada?.transportadora}${tabelaNegociacaoSelecionada?.descricao ? ' — ' + tabelaNegociacaoSelecionada.descricao : ''}`
+            ? `${tabelaNegociacaoSelecionada?.transportadora} — ${formatarOrigemTabelaNegociacao(tabelaNegociacaoSelecionada)} — Rodada ${getRodadaAtualNegociacaoImportacao(tabelaNegociacaoSelecionada)}ª${tabelaNegociacaoSelecionada?.descricao ? ' — ' + tabelaNegociacaoSelecionada.descricao : ''}`
             : undefined,
           tipoNegociacao: modoNegociacao ? tipoNegociacao : undefined,
         };
@@ -1212,6 +1233,11 @@ export default function ImportacaoPage({ store, transportadoras, onAbrirTranspor
                       </option>
                     ))}
                   </select>
+                  {tabelaNegociacaoSelecionada ? (
+                    <small style={{ display: 'block', marginTop: 6, color: '#64748b' }}>
+                      A importação entrará em {formatarOrigemTabelaNegociacao(tabelaNegociacaoSelecionada)} · Rodada {getRodadaAtualNegociacaoImportacao(tabelaNegociacaoSelecionada)}ª.
+                    </small>
+                  ) : null}
                 </div>
               )}
 
