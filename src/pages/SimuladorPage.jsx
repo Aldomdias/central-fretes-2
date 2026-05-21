@@ -1718,11 +1718,185 @@ function calcularIndicadorVeiculoOperacionalSim({ cubagemDia = 0, pesoDia = 0 } 
   };
 }
 
+
+function getTipoIlustracaoVeiculoSim(tipo = '') {
+  const nome = String(tipo || '').toLowerCase();
+  if (nome.includes('fiorino') || nome.includes('utilitário')) return 'fiorino';
+  if (nome.includes('bongo') || nome.includes('hr') || nome.includes('vuc pequeno')) return 'vucPequeno';
+  if (nome.includes('van') || nome.includes('sprinter') || nome.includes('master')) return 'van';
+  if (nome.includes('vuc') || nome.includes('3/4')) return 'vuc';
+  if (nome.includes('toco')) return 'toco';
+  if (nome.includes('bitruck')) return 'bitruck';
+  if (nome.includes('truck')) return 'truck';
+  if (nome.includes('rodotrem') || nome.includes('bitrem')) return 'rodotrem';
+  if (nome.includes('ls') || nome.includes('vanderleia')) return 'carretaLs';
+  if (nome.includes('carreta')) return 'carreta';
+  return 'truck';
+}
+
+function VeiculoOcupacaoIlustracaoSim({ tipo = '', ocupacaoPercentual = 0 }) {
+  const ilustracao = getTipoIlustracaoVeiculoSim(tipo);
+  const fill = Math.max(0, Math.min(100, ocupacaoPercentual));
+  const fillColor = fill >= 90 ? '#fb923c' : fill >= 70 ? '#34d399' : '#60a5fa';
+  const stroke = '#bfdbfe';
+  const baseFill = '#eff6ff';
+  const cabFill = '#e0f2fe';
+  const glassFill = '#f8fafc';
+  const wheelFill = '#0f172a';
+  const wheelInner = '#f8fafc';
+
+  const renderWheel = (cx, cy = 68, r = 9) => (
+    <g key={`wheel-${cx}-${cy}-${r}`}>
+      <circle cx={cx} cy={cy} r={r} fill={wheelFill} />
+      <circle cx={cx} cy={cy} r={Math.max(3, r * 0.44)} fill={wheelInner} />
+    </g>
+  );
+
+  const renderCargo = (x, y, width, height, rx = 6) => {
+    const fillWidth = Math.max(0, Math.min(width - 4, (width - 4) * (fill / 100)));
+    return (
+      <>
+        <rect x={x} y={y} width={width} height={height} rx={rx} fill={baseFill} stroke={stroke} strokeWidth="2" />
+        <rect x={x + 2} y={y + 2} width={fillWidth} height={Math.max(0, height - 4)} rx={Math.max(4, rx - 2)} fill={fillColor} opacity="0.9" />
+      </>
+    );
+  };
+
+  const desenhos = {
+    fiorino: (
+      <>
+        <path d="M18 53c0-10 8-18 18-18h84c15 0 24 6 30 14l13 1c5 0 9 4 9 9v6H18v-12Z" fill={baseFill} stroke={stroke} strokeWidth="2" />
+        <rect x="30" y="39" width="92" height="22" rx="8" fill={baseFill} stroke={stroke} strokeWidth="2" />
+        <rect x="32" y="41" width={Math.max(0, 88 * (fill / 100))} height="18" rx="6" fill={fillColor} opacity="0.9" />
+        <path d="M120 39h18c10 0 16 6 21 14h-39V39Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M132 42h10c6 0 10 4 13 9h-23V42Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(52, 66, 8)}
+        {renderWheel(136, 66, 8)}
+        <line x1="22" y1="64" x2="168" y2="64" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    vucPequeno: (
+      <>
+        {renderCargo(18, 28, 92, 34, 8)}
+        <path d="M110 38h22l18 16v8h-40V38Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M123 41h8l11 10h-19V41Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(40)}
+        {renderWheel(116)}
+        <line x1="18" y1="66" x2="150" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    van: (
+      <>
+        <path d="M20 54c0-12 9-22 21-22h86c13 0 22 5 31 15h16v18H20V54Z" fill={baseFill} stroke={stroke} strokeWidth="2" />
+        <rect x="34" y="36" width="96" height="24" rx="8" fill="none" stroke={stroke} strokeWidth="2" />
+        <rect x="36" y="38" width={Math.max(0, 92 * (fill / 100))} height="20" rx="6" fill={fillColor} opacity="0.9" />
+        <path d="M128 37h14c8 0 14 4 19 10h-33V37Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M139 40h8c5 0 9 3 12 7h-20V40Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(56, 67, 8)}
+        {renderWheel(138, 67, 8)}
+        <line x1="22" y1="65" x2="174" y2="65" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    vuc: (
+      <>
+        {renderCargo(14, 24, 108, 38, 8)}
+        <path d="M122 35h24l18 19v8h-42V35Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M136 39h8l11 11h-19V39Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(38)}
+        {renderWheel(132)}
+        <line x1="14" y1="66" x2="164" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    toco: (
+      <>
+        {renderCargo(10, 24, 124, 38, 8)}
+        <path d="M134 35h25l18 19v8h-43V35Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M149 39h8l11 11h-19V39Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(36)}
+        {renderWheel(96)}
+        {renderWheel(144)}
+        <line x1="12" y1="66" x2="176" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    truck: (
+      <>
+        {renderCargo(8, 23, 138, 39, 8)}
+        <path d="M146 34h26l19 20v8h-45V34Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M162 38h8l12 12h-20V38Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(34)}
+        {renderWheel(96)}
+        {renderWheel(144)}
+        {renderWheel(176)}
+        <line x1="10" y1="66" x2="190" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    bitruck: (
+      <>
+        {renderCargo(6, 23, 148, 39, 8)}
+        <path d="M154 34h24l18 20v8h-42V34Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M168 38h7l11 12h-18V38Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(30)}
+        {renderWheel(84)}
+        {renderWheel(122)}
+        {renderWheel(156)}
+        {renderWheel(181)}
+        <line x1="8" y1="66" x2="196" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    carreta: (
+      <>
+        {renderCargo(8, 24, 152, 38, 8)}
+        <path d="M160 35h22l16 19v8h-38V35Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M172 39h7l10 11h-17V39Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(36)}
+        {renderWheel(98)}
+        {renderWheel(132)}
+        {renderWheel(162)}
+        {renderWheel(184)}
+        <line x1="10" y1="66" x2="198" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    carretaLs: (
+      <>
+        {renderCargo(4, 24, 164, 38, 8)}
+        <path d="M168 35h20l16 19v8h-36V35Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M179 39h6l10 11h-16V39Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        {renderWheel(32)}
+        {renderWheel(90)}
+        {renderWheel(122)}
+        {renderWheel(152)}
+        {renderWheel(176)}
+        <line x1="8" y1="66" x2="202" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+    rodotrem: (
+      <>
+        {renderCargo(4, 24, 86, 38, 8)}
+        {renderCargo(100, 24, 78, 38, 8)}
+        <path d="M178 35h20l16 19v8h-36V35Z" fill={cabFill} stroke={stroke} strokeWidth="2" />
+        <path d="M189 39h6l10 11h-16V39Z" fill={glassFill} stroke={stroke} strokeWidth="1.5" />
+        <circle cx="94" cy="56" r="3" fill="#94a3b8" />
+        {renderWheel(28)}
+        {renderWheel(66)}
+        {renderWheel(112)}
+        {renderWheel(146)}
+        {renderWheel(182)}
+        {renderWheel(201)}
+        <line x1="6" y1="66" x2="214" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+      </>
+    ),
+  };
+
+  return (
+    <svg viewBox="0 0 220 88" role="img" aria-label={`Ocupação estimada do veículo ${tipo || 'selecionado'}`} style={{ width: '100%', maxWidth: 190 }}>
+      {desenhos[ilustracao] || desenhos.truck}
+    </svg>
+  );
+}
+
 function VeiculoOcupacaoCard({ cubagemDia = 0, pesoDia = 0, titulo = 'Veículo sugerido' }) {
   const indicador = calcularIndicadorVeiculoOperacionalSim({ cubagemDia, pesoDia });
   const ocupacaoPercentual = indicador.ocupacaoOperacional * 100;
-  const fill = Math.max(0, Math.min(100, ocupacaoPercentual));
-  const fillWidth = 146 * (fill / 100);
   const faixaCubagem = `${formatNumeroOperacionalSim(indicador.veiculo.cubagemMin, 0)} a ${formatNumeroOperacionalSim(indicador.veiculo.cubagemRef, 0)} m³`;
   const faixaPeso = `${formatNumeroOperacionalSim(indicador.veiculo.pesoMin, 0)} a ${formatNumeroOperacionalSim(indicador.veiculo.pesoRef, 0)} kg`;
   const badgeBg = indicador.semDados ? '#f8fafc' : indicador.ocupacaoOperacional >= 0.9 ? '#fff7ed' : indicador.ocupacaoOperacional >= 0.7 ? '#ecfdf5' : '#eff6ff';
@@ -1741,17 +1915,7 @@ function VeiculoOcupacaoCard({ cubagemDia = 0, pesoDia = 0, titulo = 'Veículo s
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '170px minmax(0, 1fr)', gap: 12, alignItems: 'center' }}>
-        <svg viewBox="0 0 220 88" role="img" aria-label="Ocupação estimada do veículo" style={{ width: '100%', maxWidth: 190 }}>
-          <rect x="8" y="24" width="156" height="38" rx="8" fill="#eff6ff" stroke="#bfdbfe" strokeWidth="2" />
-          <rect x="12" y="28" width={fillWidth} height="30" rx="6" fill="#60a5fa" opacity="0.85" />
-          <path d="M164 36h24l18 18v8h-42V36Z" fill="#e0f2fe" stroke="#bfdbfe" strokeWidth="2" />
-          <path d="M181 40h7l11 11h-18V40Z" fill="#f8fafc" stroke="#bfdbfe" strokeWidth="1.5" />
-          <circle cx="48" cy="68" r="9" fill="#0f172a" />
-          <circle cx="48" cy="68" r="4" fill="#f8fafc" />
-          <circle cx="178" cy="68" r="9" fill="#0f172a" />
-          <circle cx="178" cy="68" r="4" fill="#f8fafc" />
-          <line x1="12" y1="66" x2="204" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
-        </svg>
+        <VeiculoOcupacaoIlustracaoSim tipo={indicador.veiculo.tipo} ocupacaoPercentual={ocupacaoPercentual} />
 
         <small style={{ display: 'grid', gap: 4 }}>
           <span>Cubagem/dia: <strong>{formatNumeroOperacionalSim(indicador.cubagemDia, 2)} m³</strong></span>
