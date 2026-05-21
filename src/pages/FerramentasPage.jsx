@@ -40,7 +40,8 @@ const DEFAULT_CONFIG = {
   excluirEbazar: true,
   incluirIbge: false,
   incluirDetalhe: false,
-  vincularCtes: false,
+  vincularCtes: true,
+  somenteComCteVinculado: true,
 };
 
 const CANAIS = ['', 'ATACADO', 'B2C'];
@@ -576,8 +577,15 @@ export default function FerramentasPage({ transportadoras = [] }) {
     setConfig((prev) => ({
       ...prev,
       incluirIbge: checked,
-      vincularCtes: checked ? prev.vincularCtes : false,
       agrupamento: checked || !['ibge', 'cidade_ibge'].includes(prev.agrupamento) ? prev.agrupamento : 'cidade',
+    }));
+  };
+
+  const alterarSomenteVinculados = (checked) => {
+    setConfig((prev) => ({
+      ...prev,
+      somenteComCteVinculado: checked,
+      vincularCtes: checked ? true : prev.vincularCtes,
     }));
   };
 
@@ -753,7 +761,7 @@ export default function FerramentasPage({ transportadoras = [] }) {
       baixarArrayBuffer(resultado.fileName, resultado.arrayBuffer);
 
       const resumo = resultado.resumo || {};
-      setMensagem(`Volumetria exportada: ${(resumo.notas || 0).toLocaleString('pt-BR')} nota(s)/linha(s), ${(resumo.linhasVolumetria || 0).toLocaleString('pt-BR')} linha(s) agrupadas${resumo.incluirIbge ? ', com colunas IBGE' : ', sem colunas IBGE'}${resumo.vinculadas ? `, ${resumo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}. Cubagem total e Valor_NF líquido do frete aplicados. Modo rápido em segundo plano aplicado.`);
+      setMensagem(`Volumetria exportada: ${(resumo.notas || 0).toLocaleString('pt-BR')} nota(s)/linha(s), ${(resumo.linhasVolumetria || 0).toLocaleString('pt-BR')} linha(s) agrupadas${resumo.incluirIbge ? ', com colunas IBGE' : ', sem colunas IBGE'}${resumo.vinculadas ? `, ${resumo.vinculadas.toLocaleString('pt-BR')} com CT-e vinculado` : ''}${resumo.somenteComCteVinculado ? ', somente vínculos CT-e × Tracking' : ''}. Fonte: ${resumo.fonteBase || 'Supabase Tracking'}. Cubagem final do Tracking aplicada.`);
     } catch (error) {
       setErro(error.message || 'Erro ao gerar volumetria.');
     } finally {
@@ -1035,9 +1043,10 @@ export default function FerramentasPage({ transportadoras = [] }) {
               <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.excluirEbazar)} onChange={(e) => alterar('excluirEbazar', e.target.checked)} />Retirar EBAZAR</label>
               <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.incluirIbge)} onChange={(e) => alterarIncluirIbge(e.target.checked)} />Incluir colunas IBGE (mais lento)</label>
               <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.incluirDetalhe)} onChange={(e) => alterar('incluirDetalhe', e.target.checked)} />Incluir aba sem agrupamento</label>
-              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} disabled={!config.incluirIbge} />Vincular com CT-es locais</label>
+              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} disabled={Boolean(config.somenteComCteVinculado)} />Vincular com CT-es do Supabase</label>
+              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.somenteComCteVinculado)} onChange={(e) => alterarSomenteVinculados(e.target.checked)} />Somente CT-es com Tracking vinculado</label>
             </div>
-            <div className="hint-box compact">Modo rápido: deixe IBGE desligado. A cubagem exportada considera cubagem unitária × volumes.</div>
+            <div className="hint-box compact">A volumetria agora lê o Tracking do Supabase com paginação para suportar até três meses. A cubagem usa a cubagem final do Tracking; quando marcado, exporta somente registros vinculados CT-e × Tracking, igual à base padrão do simulador.</div>
             <div className="actions-right">
               <button className="btn-primary" type="button" onClick={exportarVolumetria} disabled={carregando}>
                 {carregando ? 'Gerando...' : 'Gerar Excel de volumetria'}
