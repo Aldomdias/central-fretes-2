@@ -1551,7 +1551,224 @@ function calcularResumoGanhasNegociacao(resultado = {}) {
     cubagemDia: cubagemGanhas / dias,
     cubagemMes: cubagemGanhas / meses,
     pesoGanhas,
+    pesoDia: pesoGanhas / dias,
+    pesoMes: pesoGanhas / meses,
   };
+}
+
+const MARGEM_OPERACIONAL_VEICULO_SIM = 0.9;
+
+const VEICULOS_OPERACIONAIS_SIM = [
+  {
+    tipo: 'Fiorino / utilitário leve',
+    cubagemMin: 3,
+    cubagemRef: 4,
+    pesoMin: 500,
+    pesoRef: 700,
+    uso: 'Coleta pequena, e-commerce, volumes leves',
+  },
+  {
+    tipo: 'HR / Kia Bongo / VUC pequeno',
+    cubagemMin: 8,
+    cubagemRef: 12,
+    pesoMin: 1000,
+    pesoRef: 1500,
+    uso: 'Coletas urbanas pequenas/médias',
+  },
+  {
+    tipo: 'Van / Sprinter / Master',
+    cubagemMin: 10,
+    cubagemRef: 15,
+    pesoMin: 1200,
+    pesoRef: 1800,
+    uso: 'Fracionado leve, coleta expressa',
+  },
+  {
+    tipo: 'VUC / 3/4',
+    cubagemMin: 18,
+    cubagemRef: 25,
+    pesoMin: 2000,
+    pesoRef: 3500,
+    uso: 'Coleta urbana, restrição de cidade, fracionado médio',
+  },
+  {
+    tipo: 'Toco',
+    cubagemMin: 35,
+    cubagemRef: 45,
+    pesoMin: 5000,
+    pesoRef: 7000,
+    uso: 'Coletas maiores e transferência curta',
+  },
+  {
+    tipo: 'Truck',
+    cubagemMin: 50,
+    cubagemRef: 60,
+    pesoMin: 10000,
+    pesoRef: 14000,
+    uso: 'Coletas grandes, fracionado pesado, filial/CD',
+  },
+  {
+    tipo: 'Bitruck',
+    cubagemMin: 60,
+    cubagemRef: 70,
+    pesoMin: 16000,
+    pesoRef: 18000,
+    uso: 'Alto peso com cubagem média',
+  },
+  {
+    tipo: 'Carreta simples / sider / baú',
+    cubagemMin: 90,
+    cubagemRef: 100,
+    pesoMin: 24000,
+    pesoRef: 28000,
+    uso: 'Transferência, grandes coletas, lotação',
+  },
+  {
+    tipo: 'Carreta LS / Vanderleia',
+    cubagemMin: 95,
+    cubagemRef: 105,
+    pesoMin: 28000,
+    pesoRef: 32000,
+    uso: 'Transferência pesada / lotação',
+  },
+  {
+    tipo: 'Rodotrem / Bitrem',
+    cubagemMin: 110,
+    cubagemRef: 140,
+    pesoMin: 38000,
+    pesoRef: 45000,
+    uso: 'Transferência de alto volume/peso',
+  },
+];
+
+function formatNumeroOperacionalSim(value, casas = 1) {
+  return Number(value || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: casas,
+    maximumFractionDigits: casas,
+  });
+}
+
+function calcularIndicadorVeiculoOperacionalSim({ cubagemDia = 0, pesoDia = 0 } = {}) {
+  const cubagem = Math.max(0, numeroRealizado(cubagemDia));
+  const peso = Math.max(0, numeroRealizado(pesoDia));
+
+  if (!cubagem && !peso) {
+    return {
+      semDados: true,
+      cubagemDia: cubagem,
+      pesoDia: peso,
+      veiculo: VEICULOS_OPERACIONAIS_SIM[0],
+      veiculoMinimo: VEICULOS_OPERACIONAIS_SIM[0],
+      ocupacaoOperacional: 0,
+      ocupacaoFisica: 0,
+      qtdVeiculos: 1,
+      fatorLimitante: 'cubagem',
+      alerta: 'Sem cubagem/peso suficiente para sugerir veículo.',
+    };
+  }
+
+  const atendeCapacidadeFisica = (veiculo) => cubagem <= veiculo.cubagemRef && peso <= veiculo.pesoRef;
+  const atendeCapacidadeOperacional = (veiculo) => (
+    cubagem <= veiculo.cubagemRef * MARGEM_OPERACIONAL_VEICULO_SIM
+    && peso <= veiculo.pesoRef * MARGEM_OPERACIONAL_VEICULO_SIM
+  );
+
+  const veiculoMinimo = VEICULOS_OPERACIONAIS_SIM.find(atendeCapacidadeFisica) || VEICULOS_OPERACIONAIS_SIM[VEICULOS_OPERACIONAIS_SIM.length - 1];
+  const veiculoComFolga = VEICULOS_OPERACIONAIS_SIM.find(atendeCapacidadeOperacional) || VEICULOS_OPERACIONAIS_SIM[VEICULOS_OPERACIONAIS_SIM.length - 1];
+  const cargaAcimaMaiorVeiculo = !VEICULOS_OPERACIONAIS_SIM.some(atendeCapacidadeOperacional);
+  const veiculo = cargaAcimaMaiorVeiculo ? VEICULOS_OPERACIONAIS_SIM[VEICULOS_OPERACIONAIS_SIM.length - 1] : veiculoComFolga;
+
+  const ocupacaoCubagemFisica = veiculo.cubagemRef ? cubagem / veiculo.cubagemRef : 0;
+  const ocupacaoPesoFisica = veiculo.pesoRef ? peso / veiculo.pesoRef : 0;
+  const ocupacaoFisica = Math.max(ocupacaoCubagemFisica, ocupacaoPesoFisica);
+  const qtdVeiculos = Math.max(1, Math.ceil(ocupacaoFisica));
+  const capacidadeCubagemOperacional = veiculo.cubagemRef * MARGEM_OPERACIONAL_VEICULO_SIM * qtdVeiculos;
+  const capacidadePesoOperacional = veiculo.pesoRef * MARGEM_OPERACIONAL_VEICULO_SIM * qtdVeiculos;
+  const ocupacaoCubagemOperacional = capacidadeCubagemOperacional ? cubagem / capacidadeCubagemOperacional : 0;
+  const ocupacaoPesoOperacional = capacidadePesoOperacional ? peso / capacidadePesoOperacional : 0;
+  const ocupacaoOperacional = Math.max(ocupacaoCubagemOperacional, ocupacaoPesoOperacional);
+  const fatorLimitante = ocupacaoCubagemOperacional >= ocupacaoPesoOperacional ? 'cubagem' : 'peso';
+  const minimoNoLimite = veiculoMinimo.tipo !== veiculo.tipo;
+
+  let alerta = 'Capacidade adequada com folga operacional.';
+  if (cargaAcimaMaiorVeiculo && qtdVeiculos > 1) {
+    alerta = `Demanda acima de 1 veículo; estimar ${qtdVeiculos} veículo(s)/dia.`;
+  } else if (minimoNoLimite) {
+    alerta = `${veiculoMinimo.tipo} comporta, mas fica acima da folga operacional; recomendado subir para ${veiculo.tipo}.`;
+  } else if (ocupacaoOperacional >= 0.9) {
+    alerta = 'Ocupação alta; acompanhar peso, cubagem e janela de coleta.';
+  }
+
+  return {
+    semDados: false,
+    cubagemDia: cubagem,
+    pesoDia: peso,
+    veiculo,
+    veiculoMinimo,
+    veiculoComFolga: veiculo,
+    ocupacaoOperacional,
+    ocupacaoFisica,
+    ocupacaoCubagemOperacional,
+    ocupacaoPesoOperacional,
+    qtdVeiculos,
+    fatorLimitante,
+    minimoNoLimite,
+    alerta,
+    margemOperacional: MARGEM_OPERACIONAL_VEICULO_SIM,
+  };
+}
+
+function VeiculoOcupacaoCard({ cubagemDia = 0, pesoDia = 0, titulo = 'Veículo sugerido' }) {
+  const indicador = calcularIndicadorVeiculoOperacionalSim({ cubagemDia, pesoDia });
+  const ocupacaoPercentual = indicador.ocupacaoOperacional * 100;
+  const fill = Math.max(0, Math.min(100, ocupacaoPercentual));
+  const fillWidth = 146 * (fill / 100);
+  const faixaCubagem = `${formatNumeroOperacionalSim(indicador.veiculo.cubagemMin, 0)} a ${formatNumeroOperacionalSim(indicador.veiculo.cubagemRef, 0)} m³`;
+  const faixaPeso = `${formatNumeroOperacionalSim(indicador.veiculo.pesoMin, 0)} a ${formatNumeroOperacionalSim(indicador.veiculo.pesoRef, 0)} kg`;
+  const badgeBg = indicador.semDados ? '#f8fafc' : indicador.ocupacaoOperacional >= 0.9 ? '#fff7ed' : indicador.ocupacaoOperacional >= 0.7 ? '#ecfdf5' : '#eff6ff';
+  const badgeColor = indicador.semDados ? '#64748b' : indicador.ocupacaoOperacional >= 0.9 ? '#c2410c' : indicador.ocupacaoOperacional >= 0.7 ? '#047857' : '#1d4ed8';
+
+  return (
+    <div className="summary-card" style={{ gridColumn: 'span 2', minWidth: 260, alignItems: 'stretch', gap: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+        <div>
+          <span>{titulo}</span>
+          <strong style={{ fontSize: '1rem', lineHeight: 1.15 }}>{indicador.veiculo.tipo}</strong>
+        </div>
+        <div style={{ padding: '4px 8px', borderRadius: 999, background: badgeBg, color: badgeColor, fontSize: '0.72rem', fontWeight: 800, whiteSpace: 'nowrap' }}>
+          {formatPercent(ocupacaoPercentual)} ocupado
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '170px minmax(0, 1fr)', gap: 12, alignItems: 'center' }}>
+        <svg viewBox="0 0 220 88" role="img" aria-label="Ocupação estimada do veículo" style={{ width: '100%', maxWidth: 190 }}>
+          <rect x="8" y="24" width="156" height="38" rx="8" fill="#eff6ff" stroke="#bfdbfe" strokeWidth="2" />
+          <rect x="12" y="28" width={fillWidth} height="30" rx="6" fill="#60a5fa" opacity="0.85" />
+          <path d="M164 36h24l18 18v8h-42V36Z" fill="#e0f2fe" stroke="#bfdbfe" strokeWidth="2" />
+          <path d="M181 40h7l11 11h-18V40Z" fill="#f8fafc" stroke="#bfdbfe" strokeWidth="1.5" />
+          <circle cx="48" cy="68" r="9" fill="#0f172a" />
+          <circle cx="48" cy="68" r="4" fill="#f8fafc" />
+          <circle cx="178" cy="68" r="9" fill="#0f172a" />
+          <circle cx="178" cy="68" r="4" fill="#f8fafc" />
+          <line x1="12" y1="66" x2="204" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+
+        <small style={{ display: 'grid', gap: 4 }}>
+          <span>Cubagem/dia: <strong>{formatNumeroOperacionalSim(indicador.cubagemDia, 2)} m³</strong></span>
+          <span>Peso/dia: <strong>{formatNumeroOperacionalSim(indicador.pesoDia, 0)} kg</strong></span>
+          <span>Referência: <strong>{faixaCubagem} • {faixaPeso}</strong></span>
+          {indicador.qtdVeiculos > 1 && <span>Necessidade: <strong>{indicador.qtdVeiculos} veículo(s)/dia</strong></span>}
+          <span>Limitante: <strong>{indicador.fatorLimitante === 'peso' ? 'peso' : 'cubagem'}</strong></span>
+        </small>
+      </div>
+
+      <small style={{ color: badgeColor }}>
+        {indicador.alerta}
+        {indicador.minimoNoLimite ? ` Menor veículo físico: ${indicador.veiculoMinimo.tipo}.` : ''}
+      </small>
+      <small>Uso comum: {indicador.veiculo.uso}</small>
+    </div>
+  );
 }
 
 function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade }) {
@@ -4546,6 +4763,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       <div className="summary-card"><span>Cargas/dia</span><strong>{Number(resumoGanhas.cargasDia || 0).toFixed(1)}</strong><small>{Number(resumoGanhas.cargasMes || 0).toFixed(0)} cargas/mês</small></div>
                       <div className="summary-card"><span>Volumes/dia</span><strong>{Number(resumoGanhas.volumesDia || 0).toFixed(1)}</strong><small>{Number(resumoGanhas.volumesMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} volumes/mês</small></div>
                       <div className="summary-card"><span>Cubagem/dia</span><strong>{Number(resumoGanhas.cubagemDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</strong><small>{Number(resumoGanhas.cubagemMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} m³/mês</small></div>
+                      <VeiculoOcupacaoCard
+                        titulo="Veículo sugerido nas cargas ganhas"
+                        cubagemDia={resumoGanhas.cubagemDia}
+                        pesoDia={resumoGanhas.pesoDia}
+                      />
                     </div>
                   </div>
                 );
