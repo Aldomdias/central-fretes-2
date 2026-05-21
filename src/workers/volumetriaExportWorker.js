@@ -5,6 +5,7 @@ import { relacionarTrackingComCtes } from '../utils/trackingCteLink';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { encontrarLinhaGradePorPeso } from '../utils/gradeFreteConfig';
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const UF_POR_CODIGO_IBGE = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -39,6 +40,26 @@ const UF_POR_CENTRO_EXPEDICAO = {
 
 const CHUNK_SIZE = 5000;
 const DETALHE_SHEET_LIMIT = 100000;
+const SUPABASE_PAGE_SIZE = 1000;
+const SUPABASE_EXPORT_LIMIT_DEFAULT = 1000000;
+const TABELA_TRACKING_SUPABASE = 'tracking_rows';
+const TABELA_CTES_SUPABASE = 'realizado_local_ctes';
+
+const TRACKING_SUPABASE_COLUMNS = [
+  'id', 'data', 'competencia', 'nota_fiscal', 'chave_nfe', 'chave_cte', 'cte_numero',
+  'pedido', 'pedido_erp', 'canal', 'canal_original', 'transportadora',
+  'cidade_origem', 'uf_origem', 'ibge_origem', 'cidade_destino', 'uf_destino', 'ibge_destino',
+  'chave_rota_ibge', 'peso', 'peso_declarado', 'peso_cubado', 'cubagem_unitaria', 'cubagem_total',
+  'valor_nf', 'qtd_volumes', 'previsao_cliente', 'previsao_transportadora', 'data_transporte', 'data_entrega',
+  'arquivo_origem', 'aba_origem', 'linha_excel', 'ibge_ok', 'raw', 'updated_at'
+].join(',');
+
+const CTE_SUPABASE_COLUMNS = [
+  'id', 'competencia', 'data_emissao', 'chave_cte', 'numero_cte', 'transportadora',
+  'cidade_origem', 'uf_origem', 'ibge_origem', 'cidade_destino', 'uf_destino', 'ibge_destino',
+  'peso', 'peso_declarado', 'peso_cubado', 'cubagem', 'valor_nf', 'valor_cte',
+  'qtd_volumes', 'canal', 'chave_rota_ibge', 'raw'
+].join(',');
 
 function postProgress(payload = {}) {
   self.postMessage({ type: 'progress', ...payload });
@@ -107,6 +128,99 @@ function normalizarCidade(value = '') {
     .trim();
 }
 
+function isTransportadoraEbazarVolumetria(value = '') {
+  return normalizarCidade(value).includes('EBAZAR');
+}
+
+function fallbackRaw(row = {}, key = '') {
+  const raw = row.raw || {};
+  return raw[key] ?? raw[key.toLowerCase()] ?? raw[key.toUpperCase()] ?? '';
+}
+
+function mapTrackingSupabaseRow(row = {}) {
+  const raw = row.raw || {};
+  const cubagemTotalFinal = toNumber(row.cubagem_total ?? raw.cubagemTotal ?? raw.Cubagem_Total_m3);
+  const cubagemUnitaria = toNumber(row.cubagem_unitaria ?? raw.cubagem ?? raw.Cubagem_Unitaria_m3);
+  const volumes = toNumber(row.qtd_volumes ?? raw.qtdVolumes ?? raw.Volumes);
+  const data = row.data || raw.data || raw.Data || '';
+
+  return {
+    id: row.id || '',
+    data,
+    dataFaturamento: data,
+    competencia: row.competencia || (data ? String(data).slice(0, 7) : ''),
+    notaFiscal: row.nota_fiscal || raw.notaFiscal || raw['NF Numero'] || '',
+    numeroNf: row.nota_fiscal || raw.numeroNf || raw['NF Numero'] || '',
+    nfNumero: row.nota_fiscal || raw.nfNumero || raw['NF Numero'] || '',
+    chaveNfe: row.chave_nfe || raw.chaveNfe || raw['NF Chave'] || '',
+    chaveNf: row.chave_nfe || raw.chaveNf || raw['NF Chave'] || '',
+    chaveCte: row.chave_cte || raw.chaveCte || '',
+    cteNumero: row.cte_numero || raw.cteNumero || raw.cte || '',
+    pedido: row.pedido || raw.pedido || '',
+    pedidoErp: row.pedido_erp || raw.pedidoErp || raw['Pedido ERP'] || '',
+    canal: row.canal || raw.canal || raw.Canal || '',
+    canalOriginal: row.canal_original || raw.canalOriginal || raw.Canal || row.canal || '',
+    loja: raw.loja || raw.Loja || '',
+    transportadora: row.transportadora || raw.transportadora || raw.Transportadora || '',
+    cidadeOrigem: row.cidade_origem || raw.cidadeOrigem || raw['Cidade de Origem'] || '',
+    ufOrigem: row.uf_origem || raw.ufOrigem || '',
+    ibgeOrigem: row.ibge_origem || raw.ibgeOrigem || '',
+    cidadeDestino: row.cidade_destino || raw.cidadeDestino || raw['Cidade Destino'] || '',
+    ufDestino: row.uf_destino || raw.ufDestino || raw['UF Destino'] || '',
+    ibgeDestino: row.ibge_destino || raw.ibgeDestino || '',
+    chaveRotaIbge: row.chave_rota_ibge || (row.ibge_origem && row.ibge_destino ? `${row.ibge_origem}-${row.ibge_destino}` : ''),
+    peso: toNumber(row.peso ?? raw.peso),
+    pesoDeclarado: toNumber(row.peso_declarado ?? raw.pesoDeclarado),
+    pesoCubado: toNumber(row.peso_cubado ?? raw.pesoCubado),
+    cubagem: cubagemUnitaria,
+    cubagemUnitariaM3: cubagemUnitaria,
+    cubagemTotalFinalM3: cubagemTotalFinal,
+    cubagemTotalNfM3: cubagemTotalFinal || (cubagemUnitaria * Math.max(volumes || 1, 1)),
+    valorNF: toNumber(row.valor_nf ?? raw.valorNF ?? raw['Valor da NF']),
+    qtdVolumes: volumes,
+    previsaoCliente: row.previsao_cliente || raw.previsaoCliente || '',
+    prevTransportadora: row.previsao_transportadora || raw.prevTransportadora || '',
+    dataTransporte: row.data_transporte || raw.dataTransporte || '',
+    entrega: row.data_entrega || raw.entrega || '',
+    arquivoOrigem: row.arquivo_origem || raw.arquivoOrigem || '',
+    abaOrigem: row.aba_origem || raw.abaOrigem || '',
+    linhaExcel: toNumber(row.linha_excel ?? raw.linhaExcel),
+    ibgeOk: Boolean(row.ibge_ok || (row.ibge_origem && row.ibge_destino)),
+    raw,
+    fonteVolumetria: 'supabase_tracking',
+  };
+}
+
+function mapCteSupabaseRow(row = {}) {
+  const raw = row.raw || {};
+  const data = row.data_emissao || raw.dataEmissao || raw.emissao || '';
+  return {
+    id: row.id || '',
+    competencia: row.competencia || (data ? String(data).slice(0, 7) : ''),
+    dataEmissao: data,
+    chaveCte: row.chave_cte || raw.chaveCte || '',
+    numeroCte: row.numero_cte || raw.numeroCte || '',
+    cteNumero: row.numero_cte || raw.cteNumero || raw.cte || '',
+    transportadora: row.transportadora || raw.transportadora || '',
+    cidadeOrigem: row.cidade_origem || raw.cidadeOrigem || '',
+    ufOrigem: row.uf_origem || raw.ufOrigem || '',
+    ibgeOrigem: row.ibge_origem || raw.ibgeOrigem || '',
+    cidadeDestino: row.cidade_destino || raw.cidadeDestino || '',
+    ufDestino: row.uf_destino || raw.ufDestino || '',
+    ibgeDestino: row.ibge_destino || raw.ibgeDestino || '',
+    peso: toNumber(row.peso ?? raw.peso),
+    pesoDeclarado: toNumber(row.peso_declarado ?? raw.pesoDeclarado),
+    pesoCubado: toNumber(row.peso_cubado ?? raw.pesoCubado),
+    cubagem: toNumber(row.cubagem ?? raw.cubagem),
+    valorNF: toNumber(row.valor_nf ?? raw.valorNF),
+    valorCte: toNumber(row.valor_cte ?? raw.valorCte),
+    qtdVolumes: toNumber(row.qtd_volumes ?? raw.qtdVolumes),
+    canal: row.canal || raw.canal || '',
+    chaveRotaIbge: row.chave_rota_ibge || (row.ibge_origem && row.ibge_destino ? `${row.ibge_origem}-${row.ibge_destino}` : ''),
+    raw,
+  };
+}
+
 function safeSheetName(nome) {
   return String(nome || 'Planilha').replace(/[\\/?*[\]:]/g, ' ').slice(0, 31) || 'Planilha';
 }
@@ -154,6 +268,8 @@ function cubagemUnitaria(row = {}) {
 }
 
 function cubagemTotalNf(row = {}) {
+  const cubagemFinal = toNumber(row.cubagemTotalFinalM3 ?? row.cubagemTotalNfM3 ?? row.cubagem_total ?? row.cubagemTotal);
+  if (cubagemFinal > 0) return cubagemFinal;
   const cubagem = cubagemUnitaria(row);
   const volumes = qtdVolumes(row);
   return cubagem * (volumes > 0 ? volumes : 1);
@@ -782,15 +898,18 @@ function normalizarConfigVolumetria(config = {}) {
     agrupamento = 'cidade';
   }
 
+  const somenteComCteVinculado = Boolean(config.somenteComCteVinculado);
+
   return {
     ...config,
     incluirIbge,
     agrupamento,
-    vincularCtes: incluirIbge ? Boolean(config.vincularCtes) : false,
+    vincularCtes: Boolean(config.vincularCtes || somenteComCteVinculado),
+    somenteComCteVinculado,
   };
 }
 
-function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo, diagnostico }) {
+function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo, diagnostico, fonteBase }) {
   return [{
     Canal: config.canal || 'Todos',
     Periodo_Inicial: config.inicio || 'Todos',
@@ -800,6 +919,7 @@ function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit,
     UF_Destino: config.ufDestino || 'Todas',
     Agrupamento: config.agrupamento,
     Modo_IBGE: config.incluirIbge ? 'Com IBGE' : 'Sem IBGE',
+    Fonte_Base: fonteBase || 'Supabase Tracking',
     Notas_Exportadas: rowsBase.length,
     Linhas_Volumetria: volumetria.length,
     Linhas_Antes_Filtros_Finais: diagnostico?.linhasAntesFiltrosFinais ?? '',
@@ -807,10 +927,12 @@ function buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit,
     Sem_UF_Destino_Antes_Filtro: diagnostico?.semUfDestinoAntes ?? '',
     Total_Compativel_Antes_Filtros_Finais: totalCompativel || rowsBase.length,
     Limite_Leitura: limit || '',
-    Vinculo_CTE_Ativo: config.vincularCtes && config.incluirIbge ? 'Sim' : 'Não',
+    Vinculo_CTE_Ativo: config.vincularCtes ? 'Sim' : 'Não',
+    Somente_Com_CTE_Vinculado: config.somenteComCteVinculado ? 'Sim' : 'Não',
     CTEs_Vinculados: resumoVinculo?.vinculadas || 0,
+    CTEs_Sem_Vinculo: resumoVinculo?.semVinculo || 0,
     Detalhe_por_Nota: config.incluirDetalhe ? 'Sim' : 'Não',
-    Regra_Cubagem: 'Cubagem do Tracking multiplicada pela quantidade de volumes da NF',
+    Regra_Cubagem: 'Cubagem final do Tracking: usa cubagem_total do Supabase quando existir; senão cubagem unitária × volumes',
     Regra_Valor_NF: 'Valor_NF = Valor NF bruto - Valor do frete/calculado, quando houver',
     Regra_UF_Modo_Rapido: 'Sem IBGE: usa UF do Tracking; se faltar, tenta inferir pela cidade e pela UF filtrada, sem exportar IBGE',
   }];
@@ -826,6 +948,141 @@ function contarSemUf(rows = []) {
   }, { semUfOrigem: 0, semUfDestino: 0, ufOrigemInferida: 0, ufDestinoInferida: 0 });
 }
 
+
+function aplicarFiltrosBaseVolumetria(rows = [], filtros = {}) {
+  const origemFiltro = normalizarCidade(filtros.origem);
+  return (rows || []).filter((row) => {
+    if (filtros.inicio && (!row.data || String(row.data).slice(0, 10) < filtros.inicio)) return false;
+    if (filtros.fim && (!row.data || String(row.data).slice(0, 10) > filtros.fim)) return false;
+    if (filtros.excluirEbazar && isTransportadoraEbazarVolumetria(row.transportadora)) return false;
+    if (origemFiltro && !normalizarCidade(row.cidadeOrigem).includes(origemFiltro)) return false;
+    return true;
+  });
+}
+
+function criarQueryTrackingSupabase(supabase, filtros = {}) {
+  let query = supabase
+    .from(TABELA_TRACKING_SUPABASE)
+    .select(TRACKING_SUPABASE_COLUMNS, { count: 'exact' })
+    .order('data', { ascending: false, nullsFirst: false })
+    .order('id', { ascending: false });
+
+  if (filtros.inicio) query = query.gte('data', filtros.inicio);
+  if (filtros.fim) query = query.lte('data', filtros.fim);
+  if (filtros.origem) query = query.ilike('cidade_origem', `%${String(filtros.origem).trim()}%`);
+  return query;
+}
+
+async function exportarTrackingSupabase(filtros = {}, options = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const limit = Number(options.limit || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  const pageSize = Number(options.pageSize || SUPABASE_PAGE_SIZE);
+  const rows = [];
+  let totalCompativel = 0;
+  let pagina = 0;
+  let countExato = 0;
+
+  while (rows.length < limit) {
+    const from = pagina * pageSize;
+    const to = from + pageSize - 1;
+    const { data, error, count } = await criarQueryTrackingSupabase(supabase, filtros).range(from, to);
+    if (error) throw new Error(`Erro ao ler Tracking do Supabase: ${error.message}`);
+    const paginaRows = (data || []).map(mapTrackingSupabaseRow);
+    const filtradas = aplicarFiltrosBaseVolumetria(paginaRows, filtros);
+    rows.push(...filtradas.slice(0, Math.max(0, limit - rows.length)));
+    totalCompativel += filtradas.length;
+    countExato = Number(count || countExato || 0);
+
+    postProgress({
+      percentual: Math.min(20, 5 + Math.round((Math.min(to + 1, countExato || to + 1) / Math.max(countExato || to + 1, 1)) * 15)),
+      mensagem: `Lendo Tracking do Supabase: ${Math.min(to + 1, countExato || to + 1).toLocaleString('pt-BR')} registro(s) avaliados...`,
+    });
+
+    if (!data || data.length < pageSize) break;
+    pagina += 1;
+    await waitFrame();
+  }
+
+  return {
+    rows,
+    totalCompativel: totalCompativel || rows.length,
+    totalBanco: countExato,
+    limit,
+    fonte: 'Supabase Tracking',
+  };
+}
+
+function criarQueryCtesSupabase(supabase, filtros = {}) {
+  let query = supabase
+    .from(TABELA_CTES_SUPABASE)
+    .select(CTE_SUPABASE_COLUMNS, { count: 'exact' })
+    .order('data_emissao', { ascending: false, nullsFirst: false });
+
+  if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
+  if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+  if (filtros.origem) query = query.ilike('cidade_origem', `%${String(filtros.origem).trim()}%`);
+  return query;
+}
+
+async function exportarRealizadoSupabaseParaVolumetria(filtros = {}, options = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const limit = Number(options.limit || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  const pageSize = Number(options.pageSize || SUPABASE_PAGE_SIZE);
+  const rows = [];
+  let pagina = 0;
+  let countExato = 0;
+
+  while (rows.length < limit) {
+    const from = pagina * pageSize;
+    const to = from + pageSize - 1;
+    const { data, error, count } = await criarQueryCtesSupabase(supabase, filtros).range(from, to);
+    if (error) throw new Error(`Erro ao ler CT-es do Supabase para vínculo: ${error.message}`);
+    const paginaRows = (data || []).map(mapCteSupabaseRow).filter((row) => {
+      if (filtros.excluirEbazar && isTransportadoraEbazarVolumetria(row.transportadora)) return false;
+      return true;
+    });
+    rows.push(...paginaRows.slice(0, Math.max(0, limit - rows.length)));
+    countExato = Number(count || countExato || 0);
+
+    postProgress({
+      percentual: Math.min(28, 20 + Math.round((Math.min(to + 1, countExato || to + 1) / Math.max(countExato || to + 1, 1)) * 8)),
+      mensagem: `Lendo CT-es do Supabase para vínculo: ${Math.min(to + 1, countExato || to + 1).toLocaleString('pt-BR')} registro(s) avaliados...`,
+    });
+
+    if (!data || data.length < pageSize) break;
+    pagina += 1;
+    await waitFrame();
+  }
+
+  return { rows, totalCompativel: rows.length, totalBanco: countExato, limit, fonte: 'Supabase CT-es' };
+}
+
+async function carregarTrackingVolumetria(filtroBase = {}, config = {}) {
+  const limit = Number(config.limiteLeitura || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  postProgress({ percentual: 5, mensagem: 'Lendo Tracking do Supabase em segundo plano...' });
+
+  const online = await exportarTrackingSupabase(filtroBase, { limit });
+  if (online?.rows?.length) return online;
+
+  postProgress({ percentual: 5, mensagem: 'Tracking do Supabase indisponível/vazio. Tentando base local como contingência...' });
+  const local = await exportarTrackingLocal(filtroBase, { limit });
+  return { ...local, fonte: 'Base local de Tracking' };
+}
+
+async function carregarCtesVolumetria(filtroBase = {}, config = {}) {
+  const limit = Number(config.limiteLeitura || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  const online = await exportarRealizadoSupabaseParaVolumetria(filtroBase, { limit });
+  if (online?.rows?.length) return online;
+  const local = await exportarRealizadoLocal(filtroBase, { limit });
+  return { ...local, fonte: 'CT-es locais' };
+}
+
 async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
   config = normalizarConfigVolumetria(config);
 
@@ -838,25 +1095,35 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
     excluirEbazar: Boolean(config.excluirEbazar),
   };
 
-  postProgress({ percentual: 5, mensagem: 'Lendo Tracking local em segundo plano...' });
-  const { rows, totalCompativel, limit } = await exportarTrackingLocal(filtroBase, { limit: Number(config.limiteLeitura || 500000) });
+  const tracking = await carregarTrackingVolumetria(filtroBase, config);
+  const rows = tracking.rows || [];
+  const totalCompativel = tracking.totalCompativel || rows.length;
+  const limit = tracking.limit || Number(config.limiteLeitura || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  const fonteBase = tracking.fonte || 'Supabase Tracking';
 
   if (!rows.length) {
-    throw new Error('Não existe base de Tracking local com os filtros informados. Importe primeiro no módulo Tracking.');
+    throw new Error('Não existe base de Tracking no Supabase com os filtros informados. Confira se o Tracking foi enviado ao Supabase e se o período/origem estão corretos.');
   }
 
   let rowsBase = rows.map(normalizarLinhaVolumetria);
   let resumoVinculo = null;
 
-  if (config.vincularCtes) {
-    postProgress({ percentual: 22, mensagem: 'Buscando CT-es locais para completar UF/IBGE...' });
-    const ctes = await exportarRealizadoLocal(filtroBase, { limit: Number(config.limiteLeitura || 500000) });
-    postProgress({ percentual: 28, mensagem: 'Relacionando Tracking com CT-es locais...' });
-    const relacionamento = relacionarTrackingComCtes(rows, ctes.rows || []);
+  if (config.vincularCtes || config.somenteComCteVinculado) {
+    postProgress({ percentual: 22, mensagem: 'Buscando CT-es no Supabase para vincular com o Tracking...' });
+    const ctes = await carregarCtesVolumetria(filtroBase, config);
+    postProgress({ percentual: 28, mensagem: 'Relacionando Tracking com CT-es para usar somente volumetria vinculada...' });
+    const relacionamento = relacionarTrackingComCtes(rowsBase, ctes.rows || []);
     rowsBase = (relacionamento.rows || []).map(normalizarLinhaVolumetria);
     resumoVinculo = relacionamento.resumo;
+
+    if (config.somenteComCteVinculado) {
+      rowsBase = rowsBase.filter((row) => Number(row.qtdCtesVinculados || 0) > 0);
+      if (!rowsBase.length) {
+        throw new Error('Nenhuma linha do Tracking encontrou vínculo com CT-e no período filtrado. Revise chaves de NF/CT-e, período e bases carregadas.');
+      }
+    }
   } else {
-    postProgress({ percentual: 28, mensagem: 'Vínculo com CT-e desligado. Seguindo somente com Tracking...' });
+    postProgress({ percentual: 28, mensagem: 'Vínculo com CT-e desligado. Seguindo somente com Tracking do Supabase...' });
   }
 
   if (config.incluirIbge) {
@@ -893,7 +1160,7 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
     ufDestinoInferidaSemIbge: diagnosticoAntesFiltro.ufDestinoInferida,
   };
 
-  appendJsonSheet(wb, 'Resumo', buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo, diagnostico }));
+  appendJsonSheet(wb, 'Resumo', buildResumoRows({ config, rowsBase, volumetria, totalCompativel, limit, resumoVinculo, diagnostico, fonteBase }));
   appendJsonSheet(wb, 'Volumetria_Agrupada', volumetria);
   appendJsonSheet(wb, 'Diagnostico_UF', [{
     Linhas_Antes_Filtros_Finais: diagnostico.linhasAntesFiltrosFinais,
@@ -933,6 +1200,8 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
       vinculadas: resumoVinculo?.vinculadas || 0,
       detalheSheets,
       incluirIbge: Boolean(config.incluirIbge),
+      fonteBase,
+      somenteComCteVinculado: Boolean(config.somenteComCteVinculado),
     },
   };
 }
