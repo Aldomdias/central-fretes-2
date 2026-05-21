@@ -1449,6 +1449,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
   let freteSelecionada = 0;
   let freteVencedor = 0;
   let valorNF = 0;
+  let valorNFComTabelaSelecionada = 0;
   let peso = 0;
   let volumes = 0;
   let cubagemTotal = 0;
@@ -1562,6 +1563,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       freteSel = numeroRealizado(itemSelecionada.total);
       freteSelecionada += freteSel;
       freteRealizadoComTabelaSelecionada += valorCte;
+      valorNFComTabelaSelecionada += nf;
       economiaTabelaSelecionadaVsRealBruto = Math.max(valorCte - freteSel, 0);
       savingTabelaSelecionadaVsRealBruto += economiaTabelaSelecionadaVsRealBruto;
 
@@ -1718,6 +1720,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     freteSelecionada,
     freteVencedor,
     valorNF,
+    valorNFComTabelaSelecionada,
     peso,
     volumes,
     cubagemTotal,
@@ -1742,6 +1745,9 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     reducaoMediaNecessaria,
     aderenciaSelecionada,
     percentualFreteRealizado: valorNF ? (freteRealizado / valorNF) * 100 : 0,
+    percentualFreteRealizadoComTabela: valorNFComTabelaSelecionada ? (freteRealizadoComTabelaSelecionada / valorNFComTabelaSelecionada) * 100 : 0,
+    percentualFreteSelecionadaComTabela: valorNFComTabelaSelecionada ? (freteSelecionada / valorNFComTabelaSelecionada) * 100 : 0,
+    variacaoPercentualFreteComTabela: freteRealizadoComTabelaSelecionada && valorNFComTabelaSelecionada ? (((freteSelecionada / valorNFComTabelaSelecionada) / (freteRealizadoComTabelaSelecionada / valorNFComTabelaSelecionada)) - 1) * 100 : 0,
     percentualFreteRealizadoGanharia: valorNFGanhariaSelecionada ? (freteRealizadoGanhariaSelecionada / valorNFGanhariaSelecionada) * 100 : 0,
     percentualFreteTabelaGanharia: valorNFGanhariaSelecionada ? (freteSelecionadaGanhadora / valorNFGanhariaSelecionada) * 100 : 0,
     variacaoPercentualFreteGanharia: freteRealizadoGanhariaSelecionada && valorNFGanhariaSelecionada ? (((freteSelecionadaGanhadora / valorNFGanhariaSelecionada) / (freteRealizadoGanhariaSelecionada / valorNFGanhariaSelecionada)) - 1) * 100 : 0,
@@ -1751,7 +1757,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     rotas,
     porTransportadoraReal,
     pareto80Volume,
-    ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor).slice(0, 1000),
+    ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor),
     diagnostico: {
       linhasSemIbgeDestino: diagnostico.linhasSemIbgeDestino,
       linhasSemResultado: diagnostico.linhasSemResultado,
@@ -1933,7 +1939,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [ufDestinoRealizadoAberto, setUfDestinoRealizadoAberto] = useState(false);
   const [inicioRealizado, setInicioRealizado] = useState('');
   const [fimRealizado, setFimRealizado] = useState('');
-  const [limiteRealizado, setLimiteRealizado] = useState(10000);
+  const [limiteRealizado, setLimiteRealizado] = useState(200000);
   const [resultadoRealizado, setResultadoRealizado] = useState(null);
   const [filtroDetalhe, setFiltroDetalhe] = useState('');
   const [paginaDetalhe, setPaginaDetalhe] = useState(0);
@@ -2215,9 +2221,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
   );
 
   const transportadorasPorCanalRealizado = useMemo(() => {
-    const oficiais = filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalRealizado, opcoesOnline, transportadoras);
+    const oficiaisDoCanal = filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalRealizado, opcoesOnline, transportadoras);
 
-    return [...new Set([...(oficiais || []), ...nomesNegociacaoRealizado])]
+    // No Simulador do Realizado a transportadora selecionada pode ser:
+    // 1) tabela oficial já cadastrada; ou
+    // 2) tabela em negociação.
+    // Por isso não podemos esconder uma tabela oficial só porque o canal/origem ainda não
+    // foi reconhecido nas opções online. A simulação depois busca a tabela no Supabase e
+    // aplica os filtros informados.
+    return [...new Set([...(oficiaisDoCanal || []), ...(todasTransportadorasDisponiveis || []), ...nomesNegociacaoRealizado])]
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [todasTransportadorasDisponiveis, canalRealizado, opcoesOnline, transportadoras, nomesNegociacaoRealizado]);
@@ -4064,6 +4076,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <option value={10000}>10.000</option>
                 <option value={20000}>20.000</option>
                 <option value={50000}>50.000</option>
+                <option value={100000}>100.000</option>
+                <option value={200000}>200.000 / mês completo</option>
               </select>
             </label>
           </div>
@@ -4175,7 +4189,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
-            <strong>Regra:</strong> por padrão, o sistema simula somente CT-es vinculados ao Tracking, garantindo NF, volumes e cubagem rastreáveis. CPS LOG fica excluído por padrão em qualquer modo e só entra quando a opção "Incluir CPS LOG nesta análise" estiver marcada. No modo “Todos os CT-es”, a simulação considera também CT-es sem Tracking. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
+            <strong>Regra:</strong> por padrão, o sistema simula somente CT-es vinculados ao Tracking, garantindo NF, volumes e cubagem rastreáveis. CPS LOG fica excluído por padrão em qualquer modo e só entra quando a opção "Incluir CPS LOG nesta análise" estiver marcada. No modo “Todos os CT-es”, a simulação considera também CT-es sem Tracking. Tabelas oficiais cadastradas e tabelas em negociação ficam disponíveis separadamente na seleção. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.
           </div>
 
           {resultadoRealizado && (
@@ -4269,6 +4283,44 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   );
                 }
                 return null;
+              })()}
+
+              {(() => {
+                const resumoGanhas = calcularResumoGanhasNegociacao(resultadoRealizado);
+                const variacaoTodas = Number(resultadoRealizado.variacaoPercentualFreteComTabela || 0);
+                const variacaoGanhas = Number(resumoGanhas.variacaoPercentual || 0);
+                const corVariacaoTodas = variacaoTodas > 0 ? '#dc2626' : variacaoTodas < 0 ? '#15803d' : '#64748b';
+                const corVariacaoGanhas = variacaoGanhas > 0 ? '#dc2626' : variacaoGanhas < 0 ? '#15803d' : '#64748b';
+                return (
+                  <div className="sim-parametros-box" style={{ border: '1px solid #d8b4fe', background: '#fbf7ff' }}>
+                    <div className="sim-parametros-header">
+                      <div>
+                        <strong>📊 % frete — total coberto pela tabela × somente cargas ganhas</strong>
+                        <p>A primeira visão considera todos os CT-es em que a tabela tem preço. A segunda mostra apenas o que ela efetivamente carregaria por ganhar.</p>
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
+                      <div className="summary-card" style={{ alignItems: 'flex-start' }}>
+                        <span>Todos os CT-es com tabela</span>
+                        <strong>{resultadoRealizado.ctesComTabelaSelecionada.toLocaleString('pt-BR')} CT-es</strong>
+                        <small style={{ display: 'grid', gap: 3, marginTop: 6 }}>
+                          <span>Realizado: <strong>{formatPercent(resultadoRealizado.percentualFreteRealizadoComTabela)}</strong></span>
+                          <span>Tabela: <strong>{formatPercent(resultadoRealizado.percentualFreteSelecionadaComTabela)}</strong></span>
+                          <span style={{ color: corVariacaoTodas }}>Variação: <strong>{formatPercent(variacaoTodas)}</strong></span>
+                        </small>
+                      </div>
+                      <div className="summary-card" style={{ alignItems: 'flex-start' }}>
+                        <span>Somente CT-es que a tabela ganha</span>
+                        <strong>{resumoGanhas.ctesGanhas.toLocaleString('pt-BR')} CT-es</strong>
+                        <small style={{ display: 'grid', gap: 3, marginTop: 6 }}>
+                          <span>Realizado: <strong>{formatPercent(resumoGanhas.percentualRealizadoGanhas)}</strong></span>
+                          <span>Tabela: <strong>{formatPercent(resumoGanhas.percentualTabelaGanhas)}</strong></span>
+                          <span style={{ color: corVariacaoGanhas }}>Variação: <strong>{formatPercent(variacaoGanhas)}</strong></span>
+                        </small>
+                      </div>
+                    </div>
+                  </div>
+                );
               })()}
 
               {(() => {
@@ -4608,7 +4660,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div>
                     <strong>Análise Detalhada</strong>
                     <p>
-                      {(resultadoRealizado.ctesDetalhes || []).length} CT-es com detalhes de cálculo disponíveis.
+                      {(resultadoRealizado.ctesDetalhes || []).length.toLocaleString('pt-BR')} CT-es com detalhes de cálculo disponíveis. A lista não é mais limitada a 1.000; a paginação abaixo controla apenas a visualização.
                       Clique em qualquer linha para ver o cálculo completo.
                     </p>
                   </div>
@@ -4959,7 +5011,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Analisando..." : "Analisar cobertura"}</button></div>
           {resultadoCobertura && (
-            <div className="sim-cobertura-box"> 
+            <div className="sim-cobertura-box">
               <p>{resultadoCobertura.explicacao}</p>
               <div className="sim-resultado-grade" style={{ marginTop: 12 }}>
                 <div><span>Combinações possíveis</span><strong>{resultadoCobertura.totalCombinacoes}</strong></div>
