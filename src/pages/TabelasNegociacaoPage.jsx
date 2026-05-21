@@ -12,6 +12,7 @@ import {
   TIPOS_TABELA_NEGOCIACAO,
   DEFAULT_GENERALIDADES,
   alternarTabelaNegociacaoNaSimulacao,
+  abrirNovaRodadaTabelaNegociacao,
   aprovarTabelaNegociacao,
   atualizarTabelaNegociacao,
   criarTabelaNegociacao,
@@ -150,6 +151,10 @@ const FORM_VAZIO = {
   data_inicio_prevista: '', incluir_simulacao: false, observacao: '',
   saving_projetado: '', aderencia_projetada: '',
 };
+const NOVA_ORIGEM_VAZIA = {
+  origem: '', uf_origem: '', uf_destino: '', descricao: '', observacao: '',
+  copiar_generalidades: true, incluir_simulacao: true,
+};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -283,13 +288,13 @@ function BadgeImportacao({ tipo }) {
 function normalizarCabecalhoTaxa(value) {
   return String(value || '')
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, ' ')
     .trim();
 }
 
-function normalizarLinhaModeloTaxa(row) {
+function normalizarLinhaTaxaDestino(row) {
   var normalizado = {};
   Object.keys(row || {}).forEach(function(key) {
     normalizado[normalizarCabecalhoTaxa(key)] = row[key];
@@ -297,8 +302,8 @@ function normalizarLinhaModeloTaxa(row) {
   return normalizado;
 }
 
-function pegarCampoModeloTaxa(row, aliases) {
-  var normalizado = normalizarLinhaModeloTaxa(row);
+function pegarCampoTaxaDestino(row, aliases) {
+  var normalizado = normalizarLinhaTaxaDestino(row);
   for (var i = 0; i < aliases.length; i += 1) {
     var chave = normalizarCabecalhoTaxa(aliases[i]);
     if (normalizado[chave] !== undefined && normalizado[chave] !== null && String(normalizado[chave]).trim() !== '') {
@@ -308,34 +313,80 @@ function pegarCampoModeloTaxa(row, aliases) {
   return '';
 }
 
-function numeroModeloTaxa(value) {
+function parseNumero(value) {
   if (value === null || value === undefined || value === '') return '';
   if (typeof value === 'number') return Number.isFinite(value) ? value : '';
-  var texto = String(value).replace(/R\$/gi, '').replace(/%/g, '').trim();
+
+  var texto = String(value)
+    .replace(/R\$/gi, '')
+    .replace(/%/g, '')
+    .replace(/\s/g, '')
+    .trim();
+
   if (!texto) return '';
-  texto = texto.replace(/\s/g, '');
-  if (texto.includes(',') && texto.includes('.')) texto = texto.replace(/\./g, '').replace(',', '.');
-  else if (texto.includes(',')) texto = texto.replace(',', '.');
-  var n = Number(texto.replace(/[^0-9.-]/g, ''));
+
+  var negativo = /^-/.test(texto) || /^\(.*\)$/.test(texto);
+  texto = texto.replace(/[()]/g, '').replace(/^-/, '');
+
+  var temVirgula = texto.includes(',');
+  var temPonto = texto.includes('.');
+
+  if (temVirgula && temPonto) {
+    // Formato brasileiro comum: 1.234,56
+    texto = texto.replace(/\./g, '').replace(',', '.');
+  } else if (temVirgula) {
+    // Formato decimal brasileiro: 2,5
+    texto = texto.replace(',', '.');
+  } else if (temPonto) {
+    // Mantém decimal americano 2.5, mas trata 1.234 / 12.345 / 123.456 como milhar.
+    var partes = texto.split('.');
+    var pareceMilhar = partes.length > 1 && partes.slice(1).every(function(parte) { return parte.length === 3; }) && partes[0].length <= 3;
+    if (pareceMilhar) texto = texto.replace(/\./g, '');
+  }
+
+  var limpo = texto.replace(/[^0-9.]/g, '');
+  if (!limpo) return '';
+  var n = Number((negativo ? '-' : '') + limpo);
   return Number.isFinite(n) ? n : '';
 }
 
-function montarTaxaDestinoDoModelo(row) {
+function numeroPlanilha(value) {
+  return parseNumero(value);
+}
+
+// Compatibilidade com nomes usados no ajuste anterior.
+function normalizarLinhaModeloTaxa(row) { return normalizarLinhaTaxaDestino(row); }
+function pegarCampoModeloTaxa(row, aliases) { return pegarCampoTaxaDestino(row, aliases); }
+function numeroModeloTaxa(value) { return numeroPlanilha(value); }
+
+function normalizarLinhaTaxaDestinoNegociacao(row) {
+  var tde = numeroPlanilha(pegarCampoTaxaDestino(row, ['TDE (R$)', 'TDE', 'Taxa TDE']));
+  var trt = numeroPlanilha(pegarCampoTaxaDestino(row, ['TRT (R$)', 'TRT', 'Taxa TRT']));
+
   return {
-    ibge_destino: normalizarTexto(pegarCampoModeloTaxa(row, ['IBGE Destino', 'IBGE', 'Código IBGE', 'Codigo IBGE', 'Código IBGE Destino', 'Codigo IBGE Destino'])),
-    uf_destino: normalizarTexto(pegarCampoModeloTaxa(row, ['UF Destino', 'UF', 'Estado Destino', 'Estado'])).toUpperCase(),
-    cidade_destino: normalizarTexto(pegarCampoModeloTaxa(row, ['Cidade Destino', 'Cidade', 'Município Destino', 'Municipio Destino', 'Destino'])),
-    tda: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['TDA (R$)', 'TDA', 'Taxa TDA'])),
-    tdr: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['TDR (R$)', 'TDR', 'Taxa TDR'])),
-    trt: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['TRT (R$)', 'TRT', 'TDE (R$)', 'TDE', 'Taxa TRT', 'Taxa TDE'])),
-    suframa: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['SUFRAMA (R$)', 'SUFRAMA'])),
-    outras_taxas: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['Outras (R$)', 'Outras', 'Outras Taxas', 'Outras Taxas (R$)'])),
-    gris: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['GRIS %', 'GRIS', '% GRIS'])),
-    gris_minimo: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['GRIS mín (R$)', 'GRIS min (R$)', 'GRIS mínimo', 'GRIS minimo', 'GRIS Mínimo (R$)', 'GRIS Minimo (R$)'])),
-    advalorem: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['Ad Valorem %', 'ADV %', 'AdValorem %', 'Ad Valorem', 'ADV', '% NF', 'Ad Val'])),
-    advalorem_minimo: numeroModeloTaxa(pegarCampoModeloTaxa(row, ['Ad Val mín (R$)', 'Ad Val min (R$)', 'Ad Val mínimo', 'Ad Val minimo', 'Ad Valorem mín (R$)', 'Ad Valorem min (R$)', 'ADV mín (R$)', 'ADV min (R$)'])),
-    observacao: normalizarTexto(pegarCampoModeloTaxa(row, ['Observação', 'Observacao', 'Obs'])),
+    ibge_destino: normalizarTexto(pegarCampoTaxaDestino(row, ['IBGE Destino', 'IBGE', 'Código IBGE', 'Codigo IBGE', 'Código IBGE Destino', 'Codigo IBGE Destino'])),
+    uf_destino: normalizarTexto(pegarCampoTaxaDestino(row, ['UF Destino', 'UF', 'Estado Destino', 'Estado'])).toUpperCase(),
+    cidade_destino: normalizarTexto(pegarCampoTaxaDestino(row, ['Cidade Destino', 'Cidade', 'Município Destino', 'Municipio Destino', 'Destino'])),
+    tda: numeroPlanilha(pegarCampoTaxaDestino(row, ['TDA (R$)', 'TDA', 'Taxa TDA'])),
+    tdr: numeroPlanilha(pegarCampoTaxaDestino(row, ['TDR (R$)', 'TDR', 'Taxa TDR'])),
+    // A tabela do Supabase usa o campo trt. Quando o modelo vier com TDE, salvamos no mesmo campo para entrar no cálculo de taxa por destino.
+    trt: trt !== '' ? trt : tde,
+    suframa: numeroPlanilha(pegarCampoTaxaDestino(row, ['SUFRAMA (R$)', 'SUFRAMA'])),
+    outras_taxas: numeroPlanilha(pegarCampoTaxaDestino(row, ['Outras (R$)', 'Outras', 'Outras Taxas', 'Outras Taxas (R$)'])),
+    gris: numeroPlanilha(pegarCampoTaxaDestino(row, ['GRIS %', 'GRIS', '% GRIS', 'GRIS (%)'])),
+    gris_minimo: numeroPlanilha(pegarCampoTaxaDestino(row, ['GRIS mín (R$)', 'GRIS min (R$)', 'GRIS mínimo', 'GRIS minimo', 'GRIS Mínimo (R$)', 'GRIS Minimo (R$)', 'GRIS Minimo'])),
+    advalorem: numeroPlanilha(pegarCampoTaxaDestino(row, ['Ad Valorem %', 'ADV %', 'AdValorem %', 'Ad Valorem', 'ADV', '% NF', 'Ad Val', 'Ad Val (%)'])),
+    advalorem_minimo: numeroPlanilha(pegarCampoTaxaDestino(row, ['Ad Val mín (R$)', 'Ad Val min (R$)', 'Ad Val mínimo', 'Ad Val minimo', 'Ad Valorem mín (R$)', 'Ad Valorem min (R$)', 'ADV mín (R$)', 'ADV min (R$)', 'Ad Val Minimo'])),
+    observacao: normalizarTexto(pegarCampoTaxaDestino(row, ['Observação', 'Observacao', 'Obs'])),
   };
+}
+
+function normalizarLinhaTaxaDestinoValida(taxa) {
+  return taxa.ibge_destino || taxa.cidade_destino || taxa.uf_destino;
+}
+
+function montarTaxaDestinoDoModelo(row) {
+  return normalizarLinhaTaxaDestinoNegociacao(row);
 }
 
 function baixarModeloTaxasDestinoNegociacao() {
@@ -377,6 +428,19 @@ function baixarModeloTaxasDestinoNegociacao() {
   var wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Taxas por Destino');
   XLSX.writeFile(wb, 'modelo_taxas_por_destino_negociacao.xlsx');
+}
+
+async function importarModeloTaxasDestinoNegociacao(file) {
+  if (!file) return [];
+  var buffer = await file.arrayBuffer();
+  var wb = XLSX.read(buffer, { type: 'array' });
+  var sheetName = wb.SheetNames && wb.SheetNames[0];
+  if (!sheetName) throw new Error('Arquivo sem abas válidas.');
+  var sheet = wb.Sheets[sheetName];
+  var rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  return rows
+    .map(normalizarLinhaTaxaDestinoNegociacao)
+    .filter(normalizarLinhaTaxaDestinoValida);
 }
 
 // ─── componente principal ─────────────────────────────────────────────────────
@@ -423,6 +487,22 @@ export default function TabelasNegociacaoPage() {
   const [aprovacao, setAprovacao] = useState({
     data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, justificativa_aprovacao: '',
   });
+  const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
+  const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
+  const [abrindoRodada, setAbrindoRodada] = useState(false);
+
+  const negociacoesMesmaTransportadora = useMemo(function() {
+    if (!selecionada) return [];
+    var nomeBase = normalizarTexto(selecionada.transportadora).toUpperCase();
+    if (!nomeBase) return [];
+    return tabelas
+      .filter(function(t) { return normalizarTexto(t.transportadora).toUpperCase() === nomeBase; })
+      .sort(function(a, b) {
+        var origemA = (normalizarTexto(a.origem) + '/' + normalizarTexto(a.uf_origem)).toUpperCase();
+        var origemB = (normalizarTexto(b.origem) + '/' + normalizarTexto(b.uf_origem)).toUpperCase();
+        return origemA.localeCompare(origemB, 'pt-BR') || getRodadaAtualTabela(b) - getRodadaAtualTabela(a);
+      });
+  }, [tabelas, selecionada]);
 
   const resumo = useMemo(() => ({
     total: tabelas.length,
@@ -716,22 +796,10 @@ export default function TabelasNegociacaoPage() {
 
     setSalvandoTaxa(true); setErro(''); setSucesso('');
     try {
-      var buffer = await file.arrayBuffer();
-      var wb = XLSX.read(buffer, { type: 'array' });
-      var sheetName = wb.SheetNames[0];
-      var sheet = wb.Sheets[sheetName];
-      var rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      var novas = rows
-        .map(montarTaxaDestinoDoModelo)
-        .filter(function(taxa) {
-          return taxa.ibge_destino || taxa.cidade_destino || taxa.uf_destino;
-        });
-
+      var novas = await importarModeloTaxasDestinoNegociacao(file);
       if (!novas.length) throw new Error('Nenhuma taxa válida encontrada no arquivo. Verifique o modelo.');
 
-      var mensagem = taxasDestino.length
-        ? 'Importar ' + novas.length + ' taxa(s) e substituir as ' + taxasDestino.length + ' taxa(s) atuais desta negociação?'
-        : 'Importar ' + novas.length + ' taxa(s) para esta negociação?';
+      var mensagem = 'Isso substituirá as taxas por destino atuais desta negociação. Deseja continuar?';
       if (!window.confirm(mensagem)) return;
 
       var salvas = await substituirTaxasDestino(selecionada.id, novas);
@@ -742,6 +810,76 @@ export default function TabelasNegociacaoPage() {
     } finally {
       setSalvandoTaxa(false);
     }
+  }
+
+  function abrirModalNovaOrigem(tabela) {
+    if (!tabela) return;
+    setModalNovaOrigem(tabela);
+    setNovaOrigem(Object.assign({}, NOVA_ORIGEM_VAZIA, {
+      uf_origem: tabela.uf_origem || '',
+      uf_destino: tabela.uf_destino || '',
+      descricao: tabela.descricao ? 'Nova origem - ' + tabela.descricao : '',
+      observacao: 'Origem criada a partir da negociação ' + (tabela.transportadora || ''),
+      copiar_generalidades: true,
+      incluir_simulacao: true,
+    }));
+  }
+
+  async function confirmarNovaOrigem() {
+    if (!modalNovaOrigem) return;
+    var origem = normalizarTexto(novaOrigem.origem);
+    var ufOrigem = normalizarTexto(novaOrigem.uf_origem).toUpperCase();
+    if (!origem && !ufOrigem) return setErro('Informe a cidade ou UF da nova origem.');
+
+    setSalvando(true); setErro(''); setSucesso('');
+    try {
+      var payload = {
+        transportadora: modalNovaOrigem.transportadora,
+        canal: modalNovaOrigem.canal || 'ATACADO',
+        tipo_tabela: modalNovaOrigem.tipo_tabela || 'FRACIONADO',
+        status: 'EM NEGOCIAÇÃO',
+        descricao: novaOrigem.descricao || modalNovaOrigem.descricao || '',
+        regiao: modalNovaOrigem.regiao || '',
+        origem: origem,
+        uf_origem: ufOrigem,
+        uf_destino: novaOrigem.uf_destino || modalNovaOrigem.uf_destino || '',
+        data_recebimento: hojeISO(),
+        data_inicio_prevista: modalNovaOrigem.data_inicio_prevista || '',
+        incluir_simulacao: Boolean(novaOrigem.incluir_simulacao),
+        observacao: novaOrigem.observacao || '',
+        origem_importacao: modalNovaOrigem.origem_importacao || '',
+        generalidades: novaOrigem.copiar_generalidades
+          ? Object.assign({}, DEFAULT_GENERALIDADES, modalNovaOrigem.generalidades || generalidades || {})
+          : Object.assign({}, DEFAULT_GENERALIDADES),
+      };
+      var criada = await criarTabelaNegociacao(payload);
+      setTabelas(function(p) { return [criada].concat((p || []).filter(function(i) { return i.id !== criada.id; })); });
+      setModalNovaOrigem(null);
+      await abrirTabela(criada);
+      setSucesso('Nova origem criada para ' + criada.transportadora + '. Importe a tabela desta origem na aba Importação.');
+    } catch (e) { setErro(e.message || 'Erro ao criar nova origem.'); }
+    finally { setSalvando(false); }
+  }
+
+  async function handleAbrirNovaRodada() {
+    if (!selecionada) return;
+    var rodadaAtual = getRodadaAtualTabela(selecionada);
+    var proximaRodada = rodadaAtual + 1;
+    var origem = origemTabelaLabel(selecionada);
+    var ok = window.confirm('Abrir a ' + proximaRodada + 'ª rodada para ' + selecionada.transportadora + (origem && origem !== '-' ? ' · ' + origem : '') + '?\n\nA análise da rodada atual será mantida no histórico e a nova rodada ficará liberada para importação.');
+    if (!ok) return;
+
+    setAbrindoRodada(true); setErro(''); setSucesso('');
+    try {
+      var at = await abrirNovaRodadaTabelaNegociacao(selecionada.id, {
+        observacao: 'Nova rodada aberta manualmente na tela de negociação',
+      });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      await abrirTabela(at);
+      setAbaNegoc('importacao');
+      setSucesso(proximaRodada + 'ª rodada aberta. Agora importe a nova proposta desta origem.');
+    } catch (e) { setErro(e.message || 'Erro ao abrir nova rodada.'); }
+    finally { setAbrindoRodada(false); }
   }
 
   function abrirModalAprovacao(tabela) {
@@ -1003,7 +1141,11 @@ export default function TabelasNegociacaoPage() {
               <p>{selecionada.tipo_tabela} · {selecionada.canal} · {selecionada.status} · Rodada {getRodadaAtualTabela(selecionada)}ª</p>
               <p style={{ marginTop: 4, color: '#475569' }}>{origemTabelaLabel(selecionada)}{selecionada.descricao ? ' · ' + selecionada.descricao : ''}</p>
             </div>
-            <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada); }}>Recarregar</button>
+            <div className="sim-actions" style={{ justifyContent: 'flex-end' }}>
+              <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
+              <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo...' : '+ Nova rodada'}</button>
+              <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada); }}>Recarregar</button>
+            </div>
           </div>
 
           {selecionada ? (function() {
@@ -1023,6 +1165,33 @@ export default function TabelasNegociacaoPage() {
               </div>
             );
           })() : null}
+
+          {negociacoesMesmaTransportadora.length > 1 ? (
+            <div className="sim-alert info" style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div>
+                  <strong>Origens desta transportadora na negociação:</strong>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {negociacoesMesmaTransportadora.map(function(t) {
+                      var ativo = selecionada && selecionada.id === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className="sim-tab"
+                          onClick={function() { abrirTabela(t); }}
+                          style={ativo ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
+                        >
+                          {origemTabelaLabel(t)} · R{getRodadaAtualTabela(t)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(selecionada); }}>+ Adicionar outra origem</button>
+              </div>
+            </div>
+          ) : null}
 
           {/* abas */}
           <div style={{ display: 'flex', gap: 0, flexWrap: 'wrap', marginBottom: 20, borderBottom: '2px solid #e2e8f0' }}>
@@ -1497,6 +1666,12 @@ export default function TabelasNegociacaoPage() {
                   Rotas e fretes da mesma proposta ficam na mesma rodada. Uma nova rodada deve ser aberta somente quando chegar uma nova proposta/tabela do transportador; os resultados salvos continuam guardados para comparação.
                 </div>
 
+                <div className="sim-actions" style={{ marginBottom: 14 }}>
+                  <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo rodada...' : '+ Abrir próxima rodada'}</button>
+                  <button className="sim-tab" type="button" onClick={function() { setAbaNegoc('importacao'); }}>Ir para importação</button>
+                  <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
+                </div>
+
                 {simulacoes.length > 1 ? (
                   <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', marginBottom: 14 }}>
                     {simulacoes.slice(0, 4).map(function(rodada) {
@@ -1556,6 +1731,58 @@ export default function TabelasNegociacaoPage() {
           })() : null}
 
         </section>
+      ) : null}
+
+      {/* MODAL NOVA ORIGEM */}
+      {modalNovaOrigem ? (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 9999, display: 'grid', placeItems: 'center', padding: 20 }}>
+          <div className="sim-card" style={{ width: 'min(760px,100%)', maxHeight: '90vh', overflow: 'auto' }}>
+            <h2>Adicionar origem na negociação</h2>
+            <p>
+              Transportadora: <strong>{modalNovaOrigem.transportadora}</strong>. A nova origem será criada como uma negociação separada da mesma transportadora, mantendo o histórico por origem e rodada.
+            </p>
+            <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
+              <label>Origem
+                <input value={novaOrigem.origem} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { origem: e.target.value }); }); }} placeholder="Ex: Joinville" />
+              </label>
+              <label>UF origem
+                <select value={novaOrigem.uf_origem} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { uf_origem: e.target.value }); }); }}>
+                  {UF_OPTIONS.map(function(uf) { return <option key={uf} value={uf}>{uf || 'Selecione'}</option>; })}
+                </select>
+              </label>
+              <label>UF destino padrão
+                <select value={novaOrigem.uf_destino} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { uf_destino: e.target.value }); }); }}>
+                  {UF_OPTIONS.map(function(uf) { return <option key={uf} value={uf}>{uf || 'Todas'}</option>; })}
+                </select>
+              </label>
+            </div>
+            <div className="sim-form-grid sim-grid-2" style={{ marginTop: 12 }}>
+              <label>Descrição
+                <input value={novaOrigem.descricao} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { descricao: e.target.value }); }); }} placeholder="Ex: Brasil Web - Joinville/SC" />
+              </label>
+              <label>Observação
+                <input value={novaOrigem.observacao} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { observacao: e.target.value }); }); }} placeholder="Motivo da nova origem" />
+              </label>
+            </div>
+            <div className="sim-actions" style={{ marginTop: 12 }}>
+              <label className="sim-flag">
+                <input type="checkbox" checked={novaOrigem.copiar_generalidades} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { copiar_generalidades: e.target.checked }); }); }} />
+                Copiar generalidades da origem atual
+              </label>
+              <label className="sim-flag">
+                <input type="checkbox" checked={novaOrigem.incluir_simulacao} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { incluir_simulacao: e.target.checked }); }); }} />
+                Deixar marcada para simulação
+              </label>
+            </div>
+            <div className="sim-alert info" style={{ marginTop: 12 }}>
+              Depois de criar, a tela abrirá a nova origem na aba Importação para você subir a proposta da Rodada 1.
+            </div>
+            <div className="sim-actions" style={{ marginTop: 14 }}>
+              <button className="primary" type="button" onClick={confirmarNovaOrigem} disabled={salvando}>{salvando ? 'Criando...' : 'Criar origem'}</button>
+              <button className="sim-tab" type="button" onClick={function() { setModalNovaOrigem(null); }}>Cancelar</button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {/* MODAL APROVAÇÃO */}
