@@ -1804,6 +1804,12 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
   let valorNFGanhariaSelecionada = 0;
   let diferencaSelecionadaVsVencedor = 0;
   let reducaoNecessariaSoma = 0;
+  let ctesCapturadosDeOutras = 0;
+  let freteCapturadoRealizado = 0;
+  let freteCapturadoTabela = 0;
+  let valorNFCapturado = 0;
+  let pesoCapturado = 0;
+  let volumesCapturados = 0;
   const diagnostico = {
     linhasSemIbgeDestino: 0,
     linhasSemResultado: 0,
@@ -1850,6 +1856,12 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
         valorNF: 0,
         peso: 0,
         volumes: 0,
+        ctesCedidosSelecionada: 0,
+        freteCedidoSelecionada: 0,
+        freteTabelaCapturadoSelecionada: 0,
+        valorNFCedidoSelecionada: 0,
+        pesoCedidoSelecionada: 0,
+        volumesCedidosSelecionada: 0,
       });
     }
     const metricaReal = transportadorasMap.get(chaveTransportadoraReal);
@@ -1946,6 +1958,28 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       ctesSemTabelaSelecionada += 1;
     }
 
+    const selecionadaJaCarregava = transportadoraCompativelSimulador(row.transportadora || '', transportadoraSelecionada)
+      || normalizarTransportadoraSimulador(row.transportadora || '') === nomeSelecionadoNorm;
+    const capturouDaTransportadoraAtual = statusSelecionada === 'Ganharia'
+      && itemSelecionada
+      && freteSel > 0
+      && !selecionadaJaCarregava;
+
+    if (capturouDaTransportadoraAtual) {
+      metricaReal.ctesCedidosSelecionada += 1;
+      metricaReal.freteCedidoSelecionada += valorCte;
+      metricaReal.freteTabelaCapturadoSelecionada += freteSel;
+      metricaReal.valorNFCedidoSelecionada += nf;
+      metricaReal.pesoCedidoSelecionada += pesoLinha;
+      metricaReal.volumesCedidosSelecionada += vol;
+      ctesCapturadosDeOutras += 1;
+      freteCapturadoRealizado += valorCte;
+      freteCapturadoTabela += freteSel;
+      valorNFCapturado += nf;
+      pesoCapturado += pesoLinha;
+      volumesCapturados += vol;
+    }
+
     const origemResumo = origemUsada || origem;
     const chaveRota = [origemResumo, row.ufOrigem, row.cidadeDestino, row.ufDestino, getTipoVeiculo(row)].map(normalizarChaveSimulador).join('|');
     const rota = rotasMap.get(chaveRota) || criarResumoRotaRealizado(row, itemSelecionada, vencedor, resultado, economiaSelecionadaVsReal, reducaoNecessaria, diferencaVencedor);
@@ -2030,14 +2064,34 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     .map(finalizarResumoRotaRealizado)
     .sort((a, b) => b.oportunidade - a.oportunidade || b.ctes - a.ctes || b.freteRealizado - a.freteRealizado);
 
+  const freteProjetadoCenario = Math.max(freteRealizado - freteCapturadoRealizado + freteCapturadoTabela, 0);
   const porTransportadoraReal = [...transportadorasMap.values()]
-    .map((item) => ({
-      ...item,
-      pctCtes: ctesAnalisados ? (item.ctes / ctesAnalisados) * 100 : 0,
-      pctFrete: freteRealizado ? (item.frete / freteRealizado) * 100 : 0,
-      percentualFrete: item.valorNF ? (item.frete / item.valorNF) * 100 : 0,
-    }))
+    .map((item) => {
+      const ctesCedidosSelecionada = numeroRealizado(item.ctesCedidosSelecionada);
+      const freteCedidoSelecionada = numeroRealizado(item.freteCedidoSelecionada);
+      const freteTabelaCapturadoSelecionada = numeroRealizado(item.freteTabelaCapturadoSelecionada);
+      const novoFaturamentoProjetado = Math.max(numeroRealizado(item.frete) - freteCedidoSelecionada, 0);
+      return {
+        ...item,
+        ctesCedidosSelecionada,
+        freteCedidoSelecionada,
+        freteTabelaCapturadoSelecionada,
+        valorNFCedidoSelecionada: numeroRealizado(item.valorNFCedidoSelecionada),
+        pesoCedidoSelecionada: numeroRealizado(item.pesoCedidoSelecionada),
+        volumesCedidosSelecionada: numeroRealizado(item.volumesCedidosSelecionada),
+        novoFaturamentoProjetado,
+        reducaoFaturamentoPct: item.frete ? (freteCedidoSelecionada / item.frete) * 100 : 0,
+        reducaoCtesPct: item.ctes ? (ctesCedidosSelecionada / item.ctes) * 100 : 0,
+        pctCtes: ctesAnalisados ? (item.ctes / ctesAnalisados) * 100 : 0,
+        pctFrete: freteRealizado ? (item.frete / freteRealizado) * 100 : 0,
+        pctFreteProjetado: freteProjetadoCenario ? (novoFaturamentoProjetado / freteProjetadoCenario) * 100 : 0,
+        percentualFrete: item.valorNF ? (item.frete / item.valorNF) * 100 : 0,
+      };
+    })
     .sort((a, b) => b.frete - a.frete || b.ctes - a.ctes);
+
+  const impactoTransportadoras = [...porTransportadoraReal]
+    .sort((a, b) => b.freteCedidoSelecionada - a.freteCedidoSelecionada || b.ctesCedidosSelecionada - a.ctesCedidosSelecionada || b.frete - a.frete);
 
   const reducaoMediaNecessaria = ctesPerdidosSelecionada ? reducaoNecessariaSoma / ctesPerdidosSelecionada : 0;
   const aderenciaSelecionada = ctesComTabelaSelecionada ? (ctesGanhariaSelecionada / ctesComTabelaSelecionada) * 100 : 0;
@@ -2073,6 +2127,15 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     volumesDia: volumes / dias,
     freteRealizadoMes,
     freteRealizadoAno,
+    freteProjetadoCenario,
+    ctesCapturadosDeOutras,
+    freteCapturadoRealizado,
+    freteCapturadoTabela,
+    valorNFCapturado,
+    pesoCapturado,
+    volumesCapturados,
+    savingCapturado: Math.max(freteCapturadoRealizado - freteCapturadoTabela, 0),
+    reducaoFaturamentoTotalPct: freteRealizado ? (freteCapturadoRealizado / freteRealizado) * 100 : 0,
     faturamentoSelecionadaMes,
     faturamentoSelecionadaAno,
     savingSelecionadaVsReal,
@@ -2098,6 +2161,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     percentualSavingVencedor: freteRealizado ? (savingVencedorVsReal / freteRealizado) * 100 : 0,
     rotas,
     porTransportadoraReal,
+    impactoTransportadoras,
     pareto80Volume,
     ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor),
     diagnostico: {
@@ -4877,22 +4941,50 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     <span style={{ fontSize: '1.1rem', color: '#64748b' }}>{secaoAberta('transp-realizado') ? '▲' : '▼'}</span>
                   </div>
                   {secaoAberta('transp-realizado') && (
-                  <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
-                    <table className="sim-analise-tabela">
-                      <thead><tr><th>Transportadora</th><th>CT-es</th><th>Frete</th><th>% frete</th><th>% NF</th></tr></thead>
-                      <tbody>
-                        {(resultadoRealizado.porTransportadoraReal || []).slice(0, 20).map((item) => (
-                          <tr key={item.transportadora}>
-                            <td><strong>{item.transportadora}</strong></td>
-                            <td>{item.ctes}</td>
-                            <td>{formatMoney(item.frete)}</td>
-                            <td>{formatPercent(item.pctFrete)}</td>
-                            <td>{formatPercent(item.percentualFrete)}</td>
+                  <>
+                    <div className="summary-grid" style={{ marginTop: 12 }}>
+                      <div className="summary-card"><span>CT-es capturados</span><strong>{(resultadoRealizado.ctesCapturadosDeOutras || 0).toLocaleString('pt-BR')}</strong><small>volume que sai das atuais</small></div>
+                      <div className="summary-card"><span>Faturamento que baixa</span><strong>{formatMoney(resultadoRealizado.freteCapturadoRealizado || 0)}</strong><small>{formatPercent(resultadoRealizado.reducaoFaturamentoTotalPct || 0)} do realizado filtrado</small></div>
+                      <div className="summary-card"><span>Faturamento na tabela</span><strong>{formatMoney(resultadoRealizado.freteCapturadoTabela || 0)}</strong><small>valor absorvido pela selecionada</small></div>
+                      <div className="summary-card"><span>Saving capturado</span><strong>{formatMoney(resultadoRealizado.savingCapturado || 0)}</strong><small>diferença do realizado para tabela</small></div>
+                    </div>
+
+                    <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+                      <table className="sim-analise-tabela">
+                        <thead>
+                          <tr>
+                            <th>Transportadora atual</th>
+                            <th>CT-es atuais</th>
+                            <th>Frete atual</th>
+                            <th>% frete atual</th>
+                            <th>CT-es cedidos</th>
+                            <th>Frete que baixa</th>
+                            <th>% redução fat.</th>
+                            <th>Novo fat. proj.</th>
+                            <th>Nova % frete</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody>
+                          {(resultadoRealizado.impactoTransportadoras || resultadoRealizado.porTransportadoraReal || []).slice(0, 20).map((item) => (
+                            <tr key={item.transportadora}>
+                              <td><strong>{item.transportadora}</strong></td>
+                              <td>{Number(item.ctes || 0).toLocaleString('pt-BR')}</td>
+                              <td>{formatMoney(item.frete)}</td>
+                              <td>{formatPercent(item.pctFrete)}</td>
+                              <td style={{ color: item.ctesCedidosSelecionada ? '#dc2626' : '#64748b', fontWeight: item.ctesCedidosSelecionada ? 700 : 400 }}>{Number(item.ctesCedidosSelecionada || 0).toLocaleString('pt-BR')}</td>
+                              <td style={{ color: item.freteCedidoSelecionada ? '#dc2626' : '#64748b', fontWeight: item.freteCedidoSelecionada ? 700 : 400 }}>{formatMoney(item.freteCedidoSelecionada || 0)}</td>
+                              <td style={{ color: item.reducaoFaturamentoPct ? '#dc2626' : '#64748b', fontWeight: item.reducaoFaturamentoPct ? 700 : 400 }}>{formatPercent(item.reducaoFaturamentoPct || 0)}</td>
+                              <td>{formatMoney(item.novoFaturamentoProjetado ?? item.frete)}</td>
+                              <td>{formatPercent(item.pctFreteProjetado ?? item.pctFrete)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <small style={{ display: 'block', marginTop: 8, color: '#64748b' }}>
+                      CT-es cedidos considera somente cargas em que a tabela selecionada ganha da transportadora atual e fica abaixo do frete realizado. Quando a própria selecionada já carregava o CT-e, o volume é tratado como retenção, não como perda de outra transportadora.
+                    </small>
+                  </>
                   )}
                 </div>
 
