@@ -160,6 +160,131 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   }));
 }
 
+
+function criarChaveUnicaRealizadoSim(row = {}) {
+  const chaveCte = normalizarChaveLongaTracking(row.chaveCte || row.chave_cte || row.chave || '');
+  if (chaveCte) return `cte:${chaveCte}`;
+  const numeroCte = apenasDigitosTracking(row.numeroCte || row.numero_cte || row.cte || '');
+  const notaFiscal = apenasDigitosTracking(row.notaFiscal || row.nota_fiscal || row.nf || '');
+  const data = String(row.dataEmissao || row.data_emissao || '').slice(0, 10);
+  const origem = normalizarChaveSimulador(row.cidadeOrigem || row.cidade_origem || '');
+  const destino = normalizarChaveSimulador(row.cidadeDestino || row.cidade_destino || '');
+  if (numeroCte || notaFiscal) return `doc:${numeroCte}|${notaFiscal}|${data}|${origem}|${destino}`;
+  return `row:${data}|${origem}|${destino}|${Number(row.valorCte || row.valor_cte || 0)}|${Number(row.valorNF || row.valor_nf || 0)}`;
+}
+
+function normalizarOrigensFiltroRealizadoSim(origens = []) {
+  const lista = Array.isArray(origens)
+    ? origens
+    : String(origens || '').split(',');
+
+  const vistos = new Set();
+  const saida = [];
+  lista.forEach((origem) => {
+    const texto = String(origem || '').trim();
+    const chave = normalizarChaveSimulador(texto);
+    if (!texto || !chave || vistos.has(chave)) return;
+    vistos.add(chave);
+    saida.push(texto);
+  });
+  return saida;
+}
+
+async function buscarRealizadoLocalCtesExpandido(filtros = {}, onProgresso = null) {
+  const origens = normalizarOrigensFiltroRealizadoSim(filtros.origens);
+  const origemUnica = String(filtros.origem || '').trim();
+
+  if (origemUnica || origens.length <= 1) {
+    return buscarRealizadoLocalCtes({
+      ...filtros,
+      origem: origemUnica || origens[0] || '',
+    }, onProgresso);
+  }
+
+  const totalMax = Math.min(Number(filtros.limit) || 100000, 200000);
+  const todos = [];
+  const vistos = new Set();
+
+  for (const origem of origens) {
+    const restante = totalMax - todos.length;
+    if (restante <= 0) break;
+
+    const parcial = await buscarRealizadoLocalCtes({
+      ...filtros,
+      origem,
+      limit: restante,
+    }, (qtd) => {
+      if (onProgresso) onProgresso(todos.length + qtd);
+    });
+
+    (parcial || []).forEach((row) => {
+      const chave = criarChaveUnicaRealizadoSim(row);
+      if (vistos.has(chave)) return;
+      vistos.add(chave);
+      todos.push(row);
+    });
+
+    if (onProgresso) onProgresso(todos.length);
+  }
+
+  return todos.slice(0, totalMax);
+}
+
+function filtrarBasePorTransportadoraSimulador(base = [], nomeTransportadora = '') {
+  const nome = String(nomeTransportadora || '').trim();
+  const lista = Array.isArray(base) ? base : [];
+  if (!nome) return lista;
+
+  return lista.filter((item) => (
+    normalizarTransportadoraSimulador(item?.nome) === normalizarTransportadoraSimulador(nome) ||
+    transportadoraCompativelSimulador(item?.nome, nome)
+  ));
+}
+
+function extrairOrigensBaseSimulador(bases = [], canal = '') {
+  const vistos = new Set();
+  const saida = [];
+  (bases || []).flat().filter(Boolean).forEach((base) => {
+    (base.origens || [])
+      .filter((origem) => !canal || (origem.canal || 'ATACADO') === canal)
+      .forEach((origem) => {
+        const cidade = String(origem.cidade || '').trim();
+        const chave = normalizarChaveSimulador(cidade);
+        if (!cidade || !chave || vistos.has(chave)) return;
+        vistos.add(chave);
+        saida.push(cidade);
+      });
+  });
+  return saida.sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function extrairUfsDestinoBaseSimulador(bases = [], canal = '', origemFiltro = '') {
+  const ufs = new Set();
+  const origemNorm = normalizarChaveSimulador(origemFiltro);
+  let encontrouOrigem = false;
+
+  (bases || []).flat().filter(Boolean).forEach((base) => {
+    (base.origens || [])
+      .filter((origem) => !canal || (origem.canal || 'ATACADO') === canal)
+      .filter((origem) => {
+        if (!origemNorm) return true;
+        const ok = normalizarChaveSimulador(origem.cidade) === origemNorm;
+        if (ok) encontrouOrigem = true;
+        return ok;
+      })
+      .forEach((origem) => {
+        if (!origemNorm) encontrouOrigem = true;
+        (origem.rotas || []).forEach((rota) => {
+          const uf = String(rota.ufDestino || getUfByIbge(rota.ibgeDestino) || '').trim().toUpperCase();
+          if (uf) ufs.add(uf);
+        });
+      });
+  });
+
+  if (origemNorm && !encontrouOrigem) return [];
+  return [...ufs].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
 const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
 const GRADE_PADRAO = {
   B2C: [
@@ -1824,6 +1949,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
   const [baseRealizadoTracking, setBaseRealizadoTracking] = useState('com_tracking'); // 'com_tracking' | 'todos'
+  const [baseOficialRealizadoSelecionada, setBaseOficialRealizadoSelecionada] = useState([]);
+  const [carregandoBaseOficialRealizado, setCarregandoBaseOficialRealizado] = useState(false);
   const [opcoesAvancadasRealizadoAberto, setOpcoesAvancadasRealizadoAberto] = useState(false);
   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
@@ -2220,6 +2347,75 @@ export default function SimuladorPage({ transportadoras = [] }) {
     [transportadorasNegociacaoRealizado]
   );
 
+  const ehTabelaNegociacaoRealizadoSelecionada = useMemo(
+    () => nomesNegociacaoRealizado.includes(transportadoraRealizado),
+    [nomesNegociacaoRealizado, transportadoraRealizado]
+  );
+
+  const basesMalhaRealizadoSelecionada = useMemo(() => {
+    if (!transportadoraRealizado) return [];
+
+    const bases = [];
+
+    const negociacao = transportadorasNegociacaoRealizado.find((item) => item.nome === transportadoraRealizado);
+    if (negociacao) bases.push(negociacao);
+
+    const local = transportadoras.find((item) => (
+      normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(transportadoraRealizado) ||
+      transportadoraCompativelSimulador(item.nome, transportadoraRealizado)
+    ));
+    if (local) bases.push(local);
+
+    const oficiaisCarregadas = filtrarBasePorTransportadoraSimulador(baseOficialRealizadoSelecionada, transportadoraRealizado);
+    if (oficiaisCarregadas.length) bases.push(...oficiaisCarregadas);
+
+    return mesclarBasesTransportadorasSimulador(bases);
+  }, [transportadoraRealizado, transportadorasNegociacaoRealizado, transportadoras, baseOficialRealizadoSelecionada]);
+
+  const origensMalhaRealizadoDisponiveis = useMemo(
+    () => extrairOrigensBaseSimulador(basesMalhaRealizadoSelecionada, canalRealizado),
+    [basesMalhaRealizadoSelecionada, canalRealizado]
+  );
+
+  const ufsDestinoDaMalhaRealizado = useMemo(
+    () => extrairUfsDestinoBaseSimulador(basesMalhaRealizadoSelecionada, canalRealizado, origemRealizado),
+    [basesMalhaRealizadoSelecionada, canalRealizado, origemRealizado]
+  );
+
+  useEffect(() => {
+    let ativo = true;
+
+    async function carregarMalhaOficialRealizadoSelecionada() {
+      setBaseOficialRealizadoSelecionada([]);
+
+      if (!transportadoraRealizado || ehTabelaNegociacaoRealizadoSelecionada) {
+        setCarregandoBaseOficialRealizado(false);
+        return;
+      }
+
+      setCarregandoBaseOficialRealizado(true);
+      try {
+        const base = await executarComTimeout(buscarBaseSimulacaoDb({
+          nomeTransportadora: transportadoraRealizado,
+          canal: canalRealizado,
+        }), 120000);
+
+        if (!ativo) return;
+        setBaseOficialRealizadoSelecionada(filtrarBasePorTransportadoraSimulador(base || [], transportadoraRealizado));
+      } catch (error) {
+        if (ativo) {
+          console.warn('Não foi possível carregar a malha oficial da transportadora selecionada.', error?.message || error);
+          setBaseOficialRealizadoSelecionada([]);
+        }
+      } finally {
+        if (ativo) setCarregandoBaseOficialRealizado(false);
+      }
+    }
+
+    carregarMalhaOficialRealizadoSelecionada();
+    return () => { ativo = false; };
+  }, [transportadoraRealizado, canalRealizado, ehTabelaNegociacaoRealizadoSelecionada]);
+
   const transportadorasPorCanalRealizado = useMemo(() => {
     const oficiaisDoCanal = filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalRealizado, opcoesOnline, transportadoras);
 
@@ -2282,53 +2478,28 @@ export default function SimuladorPage({ transportadoras = [] }) {
   }, [opcoesOnline.origensPorCanal, canalOrigem, todasOrigens]);
 
   const origensRealizadoDisponiveis = useMemo(() => {
+    if (transportadoraRealizado && origensMalhaRealizadoDisponiveis.length) return origensMalhaRealizadoDisponiveis;
+
     const porTransportadora = opcoesOnline.origensPorTransportadora?.[transportadoraRealizado];
-    if (porTransportadora?.length) return porTransportadora;
+    if (transportadoraRealizado && porTransportadora?.length) return porTransportadora;
 
     const porCanal = opcoesOnline.origensPorCanal?.[canalRealizado];
     if (porCanal?.length) return porCanal;
 
-    const selecionada = transportadoras.find((item) => item.nome === transportadoraRealizado);
-    if (selecionada) {
-      return [...new Set((selecionada.origens || [])
-        .filter((origem) => !canalRealizado || (origem.canal || 'ATACADO') === canalRealizado)
-        .map((origem) => origem.cidade)
-        .filter(Boolean))]
-        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    }
-
     return todasOrigens;
-  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraRealizado, canalRealizado, transportadoras, todasOrigens]);
+  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraRealizado, canalRealizado, todasOrigens, origensMalhaRealizadoDisponiveis]);
 
 
   const ufsDestinoRealizadoDisponiveis = useMemo(() => {
     if (!transportadoraRealizado) return UF_OPTIONS;
+    if (ufsDestinoDaMalhaRealizado.length) return ['', ...ufsDestinoDaMalhaRealizado];
 
-    const bases = [];
-    const negociacao = transportadorasNegociacaoRealizado.find((item) => item.nome === transportadoraRealizado);
-    if (negociacao) bases.push(negociacao);
+    // Se o usuário digitou uma origem que não faz parte da malha da tabela selecionada,
+    // liberamos todas as UFs para permitir simular essa origem manualmente.
+    if (origemRealizado && basesMalhaRealizadoSelecionada.length) return UF_OPTIONS;
 
-    const oficial = transportadoras.find((item) => item.nome === transportadoraRealizado);
-    if (oficial) bases.push(oficial);
-
-    if (!bases.length) return UF_OPTIONS;
-
-    const ufs = new Set();
-    bases.forEach((base) => {
-      (base.origens || [])
-        .filter((origem) => !canalRealizado || (origem.canal || 'ATACADO') === canalRealizado)
-        .filter((origem) => !origemRealizado || normalizarChaveSimulador(origem.cidade) === normalizarChaveSimulador(origemRealizado))
-        .forEach((origem) => {
-          (origem.rotas || []).forEach((rota) => {
-            const uf = String(rota.ufDestino || getUfByIbge(rota.ibgeDestino) || '').toUpperCase();
-            if (uf) ufs.add(uf);
-          });
-        });
-    });
-
-    const lista = [...ufs].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    return lista.length ? ['', ...lista] : UF_OPTIONS;
-  }, [transportadoraRealizado, transportadorasNegociacaoRealizado, transportadoras, canalRealizado, origemRealizado]);
+    return UF_OPTIONS;
+  }, [transportadoraRealizado, ufsDestinoDaMalhaRealizado, origemRealizado, basesMalhaRealizadoSelecionada]);
 
   const ufsDestinoFiltroRealizado = useMemo(() => {
     const disponiveis = new Set((ufsDestinoRealizadoDisponiveis || []).filter(Boolean));
@@ -2697,11 +2868,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
-    if (!inicioRealizado && !fimRealizado && !origemRealizado && !ufsDestinoFiltroRealizado.length && modoRealizado !== 'malha') {
-      setErroSimulacao('Informe pelo menos período, origem ou UF destino para evitar uma busca muito ampla no realizado.');
-      return;
-    }
-
     setFiltroDetalhe('');
     setPaginaDetalhe(0);
     setLinhasExpandidas(new Set());
@@ -2717,13 +2883,48 @@ export default function SimuladorPage({ transportadoras = [] }) {
           || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase())
           || transportadoraRealizado;
 
+      atualizarProcessamentoUi('Buscando malha da transportadora/tabela selecionada...', 18);
+      let baseSelecionada = [];
+
+      if (ehNegociacaoSelecionada) {
+        baseSelecionada = transportadorasNegociacaoRealizado.filter((item) =>
+          normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(nomeTabelaSelecionada)
+          || transportadoraCompativelSimulador(item.nome, nomeTabelaSelecionada)
+        );
+      } else {
+        const baseJaCarregada = basesMalhaRealizadoSelecionada.length
+          ? filtrarBasePorTransportadoraSimulador(basesMalhaRealizadoSelecionada, transportadoraRealizado)
+          : [];
+
+        const precisaBuscarMalha = !baseJaCarregada.length || origemRealizado || ufsDestinoFiltroRealizado.length;
+        if (precisaBuscarMalha) {
+          const baseOficial = await carregarBaseOnlinePorUfDestino({
+            nomeTransportadora: nomeTabelaSelecionada,
+            canal: canalRealizado,
+            origem: origemRealizado || '',
+            ufDestino: ufsDestinoFiltroRealizado,
+          });
+          baseSelecionada = filtrarBasePorTransportadoraSimulador(baseOficial, nomeTabelaSelecionada);
+        }
+
+        if (!baseSelecionada.length && baseJaCarregada.length) baseSelecionada = baseJaCarregada;
+      }
+
+      const origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
+      const ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
+      const origensFiltroEfetivo = origemRealizado ? [] : origensTabelaSelecionada;
+      const ufsDestinoEfetivasRealizado = ufsDestinoFiltroRealizado.length
+        ? ufsDestinoFiltroRealizado
+        : ufsDestinoTabelaSelecionada;
+
       atualizarProcessamentoUi('Buscando CT-es realizados — página 1...', 24);
-      const rowsBrutos = await buscarRealizadoLocalCtes({
+      const rowsBrutos = await buscarRealizadoLocalCtesExpandido({
         canal: canalRealizado,
         origem: origemRealizado,
+        origens: origensFiltroEfetivo,
         destino: destinoRealizado,
         ufOrigem: ufOrigemRealizado,
-        ufDestino: ufsDestinoFiltroRealizado,
+        ufDestino: ufsDestinoEfetivasRealizado,
         inicio: inicioRealizado,
         fim: fimRealizado,
         limit: limiteRealizado,
@@ -2768,18 +2969,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         return;
       }
 
-      atualizarProcessamentoUi('Buscando malha da transportadora/tabela selecionada...', 46);
-      const baseSelecionada = ehNegociacaoSelecionada
-        ? transportadorasNegociacaoRealizado.filter((item) =>
-            normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(nomeTabelaSelecionada)
-            || transportadoraCompativelSimulador(item.nome, nomeTabelaSelecionada)
-          )
-        : await carregarBaseOnlinePorUfDestino({
-            nomeTransportadora: nomeTabelaSelecionada,
-            canal: canalRealizado,
-            origem: modoRealizado === 'filtros' ? origemRealizado : '',
-            ufDestino: ufsDestinoFiltroRealizado,
-          });
+      atualizarProcessamentoUi('Aplicando malha da transportadora/tabela selecionada...', 46);
 
       const origensMalha = new Set(
         baseSelecionada
@@ -2789,7 +2979,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       // Diagnóstico de normalização da malha
       const origemMalhaNaoReconhecida = new Set();
-      const rowsFiltrados = modoRealizado === 'malha' && origensMalha.size
+      const aplicarFiltroOrigemMalha = modoRealizado === 'malha' && !origemRealizado && origensMalha.size;
+      const rowsFiltrados = aplicarFiltroOrigemMalha
         ? rowsComIbge.filter((row) => {
             const origemNorm = normalizarChaveSimulador(row.cidadeOrigem);
             const ok = origensMalha.has(origemNorm);
@@ -2835,7 +3026,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           const baseOrigem = await carregarBaseOnlinePorUfDestino({
             canal: canalRealizado,
             origem: origemBusca,
-            ufDestino: ufsDestinoFiltroRealizado,
+            ufDestino: ufsDestinoEfetivasRealizado,
           });
           if (Array.isArray(baseOrigem) && baseOrigem.length) {
             basesOrigemCarregadas += baseOrigem.length;
@@ -2859,7 +3050,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             origem: origemRealizado,
             destino: destinoRealizado,
             ufOrigem: ufOrigemRealizado,
-            ufDestino: ufsDestinoFiltroRealizado,
+            ufDestino: ufsDestinoEfetivasRealizado,
             inicio: inicioRealizado,
             fim: fimRealizado,
             modo: modoRealizado,
@@ -2886,7 +3077,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origem: origemRealizado,
           destino: destinoRealizado,
           ufOrigem: ufOrigemRealizado,
-          ufDestino: ufsDestinoFiltroRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          ufDestinoSelecionado: ufsDestinoFiltroRealizado,
+          ufDestinoPadraoTabela: ufsDestinoFiltroRealizado.length ? [] : ufsDestinoEfetivasRealizado,
+          origensPadraoTabela: origemRealizado ? [] : origensFiltroEfetivo,
           inicio: inicioRealizado,
           fim: fimRealizado,
           modo: modoRealizado,
@@ -2906,7 +3100,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origem: origemRealizado,
           destino: destinoRealizado,
           ufOrigem: ufOrigemRealizado,
-          ufDestino: ufsDestinoFiltroRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          ufDestinoSelecionado: ufsDestinoFiltroRealizado,
+          ufDestinoPadraoTabela: ufsDestinoFiltroRealizado.length ? [] : ufsDestinoEfetivasRealizado,
+          origensPadraoTabela: origemRealizado ? [] : origensFiltroEfetivo,
           inicio: inicioRealizado,
           fim: fimRealizado,
           limite: limiteRealizado,
@@ -3921,6 +4118,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <option value="">Selecione</option>
                 {transportadorasPorCanalRealizado.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
               </select>
+              {carregandoBaseOficialRealizado && (
+                <small style={{ color: '#64748b' }}>Carregando origens e UFs atendidas pela tabela...</small>
+              )}
             </label>
             <label>
               Canal
