@@ -58,7 +58,7 @@ const CTE_SUPABASE_COLUMNS = [
   'id', 'competencia', 'data_emissao', 'chave_cte', 'numero_cte', 'transportadora',
   'cidade_origem', 'uf_origem', 'ibge_origem', 'cidade_destino', 'uf_destino', 'ibge_destino',
   'peso', 'peso_declarado', 'peso_cubado', 'cubagem', 'valor_nf', 'valor_cte',
-  'qtd_volumes', 'canal', 'chave_rota_ibge', 'raw'
+  'qtd_volumes', 'canal', 'chave_rota_ibge'
 ].join(',');
 
 function postProgress(payload = {}) {
