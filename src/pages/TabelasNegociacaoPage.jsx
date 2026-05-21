@@ -861,25 +861,30 @@ export default function TabelasNegociacaoPage() {
     finally { setSalvando(false); }
   }
 
-  async function handleAbrirNovaRodada() {
-    if (!selecionada) return;
-    var rodadaAtual = getRodadaAtualTabela(selecionada);
+  async function handleAbrirNovaRodadaTabela(tabelaBase) {
+    var tabela = tabelaBase || selecionada;
+    if (!tabela) return;
+    var rodadaAtual = getRodadaAtualTabela(tabela);
     var proximaRodada = rodadaAtual + 1;
-    var origem = origemTabelaLabel(selecionada);
-    var ok = window.confirm('Abrir a ' + proximaRodada + 'ª rodada para ' + selecionada.transportadora + (origem && origem !== '-' ? ' · ' + origem : '') + '?\n\nA análise da rodada atual será mantida no histórico e a nova rodada ficará liberada para importação.');
+    var origem = origemTabelaLabel(tabela);
+    var ok = window.confirm('Abrir a ' + proximaRodada + 'ª rodada para ' + tabela.transportadora + (origem && origem !== '-' ? ' · ' + origem : '') + '?\n\nA análise da rodada atual será mantida no histórico e a nova rodada ficará liberada para importação.');
     if (!ok) return;
 
     setAbrindoRodada(true); setErro(''); setSucesso('');
     try {
-      var at = await abrirNovaRodadaTabelaNegociacao(selecionada.id, {
+      var at = await abrirNovaRodadaTabelaNegociacao(tabela.id, {
         observacao: 'Nova rodada aberta manualmente na tela de negociação',
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       await abrirTabela(at);
       setAbaNegoc('importacao');
-      setSucesso(proximaRodada + 'ª rodada aberta. Agora importe a nova proposta desta origem.');
+      setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Agora importe a nova proposta desta origem.');
     } catch (e) { setErro(e.message || 'Erro ao abrir nova rodada.'); }
     finally { setAbrindoRodada(false); }
+  }
+
+  async function handleAbrirNovaRodada() {
+    return handleAbrirNovaRodadaTabela(selecionada);
   }
 
   function abrirModalAprovacao(tabela) {
@@ -1113,6 +1118,8 @@ export default function TabelasNegociacaoPage() {
                     <td>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
+                        <button className="primary" type="button" onClick={function() { handleAbrirNovaRodadaTabela(tabela); }} disabled={abrindoRodada}>+ Rodada</button>
+                        <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(tabela); }}>+ Origem</button>
                         <select value={tabela.status} onChange={function(e) { atualizarStatus(tabela, e.target.value); }}>
                           {STATUS_TABELA_NEGOCIACAO.map(function(s) { return <option key={s}>{s}</option>; })}
                         </select>
@@ -1166,7 +1173,7 @@ export default function TabelasNegociacaoPage() {
             );
           })() : null}
 
-          {negociacoesMesmaTransportadora.length > 1 ? (
+          {selecionada ? (
             <div className="sim-alert info" style={{ marginBottom: 18 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                 <div>
