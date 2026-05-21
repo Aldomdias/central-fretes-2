@@ -4959,7 +4959,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Analisando..." : "Analisar cobertura"}</button></div>
           {resultadoCobertura && (
-            <div className="sim-cobertura-box">
+            <div className="sim-cobertura-box"> 
               <p>{resultadoCobertura.explicacao}</p>
               <div className="sim-resultado-grade" style={{ marginTop: 12 }}>
                 <div><span>Combinações possíveis</span><strong>{resultadoCobertura.totalCombinacoes}</strong></div>
