@@ -40,7 +40,7 @@ const UF_POR_CENTRO_EXPEDICAO = {
 
 const CHUNK_SIZE = 5000;
 const DETALHE_SHEET_LIMIT = 100000;
-const SUPABASE_PAGE_SIZE = 1000;
+const SUPABASE_PAGE_SIZE = 300;
 const SUPABASE_EXPORT_LIMIT_DEFAULT = 1000000;
 const TABELA_TRACKING_SUPABASE = 'tracking_rows';
 const TABELA_CTES_SUPABASE = 'realizado_local_ctes';
@@ -960,17 +960,93 @@ function aplicarFiltrosBaseVolumetria(rows = [], filtros = {}) {
   });
 }
 
-function criarQueryTrackingSupabase(supabase, filtros = {}) {
-  let query = supabase
-    .from(TABELA_TRACKING_SUPABASE)
-    .select(TRACKING_SUPABASE_COLUMNS, { count: 'exact' })
-    .order('data', { ascending: false, nullsFirst: false })
-    .order('id', { ascending: false });
+function toIsoDateOnly(value) {
+  const texto = String(value || '').slice(0, 10);
+  return /^20\d{2}-\d{2}-\d{2}$/.test(texto) ? texto : '';
+}
 
-  if (filtros.inicio) query = query.gte('data', filtros.inicio);
-  if (filtros.fim) query = query.lte('data', filtros.fim);
-  if (filtros.origem) query = query.ilike('cidade_origem', `%${String(filtros.origem).trim()}%`);
+function addDaysIso(dateIso, days) {
+  const data = new Date(`${dateIso}T00:00:00`);
+  data.setDate(data.getDate() + days);
+  return data.toISOString().slice(0, 10);
+}
+
+function criarJanelasPeriodo(inicio, fim, diasPorJanela = 15) {
+  const start = toIsoDateOnly(inicio);
+  const end = toIsoDateOnly(fim);
+  if (!start || !end || start > end) return [{ inicio: start || '', fim: end || '' }];
+
+  const janelas = [];
+  let atual = start;
+  while (atual <= end) {
+    const proximoFim = addDaysIso(atual, diasPorJanela - 1);
+    const fimJanela = proximoFim > end ? end : proximoFim;
+    janelas.push({ inicio: atual, fim: fimJanela });
+    atual = addDaysIso(fimJanela, 1);
+  }
+  return janelas;
+}
+
+function aplicarFiltrosSqlBasicos(query, filtros = {}, colunaData = 'data') {
+  if (filtros.inicio) query = query.gte(colunaData, filtros.inicio);
+  if (filtros.fim) query = query.lte(colunaData, filtros.fim);
+  if (filtros.canal) query = query.eq('canal', String(filtros.canal || '').toUpperCase());
+  if (filtros.ufOrigem) query = query.eq('uf_origem', cleanUf(filtros.ufOrigem));
+  if (filtros.ufDestino) query = query.eq('uf_destino', cleanUf(filtros.ufDestino));
+  // Não filtramos cidade_origem com ILIKE no SQL porque isso causou timeout em períodos grandes.
+  // A origem continua sendo filtrada em memória após páginas menores por data/UF/canal.
   return query;
+}
+
+function criarQueryTrackingSupabase(supabase, filtros = {}) {
+  return aplicarFiltrosSqlBasicos(
+    supabase.from(TABELA_TRACKING_SUPABASE).select(TRACKING_SUPABASE_COLUMNS),
+    filtros,
+    'data'
+  );
+}
+
+async function buscarPaginasSupabase({ supabase, tabelaDescricao, criarQuery, mapRow, filtros = {}, options = {}, percentualInicio = 5, percentualFim = 20 }) {
+  const limit = Number(options.limit || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  const pageSize = Number(options.pageSize || SUPABASE_PAGE_SIZE);
+  const rows = [];
+  let totalAvaliado = 0;
+  const janelas = criarJanelasPeriodo(filtros.inicio, filtros.fim, Number(options.diasPorJanela || 7));
+
+  for (let janelaIndex = 0; janelaIndex < janelas.length && rows.length < limit; janelaIndex += 1) {
+    const janela = janelas[janelaIndex];
+    const filtrosJanela = { ...filtros, inicio: janela.inicio || filtros.inicio, fim: janela.fim || filtros.fim };
+    let pagina = 0;
+
+    while (rows.length < limit) {
+      const from = pagina * pageSize;
+      const to = from + pageSize - 1;
+      const { data, error } = await criarQuery(supabase, filtrosJanela).range(from, to);
+      if (error) throw new Error(`Erro ao ler ${tabelaDescricao} do Supabase: ${error.message}`);
+
+      const paginaRows = (data || []).map(mapRow);
+      totalAvaliado += paginaRows.length;
+      const filtradas = tabelaDescricao === 'Tracking'
+        ? aplicarFiltrosBaseVolumetria(paginaRows, filtros)
+        : paginaRows.filter((row) => !(filtros.excluirEbazar && isTransportadoraEbazarVolumetria(row.transportadora)));
+
+      rows.push(...filtradas.slice(0, Math.max(0, limit - rows.length)));
+
+      const progressoJanela = janelas.length ? (janelaIndex / janelas.length) : 0;
+      const progressoPagina = data?.length ? Math.min(1, (pagina + 1) / 8) / Math.max(janelas.length, 1) : 0;
+      const percentual = Math.min(percentualFim, percentualInicio + Math.round((progressoJanela + progressoPagina) * (percentualFim - percentualInicio)));
+      postProgress({
+        percentual,
+        mensagem: `Lendo ${tabelaDescricao} do Supabase em lotes leves: ${totalAvaliado.toLocaleString('pt-BR')} registro(s) avaliados${janela.inicio && janela.fim ? ` (${janela.inicio} a ${janela.fim})` : ''}...`,
+      });
+
+      if (!data || data.length < pageSize) break;
+      pagina += 1;
+      await waitFrame();
+    }
+  }
+
+  return { rows, totalCompativel: rows.length, totalBanco: totalAvaliado, limit };
 }
 
 async function exportarTrackingSupabase(filtros = {}, options = {}) {
@@ -978,53 +1054,26 @@ async function exportarTrackingSupabase(filtros = {}, options = {}) {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
 
-  const limit = Number(options.limit || SUPABASE_EXPORT_LIMIT_DEFAULT);
-  const pageSize = Number(options.pageSize || SUPABASE_PAGE_SIZE);
-  const rows = [];
-  let totalCompativel = 0;
-  let pagina = 0;
-  let countExato = 0;
+  const resultado = await buscarPaginasSupabase({
+    supabase,
+    tabelaDescricao: 'Tracking',
+    criarQuery: criarQueryTrackingSupabase,
+    mapRow: mapTrackingSupabaseRow,
+    filtros,
+    options,
+    percentualInicio: 5,
+    percentualFim: 20,
+  });
 
-  while (rows.length < limit) {
-    const from = pagina * pageSize;
-    const to = from + pageSize - 1;
-    const { data, error, count } = await criarQueryTrackingSupabase(supabase, filtros).range(from, to);
-    if (error) throw new Error(`Erro ao ler Tracking do Supabase: ${error.message}`);
-    const paginaRows = (data || []).map(mapTrackingSupabaseRow);
-    const filtradas = aplicarFiltrosBaseVolumetria(paginaRows, filtros);
-    rows.push(...filtradas.slice(0, Math.max(0, limit - rows.length)));
-    totalCompativel += filtradas.length;
-    countExato = Number(count || countExato || 0);
-
-    postProgress({
-      percentual: Math.min(20, 5 + Math.round((Math.min(to + 1, countExato || to + 1) / Math.max(countExato || to + 1, 1)) * 15)),
-      mensagem: `Lendo Tracking do Supabase: ${Math.min(to + 1, countExato || to + 1).toLocaleString('pt-BR')} registro(s) avaliados...`,
-    });
-
-    if (!data || data.length < pageSize) break;
-    pagina += 1;
-    await waitFrame();
-  }
-
-  return {
-    rows,
-    totalCompativel: totalCompativel || rows.length,
-    totalBanco: countExato,
-    limit,
-    fonte: 'Supabase Tracking',
-  };
+  return { ...resultado, fonte: 'Supabase Tracking' };
 }
 
 function criarQueryCtesSupabase(supabase, filtros = {}) {
-  let query = supabase
-    .from(TABELA_CTES_SUPABASE)
-    .select(CTE_SUPABASE_COLUMNS, { count: 'exact' })
-    .order('data_emissao', { ascending: false, nullsFirst: false });
-
-  if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
-  if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
-  if (filtros.origem) query = query.ilike('cidade_origem', `%${String(filtros.origem).trim()}%`);
-  return query;
+  return aplicarFiltrosSqlBasicos(
+    supabase.from(TABELA_CTES_SUPABASE).select(CTE_SUPABASE_COLUMNS),
+    filtros,
+    'data_emissao'
+  );
 }
 
 async function exportarRealizadoSupabaseParaVolumetria(filtros = {}, options = {}) {
@@ -1032,35 +1081,18 @@ async function exportarRealizadoSupabaseParaVolumetria(filtros = {}, options = {
   const supabase = getSupabaseClient();
   if (!supabase) return null;
 
-  const limit = Number(options.limit || SUPABASE_EXPORT_LIMIT_DEFAULT);
-  const pageSize = Number(options.pageSize || SUPABASE_PAGE_SIZE);
-  const rows = [];
-  let pagina = 0;
-  let countExato = 0;
+  const resultado = await buscarPaginasSupabase({
+    supabase,
+    tabelaDescricao: 'CT-es',
+    criarQuery: criarQueryCtesSupabase,
+    mapRow: mapCteSupabaseRow,
+    filtros,
+    options,
+    percentualInicio: 20,
+    percentualFim: 28,
+  });
 
-  while (rows.length < limit) {
-    const from = pagina * pageSize;
-    const to = from + pageSize - 1;
-    const { data, error, count } = await criarQueryCtesSupabase(supabase, filtros).range(from, to);
-    if (error) throw new Error(`Erro ao ler CT-es do Supabase para vínculo: ${error.message}`);
-    const paginaRows = (data || []).map(mapCteSupabaseRow).filter((row) => {
-      if (filtros.excluirEbazar && isTransportadoraEbazarVolumetria(row.transportadora)) return false;
-      return true;
-    });
-    rows.push(...paginaRows.slice(0, Math.max(0, limit - rows.length)));
-    countExato = Number(count || countExato || 0);
-
-    postProgress({
-      percentual: Math.min(28, 20 + Math.round((Math.min(to + 1, countExato || to + 1) / Math.max(countExato || to + 1, 1)) * 8)),
-      mensagem: `Lendo CT-es do Supabase para vínculo: ${Math.min(to + 1, countExato || to + 1).toLocaleString('pt-BR')} registro(s) avaliados...`,
-    });
-
-    if (!data || data.length < pageSize) break;
-    pagina += 1;
-    await waitFrame();
-  }
-
-  return { rows, totalCompativel: rows.length, totalBanco: countExato, limit, fonte: 'Supabase CT-es' };
+  return { ...resultado, fonte: 'Supabase CT-es' };
 }
 
 async function carregarTrackingVolumetria(filtroBase = {}, config = {}) {
@@ -1091,7 +1123,10 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
     // quando o Tracking antigo veio com canal/estado incompleto ou como nome do estado.
     inicio: config.inicio,
     fim: config.fim,
+    canal: config.canal,
     origem: config.origem,
+    ufOrigem: config.ufOrigem,
+    ufDestino: config.ufDestino,
     excluirEbazar: Boolean(config.excluirEbazar),
   };
 
