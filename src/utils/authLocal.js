@@ -7,6 +7,31 @@ import {
 
 const USERS_KEY = 'central_fretes_usuarios_v1';
 const SESSION_KEY = 'central_fretes_sessao_v1';
+const ADMIN_EMAIL = 'aldo.dias@cantu.inc';
+
+export const MODULOS_SISTEMA = [
+  { chave: 'dashboard', label: 'Dashboard', grupo: 'Geral' },
+  { chave: 'simulador', label: 'Simulador', grupo: 'Fretes' },
+  { chave: 'tabelas-negociacao', label: 'Tabelas em Negociação', grupo: 'Suprimentos' },
+  { chave: 'cte', label: 'CT-e', grupo: 'Auditoria' },
+  { chave: 'auditoria-cte', label: 'Auditoria CT-e', grupo: 'Auditoria' },
+  { chave: 'tracking', label: 'Tracking', grupo: 'Operação' },
+  { chave: 'torre-controle', label: 'Torre de Controle', grupo: 'Operação' },
+  { chave: 'reajustes', label: 'Reajustes', grupo: 'Fretes' },
+  { chave: 'importacao', label: 'Importação', grupo: 'Suprimentos' },
+  { chave: 'formatacao', label: 'Formatação de Tabelas', grupo: 'Suprimentos' },
+  { chave: 'importar-template', label: 'Importar Template', grupo: 'Suprimentos' },
+  { chave: 'lotacao', label: 'Lotação Tabelas', grupo: 'Lotação' },
+  { chave: 'lotacao-operacao', label: 'Lotação Operação', grupo: 'Lotação' },
+  { chave: 'lotacao-auditoria', label: 'Auditoria Lotação', grupo: 'Auditoria' },
+  { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
+  { chave: 'ferramentas', label: 'Ferramentas', grupo: 'Geral' },
+  { chave: 'transportadoras', label: 'Transportadoras', grupo: 'Cadastros' },
+  { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
+];
+
+const CHAVES_MODULOS = MODULOS_SISTEMA.map((modulo) => modulo.chave);
+const CHAVES_MODULOS_USUARIO = MODULOS_SISTEMA.filter((modulo) => !modulo.somenteAdmin).map((modulo) => modulo.chave);
 
 export const PERFIS_USUARIO = {
   GESTAO: {
@@ -40,7 +65,7 @@ export const PERFIS_USUARIO = {
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',
     descricao: 'Consulta DIST/CT-e e registro de auditoria.',
-    paginas: ['dashboard', 'lotacao-auditoria'],
+    paginas: ['dashboard', 'cte', 'auditoria-cte', 'lotacao-auditoria'],
   },
   CONSULTA: {
     nome: 'Consulta',
@@ -62,9 +87,10 @@ const DEFAULT_USERS = [
   {
     id: 'user-gestao-aldo',
     nome: 'Aldo Dias',
-    email: 'aldomdias@gmail.com',
+    email: ADMIN_EMAIL,
     senha: '123456',
     perfil: 'GESTAO',
+    permissoesPaginas: ['*'],
     ativo: true,
     criadoEm: new Date().toISOString(),
   },
@@ -83,16 +109,50 @@ function normalizarEmail(email = '') {
   return limparTexto(email).toLowerCase();
 }
 
+function filtrarPermissoes(permissoes = [], permiteAdmin = false) {
+  if (!Array.isArray(permissoes)) return [];
+  if (permissoes.includes('*')) return permiteAdmin ? ['*'] : CHAVES_MODULOS_USUARIO;
+
+  const permitidas = permiteAdmin ? CHAVES_MODULOS : CHAVES_MODULOS_USUARIO;
+  return [...new Set(permissoes.filter((pagina) => permitidas.includes(pagina)))];
+}
+
+function paginasPerfil(perfilChave) {
+  const perfil = PERFIS_USUARIO[perfilChave] || PERFIS_USUARIO.CONSULTA;
+  if (perfil.paginas.includes('*')) return ['*'];
+  return filtrarPermissoes(perfil.paginas, false);
+}
+
+export function usuarioPodeAdministrarUsuarios(usuario) {
+  return normalizarEmail(usuario?.email) === ADMIN_EMAIL && usuario?.perfil === 'GESTAO';
+}
+
+function normalizarUsuario(usuario = {}) {
+  const email = normalizarEmail(usuario.email);
+  const candidato = { ...usuario, email };
+  const admin = usuarioPodeAdministrarUsuarios(candidato);
+  const permissoesBase = usuario.permissoesPaginas ?? usuario.permissoes_paginas ?? paginasPerfil(usuario.perfil);
+
+  return {
+    ...usuario,
+    email,
+    perfil: usuario.perfil || 'CONSULTA',
+    permissoesPaginas: admin ? ['*'] : filtrarPermissoes(permissoesBase, false),
+  };
+}
+
 function salvarUsuariosInterno(usuarios = []) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(usuarios));
+  localStorage.setItem(USERS_KEY, JSON.stringify(usuarios.map(normalizarUsuario)));
 }
 
 function montarSessao(usuario) {
+  const usuarioNormalizado = normalizarUsuario(usuario);
   const sessao = {
-    id: usuario.id,
-    nome: usuario.nome,
-    email: usuario.email,
-    perfil: usuario.perfil,
+    id: usuarioNormalizado.id,
+    nome: usuarioNormalizado.nome,
+    email: usuarioNormalizado.email,
+    perfil: usuarioNormalizado.perfil,
+    permissoesPaginas: usuarioNormalizado.permissoesPaginas,
     loginEm: new Date().toISOString(),
   };
 
@@ -100,16 +160,35 @@ function montarSessao(usuario) {
   return sessao;
 }
 
+export function permissoesPadraoPerfil(perfilChave, usuario = null) {
+  if ((perfilChave === 'GESTAO' || usuario?.perfil === 'GESTAO') && usuarioPodeAdministrarUsuarios({ ...usuario, perfil: 'GESTAO' })) {
+    return ['*'];
+  }
+
+  return paginasPerfil(perfilChave).filter((pagina) => pagina !== 'usuarios');
+}
+
+export function permissoesUsuario(usuario) {
+  const normalizado = normalizarUsuario(usuario);
+  if (usuarioPodeAdministrarUsuarios(normalizado)) return ['*'];
+
+  if (Array.isArray(normalizado.permissoesPaginas) && normalizado.permissoesPaginas.length) {
+    return filtrarPermissoes(normalizado.permissoesPaginas, false);
+  }
+
+  return permissoesPadraoPerfil(normalizado.perfil, normalizado);
+}
+
 export function carregarUsuarios() {
   try {
     const parsed = JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
-    if (Array.isArray(parsed) && parsed.length) return parsed;
+    if (Array.isArray(parsed) && parsed.length) return parsed.map(normalizarUsuario);
   } catch {
     // segue para seed
   }
 
   salvarUsuariosInterno(DEFAULT_USERS);
-  return DEFAULT_USERS;
+  return DEFAULT_USERS.map(normalizarUsuario);
 }
 
 export async function carregarUsuariosAsync({ migrarLocal = true } = {}) {
@@ -125,7 +204,7 @@ export async function carregarUsuariosAsync({ migrarLocal = true } = {}) {
   }
 
   try {
-    const remotos = await listarUsuariosSupabase();
+    const remotos = (await listarUsuariosSupabase()).map(normalizarUsuario);
 
     if (remotos.length) {
       salvarUsuariosInterno(remotos);
@@ -173,7 +252,8 @@ export function salvarUsuarios(usuarios = []) {
 }
 
 export async function salvarUsuariosAsync(usuarios = []) {
-  salvarUsuariosInterno(usuarios);
+  const normalizados = usuarios.map(normalizarUsuario);
+  salvarUsuariosInterno(normalizados);
 
   if (!usuarioSupabaseDisponivel()) {
     return {
@@ -184,7 +264,7 @@ export async function salvarUsuariosAsync(usuarios = []) {
   }
 
   try {
-    await salvarUsuariosSupabase(usuarios);
+    await salvarUsuariosSupabase(normalizados);
 
     return {
       origem: 'supabase',
@@ -204,12 +284,12 @@ export async function salvarUsuariosAsync(usuarios = []) {
 export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
   if (pagina === 'minha-senha') return true;
+  if (pagina === 'usuarios') return usuarioPodeAdministrarUsuarios(usuario);
 
-  const perfil = PERFIS_USUARIO[usuario.perfil] || PERFIS_USUARIO.CONSULTA;
+  const permissoes = permissoesUsuario(usuario);
+  if (permissoes.includes('*')) return true;
 
-  if (perfil.paginas.includes('*')) return true;
-
-  return perfil.paginas.includes(pagina);
+  return permissoes.includes(pagina);
 }
 
 export function loginLocal(email, senha) {
@@ -266,6 +346,7 @@ export function carregarSessao() {
       nome: usuarioAtual.nome,
       email: usuarioAtual.email,
       perfil: usuarioAtual.perfil,
+      permissoesPaginas: permissoesUsuario(usuarioAtual),
       loginEm: parsed.loginEm || new Date().toISOString(),
     };
   } catch {
@@ -288,18 +369,19 @@ export function criarUsuario(dados, usuariosAtuais = carregarUsuarios()) {
     throw new Error('Já existe um usuário com este e-mail.');
   }
 
-  const novo = {
+  const novo = normalizarUsuario({
     id: uid('user'),
     nome: limparTexto(dados.nome),
     email,
     senha: limparTexto(dados.senha),
     perfil: dados.perfil || 'CONSULTA',
+    permissoesPaginas: dados.permissoesPaginas || permissoesPadraoPerfil(dados.perfil || 'CONSULTA', { email, perfil: dados.perfil || 'CONSULTA' }),
     ativo: dados.ativo !== false,
     criadoEm: new Date().toISOString(),
     atualizadoEm: new Date().toISOString(),
-  };
+  });
 
-  return [novo, ...usuariosAtuais];
+  return [novo, ...usuariosAtuais.map(normalizarUsuario)];
 }
 
 export async function criarUsuarioAsync(dados, usuariosAtuais = carregarUsuarios()) {
@@ -316,16 +398,20 @@ export function atualizarUsuario(usuarios = [], id, alteracoes = {}) {
   }
 
   return usuarios.map((item) => {
-    if (item.id !== id) return item;
+    if (item.id !== id) return normalizarUsuario(item);
 
-    return {
+    if (usuarioPodeAdministrarUsuarios(item) && alteracoes.ativo === false) {
+      throw new Error('O administrador principal não pode ser inativado.');
+    }
+
+    return normalizarUsuario({
       ...item,
       ...alteracoes,
       nome: alteracoes.nome !== undefined ? limparTexto(alteracoes.nome) : item.nome,
       email: alteracoes.email !== undefined ? emailNovo : item.email,
       senha: alteracoes.senha !== undefined ? limparTexto(alteracoes.senha) : item.senha,
       atualizadoEm: new Date().toISOString(),
-    };
+    });
   });
 }
 
