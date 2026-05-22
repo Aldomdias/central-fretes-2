@@ -24,6 +24,31 @@ function resumoTexto(linhas = []) {
   return linhas.filter(Boolean).join('\n');
 }
 
+function linhasRotasCriticas(rotas = [], externo = false) {
+  if (!rotas.length) return ['- Nao disponivel para o recorte atual.'];
+  return rotas.map((item) => {
+    const partes = [
+      `- ${item.rota || 'Rota nao identificada'}`,
+      `${numero(item.qtdPerdidasSelecionada || item.ctes || 0)} CT-es`,
+      `reducao media ${percentual(item.reducaoMediaNecessaria || 0)}`,
+    ];
+    if (!externo && item.principalVencedor) partes.push(`referencia ${item.principalVencedor}`);
+    return partes.join(' | ');
+  });
+}
+
+function linhasRotasCompetitivas(rotas = [], externo = false) {
+  if (!rotas.length) return ['- Nao disponivel para o recorte atual.'];
+  return rotas.map((item) => {
+    const partes = [
+      `- ${item.rota || 'Rota nao identificada'}`,
+      `${numero(item.qtdGanhasSelecionada || item.ctes || 0)} CT-es competitivos`,
+    ];
+    if (!externo) partes.push(`faturamento ganho ${dinheiro(item.freteSelecionadaGanhadora || 0)}`);
+    return partes.join(' | ');
+  });
+}
+
 function rotasGanhas(resultado = {}) {
   return (resultado.rotasGanhasDestaque || resultado.rotas || [])
     .filter((item) => Number(item.qtdGanhasSelecionada || 0) > 0)
@@ -102,6 +127,55 @@ export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
     'Ficamos a disposicao para avaliar uma contraproposta direcionada, principalmente nas rotas destacadas como criticas. O ajuste nesses pontos pode aumentar a competitividade da transportadora e ampliar sua participacao nas proximas movimentacoes.',
   ]);
 
+  const relatorioExecutivo = resumoTexto([
+    `LAUDO DIRETORIA - ${transportadora}`,
+    `Periodo: ${periodoAnalise}`,
+    `Canal: ${canal || '-'}`,
+    `Origem: ${origem || '-'}`,
+    '',
+    'RESUMO EXECUTIVO',
+    `CT-es analisados: ${numero(resultado.ctesAnalisados || 0)}`,
+    `CT-es com tabela: ${numero(resultado.ctesComTabelaSelecionada || 0)}`,
+    `Aderencia: ${percentual(resultado.aderenciaSelecionada || 0)}`,
+    `Saving potencial: ${dinheiro(resultado.savingSelecionadaVsRealMes || 0)} por mes | ${dinheiro(resultado.savingSelecionadaVsRealAno || 0)} em 12 meses`,
+    `Faturamento ganho: ${dinheiro(ganhoMes)} por mes | ${dinheiro(resultado.faturamentoSelecionadaGanhadoraAno || 0)} em 12 meses`,
+    `Reducao media nas rotas perdidas: ${percentual(resultado.reducaoMediaNecessaria || 0)}`,
+    '',
+    'ROTAS COM MAIOR IMPACTO',
+    ...linhasRotasCriticas(perdidas, false),
+    '',
+    'ROTAS COM BOA COMPETITIVIDADE',
+    ...linhasRotasCompetitivas(ganhas, false),
+    '',
+    'RECOMENDACAO',
+    'Priorizar negociacao nas rotas de maior volume e maior diferenca percentual, mantendo acompanhamento de aderencia, saving e impacto financeiro antes da implantacao.',
+    cubagemOutliers ? `\nObservacao tecnica: ${numero(cubagemOutliers)} CT-e(s) apresentaram cubagem fora do padrao e foram tratados para evitar distorcao.` : '',
+  ]);
+
+  const relatorioTransportador = resumoTexto([
+    `DEVOLUTIVA DE COMPETITIVIDADE - ${transportadora}`,
+    `Periodo: ${periodoAnalise}`,
+    `Canal: ${canal || '-'}`,
+    `Origem: ${origem || '-'}`,
+    '',
+    'VISAO GERAL',
+    `CT-es analisados: ${numero(resultado.ctesAnalisados || 0)}`,
+    `CT-es com cobertura da tabela: ${numero(resultado.ctesComTabelaSelecionada || 0)}`,
+    `CT-es competitivos: ${numero(resultado.ctesGanhariaSelecionada || 0)}`,
+    `Pontos a revisar: ${numero(resultado.ctesPerdidosSelecionada || 0)}`,
+    `Aderencia no recorte: ${percentual(resultado.aderenciaSelecionada || 0)}`,
+    '',
+    'ROTAS COM OPORTUNIDADE DE AJUSTE',
+    ...linhasRotasCriticas(perdidas, true),
+    '',
+    'ROTAS COM BOA COMPETITIVIDADE',
+    ...linhasRotasCompetitivas(ganhas, true),
+    '',
+    'DIRECIONAL COMERCIAL',
+    'Recomendamos priorizar a revisao das rotas com maior volume e maior necessidade media de ajuste, buscando ampliar a competitividade e a participacao nas proximas movimentacoes.',
+    cubagemOutliers ? '\nObservacao: alguns registros apresentaram inconsistencia de cubagem e foram tratados para evitar distorcoes na analise.' : '',
+  ]);
+
   const indicadoresExecutivo = {
     ctesAnalisados: resultado.ctesAnalisados || 0,
     ctesComTabela: resultado.ctesComTabelaSelecionada || 0,
@@ -143,6 +217,7 @@ export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
       rotasPerdidas: perdidas,
       assunto: assuntoExecutivo,
       corpoEmail: corpoExecutivo,
+      relatorioTexto: relatorioExecutivo,
       laudoCompleto: `Assunto: ${assuntoExecutivo}\n\n${corpoExecutivo}`,
     },
     transportador: {
@@ -160,6 +235,7 @@ export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
       })),
       assunto: assuntoTransportador,
       corpoEmail: corpoTransportador,
+      relatorioTexto: relatorioTransportador,
       laudoCompleto: `Assunto: ${assuntoTransportador}\n\n${corpoTransportador}`,
     },
   };
