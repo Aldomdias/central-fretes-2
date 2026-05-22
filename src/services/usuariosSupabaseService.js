@@ -1,6 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const TABLE_NAME = 'usuarios_central';
+const SELECT_USUARIOS = 'id,nome,email,senha,perfil,permissoes_paginas,ativo,criado_em,atualizado_em,ultimo_login_em';
 
 function toIso(valor) {
   if (!valor) return null;
@@ -15,6 +16,18 @@ function normalizarEmail(email = '') {
   return String(email ?? '').trim().toLowerCase();
 }
 
+function normalizarPermissoes(valor) {
+  if (Array.isArray(valor)) return valor;
+  if (!valor) return [];
+
+  try {
+    const parsed = typeof valor === 'string' ? JSON.parse(valor) : valor;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export function usuarioSupabaseDisponivel() {
   return isSupabaseConfigured() && Boolean(getSupabaseClient());
 }
@@ -26,6 +39,7 @@ export function usuarioFromDb(row = {}) {
     email: normalizarEmail(row.email),
     senha: row.senha || '',
     perfil: row.perfil || 'CONSULTA',
+    permissoesPaginas: normalizarPermissoes(row.permissoes_paginas || row.permissoesPaginas),
     ativo: row.ativo !== false,
     criadoEm: row.criado_em || row.criadoEm || null,
     atualizadoEm: row.atualizado_em || row.atualizadoEm || null,
@@ -40,6 +54,7 @@ export function usuarioToDb(usuario = {}) {
     email: normalizarEmail(usuario.email),
     senha: String(usuario.senha ?? '').trim(),
     perfil: usuario.perfil || 'CONSULTA',
+    permissoes_paginas: normalizarPermissoes(usuario.permissoesPaginas || usuario.permissoes_paginas),
     ativo: usuario.ativo !== false,
     criado_em: toIso(usuario.criadoEm) || new Date().toISOString(),
     atualizado_em: new Date().toISOString(),
@@ -59,7 +74,7 @@ export async function listarUsuariosSupabase() {
   const supabase = obterClienteObrigatorio();
   const { data, error } = await supabase
     .from(TABLE_NAME)
-    .select('id,nome,email,senha,perfil,ativo,criado_em,atualizado_em,ultimo_login_em')
+    .select(SELECT_USUARIOS)
     .order('nome', { ascending: true });
 
   if (error) {
@@ -80,7 +95,7 @@ export async function salvarUsuariosSupabase(usuarios = []) {
   const { data, error } = await supabase
     .from(TABLE_NAME)
     .upsert(rows, { onConflict: 'id' })
-    .select('id,nome,email,senha,perfil,ativo,criado_em,atualizado_em,ultimo_login_em');
+    .select(SELECT_USUARIOS);
 
   if (error) {
     throw new Error(`Erro ao salvar usuários no Supabase: ${error.message}`);
@@ -101,7 +116,7 @@ export async function registrarUltimoLoginSupabase(usuarioId) {
     .from(TABLE_NAME)
     .update({ ultimo_login_em: new Date().toISOString(), atualizado_em: new Date().toISOString() })
     .eq('id', usuarioId)
-    .select('id,nome,email,senha,perfil,ativo,criado_em,atualizado_em,ultimo_login_em')
+    .select(SELECT_USUARIOS)
     .maybeSingle();
 
   if (error) {
