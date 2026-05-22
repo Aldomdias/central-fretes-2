@@ -839,6 +839,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     transportadorasPerdaDestaque: (resultado.transportadorasPerdaDestaque || []).slice(0, 10),
     laudo: (resultado.laudo || []).slice(0, 20),
     laudosEmail: resultado.laudosEmail || null,
+    laudos: resultado.laudos || null,
     pareto80Volume: resultado.pareto80Volume || null,
     diagnostico: resultado.diagnostico || {},
   };
