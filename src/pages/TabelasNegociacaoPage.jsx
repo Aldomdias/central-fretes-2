@@ -1168,12 +1168,12 @@ export default function TabelasNegociacaoPage() {
                         <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(tabela); }}>+ Origem</button>
                         {laudos.executivo ? (
                           <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
-                            Laudo Executivo
+                            Laudo Diretoria
                           </button>
                         ) : null}
                         {laudos.transportador ? (
                           <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'transportador', dados: getDadosLaudoSalvo(laudos.transportador) }); }}>
-                            Devolutiva
+                            Laudo Transportador
                           </button>
                         ) : null}
                         <select value={tabela.status} onChange={function(e) { atualizarStatus(tabela, e.target.value); }}>
@@ -1268,12 +1268,12 @@ export default function TabelasNegociacaoPage() {
                   <div className="sim-actions" style={{ marginTop: 12 }}>
                     {laudos.executivo ? (
                       <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
-                        Abrir Laudo Executivo
+                        Abrir Laudo Diretoria
                       </button>
                     ) : null}
                     {laudos.transportador ? (
                       <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'transportador', dados: getDadosLaudoSalvo(laudos.transportador) }); }}>
-                        Abrir Devolutiva Transportador
+                        Abrir Laudo Transportador
                       </button>
                     ) : null}
                   </div>
@@ -1886,6 +1886,9 @@ export default function TabelasNegociacaoPage() {
                 boxShadow: '0 12px 28px rgba(15,23,42,0.18)',
               }}
             >
+              <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.relatorioTexto || laudoSalvoAberto.dados?.laudoCompleto, 'Relatorio'); }}>
+                Copiar relatório
+              </button>
               <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.assunto, 'Assunto'); }}>
                 Copiar assunto
               </button>
@@ -1893,7 +1896,7 @@ export default function TabelasNegociacaoPage() {
                 Copiar corpo
               </button>
               <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.laudoCompleto, 'Laudo completo'); }}>
-                Copiar laudo completo
+                Copiar e-mail completo
               </button>
               <button className="sim-tab" type="button" onClick={function() { window.print(); }}>
                 Imprimir / PDF
