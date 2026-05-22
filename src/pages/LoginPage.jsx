@@ -36,13 +36,14 @@ export default function LoginPage({ onLogin }) {
           E-mail
           <input
             type="email"
+            name="central-fretes-email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter') entrar();
             }}
             placeholder="seu@email.com"
-            autoComplete="username"
+            autoComplete="off"
             disabled={carregando}
           />
         </label>
@@ -51,13 +52,14 @@ export default function LoginPage({ onLogin }) {
           Senha
           <input
             type="password"
+            name="central-fretes-senha"
             value={senha}
             onChange={(event) => setSenha(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter') entrar();
             }}
             placeholder="Senha"
-            autoComplete="current-password"
+            autoComplete="off"
             disabled={carregando}
           />
         </label>
