@@ -25,6 +25,8 @@ import {
   converterTabelasNegociacaoParaSimulador,
   labelTabelaNegociacaoSimulador,
 } from '../utils/tabelasNegociacaoSimuladorAdapter';
+import { LaudoNegociacaoTemplate } from '../components/laudos';
+import { prepararLaudosNegociacao, salvarLaudosNegociacao } from '../services/laudosNegociacaoService';
 
 const CANAL_VENDAS_MAP_SIM = {
   'B2C': 'B2C', 'B2B': 'ATACADO', 'MERCADO LIVRE': 'B2C', 'SHOPEE': 'B2C',
@@ -2829,6 +2831,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [abaDetalheRealizado, setAbaDetalheRealizado] = useState('ctes'); // 'ctes' | 'uf'
   const [abaLaudoRealizado, setAbaLaudoRealizado] = useState('diretoria');
   const [feedbackCopiaLaudo, setFeedbackCopiaLaudo] = useState('');
+  const [laudoVisualAberto, setLaudoVisualAberto] = useState(null);
+  const [salvandoLaudosVisuais, setSalvandoLaudosVisuais] = useState(false);
   const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box']));
   const toggleSecao = (id) => setSecoesFechadas((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const secaoAberta = (id) => !secoesFechadas.has(id);
@@ -3200,15 +3204,42 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setErroSimulacao('');
 
     try {
+      const contextoLaudos = {
+        transportadora: resultadoRealizado.filtros?.transportadora,
+        canal: resultadoRealizado.filtros?.canal,
+        origem: resultadoRealizado.filtros?.origem,
+      };
       await salvarResultadoSimulacaoNegociacao(negociacaoSelecionadaRealizado.id, {
         ...resultadoRealizado,
         laudosEmail: laudosEmailRealizado,
+        laudos: prepararLaudosNegociacao(resultadoRealizado, contextoLaudos),
       });
       alert('Resultado projetado salvo na negociação.');
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
     } finally {
       setSalvandoResultadoNegociacao(false);
+    }
+  };
+
+  const salvarLaudosVisuaisNegociacao = async () => {
+    if (!negociacaoSelecionadaRealizado?.id || !resultadoRealizado) return;
+
+    setSalvandoLaudosVisuais(true);
+    setErroSimulacao('');
+
+    try {
+      await salvarLaudosNegociacao(negociacaoSelecionadaRealizado.id, resultadoRealizado, {
+        transportadora: resultadoRealizado.filtros?.transportadora,
+        canal: resultadoRealizado.filtros?.canal,
+        origem: resultadoRealizado.filtros?.origem,
+      });
+
+      alert('Laudos executivo e transportador salvos na negociação.');
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao salvar laudos na negociação.');
+    } finally {
+      setSalvandoLaudosVisuais(false);
     }
   };
 
@@ -4977,6 +5008,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
               style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }}>
               📊 Relatório Diretoria
             </button>
+            <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('executivo')} disabled={!resultadoRealizado?.ctesAnalisados}>
+              Ver Laudo Executivo
+            </button>
+            <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('transportador')} disabled={!resultadoRealizado?.ctesAnalisados}>
+              Ver Devolutiva Transportador
+            </button>
+            <button className="sim-tab" type="button" onClick={salvarLaudosVisuaisNegociacao} disabled={!negociacaoSelecionadaRealizado?.id || salvandoLaudosVisuais}>
+              {salvandoLaudosVisuais ? 'Salvando laudos...' : 'Salvar laudos na negociação'}
+            </button>
             <button className="sim-tab" type="button"
               onClick={salvarResultadoNegociacaoRealizado}
               disabled={!resultadoRealizado?.ctesAnalisados || !negociacaoSelecionadaRealizado || salvandoResultadoNegociacao}
@@ -6311,6 +6351,36 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </div>
           )}
         </section>
+      )}
+
+      {laudoVisualAberto && resultadoRealizado && (
+        <div
+          className="modal-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,23,42,0.72)',
+            zIndex: 9999,
+            overflow: 'auto',
+            padding: 24,
+          }}
+        >
+          <div style={{ maxWidth: 1060, margin: '0 auto', display: 'grid', gap: 12 }}>
+            <div className="laudo-print-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+              <button className="sim-tab" type="button" onClick={() => window.print()}>
+                Imprimir / PDF
+              </button>
+              <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto(null)}>
+                Fechar
+              </button>
+            </div>
+
+            <LaudoNegociacaoTemplate
+              tipo={laudoVisualAberto}
+              resultado={resultadoRealizado}
+            />
+          </div>
+        </div>
       )}
     </div>
   );
