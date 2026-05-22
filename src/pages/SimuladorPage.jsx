@@ -4090,6 +4090,104 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
   };
 
+  const imprimirLaudoVisualIsolado = () => {
+    const laudo = document.querySelector('.modal-overlay .laudo-page');
+    if (!laudo) {
+      window.print();
+      return;
+    }
+
+    const estilos = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+      .map((node) => node.outerHTML)
+      .join('\n');
+    const janela = window.open('', '_blank', 'width=1000,height=900');
+    if (!janela) {
+      window.print();
+      return;
+    }
+
+    janela.document.write(`<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Laudo de competitividade</title>
+          ${estilos}
+          <style>
+            body { margin: 0; background: #fff; }
+            .laudo-page { box-shadow: none !important; border-radius: 0 !important; max-width: none !important; width: 100% !important; }
+          </style>
+        </head>
+        <body>${laudo.outerHTML}</body>
+      </html>`);
+    janela.document.close();
+    janela.focus();
+    setTimeout(() => {
+      janela.print();
+      janela.close();
+    }, 250);
+  };
+
+  const baixarLaudoVisualHtml = () => {
+    const laudo = document.querySelector('.modal-overlay .laudo-page');
+    if (!laudo) return;
+
+    const clone = laudo.cloneNode(true);
+    clone.setAttribute('contenteditable', 'true');
+    clone.setAttribute('spellcheck', 'true');
+
+    const cssLaudo = Array.from(document.styleSheets)
+      .map((sheet) => {
+        try {
+          return Array.from(sheet.cssRules || [])
+            .map((rule) => rule.cssText || '')
+            .filter((texto) => texto.includes('laudo-') || texto.includes('.laudo-page'))
+            .join('\n');
+        } catch {
+          return '';
+        }
+      })
+      .filter(Boolean)
+      .join('\n');
+
+    const tipo = laudoVisualAberto === 'transportador' ? 'transportador' : 'diretoria';
+    const transportadora = resultadoRealizado?.filtros?.transportadora || 'transportadora';
+    const nomeArquivo = `laudo-${tipo}-${nomeArquivoSeguro(transportadora)}.html`;
+    const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Laudo ${tipo} - ${transportadora}</title>
+  <style>
+    body { margin: 0; background: #f4f6fa; color: #0f172a; font-family: Arial, sans-serif; }
+    .laudo-export-shell { padding: 24px; }
+    .laudo-page { box-shadow: 0 0 30px rgba(15, 23, 42, 0.12) !important; }
+    .laudo-page[contenteditable="true"]:focus { outline: 3px solid #93c5fd; outline-offset: 4px; }
+    @media print {
+      body { background: #fff; }
+      .laudo-export-shell { padding: 0; }
+      .laudo-page { box-shadow: none !important; border-radius: 0 !important; max-width: none !important; width: 100% !important; }
+    }
+    ${cssLaudo}
+  </style>
+</head>
+<body>
+  <main class="laudo-export-shell">
+    ${clone.outerHTML}
+  </main>
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = nomeArquivo;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+  };
+
   const exportarLaudoEmailRealizado = (tipo = abaLaudoRealizado) => {
     const pacote = laudosEmailRealizado?.[tipo];
     if (!resultadoRealizado?.ctesAnalisados || !pacote) return;
@@ -6407,8 +6505,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
               }}>
                 Copiar e-mail
               </button>
-              <button className="sim-tab" type="button" onClick={() => window.print()}>
-                Imprimir / PDF
+              <button className="sim-tab" type="button" onClick={baixarLaudoVisualHtml}>
+                Baixar HTML editável
+              </button>
+              <button className="sim-tab" type="button" onClick={imprimirLaudoVisualIsolado}>
+                Gerar PDF
               </button>
               <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto(null)}>
                 Fechar
