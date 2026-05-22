@@ -1863,3 +1863,4 @@ export default function TabelasNegociacaoPage() {
     </div>
   );
 }
+ 
