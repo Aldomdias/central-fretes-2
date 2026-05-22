@@ -1,1 +1,1 @@
-export { default as LaudoNegociacaoTemplate } from './LaudoNegociacaoTemplate';
+export { LaudoNegociacaoTemplate } from './LaudoNegociacaoTemplate';
