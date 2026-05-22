@@ -77,8 +77,8 @@ function getIndicadoresTabela(tabela) {
   var ultimaSim = resumo.ultima_simulacao && resumo.ultima_simulacao.indicadores ? resumo.ultima_simulacao.indicadores : {};
   var savingMes = Number(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || resumo.savingSelecionadaVsReal || 0);
   var savingAno = Number(ultimaSim.saving_ano || resumo.savingSelecionadaVsRealAno || (savingMes * 12) || 0);
-  var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
-  var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
+  var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
+  var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaGanhadoraAno || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
   var pedidosDia = Number(tabela.volumetria_dia || ultimaSim.pedidos_dia || resumo.cargasDia || 0);
   var pedidosMes = pedidosDia * 22;
   var pedidosAno = pedidosMes * 12;
@@ -98,6 +98,14 @@ function getIndicadoresTabela(tabela) {
     ctesAnalisados: Number(tabela.ctes_analisados || resumo.ctesAnalisados || 0),
     ctesAtendidos: Number(tabela.ctes_atendidos || resumo.ctesComTabelaSelecionada || 0),
     rotasSemCobertura: Number(tabela.rotas_sem_cobertura || resumo.ctesSemTabelaSelecionada || 0),
+    rotasComGanho: Number(ultimaSim.rotas_com_ganho || resumo.qtdRotasComGanhoSelecionada || 0),
+    rotasGanhas: Number(ultimaSim.rotas_ganhas || resumo.qtdRotasGanhasSelecionada || 0),
+    rotasParciais: Number(ultimaSim.rotas_parciais || resumo.qtdRotasParciaisSelecionada || 0),
+    freteCapturado: Number(ultimaSim.frete_capturado || resumo.freteCapturadoRealizado || 0),
+    ctesCapturados: Number(ultimaSim.ctes_capturados || resumo.ctesCapturadosDeOutras || 0),
+    estadosGanhadores: Array.isArray(resumo.estadosGanhadoresDestaque) ? resumo.estadosGanhadoresDestaque : [],
+    transportadorasPerda: Array.isArray(resumo.transportadorasPerdaDestaque) ? resumo.transportadorasPerdaDestaque : [],
+    rotasGanhasDestaque: Array.isArray(resumo.rotasGanhasDestaque) ? resumo.rotasGanhasDestaque : [],
   };
 }
 function origemTabelaLabel(tabela) {
@@ -1090,6 +1098,8 @@ export default function TabelasNegociacaoPage() {
                           <div><strong>Aderência:</strong> {formatPercent(ind.aderencia)}</div>
                           <div><strong>Saving mês:</strong> {formatMoney(ind.savingMes)} · <strong>ano:</strong> {formatMoney(ind.savingAno)}</div>
                           <div><strong>Faturamento mês:</strong> {formatMoney(ind.faturamentoMes)} · <strong>ano:</strong> {formatMoney(ind.faturamentoAno)}</div>
+                          <div style={{ color: '#475569' }}><strong>Rotas ganhas:</strong> {formatNumber(ind.rotasComGanho, 0)} · <strong>UFs:</strong> {(ind.estadosGanhadores || []).slice(0, 3).map(function(item) { return item.uf; }).join(', ') || '-'}</div>
+                          <div style={{ color: '#475569' }}><strong>Perda transportadoras:</strong> {formatMoney(ind.freteCapturado)} · {formatNumber(ind.ctesCapturados, 0)} CT-es</div>
                         </div>
                       ) : (
                         <span style={{ color: '#64748b', fontSize: 12 }}>Execute o Simulador Realizado e salve o resultado.</span>
@@ -1158,14 +1168,47 @@ export default function TabelasNegociacaoPage() {
           {selecionada ? (function() {
             var ind = getIndicadoresTabela(selecionada);
             return ind.temSimulacao ? (
+              <>
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
                 <div className="summary-card"><span>Aderência</span><strong>{formatPercent(ind.aderencia)}</strong><small>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</small></div>
                 <div className="summary-card"><span>Saving mês</span><strong>{formatMoney(ind.savingMes)}</strong><small>Ano: {formatMoney(ind.savingAno)}</small></div>
                 <div className="summary-card"><span>Faturamento mês</span><strong>{formatMoney(ind.faturamentoMes)}</strong><small>Ano: {formatMoney(ind.faturamentoAno)}</small></div>
+                <div className="summary-card"><span>Rotas ganhas</span><strong>{formatNumber(ind.rotasComGanho, 0)}</strong><small>{formatNumber(ind.rotasGanhas, 0)} 100% ganhas · {formatNumber(ind.rotasParciais, 0)} parciais</small></div>
+                <div className="summary-card"><span>Perda transportadoras</span><strong>{formatMoney(ind.freteCapturado)}</strong><small>{formatNumber(ind.ctesCapturados, 0)} CT-es capturados</small></div>
                 <div className="summary-card"><span>Pedidos</span><strong>{formatNumber(ind.pedidosDia, 1)}/dia</strong><small>{formatNumber(ind.pedidosMes, 0)}/mês</small></div>
                 <div className="summary-card"><span>Volumes</span><strong>{formatNumber(ind.volumesDia, 1)}/dia</strong><small>{formatNumber(ind.volumesAno, 0)}/ano</small></div>
                 <div className="summary-card"><span>Frete % NF</span><strong>{formatPercent(ind.percentualTabela)}</strong><small>Real: {formatPercent(ind.percentualReal)} · Redução: {formatPercent(ind.reducaoPercentual)}</small></div>
               </div>
+              <div className="feature-grid import-grid" style={{ marginTop: -6, marginBottom: 18 }}>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Rotas ganhadoras da simulação</strong></div></div>
+                  <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
+                    {(ind.rotasGanhasDestaque || []).slice(0, 6).map(function(item) {
+                      return <div key={'neg-rota-' + item.rota}><strong>{item.rota}</strong> · {formatNumber(item.qtdGanhasSelecionada || 0, 0)} CT-es · {formatMoney(item.freteSelecionadaGanhadora || 0)}</div>;
+                    })}
+                    {!(ind.rotasGanhasDestaque || []).length ? <div>Sem rotas ganhadoras salvas nesta simulação.</div> : null}
+                  </div>
+                </div>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Resumo por estado</strong></div></div>
+                  <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
+                    {(ind.estadosGanhadores || []).slice(0, 6).map(function(item) {
+                      return <div key={'neg-uf-' + item.uf}><strong>{item.uf}</strong> · {formatNumber(item.ctesGanhas || 0, 0)} ganhos · {formatMoney(item.freteSelecionadaGanhas || 0)} · aderência {formatPercent(item.aderencia || 0)}</div>;
+                    })}
+                    {!(ind.estadosGanhadores || []).length ? <div>Sem resumo por UF salvo nesta simulação.</div> : null}
+                  </div>
+                </div>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Quem perde faturamento</strong></div></div>
+                  <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
+                    {(ind.transportadorasPerda || []).slice(0, 6).map(function(item) {
+                      return <div key={'neg-perda-' + item.transportadora}><strong>{item.transportadora}</strong> · {formatMoney(item.freteCedidoSelecionada || 0)} · {formatNumber(item.ctesCedidosSelecionada || 0, 0)} CT-es</div>;
+                    })}
+                    {!(ind.transportadorasPerda || []).length ? <div>Nenhuma perda de transportadora salva nesta simulação.</div> : null}
+                  </div>
+                </div>
+              </div>
+              </>
             ) : (
               <div className="sim-alert info" style={{ marginBottom: 18 }}>
                 Esta negociação ainda não tem simulação salva. Execute o Simulador Realizado, selecione esta tabela e salve o resultado para alimentar aderência, saving, faturamento, pedidos e volumes.
