@@ -8,6 +8,7 @@ import {
 const USERS_KEY = 'central_fretes_usuarios_v1';
 const SESSION_KEY = 'central_fretes_sessao_v1';
 const ADMIN_EMAIL = 'aldo.dias@cantu.inc';
+const SESSION_TTL_MS = 5 * 60 * 60 * 1000;
 
 export const MODULOS_SISTEMA = [
   { chave: 'dashboard', label: 'Dashboard', grupo: 'Geral' },
@@ -147,13 +148,15 @@ function salvarUsuariosInterno(usuarios = []) {
 
 function montarSessao(usuario) {
   const usuarioNormalizado = normalizarUsuario(usuario);
+  const loginEm = new Date().toISOString();
   const sessao = {
     id: usuarioNormalizado.id,
     nome: usuarioNormalizado.nome,
     email: usuarioNormalizado.email,
     perfil: usuarioNormalizado.perfil,
     permissoesPaginas: usuarioNormalizado.permissoesPaginas,
-    loginEm: new Date().toISOString(),
+    loginEm,
+    expiraEm: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
   };
 
   localStorage.setItem(SESSION_KEY, JSON.stringify(sessao));
@@ -336,10 +339,17 @@ export function carregarSessao() {
     const parsed = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
 
     if (!parsed?.id) return null;
+    if (!parsed.expiraEm || new Date(parsed.expiraEm).getTime() <= Date.now()) {
+      sairLocal();
+      return null;
+    }
 
     const usuarioAtual = carregarUsuarios().find((item) => item.id === parsed.id && item.ativo !== false);
 
-    if (!usuarioAtual) return null;
+    if (!usuarioAtual) {
+      sairLocal();
+      return null;
+    }
 
     return {
       id: usuarioAtual.id,
@@ -348,6 +358,7 @@ export function carregarSessao() {
       perfil: usuarioAtual.perfil,
       permissoesPaginas: permissoesUsuario(usuarioAtual),
       loginEm: parsed.loginEm || new Date().toISOString(),
+      expiraEm: parsed.expiraEm,
     };
   } catch {
     return null;
