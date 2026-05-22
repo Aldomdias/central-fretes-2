@@ -1857,6 +1857,7 @@ export default function TabelasNegociacaoPage() {
       {laudoSalvoAberto ? (
         <div
           className="modal-overlay"
+          onClick={function() { setLaudoSalvoAberto(null); }}
           style={{
             position: 'fixed',
             inset: 0,
@@ -1866,8 +1867,25 @@ export default function TabelasNegociacaoPage() {
             padding: 24,
           }}
         >
-          <div style={{ maxWidth: 1060, margin: '0 auto', display: 'grid', gap: 12 }}>
-            <div className="laudo-print-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+          <div onClick={function(event) { event.stopPropagation(); }} style={{ maxWidth: 1060, margin: '54px auto 0', display: 'grid', gap: 12 }}>
+            <div
+              className="laudo-print-actions"
+              style={{
+                position: 'fixed',
+                top: 12,
+                right: 24,
+                zIndex: 10000,
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 8,
+                flexWrap: 'wrap',
+                padding: 8,
+                background: 'rgba(255,255,255,0.96)',
+                border: '1px solid #cbd5e1',
+                borderRadius: 8,
+                boxShadow: '0 12px 28px rgba(15,23,42,0.18)',
+              }}
+            >
               <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.assunto, 'Assunto'); }}>
                 Copiar assunto
               </button>
