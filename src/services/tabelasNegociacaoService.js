@@ -797,6 +797,8 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
 
     faturamentoSelecionadaMes: resultado.faturamentoSelecionadaMes || 0,
     faturamentoSelecionadaAno: resultado.faturamentoSelecionadaAno || 0,
+    faturamentoSelecionadaGanhadoraMes: resultado.faturamentoSelecionadaGanhadoraMes || 0,
+    faturamentoSelecionadaGanhadoraAno: resultado.faturamentoSelecionadaGanhadoraAno || 0,
 
     savingSelecionadaVsReal: resultado.savingSelecionadaVsReal || 0,
     savingSelecionadaVsRealMes: resultado.savingSelecionadaVsRealMes || 0,
@@ -817,7 +819,25 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     peso: resultado.peso || 0,
     valorNF: resultado.valorNF || 0,
 
+    freteSelecionadaGanhadora: resultado.freteSelecionadaGanhadora || 0,
+    freteCapturadoRealizado: resultado.freteCapturadoRealizado || 0,
+    freteCapturadoTabela: resultado.freteCapturadoTabela || 0,
+    savingCapturado: resultado.savingCapturado || 0,
+    ctesCapturadosDeOutras: resultado.ctesCapturadosDeOutras || 0,
+    qtdRotasComTabelaSelecionada: resultado.qtdRotasComTabelaSelecionada || 0,
+    qtdRotasGanhasSelecionada: resultado.qtdRotasGanhasSelecionada || 0,
+    qtdRotasComGanhoSelecionada: resultado.qtdRotasComGanhoSelecionada || 0,
+    qtdRotasParciaisSelecionada: resultado.qtdRotasParciaisSelecionada || 0,
+    qtdRotasPerdidasSelecionada: resultado.qtdRotasPerdidasSelecionada || 0,
+
     rotas: (resultado.rotas || []).slice(0, 100),
+    rotasGanhasDestaque: (resultado.rotasGanhasDestaque || []).slice(0, 20),
+    rotasPerdidasDestaque: (resultado.rotasPerdidasDestaque || []).slice(0, 20),
+    resumoPorEstado: (resultado.resumoPorEstado || []).slice(0, 27),
+    estadosGanhadoresDestaque: (resultado.estadosGanhadoresDestaque || []).slice(0, 10),
+    estadosPerdidosDestaque: (resultado.estadosPerdidosDestaque || []).slice(0, 10),
+    transportadorasPerdaDestaque: (resultado.transportadorasPerdaDestaque || []).slice(0, 10),
+    laudo: (resultado.laudo || []).slice(0, 20),
     pareto80Volume: resultado.pareto80Volume || null,
     diagnostico: resultado.diagnostico || {},
   };
@@ -832,12 +852,17 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       aderencia: numero(resultado.aderencia_projetada ?? resultado.aderenciaSelecionada ?? 0),
       saving_mes: numero(resultado.saving_projetado ?? resultado.savingSelecionadaVsRealMes ?? resultado.savingSelecionadaVsReal ?? 0),
       saving_ano: numero(resultado.savingSelecionadaVsRealAno ?? 0),
-      faturamento_mes: numero(resultado.faturamento_projetado ?? resultado.faturamentoSelecionadaMes ?? resultado.freteSelecionada ?? 0),
-      faturamento_ano: numero(resultado.faturamentoSelecionadaAno ?? 0),
+      faturamento_mes: numero(resultado.faturamento_projetado ?? resultado.faturamentoSelecionadaGanhadoraMes ?? resultado.faturamentoSelecionadaMes ?? resultado.freteSelecionada ?? 0),
+      faturamento_ano: numero(resultado.faturamentoSelecionadaGanhadoraAno ?? resultado.faturamentoSelecionadaAno ?? 0),
       pedidos_dia: numero(resultado.volumetria_dia ?? resultado.cargasDia ?? 0),
       volumes_dia: numero(resultado.volumesDia ?? 0),
       percentual_frete_realizado: numero(resultado.percentualFreteRealizado ?? 0),
       percentual_frete_simulado: numero(resultado.percentual_frete_projetado ?? resultado.percentualFreteTabelaGanharia ?? resultado.percentualFreteSelecionada ?? 0),
+      rotas_com_ganho: inteiro(resultado.qtdRotasComGanhoSelecionada ?? 0),
+      rotas_ganhas: inteiro(resultado.qtdRotasGanhasSelecionada ?? 0),
+      rotas_parciais: inteiro(resultado.qtdRotasParciaisSelecionada ?? 0),
+      frete_capturado: numero(resultado.freteCapturadoRealizado ?? 0),
+      ctes_capturados: inteiro(resultado.ctesCapturadosDeOutras ?? 0),
     },
   };
 
@@ -859,6 +884,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
 
     faturamento_projetado: numero(
       resultado.faturamento_projetado ??
+      resultado.faturamentoSelecionadaGanhadoraMes ??
       resultado.faturamentoSelecionadaMes ??
       resultado.freteSelecionada ??
       0
