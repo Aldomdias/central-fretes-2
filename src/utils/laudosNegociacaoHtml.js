@@ -1,145 +1,143 @@
-export function numeroLaudo(value = 0) {
-  const n = Number(value || 0);
-  return Number.isFinite(n) ? n : 0;
+function dinheiro(valor) {
+  return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-export function formatMoneyLaudo(value = 0) {
-  return numeroLaudo(value).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-    maximumFractionDigits: 0,
-  });
-}
-
-export function formatMoneyDetalhadoLaudo(value = 0) {
-  return numeroLaudo(value).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-export function formatNumberLaudo(value = 0, casas = 0) {
-  return numeroLaudo(value).toLocaleString('pt-BR', {
+function numero(valor, casas = 0) {
+  return Number(valor || 0).toLocaleString('pt-BR', {
     minimumFractionDigits: casas,
     maximumFractionDigits: casas,
   });
 }
 
-export function formatPercentLaudo(value = 0) {
-  return `${numeroLaudo(value).toFixed(2)}%`;
+function percentual(valor) {
+  return `${Number(valor || 0).toFixed(2)}%`;
 }
 
-export function periodoLaudo(resultado = {}) {
-  const filtros = resultado?.filtros || {};
-  const inicio = filtros.inicio || filtros.periodoInicio || '';
-  const fim = filtros.fim || filtros.periodoFim || '';
-  if (inicio && fim) return `${inicio} a ${fim}`;
-  if (inicio) return `A partir de ${inicio}`;
-  if (fim) return `Até ${fim}`;
-  return 'Período filtrado na simulação';
+function periodo(resultado = {}) {
+  const inicio = resultado.filtros?.inicio || '';
+  const fim = resultado.filtros?.fim || '';
+  if (inicio || fim) return `${inicio || 'inicio'} a ${fim || 'fim'}`;
+  return 'periodo selecionado';
 }
 
-export function classificarRotaDevolutiva(rota = {}) {
-  const freteRealizado = numeroLaudo(rota.freteRealizado);
-  const freteTabela = numeroLaudo(rota.freteSelecionada || rota.freteTabela);
-  const diferenca = freteTabela - freteRealizado;
-  const gapPct = freteRealizado ? (diferenca / freteRealizado) * 100 : 0;
-
-  if (freteTabela > 0 && freteRealizado > 0 && freteTabela <= freteRealizado) {
-    return { status: 'Competitiva', tone: 'good', gapPct, diferenca };
-  }
-  if (gapPct > 40) return { status: 'Crítico', tone: 'danger', gapPct, diferenca };
-  if (gapPct > 20) return { status: 'Revisar', tone: 'danger', gapPct, diferenca };
-  if (gapPct > 5) return { status: 'Atenção', tone: 'warning', gapPct, diferenca };
-  return { status: 'Atenção', tone: 'warning', gapPct, diferenca };
+function resumoTexto(linhas = []) {
+  return linhas.filter(Boolean).join('\n');
 }
 
-export function montarDadosLaudoNegociacao(resultado = {}, opcoes = {}) {
-  const filtros = resultado?.filtros || {};
-  const transportadora = opcoes.transportadora || filtros.transportadora || filtros.transportadoraTabelaUsada || 'Transportadora';
-  const canal = opcoes.canal || filtros.canal || 'ATACADO';
-  const origem = opcoes.origem || filtros.origem || (Array.isArray(filtros.origensPadraoTabela) && filtros.origensPadraoTabela.length ? filtros.origensPadraoTabela.join(', ') : 'Todas');
-  const periodo = opcoes.periodo || periodoLaudo(resultado);
-  const geradoEm = opcoes.geradoEm || new Date().toLocaleDateString('pt-BR');
+function rotasGanhas(resultado = {}) {
+  return (resultado.rotasGanhasDestaque || resultado.rotas || [])
+    .filter((item) => Number(item.qtdGanhasSelecionada || 0) > 0)
+    .slice(0, 8);
+}
 
-  const rotas = Array.isArray(resultado.rotas) ? resultado.rotas : [];
-  const rotasComClassificacao = rotas.map((rota) => ({
-    ...rota,
-    ...classificarRotaDevolutiva(rota),
-  }));
+function rotasPerdidas(resultado = {}) {
+  return (resultado.rotasPerdidasDestaque || resultado.rotas || [])
+    .filter((item) => Number(item.qtdPerdidasSelecionada || 0) > 0 || Number(item.diferencaParaVencedor || 0) > 0)
+    .sort((a, b) => Number(b.diferencaParaVencedor || 0) - Number(a.diferencaParaVencedor || 0))
+    .slice(0, 8);
+}
 
-  const rotasCriticas = rotasComClassificacao
-    .filter((rota) => rota.tone === 'danger' || numeroLaudo(rota.diferencaParaVencedor) > 0 || numeroLaudo(rota.qtdPerdidasSelecionada) > 0)
-    .sort((a, b) => Math.abs(numeroLaudo(b.diferenca)) - Math.abs(numeroLaudo(a.diferenca)) || numeroLaudo(b.ctes) - numeroLaudo(a.ctes))
-    .slice(0, 15);
+export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
+  const transportadora = contexto.transportadora || resultado.filtros?.transportadora || 'Transportadora';
+  const canal = contexto.canal || resultado.filtros?.canal || '';
+  const origem = contexto.origem || resultado.filtros?.origem || '';
+  const geradoEm = new Date().toISOString();
+  const periodoAnalise = periodo(resultado);
+  const ganhas = rotasGanhas(resultado);
+  const perdidas = rotasPerdidas(resultado);
+  const estados = (resultado.resumoPorEstado || resultado.estadosGanhadoresDestaque || []).slice(0, 8);
+  const cubagemOutliers = Number(resultado.filtros?.trackingCubagemOutliers || 0);
+  const coberturaMes = Number(resultado.faturamentoSelecionadaMes || 0);
+  const ganhoMes = Number(resultado.faturamentoSelecionadaGanhadoraMes || 0);
+  const naoCapturadoMes = Math.max(coberturaMes - ganhoMes, 0);
 
-  const rotasCompetitivas = rotasComClassificacao
-    .filter((rota) => rota.status === 'Competitiva' || numeroLaudo(rota.qtdGanhasSelecionada) > 0)
-    .sort((a, b) => numeroLaudo(b.qtdGanhasSelecionada) - numeroLaudo(a.qtdGanhasSelecionada) || numeroLaudo(b.ctes) - numeroLaudo(a.ctes))
-    .slice(0, 10);
+  const assuntoExecutivo = `Analise de competitividade - ${transportadora} - Simulacao de frete realizado`;
+  const corpoExecutivo = resumoTexto([
+    'Prezados,',
+    '',
+    `Segue analise de competitividade da transportadora ${transportadora}, considerando a base de CT-es realizados no ${periodoAnalise} e a comparacao da tabela simulada contra as demais tabelas disponiveis no sistema.`,
+    '',
+    `A transportadora participou da simulacao em ${numero(resultado.ctesComTabelaSelecionada)} CT-es de ${numero(resultado.ctesAnalisados)} analisados, apresentando ganho em ${numero(resultado.ctesGanhariaSelecionada)} CT-es (${percentual(resultado.aderenciaSelecionada)}) e perda em ${numero(resultado.ctesPerdidosSelecionada)} CT-es para concorrentes mais competitivos.`,
+    '',
+    'Resumo executivo',
+    `- Cobertura/carteira cotada pela tabela: ${dinheiro(coberturaMes)} por mes.`,
+    `- Faturamento efetivamente ganho: ${dinheiro(ganhoMes)} por mes e ${dinheiro(resultado.faturamentoSelecionadaGanhadoraAno)} em 12 meses.`,
+    `- Volume nao capturado ou perdido para outras tabelas: ${dinheiro(naoCapturadoMes)} por mes.`,
+    `- Saving potencial nas rotas ganhas: ${dinheiro(resultado.savingSelecionadaVsRealMes)} por mes e ${dinheiro(resultado.savingSelecionadaVsRealAno)} em 12 meses.`,
+    `- Reducao media necessaria nas rotas perdidas: ${percentual(resultado.reducaoMediaNecessaria)}.`,
+    '',
+    'Principais rotas ganhas',
+    ...(ganhas.length ? ganhas.map((item) => `- ${item.rota}: ${numero(item.qtdGanhasSelecionada)} CT-es, faturamento ganho ${dinheiro(item.freteSelecionadaGanhadora || 0)}.`) : ['- Nao disponivel no recorte atual.']),
+    '',
+    'Principais rotas perdidas',
+    ...(perdidas.length ? perdidas.map((item) => `- ${item.rota}: reducao media necessaria de ${percentual(item.reducaoMediaNecessaria)}, referencia ${item.principalVencedor || '-'}.`) : ['- Nao foram identificadas rotas perdidas criticas no recorte atual.']),
+    '',
+    'Recomendacao final',
+    'Diante dos resultados, a recomendacao e seguir com negociacao direcionada nas rotas de maior perda, priorizando aquelas com maior volume e maior diferenca percentual. Caso a transportadora ajuste os pontos criticos identificados, ha potencial de aumento de competitividade e captura de saving no periodo analisado.',
+    cubagemOutliers ? `\nObservacao tecnica: ${numero(cubagemOutliers)} CT-e(s) apresentaram cubagem fora do padrao e foram tratados para evitar distorcao na analise.` : '',
+  ]);
 
-  const freteRealizado = numeroLaudo(resultado.freteRealizado);
-  const freteTabela = numeroLaudo(resultado.freteSelecionada || resultado.freteSelecionadaGanhadora);
-  const diferencaTotal = freteTabela - freteRealizado;
-  const diferencaPercentual = freteRealizado ? (diferencaTotal / freteRealizado) * 100 : 0;
-  const aderencia = numeroLaudo(resultado.aderenciaSelecionada);
-  const meses = Math.max(1, numeroLaudo(resultado.meses || 1));
-  const impactoMensal = diferencaTotal / meses;
-  const impactoAnual = impactoMensal * 12;
+  const assuntoTransportador = `Devolutiva de competitividade - ${transportadora} - Oportunidades de ajuste`;
+  const corpoTransportador = resumoTexto([
+    'Prezados,',
+    '',
+    `Realizamos uma analise de competitividade da tabela da ${transportadora} considerando as rotas e CT-es movimentados no ${periodoAnalise}. O objetivo e compartilhar uma visao pratica dos pontos em que a tabela apresenta boa aderencia e tambem das oportunidades de ajuste para ampliar a competitividade da operacao.`,
+    '',
+    'Visao geral da participacao na simulacao',
+    `- Foram analisados ${numero(resultado.ctesAnalisados)} CT-es, dos quais ${numero(resultado.ctesComTabelaSelecionada)} possuiam cobertura da tabela simulada.`,
+    `- A tabela ficou competitiva em ${numero(resultado.ctesGanhariaSelecionada)} CT-es, com aderencia de ${percentual(resultado.aderenciaSelecionada)}.`,
+    `- Foram identificados ${numero(resultado.ctesPerdidosSelecionada)} CT-es com oportunidade de melhoria frente as referencias mais competitivas da base analisada.`,
+    '',
+    'Rotas com boa competitividade',
+    ...(ganhas.length ? ganhas.map((item) => `- ${item.rota}: ${numero(item.qtdGanhasSelecionada)} CT-es com boa competitividade no recorte.`) : ['- Nao disponivel no recorte atual.']),
+    '',
+    'Rotas com perda de competitividade',
+    ...(perdidas.length ? perdidas.map((item) => `- ${item.rota}: reducao media aproximada de ${percentual(item.reducaoMediaNecessaria)} para aproximacao das referencias mais competitivas.`) : ['- Nao foram identificadas rotas criticas no recorte atual.']),
+    '',
+    'Direcional comercial',
+    `Nas rotas em que a tabela nao ficou em primeiro lugar, foi identificada uma necessidade media de reducao de aproximadamente ${percentual(resultado.reducaoMediaNecessaria)} para que a transportadora se aproxime dos valores mais competitivos do mercado analisado. Recomendamos priorizar a revisao das rotas com maior volume de CT-es e maior diferenca percentual.`,
+    cubagemOutliers ? 'Alguns registros apresentaram inconsistencia de cubagem e foram tratados para evitar distorcoes na analise.' : '',
+    '',
+    'Proximos passos sugeridos',
+    'Ficamos a disposicao para avaliar uma contraproposta direcionada, principalmente nas rotas destacadas como criticas. O ajuste nesses pontos pode aumentar a competitividade da transportadora e ampliar sua participacao nas proximas movimentacoes.',
+  ]);
 
-  const textoTransportador = [
-    `Prezados, boa tarde.`,
-    ``,
-    `Conforme análise realizada para ${transportadora}, identificamos que a tabela apresenta aderência competitiva de ${formatPercentLaudo(aderencia)} no recorte avaliado.`,
-    `As principais oportunidades de revisão estão concentradas nas rotas com maior volume e maior diferença frente aos valores praticados no período.`,
-    ``,
-    `Recomendamos priorizar os destinos destacados como críticos/revisar, mantendo as condições competitivas nas rotas onde a tabela já apresenta bom posicionamento.`,
-    ``,
-    `Fico à disposição para seguirmos com a revisão comercial e nova rodada de análise após o envio da contraproposta.`,
-  ].join('\n');
-
-  const textoExecutivo = [
-    `Resumo executivo — ${transportadora}`,
-    ``,
-    `A simulação avaliou ${formatNumberLaudo(resultado.ctesAnalisados)} CT-es no período ${periodo}.`,
-    `A tabela apresenta aderência de ${formatPercentLaudo(aderencia)}, com ${formatNumberLaudo(resultado.ctesGanhariaSelecionada)} CT-es em condição vencedora e ${formatNumberLaudo(resultado.ctesPerdidosSelecionada)} CT-es fora de competitividade.`,
-    ``,
-    `Frete realizado no recorte: ${formatMoneyDetalhadoLaudo(freteRealizado)}. Frete simulado pela tabela: ${formatMoneyDetalhadoLaudo(freteTabela)}.`,
-    `Impacto mensal estimado: ${formatMoneyDetalhadoLaudo(impactoMensal)}. Impacto anual estimado: ${formatMoneyDetalhadoLaudo(impactoAnual)}.`,
-    ``,
-    `Recomendação: avançar com negociação nas rotas críticas e validar nova rodada antes de promover a tabela para oficial.`,
-  ].join('\n');
-
-  return {
-    geradoEm,
+  const comum = {
     transportadora,
     canal,
     origem,
-    periodo,
-    ctesAnalisados: numeroLaudo(resultado.ctesAnalisados),
-    ctesComTabela: numeroLaudo(resultado.ctesComTabelaSelecionada),
-    ctesGanharia: numeroLaudo(resultado.ctesGanhariaSelecionada),
-    ctesPerderia: numeroLaudo(resultado.ctesPerdidosSelecionada),
-    freteRealizado,
-    freteTabela,
-    freteVencedor: numeroLaudo(resultado.freteVencedor),
-    faturamentoMensal: numeroLaudo(resultado.faturamentoSelecionadaGanhadoraMes || resultado.faturamentoSelecionadaMes),
-    faturamentoAnual: numeroLaudo(resultado.faturamentoSelecionadaGanhadoraAno || resultado.faturamentoSelecionadaAno),
-    savingMensal: numeroLaudo(resultado.savingSelecionadaVsRealMes),
-    savingAnual: numeroLaudo(resultado.savingSelecionadaVsRealAno),
-    diferencaTotal,
-    diferencaPercentual,
-    impactoMensal,
-    impactoAnual,
-    aderencia,
-    reducaoMediaNecessaria: numeroLaudo(resultado.reducaoMediaNecessaria),
-    rotasCriticas,
-    rotasCompetitivas,
-    resumoRotas: rotasComClassificacao.slice(0, 80),
-    textoTransportador,
-    textoExecutivo,
-    fonte: 'Central Fretes / Simulador de Fretes',
+    periodo: periodoAnalise,
+    geradoEm,
+    indicadores: {
+      ctesAnalisados: resultado.ctesAnalisados || 0,
+      ctesComTabela: resultado.ctesComTabelaSelecionada || 0,
+      ctesGanhas: resultado.ctesGanhariaSelecionada || 0,
+      ctesPerdidas: resultado.ctesPerdidosSelecionada || 0,
+      aderencia: resultado.aderenciaSelecionada || 0,
+      reducaoMedia: resultado.reducaoMediaNecessaria || 0,
+      faturamentoGanhoMes: ganhoMes,
+      faturamentoGanhoAno: resultado.faturamentoSelecionadaGanhadoraAno || 0,
+      savingMes: resultado.savingSelecionadaVsRealMes || 0,
+      savingAno: resultado.savingSelecionadaVsRealAno || 0,
+    },
+    rotasGanhas: ganhas,
+    rotasPerdidas: perdidas,
+    estados,
+    observacaoCubagem: cubagemOutliers ? `${numero(cubagemOutliers)} CT-e(s) apresentaram cubagem fora do padrao e foram tratados para evitar distorcao.` : '',
+  };
+
+  return {
+    executivo: {
+      ...comum,
+      assunto: assuntoExecutivo,
+      corpoEmail: corpoExecutivo,
+      laudoCompleto: `Assunto: ${assuntoExecutivo}\n\n${corpoExecutivo}`,
+    },
+    transportador: {
+      ...comum,
+      assunto: assuntoTransportador,
+      corpoEmail: corpoTransportador,
+      laudoCompleto: `Assunto: ${assuntoTransportador}\n\n${corpoTransportador}`,
+    },
   };
 }
