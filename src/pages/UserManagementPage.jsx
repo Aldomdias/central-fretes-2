@@ -31,6 +31,95 @@ function agruparModulos() {
   }, {});
 }
 
+const styles = {
+  compactPanel: {
+    marginTop: 12,
+    border: '1px solid #dfe6f2',
+    borderRadius: 12,
+    background: '#f8faff',
+    padding: 12,
+  },
+  moduleHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 10,
+  },
+  moduleTitle: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: '#071b49',
+  },
+  moduleCount: {
+    fontSize: 11,
+    color: '#5f7197',
+  },
+  moduleGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 10,
+  },
+  moduleGroup: {
+    display: 'grid',
+    gap: 6,
+    alignContent: 'start',
+  },
+  groupTitle: {
+    fontSize: 11,
+    fontWeight: 800,
+    color: '#3a568a',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  moduleButton: {
+    minHeight: 30,
+    borderRadius: 8,
+    border: '1px solid #d6dce8',
+    background: '#fff',
+    color: '#334155',
+    padding: '5px 8px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    textAlign: 'left',
+    fontSize: 12,
+    fontWeight: 650,
+  },
+  moduleButtonActive: {
+    borderColor: '#071b49',
+    background: '#071b49',
+    color: '#fff',
+  },
+  checkBox: {
+    width: 14,
+    height: 14,
+    borderRadius: 4,
+    border: '1px solid currentColor',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    fontSize: 10,
+    lineHeight: 1,
+  },
+  activeLine: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 27,
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  activeInput: {
+    width: 16,
+    minHeight: 16,
+    height: 16,
+    padding: 0,
+    margin: 0,
+  },
+};
+
 function ModulosCheckboxes({ permissoes, onChange, disabled }) {
   const grupos = useMemo(() => agruparModulos(), []);
   const selecionadas = Array.isArray(permissoes) && permissoes.includes('*')
@@ -38,6 +127,7 @@ function ModulosCheckboxes({ permissoes, onChange, disabled }) {
     : (permissoes || []);
 
   const alternar = (chave) => {
+    if (disabled) return;
     const atual = new Set(selecionadas);
     if (atual.has(chave)) atual.delete(chave);
     else atual.add(chave);
@@ -45,23 +135,35 @@ function ModulosCheckboxes({ permissoes, onChange, disabled }) {
   };
 
   return (
-    <div className="hint-box compact" style={{ marginTop: 12 }}>
-      <strong>Módulos permitidos</strong>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginTop: 12 }}>
+    <div style={styles.compactPanel}>
+      <div style={styles.moduleHeader}>
+        <strong style={styles.moduleTitle}>Módulos permitidos</strong>
+        <span style={styles.moduleCount}>{selecionadas.length} selecionado(s)</span>
+      </div>
+      <div style={styles.moduleGrid}>
         {Object.entries(grupos).map(([grupo, modulos]) => (
-          <div key={grupo}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: '#334155', marginBottom: 8 }}>{grupo}</div>
-            {modulos.map((modulo) => (
-              <label key={modulo.chave} className="checkbox-line" style={{ marginBottom: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={selecionadas.includes(modulo.chave)}
-                  onChange={() => alternar(modulo.chave)}
+          <div key={grupo} style={styles.moduleGroup}>
+            <div style={styles.groupTitle}>{grupo}</div>
+            {modulos.map((modulo) => {
+              const ativo = selecionadas.includes(modulo.chave);
+              return (
+                <button
+                  key={modulo.chave}
+                  type="button"
+                  onClick={() => alternar(modulo.chave)}
                   disabled={disabled}
-                />
-                {modulo.label}
-              </label>
-            ))}
+                  style={{
+                    ...styles.moduleButton,
+                    ...(ativo ? styles.moduleButtonActive : {}),
+                    opacity: disabled ? 0.65 : 1,
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <span style={styles.checkBox}>{ativo ? '✓' : ''}</span>
+                  <span>{modulo.label}</span>
+                </button>
+              );
+            })}
           </div>
         ))}
       </div>
@@ -209,7 +311,7 @@ export default function UserManagementPage({ usuarioAtual }) {
           </label>
         </div>
 
-        <div className="form-grid three">
+        <div className="form-grid three" style={{ alignItems: 'end' }}>
           <label className="field">
             Perfil
             <select value={form.perfil} onChange={(event) => alterarPerfilForm(event.target.value)} disabled={salvando}>
@@ -218,8 +320,14 @@ export default function UserManagementPage({ usuarioAtual }) {
               ))}
             </select>
           </label>
-          <label className="checkbox-line top-space-sm">
-            <input type="checkbox" checked={form.ativo} onChange={(event) => atualizarForm('ativo', event.target.checked)} disabled={salvando} />
+          <label style={styles.activeLine}>
+            <input
+              type="checkbox"
+              checked={form.ativo}
+              onChange={(event) => atualizarForm('ativo', event.target.checked)}
+              disabled={salvando}
+              style={styles.activeInput}
+            />
             Usuário ativo
           </label>
           <div className="actions-right">
@@ -301,7 +409,7 @@ export default function UserManagementPage({ usuarioAtual }) {
         </div>
 
         {usuarios.map((usuario) => (
-          <div key={`${usuario.id}-modulos`} className="panel-card" style={{ marginTop: 12 }}>
+          <div key={`${usuario.id}-modulos`} className="panel-card" style={{ marginTop: 12, borderRadius: 16 }}>
             <div className="section-row compact-top">
               <div>
                 <div className="panel-title">{usuario.nome}</div>
