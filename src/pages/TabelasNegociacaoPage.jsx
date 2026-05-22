@@ -26,6 +26,7 @@ import {
   substituirTaxasDestino,
   salvarGeneralidades,
 } from '../services/tabelasNegociacaoService';
+import { LaudoNegociacaoTemplate } from '../components/laudos';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,16 @@ function getResumoTabela(tabela) {
   return tabela && tabela.resumo_simulacao && typeof tabela.resumo_simulacao === 'object' && !Array.isArray(tabela.resumo_simulacao)
     ? tabela.resumo_simulacao
     : {};
+}
+function getLaudosTabela(tabela) {
+  var resumo = getResumoTabela(tabela);
+  return resumo.laudos && typeof resumo.laudos === 'object' && !Array.isArray(resumo.laudos)
+    ? resumo.laudos
+    : {};
+}
+function getDadosLaudoSalvo(laudo) {
+  if (!laudo || typeof laudo !== 'object') return null;
+  return laudo.dados && typeof laudo.dados === 'object' ? laudo.dados : laudo;
 }
 function getHistoricoRodadasTabela(tabela) {
   var resumo = getResumoTabela(tabela);
@@ -498,6 +509,7 @@ export default function TabelasNegociacaoPage() {
   const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
+  const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
 
   const negociacoesMesmaTransportadora = useMemo(function() {
     if (!selecionada) return [];
@@ -584,6 +596,29 @@ export default function TabelasNegociacaoPage() {
     setResultadoCantu(null); setResultadoLotacao(null);
     setArquivoRotas(null); setArquivoFretes(null);
     setArquivoCantu(null); setArquivoLotacao(null);
+  }
+
+  async function copiarTextoLaudoSalvo(texto, label) {
+    var conteudo = String(texto || '').trim();
+    if (!conteudo) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(conteudo);
+      } else {
+        var area = document.createElement('textarea');
+        area.value = conteudo;
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        document.execCommand('copy');
+        document.body.removeChild(area);
+      }
+      setSucesso((label || 'Texto') + ' copiado para a area de transferencia.');
+    } catch (e) {
+      setErro('Nao foi possivel copiar o texto automaticamente.');
+    }
   }
 
   async function carregar() {
@@ -1062,6 +1097,7 @@ export default function TabelasNegociacaoPage() {
               {tabelas.map(function(tabela) {
                 var ind = getIndicadoresTabela(tabela);
                 var historicoRodadas = getHistoricoRodadasTabela(tabela);
+                var laudos = getLaudosTabela(tabela);
                 return (
                   <tr key={tabela.id}>
                     <td style={{ minWidth: 230 }}>
@@ -1130,6 +1166,16 @@ export default function TabelasNegociacaoPage() {
                         <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
                         <button className="primary" type="button" onClick={function() { handleAbrirNovaRodadaTabela(tabela); }} disabled={abrindoRodada}>+ Rodada</button>
                         <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(tabela); }}>+ Origem</button>
+                        {laudos.executivo ? (
+                          <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
+                            Laudo Executivo
+                          </button>
+                        ) : null}
+                        {laudos.transportador ? (
+                          <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'transportador', dados: getDadosLaudoSalvo(laudos.transportador) }); }}>
+                            Devolutiva
+                          </button>
+                        ) : null}
                         <select value={tabela.status} onChange={function(e) { atualizarStatus(tabela, e.target.value); }}>
                           {STATUS_TABELA_NEGOCIACAO.map(function(s) { return <option key={s}>{s}</option>; })}
                         </select>
@@ -1167,6 +1213,7 @@ export default function TabelasNegociacaoPage() {
 
           {selecionada ? (function() {
             var ind = getIndicadoresTabela(selecionada);
+            var laudos = getLaudosTabela(selecionada);
             return ind.temSimulacao ? (
               <>
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
@@ -1208,6 +1255,30 @@ export default function TabelasNegociacaoPage() {
                   </div>
                 </div>
               </div>
+              {(laudos.executivo || laudos.transportador) ? (
+                <div className="sim-parametros-box" style={{ marginTop: -4, marginBottom: 18 }}>
+                  <div className="sim-parametros-header">
+                    <div>
+                      <strong>Laudos salvos da simulação</strong>
+                      <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>
+                        Conteudo gravado junto com o resultado desta negociação para consulta posterior.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="sim-actions" style={{ marginTop: 12 }}>
+                    {laudos.executivo ? (
+                      <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
+                        Abrir Laudo Executivo
+                      </button>
+                    ) : null}
+                    {laudos.transportador ? (
+                      <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'transportador', dados: getDadosLaudoSalvo(laudos.transportador) }); }}>
+                        Abrir Devolutiva Transportador
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
               </>
             ) : (
               <div className="sim-alert info" style={{ marginBottom: 18 }}>
@@ -1783,6 +1854,45 @@ export default function TabelasNegociacaoPage() {
         </section>
       ) : null}
 
+      {laudoSalvoAberto ? (
+        <div
+          className="modal-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,23,42,0.72)',
+            zIndex: 9999,
+            overflow: 'auto',
+            padding: 24,
+          }}
+        >
+          <div style={{ maxWidth: 1060, margin: '0 auto', display: 'grid', gap: 12 }}>
+            <div className="laudo-print-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+              <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.assunto, 'Assunto'); }}>
+                Copiar assunto
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.corpoEmail, 'Corpo do e-mail'); }}>
+                Copiar corpo
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.laudoCompleto, 'Laudo completo'); }}>
+                Copiar laudo completo
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { window.print(); }}>
+                Imprimir / PDF
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto(null); }}>
+                Fechar
+              </button>
+            </div>
+
+            <LaudoNegociacaoTemplate
+              tipo={laudoSalvoAberto.tipo}
+              dados={laudoSalvoAberto.dados}
+            />
+          </div>
+        </div>
+      ) : null}
+
       {/* MODAL NOVA ORIGEM */}
       {modalNovaOrigem ? (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 9999, display: 'grid', placeItems: 'center', padding: 20 }}>
@@ -1863,4 +1973,3 @@ export default function TabelasNegociacaoPage() {
     </div>
   );
 }
- 
