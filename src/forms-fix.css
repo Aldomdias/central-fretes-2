@@ -1,0 +1,53 @@
+/* Correção global: campos de texto ocupam 100%, mas checkbox/radio devem manter tamanho nativo. */
+input[type="checkbox"],
+input[type="radio"],
+.field input[type="checkbox"],
+.field input[type="radio"],
+.checkbox-field input[type="checkbox"],
+.checkbox-field input[type="radio"],
+.checkbox-line input[type="checkbox"],
+.checkbox-line input[type="radio"],
+.checkbox-inline input[type="checkbox"],
+.checkbox-inline input[type="radio"],
+.sim-form-grid input[type="checkbox"],
+.sim-form-grid input[type="radio"],
+.sim-lista-box input[type="checkbox"],
+.sim-lista-box input[type="radio"],
+.sim-grade-row input[type="checkbox"],
+.sim-grade-row input[type="radio"],
+.folder-file-item input[type="checkbox"],
+.folder-file-item input[type="radio"] {
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  margin: 0;
+  flex: 0 0 16px;
+  accent-color: var(--primary);
+}
+
+input[type="radio"],
+.field input[type="radio"],
+.checkbox-field input[type="radio"],
+.checkbox-line input[type="radio"],
+.checkbox-inline input[type="radio"],
+.sim-form-grid input[type="radio"],
+.sim-lista-box input[type="radio"],
+.sim-grade-row input[type="radio"] {
+  border-radius: 50%;
+}
+
+.checkbox-line,
+.checkbox-inline,
+.checkbox-field label,
+.sim-flag,
+.switch-linha {
+  align-items: center;
+}
+
+.checkbox-line input + span,
+.checkbox-inline input + span {
+  min-width: 0;
+}
