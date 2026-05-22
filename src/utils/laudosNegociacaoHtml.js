@@ -102,39 +102,62 @@ export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
     'Ficamos a disposicao para avaliar uma contraproposta direcionada, principalmente nas rotas destacadas como criticas. O ajuste nesses pontos pode aumentar a competitividade da transportadora e ampliar sua participacao nas proximas movimentacoes.',
   ]);
 
-  const comum = {
+  const indicadoresExecutivo = {
+    ctesAnalisados: resultado.ctesAnalisados || 0,
+    ctesComTabela: resultado.ctesComTabelaSelecionada || 0,
+    ctesGanhas: resultado.ctesGanhariaSelecionada || 0,
+    ctesPerdidas: resultado.ctesPerdidosSelecionada || 0,
+    aderencia: resultado.aderenciaSelecionada || 0,
+    reducaoMedia: resultado.reducaoMediaNecessaria || 0,
+    faturamentoGanhoMes: ganhoMes,
+    faturamentoGanhoAno: resultado.faturamentoSelecionadaGanhadoraAno || 0,
+    savingMes: resultado.savingSelecionadaVsRealMes || 0,
+    savingAno: resultado.savingSelecionadaVsRealAno || 0,
+  };
+
+  const indicadoresTransportador = {
+    ctesAnalisados: resultado.ctesAnalisados || 0,
+    ctesComTabela: resultado.ctesComTabelaSelecionada || 0,
+    ctesGanhas: resultado.ctesGanhariaSelecionada || 0,
+    ctesPerdidas: resultado.ctesPerdidosSelecionada || 0,
+    aderencia: resultado.aderenciaSelecionada || 0,
+    reducaoMedia: resultado.reducaoMediaNecessaria || 0,
+  };
+
+  const baseComum = {
     transportadora,
     canal,
     origem,
     periodo: periodoAnalise,
     geradoEm,
-    indicadores: {
-      ctesAnalisados: resultado.ctesAnalisados || 0,
-      ctesComTabela: resultado.ctesComTabelaSelecionada || 0,
-      ctesGanhas: resultado.ctesGanhariaSelecionada || 0,
-      ctesPerdidas: resultado.ctesPerdidosSelecionada || 0,
-      aderencia: resultado.aderenciaSelecionada || 0,
-      reducaoMedia: resultado.reducaoMediaNecessaria || 0,
-      faturamentoGanhoMes: ganhoMes,
-      faturamentoGanhoAno: resultado.faturamentoSelecionadaGanhadoraAno || 0,
-      savingMes: resultado.savingSelecionadaVsRealMes || 0,
-      savingAno: resultado.savingSelecionadaVsRealAno || 0,
-    },
-    rotasGanhas: ganhas,
-    rotasPerdidas: perdidas,
     estados,
     observacaoCubagem: cubagemOutliers ? `${numero(cubagemOutliers)} CT-e(s) apresentaram cubagem fora do padrao e foram tratados para evitar distorcao.` : '',
   };
 
   return {
     executivo: {
-      ...comum,
+      ...baseComum,
+      usoInterno: true,
+      indicadores: indicadoresExecutivo,
+      rotasGanhas: ganhas,
+      rotasPerdidas: perdidas,
       assunto: assuntoExecutivo,
       corpoEmail: corpoExecutivo,
       laudoCompleto: `Assunto: ${assuntoExecutivo}\n\n${corpoExecutivo}`,
     },
     transportador: {
-      ...comum,
+      ...baseComum,
+      usoInterno: false,
+      indicadores: indicadoresTransportador,
+      rotasGanhas: ganhas.map((item) => ({
+        rota: item.rota,
+        qtdGanhasSelecionada: item.qtdGanhasSelecionada || item.ctes || 0,
+      })),
+      rotasPerdidas: perdidas.map((item) => ({
+        rota: item.rota,
+        qtdPerdidasSelecionada: item.qtdPerdidasSelecionada || item.ctes || 0,
+        reducaoMediaNecessaria: item.reducaoMediaNecessaria || 0,
+      })),
       assunto: assuntoTransportador,
       corpoEmail: corpoTransportador,
       laudoCompleto: `Assunto: ${assuntoTransportador}\n\n${corpoTransportador}`,
