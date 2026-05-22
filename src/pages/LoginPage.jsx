@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { loginCentral } from '../utils/authLocal';
 
 export default function LoginPage({ onLogin }) {
-  const [email, setEmail] = useState('aldomdias@gmail.com');
-  const [senha, setSenha] = useState('123456');
+  const [email, setEmail] = useState('');
+  const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
   const [carregando, setCarregando] = useState(false);
 
@@ -13,6 +13,8 @@ export default function LoginPage({ onLogin }) {
     setCarregando(true);
     try {
       const sessao = await loginCentral(email, senha);
+      setEmail('');
+      setSenha('');
       onLogin(sessao);
     } catch (error) {
       setErro(error.message || String(error));
@@ -33,12 +35,14 @@ export default function LoginPage({ onLogin }) {
         <label className="field">
           E-mail
           <input
+            type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter') entrar();
             }}
             placeholder="seu@email.com"
+            autoComplete="username"
             disabled={carregando}
           />
         </label>
@@ -53,6 +57,7 @@ export default function LoginPage({ onLogin }) {
               if (event.key === 'Enter') entrar();
             }}
             placeholder="Senha"
+            autoComplete="current-password"
             disabled={carregando}
           />
         </label>
@@ -62,10 +67,6 @@ export default function LoginPage({ onLogin }) {
         <button type="button" className="btn-primary full" onClick={entrar} disabled={carregando}>
           {carregando ? 'Entrando...' : 'Entrar'}
         </button>
-
-        <div className="hint-box compact">
-          Usuário inicial de gestão: <strong>aldomdias@gmail.com</strong> · senha: <strong>123456</strong>. Depois você pode trocar/criar usuários na tela Gestão de usuários.
-        </div>
       </div>
     </div>
   );
