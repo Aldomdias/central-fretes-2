@@ -1,5 +1,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import {
   analisarCoberturaTabela,
   analisarOrigemPorGrade,
@@ -352,6 +353,164 @@ function downloadCsv(nomeArquivo, csv) {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(link.href);
+}
+function formatNumberBR(value, digits = 0) {
+  return Number(value || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+function nomeArquivoSeguro(value, fallback = 'arquivo') {
+  return String(value || fallback).toLowerCase().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || fallback;
+}
+function periodoLaudoRealizado(resultado = {}) {
+  const inicio = resultado.filtros?.inicio || '';
+  const fim = resultado.filtros?.fim || '';
+  if (inicio || fim) return `${inicio || 'início'} a ${fim || 'fim'}`;
+  return 'período selecionado';
+}
+function simOuNaoTexto(value) {
+  return Number(value || 0) > 0;
+}
+function gerarLaudosEmailRealizado(resultado = {}) {
+  if (!resultado?.ctesAnalisados) return null;
+  const transportadora = resultado.filtros?.transportadora || 'transportadora selecionada';
+  const periodo = periodoLaudoRealizado(resultado);
+  const dataGeracao = new Date().toLocaleDateString('pt-BR');
+  const rotasGanhas = (resultado.rotasGanhasDestaque || [])
+    .filter((item) => Number(item.qtdGanhasSelecionada || 0) > 0)
+    .slice(0, 8);
+  const rotasPerdidas = (resultado.rotasPerdidasDestaque || resultado.rotas || [])
+    .filter((item) => Number(item.diferencaParaVencedor || 0) > 0 || Number(item.qtdPerdidasSelecionada || 0) > 0)
+    .sort((a, b) => Number(b.diferencaParaVencedor || 0) - Number(a.diferencaParaVencedor || 0) || Number(b.qtdPerdidasSelecionada || 0) - Number(a.qtdPerdidasSelecionada || 0))
+    .slice(0, 8);
+  const estados = (resultado.resumoPorEstado || resultado.estadosGanhadoresDestaque || []).slice(0, 8);
+  const perdasTransportadoras = (resultado.transportadorasPerdaDestaque || resultado.impactoTransportadoras || [])
+    .filter((item) => Number(item.freteCedidoSelecionada || 0) > 0)
+    .slice(0, 8);
+  const cubagemOutliers = Number(resultado.filtros?.trackingCubagemOutliers || 0);
+  const coberturaMensal = Number(resultado.faturamentoSelecionadaMes || 0);
+  const faturamentoGanhoMensal = Number(resultado.faturamentoSelecionadaGanhadoraMes || 0);
+  const faturamentoNaoCapturadoMensal = Math.max(coberturaMensal - faturamentoGanhoMensal, 0);
+
+  const linhasRotas = (lista, externo = false) => lista.map((item, index) => {
+    const partes = [
+      `${index + 1}. ${item.rota || 'Rota não identificada'}`,
+      `${formatNumberBR(item.qtdGanhasSelecionada || item.ctes || 0)} CT-es`,
+    ];
+    if (!externo && Number(item.freteSelecionadaGanhadora || 0) > 0) partes.push(`faturamento ganho ${formatMoney(item.freteSelecionadaGanhadora)}`);
+    if (Number(item.reducaoMediaNecessaria || 0) > 0) partes.push(`redução média necessária ${formatPercent(item.reducaoMediaNecessaria)}`);
+    if (item.principalVencedor && item.principalVencedor !== '-') partes.push(`referência: ${item.principalVencedor}`);
+    return partes.join(' · ');
+  });
+
+  const assuntoDiretoria = `Análise de competitividade - ${transportadora} - Simulação de frete realizado`;
+  const diretoriaPartes = [
+    'Prezados,',
+    '',
+    `Segue análise de competitividade da transportadora ${transportadora}, considerando a base de CT-es realizados no ${periodo} e a comparação da tabela simulada contra as demais tabelas disponíveis no sistema.`,
+    '',
+    `A transportadora participou da simulação em ${formatNumberBR(resultado.ctesComTabelaSelecionada)} CT-es de ${formatNumberBR(resultado.ctesAnalisados)} analisados, apresentando ganho em ${formatNumberBR(resultado.ctesGanhariaSelecionada)} CT-es (${formatPercent(resultado.aderenciaSelecionada)}) e perda em ${formatNumberBR(resultado.ctesPerdidosSelecionada)} CT-es para concorrentes mais competitivos.`,
+    '',
+    'Resumo executivo',
+    `- A cobertura/carteira cotada pela tabela representa ${formatMoney(coberturaMensal)} por mês, mas o faturamento efetivamente ganho é ${formatMoney(faturamentoGanhoMensal)} por mês.`,
+    `- O volume não capturado ou perdido para outras tabelas representa aproximadamente ${formatMoney(faturamentoNaoCapturadoMensal)} por mês dentro do recorte comparado.`,
+    `- O saving potencial nas rotas/CT-es ganhos é ${formatMoney(resultado.savingSelecionadaVsRealMes)} por mês e ${formatMoney(resultado.savingSelecionadaVsRealAno)} em 12 meses.`,
+    `- A redução média necessária nas rotas perdidas é de ${formatPercent(resultado.reducaoMediaNecessaria)}.`,
+    '',
+    'Potencial financeiro',
+    `- Faturamento ganho pela tabela: ${formatMoney(resultado.freteSelecionadaGanhadora)} no período.`,
+    `- Saving no período nas rotas ganhas: ${formatMoney(resultado.savingSelecionadaVsReal)}.`,
+    `- Referência de mercado: a melhor tabela disponível geraria ${formatMoney(resultado.savingVencedorVsReal)} de saving potencial no mesmo recorte.`,
+    perdasTransportadoras.length ? `- Faturamento que migra de transportadoras atuais: ${formatMoney(resultado.freteCapturadoRealizado || 0)} em ${formatNumberBR(resultado.ctesCapturadosDeOutras || 0)} CT-es.` : '',
+    '',
+    'Principais rotas ganhas',
+    ...(rotasGanhas.length ? linhasRotas(rotasGanhas, false).map((linha) => `- ${linha}`) : ['- Não disponível para os filtros atuais.']),
+    '',
+    'Principais rotas perdidas',
+    ...(rotasPerdidas.length ? linhasRotas(rotasPerdidas, false).map((linha) => `- ${linha}`) : ['- Não foram identificadas rotas perdidas com diferença relevante.']),
+    '',
+    'Oportunidades de negociação',
+    estados.length ? `- Estados com maior relevância na análise: ${estados.slice(0, 5).map((item) => `${item.uf} (${formatNumberBR(item.ctesGanhas || 0)} ganhos, aderência ${formatPercent(item.aderencia || 0)})`).join('; ')}.` : '',
+    perdasTransportadoras.length ? `- Transportadoras com maior exposição de perda: ${perdasTransportadoras.slice(0, 4).map((item) => `${item.transportadora} (${formatMoney(item.freteCedidoSelecionada || 0)})`).join('; ')}.` : '',
+    simOuNaoTexto(cubagemOutliers) ? `- Observação técnica: ${formatNumberBR(cubagemOutliers)} CT-e(s) apresentaram cubagem fora do padrão e foram tratados para evitar distorção, utilizando o peso real na análise.` : '',
+    '',
+    'Recomendação final',
+    'Diante dos resultados, a recomendação é seguir com negociação direcionada nas rotas de maior perda, priorizando aquelas com maior volume e maior diferença percentual. Caso a transportadora ajuste os pontos críticos identificados, há potencial de aumento de competitividade e captura de saving no período analisado.',
+  ].filter((linha) => linha !== '');
+
+  const assuntoTransportadora = `Devolutiva de competitividade - ${transportadora} - Oportunidades de ajuste`;
+  const transportadoraPartes = [
+    'Prezados,',
+    '',
+    `Realizamos uma análise de competitividade da tabela da ${transportadora} considerando as rotas e CT-es movimentados no ${periodo}. O objetivo é compartilhar uma visão prática dos pontos em que a tabela apresenta boa aderência e também das oportunidades de ajuste para ampliar a competitividade da operação.`,
+    '',
+    'Visão geral da participação na simulação',
+    `- Foram analisados ${formatNumberBR(resultado.ctesAnalisados)} CT-es, dos quais ${formatNumberBR(resultado.ctesComTabelaSelecionada)} possuíam cobertura da tabela simulada.`,
+    `- A tabela ficou competitiva em ${formatNumberBR(resultado.ctesGanhariaSelecionada)} CT-es, com aderência de ${formatPercent(resultado.aderenciaSelecionada)} no recorte comparado.`,
+    `- Foram identificados ${formatNumberBR(resultado.ctesPerdidosSelecionada)} CT-es com oportunidade de melhoria frente às referências mais competitivas da base analisada.`,
+    '',
+    'Rotas com boa competitividade',
+    ...(rotasGanhas.length ? linhasRotas(rotasGanhas, true).map((linha) => `- ${linha}`) : ['- Não disponível para os filtros atuais.']),
+    '',
+    'Rotas com perda de competitividade',
+    ...(rotasPerdidas.length ? linhasRotas(rotasPerdidas, true).map((linha) => `- ${linha}`) : ['- Não foram identificadas rotas críticas com os filtros atuais.']),
+    '',
+    'Pontos prioritários de revisão',
+    `- Nas rotas em que a tabela não ficou em primeiro lugar, foi identificada uma necessidade média de redução de aproximadamente ${formatPercent(resultado.reducaoMediaNecessaria)} para que a transportadora se aproxime dos valores mais competitivos do mercado analisado.`,
+    '- Recomendamos priorizar a revisão das rotas com maior volume de CT-es e maior diferença percentual.',
+    simOuNaoTexto(cubagemOutliers) ? '- Alguns registros apresentaram inconsistência de cubagem e foram tratados para evitar distorções na análise.' : '',
+    '',
+    'Direcional comercial',
+    'O ajuste direcionado das rotas críticas pode aumentar a competitividade da tabela e ampliar a participação da transportadora nas próximas movimentações.',
+    '',
+    'Próximos passos sugeridos',
+    'Ficamos à disposição para avaliar uma contraproposta direcionada, principalmente nas rotas destacadas como críticas. O ajuste nesses pontos pode aumentar a competitividade da transportadora e ampliar sua participação nas próximas movimentações.',
+  ].filter((linha) => linha !== '');
+
+  return {
+    diretoria: {
+      tipo: 'diretoria',
+      titulo: 'Laudo para Diretoria',
+      assunto: assuntoDiretoria,
+      corpo: diretoriaPartes.join('\n'),
+      completo: `Assunto: ${assuntoDiretoria}\n\n${diretoriaPartes.join('\n')}`,
+      rotasGanhas,
+      rotasPerdidas,
+      estados,
+      perdasTransportadoras,
+      kpis: [
+        ['Aderência', formatPercent(resultado.aderenciaSelecionada)],
+        ['Faturamento ganho/mês', formatMoney(faturamentoGanhoMensal)],
+        ['Cobertura cotada/mês', formatMoney(coberturaMensal)],
+        ['Saving/mês', formatMoney(resultado.savingSelecionadaVsRealMes)],
+        ['Rotas com ganho', formatNumberBR(resultado.qtdRotasComGanhoSelecionada || 0)],
+        ['Redução média', formatPercent(resultado.reducaoMediaNecessaria)],
+      ],
+      observacaoCubagem: simOuNaoTexto(cubagemOutliers) ? `${formatNumberBR(cubagemOutliers)} CT-e(s) com cubagem fora do padrão foram tratados para evitar distorção.` : '',
+    },
+    transportadora: {
+      tipo: 'transportadora',
+      titulo: 'Laudo Devolutivo para Transportadora',
+      assunto: assuntoTransportadora,
+      corpo: transportadoraPartes.join('\n'),
+      completo: `Assunto: ${assuntoTransportadora}\n\n${transportadoraPartes.join('\n')}`,
+      rotasGanhas,
+      rotasPerdidas,
+      estados,
+      perdasTransportadoras: [],
+      kpis: [
+        ['Aderência', formatPercent(resultado.aderenciaSelecionada)],
+        ['CT-es comparados', formatNumberBR(resultado.ctesComTabelaSelecionada)],
+        ['CT-es competitivos', formatNumberBR(resultado.ctesGanhariaSelecionada)],
+        ['CT-es a revisar', formatNumberBR(resultado.ctesPerdidosSelecionada)],
+        ['Rotas com boa competitividade', formatNumberBR(resultado.qtdRotasComGanhoSelecionada || 0)],
+        ['Redução média sugerida', formatPercent(resultado.reducaoMediaNecessaria)],
+      ],
+      observacaoCubagem: simOuNaoTexto(cubagemOutliers) ? 'Alguns registros apresentaram inconsistência de cubagem e foram tratados para evitar distorções na análise.' : '',
+    },
+    meta: { transportadora, periodo, dataGeracao },
+  };
 }
 function buildDestinoLabel(item) {
   if (item.cidadeDestino) return `${item.cidadeDestino}${item.ufDestino ? `/${item.ufDestino}` : ''}`;
@@ -2668,9 +2827,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const DETALHE_POR_PAGINA = 50;
   const [linhasExpandidas, setLinhasExpandidas] = useState(new Set());
   const [abaDetalheRealizado, setAbaDetalheRealizado] = useState('ctes'); // 'ctes' | 'uf'
+  const [abaLaudoRealizado, setAbaLaudoRealizado] = useState('diretoria');
+  const [feedbackCopiaLaudo, setFeedbackCopiaLaudo] = useState('');
   const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box']));
   const toggleSecao = (id) => setSecoesFechadas((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const secaoAberta = (id) => !secoesFechadas.has(id);
+  const laudosEmailRealizado = useMemo(() => gerarLaudosEmailRealizado(resultadoRealizado), [resultadoRealizado]);
+  const laudoEmailAtual = laudosEmailRealizado?.[abaLaudoRealizado] || null;
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
@@ -3037,7 +3200,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setErroSimulacao('');
 
     try {
-      await salvarResultadoSimulacaoNegociacao(negociacaoSelecionadaRealizado.id, resultadoRealizado);
+      await salvarResultadoSimulacaoNegociacao(negociacaoSelecionadaRealizado.id, {
+        ...resultadoRealizado,
+        laudosEmail: laudosEmailRealizado,
+      });
       alert('Resultado projetado salvo na negociação.');
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
@@ -3868,7 +4034,117 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const { nomeArquivo, csv } = exportarLinhasCsv(`fornecedor-vs-realizado-${nomeBase}.csv`, linhas);
     downloadCsv(nomeArquivo, csv);
   };
+
+  const copiarTextoLaudo = async (texto, label) => {
+    if (!texto) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(texto);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = texto;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setFeedbackCopiaLaudo(`${label} copiado.`);
+      window.setTimeout(() => setFeedbackCopiaLaudo(''), 2500);
+    } catch {
+      setFeedbackCopiaLaudo('Não foi possível copiar automaticamente.');
+      window.setTimeout(() => setFeedbackCopiaLaudo(''), 3000);
+    }
+  };
+
+  const exportarLaudoEmailRealizado = (tipo = abaLaudoRealizado) => {
+    const pacote = laudosEmailRealizado?.[tipo];
+    if (!resultadoRealizado?.ctesAnalisados || !pacote) return;
+    const meta = laudosEmailRealizado.meta || {};
+    const interno = tipo === 'diretoria';
+    const linhasResumo = [
+      ['Central Fretes / Simulador de Fretes'],
+      [pacote.titulo],
+      ['Transportadora', meta.transportadora || resultadoRealizado.filtros?.transportadora || ''],
+      ['Período analisado', meta.periodo || periodoLaudoRealizado(resultadoRealizado)],
+      ['Data de geração', meta.dataGeracao || new Date().toLocaleDateString('pt-BR')],
+      [],
+      ['Assunto sugerido'],
+      [pacote.assunto],
+      [],
+      ['Corpo do e-mail'],
+      ...pacote.corpo.split('\n').map((linha) => [linha]),
+      [],
+      ['Principais indicadores'],
+      ['Indicador', 'Valor'],
+      ...(pacote.kpis || []),
+      [],
+      ['Principais rotas ganhas'],
+      ['Rota', 'CT-es ganhos', 'Faturamento ganho', interno ? 'Saving' : 'Observação', 'Aderência rota'],
+      ...(pacote.rotasGanhas || []).map((item) => [
+        item.rota || '',
+        Number(item.qtdGanhasSelecionada || 0),
+        interno ? Number(item.freteSelecionadaGanhadora || 0) : '',
+        interno ? Number(item.savingGanhasSelecionada || item.savingSelecionada || 0) : 'Boa competitividade no recorte analisado',
+        `${Number(item.qtdComSelecionada || 0) ? ((Number(item.qtdGanhasSelecionada || 0) / Number(item.qtdComSelecionada || 1)) * 100).toFixed(2) : '0.00'}%`,
+      ]),
+      [],
+      ['Principais rotas perdidas'],
+      ['Rota', 'CT-es perdidos', interno ? 'Diferença para vencedor' : 'Direcional', 'Redução média necessária', 'Principal referência'],
+      ...(pacote.rotasPerdidas || []).map((item) => [
+        item.rota || '',
+        Number(item.qtdPerdidasSelecionada || item.ctes || 0),
+        interno ? Number(item.diferencaParaVencedor || 0) : 'Revisar competitividade comercial',
+        `${Number(item.reducaoMediaNecessaria || 0).toFixed(2)}%`,
+        item.principalVencedor || '-',
+      ]),
+      [],
+      ['Resumo por estado'],
+      ['UF', 'CT-es ganhos', 'CT-es perdidos', 'Aderência', interno ? 'Faturamento ganho' : 'Direcional'],
+      ...(pacote.estados || []).map((item) => [
+        item.uf || '',
+        Number(item.ctesGanhas || 0),
+        Number(item.ctesPerdidas || 0),
+        `${Number(item.aderencia || 0).toFixed(2)}%`,
+        interno ? Number(item.freteSelecionadaGanhas || 0) : 'Priorizar rotas com maior volume e menor aderência',
+      ]),
+      [],
+      ['Observações'],
+      [pacote.observacaoCubagem || 'Não disponível'],
+      [],
+      ['Rodapé'],
+      ['Análise gerada pelo sistema Central Fretes / Simulador de Fretes.'],
+    ];
+
+    if (interno && (pacote.perdasTransportadoras || []).length) {
+      linhasResumo.push(
+        [],
+        ['Transportadoras atuais com maior perda projetada'],
+        ['Transportadora', 'CT-es cedidos', 'Faturamento cedido', 'Redução de faturamento'],
+        ...(pacote.perdasTransportadoras || []).map((item) => [
+          item.transportadora || '',
+          Number(item.ctesCedidosSelecionada || 0),
+          Number(item.freteCedidoSelecionada || 0),
+          `${Number(item.reducaoFaturamentoPct || 0).toFixed(2)}%`,
+        ])
+      );
+    }
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(linhasResumo);
+    ws['!cols'] = [{ wch: 38 }, { wch: 28 }, { wch: 24 }, { wch: 24 }, { wch: 30 }];
+    XLSX.utils.book_append_sheet(wb, ws, interno ? 'Diretoria' : 'Transportadora');
+    const nomeBase = nomeArquivoSeguro(meta.transportadora || resultadoRealizado.filtros?.transportadora || 'transportadora');
+    XLSX.writeFile(wb, `${interno ? 'laudo-diretoria' : 'laudo-transportadora'}-${nomeBase}.xlsx`);
+  };
+
   const exportarRelatorioTransportadora = () => {
+    if (laudosEmailRealizado?.transportadora) {
+      exportarLaudoEmailRealizado('transportadora');
+      return;
+    }
     if (!resultadoRealizado?.ctesAnalisados) return;
     const r = resultadoRealizado;
     const transp = r.filtros?.transportadora || 'Transportadora';
@@ -3938,6 +4214,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   // ── Relatório para Diretoria (COM saving, linguagem estratégica) ──────────────
   const exportarRelatorioDiretoria = () => {
+    if (laudosEmailRealizado?.diretoria) {
+      exportarLaudoEmailRealizado('diretoria');
+      return;
+    }
     if (!resultadoRealizado?.ctesAnalisados) return;
     const r = resultadoRealizado;
     const transp = r.filtros?.transportadora || 'Transportadora';
@@ -5236,13 +5516,126 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <div className="sim-parametros-box">
                 <div className="sim-parametros-header" onClick={() => toggleSecao('laudo')} style={{ cursor: 'pointer', userSelect: 'none' }}>
                   <div>
-                    <strong>Laudo executivo</strong>
-                    <p>Resumo pronto para diretoria ou devolutiva estratégica.</p>
+                    <strong>Laudos da simulação</strong>
+                    <p>Versões prontas para diretoria e para devolutiva comercial à transportadora.</p>
                   </div>
                   <span style={{ fontSize: '1.2rem', color: '#64748b' }}>{secaoAberta('laudo') ? '▲' : '▼'}</span>
                 </div>
                 {secaoAberta('laudo') && (
                 <>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                    {[
+                      ['diretoria', 'Diretoria'],
+                      ['transportadora', 'Transportadora'],
+                    ].map(([id, label]) => (
+                      <button
+                        key={id}
+                        className={abaLaudoRealizado === id ? 'primary' : 'sim-tab'}
+                        type="button"
+                        onClick={() => setAbaLaudoRealizado(id)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {laudoEmailAtual && (
+                    <div style={{ marginTop: 12, display: 'grid', gap: 12, minWidth: 0 }}>
+                      <div style={{ border: '1px solid #bfdbfe', background: '#f8fbff', borderRadius: 12, padding: 14, display: 'grid', gap: 10, minWidth: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <div>
+                            <strong>{laudoEmailAtual.titulo}</strong>
+                            <p style={{ margin: '4px 0 0', color: '#64748b' }}>Assunto e corpo prontos para copiar e enviar por e-mail.</p>
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <button className="sim-tab" type="button" onClick={() => copiarTextoLaudo(laudoEmailAtual.assunto, 'Assunto')}>Copiar assunto</button>
+                            <button className="sim-tab" type="button" onClick={() => copiarTextoLaudo(laudoEmailAtual.corpo, 'Corpo')}>Copiar corpo</button>
+                            <button className="sim-tab" type="button" onClick={() => copiarTextoLaudo(laudoEmailAtual.completo, 'Laudo completo')}>Copiar laudo</button>
+                            <button className="primary" type="button" onClick={() => exportarLaudoEmailRealizado(abaLaudoRealizado)}>Exportar XLSX</button>
+                          </div>
+                        </div>
+                        {feedbackCopiaLaudo && <div className="sim-alert info" style={{ margin: 0 }}>{feedbackCopiaLaudo}</div>}
+                        <div>
+                          <span style={{ display: 'block', fontSize: 12, color: '#64748b', fontWeight: 700, marginBottom: 4 }}>Assunto sugerido</span>
+                          <div style={{ background: '#fff', border: '1px solid #dbeafe', borderRadius: 8, padding: '10px 12px', fontWeight: 700, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{laudoEmailAtual.assunto}</div>
+                        </div>
+                        <div>
+                          <span style={{ display: 'block', fontSize: 12, color: '#64748b', fontWeight: 700, marginBottom: 4 }}>Corpo do e-mail</span>
+                          <pre style={{ margin: 0, background: '#fff', border: '1px solid #dbeafe', borderRadius: 8, padding: 14, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', fontFamily: 'inherit', lineHeight: 1.55, maxHeight: 520, overflowY: 'auto' }}>{laudoEmailAtual.corpo}</pre>
+                        </div>
+                      </div>
+
+                      <div className="summary-grid">
+                        {(laudoEmailAtual.kpis || []).map(([label, valor]) => (
+                          <div className="summary-card" key={`${abaLaudoRealizado}-${label}`}>
+                            <span>{label}</span>
+                            <strong>{valor}</strong>
+                          </div>
+                        ))}
+                      </div>
+
+                      {laudoEmailAtual.observacaoCubagem && (
+                        <div className="sim-alert info" style={{ margin: 0 }}>{laudoEmailAtual.observacaoCubagem}</div>
+                      )}
+
+                      <div className="feature-grid import-grid">
+                        <div className="sim-parametros-box">
+                          <div className="sim-parametros-header"><div><strong>Principais rotas ganhas</strong><p>Rotas em que a tabela ficou competitiva no recorte.</p></div></div>
+                          <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+                            <table className="sim-analise-tabela">
+                              <thead><tr><th>Rota</th><th>CT-es</th><th>{abaLaudoRealizado === 'diretoria' ? 'Faturamento' : 'Posicionamento'}</th><th>{abaLaudoRealizado === 'diretoria' ? 'Saving' : 'Observação'}</th></tr></thead>
+                              <tbody>
+                                {(laudoEmailAtual.rotasGanhas || []).slice(0, 6).map((item) => (
+                                  <tr key={`${abaLaudoRealizado}-ganha-${item.rota}`}>
+                                    <td><strong>{item.rota}</strong></td>
+                                    <td>{formatNumberBR(item.qtdGanhasSelecionada || 0)}</td>
+                                    <td>{abaLaudoRealizado === 'diretoria' ? formatMoney(item.freteSelecionadaGanhadora || 0) : 'Boa competitividade'}</td>
+                                    <td>{abaLaudoRealizado === 'diretoria' ? formatMoney(item.savingGanhasSelecionada || item.savingSelecionada || 0) : 'Manter competitividade'}</td>
+                                  </tr>
+                                ))}
+                                {!(laudoEmailAtual.rotasGanhas || []).length && <tr><td colSpan={4}>Nenhuma rota ganhadora encontrada.</td></tr>}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="sim-parametros-box">
+                          <div className="sim-parametros-header"><div><strong>Principais rotas perdidas</strong><p>Rotas prioritárias para revisão comercial.</p></div></div>
+                          <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+                            <table className="sim-analise-tabela">
+                              <thead><tr><th>Rota</th><th>CT-es</th><th>Redução média</th><th>Referência</th></tr></thead>
+                              <tbody>
+                                {(laudoEmailAtual.rotasPerdidas || []).slice(0, 6).map((item) => (
+                                  <tr key={`${abaLaudoRealizado}-perda-${item.rota}`}>
+                                    <td><strong>{item.rota}</strong></td>
+                                    <td>{formatNumberBR(item.qtdPerdidasSelecionada || item.ctes || 0)}</td>
+                                    <td>{formatPercent(item.reducaoMediaNecessaria || 0)}</td>
+                                    <td>{item.principalVencedor || '-'}</td>
+                                  </tr>
+                                ))}
+                                {!(laudoEmailAtual.rotasPerdidas || []).length && <tr><td colSpan={4}>Nenhuma rota perdida crítica encontrada.</td></tr>}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="sim-parametros-box">
+                          <div className="sim-parametros-header"><div><strong>Resumo por estado</strong><p>Leitura rápida de aderência por UF.</p></div></div>
+                          <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
+                            {(laudoEmailAtual.estados || []).slice(0, 6).map((item) => (
+                              <div key={`${abaLaudoRealizado}-uf-${item.uf}`}>
+                                <strong>{item.uf}</strong> · {formatNumberBR(item.ctesGanhas || 0)} ganhos · {formatNumberBR(item.ctesPerdidas || 0)} perdidos · aderência {formatPercent(item.aderencia || 0)}
+                              </div>
+                            ))}
+                            {!(laudoEmailAtual.estados || []).length && <div>Resumo por UF não disponível.</div>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <details style={{ marginTop: 12 }}>
+                    <summary style={{ cursor: 'pointer', fontWeight: 700, color: '#475569' }}>Ver resumo legado em bullets</summary>
                   <ul style={{ marginTop: 12 }}>
                     {(resultadoRealizado.laudo || []).map((linha, index) => <li key={index}>{linha}</li>)}
                   </ul>
@@ -5307,6 +5700,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       </div>
                     </div>
                   </div>
+                  </details>
                 </>
                 )}
               </div>
