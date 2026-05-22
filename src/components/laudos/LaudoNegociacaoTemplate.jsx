@@ -103,11 +103,6 @@ export function LaudoNegociacaoTemplate({ tipo = 'executivo', resultado = null, 
           )}
         </section>
 
-        <section className="laudo-email-box">
-          <div className="laudo-section-title">Assunto sugerido</div>
-          <p>{laudo.assunto || '-'}</p>
-        </section>
-
         <section className="laudo-section">
           <div className="laudo-section__head">
             <span className="laudo-dot danger" />
@@ -169,11 +164,6 @@ export function LaudoNegociacaoTemplate({ tipo = 'executivo', resultado = null, 
               {!rotasBoas.length ? <tr><td colSpan={externo ? 3 : 4}>Nao disponivel para o recorte atual.</td></tr> : null}
             </tbody>
           </table>
-        </section>
-
-        <section className="laudo-email-box">
-          <div className="laudo-section-title">Texto pronto para e-mail</div>
-          <pre>{laudo.corpoEmail || '-'}</pre>
         </section>
 
         {laudo.observacaoCubagem ? (
