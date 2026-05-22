@@ -1,304 +1,105 @@
-.laudo-page {
-  max-width: 980px;
-  margin: 0 auto;
-  background: #fff;
-  color: #111827;
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
-  border-radius: 18px;
-  overflow: hidden;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+.laudo-negociacao {
+  background: #ffffff;
+  color: #0f172a;
+  border-radius: 10px;
+  padding: 28px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.24);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
-.laudo-header {
-  background: radial-gradient(circle at top right, rgba(255,255,255,0.13), transparent 28%), linear-gradient(135deg, #0f2a4a, #1a4480);
-  color: #fff;
-  padding: 34px 42px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 28px;
-  align-items: end;
+.laudo-negociacao__header {
+  border-bottom: 1px solid #dbeafe;
+  padding-bottom: 16px;
+  margin-bottom: 18px;
 }
 
-.laudo-label {
-  color: rgba(255,255,255,0.58);
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  font-weight: 800;
-  margin-bottom: 10px;
-}
-
-.laudo-header h1 {
+.laudo-negociacao__title {
   margin: 0;
-  font-size: 30px;
-  line-height: 1.1;
-  font-weight: 800;
+  font-size: 1.45rem;
 }
 
-.laudo-header p {
-  margin: 8px 0 0;
-  color: rgba(255,255,255,0.72);
-  font-weight: 600;
-}
-
-.laudo-meta-grid {
-  display: grid;
+.laudo-negociacao__meta {
+  margin-top: 6px;
+  color: #64748b;
+  display: flex;
   gap: 10px;
-  min-width: 260px;
+  flex-wrap: wrap;
 }
 
-.laudo-meta-grid div {
+.laudo-negociacao__subject,
+.laudo-negociacao__body {
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fbff;
+  margin-bottom: 14px;
+}
+
+.laudo-negociacao__body {
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.laudo-negociacao__kpis {
   display: grid;
-  gap: 2px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 16px 0;
 }
 
-.laudo-meta-grid span {
-  color: rgba(255,255,255,0.48);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  font-weight: 800;
-}
-
-.laudo-meta-grid strong {
-  color: rgba(255,255,255,0.92);
-  font-size: 13px;
-}
-
-.laudo-content {
-  padding: 34px 42px 40px;
-  display: grid;
-  gap: 28px;
-}
-
-.laudo-kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px;
-}
-
-.laudo-kpi {
-  border: 1px solid #dbe3ef;
-  border-radius: 14px;
-  padding: 16px;
-  display: grid;
-  gap: 6px;
+.laudo-negociacao__kpi {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px;
   background: #f8fafc;
 }
 
-.laudo-kpi span {
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+.laudo-negociacao__kpi span {
+  display: block;
   color: #64748b;
-  font-weight: 900;
-}
-
-.laudo-kpi strong {
-  font-size: 23px;
-  line-height: 1;
-  color: #111827;
-}
-
-.laudo-kpi small {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.laudo-kpi.info {
-  background: #ebf2fc;
-  border-color: #bfdbfe;
-}
-
-.laudo-kpi.good {
-  background: #f0fdf4;
-  border-color: #86efac;
-}
-
-.laudo-kpi.danger {
-  background: #fef0f0;
-  border-color: #fca5a5;
-}
-
-.laudo-kpi.warning {
-  background: #fffbeb;
-  border-color: #fde68a;
-}
-
-.laudo-kpi.info strong { color: #1a4480; }
-.laudo-kpi.good strong { color: #16a34a; }
-.laudo-kpi.danger strong { color: #dc2626; }
-.laudo-kpi.warning strong { color: #d97706; }
-
-.laudo-callout {
-  border-radius: 14px;
-  padding: 16px 18px;
-  line-height: 1.65;
-  font-size: 14px;
-  border-left: 4px solid #2563b0;
-  background: #ebf2fc;
-  color: #1a4480;
-}
-
-.laudo-callout.executivo {
-  border-left-color: #4e008f;
-  background: #f3e8ff;
-  color: #4e008f;
-}
-
-.laudo-section {
-  display: grid;
-  gap: 12px;
-}
-
-.laudo-section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding-bottom: 10px;
-  border-bottom: 2px solid #eef2f7;
-}
-
-.laudo-section-header > div {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.laudo-section-header strong {
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #475569;
-}
-
-.laudo-section-header small {
-  color: #94a3b8;
+  font-size: 0.78rem;
   font-weight: 700;
 }
 
-.laudo-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: #2563b0;
-  display: inline-flex;
+.laudo-negociacao__kpi strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.05rem;
 }
 
-.laudo-dot.danger { background: #dc2626; }
-.laudo-dot.good { background: #16a34a; }
-.laudo-dot.info { background: #2563b0; }
-
-.laudo-table-wrap {
-  overflow-x: auto;
-  border: 1px solid #eef2f7;
-  border-radius: 14px;
-}
-
-.laudo-table {
+.laudo-negociacao table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 860px;
+  margin-top: 8px;
+  font-size: 0.86rem;
 }
 
-.laudo-table th {
-  background: #f8fafc;
-  color: #94a3b8;
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+.laudo-negociacao th,
+.laudo-negociacao td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 8px;
   text-align: left;
-  padding: 11px 12px;
-  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
 }
 
-.laudo-table td {
-  padding: 11px 12px;
-  border-bottom: 1px solid #eef2f7;
-  color: #334155;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.laudo-table tr:last-child td {
-  border-bottom: 0;
-}
-
-.laudo-table tr.critical td {
-  background: #fff5f5;
-}
-
-.laudo-table .positivo { color: #15803d; font-weight: 800; }
-.laudo-table .negativo { color: #dc2626; font-weight: 800; }
-
-.laudo-badge {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 8px;
-  padding: 3px 8px;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.03em;
-}
-
-.laudo-badge.good { background: #dcfce7; color: #166534; }
-.laudo-badge.danger { background: #fee2e2; color: #991b1b; }
-.laudo-badge.warning { background: #fef3c7; color: #92400e; }
-.laudo-badge.info { background: #dbeafe; color: #1e40af; }
-
-.laudo-email-box {
-  white-space: pre-wrap;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  padding: 16px;
-  font-size: 13px;
-  line-height: 1.65;
-  color: #334155;
-  margin: 0;
-}
-
-.laudo-footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 18px 42px;
-  color: #94a3b8;
-  font-weight: 700;
-  font-size: 11px;
-  background: #f8fafc;
-  border-top: 1px solid #e2e8f0;
+.laudo-negociacao th {
+  background: #f1f5f9;
 }
 
 @media print {
-  body * {
-    visibility: hidden;
+  .modal-overlay {
+    position: static !important;
+    background: #ffffff !important;
+    padding: 0 !important;
   }
-  .laudo-page, .laudo-page * {
-    visibility: visible;
+
+  .laudo-print-actions {
+    display: none !important;
   }
-  .laudo-page {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
+
+  .laudo-negociacao {
     box-shadow: none;
     border-radius: 0;
-  }
-}
-
-@media (max-width: 760px) {
-  .laudo-header {
-    grid-template-columns: 1fr;
-    padding: 28px 22px;
-  }
-  .laudo-content {
-    padding: 26px 22px;
-  }
-  .laudo-footer {
-    padding: 16px 22px;
-    flex-direction: column;
   }
 }
