@@ -26,6 +26,7 @@ import {
   substituirTaxasDestino,
   salvarGeneralidades,
 } from '../services/tabelasNegociacaoService';
+import { LaudoNegociacaoTemplate } from '../components/laudos';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,16 @@ function getResumoTabela(tabela) {
     ? tabela.resumo_simulacao
     : {};
 }
+function getLaudosTabela(tabela) {
+  var resumo = getResumoTabela(tabela);
+  return resumo.laudos && typeof resumo.laudos === 'object' && !Array.isArray(resumo.laudos)
+    ? resumo.laudos
+    : {};
+}
+function getDadosLaudoSalvo(laudo) {
+  if (!laudo || typeof laudo !== 'object') return null;
+  return laudo.dados && typeof laudo.dados === 'object' ? laudo.dados : laudo;
+}
 function getHistoricoRodadasTabela(tabela) {
   var resumo = getResumoTabela(tabela);
   if (Array.isArray(resumo.historico_rodadas)) return resumo.historico_rodadas;
@@ -77,8 +88,8 @@ function getIndicadoresTabela(tabela) {
   var ultimaSim = resumo.ultima_simulacao && resumo.ultima_simulacao.indicadores ? resumo.ultima_simulacao.indicadores : {};
   var savingMes = Number(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || resumo.savingSelecionadaVsReal || 0);
   var savingAno = Number(ultimaSim.saving_ano || resumo.savingSelecionadaVsRealAno || (savingMes * 12) || 0);
-  var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
-  var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
+  var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
+  var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaGanhadoraAno || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
   var pedidosDia = Number(tabela.volumetria_dia || ultimaSim.pedidos_dia || resumo.cargasDia || 0);
   var pedidosMes = pedidosDia * 22;
   var pedidosAno = pedidosMes * 12;
@@ -98,6 +109,14 @@ function getIndicadoresTabela(tabela) {
     ctesAnalisados: Number(tabela.ctes_analisados || resumo.ctesAnalisados || 0),
     ctesAtendidos: Number(tabela.ctes_atendidos || resumo.ctesComTabelaSelecionada || 0),
     rotasSemCobertura: Number(tabela.rotas_sem_cobertura || resumo.ctesSemTabelaSelecionada || 0),
+    rotasComGanho: Number(ultimaSim.rotas_com_ganho || resumo.qtdRotasComGanhoSelecionada || 0),
+    rotasGanhas: Number(ultimaSim.rotas_ganhas || resumo.qtdRotasGanhasSelecionada || 0),
+    rotasParciais: Number(ultimaSim.rotas_parciais || resumo.qtdRotasParciaisSelecionada || 0),
+    freteCapturado: Number(ultimaSim.frete_capturado || resumo.freteCapturadoRealizado || 0),
+    ctesCapturados: Number(ultimaSim.ctes_capturados || resumo.ctesCapturadosDeOutras || 0),
+    estadosGanhadores: Array.isArray(resumo.estadosGanhadoresDestaque) ? resumo.estadosGanhadoresDestaque : [],
+    transportadorasPerda: Array.isArray(resumo.transportadorasPerdaDestaque) ? resumo.transportadorasPerdaDestaque : [],
+    rotasGanhasDestaque: Array.isArray(resumo.rotasGanhasDestaque) ? resumo.rotasGanhasDestaque : [],
   };
 }
 function origemTabelaLabel(tabela) {
@@ -490,6 +509,7 @@ export default function TabelasNegociacaoPage() {
   const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
+  const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
 
   const negociacoesMesmaTransportadora = useMemo(function() {
     if (!selecionada) return [];
@@ -576,6 +596,29 @@ export default function TabelasNegociacaoPage() {
     setResultadoCantu(null); setResultadoLotacao(null);
     setArquivoRotas(null); setArquivoFretes(null);
     setArquivoCantu(null); setArquivoLotacao(null);
+  }
+
+  async function copiarTextoLaudoSalvo(texto, label) {
+    var conteudo = String(texto || '').trim();
+    if (!conteudo) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(conteudo);
+      } else {
+        var area = document.createElement('textarea');
+        area.value = conteudo;
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        document.execCommand('copy');
+        document.body.removeChild(area);
+      }
+      setSucesso((label || 'Texto') + ' copiado para a area de transferencia.');
+    } catch (e) {
+      setErro('Nao foi possivel copiar o texto automaticamente.');
+    }
   }
 
   async function carregar() {
@@ -1054,6 +1097,7 @@ export default function TabelasNegociacaoPage() {
               {tabelas.map(function(tabela) {
                 var ind = getIndicadoresTabela(tabela);
                 var historicoRodadas = getHistoricoRodadasTabela(tabela);
+                var laudos = getLaudosTabela(tabela);
                 return (
                   <tr key={tabela.id}>
                     <td style={{ minWidth: 230 }}>
@@ -1090,6 +1134,8 @@ export default function TabelasNegociacaoPage() {
                           <div><strong>Aderência:</strong> {formatPercent(ind.aderencia)}</div>
                           <div><strong>Saving mês:</strong> {formatMoney(ind.savingMes)} · <strong>ano:</strong> {formatMoney(ind.savingAno)}</div>
                           <div><strong>Faturamento mês:</strong> {formatMoney(ind.faturamentoMes)} · <strong>ano:</strong> {formatMoney(ind.faturamentoAno)}</div>
+                          <div style={{ color: '#475569' }}><strong>Rotas ganhas:</strong> {formatNumber(ind.rotasComGanho, 0)} · <strong>UFs:</strong> {(ind.estadosGanhadores || []).slice(0, 3).map(function(item) { return item.uf; }).join(', ') || '-'}</div>
+                          <div style={{ color: '#475569' }}><strong>Perda transportadoras:</strong> {formatMoney(ind.freteCapturado)} · {formatNumber(ind.ctesCapturados, 0)} CT-es</div>
                         </div>
                       ) : (
                         <span style={{ color: '#64748b', fontSize: 12 }}>Execute o Simulador Realizado e salve o resultado.</span>
@@ -1120,6 +1166,16 @@ export default function TabelasNegociacaoPage() {
                         <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
                         <button className="primary" type="button" onClick={function() { handleAbrirNovaRodadaTabela(tabela); }} disabled={abrindoRodada}>+ Rodada</button>
                         <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(tabela); }}>+ Origem</button>
+                        {laudos.executivo ? (
+                          <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
+                            Laudo Executivo
+                          </button>
+                        ) : null}
+                        {laudos.transportador ? (
+                          <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'transportador', dados: getDadosLaudoSalvo(laudos.transportador) }); }}>
+                            Devolutiva
+                          </button>
+                        ) : null}
                         <select value={tabela.status} onChange={function(e) { atualizarStatus(tabela, e.target.value); }}>
                           {STATUS_TABELA_NEGOCIACAO.map(function(s) { return <option key={s}>{s}</option>; })}
                         </select>
@@ -1157,15 +1213,73 @@ export default function TabelasNegociacaoPage() {
 
           {selecionada ? (function() {
             var ind = getIndicadoresTabela(selecionada);
+            var laudos = getLaudosTabela(selecionada);
             return ind.temSimulacao ? (
+              <>
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
                 <div className="summary-card"><span>Aderência</span><strong>{formatPercent(ind.aderencia)}</strong><small>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</small></div>
                 <div className="summary-card"><span>Saving mês</span><strong>{formatMoney(ind.savingMes)}</strong><small>Ano: {formatMoney(ind.savingAno)}</small></div>
                 <div className="summary-card"><span>Faturamento mês</span><strong>{formatMoney(ind.faturamentoMes)}</strong><small>Ano: {formatMoney(ind.faturamentoAno)}</small></div>
+                <div className="summary-card"><span>Rotas ganhas</span><strong>{formatNumber(ind.rotasComGanho, 0)}</strong><small>{formatNumber(ind.rotasGanhas, 0)} 100% ganhas · {formatNumber(ind.rotasParciais, 0)} parciais</small></div>
+                <div className="summary-card"><span>Perda transportadoras</span><strong>{formatMoney(ind.freteCapturado)}</strong><small>{formatNumber(ind.ctesCapturados, 0)} CT-es capturados</small></div>
                 <div className="summary-card"><span>Pedidos</span><strong>{formatNumber(ind.pedidosDia, 1)}/dia</strong><small>{formatNumber(ind.pedidosMes, 0)}/mês</small></div>
                 <div className="summary-card"><span>Volumes</span><strong>{formatNumber(ind.volumesDia, 1)}/dia</strong><small>{formatNumber(ind.volumesAno, 0)}/ano</small></div>
                 <div className="summary-card"><span>Frete % NF</span><strong>{formatPercent(ind.percentualTabela)}</strong><small>Real: {formatPercent(ind.percentualReal)} · Redução: {formatPercent(ind.reducaoPercentual)}</small></div>
               </div>
+              <div className="feature-grid import-grid" style={{ marginTop: -6, marginBottom: 18 }}>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Rotas ganhadoras da simulação</strong></div></div>
+                  <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
+                    {(ind.rotasGanhasDestaque || []).slice(0, 6).map(function(item) {
+                      return <div key={'neg-rota-' + item.rota}><strong>{item.rota}</strong> · {formatNumber(item.qtdGanhasSelecionada || 0, 0)} CT-es · {formatMoney(item.freteSelecionadaGanhadora || 0)}</div>;
+                    })}
+                    {!(ind.rotasGanhasDestaque || []).length ? <div>Sem rotas ganhadoras salvas nesta simulação.</div> : null}
+                  </div>
+                </div>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Resumo por estado</strong></div></div>
+                  <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
+                    {(ind.estadosGanhadores || []).slice(0, 6).map(function(item) {
+                      return <div key={'neg-uf-' + item.uf}><strong>{item.uf}</strong> · {formatNumber(item.ctesGanhas || 0, 0)} ganhos · {formatMoney(item.freteSelecionadaGanhas || 0)} · aderência {formatPercent(item.aderencia || 0)}</div>;
+                    })}
+                    {!(ind.estadosGanhadores || []).length ? <div>Sem resumo por UF salvo nesta simulação.</div> : null}
+                  </div>
+                </div>
+                <div className="sim-parametros-box">
+                  <div className="sim-parametros-header"><div><strong>Quem perde faturamento</strong></div></div>
+                  <div className="sim-cobertura-lista" style={{ marginTop: 10 }}>
+                    {(ind.transportadorasPerda || []).slice(0, 6).map(function(item) {
+                      return <div key={'neg-perda-' + item.transportadora}><strong>{item.transportadora}</strong> · {formatMoney(item.freteCedidoSelecionada || 0)} · {formatNumber(item.ctesCedidosSelecionada || 0, 0)} CT-es</div>;
+                    })}
+                    {!(ind.transportadorasPerda || []).length ? <div>Nenhuma perda de transportadora salva nesta simulação.</div> : null}
+                  </div>
+                </div>
+              </div>
+              {(laudos.executivo || laudos.transportador) ? (
+                <div className="sim-parametros-box" style={{ marginTop: -4, marginBottom: 18 }}>
+                  <div className="sim-parametros-header">
+                    <div>
+                      <strong>Laudos salvos da simulação</strong>
+                      <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>
+                        Conteudo gravado junto com o resultado desta negociação para consulta posterior.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="sim-actions" style={{ marginTop: 12 }}>
+                    {laudos.executivo ? (
+                      <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
+                        Abrir Laudo Executivo
+                      </button>
+                    ) : null}
+                    {laudos.transportador ? (
+                      <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'transportador', dados: getDadosLaudoSalvo(laudos.transportador) }); }}>
+                        Abrir Devolutiva Transportador
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              </>
             ) : (
               <div className="sim-alert info" style={{ marginBottom: 18 }}>
                 Esta negociação ainda não tem simulação salva. Execute o Simulador Realizado, selecione esta tabela e salve o resultado para alimentar aderência, saving, faturamento, pedidos e volumes.
@@ -1738,6 +1852,45 @@ export default function TabelasNegociacaoPage() {
           })() : null}
 
         </section>
+      ) : null}
+
+      {laudoSalvoAberto ? (
+        <div
+          className="modal-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15,23,42,0.72)',
+            zIndex: 9999,
+            overflow: 'auto',
+            padding: 24,
+          }}
+        >
+          <div style={{ maxWidth: 1060, margin: '0 auto', display: 'grid', gap: 12 }}>
+            <div className="laudo-print-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+              <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.assunto, 'Assunto'); }}>
+                Copiar assunto
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.corpoEmail, 'Corpo do e-mail'); }}>
+                Copiar corpo
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { copiarTextoLaudoSalvo(laudoSalvoAberto.dados?.laudoCompleto, 'Laudo completo'); }}>
+                Copiar laudo completo
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { window.print(); }}>
+                Imprimir / PDF
+              </button>
+              <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto(null); }}>
+                Fechar
+              </button>
+            </div>
+
+            <LaudoNegociacaoTemplate
+              tipo={laudoSalvoAberto.tipo}
+              dados={laudoSalvoAberto.dados}
+            />
+          </div>
+        </div>
       ) : null}
 
       {/* MODAL NOVA ORIGEM */}
