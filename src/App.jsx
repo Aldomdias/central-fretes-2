@@ -63,6 +63,26 @@ export default function App() {
     if (!usuarioTemAcesso(sessao, paginaAtual)) setPaginaAtual(primeiraPaginaPermitida(sessao));
   }, [sessao, paginaAtual]);
 
+  useEffect(() => {
+    if (!sessao?.expiraEm) return undefined;
+
+    const expiraEmMs = new Date(sessao.expiraEm).getTime();
+    const tempoRestante = expiraEmMs - Date.now();
+
+    if (!Number.isFinite(expiraEmMs) || tempoRestante <= 0) {
+      sairLocal();
+      setSessao(null);
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      sairLocal();
+      setSessao(null);
+    }, tempoRestante);
+
+    return () => window.clearTimeout(timer);
+  }, [sessao?.expiraEm]);
+
   if (!sessao) {
     return <LoginPage onLogin={setSessao} />;
   }
