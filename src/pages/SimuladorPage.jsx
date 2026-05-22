@@ -4127,28 +4127,34 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }, 250);
   };
 
+  const clonarLaudoComEstiloInline = (origem) => {
+    const clone = origem.cloneNode(true);
+    const copiarEstilos = (noOriginal, noClone) => {
+      if (!noOriginal || !noClone || noOriginal.nodeType !== 1 || noClone.nodeType !== 1) return;
+      const estilos = window.getComputedStyle(noOriginal);
+      let css = '';
+      for (let i = 0; i < estilos.length; i += 1) {
+        const prop = estilos[i];
+        css += `${prop}:${estilos.getPropertyValue(prop)};`;
+      }
+      noClone.setAttribute('style', `${noClone.getAttribute('style') || ''};${css}`);
+      Array.from(noOriginal.children || []).forEach((filho, index) => {
+        copiarEstilos(filho, noClone.children[index]);
+      });
+    };
+
+    copiarEstilos(origem, clone);
+    clone.setAttribute('contenteditable', 'true');
+    clone.setAttribute('spellcheck', 'true');
+    clone.style.outline = 'none';
+    return clone;
+  };
+
   const baixarLaudoVisualHtml = () => {
     const laudo = document.querySelector('.modal-overlay .laudo-page');
     if (!laudo) return;
 
-    const clone = laudo.cloneNode(true);
-    clone.setAttribute('contenteditable', 'true');
-    clone.setAttribute('spellcheck', 'true');
-
-    const cssLaudo = Array.from(document.styleSheets)
-      .map((sheet) => {
-        try {
-          return Array.from(sheet.cssRules || [])
-            .map((rule) => rule.cssText || '')
-            .filter((texto) => texto.includes('laudo-') || texto.includes('.laudo-page'))
-            .join('\n');
-        } catch {
-          return '';
-        }
-      })
-      .filter(Boolean)
-      .join('\n');
-
+    const clone = clonarLaudoComEstiloInline(laudo);
     const tipo = laudoVisualAberto === 'transportador' ? 'transportador' : 'diretoria';
     const transportadora = resultadoRealizado?.filtros?.transportadora || 'transportadora';
     const nomeArquivo = `laudo-${tipo}-${nomeArquivoSeguro(transportadora)}.html`;
@@ -4168,7 +4174,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
       .laudo-export-shell { padding: 0; }
       .laudo-page { box-shadow: none !important; border-radius: 0 !important; max-width: none !important; width: 100% !important; }
     }
-    ${cssLaudo}
   </style>
 </head>
 <body>
