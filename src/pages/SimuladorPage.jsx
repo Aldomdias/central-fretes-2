@@ -5009,10 +5009,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
               📊 Relatório Diretoria
             </button>
             <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('executivo')} disabled={!resultadoRealizado?.ctesAnalisados}>
-              Ver Laudo Executivo
+              Ver Laudo Diretoria
             </button>
             <button className="sim-tab" type="button" onClick={() => setLaudoVisualAberto('transportador')} disabled={!resultadoRealizado?.ctesAnalisados}>
-              Ver Devolutiva Transportador
+              Ver Laudo Transportador
             </button>
             <button className="sim-tab" type="button" onClick={salvarLaudosVisuaisNegociacao} disabled={!negociacaoSelecionadaRealizado?.id || salvandoLaudosVisuais}>
               {salvandoLaudosVisuais ? 'Salvando laudos...' : 'Salvar laudos na negociação'}
@@ -6385,6 +6385,28 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 boxShadow: '0 12px 28px rgba(15,23,42,0.18)',
               }}
             >
+              <button className="sim-tab" type="button" onClick={() => {
+                const contextoLaudos = {
+                  transportadora: resultadoRealizado.filtros?.transportadora,
+                  canal: resultadoRealizado.filtros?.canal,
+                  origem: resultadoRealizado.filtros?.origem,
+                };
+                const laudo = prepararLaudosNegociacao(resultadoRealizado, contextoLaudos)?.[laudoVisualAberto]?.dados;
+                copiarTextoLaudo(laudo?.relatorioTexto, 'Relatorio');
+              }}>
+                Copiar relatório
+              </button>
+              <button className="sim-tab" type="button" onClick={() => {
+                const contextoLaudos = {
+                  transportadora: resultadoRealizado.filtros?.transportadora,
+                  canal: resultadoRealizado.filtros?.canal,
+                  origem: resultadoRealizado.filtros?.origem,
+                };
+                const laudo = prepararLaudosNegociacao(resultadoRealizado, contextoLaudos)?.[laudoVisualAberto]?.dados;
+                copiarTextoLaudo(laudo?.corpoEmail, 'E-mail');
+              }}>
+                Copiar e-mail
+              </button>
               <button className="sim-tab" type="button" onClick={() => window.print()}>
                 Imprimir / PDF
               </button>
