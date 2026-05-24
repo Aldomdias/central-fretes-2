@@ -12,7 +12,7 @@ function ensureClient() {
 
 function detalheErroSupabase(error) {
   const msg = error?.message || String(error || 'Erro desconhecido no Supabase.');
-  if (msg.includes('lotacao_tabelas') || msg.includes('lotacao_rotas') || msg.includes('relation') || msg.includes('does not exist') || error?.code === '42P01') {
+  if (msg.includes('lotacao_tabelas') || msg.includes('lotacao_rotas') || msg.includes('lotacao_cargas') || msg.includes('lotacao_lancamentos') || msg.includes('lotacao_solicitacoes') || msg.includes('relation') || msg.includes('does not exist') || error?.code === '42P01') {
     return `${msg}. Rode o script supabase/lotacao_schema.sql no SQL Editor do Supabase antes de usar o módulo.`;
   }
   return msg;
@@ -259,20 +259,26 @@ function cargaParaDb(carga = {}, arquivoOrigem = '') {
 }
 
 function dbParaCarga(row = {}) {
+  const ctes = row.cte ? row.cte.split(';').filter(Boolean) : [];
   return {
     id:              row.id,
     dist:            row.dist            || '',
+    distKey:         normalizarTexto(row.dist || ''),
     referencia:      row.referencia      || '',
     operacao:        row.operacao        || '',
     origem:          row.origem          || '',
+    origemKey:       normalizarTexto(row.origem || ''),
     ufOrigem:        row.uf_origem       || '',
     destino:         row.destino         || '',
+    destinoKey:      normalizarTexto(row.destino || ''),
     ufDestino:       row.uf_destino      || '',
     status:          row.status          || '',
     transportadora:  row.transportadora  || '',
+    transportadoraKey: normalizarTexto(row.transportadora || ''),
     placaCavalo:     row.placa_cavalo    || '',
     placaCarreta:    row.placa_carreta   || '',
     tipoVeiculo:     row.tipo_veiculo    || '',
+    tipoKey:         normalizarTexto(row.tipo_veiculo || 'GERAL'),
     eixos:           row.eixos           || '',
     cubagem:         row.cubagem         != null ? Number(row.cubagem)         : null,
     coletaPlanejada: row.coleta_planejada || null,
@@ -283,13 +289,17 @@ function dbParaCarga(row = {}) {
     valorComparacao: row.valor_comparacao!= null ? Number(row.valor_comparacao): null,
     pedagio:         row.pedagio         != null ? Number(row.pedagio)         : null,
     seguro:          row.seguro          || '',
-    ctes:            row.cte ? row.cte.split(';').filter(Boolean) : [],
+    cteRaw:          row.cte             || '',
+    ctes,
+    cteKeys:         ctes.map(normalizarTexto),
     liberado:        Boolean(row.liberado),
     descarga:        Boolean(row.descarga),
     finalizado:      Boolean(row.finalizado),
     ocorrencia:      row.ocorrencia      || '',
     arquivoOrigem:   row.arquivo_origem  || '',
     importadoEm:     row.importado_em    || '',
+    rotaKey:         [normalizarTexto(row.origem || ''), normalizarTexto(row.destino || ''), normalizarTexto(row.tipo_veiculo || 'GERAL')].join('|'),
+    regraCalculo:    'Valor carregado do Supabase',
   };
 }
 

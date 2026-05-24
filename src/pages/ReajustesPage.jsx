@@ -528,6 +528,7 @@ export default function ReajustesPage() {
   const [percentuaisEditando, setPercentuaisEditando] = useState({});
   const [mostrarManual, setMostrarManual] = useState(false);
   const [manual, setManual] = useState(FORM_MANUAL_VAZIO);
+  const [realizadoImpactoRows, setRealizadoImpactoRows] = useState([]);
   const [fontePersistencia, setFontePersistencia] = useState(() => reajustesSupabaseConfigurado() ? 'supabase' : 'local');
   const [persistenciaPronta, setPersistenciaPronta] = useState(false);
   const [sincronizandoSupabase, setSincronizandoSupabase] = useState(false);
@@ -639,19 +640,24 @@ export default function ReajustesPage() {
       .sort((a, b) => toNumber(b.impactoRealizado || b.impactoPrevisto || b.impactoPeriodo) - toNumber(a.impactoRealizado || a.impactoPrevisto || a.impactoPeriodo) || String(a.transportadoraInformada).localeCompare(String(b.transportadoraInformada), 'pt-BR'));
   }, [itens, filtroTexto, filtroStatus, somenteEfetivados]);
 
-  function persistir(novos) {
-    setItens(novos);
-    salvarReajustes(novos);
+  function persistir(novos, options = {}) {
+    const deveRecalcular = options.recalcularImpacto && realizadoImpactoRows.length;
+    const base = deveRecalcular
+      ? calcularImpactosReajustes(novos, realizadoImpactoRows, config)
+      : novos;
+    setItens(base);
+    salvarReajustes(base);
+    return base;
   }
 
-  function alterarItem(id, campo, valor) {
+  function alterarItem(id, campo, valor, options = {}) {
     const novos = itens.map((item) => item.id === id ? { ...item, [campo]: valor, atualizadoEm: new Date().toISOString() } : item);
-    persistir(novos);
+    persistir(novos, options);
   }
 
   function salvarPercentualItem(id, campo, valorVisual) {
     const decimal = parsePercentReajuste(valorVisual);
-    alterarItem(id, campo, decimal);
+    alterarItem(id, campo, decimal, { recalcularImpacto: true });
     setPercentuaisEditando((prev) => ({
       ...prev,
       [id]: {
@@ -680,7 +686,7 @@ export default function ReajustesPage() {
           atualizadoEm: new Date().toISOString(),
         }
       : item);
-    persistir(novos);
+    persistir(novos, { recalcularImpacto: true });
   }
 
   function toggleVinculo(id, nome, checked) {
@@ -776,6 +782,7 @@ export default function ReajustesPage() {
       }, { limit: 500000 });
 
       const calculados = calcularImpactosReajustes(itens, rows || [], config);
+      setRealizadoImpactoRows(rows || []);
       persistir(calculados);
       const resumoCalculado = resumoReajustes(calculados);
 
@@ -1141,7 +1148,7 @@ export default function ReajustesPage() {
                       </select>
                     </td>
                     <td>
-                      <input type="date" value={String(item.dataInicio || '').slice(0, 10)} onChange={(event) => alterarItem(item.id, 'dataInicio', event.target.value)} />
+                      <input type="date" value={String(item.dataInicio || '').slice(0, 10)} onChange={(event) => alterarItem(item.id, 'dataInicio', event.target.value, { recalcularImpacto: true })} />
                     </td>
                     <td>
                       <input

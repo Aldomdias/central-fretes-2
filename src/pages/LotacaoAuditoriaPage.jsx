@@ -371,6 +371,70 @@ function MovimentosAutorizacao({ carga, solicitacoes }) {
 
 // ─── Página principal ────────────────────────────────────────────────────────
 
+function PainelAuditoriaGeral({ lancamentos, solicitacoes }) {
+  const pendentes = (solicitacoes || []).filter((item) => item.status === 'PENDENTE');
+  const recentes = [...(lancamentos || [])]
+    .sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime())
+    .slice(0, 80);
+
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Acompanhamento da auditoria</div>
+          <p className="compact">Visao geral do que foi lancado e do que esta aguardando aprovacao da operacao.</p>
+        </div>
+        <span className="status-pill dark">{pendentes.length} em aprovacao</span>
+      </div>
+
+      <div className="summary-strip lotacao-summary-mini">
+        <div className="summary-card"><span>Lancamentos registrados</span><strong>{(lancamentos || []).length.toLocaleString('pt-BR')}</strong><small>CT-e/fatura auditados</small></div>
+        <div className="summary-card"><span>Em aprovacao</span><strong>{pendentes.length.toLocaleString('pt-BR')}</strong><small>excedentes pendentes</small></div>
+        <div className="summary-card"><span>Aprovados</span><strong>{(solicitacoes || []).filter((item) => item.status === 'APROVADO').length.toLocaleString('pt-BR')}</strong><small>liberam saldo adicional</small></div>
+        <div className="summary-card"><span>Recusados</span><strong>{(solicitacoes || []).filter((item) => item.status === 'RECUSADO').length.toLocaleString('pt-BR')}</strong><small>sem liberacao de saldo</small></div>
+      </div>
+
+      {pendentes.length > 0 && (
+        <div className="hint-box compact top-space-sm">
+          Ha {pendentes.length.toLocaleString('pt-BR')} solicitacao(oes) aguardando a operacao validar em Lotacao Operacao.
+        </div>
+      )}
+
+      <div className="sim-analise-tabela-wrap top-space-sm">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>DIST</th>
+              <th>CT-e</th>
+              <th>Fatura</th>
+              <th>Valor lancado</th>
+              <th>Excedente</th>
+              <th>Status</th>
+              <th>Observacao</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recentes.map((item) => (
+              <tr key={item.id}>
+                <td>{formatarDataCurta(item.criadoEm)}</td>
+                <td><strong>{item.dist}</strong></td>
+                <td>{item.cte || '-'}</td>
+                <td>{item.fatura || '-'}</td>
+                <td>{formatarMoeda(item.valorLancado)}</td>
+                <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
+                <td><span className="status-pill">{item.status}</span></td>
+                <td>{item.observacao || '-'}</td>
+              </tr>
+            ))}
+            {!recentes.length && <tr><td colSpan="8">Nenhum lancamento registrado ate agora.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function LotacaoAuditoriaPage() {
   const mounted = useRef(true);
 
@@ -474,20 +538,27 @@ export default function LotacaoAuditoriaPage() {
       const lancamento = criarLancamentoAuditoria(selecionada, form, lancamentos, solicitacoes);
       const novosLancamentos = [lancamento, ...lancamentos];
 
-      // 1. Salva no Supabase (fonte de verdade)
-      await salvarLancamentoAuditoriaSupabase(lancamento);
-
-      // 2. Espelha no localStorage
       salvarLancamentosAuditoria(novosLancamentos);
       setLancamentos(novosLancamentos);
+
+      try {
+        await salvarLancamentoAuditoriaSupabase(lancamento);
+      } catch (error) {
+        console.warn('[Auditoria] Lancamento salvo localmente; falha ao salvar no Supabase:', error.message);
+      }
 
       if (lancamento.excedente > 0) {
         const solicitacao = criarSolicitacaoPagamento(selecionada, lancamento);
         const novasSolicitacoes = [solicitacao, ...solicitacoes];
 
-        await salvarSolicitacaoSupabase(solicitacao);
         salvarSolicitacoesPagamento(novasSolicitacoes);
         setSolicitacoes(novasSolicitacoes);
+
+        try {
+          await salvarSolicitacaoSupabase(solicitacao);
+        } catch (error) {
+          console.warn('[Auditoria] Solicitacao salva localmente; falha ao salvar no Supabase:', error.message);
+        }
 
         setMensagem('✓ Lançamento registrado no Supabase e solicitação criada para aprovação em Lotação Operação.');
       } else {
@@ -573,6 +644,7 @@ export default function LotacaoAuditoriaPage() {
         onRegistrar={registrarLancamento}
         salvando={salvando}
       />
+      <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} />
       <HistoricoLancamentos carga={selecionada} lancamentos={lancamentos} />
       <MovimentosAutorizacao carga={selecionada} solicitacoes={solicitacoes} />
     </div>

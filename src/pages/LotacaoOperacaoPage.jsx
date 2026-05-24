@@ -359,6 +359,24 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
     return `mailto:?subject=${subject}&body=${body}`;
   };
 
+  const responder = (item, status) => {
+    const justificativa = resposta.trim();
+    if (!justificativa) {
+      window.alert('Informe uma justificativa antes de aprovar ou recusar a solicitacao.');
+      return;
+    }
+
+    const valor = formatarMoeda(item.valorAdicional || item.excedente || item.valorLancado);
+    const acao = status === 'APROVADO' ? 'aprovar' : 'recusar';
+    const confirmado = window.confirm(
+      `Confirmar ${acao} a solicitacao da DIST ${item.dist} no valor de ${valor}?\n\nJustificativa: ${justificativa}`
+    );
+    if (!confirmado) return;
+
+    onAtualizar(item.id, status, justificativa);
+    setResposta('');
+  };
+
   return (
     <div className="table-card lotacao-table-card">
       <div className="section-row compact-top">
@@ -371,7 +389,7 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
 
       <label className="field small-width">
         Observação da resposta
-        <input value={resposta} onChange={(event) => setResposta(event.target.value)} placeholder="Opcional" />
+        <input value={resposta} onChange={(event) => setResposta(event.target.value)} placeholder="Obrigatoria para aprovar ou recusar" />
       </label>
 
       {!recentes.length ? (
@@ -407,8 +425,8 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
                       <a className="btn-secondary link-button" href={emailHref(item)}>E-mail</a>
                       {item.status === 'PENDENTE' && (
                         <>
-                          <button type="button" className="btn-primary" onClick={() => onAtualizar(item.id, 'APROVADO', resposta)}>Aprovar</button>
-                          <button type="button" className="btn-danger" onClick={() => onAtualizar(item.id, 'RECUSADO', resposta)}>Recusar</button>
+                          <button type="button" className="btn-primary" onClick={() => responder(item, 'APROVADO')}>Aprovar</button>
+                          <button type="button" className="btn-danger" onClick={() => responder(item, 'RECUSADO')}>Recusar</button>
                         </>
                       )}
                     </div>
@@ -574,7 +592,7 @@ export default function LotacaoOperacaoPage() {
       console.warn('[Operação] Falha ao atualizar solicitação no Supabase:', err.message);
     }
     // Atualiza estado local e cache
-    const base = carregarSolicitacoesPagamento();
+    const base = solicitacoes.length ? solicitacoes : carregarSolicitacoesPagamento();
     const atualizadas = atualizarStatusSolicitacao(base, id, status, observacao);
     salvarSolicitacoesPagamento(atualizadas);
     setSolicitacoes(atualizadas);
