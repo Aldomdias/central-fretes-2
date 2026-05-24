@@ -2485,7 +2485,8 @@ async function resumirRealizadoCtesViaRpc(supabase, filtros = {}) {
 
 async function listarRealizadoCtesViaAmostraRpc(supabase, filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
-  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const consultaAmpla = filtros.consultaAmpla === true;
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200));
   const resposta = await supabase.rpc('amostra_realizado_ctes', {
     p_limit: limit,
     p_inicio: filtros.inicio || null,
@@ -2559,7 +2560,8 @@ export async function carregarPainelRealizadoCtes(filtros = {}) {
 
 async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
-  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const consultaAmpla = filtros.consultaAmpla === true;
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200));
   const origem = limparOrigemParaConsultaDb(filtros.origem || '');
   const destino = limparOrigemParaConsultaDb(filtros.destino || '');
   const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
@@ -2592,7 +2594,8 @@ async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
 
 async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
-  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const consultaAmpla = filtros.consultaAmpla === true;
+  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200));
   const resposta = await supabase.rpc('listar_realizado_ctes', {
     p_limit: limit,
     p_inicio: filtros.inicio || null,
@@ -2613,10 +2616,11 @@ async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
 
 export async function listarRealizadoCtes(filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
+  const consultaAmpla = filtros.consultaAmpla === true;
   const filtrosSeguros = {
     ...filtros,
-    limit: Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 10000 : 50)) || 50, temFiltro ? 50000 : 200)),
-    amostra: filtros.amostra === true || !temFiltro,
+    limit: Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200)),
+    amostra: filtros.amostra === true || (!temFiltro && !consultaAmpla),
   };
 
   if (!isSupabaseConfigured()) {
@@ -2625,30 +2629,37 @@ export async function listarRealizadoCtes(filtros = {}) {
   }
 
   const supabase = ensureClient();
+  const timeoutConsulta = temFiltro || consultaAmpla ? 25000 : 8000;
+  let amostraError = null;
+
+  if (!consultaAmpla || filtrosSeguros.amostra === true) {
+    try {
+      return await executarComTimeout(
+        listarRealizadoCtesViaAmostraRpc(supabase, filtrosSeguros),
+        timeoutConsulta,
+        'A amostra rápida do realizado demorou demais. Rode o SQL atualizado de resumo/amostra.'
+      );
+    } catch (error) {
+      amostraError = error;
+    }
+  }
 
   try {
     return await executarComTimeout(
-      listarRealizadoCtesViaAmostraRpc(supabase, filtrosSeguros),
-      temFiltro ? 25000 : 8000,
-      'A amostra rápida do realizado demorou demais. Rode o SQL atualizado de resumo/amostra.'
+      listarRealizadoCtesViaSelect(supabase, filtrosSeguros),
+      timeoutConsulta,
+      'A consulta direta do realizado demorou demais. Use filtros mais específicos ou rode o SQL atualizado de performance.'
     );
-  } catch (amostraError) {
+  } catch (selectError) {
     try {
       return await executarComTimeout(
-        listarRealizadoCtesViaSelect(supabase, filtrosSeguros),
-        temFiltro ? 25000 : 8000,
-        'A consulta direta do realizado demorou demais. Use filtros mais específicos ou rode o SQL atualizado de performance.'
+        listarRealizadoCtesViaRpc(supabase, filtrosSeguros),
+        timeoutConsulta,
+        'A listagem RPC do realizado demorou demais. Use filtros de período/canal/origem/UF.'
       );
-    } catch (selectError) {
-      try {
-        return await executarComTimeout(
-          listarRealizadoCtesViaRpc(supabase, filtrosSeguros),
-          temFiltro ? 25000 : 8000,
-          'A listagem RPC do realizado demorou demais. Use filtros de período/canal/origem/UF.'
-        );
-      } catch (rpcError) {
-        throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto; rode o SQL atualizado. Detalhe amostra: ${amostraError.message || amostraError}. Detalhe select: ${selectError.message || selectError}. Detalhe RPC: ${rpcError.message || rpcError}`);
-      }
+    } catch (rpcError) {
+      const detalheAmostra = amostraError ? (amostraError.message || amostraError) : 'amostra ignorada em consulta ampla';
+      throw new Error(`Erro ao carregar realizado_ctes via Supabase. A tabela tem volume alto; rode o SQL atualizado. Detalhe amostra: ${detalheAmostra}. Detalhe select: ${selectError.message || selectError}. Detalhe RPC: ${rpcError.message || rpcError}`);
     }
   }
 }

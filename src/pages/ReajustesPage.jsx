@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
+import { listarRealizadoCtes } from '../services/freteDatabaseService';
 import {
   carregarConfigReajustesSupabase,
   carregarReajustesSupabase,
@@ -42,7 +43,12 @@ const FORM_MANUAL_VAZIO = {
 };
 
 function toNumber(value) {
-  const n = Number(value || 0);
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const text = String(value).trim();
+  if (!text || /nao|não|sem|n\/a/i.test(text)) return 0;
+  const normalized = text.includes(',') ? text.replace(/\./g, '').replace(',', '.') : text;
+  const n = Number(normalized.replace(/[^0-9.-]/g, ''));
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -329,6 +335,70 @@ function nomesUnicosRealizado(rows = []) {
   });
 
   return [...mapa.values()].sort((a, b) => b.frete - a.frete || b.ctes - a.ctes || a.nome.localeCompare(b.nome, 'pt-BR'));
+}
+
+function rowsRealizadoComValor(rows = []) {
+  return (rows || []).filter((row) => {
+    const nome = row.transportadora || row.nomeTransportadora || row.transportadoraRealizada;
+    const valor = row.valorCte ?? row.valorCTe ?? row.valorFrete ?? row.freteRealizado;
+    return String(nome || '').trim() && toNumber(valor) > 0;
+  });
+}
+
+async function carregarRealizadoParaReajustes(filtros = {}, options = {}) {
+  const limitLocal = Number(options.limit || 500000) || 500000;
+  const limitSupabase = Math.min(Number(options.limit || 50000) || 50000, 50000);
+  const remoto = await listarRealizadoCtes({
+    ...filtros,
+    limit: limitSupabase,
+    incluirSemCanal: true,
+    consultaAmpla: true,
+    amostra: false,
+  }).catch((error) => ({
+    rows: [],
+    erro: error,
+  }));
+  const rowsRemotos = Array.isArray(remoto) ? remoto : (remoto.rows || []);
+  const erroRemoto = Array.isArray(remoto) ? null : remoto.erro;
+
+  if (rowsRealizadoComValor(rowsRemotos).length) {
+    return {
+      rows: rowsRemotos,
+      totalCompativel: Number(rowsRemotos.length || 0),
+      limit: limitSupabase,
+      origem: 'Supabase realizado_ctes',
+    };
+  }
+
+  const local = await exportarRealizadoLocal(filtros, { ...options, limit: limitLocal }).catch((error) => ({
+    rows: [],
+    totalCompativel: 0,
+    limit: limitLocal,
+    erro: error,
+  }));
+
+  if (rowsRealizadoComValor(local.rows || []).length) {
+    return {
+      rows: local.rows || [],
+      totalCompativel: Number(local.totalCompativel || local.rows?.length || 0),
+      limit: Number(local.limit || limitLocal),
+      origem: 'Realizado Local',
+    };
+  }
+
+  if (erroRemoto && !rowsRemotos.length && !local.rows?.length) {
+    throw new Error(`Não consegui carregar realizado_ctes do Supabase (${erroRemoto.message || erroRemoto}) e o Realizado Local está vazio.`);
+  }
+
+  return {
+    rows: rowsRemotos.length ? rowsRemotos : (local.rows || []),
+    totalCompativel: Number(rowsRemotos.length || local.totalCompativel || local.rows?.length || 0),
+    limit: rowsRemotos.length ? limitSupabase : Number(local.limit || limitLocal),
+    origem: rowsRemotos.length ? 'Supabase realizado_ctes' : 'Realizado Local',
+    fallbackLocalVazio: !local.rows?.length,
+    erroSupabase: erroRemoto?.message || '',
+    erroLocal: local.erro?.message || '',
+  };
 }
 
 function filtrarOpcoesRealizado(opcoes = [], busca = '', itemNome = '') {
@@ -701,16 +771,16 @@ export default function ReajustesPage() {
     if (exibirMensagem) {
       setCarregando(true);
       setErro('');
-      setMensagem('Carregando nomes de transportadoras do Realizado Local...');
+      setMensagem('Carregando nomes de transportadoras do Realizado...');
     }
     try {
-      const { rows } = await exportarRealizadoLocal({}, { limit: 500000 });
+      const { rows, origem } = await carregarRealizadoParaReajustes({}, { limit: 500000 });
       const nomes = nomesUnicosRealizado(rows || []);
       setOpcoesRealizado(nomes);
-      if (exibirMensagem) setMensagem(`Transportadoras carregadas do Realizado Local: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
+      if (exibirMensagem) setMensagem(`Transportadoras carregadas do ${origem}: ${nomes.length.toLocaleString('pt-BR')} nome(s).`);
       return nomes;
     } catch (error) {
-      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do Realizado Local.');
+      if (exibirMensagem) setErro(error.message || 'Erro ao carregar transportadoras do Realizado.');
       return [];
     } finally {
       if (exibirMensagem) setCarregando(false);
@@ -761,7 +831,7 @@ export default function ReajustesPage() {
     const novos = aplicarVinculoAutomatico(itens, nomes.map((item) => item.nome));
     persistir(novos);
     setVinculoAtivoId(null);
-    setMensagem('Vínculo automático atualizado com base nos nomes do Realizado Local.');
+    setMensagem('Vínculo automático atualizado com base nos nomes do Realizado.');
     setErro('');
   }
 
@@ -775,24 +845,27 @@ export default function ReajustesPage() {
       return;
     }
 
-    setMensagem(`Buscando Realizado Local a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
+    setMensagem(`Buscando Realizado a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
     try {
-      const { rows, totalCompativel, limit } = await exportarRealizadoLocal({
+      const { rows, totalCompativel, limit, origem } = await carregarRealizadoParaReajustes({
         inicio: consulta.inicio,
       }, { limit: 500000 });
 
       const calculados = calcularImpactosReajustes(itens, rows || [], config);
       setRealizadoImpactoRows(rows || []);
+      const nomesCalculados = nomesUnicosRealizado(rows || []);
+      if (nomesCalculados.length) setOpcoesRealizado(nomesCalculados);
       persistir(calculados);
       const resumoCalculado = resumoReajustes(calculados);
 
       setMensagem(
         `Impacto calculado com ${Number(rows?.length || 0).toLocaleString('pt-BR')} CT-e(s). `
+        + `Fonte: ${origem}. `
         + `Base prevista: média dos ${Number(config.mesesBaseImpacto || 3).toLocaleString('pt-BR')} mês(es) anteriores à Data_Inicio. `
         + `Realizado: da Data_Inicio até ${formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base'}${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao calcular impacto pelo Realizado Local.');
+      setErro(error.message || 'Erro ao calcular impacto pelo Realizado.');
     } finally {
       setCarregando(false);
     }
