@@ -294,7 +294,7 @@ function rowPertenceAoItem(rowNorm, nomes = [], usarExato = false) {
 
 
 function dataRealizadoRow(row = {}) {
-  const value = row.data || row.dataEmissao || row.dataEmissaoCte || row.emissao || row.competencia || row.mes;
+  const value = row.data || row.dataRef || row.data_ref || row.dataEmissao || row.dataEmissaoCte || row.emissao || row.competencia || row.mes;
   const raw = String(value || '').slice(0, 10);
   if (/^20\d{2}-\d{2}-\d{2}$/.test(raw)) return raw;
   if (/^20\d{2}-\d{2}$/.test(raw)) return `${raw}-01`;
@@ -429,6 +429,7 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
     valorCteNum: toNumber(row.valorCte || row.valorCTe || row.valorFrete || row.freteRealizado),
     valorNfNum: toNumber(row.valorNF || row.valorNf || row.valorNota),
     pesoNum: toNumber(row.peso || row.pesoDeclarado || row.pesoConsiderado),
+    ctesNum: Math.max(toNumber(row.ctes ?? row.totalCtes ?? row.quantidadeCtes), 1),
   })).filter((row) => row.dataRealizado);
 
   const ultimaDataRealizado = realizadosNorm
@@ -450,7 +451,7 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
     const valorFreteBaseTotal = linhasBase.reduce((acc, row) => acc + row.valorCteNum, 0);
     const valorNFBaseTotal = linhasBase.reduce((acc, row) => acc + row.valorNfNum, 0);
     const pesoBaseTotal = linhasBase.reduce((acc, row) => acc + row.pesoNum, 0);
-    const ctesPeriodo = linhasBase.length;
+    const ctesPeriodo = linhasBase.reduce((acc, row) => acc + row.ctesNum, 0);
 
     const mesesBase = Math.max(Number(janela.meses || mesesBaseImpacto(periodo)), 1);
     const valorFretePeriodo = valorFreteBaseTotal / mesesBase;
@@ -460,7 +461,7 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
     const valorFreteRealizadoTotal = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorCteNum, 0);
     const valorNFRealizadoTotal = linhasRealizadoReajuste.reduce((acc, row) => acc + row.valorNfNum, 0);
     const pesoRealizadoTotal = linhasRealizadoReajuste.reduce((acc, row) => acc + row.pesoNum, 0);
-    const ctesRealizadoReajuste = linhasRealizadoReajuste.length;
+    const ctesRealizadoReajuste = linhasRealizadoReajuste.reduce((acc, row) => acc + row.ctesNum, 0);
 
     const mesesRealizados = janela.mesesRealizados > 0 ? janela.mesesRealizados : 0;
     const valorFreteRealizadoReajuste = mesesRealizados ? valorFreteRealizadoTotal / mesesRealizados : 0;

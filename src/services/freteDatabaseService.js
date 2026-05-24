@@ -2261,7 +2261,7 @@ function normalizeRealizadoDbRow(row = {}) {
     competencia: row.competencia || '',
     transportadora: row.transportadora || '',
     cnpjTransportadora: row.cnpj_transportadora || row.cnpjTransportadora || '',
-    emissao: row.emissao || '',
+    emissao: row.emissao || row.data_emissao || row.dataEmissao || row.data_ref || row.dataRef || '',
     chaveCte: row.chave_cte || row.chaveCte || '',
     numeroCte: row.numero_cte || row.numeroCte || '',
     serieCte: row.serie_cte || row.serieCte || '',
@@ -2274,7 +2274,8 @@ function normalizeRealizadoDbRow(row = {}) {
     statusErp: row.status_erp || row.statusErp || '',
     ufOrigem: row.uf_origem || row.ufOrigem || '',
     ufDestino: row.uf_destino || row.ufDestino || '',
-    pesoDeclarado: row.peso_declarado ?? row.pesoDeclarado ?? 0,
+    peso: row.peso ?? 0,
+    pesoDeclarado: row.peso_declarado ?? row.pesoDeclarado ?? row.peso ?? 0,
     pesoCubado: row.peso_cubado ?? row.pesoCubado ?? 0,
     metrosCubicos: row.metros_cubicos ?? row.metrosCubicos ?? 0,
     volume: row.volume ?? 0,
@@ -2397,6 +2398,42 @@ const REALIZADO_SELECT_COLUMNS = [
   'peso_declarado','peso_cubado','metros_cubicos','volume','canais','canal','canal_vendas','valor_nf','percentual_frete',
   'cep_destino','cep_origem','cidade_origem','cidade_destino','transportadora_contratada','prazo_entrega_cliente','criado_em','updated_at'
 ].join(',');
+
+const REALIZADO_LOCAL_SELECT_COLUMNS = [
+  'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','data_emissao','chave_cte','numero_cte',
+  'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino',
+  'peso','peso_declarado','peso_cubado','cubagem','qtd_volumes','canal','canal_original','valor_nf',
+  'cidade_origem','cidade_destino','created_at','updated_at'
+].join(',');
+
+function normalizeReajustesTransportadoraRow(row = {}) {
+  return {
+    nome: String(row.nome || row.transportadora || '').trim(),
+    ctes: Number(row.ctes ?? row.total_ctes ?? 0) || 0,
+    frete: Number(row.valor_cte ?? row.valorCte ?? row.frete ?? 0) || 0,
+    valorCte: Number(row.valor_cte ?? row.valorCte ?? 0) || 0,
+    valorNF: Number(row.valor_nf ?? row.valorNF ?? 0) || 0,
+    peso: Number(row.peso ?? 0) || 0,
+    primeiraData: row.primeira_data || row.primeiraData || '',
+    ultimaData: row.ultima_data || row.ultimaData || '',
+  };
+}
+
+function normalizeReajustesRealizadoDiaRow(row = {}) {
+  const data = row.data_emissao || row.dataEmissao || row.data_ref || row.dataRef || row.emissao || '';
+  const transportadora = String(row.transportadora || row.nome || '').trim();
+  return {
+    id: row.id || `${transportadora}|${String(data).slice(0, 10)}`,
+    transportadora,
+    dataEmissao: data,
+    emissao: data,
+    ctes: Number(row.ctes ?? row.total_ctes ?? row.totalCtes ?? 0) || 0,
+    valorCte: Number(row.valor_cte ?? row.valorCte ?? 0) || 0,
+    valorNF: Number(row.valor_nf ?? row.valorNF ?? 0) || 0,
+    peso: Number(row.peso ?? row.peso_declarado ?? row.pesoDeclarado ?? 0) || 0,
+    agregadoReajuste: true,
+  };
+}
 
 function uniqueNonEmpty(values = []) {
   return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
@@ -2556,6 +2593,77 @@ export async function carregarPainelRealizadoCtes(filtros = {}) {
     origem: 'supabase',
     erroAmostra: rowsResult.status === 'rejected' ? (rowsResult.reason?.message || String(rowsResult.reason)) : '',
   };
+}
+
+export async function listarTransportadorasRealizadoReajustes() {
+  if (!isSupabaseConfigured()) {
+    const mapa = new Map();
+    readRealizadoLocal().forEach((row) => {
+      const nome = String(row.transportadora || '').trim();
+      if (!nome || !isCanalRealizadoPreenchido(row.canal)) return;
+      const atual = mapa.get(nome) || { nome, ctes: 0, frete: 0, valorCte: 0, valorNF: 0, peso: 0 };
+      atual.ctes += 1;
+      atual.frete += Number(row.valorCte || 0) || 0;
+      atual.valorCte += Number(row.valorCte || 0) || 0;
+      atual.valorNF += Number(row.valorNF || 0) || 0;
+      atual.peso += Number(row.peso || row.pesoDeclarado || 0) || 0;
+      mapa.set(nome, atual);
+    });
+    return [...mapa.values()].sort((a, b) => b.frete - a.frete || b.ctes - a.ctes || a.nome.localeCompare(b.nome, 'pt-BR'));
+  }
+
+  const supabase = ensureClient();
+  const { data, error } = await executarComTimeout(
+    supabase.rpc('reajustes_realizado_transportadoras'),
+    25000,
+    'A consulta de transportadoras do realizado demorou demais.'
+  );
+  if (error) throw error;
+  return (data || []).map(normalizeReajustesTransportadoraRow).filter((row) => row.nome);
+}
+
+export async function listarRealizadoDiarioReajustes(filtros = {}) {
+  const limit = Math.max(1, Math.min(Number(filtros.limit || 100000) || 100000, 100000));
+
+  if (!isSupabaseConfigured()) {
+    return filtrarRealizadoLocal(readRealizadoLocal(), filtros).slice(0, limit);
+  }
+
+  const supabase = ensureClient();
+
+  try {
+    const { data, error } = await executarComTimeout(
+      supabase.rpc('reajustes_realizado_diario_local', {
+        p_inicio: filtros.inicio || null,
+        p_fim: filtros.fim || null,
+      }),
+      30000,
+      'A consulta consolidada de CT-es para reajustes demorou demais.'
+    );
+    if (error) throw error;
+    return (data || []).map(normalizeReajustesRealizadoDiaRow).filter((row) => row.transportadora && row.dataEmissao);
+  } catch (rpcError) {
+    let query = supabase
+      .from('realizado_local_ctes')
+      .select(REALIZADO_LOCAL_SELECT_COLUMNS)
+      .not('canal', 'is', null)
+      .neq('canal', '')
+      .limit(limit);
+
+    if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
+    if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
+    query = query.order('data_emissao', { ascending: true, nullsFirst: false });
+
+    const { data, error } = await executarComTimeout(
+      query,
+      30000,
+      'A consulta direta de CT-es para reajustes demorou demais.'
+    );
+    if (error) {
+      throw new Error(`Erro ao carregar realizado_local_ctes para reajustes. RPC: ${rpcError.message || rpcError}. Select: ${error.message || error}`);
+    }
+    return (data || []).map(normalizeRealizadoDbRow);
+  }
 }
 
 async function listarRealizadoCtesViaSelect(supabase, filtros = {}) {
