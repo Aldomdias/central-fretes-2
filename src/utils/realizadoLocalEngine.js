@@ -596,7 +596,7 @@ function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }
   };
 }
 
-function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
+export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
   const pesos = resolverPesoCubagemRealizado({ cte, origem, gradeCanal });
   const peso = pesos.pesoConsiderado;
   const valorNF = toNumber(cte.valorNF);

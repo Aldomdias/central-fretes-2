@@ -24,6 +24,7 @@ import FaturasPage from './pages/FaturasPage';
 import TratativasPage from './pages/TratativasPage';
 import PainelAuditoriaPage from './pages/PainelAuditoriaPage';
 import PainelOperacaoPage from './pages/PainelOperacaoPage';
+import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
@@ -237,6 +238,8 @@ export default function App() {
 
   if (paginaAtual === 'tratativas') {
     content = <TratativasPage />;
+  } else if (paginaAtual === 'perda-realizado') {
+    content = <PerdaRealizadoPage />;
   }
 
   if (paginaAtual === 'consulta-ibge') {
