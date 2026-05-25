@@ -29,6 +29,7 @@ function fmt(v) {
     style: 'currency', currency: 'BRL', minimumFractionDigits: 0, maximumFractionDigits: 0,
   });
 }
+function num(v, casas = 2) { return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: casas }); }
 function pct(v) { return `${Number(v || 0).toFixed(1)}%`; }
 function fmtData(s) {
   if (!s) return '-';
@@ -85,10 +86,59 @@ function Card({ label, valor, sub, cor, destaque }) {
 
 function Barra({ valor, maximo, cor }) {
   const w = maximo > 0 ? Math.min(100, (valor / maximo) * 100) : 0;
+  return <div style={{ background: '#eee', borderRadius: 4, height: 8, minWidth: 80, overflow: 'hidden' }}><div style={{ background: cor || '#9153F0', width: `${w}%`, height: '100%', borderRadius: 4 }} /></div>;
+}
+
+function Info({ label, value }) {
+  return <tr><td style={{ color: '#667085', padding: '2px 8px 2px 0', whiteSpace: 'nowrap' }}>{label}</td><td style={{ fontWeight: 600, padding: '2px 0' }}>{value ?? '-'}</td></tr>;
+}
+
+function CalculoBox({ titulo, calc, cor = '#9153F0' }) {
+  if (!calc) return null;
+  const taxas = Array.isArray(calc.taxas) ? calc.taxas : [];
   return (
-    <div style={{ background: '#eee', borderRadius: 4, height: 8, minWidth: 80, overflow: 'hidden' }}>
-      <div style={{ background: cor || '#9153F0', width: `${w}%`, height: '100%', borderRadius: 4 }} />
+    <div style={{ border: `1px solid ${cor}33`, borderRadius: 8, padding: 10, background: '#fff', minWidth: 310 }}>
+      <div style={{ fontWeight: 800, color: cor, marginBottom: 6 }}>{titulo}</div>
+      <table style={{ fontSize: '0.76rem', width: '100%' }}><tbody>
+        <Info label="Transportadora" value={calc.transportadora} />
+        <Info label="Status" value={calc.ativa === false ? `Inativa (${calc.statusTransportadora || 'sem status'})` : (calc.statusTransportadora || 'Ativa')} />
+        <Info label="Total calculado" value={fmt(calc.total)} />
+        <Info label="Prazo" value={calc.prazo ? `${calc.prazo} dias` : '-'} />
+        <Info label="Tipo cálculo" value={calc.tipoCalculo} />
+        <Info label="Faixa" value={calc.faixaPeso} />
+        <Info label="Peso informado" value={`${num(calc.pesoInformado)} kg`} />
+        <Info label="Peso considerado" value={`${num(calc.pesoConsiderado)} kg`} />
+        <Info label="Cubagem aplicada" value={`${num(calc.cubagemAplicada)} m³ (${calc.origemCubagem || '-'})`} />
+        <Info label="Peso cubado" value={`${num(calc.pesoCubadoCalculado)} kg`} />
+        <Info label="Valor NF" value={fmt(calc.valorNFInformado)} />
+        <Info label="% aplicado" value={calc.percentualAplicado ? `${num(calc.percentualAplicado)}%` : '-'} />
+        <Info label="Valor fixo/faixa" value={fmt(calc.valorFixoAplicado || calc.valorBase)} />
+        <Info label="Frete mínimo" value={fmt(calc.freteMinimoCotacao || calc.minimoAplicavel || calc.minimoRota)} />
+        <Info label="Subtotal" value={fmt(calc.subtotal)} />
+        <Info label="ICMS" value={`${fmt(calc.icms)}${calc.aliquotaIcms ? ` (${num(calc.aliquotaIcms)}%)` : ''}`} />
+        <Info label="Taxas" value={fmt(calc.taxasTotal)} />
+        <Info label="Excedente" value={fmt(calc.valorExcedente)} />
+      </tbody></table>
+      {taxas.length > 0 && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #eee' }}>
+          <div style={{ fontWeight: 700, fontSize: '0.74rem', marginBottom: 4 }}>Taxas aplicadas</div>
+          {taxas.map((t, i) => <div key={`${t.nome}-${i}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', gap: 12 }}><span>{t.nome}</span><strong>{fmt(t.valor)}</strong></div>)}
+        </div>
+      )}
     </div>
+  );
+}
+
+function DetalheCalculo({ item }) {
+  return (
+    <details style={{ minWidth: 170 }}>
+      <summary style={{ cursor: 'pointer', color: '#9153F0', fontWeight: 700 }}>Ver cálculo</summary>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0.75rem', background: '#f8f6ff', borderRadius: 8, marginTop: 6, maxWidth: 1050 }}>
+        <CalculoBox titulo="Realizada/tabela" calc={item.calculoRealizada} cor="#4E008F" />
+        <CalculoBox titulo="Mais barata ativa" calc={item.calculoGanhadora} cor="#04C7A4" />
+        {item.menorInativa && <CalculoBox titulo="Menor inativa" calc={item.menorInativa} cor="#f59e0b" />}
+      </div>
+    </details>
   );
 }
 
@@ -102,29 +152,20 @@ function PainelUfs({ titulo, cor, ufs, onChange }) {
   return (
     <div>
       <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#444', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-        {titulo}
-        <span style={{ fontWeight: 400, color: '#888' }}>({ufs.length === 0 ? 'todos' : `${ufs.length} selecionados`})</span>
+        {titulo}<span style={{ fontWeight: 400, color: '#888' }}>({ufs.length === 0 ? 'todos' : `${ufs.length} selecionados`})</span>
         {ufs.length > 0 && <button className="btn-secondary" style={{ padding: '1px 7px', fontSize: '0.72rem' }} onClick={() => onChange([])}>Limpar</button>}
         <button className="btn-secondary" style={{ padding: '1px 7px', fontSize: '0.72rem' }} onClick={() => onChange([...TODAS_UFS])}>Todos</button>
       </div>
       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: '0.3rem' }}>
         {REGIOES.map((reg) => {
           const ativas = reg.ufs.every((u) => ufs.includes(u));
-          return (
-            <button key={reg.label} style={{ fontSize: '0.73rem', padding: '2px 9px', borderRadius: 4, cursor: 'pointer', border: `1px solid ${ativas ? c : '#ccc'}`, background: ativas ? c : '#f5f5f5', color: ativas ? '#fff' : '#555', fontWeight: ativas ? 700 : 400 }} onClick={() => toggleRegiao(reg.ufs)}>
-              {reg.label}
-            </button>
-          );
+          return <button key={reg.label} style={{ fontSize: '0.73rem', padding: '2px 9px', borderRadius: 4, cursor: 'pointer', border: `1px solid ${ativas ? c : '#ccc'}`, background: ativas ? c : '#f5f5f5', color: ativas ? '#fff' : '#555', fontWeight: ativas ? 700 : 400 }} onClick={() => toggleRegiao(reg.ufs)}>{reg.label}</button>;
         })}
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
         {TODAS_UFS.map((uf) => {
           const sel = ufs.includes(uf);
-          return (
-            <button key={uf} onClick={() => toggleUf(uf)} style={{ padding: '2px 7px', fontSize: '0.73rem', borderRadius: 4, cursor: 'pointer', border: `1px solid ${sel ? c : '#ccc'}`, background: sel ? c : '#fff', color: sel ? '#fff' : '#555', fontWeight: sel ? 700 : 400 }}>
-              {uf}
-            </button>
-          );
+          return <button key={uf} onClick={() => toggleUf(uf)} style={{ padding: '2px 7px', fontSize: '0.73rem', borderRadius: 4, cursor: 'pointer', border: `1px solid ${sel ? c : '#ccc'}`, background: sel ? c : '#fff', color: sel ? '#fff' : '#555', fontWeight: sel ? 700 : 400 }}>{uf}</button>;
         })}
       </div>
     </div>
@@ -143,18 +184,14 @@ function Progresso({ etapaId, msg, pctVal }) {
             <div key={e.id} style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
               {i > 0 && <div style={{ position: 'absolute', left: 0, top: 10, width: '50%', height: 2, background: feito || atual ? '#9153F0' : '#ddd' }} />}
               {i < ETAPAS.length - 1 && <div style={{ position: 'absolute', right: 0, top: 10, width: '50%', height: 2, background: feito ? '#9153F0' : '#ddd' }} />}
-              <div style={{ width: 20, height: 20, borderRadius: '50%', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 700, position: 'relative', zIndex: 1, background: feito ? '#9153F0' : atual ? '#fff' : '#eee', border: `2px solid ${feito || atual ? '#9153F0' : '#ddd'}`, color: feito ? '#fff' : atual ? '#9153F0' : '#aaa' }}>
-                {feito ? '✓' : i + 1}
-              </div>
+              <div style={{ width: 20, height: 20, borderRadius: '50%', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 700, position: 'relative', zIndex: 1, background: feito ? '#9153F0' : atual ? '#fff' : '#eee', border: `2px solid ${feito || atual ? '#9153F0' : '#ddd'}`, color: feito ? '#fff' : atual ? '#9153F0' : '#aaa' }}>{feito ? '✓' : i + 1}</div>
               <div style={{ fontSize: '0.63rem', marginTop: 3, color: atual ? '#9153F0' : feito ? '#555' : '#bbb', fontWeight: atual ? 700 : 400 }}>{e.label}</div>
             </div>
           );
         })}
       </div>
       <div style={{ fontSize: '0.8rem', color: '#555', marginBottom: 5 }}>{msg}</div>
-      <div style={{ background: '#eee', borderRadius: 99, height: 8, overflow: 'hidden' }}>
-        <div style={{ background: 'linear-gradient(90deg,#9153F0,#6366f1)', height: '100%', borderRadius: 99, width: `${pctVal}%`, transition: 'width .4s' }} />
-      </div>
+      <div style={{ background: '#eee', borderRadius: 99, height: 8, overflow: 'hidden' }}><div style={{ background: 'linear-gradient(90deg,#9153F0,#6366f1)', height: '100%', borderRadius: 99, width: `${pctVal}%`, transition: 'width .4s' }} /></div>
       {pctVal > 0 && <div style={{ fontSize: '0.7rem', color: '#888', textAlign: 'right', marginTop: 2 }}>{pctVal}%</div>}
     </div>
   );
@@ -199,11 +236,8 @@ export default function PerdaRealizadoPage() {
     try {
       step('municipios', 'Carregando municípios IBGE...', 5);
       let municipios = [];
-      try {
-        ({ municipios } = await carregarMunicipiosIbgeComFallback({ permitirOficial: true }));
-      } catch (e) {
-        throw new Error(`Falha ao carregar municípios: ${e.message}`);
-      }
+      try { ({ municipios } = await carregarMunicipiosIbgeComFallback({ permitirOficial: true })); }
+      catch (e) { throw new Error(`Falha ao carregar municípios: ${e.message}`); }
 
       let vinculos = [];
       try { vinculos = await carregarVinculosTransportadoras(); } catch { /* não bloqueia */ }
@@ -232,10 +266,7 @@ export default function PerdaRealizadoPage() {
         realizados = realizados.filter((c) => setUfs.has(normUf(c.ufDestino)));
       }
 
-      if (totalCompativel > LIMITE_DB) {
-        setAviso(`A base tem ${totalCompativel.toLocaleString('pt-BR')} CT-es compatíveis. Foram carregados ${LIMITE_DB.toLocaleString('pt-BR')}. Refine os filtros para analisar tudo.`);
-      }
-
+      if (totalCompativel > LIMITE_DB) setAviso(`A base tem ${totalCompativel.toLocaleString('pt-BR')} CT-es compatíveis. Foram carregados ${LIMITE_DB.toLocaleString('pt-BR')}. Refine os filtros para analisar tudo.`);
       if (!realizados.length) {
         const detalhe = diagnostico ? ` Diagnóstico: ${diagnostico}` : totalBruto !== undefined ? ` Registros brutos consultados: ${totalBruto}.` : '';
         setErro(`Nenhum CT-e encontrado no Realizado oficial para os filtros informados.${detalhe}`);
@@ -244,14 +275,10 @@ export default function PerdaRealizadoPage() {
       }
 
       setInfo(`${realizados.length.toLocaleString('pt-BR')} CT-es carregados de ${origem || 'Realizado oficial'}. Buscando tabelas de frete das rotas...`);
-
       step('tabelas', `Buscando tabelas das ${new Set(realizados.map((c) => c.chaveRotaIbge).filter(Boolean)).size} rotas IBGE encontradas...`, 45);
       const routeKeys = extrairRouteKeys(realizados, filtros.canal);
       let transportadoras = [];
-      if (routeKeys.length) {
-        transportadoras = await buscarBaseSimulacaoPorRotasDb({ routeKeys, canal: filtros.canal || '' });
-      }
-
+      if (routeKeys.length) transportadoras = await buscarBaseSimulacaoPorRotasDb({ routeKeys, canal: filtros.canal || '' });
       if (!transportadoras.length) {
         setErro('CT-es encontrados, mas nenhuma tabela de frete foi localizada para as rotas filtradas. Confira se as tabelas têm origem/destino IBGE cadastrados.');
         setStatus('erro');
@@ -266,30 +293,15 @@ export default function PerdaRealizadoPage() {
       workerRef.current = worker;
       worker.onmessage = (e) => {
         const m = e.data;
-        if (m.type === 'progress') {
-          setMsg(m.etapa);
-          setPctVal(m.pct ?? 0);
-        } else if (m.type === 'done') {
+        if (m.type === 'progress') { setMsg(m.etapa); setPctVal(m.pct ?? 0); }
+        else if (m.type === 'done') {
           setResultado({ ...m.result, filtros: { ...filtros, origemDados: origem, totalBruto } });
-          setStatus('pronto');
-          setPagina(0);
-          setAba('origens');
-          worker.terminate();
-        } else if (m.type === 'error') {
-          setErro(`Erro na análise: ${m.message}`);
-          setStatus('erro');
-          worker.terminate();
-        }
+          setStatus('pronto'); setPagina(0); setAba('origens'); worker.terminate();
+        } else if (m.type === 'error') { setErro(`Erro na análise: ${m.message}`); setStatus('erro'); worker.terminate(); }
       };
-      worker.onerror = (e) => {
-        setErro(`Erro interno: ${e.message || 'Abra o console para detalhes.'}`);
-        setStatus('erro');
-      };
+      worker.onerror = (e) => { setErro(`Erro interno: ${e.message || 'Abra o console para detalhes.'}`); setStatus('erro'); };
       worker.postMessage({ type: 'analisar-perda', realizados, transportadoras, municipios, vinculos });
-    } catch (e) {
-      setErro(e.message || 'Erro inesperado.');
-      setStatus('erro');
-    }
+    } catch (e) { setErro(e.message || 'Erro inesperado.'); setStatus('erro'); }
   };
 
   const detalhesVisiveis = useMemo(() => {
@@ -299,7 +311,7 @@ export default function PerdaRealizadoPage() {
     if (filtroTab.ufOrigem) lista = lista.filter((d) => d.ufOrigem === filtroTab.ufOrigem);
     if (filtroTab.transportadora) {
       const t = filtroTab.transportadora.toUpperCase();
-      lista = lista.filter((d) => d.transportadoraRealizada?.toUpperCase().includes(t));
+      lista = lista.filter((d) => d.transportadoraRealizada?.toUpperCase().includes(t) || d.transportadoraGanhadora?.toUpperCase().includes(t));
     }
     const { campo, dir } = ordem;
     return [...lista].sort((a, b) => {
@@ -309,6 +321,7 @@ export default function PerdaRealizadoPage() {
     });
   }, [resultado, filtroTab, ordem]);
 
+  const inativas = resultado?.inativasDetalhes || [];
   const totalPags = Math.ceil(detalhesVisiveis.length / PAGE_SIZE);
   const pagAtual = detalhesVisiveis.slice(pagina * PAGE_SIZE, (pagina + 1) * PAGE_SIZE);
   const maxTop10 = resultado?.top10Origens?.[0]?.perdaTotal || 1;
@@ -316,127 +329,61 @@ export default function PerdaRealizadoPage() {
   const prazoResumo = useMemo(() => calcularResumoPrazo(resultado), [resultado]);
   const processando = status === 'carregando' || status === 'processando';
   const ordenarPor = (campo) => { setOrdem((p) => ({ campo, dir: p.campo === campo && p.dir === 'desc' ? 'asc' : 'desc' })); setPagina(0); };
-  const Th = ({ campo, label }) => (
-    <th style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => ordenarPor(campo)}>
-      {label} {ordem.campo === campo ? (ordem.dir === 'desc' ? '▼' : '▲') : ''}
-    </th>
-  );
+  const Th = ({ campo, label }) => <th style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => ordenarPor(campo)}>{label} {ordem.campo === campo ? (ordem.dir === 'desc' ? '▼' : '▲') : ''}</th>;
 
   return (
     <div className="page-shell">
-      <div className="page-header">
-        <span className="amd-mini-brand">Realizado · Análise</span>
-        <h1>Perda por Transportadora Mais Cara</h1>
-        <p>Compara o frete pago com a opção mais barata disponível nas tabelas, usando o Realizado oficial e as mesmas rotas/tabelas do simulador.</p>
-      </div>
+      <div className="page-header"><span className="amd-mini-brand">Realizado · Análise</span><h1>Perda por Transportadora Mais Cara</h1><p>Compara o frete pago com a opção mais barata ativa disponível nas tabelas, usando o Realizado oficial e as mesmas rotas/tabelas do simulador.</p></div>
 
       <div className="panel-card" style={{ marginBottom: '1rem' }}>
         <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div>
         <div className="form-grid three" style={{ marginBottom: '1rem' }}>
           <label className="field">Data início<input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} /></label>
           <label className="field">Data fim<input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} /></label>
-          <label className="field">Canal
-            <select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}>
-              <option value="">Todos os canais</option>
-              {CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </label>
+          <label className="field">Canal<select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}><option value="">Todos os canais</option>{CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>
           <label className="field">Transportadora realizada<input placeholder="Nome da transportadora que carregou" value={filtros.transportadoraRealizada} onChange={(e) => set('transportadoraRealizada', e.target.value)} /></label>
           <label className="field">Cidade de origem<input placeholder="Ex: São Paulo, Campinas..." value={filtros.cidadeOrigem} onChange={(e) => set('cidadeOrigem', e.target.value)} /></label>
         </div>
-        <div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}>
-          <PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} />
-        </div>
-        <div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}>
-          <PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} />
-        </div>
-        <div style={{ marginTop: '1rem' }}>
-          <button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>
-            {processando ? '⟳ Processando...' : '▶ Processar'}
-          </button>
-          {processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}
-        </div>
+        <div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}><PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} /></div>
+        <div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}><PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} /></div>
+        <div style={{ marginTop: '1rem' }}><button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>{processando ? '⟳ Processando...' : '▶ Processar'}</button>{processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}</div>
       </div>
 
       {info && !processando && <div className="hint-box compact" style={{ marginBottom: '0.75rem', background: '#f0f7ff', border: '1px solid #c8deff' }}>ℹ️ {info}</div>}
       {aviso && <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '0.75rem' }}>⚠️ {aviso}</div>}
       {erro && <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '0.75rem' }}>⚠️ {erro}</div>}
 
-      {resultado && (
-        <>
-          <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
-            <Card label="CT-es analisados" valor={resultado.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub={resultado.filtros?.origemDados || ''} />
-            <Card label="CT-es com perda" valor={resultado.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultado.totalCtes > 0 ? (resultado.ctesComPerda / resultado.totalCtes) * 100 : 0)} cor="#e67e22" />
-            <Card label="Perda total" valor={fmt(resultado.perdaTotal)} cor="#9b1111" destaque={resultado.perdaTotal > 0} />
-            <Card label="Perda média/CT-e" valor={fmt(resultado.perdaMedia)} cor="#e67e22" />
-            <Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" />
-            <Card label="Mais barata com prazo igual" valor={pct(prazoResumo.pctIgual)} sub={`${prazoResumo.prazoIgual} CT-es · ${fmt(prazoResumo.perdaPrazoIgual)}`} cor="#64748b" />
-            <Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" />
-            <Card label="Fora da malha" valor={resultado.semMalha.toLocaleString('pt-BR')} sub="sem tabela cadastrada" cor="#888" />
-          </div>
+      {resultado && <>
+        <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
+          <Card label="CT-es comparáveis" valor={resultado.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub="com tabela ativa e prazo" />
+          <Card label="CT-es com perda" valor={resultado.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultado.totalCtes > 0 ? (resultado.ctesComPerda / resultado.totalCtes) * 100 : 0)} cor="#e67e22" />
+          <Card label="Perda total" valor={fmt(resultado.perdaTotal)} cor="#9b1111" destaque={resultado.perdaTotal > 0} />
+          <Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" />
+          <Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" />
+          <Card label="Inativas bloqueadas" valor={(resultado.inativas || 0).toLocaleString('pt-BR')} sub={`potencial vs ativa: ${fmt(resultado.economiaInativaTotal)}`} cor="#f59e0b" />
+          <Card label="Sem comparação" valor={(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')} sub="sem tabela, prazo ou realizada ativa" cor="#888" />
+        </div>
 
-          <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem' }}>
-            {[
-              { id: 'origens', label: `Top 10 Origens (${resultado.top10Origens.length})` },
-              { id: 'transportadoras', label: `Por Transportadora (${resultado.porTransportadora.length})` },
-              { id: 'detalhes', label: `Detalhes (${detalhesVisiveis.length.toLocaleString('pt-BR')})` },
-              { id: 'sem-malha', label: `Sem malha (${resultado.semMalha})` },
-            ].map((a) => (
-              <button key={a.id} onClick={() => { setAba(a.id); setPagina(0); }} style={{ padding: '4px 14px', border: 'none', borderRadius: '4px 4px 0 0', cursor: 'pointer', background: aba === a.id ? '#9153F0' : '#f0f0f0', color: aba === a.id ? '#fff' : '#555', fontWeight: aba === a.id ? 700 : 400, fontSize: '0.85rem' }}>
-                {a.label}
-              </button>
-            ))}
-          </div>
+        <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem', flexWrap: 'wrap' }}>
+          {[
+            { id: 'origens', label: `Top 10 Origens (${resultado.top10Origens.length})` },
+            { id: 'transportadoras', label: `Por Transportadora (${resultado.porTransportadora.length})` },
+            { id: 'detalhes', label: `Detalhes (${detalhesVisiveis.length.toLocaleString('pt-BR')})` },
+            { id: 'inativas', label: `Inativas (${inativas.length.toLocaleString('pt-BR')})` },
+            { id: 'sem-malha', label: `Sem comparação (${resultado.semComparacao || resultado.semMalha || 0})` },
+          ].map((a) => <button key={a.id} onClick={() => { setAba(a.id); setPagina(0); }} style={{ padding: '4px 14px', border: 'none', borderRadius: '4px 4px 0 0', cursor: 'pointer', background: aba === a.id ? '#9153F0' : '#f0f0f0', color: aba === a.id ? '#fff' : '#555', fontWeight: aba === a.id ? 700 : 400, fontSize: '0.85rem' }}>{a.label}</button>)}
+        </div>
 
-          {aba === 'origens' && (
-            <div className="panel-card">
-              <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 10 origens por valor de perda</div>
-              {resultado.top10Origens.length === 0 ? <p style={{ color: '#888' }}>Nenhuma origem com perda encontrada.</p> : (
-                <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela">
-                  <thead><tr><th>#</th><th>Origem</th><th>CT-es</th><th>Perda total</th><th>% sobre pago</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead>
-                  <tbody>{resultado.top10Origens.map((o, i) => (
-                    <tr key={o.origem}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{o.origem}</strong></td><td>{o.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(o.perdaTotal)}</td><td>{pct(o.perdaPercentual)}</td><td><Barra valor={o.perdaTotal} maximo={maxTop10} cor="#9b1111" /></td></tr>
-                  ))}</tbody>
-                </table></div>
-              )}
-            </div>
-          )}
+        {aba === 'origens' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 10 origens por valor de perda</div>{resultado.top10Origens.length === 0 ? <p style={{ color: '#888' }}>Nenhuma origem com perda encontrada.</p> : <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Origem</th><th>CT-es</th><th>Perda total</th><th>% sobre pago</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultado.top10Origens.map((o, i) => <tr key={o.origem}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{o.origem}</strong></td><td>{o.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(o.perdaTotal)}</td><td>{pct(o.perdaPercentual)}</td><td><Barra valor={o.perdaTotal} maximo={maxTop10} cor="#9b1111" /></td></tr>)}</tbody></table></div>}</div>}
 
-          {aba === 'transportadoras' && (
-            <div className="panel-card">
-              <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Perda por transportadora realizada</div>
-              <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela">
-                <thead><tr><th>#</th><th>Transportadora realizada</th><th>CT-es</th><th>Perda total</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead>
-                <tbody>{resultado.porTransportadora.map((t, i) => (
-                  <tr key={t.transportadora}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{t.transportadora}</strong></td><td>{t.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(t.perdaTotal)}</td><td><Barra valor={t.perdaTotal} maximo={resultado.porTransportadora[0]?.perdaTotal || 1} cor="#e67e22" /></td></tr>
-                ))}</tbody>
-              </table></div>
-            </div>
-          )}
+        {aba === 'transportadoras' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Perda por transportadora realizada</div><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Transportadora realizada</th><th>CT-es</th><th>Perda total</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultado.porTransportadora.map((t, i) => <tr key={t.transportadora}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{t.transportadora}</strong></td><td>{t.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(t.perdaTotal)}</td><td><Barra valor={t.perdaTotal} maximo={resultado.porTransportadora[0]?.perdaTotal || 1} cor="#e67e22" /></td></tr>)}</tbody></table></div></div>}
 
-          {aba === 'detalhes' && (
-            <div className="panel-card">
-              <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Detalhamento por CT-e</div>
-              <div className="form-grid three" style={{ marginBottom: '0.75rem' }}>
-                <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={filtroTab.soPerda} onChange={(e) => { setFiltroTab((p) => ({ ...p, soPerda: e.target.checked })); setPagina(0); }} />Apenas CT-es com perda</label>
-                <label className="field">UF Origem<select value={filtroTab.ufOrigem} onChange={(e) => { setFiltroTab((p) => ({ ...p, ufOrigem: e.target.value })); setPagina(0); }}><option value="">Todas</option>{ufsOrigDisp.map((u) => <option key={u} value={u}>{u}</option>)}</select></label>
-                <label className="field">Transportadora<input placeholder="Filtrar" value={filtroTab.transportadora} onChange={(e) => { setFiltroTab((p) => ({ ...p, transportadora: e.target.value })); setPagina(0); }} /></label>
-              </div>
-              <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela">
-                <thead><tr><th>CT-e</th><th>Emissão</th><th>Canal</th><th>Origem</th><th>Destino</th><th>Peso</th><Th campo="transportadoraRealizada" label="Transp. realizada" /><Th campo="transportadoraGanhadora" label="Mais barata" /><Th campo="valorPago" label="Pago" /><Th campo="valorGanhadora" label="Mais barato" /><Th campo="perda" label="Perda" /><Th campo="perdaPercentual" label="% Perda" /><th>Prazo realiz.</th><th>Prazo ganh.</th><th>Dif. prazo</th></tr></thead>
-                <tbody>{pagAtual.map((d) => (
-                  <tr key={d.chaveCte} style={{ background: d.temPerda ? undefined : '#f8fff8' }}>
-                    <td style={{ fontSize: '0.78rem', color: '#666' }}>{d.numeroCte || d.chaveCte?.slice(-8) || '-'}</td><td>{fmtData(d.emissao)}</td><td>{d.canal || '-'}</td><td>{d.cidadeOrigem}/{d.ufOrigem}</td><td>{d.cidadeDestino}/{d.ufDestino}</td><td>{Number(d.peso || 0).toLocaleString('pt-BR')} kg</td><td>{d.transportadoraRealizada}</td><td style={{ color: '#04C7A4', fontWeight: 600 }}>{d.transportadoraGanhadora}</td><td>{fmt(d.valorPago)}</td><td>{fmt(d.valorGanhadora)}</td><td className={d.temPerda ? 'negativo' : ''} style={{ fontWeight: d.temPerda ? 700 : 400 }}>{d.temPerda ? fmt(d.perda) : '—'}</td><td style={{ color: d.temPerda ? '#9b1111' : '#888' }}>{d.temPerda ? pct(d.perdaPercentual) : '—'}</td><td>{d.prazoRealizada != null ? `${d.prazoRealizada}d` : '—'}</td><td>{d.prazoGanhadora != null ? `${d.prazoGanhadora}d` : '—'}</td><td style={{ color: d.difPrazo == null ? '#888' : d.difPrazo > 0 ? '#e67e22' : d.difPrazo < 0 ? '#04C7A4' : '#555', fontWeight: d.difPrazo != null && d.difPrazo !== 0 ? 700 : 400 }}>{d.difPrazo == null ? '—' : d.difPrazo > 0 ? `+${d.difPrazo}d (mais lenta)` : d.difPrazo < 0 ? `${d.difPrazo}d (mais rápida)` : 'Igual'}</td>
-                  </tr>
-                ))}{!pagAtual.length && <tr><td colSpan={15}>Nenhum CT-e com esses filtros.</td></tr>}</tbody>
-              </table></div>
-              {totalPags > 1 && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: '0.75rem' }}><button className="btn-secondary" onClick={() => setPagina(0)} disabled={pagina === 0}>«</button><button className="btn-secondary" onClick={() => setPagina((p) => p - 1)} disabled={pagina === 0}>‹</button><span style={{ fontSize: '0.85rem', color: '#555' }}>Página {pagina + 1} de {totalPags} · {detalhesVisiveis.length.toLocaleString('pt-BR')} registros</span><button className="btn-secondary" onClick={() => setPagina((p) => p + 1)} disabled={pagina >= totalPags - 1}>›</button><button className="btn-secondary" onClick={() => setPagina(totalPags - 1)} disabled={pagina >= totalPags - 1}>»</button></div>}
-            </div>
-          )}
+        {aba === 'detalhes' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Detalhamento por CT-e</div><div className="form-grid three" style={{ marginBottom: '0.75rem' }}><label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={filtroTab.soPerda} onChange={(e) => { setFiltroTab((p) => ({ ...p, soPerda: e.target.checked })); setPagina(0); }} />Apenas CT-es com perda</label><label className="field">UF Origem<select value={filtroTab.ufOrigem} onChange={(e) => { setFiltroTab((p) => ({ ...p, ufOrigem: e.target.value })); setPagina(0); }}><option value="">Todas</option>{ufsOrigDisp.map((u) => <option key={u} value={u}>{u}</option>)}</select></label><label className="field">Transportadora<input placeholder="Filtrar" value={filtroTab.transportadora} onChange={(e) => { setFiltroTab((p) => ({ ...p, transportadora: e.target.value })); setPagina(0); }} /></label></div><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>CT-e</th><th>Emissão</th><th>Canal</th><th>Origem</th><th>Destino</th><th>Peso</th><Th campo="transportadoraRealizada" label="Transp. realizada" /><Th campo="transportadoraGanhadora" label="Mais barata ativa" /><Th campo="valorPago" label="Pago" /><Th campo="valorGanhadora" label="Mais barato" /><Th campo="perda" label="Perda" /><th>Prazo</th><th>Cálculo</th></tr></thead><tbody>{pagAtual.map((d) => <tr key={d.chaveCte} style={{ background: d.temPerda ? undefined : '#f8fff8' }}><td style={{ fontSize: '0.78rem', color: '#666' }}>{d.numeroCte || d.chaveCte?.slice(-8) || '-'}</td><td>{fmtData(d.emissao)}</td><td>{d.canal || '-'}</td><td>{d.cidadeOrigem}/{d.ufOrigem}</td><td>{d.cidadeDestino}/{d.ufDestino}</td><td>{Number(d.peso || 0).toLocaleString('pt-BR')} kg</td><td>{d.transportadoraRealizada}</td><td style={{ color: '#04C7A4', fontWeight: 600 }}>{d.transportadoraGanhadora}</td><td>{fmt(d.valorPago)}</td><td>{fmt(d.valorGanhadora)}</td><td className={d.temPerda ? 'negativo' : ''} style={{ fontWeight: d.temPerda ? 700 : 400 }}>{d.temPerda ? `${fmt(d.perda)} · ${pct(d.perdaPercentual)}` : '—'}</td><td>{d.prazoRealizada}d → {d.prazoGanhadora}d<br /><span style={{ color: d.difPrazo > 0 ? '#e67e22' : d.difPrazo < 0 ? '#04C7A4' : '#555' }}>{d.difPrazo > 0 ? `+${d.difPrazo}d` : d.difPrazo < 0 ? `${d.difPrazo}d` : 'Igual'}</span></td><td><DetalheCalculo item={d} /></td></tr>)}{!pagAtual.length && <tr><td colSpan={13}>Nenhum CT-e com esses filtros.</td></tr>}</tbody></table></div>{totalPags > 1 && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: '0.75rem' }}><button className="btn-secondary" onClick={() => setPagina(0)} disabled={pagina === 0}>«</button><button className="btn-secondary" onClick={() => setPagina((p) => p - 1)} disabled={pagina === 0}>‹</button><span style={{ fontSize: '0.85rem', color: '#555' }}>Página {pagina + 1} de {totalPags} · {detalhesVisiveis.length.toLocaleString('pt-BR')} registros</span><button className="btn-secondary" onClick={() => setPagina((p) => p + 1)} disabled={pagina >= totalPags - 1}>›</button><button className="btn-secondary" onClick={() => setPagina(totalPags - 1)} disabled={pagina >= totalPags - 1}>»</button></div>}</div>}
 
-          {aba === 'sem-malha' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>CT-es fora da malha ({resultado.semMalha.toLocaleString('pt-BR')})</div><p style={{ fontSize: '0.85rem', color: '#888' }}>Esses CT-es não encontraram tabelas cadastradas para a rota ou não têm chave IBGE. Cadastrar tabelas para essas rotas pode revelar economias adicionais.</p></div>}
-        </>
-      )}
+        {aba === 'inativas' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Transportadoras inativadas — potencial bloqueado</div><div className="summary-strip" style={{ marginBottom: '0.75rem' }}><Card label="Casos com inativa menor" valor={inativas.length.toLocaleString('pt-BR')} cor="#f59e0b" /><Card label="Potencial vs ativa" valor={fmt(resultado.economiaInativaTotal)} cor="#f59e0b" /><Card label="Potencial vs pago" valor={fmt(resultado.economiaInativaVsPagoTotal)} cor="#9b1111" /></div><p style={{ fontSize: '0.84rem', color: '#667085' }}>Essas transportadoras não entram no cálculo geral. A aba serve apenas para enxergar quanto poderia reduzir se alguma inativa voltasse a operar.</p><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>CT-e</th><th>Origem</th><th>Destino</th><th>Realizada</th><th>Inativa menor</th><th>Ativa mais barata</th><th>Valor inativa</th><th>Valor ativa</th><th>Potencial</th><th>Prazo</th><th>Cálculo</th></tr></thead><tbody>{inativas.slice(0, 500).map((d, i) => <tr key={`${d.chaveCte}-${i}`}><td>{d.numeroCte || d.chaveCte?.slice(-8) || '-'}</td><td>{d.origem}</td><td>{d.destino}</td><td>{d.transportadoraRealizada}</td><td><strong>{d.transportadoraInativa}</strong><br /><small>{d.statusInativa}</small></td><td>{d.transportadoraAtivaMaisBarata || '-'}</td><td>{fmt(d.valorInativa)}</td><td>{d.valorAtivaMaisBarata != null ? fmt(d.valorAtivaMaisBarata) : '-'}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(d.economiaVsAtiva)}</td><td>{d.prazoInativa || '-'}d → {d.prazoAtivaMaisBarata || '-'}d</td><td><details><summary style={{ cursor: 'pointer', color: '#9153F0', fontWeight: 700 }}>Ver</summary><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0.75rem', background: '#fff8e8', borderRadius: 8, marginTop: 6 }}><CalculoBox titulo="Inativa" calc={d.detalheInativa} cor="#f59e0b" /><CalculoBox titulo="Ativa mais barata" calc={d.detalheAtiva} cor="#04C7A4" /></div></details></td></tr>)}{!inativas.length && <tr><td colSpan={11}>Nenhuma inativa menor que a ativa mais barata encontrada.</td></tr>}</tbody></table></div>{inativas.length > 500 && <p style={{ color: '#888', fontSize: '0.8rem' }}>Mostrando 500 primeiros registros. Refine os filtros para analisar menos itens.</p>}</div>}
+
+        {aba === 'sem-malha' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>CT-es sem comparação ({(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')})</div><p style={{ fontSize: '0.85rem', color: '#888' }}>Esses CT-es não entraram na conta principal por falta de tabela ativa, prazo válido ou transportadora realizada encontrada nas tabelas ativas. Assim o relatório fica limpo apenas com casos realmente comparáveis.</p></div>}
+      </>}
     </div>
   );
 }
