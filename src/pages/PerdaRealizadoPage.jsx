@@ -224,10 +224,10 @@ export default function PerdaRealizadoPage() {
 
       // ── Etapa 2: CT-es realizados ─────────────────────────────────────
       step('realizado', 'Buscando CT-es realizados...', 20);
+      // Datas, canal e multi-UF são filtrados em JS (não no IndexedDB) porque:
+      // - dataEmissao pode ser nulo: os registros usam apenas competencia ("2026-04")
+      // - canal salvo pode ser "ATACADO VAREJO" vs filtro "ATACADO" — usa categoriaCanalRealizado
       const filtrosDb = {
-        inicio:                  filtros.inicio    || undefined,
-        fim:                     filtros.fim       || undefined,
-        canal:                   filtros.canal     || undefined,
         transportadoraRealizada: filtros.transportadoraRealizada || undefined,
         origem:                  filtros.cidadeOrigem || undefined,
         ...(filtros.ufsOrigem.length === 1 ? { ufOrigem: filtros.ufsOrigem[0] } : {}),
@@ -240,12 +240,38 @@ export default function PerdaRealizadoPage() {
         throw new Error(`Falha ao buscar CT-es: ${e.message}. Verifique se o Realizado foi importado.`);
       }
 
-      // Filtros JS: multi-UF origem/destino
+      // Filtros JS
       let realizados = rows || [];
+
+      // Datas: tenta dataEmissao (ISO), senão competencia ("YYYY-MM") + "-01"
+      if (filtros.inicio || filtros.fim) {
+        const ini = filtros.inicio || null;
+        const fim = filtros.fim    || null;
+        realizados = realizados.filter((c) => {
+          const data = c.dataEmissao
+            ? String(c.dataEmissao).slice(0, 10)
+            : c.competencia
+              ? String(c.competencia).slice(0, 7) + '-01'
+              : null;
+          if (!data) return true;
+          if (ini && data < ini) return false;
+          if (fim && data > fim) return false;
+          return true;
+        });
+      }
+
+      // Canal por categoria
+      if (filtros.canal) {
+        realizados = realizados.filter((c) => categoriaCanalRealizado(c.canal) === filtros.canal);
+      }
+
+      // Multi-UF origem
       if (filtros.ufsOrigem.length > 1) {
         const s = new Set(filtros.ufsOrigem.map(normUf));
         realizados = realizados.filter((c) => s.has(normUf(c.ufOrigem)));
       }
+
+      // UFs destino
       if (filtros.ufsDestino.length > 0) {
         const s = new Set(filtros.ufsDestino.map(normUf));
         realizados = realizados.filter((c) => s.has(normUf(c.ufDestino)));
