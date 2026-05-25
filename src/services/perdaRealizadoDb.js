@@ -1,4 +1,8 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import {
+  buscarTrackingParaRealizado,
+  enriquecerRealizadoComTracking,
+} from './realizadoTrackingEnrichment';
 
 const PAGE_SIZE = 1000;
 
@@ -72,6 +76,7 @@ function normalizarRow(row = {}, mapaMunicipios = new Map()) {
   const cidadeDestino = row.cidadeDestino || row.cidade_destino || row.destino || row.municipio_destino || '';
   const ufOrigem = norm(row.ufOrigem || row.uf_origem || row.estado_origem).slice(0, 2);
   const ufDestino = norm(row.ufDestino || row.uf_destino || row.estado_destino).slice(0, 2);
+  const chaveCteOriginal = row.chaveCte || row.chave_cte || row.chave || '';
   const ibgeOrigem = resolverIbge({ ...row, cidadeOrigem, ufOrigem }, 'origem', mapaMunicipios);
   const ibgeDestino = resolverIbge({ ...row, cidadeDestino, ufDestino }, 'destino', mapaMunicipios);
   const peso = Math.max(
@@ -84,8 +89,11 @@ function normalizarRow(row = {}, mapaMunicipios = new Map()) {
   const chaveRotaIbge = ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '';
 
   return {
-    chaveCte: row.chaveCte || row.chave_cte || row.id || `${row.numeroCte || row.numero_cte || 'cte'}-${dataEmissao}-${row.transportadora || ''}`,
+    chaveCte: chaveCteOriginal || row.id || `${row.numeroCte || row.numero_cte || 'cte'}-${dataEmissao}-${row.transportadora || ''}`,
+    chaveCteOriginal,
     numeroCte: row.numeroCte || row.numero_cte || row.cte || '',
+    chaveNfe: onlyDigits(row.chaveNfe || row.chave_nfe || row.chave_nf || row.chaveNf || row.chave_nota || row.chaveNota),
+    notaFiscal: onlyDigits(row.notaFiscal || row.nota_fiscal || row.nf || row.numero_nf || row.numeroNf || row.nfe_numero),
     competencia: row.competencia || (dataEmissao ? dataEmissao.slice(0, 7) : ''),
     dataEmissao,
     canal: normalizarCanal(row.canal || row.canalVendas || row.canal_vendas || row.canais || row.canal_original || ''),
@@ -99,7 +107,9 @@ function normalizarRow(row = {}, mapaMunicipios = new Map()) {
     peso,
     pesoDeclarado: toNumber(row.pesoDeclarado ?? row.peso_declarado) || peso,
     pesoCubado: toNumber(row.pesoCubado ?? row.peso_cubado),
-    cubagem: toNumber(row.cubagem ?? row.cubagem_total ?? row.metrosCubicos ?? row.metros_cubicos),
+    cubagem: toNumber(row.cubagem ?? row.cubagem_total ?? row.cubagemTotal ?? row.metrosCubicos ?? row.metros_cubicos),
+    cubagemTotal: toNumber(row.cubagemTotal ?? row.cubagem_total ?? row.cubagem ?? row.metrosCubicos ?? row.metros_cubicos),
+    cubagemUnitaria: toNumber(row.cubagemUnitaria ?? row.cubagem_unitaria),
     qtdVolumes: toNumber(row.qtdVolumes ?? row.qtd_volumes ?? row.volume ?? row.volumes),
     ibgeOrigem,
     ibgeDestino,
@@ -107,6 +117,19 @@ function normalizarRow(row = {}, mapaMunicipios = new Map()) {
     ibgeOk: Boolean(chaveRotaIbge),
     tomadorServico: row.tomadorServico || row.tomador_servico || row.tomador || '',
     origemFonte: row.__fonte || 'realizado-remoto',
+  };
+}
+
+async function enriquecerRowsComTracking(rows = [], options = {}) {
+  if (options.enriquecerTracking === false || !rows.length) {
+    return { rows, tracking: null };
+  }
+
+  const mapasTracking = await buscarTrackingParaRealizado(rows);
+  const tracking = enriquecerRealizadoComTracking(rows, mapasTracking);
+  return {
+    rows: tracking.linhas || rows,
+    tracking,
   };
 }
 
@@ -177,12 +200,21 @@ export async function buscarRealizadoRemotoParaPerda(filtros = {}, options = {})
         .filter((row) => passaFiltros(row, filtros));
 
       if (rows.length) {
+        const limitRows = rows.slice(0, limit);
+        const enriquecido = await enriquecerRowsComTracking(limitRows, options);
+        const diagnosticoTracking = [
+          enriquecido.tracking?.avisoTracking,
+          enriquecido.tracking?.erroTracking ? `Tracking: ${enriquecido.tracking.erroTracking}` : '',
+        ].filter(Boolean).join(' | ');
+
         return {
-          rows: rows.slice(0, limit),
+          rows: enriquecido.rows,
           totalCompativel: rows.length,
           limit,
           origem: tabela,
           totalBruto: brutos.length,
+          tracking: enriquecido.tracking,
+          diagnostico: diagnosticoTracking || undefined,
         };
       }
 

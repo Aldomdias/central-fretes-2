@@ -558,21 +558,25 @@ function getCotacao(origem, rota, peso) {
 
 function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }) {
   const pesoDeclarado = toNumber(cte.pesoDeclarado);
-  // Importante: não usar peso cubado/cubagem do realizado para definir o peso de cálculo,
-  // porque essa cubagem vem inconsistente em algumas bases. O peso base é o peso real/declarado
-  // e a cubagem aplicada vem exclusivamente da grade configurada.
+  // Regra alinhada ao Simulador Realizado: cubagem operacional so entra no
+  // calculo quando veio do Tracking. A grade fica como fallback de simulacao.
   const pesoInformado = pesoDeclarado > 0 ? pesoDeclarado : Math.max(toNumber(cte.peso), 0);
   const pesoCubadoOriginal = toNumber(cte.pesoCubado);
-  const cubagemRealizada = Math.max(
+  const cubagemInformada = Math.max(
     toNumber(cte.cubagem),
+    toNumber(cte.cubagemTotal),
+    toNumber(cte.cubagem_total),
     toNumber(cte.metrosCubicos),
+    toNumber(cte.metros_cubicos),
     toNumber(cte.m3),
     toNumber(cte.volumeCubico)
   );
+  const cubagemVeioDoTracking = Boolean(cte.trackingMatch || cte.trackingOrigemVinculo || cte.origemCubagem === 'tracking');
+  const cubagemRealizada = cubagemVeioDoTracking ? cubagemInformada : 0;
   const linhaGrade = encontrarLinhaGradePorPeso(gradeCanal, pesoInformado || pesoDeclarado || toNumber(cte.peso));
   const cubagemGrade = toNumber(linhaGrade?.cubagem);
-  const cubagemAplicada = cubagemGrade;
-  const origemCubagem = cubagemGrade > 0 ? 'grade' : 'sem cubagem';
+  const cubagemAplicada = cubagemRealizada > 0 ? cubagemRealizada : cubagemGrade;
+  const origemCubagem = cubagemRealizada > 0 ? 'tracking' : cubagemGrade > 0 ? 'grade' : 'sem cubagem';
   const fatorCubagem = toNumber(
     origem.generalidades?.cubagem ??
     origem.generalidades?.fatorCubagem ??
