@@ -1,10 +1,8 @@
 /**
- * PerdaRealizadoPage.jsx  — v2
- * Identifica o valor "perdido" por utilizar a transportadora mais cara
- * em vez da opção mais barata disponível nas tabelas cadastradas.
- *
- * v2: filtros de UF/cidade de ORIGEM + UF de DESTINO + correção do retorno
- *     de buscarRealizadoLocalParaSimulacao (que retorna { rows, totalCompativel })
+ * PerdaRealizadoPage.jsx — v3
+ * - Carregamento em etapas sequenciais com feedback a cada passo
+ * - Filtros de UF/cidade de origem e destino
+ * - Correção: buscarRealizadoLocalParaSimulacao retorna { rows, totalCompativel }
  */
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { carregarBaseCompletaDb } from '../services/freteDatabaseService';
@@ -12,8 +10,7 @@ import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import { carregarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { buscarRealizadoLocalParaSimulacao } from '../services/realizadoLocalDb';
 
-// ── Constantes ────────────────────────────────────────────────────────────────
-
+// ── Constantes ─────────────────────────────────────────────────────────────
 const REGIOES = [
   { label: 'Sul',          ufs: ['RS', 'SC', 'PR'] },
   { label: 'Sudeste',      ufs: ['SP', 'RJ', 'MG', 'ES'] },
@@ -21,13 +18,20 @@ const REGIOES = [
   { label: 'Nordeste',     ufs: ['BA', 'SE', 'AL', 'PE', 'PB', 'RN', 'CE', 'PI', 'MA'] },
   { label: 'Norte',        ufs: ['AM', 'PA', 'RO', 'AC', 'RR', 'AP', 'TO'] },
 ];
-
 const TODAS_UFS = REGIOES.flatMap((r) => r.ufs);
 const CANAIS    = ['ATACADO', 'B2C', 'REVERSA', 'INTERCOMPANY'];
-const LIMITE_DB = 50000; // CT-es máximos carregados do IndexedDB por rodada
+const LIMITE_DB = 50000;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Etapas de carregamento para exibição
+const ETAPAS_CARGA = [
+  { id: 'tabelas',   label: 'Carregando tabelas de frete (transportadoras, rotas, cotações)...' },
+  { id: 'municipios',label: 'Carregando municípios IBGE...' },
+  { id: 'vinculos',  label: 'Carregando vínculos de transportadoras...' },
+  { id: 'realizado', label: 'Carregando CT-es realizados do período...' },
+  { id: 'worker',    label: 'Iniciando análise...' },
+];
 
+// ── Helpers ────────────────────────────────────────────────────────────────
 function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', {
     style: 'currency', currency: 'BRL',
@@ -42,8 +46,7 @@ function fmtData(s) {
 }
 function normUf(s) { return String(s || '').trim().toUpperCase(); }
 
-// ── Componentes auxiliares ────────────────────────────────────────────────────
-
+// ── Componentes auxiliares ─────────────────────────────────────────────────
 function Card({ label, valor, sub, cor, destaque }) {
   return (
     <div className="summary-card"
@@ -64,20 +67,19 @@ function Barra({ valor, maximo, cor }) {
   );
 }
 
-// Botões de seleção de UF (compartilhado entre origem e destino)
-function PainelUfs({ titulo, ufs, onChange }) {
+function PainelUfs({ titulo, cor, ufs, onChange }) {
   const toggleUf = (uf) =>
     onChange(ufs.includes(uf) ? ufs.filter((u) => u !== uf) : [...ufs, uf]);
-
   const toggleRegiao = (regUfs) => {
     const todas = regUfs.every((u) => ufs.includes(u));
     onChange(todas ? ufs.filter((u) => !regUfs.includes(u)) : [...new Set([...ufs, ...regUfs])]);
   };
+  const corAtiva = cor || '#9153F0';
 
   return (
     <div>
-      <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#555', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-        {titulo}&nbsp;
+      <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#444', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+        {titulo}
         <span style={{ fontWeight: 400, color: '#888' }}>
           ({ufs.length === 0 ? 'todos' : `${ufs.length} selecionados`})
         </span>
@@ -88,23 +90,23 @@ function PainelUfs({ titulo, ufs, onChange }) {
         <button className="btn-secondary" style={{ padding: '1px 8px', fontSize: '0.75rem' }}
           onClick={() => onChange([...TODAS_UFS])}>Todos</button>
       </div>
-
-      {/* Regiões */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: '0.35rem' }}>
         {REGIOES.map((reg) => {
           const ativas = reg.ufs.every((u) => ufs.includes(u));
           return (
             <button key={reg.label}
-              className={ativas ? 'btn-primary' : 'btn-secondary'}
-              style={{ fontSize: '0.75rem', padding: '2px 9px' }}
+              style={{
+                fontSize: '0.75rem', padding: '2px 10px', borderRadius: 4, cursor: 'pointer',
+                border: `1px solid ${ativas ? corAtiva : '#ccc'}`,
+                background: ativas ? corAtiva : '#f5f5f5',
+                color: ativas ? '#fff' : '#555', fontWeight: ativas ? 700 : 400,
+              }}
               onClick={() => toggleRegiao(reg.ufs)}>
               {reg.label}
             </button>
           );
         })}
       </div>
-
-      {/* UFs individuais */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
         {TODAS_UFS.map((uf) => {
           const sel = ufs.includes(uf);
@@ -112,8 +114,8 @@ function PainelUfs({ titulo, ufs, onChange }) {
             <button key={uf} onClick={() => toggleUf(uf)}
               style={{
                 padding: '2px 8px', fontSize: '0.75rem', borderRadius: 4, cursor: 'pointer',
-                border: '1px solid', borderColor: sel ? '#9153F0' : '#ccc',
-                background: sel ? '#9153F0' : '#fff',
+                border: `1px solid ${sel ? corAtiva : '#ccc'}`,
+                background: sel ? corAtiva : '#fff',
                 color: sel ? '#fff' : '#555', fontWeight: sel ? 700 : 400,
               }}>
               {uf}
@@ -125,101 +127,200 @@ function PainelUfs({ titulo, ufs, onChange }) {
   );
 }
 
-// ── Página ────────────────────────────────────────────────────────────────────
+// Painel de progresso com etapas visuais
+function PainelProgresso({ etapaAtual, mensagem, pctWorker }) {
+  return (
+    <div style={{ marginTop: '0.75rem' }}>
+      {/* Etapas visuais */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: '0.6rem' }}>
+        {ETAPAS_CARGA.map((e, i) => {
+          const idx     = ETAPAS_CARGA.findIndex((x) => x.id === etapaAtual);
+          const feito   = i < idx;
+          const atual   = e.id === etapaAtual;
+          return (
+            <div key={e.id} style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
+              {/* Linha conectora */}
+              {i > 0 && (
+                <div style={{
+                  position: 'absolute', left: 0, top: 11, width: '50%', height: 2,
+                  background: feito || atual ? '#9153F0' : '#ddd',
+                }} />
+              )}
+              {i < ETAPAS_CARGA.length - 1 && (
+                <div style={{
+                  position: 'absolute', right: 0, top: 11, width: '50%', height: 2,
+                  background: feito ? '#9153F0' : '#ddd',
+                }} />
+              )}
+              {/* Bolinha */}
+              <div style={{
+                width: 22, height: 22, borderRadius: '50%', margin: '0 auto',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '0.7rem', fontWeight: 700, position: 'relative', zIndex: 1,
+                background: feito ? '#9153F0' : atual ? '#fff' : '#eee',
+                border: `2px solid ${feito || atual ? '#9153F0' : '#ddd'}`,
+                color: feito ? '#fff' : atual ? '#9153F0' : '#aaa',
+              }}>
+                {feito ? '✓' : i + 1}
+              </div>
+              <div style={{
+                fontSize: '0.65rem', marginTop: 3,
+                color: atual ? '#9153F0' : feito ? '#555' : '#aaa',
+                fontWeight: atual ? 700 : 400,
+                lineHeight: 1.2,
+              }}>
+                {e.id === 'tabelas'    ? 'Tabelas'    :
+                 e.id === 'municipios' ? 'Municípios' :
+                 e.id === 'vinculos'   ? 'Vínculos'   :
+                 e.id === 'realizado'  ? 'CT-es'      : 'Análise'}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
+      {/* Mensagem atual */}
+      <div style={{ fontSize: '0.82rem', color: '#555', marginBottom: 5, minHeight: 18 }}>
+        {mensagem}
+      </div>
+
+      {/* Barra de progresso */}
+      <div style={{ background: '#eee', borderRadius: 99, height: 8, overflow: 'hidden' }}>
+        <div style={{
+          background: 'linear-gradient(90deg, #9153F0, #6366f1)',
+          height: '100%', borderRadius: 99,
+          width: `${pctWorker}%`, transition: 'width .4s ease',
+        }} />
+      </div>
+      {pctWorker > 0 && (
+        <div style={{ fontSize: '0.72rem', color: '#888', textAlign: 'right', marginTop: 2 }}>
+          {pctWorker}%
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Página ────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 50;
 
 export default function PerdaRealizadoPage() {
   const workerRef = useRef(null);
 
-  // ── Filtros ───────────────────────────────────────────────────────────────
   const [filtros, setFiltros] = useState({
     inicio:                  new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1).toISOString().slice(0, 10),
     fim:                     new Date().toISOString().slice(0, 10),
     canal:                   '',
     transportadoraRealizada: '',
-    cidadeOrigem:            '',   // texto livre
-    ufsOrigem:               [],   // multi-select
-    ufsDestino:              [],   // multi-select
+    cidadeOrigem:            '',
+    ufsOrigem:               [],
+    ufsDestino:              [],
   });
-
   const set = (campo, valor) => setFiltros((p) => ({ ...p, [campo]: valor }));
 
-  // ── Processamento ─────────────────────────────────────────────────────────
-  const [status,    setStatus]    = useState('idle'); // idle|carregando|processando|pronto|erro
-  const [progresso, setProgresso] = useState({ etapa: '', pct: 0 });
-  const [erro,      setErro]      = useState('');
-  const [aviso,     setAviso]     = useState(''); // avisos não-bloqueantes
-  const [resultado, setResultado] = useState(null);
+  const [status,      setStatus]      = useState('idle');
+  const [etapaId,     setEtapaId]     = useState('');
+  const [mensagem,    setMensagem]     = useState('');
+  const [pctWorker,   setPctWorker]   = useState(0);
+  const [erro,        setErro]        = useState('');
+  const [aviso,       setAviso]       = useState('');
+  const [ctesCont,    setCtesCont]    = useState(null); // quantos CT-es foram carregados
+  const [resultado,   setResultado]   = useState(null);
 
-  // ── Resultado / navegação ─────────────────────────────────────────────────
-  const [pagina,       setPagina]       = useState(0);
-  const [aba,          setAba]          = useState('origens');
-  const [filtroTab,    setFiltroTab]    = useState({ soPerda: true, ufOrigem: '', transportadora: '' });
-  const [ordenacao,    setOrdenacao]    = useState({ campo: 'perda', dir: 'desc' });
+  const [pagina,     setPagina]    = useState(0);
+  const [aba,        setAba]       = useState('origens');
+  const [filtroTab,  setFiltroTab] = useState({ soPerda: true, ufOrigem: '', transportadora: '' });
+  const [ordenacao,  setOrdenacao] = useState({ campo: 'perda', dir: 'desc' });
 
   useEffect(() => () => workerRef.current?.terminate(), []);
 
-  // ── Processar ─────────────────────────────────────────────────────────────
+  const step = (id, msg, pct = 0) => {
+    setEtapaId(id);
+    setMensagem(msg);
+    setPctWorker(pct);
+  };
+
   const processar = async () => {
     workerRef.current?.terminate();
     setStatus('carregando');
-    setProgresso({ etapa: 'Carregando tabelas de frete...', pct: 2 });
     setErro('');
     setAviso('');
     setResultado(null);
+    setCtesCont(null);
 
     try {
-      // 1. Carrega base de tabelas + municípios + vínculos em paralelo
-      const [transportadoras, { municipios }, vinculos] = await Promise.all([
-        carregarBaseCompletaDb(),
-        carregarMunicipiosIbgeComFallback({ permitirOficial: true }),
-        carregarVinculosTransportadoras(),
-      ]);
+      // ── Etapa 1: tabelas de frete ─────────────────────────────────────
+      step('tabelas', 'Carregando tabelas de frete do Supabase... (pode demorar alguns segundos)', 5);
+      let transportadoras;
+      try {
+        transportadoras = await carregarBaseCompletaDb();
+      } catch (e) {
+        throw new Error(`Falha ao carregar tabelas de frete: ${e.message}`);
+      }
+      if (!transportadoras?.length) throw new Error('Nenhuma tabela de frete encontrada. Verifique se as tabelas estão cadastradas.');
 
-      // 2. Monta filtros para o IndexedDB
-      // ufOrigem: o IndexedDB aceita apenas uma UF por índice; se o usuário selecionou
-      // exatamente 1, passamos direto; se múltiplas, buscamos sem filtro de UF e filtramos no JS.
-      setProgresso({ etapa: 'Carregando CT-es realizados...', pct: 15 });
+      // ── Etapa 2: municípios IBGE ──────────────────────────────────────
+      step('municipios', 'Carregando municípios IBGE...', 25);
+      let municipios;
+      try {
+        ({ municipios } = await carregarMunicipiosIbgeComFallback({ permitirOficial: true }));
+      } catch (e) {
+        throw new Error(`Falha ao carregar municípios: ${e.message}`);
+      }
 
+      // ── Etapa 3: vínculos ─────────────────────────────────────────────
+      step('vinculos', 'Carregando vínculos de transportadoras...', 40);
+      let vinculos = [];
+      try {
+        vinculos = await carregarVinculosTransportadoras();
+      } catch {
+        // não bloqueia, continua sem vínculos
+      }
+
+      // ── Etapa 4: CT-es realizados ─────────────────────────────────────
+      step('realizado', 'Buscando CT-es realizados com os filtros...', 55);
       const filtrosDb = {
         inicio:                  filtros.inicio    || undefined,
         fim:                     filtros.fim       || undefined,
         canal:                   filtros.canal     || undefined,
         transportadoraRealizada: filtros.transportadoraRealizada || undefined,
         origem:                  filtros.cidadeOrigem || undefined,
-        // se exatamente 1 UF origem selecionada, usa o índice nativo
         ...(filtros.ufsOrigem.length === 1 ? { ufOrigem: filtros.ufsOrigem[0] } : {}),
       };
 
-      const { rows, totalCompativel } = await buscarRealizadoLocalParaSimulacao(filtrosDb, { limit: LIMITE_DB });
+      let rows, totalCompativel;
+      try {
+        ({ rows, totalCompativel } = await buscarRealizadoLocalParaSimulacao(filtrosDb, { limit: LIMITE_DB }));
+      } catch (e) {
+        throw new Error(`Falha ao buscar CT-es realizados: ${e.message}`);
+      }
 
-      // 3. Filtros JS adicionais (multi-UF)
-      let realizados = rows;
-
+      // Filtros JS adicionais (multi-UF)
+      let realizados = rows || [];
       if (filtros.ufsOrigem.length > 1) {
-        const set_ = new Set(filtros.ufsOrigem.map(normUf));
-        realizados = realizados.filter((c) => set_.has(normUf(c.ufOrigem)));
+        const s = new Set(filtros.ufsOrigem.map(normUf));
+        realizados = realizados.filter((c) => s.has(normUf(c.ufOrigem)));
       }
       if (filtros.ufsDestino.length > 0) {
-        const set_ = new Set(filtros.ufsDestino.map(normUf));
-        realizados = realizados.filter((c) => set_.has(normUf(c.ufDestino)));
+        const s = new Set(filtros.ufsDestino.map(normUf));
+        realizados = realizados.filter((c) => s.has(normUf(c.ufDestino)));
       }
 
-      // Aviso se atingiu o limite
       if (totalCompativel > LIMITE_DB) {
-        setAviso(`⚠️ A base tem ${totalCompativel.toLocaleString('pt-BR')} CT-es compatíveis, mas o processamento foi limitado a ${LIMITE_DB.toLocaleString('pt-BR')}. Refine os filtros para analisar um período menor ou uma origem específica.`);
+        setAviso(`⚠️ A base tem ${totalCompativel.toLocaleString('pt-BR')} CT-es no período. Foram carregados os primeiros ${LIMITE_DB.toLocaleString('pt-BR')}. Para analisar tudo, refine os filtros (período menor, origem específica).`);
       }
 
       if (!realizados.length) {
-        setErro('Nenhum CT-e encontrado com os filtros selecionados.');
+        setErro('Nenhum CT-e encontrado com os filtros selecionados. Verifique se o Realizado foi importado.');
         setStatus('erro');
         return;
       }
 
-      // 4. Envia para o worker
+      setCtesCont(realizados.length);
+
+      // ── Etapa 5: worker ───────────────────────────────────────────────
       setStatus('processando');
-      setProgresso({ etapa: `Iniciando análise de ${realizados.length.toLocaleString('pt-BR')} CT-es...`, pct: 3 });
+      step('worker', `Analisando ${realizados.length.toLocaleString('pt-BR')} CT-es — aguarde...`, 2);
 
       const worker = new Worker(
         new URL('../workers/perdaRealizadoWorker.js', import.meta.url),
@@ -230,7 +331,8 @@ export default function PerdaRealizadoPage() {
       worker.onmessage = (e) => {
         const msg = e.data;
         if (msg.type === 'progress') {
-          setProgresso({ etapa: msg.etapa, pct: msg.pct });
+          setMensagem(msg.etapa);
+          setPctWorker(msg.pct ?? 0);
         } else if (msg.type === 'done') {
           setResultado(msg.result);
           setStatus('pronto');
@@ -238,29 +340,29 @@ export default function PerdaRealizadoPage() {
           setAba('origens');
           worker.terminate();
         } else if (msg.type === 'error') {
-          setErro(msg.message);
+          setErro(`Erro na análise: ${msg.message}`);
           setStatus('erro');
           worker.terminate();
         }
       };
       worker.onerror = (e) => {
-        setErro(e.message || 'Erro interno no worker.');
+        setErro(`Erro interno: ${e.message || 'Verifique o console do browser (F12) para detalhes.'}`);
         setStatus('erro');
       };
 
       worker.postMessage({ type: 'analisar-perda', realizados, transportadoras, municipios, vinculos });
     } catch (e) {
-      setErro(e.message || 'Erro ao carregar dados.');
+      setErro(e.message || 'Erro inesperado ao carregar dados.');
       setStatus('erro');
     }
   };
 
-  // ── Tabela detalhada ──────────────────────────────────────────────────────
+  // ── Tabela detalhada ──────────────────────────────────────────────────
   const detalhesVisiveis = useMemo(() => {
     if (!resultado?.detalhes) return [];
     let lista = resultado.detalhes;
-    if (filtroTab.soPerda)       lista = lista.filter((d) => d.temPerda);
-    if (filtroTab.ufOrigem)      lista = lista.filter((d) => d.ufOrigem === filtroTab.ufOrigem);
+    if (filtroTab.soPerda)        lista = lista.filter((d) => d.temPerda);
+    if (filtroTab.ufOrigem)       lista = lista.filter((d) => d.ufOrigem === filtroTab.ufOrigem);
     if (filtroTab.transportadora) {
       const t = filtroTab.transportadora.toUpperCase();
       lista = lista.filter((d) => d.transportadoraRealizada?.toUpperCase().includes(t));
@@ -293,7 +395,7 @@ export default function PerdaRealizadoPage() {
 
   const processando = status === 'carregando' || status === 'processando';
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────
   return (
     <div className="page-shell">
       <div className="page-header">
@@ -301,25 +403,22 @@ export default function PerdaRealizadoPage() {
         <h1>Perda por Transportadora Mais Cara</h1>
         <p>
           Compara o frete pago com a opção mais barata disponível nas tabelas cadastradas.
-          Filtre por origem, destino, canal e período para identificar onde está o valor perdido.
+          Filtre por origem, destino, canal e período.
         </p>
       </div>
 
-      {/* ── FILTROS ──────────────────────────────────────────────────────── */}
+      {/* ── FILTROS ─────────────────────────────────────────────────── */}
       <div className="panel-card" style={{ marginBottom: '1rem' }}>
         <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div>
 
-        {/* Linha 1: período, canal, transportadora, cidade origem */}
         <div className="form-grid three" style={{ marginBottom: '1rem' }}>
           <label className="field">
             Data início
-            <input type="date" value={filtros.inicio}
-              onChange={(e) => set('inicio', e.target.value)} />
+            <input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} />
           </label>
           <label className="field">
             Data fim
-            <input type="date" value={filtros.fim}
-              onChange={(e) => set('fim', e.target.value)} />
+            <input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} />
           </label>
           <label className="field">
             Canal
@@ -342,68 +441,65 @@ export default function PerdaRealizadoPage() {
           </label>
         </div>
 
-        {/* UFs de ORIGEM */}
-        <div style={{ marginBottom: '1rem', padding: '0.75rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}>
-          <PainelUfs
-            titulo="Estados de origem"
-            ufs={filtros.ufsOrigem}
-            onChange={(v) => set('ufsOrigem', v)}
-          />
+        {/* UFs origem */}
+        <div style={{ marginBottom: '0.75rem', padding: '0.75rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}>
+          <PainelUfs titulo="Estados de origem" cor="#9153F0"
+            ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} />
         </div>
 
-        {/* UFs de DESTINO */}
-        <div style={{ padding: '0.75rem', background: '#f6f9ff', borderRadius: 8, border: '1px solid #d8e4ff' }}>
-          <PainelUfs
-            titulo="Estados de destino"
-            ufs={filtros.ufsDestino}
-            onChange={(v) => set('ufsDestino', v)}
-          />
+        {/* UFs destino */}
+        <div style={{ padding: '0.75rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}>
+          <PainelUfs titulo="Estados de destino" cor="#2563eb"
+            ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} />
         </div>
 
-        {/* Botão processar */}
-        <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="btn-primary" onClick={processar} disabled={processando}
-            style={{ minWidth: 160 }}>
-            {processando ? '⟳ Processando...' : '▶ Processar'}
-          </button>
+        {/* Botão e progresso */}
+        <div style={{ marginTop: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: processando ? '0.5rem' : 0 }}>
+            <button className="btn-primary" onClick={processar} disabled={processando}
+              style={{ minWidth: 160 }}>
+              {processando ? '⟳ Processando...' : '▶ Processar'}
+            </button>
+            {ctesCont != null && !processando && (
+              <span style={{ fontSize: '0.82rem', color: '#666' }}>
+                Último processamento: <strong>{ctesCont.toLocaleString('pt-BR')}</strong> CT-es analisados
+              </span>
+            )}
+          </div>
+
           {processando && (
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: 3 }}>{progresso.etapa}</div>
-              <div style={{ background: '#eee', borderRadius: 99, height: 8, overflow: 'hidden' }}>
-                <div style={{ background: '#9153F0', height: '100%', borderRadius: 99,
-                  width: `${progresso.pct}%`, transition: 'width .3s' }} />
-              </div>
-            </div>
+            <PainelProgresso
+              etapaAtual={etapaId}
+              mensagem={mensagem}
+              pctWorker={pctWorker}
+            />
           )}
         </div>
       </div>
 
-      {/* Aviso não-bloqueante */}
+      {/* Avisos */}
       {aviso && (
-        <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '1rem' }}>
+        <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '0.75rem' }}>
           {aviso}
         </div>
       )}
-
-      {/* Erro */}
       {erro && (
-        <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '1rem' }}>
+        <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '0.75rem' }}>
           ⚠️ {erro}
         </div>
       )}
 
-      {/* ── RESULTADOS ───────────────────────────────────────────────────── */}
+      {/* ── RESULTADOS ──────────────────────────────────────────────── */}
       {resultado && (
         <>
-          {/* Cards resumo */}
           <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
-            <Card label="CT-es analisados"   valor={resultado.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" />
-            <Card label="CT-es com perda"    valor={resultado.ctesComPerda.toLocaleString('pt-BR')}
+            <Card label="CT-es analisados"  valor={resultado.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" />
+            <Card label="CT-es com perda"   valor={resultado.ctesComPerda.toLocaleString('pt-BR')}
               sub={pct(resultado.totalCtes > 0 ? (resultado.ctesComPerda / resultado.totalCtes) * 100 : 0)}
               cor="#e67e22" />
-            <Card label="Perda total"        valor={fmt(resultado.perdaTotal)} cor="#9b1111" destaque={resultado.perdaTotal > 0} />
-            <Card label="Perda média/CT-e"   valor={fmt(resultado.perdaMedia)} cor="#e67e22" />
-            <Card label="Fora da malha"      valor={resultado.semMalha.toLocaleString('pt-BR')}
+            <Card label="Perda total"       valor={fmt(resultado.perdaTotal)} cor="#9b1111" destaque={resultado.perdaTotal > 0} />
+            <Card label="Perda média/CT-e"  valor={fmt(resultado.perdaMedia)} cor="#e67e22" />
+            <Card label="Fora da malha"     valor={resultado.semMalha.toLocaleString('pt-BR')}
               sub="sem tabela cadastrada" cor="#888" />
           </div>
 
@@ -427,21 +523,17 @@ export default function PerdaRealizadoPage() {
             ))}
           </div>
 
-          {/* ── Top 10 Origens ────────────────────────────────────────────── */}
+          {/* Top 10 Origens */}
           {aba === 'origens' && (
             <div className="panel-card">
               <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 10 origens por valor de perda</div>
               {resultado.top10Origens.length === 0
-                ? <p style={{ color: '#888', fontSize: '0.9rem' }}>Nenhuma origem com perda encontrada.</p>
+                ? <p style={{ color: '#888' }}>Nenhuma origem com perda encontrada.</p>
                 : (
                   <div className="sim-analise-tabela-wrap">
                     <table className="sim-analise-tabela">
                       <thead>
-                        <tr>
-                          <th>#</th><th>Origem</th><th>CT-es com perda</th>
-                          <th>Perda total</th><th>% sobre frete pago</th>
-                          <th style={{ minWidth: 120 }}>Visual</th>
-                        </tr>
+                        <tr><th>#</th><th>Origem</th><th>CT-es com perda</th><th>Perda total</th><th>% sobre pago</th><th style={{ minWidth: 120 }}>Visual</th></tr>
                       </thead>
                       <tbody>
                         {resultado.top10Origens.map((o, i) => (
@@ -461,18 +553,14 @@ export default function PerdaRealizadoPage() {
             </div>
           )}
 
-          {/* ── Por Transportadora ────────────────────────────────────────── */}
+          {/* Por Transportadora */}
           {aba === 'transportadoras' && (
             <div className="panel-card">
               <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Perda por transportadora realizada</div>
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
                   <thead>
-                    <tr>
-                      <th>#</th><th>Transportadora realizada</th>
-                      <th>CT-es com perda</th><th>Perda total</th>
-                      <th style={{ minWidth: 120 }}>Visual</th>
-                    </tr>
+                    <tr><th>#</th><th>Transportadora realizada</th><th>CT-es com perda</th><th>Perda total</th><th style={{ minWidth: 120 }}>Visual</th></tr>
                   </thead>
                   <tbody>
                     {resultado.porTransportadora.map((t, i) => (
@@ -481,10 +569,7 @@ export default function PerdaRealizadoPage() {
                         <td><strong>{t.transportadora}</strong></td>
                         <td>{t.ctes.toLocaleString('pt-BR')}</td>
                         <td className="negativo" style={{ fontWeight: 700 }}>{fmt(t.perdaTotal)}</td>
-                        <td>
-                          <Barra valor={t.perdaTotal}
-                            maximo={resultado.porTransportadora[0]?.perdaTotal || 1} cor="#e67e22" />
-                        </td>
+                        <td><Barra valor={t.perdaTotal} maximo={resultado.porTransportadora[0]?.perdaTotal || 1} cor="#e67e22" /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -493,11 +578,10 @@ export default function PerdaRealizadoPage() {
             </div>
           )}
 
-          {/* ── Detalhes CT-e ─────────────────────────────────────────────── */}
+          {/* Detalhes */}
           {aba === 'detalhes' && (
             <div className="panel-card">
               <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Detalhamento por CT-e</div>
-
               <div className="form-grid three" style={{ marginBottom: '0.75rem' }}>
                 <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={filtroTab.soPerda}
@@ -514,27 +598,23 @@ export default function PerdaRealizadoPage() {
                 </label>
                 <label className="field">
                   Transportadora
-                  <input placeholder="Filtrar transportadora"
-                    value={filtroTab.transportadora}
+                  <input placeholder="Filtrar transportadora" value={filtroTab.transportadora}
                     onChange={(e) => { setFiltroTab((p) => ({ ...p, transportadora: e.target.value })); setPagina(0); }} />
                 </label>
               </div>
-
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
                   <thead>
                     <tr>
                       <th>CT-e</th><th>Emissão</th><th>Canal</th>
                       <th>Origem</th><th>Destino</th><th>Peso</th>
-                      <Th campo="transportadoraRealizada"  label="Transp. realizada" />
-                      <Th campo="transportadoraGanhadora"  label="Mais barata" />
-                      <Th campo="valorPago"                label="Pago" />
-                      <Th campo="valorGanhadora"           label="Mais barato" />
-                      <Th campo="perda"                    label="Perda" />
-                      <Th campo="perdaPercentual"          label="% Perda" />
-                      <th>Prazo realiz.</th>
-                      <th>Prazo ganh.</th>
-                      <th>Dif. prazo</th>
+                      <Th campo="transportadoraRealizada" label="Transp. realizada" />
+                      <Th campo="transportadoraGanhadora" label="Mais barata" />
+                      <Th campo="valorPago"               label="Pago" />
+                      <Th campo="valorGanhadora"          label="Mais barato" />
+                      <Th campo="perda"                   label="Perda" />
+                      <Th campo="perdaPercentual"         label="% Perda" />
+                      <th>Prazo realiz.</th><th>Prazo ganh.</th><th>Dif. prazo</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -559,15 +639,10 @@ export default function PerdaRealizadoPage() {
                         <td>{d.prazoRealizada != null ? `${d.prazoRealizada}d` : '—'}</td>
                         <td>{d.prazoGanhadora != null ? `${d.prazoGanhadora}d` : '—'}</td>
                         <td style={{
-                          color: d.difPrazo == null ? '#888'
-                            : d.difPrazo > 0 ? '#e67e22'
-                            : d.difPrazo < 0 ? '#04C7A4' : '#555',
+                          color: d.difPrazo == null ? '#888' : d.difPrazo > 0 ? '#e67e22' : d.difPrazo < 0 ? '#04C7A4' : '#555',
                           fontWeight: d.difPrazo != null && d.difPrazo !== 0 ? 700 : 400,
                         }}>
-                          {d.difPrazo == null ? '—'
-                            : d.difPrazo > 0 ? `+${d.difPrazo}d (mais lenta)`
-                            : d.difPrazo < 0 ? `${d.difPrazo}d (mais rápida)`
-                            : 'Igual'}
+                          {d.difPrazo == null ? '—' : d.difPrazo > 0 ? `+${d.difPrazo}d (mais lenta)` : d.difPrazo < 0 ? `${d.difPrazo}d (mais rápida)` : 'Igual'}
                         </td>
                       </tr>
                     ))}
@@ -577,14 +652,12 @@ export default function PerdaRealizadoPage() {
                   </tbody>
                 </table>
               </div>
-
               {totalPaginas > 1 && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: '0.75rem' }}>
                   <button className="btn-secondary" onClick={() => setPagina(0)} disabled={pagina === 0}>«</button>
                   <button className="btn-secondary" onClick={() => setPagina((p) => p - 1)} disabled={pagina === 0}>‹</button>
                   <span style={{ fontSize: '0.85rem', color: '#555' }}>
-                    Página {pagina + 1} de {totalPaginas}
-                    &nbsp;·&nbsp;{detalhesVisiveis.length.toLocaleString('pt-BR')} registros
+                    Página {pagina + 1} de {totalPaginas} · {detalhesVisiveis.length.toLocaleString('pt-BR')} registros
                   </span>
                   <button className="btn-secondary" onClick={() => setPagina((p) => p + 1)} disabled={pagina >= totalPaginas - 1}>›</button>
                   <button className="btn-secondary" onClick={() => setPagina(totalPaginas - 1)} disabled={pagina >= totalPaginas - 1}>»</button>
@@ -593,15 +666,15 @@ export default function PerdaRealizadoPage() {
             </div>
           )}
 
-          {/* ── Sem malha ─────────────────────────────────────────────────── */}
+          {/* Sem malha */}
           {aba === 'sem-malha' && (
             <div className="panel-card">
               <div className="panel-title" style={{ marginBottom: '0.75rem' }}>
                 CT-es fora da malha ({resultado.semMalha.toLocaleString('pt-BR')})
               </div>
               <p style={{ fontSize: '0.85rem', color: '#888' }}>
-                Esses CT-es não puderam ser comparados pois a rota não existe nas tabelas cadastradas
-                ou o CT-e não tem chave IBGE. Cadastrar tabelas para essas rotas pode revelar economias adicionais.
+                Esses CT-es não puderam ser comparados pois a rota não existe nas tabelas cadastradas ou o CT-e não tem chave IBGE.
+                Cadastrar tabelas para essas rotas pode revelar economias adicionais.
               </p>
             </div>
           )}
