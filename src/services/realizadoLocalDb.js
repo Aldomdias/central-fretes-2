@@ -301,7 +301,8 @@ function normalizarCteSupabaseParaLocal(row = {}, municipioPorCidade = new Map()
 }
 
 async function buscarRealizadoSupabaseParaSimulacao(filtros = {}, options = {}) {
-  const limit = Number(options.limit || 5000);
+  const limitTela = Number(options.limit || 5000);
+  const limit = Math.max(limitTela, Number(options.limitSupabase || 100000));
   const municipioPorCidade = await carregarMapaMunicipiosParaRealizado();
   const rowsBrutos = await listarRealizadoCtes({
     inicio: filtros.inicio || '',
@@ -320,20 +321,46 @@ async function buscarRealizadoSupabaseParaSimulacao(filtros = {}, options = {}) 
   const rows = (rowsBrutos || [])
     .map((row) => normalizarCteSupabaseParaLocal(row, municipioPorCidade))
     .filter((row) => filtrarCteLocal(row, filtros))
-    .slice(0, limit);
+    .slice(0, limitTela);
 
-  return { rows, totalCompativel: rows.length, limit, origem: 'supabase-realizado-ctes' };
+  return {
+    rows,
+    totalCompativel: rows.length,
+    limit: limitTela,
+    origem: 'supabase-realizado-ctes',
+    totalBrutoSupabase: Array.isArray(rowsBrutos) ? rowsBrutos.length : 0,
+  };
 }
 
 export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {
-  const local = await buscarRealizadoLocalParaSimulacaoIndexedDb(filtros, options);
-  if (local.rows.length || local.totalCompativel > 0) return { ...local, origem: 'indexeddb' };
+  let erroSupabase = '';
 
-  try {
-    return await buscarRealizadoSupabaseParaSimulacao(filtros, options);
-  } catch (error) {
-    return { ...local, origem: 'indexeddb', erroFallbackSupabase: error?.message || String(error) };
+  // Esta tela precisa usar o mesmo conceito da Análise por Origem: buscar o Realizado oficial.
+  // A base IndexedDB/local pode estar vazia ou desatualizada no navegador e gerava falso "Nenhum CT-e encontrado".
+  // Por isso o Supabase é a fonte principal aqui; IndexedDB fica só como contingência.
+  if (options.preferSupabase !== false) {
+    try {
+      const remoto = await buscarRealizadoSupabaseParaSimulacao(filtros, options);
+      if (remoto.rows.length || remoto.totalCompativel > 0) return remoto;
+    } catch (error) {
+      erroSupabase = error?.message || String(error);
+    }
   }
+
+  const local = await buscarRealizadoLocalParaSimulacaoIndexedDb(filtros, options);
+  if (local.rows.length || local.totalCompativel > 0) {
+    return { ...local, origem: 'indexeddb', erroFallbackSupabase: erroSupabase };
+  }
+
+  if (options.preferSupabase === false) {
+    try {
+      return await buscarRealizadoSupabaseParaSimulacao(filtros, options);
+    } catch (error) {
+      return { ...local, origem: 'indexeddb', erroFallbackSupabase: error?.message || String(error) };
+    }
+  }
+
+  return { ...local, origem: 'supabase-realizado-ctes', erroFallbackSupabase: erroSupabase };
 }
 
 export async function resumirRealizadoLocal(filtros = {}, options = {}) {
