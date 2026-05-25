@@ -1,6 +1,8 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { salvarSecaoDb } from './freteDatabaseService';
 import { converterTabelaNegociacaoParaSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
+import { carregarCargasLotacaoSupabase } from './lotacaoSupabaseService';
+import { normalizarTexto as normalizarTextoLotacao } from '../utils/lotacaoTables';
 
 export const STATUS_TABELA_NEGOCIACAO = [
   'EM NEGOCIAÇÃO',
@@ -15,6 +17,14 @@ export const TIPOS_TABELA_NEGOCIACAO = [
   'FRACIONADO',
   'LOTACAO',
 ];
+
+export const TIPOS_NEGOCIACAO = [
+  { value: 'NOVA_TABELA', label: 'Nova tabela / Novo transportador' },
+  { value: 'REAJUSTE_TABELA_EXISTENTE', label: 'Reajuste de tabela existente' },
+  { value: 'TABELA_LOTACAO', label: 'Tabela de Lotacao' },
+];
+
+export const TIPOS_NEGOCIACAO_VALUES = TIPOS_NEGOCIACAO.map((item) => item.value);
 
 export const DEFAULT_GENERALIDADES = {
   incideIcms: false,
@@ -80,6 +90,30 @@ function numero(value) {
 function inteiro(value) {
   const n = parseInt(numero(value), 10);
   return Number.isFinite(n) ? n : 0;
+}
+
+function dataOuNull(value) {
+  const raw = texto(value);
+  return raw || null;
+}
+
+export function normalizarTipoNegociacao(payload = {}) {
+  const tipo = upper(payload.tipo_negociacao || payload.tipoNegociacao);
+  if (TIPOS_NEGOCIACAO_VALUES.includes(tipo)) return tipo;
+  if (upper(payload.tipo_tabela) === 'LOTACAO') return 'TABELA_LOTACAO';
+  return 'NOVA_TABELA';
+}
+
+function normalizarTipoTabelaPorNegociacao(payload = {}) {
+  const tipoNegociacao = normalizarTipoNegociacao(payload);
+  if (tipoNegociacao === 'TABELA_LOTACAO') return 'LOTACAO';
+  return upper(payload.tipo_tabela || 'FRACIONADO') || 'FRACIONADO';
+}
+
+function normalizarCanalPorNegociacao(payload = {}) {
+  const tipoNegociacao = normalizarTipoNegociacao(payload);
+  if (tipoNegociacao === 'TABELA_LOTACAO') return 'LOTACAO';
+  return upper(payload.canal || 'ATACADO');
 }
 
 function dataISO() {
@@ -242,6 +276,7 @@ export async function listarTabelasNegociacao(filtros = {}) {
 
   if (filtros.status) query = query.eq('status', filtros.status);
   if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
+  if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
   if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
   if (filtros.somenteSimulacao) query = query.eq('incluir_simulacao', true);
@@ -261,11 +296,24 @@ export async function obterTabelaNegociacao(id) {
 
 export async function criarTabelaNegociacao(payload = {}) {
   const supabase = supabaseOrThrow();
+  const tipoNegociacao = normalizarTipoNegociacao(payload);
+  const tipoTabela = normalizarTipoTabelaPorNegociacao(payload);
 
   const novo = {
     transportadora: texto(payload.transportadora),
-    canal: upper(payload.canal || 'ATACADO'),
-    tipo_tabela: upper(payload.tipo_tabela || 'FRACIONADO'),
+    canal: normalizarCanalPorNegociacao(payload),
+    tipo_tabela: tipoTabela,
+    tipo_negociacao: tipoNegociacao,
+    transportadora_base_id: texto(payload.transportadora_base_id || payload.transportadoraBaseId),
+    transportadora_base_nome: texto(payload.transportadora_base_nome || payload.transportadoraBaseNome) || (tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE' ? texto(payload.transportadora) : ''),
+    tabela_base_id: texto(payload.tabela_base_id || payload.tabelaBaseId),
+    modalidade: texto(payload.modalidade),
+    comparar_com_proprio_realizado: tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE'
+      ? true
+      : Boolean(payload.comparar_com_proprio_realizado || payload.compararComProprioRealizado),
+    periodo_realizado_inicio: dataOuNull(payload.periodo_realizado_inicio || payload.periodoRealizadoInicio),
+    periodo_realizado_fim: dataOuNull(payload.periodo_realizado_fim || payload.periodoRealizadoFim),
+    tipo_veiculo: texto(payload.tipo_veiculo || payload.tipoVeiculo),
     status: payload.status || 'EM NEGOCIAÇÃO',
     descricao: texto(payload.descricao),
     regiao: texto(payload.regiao),
@@ -284,6 +332,7 @@ export async function criarTabelaNegociacao(payload = {}) {
 
   if (!novo.transportadora) throw new Error('Informe a transportadora.');
   if (!TIPOS_TABELA_NEGOCIACAO.includes(novo.tipo_tabela)) throw new Error('Tipo de tabela inválido.');
+  if (!TIPOS_NEGOCIACAO_VALUES.includes(novo.tipo_negociacao)) throw new Error('Tipo de negociação inválido.');
 
   const { data, error } = await supabase
     .from('tabelas_negociacao').insert(novo).select().single();
@@ -293,11 +342,28 @@ export async function criarTabelaNegociacao(payload = {}) {
 
 export async function atualizarTabelaNegociacao(id, payload = {}) {
   const supabase = supabaseOrThrow();
+  const tipoNegociacao = payload.tipo_negociacao !== undefined || payload.tipoNegociacao !== undefined || payload.tipo_tabela !== undefined
+    ? normalizarTipoNegociacao(payload)
+    : undefined;
+  const tipoTabela = payload.tipo_tabela !== undefined || tipoNegociacao === 'TABELA_LOTACAO'
+    ? normalizarTipoTabelaPorNegociacao(payload)
+    : undefined;
 
   const atualizacao = {
     transportadora:            payload.transportadora !== undefined ? texto(payload.transportadora) : undefined,
-    canal:                     payload.canal !== undefined ? upper(payload.canal) : undefined,
-    tipo_tabela:               payload.tipo_tabela !== undefined ? upper(payload.tipo_tabela) : undefined,
+    canal:                     payload.canal !== undefined || tipoNegociacao === 'TABELA_LOTACAO' ? normalizarCanalPorNegociacao(payload) : undefined,
+    tipo_tabela:               tipoTabela,
+    tipo_negociacao:           tipoNegociacao,
+    transportadora_base_id:    payload.transportadora_base_id !== undefined || payload.transportadoraBaseId !== undefined ? texto(payload.transportadora_base_id || payload.transportadoraBaseId) : undefined,
+    transportadora_base_nome:  payload.transportadora_base_nome !== undefined || payload.transportadoraBaseNome !== undefined ? texto(payload.transportadora_base_nome || payload.transportadoraBaseNome) : undefined,
+    tabela_base_id:            payload.tabela_base_id !== undefined || payload.tabelaBaseId !== undefined ? texto(payload.tabela_base_id || payload.tabelaBaseId) : undefined,
+    modalidade:                payload.modalidade !== undefined ? texto(payload.modalidade) : undefined,
+    comparar_com_proprio_realizado: payload.comparar_com_proprio_realizado !== undefined || payload.compararComProprioRealizado !== undefined
+      ? Boolean(payload.comparar_com_proprio_realizado || payload.compararComProprioRealizado)
+      : (tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE' ? true : undefined),
+    periodo_realizado_inicio:  payload.periodo_realizado_inicio !== undefined || payload.periodoRealizadoInicio !== undefined ? dataOuNull(payload.periodo_realizado_inicio || payload.periodoRealizadoInicio) : undefined,
+    periodo_realizado_fim:     payload.periodo_realizado_fim !== undefined || payload.periodoRealizadoFim !== undefined ? dataOuNull(payload.periodo_realizado_fim || payload.periodoRealizadoFim) : undefined,
+    tipo_veiculo:              payload.tipo_veiculo !== undefined || payload.tipoVeiculo !== undefined ? texto(payload.tipo_veiculo || payload.tipoVeiculo) : undefined,
     status:                    payload.status !== undefined ? payload.status : undefined,
     descricao:                 payload.descricao !== undefined ? texto(payload.descricao) : undefined,
     regiao:                    payload.regiao !== undefined ? texto(payload.regiao) : undefined,
@@ -313,6 +379,21 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     justificativa_aprovacao:   payload.justificativa_aprovacao !== undefined ? texto(payload.justificativa_aprovacao) : undefined,
     saving_projetado:          payload.saving_projetado !== undefined ? numero(payload.saving_projetado) : undefined,
     aderencia_projetada:       payload.aderencia_projetada !== undefined ? numero(payload.aderencia_projetada) : undefined,
+    valor_atual_realizado:     payload.valor_atual_realizado !== undefined ? numero(payload.valor_atual_realizado) : undefined,
+    valor_simulado_nova_tabela: payload.valor_simulado_nova_tabela !== undefined ? numero(payload.valor_simulado_nova_tabela) : undefined,
+    impacto_valor:             payload.impacto_valor !== undefined ? numero(payload.impacto_valor) : undefined,
+    impacto_percentual:        payload.impacto_percentual !== undefined ? numero(payload.impacto_percentual) : undefined,
+    impacto_mensal:            payload.impacto_mensal !== undefined ? numero(payload.impacto_mensal) : undefined,
+    impacto_anual:             payload.impacto_anual !== undefined ? numero(payload.impacto_anual) : undefined,
+    frete_percentual_nf_atual: payload.frete_percentual_nf_atual !== undefined ? numero(payload.frete_percentual_nf_atual) : undefined,
+    frete_percentual_nf_simulado: payload.frete_percentual_nf_simulado !== undefined ? numero(payload.frete_percentual_nf_simulado) : undefined,
+    qtd_registros_analisados:  payload.qtd_registros_analisados !== undefined ? inteiro(payload.qtd_registros_analisados) : undefined,
+    qtd_registros_com_tabela:  payload.qtd_registros_com_tabela !== undefined ? inteiro(payload.qtd_registros_com_tabela) : undefined,
+    resultado_simulacao_json:  payload.resultado_simulacao_json !== undefined ? payload.resultado_simulacao_json : undefined,
+    usuario_aprovacao:         payload.usuario_aprovacao !== undefined ? texto(payload.usuario_aprovacao) : undefined,
+    observacao_aprovacao:      payload.observacao_aprovacao !== undefined ? texto(payload.observacao_aprovacao) : undefined,
+    tabela_anterior_id:        payload.tabela_anterior_id !== undefined ? texto(payload.tabela_anterior_id) : undefined,
+    percentual_medio_impacto:  payload.percentual_medio_impacto !== undefined ? numero(payload.percentual_medio_impacto) : undefined,
     origem_importacao:         payload.origem_importacao !== undefined ? texto(payload.origem_importacao) : undefined,
     generalidades:             payload.generalidades !== undefined ? payload.generalidades : undefined,
   };
@@ -656,13 +737,14 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
 
   const { data: tabelaAtual } = await supabase
     .from('tabelas_negociacao')
-    .select('resumo_simulacao')
+    .select('*')
     .eq('id', id)
     .maybeSingle();
 
   const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual || {});
   const historicoAnterior = getHistoricoRodadas(tabelaAtual || {});
   const agora = new Date().toISOString();
+  const impactoAtual = calcularImpactoResultado(tabelaAtual?.resultado_simulacao_json || resumoAnterior || {}, tabelaAtual || {});
 
   const entradaAprovacao = {
     id: `APROVACAO-${Date.now()}`,
@@ -670,7 +752,12 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
     rodada: inteiro(resumoAnterior.rodada_atual || 1) || 1,
     criado_em: agora,
     data_inicio_vigencia: dados.data_inicio_vigencia || null,
-    observacao: dados.justificativa_aprovacao || '',
+    usuario_aprovacao: texto(dados.usuario_aprovacao || dados.usuarioAprovacao || dados.usuario),
+    observacao: dados.observacao_aprovacao || dados.justificativa_aprovacao || '',
+    tipo_negociacao: tabelaAtual?.tipo_negociacao || null,
+    tabela_base_id: dados.tabela_base_id || tabelaAtual?.tabela_base_id || null,
+    transportadora_base_nome: dados.transportadora_base_nome || tabelaAtual?.transportadora_base_nome || tabelaAtual?.transportadora || '',
+    percentual_medio_impacto: numero(dados.percentual_medio_impacto ?? impactoAtual.impactoPercentual),
     promocao_oficial: promocaoOficial,
   };
 
@@ -679,6 +766,12 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
     data_inicio_vigencia: dados.data_inicio_vigencia || null,
     data_aprovacao: agora,
     justificativa_aprovacao: dados.justificativa_aprovacao || '',
+    usuario_aprovacao: texto(dados.usuario_aprovacao || dados.usuarioAprovacao || dados.usuario),
+    observacao_aprovacao: texto(dados.observacao_aprovacao || dados.justificativa_aprovacao),
+    tabela_anterior_id: texto(dados.tabela_anterior_id || dados.tabela_base_id || tabelaAtual?.tabela_base_id),
+    tabela_anterior_snapshot: dados.tabela_anterior_snapshot || null,
+    nova_tabela_aprovada_snapshot: promocaoOficial || null,
+    percentual_medio_impacto: numero(dados.percentual_medio_impacto ?? impactoAtual.impactoPercentual),
     substituir_tabela_anterior: Boolean(dados.substituir_tabela_anterior),
     incluir_simulacao: false,
     resumo_simulacao: {
@@ -734,6 +827,7 @@ export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
     .order('criado_em', { ascending: false });
 
   if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
+  if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
 
   const { data: tabelas, error } = await query;
@@ -753,6 +847,93 @@ export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
   }
 
   return completas;
+}
+
+function tipoNegociacaoResultado(resultado = {}, tabela = {}) {
+  return normalizarTipoNegociacao({
+    tipo_negociacao:
+      resultado.tipo_negociacao ||
+      resultado.tipoNegociacao ||
+      resultado.filtros?.tipoNegociacao ||
+      tabela.tipo_negociacao,
+    tipo_tabela: tabela.tipo_tabela || resultado.tipo_tabela,
+  });
+}
+
+function calcularImpactoResultado(resultado = {}, tabela = {}) {
+  const tipoNegociacao = tipoNegociacaoResultado(resultado, tabela);
+  const meses = numero(resultado.meses) || 1;
+  const valorAtual = numero(
+    resultado.valor_atual_realizado ??
+    resultado.valorAtualRealizado ??
+    resultado.freteRealizadoComTabelaSelecionada ??
+    resultado.freteRealizado ??
+    0
+  );
+  const valorSimulado = numero(
+    resultado.valor_simulado_nova_tabela ??
+    resultado.valorSimuladoNovaTabela ??
+    resultado.freteSelecionada ??
+    resultado.valorSimulado ??
+    0
+  );
+  const impactoValor = numero(
+    resultado.impacto_valor ??
+    resultado.impactoValor ??
+    (valorSimulado - valorAtual)
+  );
+  const impactoPercentual = resultado.impacto_percentual !== undefined || resultado.impactoPercentual !== undefined
+    ? numero(resultado.impacto_percentual ?? resultado.impactoPercentual)
+    : (valorAtual ? (impactoValor / valorAtual) * 100 : 0);
+  const impactoMensal = resultado.impacto_mensal !== undefined || resultado.impactoMensal !== undefined
+    ? numero(resultado.impacto_mensal ?? resultado.impactoMensal)
+    : (meses ? impactoValor / meses : impactoValor);
+  const impactoAnual = resultado.impacto_anual !== undefined || resultado.impactoAnual !== undefined
+    ? numero(resultado.impacto_anual ?? resultado.impactoAnual)
+    : impactoMensal * 12;
+  const fretePctAtual = numero(
+    resultado.frete_percentual_nf_atual ??
+    resultado.fretePercentualNfAtual ??
+    resultado.percentualFreteRealizadoComTabela ??
+    resultado.percentualFreteRealizado ??
+    0
+  );
+  const fretePctSimulado = numero(
+    resultado.frete_percentual_nf_simulado ??
+    resultado.fretePercentualNfSimulado ??
+    resultado.percentualFreteSelecionadaComTabela ??
+    resultado.percentualFreteSelecionada ??
+    resultado.percentual_frete_projetado ??
+    0
+  );
+  const qtdAnalisados = inteiro(
+    resultado.qtd_registros_analisados ??
+    resultado.qtdRegistrosAnalisados ??
+    resultado.viagensAnalisadas ??
+    resultado.ctesAnalisados ??
+    0
+  );
+  const qtdComTabela = inteiro(
+    resultado.qtd_registros_com_tabela ??
+    resultado.qtdRegistrosComTabela ??
+    resultado.viagensComTabela ??
+    resultado.ctesComTabelaSelecionada ??
+    0
+  );
+
+  return {
+    tipoNegociacao,
+    valorAtual,
+    valorSimulado,
+    impactoValor,
+    impactoPercentual,
+    impactoMensal,
+    impactoAnual,
+    fretePctAtual,
+    fretePctSimulado,
+    qtdAnalisados,
+    qtdComTabela,
+  };
 }
 
 
@@ -777,10 +958,12 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const historicoAnterior = getHistoricoRodadas(tabelaAtual);
   const rodadaAtual = inteiro(resumoAnterior.rodada_atual || 1) || 1;
   const agora = dataISO();
+  const impacto = calcularImpactoResultado(resultado, tabelaAtual);
 
   const resumoResultado = {
     salvo_em: agora,
     rodada: rodadaAtual,
+    tipoNegociacao: impacto.tipoNegociacao,
     filtros: resultado.filtros || {},
 
     ctesAnalisados: resultado.ctesAnalisados || 0,
@@ -812,6 +995,17 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     percentualFreteTabelaGanharia: resultado.percentualFreteTabelaGanharia || 0,
     percentualFreteSelecionada: resultado.percentualFreteSelecionada || 0,
     reducaoMediaNecessaria: resultado.reducaoMediaNecessaria || 0,
+
+    valor_atual_realizado: impacto.valorAtual,
+    valor_simulado_nova_tabela: impacto.valorSimulado,
+    impacto_valor: impacto.impactoValor,
+    impacto_percentual: impacto.impactoPercentual,
+    impacto_mensal: impacto.impactoMensal,
+    impacto_anual: impacto.impactoAnual,
+    frete_percentual_nf_atual: impacto.fretePctAtual,
+    frete_percentual_nf_simulado: impacto.fretePctSimulado,
+    qtd_registros_analisados: impacto.qtdAnalisados,
+    qtd_registros_com_tabela: impacto.qtdComTabela,
 
     cargasDia: resultado.cargasDia || 0,
     volumesDia: resultado.volumesDia || 0,
@@ -860,6 +1054,16 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       volumes_dia: numero(resultado.volumesDia ?? 0),
       percentual_frete_realizado: numero(resultado.percentualFreteRealizado ?? 0),
       percentual_frete_simulado: numero(resultado.percentual_frete_projetado ?? resultado.percentualFreteTabelaGanharia ?? resultado.percentualFreteSelecionada ?? 0),
+      valor_atual_realizado: impacto.valorAtual,
+      valor_simulado_nova_tabela: impacto.valorSimulado,
+      impacto_valor: impacto.impactoValor,
+      impacto_percentual: impacto.impactoPercentual,
+      impacto_mensal: impacto.impactoMensal,
+      impacto_anual: impacto.impactoAnual,
+      frete_percentual_nf_atual: impacto.fretePctAtual,
+      frete_percentual_nf_simulado: impacto.fretePctSimulado,
+      qtd_registros_analisados: impacto.qtdAnalisados,
+      qtd_registros_com_tabela: impacto.qtdComTabela,
       rotas_com_ganho: inteiro(resultado.qtdRotasComGanhoSelecionada ?? 0),
       rotas_ganhas: inteiro(resultado.qtdRotasGanhasSelecionada ?? 0),
       rotas_parciais: inteiro(resultado.qtdRotasParciaisSelecionada ?? 0),
@@ -929,6 +1133,19 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       0
     ),
 
+    valor_atual_realizado: impacto.valorAtual,
+    valor_simulado_nova_tabela: impacto.valorSimulado,
+    impacto_valor: impacto.impactoValor,
+    impacto_percentual: impacto.impactoPercentual,
+    impacto_mensal: impacto.impactoMensal,
+    impacto_anual: impacto.impactoAnual,
+    frete_percentual_nf_atual: impacto.fretePctAtual,
+    frete_percentual_nf_simulado: impacto.fretePctSimulado,
+    qtd_registros_analisados: impacto.qtdAnalisados,
+    qtd_registros_com_tabela: impacto.qtdComTabela,
+    resultado_simulacao_json: resumoResultado,
+    percentual_medio_impacto: impacto.impactoPercentual,
+
     incluir_simulacao: false,
 
     resumo_simulacao: {
@@ -953,4 +1170,200 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   }
 
   return data;
+}
+
+function chaveRotaLotacao(origem = '', destino = '', tipo = '') {
+  return [
+    normalizarTextoLotacao(origem),
+    normalizarTextoLotacao(destino),
+    normalizarTextoLotacao(tipo || 'GERAL'),
+  ].join('|');
+}
+
+function valorAtualCargaLotacao(carga = {}) {
+  return numero(
+    carga.valorComparacao ??
+    carga.freteTransp ??
+    carga.freteCantu ??
+    carga.valor_lancado ??
+    carga.valorAutorizadoCarga ??
+    0
+  );
+}
+
+function dataCargaLotacao(carga = {}) {
+  return dataOuNull(carga.coletaRealizada || carga.coletaPlanejada || carga.emissaoNf);
+}
+
+function mesesPeriodoLotacao(cargas = [], inicioFiltro = '', fimFiltro = '') {
+  const datas = (cargas || [])
+    .map(dataCargaLotacao)
+    .filter(Boolean)
+    .sort();
+  const inicio = dataOuNull(inicioFiltro) || datas[0];
+  const fim = dataOuNull(fimFiltro) || datas[datas.length - 1];
+  if (!inicio || !fim) return 1;
+  const ini = new Date(inicio);
+  const end = new Date(fim);
+  if (Number.isNaN(ini.getTime()) || Number.isNaN(end.getTime())) return 1;
+  const dias = Math.max(1, Math.ceil((end.getTime() - ini.getTime()) / 86400000) + 1);
+  return Math.max(dias / 30.4375, 1);
+}
+
+function montarTabelaLotacaoNegociacao(tabela = {}, itens = []) {
+  const linhas = (itens || [])
+    .filter((item) => numero(item.valor_lotacao || item.taxa_aplicada) > 0)
+    .map((item, index) => {
+      const origem = texto(item.cidade_origem || item.origem || tabela.origem);
+      const destino = texto(item.cidade_destino || item.destino);
+      const tipo = texto(item.tipo_veiculo || 'GERAL') || 'GERAL';
+      return {
+        id: item.id || `neg-lot-${index}`,
+        origem,
+        ufOrigem: upper(item.uf_origem || tabela.uf_origem),
+        destino,
+        ufDestino: upper(item.uf_destino || tabela.uf_destino),
+        tipo,
+        valor: numero(item.valor_lotacao || item.taxa_aplicada),
+        km: numero(item.km),
+        pedagio: numero(item.pedagio),
+        chave: chaveRotaLotacao(origem, destino, tipo),
+        chaveSemTipo: chaveRotaLotacao(origem, destino, 'GERAL'),
+      };
+    });
+
+  return linhas;
+}
+
+function indexarLotacaoNegociacao(linhas = []) {
+  const mapa = new Map();
+  const mapaSemTipo = new Map();
+  linhas.forEach((linha) => {
+    if (!linha.chave) return;
+    if (!mapa.has(linha.chave) || numero(linha.valor) < numero(mapa.get(linha.chave).valor)) mapa.set(linha.chave, linha);
+    if (!mapaSemTipo.has(linha.chaveSemTipo) || numero(linha.valor) < numero(mapaSemTipo.get(linha.chaveSemTipo).valor)) {
+      mapaSemTipo.set(linha.chaveSemTipo, linha);
+    }
+  });
+  return { mapa, mapaSemTipo };
+}
+
+export async function simularLotacaoNegociacao(id, filtros = {}) {
+  if (!id) throw new Error('Negociacao de lotacao invalida.');
+
+  const tabela = await obterTabelaNegociacao(id);
+  const itens = await listarTodosItensTabelaNegociacao(id);
+  const linhasTabela = montarTabelaLotacaoNegociacao(tabela, itens);
+  if (!linhasTabela.length) throw new Error('Nao ha rotas de lotacao salvas nesta negociacao.');
+
+  const filtrosCarga = {
+    origem: filtros.origem || tabela.origem || '',
+    destino: filtros.destino || '',
+    tipoVeiculo: filtros.tipoVeiculo || filtros.tipo_veiculo || tabela.tipo_veiculo || '',
+    transportadora: filtros.transportadoraBase || filtros.transportadora_base_nome || tabela.transportadora_base_nome || '',
+    inicio: filtros.inicio || tabela.periodo_realizado_inicio || '',
+    fim: filtros.fim || tabela.periodo_realizado_fim || '',
+    limit: filtros.limit || 20000,
+  };
+  const cargas = await carregarCargasLotacaoSupabase(filtrosCarga);
+  if (!cargas.length) throw new Error('Nenhuma carga de lotacao encontrada para os filtros informados.');
+
+  const { mapa, mapaSemTipo } = indexarLotacaoNegociacao(linhasTabela);
+  const detalhes = [];
+  const rotasMap = new Map();
+
+  let valorAtual = 0;
+  let valorSimulado = 0;
+  let qtdComTabela = 0;
+  let pesoTotal = 0;
+
+  cargas.forEach((carga) => {
+    const atual = valorAtualCargaLotacao(carga);
+    const chave = chaveRotaLotacao(carga.origem, carga.destino, carga.tipoVeiculo || 'GERAL');
+    const chaveSemTipo = chaveRotaLotacao(carga.origem, carga.destino, 'GERAL');
+    const linha = mapa.get(chave) || mapaSemTipo.get(chaveSemTipo) || null;
+    const simulado = linha ? numero(linha.valor) : 0;
+    const diferenca = linha ? simulado - atual : 0;
+
+    if (linha) {
+      qtdComTabela += 1;
+      valorAtual += atual;
+      valorSimulado += simulado;
+    }
+
+    pesoTotal += numero(carga.cubagem);
+
+    const rotaKey = chaveSemTipo;
+    const rota = rotasMap.get(rotaKey) || {
+      rota: `${carga.origem || linha?.origem || '-'} -> ${carga.destino || linha?.destino || '-'}`,
+      origem: carga.origem || linha?.origem || '',
+      destino: carga.destino || linha?.destino || '',
+      tipoVeiculo: carga.tipoVeiculo || linha?.tipo || '',
+      viagens: 0,
+      comTabela: 0,
+      valorAtual: 0,
+      valorSimulado: 0,
+      diferenca: 0,
+    };
+    rota.viagens += 1;
+    if (linha) {
+      rota.comTabela += 1;
+      rota.valorAtual += atual;
+      rota.valorSimulado += simulado;
+      rota.diferenca += diferenca;
+    }
+    rotasMap.set(rotaKey, rota);
+
+    detalhes.push({
+      dist: carga.dist || '',
+      origem: carga.origem || linha?.origem || '',
+      destino: carga.destino || linha?.destino || '',
+      tipoVeiculo: carga.tipoVeiculo || linha?.tipo || '',
+      transportadoraAtual: carga.transportadora || '',
+      valorAtual: atual,
+      valorSimulado: simulado,
+      diferenca,
+      status: linha ? (diferenca > 0 ? 'Aumento' : diferenca < 0 ? 'Reducao' : 'Sem alteracao') : 'Sem tabela',
+    });
+  });
+
+  const impactoValor = valorSimulado - valorAtual;
+  const impactoPercentual = valorAtual ? (impactoValor / valorAtual) * 100 : 0;
+  const meses = mesesPeriodoLotacao(cargas, filtrosCarga.inicio, filtrosCarga.fim);
+  const impactoMensal = meses ? impactoValor / meses : impactoValor;
+  const impactoAnual = impactoMensal * 12;
+  const resultado = {
+    tipoNegociacao: 'TABELA_LOTACAO',
+    modoNegociacao: 'LOTACAO',
+    filtros: filtrosCarga,
+    ctesAnalisados: cargas.length,
+    ctesComTabelaSelecionada: qtdComTabela,
+    viagensAnalisadas: cargas.length,
+    viagensComTabela: qtdComTabela,
+    valor_atual_realizado: valorAtual,
+    valor_simulado_nova_tabela: valorSimulado,
+    impacto_valor: impactoValor,
+    impacto_percentual: impactoPercentual,
+    impacto_mensal: impactoMensal,
+    impacto_anual: impactoAnual,
+    qtd_registros_analisados: cargas.length,
+    qtd_registros_com_tabela: qtdComTabela,
+    aderenciaSelecionada: cargas.length ? (qtdComTabela / cargas.length) * 100 : 0,
+    freteRealizado: valorAtual,
+    freteSelecionada: valorSimulado,
+    freteRealizadoComTabelaSelecionada: valorAtual,
+    meses,
+    peso: pesoTotal,
+    rotas: [...rotasMap.values()]
+      .map((rota) => ({
+        ...rota,
+        impactoPercentual: rota.valorAtual ? (rota.diferenca / rota.valorAtual) * 100 : 0,
+      }))
+      .sort((a, b) => Math.abs(b.diferenca) - Math.abs(a.diferenca))
+      .slice(0, 100),
+    ctesDetalhes: detalhes.slice(0, 500),
+  };
+
+  const tabelaAtualizada = await salvarResultadoSimulacaoNegociacao(id, resultado);
+  return { resultado, tabela: tabelaAtualizada };
 }

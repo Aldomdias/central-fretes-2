@@ -127,7 +127,9 @@ export function labelTabelaNegociacaoSimulador(tabela = {}) {
   const nome = texto(tabela.transportadora) || 'Tabela em negociação';
   const origem = origemTabelaNegociacaoLabel(tabela);
   const rodada = getRodadaTabelaNegociacao(tabela);
-  return `${nome}${origem ? ` — ${origem}` : ''} (NEGOCIAÇÃO R${rodada})`;
+  const tipo = upper(tabela.tipo_negociacao || tabela.tipoNegociacao);
+  const tag = tipo === 'REAJUSTE_TABELA_EXISTENTE' ? 'REAJUSTE' : tipo === 'TABELA_LOTACAO' ? 'LOTACAO' : 'NEGOCIACAO';
+  return `${nome}${origem ? ` — ${origem}` : ''} (${tag} R${rodada})`;
 }
 
 function montarGeneralidades(generalidades = {}) {

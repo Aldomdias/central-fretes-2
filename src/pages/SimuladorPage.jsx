@@ -1000,6 +1000,70 @@ function normalizarTransportadoraSimulador(nome = '') {
     .toUpperCase();
 }
 
+function tipoNegociacaoSimulador(tabela = {}) {
+  const tipo = String(tabela?.tipo_negociacao || tabela?.tipoNegociacao || '').trim().toUpperCase();
+  if (tipo) return tipo;
+  if (String(tabela?.tipo_tabela || tabela?.tipoTabela || '').trim().toUpperCase() === 'LOTACAO') return 'TABELA_LOTACAO';
+  return 'NOVA_TABELA';
+}
+
+function isReajusteNegociacaoSimulador(tabela = {}) {
+  return tipoNegociacaoSimulador(tabela) === 'REAJUSTE_TABELA_EXISTENTE';
+}
+
+function transportadoraBaseNegociacaoSimulador(tabela = {}) {
+  return String(tabela?.transportadora_base_nome || tabela?.transportadoraBaseNome || tabela?.transportadora || '').trim();
+}
+
+function registroDaTransportadoraBaseSimulador(row = {}, transportadoraBase = '') {
+  const baseNorm = normalizarTransportadoraSimulador(transportadoraBase);
+  if (!baseNorm) return true;
+  const nomes = [
+    row.transportadora,
+    row.transportadoraReal,
+    row.transportadora_real,
+    row.nomeTransportadora,
+    row.nome_transportadora,
+    row.transportador,
+    row.raw?.transportadora,
+    row.raw?.nome_transportadora,
+  ];
+  return nomes.some((nome) => {
+    const norm = normalizarTransportadoraSimulador(nome);
+    return norm && (norm === baseNorm || norm.includes(baseNorm) || baseNorm.includes(norm));
+  });
+}
+
+function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, transportadoraBase = '') {
+  const valorAtual = numeroRealizado(resultado.freteRealizadoComTabelaSelecionada || resultado.freteRealizado || 0);
+  const valorNovo = numeroRealizado(resultado.freteSelecionada || 0);
+  const impactoValor = valorNovo - valorAtual;
+  const impactoPercentual = valorAtual ? (impactoValor / valorAtual) * 100 : 0;
+  const meses = numeroRealizado(resultado.meses) || 1;
+  const impactoMensal = meses ? impactoValor / meses : impactoValor;
+  const impactoAnual = impactoMensal * 12;
+  const qtdComTabela = Number(resultado.ctesComTabelaSelecionada || 0);
+  const qtdAnalisados = Number(resultado.ctesAnalisados || 0);
+
+  return {
+    ...resultado,
+    tipoNegociacao: 'REAJUSTE_TABELA_EXISTENTE',
+    modoNegociacao: 'REAJUSTE',
+    transportadoraBaseRealizado: transportadoraBase || transportadoraBaseNegociacaoSimulador(negociacao),
+    valor_atual_realizado: valorAtual,
+    valor_simulado_nova_tabela: valorNovo,
+    impacto_valor: impactoValor,
+    impacto_percentual: impactoPercentual,
+    impacto_mensal: impactoMensal,
+    impacto_anual: impactoAnual,
+    frete_percentual_nf_atual: numeroRealizado(resultado.percentualFreteRealizadoComTabela || resultado.percentualFreteRealizado || 0),
+    frete_percentual_nf_simulado: numeroRealizado(resultado.percentualFreteSelecionadaComTabela || resultado.percentualFreteSelecionada || 0),
+    qtd_registros_analisados: qtdAnalisados,
+    qtd_registros_com_tabela: qtdComTabela,
+    aderenciaSelecionada: qtdAnalisados ? (qtdComTabela / qtdAnalisados) * 100 : 0,
+  };
+}
+
 function isCpsLogSimulador(nome = '') {
   const texto = normalizarTransportadoraSimulador(nome);
   return texto.includes('CPS LOG') || texto.includes('CPSLOG');
@@ -3181,6 +3245,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
     [negociacoesSimulador, transportadoraRealizado]
   );
 
+  const isReajusteRealizadoSelecionado = useMemo(
+    () => isReajusteNegociacaoSimulador(negociacaoSelecionadaRealizado),
+    [negociacaoSelecionadaRealizado]
+  );
+
+  const transportadoraBaseReajusteRealizado = useMemo(
+    () => transportadoraBaseNegociacaoSimulador(negociacaoSelecionadaRealizado),
+    [negociacaoSelecionadaRealizado]
+  );
+
   const salvarResultadoNegociacaoRealizado = async () => {
     if (!negociacaoSelecionadaRealizado?.id || !resultadoRealizado) return;
 
@@ -3192,6 +3266,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadora: resultadoRealizado.filtros?.transportadora,
         canal: resultadoRealizado.filtros?.canal,
         origem: resultadoRealizado.filtros?.origem,
+        tipoNegociacao: resultadoRealizado.tipoNegociacao || resultadoRealizado.filtros?.tipoNegociacao || tipoNegociacaoSimulador(negociacaoSelecionadaRealizado),
+        transportadoraBase: resultadoRealizado.transportadoraBaseRealizado || transportadoraBaseReajusteRealizado,
       };
       await salvarResultadoSimulacaoNegociacao(negociacaoSelecionadaRealizado.id, {
         ...resultadoRealizado,
@@ -3217,6 +3293,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadora: resultadoRealizado.filtros?.transportadora,
         canal: resultadoRealizado.filtros?.canal,
         origem: resultadoRealizado.filtros?.origem,
+        tipoNegociacao: resultadoRealizado.tipoNegociacao || resultadoRealizado.filtros?.tipoNegociacao || tipoNegociacaoSimulador(negociacaoSelecionadaRealizado),
+        transportadoraBase: resultadoRealizado.transportadoraBaseRealizado || transportadoraBaseReajusteRealizado,
       });
 
       alert('Laudos executivo e transportador salvos na negociação.');
@@ -3658,6 +3736,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
         : mapaVinculos.get(normalizarChaveSimulador(transportadoraRealizado))
           || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase())
           || transportadoraRealizado;
+      const negociacaoRealizadoAtual = ehNegociacaoSelecionada ? negociacaoSelecionadaRealizado : null;
+      const ehReajusteSelecionado = isReajusteNegociacaoSimulador(negociacaoRealizadoAtual);
+      const transportadoraBaseReajuste = ehReajusteSelecionado
+        ? transportadoraBaseNegociacaoSimulador(negociacaoRealizadoAtual)
+        : '';
 
       atualizarProcessamentoUi('Buscando malha da transportadora/tabela selecionada...', 18);
       let baseSelecionada = [];
@@ -3737,11 +3820,21 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const rowsComIbge = baseRealizadoTracking === 'com_tracking'
         ? rowsComTracking
         : linhasEnriquecidasFiltradas;
+      const rowsComIbgeEscopoNegociacao = ehReajusteSelecionado
+        ? rowsComIbge.filter((row) => registroDaTransportadoraBaseSimulador(row, transportadoraBaseReajuste))
+        : rowsComIbge;
 
       if (baseRealizadoTracking === 'com_tracking' && !rowsComIbge.length) {
         setErroSimulacao('Nenhum CT-e encontrou vínculo com o Tracking nos filtros informados. Revise período, origem, UF ou a carga do Tracking.');
         setResultadoRealizado(null);
         finalizarProcessamentoUi('Sem CT-es com Tracking', 'A base foi carregada, mas nenhum CT-e teve vínculo com Tracking.', 100);
+        return;
+      }
+
+      if (ehReajusteSelecionado && !rowsComIbgeEscopoNegociacao.length) {
+        setErroSimulacao(`Nenhum CT-e do realizado pertence a transportadora base ${transportadoraBaseReajuste || 'informada'} nos filtros selecionados.`);
+        setResultadoRealizado(null);
+        finalizarProcessamentoUi('Sem CT-es da transportadora base', 'O reajuste precisa comparar somente contra o proprio realizado da transportadora.', 100);
         return;
       }
 
@@ -3757,16 +3850,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const origemMalhaNaoReconhecida = new Set();
       const aplicarFiltroOrigemMalha = modoRealizado === 'malha' && !origemRealizado && origensMalha.size;
       const rowsFiltrados = aplicarFiltroOrigemMalha
-        ? rowsComIbge.filter((row) => {
+        ? rowsComIbgeEscopoNegociacao.filter((row) => {
             const origemNorm = normalizarChaveSimulador(row.cidadeOrigem);
             const ok = origensMalha.has(origemNorm);
             if (!ok && row.cidadeOrigem) origemMalhaNaoReconhecida.add(row.cidadeOrigem);
             return ok;
           })
-        : rowsComIbge;
+        : rowsComIbgeEscopoNegociacao;
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
-      const deveCompararConcorrentes = Boolean(compararConcorrentesRealizado);
+      const deveCompararConcorrentes = ehReajusteSelecionado ? false : Boolean(compararConcorrentesRealizado);
       const basesParaMesclar = [baseSelecionada].filter((base) => Array.isArray(base) ? base.length : Boolean(base));
 
       // Só adiciona negociações como concorrentes quando os dois flags estiverem marcados.
@@ -3865,12 +3958,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
         gradePorCanal: grade,
         municipioPorCidade,
       });
+      const resultadoComTipo = ehReajusteSelecionado
+        ? enriquecerResultadoReajusteNegociacao(resultado, negociacaoRealizadoAtual, transportadoraBaseReajuste)
+        : resultado;
 
       setResultadoRealizado({
-        ...resultado,
+        ...resultadoComTipo,
         filtros: {
           transportadora: transportadoraRealizado,
           transportadoraTabelaUsada: nomeTabelaSelecionada,
+          tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
+          transportadoraBaseRealizado: transportadoraBaseReajuste,
+          compararComProprioRealizado: ehReajusteSelecionado,
           canal: canalRealizado,
           modo: modoRealizado,
           origem: origemRealizado,
@@ -3891,7 +3990,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
           baseRealizadoTracking,
           ctesComTracking: trackingEnriquecido.vinculados,
           ctesSemTracking: trackingEnriquecido.semTracking,
-          ctesBaseSimulada: rowsComIbge.length,
+          ctesBaseSimulada: rowsComIbgeEscopoNegociacao.length,
+          ctesBaseAntesEscopoNegociacao: rowsComIbge.length,
+          ctesForaTransportadoraBase: Math.max(0, rowsComIbge.length - rowsComIbgeEscopoNegociacao.length),
           ctesNaMalha: rowsFiltrados.length,
           origemMalhaNaoReconhecida: [...origemMalhaNaoReconhecida].slice(0, 20),
           trackingVinculados: trackingEnriquecido.vinculados,
@@ -5122,6 +5223,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </select>
               {carregandoBaseOficialRealizado && (
                 <small style={{ color: '#64748b' }}>Carregando origens e UFs atendidas pela tabela...</small>
+              )}
+              {isReajusteRealizadoSelecionado && (
+                <small style={{ color: '#b45309', fontWeight: 700 }}>Reajuste: filtra o realizado por {transportadoraBaseReajusteRealizado || 'transportadora base'}.</small>
               )}
             </label>
             <label>
