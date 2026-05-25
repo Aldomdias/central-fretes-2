@@ -18,7 +18,7 @@ import TrackingPage from './pages/TrackingPage';
 import TorreControlePage from './pages/TorreControlePage';
 import ReajustesPage from './pages/ReajustesPage';
 import CtePage from './pages/CtePage';
-import TabelasNegociacaoPage from './pages/TabelasNegociacaoPage';
+import TabelasNegociacaoPageWithEditor from './pages/TabelasNegociacaoPageWithEditor';
 import AuditoriaCtePage from './pages/AuditoriaCtePage';
 import FaturasPage from './pages/FaturasPage';
 import TratativasPage from './pages/TratativasPage';
@@ -28,34 +28,15 @@ import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
-function primeiraPaginaPermitida(usuario) {
-  const candidatas = [
-    'dashboard',
-    'simulador',
-    'tabelas-negociacao',
-    'cte',
-    'auditoria-cte',
-    'tracking',
-    'torre-controle',
-    'reajustes',
-    'importacao',
-    'formatacao',
-    'importar-template',
-    'lotacao',
-    'lotacao-operacao',
-    'lotacao-auditoria',
-    'painel-auditoria',
-    'painel-operacao',
-    'faturas',
-    'tratativas',
-    'consulta-ibge',
-    'ferramentas',
-    'transportadoras',
-    'usuarios',
-    'minha-senha',
-  ];
+const PAGINAS_PERMITIDAS = [
+  'dashboard', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
+  'torre-controle', 'reajustes', 'importacao', 'formatacao', 'importar-template',
+  'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
+  'faturas', 'tratativas', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+];
 
-  return candidatas.find((pagina) => usuarioTemAcesso(usuario, pagina)) || 'dashboard';
+function primeiraPaginaPermitida(usuario) {
+  return PAGINAS_PERMITIDAS.find((pagina) => usuarioTemAcesso(usuario, pagina)) || 'dashboard';
 }
 
 export default function App() {
@@ -64,52 +45,36 @@ export default function App() {
   const [paginaAtual, setPaginaAtual] = useState('dashboard');
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
   const [origemSelecionadaId, setOrigemSelecionadaId] = useState(null);
-
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
 
   useEffect(() => {
-    if (!sessao) return;
-    if (!usuarioTemAcesso(sessao, paginaAtual)) setPaginaAtual(primeiraPaginaPermitida(sessao));
+    if (sessao && !usuarioTemAcesso(sessao, paginaAtual)) setPaginaAtual(primeiraPaginaPermitida(sessao));
   }, [sessao, paginaAtual]);
 
   useEffect(() => {
     if (!sessao?.expiraEm) return undefined;
-
-    const expiraEmMs = new Date(sessao.expiraEm).getTime();
-    const tempoRestante = expiraEmMs - Date.now();
-
-    if (!Number.isFinite(expiraEmMs) || tempoRestante <= 0) {
+    const tempoRestante = new Date(sessao.expiraEm).getTime() - Date.now();
+    if (!Number.isFinite(tempoRestante) || tempoRestante <= 0) {
       sairLocal();
       setSessao(null);
       return undefined;
     }
-
     const timer = window.setTimeout(() => {
       sairLocal();
       setSessao(null);
     }, tempoRestante);
-
     return () => window.clearTimeout(timer);
   }, [sessao?.expiraEm]);
 
-  if (!sessao) {
-    return <LoginPage onLogin={setSessao} />;
-  }
+  if (!sessao) return <LoginPage onLogin={setSessao} />;
 
   const mudarPagina = (pagina) => {
     if (!usuarioTemAcesso(sessao, pagina)) return;
-
     setPaginaAtual(pagina);
-
     if (pagina !== 'transportadoras') {
       setTransportadoraSelecionadaId(null);
       setOrigemSelecionadaId(null);
     }
-  };
-
-  const sair = () => {
-    sairLocal();
-    setSessao(null);
   };
 
   const abrirTransportadoras = () => {
@@ -136,159 +101,54 @@ export default function App() {
     setOrigemSelecionadaId(null);
   };
 
-  const abrirOrigem = (id) => setOrigemSelecionadaId(id);
-
   const voltarTransportadoras = () => {
     if (origemSelecionadaId) return setOrigemSelecionadaId(null);
     if (transportadoraSelecionadaId) return setTransportadoraSelecionadaId(null);
     return mudarPagina('dashboard');
   };
 
-  let content = null;
+  const sair = () => {
+    sairLocal();
+    setSessao(null);
+  };
 
-  if (paginaAtual === 'dashboard') {
-    content = (
-      <DashboardPage
-        transportadoras={transportadorasMemo}
-        onAbrirSimulador={abrirSimulador}
-        onAbrirTransportadoras={abrirTransportadoras}
-        onAbrirImportacao={abrirImportacao}
-        onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')}
-        onAtualizarBase={store.atualizarResumo}
-        onConferirBase={store.conferirBase}
-        syncStatus={store.syncStatus}
-      />
-    );
-  }
+  const paginas = {
+    dashboard: <DashboardPage transportadoras={transportadorasMemo} onAbrirSimulador={abrirSimulador} onAbrirTransportadoras={abrirTransportadoras} onAbrirImportacao={abrirImportacao} onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')} onAtualizarBase={store.atualizarResumo} onConferirBase={store.conferirBase} syncStatus={store.syncStatus} />,
+    simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
+    'tabelas-negociacao': <TabelasNegociacaoPageWithEditor />,
+    cte: <CtePage transportadoras={transportadorasMemo} />,
+    'auditoria-cte': <AuditoriaCtePage />,
+    importacao: <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
+    formatacao: <FormatacaoPage store={store} transportadoras={transportadorasMemo} />,
+    'importar-template': <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />,
+    tracking: <TrackingPage />,
+    'torre-controle': <TorreControlePage />,
+    reajustes: <ReajustesPage transportadoras={transportadorasMemo} />,
+    lotacao: <LotacaoPage />,
+    'lotacao-operacao': <LotacaoOperacaoPage />,
+    'lotacao-auditoria': <LotacaoAuditoriaPage />,
+    'painel-auditoria': <PainelAuditoriaPage />,
+    'painel-operacao': <PainelOperacaoPage />,
+    faturas: <FaturasPage />,
+    tratativas: <TratativasPage />,
+    'perda-realizado': <PerdaRealizadoPage />,
+    'consulta-ibge': <ConsultaIbgePage />,
+    ferramentas: <FerramentasPage transportadoras={transportadorasMemo} />,
+    usuarios: <UserManagementPage usuarioAtual={sessao} />,
+    'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
+    transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} />,
+  };
 
-  if (paginaAtual === 'simulador') {
-    content = (
-      <SimuladorPage
-        transportadoras={transportadorasMemo}
-        onAbrirTransportadoras={abrirTransportadoras}
-      />
-    );
-  }
-
-  if (paginaAtual === 'tabelas-negociacao') {
-    content = <TabelasNegociacaoPage />;
-  }
-
-  if (paginaAtual === 'cte') {
-    content = <CtePage transportadoras={transportadorasMemo} />;
-  }
-
-  if (paginaAtual === 'auditoria-cte') {
-    content = <AuditoriaCtePage />;
-  }
-
-  if (paginaAtual === 'importacao') {
-    content = (
-      <ImportacaoPage
-        store={store}
-        transportadoras={transportadorasMemo}
-        onAbrirTransportadoras={abrirTransportadoras}
-      />
-    );
-  }
-
-  if (paginaAtual === 'formatacao') {
-    content = <FormatacaoPage store={store} transportadoras={transportadorasMemo} />;
-  }
-
-  if (paginaAtual === 'importar-template') {
-    content = <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />;
-  }
-
-  if (paginaAtual === 'tracking') {
-    content = <TrackingPage />;
-  }
-
-  if (paginaAtual === 'torre-controle') {
-    content = <TorreControlePage />;
-  }
-
-  if (paginaAtual === 'reajustes') {
-    content = <ReajustesPage transportadoras={transportadorasMemo} />;
-  }
-
-  if (paginaAtual === 'lotacao') {
-    content = <LotacaoPage />;
-  }
-
-  if (paginaAtual === 'lotacao-operacao') {
-    content = <LotacaoOperacaoPage />;
-  }
-
-  if (paginaAtual === 'lotacao-auditoria') {
-    content = <LotacaoAuditoriaPage />;
-  }
-
-  if (paginaAtual === 'painel-auditoria') {
-    content = <PainelAuditoriaPage />;
-  }
-
-  if (paginaAtual === 'painel-operacao') {
-    content = <PainelOperacaoPage />;
-  }
-
-  if (paginaAtual === 'faturas') {
-    content = <FaturasPage />;
-  }
-
-  if (paginaAtual === 'tratativas') {
-    content = <TratativasPage />;
-  } else if (paginaAtual === 'perda-realizado') {
-    content = <PerdaRealizadoPage />;
-  }
-
-  if (paginaAtual === 'consulta-ibge') {
-    content = <ConsultaIbgePage />;
-  }
-
-  if (paginaAtual === 'ferramentas') {
-    content = <FerramentasPage transportadoras={transportadorasMemo} />;
-  }
-
-  if (paginaAtual === 'usuarios') {
-    content = <UserManagementPage usuarioAtual={sessao} />;
-  }
-
-  if (paginaAtual === 'minha-senha') {
-    content = <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />;
-  }
-
-  if (paginaAtual === 'transportadoras') {
-    content = (
-      <TransportadorasPage
-        transportadoras={transportadorasMemo}
-        transportadoraSelecionadaId={transportadoraSelecionadaId}
-        origemSelecionadaId={origemSelecionadaId}
-        onOpenTransportadora={abrirTransportadora}
-        onOpenOrigem={abrirOrigem}
-        onVoltar={voltarTransportadoras}
-        store={store}
-      />
-    );
-  }
-
-  if (!content) {
-    content = (
-      <div className="panel-card">
-        <div className="panel-title">Sem acesso</div>
-        <p>Seu perfil não tem permissão para acessar esta tela.</p>
-      </div>
-    );
-  }
+  const content = paginas[paginaAtual] || (
+    <div className="panel-card">
+      <div className="panel-title">Sem acesso</div>
+      <p>Seu perfil não tem permissão para acessar esta tela.</p>
+    </div>
+  );
 
   return (
     <div className="app-layout">
-      <Sidebar
-        paginaAtual={paginaAtual}
-        onMudarPagina={mudarPagina}
-        usuario={sessao}
-        onLogout={sair}
-      />
+      <Sidebar paginaAtual={paginaAtual} onMudarPagina={mudarPagina} usuario={sessao} onLogout={sair} />
       <main className="app-content">{content}</main>
     </div>
   );
