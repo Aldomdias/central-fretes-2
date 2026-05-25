@@ -1,4 +1,6 @@
 import { isTomadorServicoValidoRealizado } from '../utils/realizadoCtes';
+import { carregarMunicipiosIbgeDb, listarRealizadoCtes } from './freteDatabaseService';
+
 const DB_NAME = 'amd-realizado-local-db';
 const DB_VERSION = 3;
 const STORE_CTES = 'ctes_enxutos';
@@ -68,6 +70,10 @@ function normalize(value) {
 
 function normalizeLoose(value) {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function cidadeKey(cidade = '', uf = '') {
+  return `${normalizeLoose(cidade)}|${normalize(uf)}`;
 }
 
 function isTransportadoraEbazar(value) {
@@ -208,7 +214,7 @@ export async function buscarRealizadoLocalPorMalha(filtros = {}, malhaKeys = [],
   return { rows, totalCompativel, limit, malhaKeys: keys.size, avaliados };
 }
 
-export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {
+async function buscarRealizadoLocalParaSimulacaoIndexedDb(filtros = {}, options = {}) {
   const db = await openDb();
   const limit = Number(options.limit || 5000);
   const rows = [];
@@ -236,6 +242,98 @@ export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = 
 
   db.close();
   return { rows, totalCompativel, limit };
+}
+
+async function carregarMapaMunicipiosParaRealizado() {
+  const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
+  const mapa = new Map();
+  (municipios || []).forEach((item) => {
+    const cidade = item.cidade || item.nome || item.municipio || '';
+    const uf = item.uf || '';
+    const ibge = String(item.ibge || item.codigo_ibge || item.codigo || '').replace(/\D/g, '').slice(0, 7);
+    if (!cidade || !ibge) return;
+    mapa.set(cidadeKey(cidade, uf), ibge);
+    if (!mapa.has(cidadeKey(cidade, ''))) mapa.set(cidadeKey(cidade, ''), ibge);
+  });
+  return mapa;
+}
+
+function resolverIbgeCte(row = {}, tipo = 'destino', municipioPorCidade = new Map()) {
+  const atual = String(tipo === 'origem' ? row.ibgeOrigem || row.ibge_origem : row.ibgeDestino || row.ibge_destino).replace(/\D/g, '').slice(0, 7);
+  if (atual) return atual;
+  const cidade = tipo === 'origem' ? row.cidadeOrigem || row.cidade_origem : row.cidadeDestino || row.cidade_destino;
+  const uf = tipo === 'origem' ? row.ufOrigem || row.uf_origem : row.ufDestino || row.uf_destino;
+  return municipioPorCidade.get(cidadeKey(cidade, uf)) || municipioPorCidade.get(cidadeKey(cidade, '')) || '';
+}
+
+function normalizarCteSupabaseParaLocal(row = {}, municipioPorCidade = new Map()) {
+  const dataEmissao = String(row.dataEmissao || row.data_emissao || row.emissao || '').slice(0, 10);
+  const ibgeOrigem = resolverIbgeCte(row, 'origem', municipioPorCidade);
+  const ibgeDestino = resolverIbgeCte(row, 'destino', municipioPorCidade);
+  const peso = Math.max(toNumber(row.peso), toNumber(row.pesoDeclarado), toNumber(row.peso_declarado), toNumber(row.pesoCubado), toNumber(row.peso_cubado));
+  const chaveRotaIbge = ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '';
+
+  return {
+    chaveCte: row.chaveCte || row.chave_cte || row.id || `${row.numeroCte || row.numero_cte || 'cte'}-${dataEmissao}-${row.transportadora || ''}`,
+    numeroCte: row.numeroCte || row.numero_cte || '',
+    competencia: row.competencia || (dataEmissao ? dataEmissao.slice(0, 7) : ''),
+    dataEmissao,
+    canal: row.canal || row.canalVendas || row.canal_vendas || row.canais || '',
+    transportadora: row.transportadora || row.transportadoraContratada || row.transportadora_contratada || '',
+    ufOrigem: normalize(row.ufOrigem || row.uf_origem).slice(0, 2),
+    ufDestino: normalize(row.ufDestino || row.uf_destino).slice(0, 2),
+    cidadeOrigem: row.cidadeOrigem || row.cidade_origem || '',
+    cidadeDestino: row.cidadeDestino || row.cidade_destino || '',
+    valorCte: toNumber(row.valorCte ?? row.valor_cte),
+    valorNF: toNumber(row.valorNF ?? row.valor_nf),
+    peso,
+    pesoDeclarado: toNumber(row.pesoDeclarado ?? row.peso_declarado) || peso,
+    pesoCubado: toNumber(row.pesoCubado ?? row.peso_cubado),
+    cubagem: toNumber(row.metrosCubicos ?? row.metros_cubicos ?? row.cubagem),
+    qtdVolumes: toNumber(row.volume ?? row.qtdVolumes ?? row.qtd_volumes),
+    ibgeOrigem,
+    ibgeDestino,
+    chaveRotaIbge,
+    ibgeOk: Boolean(chaveRotaIbge),
+    tomadorServico: row.tomadorServico || row.tomador_servico || row.tomador || '',
+    origemFonte: 'supabase-realizado-ctes',
+  };
+}
+
+async function buscarRealizadoSupabaseParaSimulacao(filtros = {}, options = {}) {
+  const limit = Number(options.limit || 5000);
+  const municipioPorCidade = await carregarMapaMunicipiosParaRealizado();
+  const rowsBrutos = await listarRealizadoCtes({
+    inicio: filtros.inicio || '',
+    fim: filtros.fim || '',
+    canal: filtros.canal || '',
+    transportadoraRealizada: filtros.transportadoraRealizada || '',
+    ufOrigem: filtros.ufOrigem || '',
+    ufDestino: filtros.ufDestino || '',
+    origem: filtros.origem || '',
+    destino: filtros.destino || '',
+    incluirSemCanal: false,
+    consultaAmpla: true,
+    limit,
+  });
+
+  const rows = (rowsBrutos || [])
+    .map((row) => normalizarCteSupabaseParaLocal(row, municipioPorCidade))
+    .filter((row) => filtrarCteLocal(row, filtros))
+    .slice(0, limit);
+
+  return { rows, totalCompativel: rows.length, limit, origem: 'supabase-realizado-ctes' };
+}
+
+export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = {}) {
+  const local = await buscarRealizadoLocalParaSimulacaoIndexedDb(filtros, options);
+  if (local.rows.length || local.totalCompativel > 0) return { ...local, origem: 'indexeddb' };
+
+  try {
+    return await buscarRealizadoSupabaseParaSimulacao(filtros, options);
+  } catch (error) {
+    return { ...local, origem: 'indexeddb', erroFallbackSupabase: error?.message || String(error) };
+  }
 }
 
 export async function resumirRealizadoLocal(filtros = {}, options = {}) {
