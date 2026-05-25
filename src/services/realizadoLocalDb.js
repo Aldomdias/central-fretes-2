@@ -1,4 +1,5 @@
 import { isTomadorServicoValidoRealizado } from '../utils/realizadoCtes';
+import { CANAL_A_DEFINIR } from '../utils/canalTransportadora';
 const DB_NAME = 'amd-realizado-local-db';
 const DB_VERSION = 3;
 const STORE_CTES = 'ctes_enxutos';
@@ -160,6 +161,7 @@ export async function listarRealizadoLocal(filtros = {}, options = {}) {
 function normalizeCanalParaMalha(value) {
   const canal = normalize(value);
   if (!canal) return '';
+  if (canal.includes('A DEFINIR') || canal.includes('SEM TABELA') || canal.includes('SEM VINCULO')) return CANAL_A_DEFINIR;
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
   if (['ATACADO', 'B2B'].some((item) => canal === item || canal.includes(item))) return 'ATACADO';

@@ -1,6 +1,7 @@
 import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine';
 import { toNumberRealizado, normalizeTextRealizado } from './realizadoCtes';
 import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete } from './gradeFreteConfig';
+import { CANAL_A_DEFINIR } from './canalTransportadora';
 
 const CANAIS_B2C = [
   'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
@@ -83,6 +84,7 @@ function sleepFrame() {
 export function categoriaCanalRealizado(value) {
   const canal = normalize(value);
   if (!canal) return '';
+  if (canal.includes('A DEFINIR') || canal.includes('SEM TABELA') || canal.includes('SEM VINCULO')) return CANAL_A_DEFINIR;
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
   if (CANAIS_ATACADO.some((item) => canal === item || canal.includes(item))) return 'ATACADO';

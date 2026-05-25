@@ -27,14 +27,8 @@ import {
 } from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { LaudoNegociacaoTemplate } from '../components/laudos';
 import { prepararLaudosNegociacao, salvarLaudosNegociacao } from '../services/laudosNegociacaoService';
+import { CANAL_A_DEFINIR, normalizarCanalOperacional } from '../utils/canalTransportadora';
 
-const CANAL_VENDAS_MAP_SIM = {
-  'B2C': 'B2C', 'B2B': 'ATACADO', 'MERCADO LIVRE': 'B2C', 'SHOPEE': 'B2C',
-  'MAGAZINE LUIZA': 'B2C', 'AMAZON': 'B2C', 'VIA VAREJO': 'B2C', 'CARREFOUR': 'B2C',
-  'LIVELO': 'B2C', 'CANTU PNEUS': 'B2C', 'PITSTOP': 'B2C', 'INTER': 'B2C',
-  'ITAU SHOP': 'B2C', '99': 'B2C', 'COOPERA': 'B2C', 'BRADESCO SHOP': 'B2C', 'MUSTANG': 'B2C',
-};
-const MARCADORES_ATACADO_SIM = ['AT-AG', 'AT-TR', 'ECM-B2B', 'ECC-SALES', 'ECA-SALES'];
 const TOMADORES_REALIZADO_PADRAO_SIM = ['CPX', 'ITR', 'GP PNEUS'];
 
 
@@ -65,17 +59,7 @@ async function executarQueryRealizadoComRetry(montarQuery, contexto = 'consulta 
 }
 
 function normalizarCanalSim(r) {
-  const norm = (s) => String(s || '').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const cv = norm(r.canal_vendas);
-  if (cv && CANAL_VENDAS_MAP_SIM[cv]) return CANAL_VENDAS_MAP_SIM[cv];
-  const marc = norm(r.marcadores);
-  if (marc) {
-    if (MARCADORES_ATACADO_SIM.some((t) => marc.includes(t))) return 'ATACADO';
-    if (marc.length > 0) return 'B2C';
-  }
-  if (!String(r.documento_destinatario || '').trim()) return 'B2C';
-  const cl = norm(r.canal);
-  return cl || 'B2C';
+  return normalizarCanalOperacional(r.canal || r.canal_original || r.canal_vendas || r.canais, { permitirInferencia: false }) || CANAL_A_DEFINIR;
 }
 
 function pickRealizadoField(row = {}, keys = []) {
@@ -249,7 +233,7 @@ function extrairOrigensBaseSimulador(bases = [], canal = '') {
   const saida = [];
   (bases || []).flat().filter(Boolean).forEach((base) => {
     (base.origens || [])
-      .filter((origem) => !canal || (origem.canal || 'ATACADO') === canal)
+      .filter((origem) => !canal || String(origem.canal || '').toUpperCase() === canal)
       .forEach((origem) => {
         const cidade = String(origem.cidade || '').trim();
         const chave = normalizarChaveSimulador(cidade);
@@ -268,7 +252,7 @@ function extrairUfsDestinoBaseSimulador(bases = [], canal = '', origemFiltro = '
 
   (bases || []).flat().filter(Boolean).forEach((base) => {
     (base.origens || [])
-      .filter((origem) => !canal || (origem.canal || 'ATACADO') === canal)
+      .filter((origem) => !canal || String(origem.canal || '').toUpperCase() === canal)
       .filter((origem) => {
         if (!origemNorm) return true;
         const ok = normalizarChaveSimulador(origem.cidade) === origemNorm;
@@ -313,7 +297,7 @@ function canaisDaTransportadora(nome, opcoesOnline, transportadoras) {
   if (online?.length) return online;
 
   const local = transportadoras.find((item) => item.nome === nome);
-  return [...new Set((local?.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))].sort();
+  return [...new Set((local?.origens || []).map((origem) => origem.canal).filter(Boolean))].sort();
 }
 
 function filtrarTransportadorasPorCanal(nomes = [], canal, opcoesOnline, transportadoras) {
@@ -1494,7 +1478,7 @@ function valoresUnicosValidos(lista = []) {
 function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '', pesoLinha = 0, nf = 0, destino = '', cidadePorIbge, gradeCanal = [], filtros = {} }) {
   const origemLinha = String(row.cidadeOrigem || '').trim();
   const ufOrigem = String(row.ufOrigem || '').trim().toUpperCase();
-  const canalLinha = canal || filtros.canal || row.canal || 'ATACADO';
+  const canalLinha = canal || filtros.canal || row.canal || CANAL_A_DEFINIR;
 
   const origensTentativa = valoresUnicosValidos([
     origemLinha,
@@ -2258,7 +2242,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     if (row.trackingMatch) linhasComTracking += 1;
     cubagemTotal += cubagemLinha;
     const origem = row.cidadeOrigem || filtros.origem || '';
-    const canal = filtros.canal || row.canal || 'ATACADO';
+    const canal = filtros.canal || row.canal || CANAL_A_DEFINIR;
     const canalDiag = String(canal || 'SEM CANAL').toUpperCase();
     diagnostico.canaisUsados.set(canalDiag, (diagnostico.canaisUsados.get(canalDiag) || 0) + 1);
     const origemDiag = String(origem || 'SEM ORIGEM').trim();
@@ -2307,7 +2291,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       return;
     }
 
-    const gradeCanal = gradePorCanal[canal] || gradePorCanal.ATACADO || [];
+    const gradeCanal = canal === CANAL_A_DEFINIR ? [] : (gradePorCanal[canal] || gradePorCanal.ATACADO || []);
     const { resultado, origemUsada, fallback } = simularLinhaRealizadoComFallback({
       baseOnline,
       row,
@@ -2928,7 +2912,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     const locais = transportadoras.flatMap((item) =>
       (item.origens || [])
-        .filter((origem) => !canalSimples || (origem.canal || 'ATACADO') === canalSimples)
+        .filter((origem) => !canalSimples || String(origem.canal || '').toUpperCase() === canalSimples)
         .map((origem) => origem.cidade)
         .filter(Boolean)
     );
@@ -3253,7 +3237,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const selecionada = transportadoras.find((item) => item.nome === transportadoraAnalise);
     if (selecionada) {
       return [...new Set((selecionada.origens || [])
-        .filter((origem) => !canalAnalise || (origem.canal || 'ATACADO') === canalAnalise)
+        .filter((origem) => !canalAnalise || String(origem.canal || '').toUpperCase() === canalAnalise)
         .map((origem) => origem.cidade)
         .filter(Boolean))]
         .sort((a, b) => a.localeCompare(b, 'pt-BR'));
@@ -4716,7 +4700,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   const nome = e.target.value;
                   setTransportadora(nome);
                   setOrigemTransportadora('');
-                  const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canalTransportadora || canais[0] || 'ATACADO';
+                  const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canalTransportadora || canais[0] || '';
                   if (opcoesOnline.canaisPorTransportadora?.[nome]?.length && !opcoesOnline.canaisPorTransportadora[nome].includes(canalTransportadora)) {
                     setCanalTransportadora(primeiroCanal);
                   }

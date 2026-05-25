@@ -6,6 +6,7 @@ import {
   listarPendenciasIbgeRealizadoMensal,
   verificarCompetenciaRealizadoMensal,
 } from '../services/realizadoMensalService';
+import { CANAIS_OPERACIONAIS, CANAL_A_DEFINIR, normalizarCanalOperacional } from '../utils/canalTransportadora';
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 const TABELA = 'realizado_local_ctes';
@@ -15,57 +16,16 @@ const ANALISE_MAX_REGISTROS = 5000;
 
 const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GP PNEUS'];
 
-const CANAL_VENDAS_MAP = {
-  B2C: 'B2C',
-  B2B: 'ATACADO',
-  'MERCADO LIVRE': 'B2C',
-  SHOPEE: 'B2C',
-  'MAGAZINE LUIZA': 'B2C',
-  AMAZON: 'B2C',
-  'VIA VAREJO': 'B2C',
-  CARREFOUR: 'B2C',
-  LIVELO: 'B2C',
-  'CANTU PNEUS': 'B2C',
-  PITSTOP: 'B2C',
-  INTER: 'B2C',
-  ITAU: 'B2C',
-  'ITAU SHOP': 'B2C',
-  '99': 'B2C',
-  COOPERA: 'B2C',
-  'BRADESCO SHOP': 'B2C',
-  MUSTANG: 'B2C',
-};
-
-const MARCADORES_ATACADO = ['AT-AG', 'AT-TR', 'ECM-B2B', 'ECC-SALES', 'ECA-SALES'];
-
 function monthNow() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function normalizarCanalRow(row) {
-  const canalVendas = String(row?.canal_vendas || row?.canalVendas || '').trim().toUpperCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-
-  if (canalVendas) {
-    const mapped = CANAL_VENDAS_MAP[canalVendas];
-    if (mapped) return mapped;
-  }
-
-  const marcadores = String(row?.marcadores || row?.marcador || '').trim().toUpperCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-
-  if (marcadores) {
-    const ehAtacado = MARCADORES_ATACADO.some((tok) => marcadores.includes(tok));
-    if (ehAtacado) return 'ATACADO';
-    if (marcadores.length > 0) return 'B2C';
-  }
-
-  const docDest = String(row?.documento_destinatario || row?.documentoDestinatario || '').trim();
-  if (!docDest) return 'B2C';
-
-  const canalLegado = String(row?.canal || '').trim().toUpperCase();
-  return canalLegado || 'B2C';
+  const canalBanco = campo(row, 'canal');
+  if (canalBanco) return normalizarCanalOperacional(canalBanco, { permitirInferencia: false });
+  const original = campo(row, 'canal_original', 'canalOriginal', 'canal_vendas', 'canalVendas', 'canais');
+  return original ? normalizarCanalOperacional(original, { permitirInferencia: false }) : '';
 }
 
 function fmt(v) {
@@ -177,7 +137,7 @@ function getUfDestino(row) {
 }
 
 function getCanal(row) {
-  return normalizarCanalRow(row) || campo(row, 'canal', 'canal_vendas', 'canais') || '';
+  return normalizarCanalRow(row) || '';
 }
 
 function getValorCte(row) {
@@ -1223,8 +1183,7 @@ export default function CtePage() {
             <label>Canal</label>
             <select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}>
               <option value="">Todos</option>
-              <option value="ATACADO">ATACADO</option>
-              <option value="B2C">B2C</option>
+              {CANAIS_OPERACIONAIS.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
             </select>
           </div>
 
@@ -1445,7 +1404,10 @@ export default function CtePage() {
                         <td>{peso ? `${fmtN(peso)} kg` : '-'}</td>
                         <td>{volumes ? fmtN(volumes) : '-'}</td>
                         <td>
-                          <span className={`coverage-badge ${canal === 'ATACADO' ? '' : 'ok'}`}>
+                          <span
+                            className={`coverage-badge ${canal === CANAL_A_DEFINIR ? 'warn' : canal === 'ATACADO' ? '' : 'ok'}`}
+                            title={canal === CANAL_A_DEFINIR ? `Canal original: ${campo(row, 'canal_original', 'canalOriginal', 'canal_vendas', 'canalVendas') || '-'}` : ''}
+                          >
                             {canal || '-'}
                           </span>
                         </td>

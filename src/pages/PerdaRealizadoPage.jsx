@@ -29,7 +29,7 @@ const REGIOES = [
   { label: 'Norte',        ufs: ['AM', 'PA', 'RO', 'AC', 'RR', 'AP', 'TO'] },
 ];
 const TODAS_UFS = REGIOES.flatMap((r) => r.ufs);
-const CANAIS    = ['ATACADO', 'B2C', 'REVERSA', 'INTERCOMPANY'];
+const CANAIS    = ['ATACADO', 'B2C', 'REVERSA', 'INTERCOMPANY', 'A DEFINIR'];
 const LIMITE_DB = 30000;
 
 // Etapas do carregamento

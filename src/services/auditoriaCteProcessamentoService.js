@@ -78,6 +78,7 @@ function competenciaParaDatas(competencia = '') {
 function canalCategoria(value) {
   const canal = normalizeText(value);
   if (!canal) return '';
+  if (canal.includes('A DEFINIR') || canal.includes('SEM TABELA') || canal.includes('SEM VINCULO')) return 'A DEFINIR';
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
   if (canal.includes('ATACADO') || canal === 'B2B' || canal.includes(' B2B')) return 'ATACADO';
@@ -89,6 +90,7 @@ function canalCompativel(canalTabela, canalCte) {
   const tabela = canalCategoria(canalTabela);
   const cte = canalCategoria(canalCte);
 
+  if (cte === 'A DEFINIR') return false;
   if (!cte) return true;
   if (!tabela) return true;
 

@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { CANAL_A_DEFINIR } from './canalTransportadora';
 
 const DB_NAME = 'amd-tracking-local-db';
 const DB_VERSION = 2;
@@ -193,7 +194,7 @@ function categoriaCanal(value) {
 
   // Tracking é base de venda. Para não perder volumetria no filtro B2C,
   // canais não mapeados entram como B2C e ficam com o canal original preservado.
-  return 'B2C';
+  return CANAL_A_DEFINIR;
 }
 
 function headerKey(value) {
@@ -565,8 +566,8 @@ function normalizarCanalTrackingRow(row = {}) {
   return {
     ...row,
     canalOriginal,
-    canal: canalClassificado || row.canal || '',
-    canalNaoClassificado: !CANAL_DEPARA_TRACKING[normalizeLoose(canalOriginal)] && !CANAL_DEPARA_TRACKING[normalize(canalOriginal)] && canalClassificado === 'B2C',
+    canal: canalClassificado || row.canal || CANAL_A_DEFINIR,
+    canalNaoClassificado: canalClassificado === CANAL_A_DEFINIR,
   };
 }
 
