@@ -243,17 +243,29 @@ export default function PerdaRealizadoPage() {
       // Filtros JS
       let realizados = rows || [];
 
-      // Datas: tenta dataEmissao (ISO), senão competencia ("YYYY-MM") + "-01"
+      // Normaliza qualquer formato de data para ISO YYYY-MM-DD
+      function toISO(cte) {
+        if (cte.dataEmissao) {
+          const s = String(cte.dataEmissao).trim();
+          const br = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);   // DD/MM/YYYY
+          if (br) return `${br[3]}-${br[2]}-${br[1]}`;
+          if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10); // YYYY-MM-DD
+        }
+        if (cte.competencia) {
+          const s = String(cte.competencia).trim();
+          const mm = s.match(/^(\d{2})\/(\d{4})/);               // MM/YYYY
+          if (mm) return `${mm[2]}-${mm[1]}-01`;
+          if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;          // YYYY-MM
+        }
+        return null;
+      }
+
       if (filtros.inicio || filtros.fim) {
         const ini = filtros.inicio || null;
         const fim = filtros.fim    || null;
         realizados = realizados.filter((c) => {
-          const data = c.dataEmissao
-            ? String(c.dataEmissao).slice(0, 10)
-            : c.competencia
-              ? String(c.competencia).slice(0, 7) + '-01'
-              : null;
-          if (!data) return true;
+          const data = toISO(c);
+          if (!data) return true;           // sem data → não filtra
           if (ini && data < ini) return false;
           if (fim && data > fim) return false;
           return true;
