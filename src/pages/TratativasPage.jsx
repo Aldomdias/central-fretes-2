@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { v4 as uuidv4 } from 'uuid';
+
 import {
   carregarTratativasSupabase,
   salvarTratativaSupabase,
@@ -211,7 +211,7 @@ export default function TratativasPage() {
       const isNova = !editando?.id;
       const payload = {
         ...form,
-        id: editando?.id || uuidv4(),
+        id: editando?.id || crypto.randomUUID(),
         impacto_financeiro: Number(form.impacto_financeiro || 0),
         prazo: form.prazo || null,
         data_abertura: editando?.data_abertura || new Date().toISOString(),
