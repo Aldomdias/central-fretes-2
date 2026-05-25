@@ -2,9 +2,9 @@
  * perdaRealizadoWorker.js
  * Regras principais:
  * - cálculo geral considera somente opções ATIVAS;
- * - CT-es só entram na conta principal quando têm tabela e prazo comparável;
+ * - CT-es só entram na conta principal quando têm tabela, faixa/cotação válida e prazo comparável;
  * - opções inativadas ficam em aba separada para medir economia bloqueada;
- * - envia detalhe do cálculo para auditoria/validação na UI.
+ * - envia detalhe enxuto do cálculo para auditoria/validação na UI.
  */
 import {
   calcularItemTabela,
@@ -65,6 +65,8 @@ function detalheCalculo(item) {
     transportadora: item?.transportadora || '',
     statusTransportadora: item?.statusTransportadora || '',
     ativa: item?.ativa !== false,
+    temTabelaCalculo: true,
+    fontePrazo: 'Tabela de Frete > Rota > prazoEntregaDias',
     total: fmt2(item?.total || 0),
     prazo: numeroValido(item?.prazo),
     tipoCalculo: item?.tipoCalculo || f.tipoCalculo || '',
@@ -95,7 +97,6 @@ function detalheCalculo(item) {
     taxas: taxas.itens,
     valorExcedente: fmt2(f.valorExcedente || 0),
     componenteBase: f.componenteBase || '',
-    detalhesFrete: f,
   };
 }
 
@@ -159,7 +160,7 @@ self.onmessage = async (event) => {
         .map((c) => {
           try {
             const r = calcularItemTabela({ ...c, cte, gradeCanal: [] });
-            if (!r) return null;
+            if (!r || !Number.isFinite(Number(r.total)) || Number(r.total) <= 0) return null;
             const ativa = transportadoraAtiva(c.transportadora);
             const statusTransportadora = c.transportadora?.status || c.transportadora?.situacao || '';
             return { ...r, ativa, statusTransportadora };
@@ -200,6 +201,7 @@ self.onmessage = async (event) => {
           economiaVsPago: fmt2(valorPago - menorInativa.total),
           prazoInativa: numeroValido(menorInativa.prazo),
           prazoAtivaMaisBarata: numeroValido(ganhadoraAtiva?.prazo),
+          fontePrazo: 'Tabela de Frete > Rota > prazoEntregaDias',
           detalheInativa: detalheCalculo(menorInativa),
           detalheAtiva: ganhadoraAtiva ? detalheCalculo(ganhadoraAtiva) : null,
         });
@@ -261,6 +263,7 @@ self.onmessage = async (event) => {
         prazoGanhadora,
         prazoRealizada,
         difPrazo: prazoGanhadora - prazoRealizada,
+        fontePrazo: 'Tabela de Frete > Rota > prazoEntregaDias',
         realizadaNasTabelas: true,
         totalOpcoes: calculadosAtivos.length,
         totalOpcoesInativas: calculadosInativos.length,
