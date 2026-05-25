@@ -1,15 +1,12 @@
 /**
  * perdaRealizadoWorker.js
- * Analisa o realizado e identifica o valor "perdido" por usar
- * a transportadora mais cara em vez da mais barata disponível.
+ * Analisa o realizado e identifica o valor perdido por usar uma transportadora
+ * mais cara em vez da opção mais barata disponível na tabela.
  *
- * Para cada CT-e:
- *  1. Busca todos os candidatos (transportadoras com tabela para a rota)
- *  2. Calcula o custo de cada uma
- *  3. Identifica a mais barata (ganhadora)
- *  4. Compara com o valor pago (cte.valorCte)
- *  5. Perda = valorPago - ganhadora.total   (quando > 0)
- *  6. Registra prazo da realizada vs prazo da ganhadora
+ * Regra da tela:
+ * - conta/análise principal somente CT-es que tenham tabela compatível;
+ * - conta/análise principal somente CT-es que tenham prazo da realizada e da ganhadora;
+ * - itens sem tabela ou sem prazo ficam fora da conta principal, apenas como diagnóstico.
  */
 import {
   calcularItemTabela,
@@ -29,6 +26,28 @@ function fmt2(n) {
   return Math.round((n || 0) * 100) / 100;
 }
 
+function numeroValido(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function prazoValido(value) {
+  const n = numeroValido(value);
+  return n !== null && n > 0;
+}
+
+function registrarIgnorado(lista, cte, motivo, extra = {}) {
+  lista.push({
+    chaveCte: cte.chaveCte,
+    numeroCte: cte.numeroCte,
+    transportadora: cte.transportadora,
+    origem: `${cte.cidadeOrigem}/${cte.ufOrigem}`,
+    destino: `${cte.cidadeDestino}/${cte.ufDestino}`,
+    motivo,
+    ...extra,
+  });
+}
+
 self.onmessage = async (event) => {
   const msg = event.data || {};
   if (msg.type !== 'analisar-perda') return;
@@ -41,30 +60,26 @@ self.onmessage = async (event) => {
       vinculos = [],
     } = msg;
 
-    // ── 1. Mapa de vínculos (nome CT-e → nome tabela) ──────────────────────
     const mapaVinculos = criarMapaVinculosTransportadoras(vinculos);
 
-    // ── 2. Índice de rotas (canal|chaveRota → candidatos) ──────────────────
     self.postMessage({ type: 'progress', etapa: 'Construindo índice de tabelas...', pct: 5 });
     const { index } = construirIndiceFretesPorRota(transportadoras, municipios);
 
-    // ── 3. Análise por CT-e ────────────────────────────────────────────────
     const detalhes = [];
     const semMalha = [];
+    const semPrazo = [];
     const CHUNK = 200;
 
-    for (let i = 0; i < realizados.length; i++) {
+    for (let i = 0; i < realizados.length; i += 1) {
       const cte = realizados[i];
 
-      // progresso a cada chunk
       if (i % CHUNK === 0) {
-        const pct = 5 + Math.round((i / realizados.length) * 85);
+        const pct = 5 + Math.round((i / Math.max(realizados.length, 1)) * 85);
         self.postMessage({
           type: 'progress',
           etapa: `Analisando CT-es: ${i} / ${realizados.length}`,
           pct,
         });
-        // yield para não travar
         await new Promise((r) => setTimeout(r, 0));
       }
 
@@ -73,24 +88,18 @@ self.onmessage = async (event) => {
       const candidatos = index.get(key) || [];
 
       if (!cte.chaveRotaIbge || !candidatos.length) {
-        semMalha.push({
-          chaveCte: cte.chaveCte,
-          transportadora: cte.transportadora,
-          origem: `${cte.cidadeOrigem}/${cte.ufOrigem}`,
-          destino: `${cte.cidadeDestino}/${cte.ufDestino}`,
-          motivo: !cte.chaveRotaIbge
-            ? 'CT-e sem chave IBGE origem-destino'
-            : 'Rota não encontrada nas tabelas',
-        });
+        registrarIgnorado(
+          semMalha,
+          cte,
+          !cte.chaveRotaIbge ? 'CT-e sem chave IBGE origem-destino' : 'Rota não encontrada nas tabelas'
+        );
         continue;
       }
 
-      // Calcular custo para cada candidato
       const calculados = candidatos
         .map((c) => {
           try {
-            const r = calcularItemTabela({ ...c, cte, gradeCanal: [] });
-            return r;
+            return calcularItemTabela({ ...c, cte, gradeCanal: [] });
           } catch {
             return null;
           }
@@ -99,19 +108,11 @@ self.onmessage = async (event) => {
         .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 
       if (!calculados.length) {
-        semMalha.push({
-          chaveCte: cte.chaveCte,
-          transportadora: cte.transportadora,
-          origem: `${cte.cidadeOrigem}/${cte.ufOrigem}`,
-          destino: `${cte.cidadeDestino}/${cte.ufDestino}`,
-          motivo: 'Nenhuma cotação/faixa de peso válida para a rota',
-        });
+        registrarIgnorado(semMalha, cte, 'Nenhuma cotação/faixa de peso válida para a rota');
         continue;
       }
 
-      const ganhadora = calculados[0]; // mais barata
-
-      // Tentar achar a transportadora realizada nas tabelas (via vínculo)
+      const ganhadora = calculados[0];
       const nomeVinculado = norm(aplicarVinculoTransportadora(cte.transportadora, mapaVinculos));
       const nomeRaw = norm(cte.transportadora);
       const realizadaCalc = calculados.find(
@@ -119,6 +120,28 @@ self.onmessage = async (event) => {
       ) || calculados.find(
         (c) => nomeVinculado && norm(c.transportadora).includes(nomeVinculado.split(' ')[0])
       );
+
+      const prazoGanhadora = numeroValido(ganhadora?.prazo);
+      const prazoRealizada = numeroValido(realizadaCalc?.prazo);
+
+      if (!realizadaCalc) {
+        registrarIgnorado(semPrazo, cte, 'Transportadora realizada não encontrada nas tabelas da rota', {
+          transportadoraGanhadora: ganhadora.transportadora,
+          prazoGanhadora,
+          totalOpcoes: calculados.length,
+        });
+        continue;
+      }
+
+      if (!prazoValido(prazoRealizada) || !prazoValido(prazoGanhadora)) {
+        registrarIgnorado(semPrazo, cte, 'Sem prazo válido para comparar realizada x ganhadora', {
+          transportadoraGanhadora: ganhadora.transportadora,
+          prazoRealizada,
+          prazoGanhadora,
+          totalOpcoes: calculados.length,
+        });
+        continue;
+      }
 
       const valorPago = Number(cte.valorCte || 0);
       const valorGanhadora = ganhadora.total;
@@ -143,24 +166,22 @@ self.onmessage = async (event) => {
         valorGanhadora: fmt2(valorGanhadora),
         perda,
         perdaPercentual: valorPago > 0 ? fmt2((perda / valorPago) * 100) : 0,
-        prazoGanhadora: ganhadora.prazo || 0,
-        prazoRealizada: realizadaCalc?.prazo ?? null,
-        difPrazo: realizadaCalc != null ? (ganhadora.prazo - realizadaCalc.prazo) : null,
-        realizadaNasTabelas: realizadaCalc != null,
+        prazoGanhadora,
+        prazoRealizada,
+        difPrazo: prazoGanhadora - prazoRealizada,
+        realizadaNasTabelas: true,
         totalOpcoes: calculados.length,
         temPerda,
       });
     }
 
-    // ── 4. Agregações ──────────────────────────────────────────────────────
-    self.postMessage({ type: 'progress', etapa: 'Consolidando resultados...', pct: 93 });
+    self.postMessage({ type: 'progress', etapa: 'Consolidando resultados comparáveis...', pct: 93 });
 
     const totalCtes = detalhes.length;
     const ctesComPerda = detalhes.filter((d) => d.temPerda).length;
     const perdaTotal = fmt2(detalhes.reduce((s, d) => s + (d.temPerda ? d.perda : 0), 0));
     const perdaMedia = ctesComPerda > 0 ? fmt2(perdaTotal / ctesComPerda) : 0;
 
-    // Por UF de origem
     const mapaOrigem = new Map();
     for (const d of detalhes) {
       if (!d.temPerda) continue;
@@ -178,12 +199,12 @@ self.onmessage = async (event) => {
       g.valorPagoTotal = fmt2(g.valorPagoTotal + d.valorPago);
       mapaOrigem.set(k, g);
     }
+
     const top10Origens = Array.from(mapaOrigem.values())
       .sort((a, b) => b.perdaTotal - a.perdaTotal)
       .slice(0, 10)
       .map((g) => ({ ...g, perdaPercentual: g.valorPagoTotal > 0 ? fmt2((g.perdaTotal / g.valorPagoTotal) * 100) : 0 }));
 
-    // Por transportadora realizada
     const mapaTransp = new Map();
     for (const d of detalhes) {
       if (!d.temPerda) continue;
@@ -193,6 +214,7 @@ self.onmessage = async (event) => {
       g.perdaTotal = fmt2(g.perdaTotal + d.perda);
       mapaTransp.set(k, g);
     }
+
     const porTransportadora = Array.from(mapaTransp.values())
       .sort((a, b) => b.perdaTotal - a.perdaTotal)
       .slice(0, 15);
@@ -205,9 +227,11 @@ self.onmessage = async (event) => {
         perdaTotal,
         perdaMedia,
         semMalha: semMalha.length,
+        semPrazo: semPrazo.length,
+        semComparacao: semMalha.length + semPrazo.length,
         top10Origens,
         porTransportadora,
-        detalhes, // tabela completa (paginada na UI)
+        detalhes,
       },
     });
   } catch (error) {
