@@ -28,6 +28,7 @@ import {
   salvarLancamentoAuditoriaSupabase,
   salvarSolicitacaoSupabase,
 } from '../services/lotacaoSupabaseService';
+import { carregarSessao } from '../utils/authLocal';
 
 function classeSaldo(valor) {
   if (valor < -0.01) return 'negativo';
@@ -117,7 +118,10 @@ function ResumoCarga({ carga, lancamentos, solicitacoes }) {
   );
 }
 
-function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvando }) {
+// ─── FORMULÁRIO DE LANÇAMENTO ─────────────────────────────────────────────────
+// FASE 1: observação obrigatória quando há excedente + dados do auditor
+
+function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvando, usuarioAtual }) {
   const ctes = carga?.ctes?.length ? carga.ctes : separarCtes(carga?.cteRaw || '');
   const [form, setForm] = useState({
     cte: ctes[0] || '',
@@ -137,9 +141,26 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
   const duplicado = cteJaLancado(lancamentos, carga, cteEfetivo);
   const ctesLancados = ctesLancadosCarga(lancamentos, carga);
 
+  // REGRA FASE 1: observação obrigatória quando excede o saldo
+  const observacaoObrigatoria = excedentePrevisto > 0;
+  const observacaoVazia = !form.observacao || !form.observacao.trim();
+  const bloqueadoPorObservacao = observacaoObrigatoria && observacaoVazia;
+
   const registrar = () => {
-    if (!valorDigitado || valorDigitado <= 0 || duplicado) return;
-    onRegistrar({ ...form, cte: cteEfetivo });
+    if (!valorDigitado || valorDigitado <= 0 || duplicado || bloqueadoPorObservacao) return;
+    onRegistrar({
+      ...form,
+      cte: cteEfetivo,
+      // Dados do auditor — gravados junto com o lançamento
+      auditedByUserId: usuarioAtual?.id || '',
+      auditedByName: usuarioAtual?.nome || '',
+      auditedByEmail: usuarioAtual?.email || '',
+      auditedAt: new Date().toISOString(),
+      auditStatus: excedentePrevisto > 0 ? 'EXCEDEU_AGUARDANDO_OPERACAO' : 'AUDITADO_OK',
+      auditExceededAmount: excedentePrevisto,
+      auditAllowedAmount: Math.max(0, saldo),
+      auditEnteredAmount: valorDigitado,
+    });
     setForm({
       cte: ctes.find((c) => !cteJaLancado(lancamentos, carga, c)) || 'OUTRO',
       cteOutro: '',
@@ -158,6 +179,11 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
           <div className="panel-title">Registrar lançamento auditado</div>
           <p>Informe o CT-e, o valor lançado e a fatura. CT-e já utilizado na DIST fica bloqueado para evitar duplicidade.</p>
         </div>
+        {usuarioAtual && (
+          <span className="status-pill">
+            Auditor: {usuarioAtual.nome || usuarioAtual.email}
+          </span>
+        )}
       </div>
 
       <div className="form-grid three">
@@ -214,14 +240,30 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
         </label>
       </div>
 
-      <label className="field">
-        Observação
+      {/* OBSERVAÇÃO — obrigatória quando há excedente */}
+      <label className="field" style={{ marginTop: '0.75rem' }}>
+        Observação{observacaoObrigatoria ? <span style={{ color: '#c0392b', marginLeft: 4 }}>*</span> : ''}
         <textarea
           value={form.observacao}
           onChange={(e) => atualizar('observacao', e.target.value)}
-          placeholder="Observação da auditoria ou justificativa"
+          placeholder={
+            observacaoObrigatoria
+              ? 'Justificativa obrigatória — informe o motivo do excedente para a operação.'
+              : 'Observação da auditoria ou justificativa'
+          }
+          style={{
+            borderColor: observacaoObrigatoria && observacaoVazia ? '#c0392b' : undefined,
+            minHeight: observacaoObrigatoria ? 80 : 60,
+          }}
         />
       </label>
+
+      {/* ALERTA FASE 1: observação obrigatória */}
+      {observacaoObrigatoria && observacaoVazia && (
+        <div className="hint-box compact error-text" style={{ marginTop: '0.5rem' }}>
+          ⚠ Informe uma justificativa para enviar à operação. O campo Observação é obrigatório quando o valor lançado ultrapassa o saldo disponível.
+        </div>
+      )}
 
       <div className="sim-analise-resumo">
         <div><span>Saldo antes do lançamento</span><strong>{formatarMoeda(saldo)}</strong></div>
@@ -245,7 +287,7 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
       )}
       {excedentePrevisto > 0 && !duplicado && (
         <div className="hint-box compact error-text">
-          Este lançamento passa do saldo da DIST. Ao registrar, o sistema cria uma solicitação pendente na tela Lotação Operação para aprovação.
+          Este lançamento passa do saldo da DIST. Ao registrar, o sistema cria uma pendência para aprovação na tela Lotação Operação.
         </div>
       )}
 
@@ -258,14 +300,16 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
             !valorDigitado ||
             valorDigitado <= 0 ||
             duplicado ||
-            (form.cte === 'OUTRO' && !form.cteOutro.trim())
+            (form.cte === 'OUTRO' && !form.cteOutro.trim()) ||
+            bloqueadoPorObservacao
           }
+          title={bloqueadoPorObservacao ? 'Preencha a justificativa antes de registrar' : ''}
           onClick={registrar}
         >
           {salvando
             ? 'Salvando...'
             : excedentePrevisto > 0
-            ? 'Registrar e abrir solicitação'
+            ? 'Registrar e abrir pendência'
             : 'Registrar auditado'}
         </button>
       </div>
@@ -292,27 +336,37 @@ function HistoricoLancamentos({ carga, lancamentos }) {
         <table className="sim-analise-tabela">
           <thead>
             <tr>
-              <th>Data</th>
+              <th>Data/Hora</th>
+              <th>Auditor</th>
               <th>CT-e</th>
               <th>Fatura</th>
               <th>Valor lançado</th>
               <th>Saldo anterior</th>
               <th>Excedente</th>
               <th>Status</th>
-              <th>Observação</th>
+              <th>Observação / Justificativa</th>
             </tr>
           </thead>
           <tbody>
             {lista.map((item) => (
               <tr key={item.id}>
-                <td>{formatarDataCurta(item.criadoEm)}</td>
+                <td>{formatarDataCurta(item.auditedAt || item.criadoEm)}</td>
+                <td>
+                  <span title={item.auditedByEmail || item.audited_by_email || ''}>
+                    {item.auditedByName || item.audited_by_name || '-'}
+                  </span>
+                </td>
                 <td>{item.cte || '-'}</td>
                 <td>{item.fatura || '-'}</td>
                 <td>{formatarMoeda(item.valorLancado)}</td>
                 <td>{formatarMoeda(item.saldoAnterior ?? item.totalAnterior)}</td>
                 <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
-                <td><span className="status-pill">{item.status}</span></td>
-                <td>{item.observacao || '-'}</td>
+                <td>
+                  <span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>
+                    {item.auditStatus || item.audit_status || item.status}
+                  </span>
+                </td>
+                <td>{item.observacao || item.audit_observation || '-'}</td>
               </tr>
             ))}
           </tbody>
@@ -369,12 +423,12 @@ function MovimentosAutorizacao({ carga, solicitacoes }) {
   );
 }
 
-// ─── Página principal ────────────────────────────────────────────────────────
+// ─── Painel de acompanhamento geral ──────────────────────────────────────────
 
 function PainelAuditoriaGeral({ lancamentos, solicitacoes }) {
-  const pendentes = (solicitacoes || []).filter((item) => item.status === 'PENDENTE');
+  const pendentes = (solicitacoes || []).filter((item) => item.status === 'PENDENTE' || item.status === 'EXCEDEU_AGUARDANDO_OPERACAO');
   const recentes = [...(lancamentos || [])]
-    .sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime())
+    .sort((a, b) => new Date(b.auditedAt || b.criadoEm).getTime() - new Date(a.auditedAt || a.criadoEm).getTime())
     .slice(0, 80);
 
   return (
@@ -382,21 +436,37 @@ function PainelAuditoriaGeral({ lancamentos, solicitacoes }) {
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Acompanhamento da auditoria</div>
-          <p className="compact">Visao geral do que foi lancado e do que esta aguardando aprovacao da operacao.</p>
+          <p className="compact">Visão geral do que foi lançado e do que está aguardando aprovação da operação.</p>
         </div>
-        <span className="status-pill dark">{pendentes.length} em aprovacao</span>
+        <span className="status-pill dark">{pendentes.length} em aprovação</span>
       </div>
 
       <div className="summary-strip lotacao-summary-mini">
-        <div className="summary-card"><span>Lancamentos registrados</span><strong>{(lancamentos || []).length.toLocaleString('pt-BR')}</strong><small>CT-e/fatura auditados</small></div>
-        <div className="summary-card"><span>Em aprovacao</span><strong>{pendentes.length.toLocaleString('pt-BR')}</strong><small>excedentes pendentes</small></div>
-        <div className="summary-card"><span>Aprovados</span><strong>{(solicitacoes || []).filter((item) => item.status === 'APROVADO').length.toLocaleString('pt-BR')}</strong><small>liberam saldo adicional</small></div>
-        <div className="summary-card"><span>Recusados</span><strong>{(solicitacoes || []).filter((item) => item.status === 'RECUSADO').length.toLocaleString('pt-BR')}</strong><small>sem liberacao de saldo</small></div>
+        <div className="summary-card">
+          <span>Lançamentos registrados</span>
+          <strong>{(lancamentos || []).length.toLocaleString('pt-BR')}</strong>
+          <small>CT-e/fatura auditados</small>
+        </div>
+        <div className="summary-card">
+          <span>Em aprovação</span>
+          <strong>{pendentes.length.toLocaleString('pt-BR')}</strong>
+          <small>excedentes pendentes</small>
+        </div>
+        <div className="summary-card">
+          <span>Aprovados</span>
+          <strong>{(solicitacoes || []).filter((item) => item.status === 'APROVADO' || item.status === 'APROVADO_OPERACAO').length.toLocaleString('pt-BR')}</strong>
+          <small>liberam saldo adicional</small>
+        </div>
+        <div className="summary-card">
+          <span>Recusados</span>
+          <strong>{(solicitacoes || []).filter((item) => item.status === 'RECUSADO' || item.status === 'RECUSADO_OPERACAO').length.toLocaleString('pt-BR')}</strong>
+          <small>sem liberação de saldo</small>
+        </div>
       </div>
 
       {pendentes.length > 0 && (
         <div className="hint-box compact top-space-sm">
-          Ha {pendentes.length.toLocaleString('pt-BR')} solicitacao(oes) aguardando a operacao validar em Lotacao Operacao.
+          Há {pendentes.length.toLocaleString('pt-BR')} solicitação(ões) aguardando a operação validar em Lotação Operação.
         </div>
       )}
 
@@ -405,29 +475,39 @@ function PainelAuditoriaGeral({ lancamentos, solicitacoes }) {
           <thead>
             <tr>
               <th>Data</th>
+              <th>Auditor</th>
               <th>DIST</th>
               <th>CT-e</th>
               <th>Fatura</th>
-              <th>Valor lancado</th>
+              <th>Valor lançado</th>
               <th>Excedente</th>
               <th>Status</th>
-              <th>Observacao</th>
+              <th>Justificativa</th>
             </tr>
           </thead>
           <tbody>
             {recentes.map((item) => (
               <tr key={item.id}>
-                <td>{formatarDataCurta(item.criadoEm)}</td>
+                <td>{formatarDataCurta(item.auditedAt || item.criadoEm)}</td>
+                <td>
+                  <span title={item.auditedByEmail || ''}>
+                    {item.auditedByName || '-'}
+                  </span>
+                </td>
                 <td><strong>{item.dist}</strong></td>
                 <td>{item.cte || '-'}</td>
                 <td>{item.fatura || '-'}</td>
                 <td>{formatarMoeda(item.valorLancado)}</td>
                 <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
-                <td><span className="status-pill">{item.status}</span></td>
+                <td>
+                  <span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>
+                    {item.auditStatus || item.status}
+                  </span>
+                </td>
                 <td>{item.observacao || '-'}</td>
               </tr>
             ))}
-            {!recentes.length && <tr><td colSpan="8">Nenhum lancamento registrado ate agora.</td></tr>}
+            {!recentes.length && <tr><td colSpan="9">Nenhum lançamento registrado até agora.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -435,8 +515,13 @@ function PainelAuditoriaGeral({ lancamentos, solicitacoes }) {
   );
 }
 
+// ─── Página principal ─────────────────────────────────────────────────────────
+
 export default function LotacaoAuditoriaPage() {
   const mounted = useRef(true);
+
+  // Carrega usuário da sessão para rastrear quem auditou
+  const [usuarioAtual] = useState(() => carregarSessao());
 
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
@@ -458,7 +543,6 @@ export default function LotacaoAuditoriaPage() {
     setCarregandoHistorico(true);
 
     (async () => {
-      // Tenta Supabase primeiro
       try {
         const cargasSupabase = await carregarCargasLotacaoSupabase({});
         if (mounted.current && cargasSupabase.length > 0) {
@@ -470,7 +554,6 @@ export default function LotacaoAuditoriaPage() {
         console.warn('[Auditoria] Supabase indisponível para cargas, usando local:', err.message);
       }
 
-      // Fallback localStorage / IndexedDB
       try {
         const base = await carregarFluxoCargasLotacaoCompleto();
         if (mounted.current) {
@@ -487,7 +570,7 @@ export default function LotacaoAuditoriaPage() {
     return () => { mounted.current = false; };
   }, []);
 
-  // ── Carrega lançamentos e solicitações (Supabase > local) ───────────────────
+  // ── Carrega lançamentos e solicitações (Supabase > local) ──────────────────
   useEffect(() => {
     setCarregandoAuditoria(true);
 
@@ -499,7 +582,7 @@ export default function LotacaoAuditoriaPage() {
         ]);
         if (lancs !== null) {
           setLancamentos(lancs);
-          salvarLancamentosAuditoria(lancs); // espelha no cache local
+          salvarLancamentosAuditoria(lancs);
         }
         if (sols !== null) {
           setSolicitacoes(sols);
@@ -528,7 +611,7 @@ export default function LotacaoAuditoriaPage() {
     setMensagem('');
   }, [resultados]);
 
-  // ── Registra lançamento ───────────────────────────────────────────────────
+  // ── Registra lançamento com dados do auditor ──────────────────────────────
   const registrarLancamento = useCallback(async (form) => {
     if (!selecionada) return;
     setSalvando(true);
@@ -536,40 +619,62 @@ export default function LotacaoAuditoriaPage() {
 
     try {
       const lancamento = criarLancamentoAuditoria(selecionada, form, lancamentos, solicitacoes);
-      const novosLancamentos = [lancamento, ...lancamentos];
 
+      // FASE 1: enriquecer com dados do auditor
+      const lancamentoComAuditor = {
+        ...lancamento,
+        auditedByUserId: form.auditedByUserId || usuarioAtual?.id || '',
+        auditedByName: form.auditedByName || usuarioAtual?.nome || '',
+        auditedByEmail: form.auditedByEmail || usuarioAtual?.email || '',
+        auditedAt: form.auditedAt || new Date().toISOString(),
+        auditStatus: form.auditStatus || (lancamento.excedente > 0 ? 'EXCEDEU_AGUARDANDO_OPERACAO' : 'AUDITADO_OK'),
+        auditExceededAmount: form.auditExceededAmount ?? lancamento.excedente,
+        auditAllowedAmount: form.auditAllowedAmount ?? 0,
+        auditEnteredAmount: form.auditEnteredAmount ?? lancamento.valorLancado,
+        observacao: form.observacao || '',
+        origemTela: 'AUDITORIA_LOTACAO',
+      };
+
+      const novosLancamentos = [lancamentoComAuditor, ...lancamentos];
       salvarLancamentosAuditoria(novosLancamentos);
       setLancamentos(novosLancamentos);
 
       try {
-        await salvarLancamentoAuditoriaSupabase(lancamento);
+        await salvarLancamentoAuditoriaSupabase(lancamentoComAuditor);
       } catch (error) {
-        console.warn('[Auditoria] Lancamento salvo localmente; falha ao salvar no Supabase:', error.message);
+        console.warn('[Auditoria] Lançamento salvo localmente; falha ao salvar no Supabase:', error.message);
       }
 
-      if (lancamento.excedente > 0) {
-        const solicitacao = criarSolicitacaoPagamento(selecionada, lancamento);
-        const novasSolicitacoes = [solicitacao, ...solicitacoes];
-
+      if (lancamentoComAuditor.excedente > 0) {
+        const solicitacao = criarSolicitacaoPagamento(selecionada, lancamentoComAuditor);
+        const solicitacaoComAuditor = {
+          ...solicitacao,
+          auditedByName: lancamentoComAuditor.auditedByName,
+          auditedByEmail: lancamentoComAuditor.auditedByEmail,
+          auditedAt: lancamentoComAuditor.auditedAt,
+          observation: lancamentoComAuditor.observacao,
+          status: 'EXCEDEU_AGUARDANDO_OPERACAO',
+        };
+        const novasSolicitacoes = [solicitacaoComAuditor, ...solicitacoes];
         salvarSolicitacoesPagamento(novasSolicitacoes);
         setSolicitacoes(novasSolicitacoes);
 
         try {
-          await salvarSolicitacaoSupabase(solicitacao);
+          await salvarSolicitacaoSupabase(solicitacaoComAuditor);
         } catch (error) {
-          console.warn('[Auditoria] Solicitacao salva localmente; falha ao salvar no Supabase:', error.message);
+          console.warn('[Auditoria] Solicitação salva localmente; falha ao salvar no Supabase:', error.message);
         }
 
-        setMensagem('✓ Lançamento registrado no Supabase e solicitação criada para aprovação em Lotação Operação.');
+        setMensagem('✓ Lançamento registrado e pendência criada para aprovação em Lotação Operação.');
       } else {
-        setMensagem('✓ Lançamento auditado registrado no Supabase com sucesso.');
+        setMensagem('✓ Lançamento auditado registrado com sucesso.');
       }
     } catch (error) {
       setMensagem(`Erro ao registrar: ${error.message || String(error)}`);
     } finally {
       setSalvando(false);
     }
-  }, [selecionada, lancamentos, solicitacoes]);
+  }, [selecionada, lancamentos, solicitacoes, usuarioAtual]);
 
   const totalCargas = baseFluxo.cargas?.length || 0;
 
@@ -584,9 +689,14 @@ export default function LotacaoAuditoriaPage() {
             saldo lançado quando houver mais de um CT-e vinculado.
           </p>
         </div>
+        {usuarioAtual && (
+          <div style={{ textAlign: 'right', fontSize: '0.85rem', opacity: 0.75 }}>
+            <div><strong>{usuarioAtual.nome}</strong></div>
+            <div>{usuarioAtual.email}</div>
+          </div>
+        )}
       </header>
 
-      {/* Status de carregamento */}
       {(carregandoHistorico || carregandoAuditoria) && (
         <div className="hint-box compact">
           {carregandoHistorico && 'Carregando histórico de cargas do Supabase...'}
@@ -594,15 +704,14 @@ export default function LotacaoAuditoriaPage() {
         </div>
       )}
 
-      {/* Badge de fonte dos dados */}
       {!carregandoHistorico && !carregandoAuditoria && (
         <div
           className="hint-box compact"
           style={{ background: fonteCargas === 'supabase' ? '#e8f5e9' : '#fff8e1' }}
         >
           {fonteCargas === 'supabase'
-            ? `✓ ${totalCargas} cargas carregadas do Supabase. Lançamentos e solicitações salvos na nuvem.`
-            : `⚠ ${totalCargas} cargas carregadas localmente. Conecte ao Supabase para compartilhar entre usuários.`}
+            ? `✓ ${totalCargas} cargas carregadas do Supabase.`
+            : `⚠ ${totalCargas} cargas carregadas localmente.`}
         </div>
       )}
 
@@ -643,6 +752,7 @@ export default function LotacaoAuditoriaPage() {
         solicitacoes={solicitacoes}
         onRegistrar={registrarLancamento}
         salvando={salvando}
+        usuarioAtual={usuarioAtual}
       />
       <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} />
       <HistoricoLancamentos carga={selecionada} lancamentos={lancamentos} />

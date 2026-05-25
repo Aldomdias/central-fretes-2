@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
+import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
+import { carregarSessao } from '../utils/authLocal';
 
 function normalizarNomeTransp(nome = '') {
   return String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -563,6 +565,7 @@ function normalizarValorInput(value) {
 }
 
 export default function FerramentasPage({ transportadoras = [] }) {
+  const sessao = carregarSessao();
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
@@ -947,6 +950,10 @@ export default function FerramentasPage({ transportadoras = [] }) {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
+
+      {sessao?.perfil === 'GESTAO' && (
+        <SlaAuditoriaConfig canal="LOTACAO" />
+      )}
 
       {/* Grade de peso */}
       <div className="panel-card" style={{padding:0,overflow:'hidden'}}>

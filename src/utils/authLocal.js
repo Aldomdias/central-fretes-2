@@ -25,6 +25,10 @@ export const MODULOS_SISTEMA = [
   { chave: 'lotacao', label: 'Lotação Tabelas', grupo: 'Lotação' },
   { chave: 'lotacao-operacao', label: 'Lotação Operação', grupo: 'Lotação' },
   { chave: 'lotacao-auditoria', label: 'Auditoria Lotação', grupo: 'Auditoria' },
+  { chave: 'painel-auditoria', label: 'Painel Auditoria', grupo: 'Auditoria' },
+  { chave: 'painel-operacao', label: 'Painel Operação', grupo: 'Operação' },
+  { chave: 'faturas', label: 'Faturas / Central Auditoria', grupo: 'Auditoria' },
+  { chave: 'tratativas', label: 'Tratativas', grupo: 'Auditoria' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
   { chave: 'ferramentas', label: 'Ferramentas', grupo: 'Geral' },
   { chave: 'transportadoras', label: 'Transportadoras', grupo: 'Cadastros' },
@@ -61,12 +65,12 @@ export const PERFIS_USUARIO = {
   OPERACAO_LOTACAO: {
     nome: 'Operação Lotação',
     descricao: 'Consulta lotação, histórico de cargas, custos adicionais e aprovações.',
-    paginas: ['dashboard', 'lotacao', 'lotacao-operacao'],
+    paginas: ['dashboard', 'lotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas'],
   },
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',
     descricao: 'Consulta DIST/CT-e e registro de auditoria.',
-    paginas: ['dashboard', 'cte', 'auditoria-cte', 'lotacao-auditoria'],
+    paginas: ['dashboard', 'cte', 'auditoria-cte', 'lotacao-auditoria', 'painel-auditoria', 'faturas', 'tratativas'],
   },
   CONSULTA: {
     nome: 'Consulta',

@@ -1,4 +1,4 @@
-import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
+﻿import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
 import { normalizarTexto, normalizarTipoTabela } from '../utils/lotacaoTables';
 
 const PAGE_SIZE = 1000;
@@ -6,14 +6,14 @@ const INSERT_CHUNK_SIZE = 500;
 
 function ensureClient() {
   const client = getSupabaseClient();
-  if (!client) throw new Error('Supabase não configurado. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no ambiente do projeto.');
+  if (!client) throw new Error('Supabase nÃ£o configurado. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no ambiente do projeto.');
   return client;
 }
 
 function detalheErroSupabase(error) {
   const msg = error?.message || String(error || 'Erro desconhecido no Supabase.');
   if (msg.includes('lotacao_tabelas') || msg.includes('lotacao_rotas') || msg.includes('lotacao_cargas') || msg.includes('lotacao_lancamentos') || msg.includes('lotacao_solicitacoes') || msg.includes('relation') || msg.includes('does not exist') || error?.code === '42P01') {
-    return `${msg}. Rode o script supabase/lotacao_schema.sql no SQL Editor do Supabase antes de usar o módulo.`;
+    return `${msg}. Rode o script supabase/lotacao_schema.sql no SQL Editor do Supabase antes de usar o mÃ³dulo.`;
   }
   return msg;
 }
@@ -186,7 +186,7 @@ export async function removerTabelaLotacaoSupabase(tabelaId) {
 }
 
 export async function diagnosticarLotacaoSupabase() {
-  if (!isSupabaseConfigured()) return { ok: false, configured: false, erro: 'Supabase não configurado.' };
+  if (!isSupabaseConfigured()) return { ok: false, configured: false, erro: 'Supabase nÃ£o configurado.' };
   const supabase = ensureClient();
   const [tabelas, rotas] = await Promise.all([
     supabase.from('lotacao_tabelas').select('id', { count: 'exact', head: true }),
@@ -198,7 +198,7 @@ export async function diagnosticarLotacaoSupabase() {
 }
 
 // ============================================================
-// CARGAS DE LOTAÇÃO — salvar e carregar do Supabase
+// CARGAS DE LOTAÃ‡ÃƒO â€” salvar e carregar do Supabase
 // ============================================================
 
 function parseDateSafe(valor) {
@@ -383,7 +383,7 @@ export async function limparCargasLotacaoSupabase() {
 }
 
 // ============================================================
-// LANÇAMENTOS DE AUDITORIA — Supabase
+// LANÃ‡AMENTOS DE AUDITORIA â€” Supabase
 // ============================================================
 
 function lancamentoParaDb(item = {}) {
@@ -403,6 +403,18 @@ function lancamentoParaDb(item = {}) {
     excedente:                   Number(item.excedente ?? 0),
     status:                      String(item.status || 'OK'),
     observacao:                  String(item.observacao || ''),
+    // â”€â”€ FASE 1: campos de rastreabilidade do auditor â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    audited_by_user_id:          String(item.auditedByUserId  || item.audited_by_user_id  || ''),
+    audited_by_name:             String(item.auditedByName    || item.audited_by_name    || ''),
+    audited_by_email:            String(item.auditedByEmail   || item.audited_by_email   || ''),
+    audited_at:                  item.auditedAt || item.audited_at || new Date().toISOString(),
+    audit_observation:           String(item.observacao || item.auditObservation || item.audit_observation || ''),
+    audit_status:                String(item.auditStatus || item.audit_status || (Number(item.excedente ?? 0) > 0 ? 'EXCEDEU_AGUARDANDO_OPERACAO' : 'AUDITADO_OK')),
+    audit_exceeded_amount:       item.auditExceededAmount != null ? Number(item.auditExceededAmount) : Number(item.excedente ?? 0),
+    audit_allowed_amount:        item.auditAllowedAmount  != null ? Number(item.auditAllowedAmount)  : null,
+    audit_entered_amount:        item.auditEnteredAmount  != null ? Number(item.auditEnteredAmount)  : Number(item.valorLancado ?? item.valor_lancado ?? 0),
+    origem_tela:                 String(item.origemTela || item.origem_tela || 'AUDITORIA_LOTACAO'),
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     criado_em:                   item.criadoEm || item.criado_em || new Date().toISOString(),
   };
 }
@@ -423,8 +435,20 @@ function dbParaLancamento(row = {}) {
     saldoAnterior:             row.saldo_anterior        != null ? Number(row.saldo_anterior)        : null,
     excedente:                 row.excedente             != null ? Number(row.excedente)             : 0,
     status:                    row.status                || 'OK',
-    observacao:                row.observacao            || '',
-    criadoEm:                  row.criado_em             || '',
+    observacao:                row.observacao            || row.audit_observation || '',
+    // â”€â”€ FASE 1: campos de rastreabilidade do auditor â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    auditedByUserId:           row.audited_by_user_id   || '',
+    auditedByName:             row.audited_by_name      || '',
+    auditedByEmail:            row.audited_by_email     || '',
+    auditedAt:                 row.audited_at           || '',
+    auditObservation:          row.audit_observation    || row.observacao || '',
+    auditStatus:               row.audit_status         || row.status     || 'AUDITADO_OK',
+    auditExceededAmount:       row.audit_exceeded_amount!= null ? Number(row.audit_exceeded_amount) : 0,
+    auditAllowedAmount:        row.audit_allowed_amount != null ? Number(row.audit_allowed_amount)  : null,
+    auditEnteredAmount:        row.audit_entered_amount != null ? Number(row.audit_entered_amount)  : null,
+    origemTela:                row.origem_tela          || '',
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    criadoEm:                  row.criado_em            || '',
   };
 }
 
@@ -445,7 +469,7 @@ export async function salvarLancamentoAuditoriaSupabase(lancamento) {
 }
 
 // ============================================================
-// SOLICITAÇÕES DE PAGAMENTO — Supabase
+// SOLICITAÃ‡Ã•ES DE PAGAMENTO â€” Supabase
 // ============================================================
 
 function solicitacaoParaDb(item = {}) {
@@ -531,4 +555,300 @@ export async function atualizarSolicitacaoSupabase(id, status, resposta = '') {
     .eq('id', id);
   if (error) throw new Error(detalheErroSupabase(error));
   return { ok: true };
+}
+
+// ============================================================
+// FASE 1/2: PENDÃŠNCIAS DE AUDITORIA (audit_pendencias)
+// ============================================================
+
+export async function carregarPendenciasAuditoriaSupabase({ status, transportadora } = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = ensureClient();
+  let query = supabase
+    .from('audit_pendencias')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (status) query = query.eq('status', status);
+  if (transportadora) query = query.ilike('transportadora', `%${transportadora}%`);
+  const { data, error } = await query;
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+export async function salvarPendenciaAuditoriaSupabase(pendencia) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const row = {
+    id: pendencia.id || undefined,
+    lancamento_id: String(pendencia.lancamentoId || pendencia.lancamento_id || ''),
+    dist: String(pendencia.dist || ''),
+    dist_key: String(pendencia.distKey || pendencia.dist_key || ''),
+    cte: String(pendencia.cte || ''),
+    fatura: String(pendencia.fatura || ''),
+    transportadora: String(pendencia.transportadora || ''),
+    carga_id: String(pendencia.cargaId || pendencia.carga_id || ''),
+    valor_lancado: pendencia.valorLancado != null ? Number(pendencia.valorLancado) : null,
+    valor_autorizado: pendencia.valorAutorizado != null ? Number(pendencia.valorAutorizado) : null,
+    valor_excedente: pendencia.valorExcedente != null ? Number(pendencia.valorExcedente) : null,
+    status: String(pendencia.status || 'EXCEDEU_AGUARDANDO_OPERACAO'),
+    audited_by_user_id: String(pendencia.auditedByUserId || ''),
+    audited_by_name: String(pendencia.auditedByName || ''),
+    audited_by_email: String(pendencia.auditedByEmail || ''),
+    audited_at: pendencia.auditedAt || new Date().toISOString(),
+    observation: String(pendencia.observation || pendencia.observacao || ''),
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from('audit_pendencias').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+export async function atualizarPendenciaAuditoriaSupabase(id, status, dadosExtra = {}) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const update = {
+    status,
+    updated_at: new Date().toISOString(),
+    ...dadosExtra,
+  };
+  const { error } = await supabase.from('audit_pendencias').update(update).eq('id', id);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+// ============================================================
+// FASE 2: HISTÃ“RICO DE EVENTOS (audit_historico_eventos)
+// ============================================================
+
+export async function registrarEventoHistoricoSupabase(evento) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const row = {
+    pendencia_id: evento.pendenciaId || evento.pendencia_id || null,
+    lancamento_id: String(evento.lancamentoId || evento.lancamento_id || ''),
+    data_hora: evento.dataHora || new Date().toISOString(),
+    user_id: String(evento.userId || evento.user_id || ''),
+    user_name: String(evento.userName || evento.user_name || ''),
+    user_email: String(evento.userEmail || evento.user_email || ''),
+    acao: String(evento.acao || ''),
+    status_anterior: String(evento.statusAnterior || evento.status_anterior || ''),
+    status_novo: String(evento.statusNovo || evento.status_novo || ''),
+    comentario: String(evento.comentario || ''),
+    origem_tela: String(evento.origemTela || evento.origem_tela || ''),
+  };
+  const { error } = await supabase.from('audit_historico_eventos').insert(row);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+export async function carregarHistoricoEventosSupabase(pendenciaId) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('audit_historico_eventos')
+    .select('*')
+    .eq('pendencia_id', pendenciaId)
+    .order('data_hora', { ascending: true });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+// ============================================================
+// FASE 3: CONFIGURAÃ‡Ã•ES DE SLA (audit_sla_config)
+// ============================================================
+
+export async function carregarSlaConfigSupabase(canal = 'LOTACAO') {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('audit_sla_config')
+    .select('*')
+    .eq('canal_modulo', canal)
+    .eq('ativo', true)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data?.[0] || null;
+}
+
+export async function salvarSlaConfigSupabase(config) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const row = {
+    id: config.id || undefined,
+    nome: String(config.nome || 'PadrÃ£o'),
+    prazo_alerta_operacao_h: Number(config.prazoAlertaOperacaoH ?? config.prazo_alerta_operacao_h ?? 24),
+    prazo_escalonamento_dias: Number(config.prazoEscalonamentoDias ?? config.prazo_escalonamento_dias ?? 2),
+    emails_operacao: Array.isArray(config.emailsOperacao) ? config.emailsOperacao : [],
+    emails_gerencia: Array.isArray(config.emailsGerencia) ? config.emailsGerencia : [],
+    emails_diretoria: Array.isArray(config.emailsDiretoria) ? config.emailsDiretoria : [],
+    envio_email_ativo: Boolean(config.envioEmailAtivo ?? config.envio_email_ativo ?? true),
+    alerta_visual_ativo: Boolean(config.alertaVisualAtivo ?? config.alerta_visual_ativo ?? true),
+    mensagem_padrao_email: String(config.mensagemPadraoEmail ?? config.mensagem_padrao_email ?? ''),
+    canal_modulo: String(config.canalModulo ?? config.canal_modulo ?? 'LOTACAO'),
+    ativo: true,
+    created_by: String(config.createdBy || config.created_by || ''),
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from('audit_sla_config').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+// ============================================================
+// FASE 5: SOLICITAÃ‡Ã•ES DE INFORMAÃ‡ÃƒO (audit_solicitacoes_informacao)
+// ============================================================
+
+export async function carregarSolicitacoesInfoSupabase({ status, responsavelId } = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = ensureClient();
+  let query = supabase
+    .from('audit_solicitacoes_informacao')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (status) query = query.eq('status', status);
+  if (responsavelId) query = query.eq('responsavel_id', responsavelId);
+  const { data, error } = await query;
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+export async function salvarSolicitacaoInfoSupabase(sol) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const row = {
+    id: sol.id || undefined,
+    tipo: String(sol.tipo || 'OUTRO'),
+    chave_informada: String(sol.chaveInformada || sol.chave_informada || ''),
+    numero_informado: String(sol.numeroInformado || sol.numero_informado || ''),
+    transportadora: String(sol.transportadora || ''),
+    fatura: String(sol.fatura || ''),
+    descricao_problema: String(sol.descricaoProblema || sol.descricao_problema || ''),
+    responsavel_id: String(sol.responsavelId || sol.responsavel_id || ''),
+    responsavel_nome: String(sol.responsavelNome || sol.responsavel_nome || ''),
+    prioridade: String(sol.prioridade || 'NORMAL'),
+    prazo: sol.prazo || null,
+    status: String(sol.status || 'AGUARDANDO_INFORMACAO'),
+    aberto_por_id: String(sol.abertoPorId || sol.aberto_por_id || ''),
+    aberto_por_nome: String(sol.abertoPorNome || sol.aberto_por_nome || ''),
+    aberto_por_email: String(sol.abertoPorEmail || sol.aberto_por_email || ''),
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from('audit_solicitacoes_informacao').upsert(row, { onConflict: 'id' });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+// ============================================================
+// FASE 4: FATURAS
+// ============================================================
+
+export async function carregarFaturasSupabase({ transportadora, status, dataVencimentoInicio, dataVencimentoFim } = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = ensureClient();
+  let query = supabase.from('faturas').select('*').order('created_at', { ascending: false });
+  if (transportadora) query = query.ilike('transportadora', `%${transportadora}%`);
+  if (status) query = query.eq('status', status);
+  if (dataVencimentoInicio) query = query.gte('data_vencimento', dataVencimentoInicio);
+  if (dataVencimentoFim) query = query.lte('data_vencimento', dataVencimentoFim);
+  const { data, error } = await query.limit(500);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+export async function carregarDetalhesFaturaSupabase(faturaId) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('fatura_detalhes')
+    .select('*')
+    .eq('fatura_id', faturaId)
+    .order('numero_cte');
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+export async function salvarFaturaSupabase(fatura) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('faturas')
+    .upsert(fatura, { onConflict: 'id' })
+    .select('id')
+    .single();
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true, id: data?.id };
+}
+
+export async function salvarDetalhesFaturaSupabase(detalhes) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  // Insert em lotes
+  const CHUNK = 200;
+  for (let i = 0; i < detalhes.length; i += CHUNK) {
+    const chunk = detalhes.slice(i, i + CHUNK);
+    const { error } = await supabase.from('fatura_detalhes').upsert(chunk, { onConflict: 'id' });
+    if (error) throw new Error(detalheErroSupabase(error));
+  }
+  return { ok: true };
+}
+
+// ============================================================
+// FASE 9: TRATATIVAS
+// ============================================================
+
+export async function carregarTratativasSupabase({ status, responsavelId, tipo } = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = ensureClient();
+  let query = supabase.from('tratativas').select('*').order('created_at', { ascending: false });
+  if (status) query = query.eq('status', status);
+  if (responsavelId) query = query.eq('responsavel_id', responsavelId);
+  if (tipo) query = query.eq('tipo', tipo);
+  const { data, error } = await query.limit(500);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+export async function salvarTratativaSupabase(tratativa) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { error } = await supabase.from('tratativas').upsert(tratativa, { onConflict: 'id' });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+export async function registrarHistoricoTratativaSupabase(evento) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { error } = await supabase.from('tratativa_historico').insert(evento);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
+// ============================================================
+// FASE 10: LAUDOS DO SIMULADOR
+// ============================================================
+
+export async function salvarLaudoSimulacaoSupabase(laudo) {
+  if (!isSupabaseConfigured()) return { ok: false };
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('simulation_reports')
+    .upsert(laudo, { onConflict: 'id' })
+    .select('id')
+    .single();
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true, id: data?.id };
+}
+
+export async function carregarLaudosSimulacaoSupabase({ simulationId, carrierId, reportType } = {}) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  let query = supabase.from('simulation_reports').select('*').order('created_at', { ascending: false });
+  if (simulationId) query = query.eq('simulation_id', simulationId);
+  if (carrierId) query = query.eq('carrier_id', carrierId);
+  if (reportType) query = query.eq('report_type', reportType);
+  const { data, error } = await query.limit(100);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
 }

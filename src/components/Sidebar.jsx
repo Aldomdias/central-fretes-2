@@ -39,6 +39,10 @@ const menuPrincipal = [
   { chave: 'lotacao',            label: 'Lotação Tabelas' },
   { chave: 'lotacao-operacao',   label: 'Lotação Operação' },
   { chave: 'lotacao-auditoria',  label: 'Auditoria Lotação' },
+  { chave: 'painel-auditoria',   label: 'Painel Auditoria' },
+  { chave: 'painel-operacao',    label: 'Painel Operação' },
+  { chave: 'faturas',            label: 'Faturas / Central Audit.' },
+  { chave: 'tratativas',         label: 'Tratativas' },
   { chave: 'consulta-ibge',      label: 'Consulta IBGE' },
   { chave: 'ferramentas',        label: 'Ferramentas' },
 ];
