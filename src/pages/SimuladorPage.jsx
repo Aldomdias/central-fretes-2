@@ -3195,6 +3195,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
       };
       await salvarResultadoSimulacaoNegociacao(negociacaoSelecionadaRealizado.id, {
         ...resultadoRealizado,
+        // campos extras de rastreabilidade de base
+        ctesBrutos: resultadoRealizado?.filtros?.ctesBrutos ?? 0,
+        ctesNaMalha: resultadoRealizado?.filtros?.ctesNaMalha ?? resultadoRealizado?.ctesAnalisados ?? 0,
+        naoCalculadosPorMotivo: (function() {
+          const mapa = new Map();
+          (resultadoRealizado?.foraMalha || []).forEach(function(r) {
+            const motivo = r.motivo || 'Sem motivo';
+            mapa.set(motivo, (mapa.get(motivo) || 0) + 1);
+          });
+          return Array.from(mapa.entries()).map(function([motivo, qtd]) { return { motivo, qtd }; });
+        }()),
         laudosEmail: laudosEmailRealizado,
         laudos: prepararLaudosNegociacao(resultadoRealizado, contextoLaudos),
       });
