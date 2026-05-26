@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "patch:simulador-4-10": "node patches/implementar-fluxo-pesquisar-ctes-realizado.cjs",
+    "predev": "npm run patch:simulador-4-10",
     "dev": "vite",
+    "prebuild": "npm run patch:simulador-4-10",
     "build": "vite build",
     "preview": "vite preview"
   },
