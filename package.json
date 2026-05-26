@@ -4,10 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "patch:simulador": "node patches/corrigir-simulador-realizado-estavel.cjs && node patches/corrigir-simulador-realizado-b2c.cjs && node patches/corrigir-dropdown-realizado-por-canal.cjs",
-    "predev": "npm run patch:simulador",
     "dev": "vite",
-    "prebuild": "npm run patch:simulador",
     "build": "vite build",
     "preview": "vite preview"
   },
