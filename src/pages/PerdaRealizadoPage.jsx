@@ -168,6 +168,7 @@ export default function PerdaRealizadoPage() {
   const [pctVal, setPctVal] = useState(0);
   const [erro, setErro] = useState('');
   const [aviso, setAviso] = useState('');
+  const [excluirADefinir, setExcluirADefinir] = useState(true);
   const [info, setInfo] = useState('');
   const [resultado, setResultado] = useState(null);
   const [pagina, setPagina] = useState(0);
@@ -209,6 +210,27 @@ export default function PerdaRealizadoPage() {
       if (filtros.ufsDestino.length > 0) { const setUfs = new Set(filtros.ufsDestino.map(normUf)); realizados = realizados.filter((c) => setUfs.has(normUf(c.ufDestino))); }
       if (totalCompativel > LIMITE_DB) setAviso(`A base tem ${totalCompativel.toLocaleString('pt-BR')} CT-es compatíveis. Foram carregados ${LIMITE_DB.toLocaleString('pt-BR')}. Refine os filtros para analisar tudo.`);
       if (!realizados.length) { const detalhe = diagnostico ? ` Diagnóstico: ${diagnostico}` : totalBruto !== undefined ? ` Registros brutos consultados: ${totalBruto}.` : ''; setErro(`Nenhum CT-e encontrado no Realizado oficial para os filtros informados.${detalhe}`); setStatus('erro'); return; }
+
+      // Registros sem canal confiável — detectar antes de calcular
+      const ctesADefinir = realizados.filter((c) => {
+        const canal = String(c.canal || '').trim().toUpperCase();
+        return !canal || canal === 'A DEFINIR' || canal === 'SEM CANAL';
+      });
+      if (ctesADefinir.length > 0) {
+        const pct = ((ctesADefinir.length / realizados.length) * 100).toFixed(1);
+        setAviso(
+          `⚠ ${ctesADefinir.length.toLocaleString('pt-BR')} CT-e(s) (${pct}%) estão com canal A DEFINIR ou sem canal. ` +
+          (excluirADefinir
+            ? 'Esses registros foram excluídos da análise para evitar distorção de saving. Trate-os em Ferramentas → Pendências de Canal.'
+            : 'Esses registros estão incluídos na análise — o saving pode estar distorcido. Recomendamos tratá-los em Ferramentas → Pendências de Canal.')
+        );
+        if (excluirADefinir) {
+          realizados = realizados.filter((c) => {
+            const canal = String(c.canal || '').trim().toUpperCase();
+            return canal && canal !== 'A DEFINIR' && canal !== 'SEM CANAL';
+          });
+        }
+      }
 
       const routeKeys = extrairRouteKeys(realizados, filtros.canal);
       const lotes = chunkArray(routeKeys, ROUTE_CHUNK_SIZE);
@@ -261,7 +283,11 @@ export default function PerdaRealizadoPage() {
 
   return <div className="page-shell">
     <div className="page-header"><span className="amd-mini-brand">Realizado · Análise</span><h1>Perda por Transportadora Mais Cara</h1><p>Compara o frete pago com a opção mais barata ativa disponível nas tabelas. O processamento é feito por lotes de rotas para evitar timeout.</p></div>
-    <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div><div className="form-grid three" style={{ marginBottom: '1rem' }}><label className="field">Data início<input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} /></label><label className="field">Data fim<input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} /></label><label className="field">Canal<select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}><option value="">Todos os canais</option>{CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><label className="field">Transportadora realizada<input placeholder="Nome da transportadora que carregou" value={filtros.transportadoraRealizada} onChange={(e) => set('transportadoraRealizada', e.target.value)} /></label><label className="field">Cidade de origem<input placeholder="Ex: São Paulo, Campinas..." value={filtros.cidadeOrigem} onChange={(e) => set('cidadeOrigem', e.target.value)} /></label></div><div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}><PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} /></div><div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}><PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} /></div><div style={{ marginTop: '1rem' }}><button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>{processando ? '⟳ Processando...' : '▶ Processar'}</button>{processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}</div></div>
+    <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div><div className="form-grid three" style={{ marginBottom: '1rem' }}><label className="field">Data início<input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} /></label><label className="field">Data fim<input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} /></label><label className="field">Canal<select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}><option value="">Todos os canais</option>{CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><label className="field">Transportadora realizada<input placeholder="Nome da transportadora que carregou" value={filtros.transportadoraRealizada} onChange={(e) => set('transportadoraRealizada', e.target.value)} /></label><label className="field">Cidade de origem<input placeholder="Ex: São Paulo, Campinas..." value={filtros.cidadeOrigem} onChange={(e) => set('cidadeOrigem', e.target.value)} /></label></div><div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}><PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} /></div><div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}><PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} /></div><div style={{ marginTop: '1rem' }}><button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>{processando ? '⟳ Processando...' : '▶ Processar'}</button>
+              <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, color:'#555', marginLeft:8, cursor:'pointer' }}>
+                <input type="checkbox" checked={excluirADefinir} onChange={(e) => setExcluirADefinir(e.target.checked)} />
+                Excluir registros sem canal (A DEFINIR) da análise
+              </label>{processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}</div></div>
     {info && !processando && <div className="hint-box compact" style={{ marginBottom: '0.75rem', background: '#f0f7ff', border: '1px solid #c8deff' }}>ℹ️ {info}</div>}{aviso && <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '0.75rem' }}>⚠️ {aviso}</div>}{erro && <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '0.75rem' }}>⚠️ {erro}</div>}
     {resultado && <><div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}><Card label="CT-es comparáveis" valor={resultado.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub="com tabela ativa e prazo" /><Card label="CT-es com perda" valor={resultado.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultado.totalCtes > 0 ? (resultado.ctesComPerda / resultado.totalCtes) * 100 : 0)} cor="#e67e22" /><Card label="Perda total" valor={fmt(resultado.perdaTotal)} cor="#9b1111" destaque={resultado.perdaTotal > 0} /><Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" /><Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" /><Card label="Inativas bloqueadas" valor={(resultado.inativas || 0).toLocaleString('pt-BR')} sub={`potencial vs ativa: ${fmt(resultado.economiaInativaTotal)}`} cor="#f59e0b" /><Card label="Sem comparação" valor={(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')} sub="sem tabela, prazo ou realizada ativa" cor="#888" /></div>
     <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem', flexWrap: 'wrap' }}>{[{ id: 'origens', label: `Top 10 Origens (${resultado.top10Origens.length})` }, { id: 'transportadoras', label: `Por Transportadora (${resultado.porTransportadora.length})` }, { id: 'detalhes', label: `Detalhes (${detalhesVisiveis.length.toLocaleString('pt-BR')})` }, { id: 'inativas', label: `Inativas (${inativas.length.toLocaleString('pt-BR')})` }, { id: 'sem-malha', label: `Sem comparação (${resultado.semComparacao || resultado.semMalha || 0})` }].map((a) => <button key={a.id} onClick={() => { setAba(a.id); setPagina(0); }} style={{ padding: '4px 14px', border: 'none', borderRadius: '4px 4px 0 0', cursor: 'pointer', background: aba === a.id ? '#9153F0' : '#f0f0f0', color: aba === a.id ? '#fff' : '#555', fontWeight: aba === a.id ? 700 : 400, fontSize: '0.85rem' }}>{a.label}</button>)}</div>

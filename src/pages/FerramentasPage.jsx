@@ -1018,7 +1018,24 @@ export default function FerramentasPage({ transportadoras = [] }) {
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
 
       {sessao?.perfil === 'GESTAO' && (
-        <SlaAuditoriaConfig canal="LOTACAO" />
+        <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+          <button
+            type="button"
+            onClick={() => toggleAba('sla')}
+            style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='sla'?'1px solid var(--border-soft)':'none'}}
+          >
+            <div>
+              <div className="panel-title" style={{margin:0}}>Configuração de SLA</div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Prazos, alertas e e-mails de auditoria - Módulo LOTACAO</div>
+            </div>
+            <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='sla'?'▴':'▾'}</span>
+          </button>
+          {abaAberta === 'sla' && (
+            <div style={{padding:'16px 20px'}}>
+              <SlaAuditoriaConfig canal="LOTACAO" />
+            </div>
+          )}
+        </div>
       )}
 
       {/* Pendencias de canal */}
