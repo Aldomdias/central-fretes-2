@@ -12,19 +12,15 @@ function writeIfChanged(file, src, original, label) {
   }
 }
 
-function replaceFunction(src, name, replacement) {
-  const start = src.indexOf(`function ${name}(`);
-  if (start < 0) return src;
-  let i = src.indexOf('{', start);
-  if (i < 0) return src;
-  let depth = 0;
-  for (; i < src.length; i += 1) {
-    if (src[i] === '{') depth += 1;
-    if (src[i] === '}') {
-      depth -= 1;
-      if (depth === 0) return src.slice(0, start) + replacement + src.slice(i + 1);
-    }
+function replaceRangeByMarkers(src, startMarker, endMarker, replacement, label) {
+  const start = src.indexOf(startMarker);
+  const end = start >= 0 ? src.indexOf(endMarker, start) : -1;
+  if (start >= 0 && end > start) {
+    changed = true;
+    console.log('OK ' + label);
+    return src.slice(0, start) + replacement + '\n\n' + src.slice(end);
   }
+  console.warn('WARN ' + label);
   return src;
 }
 
@@ -44,7 +40,7 @@ function insertBefore(src, marker, block, label) {
 const servicePath = path.join(process.cwd(), 'src/services/tabelasNegociacaoService.js');
 let service = fs.readFileSync(servicePath, 'utf8');
 const originalService = service;
-service = replaceFunction(service, 'cotacaoLaudoServico', `function cotacaoLaudoServico(item = {}) {
+const cotacaoNova = `function cotacaoLaudoServico(item = {}) {
   const candidatos = [
     item.cotacao,
     item.cotacaoFinal,
@@ -61,9 +57,10 @@ service = replaceFunction(service, 'cotacaoLaudoServico', `function cotacaoLaudo
   const bruto = texto(candidatos.find((v) => texto(v))) || 'Destino';
   const partes = bruto.split('|').map((p) => texto(p)).filter(Boolean);
   const base = partes[0] || bruto;
-  return base.replace(/\s+\d+[,.]?\d*\s*A\s*\d+[,.]?\d*\s*KG.*$/i, '').trim() || base;
-}`);
-writeIfChanged(servicePath, service, originalService, 'cotação salva sem faixa embutida');
+  return base.replace(/ [0-9][0-9.,]* *A *[0-9][0-9.,]* *KG.*$/i, '').trim() || base;
+}`;
+service = replaceRangeByMarkers(service, 'function cotacaoLaudoServico', 'function montarAnaliseFaixasB2CLaudoServico', cotacaoNova, 'cotação salva sem faixa embutida');
+writeIfChanged(servicePath, service, originalService, 'service do laudo');
 
 // 2) Faz o laudo derivar visão por cotação e por destino a partir da análise de faixas salva.
 const utilPath = path.join(process.cwd(), 'src/utils/laudosRodadasNegociacaoHtml.js');
