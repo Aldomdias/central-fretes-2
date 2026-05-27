@@ -32,14 +32,15 @@ function replaceRange(src, startMarker, endMarker, block, label) {
 const calcPath = path.join(process.cwd(), 'src/utils/calculoFrete.js');
 let calc = fs.readFileSync(calcPath, 'utf8');
 const calcOld = calc;
-calc = rep(calc,
-`      tipoCalculo: calculo.tipoCalculo,
-      faixaPeso: cotacao ? \`${toNumber(cotacao.pesoMin)} até ${cotacao.pesoMax ?? cotacao.pesoLimite ?? 'sem limite'}\` : 'Sem cotação',`,
-`      tipoCalculo: calculo.tipoCalculo,
-      rotaCotacao: cotacao?.rota || rota?.nomeRota || '',
-      cotacaoComercial: cotacao?.rota || rota?.nomeRota || '',
-      faixaPeso: cotacao ? \`${toNumber(cotacao.pesoMin)} até ${cotacao.pesoMax ?? cotacao.pesoLimite ?? 'sem limite'}\` : 'Sem cotação',`,
-'preserva rota comercial no detalhe do frete');
+if (!calc.includes("rotaCotacao: cotacao?.rota || rota?.nomeRota || ''")) {
+  calc = rep(calc,
+    '      tipoCalculo: calculo.tipoCalculo,\n',
+    "      tipoCalculo: calculo.tipoCalculo,\n      rotaCotacao: cotacao?.rota || rota?.nomeRota || '',\n      cotacaoComercial: cotacao?.rota || rota?.nomeRota || '',\n",
+    'preserva rota comercial no detalhe do frete'
+  );
+} else {
+  console.log('SKIP preserva rota comercial no detalhe do frete');
+}
 save(calcPath, calc, calcOld, 'calculoFrete');
 
 // 2) Simulador: leva a rota comercial para cada CT-e detalhado salvo na rodada.
