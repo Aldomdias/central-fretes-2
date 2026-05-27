@@ -9,8 +9,8 @@ function rep(a,b,msg){
   console.warn('WARN '+msg);
 }
 
-rep(`  const [resultadoRealizado, setResultadoRealizado] = useState(null);`, `  const [resultadoRealizado, setResultadoRealizado] = useState(null);
-  const [baseRealizadoPesquisada, setBaseRealizadoPesquisada] = useState(null);`, 'estado base realizada pesquisada');
+// O estado baseRealizadoPesquisada já é criado pelo patch 4.10.
+// A 4.17 apenas reutiliza esse estado para recalcular com a mesma base.
 
 rep(`  const carregarNegociacoesSimulador = async () => {
     setCarregandoNegociacoesSimulador(true);`, `  const carregarNegociacoesSimulador = async (opcoes = {}) => {
