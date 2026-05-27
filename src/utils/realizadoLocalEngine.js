@@ -1,6 +1,7 @@
 import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine';
 import { toNumberRealizado, normalizeTextRealizado } from './realizadoCtes';
 import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete } from './gradeFreteConfig';
+import { CANAL_A_DEFINIR } from './canalTransportadora';
 
 const CANAIS_B2C = [
   'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
@@ -83,6 +84,7 @@ function sleepFrame() {
 export function categoriaCanalRealizado(value) {
   const canal = normalize(value);
   if (!canal) return '';
+  if (canal.includes('A DEFINIR') || canal.includes('SEM TABELA') || canal.includes('SEM VINCULO')) return CANAL_A_DEFINIR;
   if (canal.includes('INTERCOMPANY')) return 'INTERCOMPANY';
   if (canal.includes('REVERSA')) return 'REVERSA';
   if (CANAIS_ATACADO.some((item) => canal === item || canal.includes(item))) return 'ATACADO';
@@ -556,21 +558,25 @@ function getCotacao(origem, rota, peso) {
 
 function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }) {
   const pesoDeclarado = toNumber(cte.pesoDeclarado);
-  // Importante: não usar peso cubado/cubagem do realizado para definir o peso de cálculo,
-  // porque essa cubagem vem inconsistente em algumas bases. O peso base é o peso real/declarado
-  // e a cubagem aplicada vem exclusivamente da grade configurada.
+  // Regra alinhada ao Simulador Realizado: cubagem operacional so entra no
+  // calculo quando veio do Tracking. A grade fica como fallback de simulacao.
   const pesoInformado = pesoDeclarado > 0 ? pesoDeclarado : Math.max(toNumber(cte.peso), 0);
   const pesoCubadoOriginal = toNumber(cte.pesoCubado);
-  const cubagemRealizada = Math.max(
+  const cubagemInformada = Math.max(
     toNumber(cte.cubagem),
+    toNumber(cte.cubagemTotal),
+    toNumber(cte.cubagem_total),
     toNumber(cte.metrosCubicos),
+    toNumber(cte.metros_cubicos),
     toNumber(cte.m3),
     toNumber(cte.volumeCubico)
   );
+  const cubagemVeioDoTracking = Boolean(cte.trackingMatch || cte.trackingOrigemVinculo || cte.origemCubagem === 'tracking');
+  const cubagemRealizada = cubagemVeioDoTracking ? cubagemInformada : 0;
   const linhaGrade = encontrarLinhaGradePorPeso(gradeCanal, pesoInformado || pesoDeclarado || toNumber(cte.peso));
   const cubagemGrade = toNumber(linhaGrade?.cubagem);
-  const cubagemAplicada = cubagemGrade;
-  const origemCubagem = cubagemGrade > 0 ? 'grade' : 'sem cubagem';
+  const cubagemAplicada = cubagemRealizada > 0 ? cubagemRealizada : cubagemGrade;
+  const origemCubagem = cubagemRealizada > 0 ? 'tracking' : cubagemGrade > 0 ? 'grade' : 'sem cubagem';
   const fatorCubagem = toNumber(
     origem.generalidades?.cubagem ??
     origem.generalidades?.fatorCubagem ??
@@ -596,7 +602,7 @@ function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }
   };
 }
 
-function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
+export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
   const pesos = resolverPesoCubagemRealizado({ cte, origem, gradeCanal });
   const peso = pesos.pesoConsiderado;
   const valorNF = toNumber(cte.valorNF);

@@ -313,6 +313,7 @@ function normalizeRegistro(row = {}, arquivoOrigem = '') {
     volume: toNumberRealizado(item.volume),
     canais: normalizeTextRealizado(item.canais),
     canalVendas: normalizeTextRealizado(item.canalVendas),
+    canalOriginal: normalizeTextRealizado(item.canalVendas || item.canal || item.canais),
     canal: normalizeCanal(item),
     valorNF: toNumberRealizado(item.valorNF),
     percentualFrete: toNumberRealizado(item.percentualFrete),

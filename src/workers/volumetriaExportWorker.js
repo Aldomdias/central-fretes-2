@@ -410,6 +410,7 @@ function formatarPesoFaixa(value = 0) {
 }
 
 function faixaVolumetria(canal, peso, grade = {}) {
+  if (String(canal || '').toUpperCase() === 'A DEFINIR') return '';
   const canalNorm = String(canal || '').toUpperCase() === 'B2C' ? 'B2C' : 'ATACADO';
   const gradeCanal = (Array.isArray(grade[canalNorm]) ? grade[canalNorm] : [])
     .map((item) => ({ ...item, peso: toNumber(item?.peso) }))

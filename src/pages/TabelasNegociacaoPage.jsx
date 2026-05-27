@@ -1917,7 +1917,12 @@ export default function TabelasNegociacaoPage() {
                     {simulacoes.slice(0, 4).map(function(rodada) {
                       var ind = rodada.indicadores || {};
                       return (
-                        <div className="summary-card" key={rodada.id || rodada.criado_em}>
+                        <div className="summary-card" key={rodada.id || rodada.criado_em} style={rodada.divergencia_base && rodada.divergencia_base.divergiu ? { borderColor: '#dc2626', borderWidth: 2 } : {}}>
+                        {rodada.divergencia_base && rodada.divergencia_base.divergiu ? (
+                          <div style={{ fontSize: 11, color: '#dc2626', marginBottom: 4, fontWeight: 600 }}>
+                            ⚠ Base diverge da 1ª rodada ({(rodada.divergencia_base.dif_ctes > 0 ? '+' : '') + rodada.divergencia_base.dif_ctes} CT-es)
+                          </div>
+                        ) : null}
                           <span>{rodada.rodada}ª rodada</span>
                           <strong>{formatPercent(ind.aderencia || 0)}</strong>
                           <small>Saving mês: {formatMoney(ind.saving_mes || 0)}</small>
@@ -1939,6 +1944,8 @@ export default function TabelasNegociacaoPage() {
                         <th>Faturamento mês/ano</th>
                         <th>Pedidos/Volumes</th>
                         <th>Frete % NF</th>
+                        <th>Base CT-es</th>
+                        <th>Não calc.</th>
                         <th>Observação</th>
                       </tr>
                     </thead>
@@ -1957,6 +1964,22 @@ export default function TabelasNegociacaoPage() {
                             <td>{isSim ? <span>{formatMoney(ind.saving_mes || 0)}<br /><small>{formatMoney(ind.saving_ano || 0)}</small></span> : '-'}</td>
                             <td>{isSim ? <span>{formatMoney(ind.faturamento_mes || 0)}<br /><small>{formatMoney(ind.faturamento_ano || 0)}</small></span> : '-'}</td>
                             <td>{isSim ? <span>{formatNumber(ind.pedidos_dia || 0, 1)} NF/dia<br /><small>{formatNumber(ind.volumes_dia || 0, 1)} vol/dia</small></span> : <span>{imp.rotas || 0} rotas · {imp.cotacoes || 0} fretes<br /><small>Ativo: {salvos.rotas || 0} rotas · {salvos.cotacoes || 0} fretes</small></span>}</td>
+                            <td style={{ fontSize: 12 }}>{(function() {
+                                var b = rodada.base || {};
+                                var n = b.ctes_na_malha || b.ctes_analisados || ind.ctes_analisados || '-';
+                                var div = rodada.divergencia_base;
+                                return <span>
+                                  {n}
+                                  {div && div.divergiu ? <span title={'Base divergiu da 1ª rodada: ' + (div.dif_ctes > 0 ? '+' : '') + div.dif_ctes + ' CT-es'} style={{ color: '#dc2626', marginLeft: 4, fontWeight: 700, cursor: 'help' }}>⚠</span> : null}
+                                </span>;
+                              }())}</td>
+                            <td style={{ fontSize: 12 }}>{(function() {
+                                var lista = rodada.nao_calculados_por_motivo || [];
+                                var total = lista.reduce(function(s, x) { return s + (x.qtd || 0); }, 0);
+                                if (!total) return <span style={{ color: '#94a3b8' }}>—</span>;
+                                var titulo = lista.map(function(x) { return x.motivo + ': ' + x.qtd; }).join('\n');
+                                return <span title={titulo} style={{ cursor: 'help', color: '#d97706' }}>{total}</span>;
+                              }())}</td>
                             <td>{isSim ? <span>Real: {formatPercent(ind.percentual_frete_realizado || 0)}<br /><small>Tabela: {formatPercent(ind.percentual_frete_simulado || 0)}</small></span> : '-'}</td>
                             <td style={{ fontSize: 12, color: '#475569' }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
                           </tr>

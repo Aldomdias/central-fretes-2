@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
+import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
+import { carregarSessao } from '../utils/authLocal';
 
 function normalizarNomeTransp(nome = '') {
   return String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -23,6 +25,11 @@ import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import { relacionarTrackingComCtes } from '../utils/trackingCteLink';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import {
+  CANAIS_PARAMETRIZAVEIS,
+  definirCanalTransportadora,
+  listarPendenciasCanalTransportadora,
+} from '../services/canalTransportadoraService';
+import {
   carregarGradeFrete,
   salvarGradeFrete,
   restaurarGradeFretePadrao,
@@ -44,7 +51,7 @@ const DEFAULT_CONFIG = {
   somenteComCteVinculado: true,
 };
 
-const CANAIS = ['', 'ATACADO', 'B2C'];
+const CANAIS = ['', 'ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA', 'A DEFINIR'];
 const CANAIS_GRADE = ['ATACADO', 'B2C'];
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 
@@ -246,6 +253,7 @@ function cubagemTotalTracking(row = {}) {
 }
 
 function faixaVolumetria(canal, peso, grade = {}) {
+  if (String(canal || '').toUpperCase() === 'A DEFINIR') return '';
   const canalNorm = String(canal || '').toUpperCase() === 'B2C' ? 'B2C' : 'ATACADO';
   const linha = encontrarLinhaGradePorPeso(grade[canalNorm] || [], peso);
   if (!linha) return '';
@@ -562,7 +570,23 @@ function normalizarValorInput(value) {
   return String(value ?? '').replace(',', '.');
 }
 
+function fmtNumero(value, casas = 0) {
+  return Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
+}
+
+function fmtMoeda(value) {
+  return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function fmtData(value) {
+  if (!value) return '-';
+  const s = String(value).slice(0, 10);
+  const [y, m, d] = s.split('-');
+  return y && m && d ? `${d}/${m}/${y}` : s;
+}
+
 export default function FerramentasPage({ transportadoras = [] }) {
+  const sessao = carregarSessao();
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
@@ -570,6 +594,51 @@ export default function FerramentasPage({ transportadoras = [] }) {
   const [grade, setGrade] = useState(() => carregarGradeFrete());
   const [canalGrade, setCanalGrade] = useState('ATACADO');
   const [atualizandoCubagemGrade, setAtualizandoCubagemGrade] = useState(false);
+  const [pendenciasCanal, setPendenciasCanal] = useState([]);
+  const [carregandoPendenciasCanal, setCarregandoPendenciasCanal] = useState(false);
+  const [salvandoCanalPendencia, setSalvandoCanalPendencia] = useState('');
+
+  const resumoPendenciasCanal = pendenciasCanal.reduce((acc, item) => {
+    acc.transportadoras += 1;
+    acc.ctes += Number(item.quantidadeCtes || 0);
+    acc.tracking += Number(item.quantidadeTracking || 0);
+    acc.valorCte += Number(item.valorTotalCte || 0);
+    return acc;
+  }, { transportadoras: 0, ctes: 0, tracking: 0, valorCte: 0 });
+
+  async function carregarPendenciasCanal() {
+    setCarregandoPendenciasCanal(true);
+    setErro('');
+    try {
+      const lista = await listarPendenciasCanalTransportadora();
+      setPendenciasCanal(lista);
+      setMensagem(`${fmtNumero(lista.length)} transportadora(s) com pendencia de canal carregada(s).`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao carregar pendencias de canal.');
+    } finally {
+      setCarregandoPendenciasCanal(false);
+    }
+  }
+
+  async function definirCanalPendencia(item, canal) {
+    const ok = window.confirm(`Definir canal ${canal} para ${item.transportadora}? Isso atualizara CT-es e Tracking atuais com canal A DEFINIR.`);
+    if (!ok) return;
+    setSalvandoCanalPendencia(`${item.transportadora}|${canal}`);
+    setErro('');
+    try {
+      const resultado = await definirCanalTransportadora({
+        transportadora: item.transportadora,
+        canal,
+        usuario: sessao?.email || sessao?.nome || '',
+      });
+      setMensagem(`Canal ${canal} salvo para ${item.transportadora}. CT-es atualizados: ${fmtNumero(resultado?.ctes_atualizados || 0)}. Tracking atualizado: ${fmtNumero(resultado?.tracking_atualizados || 0)}.`);
+      await carregarPendenciasCanal();
+    } catch (error) {
+      setErro(error.message || 'Erro ao definir canal da transportadora.');
+    } finally {
+      setSalvandoCanalPendencia('');
+    }
+  }
 
   const alterar = (campo, valor) => setConfig((prev) => ({ ...prev, [campo]: valor }));
 
@@ -947,6 +1016,111 @@ export default function FerramentasPage({ transportadoras = [] }) {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
+
+      {sessao?.perfil === 'GESTAO' && (
+        <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+          <button
+            type="button"
+            onClick={() => toggleAba('sla')}
+            style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='sla'?'1px solid var(--border-soft)':'none'}}
+          >
+            <div>
+              <div className="panel-title" style={{margin:0}}>Configuração de SLA</div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Prazos, alertas e e-mails de auditoria - Módulo LOTACAO</div>
+            </div>
+            <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='sla'?'▴':'▾'}</span>
+          </button>
+          {abaAberta === 'sla' && (
+            <div style={{padding:'16px 20px'}}>
+              <SlaAuditoriaConfig canal="LOTACAO" />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pendencias de canal */}
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => { toggleAba('pendencias-canal'); if (abaAberta !== 'pendencias-canal' && !pendenciasCanal.length) carregarPendenciasCanal(); }} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='pendencias-canal'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>Pendencias de Canal</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Transportadoras com CT-es ou Tracking em A DEFINIR</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='pendencias-canal'?'△':'▽'}</span>
+        </button>
+        {abaAberta === 'pendencias-canal' && (
+          <div style={{padding:'16px 20px',display:'grid',gap:14}}>
+            <div className="summary-strip" style={{flexWrap:'wrap',gap:10}}>
+              <div className="summary-card"><span>Transportadoras pendentes</span><strong>{fmtNumero(resumoPendenciasCanal.transportadoras)}</strong><small>A DEFINIR</small></div>
+              <div className="summary-card"><span>CT-es pendentes</span><strong>{fmtNumero(resumoPendenciasCanal.ctes)}</strong><small>realizado_local_ctes</small></div>
+              <div className="summary-card"><span>Tracking pendente</span><strong>{fmtNumero(resumoPendenciasCanal.tracking)}</strong><small>tracking_rows</small></div>
+              <div className="summary-card"><span>Valor CT-e afetado</span><strong>{fmtMoeda(resumoPendenciasCanal.valorCte)}</strong><small>canal a definir</small></div>
+            </div>
+            <div className="actions-right">
+              <button className="btn-secondary" type="button" onClick={carregarPendenciasCanal} disabled={carregandoPendenciasCanal}>
+                {carregandoPendenciasCanal ? 'Carregando...' : 'Recarregar pendencias'}
+              </button>
+            </div>
+            <div className="hint-box compact">
+              Esta lista vem da view <code>pendencias_canal_transportadora</code>. Ao definir o canal, a parametrizacao fica salva e os registros atuais em A DEFINIR sao atualizados.
+            </div>
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead>
+                  <tr>
+                    <th>Transportadora</th>
+                    <th>Motivo</th>
+                    <th>Canal original</th>
+                    <th>Registros</th>
+                    <th>CT-es</th>
+                    <th>Tracking</th>
+                    <th>Valor CT-e</th>
+                    <th>Peso</th>
+                    <th>Ultima ocorrencia</th>
+                    <th>Acoes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendenciasCanal.map((item) => (
+                    <tr key={item.transportadoraNormalizada || item.transportadora}>
+                      <td><strong>{item.transportadora}</strong><div style={{fontSize:11,color:'var(--muted)'}}>{item.basesAfetadas}</div></td>
+                      <td>{item.motivo}</td>
+                      <td>{item.canalOriginal || '-'}</td>
+                      <td>{fmtNumero(item.quantidadeTotal)}</td>
+                      <td>{fmtNumero(item.quantidadeCtes)}</td>
+                      <td>{fmtNumero(item.quantidadeTracking)}</td>
+                      <td>{fmtMoeda(item.valorTotalCte)}</td>
+                      <td>{fmtNumero(item.pesoTotal, 2)} kg</td>
+                      <td>{fmtData(item.ultimaOcorrencia)}</td>
+                      <td>
+                        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                          {CANAIS_PARAMETRIZAVEIS.map((canal) => {
+                            const key = `${item.transportadora}|${canal}`;
+                            return (
+                              <button
+                                key={canal}
+                                className="btn-secondary"
+                                type="button"
+                                style={{minHeight:28,padding:'0 8px',fontSize:11}}
+                                disabled={salvandoCanalPendencia === key}
+                                onClick={() => definirCanalPendencia(item, canal)}
+                              >
+                                {salvandoCanalPendencia === key ? 'Salvando...' : canal}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!pendenciasCanal.length && (
+                    <tr><td colSpan="10">{carregandoPendenciasCanal ? 'Carregando pendencias...' : 'Nenhuma pendencia de canal encontrada.'}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Grade de peso */}
       <div className="panel-card" style={{padding:0,overflow:'hidden'}}>

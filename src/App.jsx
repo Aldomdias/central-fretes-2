@@ -20,6 +20,11 @@ import ReajustesPage from './pages/ReajustesPage';
 import CtePage from './pages/CtePage';
 import TabelasNegociacaoPage from './pages/TabelasNegociacaoPage';
 import AuditoriaCtePage from './pages/AuditoriaCtePage';
+import FaturasPage from './pages/FaturasPage';
+import TratativasPage from './pages/TratativasPage';
+import PainelAuditoriaPage from './pages/PainelAuditoriaPage';
+import PainelOperacaoPage from './pages/PainelOperacaoPage';
+import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
@@ -39,6 +44,10 @@ function primeiraPaginaPermitida(usuario) {
     'lotacao',
     'lotacao-operacao',
     'lotacao-auditoria',
+    'painel-auditoria',
+    'painel-operacao',
+    'faturas',
+    'tratativas',
     'consulta-ibge',
     'ferramentas',
     'transportadoras',
@@ -213,6 +222,24 @@ export default function App() {
 
   if (paginaAtual === 'lotacao-auditoria') {
     content = <LotacaoAuditoriaPage />;
+  }
+
+  if (paginaAtual === 'painel-auditoria') {
+    content = <PainelAuditoriaPage />;
+  }
+
+  if (paginaAtual === 'painel-operacao') {
+    content = <PainelOperacaoPage />;
+  }
+
+  if (paginaAtual === 'faturas') {
+    content = <FaturasPage />;
+  }
+
+  if (paginaAtual === 'tratativas') {
+    content = <TratativasPage />;
+  } else if (paginaAtual === 'perda-realizado') {
+    content = <PerdaRealizadoPage />;
   }
 
   if (paginaAtual === 'consulta-ibge') {

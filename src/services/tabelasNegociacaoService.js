@@ -756,6 +756,46 @@ export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
 }
 
 
+
+// ─── helpers de comparação de base entre rodadas ─────────────────────────────
+
+function montarFingerprintBase(resultado = {}) {
+  return {
+    ctes_brutos: inteiro(resultado.filtros?.ctesBrutos ?? resultado.ctesBrutos ?? 0),
+    ctes_na_malha: inteiro(resultado.filtros?.ctesNaMalha ?? resultado.ctesNaMalha ?? resultado.ctesAnalisados ?? 0),
+    ctes_analisados: inteiro(resultado.ctesAnalisados ?? 0),
+    frete_realizado: numero(resultado.freteRealizado ?? 0),
+    valor_nf: numero(resultado.valorNF ?? 0),
+    filtros: {
+      inicio: String(resultado.filtros?.inicio ?? ''),
+      fim: String(resultado.filtros?.fim ?? ''),
+      canal: String(resultado.filtros?.canal ?? ''),
+      origem: String(resultado.filtros?.origem ?? ''),
+      ufDestino: Array.isArray(resultado.filtros?.ufDestino) ? resultado.filtros.ufDestino : [],
+    },
+  };
+}
+
+function calcularDivergenciaBase(atual = {}, inicial = {}) {
+  if (!inicial || !Object.keys(inicial).length) return null;
+
+  const difCtes = inteiro(atual.ctes_na_malha) - inteiro(inicial.ctes_na_malha);
+  const difFrete = numero(atual.frete_realizado) - numero(inicial.frete_realizado);
+  const difNf = numero(atual.valor_nf) - numero(inicial.valor_nf);
+  const divergiu = Math.abs(difCtes) > 0 || Math.abs(difFrete) > 0.01 || Math.abs(difNf) > 0.01;
+
+  return {
+    divergiu,
+    dif_ctes: difCtes,
+    dif_frete_realizado: difFrete,
+    dif_valor_nf: difNf,
+    base_inicial_ctes: inteiro(inicial.ctes_na_malha),
+    base_atual_ctes: inteiro(atual.ctes_na_malha),
+    base_inicial_frete: numero(inicial.frete_realizado),
+    base_atual_frete: numero(atual.frete_realizado),
+  };
+}
+// ─────────────────────────────────────────────────────────────────────────────
 export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const supabase = supabaseOrThrow();
 
@@ -777,6 +817,17 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const historicoAnterior = getHistoricoRodadas(tabelaAtual);
   const rodadaAtual = inteiro(resumoAnterior.rodada_atual || 1) || 1;
   const agora = dataISO();
+
+  const fingerprintAtual = montarFingerprintBase(resultado);
+  const baseInicialExistente = tabelaAtual.base_comparacao_inicial || null;
+  const divergenciaBase = calcularDivergenciaBase(fingerprintAtual, baseInicialExistente);
+  const naoCalculadosPorMotivo = Array.isArray(resultado.naoCalculadosPorMotivo)
+    ? resultado.naoCalculadosPorMotivo
+    : [];
+  const deveGravarBaseInicial = !baseInicialExistente;
+  const baseInicialParaGravar = deveGravarBaseInicial
+    ? { ...fingerprintAtual, registrada_em: agora, rodada: rodadaAtual }
+    : undefined;
 
   const resumoResultado = {
     salvo_em: agora,
@@ -866,6 +917,9 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       frete_capturado: numero(resultado.freteCapturadoRealizado ?? 0),
       ctes_capturados: inteiro(resultado.ctesCapturadosDeOutras ?? 0),
     },
+    base: fingerprintAtual,
+    divergencia_base: divergenciaBase,
+    nao_calculados_por_motivo: naoCalculadosPorMotivo,
   };
 
   const historicoAtualizado = historicoAnterior.concat([entradaRodada]).slice(-30);
@@ -930,6 +984,9 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     ),
 
     incluir_simulacao: false,
+
+    // base de comparação (só grava na primeira simulação)
+    ...(baseInicialParaGravar ? { base_comparacao_inicial: baseInicialParaGravar } : {}),
 
     resumo_simulacao: {
       ...resumoAnterior,
