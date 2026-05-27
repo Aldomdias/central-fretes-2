@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "patch:simulador-4-10": "node patches/implementar-fluxo-pesquisar-ctes-realizado.cjs && node patches/corrigir-feedback-calculo-origem-e-volumes-realizado.cjs && node patches/corrigir-indicadores-ganhos-negociacao.cjs && node patches/corrigir-volumes-pedidos-ganhos-service.cjs",
+    "patch:simulador-4-10": "node patches/implementar-fluxo-pesquisar-ctes-realizado.cjs && node patches/corrigir-feedback-calculo-origem-e-volumes-realizado.cjs && node patches/corrigir-indicadores-ganhos-negociacao.cjs && node patches/corrigir-volumes-pedidos-ganhos-service.cjs && node patches/excluir-rodada-negociacao.cjs",
     "predev": "npm run patch:simulador-4-10",
     "dev": "vite",
     "prebuild": "npm run patch:simulador-4-10",
