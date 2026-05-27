@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 let changed = false;
+
 function writeIfChanged(file, src, original, label) {
   if (src !== original) {
     fs.writeFileSync(file, src, 'utf8');
@@ -10,6 +11,7 @@ function writeIfChanged(file, src, original, label) {
     console.log('SKIP ' + label);
   }
 }
+
 function replaceFunction(src, name, replacement) {
   const start = src.indexOf(`function ${name}(`);
   if (start < 0) return src;
@@ -25,6 +27,7 @@ function replaceFunction(src, name, replacement) {
   }
   return src;
 }
+
 function insertBefore(src, marker, block, label) {
   if (src.includes(block.trim().split('\n')[0])) return src;
   const idx = src.indexOf(marker);
@@ -37,7 +40,7 @@ function insertBefore(src, marker, block, label) {
   return src.slice(0, idx) + block + '\n' + src.slice(idx);
 }
 
-// 1) Ajusta a cotação salva: remover a parte da faixa do texto da tabela.
+// 1) Ajusta a cotação salva: remove a parte da faixa do texto da tabela.
 const servicePath = path.join(process.cwd(), 'src/services/tabelasNegociacaoService.js');
 let service = fs.readFileSync(servicePath, 'utf8');
 const originalService = service;
@@ -210,7 +213,7 @@ const tabelaFaixas = `function TabelaFaixas({ titulo, linhas = [] }) {
                 <td className="right">{percentual(item.aderencia)}</td>
                 <td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td>
                 <td className="right">{percentual(item.ajusteMedio)}</td>
-                <td><span className={\`laudo-rodadas-badge ${prioridadeClasse(item.prioridade)}\`}>{item.prioridade || 'BAIXA'}</span></td>
+                <td><span className={'laudo-rodadas-badge ' + prioridadeClasse(item.prioridade)}>{item.prioridade || 'BAIXA'}</span></td>
               </tr>
             ))}
             {!linhas.length ? <tr><td colSpan="11">Sem leitura suficiente por faixa neste recorte.</td></tr> : null}
