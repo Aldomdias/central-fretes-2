@@ -2,16 +2,9 @@
 /**
  * Prompt 4.15 — Excluir registro de rodada/simulação da negociação
  *
- * Objetivo:
- * - Permitir apagar uma simulação antiga salva com indicadores incorretos, por exemplo volumes antigos.
- * - Recalcular os indicadores da negociação com base na última simulação restante.
- * - Manter a importação/rodada aberta quando o usuário apagar apenas a linha de SIMULAÇÃO.
- *
- * Regra:
- * - Cada linha do histórico pode ser excluída com confirmação.
- * - Ao excluir uma SIMULAÇÃO, remove somente aquele registro do histórico.
- * - Os cards principais passam a refletir a última simulação restante.
- * - Se não houver simulação restante, zera os indicadores projetados, mas mantém o histórico/importações.
+ * Permite remover uma simulação antiga do histórico para recalcular depois.
+ * Também garante feedback visual no botão: primeiro clique pede confirmação,
+ * segundo clique executa e mostra status de processamento.
  */
 
 const fs = require('fs');
@@ -29,13 +22,14 @@ function substituirEmService(trecho, novo, descricao) {
     service = service.replace(trecho, novo);
     alterou = true;
     console.log(`OK service ${descricao}`);
-    return;
+    return true;
   }
   if (service.includes(novo)) {
     console.log(`SKIP service ${descricao} já aplicado`);
-    return;
+    return true;
   }
   console.warn(`WARN service ${descricao} não encontrado`);
+  return false;
 }
 
 function substituirEmPage(trecho, novo, descricao) {
@@ -43,13 +37,14 @@ function substituirEmPage(trecho, novo, descricao) {
     page = page.replace(trecho, novo);
     alterou = true;
     console.log(`OK page ${descricao}`);
-    return;
+    return true;
   }
   if (page.includes(novo)) {
     console.log(`SKIP page ${descricao} já aplicado`);
-    return;
+    return true;
   }
   console.warn(`WARN page ${descricao} não encontrado`);
+  return false;
 }
 
 const funcService = `
@@ -172,43 +167,65 @@ substituirEmPage(
   'importa excluirRegistroRodadaNegociacao'
 );
 
+substituirEmPage(
+`  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState('');`,
+`  const [salvando, setSalvando] = useState(false);
+  const [registroExclusaoPendente, setRegistroExclusaoPendente] = useState('');
+  const [excluindoRegistroRodada, setExcluindoRegistroRodada] = useState('');
+  const [erro, setErro] = useState('');`,
+  'adiciona estados de exclusão visual'
+);
+
 const handlerPage = `
   async function handleExcluirRegistroRodada(rodada) {
     if (!selecionada || !rodada) return;
-    var registroId = rodada.id || rodada.criado_em;
+    var registroId = String(rodada.id || rodada.criado_em || '');
     var tipo = rodada.tipo_registro === 'SIMULACAO' ? 'simulação' : 'importação';
-    var mensagem = 'Excluir esta ' + tipo + ' da ' + (rodada.rodada || '-') + 'ª rodada?\n\nEssa ação remove somente este registro do histórico. Use para apagar simulações antigas com indicadores incorretos e recalcular depois.';
-    if (!window.confirm(mensagem)) return;
 
-    setSalvando(true); setErro(''); setSucesso('');
+    if (!registroId) {
+      setErro('Não foi possível identificar o registro da rodada para exclusão.');
+      return;
+    }
+
+    if (registroExclusaoPendente !== registroId) {
+      setRegistroExclusaoPendente(registroId);
+      setErro('');
+      setSucesso('Confirmação necessária: clique novamente em Confirmar apagar para excluir esta ' + tipo + ' da ' + (rodada.rodada || '-') + 'ª rodada.');
+      return;
+    }
+
+    setExcluindoRegistroRodada(registroId);
+    setSalvando(true); setErro(''); setSucesso('Excluindo registro da rodada...');
     try {
       var at = await excluirRegistroRodadaNegociacao(selecionada.id, registroId);
       setSelecionada(at);
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setRegistroExclusaoPendente('');
       setSucesso('Registro da rodada excluído. Os indicadores foram recalculados com a última simulação restante.');
     } catch (e) {
       setErro(e.message || 'Erro ao excluir registro da rodada.');
     } finally {
+      setExcluindoRegistroRodada('');
       setSalvando(false);
     }
   }
 `;
 
 if (!page.includes('async function handleExcluirRegistroRodada(rodada)')) {
-  substituirEmPage(
-`  async function handleAbrirNovaRodada() {
-    if (!selecionada) return;
-    await handleAbrirNovaRodadaTabela(selecionada);
+  if (page.includes(`  async function excluirTabela(tabela) {`)) {
+    page = page.replace(`  async function excluirTabela(tabela) {`, `${handlerPage}
+  async function excluirTabela(tabela) {`);
+    alterou = true;
+    console.log('OK page adiciona handler antes de excluirTabela');
+  } else if (page.includes(`  async function salvarNovaTabela() {`)) {
+    page = page.replace(`  async function salvarNovaTabela() {`, `${handlerPage}
+  async function salvarNovaTabela() {`);
+    alterou = true;
+    console.log('OK page adiciona handler antes de salvarNovaTabela');
+  } else {
+    console.warn('WARN page ponto para handler de exclusão não encontrado');
   }
-`,
-`  async function handleAbrirNovaRodada() {
-    if (!selecionada) return;
-    await handleAbrirNovaRodadaTabela(selecionada);
-  }
-${handlerPage}
-`,
-    'adiciona handler para excluir registro de rodada'
-  );
 } else {
   console.log('SKIP page handler de exclusão já existe');
 }
@@ -223,6 +240,17 @@ substituirEmPage(
 );
 
 substituirEmPage(
+`                        var isSim = rodada.tipo_registro === 'SIMULACAO';
+                        return (`,
+`                        var isSim = rodada.tipo_registro === 'SIMULACAO';
+                        var registroIdExclusao = String(rodada.id || rodada.criado_em || idx);
+                        var aguardandoConfirmacaoExclusao = registroExclusaoPendente === registroIdExclusao;
+                        var apagandoRegistroAtual = excluindoRegistroRodada === registroIdExclusao;
+                        return (`,
+  'cria variáveis por linha para confirmação visual'
+);
+
+substituirEmPage(
 `                            <td style={{ fontSize: 12, color: '#475569' }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
                           </tr>`,
 `                            <td style={{ fontSize: 12, color: '#475569' }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
@@ -230,11 +258,13 @@ substituirEmPage(
                               <button
                                 className="sim-tab"
                                 type="button"
-                                disabled={salvando}
-                                onClick={function() { handleExcluirRegistroRodada(rodada); }}
-                                style={{ color: '#dc2626', borderColor: '#fecaca' }}
+                                disabled={salvando && !apagandoRegistroAtual}
+                                onClick={function(event) { event.preventDefault(); event.stopPropagation(); handleExcluirRegistroRodada(rodada); }}
+                                style={aguardandoConfirmacaoExclusao
+                                  ? { color: '#fff', background: '#dc2626', borderColor: '#dc2626' }
+                                  : { color: '#dc2626', borderColor: '#fecaca' }}
                               >
-                                Apagar
+                                {apagandoRegistroAtual ? 'Apagando...' : aguardandoConfirmacaoExclusao ? 'Confirmar apagar' : 'Apagar'}
                               </button>
                             </td>
                           </tr>`,
@@ -242,7 +272,7 @@ substituirEmPage(
 );
 
 substituirEmPage(
-`                      {!historico.length ? <tr><td colSpan="9">Nenhuma rodada registrada ainda.</td></tr> : null}`, 
+`                      {!historico.length ? <tr><td colSpan="9">Nenhuma rodada registrada ainda.</td></tr> : null}`,
 `                      {!historico.length ? <tr><td colSpan="12">Nenhuma rodada registrada ainda.</td></tr> : null}`,
   'ajusta colspan do histórico vazio'
 );
