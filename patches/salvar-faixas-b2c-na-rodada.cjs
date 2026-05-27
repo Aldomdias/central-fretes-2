@@ -18,7 +18,7 @@ function rep(a,b,msg){
   console.warn('WARN '+msg);
 }
 
-add('// ─────────────────────────────────────────────────────────────────────────────\nexport async function salvarResultadoSimulacaoNegociacao', `function faixaB2CLaudoServico(peso) {
+add('export async function salvarResultadoSimulacaoNegociacao', `function faixaB2CLaudoServico(peso) {
   const p = numero(peso);
   if (!p) return '';
   if (p <= 2) return '0 a 2 kg';
