@@ -183,9 +183,9 @@ const paretoUtils = `function montarParetoCidadesVolume(simulacao = {}) {
 
 function recomendacaoPorAnalise({ faixasCriticas = [], cidadesParetoVolume = [], rotasCriticas = [] }) {
   const topFaixas = (faixasCriticas || []).slice(0, 3).map((f) => [f.origem, f.ufDestino, f.rota || f.cotacao, f.faixa].filter(Boolean).join(' / '));
-  if (topFaixas.length) return `Para a próxima rodada, recomendamos concentrar a revisão nas combinações de maior impacto: ${topFaixas.join('; ')}. Não é necessário alterar toda a tabela; o ganho de competitividade deve vir de ajustes direcionados nas rotas, cotações e faixas destacadas.`;
+  if (topFaixas.length) return 'Para a próxima rodada, recomendamos concentrar a revisão nas combinações de maior impacto: ' + topFaixas.join('; ') + '. Não é necessário alterar toda a tabela; o ganho de competitividade deve vir de ajustes direcionados nas rotas, cotações e faixas destacadas.';
   const topCidades = (cidadesParetoVolume || []).slice(0, 3).map((c) => [c.cidade, c.ufDestino].filter(Boolean).join('/'));
-  if (topCidades.length) return `Para a próxima rodada, recomendamos priorizar as cidades que concentram 80% do volume analisado: ${topCidades.join('; ')}. A revisão deve focar os pontos com maior perda de competitividade dentro desse bloco.`;
+  if (topCidades.length) return 'Para a próxima rodada, recomendamos priorizar as cidades que concentram 80% do volume analisado: ' + topCidades.join('; ') + '. A revisão deve focar os pontos com maior perda de competitividade dentro desse bloco.';
   return classificarRecomendacao({ atual: {} }, rotasCriticas || []);
 }
 
