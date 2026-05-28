@@ -2937,6 +2937,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [abaDetalheRealizado, setAbaDetalheRealizado] = useState('ctes'); // 'ctes' | 'uf'
   const [abaLaudoRealizado, setAbaLaudoRealizado] = useState('diretoria');
   const [feedbackCopiaLaudo, setFeedbackCopiaLaudo] = useState('');
+  const [feedbackNegociacao, setFeedbackNegociacao] = useState(null);
   const [laudoVisualAberto, setLaudoVisualAberto] = useState(null);
   const [salvandoLaudosVisuais, setSalvandoLaudosVisuais] = useState(false);
   const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box']));
@@ -2949,6 +2950,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setBaseRealizadoPesquisada(null);
     setResumoPesquisaRealizado(null);
     setFiltrosPesquisaRealizado('');
+    setFeedbackNegociacao(null);
   }, [
     transportadoraRealizado,
     canalRealizado,
@@ -3601,6 +3603,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setSalvandoResultadoNegociacao(true);
     setErroSimulacao('');
+    setFeedbackNegociacao({ tipo: 'info', mensagem: 'Salvando resultado na negociacao...' });
 
     try {
       const contextoLaudos = {
@@ -3614,9 +3617,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
         laudosEmail: laudosEmailRealizado,
         laudos: prepararLaudosNegociacao(resultadoRealizado, contextoLaudos),
       });
-      alert('Resultado projetado salvo na negociação.');
+      setFeedbackNegociacao({
+        tipo: 'sucesso',
+        mensagem: `Resultado salvo na negociação às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.`,
+      });
     } catch (error) {
-      setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
+      const mensagem = error.message || 'Erro ao salvar resultado na negociação.';
+      console.error('Erro ao salvar resultado na negociação:', error);
+      setErroSimulacao(mensagem);
+      setFeedbackNegociacao({ tipo: 'erro', mensagem });
     } finally {
       setSalvandoResultadoNegociacao(false);
     }
@@ -3627,6 +3636,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setSalvandoLaudosVisuais(true);
     setErroSimulacao('');
+    setFeedbackNegociacao({ tipo: 'info', mensagem: 'Salvando laudos na negociação...' });
 
     try {
       const contextoLaudos = {
@@ -3635,9 +3645,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
         origem: resultadoRealizado.filtros?.origem,
       };
       await salvarLaudosNegociacao(negociacaoSelecionadaRealizado.id, resultadoRealizado, contextoLaudos);
-      alert('Laudos salvos na negociaÃ§Ã£o.');
+      setFeedbackNegociacao({
+        tipo: 'sucesso',
+        mensagem: `Laudos salvos na negociação às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.`,
+      });
     } catch (error) {
-      setErroSimulacao(error.message || 'Erro ao salvar laudos na negociaÃ§Ã£o.');
+      const mensagem = error.message || 'Erro ao salvar laudos na negociação.';
+      console.error('Erro ao salvar laudos na negociação:', error);
+      setErroSimulacao(mensagem);
+      setFeedbackNegociacao({ tipo: 'erro', mensagem });
     } finally {
       setSalvandoLaudosVisuais(false);
     }
@@ -5420,6 +5436,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar resultado na negociação'}
             </button>
           </div>
+
+          {feedbackNegociacao && (
+            <div
+              className={`sim-alert ${feedbackNegociacao.tipo === 'erro' ? 'error' : 'info'}`}
+              role="status"
+              aria-live="polite"
+              style={{
+                marginTop: 12,
+                background: feedbackNegociacao.tipo === 'sucesso' ? '#ecfdf5' : feedbackNegociacao.tipo === 'erro' ? '#fef2f2' : '#eef6ff',
+                borderColor: feedbackNegociacao.tipo === 'sucesso' ? '#86efac' : feedbackNegociacao.tipo === 'erro' ? '#fecaca' : '#c9def8',
+                color: feedbackNegociacao.tipo === 'sucesso' ? '#047857' : feedbackNegociacao.tipo === 'erro' ? '#991b1b' : '#23466c',
+                fontWeight: 700,
+              }}
+            >
+              {feedbackNegociacao.mensagem}
+            </div>
+          )}
 
           <div className="sim-form-grid sim-grid-5">
             <label>

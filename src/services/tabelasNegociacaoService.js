@@ -36,6 +36,40 @@ function supabaseOrThrow() {
   return getSupabaseClient();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isErroTemporarioSupabase(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('network') ||
+    msg.includes('timeout') ||
+    msg.includes('aborted') ||
+    msg.includes('temporar') ||
+    msg.includes('502') ||
+    msg.includes('503') ||
+    msg.includes('504')
+  );
+}
+
+async function executarSupabaseComRetry(operacao, contexto, tentativas = 3) {
+  let ultimoErro = null;
+
+  for (let tentativa = 1; tentativa <= tentativas; tentativa += 1) {
+    try {
+      return await operacao();
+    } catch (error) {
+      ultimoErro = error;
+      if (!isErroTemporarioSupabase(error) || tentativa >= tentativas) break;
+      await sleep(700 * tentativa);
+    }
+  }
+
+  throw new Error(`${contexto}: ${ultimoErro?.message || String(ultimoErro || 'erro desconhecido')}`);
+}
+
 function texto(value) { return String(value || '').trim(); }
 function upper(value) { return texto(value).toUpperCase(); }
 function numero(value) {
@@ -915,12 +949,18 @@ export async function excluirRegistroRodadaNegociacao(id, registroId) {
     rotas_sem_cobertura: inteiro(resumoUltima.ctesSemTabelaSelecionada || 0),
   };
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao')
-    .update(payload)
-    .eq('id', id)
-    .select()
-    .single();
+  const { data, error } = await executarSupabaseComRetry(async () => {
+    const resposta = await supabase
+      .from('tabelas_negociacao')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .single();
+    if (resposta.error && isErroTemporarioSupabase(resposta.error)) {
+      throw new Error(resposta.error.message || 'Falha temporaria ao salvar resultado.');
+    }
+    return resposta;
+  }, 'Erro ao salvar resultado da simulacao na negociacao');
 
   if (error) {
     throw new Error(error.message || 'Erro ao excluir registro da rodada.');
@@ -1126,11 +1166,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     laudosEmail: resultado.laudosEmail || null,
     laudos: resultado.laudos || null,
     pareto80Volume: resultado.pareto80Volume || null,
-    analiseFaixasB2C: (resultado.analiseFaixasB2C || montarAnaliseFaixasB2CLaudoServico(resultado)).slice(0, 10000),
-    analiseFaixasB2C: (resultado.analiseFaixasB2C || montarAnaliseFaixasB2CLaudoServico(resultado)).slice(0, 10000),
-    analiseFaixasB2C: (resultado.analiseFaixasB2C || montarAnaliseFaixasB2CLaudoServico(resultado)).slice(0, 10000),
-    analiseFaixasB2C: (resultado.analiseFaixasB2C || montarAnaliseFaixasB2CLaudoServico(resultado)).slice(0, 10000),
-    analiseFaixasB2C: (resultado.analiseFaixasB2C || montarAnaliseFaixasB2CLaudoServico(resultado)).slice(0, 10000),
+    analiseFaixasB2C: (resultado.analiseFaixasB2C || montarAnaliseFaixasB2CLaudoServico(resultado)).slice(0, 5000),
     diagnostico: resultado.diagnostico || {},
     ctesDetalhes: (resultado.ctesDetalhes || []).slice(0, 3000).map((item) => ({
       cte: item.cte || '',
