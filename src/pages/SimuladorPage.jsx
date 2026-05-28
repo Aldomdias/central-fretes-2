@@ -3513,6 +3513,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
   };
 
+  const salvarLaudosVisuaisNegociacao = async () => {
+    if (!negociacaoSelecionadaRealizado?.id || !resultadoRealizado) return;
+
+    setSalvandoLaudosVisuais(true);
+    setErroSimulacao('');
+
+    try {
+      const contextoLaudos = {
+        transportadora: resultadoRealizado.filtros?.transportadora,
+        canal: resultadoRealizado.filtros?.canal,
+        origem: resultadoRealizado.filtros?.origem,
+      };
+      await salvarLaudosNegociacao(negociacaoSelecionadaRealizado.id, resultadoRealizado, contextoLaudos);
+      alert('Laudos salvos na negociaÃ§Ã£o.');
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao salvar laudos na negociaÃ§Ã£o.');
+    } finally {
+      setSalvandoLaudosVisuais(false);
+    }
+  };
+
   const recalcularRealizadoComMesmaBase = async () => {
     if (!baseRealizadoPesquisada?.rowsFiltrados?.length) {
       setErroSimulacao('Faça uma simulação primeiro para guardar a base de CT-es pesquisada.');
