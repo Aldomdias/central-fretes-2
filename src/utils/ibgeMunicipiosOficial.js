@@ -1,5 +1,5 @@
 const IBGE_API_URL = 'https://servicodados.ibge.gov.br/api/v1/localidades/municipios?orderBy=nome';
-const CACHE_KEY = 'amd-ibge-municipios-oficial-v1';
+const CACHE_KEY = 'amd-ibge-municipios-oficial-v2';
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 function extrairUf(item = {}) {
@@ -11,12 +11,33 @@ function extrairUf(item = {}) {
   ).toString().toUpperCase();
 }
 
+function extrairMesorregiao(item = {}) {
+  return (
+    item?.microrregiao?.mesorregiao?.nome ||
+    item?.['regiao-imediata']?.['regiao-intermediaria']?.nome ||
+    item?.mesorregiao ||
+    item?.mesoRegiao ||
+    ''
+  ).toString().trim();
+}
+
+function extrairRegiaoIntermediaria(item = {}) {
+  return (
+    item?.['regiao-imediata']?.['regiao-intermediaria']?.nome ||
+    item?.microrregiao?.mesorregiao?.nome ||
+    item?.regiaoIntermediaria ||
+    ''
+  ).toString().trim();
+}
+
 function normalizarLista(raw = []) {
   return (Array.isArray(raw) ? raw : [])
     .map((item) => ({
       ibge: String(item.id || item.ibge || item.codigo_ibge || '').replace(/\D/g, '').slice(0, 7),
       cidade: String(item.nome || item.cidade || item.municipio || '').trim(),
       uf: extrairUf(item),
+      mesorregiao: extrairMesorregiao(item),
+      regiaoIntermediaria: extrairRegiaoIntermediaria(item),
     }))
     .filter((item) => item.ibge.length === 7 && item.cidade && item.uf.length === 2)
     .sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
@@ -57,7 +78,7 @@ export async function carregarMunicipiosIbgeOficial({ usarCache = true } = {}) {
 
   const raw = await response.json();
   const municipios = normalizarLista(raw);
-  if (municipios.length >= 5000) salvarCache(municipios);
+  if (municipios.length >= 5000) salvarCache(raw);
   return { municipios, fonte: 'IBGE oficial online' };
 }
 
