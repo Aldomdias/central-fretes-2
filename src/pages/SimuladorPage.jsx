@@ -698,6 +698,65 @@ function cubagemRealizado(row = {}) {
   return 0;
 }
 
+function montarResumoPesquisaRealizado(payload = {}) {
+  const rowsBrutos = payload.rowsBrutos || [];
+  const rowsBase = payload.rowsComIbgeBase || payload.rows || [];
+  const rows = payload.rows || [];
+  const rowsComTracking = payload.rowsComTracking || rowsBase.filter((row) => row.trackingMatch);
+  const filtros = payload.filtros || {};
+
+  const totais = rows.reduce((acc, row) => {
+    const valorCte = numeroRealizado(row.valorCte || row.valor_cte);
+    const valorNF = numeroRealizado(row.valorNF || row.valor_nf);
+    const peso = pesoRealizado(row);
+    const cubagem = cubagemRealizado(row);
+    const volumes = numeroRealizado(row.qtdVolumes || row.volumes || row.volume);
+    acc.valorCte += valorCte;
+    acc.valorNF += valorNF;
+    acc.peso += peso;
+    acc.cubagem += cubagem;
+    acc.volumes += volumes;
+    return acc;
+  }, { valorCte: 0, valorNF: 0, peso: 0, cubagem: 0, volumes: 0 });
+
+  const origens = [...new Set(rows.map((row) => row.cidadeOrigem || row.origem).filter(Boolean))];
+  const ufsDestino = [...new Set(rows.map((row) => row.ufDestino || row.uf_destino).filter(Boolean))];
+  const ctesBase = rows.length;
+  const ctesComTracking = rowsComTracking.length || rows.filter((row) => row.trackingMatch).length;
+
+  return {
+    tabela: payload.nomeTabelaSelecionada || filtros.transportadora || '-',
+    canal: filtros.canal || '-',
+    modoBase: filtros.baseRealizadoTracking || 'com_tracking',
+    ctesBrutos: rowsBrutos.length,
+    ctesBase,
+    ctesComTracking,
+    ctesSemTracking: Math.max((rowsBase.length || rows.length) - ctesComTracking, 0),
+    percentualTracking: rowsBase.length ? (ctesComTracking / rowsBase.length) * 100 : 0,
+    valorCte: totais.valorCte,
+    valorNF: totais.valorNF,
+    peso: totais.peso,
+    cubagem: totais.cubagem,
+    volumes: totais.volumes,
+    volumeMedioPorCte: ctesBase ? totais.volumes / ctesBase : 0,
+    fretePorVolume: totais.volumes ? totais.valorCte / totais.volumes : 0,
+    origens: origens.length ? origens.slice(0, 4).join(', ') + (origens.length > 4 ? ` +${origens.length - 4}` : '') : '-',
+    ufsDestino: ufsDestino.length ? ufsDestino.join(', ') : (Array.isArray(filtros.ufDestino) ? filtros.ufDestino.join(', ') : filtros.ufDestino) || '-',
+    alertaVolumes: ctesBase && !totais.volumes ? 'A base pesquisada nao trouxe volumes; indicadores por volume podem ficar zerados.' : '',
+    preview: rows.slice(0, 12).map((row) => ({
+      cte: row.numeroCte || row.numero_cte || row.cte || '',
+      nf: row.notaFiscal || row.nota_fiscal || row.nf || '',
+      transportadora: row.transportadora || '',
+      origem: row.cidadeOrigem || row.origem || '',
+      destino: row.cidadeDestino || row.destino || '',
+      ufDestino: row.ufDestino || row.uf_destino || '',
+      valorCte: row.valorCte || row.valor_cte || 0,
+      valorNF: row.valorNF || row.valor_nf || 0,
+      tracking: row.trackingMatch ? 'Com Tracking' : 'Sem Tracking',
+    })),
+  };
+}
+
 
 function normalizarChaveTracking(value = '') {
   return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -3433,6 +3492,56 @@ export default function SimuladorPage({ transportadoras = [] }) {
     () => extrairUfsDestinoBaseSimulador(basesMalhaRealizadoSelecionada, canalRealizado, origemRealizado),
     [basesMalhaRealizadoSelecionada, canalRealizado, origemRealizado]
   );
+
+  const origensAnaliseDisponiveis = useMemo(() => {
+    if (transportadoraAnalise) {
+      const base = transportadoras.filter((item) => transportadoraCompativelSimulador(item.nome, transportadoraAnalise));
+      const origens = extrairOrigensBaseSimulador(base, canalAnalise);
+      if (origens.length) return origens;
+    }
+    return opcoesOnline.origensPorCanal?.[canalAnalise] || todasOrigens;
+  }, [transportadoraAnalise, canalAnalise, transportadoras, opcoesOnline.origensPorCanal, todasOrigens]);
+
+  const origensOrigemDisponiveis = useMemo(
+    () => opcoesOnline.origensPorCanal?.[canalOrigem] || todasOrigens,
+    [opcoesOnline.origensPorCanal, canalOrigem, todasOrigens]
+  );
+
+  const origensRealizadoDisponiveis = useMemo(() => {
+    if (origensMalhaRealizadoDisponiveis.length) return origensMalhaRealizadoDisponiveis;
+    return opcoesOnline.origensPorCanal?.[canalRealizado] || todasOrigens;
+  }, [origensMalhaRealizadoDisponiveis, opcoesOnline.origensPorCanal, canalRealizado, todasOrigens]);
+
+  const ufsDestinoFiltroRealizado = useMemo(() => {
+    if (ufsDestinoRealizado.length) return ufsDestinoRealizado;
+    return ufDestinoRealizado ? [ufDestinoRealizado] : [];
+  }, [ufsDestinoRealizado, ufDestinoRealizado]);
+
+  const ufsDestinoRealizadoDisponiveis = useMemo(() => {
+    if (ufsDestinoDaMalhaRealizado.length) return ufsDestinoDaMalhaRealizado;
+    return UF_OPTIONS.filter(Boolean);
+  }, [ufsDestinoDaMalhaRealizado]);
+
+  const ufDestinoRealizadoLabel = useMemo(() => {
+    if (!ufsDestinoFiltroRealizado.length) return 'Todas';
+    if (ufsDestinoFiltroRealizado.length <= 3) return ufsDestinoFiltroRealizado.join(', ');
+    return `${ufsDestinoFiltroRealizado.length} UFs selecionadas`;
+  }, [ufsDestinoFiltroRealizado]);
+
+  const toggleUfDestinoRealizado = (uf) => {
+    if (!uf) {
+      setUfDestinoRealizado('');
+      setUfsDestinoRealizado([]);
+      return;
+    }
+
+    setUfDestinoRealizado('');
+    setUfsDestinoRealizado((atuais) => (
+      atuais.includes(uf)
+        ? atuais.filter((item) => item !== uf)
+        : [...atuais, uf].sort((a, b) => a.localeCompare(b, 'pt-BR'))
+    ));
+  };
 
   useEffect(() => {
     let ativo = true;
