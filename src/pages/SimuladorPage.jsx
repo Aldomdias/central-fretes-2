@@ -3169,6 +3169,226 @@ export default function SimuladorPage({ transportadoras = [] }) {
     [todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras]
   );
 
+  const origensTransportadora = useMemo(() => {
+    const online = opcoesOnline.origensPorCanal?.[canalTransportadora];
+    if (online?.length) return online;
+    return extrairOrigensBaseSimulador(transportadoras, canalTransportadora);
+  }, [opcoesOnline.origensPorCanal, canalTransportadora, transportadoras]);
+
+  const identificarDestinoLocal = (valor) => {
+    const texto = String(valor || '').trim();
+    if (!texto) return null;
+
+    const ibge = texto.match(/(\d{7})\D*$/)?.[1];
+    if (ibge) {
+      return todosDestinosComCidade.find((item) => String(item.ibge) === ibge) || { ibge, cidade: getCidadeByIbge(ibge, cidadePorIbgeCompleto), uf: getUfByIbge(ibge) };
+    }
+
+    const busca = normalizeBuscaIbge(limparCidadeDigitada(texto));
+    if (!busca) return null;
+
+    return todosDestinosComCidade.find((item) => {
+      const cidade = normalizeBuscaIbge(item.cidade);
+      const cidadeUf = normalizeBuscaIbge(`${item.cidade || ''}/${item.uf || ''}`);
+      return cidade === busca || cidadeUf === busca;
+    }) || null;
+  };
+
+  const destinoTransportadoraIdentificado = useMemo(() => {
+    const municipio = identificarDestinoLocal(destinoTransportadora);
+    return municipio ? montarLabelMunicipio(municipio) : '';
+  }, [destinoTransportadora, todosDestinosComCidade, cidadePorIbgeCompleto]);
+
+  const resolverDestinoDigitado = async (valor) => {
+    const local = identificarDestinoLocal(valor);
+    if (local?.ibge) return String(local.ibge);
+
+    const remoto = await resolverDestinoIbgeDb(valor);
+    if (remoto?.ibge) return String(remoto.ibge);
+
+    const digitos = String(valor || '').replace(/\D/g, '');
+    if (digitos.length === 7) return digitos;
+    return '';
+  };
+
+  const baseSimuladorComFallback = async (filtros = {}) => {
+    const online = await carregarBaseOnlinePorUfDestino(filtros);
+    return Array.isArray(online) && online.length ? online : transportadoras;
+  };
+
+  const onSimularSimples = async () => {
+    setErroSimulacao('');
+    if (!origemSimples || !destinoCodigo || !pesoSimples) {
+      setErroSimulacao('Informe origem, destino e peso para simular.');
+      return;
+    }
+
+    setCarregandoSimulacao(true);
+    try {
+      const ibgeDestino = await resolverDestinoDigitado(destinoCodigo);
+      if (!ibgeDestino) throw new Error('Destino nÃ£o identificado. Informe cidade/UF, IBGE ou CEP.');
+
+      const base = await baseSimuladorComFallback({ origem: origemSimples, canal: canalSimples });
+      const gradeCanal = grade?.[canalSimples] || grade?.ATACADO || [];
+      const resultado = simularSimples({
+        transportadoras: base,
+        origem: origemSimples,
+        canal: canalSimples,
+        peso: pesoSimples,
+        valorNF: nfSimples,
+        destinoCodigo: ibgeDestino,
+        cidadePorIbge: cidadePorIbgeCompleto,
+        gradeCanal,
+      });
+      setResultadoSimples(resultado || []);
+    } catch (error) {
+      setResultadoSimples([]);
+      setErroSimulacao(error.message || 'Erro ao simular frete simples.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const onSimularTransportadora = async () => {
+    setErroSimulacao('');
+    if (!transportadora || !pesoTransportadora) {
+      setErroSimulacao('Informe transportadora e peso para simular.');
+      return;
+    }
+
+    setCarregandoSimulacao(true);
+    try {
+      const entradas = modoLista
+        ? String(listaCodigos || '').split(/\r?\n|,|;/).map((item) => item.trim()).filter(Boolean)
+        : [destinoTransportadora].filter((item) => String(item || '').trim());
+
+      const destinoCodigos = [];
+      for (const entrada of entradas) {
+        const ibge = await resolverDestinoDigitado(entrada);
+        if (ibge) destinoCodigos.push(ibge);
+      }
+
+      if (entradas.length && !destinoCodigos.length) throw new Error('Nenhum destino da lista foi identificado.');
+
+      const base = await baseSimuladorComFallback({ nomeTransportadora: transportadora, canal: canalTransportadora, origem: origemTransportadora });
+      const gradeCanal = grade?.[canalTransportadora] || grade?.ATACADO || [];
+      const resultado = simularPorTransportadora({
+        transportadoras: base,
+        nomeTransportadora: transportadora,
+        canal: canalTransportadora,
+        origem: origemTransportadora,
+        destinoCodigos,
+        peso: pesoTransportadora,
+        valorNF: nfTransportadora,
+        cidadePorIbge: cidadePorIbgeCompleto,
+        gradeCanal,
+      });
+      setResultadoTransportadora(resultado || []);
+    } catch (error) {
+      setResultadoTransportadora([]);
+      setErroSimulacao(error.message || 'Erro ao simular transportadora.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const onSimularGrade = async () => {
+    setErroSimulacao('');
+    if (!transportadoraAnalise) {
+      setErroSimulacao('Informe a transportadora para gerar a anÃ¡lise.');
+      return;
+    }
+
+    setCarregandoSimulacao(true);
+    iniciarProcessamentoUi('Gerando relatÃ³rio', 'Buscando tabela e calculando aderÃªncia...', 12);
+    try {
+      const base = await baseSimuladorComFallback({
+        nomeTransportadora: transportadoraAnalise,
+        canal: canalAnalise,
+        origem: origemAnalise,
+        ufDestino: ufAnalise,
+      });
+      atualizarProcessamentoUi('Calculando cenÃ¡rios da grade...', 55);
+      const resultado = analisarTransportadoraPorGrade({
+        transportadoras: base,
+        nomeTransportadora: transportadoraAnalise,
+        canal: canalAnalise,
+        origem: origemAnalise,
+        ufDestino: ufAnalise,
+        grade: grade?.[canalAnalise] || grade?.ATACADO || [],
+        cidadePorIbge: cidadePorIbgeCompleto,
+      });
+      setResultadoAnalise(resultado);
+      finalizarProcessamentoUi('RelatÃ³rio pronto', 'AnÃ¡lise carregada.', 100);
+    } catch (error) {
+      limparProcessamentoUi();
+      setResultadoAnalise(null);
+      setErroSimulacao(error.message || 'Erro ao gerar anÃ¡lise de transportadora.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const onAnalisarCobertura = async () => {
+    setErroSimulacao('');
+    setCarregandoSimulacao(true);
+    iniciarProcessamentoUi('Analisando cobertura', 'Conferindo destinos com e sem tabela...', 15);
+    try {
+      const base = await baseSimuladorComFallback({
+        canal: canalCobertura,
+        origem: origemCobertura,
+        nomeTransportadora: transportadoraCobertura,
+        ufDestino: ufCobertura,
+      });
+      const resultado = analisarCoberturaTabela({
+        transportadoras: base,
+        canal: canalCobertura,
+        origem: origemCobertura,
+        transportadora: transportadoraCobertura,
+        ufDestino: ufCobertura,
+        cidadePorIbge: cidadePorIbgeCompleto,
+      });
+      setResultadoCobertura(resultado);
+      finalizarProcessamentoUi('Cobertura analisada', 'Resultado carregado.', 100);
+    } catch (error) {
+      limparProcessamentoUi();
+      setResultadoCobertura(null);
+      setErroSimulacao(error.message || 'Erro ao analisar cobertura.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const exportarSimulacaoTransportadora = () => {
+    if (!resultadoTransportadora.length) return;
+    const linhas = [
+      ['Transportadora', 'Origem', 'Destino', 'IBGE', 'Ranking', 'Total', 'Prazo'],
+      ...resultadoTransportadora.map((item) => [item.transportadora, item.origem, buildDestinoLabel(item), item.ibgeDestino, item.ranking, item.total, item.prazo]),
+    ];
+    const { nomeArquivo, csv } = exportarLinhasCsv('simulacao-transportadora.csv', linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
+  const exportarAnalise = () => {
+    if (!resultadoAnalise?.detalhes?.length) return;
+    const linhas = [
+      ['Transportadora', 'Origem', 'Destino', 'IBGE', 'UF', 'Ranking', 'Total', 'Prazo'],
+      ...resultadoAnalise.detalhes.map((item) => [item.transportadora, item.origem, buildDestinoLabel(item), item.ibgeDestino, item.ufDestino, item.ranking, item.total, item.prazo]),
+    ];
+    const { nomeArquivo, csv } = exportarLinhasCsv('analise-transportadora.csv', linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
+  const exportarCobertura = () => {
+    if (!resultadoCobertura?.faltantes?.length) return;
+    const linhas = [
+      ['Origem', 'Cidade', 'UF', 'IBGE'],
+      ...resultadoCobertura.faltantes.map((item) => [item.origem, item.cidade, item.uf, item.ibge]),
+    ];
+    const { nomeArquivo, csv } = exportarLinhasCsv('cobertura-faltantes.csv', linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
   const transportadorasNegociacaoRealizado = useMemo(
     () => converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalRealizado }),
     [negociacoesSimulador, canalRealizado]
