@@ -88,20 +88,6 @@ apply(pagePath, function(src) {
     );
   }
 
-  if (!src.includes('function repararHistoricoRodadasLocal')) {
-    src = src.replace(
-      'function getIndicadoresTabela(tabela) {',
-      "function precisaRepararHistoricoRodadas(tabela) {\n  var resumo = getResumoTabela(tabela);\n  var hist = getHistoricoRodadasTabela(tabela);\n  var rodadaAtual = Number(resumo.rodada_atual || tabela?.rodada_atual || 0);\n  return rodadaAtual > 1 && !hist.length;\n}\n\nfunction repararHistoricoRodadasLocal(tabela, setSelecionada, setMensagem) {\n  if (!tabela) return;\n  var resumo = getResumoTabela(tabela);\n  var rodadaAtual = Number(resumo.rodada_atual || tabela.rodada_atual || 1) || 1;\n  var agora = new Date().toISOString();\n  var historico = [{\n    id: 'reparo-' + rodadaAtual + '-' + Date.now(),\n    tipo_registro: 'NOVA_RODADA',\n    rodada: rodadaAtual,\n    criado_em: agora,\n    observacao: 'Histórico reparado automaticamente a partir da rodada atual.',\n    origem_importacao: 'REPARO_HISTORICO',\n  }];\n  var atualizada = Object.assign({}, tabela, {\n    resumo_simulacao: Object.assign({}, resumo, {\n      rodada_atual: rodadaAtual,\n      historico_rodadas: historico,\n      ultima_rodada_aberta: historico[0],\n    }),\n  });\n  setSelecionada(atualizada);\n  setMensagem('Histórico de rodadas reparado na tela. Clique em salvar/importar ou abra uma nova rodada para persistir a sequência.');\n}\n\nfunction getIndicadoresTabela(tabela) {"
-    );
-  }
-
-  if (!src.includes('precisaRepararHistoricoRodadas(selecionada) ? (')) {
-    src = src.replace(
-      '<div className="sim-analise-tabela-wrap">',
-      "{precisaRepararHistoricoRodadas(selecionada) ? (\n                  <div className=\"sim-alert warn\" style={{ marginBottom: 14 }}>\n                    Histórico vazio com rodada atual maior que 1.\n                    <button className=\"sim-tab\" type=\"button\" style={{ marginLeft: 8 }} onClick={function() { repararHistoricoRodadasLocal(selecionada, setSelecionada, setMensagem); }}>🔧 Reparar histórico</button>\n                  </div>\n                ) : null}\n\n                <div className=\"sim-analise-tabela-wrap\">"
-    );
-  }
-
   return src;
 }, 'correcoes Rodadas Claude');
 
