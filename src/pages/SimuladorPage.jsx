@@ -2801,6 +2801,26 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [pesoSimples, setPesoSimples] = useState('');
   const [nfSimples, setNfSimples] = useState('');
   const [resultadoSimples, setResultadoSimples] = useState([]);
+  const destinoIdentificado = useMemo(() => {
+    const texto = String(destinoCodigo || '').trim();
+    if (!texto) return '';
+
+    const ibgeDigitado = texto.match(/(\d{7})\D*$/)?.[1];
+    let municipio = ibgeDigitado
+      ? todosDestinosComCidade.find((item) => String(item.ibge) === ibgeDigitado)
+      : null;
+
+    if (!municipio) {
+      const busca = normalizeBuscaIbge(limparCidadeDigitada(texto));
+      municipio = todosDestinosComCidade.find((item) => {
+        const cidade = normalizeBuscaIbge(item.cidade);
+        const cidadeUf = normalizeBuscaIbge(`${item.cidade || ''}/${item.uf || ''}`);
+        return busca && (cidade === busca || cidadeUf === busca);
+      });
+    }
+
+    return municipio ? montarLabelMunicipio(municipio) : '';
+  }, [destinoCodigo, todosDestinosComCidade]);
 
   const [transportadora, setTransportadora] = useState('');
   const [canalTransportadora, setCanalTransportadora] = useState(canais[0] || 'ATACADO');
