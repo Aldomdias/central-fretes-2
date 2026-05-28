@@ -24,7 +24,10 @@ function replaceAll(src, from, to) {
 }
 
 const pagePath = path.join(process.cwd(), 'src/pages/TabelasNegociacaoPage.jsx');
+const templatePath = path.join(process.cwd(), 'src/components/laudos/LaudoRodadasNegociacaoTemplate.jsx');
 const ctePath = path.join(process.cwd(), 'src/pages/CtePage.jsx');
+
+const tabelaDestinoFaixaComponent = "function TabelaDestinoFaixaPareto(props) {\n  var fonte = (props && (props.dados || props.linhas || props.itens || props.destinoFaixaPareto || props.data)) || [];\n  var linhas = Array.isArray(fonte) ? fonte : [];\n  if (!linhas.length) return null;\n  return (\n    <div className=\"sim-analise-tabela-wrap\">\n      <table className=\"sim-analise-tabela\">\n        <thead>\n          <tr><th>Destino</th><th>UF</th><th>Faixa</th><th>CT-es</th><th>Volumes</th><th>% Volume</th></tr>\n        </thead>\n        <tbody>\n          {linhas.slice(0, 20).map(function(item, idx) {\n            return (\n              <tr key={(item && (item.chave || item.rota || item.destino)) || idx}>\n                <td>{(item && (item.destino || item.cidade || item.cidadeDestino || item.rota || item.chave)) || '-'}</td>\n                <td>{(item && (item.ufDestino || item.uf_destino || item.uf)) || '-'}</td>\n                <td>{(item && (item.faixa || item.faixaPeso || item.faixa_peso)) || '-'}</td>\n                <td>{(item && (item.ctes || item.qtdCtes || item.quantidade || item.total)) || 0}</td>\n                <td>{(item && (item.volumes || item.volume || item.qtdVolumes)) || 0}</td>\n                <td>{(item && (item.percentual || item.percentualVolume || item.percVolume)) || 0}%</td>\n              </tr>\n            );\n          })}\n        </tbody>\n      </table>\n    </div>\n  );\n}\n\nconst TabelasDestinoFaixaPareto = TabelaDestinoFaixaPareto;\n\n";
 
 apply(pagePath, function(src) {
   src = replaceAll(
@@ -82,14 +85,18 @@ apply(pagePath, function(src) {
   );
 
   if (!src.includes('function TabelaDestinoFaixaPareto')) {
-    src = src.replace(
-      'export default function TabelasNegociacaoPage() {',
-      "function TabelaDestinoFaixaPareto(props) {\n  var fonte = (props && (props.dados || props.linhas || props.itens || props.destinoFaixaPareto || props.data)) || [];\n  var linhas = Array.isArray(fonte) ? fonte : [];\n  if (!linhas.length) return null;\n  return (\n    <div className=\"sim-analise-tabela-wrap\">\n      <table className=\"sim-analise-tabela\">\n        <thead>\n          <tr><th>Destino</th><th>UF</th><th>Faixa</th><th>CT-es</th><th>Volumes</th><th>% Volume</th></tr>\n        </thead>\n        <tbody>\n          {linhas.slice(0, 20).map(function(item, idx) {\n            return (\n              <tr key={(item && (item.chave || item.rota || item.destino)) || idx}>\n                <td>{(item && (item.destino || item.cidade || item.cidadeDestino || item.rota || item.chave)) || '-'}</td>\n                <td>{(item && (item.ufDestino || item.uf_destino || item.uf)) || '-'}</td>\n                <td>{(item && (item.faixa || item.faixaPeso || item.faixa_peso)) || '-'}</td>\n                <td>{(item && (item.ctes || item.qtdCtes || item.quantidade || item.total)) || 0}</td>\n                <td>{(item && (item.volumes || item.volume || item.qtdVolumes)) || 0}</td>\n                <td>{(item && (item.percentual || item.percentualVolume || item.percVolume)) || 0}%</td>\n              </tr>\n            );\n          })}\n        </tbody>\n      </table>\n    </div>\n  );\n}\n\nconst TabelasDestinoFaixaPareto = TabelaDestinoFaixaPareto;\n\nexport default function TabelasNegociacaoPage() {"
-    );
+    src = src.replace('export default function TabelasNegociacaoPage() {', tabelaDestinoFaixaComponent + 'export default function TabelasNegociacaoPage() {');
   }
 
   return src;
 }, 'correcoes Rodadas Claude');
+
+apply(templatePath, function(src) {
+  if ((src.includes('<TabelaDestinoFaixaPareto') || src.includes('<TabelasDestinoFaixaPareto')) && !src.includes('function TabelaDestinoFaixaPareto')) {
+    src = src.replace('export function LaudoRodadasNegociacaoTemplate', tabelaDestinoFaixaComponent + 'export function LaudoRodadasNegociacaoTemplate');
+  }
+  return src;
+}, 'componente destino faixa no template laudos');
 
 apply(ctePath, function(src) {
   src = src.replace(/const ANALISE_MAX_REGISTROS = 5000;\n/g, '');
