@@ -1039,15 +1039,39 @@ export default function TabelasNegociacaoPage() {
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       await abrirTabela(at);
-      setAbaNegoc('importacao');
-      setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Agora importe a nova proposta desta origem.');
+      // Vai direto para aba Rodadas para o usuário confirmar que foi criada
+      setAbaNegoc('rodadas');
+      setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Agora importe a nova proposta desta origem (aba Importação).');
     } catch (e) { setErro(e.message || 'Erro ao abrir nova rodada.'); }
+    finally { setAbrindoRodada(false); }
+  }
+
+  async function handleRepararHistoricoRodadas(tabela) {
+    if (!tabela) return;
+    var ok = window.confirm(
+      'Reparar histórico de rodadas para ' + tabela.transportadora + '?\n\n' +
+      'Isso vai criar um registro no histórico sem apagar dados nem avançar a rodada. ' +
+      'Use quando o histórico estiver vazio mas a negociação já tem uma rodada ativa.'
+    );
+    if (!ok) return;
+    setAbrindoRodada(true); setErro(''); setSucesso('');
+    try {
+      var at = await abrirNovaRodadaTabelaNegociacao(tabela.id, {
+        observacao: 'Histórico reparado manualmente — rodada reativada',
+      });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      if (selecionada && selecionada.id === at.id) setSelecionada(at);
+      setAbaNegoc('rodadas');
+      setSucesso('Histórico reparado. Agora você pode ver e importar a rodada atual.');
+    } catch (e) { setErro(e.message || 'Erro ao reparar histórico.'); }
     finally { setAbrindoRodada(false); }
   }
 
   async function handleAbrirNovaRodada() {
     return handleAbrirNovaRodadaTabela(selecionada);
   }
+
+  // handleRepararHistoricoRodadas está definido acima junto com handleAbrirNovaRodadaTabela
 
   function abrirModalAprovacao(tabela) {
     setModalAprovacao(tabela);
@@ -1897,14 +1921,29 @@ export default function TabelasNegociacaoPage() {
 
           {/* ABA: RODADAS */}
           {abaNegoc === 'rodadas' ? (function() {
-            var historico = getHistoricoRodadasTabela(selecionada).slice().reverse();
-            var simulacoes = historico.filter(function(r) { return r.tipo_registro === 'SIMULACAO'; });
+            try {
+            var historicoRaw = getHistoricoRodadasTabela(selecionada);
+            var historico = Array.isArray(historicoRaw) ? historicoRaw.slice().reverse() : [];
+            var simulacoes = historico.filter(function(r) { return r && r.tipo_registro === 'SIMULACAO'; });
+            var historicoVazio = historico.length === 0;
+            var rodadaAtualNum = getRodadaAtualTabela(selecionada);
             return (
               <div>
                 <h3 style={{ margin: '0 0 12px' }}>Histórico de rodadas e análises</h3>
                 <div className="sim-alert info" style={{ marginBottom: 14 }}>
                   Rotas e fretes da mesma proposta ficam na mesma rodada. Uma nova rodada deve ser aberta somente quando chegar uma nova proposta/tabela do transportador; os resultados salvos continuam guardados para comparação.
                 </div>
+
+                {historicoVazio && rodadaAtualNum > 1 ? (
+                  <div className="sim-alert" style={{ marginBottom: 14, background: '#fef9c3', borderColor: '#facc15' }}>
+                    <strong>⚠ Histórico de rodadas está vazio</strong>, mas a negociação indica rodada {rodadaAtualNum}. Isso pode ocorrer após testes de exclusão/recriação. Clique em <strong>"Reparar histórico"</strong> para recriar a entrada da rodada atual.
+                    <div style={{ marginTop: 8 }}>
+                      <button className="primary" type="button" onClick={function() { handleRepararHistoricoRodadas(selecionada); }} disabled={abrindoRodada}>
+                        {abrindoRodada ? 'Reparando...' : '🔧 Reparar histórico'}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="sim-actions" style={{ marginBottom: 14 }}>
                   <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo rodada...' : '+ Abrir próxima rodada'}</button>
@@ -1917,7 +1956,7 @@ export default function TabelasNegociacaoPage() {
                     {simulacoes.slice(0, 4).map(function(rodada) {
                       var ind = rodada.indicadores || {};
                       return (
-                        <div className="summary-card" key={rodada.id || rodada.criado_em} style={rodada.divergencia_base && rodada.divergencia_base.divergiu ? { borderColor: '#dc2626', borderWidth: 2 } : {}}>
+                        <div className="summary-card" key={rodada.id || rodada.criado_em || Math.random()} style={rodada.divergencia_base && rodada.divergencia_base.divergiu ? { borderColor: '#dc2626', borderWidth: 2 } : {}}>
                         {rodada.divergencia_base && rodada.divergencia_base.divergiu ? (
                           <div style={{ fontSize: 11, color: '#dc2626', marginBottom: 4, fontWeight: 600 }}>
                             ⚠ Base diverge da 1ª rodada ({(rodada.divergencia_base.dif_ctes > 0 ? '+' : '') + rodada.divergencia_base.dif_ctes} CT-es)
@@ -1943,14 +1982,15 @@ export default function TabelasNegociacaoPage() {
                         <th>Saving mês/ano</th>
                         <th>Faturamento mês/ano</th>
                         <th>Pedidos/Volumes</th>
-                        <th>Frete % NF</th>
                         <th>Base CT-es</th>
                         <th>Não calc.</th>
+                        <th>Frete % NF</th>
                         <th>Observação</th>
                       </tr>
                     </thead>
                     <tbody>
                       {historico.map(function(rodada, idx) {
+                        if (!rodada) return null;
                         var ind = rodada.indicadores || {};
                         var imp = rodada.itens_importados || {};
                         var salvos = rodada.itens_salvos_apos_importacao || {};
@@ -1958,7 +1998,7 @@ export default function TabelasNegociacaoPage() {
                         return (
                           <tr key={rodada.id || rodada.criado_em || idx}>
                             <td><strong>{rodada.rodada || '-' }ª</strong></td>
-                            <td>{isSim ? 'SIMULAÇÃO' : 'IMPORTAÇÃO'}</td>
+                            <td>{isSim ? 'SIMULAÇÃO' : (rodada.tipo_registro === 'NOVA_RODADA' ? 'ABERTURA' : 'IMPORTAÇÃO')}</td>
                             <td>{formatDateBR(rodada.criado_em)}</td>
                             <td>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
                             <td>{isSim ? <span>{formatMoney(ind.saving_mes || 0)}<br /><small>{formatMoney(ind.saving_ano || 0)}</small></span> : '-'}</td>
@@ -1974,10 +2014,10 @@ export default function TabelasNegociacaoPage() {
                                 </span>;
                               }())}</td>
                             <td style={{ fontSize: 12 }}>{(function() {
-                                var lista = rodada.nao_calculados_por_motivo || [];
-                                var total = lista.reduce(function(s, x) { return s + (x.qtd || 0); }, 0);
+                                var lista = Array.isArray(rodada.nao_calculados_por_motivo) ? rodada.nao_calculados_por_motivo : [];
+                                var total = lista.reduce(function(s, x) { return s + (Number((x && x.qtd) || 0)); }, 0);
                                 if (!total) return <span style={{ color: '#94a3b8' }}>—</span>;
-                                var titulo = lista.map(function(x) { return x.motivo + ': ' + x.qtd; }).join('\n');
+                                var titulo = lista.map(function(x) { return (x && x.motivo ? x.motivo : '?') + ': ' + (x && x.qtd || 0); }).join('\n');
                                 return <span title={titulo} style={{ cursor: 'help', color: '#d97706' }}>{total}</span>;
                               }())}</td>
                             <td>{isSim ? <span>Real: {formatPercent(ind.percentual_frete_realizado || 0)}<br /><small>Tabela: {formatPercent(ind.percentual_frete_simulado || 0)}</small></span> : '-'}</td>
@@ -1985,12 +2025,32 @@ export default function TabelasNegociacaoPage() {
                           </tr>
                         );
                       })}
-                      {!historico.length ? <tr><td colSpan="9">Nenhuma rodada registrada ainda.</td></tr> : null}
+                      {!historico.length ? <tr><td colSpan="11" style={{ textAlign: 'center', color: '#94a3b8', padding: 16 }}>Nenhuma rodada registrada ainda. Use "+ Abrir próxima rodada" para iniciar.</td></tr> : null}
                     </tbody>
                   </table>
                 </div>
               </div>
             );
+            } catch(erroRodadas) {
+              return (
+                <div>
+                  <div className="sim-alert" style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+                    <strong>⚠ Erro ao renderizar aba Rodadas</strong>
+                    <br /><code style={{ fontSize: 12, display: 'block', marginTop: 8, background: '#fff1f1', padding: '6px 10px', borderRadius: 4 }}>{erroRodadas && erroRodadas.message ? erroRodadas.message : String(erroRodadas)}</code>
+                    <div style={{ marginTop: 12, fontSize: 13, color: '#475569' }}>
+                      Copie essa mensagem e informe ao suporte.
+                    </div>
+                    <div style={{ marginTop: 10 }}>
+                      <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada); }}>Recarregar negociação</button>
+                    </div>
+                  </div>
+                  <div className="sim-actions">
+                    <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo rodada...' : '+ Abrir próxima rodada'}</button>
+                    <button className="sim-tab" type="button" onClick={function() { setAbaNegoc('importacao'); }}>Ir para importação</button>
+                  </div>
+                </div>
+              );
+            }
           })() : null}
 
         </section>
