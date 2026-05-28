@@ -1,5 +1,6 @@
-// Patch 4.16AE desativado temporariamente.
-// Motivo: a tentativa anterior buscava mesorregiao dentro do motor da simulação
-// e gerou erro de runtime. A mesorregião será resolvida somente no laudo/exportação,
-// sem alterar o motor de cálculo.
-console.log('4.16AE desativado: sem alteração no motor de cálculo.');
+// Patch 4.16AE - rollback seguro.
+// Não altera o motor de simulação.
+// A tentativa anterior de buscar mesorregião dentro do cálculo foi removida/desativada
+// porque a simulação não deve depender de municipioPorIbge dentro da função de cálculo.
+// A mesorregião deve ser tratada posteriormente apenas no laudo/exportação.
+console.log('4.16AE rollback seguro: sem alteração no motor de cálculo.');
