@@ -2379,7 +2379,7 @@ function filtrarRealizadoLocal(rows = [], filtros = {}) {
 }
 
 function temFiltroRealizadoDb(filtros = {}) {
-  return Boolean(filtros.inicio || filtros.fim || filtros.canal || filtros.transportadoraRealizada || filtros.ufOrigem || filtros.ufDestino || filtros.origem || filtros.destino || filtros.somenteSemCanal);
+  return Boolean(filtros.competencia || filtros.inicio || filtros.fim || filtros.canal || filtros.transportadoraRealizada || filtros.ufOrigem || filtros.ufDestino || filtros.origem || filtros.destino || filtros.somenteSemCanal);
 }
 
 function isCanalRealizadoPreenchido(value) {
@@ -2462,6 +2462,139 @@ function limparOrigemParaConsultaDb(origem = '') {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim();
+}
+
+
+const REALIZADO_PAGINADO_PAGE_SIZE = 1000;
+const REALIZADO_PAGINADO_MAX_ROWS = 300000;
+
+function aplicarFiltrosRealizadoSelectQueryDb(query, filtros = {}) {
+  const origem = limparOrigemParaConsultaDb(filtros.origem || '');
+  const destino = limparOrigemParaConsultaDb(filtros.destino || '');
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
+  const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
+  const competencia = String(filtros.competencia || '').trim().slice(0, 7);
+
+  if (competencia) query = query.eq('competencia', competencia);
+  if (filtros.inicio) query = query.gte('emissao', filtros.inicio + 'T00:00:00');
+  if (filtros.fim) query = query.lte('emissao', filtros.fim + 'T23:59:59');
+  if (filtros.ufOrigem) query = query.eq('uf_origem', String(filtros.ufOrigem).trim().toUpperCase());
+  if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
+  if (transportadoraRealizada) query = query.ilike('transportadora', '%' + transportadoraRealizada + '%');
+  if (origem) query = query.ilike('cidade_origem', origem + '%');
+  if (destino) query = query.ilike('cidade_destino', destino + '%');
+  if (canalVariantes.length) query = query.in('canal', canalVariantes);
+  if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
+  if (filtros.somenteSemCanal) query = query.or('canal.is.null,canal.eq.');
+  return query;
+}
+
+async function listarRealizadoCtesViaSelectPaginado(supabase, filtros = {}) {
+  const pageSize = Math.max(100, Math.min(Number(filtros.pageSize || REALIZADO_PAGINADO_PAGE_SIZE) || REALIZADO_PAGINADO_PAGE_SIZE, 1000));
+  const totalMax = Math.max(pageSize, Math.min(Number(filtros.limit || filtros.totalMax || REALIZADO_PAGINADO_MAX_ROWS) || REALIZADO_PAGINADO_MAX_ROWS, REALIZADO_PAGINADO_MAX_ROWS));
+  const onProgress = typeof filtros.onProgress === 'function' ? filtros.onProgress : null;
+  let totalEncontrado = null;
+
+  try {
+    let countQuery = supabase.from('realizado_ctes').select('id', { count: 'exact', head: true });
+    countQuery = aplicarFiltrosRealizadoSelectQueryDb(countQuery, filtros);
+    const { count, error } = await countQuery;
+    if (!error) totalEncontrado = count || 0;
+  } catch {
+    totalEncontrado = null;
+  }
+
+  const rows = [];
+  let from = 0;
+  let pagina = 1;
+  onProgress?.({ etapa: 'inicio', pagina: 0, lote: 0, loteBruto: 0, carregados: 0, total: totalEncontrado, pageSize, concluido: false });
+
+  while (from < totalMax) {
+    const to = Math.min(from + pageSize - 1, totalMax - 1);
+    let query = supabase
+      .from('realizado_ctes')
+      .select(REALIZADO_SELECT_COLUMNS)
+      .order('emissao', { ascending: false, nullsFirst: false })
+      .range(from, to);
+
+    query = aplicarFiltrosRealizadoSelectQueryDb(query, filtros);
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const loteBruto = data || [];
+    const lote = aplicarFiltroSemCanal(filtrarRealizadoLocal(loteBruto.map(normalizeRealizadoDbRow), filtros), filtros);
+    rows.push(...lote);
+
+    const concluiu = loteBruto.length < pageSize || rows.length >= totalMax || (totalEncontrado !== null && from + loteBruto.length >= totalEncontrado);
+    onProgress?.({ etapa: concluiu ? 'concluido' : 'lote', pagina, lote: lote.length, loteBruto: loteBruto.length, carregados: rows.length, total: totalEncontrado, pageSize, concluido: concluiu });
+
+    if (!loteBruto.length || loteBruto.length < pageSize) break;
+    from += pageSize;
+    pagina += 1;
+    await aguardar(0);
+  }
+
+  return rows.slice(0, totalMax);
+}
+
+async function usuarioResponsavelResumoRealizadoDb(supabase) {
+  try {
+    const { data } = await supabase.auth.getUser();
+    return data?.user?.email || data?.user?.id || '';
+  } catch {
+    return '';
+  }
+}
+
+export async function salvarResumoMensalRealizadoCtes(payload = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado. Nao foi possivel salvar o resumo mensal.');
+  const supabase = ensureClient();
+  const usuario = payload.usuario_responsavel || payload.usuarioResponsavel || await usuarioResponsavelResumoRealizadoDb(supabase);
+  const row = {
+    competencia: payload.competencia || '',
+    periodo_inicio: payload.periodo_inicio || payload.periodoInicio || null,
+    periodo_fim: payload.periodo_fim || payload.periodoFim || null,
+    total_ctes: Number(payload.total_ctes ?? payload.totalCtes ?? 0) || 0,
+    total_transportadoras: Number(payload.total_transportadoras ?? payload.totalTransportadoras ?? 0) || 0,
+    total_origens: Number(payload.total_origens ?? payload.totalOrigens ?? 0) || 0,
+    total_destinos: Number(payload.total_destinos ?? payload.totalDestinos ?? 0) || 0,
+    valor_total_cte: Number(payload.valor_total_cte ?? payload.valorTotalCte ?? 0) || 0,
+    valor_total_nf: Number(payload.valor_total_nf ?? payload.valorTotalNf ?? 0) || 0,
+    peso_total: Number(payload.peso_total ?? payload.pesoTotal ?? 0) || 0,
+    cubagem_total: Number(payload.cubagem_total ?? payload.cubagemTotal ?? 0) || 0,
+    volumes_totais: Number(payload.volumes_totais ?? payload.volumesTotais ?? 0) || 0,
+    frete_sobre_nf: Number(payload.frete_sobre_nf ?? payload.freteSobreNf ?? 0) || 0,
+    resumo_transportadora: payload.resumo_transportadora || payload.resumoTransportadora || [],
+    resumo_origem: payload.resumo_origem || payload.resumoOrigem || [],
+    resumo_uf_destino: payload.resumo_uf_destino || payload.resumoUfDestino || [],
+    resumo_canal: payload.resumo_canal || payload.resumoCanal || [],
+    filtros: payload.filtros || {},
+    usuario_responsavel: usuario || '',
+  };
+
+  const { data, error } = await supabase
+    .from('realizado_ctes_resumos_mensais')
+    .insert(row)
+    .select('*')
+    .single();
+
+  if (error) {
+    throw new Error('Erro ao salvar resumo mensal. Rode a migration 20260528_001_realizado_ctes_resumos_mensais.sql no Supabase. Detalhe: ' + error.message);
+  }
+
+  return data;
+}
+
+export async function listarResumosMensaisRealizadoCtes(limit = 5) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('realizado_ctes_resumos_mensais')
+    .select('*')
+    .order('criado_em', { ascending: false })
+    .limit(Math.max(1, Math.min(Number(limit) || 5, 20)));
+  if (error) return [];
+  return data || [];
 }
 
 
@@ -2564,8 +2697,11 @@ export async function resumirRealizadoCtes(filtros = {}) {
 
 export async function carregarPainelRealizadoCtes(filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
-  const limit = Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 15000 : 50)) || 50, temFiltro ? 50000 : 200));
-  const filtrosBusca = { ...filtros, limit, amostra: !temFiltro };
+  const consultaCompleta = filtros.consultaCompleta === true || filtros.paginado === true;
+  const limit = consultaCompleta
+    ? Math.max(1, Math.min(Number(filtros.limit || REALIZADO_PAGINADO_MAX_ROWS) || REALIZADO_PAGINADO_MAX_ROWS, REALIZADO_PAGINADO_MAX_ROWS))
+    : Math.max(1, Math.min(Number(filtros.limit || (temFiltro ? 15000 : 50)) || 50, temFiltro ? 50000 : 200));
+  const filtrosBusca = { ...filtros, limit, consultaCompleta, amostra: !temFiltro && !consultaCompleta };
 
   if (!isSupabaseConfigured()) {
     const rows = aplicarFiltroSemCanal(filtrarRealizadoLocal(readRealizadoLocal(), filtrosBusca), filtrosBusca).slice(0, limit);
@@ -2725,10 +2861,14 @@ async function listarRealizadoCtesViaRpc(supabase, filtros = {}) {
 export async function listarRealizadoCtes(filtros = {}) {
   const temFiltro = temFiltroRealizadoDb(filtros);
   const consultaAmpla = filtros.consultaAmpla === true;
+  const consultaCompleta = filtros.consultaCompleta === true || filtros.paginado === true;
   const filtrosSeguros = {
     ...filtros,
-    limit: Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200)),
-    amostra: filtros.amostra === true || (!temFiltro && !consultaAmpla),
+    limit: consultaCompleta
+      ? Math.max(1, Math.min(Number(filtros.limit || REALIZADO_PAGINADO_MAX_ROWS) || REALIZADO_PAGINADO_MAX_ROWS, REALIZADO_PAGINADO_MAX_ROWS))
+      : Math.max(1, Math.min(Number(filtros.limit || (temFiltro || consultaAmpla ? 10000 : 50)) || 50, temFiltro || consultaAmpla ? 50000 : 200)),
+    consultaCompleta,
+    amostra: filtros.amostra === true || (!temFiltro && !consultaAmpla && !consultaCompleta),
   };
 
   if (!isSupabaseConfigured()) {
@@ -2737,8 +2877,16 @@ export async function listarRealizadoCtes(filtros = {}) {
   }
 
   const supabase = ensureClient();
-  const timeoutConsulta = temFiltro || consultaAmpla ? 25000 : 8000;
+  const timeoutConsulta = consultaCompleta ? Number(filtrosSeguros.timeoutMs || 180000) : (temFiltro || consultaAmpla ? 25000 : 8000);
   let amostraError = null;
+
+  if (consultaCompleta) {
+    return await executarComTimeout(
+      listarRealizadoCtesViaSelectPaginado(supabase, filtrosSeguros),
+      timeoutConsulta,
+      'A busca completa paginada do realizado demorou demais. Tente filtrar por competencia, periodo, canal ou origem.'
+    );
+  }
 
   if (!consultaAmpla || filtrosSeguros.amostra === true) {
     try {

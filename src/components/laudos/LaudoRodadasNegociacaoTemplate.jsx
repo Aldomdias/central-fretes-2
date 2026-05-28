@@ -16,6 +16,90 @@ function Variacao({ valor, tipo = 'numero', sufixo = '' }) {
   return <small style={{ color: positivo ? '#15803d' : '#b91c1c', fontWeight: 800 }}>{positivo ? '+' : '-'}{texto}{sufixo}</small>;
 }
 
+function percentualPp(valor) {
+  const v = Number(valor || 0);
+  return (v > 0 ? '+' : '') + v.toFixed(2) + ' p.p.';
+}
+
+function mesorregiaoReal(valor) {
+  const texto = String(valor || '').trim().toLowerCase();
+  return texto && !texto.includes('não identificada') && !texto.includes('nao identificada');
+}
+
+function diagnosticoResumoTexto({ externo, poucaBase, atual, inicial }) {
+  if (poucaBase) {
+    return externo
+      ? 'Esta é a primeira rodada salva da análise. A proposta apresenta aderência atual de ' + percentual(atual.aderencia) + ', com ' + numero(atual.ctesGanhos) + ' CT-es competitivos, ' + numero(atual.volumesGanhos) + ' volumes competitivos e faturamento potencial capturado de ' + dinheiro(atual.faturamentoMes) + ' por mês. As próximas seções mostram onde estão os maiores volumes e as oportunidades de ajuste.'
+      : 'Esta é a primeira rodada salva da análise. O cenário atual apresenta aderência de ' + percentual(atual.aderencia) + ', saving mensal de ' + dinheiro(atual.savingMes) + ' e faturamento capturado de ' + dinheiro(atual.faturamentoMes) + ' por mês.';
+  }
+  return externo
+    ? 'A proposta saiu de ' + percentual(inicial.aderencia) + ' para ' + percentual(atual.aderencia) + ' de aderência. Os CT-es competitivos passaram de ' + numero(inicial.ctesGanhos) + ' para ' + numero(atual.ctesGanhos) + '. O objetivo da próxima rodada deve ser revisar os pontos de maior impacto listados abaixo.'
+    : 'A negociação saiu de ' + percentual(inicial.aderencia) + ' para ' + percentual(atual.aderencia) + ' de aderência, com saving mensal de ' + dinheiro(inicial.savingMes) + ' para ' + dinheiro(atual.savingMes) + ' e faturamento capturado de ' + dinheiro(inicial.faturamentoMes) + ' para ' + dinheiro(atual.faturamentoMes) + ' por mês.';
+}
+
+function numeroOperacional(valor, casas = 1) {
+  return Number(valor || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: casas,
+    maximumFractionDigits: casas,
+  });
+}
+
+function VeiculoOcupacaoIlustracaoLaudo({ ocupacaoPercentual = 0 }) {
+  const fill = Math.max(0, Math.min(100, ocupacaoPercentual));
+  const fillColor = fill >= 90 ? '#fb923c' : fill >= 70 ? '#34d399' : '#60a5fa';
+  return (
+    <svg viewBox="0 0 220 88" role="img" aria-label="Ocupação estimada do veículo" style={{ width: '100%', maxWidth: 190 }}>
+      <rect x="18" y="28" width="92" height="34" rx="8" fill="#eff6ff" stroke="#bfdbfe" strokeWidth="2" />
+      <rect x="20" y="30" width={Math.max(0, 88 * (fill / 100))} height="30" rx="6" fill={fillColor} opacity="0.9" />
+      <path d="M110 38h22l18 16v8h-40V38Z" fill="#e0f2fe" stroke="#bfdbfe" strokeWidth="2" />
+      <path d="M123 41h8l11 10h-19V41Z" fill="#f8fafc" stroke="#bfdbfe" strokeWidth="1.5" />
+      <circle cx="40" cy="68" r="9" fill="#0f172a" />
+      <circle cx="40" cy="68" r="4" fill="#f8fafc" />
+      <circle cx="116" cy="68" r="9" fill="#0f172a" />
+      <circle cx="116" cy="68" r="4" fill="#f8fafc" />
+      <line x1="18" y1="66" x2="150" y2="66" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function VeiculoOperacionalLaudoCard({ dados }) {
+  if (!dados || dados.semDados) return null;
+  const ocupacaoPercentual = Number(dados.ocupacaoOperacional || 0) * 100;
+  const badgeBg = dados.ocupacaoOperacional >= 0.9 ? '#fff7ed' : dados.ocupacaoOperacional >= 0.7 ? '#ecfdf5' : '#eff6ff';
+  const badgeColor = dados.ocupacaoOperacional >= 0.9 ? '#c2410c' : dados.ocupacaoOperacional >= 0.7 ? '#047857' : '#1d4ed8';
+  const faixaCubagem = numeroOperacional(dados.veiculo?.cubagemMin, 0) + ' a ' + numeroOperacional(dados.veiculo?.cubagemRef, 0) + ' m³';
+  const faixaPeso = numeroOperacional(dados.veiculo?.pesoMin, 0) + ' a ' + numeroOperacional(dados.veiculo?.pesoRef, 0) + ' kg';
+  return (
+    <section className="laudo-rodadas-section">
+      <h2>Veículo sugerido nas cargas ganhas</h2>
+      <div className="laudo-rodadas-kpi" style={{ alignItems: 'stretch', gap: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+          <div>
+            <span>Veículo sugerido</span>
+            <strong style={{ fontSize: '1rem', lineHeight: 1.15 }}>{dados.veiculo?.tipo}</strong>
+          </div>
+          <div style={{ padding: '4px 8px', borderRadius: 999, background: badgeBg, color: badgeColor, fontSize: '0.72rem', fontWeight: 800, whiteSpace: 'nowrap' }}>
+            {percentual(ocupacaoPercentual)} ocupado
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '170px minmax(0, 1fr)', gap: 12, alignItems: 'center' }}>
+          <VeiculoOcupacaoIlustracaoLaudo ocupacaoPercentual={ocupacaoPercentual} />
+          <small style={{ display: 'grid', gap: 4 }}>
+            <span>Cubagem/dia: <strong>{numeroOperacional(dados.cubagemDia, 2)} m³</strong></span>
+            <span>Peso/dia: <strong>{numeroOperacional(dados.pesoDia, 0)} kg</strong></span>
+            <span>Referência: <strong>{faixaCubagem} • {faixaPeso}</strong></span>
+            {dados.qtdVeiculos > 1 ? <span>Necessidade: <strong>{dados.qtdVeiculos} veículo(s)/dia</strong></span> : null}
+            <span>Limitante: <strong>{dados.fatorLimitante === 'peso' ? 'peso' : 'cubagem'}</strong></span>
+          </small>
+        </div>
+        <small style={{ color: badgeColor }}>{dados.alerta}{dados.minimoNoLimite ? ' Menor veículo físico: ' + dados.veiculoMinimo?.tipo + '.' : ''}</small>
+        <small>Uso comum: {dados.veiculo?.uso}</small>
+      </div>
+    </section>
+  );
+}
+
+
 function prioridadeClasse(valor) {
   const v = String(valor || '').toLowerCase();
   if (v.includes('alta')) return 'alta';
@@ -161,14 +245,33 @@ function oportunidadesExcel(linhas = []) {
   }));
 }
 
+function paretoCidadesExcel(linhas = []) {
+  return linhas.map((item, idx) => ({
+    Posicao: idx + 1,
+    Cidade: item.cidade || '',
+    UF_Destino: item.ufDestino || '',
+    CTEs: item.ctes || 0,
+    Volumes: item.volumes || 0,
+    Percentual_Volume: item.pctVolume || 0,
+    Percentual_Acumulado: item.pctAcumulado || 0,
+    Frete_Realizado: item.freteRealizado || 0,
+    Valor_NF: item.valorNF || 0,
+  }));
+}
+
+
 function exportarExcel(laudo = {}, externo) {
+  const poucaBase = Number(laudo.quantidadeSimulacoes || 0) < 2;
+  const mesorregioesReais = (laudo.mesorregiaoFaixas || []).filter((item) => mesorregiaoReal(item.mesorregiao || item.rota));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhaResumoExcel(laudo)), 'Resumo');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(evolucaoExcel(laudo.evolucaoRodadas || [])), 'Evolucao Rodadas');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.rotasCriticas || laudo.ondeAjustar || [])), 'Rotas Criticas');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.rotasMelhoraram || laudo.ondeMelhorou || [])), 'Rotas Melhoraram');
+  if (!poucaBase) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.rotasMelhoraram || laudo.ondeMelhorou || [])), 'Rotas Melhoraram');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.ufsCriticas || laudo.ufsPrioritarias || [])), 'UFs Prioritarias');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.faixasCriticas || laudo.faixasPrioritarias || [])), 'Faixas Prioritarias');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paretoCidadesExcel(laudo.cidadesParetoVolume || [])), 'Pareto Cidades');
+  if (mesorregioesReais.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(mesorregioesReais)), 'Mesorregiao Faixa');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.destinoFaixaPareto || [])), 'Pareto Destino Faixa');
 
   const tipo = externo ? 'transportador' : 'diretoria';
   const nome = `laudo-rodadas-${tipo}-${nomeArquivoSeguro(laudo.transportadora)}.xlsx`;
@@ -282,6 +385,70 @@ function TabelaMelhorias({ linhas = [] }) {
   );
 }
 
+function TabelaDestinoFaixaPareto({ linhas = [] }) {
+  return (
+    <section className="laudo-rodadas-section">
+      <h2>Pareto 80% — Destino x Faixa</h2>
+      <p>Mostra onde o volume está concentrado por origem, destino e faixa de peso.</p>
+      <div className="laudo-rodadas-table-wrap">
+        <table className="laudo-rodadas-table">
+          <thead><tr><th>Origem → Destino/UF</th><th>Faixa</th><th className="right">CT-es</th><th className="right">Volumes</th><th className="right">% volume</th><th className="right">% acumulado</th><th className="right">CT-es ganhos</th><th className="right">CT-es perdidos</th><th className="right">Aderência</th><th className="right">Fat. não capturado</th><th className="right">Ajuste médio</th></tr></thead>
+          <tbody>
+            {linhas.map((item, idx) => (
+              <tr key={item.chave || idx}>
+                <td><strong>{item.rotaDestino || [item.origem, item.destino ? item.destino + (item.ufDestino ? '/' + item.ufDestino : '') : item.ufDestino].filter(Boolean).join(' → ') || '-'}</strong></td>
+                <td>{item.faixa || '-'}</td>
+                <td className="right">{numero(item.ctes)}</td>
+                <td className="right">{numero(item.volumes)}</td>
+                <td className="right">{percentual(item.pctVolume)}</td>
+                <td className="right">{percentual(item.pctAcumulado)}</td>
+                <td className="right">{numero(item.ctesGanhos)}</td>
+                <td className="right">{numero(item.ctesPerdidos)}</td>
+                <td className="right">{percentual(item.aderencia)}</td>
+                <td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td>
+                <td className="right">{percentual(item.ajusteMedio)}</td>
+              </tr>
+            ))}
+            {!linhas.length ? <tr><td colSpan="11">Sem leitura suficiente por destino e faixa.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+
+function TabelaFaixas({ titulo, linhas = [] }) {
+  return (
+    <section className="laudo-rodadas-section">
+      <h2>{titulo}</h2>
+      <div className="laudo-rodadas-table-wrap">
+        <table className="laudo-rodadas-table">
+          <thead><tr><th>Origem</th><th>UF destino</th><th>Destino</th><th>Faixa</th><th className="right">CT-es perdidos</th><th className="right">CT-es ganhos</th><th className="right">Aderência</th><th className="right">Fat. não capturado</th><th className="right">Ajuste médio</th><th>Prioridade</th></tr></thead>
+          <tbody>{linhas.map((item) => (<tr key={item.chave || [item.origem, item.ufDestino, item.rota, item.faixa].filter(Boolean).join('-')}><td>{item.origem || '-'}</td><td>{item.ufDestino || '-'}</td><td><strong>{item.rota || item.cotacao || '-'}</strong></td><td><strong>{item.faixa || '-'}</strong></td><td className="right">{numero(item.ctesPerdidos)}</td><td className="right">{numero(item.ctesGanhos)}</td><td className="right">{percentual(item.aderencia)}</td><td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td><td className="right">{percentual(item.ajusteMedio)}</td><td><span className={'laudo-rodadas-badge ' + prioridadeClasse(item.prioridade)}>{item.prioridade || 'BAIXA'}</span></td></tr>))}{!linhas.length ? <tr><td colSpan="10">Sem leitura suficiente por faixa neste recorte.</td></tr> : null}</tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+
+function TabelaParetoCidades({ linhas = [] }) {
+  return (
+    <section className="laudo-rodadas-section">
+      <h2>Pareto 80% das cidades por volume total</h2>
+      <p>Cidades que concentram aproximadamente 80% do volume total da última rodada analisada, independentemente de ganho ou perda.</p>
+      <div className="laudo-rodadas-table-wrap">
+        <table className="laudo-rodadas-table">
+          <thead><tr><th>Origem → Destino/UF</th><th className="right">CT-es</th><th className="right">Volumes</th><th className="right">% volume</th><th className="right">% acumulado</th><th className="right">CT-es ganhos</th><th className="right">CT-es perdidos</th><th className="right">Fat. capturado</th><th className="right">Fat. não capturado</th><th className="right">Redução média</th></tr></thead>
+          <tbody>{linhas.map((item) => (<tr key={item.chave || item.rotaDestino || item.cidade}><td><strong>{item.rotaDestino || [item.origem, item.cidade ? item.cidade + (item.ufDestino ? '/' + item.ufDestino : '') : item.ufDestino].filter(Boolean).join(' → ') || '-'}</strong></td><td className="right">{numero(item.ctes)}</td><td className="right">{numero(item.volumes)}</td><td className="right">{percentual(item.pctVolume)}</td><td className="right">{percentual(item.pctAcumulado)}</td><td className="right">{numero(item.ctesGanhos)}</td><td className="right">{numero(item.ctesPerdidos)}</td><td className="right">{dinheiro(item.faturamentoCapturado)}</td><td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td><td className="right">{percentual(item.ajusteMedio)}</td></tr>))}{!linhas.length ? <tr><td colSpan="10">Execute uma nova simulação para gerar o Pareto de cidades.</td></tr> : null}</tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+
 function TabelaSimples({ titulo, linhas = [], tipo = 'uf' }) {
   return (
     <section className="laudo-rodadas-section">
@@ -328,6 +495,7 @@ export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = nu
   const inicial = comparativo.inicial || {};
   const atual = comparativo.atual || {};
   const poucaBase = Number(laudo.quantidadeSimulacoes || 0) < 2;
+  const mesorregioesReais = (laudo.mesorregiaoFaixas || []).filter((item) => mesorregiaoReal(item.mesorregiao || item.rota));
   const tipoArquivo = externo ? 'transportador' : 'diretoria';
   const tituloExport = `${laudo.titulo || 'Laudo de rodadas'} - ${laudo.transportadora || 'Transportadora'}`;
 
@@ -377,23 +545,22 @@ export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = nu
         {poucaBase ? (
           <div className="laudo-rodadas-alert warn">Para análise completa de evolução, o ideal é ter pelo menos duas simulações salvas. Com uma única rodada, o laudo mostra apenas o diagnóstico atual.</div>
         ) : null}
-
         <section className="laudo-rodadas-kpis">
-          <div className="laudo-rodadas-kpi"><span>Aderência atual</span><strong>{percentual(atual.aderencia)}</strong><Variacao valor={comparativo.evolucaoAderencia} tipo="percentual" sufixo=" p.p." /></div>
-          <div className="laudo-rodadas-kpi"><span>CT-es competitivos</span><strong>{numero(atual.ctesGanhos)}</strong><Variacao valor={comparativo.evolucaoCtesGanhos} /></div>
-          <div className="laudo-rodadas-kpi"><span>Volumes competitivos</span><strong>{numero(atual.volumesGanhos)}</strong><Variacao valor={comparativo.evolucaoVolumes} /></div>
-          <div className="laudo-rodadas-kpi"><span>Faturamento capturado/mês</span><strong>{dinheiro(atual.faturamentoMes)}</strong><Variacao valor={comparativo.evolucaoFaturamentoMes} tipo="dinheiro" /></div>
+          <div className="laudo-rodadas-kpi"><span>Aderência da proposta</span><strong>{percentual(atual.aderencia)}</strong>{!poucaBase ? <Variacao valor={comparativo.evolucaoAderencia} tipo="percentual" sufixo=" p.p." /> : <small>Diagnóstico atual</small>}</div>
+          <div className="laudo-rodadas-kpi"><span>CT-es que a proposta captura</span><strong>{numero(atual.ctesGanhos)}</strong>{!poucaBase ? <Variacao valor={comparativo.evolucaoCtesGanhos} /> : <small>Base competitiva</small>}</div>
+          <div className="laudo-rodadas-kpi"><span>Volumes que a proposta captura</span><strong>{numero(atual.volumesGanhos)}</strong>{!poucaBase ? <Variacao valor={comparativo.evolucaoVolumes} /> : <small>Volume competitivo</small>}</div>
+          <div className="laudo-rodadas-kpi"><span>Faturamento potencial capturado/mês</span><strong>{dinheiro(atual.faturamentoMes)}</strong>{!poucaBase ? <Variacao valor={comparativo.evolucaoFaturamentoMes} tipo="dinheiro" /> : <small>Estimativa mensal</small>}</div>
           {!externo ? <div className="laudo-rodadas-kpi"><span>Saving/mês</span><strong>{dinheiro(atual.savingMes)}</strong><Variacao valor={comparativo.evolucaoSavingMes} tipo="dinheiro" /></div> : null}
-          <div className="laudo-rodadas-kpi"><span>Ajuste médio necessário</span><strong>{percentual(atual.reducaoMedia)}</strong><small>Inicial: {percentual(inicial.reducaoMedia)}</small></div>
+          <div className="laudo-rodadas-kpi"><span>Frete atual sobre NF</span><strong>{percentual(atual.percentualFreteReal)}</strong><small>Base realizada</small></div>
+          <div className="laudo-rodadas-kpi"><span>Frete da proposta sobre NF</span><strong>{percentual(atual.percentualFreteTabela)}</strong><small>Tabela simulada</small></div>
+          <div className="laudo-rodadas-kpi"><span>Redução sobre NF</span><strong>{percentualPp((atual.percentualFreteTabela || 0) - (atual.percentualFreteReal || 0))}</strong><small>Meta frete/NF</small></div>
+          <div className="laudo-rodadas-kpi"><span>Redução média para capturar volume perdido</span><strong>{percentual(atual.reducaoMedia)}</strong><small>Cargas ainda não competitivas</small></div>
         </section>
+        <VeiculoOperacionalLaudoCard dados={laudo.veiculoOperacional || atual.veiculoOperacional} />
 
         <section className="laudo-rodadas-section">
-          <h2>Resumo da evolução</h2>
-          <p>
-            {externo
-              ? `A proposta saiu de ${percentual(inicial.aderencia)} para ${percentual(atual.aderencia)} de aderência. Os CT-es competitivos passaram de ${numero(inicial.ctesGanhos)} para ${numero(atual.ctesGanhos)}. O objetivo da próxima rodada deve ser revisar os pontos de maior impacto listados abaixo.`
-              : `A negociação saiu de ${percentual(inicial.aderencia)} para ${percentual(atual.aderencia)} de aderência, com saving mensal de ${dinheiro(inicial.savingMes)} para ${dinheiro(atual.savingMes)} e faturamento capturado de ${dinheiro(inicial.faturamentoMes)} para ${dinheiro(atual.faturamentoMes)} por mês.`}
-          </p>
+          <h2>{poucaBase ? 'Diagnóstico inicial' : 'Resumo da evolução'}</h2>
+          <p>{diagnosticoResumoTexto({ externo, poucaBase, atual, inicial })}</p>
         </section>
 
         <section className="laudo-rodadas-section">
@@ -401,28 +568,77 @@ export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = nu
           <TabelaEvolucao linhas={laudo.evolucaoRodadas || []} externo={externo} />
         </section>
 
+        {!poucaBase ? (
+          <section className="laudo-rodadas-section">
+            <h2>{externo ? 'Onde a proposta melhorou' : 'Rotas/Cotações que evoluíram'}</h2>
+            <TabelaMelhorias linhas={(laudo.rotasMelhoraram || laudo.ondeMelhorou || []).slice(0, 10)} />
+          </section>
+        ) : null}
+
+        <TabelaParetoCidades linhas={(laudo.cidadesParetoVolume || []).slice(0, 20)} />
+        <TabelaSimples titulo="Visão por Estado/UF" linhas={(laudo.ufsCriticas || laudo.ufsPrioritarias || []).slice(0, 8)} tipo="uf" />
+        {mesorregioesReais.length ? (
         <section className="laudo-rodadas-section">
-          <h2>{externo ? 'Onde ainda precisa melhorar' : 'Rotas/Cotações prioritárias'}</h2>
-          <p>{externo ? 'Pontos com maior volume, perda de competitividade ou faturamento potencial ainda não capturado.' : 'Ranking interno de oportunidades, priorizado por faturamento não capturado, CT-es perdidos e ajuste médio necessário.'}</p>
-          <TabelaRotas linhas={(laudo.rotasCriticas || laudo.ondeAjustar || []).slice(0, 12)} />
+          <h2>Mesorregião x Faixa</h2>
+          <p>Agrupamento regional por mesorregião do IBGE e faixa de peso, para direcionar ajustes sem depender do nome comercial da cotação.</p>
+          <div className="laudo-rodadas-table-wrap">
+            <table className="laudo-rodadas-table">
+              <thead><tr><th>Origem</th><th>UF destino</th><th>Mesorregião</th><th>Faixa</th><th className="right">CT-es perdidos</th><th className="right">CT-es ganhos</th><th className="right">Aderência</th><th className="right">Fat. não capturado</th><th className="right">Ajuste médio</th><th>Prioridade</th></tr></thead>
+              <tbody>
+                {mesorregioesReais.slice(0, 25).map((item, idx) => (
+                  <tr key={idx}>
+                    <td>{item.origem || '-'}</td>
+                    <td>{item.ufDestino || '-'}</td>
+                    <td><strong>{item.mesorregiao || item.rota || '-'}</strong></td>
+                    <td>{item.faixa || '-'}</td>
+                    <td className="right">{numero(item.ctesPerdidos)}</td>
+                    <td className="right">{numero(item.ctesGanhos)}</td>
+                    <td className="right">{percentual(item.aderencia)}</td>
+                    <td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td>
+                    <td className="right">{percentual(item.ajusteMedio)}</td>
+                    <td><span className={`laudo-rodadas-badge ${prioridadeClasse(item.prioridade)}`}>{item.prioridade || 'BAIXA'}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
+        ) : null}
 
         <section className="laudo-rodadas-section">
-          <h2>{externo ? 'Onde a proposta melhorou' : 'Rotas/Cotações que evoluíram'}</h2>
-          <TabelaMelhorias linhas={(laudo.rotasMelhoraram || laudo.ondeMelhorou || []).slice(0, 10)} />
+          <h2>Pareto 80% das cidades por volume total</h2>
+          <p>Cidades que concentram 80% do volume total da última rodada, independentemente de ganho ou perda.</p>
+          <div className="laudo-rodadas-table-wrap">
+            <table className="laudo-rodadas-table">
+              <thead><tr><th>Cidade destino</th><th>UF</th><th className="right">CT-es</th><th className="right">Volumes</th><th className="right">% volume</th><th className="right">% acumulado</th><th className="right">CT-es ganhos</th><th className="right">CT-es perdidos</th><th className="right">Aderência</th><th className="right">Fat. não capturado</th></tr></thead>
+              <tbody>
+                {(laudo.paretoCidades || []).length > 0
+                  ? (laudo.paretoCidades || []).map((item, idx) => (
+                    <tr key={idx}>
+                      <td><strong>{item.cidade || '-'}</strong></td>
+                      <td>{item.ufDestino || '-'}</td>
+                      <td className="right">{numero(item.ctes)}</td>
+                      <td className="right">{numero(item.volumes)}</td>
+                      <td className="right">{percentual(item.pctVolume)}</td>
+                      <td className="right">{percentual(item.pctAcumulado)}</td>
+                      <td className="right">{numero(item.ctesGanhos)}</td>
+                      <td className="right">{numero(item.ctesPerdidos)}</td>
+                      <td className="right">{percentual(item.aderencia)}</td>
+                      <td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td>
+                    </tr>
+                  ))
+                  : <tr><td colSpan={10}>Execute uma nova simulação para gerar o Pareto de cidades.</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
         </section>
 
-        <TabelaSimples titulo="UFs destino prioritárias" linhas={(laudo.ufsCriticas || laudo.ufsPrioritarias || []).slice(0, 8)} tipo="uf" />
-        <TabelaSimples titulo="Faixas de peso prioritárias" linhas={(laudo.faixasCriticas || laudo.faixasPrioritarias || []).slice(0, 8)} tipo="faixa" />
+        <TabelaDestinoFaixaPareto linhas={(laudo.destinoFaixaPareto || []).slice(0, 30)} />
 
         <section className="laudo-rodadas-section">
           <h2>Recomendação final</h2>
           <div className="laudo-rodadas-recomendacao">{laudo.recomendacao}</div>
-        </section>
-
-        <section className="laudo-rodadas-section">
-          <h2>Texto pronto para copiar</h2>
-          <pre className="laudo-rodadas-copy">{laudo.relatorioTexto || laudo.relatorio || laudo.corpoEmail}</pre>
         </section>
       </div>
     </article>

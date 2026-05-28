@@ -25,8 +25,9 @@ import {
   excluirTaxaDestino,
   substituirTaxasDestino,
   salvarGeneralidades,
+  excluirRegistroRodadaNegociacao,
 } from '../services/tabelasNegociacaoService';
-import { LaudoNegociacaoTemplate } from '../components/laudos';
+import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -99,18 +100,59 @@ function getRodadaAtualTabela(tabela) {
   var hist = getHistoricoRodadasTabela(tabela);
   return Number(resumo.rodada_atual || (hist.length ? hist[hist.length - 1].rodada : 1) || 1);
 }
+function getIndicadoresGanhasTabela(resumo) {
+  var detalhes = Array.isArray(resumo && resumo.ctesDetalhes) ? resumo.ctesDetalhes : [];
+  var ganhas = detalhes.filter(function(item) {
+    return item && (
+      item.statusSelecionada === 'Ganharia' ||
+      item.ganhouRealizado === true ||
+      Number(item.savingSelecionada || 0) > 0
+    );
+  });
+
+  var meses = Math.max(1, Number((resumo && resumo.meses) || 1));
+  var soma = function(lista, campo) {
+    return lista.reduce(function(acc, item) { return acc + Number((item && item[campo]) || 0); }, 0);
+  };
+
+  var ctesGanhas = ganhas.length || Number(
+    (resumo && (resumo.ctesGanhariaSelecionada || resumo.ctesCapturadosDeOutras)) || 0
+  );
+  var volumesGanhas = ganhas.length
+    ? soma(ganhas, 'volumes')
+    : Number((resumo && resumo.volumesCapturados) || 0);
+
+  var pedidosMes = meses ? ctesGanhas / meses : ctesGanhas;
+  var volumesMes = meses ? volumesGanhas / meses : volumesGanhas;
+
+  return {
+    temGanhas: ctesGanhas > 0,
+    ctesGanhas: ctesGanhas,
+    volumesGanhas: volumesGanhas,
+    pedidosMes: pedidosMes,
+    pedidosDia: pedidosMes / 22,
+    volumesMes: volumesMes,
+    volumesDia: volumesMes / 22,
+  };
+}
+
 function getIndicadoresTabela(tabela) {
   var resumo = getResumoTabela(tabela);
   var ultimaSim = resumo.ultima_simulacao && resumo.ultima_simulacao.indicadores ? resumo.ultima_simulacao.indicadores : {};
+  var ganhos = getIndicadoresGanhasTabela(resumo);
   var savingMes = Number(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || resumo.savingSelecionadaVsReal || 0);
   var savingAno = Number(ultimaSim.saving_ano || resumo.savingSelecionadaVsRealAno || (savingMes * 12) || 0);
   var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
   var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaGanhadoraAno || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
-  var pedidosDia = Number(tabela.volumetria_dia || ultimaSim.pedidos_dia || resumo.cargasDia || 0);
-  var pedidosMes = pedidosDia * 22;
+  // Na tela de negociação, pedidos/volumes devem refletir somente as cargas ganhas/capturadas.
+  // A base total do recorte continua no resumo do simulador, mas não deve alimentar os cards principais.
+  var pedidosDia = Number(ultimaSim.pedidos_ganhos_dia || ganhos.pedidosDia || 0);
+  if (!pedidosDia) pedidosDia = Number(tabela.volumetria_dia || ultimaSim.pedidos_dia || resumo.cargasDia || 0);
+  var pedidosMes = Number(ultimaSim.pedidos_ganhos_mes || ganhos.pedidosMes || 0) || (pedidosDia * 22);
   var pedidosAno = pedidosMes * 12;
-  var volumesDia = Number(ultimaSim.volumes_dia || resumo.volumesDia || 0);
-  var volumesMes = volumesDia * 22;
+  var volumesDia = Number(ultimaSim.volumes_ganhos_dia || ganhos.volumesDia || 0);
+  if (!volumesDia) volumesDia = Number(ultimaSim.volumes_dia || resumo.volumesDia || 0);
+  var volumesMes = Number(ultimaSim.volumes_ganhos_mes || ganhos.volumesMes || 0) || (volumesDia * 22);
   var volumesAno = volumesMes * 12;
   var percentualReal = Number(ultimaSim.percentual_frete_realizado || resumo.percentualFreteRealizado || 0);
   var percentualTabela = Number(tabela.percentual_frete_projetado || ultimaSim.percentual_frete_simulado || resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada || 0);
@@ -129,7 +171,8 @@ function getIndicadoresTabela(tabela) {
     rotasGanhas: Number(ultimaSim.rotas_ganhas || resumo.qtdRotasGanhasSelecionada || 0),
     rotasParciais: Number(ultimaSim.rotas_parciais || resumo.qtdRotasParciaisSelecionada || 0),
     freteCapturado: Number(ultimaSim.frete_capturado || resumo.freteCapturadoRealizado || 0),
-    ctesCapturados: Number(ultimaSim.ctes_capturados || resumo.ctesCapturadosDeOutras || 0),
+    ctesCapturados: Number(ultimaSim.ctes_capturados || ganhos.ctesGanhas || resumo.ctesCapturadosDeOutras || 0),
+    volumesCapturados: Number(ultimaSim.volumes_capturados || ganhos.volumesGanhas || resumo.volumesCapturados || 0),
     estadosGanhadores: Array.isArray(resumo.estadosGanhadoresDestaque) ? resumo.estadosGanhadoresDestaque : [],
     transportadorasPerda: Array.isArray(resumo.transportadorasPerdaDestaque) ? resumo.transportadorasPerdaDestaque : [],
     rotasGanhasDestaque: Array.isArray(resumo.rotasGanhasDestaque) ? resumo.rotasGanhasDestaque : [],
@@ -493,6 +536,8 @@ export default function TabelasNegociacaoPage() {
   const [abaNegoc, setAbaNegoc] = useState('importacao');
   const [carregando, setCarregando] = useState(false);
   const [salvando, setSalvando] = useState(false);
+  const [registroExclusaoPendente, setRegistroExclusaoPendente] = useState('');
+  const [excluindoRegistroRodada, setExcluindoRegistroRodada] = useState('');
   const [erro, setErro] = useState('');
   const [sucesso, setSucesso] = useState('');
   const [filtros, setFiltros] = useState({ status: '', tipoTabela: '', canal: '', transportadora: '' });
@@ -526,6 +571,7 @@ export default function TabelasNegociacaoPage() {
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
+  const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
 
   const negociacoesMesmaTransportadora = useMemo(function() {
     if (!selecionada) return [];
@@ -798,6 +844,40 @@ export default function TabelasNegociacaoPage() {
       if (selecionada && selecionada.id === tabela.id) setSelecionada(at);
       setSucesso('Status atualizado.');
     } catch (e) { setErro(e.message || 'Erro.'); }
+  }
+
+
+  async function handleExcluirRegistroRodada(rodada) {
+    if (!selecionada || !rodada) return;
+    var registroId = String(rodada.id || rodada.criado_em || '');
+    var tipo = rodada.tipo_registro === 'SIMULACAO' ? 'simulação' : 'importação';
+
+    if (!registroId) {
+      setErro('Não foi possível identificar o registro da rodada para exclusão.');
+      return;
+    }
+
+    if (registroExclusaoPendente !== registroId) {
+      setRegistroExclusaoPendente(registroId);
+      setErro('');
+      setSucesso('Confirmação necessária: clique novamente em Confirmar apagar para excluir esta ' + tipo + ' da ' + (rodada.rodada || '-') + 'ª rodada.');
+      return;
+    }
+
+    setExcluindoRegistroRodada(registroId);
+    setSalvando(true); setErro(''); setSucesso('Excluindo registro da rodada...');
+    try {
+      var at = await excluirRegistroRodadaNegociacao(selecionada.id, registroId);
+      setSelecionada(at);
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setRegistroExclusaoPendente('');
+      setSucesso('Registro da rodada excluído. Os indicadores foram recalculados com a última simulação restante.');
+    } catch (e) {
+      setErro(e.message || 'Erro ao excluir registro da rodada.');
+    } finally {
+      setExcluindoRegistroRodada('');
+      setSalvando(false);
+    }
   }
 
   async function excluirTabela(tabela) {
@@ -1932,6 +2012,30 @@ export default function TabelasNegociacaoPage() {
                   </div>
                 ) : null}
 
+
+                <div className="sim-card" style={{ marginBottom: 14 }}>
+                  <div className="sim-parametros-header" style={{ alignItems: 'flex-start', gap: 12 }}>
+                    <div>
+                      <h3 style={{ margin: 0 }}>Laudo geral das rodadas</h3>
+                      <p style={{ margin: '6px 0 0', color: '#64748b' }}>
+                        Analisa a evolucao da negociacao por rodada e mostra onde a transportadora melhorou, onde ainda perde e quais rotas, cotacoes, UFs e faixas precisam de ajuste.
+                      </p>
+                    </div>
+                    <div className="sim-actions" style={{ margin: 0 }}>
+                      <button className={tipoLaudoRodadas === 'transportador' ? 'primary' : 'sim-tab'} type="button" onClick={function() { setTipoLaudoRodadas('transportador'); }}>Transportador</button>
+                      <button className={tipoLaudoRodadas === 'executivo' ? 'primary' : 'sim-tab'} type="button" onClick={function() { setTipoLaudoRodadas('executivo'); }}>Diretoria</button>
+                    </div>
+                  </div>
+                  {simulacoes.length < 2 ? (
+                    <div className="sim-alert info" style={{ marginTop: 12 }}>
+                      Para uma analise completa de evolucao, o ideal e ter pelo menos duas simulacoes salvas. Com uma unica simulacao, o laudo mostra o diagnostico atual sem comparacao entre rodadas.
+                    </div>
+                  ) : null}
+                  <div style={{ marginTop: 14 }}>
+                    <LaudoRodadasNegociacaoTemplate tipo={tipoLaudoRodadas} tabela={selecionada} />
+                  </div>
+                </div>
+
                 <div className="sim-analise-tabela-wrap">
                   <table className="sim-analise-tabela">
                     <thead>
@@ -1947,6 +2051,7 @@ export default function TabelasNegociacaoPage() {
                         <th>Base CT-es</th>
                         <th>Não calc.</th>
                         <th>Observação</th>
+                        <th>Ações</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1955,6 +2060,9 @@ export default function TabelasNegociacaoPage() {
                         var imp = rodada.itens_importados || {};
                         var salvos = rodada.itens_salvos_apos_importacao || {};
                         var isSim = rodada.tipo_registro === 'SIMULACAO';
+                        var registroIdExclusao = String(rodada.id || rodada.criado_em || idx);
+                        var aguardandoConfirmacaoExclusao = registroExclusaoPendente === registroIdExclusao;
+                        var apagandoRegistroAtual = excluindoRegistroRodada === registroIdExclusao;
                         return (
                           <tr key={rodada.id || rodada.criado_em || idx}>
                             <td><strong>{rodada.rodada || '-' }ª</strong></td>
@@ -1982,10 +2090,23 @@ export default function TabelasNegociacaoPage() {
                               }())}</td>
                             <td>{isSim ? <span>Real: {formatPercent(ind.percentual_frete_realizado || 0)}<br /><small>Tabela: {formatPercent(ind.percentual_frete_simulado || 0)}</small></span> : '-'}</td>
                             <td style={{ fontSize: 12, color: '#475569' }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
+                            <td>
+                              <button
+                                className="sim-tab"
+                                type="button"
+                                disabled={salvando && !apagandoRegistroAtual}
+                                onClick={function(event) { event.preventDefault(); event.stopPropagation(); handleExcluirRegistroRodada(rodada); }}
+                                style={aguardandoConfirmacaoExclusao
+                                  ? { color: '#fff', background: '#dc2626', borderColor: '#dc2626' }
+                                  : { color: '#dc2626', borderColor: '#fecaca' }}
+                              >
+                                {apagandoRegistroAtual ? 'Apagando...' : aguardandoConfirmacaoExclusao ? 'Confirmar apagar' : 'Apagar'}
+                              </button>
+                            </td>
                           </tr>
                         );
                       })}
-                      {!historico.length ? <tr><td colSpan="9">Nenhuma rodada registrada ainda.</td></tr> : null}
+                      {!historico.length ? <tr><td colSpan="12">Nenhuma rodada registrada ainda.</td></tr> : null}
                     </tbody>
                   </table>
                 </div>

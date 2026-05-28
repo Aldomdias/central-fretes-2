@@ -8,8 +8,10 @@ import {
   diagnosticarRealizadoSupabaseDb,
   excluirRealizadoCtes,
   listarRealizadoCtes,
+  listarResumosMensaisRealizadoCtes,
   resolverDestinoIbgeDb,
   salvarRealizadoCtes,
+  salvarResumoMensalRealizadoCtes,
 } from '../services/freteDatabaseService';
 import { simularRealizadoPorTransportadoraAsync } from '../utils/calculoFrete';
 import {
@@ -24,6 +26,7 @@ import {
 const DEFAULT_FILTROS = {
   inicio: '',
   fim: '',
+  competencia: '',
   canal: '',
   transportadoraRealizada: '',
   ufOrigem: '',
@@ -214,6 +217,7 @@ function filtrarRows(rows = [], filtros = {}) {
   const inicio = filtros.inicio ? new Date(`${filtros.inicio}T00:00:00`) : null;
   const fim = filtros.fim ? new Date(`${filtros.fim}T23:59:59`) : null;
   const canal = String(filtros.canal || '').trim();
+  const competencia = String(filtros.competencia || '').trim().slice(0, 7);
   const transportadoraRealizada = normalizarBusca(filtros.transportadoraRealizada);
   const origem = cidadeFiltroTela(filtros.origem);
   const destino = cidadeFiltroTela(filtros.destino);
@@ -226,6 +230,7 @@ function filtrarRows(rows = [], filtros = {}) {
     const destinoParsed = splitCidadeUfTela(row.cidadeDestino, row.ufDestino);
     if (inicio && (!data || data < inicio)) return false;
     if (fim && (!data || data > fim)) return false;
+    if (competencia && getCompetencia(row) !== competencia) return false;
     if (!canalCompativelTela(row.canal || row.canalVendas || row.canais, canal)) return false;
     if (transportadoraRealizada && !normalizarBusca(row.transportadora).includes(transportadoraRealizada)) return false;
     if (origem && cidadeFiltroTela(row.cidadeOrigem, row.ufOrigem) !== origem) return false;
@@ -244,6 +249,7 @@ function temFiltroMinimoRealizado(filtros = {}) {
   return Boolean(
     filtros.inicio ||
     filtros.fim ||
+    filtros.competencia ||
     filtros.canal ||
     filtros.transportadoraRealizada ||
     filtros.ufOrigem ||
@@ -422,6 +428,93 @@ function exportarCsvAnalise(resultado, transportadora) {
   URL.revokeObjectURL(url);
 }
 
+function getCubagemResumoMensal(row = {}) {
+  return safeNumber(campo(row, 'metrosCubicos', 'metros_cubicos', 'cubagem', 'cubagemTotal', 'cubagem_total'));
+}
+
+function chaveResumoMensal(value) {
+  const texto = String(value || '').trim();
+  return texto || 'Nao informado';
+}
+
+function agruparResumoMensal(rows = [], keyGetter) {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const key = chaveResumoMensal(keyGetter(row));
+    const atual = map.get(key) || { chave: key, label: key, ctes: 0, valorCte: 0, valorNF: 0, peso: 0, cubagem: 0, volumes: 0 };
+    atual.ctes += 1;
+    atual.valorCte += getValorCte(row);
+    atual.valorNF += getValorNf(row);
+    atual.peso += getPeso(row);
+    atual.cubagem += getCubagemResumoMensal(row);
+    atual.volumes += getVolumes(row);
+    map.set(key, atual);
+  });
+  return [...map.values()]
+    .map((item) => ({ ...item, freteSobreNf: item.valorNF > 0 ? (item.valorCte / item.valorNF) * 100 : 0 }))
+    .sort((a, b) => b.valorCte - a.valorCte || b.ctes - a.ctes || a.label.localeCompare(b.label, 'pt-BR'))
+    .slice(0, 80);
+}
+
+function inferirCompetenciaResumoMensal(filtros = {}, rows = []) {
+  const filtroCompetencia = String(filtros.competencia || '').trim().slice(0, 7);
+  if (filtroCompetencia) return filtroCompetencia;
+  const inicio = String(filtros.inicio || '').slice(0, 7);
+  const fim = String(filtros.fim || '').slice(0, 7);
+  if (inicio && inicio === fim) return inicio;
+  const competencias = [...new Set((rows || []).map(getCompetencia).filter(Boolean))];
+  return competencias.length === 1 ? competencias[0] : inicio || fim || '';
+}
+
+function montarResumoMensalRealizado(rows = [], filtros = {}) {
+  const base = Array.isArray(rows) ? rows : [];
+  const datas = base.map((row) => String(getDataEmissao(row) || '').slice(0, 10)).filter(Boolean).sort();
+  const valorTotalCte = base.reduce((acc, row) => acc + getValorCte(row), 0);
+  const valorTotalNf = base.reduce((acc, row) => acc + getValorNf(row), 0);
+  const pesoTotal = base.reduce((acc, row) => acc + getPeso(row), 0);
+  const cubagemTotal = base.reduce((acc, row) => acc + getCubagemResumoMensal(row), 0);
+  const volumesTotais = base.reduce((acc, row) => acc + getVolumes(row), 0);
+  const transportadoras = new Set(base.map(getTransportadora).map(chaveResumoMensal));
+  const origens = new Set(base.map((row) => [getOrigem(row), getUfOrigem(row)].filter(Boolean).join('/')).map(chaveResumoMensal));
+  const destinos = new Set(base.map((row) => [getDestino(row), getUfDestino(row)].filter(Boolean).join('/')).map(chaveResumoMensal));
+
+  return {
+    competencia: inferirCompetenciaResumoMensal(filtros, base),
+    periodo_inicio: filtros.inicio || datas[0] || null,
+    periodo_fim: filtros.fim || datas[datas.length - 1] || null,
+    total_ctes: base.length,
+    total_transportadoras: transportadoras.size,
+    total_origens: origens.size,
+    total_destinos: destinos.size,
+    valor_total_cte: valorTotalCte,
+    valor_total_nf: valorTotalNf,
+    peso_total: pesoTotal,
+    cubagem_total: cubagemTotal,
+    volumes_totais: volumesTotais,
+    frete_sobre_nf: valorTotalNf > 0 ? (valorTotalCte / valorTotalNf) * 100 : 0,
+    resumo_transportadora: agruparResumoMensal(base, getTransportadora),
+    resumo_origem: agruparResumoMensal(base, (row) => [getOrigem(row), getUfOrigem(row)].filter(Boolean).join('/')),
+    resumo_uf_destino: agruparResumoMensal(base, getUfDestino),
+    resumo_canal: agruparResumoMensal(base, (row) => categoriaCanalTela(getCanal(row))),
+    filtros,
+  };
+}
+
+function normalizarResumoMensalCard(row = {}) {
+  return {
+    competencia: row.competencia || '',
+    totalCtes: Number(row.total_ctes ?? row.totalCtes ?? 0) || 0,
+    valorTotalCte: Number(row.valor_total_cte ?? row.valorTotalCte ?? 0) || 0,
+    valorTotalNf: Number(row.valor_total_nf ?? row.valorTotalNf ?? 0) || 0,
+    freteSobreNf: Number(row.frete_sobre_nf ?? row.freteSobreNf ?? 0) || 0,
+    periodoInicio: row.periodo_inicio ?? row.periodoInicio ?? '',
+    periodoFim: row.periodo_fim ?? row.periodoFim ?? '',
+    criadoEm: row.criado_em ?? row.criadoEm ?? '',
+    usuario: row.usuario_responsavel ?? row.usuarioResponsavel ?? '',
+  };
+}
+
+
 function formatDiagCount(value, sufixo = '') {
   if (value === null || value === undefined || value === '') return 'não calculado';
   const numero = Number(value);
@@ -432,6 +525,9 @@ function formatDiagCount(value, sufixo = '') {
 export default function RealizadoPage({ transportadoras = [] }) {
   const [rows, setRows] = useState([]);
   const [resumoRealizado, setResumoRealizado] = useState(null);
+  const [progressoCarga, setProgressoCarga] = useState(null);
+  const [salvandoResumoMensal, setSalvandoResumoMensal] = useState(false);
+  const [ultimoResumoMensal, setUltimoResumoMensal] = useState(null);
   const [opcoes, setOpcoes] = useState({ transportadoras: [], canais: [], origens: [], municipiosIbge: [] });
   const [filtros, setFiltros] = useState(DEFAULT_FILTROS);
   const [filtrosAplicados, setFiltrosAplicados] = useState(DEFAULT_FILTROS);
@@ -457,31 +553,52 @@ export default function RealizadoPage({ transportadoras = [] }) {
   async function carregarBase(filtrosCarga = filtros) {
     setCarregando(true);
     setErro('');
+    setProgressoCarga(null);
     try {
-      const temFiltro = temFiltroMinimoRealizado(filtrosCarga);
+      const filtrosEfetivos = { ...DEFAULT_FILTROS, ...filtrosCarga };
+      const temFiltro = temFiltroMinimoRealizado(filtrosEfetivos);
+      const consultaCompleta = temFiltro && filtrosEfetivos.amostra !== true;
+      const onProgress = consultaCompleta
+        ? (progress) => {
+            const total = Number(progress.total || 0);
+            const carregados = Number(progress.carregados || 0);
+            const percentual = total > 0 ? Math.min(99, Math.round((carregados / total) * 100)) : Math.min(95, Number(progress.pagina || 0) * 4);
+            setProgressoCarga({ ...progress, percentual, ativo: true });
+            setFeedback(`Buscando CT-es em lotes: ${carregados.toLocaleString('pt-BR')}${total ? ' de ' + total.toLocaleString('pt-BR') : ''} carregados. Lote ${Number(progress.pagina || 0).toLocaleString('pt-BR')}.`);
+          }
+        : null;
+
       const painel = await carregarPainelRealizadoCtes({
-        inicio: filtrosCarga.inicio,
-        fim: filtrosCarga.fim,
-        canal: filtrosCarga.canal,
-        transportadoraRealizada: filtrosCarga.transportadoraRealizada,
-        ufOrigem: filtrosCarga.ufOrigem,
-        ufDestino: filtrosCarga.ufDestino,
-        origem: filtrosCarga.origem,
-        destino: filtrosCarga.destino,
-        limit: temFiltro ? 15000 : 50,
+        inicio: filtrosEfetivos.inicio,
+        fim: filtrosEfetivos.fim,
+        competencia: filtrosEfetivos.competencia,
+        canal: filtrosEfetivos.canal,
+        transportadoraRealizada: filtrosEfetivos.transportadoraRealizada,
+        ufOrigem: filtrosEfetivos.ufOrigem,
+        ufDestino: filtrosEfetivos.ufDestino,
+        origem: filtrosEfetivos.origem,
+        destino: filtrosEfetivos.destino,
+        limit: consultaCompleta ? 300000 : 50,
+        pageSize: 1000,
+        consultaCompleta,
         incluirSemCanal: temFiltro,
         amostra: !temFiltro,
+        onProgress,
       });
 
       const data = painel.rows || [];
       const resumo = painel.resumo || null;
       setRows(data);
       setResumoRealizado(resumo);
-      setFiltrosAplicados({ ...DEFAULT_FILTROS, ...filtrosCarga });
+      setFiltrosAplicados({ ...DEFAULT_FILTROS, ...filtrosEfetivos });
 
-      const totalResumo = Number(resumo?.total || 0);
-      const comCanalResumo = Number(resumo?.comCanal || 0);
-      const semCanalResumo = Number(resumo?.semCanal || 0);
+      const totalResumo = Number(resumo?.total || data.length || 0);
+      const comCanalResumo = Number(resumo?.comCanal || data.filter(hasCanalRealizado).length || 0);
+      const semCanalResumo = Number(resumo?.semCanal || Math.max(data.length - comCanalResumo, 0) || 0);
+
+      if (consultaCompleta) {
+        setProgressoCarga((prev) => prev ? { ...prev, carregados: data.length, percentual: 100, concluido: true } : null);
+      }
 
       if (!temFiltro) {
         setFeedback(
@@ -489,8 +606,8 @@ export default function RealizadoPage({ transportadoras = [] }) {
         );
       } else {
         setFeedback(
-          totalResumo
-            ? `Filtro carregado: ${comCanalResumo.toLocaleString('pt-BR')} CT-e(s) com canal, ${semCanalResumo.toLocaleString('pt-BR')} pendência(s), amostra de ${data.length.toLocaleString('pt-BR')} linha(s).`
+          data.length
+            ? `Filtro carregado em base completa: ${data.length.toLocaleString('pt-BR')} CT-e(s) carregados em lote(s), ${comCanalResumo.toLocaleString('pt-BR')} com canal e ${semCanalResumo.toLocaleString('pt-BR')} pendencia(s).`
             : 'Nenhum CT-e encontrado para os filtros atuais.'
         );
       }
@@ -504,6 +621,8 @@ export default function RealizadoPage({ transportadoras = [] }) {
       setCarregando(false);
     }
   }
+
+
 
   useEffect(() => {
     let ativo = true;
@@ -522,6 +641,8 @@ export default function RealizadoPage({ transportadoras = [] }) {
           municipiosIbge: municipios?.length ? municipios : opcoesDb?.municipiosIbge || [],
         });
         await carregarBase({ ...DEFAULT_FILTROS, amostra: true });
+        const resumos = await listarResumosMensaisRealizadoCtes(1).catch(() => []);
+        if (ativo && resumos[0]) setUltimoResumoMensal(resumos[0]);
       } catch (error) {
         if (ativo) setErro(error.message || 'Erro ao iniciar base realizada.');
       }
@@ -535,8 +656,11 @@ export default function RealizadoPage({ transportadoras = [] }) {
 
   const rowsValidas = useMemo(() => rows.filter(hasCanalRealizado), [rows]);
   const rowsSemCanal = useMemo(() => rows.filter((row) => !hasCanalRealizado(row)), [rows]);
+  const rowsResumoMensal = useMemo(() => filtrarRows(rows, filtrosAplicados), [rows, filtrosAplicados]);
   const rowsFiltradas = useMemo(() => filtrarRows(rowsValidas, filtrosAplicados), [rowsValidas, filtrosAplicados]);
   const pendenciasFiltradas = useMemo(() => filtrarRows(rowsSemCanal, { ...filtrosAplicados, canal: '' }), [rowsSemCanal, filtrosAplicados]);
+  const resumoMensalAtual = useMemo(() => montarResumoMensalRealizado(rowsResumoMensal, filtrosAplicados), [rowsResumoMensal, filtrosAplicados]);
+  const ultimoResumoCard = useMemo(() => normalizarResumoMensalCard(ultimoResumoMensal), [ultimoResumoMensal]);
   const stats = useMemo(() => {
     const local = statsRealizado(rowsFiltradas);
     if (!resumoRealizado) {
@@ -910,6 +1034,27 @@ export default function RealizadoPage({ transportadoras = [] }) {
     }
   }
 
+  async function salvarResumoMensal() {
+    if (!rowsResumoMensal.length) {
+      setErro('Pesquise uma base mensal antes de salvar o resumo.');
+      return;
+    }
+
+    setSalvandoResumoMensal(true);
+    setErro('');
+    try {
+      const payload = montarResumoMensalRealizado(rowsResumoMensal, filtrosAplicados);
+      const salvo = await salvarResumoMensalRealizadoCtes(payload);
+      setUltimoResumoMensal(salvo);
+      setFeedback(`Resumo mensal salvo: ${payload.competencia || 'periodo filtrado'} com ${Number(payload.total_ctes || 0).toLocaleString('pt-BR')} CT-e(s).`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao salvar resumo mensal.');
+    } finally {
+      setSalvandoResumoMensal(false);
+    }
+  }
+
+
   async function onSimular() {
     const filtrosSimulacao = { ...filtrosAplicados, transportadora: filtros.transportadora || filtrosAplicados.transportadora };
     if (!filtros.transportadora) {
@@ -925,7 +1070,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
     setErro('');
     setResultado(null);
 
-    const limite = rowsFiltradas.slice(0, 6000);
+    const limite = rowsFiltradas;
     const totalSimular = limite.length;
 
     setSimProgress({
@@ -939,10 +1084,6 @@ export default function RealizadoPage({ transportadoras = [] }) {
     await nextFrame();
 
     try {
-      if (rowsFiltradas.length > limite.length) {
-        setFeedback(`Simulando os primeiros ${limite.length.toLocaleString('pt-BR')} CT-e(s) dos filtros para manter a tela leve.`);
-      }
-
       setSimProgress({
         etapa: 'Preparando destinos',
         atual: totalSimular,
@@ -1122,6 +1263,26 @@ export default function RealizadoPage({ transportadoras = [] }) {
       {erro ? <div className="sim-alert">{erro}</div> : null}
       {feedback ? <div className="sim-alert info">{feedback}</div> : null}
 
+
+      {progressoCarga ? (
+        <div className="sim-alert info">
+          <div className="sim-parametros-header">
+            <div>
+              <strong>Busca paginada de CT-es</strong>
+              <p>
+                {Number(progressoCarga.carregados || 0).toLocaleString('pt-BR')}
+                {progressoCarga.total ? ' de ' + Number(progressoCarga.total || 0).toLocaleString('pt-BR') : ''} CT-e(s) carregados
+                {progressoCarga.pagina ? ' • lote ' + Number(progressoCarga.pagina || 0).toLocaleString('pt-BR') : ''}.
+              </p>
+            </div>
+            <span>{Number(progressoCarga.percentual || 0).toLocaleString('pt-BR')}%</span>
+          </div>
+          <div style={{ height: 10, borderRadius: 999, background: 'rgba(0,0,0,0.08)', overflow: 'hidden', marginTop: 10 }}>
+            <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, Number(progressoCarga.percentual || 0)))}%`, borderRadius: 999, background: '#2563eb', transition: 'width 180ms ease' }} />
+          </div>
+        </div>
+      ) : null}
+
       {simulando && simProgress ? (
         <div className="sim-alert info">
           <div className="sim-parametros-header">
@@ -1151,6 +1312,36 @@ export default function RealizadoPage({ transportadoras = [] }) {
         <SummaryCard title="% frete realizado" value={formatPercent(stats.percentualFrete)} subtitle="Frete realizado / NF" />
         <SummaryCard title="Pendências sem canal" value={stats.pendencias.toLocaleString('pt-BR')} subtitle="fora da simulação até avaliar" />
       </div>
+
+
+      <section className="sim-card top-space">
+        <div className="sim-parametros-header">
+          <div>
+            <h2>Resumo mensal dos CT-es realizados</h2>
+            <p>Salve um snapshot consolidado da ultima base pesquisada, incluindo totais e agrupamentos principais para consulta posterior.</p>
+          </div>
+          <button className="btn-primary" onClick={salvarResumoMensal} disabled={salvandoResumoMensal || carregando || importando || simulando || !rowsResumoMensal.length}>
+            {salvandoResumoMensal ? 'Salvando resumo...' : 'Salvar resumo mensal'}
+          </button>
+        </div>
+        <div className="sim-analise-resumo top-space">
+          <div><span>Competencia</span><strong>{resumoMensalAtual.competencia || 'Periodo'}</strong></div>
+          <div><span>CT-e(s) carregados</span><strong>{Number(resumoMensalAtual.total_ctes || 0).toLocaleString('pt-BR')}</strong></div>
+          <div><span>Transportadoras</span><strong>{Number(resumoMensalAtual.total_transportadoras || 0).toLocaleString('pt-BR')}</strong></div>
+          <div><span>Origens</span><strong>{Number(resumoMensalAtual.total_origens || 0).toLocaleString('pt-BR')}</strong></div>
+          <div><span>Destinos</span><strong>{Number(resumoMensalAtual.total_destinos || 0).toLocaleString('pt-BR')}</strong></div>
+          <div><span>Valor CT-e</span><strong>{formatCurrency(resumoMensalAtual.valor_total_cte)}</strong></div>
+          <div><span>Valor NF</span><strong>{formatCurrency(resumoMensalAtual.valor_total_nf)}</strong></div>
+          <div><span>Frete/NF</span><strong>{formatPercent(resumoMensalAtual.frete_sobre_nf)}</strong></div>
+        </div>
+        {ultimoResumoCard.totalCtes ? (
+          <div className="import-meta-box success top-space">
+            <strong>Ultimo resumo salvo:</strong> {ultimoResumoCard.competencia || 'periodo'} • {ultimoResumoCard.totalCtes.toLocaleString('pt-BR')} CT-e(s) • {formatCurrency(ultimoResumoCard.valorTotalCte)} • {formatPercent(ultimoResumoCard.freteSobreNf)}
+            {ultimoResumoCard.criadoEm ? <span> • salvo em {formatDateBr(ultimoResumoCard.criadoEm)}</span> : null}
+            {ultimoResumoCard.usuario ? <span> • {ultimoResumoCard.usuario}</span> : null}
+          </div>
+        ) : null}
+      </section>
 
       <section className="sim-card top-space">
         <div className="sim-parametros-header">
@@ -1303,6 +1494,7 @@ export default function RealizadoPage({ transportadoras = [] }) {
           <div className="form-grid three">
             <div className="field"><label>Data inicial</label><input type="date" value={filtros.inicio} onChange={(e) => alterarFiltro('inicio', e.target.value)} /></div>
             <div className="field"><label>Data final</label><input type="date" value={filtros.fim} onChange={(e) => alterarFiltro('fim', e.target.value)} /></div>
+            <div className="field"><label>Competencia</label><input type="month" value={filtros.competencia} onChange={(e) => alterarFiltro('competencia', e.target.value)} /></div>
             <div className="field"><label>Transportadora realizada</label><input list="transportadoras-realizadas-list" value={filtros.transportadoraRealizada} onChange={(e) => alterarFiltro('transportadoraRealizada', e.target.value)} placeholder="Todas" /></div>
             <div className="field"><label>Canal</label><select value={filtros.canal} onChange={(e) => alterarFiltro('canal', e.target.value)}><option value="">Todos</option>{canaisDisponiveis.map((item) => <option key={item} value={item}>{item}</option>)}</select></div>
             <div className="field"><label>UF origem</label><input value={filtros.ufOrigem} onChange={(e) => alterarFiltro('ufOrigem', e.target.value.toUpperCase().slice(0, 2))} placeholder="Ex.: SC" /></div>
