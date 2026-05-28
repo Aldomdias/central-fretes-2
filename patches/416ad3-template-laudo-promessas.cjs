@@ -79,15 +79,9 @@ sub(/\n\s*<section className="laudo-rodadas-section">\s*<h2>Texto pronto para co
 sub(/\n\s*<section className="laudo-rodadas-section">\s*<h2>Faixas por cotação\/rota<\/h2>[\s\S]*?<\/section>/, '', 'remove faixas cotacao');
 sub(/\n\s*<section className="laudo-rodadas-section">\s*<h2>Destino x Faixa<\/h2>[\s\S]*?<\/section>/, '', 'remove destino faixa antigo');
 
-const melhoria = [
-  '        {!poucaBase ? (',
-  '          <section className="laudo-rodadas-section">',
-  "            <h2>{externo ? 'Onde a proposta melhorou' : 'Rotas/Cotações que evoluíram'}</h2>",
-  '            <TabelaMelhorias linhas={(laudo.rotasMelhoraram || laudo.ondeMelhorou || []).slice(0, 10)} />',
-  '          </section>',
-  '        ) : null}'
-].join('\n');
-sub(/\n\s*<section className="laudo-rodadas-section">\s*<h2>\{externo \? 'Onde a proposta melhorou' : 'Rotas\/Cotações que evoluíram'\}<\/h2>\s*<TabelaMelhorias[\s\S]*?<\/section>/, '\n' + melhoria, 'melhoria');
+// A seção "Onde a proposta melhorou" já é condicionada pelo patch AC2.
+// Não reaplicamos o wrapper aqui para não duplicar {!poucaBase ? (...)}.
+console.log('SKIP melhoria: controle feito pelo AC2');
 
 s = s.replace('titulo="UFs destino prioritárias"', 'titulo="Visão por Estado/UF"');
 s = s.replace(/\n\s*<TabelaSimples titulo="Faixas de peso prioritárias" linhas=\{\(laudo\.faixasCriticas \|\| laudo\.faixasPrioritarias \|\| \[\]\)\.slice\(0, 8\)\} tipo="faixa" \/>/, '');
