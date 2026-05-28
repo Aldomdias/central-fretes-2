@@ -5,3 +5,5 @@ require('./416z4-utils-pareto-faixas.cjs');
 require('./416z5-template-secoes-laudo.cjs');
 require('./416ab1-dados-laudo-final.cjs');
 require('./416ab2-template-laudo-final.cjs');
+require('./416ac1-dados-laudo-final.cjs');
+require('./416ac2-template-final-limpo.cjs');
