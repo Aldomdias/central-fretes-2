@@ -81,6 +81,13 @@ apply(pagePath, function(src) {
     "!historico.length ? <tr><td colSpan=\"11\">Nenhuma rodada registrada ainda.</td></tr> : null"
   );
 
+  if (!src.includes('function TabelaDestinoFaixaPareto')) {
+    src = src.replace(
+      'export default function TabelasNegociacaoPage() {',
+      "function TabelaDestinoFaixaPareto(props) {\n  var fonte = (props && (props.dados || props.linhas || props.itens || props.destinoFaixaPareto || props.data)) || [];\n  var linhas = Array.isArray(fonte) ? fonte : [];\n  if (!linhas.length) return null;\n  return (\n    <div className=\"sim-analise-tabela-wrap\">\n      <table className=\"sim-analise-tabela\">\n        <thead>\n          <tr><th>Destino</th><th>UF</th><th>Faixa</th><th>CT-es</th><th>Volumes</th><th>% Volume</th></tr>\n        </thead>\n        <tbody>\n          {linhas.slice(0, 20).map(function(item, idx) {\n            return (\n              <tr key={(item && (item.chave || item.rota || item.destino)) || idx}>\n                <td>{(item && (item.destino || item.cidade || item.cidadeDestino || item.rota || item.chave)) || '-'}</td>\n                <td>{(item && (item.ufDestino || item.uf_destino || item.uf)) || '-'}</td>\n                <td>{(item && (item.faixa || item.faixaPeso || item.faixa_peso)) || '-'}</td>\n                <td>{(item && (item.ctes || item.qtdCtes || item.quantidade || item.total)) || 0}</td>\n                <td>{(item && (item.volumes || item.volume || item.qtdVolumes)) || 0}</td>\n                <td>{(item && (item.percentual || item.percentualVolume || item.percVolume)) || 0}%</td>\n              </tr>\n            );\n          })}\n        </tbody>\n      </table>\n    </div>\n  );\n}\n\nconst TabelasDestinoFaixaPareto = TabelaDestinoFaixaPareto;\n\nexport default function TabelasNegociacaoPage() {"
+    );
+  }
+
   if (!src.includes('function repararHistoricoRodadasLocal')) {
     src = src.replace(
       'function getIndicadoresTabela(tabela) {',
@@ -89,10 +96,6 @@ apply(pagePath, function(src) {
   }
 
   if (!src.includes('precisaRepararHistoricoRodadas(selecionada) ? (')) {
-    src = src.replace(
-      '<div className="sim-actions" style={{ marginBottom: 14 }}>\n                  <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? \'Abrindo rodada...\' : \'+ Abrir próxima rodada\'}</button>',
-      '<div className="sim-actions" style={{ marginBottom: 14 }}>\n                  <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? \'Abrindo rodada...\' : \'+ Abrir próxima rodada\'}</button>'
-    );
     src = src.replace(
       '<div className="sim-analise-tabela-wrap">',
       "{precisaRepararHistoricoRodadas(selecionada) ? (\n                  <div className=\"sim-alert warn\" style={{ marginBottom: 14 }}>\n                    Histórico vazio com rodada atual maior que 1.\n                    <button className=\"sim-tab\" type=\"button\" style={{ marginLeft: 8 }} onClick={function() { repararHistoricoRodadasLocal(selecionada, setSelecionada, setMensagem); }}>🔧 Reparar histórico</button>\n                  </div>\n                ) : null}\n\n                <div className=\"sim-analise-tabela-wrap\">"
