@@ -6,23 +6,35 @@ function supabaseOrThrow() {
   return getSupabaseClient();
 }
 
+function limparLaudoParaSalvar(laudo = {}) {
+  if (!laudo || typeof laudo !== 'object') return null;
+
+  return {
+    geradoEm: laudo.geradoEm || new Date().toISOString(),
+    assunto: laudo.assunto || '',
+    corpoEmail: laudo.corpoEmail || '',
+    laudoCompleto: laudo.laudoCompleto || '',
+    dados: {
+      transportadora: laudo.transportadora || '',
+      canal: laudo.canal || '',
+      origem: laudo.origem || '',
+      periodo: laudo.periodo || '',
+      usoInterno: Boolean(laudo.usoInterno),
+      indicadores: laudo.indicadores || {},
+      rotasGanhas: Array.isArray(laudo.rotasGanhas) ? laudo.rotasGanhas.slice(0, 20) : [],
+      rotasPerdidas: Array.isArray(laudo.rotasPerdidas) ? laudo.rotasPerdidas.slice(0, 20) : [],
+      estados: Array.isArray(laudo.estados) ? laudo.estados.slice(0, 27) : [],
+      observacaoCubagem: laudo.observacaoCubagem || '',
+      recomendacao: laudo.recomendacao || '',
+    },
+  };
+}
+
 export function prepararLaudosNegociacao(resultado = {}, contexto = {}) {
   const laudos = montarLaudosNegociacao(resultado, contexto);
   return {
-    executivo: {
-      geradoEm: laudos.executivo.geradoEm,
-      assunto: laudos.executivo.assunto,
-      corpoEmail: laudos.executivo.corpoEmail,
-      laudoCompleto: laudos.executivo.laudoCompleto,
-      dados: laudos.executivo,
-    },
-    transportador: {
-      geradoEm: laudos.transportador.geradoEm,
-      assunto: laudos.transportador.assunto,
-      corpoEmail: laudos.transportador.corpoEmail,
-      laudoCompleto: laudos.transportador.laudoCompleto,
-      dados: laudos.transportador,
-    },
+    executivo: limparLaudoParaSalvar(laudos.executivo),
+    transportador: limparLaudoParaSalvar(laudos.transportador),
   };
 }
 
@@ -53,7 +65,7 @@ export async function salvarLaudosNegociacao(tabelaNegociacaoId, resultado = {},
     .from('tabelas_negociacao')
     .update({ resumo_simulacao: resumoAtualizado })
     .eq('id', tabelaNegociacaoId)
-    .select()
+    .select('id,transportadora,canal,status')
     .single();
 
   if (error) throw new Error(error.message || 'Erro ao salvar laudos na negociacao.');
