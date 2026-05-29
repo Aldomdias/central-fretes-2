@@ -17,6 +17,14 @@ const CANAIS = ['ATACADO', 'B2C', 'REVERSA', 'INTERCOMPANY', 'A DEFINIR'];
 const LIMITE_DB = 50000;
 const PAGE_SIZE = 50;
 const ROUTE_CHUNK_SIZE = 90;
+const FILTROS_CURADORIA_PADRAO = {
+  origemTexto: '',
+  destinoTexto: '',
+  ufOrigem: '',
+  ufDestino: '',
+  realizadasExcluidas: [],
+  simuladasExcluidas: [],
+};
 
 const ETAPAS = [
   { id: 'municipios', label: 'Municípios' },
@@ -32,6 +40,16 @@ function fmtData(s) { if (!s) return '-'; const [y, m, d] = String(s).slice(0, 1
 function normUf(s) { return String(s || '').trim().toUpperCase(); }
 function safeNumber(v) { const n = Number(v || 0); return Number.isFinite(n) ? n : 0; }
 function chunkArray(arr, size) { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; }
+function textoBusca(v) { return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase(); }
+function nomeFiltroTransportadora(v) { const nome = String(v || '').trim(); return nome || 'Nao informado'; }
+function ufDeTextoRota(v) { const m = String(v || '').match(/\/\s*([A-Z]{2})\s*$/i); return m ? normUf(m[1]) : ''; }
+function ufOrigemItem(item) { return normUf(item?.ufOrigem || ufDeTextoRota(item?.origem)); }
+function ufDestinoItem(item) { return normUf(item?.ufDestino || ufDeTextoRota(item?.destino)); }
+function origemTextoItem(item) { return textoBusca(`${item?.cidadeOrigem || item?.origem || ''} ${ufOrigemItem(item)}`); }
+function destinoTextoItem(item) { return textoBusca(`${item?.cidadeDestino || item?.destino || ''} ${ufDestinoItem(item)}`); }
+function transpRealizadaItem(item) { return nomeFiltroTransportadora(item?.transportadoraRealizada); }
+function transpSimuladaItem(item) { return nomeFiltroTransportadora(item?.transportadoraGanhadora || item?.transportadoraAtivaMaisBarata); }
+function uniqOrdenado(lista) { return [...new Set(lista.filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR')); }
 
 function chavesCte(cte, canalFiltro = '') {
   const rota = String(cte.chaveRotaIbge || '').trim();
@@ -108,6 +126,77 @@ function calcularResumoPrazo(resultado) {
   return { comPrazo: base, prazoMaior: prazoMaior.length, prazoMenor: prazoMenor.length, prazoIgual: prazoIgual.length, pctMaior: base ? (prazoMaior.length / base) * 100 : 0, pctMenor: base ? (prazoMenor.length / base) * 100 : 0, pctIgual: base ? (prazoIgual.length / base) * 100 : 0, perdaPrazoMaior: soma(prazoMaior), perdaPrazoMenor: soma(prazoMenor), perdaPrazoIgual: soma(prazoIgual) };
 }
 
+function filtrarItensCuradoria(lista = [], filtros = FILTROS_CURADORIA_PADRAO) {
+  const origem = textoBusca(filtros.origemTexto);
+  const destino = textoBusca(filtros.destinoTexto);
+  const realizadasExcluidas = new Set(filtros.realizadasExcluidas || []);
+  const simuladasExcluidas = new Set(filtros.simuladasExcluidas || []);
+  return (lista || []).filter((item) => {
+    if (origem && !origemTextoItem(item).includes(origem)) return false;
+    if (destino && !destinoTextoItem(item).includes(destino)) return false;
+    if (filtros.ufOrigem && ufOrigemItem(item) !== filtros.ufOrigem) return false;
+    if (filtros.ufDestino && ufDestinoItem(item) !== filtros.ufDestino) return false;
+    if (realizadasExcluidas.has(transpRealizadaItem(item))) return false;
+    if (simuladasExcluidas.has(transpSimuladaItem(item))) return false;
+    return true;
+  });
+}
+
+function aplicarCuradoriaResultado(resultadoBase, filtrosCuradoria) {
+  if (!resultadoBase) return null;
+  const detalhes = filtrarItensCuradoria(resultadoBase.detalhes || [], filtrosCuradoria);
+  const inativasDetalhes = filtrarItensCuradoria(resultadoBase.inativasDetalhes || [], filtrosCuradoria);
+  const economiaInativaTotal = Math.round(inativasDetalhes.reduce((s, d) => s + safeNumber(d.economiaVsAtiva), 0) * 100) / 100;
+  const economiaInativaVsPagoTotal = Math.round(inativasDetalhes.reduce((s, d) => s + safeNumber(d.economiaVsPago), 0) * 100) / 100;
+  return recalcularAgregados({ ...resultadoBase, detalhes, inativasDetalhes, inativas: inativasDetalhes.length, economiaInativaTotal, economiaInativaVsPagoTotal });
+}
+
+function csvValor(v) {
+  const s = String(v ?? '');
+  return /[";\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function montarCsvPerdas(resultado) {
+  const cols = ['CT-e', 'Emissao', 'Canal', 'Origem', 'UF origem', 'Destino', 'UF destino', 'Peso', 'Transportadora realizada', 'Mais barata ativa', 'Pago', 'Mais barato', 'Perda', 'Perda %', 'Prazo realizada', 'Prazo ganhadora', 'Diferenca prazo', 'Fonte prazo'];
+  const linhas = (resultado?.detalhes || []).map((d) => [
+    d.numeroCte || d.chaveCte || '',
+    fmtData(d.emissao),
+    d.canal || '',
+    d.cidadeOrigem || d.origem || '',
+    ufOrigemItem(d),
+    d.cidadeDestino || d.destino || '',
+    ufDestinoItem(d),
+    safeNumber(d.peso),
+    d.transportadoraRealizada || '',
+    d.transportadoraGanhadora || '',
+    safeNumber(d.valorPago),
+    safeNumber(d.valorGanhadora),
+    safeNumber(d.perda),
+    safeNumber(d.perdaPercentual),
+    d.prazoRealizada ?? '',
+    d.prazoGanhadora ?? '',
+    d.difPrazo ?? '',
+    d.fontePrazo || '',
+  ].map(csvValor).join(';'));
+  return `\ufeff${cols.map(csvValor).join(';')}\r\n${linhas.join('\r\n')}`;
+}
+
+function htmlEsc(v) { return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function montarLaudoPerdasHtml(resultado, filtrosCuradoria, resultadoBase) {
+  const prazo = calcularResumoPrazo(resultado);
+  const filtrosAtivos = [];
+  if (filtrosCuradoria.origemTexto) filtrosAtivos.push(`Origem contem "${filtrosCuradoria.origemTexto}"`);
+  if (filtrosCuradoria.destinoTexto) filtrosAtivos.push(`Destino contem "${filtrosCuradoria.destinoTexto}"`);
+  if (filtrosCuradoria.ufOrigem) filtrosAtivos.push(`UF origem ${filtrosCuradoria.ufOrigem}`);
+  if (filtrosCuradoria.ufDestino) filtrosAtivos.push(`UF destino ${filtrosCuradoria.ufDestino}`);
+  if (filtrosCuradoria.realizadasExcluidas?.length) filtrosAtivos.push(`Realizadas removidas: ${filtrosCuradoria.realizadasExcluidas.join(', ')}`);
+  if (filtrosCuradoria.simuladasExcluidas?.length) filtrosAtivos.push(`Simuladas removidas: ${filtrosCuradoria.simuladasExcluidas.join(', ')}`);
+  const topOrigens = (resultado?.top10Origens || []).map((o, i) => `<tr><td>${i + 1}</td><td>${htmlEsc(o.origem)}</td><td>${o.ctes}</td><td>${fmt(o.perdaTotal)}</td><td>${pct(o.perdaPercentual)}</td></tr>`).join('');
+  const porTransp = (resultado?.porTransportadora || []).map((t, i) => `<tr><td>${i + 1}</td><td>${htmlEsc(t.transportadora)}</td><td>${t.ctes}</td><td>${fmt(t.perdaTotal)}</td></tr>`).join('');
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Laudo de perdas</title><style>body{font-family:Arial,sans-serif;color:#001b4d;margin:32px;background:#f6f8fc}main{background:#fff;border:1px solid #d7deea;border-radius:8px;padding:28px;max-width:1080px;margin:auto}h1{margin:0 0 6px}h2{margin-top:28px}section.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:20px 0}.card{border-left:4px solid #9153F0;background:#f8f6ff;padding:12px;border-radius:6px}.card b{display:block;font-size:22px;margin-top:4px}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border-bottom:1px solid #e6ebf2;text-align:left;padding:8px;font-size:13px}th{background:#eef3fb}small{color:#667085}.neg{color:#9b1111;font-weight:700}</style></head><body><main><small>AMDLOG - Central de Fretes</small><h1>Laudo de perdas por transportadora</h1><p>Analise gerada em ${new Date().toLocaleString('pt-BR')} com a base curada apos o processamento.</p><section class="cards"><div class="card"><span>CT-es comparaveis</span><b>${(resultado?.totalCtes || 0).toLocaleString('pt-BR')}</b><small>base original: ${(resultadoBase?.totalCtes || 0).toLocaleString('pt-BR')}</small></div><div class="card"><span>CT-es com perda</span><b>${(resultado?.ctesComPerda || 0).toLocaleString('pt-BR')}</b><small>${pct((resultado?.totalCtes || 0) ? ((resultado?.ctesComPerda || 0) / resultado.totalCtes) * 100 : 0)}</small></div><div class="card"><span>Perda total</span><b class="neg">${fmt(resultado?.perdaTotal || 0)}</b></div><div class="card"><span>Prazo menor</span><b>${pct(prazo.pctMenor)}</b><small>${prazo.prazoMenor} CT-es - ${fmt(prazo.perdaPrazoMenor)}</small></div><div class="card"><span>Prazo maior</span><b>${pct(prazo.pctMaior)}</b><small>${prazo.prazoMaior} CT-es - ${fmt(prazo.perdaPrazoMaior)}</small></div></section><h2>Curadoria aplicada</h2><p>${filtrosAtivos.length ? filtrosAtivos.map(htmlEsc).join('<br>') : 'Nenhum filtro de curadoria aplicado.'}</p><h2>Top 10 origens</h2><table><thead><tr><th>#</th><th>Origem</th><th>CT-es</th><th>Perda total</th><th>% sobre pago</th></tr></thead><tbody>${topOrigens || '<tr><td colspan="5">Sem perdas na base curada.</td></tr>'}</tbody></table><h2>Transportadoras realizadas</h2><table><thead><tr><th>#</th><th>Transportadora</th><th>CT-es</th><th>Perda total</th></tr></thead><tbody>${porTransp || '<tr><td colspan="4">Sem perdas na base curada.</td></tr>'}</tbody></table></main></body></html>`;
+}
+
 function Card({ label, valor, sub, cor, destaque }) {
   return <div className="summary-card" style={{ borderLeft: `4px solid ${cor || '#9153F0'}`, background: destaque ? '#fff5f5' : undefined }}><span>{label}</span><strong style={{ color: destaque ? '#9b1111' : undefined }}>{valor}</strong>{sub && <small>{sub}</small>}</div>;
 }
@@ -153,6 +242,12 @@ function PainelUfs({ titulo, cor, ufs, onChange }) {
   return <div><div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#444', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: 6 }}>{titulo}<span style={{ fontWeight: 400, color: '#888' }}>({ufs.length === 0 ? 'todos' : `${ufs.length} selecionados`})</span>{ufs.length > 0 && <button className="btn-secondary" style={{ padding: '1px 7px', fontSize: '0.72rem' }} onClick={() => onChange([])}>Limpar</button>}<button className="btn-secondary" style={{ padding: '1px 7px', fontSize: '0.72rem' }} onClick={() => onChange([...TODAS_UFS])}>Todos</button></div><div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: '0.3rem' }}>{REGIOES.map((reg) => { const ativas = reg.ufs.every((u) => ufs.includes(u)); return <button key={reg.label} style={{ fontSize: '0.73rem', padding: '2px 9px', borderRadius: 4, cursor: 'pointer', border: `1px solid ${ativas ? c : '#ccc'}`, background: ativas ? c : '#f5f5f5', color: ativas ? '#fff' : '#555', fontWeight: ativas ? 700 : 400 }} onClick={() => toggleRegiao(reg.ufs)}>{reg.label}</button>; })}</div><div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>{TODAS_UFS.map((uf) => { const sel = ufs.includes(uf); return <button key={uf} onClick={() => toggleUf(uf)} style={{ padding: '2px 7px', fontSize: '0.73rem', borderRadius: 4, cursor: 'pointer', border: `1px solid ${sel ? c : '#ccc'}`, background: sel ? c : '#fff', color: sel ? '#fff' : '#555', fontWeight: sel ? 700 : 400 }}>{uf}</button>; })}</div></div>;
 }
 
+function GrupoChipsCuradoria({ titulo, itens, excluidas, onToggle, cor = '#9153F0' }) {
+  const removidas = new Set(excluidas || []);
+  if (!itens?.length) return null;
+  return <div style={{ marginTop: '0.85rem' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline', marginBottom: 6 }}><strong style={{ fontSize: '0.84rem' }}>{titulo}</strong><small style={{ color: '#667085' }}>{removidas.size ? `${removidas.size} fora da analise` : 'todas na analise'}</small></div><div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{itens.map((nome) => { const off = removidas.has(nome); return <button key={nome} type="button" onClick={() => onToggle(nome)} title={off ? 'Clique para recolocar na analise' : 'Clique para tirar da analise'} style={{ border: `1px solid ${off ? '#f1a7a7' : `${cor}55`}`, background: off ? '#fff5f5' : '#fff', color: off ? '#9b1111' : '#001b4d', borderRadius: 999, padding: '4px 10px', fontSize: '0.75rem', cursor: 'pointer', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', boxShadow: off ? 'inset 0 0 0 1px #ffd1d1' : 'none' }}><span style={{ fontWeight: 800, color: off ? '#9b1111' : cor }}>{off ? 'FORA' : 'OK'}</span> {nome}</button>; })}</div></div>;
+}
+
 function Progresso({ etapaId, msg, pctVal }) {
   const idx = ETAPAS.findIndex((e) => e.id === etapaId);
   return <div style={{ marginTop: '0.75rem' }}><div style={{ display: 'flex', marginBottom: '0.5rem' }}>{ETAPAS.map((e, i) => { const feito = i < idx; const atual = i === idx; return <div key={e.id} style={{ flex: 1, textAlign: 'center', position: 'relative' }}>{i > 0 && <div style={{ position: 'absolute', left: 0, top: 10, width: '50%', height: 2, background: feito || atual ? '#9153F0' : '#ddd' }} />}{i < ETAPAS.length - 1 && <div style={{ position: 'absolute', right: 0, top: 10, width: '50%', height: 2, background: feito ? '#9153F0' : '#ddd' }} />}<div style={{ width: 20, height: 20, borderRadius: '50%', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 700, position: 'relative', zIndex: 1, background: feito ? '#9153F0' : atual ? '#fff' : '#eee', border: `2px solid ${feito || atual ? '#9153F0' : '#ddd'}`, color: feito ? '#fff' : atual ? '#9153F0' : '#aaa' }}>{feito ? '✓' : i + 1}</div><div style={{ fontSize: '0.63rem', marginTop: 3, color: atual ? '#9153F0' : feito ? '#555' : '#bbb', fontWeight: atual ? 700 : 400 }}>{e.label}</div></div>; })}</div><div style={{ fontSize: '0.8rem', color: '#555', marginBottom: 5 }}>{msg}</div><div style={{ background: '#eee', borderRadius: 99, height: 8, overflow: 'hidden' }}><div style={{ background: 'linear-gradient(90deg,#9153F0,#6366f1)', height: '100%', borderRadius: 99, width: `${pctVal}%`, transition: 'width .4s' }} /></div>{pctVal > 0 && <div style={{ fontSize: '0.7rem', color: '#888', textAlign: 'right', marginTop: 2 }}>{pctVal}%</div>}</div>;
@@ -170,14 +265,28 @@ export default function PerdaRealizadoPage() {
   const [aviso, setAviso] = useState('');
   const [excluirADefinir, setExcluirADefinir] = useState(true);
   const [info, setInfo] = useState('');
+  const [resultadoBase, setResultadoBase] = useState(null);
   const [resultado, setResultado] = useState(null);
+  const [filtrosCuradoria, setFiltrosCuradoria] = useState(FILTROS_CURADORIA_PADRAO);
   const [pagina, setPagina] = useState(0);
   const [aba, setAba] = useState('origens');
   const [filtroTab, setFiltroTab] = useState({ soPerda: true, ufOrigem: '', transportadora: '' });
   const [ordem, setOrdem] = useState({ campo: 'perda', dir: 'desc' });
 
   useEffect(() => () => workerRef.current?.terminate(), []);
+  useEffect(() => {
+    if (!resultadoBase) return;
+    setResultado(aplicarCuradoriaResultado(resultadoBase, filtrosCuradoria));
+    setPagina(0);
+  }, [resultadoBase, filtrosCuradoria]);
   const step = (id, m, p = 0) => { setEtapaId(id); setMsg(m); setPctVal(p); };
+  const setFiltroCuradoria = (campo, valor) => setFiltrosCuradoria((p) => ({ ...p, [campo]: valor }));
+  const toggleExclusaoCuradoria = (campo, nome) => setFiltrosCuradoria((p) => {
+    const atual = new Set(p[campo] || []);
+    if (atual.has(nome)) atual.delete(nome); else atual.add(nome);
+    return { ...p, [campo]: Array.from(atual) };
+  });
+  const limparCuradoria = () => setFiltrosCuradoria(FILTROS_CURADORIA_PADRAO);
 
   const analisarLote = (payload) => new Promise((resolve, reject) => {
     const worker = new Worker(new URL('../workers/perdaRealizadoWorker.js', import.meta.url), { type: 'module' });
@@ -194,7 +303,7 @@ export default function PerdaRealizadoPage() {
 
   const processar = async () => {
     workerRef.current?.terminate();
-    setStatus('carregando'); setErro(''); setAviso(''); setInfo(''); setResultado(null);
+    setStatus('carregando'); setErro(''); setAviso(''); setInfo(''); setResultado(null); setResultadoBase(null); setFiltrosCuradoria(FILTROS_CURADORIA_PADRAO);
     try {
       step('municipios', 'Carregando municípios IBGE...', 5);
       let municipios = [];
@@ -256,7 +365,9 @@ export default function PerdaRealizadoPage() {
         setErro('CT-es encontrados, mas nenhuma comparação válida foi gerada. Verifique se existem tabelas ativas, faixas/cotações e prazos válidos para as rotas.');
         setStatus('erro'); return;
       }
-      setResultado({ ...consolidado, filtros: { ...filtros, origemDados: origem, totalBruto } });
+      const pronto = { ...consolidado, filtros: { ...filtros, origemDados: origem, totalBruto } };
+      setResultadoBase(pronto);
+      setResultado(pronto);
       setStatus('pronto'); setPagina(0); setAba('origens'); step('analise', 'Concluído.', 100);
     } catch (e) { setErro(e.message || 'Erro inesperado.'); setStatus('erro'); }
   };
@@ -281,6 +392,38 @@ export default function PerdaRealizadoPage() {
   const ordenarPor = (campo) => { setOrdem((p) => ({ campo, dir: p.campo === campo && p.dir === 'desc' ? 'asc' : 'desc' })); setPagina(0); };
   const Th = ({ campo, label }) => <th style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => ordenarPor(campo)}>{label} {ordem.campo === campo ? (ordem.dir === 'desc' ? '▼' : '▲') : ''}</th>;
 
+  const opcoesCuradoria = useMemo(() => {
+    const detalhes = resultadoBase?.detalhes || [];
+    const inativasBase = resultadoBase?.inativasDetalhes || [];
+    const todos = [...detalhes, ...inativasBase];
+    return {
+      realizadas: uniqOrdenado(todos.map(transpRealizadaItem)),
+      simuladas: uniqOrdenado(todos.map(transpSimuladaItem).filter((n) => n !== 'Nao informado')),
+      ufsOrigem: uniqOrdenado(todos.map(ufOrigemItem).filter(Boolean)),
+      ufsDestino: uniqOrdenado(todos.map(ufDestinoItem).filter(Boolean)),
+    };
+  }, [resultadoBase]);
+  const curadoriaAtiva = Boolean(filtrosCuradoria.origemTexto || filtrosCuradoria.destinoTexto || filtrosCuradoria.ufOrigem || filtrosCuradoria.ufDestino || filtrosCuradoria.realizadasExcluidas.length || filtrosCuradoria.simuladasExcluidas.length);
+  const baixarArquivo = (nome, conteudo, tipo) => {
+    const blob = new Blob([conteudo], { type: tipo });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nome;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+  const baixarRelatorioCsv = () => {
+    if (!resultado) return;
+    baixarArquivo(`relatorio-perdas-curado-${new Date().toISOString().slice(0, 10)}.csv`, montarCsvPerdas(resultado), 'text/csv;charset=utf-8');
+  };
+  const baixarLaudoHtml = () => {
+    if (!resultado) return;
+    baixarArquivo(`laudo-perdas-curado-${new Date().toISOString().slice(0, 10)}.html`, montarLaudoPerdasHtml(resultado, filtrosCuradoria, resultadoBase), 'text/html;charset=utf-8');
+  };
+
   return <div className="page-shell">
     <div className="page-header"><span className="amd-mini-brand">Realizado · Análise</span><h1>Perda por Transportadora Mais Cara</h1><p>Compara o frete pago com a opção mais barata ativa disponível nas tabelas. O processamento é feito por lotes de rotas para evitar timeout.</p></div>
     <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div><div className="form-grid three" style={{ marginBottom: '1rem' }}><label className="field">Data início<input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} /></label><label className="field">Data fim<input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} /></label><label className="field">Canal<select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}><option value="">Todos os canais</option>{CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><label className="field">Transportadora realizada<input placeholder="Nome da transportadora que carregou" value={filtros.transportadoraRealizada} onChange={(e) => set('transportadoraRealizada', e.target.value)} /></label><label className="field">Cidade de origem<input placeholder="Ex: São Paulo, Campinas..." value={filtros.cidadeOrigem} onChange={(e) => set('cidadeOrigem', e.target.value)} /></label></div><div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}><PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} /></div><div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}><PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} /></div><div style={{ marginTop: '1rem' }}><button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>{processando ? '⟳ Processando...' : '▶ Processar'}</button>
@@ -288,6 +431,16 @@ export default function PerdaRealizadoPage() {
                 <input type="checkbox" checked={excluirADefinir} onChange={(e) => setExcluirADefinir(e.target.checked)} />
                 Excluir registros sem canal (A DEFINIR) da análise
               </label>{processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}</div></div>
+    {resultado && resultadoBase && <div className="panel-card" style={{ marginBottom: '1rem', border: '1px solid #c8deff', background: '#fbfdff' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+        <div><div className="panel-title">Curadoria da base processada</div><p style={{ margin: '0.25rem 0 0', color: '#667085', fontSize: '0.84rem' }}>Ajuste a analise sem buscar de novo. Tudo abaixo recalcula cards, abas, relatorio e laudo.</p></div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btn-secondary" onClick={limparCuradoria} disabled={!curadoriaAtiva}>Limpar curadoria</button><button type="button" className="btn-secondary" onClick={baixarRelatorioCsv}>Baixar relatorio CSV</button><button type="button" className="btn-primary" onClick={baixarLaudoHtml}>Baixar laudo</button></div>
+      </div>
+      <div className="form-grid three" style={{ marginBottom: '0.4rem' }}><label className="field">Origem na base<input placeholder="Cidade ou UF" value={filtrosCuradoria.origemTexto} onChange={(e) => setFiltroCuradoria('origemTexto', e.target.value)} /></label><label className="field">Destino na base<input placeholder="Cidade ou UF" value={filtrosCuradoria.destinoTexto} onChange={(e) => setFiltroCuradoria('destinoTexto', e.target.value)} /></label><label className="field">UF origem<select value={filtrosCuradoria.ufOrigem} onChange={(e) => setFiltroCuradoria('ufOrigem', e.target.value)}><option value="">Todas</option>{opcoesCuradoria.ufsOrigem.map((uf) => <option key={uf} value={uf}>{uf}</option>)}</select></label><label className="field">UF destino<select value={filtrosCuradoria.ufDestino} onChange={(e) => setFiltroCuradoria('ufDestino', e.target.value)}><option value="">Todas</option>{opcoesCuradoria.ufsDestino.map((uf) => <option key={uf} value={uf}>{uf}</option>)}</select></label></div>
+      <GrupoChipsCuradoria titulo="Transportadoras realizadas" itens={opcoesCuradoria.realizadas} excluidas={filtrosCuradoria.realizadasExcluidas} onToggle={(nome) => toggleExclusaoCuradoria('realizadasExcluidas', nome)} cor="#e67e22" />
+      <GrupoChipsCuradoria titulo="Transportadoras simuladas / mais baratas" itens={opcoesCuradoria.simuladas} excluidas={filtrosCuradoria.simuladasExcluidas} onToggle={(nome) => toggleExclusaoCuradoria('simuladasExcluidas', nome)} cor="#04C7A4" />
+      <div style={{ marginTop: '0.85rem', color: '#667085', fontSize: '0.82rem' }}>Base curada: <strong>{resultado.totalCtes.toLocaleString('pt-BR')}</strong> de {resultadoBase.totalCtes.toLocaleString('pt-BR')} CT-es comparaveis. Perda atual: <strong>{fmt(resultado.perdaTotal)}</strong>.</div>
+    </div>}
     {info && !processando && <div className="hint-box compact" style={{ marginBottom: '0.75rem', background: '#f0f7ff', border: '1px solid #c8deff' }}>ℹ️ {info}</div>}{aviso && <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '0.75rem' }}>⚠️ {aviso}</div>}{erro && <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '0.75rem' }}>⚠️ {erro}</div>}
     {resultado && <><div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}><Card label="CT-es comparáveis" valor={resultado.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub="com tabela ativa e prazo" /><Card label="CT-es com perda" valor={resultado.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultado.totalCtes > 0 ? (resultado.ctesComPerda / resultado.totalCtes) * 100 : 0)} cor="#e67e22" /><Card label="Perda total" valor={fmt(resultado.perdaTotal)} cor="#9b1111" destaque={resultado.perdaTotal > 0} /><Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" /><Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" /><Card label="Inativas bloqueadas" valor={(resultado.inativas || 0).toLocaleString('pt-BR')} sub={`potencial vs ativa: ${fmt(resultado.economiaInativaTotal)}`} cor="#f59e0b" /><Card label="Sem comparação" valor={(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')} sub="sem tabela, prazo ou realizada ativa" cor="#888" /></div>
     <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem', flexWrap: 'wrap' }}>{[{ id: 'origens', label: `Top 10 Origens (${resultado.top10Origens.length})` }, { id: 'transportadoras', label: `Por Transportadora (${resultado.porTransportadora.length})` }, { id: 'detalhes', label: `Detalhes (${detalhesVisiveis.length.toLocaleString('pt-BR')})` }, { id: 'inativas', label: `Inativas (${inativas.length.toLocaleString('pt-BR')})` }, { id: 'sem-malha', label: `Sem comparação (${resultado.semComparacao || resultado.semMalha || 0})` }].map((a) => <button key={a.id} onClick={() => { setAba(a.id); setPagina(0); }} style={{ padding: '4px 14px', border: 'none', borderRadius: '4px 4px 0 0', cursor: 'pointer', background: aba === a.id ? '#9153F0' : '#f0f0f0', color: aba === a.id ? '#fff' : '#555', fontWeight: aba === a.id ? 700 : 400, fontSize: '0.85rem' }}>{a.label}</button>)}</div>
