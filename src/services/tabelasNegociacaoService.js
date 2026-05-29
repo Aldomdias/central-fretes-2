@@ -36,6 +36,40 @@ function supabaseOrThrow() {
   return getSupabaseClient();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isErroTemporarioSupabase(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('network') ||
+    msg.includes('timeout') ||
+    msg.includes('aborted') ||
+    msg.includes('temporar') ||
+    msg.includes('502') ||
+    msg.includes('503') ||
+    msg.includes('504')
+  );
+}
+
+async function executarSupabaseComRetry(operacao, contexto, tentativas = 3) {
+  let ultimoErro = null;
+
+  for (let tentativa = 1; tentativa <= tentativas; tentativa += 1) {
+    try {
+      return await operacao();
+    } catch (error) {
+      ultimoErro = error;
+      if (!isErroTemporarioSupabase(error) || tentativa >= tentativas) break;
+      await sleep(700 * tentativa);
+    }
+  }
+
+  throw new Error(`${contexto}: ${ultimoErro?.message || String(ultimoErro || 'erro desconhecido')}`);
+}
+
 function texto(value) { return String(value || '').trim(); }
 function upper(value) { return texto(value).toUpperCase(); }
 function numero(value) {
@@ -795,7 +829,246 @@ function calcularDivergenciaBase(atual = {}, inicial = {}) {
     base_atual_frete: numero(atual.frete_realizado),
   };
 }
+
+function calcularIndicadoresGanhasResultado(resultado = {}) {
+  const detalhes = Array.isArray(resultado.ctesDetalhes) ? resultado.ctesDetalhes : [];
+  const ganhas = detalhes.filter((item) => item && (
+    item.statusSelecionada === 'Ganharia' ||
+    item.ganhouRealizado === true ||
+    numero(item.savingSelecionada || 0) > 0
+  ));
+
+  const meses = Math.max(1, numero(resultado.meses || 1));
+  const soma = (lista, campo) => lista.reduce((acc, item) => acc + numero(item?.[campo] || 0), 0);
+
+  const ctesGanhas = ganhas.length || inteiro(resultado.ctesGanhariaSelecionada || resultado.ctesCapturadosDeOutras || 0);
+  const volumesGanhas = ganhas.length
+    ? soma(ganhas, 'volumes')
+    : numero(resultado.volumesCapturados || 0);
+  const pesoGanhas = ganhas.length ? soma(ganhas, 'peso') : numero(resultado.pesoCapturado || 0);
+  const valorNFGanhas = ganhas.length ? soma(ganhas, 'valorNF') : numero(resultado.valorNFCapturado || 0);
+
+  const pedidosMes = meses ? ctesGanhas / meses : ctesGanhas;
+  const volumesMes = meses ? volumesGanhas / meses : volumesGanhas;
+
+  return {
+    ctesGanhas,
+    volumesGanhas,
+    pesoGanhas,
+    valorNFGanhas,
+    pedidosMes,
+    pedidosDia: pedidosMes / 22,
+    volumesMes,
+    volumesDia: volumesMes / 22,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
+
+export async function excluirRegistroRodadaNegociacao(id, registroId) {
+  const supabase = supabaseOrThrow();
+
+  if (!id) throw new Error('Negociação inválida para excluir registro.');
+  if (!registroId) throw new Error('Registro da rodada inválido para exclusão.');
+
+  const { data: tabelaAtual, error: tabelaError } = await supabase
+    .from('tabelas_negociacao')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (tabelaError) {
+    throw new Error(tabelaError.message || 'Erro ao buscar negociação atual.');
+  }
+
+  const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
+  const historicoAnterior = getHistoricoRodadas(tabelaAtual);
+  const historicoAtualizado = historicoAnterior.filter((item) => String(item.id || item.criado_em || '') !== String(registroId));
+
+  if (historicoAtualizado.length === historicoAnterior.length) {
+    throw new Error('Registro não encontrado no histórico da negociação.');
+  }
+
+  const simulacoesRestantes = historicoAtualizado.filter((item) => item.tipo_registro === 'SIMULACAO');
+  const ultimaSimulacao = simulacoesRestantes.length ? simulacoesRestantes[simulacoesRestantes.length - 1] : null;
+  const resumoUltima = ultimaSimulacao && ultimaSimulacao.resumo ? ultimaSimulacao.resumo : {};
+  const indUltima = ultimaSimulacao && ultimaSimulacao.indicadores ? ultimaSimulacao.indicadores : {};
+  const maiorRodada = historicoAtualizado.reduce((acc, item) => Math.max(acc, inteiro(item.rodada || 0)), 1);
+
+  const resumoSimulacaoAtualizado = ultimaSimulacao
+    ? {
+        ...resumoAnterior,
+        ...resumoUltima,
+        rodada_atual: maiorRodada,
+        ultima_simulacao: ultimaSimulacao,
+        ultima_simulacao_em: ultimaSimulacao.criado_em || null,
+        historico_rodadas: historicoAtualizado,
+      }
+    : {
+        ...resumoAnterior,
+        rodada_atual: maiorRodada,
+        ultima_simulacao: null,
+        ultima_simulacao_em: null,
+        historico_rodadas: historicoAtualizado,
+        ctesAnalisados: 0,
+        ctesSimulados: 0,
+        ctesComTabelaSelecionada: 0,
+        ctesGanhariaSelecionada: 0,
+        ctesPerdidosSelecionada: 0,
+        ctesSemTabelaSelecionada: 0,
+        freteRealizado: 0,
+        freteSelecionada: 0,
+        faturamentoSelecionadaMes: 0,
+        faturamentoSelecionadaAno: 0,
+        faturamentoSelecionadaGanhadoraMes: 0,
+        faturamentoSelecionadaGanhadoraAno: 0,
+        savingSelecionadaVsReal: 0,
+        savingSelecionadaVsRealMes: 0,
+        savingSelecionadaVsRealAno: 0,
+        aderenciaSelecionada: 0,
+        cargasDia: 0,
+        volumesDia: 0,
+        volumes: 0,
+        peso: 0,
+        valorNF: 0,
+        rotasGanhasDestaque: [],
+        estadosGanhadoresDestaque: [],
+        transportadorasPerdaDestaque: [],
+      };
+
+  const payload = {
+    resumo_simulacao: resumoSimulacaoAtualizado,
+    saving_projetado: numero(indUltima.saving_mes || resumoUltima.savingSelecionadaVsRealMes || 0),
+    aderencia_projetada: numero(indUltima.aderencia || resumoUltima.aderenciaSelecionada || 0),
+    faturamento_projetado: numero(indUltima.faturamento_mes || resumoUltima.faturamentoSelecionadaGanhadoraMes || resumoUltima.faturamentoSelecionadaMes || 0),
+    impacto_projetado: numero(resumoUltima.diferencaSelecionadaVsVencedor || 0),
+    percentual_frete_projetado: numero(indUltima.percentual_frete_simulado || resumoUltima.percentualFreteTabelaGanharia || resumoUltima.percentualFreteSelecionada || 0),
+    volumetria_dia: numero(indUltima.pedidos_ganhos_dia || indUltima.pedidos_dia || resumoUltima.cargasDia || 0),
+    ctes_analisados: inteiro(resumoUltima.ctesAnalisados || 0),
+    ctes_atendidos: inteiro(resumoUltima.ctesComTabelaSelecionada || 0),
+    rotas_sem_cobertura: inteiro(resumoUltima.ctesSemTabelaSelecionada || 0),
+  };
+
+  const { data, error } = await executarSupabaseComRetry(async () => {
+    const resposta = await supabase
+      .from('tabelas_negociacao')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .single();
+    if (resposta.error && isErroTemporarioSupabase(resposta.error)) {
+      throw new Error(resposta.error.message || 'Falha temporaria ao salvar resultado.');
+    }
+    return resposta;
+  }, 'Erro ao salvar resultado da simulacao na negociacao');
+
+  if (error) {
+    throw new Error(error.message || 'Erro ao excluir registro da rodada.');
+  }
+
+  return data;
+}
+
+function formatarLimiteFaixaServico(valor) {
+  const nValor = numero(valor);
+  if (Math.abs(nValor - Math.round(nValor)) < 0.0001) return String(Math.round(nValor));
+  return String(nValor).replace('.', ',');
+}
+
+function gradeFaixasLaudoServico(resultado = {}) {
+  const canal = upper(resultado.filtros?.canal || resultado.canal || 'ATACADO');
+  const gradeRecebida = Array.isArray(resultado.gradeFaixasLaudo) ? resultado.gradeFaixasLaudo : [];
+  const fallbackB2C = [2, 5, 10, 20, 30, 50, 70, 100, 999999999].map((peso) => ({ peso }));
+  const fallbackAtacado = [20, 30, 50, 70, 100, 150, 250, 500, 999999999].map((peso) => ({ peso }));
+  const base = gradeRecebida.length ? gradeRecebida : (canal.includes('B2C') ? fallbackB2C : fallbackAtacado);
+  return base
+    .map((item) => ({
+      peso: numero(item.peso || item.limite || item.limite_kg || item.peso_final || item.pesoFinal),
+      label: texto(item.label || item.faixa || item.faixaPeso || item.faixa_peso),
+    }))
+    .filter((item) => item.peso > 0)
+    .sort((a, b) => a.peso - b.peso);
+}
+
+function faixaB2CLaudoServico(peso, resultado = {}) {
+  const p = numero(peso);
+  if (!p) return '';
+  const grade = gradeFaixasLaudoServico(resultado);
+  if (!grade.length) return '';
+  let anterior = 0;
+  for (const item of grade) {
+    if (p <= item.peso) {
+      if (item.label) return item.label;
+      if (item.peso >= 999999 || item.peso === Infinity) return 'Acima de ' + formatarLimiteFaixaServico(anterior) + ' kg';
+      return formatarLimiteFaixaServico(anterior) + ' a ' + formatarLimiteFaixaServico(item.peso) + ' kg';
+    }
+    anterior = item.peso;
+  }
+  const ultimo = grade[grade.length - 1]?.peso || anterior;
+  return 'Acima de ' + formatarLimiteFaixaServico(ultimo) + ' kg';
+}
+
+function pesoFaixaLaudoServico(item = {}) {
+  return numero(item.pesoConsiderado || item.peso || item.pesoDeclarado || item.pesoRealizado || item.pesoCubado || item.selecionadaDetalhes?.frete?.pesoConsiderado || item.vencedorDetalhes?.frete?.pesoConsiderado || item.todosResultados?.[0]?.detalhes?.frete?.pesoConsiderado);
+}
+
+function cotacaoLaudoServico(item = {}) {
+  const rotaResultado = Array.isArray(item.todosResultados)
+    ? item.todosResultados.map((r) => r?.detalhes?.frete?.rotaCotacao || r?.detalhes?.frete?.cotacaoComercial || r?.rotaNome).find((v) => texto(v))
+    : '';
+  const candidatos = [item.rotaCotacao, item.rotaSelecionada, item.rotaVencedora, item.cotacaoComercial, item.selecionadaDetalhes?.frete?.rotaCotacao, item.selecionadaDetalhes?.frete?.cotacaoComercial, item.vencedorDetalhes?.frete?.rotaCotacao, item.vencedorDetalhes?.frete?.cotacaoComercial, rotaResultado, item.cotacao, item.cotacaoFinal, item.faixaCotacao, item.rota, item.nomeRota].map((v) => texto(v)).filter(Boolean);
+  const invalida = (v) => {
+    const s = String(v || '').toUpperCase().trim();
+    if (!s) return true;
+    if (s.includes('IBGE')) return true;
+    if (/^\d+[.,]?\d*\s*(ATE|ATÉ|A)\s*\d+[.,]?\d*/i.test(s)) return true;
+    if (/^ACIMA DE\s*\d+/i.test(s)) return true;
+    return false;
+  };
+  const bruto = candidatos.find((v) => !invalida(v)) || texto(item.destino || item.cidadeDestino || 'Destino');
+  const partes = bruto.split('|').map((p) => texto(p)).filter(Boolean);
+  const base = partes[0] || bruto;
+  return base.replace(/ [0-9][0-9.,]* *A *[0-9][0-9.,]* *KG.*$/i, '').trim() || base;
+}
+
+function montarAnaliseFaixasB2CLaudoServico(resultado = {}) {
+  const detalhes = Array.isArray(resultado.ctesDetalhes) ? resultado.ctesDetalhes : [];
+  const mapa = new Map();
+  detalhes.forEach((item) => {
+    const peso = pesoFaixaLaudoServico(item);
+    const faixa = faixaB2CLaudoServico(peso, resultado);
+    if (!faixa) return;
+    const origem = texto(item.origem || item.cidadeOrigem || resultado.filtros?.origem || 'Origem');
+    const destino = texto(item.destino || item.cidadeDestino || 'Destino');
+    const ufDestino = upper(item.ufDestino || item.uf || item.estadoDestino || '');
+    const rota = cotacaoLaudoServico(item);
+    const chave = [origem, ufDestino, rota, faixa].map(upper).join('|');
+    if (!mapa.has(chave)) mapa.set(chave, { chave, origem, destino: '', destinoExemplo: destino, ufDestino, rota, cotacao: rota, faixa, ctesAnalisados: 0, ctesGanhos: 0, ctesPerdidos: 0, volumes: 0, pesoTotal: 0, faturamentoPotencial: 0, faturamentoCapturado: 0, faturamentoNaoCapturado: 0, reducaoSoma: 0, reducaoQtd: 0 });
+    const acc = mapa.get(chave);
+    const status = upper(item.statusSelecionada);
+    const ganhou = status === 'GANHARIA' || item.ganhouRealizado === true || numero(item.savingSelecionada) > 0;
+    const perdeu = status === 'PERDERIA' || (!ganhou && numero(item.freteSelecionada) > 0);
+    acc.ctesAnalisados += 1;
+    if (ganhou) acc.ctesGanhos += 1;
+    if (perdeu) acc.ctesPerdidos += 1;
+    acc.volumes += numero(item.volumes || item.qtdVolumes);
+    acc.pesoTotal += peso;
+    acc.faturamentoPotencial += numero(item.freteRealizado);
+    if (ganhou) acc.faturamentoCapturado += numero(item.freteRealizado);
+    if (perdeu) acc.faturamentoNaoCapturado += numero(item.freteRealizado);
+    if (perdeu && numero(item.reducaoNecessaria)) { acc.reducaoSoma += numero(item.reducaoNecessaria); acc.reducaoQtd += 1; }
+  });
+  return Array.from(mapa.values()).map((x) => {
+    const base = x.ctesGanhos + x.ctesPerdidos || x.ctesAnalisados;
+    const aderencia = base ? (x.ctesGanhos / base) * 100 : 0;
+    const ajusteMedio = x.reducaoQtd ? x.reducaoSoma / x.reducaoQtd : 0;
+    let prioridade = 'BAIXA';
+    if (x.faturamentoNaoCapturado >= 50000 || x.ctesPerdidos >= 100 || ajusteMedio >= 15) prioridade = 'ALTA';
+    else if (x.faturamentoNaoCapturado >= 15000 || x.ctesPerdidos >= 30 || ajusteMedio >= 8) prioridade = 'MÉDIA';
+    return { ...x, aderencia, ajusteMedio, prioridade };
+  }).sort((a,b) => numero(b.faturamentoNaoCapturado) - numero(a.faturamentoNaoCapturado) || numero(b.ctesPerdidos) - numero(a.ctesPerdidos));
+}
+
 export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const supabase = supabaseOrThrow();
 
@@ -824,6 +1097,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const naoCalculadosPorMotivo = Array.isArray(resultado.naoCalculadosPorMotivo)
     ? resultado.naoCalculadosPorMotivo
     : [];
+  const indicadoresGanhas = calcularIndicadoresGanhasResultado(resultado);
   const deveGravarBaseInicial = !baseInicialExistente;
   const baseInicialParaGravar = deveGravarBaseInicial
     ? { ...fingerprintAtual, registrada_em: agora, rodada: rodadaAtual }
@@ -892,7 +1166,32 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     laudosEmail: resultado.laudosEmail || null,
     laudos: resultado.laudos || null,
     pareto80Volume: resultado.pareto80Volume || null,
+    analiseFaixasB2C: (resultado.analiseFaixasB2C || montarAnaliseFaixasB2CLaudoServico(resultado)).slice(0, 5000),
     diagnostico: resultado.diagnostico || {},
+    ctesDetalhes: (resultado.ctesDetalhes || []).slice(0, 3000).map((item) => ({
+      cte: item.cte || '',
+      origem: item.origem || '',
+      ufOrigem: item.ufOrigem || '',
+      destino: item.destino || '',
+      ufDestino: item.ufDestino || '',
+      ibgeDestino: item.ibgeDestino || item.codigoIbgeDestino || item.ibge_destino || item.codIbgeDestino || '',
+      mesorregiaoDestino: item.mesorregiaoDestino || item.mesorregiao || item.mesoRegiaoDestino || item.mesoRegiao || item.meso_regiao || item.microrregiao || item.regiaoDestino || '',
+      peso: item.peso || 0,
+      valorNF: item.valorNF || item.valorNf || item.valor_nf || item.valorNota || item.nf || 0,
+      percentualFreteRealizado: item.percentualFreteRealizado || 0,
+      percentualFreteSelecionada: item.percentualFreteSelecionada || 0,
+      percentualFreteVencedor: item.percentualFreteVencedor || 0,
+      volumes: item.volumes || 0,
+      freteRealizado: item.freteRealizado || 0,
+      freteSelecionada: item.freteSelecionada || 0,
+      statusSelecionada: item.statusSelecionada || '',
+      ganhouRealizado: item.ganhouRealizado || false,
+      savingSelecionada: item.savingSelecionada || 0,
+      diferencaParaVencedor: item.diferencaParaVencedor || 0,
+      reducaoNecessaria: item.reducaoNecessaria || 0,
+      nomeRota: item.nomeRota || item.nomeRotaCotacao || item.cotacaoComercial || item.rotaCotacao || '',
+      faixaPeso: item.faixaPeso || item.faixaPesoCotacao || '',
+    })),
   };
 
   const entradaRodada = {
@@ -907,15 +1206,20 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       saving_ano: numero(resultado.savingSelecionadaVsRealAno ?? 0),
       faturamento_mes: numero(resultado.faturamento_projetado ?? resultado.faturamentoSelecionadaGanhadoraMes ?? resultado.faturamentoSelecionadaMes ?? resultado.freteSelecionada ?? 0),
       faturamento_ano: numero(resultado.faturamentoSelecionadaGanhadoraAno ?? resultado.faturamentoSelecionadaAno ?? 0),
-      pedidos_dia: numero(resultado.volumetria_dia ?? resultado.cargasDia ?? 0),
-      volumes_dia: numero(resultado.volumesDia ?? 0),
+      pedidos_dia: numero(indicadoresGanhas.pedidosDia || resultado.volumetria_dia || resultado.cargasDia || 0),
+      pedidos_ganhos_dia: numero(indicadoresGanhas.pedidosDia || 0),
+      pedidos_ganhos_mes: numero(indicadoresGanhas.pedidosMes || 0),
+      volumes_dia: numero(indicadoresGanhas.volumesDia || resultado.volumesDia || 0),
+      volumes_ganhos_dia: numero(indicadoresGanhas.volumesDia || 0),
+      volumes_ganhos_mes: numero(indicadoresGanhas.volumesMes || 0),
+      volumes_capturados: numero(indicadoresGanhas.volumesGanhas || 0),
       percentual_frete_realizado: numero(resultado.percentualFreteRealizado ?? 0),
       percentual_frete_simulado: numero(resultado.percentual_frete_projetado ?? resultado.percentualFreteTabelaGanharia ?? resultado.percentualFreteSelecionada ?? 0),
       rotas_com_ganho: inteiro(resultado.qtdRotasComGanhoSelecionada ?? 0),
       rotas_ganhas: inteiro(resultado.qtdRotasGanhasSelecionada ?? 0),
       rotas_parciais: inteiro(resultado.qtdRotasParciaisSelecionada ?? 0),
       frete_capturado: numero(resultado.freteCapturadoRealizado ?? 0),
-      ctes_capturados: inteiro(resultado.ctesCapturadosDeOutras ?? 0),
+      ctes_capturados: inteiro(indicadoresGanhas.ctesGanhas || resultado.ctesCapturadosDeOutras || 0),
     },
     base: fingerprintAtual,
     divergencia_base: divergenciaBase,
@@ -960,6 +1264,11 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     ),
 
     volumetria_dia: numero(
+      indicadoresGanhas.pedidosDia ??
+      indicadoresGanhas.pedidosDia ??
+      indicadoresGanhas.pedidosDia ??
+      indicadoresGanhas.pedidosDia ??
+      indicadoresGanhas.pedidosDia ??
       resultado.volumetria_dia ??
       resultado.cargasDia ??
       0

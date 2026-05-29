@@ -259,7 +259,10 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
     prazo: toNumber(rota?.prazoEntregaDias),
     frete: {
       tipoCalculo: calculo.tipoCalculo,
+      rotaCotacao: cotacao?.rota || rota?.nomeRota || '',
+      cotacaoComercial: cotacao?.rota || rota?.nomeRota || '',
       faixaPeso: cotacao ? `${toNumber(cotacao.pesoMin)} até ${cotacao.pesoMax ?? cotacao.pesoLimite ?? 'sem limite'}` : 'Sem cotação',
+      nomeCotacao: rota?.__nomeCotacao || cotacao?.rota || cotacao?.faixaCotacao || cotacao?.id || '',
       percentualAplicado: percentual,
       rsKgAplicado: rsKg,
       valorFixoAplicado: valorFixo,

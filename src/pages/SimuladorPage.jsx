@@ -92,8 +92,10 @@ function onlyDigitsRealizado(value = '') {
 
 function aplicarFiltrosRealizadoQuery(query, filtros) {
   if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
-  if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem + '%');
-  if (filtros.destino) query = query.ilike('cidade_destino', filtros.destino + '%');
+  // Origem/destino são filtrados depois em JavaScript com normalização sem acento.
+  // Isso evita falha entre Itajaí/Itajai e outros casos de acentuação.
+  // if (filtros.origem) query = query.ilike('cidade_origem', filtros.origem + '%');
+  // if (filtros.destino) query = query.ilike('cidade_destino', filtros.destino + '%');
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.canal) {
     const canalNorm = String(filtros.canal || '').toUpperCase();
@@ -136,7 +138,7 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   }
 
   const rows = allRows.slice(0, totalMax);
-  return rows.map(r => ({
+  let mapeados = rows.map(r => ({
     transportadora: pickRealizadoField(r, ['transportadora', 'nome_transportadora', 'transportador']) || '',
     tomador: pickRealizadoField(r, ['tomador_servico', 'tomadorServico', 'tomador', 'nome_tomador', 'razao_social_tomador']) || '',
     valorCte: Number(pickRealizadoField(r, ['valor_cte', 'valorCte', 'frete_realizado', 'freteRealizado', 'valor_frete'])) || 0,
@@ -161,6 +163,20 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
     dataEmissao: pickRealizadoField(r, ['data_emissao', 'dataEmissao', 'emissao']) || '',
     tipo_veiculo: pickRealizadoField(r, ['tipo_veiculo', 'tipoVeiculo', 'veiculo', 'tipo']) || '',
   }));
+
+  const origemFiltro = String(filtros.origem || '').trim();
+  if (origemFiltro) {
+    const origemNorm = normalizarChaveSimulador(origemFiltro);
+    mapeados = mapeados.filter((row) => normalizarChaveSimulador(row.cidadeOrigem || '').startsWith(origemNorm));
+  }
+
+  const destinoFiltro = String(filtros.destino || '').trim();
+  if (destinoFiltro) {
+    const destinoNorm = normalizarChaveSimulador(destinoFiltro);
+    mapeados = mapeados.filter((row) => normalizarChaveSimulador(row.cidadeDestino || '').startsWith(destinoNorm));
+  }
+
+  return mapeados;
 }
 
 
@@ -680,6 +696,65 @@ function cubagemRealizado(row = {}) {
 
   if (unitaria > 0 && volumes > 0) return unitaria * volumes;
   return 0;
+}
+
+function montarResumoPesquisaRealizado(payload = {}) {
+  const rowsBrutos = payload.rowsBrutos || [];
+  const rowsBase = payload.rowsComIbgeBase || payload.rows || [];
+  const rows = payload.rows || [];
+  const rowsComTracking = payload.rowsComTracking || rowsBase.filter((row) => row.trackingMatch);
+  const filtros = payload.filtros || {};
+
+  const totais = rows.reduce((acc, row) => {
+    const valorCte = numeroRealizado(row.valorCte || row.valor_cte);
+    const valorNF = numeroRealizado(row.valorNF || row.valor_nf);
+    const peso = pesoRealizado(row);
+    const cubagem = cubagemRealizado(row);
+    const volumes = numeroRealizado(row.qtdVolumes || row.volumes || row.volume);
+    acc.valorCte += valorCte;
+    acc.valorNF += valorNF;
+    acc.peso += peso;
+    acc.cubagem += cubagem;
+    acc.volumes += volumes;
+    return acc;
+  }, { valorCte: 0, valorNF: 0, peso: 0, cubagem: 0, volumes: 0 });
+
+  const origens = [...new Set(rows.map((row) => row.cidadeOrigem || row.origem).filter(Boolean))];
+  const ufsDestino = [...new Set(rows.map((row) => row.ufDestino || row.uf_destino).filter(Boolean))];
+  const ctesBase = rows.length;
+  const ctesComTracking = rowsComTracking.length || rows.filter((row) => row.trackingMatch).length;
+
+  return {
+    tabela: payload.nomeTabelaSelecionada || filtros.transportadora || '-',
+    canal: filtros.canal || '-',
+    modoBase: filtros.baseRealizadoTracking || 'com_tracking',
+    ctesBrutos: rowsBrutos.length,
+    ctesBase,
+    ctesComTracking,
+    ctesSemTracking: Math.max((rowsBase.length || rows.length) - ctesComTracking, 0),
+    percentualTracking: rowsBase.length ? (ctesComTracking / rowsBase.length) * 100 : 0,
+    valorCte: totais.valorCte,
+    valorNF: totais.valorNF,
+    peso: totais.peso,
+    cubagem: totais.cubagem,
+    volumes: totais.volumes,
+    volumeMedioPorCte: ctesBase ? totais.volumes / ctesBase : 0,
+    fretePorVolume: totais.volumes ? totais.valorCte / totais.volumes : 0,
+    origens: origens.length ? origens.slice(0, 4).join(', ') + (origens.length > 4 ? ` +${origens.length - 4}` : '') : '-',
+    ufsDestino: ufsDestino.length ? ufsDestino.join(', ') : (Array.isArray(filtros.ufDestino) ? filtros.ufDestino.join(', ') : filtros.ufDestino) || '-',
+    alertaVolumes: ctesBase && !totais.volumes ? 'A base pesquisada nao trouxe volumes; indicadores por volume podem ficar zerados.' : '',
+    preview: rows.slice(0, 12).map((row) => ({
+      cte: row.numeroCte || row.numero_cte || row.cte || '',
+      nf: row.notaFiscal || row.nota_fiscal || row.nf || '',
+      transportadora: row.transportadora || '',
+      origem: row.cidadeOrigem || row.origem || '',
+      destino: row.cidadeDestino || row.destino || '',
+      ufDestino: row.ufDestino || row.uf_destino || '',
+      valorCte: row.valorCte || row.valor_cte || 0,
+      valorNF: row.valorNF || row.valor_nf || 0,
+      tracking: row.trackingMatch ? 'Com Tracking' : 'Sem Tracking',
+    })),
+  };
 }
 
 
@@ -2455,6 +2530,10 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       destino: row.cidadeDestino || vencedor?.cidadeDestino || '',
       ufDestino: row.ufDestino || vencedor?.ufDestino || '',
       canal,
+      rotaSelecionada: itemSelecionada?.detalhes?.frete?.rotaCotacao || itemSelecionada?.detalhes?.frete?.cotacaoComercial || itemSelecionada?.rotaNome || '',
+      rotaCotacao: itemSelecionada?.detalhes?.frete?.rotaCotacao || itemSelecionada?.detalhes?.frete?.cotacaoComercial || itemSelecionada?.rotaNome || '',
+      rotaVencedora: vencedor?.detalhes?.frete?.rotaCotacao || vencedor?.detalhes?.frete?.cotacaoComercial || vencedor?.rotaNome || '',
+      faixaCotacaoSelecionada: itemSelecionada?.detalhes?.frete?.faixaPeso || '',
       transportadoraReal: row.transportadora || '',
       freteRealizado: valorCte,
       freteSelecionada: freteSel,
@@ -2487,11 +2566,14 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       vencedorDetalhes: vencedor?.detalhes || null,
       selecionadaDetalhes: itemSelecionada?.detalhes || null,
       ganhouRealizado: freteSel > 0 && valorCte > 0 && freteSel < valorCte,
+      nomeRota: itemSelecionada?.detalhes?.frete?.nomeCotacao || itemSelecionada?.detalhes?.frete?.rotaCotacao || itemSelecionada?.detalhes?.frete?.cotacaoComercial || itemSelecionada?.rotaNome || '',
+      faixaPeso: itemSelecionada?.detalhes?.frete?.faixaPeso || '',
       todosResultados: resultado.slice(0, 8).map((r) => ({
         transportadora: r.transportadora,
         total: r.total,
         ranking: r.ranking,
         origem: r.origem,
+        rotaNome: r.detalhes?.frete?.rotaCotacao || r.detalhes?.frete?.cotacaoComercial || r.rotaNome || '',
         detalhes: r.detalhes || null,
       })),
     });
@@ -2778,6 +2860,26 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [pesoSimples, setPesoSimples] = useState('');
   const [nfSimples, setNfSimples] = useState('');
   const [resultadoSimples, setResultadoSimples] = useState([]);
+  const destinoIdentificado = useMemo(() => {
+    const texto = String(destinoCodigo || '').trim();
+    if (!texto) return '';
+
+    const ibgeDigitado = texto.match(/(\d{7})\D*$/)?.[1];
+    let municipio = ibgeDigitado
+      ? todosDestinosComCidade.find((item) => String(item.ibge) === ibgeDigitado)
+      : null;
+
+    if (!municipio) {
+      const busca = normalizeBuscaIbge(limparCidadeDigitada(texto));
+      municipio = todosDestinosComCidade.find((item) => {
+        const cidade = normalizeBuscaIbge(item.cidade);
+        const cidadeUf = normalizeBuscaIbge(`${item.cidade || ''}/${item.uf || ''}`);
+        return busca && (cidade === busca || cidadeUf === busca);
+      });
+    }
+
+    return municipio ? montarLabelMunicipio(municipio) : '';
+  }, [destinoCodigo, todosDestinosComCidade]);
 
   const [transportadora, setTransportadora] = useState('');
   const [canalTransportadora, setCanalTransportadora] = useState(canais[0] || 'ATACADO');
@@ -2824,6 +2926,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [fimRealizado, setFimRealizado] = useState('');
   const [limiteRealizado, setLimiteRealizado] = useState(200000);
   const [resultadoRealizado, setResultadoRealizado] = useState(null);
+  const [baseRealizadoPesquisada, setBaseRealizadoPesquisada] = useState(null);
+  const [resumoPesquisaRealizado, setResumoPesquisaRealizado] = useState(null);
+  const [pesquisandoRealizado, setPesquisandoRealizado] = useState(false);
+  const [filtrosPesquisaRealizado, setFiltrosPesquisaRealizado] = useState('');
   const [filtroDetalhe, setFiltroDetalhe] = useState('');
   const [paginaDetalhe, setPaginaDetalhe] = useState(0);
   const DETALHE_POR_PAGINA = 50;
@@ -2831,6 +2937,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [abaDetalheRealizado, setAbaDetalheRealizado] = useState('ctes'); // 'ctes' | 'uf'
   const [abaLaudoRealizado, setAbaLaudoRealizado] = useState('diretoria');
   const [feedbackCopiaLaudo, setFeedbackCopiaLaudo] = useState('');
+  const [feedbackNegociacao, setFeedbackNegociacao] = useState(null);
   const [laudoVisualAberto, setLaudoVisualAberto] = useState(null);
   const [salvandoLaudosVisuais, setSalvandoLaudosVisuais] = useState(false);
   const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box']));
@@ -2838,6 +2945,29 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const secaoAberta = (id) => !secoesFechadas.has(id);
   const laudosEmailRealizado = useMemo(() => gerarLaudosEmailRealizado(resultadoRealizado), [resultadoRealizado]);
   const laudoEmailAtual = laudosEmailRealizado?.[abaLaudoRealizado] || null;
+
+  useEffect(() => {
+    setBaseRealizadoPesquisada(null);
+    setResumoPesquisaRealizado(null);
+    setFiltrosPesquisaRealizado('');
+    setFeedbackNegociacao(null);
+  }, [
+    transportadoraRealizado,
+    canalRealizado,
+    modoRealizado,
+    origemRealizado,
+    destinoRealizado,
+    ufOrigemRealizado,
+    ufDestinoRealizado,
+    ufsDestinoRealizado,
+    inicioRealizado,
+    fimRealizado,
+    limiteRealizado,
+    baseRealizadoTracking,
+    incluirCpsLogRealizado,
+    incluirNegociacoesRealizado,
+  ]);
+
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
@@ -2957,7 +3087,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
   };
 
 
-  const carregarNegociacoesSimulador = async () => {
+  const carregarNegociacoesSimulador = async (opcoes = {}) => {
+    if (!opcoes.forcar && negociacoesSimulador.length) return negociacoesSimulador;
     setCarregandoNegociacoesSimulador(true);
     setErroNegociacoesSimulador('');
 
@@ -3099,6 +3230,226 @@ export default function SimuladorPage({ transportadoras = [] }) {
     [todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras]
   );
 
+  const origensTransportadora = useMemo(() => {
+    const online = opcoesOnline.origensPorCanal?.[canalTransportadora];
+    if (online?.length) return online;
+    return extrairOrigensBaseSimulador(transportadoras, canalTransportadora);
+  }, [opcoesOnline.origensPorCanal, canalTransportadora, transportadoras]);
+
+  const identificarDestinoLocal = (valor) => {
+    const texto = String(valor || '').trim();
+    if (!texto) return null;
+
+    const ibge = texto.match(/(\d{7})\D*$/)?.[1];
+    if (ibge) {
+      return todosDestinosComCidade.find((item) => String(item.ibge) === ibge) || { ibge, cidade: getCidadeByIbge(ibge, cidadePorIbgeCompleto), uf: getUfByIbge(ibge) };
+    }
+
+    const busca = normalizeBuscaIbge(limparCidadeDigitada(texto));
+    if (!busca) return null;
+
+    return todosDestinosComCidade.find((item) => {
+      const cidade = normalizeBuscaIbge(item.cidade);
+      const cidadeUf = normalizeBuscaIbge(`${item.cidade || ''}/${item.uf || ''}`);
+      return cidade === busca || cidadeUf === busca;
+    }) || null;
+  };
+
+  const destinoTransportadoraIdentificado = useMemo(() => {
+    const municipio = identificarDestinoLocal(destinoTransportadora);
+    return municipio ? montarLabelMunicipio(municipio) : '';
+  }, [destinoTransportadora, todosDestinosComCidade, cidadePorIbgeCompleto]);
+
+  const resolverDestinoDigitado = async (valor) => {
+    const local = identificarDestinoLocal(valor);
+    if (local?.ibge) return String(local.ibge);
+
+    const remoto = await resolverDestinoIbgeDb(valor);
+    if (remoto?.ibge) return String(remoto.ibge);
+
+    const digitos = String(valor || '').replace(/\D/g, '');
+    if (digitos.length === 7) return digitos;
+    return '';
+  };
+
+  const baseSimuladorComFallback = async (filtros = {}) => {
+    const online = await carregarBaseOnlinePorUfDestino(filtros);
+    return Array.isArray(online) && online.length ? online : transportadoras;
+  };
+
+  const onSimularSimples = async () => {
+    setErroSimulacao('');
+    if (!origemSimples || !destinoCodigo || !pesoSimples) {
+      setErroSimulacao('Informe origem, destino e peso para simular.');
+      return;
+    }
+
+    setCarregandoSimulacao(true);
+    try {
+      const ibgeDestino = await resolverDestinoDigitado(destinoCodigo);
+      if (!ibgeDestino) throw new Error('Destino nÃ£o identificado. Informe cidade/UF, IBGE ou CEP.');
+
+      const base = await baseSimuladorComFallback({ origem: origemSimples, canal: canalSimples });
+      const gradeCanal = grade?.[canalSimples] || grade?.ATACADO || [];
+      const resultado = simularSimples({
+        transportadoras: base,
+        origem: origemSimples,
+        canal: canalSimples,
+        peso: pesoSimples,
+        valorNF: nfSimples,
+        destinoCodigo: ibgeDestino,
+        cidadePorIbge: cidadePorIbgeCompleto,
+        gradeCanal,
+      });
+      setResultadoSimples(resultado || []);
+    } catch (error) {
+      setResultadoSimples([]);
+      setErroSimulacao(error.message || 'Erro ao simular frete simples.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const onSimularTransportadora = async () => {
+    setErroSimulacao('');
+    if (!transportadora || !pesoTransportadora) {
+      setErroSimulacao('Informe transportadora e peso para simular.');
+      return;
+    }
+
+    setCarregandoSimulacao(true);
+    try {
+      const entradas = modoLista
+        ? String(listaCodigos || '').split(/\r?\n|,|;/).map((item) => item.trim()).filter(Boolean)
+        : [destinoTransportadora].filter((item) => String(item || '').trim());
+
+      const destinoCodigos = [];
+      for (const entrada of entradas) {
+        const ibge = await resolverDestinoDigitado(entrada);
+        if (ibge) destinoCodigos.push(ibge);
+      }
+
+      if (entradas.length && !destinoCodigos.length) throw new Error('Nenhum destino da lista foi identificado.');
+
+      const base = await baseSimuladorComFallback({ nomeTransportadora: transportadora, canal: canalTransportadora, origem: origemTransportadora });
+      const gradeCanal = grade?.[canalTransportadora] || grade?.ATACADO || [];
+      const resultado = simularPorTransportadora({
+        transportadoras: base,
+        nomeTransportadora: transportadora,
+        canal: canalTransportadora,
+        origem: origemTransportadora,
+        destinoCodigos,
+        peso: pesoTransportadora,
+        valorNF: nfTransportadora,
+        cidadePorIbge: cidadePorIbgeCompleto,
+        gradeCanal,
+      });
+      setResultadoTransportadora(resultado || []);
+    } catch (error) {
+      setResultadoTransportadora([]);
+      setErroSimulacao(error.message || 'Erro ao simular transportadora.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const onSimularGrade = async () => {
+    setErroSimulacao('');
+    if (!transportadoraAnalise) {
+      setErroSimulacao('Informe a transportadora para gerar a anÃ¡lise.');
+      return;
+    }
+
+    setCarregandoSimulacao(true);
+    iniciarProcessamentoUi('Gerando relatÃ³rio', 'Buscando tabela e calculando aderÃªncia...', 12);
+    try {
+      const base = await baseSimuladorComFallback({
+        nomeTransportadora: transportadoraAnalise,
+        canal: canalAnalise,
+        origem: origemAnalise,
+        ufDestino: ufAnalise,
+      });
+      atualizarProcessamentoUi('Calculando cenÃ¡rios da grade...', 55);
+      const resultado = analisarTransportadoraPorGrade({
+        transportadoras: base,
+        nomeTransportadora: transportadoraAnalise,
+        canal: canalAnalise,
+        origem: origemAnalise,
+        ufDestino: ufAnalise,
+        grade: grade?.[canalAnalise] || grade?.ATACADO || [],
+        cidadePorIbge: cidadePorIbgeCompleto,
+      });
+      setResultadoAnalise(resultado);
+      finalizarProcessamentoUi('RelatÃ³rio pronto', 'AnÃ¡lise carregada.', 100);
+    } catch (error) {
+      limparProcessamentoUi();
+      setResultadoAnalise(null);
+      setErroSimulacao(error.message || 'Erro ao gerar anÃ¡lise de transportadora.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const onAnalisarCobertura = async () => {
+    setErroSimulacao('');
+    setCarregandoSimulacao(true);
+    iniciarProcessamentoUi('Analisando cobertura', 'Conferindo destinos com e sem tabela...', 15);
+    try {
+      const base = await baseSimuladorComFallback({
+        canal: canalCobertura,
+        origem: origemCobertura,
+        nomeTransportadora: transportadoraCobertura,
+        ufDestino: ufCobertura,
+      });
+      const resultado = analisarCoberturaTabela({
+        transportadoras: base,
+        canal: canalCobertura,
+        origem: origemCobertura,
+        transportadora: transportadoraCobertura,
+        ufDestino: ufCobertura,
+        cidadePorIbge: cidadePorIbgeCompleto,
+      });
+      setResultadoCobertura(resultado);
+      finalizarProcessamentoUi('Cobertura analisada', 'Resultado carregado.', 100);
+    } catch (error) {
+      limparProcessamentoUi();
+      setResultadoCobertura(null);
+      setErroSimulacao(error.message || 'Erro ao analisar cobertura.');
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const exportarSimulacaoTransportadora = () => {
+    if (!resultadoTransportadora.length) return;
+    const linhas = [
+      ['Transportadora', 'Origem', 'Destino', 'IBGE', 'Ranking', 'Total', 'Prazo'],
+      ...resultadoTransportadora.map((item) => [item.transportadora, item.origem, buildDestinoLabel(item), item.ibgeDestino, item.ranking, item.total, item.prazo]),
+    ];
+    const { nomeArquivo, csv } = exportarLinhasCsv('simulacao-transportadora.csv', linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
+  const exportarAnalise = () => {
+    if (!resultadoAnalise?.detalhes?.length) return;
+    const linhas = [
+      ['Transportadora', 'Origem', 'Destino', 'IBGE', 'UF', 'Ranking', 'Total', 'Prazo'],
+      ...resultadoAnalise.detalhes.map((item) => [item.transportadora, item.origem, buildDestinoLabel(item), item.ibgeDestino, item.ufDestino, item.ranking, item.total, item.prazo]),
+    ];
+    const { nomeArquivo, csv } = exportarLinhasCsv('analise-transportadora.csv', linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
+  const exportarCobertura = () => {
+    if (!resultadoCobertura?.faltantes?.length) return;
+    const linhas = [
+      ['Origem', 'Cidade', 'UF', 'IBGE'],
+      ...resultadoCobertura.faltantes.map((item) => [item.origem, item.cidade, item.uf, item.ibge]),
+    ];
+    const { nomeArquivo, csv } = exportarLinhasCsv('cobertura-faltantes.csv', linhas);
+    downloadCsv(nomeArquivo, csv);
+  };
+
   const transportadorasNegociacaoRealizado = useMemo(
     () => converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalRealizado }),
     [negociacoesSimulador, canalRealizado]
@@ -3143,6 +3494,56 @@ export default function SimuladorPage({ transportadoras = [] }) {
     () => extrairUfsDestinoBaseSimulador(basesMalhaRealizadoSelecionada, canalRealizado, origemRealizado),
     [basesMalhaRealizadoSelecionada, canalRealizado, origemRealizado]
   );
+
+  const origensAnaliseDisponiveis = useMemo(() => {
+    if (transportadoraAnalise) {
+      const base = transportadoras.filter((item) => transportadoraCompativelSimulador(item.nome, transportadoraAnalise));
+      const origens = extrairOrigensBaseSimulador(base, canalAnalise);
+      if (origens.length) return origens;
+    }
+    return opcoesOnline.origensPorCanal?.[canalAnalise] || todasOrigens;
+  }, [transportadoraAnalise, canalAnalise, transportadoras, opcoesOnline.origensPorCanal, todasOrigens]);
+
+  const origensOrigemDisponiveis = useMemo(
+    () => opcoesOnline.origensPorCanal?.[canalOrigem] || todasOrigens,
+    [opcoesOnline.origensPorCanal, canalOrigem, todasOrigens]
+  );
+
+  const origensRealizadoDisponiveis = useMemo(() => {
+    if (origensMalhaRealizadoDisponiveis.length) return origensMalhaRealizadoDisponiveis;
+    return opcoesOnline.origensPorCanal?.[canalRealizado] || todasOrigens;
+  }, [origensMalhaRealizadoDisponiveis, opcoesOnline.origensPorCanal, canalRealizado, todasOrigens]);
+
+  const ufsDestinoFiltroRealizado = useMemo(() => {
+    if (ufsDestinoRealizado.length) return ufsDestinoRealizado;
+    return ufDestinoRealizado ? [ufDestinoRealizado] : [];
+  }, [ufsDestinoRealizado, ufDestinoRealizado]);
+
+  const ufsDestinoRealizadoDisponiveis = useMemo(() => {
+    if (ufsDestinoDaMalhaRealizado.length) return ufsDestinoDaMalhaRealizado;
+    return UF_OPTIONS.filter(Boolean);
+  }, [ufsDestinoDaMalhaRealizado]);
+
+  const ufDestinoRealizadoLabel = useMemo(() => {
+    if (!ufsDestinoFiltroRealizado.length) return 'Todas';
+    if (ufsDestinoFiltroRealizado.length <= 3) return ufsDestinoFiltroRealizado.join(', ');
+    return `${ufsDestinoFiltroRealizado.length} UFs selecionadas`;
+  }, [ufsDestinoFiltroRealizado]);
+
+  const toggleUfDestinoRealizado = (uf) => {
+    if (!uf) {
+      setUfDestinoRealizado('');
+      setUfsDestinoRealizado([]);
+      return;
+    }
+
+    setUfDestinoRealizado('');
+    setUfsDestinoRealizado((atuais) => (
+      atuais.includes(uf)
+        ? atuais.filter((item) => item !== uf)
+        : [...atuais, uf].sort((a, b) => a.localeCompare(b, 'pt-BR'))
+    ));
+  };
 
   useEffect(() => {
     let ativo = true;
@@ -3202,6 +3603,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setSalvandoResultadoNegociacao(true);
     setErroSimulacao('');
+    setFeedbackNegociacao({ tipo: 'info', mensagem: 'Salvando resultado na negociacao...' });
 
     try {
       const contextoLaudos = {
@@ -3211,12 +3613,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
       };
       await salvarResultadoSimulacaoNegociacao(negociacaoSelecionadaRealizado.id, {
         ...resultadoRealizado,
+        gradeFaixasLaudo: grade?.[canalRealizado] || grade?.ATACADO || [],
         laudosEmail: laudosEmailRealizado,
         laudos: prepararLaudosNegociacao(resultadoRealizado, contextoLaudos),
       });
-      alert('Resultado projetado salvo na negociação.');
+      setFeedbackNegociacao({
+        tipo: 'sucesso',
+        mensagem: `Resultado salvo na negociação às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.`,
+      });
     } catch (error) {
-      setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
+      const mensagem = error.message || 'Erro ao salvar resultado na negociação.';
+      console.error('Erro ao salvar resultado na negociação:', error);
+      setErroSimulacao(mensagem);
+      setFeedbackNegociacao({ tipo: 'erro', mensagem });
     } finally {
       setSalvandoResultadoNegociacao(false);
     }
@@ -3227,446 +3636,144 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     setSalvandoLaudosVisuais(true);
     setErroSimulacao('');
+    setFeedbackNegociacao({ tipo: 'info', mensagem: 'Salvando laudos na negociação...' });
 
     try {
-      await salvarLaudosNegociacao(negociacaoSelecionadaRealizado.id, resultadoRealizado, {
+      const contextoLaudos = {
         transportadora: resultadoRealizado.filtros?.transportadora,
         canal: resultadoRealizado.filtros?.canal,
         origem: resultadoRealizado.filtros?.origem,
+      };
+      await salvarLaudosNegociacao(negociacaoSelecionadaRealizado.id, resultadoRealizado, contextoLaudos);
+      setFeedbackNegociacao({
+        tipo: 'sucesso',
+        mensagem: `Laudos salvos na negociação às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.`,
       });
-
-      alert('Laudos executivo e transportador salvos na negociação.');
     } catch (error) {
-      setErroSimulacao(error.message || 'Erro ao salvar laudos na negociação.');
+      const mensagem = error.message || 'Erro ao salvar laudos na negociação.';
+      console.error('Erro ao salvar laudos na negociação:', error);
+      setErroSimulacao(mensagem);
+      setFeedbackNegociacao({ tipo: 'erro', mensagem });
     } finally {
       setSalvandoLaudosVisuais(false);
     }
   };
 
-  const origensAnaliseDisponiveis = useMemo(() => {
-    const porTransportadora = opcoesOnline.origensPorTransportadora?.[transportadoraAnalise];
-    if (porTransportadora?.length) return porTransportadora;
-
-    const porCanal = opcoesOnline.origensPorCanal?.[canalAnalise];
-    if (porCanal?.length) return porCanal;
-
-    const selecionada = transportadoras.find((item) => item.nome === transportadoraAnalise);
-    if (selecionada) {
-      return [...new Set((selecionada.origens || [])
-        .filter((origem) => !canalAnalise || (origem.canal || 'ATACADO') === canalAnalise)
-        .map((origem) => origem.cidade)
-        .filter(Boolean))]
-        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    }
-
-    return todasOrigens;
-  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraAnalise, canalAnalise, transportadoras, todasOrigens]);
-
-
-  const origensOrigemDisponiveis = useMemo(() => {
-    const online = opcoesOnline.origensPorCanal?.[canalOrigem];
-    if (online?.length) return online;
-    return todasOrigens;
-  }, [opcoesOnline.origensPorCanal, canalOrigem, todasOrigens]);
-
-  const origensRealizadoDisponiveis = useMemo(() => {
-    if (transportadoraRealizado && origensMalhaRealizadoDisponiveis.length) return origensMalhaRealizadoDisponiveis;
-
-    const porTransportadora = opcoesOnline.origensPorTransportadora?.[transportadoraRealizado];
-    if (transportadoraRealizado && porTransportadora?.length) return porTransportadora;
-
-    const porCanal = opcoesOnline.origensPorCanal?.[canalRealizado];
-    if (porCanal?.length) return porCanal;
-
-    return todasOrigens;
-  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraRealizado, canalRealizado, todasOrigens, origensMalhaRealizadoDisponiveis]);
-
-
-  const ufsDestinoRealizadoDisponiveis = useMemo(() => {
-    if (!transportadoraRealizado) return UF_OPTIONS;
-    if (ufsDestinoDaMalhaRealizado.length) return ['', ...ufsDestinoDaMalhaRealizado];
-
-    // Se o usuário digitou uma origem que não faz parte da malha da tabela selecionada,
-    // liberamos todas as UFs para permitir simular essa origem manualmente.
-    if (origemRealizado && basesMalhaRealizadoSelecionada.length) return UF_OPTIONS;
-
-    return UF_OPTIONS;
-  }, [transportadoraRealizado, ufsDestinoDaMalhaRealizado, origemRealizado, basesMalhaRealizadoSelecionada]);
-
-  const ufsDestinoFiltroRealizado = useMemo(() => {
-    const disponiveis = new Set((ufsDestinoRealizadoDisponiveis || []).filter(Boolean));
-    return (ufsDestinoRealizado || [])
-      .map((uf) => String(uf || '').trim().toUpperCase())
-      .filter((uf, index, arr) => uf && arr.indexOf(uf) === index)
-      .filter((uf) => !disponiveis.size || disponiveis.has(uf));
-  }, [ufsDestinoRealizado, ufsDestinoRealizadoDisponiveis]);
-
-  const ufDestinoRealizadoLabel = useMemo(() => {
-    if (!ufsDestinoFiltroRealizado.length) return 'Todas';
-    if (ufsDestinoFiltroRealizado.length <= 3) return ufsDestinoFiltroRealizado.join(', ');
-    return `${ufsDestinoFiltroRealizado.length} UFs selecionadas`;
-  }, [ufsDestinoFiltroRealizado]);
-
-  const toggleUfDestinoRealizado = (uf) => {
-    const ufNorm = String(uf || '').trim().toUpperCase();
-    if (!ufNorm) {
-      setUfsDestinoRealizado([]);
-      setUfDestinoRealizado('');
+  const recalcularRealizadoComMesmaBase = async () => {
+    if (!baseRealizadoPesquisada?.rowsFiltrados?.length) {
+      setErroSimulacao('Faça uma simulação primeiro para guardar a base de CT-es pesquisada.');
       return;
     }
-
-    setUfsDestinoRealizado((prev) => {
-      const atual = new Set((prev || []).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean));
-      if (atual.has(ufNorm)) atual.delete(ufNorm);
-      else atual.add(ufNorm);
-      const lista = [...atual].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-      setUfDestinoRealizado(lista.length === 1 ? lista[0] : '');
-      return lista;
-    });
-  };
-
-  useEffect(() => {
-    const permitidas = new Set((ufsDestinoRealizadoDisponiveis || []).filter(Boolean));
-    setUfsDestinoRealizado((prev) => {
-      const filtradas = (prev || []).filter((uf) => permitidas.has(uf));
-      if (filtradas.length !== (prev || []).length) {
-        setUfDestinoRealizado(filtradas.length === 1 ? filtradas[0] : '');
-      }
-      return filtradas;
-    });
-  }, [ufsDestinoRealizadoDisponiveis]);
-
-  useEffect(() => {
-    if (transportadora && transportadorasPorCanalTransportadora.length && !transportadorasPorCanalTransportadora.includes(transportadora)) {
-      setTransportadora('');
-      setOrigemTransportadora('');
-    }
-  }, [transportadorasPorCanalTransportadora, transportadora]);
-
-  useEffect(() => {
-    if (transportadoraAnalise && transportadorasPorCanalAnalise.length && !transportadorasPorCanalAnalise.includes(transportadoraAnalise)) {
-      setTransportadoraAnalise('');
-    }
-  }, [transportadorasPorCanalAnalise, transportadoraAnalise]);
-
-  useEffect(() => {
-    if (transportadoraCobertura && !transportadorasPorCanalCobertura.includes(transportadoraCobertura)) {
-      setTransportadoraCobertura('');
-    }
-  }, [transportadorasPorCanalCobertura, transportadoraCobertura]);
-
-  useEffect(() => {
-    if (transportadoraRealizado && transportadorasPorCanalRealizado.length && !transportadorasPorCanalRealizado.includes(transportadoraRealizado)) {
-      setTransportadoraRealizado('');
-      setOrigemRealizado('');
-    }
-  }, [transportadorasPorCanalRealizado, transportadoraRealizado]);
-
-
-  const origensTransportadora = useMemo(() => {
-    const online = opcoesOnline.origensPorTransportadora?.[transportadora];
-    if (online?.length) return online;
-    const selecionada = transportadoras.find((item) => item.nome === transportadora);
-    if (!selecionada) return [];
-    return [...new Set((selecionada.origens || []).filter((item) => !canalTransportadora || item.canal === canalTransportadora).map((item) => item.cidade))].sort();
-  }, [transportadoras, transportadora, canalTransportadora, opcoesOnline.origensPorTransportadora]);
-
-  const canaisTransportadora = useMemo(() => {
-    const online = opcoesOnline.canaisPorTransportadora?.[transportadora];
-    if (online?.length) return online;
-    const selecionada = transportadoras.find((item) => item.nome === transportadora);
-    if (!selecionada) return canais;
-    return [...new Set((selecionada.origens || []).map((item) => item.canal).filter(Boolean))];
-  }, [transportadoras, transportadora, canais, opcoesOnline.canaisPorTransportadora]);
-
-  const identificarDestinoLocal = (valor) => {
-    const raw = String(valor || '').trim();
-    if (!raw) return null;
-
-    const digitos = raw.replace(/\D/g, '');
-    if (digitos.length === 7 && municipioPorIbge.has(digitos)) return municipioPorIbge.get(digitos);
-
-    const cidadeLimpa = limparCidadeDigitada(raw);
-    const chaveCidade = normalizeBuscaIbge(cidadeLimpa);
-    if (municipioPorCidade.has(chaveCidade)) return municipioPorCidade.get(chaveCidade);
-
-    if (digitos.length === 7) {
-      const cidade = getCidadeByIbge(digitos, cidadePorIbgeCompleto);
-      return cidade ? { ibge: digitos, cidade, uf: getUfByIbge(digitos) } : { ibge: digitos, cidade: '', uf: getUfByIbge(digitos) };
-    }
-
-    return null;
-  };
-
-  const resolverDestinoInput = async (valor) => {
-    const local = identificarDestinoLocal(valor);
-    if (local?.ibge) return local;
-
-    const remoto = await resolverDestinoIbgeDb(valor);
-    if (remoto?.ibge) return remoto;
-
-    return null;
-  };
-
-  const destinoIdentificado = useMemo(() => {
-    const destino = identificarDestinoLocal(destinoCodigo);
-    return destino ? montarLabelMunicipio(destino) : '';
-  }, [destinoCodigo, municipioPorIbge, municipioPorCidade, cidadePorIbgeCompleto]);
-
-  const destinoTransportadoraIdentificado = useMemo(() => {
-    const destino = identificarDestinoLocal(destinoTransportadora);
-    return destino ? montarLabelMunicipio(destino) : '';
-  }, [destinoTransportadora, municipioPorIbge, municipioPorCidade, cidadePorIbgeCompleto]);
-
-  const onSimularSimples = async () => {
-    const destinoResolvido = await resolverDestinoInput(destinoCodigo);
-    const destinoFinal = destinoResolvido?.ibge || destinoCodigo;
-
-    if (destinoCodigo && !destinoResolvido?.ibge) {
-      setErroSimulacao('Não foi possível identificar o destino informado na base IBGE/CEP. Use cidade, IBGE ou CEP válido.');
-      return;
-    }
-
-    const baseOnline = await carregarBaseOnline({
-      origem: origemSimples,
-      canal: canalSimples,
-      destinoCodigo: destinoFinal,
-    });
-
-    const lookupOnline = buildLookupTables(baseOnline);
-    const mapaCidades = new Map(cidadePorIbgeCompleto);
-    (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
-    if (destinoResolvido?.ibge && destinoResolvido?.cidade) {
-      mapaCidades.set(destinoResolvido.ibge, destinoResolvido.uf ? `${destinoResolvido.cidade}/${destinoResolvido.uf}` : destinoResolvido.cidade);
-    }
-
-    setResultadoSimples(simularSimples({
-      transportadoras: baseOnline,
-      origem: origemSimples,
-      canal: canalSimples,
-      peso: Number(pesoSimples || 0),
-      valorNF: Number(nfSimples || 0),
-      destinoCodigo: destinoFinal,
-      cidadePorIbge: mapaCidades,
-      gradeCanal: grade[canalSimples] || grade.ATACADO || [],
-    }));
-  };
-  const onSimularTransportadora = async () => {
-    const entradas = modoLista
-      ? listaCodigos.split(/\n|,|;/).map((item) => item.trim()).filter(Boolean)
-      : destinoTransportadora ? [destinoTransportadora.trim()] : [];
-
-    const resolvidos = await Promise.all(entradas.map(async (entrada) => {
-      const destino = await resolverDestinoInput(entrada);
-      return destino?.ibge ? destino : { ibge: entrada, cidade: '', uf: '' };
-    }));
-
-    const codigos = resolvidos.map((item) => item.ibge).filter(Boolean);
-
-    if (entradas.length && !codigos.length) {
-      setErroSimulacao('Não foi possível identificar os destinos informados na base IBGE/CEP.');
-      return;
-    }
-
-    iniciarProcessamentoUi('Simulação por transportadora', 'Validando destinos e preparando consulta...', 12);
-
-    atualizarProcessamentoUi('Buscando concorrentes no Supabase...', 36);
-
-    const baseOnline = await carregarBaseOnline({
-      origem: origemTransportadora,
-      canal: canalTransportadora,
-      destinoCodigos: codigos,
-      nomeTransportadora: transportadora,
-    });
-
-    atualizarProcessamentoUi('Montando base da análise...', 72);
-
-    const lookupOnline = buildLookupTables(baseOnline);
-    const mapaCidades = new Map(cidadePorIbgeCompleto);
-    (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
-    resolvidos.forEach((destino) => {
-      if (destino?.ibge && destino?.cidade) {
-        mapaCidades.set(destino.ibge, destino.uf ? `${destino.cidade}/${destino.uf}` : destino.cidade);
-      }
-    });
-
-    atualizarProcessamentoUi('Calculando cenário competitivo...', 88);
-
-    setResultadoTransportadora(simularPorTransportadora({
-      transportadoras: baseOnline,
-      nomeTransportadora: transportadora,
-      canal: canalTransportadora,
-      origem: origemTransportadora,
-      destinoCodigos: codigos,
-      peso: Number(pesoTransportadora || 0),
-      valorNF: Number(nfTransportadora || 0),
-      cidadePorIbge: mapaCidades,
-      gradeCanal: grade[canalTransportadora] || grade.ATACADO || [],
-    }));
-
-    finalizarProcessamentoUi('Simulação concluída', 'A comparação entre transportadoras foi carregada.', 100);
-  };
-  const exportarSimulacaoTransportadora = () => {
-    if (!resultadoTransportadora.length) return;
-    const { nomeArquivo, csv } = exportarLinhasCsv(`simulacao-${transportadora.toLowerCase().replace(/\s+/g, '-')}.csv`, [
-      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Prazo', 'Frete Final', '% sobre NF', 'Perdeu para', 'Substituta se bloquear', 'Frete substituta', 'Saving vs 2º', 'Diferença Líder', 'Redução % Líder'],
-      ...resultadoTransportadora.map((item) => [
-        item.transportadora,
-        item.origem,
-        item.cidadeDestino || `IBGE ${item.ibgeDestino}`,
-        item.ufDestino,
-        item.ibgeDestino,
-        item.prazo,
-        item.total.toFixed(2),
-        item.percentualSobreNF.toFixed(2),
-        item.perdeuPara || '',
-        item.proximaSeBloquear || '',
-        item.freteSubstituta?.toFixed?.(2) || '0.00',
-        item.savingSegundo.toFixed(2),
-        item.diferencaLider.toFixed(2),
-        item.reducaoNecessariaPct.toFixed(2),
-      ]),
-    ]);
-    downloadCsv(nomeArquivo, csv);
-  };
-  const onSimularGrade = async () => {
-    if (!transportadoraAnalise) {
-      setErroSimulacao('Informe a transportadora para gerar a análise.');
-      return;
-    }
-
-    if (!origemAnalise) {
-      setErroSimulacao('Para evitar travamento em bases B2C grandes, selecione uma Origem para quebrar a análise. Depois você pode repetir para Itajaí, Itupeva, Campo Grande etc.');
-      return;
-    }
-
-    iniciarProcessamentoUi('Análise de transportadora', `Preparando análise de ${transportadoraAnalise} em ${origemAnalise}...`, 8);
-
-    try {
-      atualizarProcessamentoUi('Buscando apenas destinos da transportadora nesta origem/UF...', 28);
-
-      const baseOnline = await carregarBaseOnline({
-        canal: canalAnalise,
-        origem: origemAnalise,
-        nomeTransportadora: transportadoraAnalise,
-        ufDestino: ufAnalise,
-      });
-
-      if (!baseOnline.length) {
-        setResultadoAnalise(null);
-        finalizarProcessamentoUi('Sem dados para analisar', 'Não foram encontradas rotas/cotações para essa transportadora, origem e canal.', 100);
-        return;
-      }
-
-      atualizarProcessamentoUi('Organizando rotas, destinos e faixas...', 62);
-
-      const lookupOnline = buildLookupTables(baseOnline);
-      const mapaCidades = new Map(cidadePorIbgeCompleto);
-      (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
-
-      atualizarProcessamentoUi('Calculando aderência, saving e ranking da origem...', 84);
-      await new Promise((resolve) => setTimeout(resolve, 80));
-
-      const resultado = analisarTransportadoraPorGrade({
-        transportadoras: baseOnline,
-        nomeTransportadora: transportadoraAnalise,
-        canal: canalAnalise,
-        origem: origemAnalise,
-        ufDestino: ufAnalise,
-        grade: grade[canalAnalise] || grade.ATACADO || [],
-        cidadePorIbge: mapaCidades,
-      });
-
-      const detalhes = ufAnalise
-        ? (resultado.detalhes || []).filter((item) => String(item.ufDestino || '').toUpperCase() === ufAnalise)
-        : resultado.detalhes || [];
-
-      const resultadoFinal = ufAnalise ? {
-        ...resultado,
-        detalhes,
-        rotasAvaliadas: detalhes.length,
-        vitorias: detalhes.filter((item) => Number(item.ranking) === 1).length,
-        aderencia: detalhes.length ? (detalhes.filter((item) => Number(item.ranking) === 1).length / detalhes.length) * 100 : 0,
-        saving: detalhes.reduce((acc, item) => acc + Number(item.savingSegundo || 0), 0),
-        freteMedio: detalhes.length ? detalhes.reduce((acc, item) => acc + Number(item.total || 0), 0) / detalhes.length : 0,
-        prazoMedio: detalhes.length ? detalhes.reduce((acc, item) => acc + Number(item.prazo || 0), 0) / detalhes.length : 0,
-      } : resultado;
-
-      setResultadoAnalise(resultadoFinal);
-
-      finalizarProcessamentoUi('Análise concluída', `Relatório gerado para ${transportadoraAnalise} em ${origemAnalise}.`, 100);
-    } catch (error) {
-      setErroSimulacao(error.message || 'Erro ao gerar análise. Tente uma origem menor ou atualize as opções.');
-      finalizarProcessamentoUi('Erro na análise', 'A análise foi interrompida. Tente filtrar outra origem.', 100);
-    }
-  };
-  const exportarAnalise = () => {
-    if (!resultadoAnalise?.detalhes?.length) return;
-    const { nomeArquivo, csv } = exportarLinhasCsv(`analise-${transportadoraAnalise.toLowerCase().replace(/\s+/g, '-')}.csv`, [
-      ['Transportadora', 'Origem', 'Destino', 'UF', 'IBGE', 'Peso', 'Valor NF', 'Prazo', 'Ranking', 'Frete Final', '% sobre NF', 'Perdeu para', 'Substituta', 'Saving 2º'],
-      ...resultadoAnalise.detalhes.map((item) => [
-        item.transportadora,
-        item.origem,
-        item.cidadeDestino || `IBGE ${item.ibgeDestino}`,
-        item.ufDestino,
-        item.ibgeDestino,
-        item.gradePeso,
-        item.gradeValorNF,
-        item.prazo,
-        item.ranking,
-        item.total.toFixed(2),
-        item.percentualSobreNF.toFixed(2),
-        item.perdeuPara || '',
-        item.proximaSeBloquear || '',
-        item.savingSegundo.toFixed(2),
-      ]),
-    ]);
-    downloadCsv(nomeArquivo, csv);
-  };
-  const onAnalisarCobertura = async () => {
-    iniciarProcessamentoUi('Cobertura de tabela', 'Buscando base online no Supabase...', 15);
-    try {
-      const baseOnline = await carregarBaseOnline({
-        canal: canalCobertura,
-        origem: origemCobertura,
-      });
-      const base = baseOnline.length ? baseOnline : transportadoras;
-      setResultadoCobertura(analisarCoberturaTabela({
-        transportadoras: base,
-        canal: canalCobertura,
-        origem: origemCobertura,
-        transportadora: transportadoraCobertura,
-        ufDestino: ufCobertura,
-        cidadePorIbge: cidadePorIbgeCompleto,
-      }));
-      finalizarProcessamentoUi('Cobertura analisada', 'Resultado carregado.', 100);
-    } catch (error) {
-      setErroSimulacao(error.message || 'Erro ao analisar cobertura.');
-      finalizarProcessamentoUi('Erro', 'Não foi possível analisar a cobertura.', 100);
-    }
-  };
-  const exportarCobertura = () => {
-    if (!resultadoCobertura?.faltantes?.length) return;
-    const { nomeArquivo, csv } = exportarLinhasCsv('cobertura-faltantes.csv', [
-      ['Origem', 'UF Destino', 'Cidade Destino', 'IBGE Destino', 'Status'],
-      ...resultadoCobertura.faltantes.map((item) => [item.origem, item.uf, item.cidade || '', item.ibge, 'Sem tabela']),
-    ]);
-    downloadCsv(nomeArquivo, csv);
-  };
-
-  const onSimularRealizado = async () => {
     if (!transportadoraRealizado) {
-      setErroSimulacao('Selecione a transportadora/tabela que será simulada no realizado.');
+      setErroSimulacao('Selecione a transportadora/tabela para recalcular.');
       return;
     }
 
     setFiltroDetalhe('');
     setPaginaDetalhe(0);
     setLinhasExpandidas(new Set());
-    iniciarProcessamentoUi('Simulador do realizado', 'Carregando vínculos, CT-es e tabelas...', 8);
+    iniciarProcessamentoUi('Recalculando com mesma base', 'Recarregando somente a tabela/negociação selecionada...', 18);
 
     try {
-      atualizarProcessamentoUi('Carregando vínculos de transportadoras...', 14);
+      const dadosNegociacoes = await carregarNegociacoesSimulador({ forcar: true });
+      const negociacoesConvertidas = converterTabelasNegociacaoParaSimulador(dadosNegociacoes || [], { canal: canalRealizado });
+      const ehNegociacao = negociacoesConvertidas.some((item) => normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(transportadoraRealizado));
+      let baseSelecionada = [];
+
+      if (ehNegociacao) {
+        baseSelecionada = negociacoesConvertidas.filter((item) =>
+          normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(transportadoraRealizado) ||
+          transportadoraCompativelSimulador(item.nome, transportadoraRealizado)
+        );
+      } else {
+        const mapaVinculos = await carregarMapaVinculosSimulador();
+        const nomeTabela = mapaVinculos.get(normalizarChaveSimulador(transportadoraRealizado)) || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase()) || transportadoraRealizado;
+        const baseOficial = await carregarBaseOnlinePorUfDestino({
+          nomeTransportadora: nomeTabela,
+          canal: canalRealizado,
+          origem: origemRealizado || '',
+          ufDestino: ufsDestinoFiltroRealizado,
+        });
+        baseSelecionada = filtrarBasePorTransportadoraSimulador(baseOficial, nomeTabela);
+      }
+
+      if (!baseSelecionada.length) {
+        setErroSimulacao('Não encontrei tabela atualizada para recalcular. Clique em Simular realizado para refazer o fluxo completo.');
+        finalizarProcessamentoUi('Tabela não encontrada', 'Não foi possível recalcular com a tabela atualizada.', 100);
+        return;
+      }
+
+      const basesParaMesclar = [baseSelecionada].filter((base) => Array.isArray(base) ? base.length : Boolean(base));
+      if (compararConcorrentesRealizado && incluirNegociacoesRealizado && negociacoesConvertidas.length) basesParaMesclar.push(negociacoesConvertidas);
+      const baseParaSimulacao = mesclarBasesTransportadorasSimulador(basesParaMesclar);
+      const lookupOnline = buildLookupTables(baseParaSimulacao);
+      const mapaCidades = new Map(cidadePorIbgeCompleto);
+      (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
+
+      atualizarProcessamentoUi('Simulando novamente CT-e a CT-e com a mesma base pesquisada...', 72);
+      const resultado = simularRealizadoComTabela({
+        rows: baseRealizadoPesquisada.rowsFiltrados,
+        baseOnline: baseParaSimulacao,
+        transportadoraSelecionada: transportadoraRealizado,
+        filtros: {
+          ...(baseRealizadoPesquisada.filtros || {}),
+          transportadora: transportadoraRealizado,
+          transportadoraTabelaUsada: transportadoraRealizado,
+          recalculoMesmaBase: true,
+          recalculadoEm: new Date().toISOString(),
+        },
+        cidadePorIbge: mapaCidades,
+        gradePorCanal: grade,
+        municipioPorCidade,
+      });
+
+      setResultadoRealizado({
+        ...resultado,
+        filtros: {
+          ...(baseRealizadoPesquisada.filtros || {}),
+          transportadora: transportadoraRealizado,
+          transportadoraTabelaUsada: transportadoraRealizado,
+          canal: canalRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufsDestinoFiltroRealizado.length ? ufsDestinoFiltroRealizado : (baseRealizadoPesquisada.filtros?.ufDestino || []),
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          recalculoMesmaBase: true,
+          recalculadoEm: new Date().toISOString(),
+          ctesNaMalha: baseRealizadoPesquisada.rowsFiltrados.length,
+          ctesBaseSimulada: baseRealizadoPesquisada.rowsFiltrados.length,
+          tabelasBaseSelecionada: baseSelecionada.length,
+          fonteTabela: 'recalculo_mesma_base',
+        },
+      });
+      finalizarProcessamentoUi('Recalculo concluído', 'A mesma base de CT-es foi recalculada com a tabela atualizada.', 100);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao recalcular com a mesma base.');
+      finalizarProcessamentoUi('Erro no recalculo', 'Não foi possível recalcular com a base pesquisada.', 100);
+    }
+  };
+
+  const onPesquisarRealizado = async () => {
+    if (!transportadoraRealizado) {
+      setErroSimulacao('Selecione a transportadora/tabela antes de pesquisar os CT-es.');
+      return;
+    }
+
+    setPesquisandoRealizado(true);
+    setCarregandoSimulacao(true);
+    setResultadoRealizado(null);
+    setBaseRealizadoPesquisada(null);
+    setResumoPesquisaRealizado(null);
+    setFiltroDetalhe('');
+    setPaginaDetalhe(0);
+    setLinhasExpandidas(new Set());
+    iniciarProcessamentoUi('Pesquisar CT-es', 'Localizando tabela/malha selecionada...', 8);
+
+    try {
+      atualizarProcessamentoUi('Carregando vínculos de transportadoras...', 12);
       const mapaVinculos = await carregarMapaVinculosSimulador();
       const ehNegociacaoSelecionada = nomesNegociacaoRealizado.includes(transportadoraRealizado);
       const nomeTabelaSelecionada = ehNegociacaoSelecionada
@@ -3675,7 +3782,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase())
           || transportadoraRealizado;
 
-      atualizarProcessamentoUi('Buscando malha da transportadora/tabela selecionada...', 18);
+      atualizarProcessamentoUi('Buscando malha/tabela selecionada...', 18);
       let baseSelecionada = [];
 
       if (ehNegociacaoSelecionada) {
@@ -3702,6 +3809,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
         if (!baseSelecionada.length && baseJaCarregada.length) baseSelecionada = baseJaCarregada;
       }
 
+      if (!baseSelecionada.length) {
+        setErroSimulacao('Tabela/malha não localizada para a transportadora selecionada. Revise canal, transportadora e cadastro da tabela antes de simular.');
+        finalizarProcessamentoUi('Tabela não localizada', 'Não foi possível carregar a malha para esta seleção.', 100);
+        return;
+      }
+
       const origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
       const ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
       const origensFiltroEfetivo = origemRealizado ? [] : origensTabelaSelecionada;
@@ -3709,7 +3822,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ? ufsDestinoFiltroRealizado
         : ufsDestinoTabelaSelecionada;
 
-      atualizarProcessamentoUi('Buscando CT-es realizados — página 1...', 24);
+      atualizarProcessamentoUi('Tabela localizada. Buscando CT-es realizados — página 1...', 26);
       const rowsBrutos = await buscarRealizadoLocalCtesExpandido({
         canal: canalRealizado,
         origem: origemRealizado,
@@ -3721,16 +3834,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
         fim: fimRealizado,
         limit: limiteRealizado,
       }, (qtd) => {
-        atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(38, 24 + Math.floor(qtd / 500)));
+        atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(42, 26 + Math.floor(qtd / 500)));
       });
 
+      if (!rowsBrutos.length) {
+        setErroSimulacao('Nenhum CT-e encontrado para os filtros informados. Revise canal, período, origem, destino e UF.');
+        finalizarProcessamentoUi('Nenhum CT-e encontrado', 'A tabela foi localizada, mas a busca de CT-es retornou zero.', 100);
+        return;
+      }
+
       const rowsBrutosFiltrados = aplicarFiltrosPadraoRealizadoSim(rowsBrutos, {
-        // CPS LOG fica excluído por padrão em qualquer base.
-        // Marque a opção na tela somente quando quiser analisar CPS LOG.
         incluirCpsLog: incluirCpsLogRealizado,
       });
 
-      atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 36);
+      atualizarProcessamentoUi('Resolvendo IBGE e aplicando vínculos...', 48);
       const rowsComIbgeBaseAntesCps = rowsBrutosFiltrados.map((row) => {
         const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
         const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', municipioPorCidade);
@@ -3739,15 +3856,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
         return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
       });
 
-      // Segunda barreira: depois dos vínculos, a transportadora pode virar CPS LOG.
-      // Por isso filtramos novamente antes do cruzamento com Tracking e antes da simulação.
       const rowsComIbgeBase = filtrarCpsLogRealizadoSim(rowsComIbgeBaseAntesCps, incluirCpsLogRealizado);
 
-      atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 42);
+      atualizarProcessamentoUi('Cruzando CT-es com Tracking...', 62);
       const mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
       const trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
-
-      // Terceira barreira: garante que CPS LOG não entre mesmo se vier enriquecido/vinculado no Tracking.
       const linhasEnriquecidasFiltradas = filtrarCpsLogRealizadoSim(trackingEnriquecido.linhas || [], incluirCpsLogRealizado);
       const rowsComTracking = linhasEnriquecidasFiltradas.filter((row) => row.trackingMatch);
       const rowsComIbge = baseRealizadoTracking === 'com_tracking'
@@ -3755,9 +3868,97 @@ export default function SimuladorPage({ transportadoras = [] }) {
         : linhasEnriquecidasFiltradas;
 
       if (baseRealizadoTracking === 'com_tracking' && !rowsComIbge.length) {
-        setErroSimulacao('Nenhum CT-e encontrou vínculo com o Tracking nos filtros informados. Revise período, origem, UF ou a carga do Tracking.');
-        setResultadoRealizado(null);
-        finalizarProcessamentoUi('Sem CT-es com Tracking', 'A base foi carregada, mas nenhum CT-e teve vínculo com Tracking.', 100);
+        setErroSimulacao('Nenhum CT-e encontrou vínculo com Tracking. A tabela foi localizada e os CT-es foram buscados, mas a base final ficou zerada no Tracking.');
+        finalizarProcessamentoUi('Sem CT-es com Tracking', 'Revise carga de Tracking ou altere temporariamente para Todos os CT-es.', 100);
+        return;
+      }
+
+      const payloadPesquisa = {
+        mapaVinculos,
+        ehNegociacaoSelecionada,
+        nomeTabelaSelecionada,
+        baseSelecionada,
+        origensTabelaSelecionada,
+        ufsDestinoTabelaSelecionada,
+        origensFiltroEfetivo,
+        ufsDestinoEfetivasRealizado,
+        rowsBrutos,
+        rowsComIbgeBaseAntesCps,
+        rowsComIbgeBase,
+        mapasTracking,
+        trackingEnriquecido,
+        linhasEnriquecidasFiltradas,
+        rowsComTracking,
+        rows: rowsComIbge,
+        filtros: {
+          canal: canalRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          baseRealizadoTracking,
+          incluirCpsLogRealizado,
+        },
+      };
+
+      setBaseRealizadoPesquisada(payloadPesquisa);
+      setResumoPesquisaRealizado(montarResumoPesquisaRealizado(payloadPesquisa));
+      setFiltrosPesquisaRealizado(JSON.stringify(payloadPesquisa.filtros));
+      setErroSimulacao('');
+      finalizarProcessamentoUi('Pesquisa concluída', 'Base de CT-es localizada e pronta para simular/calcular.', 100);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao pesquisar CT-es do realizado.');
+      finalizarProcessamentoUi('Erro na pesquisa de CT-es', 'Não foi possível montar a base para simulação.', 100);
+    } finally {
+      setPesquisandoRealizado(false);
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  const onSimularRealizado = async () => {
+    if (!transportadoraRealizado) {
+      setErroSimulacao('Selecione a transportadora/tabela que será simulada no realizado.');
+      return;
+    }
+
+    setCarregandoSimulacao(true);
+    setFiltroDetalhe('');
+    setPaginaDetalhe(0);
+    setLinhasExpandidas(new Set());
+    iniciarProcessamentoUi('Simular / Calcular', 'Calculando sobre a base de CT-es já pesquisada...', 8);
+
+    try {
+      if (!baseRealizadoPesquisada?.rows?.length) {
+        setErroSimulacao('Pesquise os CT-es antes de simular. Primeiro valide a base encontrada e depois clique em Simular / Calcular.');
+        finalizarProcessamentoUi('Pesquisa obrigatória', 'A simulação foi bloqueada porque não existe base de CT-es pesquisada.', 100);
+        return;
+      }
+
+      atualizarProcessamentoUi('Usando base de CT-es já pesquisada...', 18);
+      const pesquisa = baseRealizadoPesquisada;
+      const mapaVinculos = pesquisa.mapaVinculos || new Map();
+      const ehNegociacaoSelecionada = pesquisa.ehNegociacaoSelecionada;
+      const nomeTabelaSelecionada = pesquisa.nomeTabelaSelecionada || transportadoraRealizado;
+      const baseSelecionada = pesquisa.baseSelecionada || [];
+      const origensTabelaSelecionada = pesquisa.origensTabelaSelecionada || [];
+      const ufsDestinoTabelaSelecionada = pesquisa.ufsDestinoTabelaSelecionada || [];
+      const origensFiltroEfetivo = pesquisa.origensFiltroEfetivo || [];
+      const ufsDestinoEfetivasRealizado = pesquisa.ufsDestinoEfetivasRealizado || [];
+      const rowsBrutos = pesquisa.rowsBrutos || [];
+      const rowsComIbgeBaseAntesCps = pesquisa.rowsComIbgeBaseAntesCps || [];
+      const rowsComIbgeBase = pesquisa.rowsComIbgeBase || [];
+      const mapasTracking = pesquisa.mapasTracking || { total: 0 };
+      const trackingEnriquecido = pesquisa.trackingEnriquecido || { linhas: [], vinculados: 0, semTracking: 0 };
+      const linhasEnriquecidasFiltradas = pesquisa.linhasEnriquecidasFiltradas || [];
+      const rowsComTracking = pesquisa.rowsComTracking || linhasEnriquecidasFiltradas.filter((row) => row.trackingMatch);
+      const rowsComIbge = pesquisa.rows || [];
+
+      if (!rowsComIbge.length) {
+        setErroSimulacao('A base pesquisada está vazia. Pesquise os CT-es novamente antes de simular.');
+        finalizarProcessamentoUi('Base pesquisada vazia', 'Não há CT-es disponíveis para cálculo.', 100);
         return;
       }
 
@@ -3780,6 +3981,111 @@ export default function SimuladorPage({ transportadoras = [] }) {
             return ok;
           })
         : rowsComIbge;
+
+      setBaseRealizadoPesquisada({
+        criadoEm: new Date().toISOString(),
+        rowsFiltrados,
+        filtros: {
+          canal: canalRealizado,
+          modo: modoRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          ufDestinoSelecionado: ufsDestinoFiltroRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          ctesNaMalha: rowsFiltrados.length,
+          ctesBaseSimulada: rowsComIbge.length,
+          baseRealizadoTracking,
+          incluirCpsLog: incluirCpsLogRealizado,
+        },
+      });
+
+      setBaseRealizadoPesquisada({
+        criadoEm: new Date().toISOString(),
+        rowsFiltrados,
+        filtros: {
+          canal: canalRealizado,
+          modo: modoRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          ufDestinoSelecionado: ufsDestinoFiltroRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          ctesNaMalha: rowsFiltrados.length,
+          ctesBaseSimulada: rowsComIbge.length,
+          baseRealizadoTracking,
+          incluirCpsLog: incluirCpsLogRealizado,
+        },
+      });
+
+      setBaseRealizadoPesquisada({
+        criadoEm: new Date().toISOString(),
+        rowsFiltrados,
+        filtros: {
+          canal: canalRealizado,
+          modo: modoRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          ufDestinoSelecionado: ufsDestinoFiltroRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          ctesNaMalha: rowsFiltrados.length,
+          ctesBaseSimulada: rowsComIbge.length,
+          baseRealizadoTracking,
+          incluirCpsLog: incluirCpsLogRealizado,
+        },
+      });
+
+      setBaseRealizadoPesquisada({
+        criadoEm: new Date().toISOString(),
+        rowsFiltrados,
+        filtros: {
+          canal: canalRealizado,
+          modo: modoRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          ufDestinoSelecionado: ufsDestinoFiltroRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          ctesNaMalha: rowsFiltrados.length,
+          ctesBaseSimulada: rowsComIbge.length,
+          baseRealizadoTracking,
+          incluirCpsLog: incluirCpsLogRealizado,
+        },
+      });
+
+      setBaseRealizadoPesquisada({
+        criadoEm: new Date().toISOString(),
+        rowsFiltrados,
+        filtros: {
+          canal: canalRealizado,
+          modo: modoRealizado,
+          origem: origemRealizado,
+          destino: destinoRealizado,
+          ufOrigem: ufOrigemRealizado,
+          ufDestino: ufsDestinoEfetivasRealizado,
+          ufDestinoSelecionado: ufsDestinoFiltroRealizado,
+          inicio: inicioRealizado,
+          fim: fimRealizado,
+          limite: limiteRealizado,
+          ctesNaMalha: rowsFiltrados.length,
+          ctesBaseSimulada: rowsComIbge.length,
+          baseRealizadoTracking,
+          incluirCpsLog: incluirCpsLogRealizado,
+        },
+      });
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, canalRealizado);
       const deveCompararConcorrentes = Boolean(compararConcorrentesRealizado);
@@ -3931,6 +4237,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao simular realizado.');
       finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
+    } finally {
+      setCarregandoSimulacao(false);
     }
   };
 
@@ -5129,6 +5437,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </button>
           </div>
 
+          {feedbackNegociacao && (
+            <div
+              className={`sim-alert ${feedbackNegociacao.tipo === 'erro' ? 'error' : 'info'}`}
+              role="status"
+              aria-live="polite"
+              style={{
+                marginTop: 12,
+                background: feedbackNegociacao.tipo === 'sucesso' ? '#ecfdf5' : feedbackNegociacao.tipo === 'erro' ? '#fef2f2' : '#eef6ff',
+                borderColor: feedbackNegociacao.tipo === 'sucesso' ? '#86efac' : feedbackNegociacao.tipo === 'erro' ? '#fecaca' : '#c9def8',
+                color: feedbackNegociacao.tipo === 'sucesso' ? '#047857' : feedbackNegociacao.tipo === 'erro' ? '#991b1b' : '#23466c',
+                fontWeight: 700,
+              }}
+            >
+              {feedbackNegociacao.mensagem}
+            </div>
+          )}
+
           <div className="sim-form-grid sim-grid-5">
             <label>
               Transportadora / tabela
@@ -5397,14 +5722,91 @@ export default function SimuladorPage({ transportadoras = [] }) {
             {erroNegociacoesSimulador ? <span style={{ color: '#dc2626' }}>{erroNegociacoesSimulador}</span> : null}
           </div>
 
-          <div className="sim-actions" style={{ marginTop: 14 }}>
-            <button className="primary" type="button" onClick={onSimularRealizado} disabled={carregandoSimulacao || !transportadoraRealizado}>
-              {carregandoSimulacao ? 'Simulando...' : 'Simular realizado'}
+          <div className="sim-actions" style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button className="primary" type="button" onClick={onPesquisarRealizado} disabled={carregandoSimulacao || pesquisandoRealizado || !transportadoraRealizado}>
+              {pesquisandoRealizado ? 'Pesquisando CT-es...' : 'Pesquisar CT-es'}
             </button>
-            <button className="sim-tab" type="button" onClick={() => setResultadoRealizado(null)}>
-              Limpar resultado
+            <button className="primary" type="button" onClick={onSimularRealizado} disabled={carregandoSimulacao || !baseRealizadoPesquisada?.rows?.length}>
+              {carregandoSimulacao && !pesquisandoRealizado ? 'Calculando...' : 'Simular / Calcular'}
+            </button>
+            <button className="sim-tab" type="button" onClick={() => { setResultadoRealizado(null); setBaseRealizadoPesquisada(null); setResumoPesquisaRealizado(null); }}>
+              Limpar resultado/base
             </button>
           </div>
+
+
+          {resumoPesquisaRealizado && (
+            <div className="sim-alert info" style={{ marginTop: 14, display: 'grid', gap: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <strong>Base pesquisada pronta para simular</strong>
+                  <div style={{ color: '#64748b', fontSize: '0.82rem', marginTop: 3 }}>
+                    Tabela localizada: <strong>{resumoPesquisaRealizado.tabela}</strong> • Canal {resumoPesquisaRealizado.canal} • {resumoPesquisaRealizado.modoBase === 'com_tracking' ? 'Somente CT-es com Tracking' : 'Todos os CT-es'}
+                  </div>
+                </div>
+                <div style={{ fontWeight: 800, color: '#15803d' }}>✅ Pesquisa concluída</div>
+              </div>
+
+              <div className="sim-analise-resumo">
+                <div><span>CT-es buscados</span><strong>{resumoPesquisaRealizado.ctesBrutos}</strong></div>
+                <div><span>Base para simular</span><strong>{resumoPesquisaRealizado.ctesBase}</strong></div>
+                <div><span>Com Tracking</span><strong>{resumoPesquisaRealizado.ctesComTracking}</strong></div>
+                <div><span>Sem Tracking</span><strong>{resumoPesquisaRealizado.ctesSemTracking}</strong></div>
+                <div><span>% vínculo Tracking</span><strong>{formatPercent(resumoPesquisaRealizado.percentualTracking)}</strong></div>
+                <div><span>Valor CT-e</span><strong>{Number(resumoPesquisaRealizado.valorCte || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</strong></div>
+                <div><span>Valor NF</span><strong>{Number(resumoPesquisaRealizado.valorNF || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</strong></div>
+                <div><span>Peso</span><strong>{Number(resumoPesquisaRealizado.peso || 0).toLocaleString('pt-BR')}</strong></div>
+                <div><span>Cubagem</span><strong>{Number(resumoPesquisaRealizado.cubagem || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })}</strong></div>
+                <div><span>Volumes</span><strong>{Number(resumoPesquisaRealizado.volumes || 0).toLocaleString('pt-BR')}</strong></div>
+                <div><span>Vol./CT-e</span><strong>{Number(resumoPesquisaRealizado.volumeMedioPorCte || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</strong></div>
+                <div><span>Frete/volume</span><strong>{Number(resumoPesquisaRealizado.fretePorVolume || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</strong></div>
+                <div><span>Origens</span><strong>{resumoPesquisaRealizado.origens}</strong></div>
+                <div><span>UFs destino</span><strong>{resumoPesquisaRealizado.ufsDestino}</strong></div>
+              </div>
+
+
+              {resumoPesquisaRealizado.alertaVolumes && (
+                <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412', borderRadius: 10, padding: '10px 12px', fontWeight: 700 }}>
+                  ⚠️ {resumoPesquisaRealizado.alertaVolumes}
+                </div>
+              )}
+
+              {(resumoPesquisaRealizado.preview || []).length > 0 && (
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="sim-table" style={{ minWidth: 980 }}>
+                    <thead>
+                      <tr>
+                        <th>CT-e</th>
+                        <th>NF</th>
+                        <th>Transportadora realizada</th>
+                        <th>Origem</th>
+                        <th>Destino</th>
+                        <th>UF</th>
+                        <th>Valor CT-e</th>
+                        <th>Valor NF</th>
+                        <th>Tracking</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {resumoPesquisaRealizado.preview.map((row, idx) => (
+                        <tr key={idx}>
+                          <td>{row.cte}</td>
+                          <td>{row.nf}</td>
+                          <td>{row.transportadora}</td>
+                          <td>{row.origem}</td>
+                          <td>{row.destino}</td>
+                          <td>{row.ufDestino}</td>
+                          <td>{Number(row.valorCte || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                          <td>{Number(row.valorNF || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                          <td style={{ fontWeight: 700, color: row.tracking === 'Com Tracking' ? '#15803d' : '#b45309' }}>{row.tracking}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
             <strong>Regra:</strong> por padrão, o sistema simula somente CT-es vinculados ao Tracking, garantindo NF, volumes e cubagem rastreáveis. CPS LOG fica excluído por padrão em qualquer modo e só entra quando a opção "Incluir CPS LOG nesta análise" estiver marcada. No modo “Todos os CT-es”, a simulação considera também CT-es sem Tracking. Tabelas oficiais cadastradas e tabelas em negociação ficam disponíveis separadamente na seleção. Concorrentes só são buscados quando a opção "Comparar com tabelas oficiais/concorrentes" estiver marcada.

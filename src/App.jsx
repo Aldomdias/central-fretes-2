@@ -1,5 +1,53 @@
 import { useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import Sidebar from './components/Sidebar';
+
+// ─── Error Boundary global ────────────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { temErro: false, erro: null, stack: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { temErro: true, erro: error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[ErrorBoundary] Erro capturado na tela:', this.props.nomePagina, error, info);
+    this.setState({ stack: info && info.componentStack ? info.componentStack : null });
+  }
+  render() {
+    if (this.state.temErro) {
+      return (
+        <div style={{ padding: 32 }}>
+          <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 10, padding: 20 }}>
+            <strong style={{ color: '#991b1b', fontSize: 16 }}>⚠ Erro nesta tela</strong>
+            <p style={{ margin: '8px 0 0', color: '#7f1d1d', fontSize: 13 }}>
+              Ocorreu um erro inesperado. Copie a mensagem abaixo e informe ao suporte.
+            </p>
+            <code style={{ display: 'block', marginTop: 12, background: '#fff1f1', padding: '8px 12px', borderRadius: 6, fontSize: 12, wordBreak: 'break-all' }}>
+              {this.state.erro && this.state.erro.message ? this.state.erro.message : String(this.state.erro)}
+            </code>
+            {this.state.stack && (
+              <details style={{ marginTop: 10 }}>
+                <summary style={{ fontSize: 12, color: '#6b7280', cursor: 'pointer' }}>Stack trace</summary>
+                <pre style={{ fontSize: 11, marginTop: 6, overflow: 'auto', maxHeight: 200, background: '#f9fafb', padding: 8, borderRadius: 4 }}>{this.state.stack}</pre>
+              </details>
+            )}
+            <button
+              type="button"
+              style={{ marginTop: 14, padding: '7px 16px', borderRadius: 6, background: '#3b82f6', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 13 }}
+              onClick={() => this.setState({ temErro: false, erro: null, stack: null })}
+            >
+              Tentar novamente
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 import DashboardPage from './pages/DashboardPage';
 import SimuladorPage from './pages/SimuladorPage';
 import TransportadorasPage from './pages/TransportadorasPage';
@@ -289,7 +337,11 @@ export default function App() {
         usuario={sessao}
         onLogout={sair}
       />
-      <main className="app-content">{content}</main>
+      <main className="app-content">
+        <ErrorBoundary nomePagina={paginaAtual} key={paginaAtual}>
+          {content}
+        </ErrorBoundary>
+      </main>
     </div>
   );
 }
