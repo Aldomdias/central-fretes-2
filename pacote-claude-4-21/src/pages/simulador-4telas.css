@@ -1,0 +1,343 @@
+.simulador-shell {
+  padding: 24px;
+  background: #f5f7fb;
+  min-height: 100vh;
+}
+
+.simulador-header h1 {
+  margin: 6px 0 8px;
+  font-size: 44px;
+  line-height: 1.05;
+  color: #071b49;
+}
+
+.simulador-subtitulo {
+  color: #415a8a;
+  font-size: 15px;
+}
+
+.simulador-header p {
+  margin: 0 0 20px;
+  color: #62739a;
+}
+
+.sim-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.sim-tab {
+  border: 1px solid #d4dced;
+  background: #fff;
+  color: #0d2458;
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sim-tab.active,
+.primary {
+  background: #071b49;
+  color: #fff;
+  border-color: #071b49;
+}
+
+.primary {
+  border: 1px solid #071b49;
+  border-radius: 14px;
+  padding: 12px 18px;
+  cursor: pointer;
+}
+
+.primary.small {
+  padding: 10px 14px;
+}
+
+.sim-card {
+  background: #fff;
+  border: 1px solid #d8e0ef;
+  border-radius: 22px;
+  padding: 22px;
+  margin-bottom: 18px;
+  box-shadow: 0 10px 28px rgba(7, 27, 73, 0.06);
+}
+
+.sim-card h2 {
+  margin: 0 0 18px;
+  color: #071b49;
+}
+
+.sim-form-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.sim-grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.sim-grid-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.sim-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.sim-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.sim-form-grid label,
+.sim-lista-box label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #0d2458;
+  font-weight: 700;
+}
+
+.sim-form-grid input,
+.sim-form-grid select,
+.sim-lista-box textarea,
+.sim-grade-row input {
+  min-height: 48px;
+  border-radius: 14px;
+  border: 1px solid #ccd7ea;
+  padding: 0 14px;
+  background: #fff;
+  font-size: 16px;
+}
+
+.sim-lista-box textarea {
+  height: auto;
+  min-height: 130px;
+  padding: 12px 14px;
+}
+
+.sim-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.sim-actions-start {
+  justify-content: flex-start;
+}
+
+.sim-inline-tools {
+  margin-top: 16px;
+}
+
+.sim-flag {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  color: #0d2458;
+  font-weight: 700;
+}
+
+.sim-resultados {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.sim-resultado-card {
+  border: 1px solid #dbe4f2;
+  border-radius: 18px;
+  padding: 16px;
+  background: #fbfcff;
+}
+
+.sim-resultado-topo,
+.sim-resultado-grade,
+.sim-parametros-header,
+.sim-analise-resumo {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sim-resultado-linha {
+  color: #53668e;
+  margin-top: 8px;
+}
+
+.sim-resultado-grade {
+  margin-top: 14px;
+}
+
+.sim-resultado-grade div,
+.sim-analise-resumo div,
+.sim-detalhes-grid div {
+  min-width: 140px;
+  padding: 10px 12px;
+  border: 1px solid #dde5f2;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.sim-resultado-grade span,
+.sim-analise-resumo span,
+.sim-detalhes-grid span,
+.sim-taxa-item span {
+  display: block;
+  color: #6e7fa4;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.sim-badge {
+  background: #eef3ff;
+  color: #071b49;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 700;
+}
+
+.sim-badge.winner {
+  background: #daf6ef;
+  color: #0f6a52;
+}
+
+.sim-detalhes-box {
+  margin-top: 16px;
+  border-top: 1px solid #e4ebf6;
+  padding-top: 16px;
+  display: grid;
+  gap: 16px;
+}
+
+.sim-detalhes-grid,
+.sim-taxas-lista {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sim-taxa-item {
+  border: 1px dashed #d5dfef;
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.sim-observacao {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #eef3ff;
+  color: #314568;
+}
+
+.sim-parametros-box {
+  border: 1px solid #dde5f2;
+  border-radius: 18px;
+  padding: 16px;
+  background: #fbfcff;
+}
+
+.sim-parametros-header p {
+  margin: 6px 0 0;
+  color: #66789d;
+}
+
+.sim-grade-config {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin-top: 18px;
+}
+
+.sim-grade-row {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 10px;
+}
+
+.sim-cobertura-box {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.sim-missing-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sim-missing-item {
+  border: 1px dashed #d5dfef;
+  border-radius: 14px;
+  padding: 12px;
+  color: #314568;
+  background: #fff;
+  display: grid;
+  gap: 4px;
+}
+
+.sim-missing-item.warning {
+  background: #fff9ef;
+  border-color: #efd8a3;
+}
+
+.sim-alert,
+.sim-empty {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #fff4f1;
+  color: #8d3a2f;
+  border: 1px solid #f0c7be;
+}
+
+.sim-empty {
+  background: #f7f9fd;
+  color: #50627f;
+  border-color: #dde5f2;
+}
+
+.sim-table-wrap {
+  overflow: auto;
+  border: 1px solid #dde5f2;
+  border-radius: 16px;
+  margin-top: 16px;
+}
+
+.sim-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.sim-table th,
+.sim-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #ecf1f8;
+  text-align: left;
+  font-size: 14px;
+}
+
+.sim-table th {
+  background: #f7f9fd;
+  color: #415a8a;
+}
+
+.sim-detalhe-row td {
+  background: #fbfcff;
+}
+
+.link-btn {
+  border: 0;
+  background: transparent;
+  color: #071b49;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.compact-top { margin-bottom: 16px; }
+
+@media (max-width: 1200px) {
+  .sim-grid-5, .sim-grid-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sim-missing-list, .sim-grade-config, .sim-grid-3, .sim-detalhes-grid, .sim-taxas-lista { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 768px) {
+  .simulador-header h1 { font-size: 34px; }
+  .sim-grid-2, .sim-grid-5, .sim-grid-6, .sim-grid-3, .sim-detalhes-grid, .sim-taxas-lista, .sim-missing-list { grid-template-columns: 1fr; }
+  .sim-grade-row { grid-template-columns: 1fr; }
+}

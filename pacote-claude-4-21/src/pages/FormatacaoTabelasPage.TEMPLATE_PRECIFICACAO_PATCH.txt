@@ -1,0 +1,52 @@
+MELHORIA PARA SUBIR - IMPORTAÇÃO DE TEMPLATE DE PRECIFICAÇÃO
+
+Arquivos deste pacote:
+- src/utils/templatePrecificacao.js
+- src/pages/FormatacaoTabelasPage.TEMPLATE_PRECIFICACAO_PATCH.txt
+
+Objetivo:
+Adicionar uma nova opção na etapa de Fretes:
+- Importar template de precificação
+
+Comportamento esperado:
+1) Manter o modelo atual já existente.
+2) Acrescentar uma nova ação:
+   - "Importar template de precificação"
+3) Ler planilhas no padrão:
+   - CIDADE DE ORIGEM
+   - UF ORIGEM
+   - UF DESTINO
+   - FAIXA PESO
+   - blocos de cotação:
+     * CAPITAL Frete kg (R$)
+     * CAPITAL Ad Valorem(%)
+     * INTERIOR 1 Frete kg (R$)
+     * INTERIOR 1 Ad Valorem(%)
+     * INTERIOR 2 Frete kg (R$)
+     * INTERIOR 2 Ad Valorem(%)
+4) Converter automaticamente essas colunas para linhas internas de frete.
+
+Como integrar:
+A) Importar o parser:
+   import { converterTemplatePrecificacaoParaFretes } from "../utils/templatePrecificacao";
+
+B) Após ler a planilha (xlsx/ods) e transformá-la em matriz de linhas:
+   const fretesConvertidos = converterTemplatePrecificacaoParaFretes({
+     linhas: matrizDaPlanilha,
+     dadosGerais
+   });
+
+C) Mesclar esses registros ao estado dos fretes da formatação atual.
+
+Resultado esperado:
+- A tabela se autoformata a partir do template já precificado
+- Mantém o fluxo atual
+- Acrescenta uma segunda opção de importação mais inteligente
+
+Observações:
+- O parser já monta a cotação no padrão:
+  Origem - UF destino - Cotação base
+- Exemplo:
+  Itajaí - AL - Interior 1
+- O parser ignora blocos vazios
+- A faixa de peso é extraída do texto do template

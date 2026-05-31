@@ -627,7 +627,7 @@ export async function abrirNovaRodadaTabelaNegociacao(id, dados = {}) {
 
   const { data: tabelaAtual, error: tabelaError } = await supabase
     .from('tabelas_negociacao')
-    .select('*')
+    .select('id,transportadora,canal,tipo_tabela,tipo_negociacao,tabela_base_id,transportadora_base_nome,resumo_simulacao')
     .eq('id', id)
     .single();
 
@@ -773,6 +773,11 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
     nova_tabela_aprovada_snapshot: promocaoOficial || null,
     percentual_medio_impacto: numero(dados.percentual_medio_impacto ?? impactoAtual.impactoPercentual),
     substituir_tabela_anterior: Boolean(dados.substituir_tabela_anterior),
+    // Persiste o periodo analisado para que rodadas subsequentes possam
+    // ser automaticamente preenchidas com o mesmo recorte de dados.
+    periodo_realizado_inicio: dataOuNull(resultado.filtros?.inicio || null),
+    periodo_realizado_fim:    dataOuNull(resultado.filtros?.fim    || null),
+
     incluir_simulacao: false,
     resumo_simulacao: {
       ...resumoAnterior,
@@ -821,7 +826,7 @@ export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
   // depois, carregamos itens/taxas paginados por tabela.
   let query = supabase
     .from('tabelas_negociacao')
-    .select('*')
+    .select('id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto')
     .eq('incluir_simulacao', true)
     .in('status', ['EM NEGOCIAÇÃO', 'EM TESTE', 'APROVADA'])
     .order('criado_em', { ascending: false });
@@ -937,6 +942,248 @@ function calcularImpactoResultado(resultado = {}, tabela = {}) {
 }
 
 
+
+export async function excluirRegistroRodadaNegociacao(id, registroId) {
+  const supabase = supabaseOrThrow();
+
+  if (!id) throw new Error('Negociação inválida para excluir registro.');
+  if (!registroId) throw new Error('Registro da rodada inválido para exclusão.');
+
+  const { data: tabelaAtual, error: tabelaError } = await supabase
+    .from('tabelas_negociacao')
+    .select('id,resumo_simulacao')
+    .eq('id', id)
+    .single();
+
+  if (tabelaError) {
+    throw new Error(tabelaError.message || 'Erro ao buscar negociação atual.');
+  }
+
+  const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
+  const historicoAnterior = getHistoricoRodadas(tabelaAtual);
+  const historicoAtualizado = historicoAnterior.filter((item) => String(item.id || item.criado_em || '') !== String(registroId));
+
+  if (historicoAtualizado.length === historicoAnterior.length) {
+    throw new Error('Registro não encontrado no histórico da negociação.');
+  }
+
+  const simulacoesRestantes = historicoAtualizado.filter((item) => item.tipo_registro === 'SIMULACAO');
+  const ultimaSimulacao = simulacoesRestantes.length ? simulacoesRestantes[simulacoesRestantes.length - 1] : null;
+  const resumoUltima = ultimaSimulacao && ultimaSimulacao.resumo ? ultimaSimulacao.resumo : {};
+  const indUltima = ultimaSimulacao && ultimaSimulacao.indicadores ? ultimaSimulacao.indicadores : {};
+  const maiorRodada = historicoAtualizado.reduce((acc, item) => Math.max(acc, inteiro(item.rodada || 0)), 1);
+
+  const resumoSimulacaoAtualizado = ultimaSimulacao
+    ? {
+        ...resumoAnterior,
+        ...resumoUltima,
+        rodada_atual: maiorRodada,
+        ultima_simulacao: ultimaSimulacao,
+        ultima_simulacao_em: ultimaSimulacao.criado_em || null,
+        historico_rodadas: historicoAtualizado,
+      }
+    : {
+        ...resumoAnterior,
+        rodada_atual: maiorRodada,
+        ultima_simulacao: null,
+        ultima_simulacao_em: null,
+        historico_rodadas: historicoAtualizado,
+        ctesAnalisados: 0,
+        ctesSimulados: 0,
+        ctesComTabelaSelecionada: 0,
+        ctesGanhariaSelecionada: 0,
+        ctesPerdidosSelecionada: 0,
+        ctesSemTabelaSelecionada: 0,
+        freteRealizado: 0,
+        freteSelecionada: 0,
+        faturamentoSelecionadaMes: 0,
+        faturamentoSelecionadaAno: 0,
+        faturamentoSelecionadaGanhadoraMes: 0,
+        faturamentoSelecionadaGanhadoraAno: 0,
+        savingSelecionadaVsReal: 0,
+        savingSelecionadaVsRealMes: 0,
+        savingSelecionadaVsRealAno: 0,
+        aderenciaSelecionada: 0,
+        cargasDia: 0,
+        volumesDia: 0,
+        volumes: 0,
+        peso: 0,
+        valorNF: 0,
+        rotasGanhasDestaque: [],
+        estadosGanhadoresDestaque: [],
+        transportadorasPerdaDestaque: [],
+      };
+
+  const payload = {
+    resumo_simulacao: resumoSimulacaoAtualizado,
+    saving_projetado: numero(indUltima.saving_mes || resumoUltima.savingSelecionadaVsRealMes || 0),
+    aderencia_projetada: numero(indUltima.aderencia || resumoUltima.aderenciaSelecionada || 0),
+    faturamento_projetado: numero(indUltima.faturamento_mes || resumoUltima.faturamentoSelecionadaGanhadoraMes || resumoUltima.faturamentoSelecionadaMes || 0),
+    impacto_projetado: numero(resumoUltima.diferencaSelecionadaVsVencedor || 0),
+    percentual_frete_projetado: numero(indUltima.percentual_frete_simulado || resumoUltima.percentualFreteTabelaGanharia || resumoUltima.percentualFreteSelecionada || 0),
+    volumetria_dia: numero(indUltima.pedidos_ganhos_dia || indUltima.pedidos_dia || resumoUltima.cargasDia || 0),
+    ctes_analisados: inteiro(resumoUltima.ctesAnalisados || 0),
+    ctes_atendidos: inteiro(resumoUltima.ctesComTabelaSelecionada || 0),
+    rotas_sem_cobertura: inteiro(resumoUltima.ctesSemTabelaSelecionada || 0),
+  };
+
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message || 'Erro ao excluir registro da rodada.');
+  }
+
+  return data;
+}
+
+
+export async function excluirRodadaNegociacao(id, rodadaNumero) {
+  const supabase = supabaseOrThrow();
+
+  if (!id) throw new Error('Negociação inválida para excluir rodada.');
+  const rodadaAlvo = inteiro(rodadaNumero);
+  if (!rodadaAlvo) throw new Error('Número da rodada inválido para exclusão.');
+
+  const { data: tabelaAtual, error: tabelaError } = await supabase
+    .from('tabelas_negociacao')
+    .select('id,resumo_simulacao')
+    .eq('id', id)
+    .single();
+
+  if (tabelaError) {
+    throw new Error(tabelaError.message || 'Erro ao buscar negociação atual.');
+  }
+
+  const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
+  const historicoAnterior = getHistoricoRodadas(tabelaAtual);
+
+  const historicoAtualizado = historicoAnterior.filter(function(item) {
+    const mesmaRodada = inteiro(item?.rodada || 0) === rodadaAlvo;
+    if (!mesmaRodada) return true;
+
+    const tipoRegistro = String(item?.tipo_registro || '').toUpperCase();
+    const origemRegistro = String(item?.origem_importacao || '').toUpperCase();
+    const observacaoRegistro = String(item?.observacao || '').toUpperCase();
+    const importados = item?.itens_importados || {};
+    const salvos = item?.itens_salvos_apos_importacao || {};
+    const totalItens =
+      inteiro(importados.total || 0) +
+      inteiro(importados.rotas || 0) +
+      inteiro(importados.cotacoes || 0) +
+      inteiro(salvos.total || 0) +
+      inteiro(salvos.rotas || 0) +
+      inteiro(salvos.cotacoes || 0);
+
+    // A importação real é o histórico da subida da tabela e não pode ser apagada
+    // pelo botão de apagar rodada/análise.
+    const ehImportacaoReal = tipoRegistro === 'IMPORTACAO' && totalItens > 0;
+    if (ehImportacaoReal) return true;
+
+    const ehSimulacao = tipoRegistro === 'SIMULACAO';
+
+    const ehMarcadorVazio =
+      totalItens === 0 &&
+      (
+        tipoRegistro === 'NOVA_RODADA' ||
+        tipoRegistro === 'ABERTURA' ||
+        origemRegistro === 'NOVA_RODADA' ||
+        observacaoRegistro.includes('NOVA RODADA')
+      );
+
+    // Remove a simulação da rodada e marcadores vazios de abertura.
+    // Preserva qualquer importação real da tabela.
+    return !(ehSimulacao || ehMarcadorVazio);
+  });
+
+  if (historicoAtualizado.length === historicoAnterior.length) {
+    throw new Error('Nenhuma simulação ou marcador vazio encontrado para esta rodada. Importações reais foram preservadas.');
+  }
+
+  const simulacoesRestantes = historicoAtualizado.filter(function(item) {
+    return String(item?.tipo_registro || '').toUpperCase() === 'SIMULACAO';
+  });
+
+  const ultimaSimulacao = simulacoesRestantes.length ? simulacoesRestantes[simulacoesRestantes.length - 1] : null;
+  const resumoUltima = ultimaSimulacao && ultimaSimulacao.resumo ? ultimaSimulacao.resumo : {};
+  const indUltima = ultimaSimulacao && ultimaSimulacao.indicadores ? ultimaSimulacao.indicadores : {};
+  const maiorRodada = historicoAtualizado.reduce(function(acc, item) {
+    return Math.max(acc, inteiro(item?.rodada || 0));
+  }, 1);
+
+  const resumoSimulacaoAtualizado = ultimaSimulacao
+    ? {
+        ...resumoAnterior,
+        ...resumoUltima,
+        rodada_atual: maiorRodada,
+        ultima_simulacao: ultimaSimulacao,
+        ultima_simulacao_em: ultimaSimulacao.criado_em || null,
+        historico_rodadas: historicoAtualizado,
+      }
+    : {
+        ...resumoAnterior,
+        rodada_atual: maiorRodada,
+        ultima_simulacao: null,
+        ultima_simulacao_em: null,
+        historico_rodadas: historicoAtualizado,
+        ctesAnalisados: 0,
+        ctesSimulados: 0,
+        ctesComTabelaSelecionada: 0,
+        ctesGanhariaSelecionada: 0,
+        ctesPerdidosSelecionada: 0,
+        ctesSemTabelaSelecionada: 0,
+        freteRealizado: 0,
+        freteSelecionada: 0,
+        faturamentoSelecionadaMes: 0,
+        faturamentoSelecionadaAno: 0,
+        faturamentoSelecionadaGanhadoraMes: 0,
+        faturamentoSelecionadaGanhadoraAno: 0,
+        savingSelecionadaVsReal: 0,
+        savingSelecionadaVsRealMes: 0,
+        savingSelecionadaVsRealAno: 0,
+        aderenciaSelecionada: 0,
+        cargasDia: 0,
+        volumesDia: 0,
+        volumes: 0,
+        peso: 0,
+        valorNF: 0,
+        rotasGanhasDestaque: [],
+        estadosGanhadoresDestaque: [],
+        transportadorasPerdaDestaque: [],
+      };
+
+  const payload = {
+    resumo_simulacao: resumoSimulacaoAtualizado,
+    saving_projetado: numero(indUltima.saving_mes || resumoUltima.savingSelecionadaVsRealMes || 0),
+    aderencia_projetada: numero(indUltima.aderencia || resumoUltima.aderenciaSelecionada || 0),
+    faturamento_projetado: numero(indUltima.faturamento_mes || resumoUltima.faturamentoSelecionadaGanhadoraMes || resumoUltima.faturamentoSelecionadaMes || 0),
+    impacto_projetado: numero(resumoUltima.diferencaSelecionadaVsVencedor || 0),
+    percentual_frete_projetado: numero(indUltima.percentual_frete_simulado || resumoUltima.percentualFreteTabelaGanharia || resumoUltima.percentualFreteSelecionada || 0),
+    volumetria_dia: numero(indUltima.pedidos_ganhos_dia || indUltima.pedidos_dia || resumoUltima.cargasDia || 0),
+    ctes_analisados: inteiro(resumoUltima.ctesAnalisados || 0),
+    ctes_atendidos: inteiro(resumoUltima.ctesComTabelaSelecionada || 0),
+    rotas_sem_cobertura: inteiro(resumoUltima.ctesSemTabelaSelecionada || 0),
+  };
+
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message || 'Erro ao excluir rodada.');
+  }
+
+  return data;
+}
+
+
 export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const supabase = supabaseOrThrow();
 
@@ -1024,18 +1271,64 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     qtdRotasParciaisSelecionada: resultado.qtdRotasParciaisSelecionada || 0,
     qtdRotasPerdidasSelecionada: resultado.qtdRotasPerdidasSelecionada || 0,
 
-    rotas: (resultado.rotas || []).slice(0, 100),
-    rotasGanhasDestaque: (resultado.rotasGanhasDestaque || []).slice(0, 20),
-    rotasPerdidasDestaque: (resultado.rotasPerdidasDestaque || []).slice(0, 20),
+    rotas: (resultado.rotas || []).slice(0, 30),
+    rotasGanhasDestaque: (resultado.rotasGanhasDestaque || []).slice(0, 10),
+    rotasPerdidasDestaque: (resultado.rotasPerdidasDestaque || []).slice(0, 10),
     resumoPorEstado: (resultado.resumoPorEstado || []).slice(0, 27),
     estadosGanhadoresDestaque: (resultado.estadosGanhadoresDestaque || []).slice(0, 10),
     estadosPerdidosDestaque: (resultado.estadosPerdidosDestaque || []).slice(0, 10),
     transportadorasPerdaDestaque: (resultado.transportadorasPerdaDestaque || []).slice(0, 10),
-    laudo: (resultado.laudo || []).slice(0, 20),
+    laudo: (resultado.laudo || []).slice(0, 12),
     laudosEmail: resultado.laudosEmail || null,
     laudos: resultado.laudos || null,
-    pareto80Volume: resultado.pareto80Volume || null,
+    pareto80Volume: resultado.pareto80Volume
+      ? {
+          qtdRotas: resultado.pareto80Volume.qtdRotas || 0,
+          totalVolume: resultado.pareto80Volume.totalVolume || 0,
+          volumeCoberto: resultado.pareto80Volume.volumeCoberto || 0,
+          pctCoberto: resultado.pareto80Volume.pctCoberto || 0,
+          ctes: resultado.pareto80Volume.ctes || 0,
+          volumes: resultado.pareto80Volume.volumes || 0,
+          freteRealizado: resultado.pareto80Volume.freteRealizado || 0,
+          freteSelecionada: resultado.pareto80Volume.freteSelecionada || 0,
+          freteVencedor: resultado.pareto80Volume.freteVencedor || 0,
+          savingSelecionada: resultado.pareto80Volume.savingSelecionada || 0,
+          savingVencedor: resultado.pareto80Volume.savingVencedor || 0,
+          reducaoMediaNecessaria: resultado.pareto80Volume.reducaoMediaNecessaria || 0,
+          rotas: (resultado.pareto80Volume.rotas || []).slice(0, 15),
+        }
+      : null,
     diagnostico: resultado.diagnostico || {},
+
+    // Detalhes por CT-e: base dos agrupamentos do laudo de rodadas
+    // Limitado a 800 itens para nao estourar o payload do Supabase.
+    ctesDetalhes: (resultado.ctesDetalhes || []).slice(0, 800).map((item) => ({
+      origem:                item.origem || '',
+      ufOrigem:              item.ufOrigem || '',
+      destino:               item.destino || '',
+      ufDestino:             item.ufDestino || '',
+      canal:                 item.canal || '',
+      peso:                  item.peso || 0,
+      cubagem:               item.cubagem || 0,
+      volumes:               item.volumes || 0,
+      valorNF:               item.valorNF || 0,
+      freteRealizado:        item.freteRealizado || 0,
+      freteSelecionada:      item.freteSelecionada || 0,
+      statusSelecionada:     item.statusSelecionada || '',
+      ganhouRealizado:       item.ganhouRealizado || false,
+      perdeuRealizado:       item.statusSelecionada === 'Perderia'
+                               || (Number(item.diferencaParaVencedor || 0) > 0 && !item.ganhouRealizado),
+      diferencaParaVencedor: item.diferencaParaVencedor || 0,
+      reducaoMediaNecessaria: item.reducaoNecessaria || 0,
+      savingSelecionada:     item.savingSelecionada || 0,
+      faixaPeso:             item.selecionadaDetalhes?.frete?.faixaPeso || '',
+      trackingMatch:         item.trackingMatch || false,
+    })),
+
+    // Totais agregados usados como fallback pelo motor de veiculo sugerido
+    cubagemTotal:      resultado.cubagemTotal || 0,
+    volumesCapturados: resultado.volumesCapturados || 0,
+    pesoCapturado:     resultado.pesoCapturado || 0,
   };
 
   const entradaRodada = {
@@ -1072,7 +1365,40 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     },
   };
 
-  const historicoAtualizado = historicoAnterior.concat([entradaRodada]).slice(-30);
+  const historicoSemRegistroVazioDaRodada = historicoAnterior.filter((item) => {
+    const mesmaRodada = inteiro(item?.rodada || 0) === rodadaAtual;
+    const tipoRegistro = String(item?.tipo_registro || '').toUpperCase();
+    const origemRegistro = String(item?.origem_importacao || '').toUpperCase();
+    const observacaoRegistro = String(item?.observacao || '').toUpperCase();
+    const importados = item?.itens_importados || {};
+    const salvos = item?.itens_salvos_apos_importacao || {};
+    const totalItens =
+      inteiro(importados.total || 0) +
+      inteiro(importados.rotas || 0) +
+      inteiro(importados.cotacoes || 0) +
+      inteiro(salvos.total || 0) +
+      inteiro(salvos.rotas || 0) +
+      inteiro(salvos.cotacoes || 0);
+
+    // Preserva importação real de tabela, pois é histórico da subida.
+    const ehImportacaoReal = tipoRegistro === 'IMPORTACAO' && totalItens > 0;
+
+    // Ao salvar novamente a mesma rodada, substitui a simulação anterior
+    // e remove apenas marcadores vazios de abertura/nova rodada.
+    const ehSimulacaoDaRodada = tipoRegistro === 'SIMULACAO';
+    const ehMarcadorVazio =
+      totalItens === 0 &&
+      (
+        tipoRegistro === 'NOVA_RODADA' ||
+        tipoRegistro === 'ABERTURA' ||
+        origemRegistro === 'NOVA_RODADA' ||
+        observacaoRegistro.includes('NOVA RODADA')
+      );
+
+    return !(mesmaRodada && !ehImportacaoReal && (ehSimulacaoDaRodada || ehMarcadorVazio));
+  });
+
+  const historicoAtualizado = historicoSemRegistroVazioDaRodada.concat([entradaRodada]).slice(-30);
 
   const payload = {
     saving_projetado: numero(
@@ -1154,6 +1480,9 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       rodada_atual: rodadaAtual,
       ultima_simulacao_em: agora,
       ultima_simulacao: entradaRodada,
+      laudos: resultado.laudos || resumoAnterior.laudos || null,
+      laudosEmail: resultado.laudosEmail || resumoAnterior.laudosEmail || null,
+      laudos_gerados_em: resultado.laudos ? agora : resumoAnterior.laudos_gerados_em,
       historico_rodadas: historicoAtualizado,
     },
   };
@@ -1162,7 +1491,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     .from('tabelas_negociacao')
     .update(payload)
     .eq('id', id)
-    .select()
+    .select('id,transportadora,canal,status,resumo_simulacao')
     .single();
 
   if (error) {

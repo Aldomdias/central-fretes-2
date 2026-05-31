@@ -1,0 +1,39 @@
+
+MELHORIA FOCADA NO IMPORTADOR DO MODELO PADRÃO
+
+Arquivo incluído:
+- src/utils/importadorTabelaPronta.js
+
+Objetivo:
+Permitir importar o arquivo padrão com as abas:
+- Rotas
+- Fretes
+
+Regras implementadas:
+1) Aba Rotas:
+   - usa REGIÃO/REGIAO/COTAÇÃO como cotação base
+   - monta cotação final no padrão:
+     Origem - UF destino - Cotação base
+   - se houver CEP inicial/final, gera registro em quebra de faixas
+
+2) Aba Fretes:
+   - suporta cabeçalho em 2 linhas
+   - identifica blocos:
+     CAPITAL | Frete kg (R$) | Ad Valorem(%)
+     INTERIOR 1 | Frete kg (R$) | Ad Valorem(%)
+     INTERIOR 2 | Frete kg (R$) | Ad Valorem(%)
+   - converte para linhas internas prontas de frete
+
+Como ligar na tela:
+1) Importar:
+   import { importarTabelaPronta } from "../utils/importadorTabelaPronta";
+
+2) Na ação do botão "Importar template pronto":
+   const resultado = await importarTabelaPronta(file);
+   setRotas(resultado.rotas);
+   setQuebrasFaixa(resultado.quebrasFaixa);
+   setFretes(resultado.fretes);
+
+Observação:
+- O parser já trata Ad Valorem decimal, ex.: 0.005
+- O parser já preserva UF destino na cotação final

@@ -1,0 +1,221 @@
+.laudo-rodadas-page {
+  background: #f8fafc;
+  color: #0f172a;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+}
+
+.laudo-rodadas-header {
+  padding: 26px;
+  background: linear-gradient(135deg, #430d95, #6514de 55%, #9153f0);
+  color: #fff;
+}
+
+.laudo-rodadas-header small {
+  display: block;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  opacity: .86;
+  font-weight: 800;
+}
+
+.laudo-rodadas-header h1 {
+  margin: 8px 0 6px;
+  font-size: 28px;
+  line-height: 1.12;
+}
+
+.laudo-rodadas-header p {
+  margin: 0;
+  opacity: .92;
+}
+
+.laudo-rodadas-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.laudo-rodadas-meta div {
+  background: rgba(255, 255, 255, .13);
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.laudo-rodadas-meta span,
+.laudo-rodadas-kpi span {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  opacity: .75;
+  font-weight: 800;
+}
+
+.laudo-rodadas-meta strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.laudo-rodadas-body {
+  padding: 22px;
+  display: grid;
+  gap: 18px;
+}
+
+.laudo-rodadas-alert {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-weight: 700;
+}
+
+.laudo-rodadas-alert.warn {
+  background: #fff7ed;
+  color: #9a3412;
+  border-color: #fed7aa;
+}
+
+.laudo-rodadas-alert.danger {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
+.laudo-rodadas-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.laudo-rodadas-kpi {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, .05);
+}
+
+.laudo-rodadas-kpi strong {
+  display: block;
+  font-size: 22px;
+  margin-top: 4px;
+  color: #111827;
+}
+
+.laudo-rodadas-kpi small {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+}
+
+.laudo-rodadas-section {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, .04);
+}
+
+.laudo-rodadas-section h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.laudo-rodadas-section p {
+  color: #475569;
+  line-height: 1.55;
+}
+
+.laudo-rodadas-table-wrap {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+
+.laudo-rodadas-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.laudo-rodadas-table th,
+.laudo-rodadas-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 9px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.laudo-rodadas-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.laudo-rodadas-table .right {
+  text-align: right;
+}
+
+.laudo-rodadas-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.laudo-rodadas-badge.alta {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.laudo-rodadas-badge.media {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.laudo-rodadas-badge.baixa {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.laudo-rodadas-recomendacao {
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  color: #4c1d95;
+  border-radius: 14px;
+  padding: 14px;
+  line-height: 1.55;
+  font-weight: 700;
+}
+
+.laudo-rodadas-copy {
+  white-space: pre-wrap;
+  background: #0f172a;
+  color: #e5e7eb;
+  border-radius: 14px;
+  padding: 14px;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+@media print {
+  .laudo-rodadas-page {
+    box-shadow: none;
+    border-radius: 0;
+  }
+}

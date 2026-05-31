@@ -3424,6 +3424,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
   }, [transportadorasPorCanalRealizado, transportadoraRealizado]);
 
+  // Preenche automaticamente o periodo quando uma negociacao ja existente e selecionada
+  // e o periodo ainda nao foi preenchido manualmente.
+  // Garante que rodadas subsequentes usem sempre o mesmo recorte de dados.
+  useEffect(() => {
+    if (!negociacaoSelecionadaRealizado) return;
+    const inicio = negociacaoSelecionadaRealizado.periodo_realizado_inicio || '';
+    const fim    = negociacaoSelecionadaRealizado.periodo_realizado_fim    || '';
+    if (inicio && !inicioRealizado) setInicioRealizado(inicio);
+    if (fim    && !fimRealizado)    setFimRealizado(fim);
+  }, [negociacaoSelecionadaRealizado]);
+
 
   const origensTransportadora = useMemo(() => {
     const online = opcoesOnline.origensPorTransportadora?.[transportadora];

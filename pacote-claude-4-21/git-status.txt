@@ -1,0 +1,26 @@
+﻿ M src/components/laudos/index.js
+ M src/pages/SimuladorPage.jsx
+ M src/pages/TabelasNegociacaoPage.jsx
+ M src/services/tabelasNegociacaoService.js
+?? README-416AF.txt
+?? analise-laudo-rodadas.zip
+?? analise-laudo-rodadas/
+?? backup-antes-ajuste-simulador/
+?? backup-antes-laudo-rodadas/
+?? backup-seguranca-416af-20260530-072705.zip
+?? backup-seguranca-416af-20260530-072705/
+?? backups/
+?? build-416af-error.txt
+?? pacote-claude-4-21/
+?? pacote-claude-laudo.zip
+?? pacote-claude-laudo/
+?? pacote-claude-simulador-realizado.zip
+?? pacote-claude-simulador-realizado/
+?? scripts/
+?? src/components/laudos/LaudoRodadasNegociacaoTemplate.css
+?? src/components/laudos/LaudoRodadasNegociacaoTemplate.jsx
+?? src/utils/laudosRodadasNegociacaoHtml.js
+?? suporte-416af-atual.zip
+?? suporte-416af-atual/
+?? suporte-416af.zip
+?? suporte-416af/

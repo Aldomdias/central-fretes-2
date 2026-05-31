@@ -1,0 +1,31 @@
+/*
+ARQUIVO DE APOIO PARA SUBIR A MELHORIA DE PADRONIZAÇÃO DA COTAÇÃO
+
+Aplique esta lógica na tela FormatacaoTabelasPage.jsx:
+
+1) Na grade de Rotas, o usuário informa:
+   - ibgeDestino
+   - prazo
+   - cotacaoBase
+
+2) Antes de gerar fretes ou exportar arquivos:
+   import {
+     aplicarCotacaoPadraoNasRotas,
+     obterCotacoesUnicasDasRotas
+   } from "../utils/formatacaoTabela";
+
+3) Para recalcular as rotas:
+   const rotasPadronizadas = aplicarCotacaoPadraoNasRotas(rotas, dadosGerais, baseIbge);
+
+4) Para gerar fretes sem repetição:
+   const cotacoesUnicas = obterCotacoesUnicasDasRotas(rotas, dadosGerais, baseIbge);
+
+5) Regra final da cotação:
+   Origem - UF destino - Cotação base
+   Exemplo: Itajaí - AL - Interior 1
+
+OBS:
+- A origem vem de Dados Gerais
+- A UF destino vem da base IBGE pelo IBGE destino
+- A cotação base é o valor escolhido na rota
+*/

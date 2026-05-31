@@ -18,6 +18,7 @@ import {
   atualizarTabelaNegociacao,
   criarTabelaNegociacao,
   excluirTabelaNegociacao,
+  excluirRodadaNegociacao,
   listarItensTabelaNegociacao,
   listarTabelasNegociacao,
   substituirItensTabelaNegociacao,
@@ -28,7 +29,7 @@ import {
   salvarGeneralidades,
   simularLotacaoNegociacao,
 } from '../services/tabelasNegociacaoService';
-import { LaudoNegociacaoTemplate } from '../components/laudos';
+import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -63,6 +64,38 @@ function formatDateBR(v) {
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleDateString('pt-BR');
 }
+
+class LaudoRodadasErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { erro: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { erro: error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Erro ao renderizar LaudoRodadasNegociacaoTemplate:', error, info);
+  }
+
+  render() {
+    if (this.state.erro) {
+      return (
+        <div className="sim-alert danger" style={{ marginTop: 12 }}>
+          <strong>Erro ao carregar o laudo geral das rodadas.</strong>
+          <br />
+          <span>{this.state.erro?.message || String(this.state.erro || 'Erro desconhecido')}</span>
+          <br />
+          <small>A tabela de rodadas foi preservada. Abra o console do navegador para ver o detalhe técnico.</small>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 function getResumoTabela(tabela) {
   return tabela && tabela.resumo_simulacao && typeof tabela.resumo_simulacao === 'object' && !Array.isArray(tabela.resumo_simulacao)
     ? tabela.resumo_simulacao
@@ -586,6 +619,7 @@ export default function TabelasNegociacaoPage() {
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
+  const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
   const [simulandoLotacao, setSimulandoLotacao] = useState(false);
 
   const negociacoesMesmaTransportadora = useMemo(function() {
@@ -903,6 +937,52 @@ export default function TabelasNegociacaoPage() {
       if (selecionada && selecionada.id === tabela.id) setSelecionada(at);
       setSucesso('Status atualizado.');
     } catch (e) { setErro(e.message || 'Erro.'); }
+  }
+
+
+  async function handleExcluirRodadaCompleta(rodadaLinha) {
+    if (!selecionada || !rodadaLinha) return;
+
+    var numeroRodada = Number(rodadaLinha.rodada || 0);
+    if (!numeroRodada) {
+      setErro('Não foi possível identificar a rodada para exclusão.');
+      return;
+    }
+
+    var historico = getHistoricoRodadasTabela(selecionada);
+    var registrosDaRodada = historico.filter(function(item) {
+      return Number(item.rodada || 0) === numeroRodada;
+    });
+
+    if (!registrosDaRodada.length) {
+      setErro('Nenhum registro encontrado para esta rodada.');
+      return;
+    }
+
+    if (!window.confirm('Apagar a análise da ' + numeroRodada + 'ª rodada? A simulação e marcadores vazios serão removidos, mas a importação real da tabela será preservada.')) {
+      return;
+    }
+
+    setSalvando(true);
+    setErro('');
+    setSucesso('Apagando ' + numeroRodada + 'ª rodada...');
+
+    try {
+      var atualizada = await excluirRodadaNegociacao(selecionada.id, numeroRodada);
+
+      setSelecionada(atualizada);
+      setTabelas(function(lista) {
+        return lista.map(function(item) {
+          return item.id === atualizada.id ? atualizada : item;
+        });
+      });
+
+      setSucesso('Análise da ' + numeroRodada + 'ª rodada apagada. Importações reais foram preservadas.');
+    } catch (e) {
+      setErro(e.message || 'Erro ao apagar rodada.');
+    } finally {
+      setSalvando(false);
+    }
   }
 
   async function excluirTabela(tabela) {
@@ -2131,7 +2211,47 @@ export default function TabelasNegociacaoPage() {
                   </div>
                 ) : null}
 
-                <div className="sim-analise-tabela-wrap">
+                
+                <div className="sim-card" style={{ marginBottom: 14 }}>
+                  <div className="sim-parametros-header" style={{ alignItems: 'flex-start', gap: 12 }}>
+                    <div>
+                      <h3 style={{ margin: 0 }}>Laudo geral das rodadas</h3>
+                      <p style={{ margin: '6px 0 0', color: '#64748b' }}>
+                        Analisa a evolução da negociação por rodada e mostra onde a transportadora melhorou, onde ainda perde e quais rotas, cotações, UFs e faixas precisam de ajuste.
+                      </p>
+                    </div>
+                    <div className="sim-actions" style={{ margin: 0 }}>
+                      <button
+                        className={tipoLaudoRodadas === 'transportador' ? 'primary' : 'sim-tab'}
+                        type="button"
+                        onClick={function() { setTipoLaudoRodadas('transportador'); }}
+                      >
+                        Transportador
+                      </button>
+                      <button
+                        className={tipoLaudoRodadas === 'executivo' ? 'primary' : 'sim-tab'}
+                        type="button"
+                        onClick={function() { setTipoLaudoRodadas('executivo'); }}
+                      >
+                        Diretoria
+                      </button>
+                    </div>
+                  </div>
+
+                  {simulacoes.length < 2 ? (
+                    <div className="sim-alert info" style={{ marginTop: 12 }}>
+                      Para uma análise completa de evolução, o ideal é ter pelo menos duas simulações salvas. Com uma única simulação, o laudo mostra o diagnóstico atual sem comparação entre rodadas.
+                    </div>
+                  ) : null}
+
+                  <div style={{ marginTop: 14 }}>
+                    <LaudoRodadasErrorBoundary key={(selecionada?.id || 'sem-tabela') + '-' + tipoLaudoRodadas}>
+                      <LaudoRodadasNegociacaoTemplate tipo={tipoLaudoRodadas} tabela={selecionada} />
+                    </LaudoRodadasErrorBoundary>
+                  </div>
+                </div>
+
+<div className="sim-analise-tabela-wrap">
                   <table className="sim-analise-tabela">
                     <thead>
                       <tr>
@@ -2154,7 +2274,23 @@ export default function TabelasNegociacaoPage() {
                         var isSim = rodada.tipo_registro === 'SIMULACAO';
                         return (
                           <tr key={rodada.id || rodada.criado_em || idx}>
-                            <td><strong>{rodada.rodada || '-' }ª</strong></td>
+                            <td>
+                              <strong>{rodada.rodada || '-' }ª</strong>
+                              <br />
+                              <button
+                                className="sim-tab"
+                                type="button"
+                                disabled={salvando}
+                                onClick={function(event) {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  handleExcluirRodadaCompleta(rodada);
+                                }}
+                                style={{ marginTop: 6, color: '#dc2626', borderColor: '#fecaca', fontSize: 11 }}
+                              >
+                                Apagar análise
+                              </button>
+                            </td>
                             <td>{isSim ? 'SIMULAÇÃO' : 'IMPORTAÇÃO'}</td>
                             <td>{formatDateBR(rodada.criado_em)}</td>
                             <td>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
@@ -2166,7 +2302,7 @@ export default function TabelasNegociacaoPage() {
                           </tr>
                         );
                       })}
-                      {!historico.length ? <tr><td colSpan="9">Nenhuma rodada registrada ainda.</td></tr> : null}
+                      {!historico.length ? <tr><td colSpan="10">Nenhuma rodada registrada ainda.</td></tr> : null}
                     </tbody>
                   </table>
                 </div>
