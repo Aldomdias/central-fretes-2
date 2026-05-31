@@ -10,6 +10,7 @@ import {
 import {
   STATUS_TABELA_NEGOCIACAO,
   TIPOS_TABELA_NEGOCIACAO,
+  TIPOS_NEGOCIACAO,
   DEFAULT_GENERALIDADES,
   alternarTabelaNegociacaoNaSimulacao,
   abrirNovaRodadaTabelaNegociacao,
@@ -17,6 +18,7 @@ import {
   atualizarTabelaNegociacao,
   criarTabelaNegociacao,
   excluirTabelaNegociacao,
+  excluirRodadaNegociacao,
   listarItensTabelaNegociacao,
   listarTabelasNegociacao,
   substituirItensTabelaNegociacao,
@@ -25,8 +27,9 @@ import {
   excluirTaxaDestino,
   substituirTaxasDestino,
   salvarGeneralidades,
+  simularLotacaoNegociacao,
 } from '../services/tabelasNegociacaoService';
-import { LaudoNegociacaoTemplate } from '../components/laudos';
+import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -61,10 +64,59 @@ function formatDateBR(v) {
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleDateString('pt-BR');
 }
+
+class LaudoRodadasErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { erro: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { erro: error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Erro ao renderizar LaudoRodadasNegociacaoTemplate:', error, info);
+  }
+
+  render() {
+    if (this.state.erro) {
+      return (
+        <div className="sim-alert danger" style={{ marginTop: 12 }}>
+          <strong>Erro ao carregar o laudo geral das rodadas.</strong>
+          <br />
+          <span>{this.state.erro?.message || String(this.state.erro || 'Erro desconhecido')}</span>
+          <br />
+          <small>A tabela de rodadas foi preservada. Abra o console do navegador para ver o detalhe técnico.</small>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 function getResumoTabela(tabela) {
   return tabela && tabela.resumo_simulacao && typeof tabela.resumo_simulacao === 'object' && !Array.isArray(tabela.resumo_simulacao)
     ? tabela.resumo_simulacao
     : {};
+}
+function getTipoNegociacaoTabela(tabela) {
+  var tipo = normalizarTexto(tabela && (tabela.tipo_negociacao || tabela.tipoNegociacao)).toUpperCase();
+  if (tipo) return tipo;
+  if (normalizarTexto(tabela && tabela.tipo_tabela).toUpperCase() === 'LOTACAO') return 'TABELA_LOTACAO';
+  return 'NOVA_TABELA';
+}
+function getTipoNegociacaoLabel(tipo) {
+  var normalizado = normalizarTexto(tipo).toUpperCase();
+  var found = TIPOS_NEGOCIACAO.find(function(item) { return item.value === normalizado; });
+  return found ? found.label : 'Nova tabela / Novo transportador';
+}
+function isReajusteNegociacao(tabela) {
+  return getTipoNegociacaoTabela(tabela) === 'REAJUSTE_TABELA_EXISTENTE';
+}
+function isLotacaoNegociacao(tabela) {
+  return getTipoNegociacaoTabela(tabela) === 'TABELA_LOTACAO' || normalizarTexto(tabela && tabela.tipo_tabela).toUpperCase() === 'LOTACAO';
 }
 function getLaudosTabela(tabela) {
   var resumo = getResumoTabela(tabela);
@@ -77,6 +129,8 @@ function getLaudosTabela(tabela) {
     transportadora: tabela?.transportadora,
     canal: tabela?.canal,
     origem: tabela?.origem,
+    tipoNegociacao: getTipoNegociacaoTabela(tabela),
+    transportadoraBase: tabela?.transportadora_base_nome || tabela?.transportadora,
   });
 
   return {
@@ -114,16 +168,33 @@ function getIndicadoresTabela(tabela) {
   var volumesAno = volumesMes * 12;
   var percentualReal = Number(ultimaSim.percentual_frete_realizado || resumo.percentualFreteRealizado || 0);
   var percentualTabela = Number(tabela.percentual_frete_projetado || ultimaSim.percentual_frete_simulado || resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada || 0);
+  var tipoNegociacao = getTipoNegociacaoTabela(tabela);
+  var valorAtualRealizado = Number(tabela.valor_atual_realizado || ultimaSim.valor_atual_realizado || resumo.valor_atual_realizado || resumo.freteRealizadoComTabelaSelecionada || resumo.freteRealizado || 0);
+  var valorSimuladoNovaTabela = Number(tabela.valor_simulado_nova_tabela || ultimaSim.valor_simulado_nova_tabela || resumo.valor_simulado_nova_tabela || resumo.freteSelecionada || 0);
+  var impactoValor = Number(tabela.impacto_valor || ultimaSim.impacto_valor || resumo.impacto_valor || (valorSimuladoNovaTabela - valorAtualRealizado) || 0);
+  var impactoPercentual = Number(tabela.impacto_percentual || ultimaSim.impacto_percentual || resumo.impacto_percentual || (valorAtualRealizado ? (impactoValor / valorAtualRealizado) * 100 : 0));
+  var impactoMensal = Number(tabela.impacto_mensal || ultimaSim.impacto_mensal || resumo.impacto_mensal || impactoValor || 0);
+  var impactoAnual = Number(tabela.impacto_anual || ultimaSim.impacto_anual || resumo.impacto_anual || (impactoMensal * 12) || 0);
+  var fretePctAtual = Number(tabela.frete_percentual_nf_atual || ultimaSim.frete_percentual_nf_atual || resumo.frete_percentual_nf_atual || resumo.percentualFreteRealizadoComTabela || percentualReal || 0);
+  var fretePctSimulado = Number(tabela.frete_percentual_nf_simulado || ultimaSim.frete_percentual_nf_simulado || resumo.frete_percentual_nf_simulado || resumo.percentualFreteSelecionadaComTabela || percentualTabela || 0);
+  var qtdAnalisados = Number(tabela.qtd_registros_analisados || tabela.ctes_analisados || ultimaSim.qtd_registros_analisados || resumo.qtd_registros_analisados || resumo.ctesAnalisados || 0);
+  var qtdComTabela = Number(tabela.qtd_registros_com_tabela || tabela.ctes_atendidos || ultimaSim.qtd_registros_com_tabela || resumo.qtd_registros_com_tabela || resumo.ctesComTabelaSelecionada || 0);
   return {
-    temSimulacao: Boolean(resumo.ultima_simulacao || resumo.salvo_em || tabela.aderencia_projetada || tabela.saving_projetado || tabela.faturamento_projetado),
+    tipoNegociacao: tipoNegociacao,
+    isReajuste: tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE',
+    isLotacao: tipoNegociacao === 'TABELA_LOTACAO',
+    temSimulacao: Boolean(resumo.ultima_simulacao || resumo.salvo_em || tabela.aderencia_projetada || tabela.saving_projetado || tabela.faturamento_projetado || tabela.impacto_valor || tabela.valor_simulado_nova_tabela),
     rodada: getRodadaAtualTabela(tabela),
     aderencia: Number(tabela.aderencia_projetada || ultimaSim.aderencia || resumo.aderenciaSelecionada || 0),
     savingMes: savingMes, savingAno: savingAno, faturamentoMes: faturamentoMes, faturamentoAno: faturamentoAno,
     pedidosDia: pedidosDia, pedidosMes: pedidosMes, pedidosAno: pedidosAno,
     volumesDia: volumesDia, volumesMes: volumesMes, volumesAno: volumesAno,
     percentualReal: percentualReal, percentualTabela: percentualTabela, reducaoPercentual: percentualReal && percentualTabela ? percentualReal - percentualTabela : 0,
-    ctesAnalisados: Number(tabela.ctes_analisados || resumo.ctesAnalisados || 0),
-    ctesAtendidos: Number(tabela.ctes_atendidos || resumo.ctesComTabelaSelecionada || 0),
+    fretePctAtual: fretePctAtual, fretePctSimulado: fretePctSimulado,
+    valorAtualRealizado: valorAtualRealizado, valorSimuladoNovaTabela: valorSimuladoNovaTabela,
+    impactoValor: impactoValor, impactoPercentual: impactoPercentual, impactoMensal: impactoMensal, impactoAnual: impactoAnual,
+    ctesAnalisados: qtdAnalisados,
+    ctesAtendidos: qtdComTabela,
     rotasSemCobertura: Number(tabela.rotas_sem_cobertura || resumo.ctesSemTabelaSelecionada || 0),
     rotasComGanho: Number(ultimaSim.rotas_com_ganho || resumo.qtdRotasComGanhoSelecionada || 0),
     rotasGanhas: Number(ultimaSim.rotas_ganhas || resumo.qtdRotasGanhasSelecionada || 0),
@@ -181,6 +252,9 @@ const TAXA_VAZIA = {
 };
 const FORM_VAZIO = {
   transportadora: '', canal: 'ATACADO', tipo_tabela: 'FRACIONADO',
+  tipo_negociacao: 'NOVA_TABELA', transportadora_base_nome: '', tabela_base_id: '',
+  comparar_com_proprio_realizado: false, periodo_realizado_inicio: '', periodo_realizado_fim: '',
+  tipo_veiculo: '',
   status: 'EM NEGOCIAÇÃO', descricao: '', regiao: '', origem: '',
   uf_origem: '', uf_destino: '', data_recebimento: hojeISO(),
   data_inicio_prevista: '', incluir_simulacao: false, observacao: '',
@@ -190,6 +264,24 @@ const NOVA_ORIGEM_VAZIA = {
   origem: '', uf_origem: '', uf_destino: '', descricao: '', observacao: '',
   copiar_generalidades: true, incluir_simulacao: true,
 };
+
+function ajustarFormPorTipoNegociacao(form, tipo) {
+  var tipoNorm = normalizarTexto(tipo).toUpperCase() || 'NOVA_TABELA';
+  var next = Object.assign({}, form, { tipo_negociacao: tipoNorm });
+  if (tipoNorm === 'TABELA_LOTACAO') {
+    next.tipo_tabela = 'LOTACAO';
+    next.canal = 'LOTACAO';
+    next.comparar_com_proprio_realizado = false;
+  } else {
+    next.tipo_tabela = 'FRACIONADO';
+    if (next.canal === 'LOTACAO') next.canal = 'ATACADO';
+    if (tipoNorm === 'REAJUSTE_TABELA_EXISTENTE') {
+      next.comparar_com_proprio_realizado = true;
+      if (!next.transportadora_base_nome) next.transportadora_base_nome = next.transportadora;
+    }
+  }
+  return next;
+}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -495,7 +587,7 @@ export default function TabelasNegociacaoPage() {
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState('');
   const [sucesso, setSucesso] = useState('');
-  const [filtros, setFiltros] = useState({ status: '', tipoTabela: '', canal: '', transportadora: '' });
+  const [filtros, setFiltros] = useState({ status: '', tipoTabela: '', tipoNegociacao: '', canal: '', transportadora: '' });
   const [form, setForm] = useState(Object.assign({}, FORM_VAZIO));
   const inputTaxasDestinoRef = useRef(null);
 
@@ -520,12 +612,15 @@ export default function TabelasNegociacaoPage() {
 
   const [modalAprovacao, setModalAprovacao] = useState(null);
   const [aprovacao, setAprovacao] = useState({
-    data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, justificativa_aprovacao: '',
+    data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, promover_para_oficial: false,
+    usuario_aprovacao: '', observacao_aprovacao: '', justificativa_aprovacao: '',
   });
   const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
   const [abrindoRodada, setAbrindoRodada] = useState(false);
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
+  const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
+  const [simulandoLotacao, setSimulandoLotacao] = useState(false);
 
   const negociacoesMesmaTransportadora = useMemo(function() {
     if (!selecionada) return [];
@@ -547,6 +642,9 @@ export default function TabelasNegociacaoPage() {
     aprovadas: tabelas.filter(function(t) { return t.status === 'APROVADA'; }).length,
     lotacao: tabelas.filter(function(t) { return t.tipo_tabela === 'LOTACAO'; }).length,
     fracionado: tabelas.filter(function(t) { return t.tipo_tabela === 'FRACIONADO'; }).length,
+    novas: tabelas.filter(function(t) { return getTipoNegociacaoTabela(t) === 'NOVA_TABELA'; }).length,
+    reajustes: tabelas.filter(function(t) { return getTipoNegociacaoTabela(t) === 'REAJUSTE_TABELA_EXISTENTE'; }).length,
+    negociacaoLotacao: tabelas.filter(function(t) { return getTipoNegociacaoTabela(t) === 'TABELA_LOTACAO'; }).length,
   }), [tabelas]);
 
   const resumoItens = useMemo(() => {
@@ -764,7 +862,8 @@ export default function TabelasNegociacaoPage() {
       setGeneralidades(Object.assign({}, DEFAULT_GENERALIDADES, tabela.generalidades || {}));
       setInicioVigencia(tabela.data_inicio_prevista || hojeISO());
       setFimVigencia(fimTresAnosISO());
-      if (itens.length > 0 && itens[0].origem_importacao) setTipoImportacao(itens[0].origem_importacao);
+      if (isLotacaoNegociacao(tabela)) setTipoImportacao('LOTACAO_TRANSPORTADORA');
+      else if (itens.length > 0 && itens[0].origem_importacao) setTipoImportacao(itens[0].origem_importacao);
     } catch (e) { setErro(e.message || 'Erro ao abrir itens.'); }
   }
 
@@ -790,6 +889,46 @@ export default function TabelasNegociacaoPage() {
     } catch (e) { setErro(e.message || 'Erro.'); }
   }
 
+  async function prepararSimulacao(tabela) {
+    if (!tabela) return;
+    if (isLotacaoNegociacao(tabela)) {
+      setErro('');
+      setSucesso('Abra a negociacao e use "Simular Lotacao" na aba de importacao para salvar aderencia e impacto.');
+      await abrirTabela(tabela);
+      setAbaNegoc('importacao');
+      return;
+    }
+    setErro(''); setSucesso('');
+    try {
+      var at = tabela.incluir_simulacao
+        ? tabela
+        : await alternarTabelaNegociacaoNaSimulacao(tabela.id, true);
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      if (selecionada && selecionada.id === tabela.id) setSelecionada(at);
+      setSucesso(isReajusteNegociacao(at)
+        ? 'Reajuste marcado para simulacao. No Simulador Realizado, selecione esta negociacao; a base sera filtrada pela transportadora base.'
+        : 'Tabela marcada para simulacao. No Simulador Realizado, selecione esta negociacao.');
+    } catch (e) { setErro(e.message || 'Erro ao preparar simulacao.'); }
+  }
+
+  async function handleSimularLotacaoNegociacao() {
+    if (!selecionada) return;
+    setSimulandoLotacao(true); setErro(''); setSucesso('');
+    try {
+      var resposta = await simularLotacaoNegociacao(selecionada.id, {
+        origem: selecionada.origem || '',
+        tipoVeiculo: selecionada.tipo_veiculo || '',
+        inicio: selecionada.periodo_realizado_inicio || '',
+        fim: selecionada.periodo_realizado_fim || '',
+      });
+      var at = resposta.tabela;
+      setSelecionada(at);
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setSucesso('Simulacao de lotacao salva: ' + formatNumber(resposta.resultado.qtd_registros_com_tabela, 0) + ' viagem(ns) com tabela e impacto de ' + formatMoney(resposta.resultado.impacto_mensal) + '/mes.');
+    } catch (e) { setErro(e.message || 'Erro ao simular lotacao.'); }
+    finally { setSimulandoLotacao(false); }
+  }
+
   async function atualizarStatus(tabela, status) {
     setErro(''); setSucesso('');
     try {
@@ -798,6 +937,52 @@ export default function TabelasNegociacaoPage() {
       if (selecionada && selecionada.id === tabela.id) setSelecionada(at);
       setSucesso('Status atualizado.');
     } catch (e) { setErro(e.message || 'Erro.'); }
+  }
+
+
+  async function handleExcluirRodadaCompleta(rodadaLinha) {
+    if (!selecionada || !rodadaLinha) return;
+
+    var numeroRodada = Number(rodadaLinha.rodada || 0);
+    if (!numeroRodada) {
+      setErro('Não foi possível identificar a rodada para exclusão.');
+      return;
+    }
+
+    var historico = getHistoricoRodadasTabela(selecionada);
+    var registrosDaRodada = historico.filter(function(item) {
+      return Number(item.rodada || 0) === numeroRodada;
+    });
+
+    if (!registrosDaRodada.length) {
+      setErro('Nenhum registro encontrado para esta rodada.');
+      return;
+    }
+
+    if (!window.confirm('Apagar a análise da ' + numeroRodada + 'ª rodada? A simulação e marcadores vazios serão removidos, mas a importação real da tabela será preservada.')) {
+      return;
+    }
+
+    setSalvando(true);
+    setErro('');
+    setSucesso('Apagando ' + numeroRodada + 'ª rodada...');
+
+    try {
+      var atualizada = await excluirRodadaNegociacao(selecionada.id, numeroRodada);
+
+      setSelecionada(atualizada);
+      setTabelas(function(lista) {
+        return lista.map(function(item) {
+          return item.id === atualizada.id ? atualizada : item;
+        });
+      });
+
+      setSucesso('Análise da ' + numeroRodada + 'ª rodada apagada. Importações reais foram preservadas.');
+    } catch (e) {
+      setErro(e.message || 'Erro ao apagar rodada.');
+    } finally {
+      setSalvando(false);
+    }
   }
 
   async function excluirTabela(tabela) {
@@ -999,6 +1184,10 @@ export default function TabelasNegociacaoPage() {
         transportadora: modalNovaOrigem.transportadora,
         canal: modalNovaOrigem.canal || 'ATACADO',
         tipo_tabela: modalNovaOrigem.tipo_tabela || 'FRACIONADO',
+        tipo_negociacao: modalNovaOrigem.tipo_negociacao || getTipoNegociacaoTabela(modalNovaOrigem),
+        transportadora_base_nome: modalNovaOrigem.transportadora_base_nome || modalNovaOrigem.transportadora,
+        tabela_base_id: modalNovaOrigem.tabela_base_id || '',
+        comparar_com_proprio_realizado: Boolean(modalNovaOrigem.comparar_com_proprio_realizado),
         status: 'EM NEGOCIAÇÃO',
         descricao: novaOrigem.descricao || modalNovaOrigem.descricao || '',
         regiao: modalNovaOrigem.regiao || '',
@@ -1039,31 +1228,9 @@ export default function TabelasNegociacaoPage() {
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       await abrirTabela(at);
-      // Vai direto para aba Rodadas para o usuário confirmar que foi criada
-      setAbaNegoc('rodadas');
-      setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Agora importe a nova proposta desta origem (aba Importação).');
+      setAbaNegoc('importacao');
+      setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Agora importe a nova proposta desta origem.');
     } catch (e) { setErro(e.message || 'Erro ao abrir nova rodada.'); }
-    finally { setAbrindoRodada(false); }
-  }
-
-  async function handleRepararHistoricoRodadas(tabela) {
-    if (!tabela) return;
-    var ok = window.confirm(
-      'Reparar histórico de rodadas para ' + tabela.transportadora + '?\n\n' +
-      'Isso vai criar um registro no histórico sem apagar dados nem avançar a rodada. ' +
-      'Use quando o histórico estiver vazio mas a negociação já tem uma rodada ativa.'
-    );
-    if (!ok) return;
-    setAbrindoRodada(true); setErro(''); setSucesso('');
-    try {
-      var at = await abrirNovaRodadaTabelaNegociacao(tabela.id, {
-        observacao: 'Histórico reparado manualmente — rodada reativada',
-      });
-      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      if (selecionada && selecionada.id === at.id) setSelecionada(at);
-      setAbaNegoc('rodadas');
-      setSucesso('Histórico reparado. Agora você pode ver e importar a rodada atual.');
-    } catch (e) { setErro(e.message || 'Erro ao reparar histórico.'); }
     finally { setAbrindoRodada(false); }
   }
 
@@ -1071,11 +1238,18 @@ export default function TabelasNegociacaoPage() {
     return handleAbrirNovaRodadaTabela(selecionada);
   }
 
-  // handleRepararHistoricoRodadas está definido acima junto com handleAbrirNovaRodadaTabela
-
   function abrirModalAprovacao(tabela) {
     setModalAprovacao(tabela);
-    setAprovacao({ data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, justificativa_aprovacao: '' });
+    setAprovacao({
+      data_inicio_vigencia: hojeISO(),
+      substituir_tabela_anterior: isReajusteNegociacao(tabela),
+      promover_para_oficial: false,
+      usuario_aprovacao: '',
+      observacao_aprovacao: '',
+      justificativa_aprovacao: '',
+      tabela_base_id: tabela?.tabela_base_id || '',
+      transportadora_base_nome: tabela?.transportadora_base_nome || tabela?.transportadora || '',
+    });
   }
 
   async function confirmarAprovacao() {
@@ -1123,6 +1297,9 @@ export default function TabelasNegociacaoPage() {
 
       <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
         <div className="summary-card"><span>Total</span><strong>{resumo.total}</strong><small>em negociação</small></div>
+        <div className="summary-card"><span>Novas</span><strong>{resumo.novas}</strong><small>novo transportador</small></div>
+        <div className="summary-card"><span>Reajustes</span><strong>{resumo.reajustes}</strong><small>proprio realizado</small></div>
+        <div className="summary-card"><span>Neg. Lotacao</span><strong>{resumo.negociacaoLotacao}</strong><small>lotacao</small></div>
         <div className="summary-card"><span>Em simulação</span><strong>{resumo.emSimulacao}</strong><small>entram no simulador</small></div>
         <div className="summary-card"><span>Em teste</span><strong>{resumo.emTeste}</strong><small>em análise</small></div>
         <div className="summary-card"><span>Aprovadas</span><strong>{resumo.aprovadas}</strong><small>aguardando promoção</small></div>
@@ -1135,16 +1312,17 @@ export default function TabelasNegociacaoPage() {
         <h2>Nova tabela em negociação</h2>
         <div className="sim-form-grid sim-grid-5">
           <label>Transportadora
-            <input value={form.transportadora} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { transportadora: e.target.value }); }); }} placeholder="Ex: JADLOG" />
+            <input value={form.transportadora} onChange={function(e) { var valor = e.target.value; setForm(function(p) { return Object.assign({}, p, { transportadora: valor, transportadora_base_nome: p.tipo_negociacao === 'REAJUSTE_TABELA_EXISTENTE' && !p.transportadora_base_nome ? valor : p.transportadora_base_nome }); }); }} placeholder="Ex: JADLOG" />
           </label>
           <label>Canal
-            <select value={form.canal} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { canal: e.target.value }); }); }}>
+            <select value={form.canal} disabled={form.tipo_negociacao === 'TABELA_LOTACAO'} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { canal: e.target.value }); }); }}>
+              {form.tipo_negociacao === 'TABELA_LOTACAO' ? <option value="LOTACAO">LOTACAO</option> : null}
               {CANAIS.map(function(c) { return <option key={c}>{c}</option>; })}
             </select>
           </label>
-          <label>Tipo
-            <select value={form.tipo_tabela} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { tipo_tabela: e.target.value }); }); }}>
-              {TIPOS_TABELA_NEGOCIACAO.map(function(t) { return <option key={t}>{t}</option>; })}
+          <label>Tipo de negociacao
+            <select value={form.tipo_negociacao} onChange={function(e) { setForm(function(p) { return ajustarFormPorTipoNegociacao(p, e.target.value); }); }}>
+              {TIPOS_NEGOCIACAO.map(function(t) { return <option key={t.value} value={t.value}>{t.label}</option>; })}
             </select>
           </label>
           <label>Status
@@ -1178,6 +1356,45 @@ export default function TabelasNegociacaoPage() {
             Incluir nas simulações
           </label>
         </div>
+        {form.tipo_negociacao === 'REAJUSTE_TABELA_EXISTENTE' ? (
+          <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
+            <label>Transportadora base atual
+              <input value={form.transportadora_base_nome} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { transportadora_base_nome: e.target.value }); }); }} placeholder="Ex: Panservice" />
+            </label>
+            <label>Tabela oficial atual
+              <input value={form.tabela_base_id} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { tabela_base_id: e.target.value }); }); }} placeholder="ID/nome da tabela atual" />
+            </label>
+            <label>Realizado inicio
+              <input type="date" value={form.periodo_realizado_inicio} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { periodo_realizado_inicio: e.target.value }); }); }} />
+            </label>
+            <label>Realizado fim
+              <input type="date" value={form.periodo_realizado_fim} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { periodo_realizado_fim: e.target.value }); }); }} />
+            </label>
+            <label className="sim-flag" style={{ justifyContent: 'end' }}>
+              <input type="checkbox" checked={form.comparar_com_proprio_realizado} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { comparar_com_proprio_realizado: e.target.checked }); }); }} />
+              Proprio realizado
+            </label>
+          </div>
+        ) : null}
+        {form.tipo_negociacao === 'TABELA_LOTACAO' ? (
+          <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
+            <label>Tipo de veiculo
+              <input value={form.tipo_veiculo} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { tipo_veiculo: e.target.value }); }); }} placeholder="Opcional" />
+            </label>
+            <label>Realizado inicio
+              <input type="date" value={form.periodo_realizado_inicio} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { periodo_realizado_inicio: e.target.value }); }); }} />
+            </label>
+            <label>Realizado fim
+              <input type="date" value={form.periodo_realizado_fim} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { periodo_realizado_fim: e.target.value }); }); }} />
+            </label>
+            <label>Modalidade
+              <input value={form.modalidade || ''} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { modalidade: e.target.value }); }); }} placeholder="Entrada ou reajuste" />
+            </label>
+            <label>Tipo tabela
+              <input value="LOTACAO" disabled />
+            </label>
+          </div>
+        ) : null}
         <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
           <label>Descrição<input value={form.descricao} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { descricao: e.target.value }); }); }} /></label>
           <label>Região<input value={form.regiao} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { regiao: e.target.value }); }); }} placeholder="Ex: SP/MG/ES" /></label>
@@ -1195,7 +1412,7 @@ export default function TabelasNegociacaoPage() {
           <div><h2 style={{ margin: 0 }}>Tabelas cadastradas</h2></div>
           <button className="sim-tab" type="button" onClick={carregar} disabled={carregando}>{carregando ? 'Atualizando...' : 'Atualizar'}</button>
         </div>
-        <div className="sim-form-grid sim-grid-4">
+        <div className="sim-form-grid sim-grid-5">
           <label>Status
             <select value={filtros.status} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { status: e.target.value }); }); }}>
               <option value="">Todos</option>
@@ -1206,6 +1423,12 @@ export default function TabelasNegociacaoPage() {
             <select value={filtros.tipoTabela} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { tipoTabela: e.target.value }); }); }}>
               <option value="">Todos</option>
               {TIPOS_TABELA_NEGOCIACAO.map(function(t) { return <option key={t}>{t}</option>; })}
+            </select>
+          </label>
+          <label>Tipo negociacao
+            <select value={filtros.tipoNegociacao} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { tipoNegociacao: e.target.value }); }); }}>
+              <option value="">Todos</option>
+              {TIPOS_NEGOCIACAO.map(function(t) { return <option key={t.value} value={t.value}>{t.label}</option>; })}
             </select>
           </label>
           <label>Canal
@@ -1220,7 +1443,7 @@ export default function TabelasNegociacaoPage() {
         </div>
         <div className="sim-actions" style={{ marginTop: 12 }}>
           <button className="primary" type="button" onClick={carregar}>Filtrar</button>
-          <button className="sim-tab" type="button" onClick={function() { setFiltros({ status: '', tipoTabela: '', canal: '', transportadora: '' }); }}>Limpar filtros</button>
+          <button className="sim-tab" type="button" onClick={function() { setFiltros({ status: '', tipoTabela: '', tipoNegociacao: '', canal: '', transportadora: '' }); }}>Limpar filtros</button>
         </div>
         <div className="sim-analise-tabela-wrap" style={{ marginTop: 14 }}>
           <table className="sim-analise-tabela">
@@ -1241,18 +1464,25 @@ export default function TabelasNegociacaoPage() {
                 var ind = getIndicadoresTabela(tabela);
                 var historicoRodadas = getHistoricoRodadasTabela(tabela);
                 var laudos = getLaudosTabela(tabela);
+                var tipoNegociacaoLabel = getTipoNegociacaoLabel(ind.tipoNegociacao);
                 return (
                   <tr key={tabela.id}>
                     <td style={{ minWidth: 230 }}>
                       <strong>{tabela.transportadora}</strong>
                       <BadgeImportacao tipo={tabela.origem_importacao} />
+                      <span style={{ marginLeft: 6, borderRadius: 999, padding: '3px 7px', fontSize: 11, fontWeight: 800, background: ind.isReajuste ? '#fff7ed' : ind.isLotacao ? '#ecfeff' : '#eef2ff', color: ind.isReajuste ? '#c2410c' : ind.isLotacao ? '#0e7490' : '#3730a3', border: '1px solid rgba(148,163,184,0.35)' }}>
+                        {ind.isReajuste ? 'REAJUSTE' : ind.isLotacao ? 'LOTACAO' : 'NOVA'}
+                      </span>
                       <div style={{ fontSize: 12, color: '#334155', marginTop: 3 }}>{origemTabelaLabel(tabela)}</div>
                       <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
                         {tabela.descricao || tabela.regiao || 'Sem descrição'}
                       </div>
                       <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
-                        {tabela.tipo_tabela} · {tabela.canal} · Recebida em {formatDateBR(tabela.data_recebimento)}
+                        {tipoNegociacaoLabel} · {tabela.tipo_tabela} · {tabela.canal} · Recebida em {formatDateBR(tabela.data_recebimento)}
                       </div>
+                      {ind.isReajuste ? (
+                        <div style={{ fontSize: 11, color: '#b45309', marginTop: 3 }}>Base: {tabela.transportadora_base_nome || tabela.transportadora}</div>
+                      ) : null}
                     </td>
                     <td>
                       <span style={Object.assign({}, statusStyle(tabela.status), { borderRadius: 999, padding: '4px 8px', fontSize: 12, fontWeight: 700 })}>
@@ -1274,11 +1504,24 @@ export default function TabelasNegociacaoPage() {
                     <td style={{ minWidth: 240 }}>
                       {ind.temSimulacao ? (
                         <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+                          {(ind.isReajuste || ind.isLotacao) ? (
+                            <>
+                              <div><strong>{ind.isLotacao ? 'Valor atual:' : 'Realizado atual:'}</strong> {formatMoney(ind.valorAtualRealizado)}</div>
+                              <div><strong>Nova tabela:</strong> {formatMoney(ind.valorSimuladoNovaTabela)}</div>
+                              <div style={{ color: ind.impactoValor > 0 ? '#dc2626' : '#15803d' }}><strong>Impacto:</strong> {formatMoney(ind.impactoValor)} ({formatPercent(ind.impactoPercentual)})</div>
+                              <div><strong>Mensal:</strong> {formatMoney(ind.impactoMensal)} · <strong>Anual:</strong> {formatMoney(ind.impactoAnual)}</div>
+                              <div style={{ color: '#475569' }}><strong>{ind.isLotacao ? 'Viagens' : 'CT-es'}:</strong> {formatNumber(ind.ctesAtendidos, 0)}/{formatNumber(ind.ctesAnalisados, 0)} com tabela</div>
+                            </>
+                          ) : null}
+                          {!(ind.isReajuste || ind.isLotacao) ? (
+                            <>
                           <div><strong>Aderência:</strong> {formatPercent(ind.aderencia)}</div>
                           <div><strong>Saving mês:</strong> {formatMoney(ind.savingMes)} · <strong>ano:</strong> {formatMoney(ind.savingAno)}</div>
                           <div><strong>Faturamento mês:</strong> {formatMoney(ind.faturamentoMes)} · <strong>ano:</strong> {formatMoney(ind.faturamentoAno)}</div>
                           <div style={{ color: '#475569' }}><strong>Rotas ganhas:</strong> {formatNumber(ind.rotasComGanho, 0)} · <strong>UFs:</strong> {(ind.estadosGanhadores || []).slice(0, 3).map(function(item) { return item.uf; }).join(', ') || '-'}</div>
                           <div style={{ color: '#475569' }}><strong>Perda transportadoras:</strong> {formatMoney(ind.freteCapturado)} · {formatNumber(ind.ctesCapturados, 0)} CT-es</div>
+                            </>
+                          ) : null}
                         </div>
                       ) : (
                         <span style={{ color: '#64748b', fontSize: 12 }}>Execute o Simulador Realizado e salve o resultado.</span>
@@ -1296,10 +1539,12 @@ export default function TabelasNegociacaoPage() {
                     <td style={{ minWidth: 150 }}>
                       {ind.temSimulacao ? (
                         <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                          <div>Realizado: <strong>{formatPercent(ind.percentualReal)}</strong></div>
-                          <div>Tabela: <strong>{formatPercent(ind.percentualTabela)}</strong></div>
+                          <div>Atual: <strong>{formatPercent(ind.isReajuste || ind.isLotacao ? ind.fretePctAtual : ind.percentualReal)}</strong></div>
+                          <div>Novo: <strong>{formatPercent(ind.isReajuste || ind.isLotacao ? ind.fretePctSimulado : ind.percentualTabela)}</strong></div>
                           <div style={{ color: ind.reducaoPercentual >= 0 ? '#15803d' : '#dc2626' }}>
-                            {ind.reducaoPercentual >= 0 ? 'Redução' : 'Aumento'}: {formatPercent(Math.abs(ind.reducaoPercentual))}
+                            {(ind.isReajuste || ind.isLotacao)
+                              ? (ind.impactoValor > 0 ? 'Aumento' : 'Reducao')
+                              : (ind.reducaoPercentual >= 0 ? 'Redução' : 'Aumento')}: {formatPercent(Math.abs(ind.isReajuste || ind.isLotacao ? ind.impactoPercentual : ind.reducaoPercentual))}
                           </div>
                         </div>
                       ) : '-' }
@@ -1307,6 +1552,7 @@ export default function TabelasNegociacaoPage() {
                     <td>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
+                        <button className="primary" type="button" onClick={function() { prepararSimulacao(tabela); }}>Simular</button>
                         <button className="primary" type="button" onClick={function() { handleAbrirNovaRodadaTabela(tabela); }} disabled={abrindoRodada}>+ Rodada</button>
                         <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(tabela); }}>+ Origem</button>
                         {laudos.executivo ? (
@@ -1360,9 +1606,20 @@ export default function TabelasNegociacaoPage() {
             return ind.temSimulacao ? (
               <>
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
-                <div className="summary-card"><span>Aderência</span><strong>{formatPercent(ind.aderencia)}</strong><small>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</small></div>
-                <div className="summary-card"><span>Saving mês</span><strong>{formatMoney(ind.savingMes)}</strong><small>Ano: {formatMoney(ind.savingAno)}</small></div>
-                <div className="summary-card"><span>Faturamento mês</span><strong>{formatMoney(ind.faturamentoMes)}</strong><small>Ano: {formatMoney(ind.faturamentoAno)}</small></div>
+                {(ind.isReajuste || ind.isLotacao) ? (
+                  <>
+                    <div className="summary-card"><span>{ind.isLotacao ? 'Viagens aderentes' : 'Aderencia'}</span><strong>{formatPercent(ind.aderencia)}</strong><small>{ind.ctesAtendidos}/{ind.ctesAnalisados} com tabela</small></div>
+                    <div className="summary-card"><span>Valor atual</span><strong>{formatMoney(ind.valorAtualRealizado)}</strong><small>base realizada</small></div>
+                    <div className="summary-card"><span>Nova tabela</span><strong>{formatMoney(ind.valorSimuladoNovaTabela)}</strong><small>simulado</small></div>
+                    <div className="summary-card"><span>Impacto mes</span><strong>{formatMoney(ind.impactoMensal)}</strong><small>Ano: {formatMoney(ind.impactoAnual)}</small></div>
+                  </>
+                ) : (
+                  <>
+                    <div className="summary-card"><span>Aderência</span><strong>{formatPercent(ind.aderencia)}</strong><small>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</small></div>
+                    <div className="summary-card"><span>Saving mês</span><strong>{formatMoney(ind.savingMes)}</strong><small>Ano: {formatMoney(ind.savingAno)}</small></div>
+                    <div className="summary-card"><span>Faturamento mês</span><strong>{formatMoney(ind.faturamentoMes)}</strong><small>Ano: {formatMoney(ind.faturamentoAno)}</small></div>
+                  </>
+                )}
                 <div className="summary-card"><span>Rotas ganhas</span><strong>{formatNumber(ind.rotasComGanho, 0)}</strong><small>{formatNumber(ind.rotasGanhas, 0)} 100% ganhas · {formatNumber(ind.rotasParciais, 0)} parciais</small></div>
                 <div className="summary-card"><span>Perda transportadoras</span><strong>{formatMoney(ind.freteCapturado)}</strong><small>{formatNumber(ind.ctesCapturados, 0)} CT-es capturados</small></div>
                 <div className="summary-card"><span>Pedidos</span><strong>{formatNumber(ind.pedidosDia, 1)}/dia</strong><small>{formatNumber(ind.pedidosMes, 0)}/mês</small></div>
@@ -1479,7 +1736,9 @@ export default function TabelasNegociacaoPage() {
               <div className="sim-parametros-box" style={{ marginBottom: 20 }}>
                 <div className="sim-parametros-header"><div><strong>Tipo de importação</strong><p>Escolha o modelo de acordo com o arquivo recebido.</p></div></div>
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
-                  {TIPOS_IMPORTACAO.map(function(tipo) {
+                  {TIPOS_IMPORTACAO.filter(function(tipo) {
+                    return isLotacaoNegociacao(selecionada) ? tipo.value === 'LOTACAO_TRANSPORTADORA' : tipo.value !== 'LOTACAO_TRANSPORTADORA';
+                  }).map(function(tipo) {
                     return (
                       <button key={tipo.value} type="button" style={styBtn(tipoImportacao === tipo.value)}
                         onClick={function() { setTipoImportacao(tipo.value); setErro(''); setSucesso(''); limparImport(); }}>
@@ -1636,7 +1895,8 @@ export default function TabelasNegociacaoPage() {
                   <div className="sim-actions" style={{ marginTop: 12 }}>
                     <button className="primary" type="button" onClick={processarLotacao} disabled={!arquivoLotacao}>Ler modelo de Lotação</button>
                     <button className="sim-tab" type="button" onClick={function() { exportarXlsx(resultadoLotacao ? resultadoLotacao.itens.map(function(i) { return { Origem: i.cidade_origem, UFOrig: i.uf_origem, Destino: i.cidade_destino, UFDest: i.uf_destino, KM: i.km, Tipo: i.tipo_veiculo, Target: i.valor_lotacao, ICMS: i.icms, Pedagio: i.pedagio, Prazo: i.prazo }; }) : [], 'lotacao-prev-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Lotação'); }} disabled={!resultadoLotacao}>Exportar prévia</button>
-                    <button className="primary" type="button" onClick={function() { salvarItens(resultadoLotacao ? resultadoLotacao.itens : [], 'LOTACAO_TRANSPORTADORA', { tipo_tabela: 'LOTACAO', canal: 'LOTACAO' }); }} disabled={!resultadoLotacao || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
+                    <button className="primary" type="button" onClick={function() { salvarItens(resultadoLotacao ? resultadoLotacao.itens : [], 'LOTACAO_TRANSPORTADORA', { tipo_tabela: 'LOTACAO', tipo_negociacao: 'TABELA_LOTACAO', canal: 'LOTACAO' }); }} disabled={!resultadoLotacao || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
+                    <button className="sim-tab" type="button" onClick={handleSimularLotacaoNegociacao} disabled={simulandoLotacao || salvando || !itensSelecionada.length}>{simulandoLotacao ? 'Simulando...' : 'Simular Lotacao'}</button>
                   </div>
                   {resultadoLotacao ? (
                     <div>
@@ -1921,29 +2181,14 @@ export default function TabelasNegociacaoPage() {
 
           {/* ABA: RODADAS */}
           {abaNegoc === 'rodadas' ? (function() {
-            try {
-            var historicoRaw = getHistoricoRodadasTabela(selecionada);
-            var historico = Array.isArray(historicoRaw) ? historicoRaw.slice().reverse() : [];
-            var simulacoes = historico.filter(function(r) { return r && r.tipo_registro === 'SIMULACAO'; });
-            var historicoVazio = historico.length === 0;
-            var rodadaAtualNum = getRodadaAtualTabela(selecionada);
+            var historico = getHistoricoRodadasTabela(selecionada).slice().reverse();
+            var simulacoes = historico.filter(function(r) { return r.tipo_registro === 'SIMULACAO'; });
             return (
               <div>
                 <h3 style={{ margin: '0 0 12px' }}>Histórico de rodadas e análises</h3>
                 <div className="sim-alert info" style={{ marginBottom: 14 }}>
                   Rotas e fretes da mesma proposta ficam na mesma rodada. Uma nova rodada deve ser aberta somente quando chegar uma nova proposta/tabela do transportador; os resultados salvos continuam guardados para comparação.
                 </div>
-
-                {historicoVazio && rodadaAtualNum > 1 ? (
-                  <div className="sim-alert" style={{ marginBottom: 14, background: '#fef9c3', borderColor: '#facc15' }}>
-                    <strong>⚠ Histórico de rodadas está vazio</strong>, mas a negociação indica rodada {rodadaAtualNum}. Isso pode ocorrer após testes de exclusão/recriação. Clique em <strong>"Reparar histórico"</strong> para recriar a entrada da rodada atual.
-                    <div style={{ marginTop: 8 }}>
-                      <button className="primary" type="button" onClick={function() { handleRepararHistoricoRodadas(selecionada); }} disabled={abrindoRodada}>
-                        {abrindoRodada ? 'Reparando...' : '🔧 Reparar histórico'}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
 
                 <div className="sim-actions" style={{ marginBottom: 14 }}>
                   <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo rodada...' : '+ Abrir próxima rodada'}</button>
@@ -1956,12 +2201,7 @@ export default function TabelasNegociacaoPage() {
                     {simulacoes.slice(0, 4).map(function(rodada) {
                       var ind = rodada.indicadores || {};
                       return (
-                        <div className="summary-card" key={rodada.id || rodada.criado_em || Math.random()} style={rodada.divergencia_base && rodada.divergencia_base.divergiu ? { borderColor: '#dc2626', borderWidth: 2 } : {}}>
-                        {rodada.divergencia_base && rodada.divergencia_base.divergiu ? (
-                          <div style={{ fontSize: 11, color: '#dc2626', marginBottom: 4, fontWeight: 600 }}>
-                            ⚠ Base diverge da 1ª rodada ({(rodada.divergencia_base.dif_ctes > 0 ? '+' : '') + rodada.divergencia_base.dif_ctes} CT-es)
-                          </div>
-                        ) : null}
+                        <div className="summary-card" key={rodada.id || rodada.criado_em}>
                           <span>{rodada.rodada}ª rodada</span>
                           <strong>{formatPercent(ind.aderencia || 0)}</strong>
                           <small>Saving mês: {formatMoney(ind.saving_mes || 0)}</small>
@@ -1971,7 +2211,47 @@ export default function TabelasNegociacaoPage() {
                   </div>
                 ) : null}
 
-                <div className="sim-analise-tabela-wrap">
+                
+                <div className="sim-card" style={{ marginBottom: 14 }}>
+                  <div className="sim-parametros-header" style={{ alignItems: 'flex-start', gap: 12 }}>
+                    <div>
+                      <h3 style={{ margin: 0 }}>Laudo geral das rodadas</h3>
+                      <p style={{ margin: '6px 0 0', color: '#64748b' }}>
+                        Analisa a evolução da negociação por rodada e mostra onde a transportadora melhorou, onde ainda perde e quais rotas, cotações, UFs e faixas precisam de ajuste.
+                      </p>
+                    </div>
+                    <div className="sim-actions" style={{ margin: 0 }}>
+                      <button
+                        className={tipoLaudoRodadas === 'transportador' ? 'primary' : 'sim-tab'}
+                        type="button"
+                        onClick={function() { setTipoLaudoRodadas('transportador'); }}
+                      >
+                        Transportador
+                      </button>
+                      <button
+                        className={tipoLaudoRodadas === 'executivo' ? 'primary' : 'sim-tab'}
+                        type="button"
+                        onClick={function() { setTipoLaudoRodadas('executivo'); }}
+                      >
+                        Diretoria
+                      </button>
+                    </div>
+                  </div>
+
+                  {simulacoes.length < 2 ? (
+                    <div className="sim-alert info" style={{ marginTop: 12 }}>
+                      Para uma análise completa de evolução, o ideal é ter pelo menos duas simulações salvas. Com uma única simulação, o laudo mostra o diagnóstico atual sem comparação entre rodadas.
+                    </div>
+                  ) : null}
+
+                  <div style={{ marginTop: 14 }}>
+                    <LaudoRodadasErrorBoundary key={(selecionada?.id || 'sem-tabela') + '-' + tipoLaudoRodadas}>
+                      <LaudoRodadasNegociacaoTemplate tipo={tipoLaudoRodadas} tabela={selecionada} />
+                    </LaudoRodadasErrorBoundary>
+                  </div>
+                </div>
+
+<div className="sim-analise-tabela-wrap">
                   <table className="sim-analise-tabela">
                     <thead>
                       <tr>
@@ -1982,75 +2262,52 @@ export default function TabelasNegociacaoPage() {
                         <th>Saving mês/ano</th>
                         <th>Faturamento mês/ano</th>
                         <th>Pedidos/Volumes</th>
-                        <th>Base CT-es</th>
-                        <th>Não calc.</th>
                         <th>Frete % NF</th>
                         <th>Observação</th>
                       </tr>
                     </thead>
                     <tbody>
                       {historico.map(function(rodada, idx) {
-                        if (!rodada) return null;
                         var ind = rodada.indicadores || {};
                         var imp = rodada.itens_importados || {};
                         var salvos = rodada.itens_salvos_apos_importacao || {};
                         var isSim = rodada.tipo_registro === 'SIMULACAO';
                         return (
                           <tr key={rodada.id || rodada.criado_em || idx}>
-                            <td><strong>{rodada.rodada || '-' }ª</strong></td>
-                            <td>{isSim ? 'SIMULAÇÃO' : (rodada.tipo_registro === 'NOVA_RODADA' ? 'ABERTURA' : 'IMPORTAÇÃO')}</td>
+                            <td>
+                              <strong>{rodada.rodada || '-' }ª</strong>
+                              <br />
+                              <button
+                                className="sim-tab"
+                                type="button"
+                                disabled={salvando}
+                                onClick={function(event) {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  handleExcluirRodadaCompleta(rodada);
+                                }}
+                                style={{ marginTop: 6, color: '#dc2626', borderColor: '#fecaca', fontSize: 11 }}
+                              >
+                                Apagar análise
+                              </button>
+                            </td>
+                            <td>{isSim ? 'SIMULAÇÃO' : 'IMPORTAÇÃO'}</td>
                             <td>{formatDateBR(rodada.criado_em)}</td>
                             <td>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
                             <td>{isSim ? <span>{formatMoney(ind.saving_mes || 0)}<br /><small>{formatMoney(ind.saving_ano || 0)}</small></span> : '-'}</td>
                             <td>{isSim ? <span>{formatMoney(ind.faturamento_mes || 0)}<br /><small>{formatMoney(ind.faturamento_ano || 0)}</small></span> : '-'}</td>
                             <td>{isSim ? <span>{formatNumber(ind.pedidos_dia || 0, 1)} NF/dia<br /><small>{formatNumber(ind.volumes_dia || 0, 1)} vol/dia</small></span> : <span>{imp.rotas || 0} rotas · {imp.cotacoes || 0} fretes<br /><small>Ativo: {salvos.rotas || 0} rotas · {salvos.cotacoes || 0} fretes</small></span>}</td>
-                            <td style={{ fontSize: 12 }}>{(function() {
-                                var b = rodada.base || {};
-                                var n = b.ctes_na_malha || b.ctes_analisados || ind.ctes_analisados || '-';
-                                var div = rodada.divergencia_base;
-                                return <span>
-                                  {n}
-                                  {div && div.divergiu ? <span title={'Base divergiu da 1ª rodada: ' + (div.dif_ctes > 0 ? '+' : '') + div.dif_ctes + ' CT-es'} style={{ color: '#dc2626', marginLeft: 4, fontWeight: 700, cursor: 'help' }}>⚠</span> : null}
-                                </span>;
-                              }())}</td>
-                            <td style={{ fontSize: 12 }}>{(function() {
-                                var lista = Array.isArray(rodada.nao_calculados_por_motivo) ? rodada.nao_calculados_por_motivo : [];
-                                var total = lista.reduce(function(s, x) { return s + (Number((x && x.qtd) || 0)); }, 0);
-                                if (!total) return <span style={{ color: '#94a3b8' }}>—</span>;
-                                var titulo = lista.map(function(x) { return (x && x.motivo ? x.motivo : '?') + ': ' + (x && x.qtd || 0); }).join('\n');
-                                return <span title={titulo} style={{ cursor: 'help', color: '#d97706' }}>{total}</span>;
-                              }())}</td>
                             <td>{isSim ? <span>Real: {formatPercent(ind.percentual_frete_realizado || 0)}<br /><small>Tabela: {formatPercent(ind.percentual_frete_simulado || 0)}</small></span> : '-'}</td>
                             <td style={{ fontSize: 12, color: '#475569' }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
                           </tr>
                         );
                       })}
-                      {!historico.length ? <tr><td colSpan="11" style={{ textAlign: 'center', color: '#94a3b8', padding: 16 }}>Nenhuma rodada registrada ainda. Use "+ Abrir próxima rodada" para iniciar.</td></tr> : null}
+                      {!historico.length ? <tr><td colSpan="10">Nenhuma rodada registrada ainda.</td></tr> : null}
                     </tbody>
                   </table>
                 </div>
               </div>
             );
-            } catch(erroRodadas) {
-              return (
-                <div>
-                  <div className="sim-alert" style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-                    <strong>⚠ Erro ao renderizar aba Rodadas</strong>
-                    <br /><code style={{ fontSize: 12, display: 'block', marginTop: 8, background: '#fff1f1', padding: '6px 10px', borderRadius: 4 }}>{erroRodadas && erroRodadas.message ? erroRodadas.message : String(erroRodadas)}</code>
-                    <div style={{ marginTop: 12, fontSize: 13, color: '#475569' }}>
-                      Copie essa mensagem e informe ao suporte.
-                    </div>
-                    <div style={{ marginTop: 10 }}>
-                      <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada); }}>Recarregar negociação</button>
-                    </div>
-                  </div>
-                  <div className="sim-actions">
-                    <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo rodada...' : '+ Abrir próxima rodada'}</button>
-                    <button className="sim-tab" type="button" onClick={function() { setAbaNegoc('importacao'); }}>Ir para importação</button>
-                  </div>
-                </div>
-              );
-            }
           })() : null}
 
         </section>
@@ -2176,7 +2433,7 @@ export default function TabelasNegociacaoPage() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 9999, display: 'grid', placeItems: 'center', padding: 20 }}>
           <div className="sim-card" style={{ width: 'min(720px,100%)', maxHeight: '90vh', overflow: 'auto' }}>
             <h2>Aprovar tabela</h2>
-            <p>A tabela de <strong>{modalAprovacao.transportadora}</strong> será marcada como aprovada.</p>
+            <p>A tabela de <strong>{modalAprovacao.transportadora}</strong> sera marcada como aprovada. Tipo: <strong>{getTipoNegociacaoLabel(getTipoNegociacaoTabela(modalAprovacao))}</strong>.</p>
             <div className="sim-form-grid sim-grid-2">
               <label>Data início de vigência
                 <input type="date" value={aprovacao.data_inicio_vigencia} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { data_inicio_vigencia: e.target.value }); }); }} />
@@ -2186,6 +2443,23 @@ export default function TabelasNegociacaoPage() {
                 Substitui tabela anterior
               </label>
             </div>
+            <div className="sim-form-grid sim-grid-2" style={{ marginTop: 12 }}>
+              <label>Usuario aprovador
+                <input value={aprovacao.usuario_aprovacao} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { usuario_aprovacao: e.target.value }); }); }} placeholder="Nome ou e-mail" />
+              </label>
+              <label className="sim-flag" style={{ justifyContent: 'end' }}>
+                <input type="checkbox" checked={aprovacao.promover_para_oficial} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { promover_para_oficial: e.target.checked }); }); }} />
+                Promover para tabela oficial
+              </label>
+            </div>
+            {isReajusteNegociacao(modalAprovacao) ? (
+              <div className="sim-alert info" style={{ marginTop: 12 }}>
+                Reajuste aprovado: a tabela anterior sera mantida no historico e a nova proposta podera ser promovida como oficial a partir da vigencia informada.
+              </div>
+            ) : null}
+            <label style={{ marginTop: 12 }}>Observacao da aprovacao
+              <textarea value={aprovacao.observacao_aprovacao} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { observacao_aprovacao: e.target.value }); }); }} placeholder="Observacao complementar..." style={{ minHeight: 70 }} />
+            </label>
             <label style={{ marginTop: 12 }}>Justificativa
               <textarea value={aprovacao.justificativa_aprovacao} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { justificativa_aprovacao: e.target.value }); }); }} placeholder="Explique o motivo da aprovação..." style={{ minHeight: 100 }} />
             </label>

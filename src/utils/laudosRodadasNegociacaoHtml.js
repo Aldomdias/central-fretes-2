@@ -29,12 +29,23 @@ function upper(valor) {
 function padraoComercialLaudo(valor) {
   return texto(valor)
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
-    .replace(/s+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
+// Exibição com Title Case para nomes de cidades (chave continua em CAPS internamente)
+function exibirCidade(valor) {
+  if (!valor) return '';
+  // separa "ITAJAI/SC" em parte cidade e UF
+  const str = String(valor).trim();
+  return str
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    // UF após "/" volta para CAPS: "/Sc" -> "/SC"
+    .replace(/\/([a-zA-Z]{2})(\b|$)/g, (_, uf) => '/' + uf.toUpperCase());
+}
 
 function dataBR(valor) {
   if (!valor) return '-';
@@ -171,6 +182,12 @@ function normalizarFaixaB2C(valor) {
   return '';
 }
 
+function mapearPesoParaFaixa(peso) {
+  if (!peso || peso <= 0) return 'Sem faixa';
+  const faixa = FAIXAS_B2C_OFICIAIS.find((f) => peso > f.min && peso <= f.max);
+  return faixa ? faixa.label : 'Acima de 100 kg';
+}
+
 function pesoIndividualCte(item = {}) {
   return n(
     item.pesoRealizado || item.peso_realizado || item.pesoCte || item.peso_cte || item.pesoCobrado || item.peso_cobrado ||
@@ -207,23 +224,34 @@ function itemValidoParaFaixaB2C(item = {}) {
 }
 
 function getFaixa(item = {}) {
+  // 1. faixa explícita no campo
   const direta = normalizarFaixaB2C(item.faixaPeso || item.faixa_peso || item.faixa || item.pesoFaixa || item.faixa_peso_padrao);
   if (direta) return direta;
-  const peso = pesoIndividualCte(item);
-  if (!peso) return 'Sem faixa';
-  const faixa = FAIXAS_B2C_OFICIAIS.find((f) => peso > f.min && peso <= f.max) || FAIXAS_B2C_OFICIAIS[0];
-  return faixa.label;
+  // 2. peso individual do CT-e
+  const pesoUnit = pesoIndividualCte(item);
+  if (pesoUnit > 0) return mapearPesoParaFaixa(pesoUnit);
+  // 3. fallback: peso total / quantidade de CT-es (nunca usa peso total somado diretamente)
+  const qtd = n(item.ctes || item.qtd || item.qtdCtes || 1) || 1;
+  const pesoTotalCampo = n(item.pesoTotal || item.peso_total);
+  if (pesoTotalCampo > 0 && qtd > 0) return mapearPesoParaFaixa(pesoTotalCampo / qtd);
+  return 'Sem faixa';
 }
 
 function isGanha(item = {}) {
-  if (n(item.qtdGanhasSelecionada) > 0 || n(item.ctesGanhos) > 0) return true;
-  if (n(item.ctesPerdidos) > 0 || n(item.qtdPerdidasSelecionada) > 0) return false;
+  // Se tem campos diretos de contagem, usa-os com prioridade (evita dupla contagem)
+  if (item.qtdGanhasSelecionada != null) return n(item.qtdGanhasSelecionada) > 0;
+  if (item.ctesGanhos != null && item.ctesPerdidos != null) return n(item.ctesGanhos) > 0 && n(item.ctesPerdidos) === 0;
+  if (n(item.ctesGanhos) > 0) return true;
+  if (n(item.ctesPerdidos) > 0) return false;
   return item.statusSelecionada === 'Ganharia' || item.ganhouRealizado === true || n(item.savingSelecionada) > 0;
 }
 
 function isPerdida(item = {}) {
-  if (n(item.qtdPerdidasSelecionada) > 0 || n(item.ctesPerdidos) > 0) return true;
-  if (n(item.ctesGanhos) > 0 || n(item.qtdGanhasSelecionada) > 0) return false;
+  // Se tem campos diretos de contagem, usa-os com prioridade (evita dupla contagem)
+  if (item.qtdPerdidasSelecionada != null) return n(item.qtdPerdidasSelecionada) > 0;
+  if (item.ctesGanhos != null && item.ctesPerdidos != null) return n(item.ctesPerdidos) > 0 && n(item.ctesGanhos) === 0;
+  if (n(item.ctesPerdidos) > 0) return true;
+  if (n(item.ctesGanhos) > 0) return false;
   return item.statusSelecionada === 'Perderia' || item.perdeuRealizado === true || n(item.diferencaParaVencedor) > 0;
 }
 
@@ -237,6 +265,24 @@ function valorCapturado(item = {}) {
 
 function reducaoItem(item = {}) {
   return n(item.reducaoMediaNecessaria || item.reducaoNecessaria || item.percentualReducaoNecessaria || item.diferencaPercentual || item.gapPercentual);
+}
+
+// CORRIGIDO: extrai ganhos/perdidos sem dupla contagem.
+// Se o item já traz ctesGanhos/ctesPerdidos como campos numéricos diretos (linha agregada),
+// usa direto. Se é linha individual (CT-e único), usa isGanha/isPerdida.
+function extrairContagemItem(item) {
+  const qtdAnalisada = n(item.ctes || item.qtd || item.qtdCtes || item.qtdAnalisados || 1) || 1;
+  const temCamposDiretos = item.ctesGanhos != null || item.ctesPerdidos != null || item.qtdGanhasSelecionada != null || item.qtdPerdidasSelecionada != null;
+
+  let qtdGanha, qtdPerdida;
+  if (temCamposDiretos) {
+    qtdGanha = n(item.qtdGanhasSelecionada ?? item.ctesGanhos ?? 0);
+    qtdPerdida = n(item.qtdPerdidasSelecionada ?? item.ctesPerdidos ?? 0);
+  } else {
+    qtdGanha = isGanha(item) ? qtdAnalisada : 0;
+    qtdPerdida = isPerdida(item) ? qtdAnalisada : 0;
+  }
+  return { qtdAnalisada, qtdGanha, qtdPerdida };
 }
 
 function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}) {
@@ -263,12 +309,10 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}) {
   }
 
   const acc = mapa.get(chave);
-  const qtdAnalisada = n(item.ctes || item.qtd || item.qtdCtes || item.qtdAnalisados || 1) || 1;
-  const qtdGanha = n(item.qtdGanhasSelecionada || item.ctesGanhos || item.ctesGanhas || (isGanha(item) ? qtdAnalisada : 0));
-  const qtdPerdida = n(item.qtdPerdidasSelecionada || item.ctesPerdidos || item.ctesPerdidas || (isPerdida(item) ? qtdAnalisada : 0));
+  const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
   const volumes = n(item.volumes || item.qtdVolumes || item.volumesCapturados || item.volumesGanhas);
   const potencial = valorPotencial(item);
-  const capturado = valorCapturado(item);
+  const capturado = qtdGanha > 0 ? valorCapturado(item) : 0;
   const reducao = reducaoItem(item);
 
   acc.ctesAnalisados += qtdAnalisada;
@@ -277,9 +321,9 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}) {
   acc.volumes += volumes;
   acc.faturamentoPotencial += potencial;
   acc.faturamentoCapturado += capturado;
-  if (reducao) {
-    acc.reducaoSoma += reducao * Math.max(qtdPerdida || qtdAnalisada, 1);
-    acc.reducaoQtd += Math.max(qtdPerdida || qtdAnalisada, 1);
+  if (reducao && qtdPerdida > 0) {
+    acc.reducaoSoma += reducao * qtdPerdida;
+    acc.reducaoQtd += qtdPerdida;
   }
 
   if (!acc.ufDestino || acc.ufDestino === '-') acc.ufDestino = getUfDestino(item);
@@ -528,18 +572,16 @@ function agruparMesorregiaoFaixa(simulacao) {
     const chave = [upper(origem), ufDestino, upper(mesorregiao), upper(faixa)].join('|');
     if (!mapa.has(chave)) mapa.set(chave, { chave, origem, ufDestino, mesorregiao, rota: mesorregiao, faixa, ctesAnalisados: 0, ctesGanhos: 0, ctesPerdidos: 0, volumes: 0, faturamentoPotencial: 0, faturamentoCapturado: 0, faturamentoNaoCapturado: 0, reducaoSoma: 0, reducaoQtd: 0, prioridade: 'BAIXA' });
     const acc = mapa.get(chave);
-    const qtd = n(item.ctes || item.qtd || item.qtdCtes || 1) || 1;
-    const qtdGanha = isGanha(item) ? qtd : n(item.ctesGanhos || 0);
-    const qtdPerdida = isPerdida(item) ? qtd : n(item.ctesPerdidos || 0);
+    const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
     const reducao = reducaoItem(item);
-    acc.ctesAnalisados += qtd;
+    acc.ctesAnalisados += qtdAnalisada;
     acc.ctesGanhos += qtdGanha;
     acc.ctesPerdidos += qtdPerdida;
-    acc.volumes += n(item.volumes || item.qtdVolumes || qtd);
+    acc.volumes += n(item.volumes || item.qtdVolumes || qtdAnalisada);
     acc.faturamentoPotencial += valorPotencial(item);
-    acc.faturamentoCapturado += isGanha(item) ? n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado) : 0;
-    acc.faturamentoNaoCapturado += isPerdida(item) ? n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado) : 0;
-    if (reducao) { acc.reducaoSoma += reducao * Math.max(qtdPerdida || qtd, 1); acc.reducaoQtd += Math.max(qtdPerdida || qtd, 1); }
+    acc.faturamentoCapturado += qtdGanha > 0 ? n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado) : 0;
+    acc.faturamentoNaoCapturado += qtdPerdida > 0 ? n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado) : 0;
+    if (reducao && qtdPerdida > 0) { acc.reducaoSoma += reducao * qtdPerdida; acc.reducaoQtd += qtdPerdida; }
   });
   return finalizarAgrupados(Array.from(mapa.values())).sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos)).slice(0, 30);
 }
@@ -551,6 +593,7 @@ function origemLabelLaudo(item = {}) {
   return origem + (ufOrigem ? '/' + ufOrigem : '');
 }
 
+// CORRIGIDO: usa só última rodada (não compararGenerico que une 2 rodadas)
 function agruparPorOrigemUf(simulacao) {
   const resumo = getResumoRodada(simulacao);
   const detalhes = extrairDetalhesResumo(resumo);
@@ -560,24 +603,18 @@ function agruparPorOrigemUf(simulacao) {
     const ufDestino = getUfDestino(item);
     const chave = [upper(origem), ufDestino].join('|');
     if (!mapa.has(chave)) mapa.set(chave, { chave, origem, ufDestino, rota: origem + ' → ' + ufDestino,
-      destino: ufDestino,
-      destino: ufDestino,
-      destino: ufDestino,
-      destino: ufDestino,
       destino: ufDestino, faixa: 'Todas', ctesAnalisados: 0, ctesGanhos: 0, ctesPerdidos: 0, volumes: 0, faturamentoPotencial: 0, faturamentoCapturado: 0, faturamentoNaoCapturado: 0, reducaoSoma: 0, reducaoQtd: 0 });
     const acc = mapa.get(chave);
-    const qtd = n(item.ctes || item.qtd || item.qtdCtes || 1) || 1;
-    const ganhou = isGanha(item);
-    const perdeu = isPerdida(item);
+    const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
     const reducao = reducaoItem(item);
-    acc.ctesAnalisados += qtd;
-    acc.ctesGanhos += ganhou ? qtd : n(item.ctesGanhos || 0);
-    acc.ctesPerdidos += perdeu ? qtd : n(item.ctesPerdidos || 0);
-    acc.volumes += n(item.volumes || item.qtdVolumes || qtd);
+    acc.ctesAnalisados += qtdAnalisada;
+    acc.ctesGanhos += qtdGanha;
+    acc.ctesPerdidos += qtdPerdida;
+    acc.volumes += n(item.volumes || item.qtdVolumes || qtdAnalisada);
     acc.faturamentoPotencial += valorPotencial(item);
-    acc.faturamentoCapturado += ganhou ? n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado) : 0;
-    acc.faturamentoNaoCapturado += perdeu ? n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado) : 0;
-    if (reducao) { acc.reducaoSoma += reducao * Math.max(qtd, 1); acc.reducaoQtd += Math.max(qtd, 1); }
+    acc.faturamentoCapturado += qtdGanha > 0 ? n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado) : 0;
+    acc.faturamentoNaoCapturado += qtdPerdida > 0 ? n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado) : 0;
+    if (reducao && qtdPerdida > 0) { acc.reducaoSoma += reducao * qtdPerdida; acc.reducaoQtd += qtdPerdida; }
   });
   return finalizarAgrupados(Array.from(mapa.values())).sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos));
 }
@@ -590,21 +627,20 @@ function montarParetoDestinoFaixa(simulacao) {
     const origem = origemLabelLaudo(item);
     const cidade = padraoComercialLaudo(item.destino || item.cidadeDestino || item.cidade_destino || 'DESTINO');
     const ufDestino = getUfDestino(item);
+    // CORRIGIDO: getFaixa usa peso individual do CT-e, não peso acumulado
     const faixa = getFaixa(item);
     const chave = [upper(origem), upper(cidade), ufDestino, upper(faixa)].join('|');
     if (!mapa.has(chave)) mapa.set(chave, { chave, origem, destino: cidade, ufDestino, faixa, rotaDestino: origem + ' → ' + cidade + (ufDestino && ufDestino !== '-' ? '/' + ufDestino : ''), ctes: 0, volumes: 0, ctesGanhos: 0, ctesPerdidos: 0, faturamentoCapturado: 0, faturamentoNaoCapturado: 0, reducaoSoma: 0, reducaoQtd: 0 });
     const acc = mapa.get(chave);
-    const qtd = n(item.ctes || item.qtd || item.qtdCtes || 1) || 1;
-    const ganhou = isGanha(item);
-    const perdeu = isPerdida(item);
+    const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
     const reducao = reducaoItem(item);
-    acc.ctes += qtd;
-    acc.volumes += n(item.volumes || item.qtdVolumes || qtd);
-    if (ganhou) acc.ctesGanhos += qtd;
-    if (perdeu) acc.ctesPerdidos += qtd;
-    if (ganhou) acc.faturamentoCapturado += n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado);
-    if (perdeu) acc.faturamentoNaoCapturado += n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado);
-    if (reducao) { acc.reducaoSoma += reducao * Math.max(qtd, 1); acc.reducaoQtd += Math.max(qtd, 1); }
+    acc.ctes += qtdAnalisada;
+    acc.volumes += n(item.volumes || item.qtdVolumes || qtdAnalisada);
+    acc.ctesGanhos += qtdGanha;
+    acc.ctesPerdidos += qtdPerdida;
+    if (qtdGanha > 0) acc.faturamentoCapturado += n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado);
+    if (qtdPerdida > 0) acc.faturamentoNaoCapturado += n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado);
+    if (reducao && qtdPerdida > 0) { acc.reducaoSoma += reducao * qtdPerdida; acc.reducaoQtd += qtdPerdida; }
   });
   const totalVolumes = Array.from(mapa.values()).reduce((s, i) => s + n(i.volumes), 0);
   let acumulado = 0;
@@ -739,42 +775,68 @@ function pesoOperacionalItemLaudo(item = {}) {
   return n(item.peso || item.pesoRealizado || item.pesoDeclarado || item.peso_declarado || item.pesoCubado || item.peso_cubado || item.pesoConsiderado);
 }
 
-function calcularIndicadorVeiculoOperacionalLaudo({ cubagemDia = 0, pesoDia = 0 } = {}) {
+function calcularIndicadorVeiculoOperacionalLaudo({ cubagemDia = 0, pesoDia = 0, cubagemDisponivel = true } = {}) {
   const cubagem = Math.max(0, n(cubagemDia));
   const peso = Math.max(0, n(pesoDia));
   const primeiro = VEICULOS_OPERACIONAIS_LAUDO[0];
-  if (!cubagem && !peso) {
-    return { semDados: true, cubagemDia: cubagem, pesoDia: peso, veiculo: primeiro, ocupacaoOperacional: 0, qtdVeiculos: 1, fatorLimitante: 'cubagem', alerta: 'Sem cubagem/peso suficiente para sugerir veículo.' };
+  if (!peso) {
+    return { semDados: true, cubagemDia: cubagem, pesoDia: peso, cubagemDisponivel, veiculo: primeiro, ocupacaoOperacional: 0, qtdVeiculos: 1, fatorLimitante: 'peso', alerta: 'Sem peso suficiente para sugerir veículo.' };
   }
-  const atendeFisico = (v) => cubagem <= v.cubagemRef && peso <= v.pesoRef;
-  const atendeOperacional = (v) => cubagem <= v.cubagemRef * MARGEM_OPERACIONAL_VEICULO_LAUDO && peso <= v.pesoRef * MARGEM_OPERACIONAL_VEICULO_LAUDO;
+  // Se cubagem não disponível, seleciona veículo só pelo peso
+  const atendeFisico = cubagemDisponivel
+    ? (v) => cubagem <= v.cubagemRef && peso <= v.pesoRef
+    : (v) => peso <= v.pesoRef;
+  const atendeOperacional = cubagemDisponivel
+    ? (v) => cubagem <= v.cubagemRef * MARGEM_OPERACIONAL_VEICULO_LAUDO && peso <= v.pesoRef * MARGEM_OPERACIONAL_VEICULO_LAUDO
+    : (v) => peso <= v.pesoRef * MARGEM_OPERACIONAL_VEICULO_LAUDO;
   const veiculoMinimo = VEICULOS_OPERACIONAIS_LAUDO.find(atendeFisico) || VEICULOS_OPERACIONAIS_LAUDO[VEICULOS_OPERACIONAIS_LAUDO.length - 1];
   const veiculoComFolga = VEICULOS_OPERACIONAIS_LAUDO.find(atendeOperacional) || VEICULOS_OPERACIONAIS_LAUDO[VEICULOS_OPERACIONAIS_LAUDO.length - 1];
   const cargaAcimaMaior = !VEICULOS_OPERACIONAIS_LAUDO.some(atendeOperacional);
   const veiculo = cargaAcimaMaior ? VEICULOS_OPERACIONAIS_LAUDO[VEICULOS_OPERACIONAIS_LAUDO.length - 1] : veiculoComFolga;
-  const ocupacaoFisica = Math.max(veiculo.cubagemRef ? cubagem / veiculo.cubagemRef : 0, veiculo.pesoRef ? peso / veiculo.pesoRef : 0);
+  const ocupacaoFisica = veiculo.pesoRef ? peso / veiculo.pesoRef : 0;
   const qtdVeiculos = Math.max(1, Math.ceil(ocupacaoFisica));
-  const ocupacaoCubagem = veiculo.cubagemRef ? cubagem / (veiculo.cubagemRef * MARGEM_OPERACIONAL_VEICULO_LAUDO * qtdVeiculos) : 0;
+  const ocupacaoCubagem = (cubagemDisponivel && cubagem && veiculo.cubagemRef) ? cubagem / (veiculo.cubagemRef * MARGEM_OPERACIONAL_VEICULO_LAUDO * qtdVeiculos) : 0;
   const ocupacaoPeso = veiculo.pesoRef ? peso / (veiculo.pesoRef * MARGEM_OPERACIONAL_VEICULO_LAUDO * qtdVeiculos) : 0;
-  const ocupacaoOperacional = Math.max(ocupacaoCubagem, ocupacaoPeso);
-  const fatorLimitante = ocupacaoCubagem >= ocupacaoPeso ? 'cubagem' : 'peso';
+  const ocupacaoOperacional = cubagemDisponivel ? Math.max(ocupacaoCubagem, ocupacaoPeso) : ocupacaoPeso;
+  const fatorLimitante = (cubagemDisponivel && ocupacaoCubagem >= ocupacaoPeso) ? 'cubagem' : 'peso';
   const minimoNoLimite = veiculoMinimo.tipo !== veiculo.tipo;
-  let alerta = 'Capacidade adequada com folga operacional.';
+  let alerta = cubagemDisponivel
+    ? 'Capacidade adequada com folga operacional.'
+    : 'Cubagem não informada nos dados; sugestão baseada somente no peso das cargas ganhas.';
   if (cargaAcimaMaior && qtdVeiculos > 1) alerta = `Demanda acima de 1 veículo; estimar ${qtdVeiculos} veículo(s)/dia.`;
   else if (minimoNoLimite) alerta = `${veiculoMinimo.tipo} comporta, mas fica acima da folga operacional; recomendado subir para ${veiculo.tipo}.`;
   else if (ocupacaoOperacional >= 0.9) alerta = 'Ocupação alta; acompanhar peso, cubagem e janela de coleta.';
-  return { semDados: false, cubagemDia: cubagem, pesoDia: peso, veiculo, veiculoMinimo, ocupacaoOperacional, qtdVeiculos, fatorLimitante, minimoNoLimite, alerta, margemOperacional: MARGEM_OPERACIONAL_VEICULO_LAUDO };
+  return { semDados: false, cubagemDia: cubagem, pesoDia: peso, cubagemDisponivel, veiculo, veiculoMinimo, ocupacaoOperacional, qtdVeiculos, fatorLimitante, minimoNoLimite, alerta, margemOperacional: MARGEM_OPERACIONAL_VEICULO_LAUDO };
 }
 
+// CORRIGIDO: cubagem zerada = dado ausente, não zero real.
+// Tenta buscar cubagem dos detalhes; se não encontrar, sinaliza cubagemDisponivel=false
+// e calcula o veículo só pelo peso (que sempre deve existir).
 function calcularVeiculoOperacionalLaudo(simulacao = {}) {
   const resumo = getResumoRodada(simulacao);
   const detalhes = extrairDetalhesResumo(resumo);
   const ganhas = detalhes.filter(isGanha);
   const dias = diasPeriodoOperacionalLaudo(resumo);
+
   const cubagemTotal = ganhas.reduce((acc, item) => acc + cubagemOperacionalItemLaudo(item), 0);
   const pesoTotal = ganhas.reduce((acc, item) => acc + pesoOperacionalItemLaudo(item), 0);
-  const indicador = calcularIndicadorVeiculoOperacionalLaudo({ cubagemDia: cubagemTotal / dias, pesoDia: pesoTotal / dias });
-  return { ...indicador, cubagemTotal, pesoTotal, diasBase: dias, ctesGanhos: ganhas.length };
+
+  // Fallback de peso pelo campo agregado do resumo quando detalhes não têm peso
+  const pesoFallback = pesoTotal > 0 ? pesoTotal : n(resumo.peso || resumo.pesoTotal || resumo.peso_total || 0);
+
+  // Cubagem: se vier zero dos detalhes, tenta campo agregado do resumo
+  const cubagemFallback = cubagemTotal > 0
+    ? cubagemTotal
+    : n(resumo.cubagemTotal || resumo.cubagem_total || resumo.cubagemGanho || resumo.cubagem_ganha || 0);
+
+  const cubagemDisponivel = cubagemFallback > 0;
+
+  const indicador = calcularIndicadorVeiculoOperacionalLaudo({
+    cubagemDia: cubagemDisponivel ? cubagemFallback / dias : 0,
+    pesoDia: pesoFallback / dias,
+    cubagemDisponivel,
+  });
+  return { ...indicador, cubagemTotal: cubagemFallback, pesoTotal: pesoFallback, diasBase: dias, ctesGanhos: ganhas.length };
 }
 
 
@@ -797,27 +859,38 @@ function recomendacaoTransportador(rotasCriticas = [], rotasMelhoraram = []) {
   return `${melhora}A proposta apresenta boa evolução geral. Para avançarmos, recomendamos validar os pontos remanescentes e manter as condições competitivas nas rotas onde a tabela já performa bem.`;
 }
 
+// CORRIGIDO: usa somente cargas ganhas para calcular % frete/NF
 function calcularMetricasNfRodada(simulacao = {}) {
   const resumo = getResumoRodada(simulacao);
   const detalhes = extrairDetalhesResumo(resumo);
+  // Filtra apenas cargas ganhas
+  const ganhas = detalhes.filter(isGanha);
   let valorNfTotal = 0;
   let freteRealizadoTotal = 0;
   let freteSelecionadaTotal = 0;
-  detalhes.forEach((item) => {
+  ganhas.forEach((item) => {
     const nf = n(item.valorNF || item.valorNf || item.valor_nf || item.valorNota || item.nf);
     valorNfTotal += nf;
     freteRealizadoTotal += n(item.freteRealizado || item.valorCte || item.valorCTe);
     freteSelecionadaTotal += n(item.freteSelecionada || item.freteTabelaSelecionada || item.valorFreteSelecionada);
   });
-  const percentualFreteReal = valorNfTotal ? (freteRealizadoTotal / valorNfTotal) * 100 : n(resumo.percentualFreteRealizado);
-  const percentualFreteTabela = valorNfTotal ? (freteSelecionadaTotal / valorNfTotal) * 100 : n(resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada);
+  // Fallback nos campos agregados do resumo quando não há detalhes com NF
+  const percentualFreteReal = valorNfTotal
+    ? (freteRealizadoTotal / valorNfTotal) * 100
+    : n(resumo.percentualFreteRealizado);
+  const percentualFreteTabela = valorNfTotal
+    ? (freteSelecionadaTotal / valorNfTotal) * 100
+    : n(resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada);
+  const variacaoPp = percentualFreteTabela - percentualFreteReal;
   return {
     valorNfTotal,
     freteRealizadoTotal,
     freteSelecionadaTotal,
     percentualFreteReal,
     percentualFreteTabela,
-    reducaoPpFreteNf: percentualFreteTabela - percentualFreteReal,
+    reducaoPpFreteNf: variacaoPp,
+    // flag para o template saber se deve chamar "Redução" ou "Variação"
+    fretePropostaAcima: variacaoPp > 0,
   };
 }
 
@@ -825,6 +898,11 @@ function calcularMetricasNfRodada(simulacao = {}) {
 function montarComparativo(evolucaoRodadas = []) {
   const inicial = evolucaoRodadas[0] || {};
   const atual = evolucaoRodadas[evolucaoRodadas.length - 1] || inicial;
+  // Detecta mudança de base entre rodadas
+  const ctesAnalisadosInicial = n(inicial.ctesAnalisados);
+  const ctesAnalisadosAtual = n(atual.ctesAnalisados);
+  const baseMudou = evolucaoRodadas.length >= 2 && ctesAnalisadosInicial > 0 && ctesAnalisadosAtual > 0
+    && Math.abs(ctesAnalisadosAtual - ctesAnalisadosInicial) / ctesAnalisadosInicial > 0.1;
   return {
     inicial,
     atual,
@@ -834,6 +912,7 @@ function montarComparativo(evolucaoRodadas = []) {
     evolucaoCtesGanhos: n(atual.ctesGanhos) - n(inicial.ctesGanhos),
     evolucaoVolumes: n(atual.volumesGanhos) - n(inicial.volumesGanhos),
     evolucaoReducaoMedia: n(atual.reducaoMedia) - n(inicial.reducaoMedia),
+    baseMudou,
   };
 }
 
@@ -844,6 +923,7 @@ function fraseEvolucao(comparativo, quantidadeRodadas = 0) {
   const partes = [];
   if (comparativo.evolucaoAderencia >= 0) partes.push(`A aderência evoluiu ${percentual(comparativo.evolucaoAderencia)} p.p. entre a primeira e a última rodada.`);
   else partes.push(`A aderência caiu ${percentual(Math.abs(comparativo.evolucaoAderencia))} p.p. entre a primeira e a última rodada.`);
+  if (comparativo.baseMudou) partes.push('A base de CT-es analisados mudou entre as rodadas; a comparação de aderência deve ser lida com cautela.');
   if (comparativo.evolucaoFaturamentoMes > 0) partes.push(`O faturamento potencial capturado aumentou ${dinheiro(comparativo.evolucaoFaturamentoMes)} por mês.`);
   if (comparativo.evolucaoCtesGanhos > 0) partes.push(`A proposta passou a capturar mais ${numero(comparativo.evolucaoCtesGanhos)} CT-es no recorte analisado.`);
   if (comparativo.evolucaoReducaoMedia < 0) partes.push('A redução média necessária caiu, indicando aproximação da proposta em relação às referências de mercado.');
@@ -867,8 +947,8 @@ function montarRelatorioExecutivo({ tabela, comparativo, evolucaoRodadas, rotasC
     '',
     'VEÍCULO SUGERIDO NAS CARGAS GANHAS',
     ...(comparativo.atual?.veiculoOperacional && !comparativo.atual.veiculoOperacional.semDados ? [
-      `- ${comparativo.atual.veiculoOperacional.veiculo.tipo}: ${percentual(comparativo.atual.veiculoOperacional.ocupacaoOperacional * 100)} ocupado, limitante ${comparativo.atual.veiculoOperacional.fatorLimitante}. Cubagem/dia ${numero(comparativo.atual.veiculoOperacional.cubagemDia, 2)} m³ e peso/dia ${numero(comparativo.atual.veiculoOperacional.pesoDia, 0)} kg.`
-    ] : ['- Sem cubagem/peso suficiente para sugerir veículo.']),
+      `- ${comparativo.atual.veiculoOperacional.veiculo.tipo}: ${percentual(comparativo.atual.veiculoOperacional.ocupacaoOperacional * 100)} ocupado, limitante ${comparativo.atual.veiculoOperacional.fatorLimitante}. ${comparativo.atual.veiculoOperacional.cubagemDisponivel ? `Cubagem/dia ${numero(comparativo.atual.veiculoOperacional.cubagemDia, 2)} m³ e ` : ''}Peso/dia ${numero(comparativo.atual.veiculoOperacional.pesoDia, 0)} kg.`
+    ] : ['- Sem peso suficiente para sugerir veículo.']),
     '',
     'EVOLUÇÃO DAS RODADAS',
     ...evolucaoRodadas.map((r) => `- ${r.rodada}ª rodada (${dataBR(r.criadoEm)}): aderência ${percentual(r.aderencia)}, CT-es ganhos ${numero(r.ctesGanhos)}, volumes ${numero(r.volumesGanhos)}, faturamento ${dinheiro(r.faturamentoMes)}/mês, saving ${dinheiro(r.savingMes)}/mês.`),
@@ -903,7 +983,7 @@ function montarRelatorioTransportador({ tabela, comparativo, evolucaoRodadas, ro
     poucaBase
       ? `Esta é a primeira rodada salva da análise. A proposta apresenta aderência atual de ${percentual(comparativo.atual.aderencia)}, com ${numero(comparativo.atual.ctesGanhos)} CT-es competitivos, ${numero(comparativo.atual.volumesGanhos)} volumes competitivos e faturamento potencial capturado de ${dinheiro(comparativo.atual.faturamentoMes)} por mês. As próximas seções mostram onde estão os maiores volumes e as oportunidades de ajuste.`
       : `A proposta saiu de ${percentual(comparativo.inicial.aderencia)} para ${percentual(comparativo.atual.aderencia)} de aderência no recorte analisado.`,
-    `Hoje o frete representa ${percentual(comparativo.atual.percentualFreteReal)} das notas. Com a proposta, passaria para ${percentual(comparativo.atual.percentualFreteTabela)}. Redução: ${Number(comparativo.atual.reducaoPpFreteNf || 0).toFixed(2)} p.p.`,
+    `Hoje o frete representa ${percentual(comparativo.atual.percentualFreteReal)} das notas fiscais das cargas ganhas. Com a proposta, passaria para ${percentual(comparativo.atual.percentualFreteTabela)}. ${comparativo.atual.fretePropostaAcima ? 'Variação' : 'Redução'}: ${Math.abs(Number(comparativo.atual.reducaoPpFreteNf || 0)).toFixed(2)} p.p.`,
     '',
     'EVOLUÇÃO DAS RODADAS',
     ...evolucaoRodadas.map((r) => `- ${r.rodada}ª rodada (${dataBR(r.criadoEm)}): aderência ${percentual(r.aderencia)}, CT-es competitivos ${numero(r.ctesGanhos)}, volumes ${numero(r.volumesGanhos)}, faturamento ${dinheiro(r.faturamentoMes)}/mês.`),
@@ -950,16 +1030,26 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
     .filter((r) => n(r.evolucaoCtes) > 0)
     .sort((a, b) => n(b.evolucaoCtes) - n(a.evolucaoCtes))
     .slice(0, 12);
-  const ufsCriticas = primeira && ultima ? compararGenerico(primeira, ultima, agruparPorOrigemUf)
-    .filter((u) => n(u.ctesPerdidos) > 0 || n(u.faturamentoNaoCapturado) > 0)
-    .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))
-    .slice(0, 12) : [];
+
+  // CORRIGIDO: ufsCriticas usa só a última rodada (não compararGenerico que soma 2 rodadas)
+  const ufsCriticas = ultima
+    ? agruparPorOrigemUf(ultima)
+        .filter((u) => n(u.ctesPerdidos) > 0 || n(u.faturamentoNaoCapturado) > 0)
+        .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))
+        .slice(0, 12)
+    : [];
+
   const faixasCriticas = primeira && ultima ? compararGenerico(primeira, ultima, (sim) => agruparDetalhes(sim, getFaixa))
     .filter((f) => n(f.ctesPerdidos) > 0 || n(f.faturamentoNaoCapturado) > 0)
     .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))
     .slice(0, 12) : [];
 
+  // Pareto de cidades: usa cidadesParetoVolume como fonte única
   const paretoCidades = ultima ? calcularParetoCidadesSalvos(ultima) : [];
+  // Se calcularParetoCidadesSalvos não trouxe dados (sem ctesDetalhes com statusSelecionada),
+  // usa cidadesParetoVolume como fallback
+  const paretoFinal = paretoCidades.length > 0 ? paretoCidades : cidadesParetoVolume;
+
   const faixasDetalhadas = ultima ? agruparDetalhes(ultima, chaveRota)
     .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))
     .slice(0, 30) : [];
@@ -973,11 +1063,28 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
 
   const metricasNfAtual = ultima ? calcularMetricasNfRodada(ultima) : {};
   const veiculoOperacional = ultima ? calcularVeiculoOperacionalLaudo(ultima) : null;
-  comparativo.atual = { ...(comparativo.atual || {}), ...metricasNfAtual, veiculoOperacional, percentualFreteReal: metricasNfAtual.percentualFreteReal || comparativo.atual?.percentualFreteReal || 0, percentualFreteTabela: metricasNfAtual.percentualFreteTabela || comparativo.atual?.percentualFreteTabela || 0 };
+  comparativo.atual = {
+    ...(comparativo.atual || {}),
+    ...metricasNfAtual,
+    veiculoOperacional,
+    percentualFreteReal: metricasNfAtual.percentualFreteReal || comparativo.atual?.percentualFreteReal || 0,
+    percentualFreteTabela: metricasNfAtual.percentualFreteTabela || comparativo.atual?.percentualFreteTabela || 0,
+    fretePropostaAcima: metricasNfAtual.fretePropostaAcima || false,
+  };
 
+  const cotacoesCriticas = primeira && ultima
+    ? compararGenerico(primeira, ultima, agruparPorCotacao)
+        .filter((r) => n(r.ctesPerdidos) > 0 || n(r.faturamentoNaoCapturado) > 0)
+        .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))
+        .slice(0, 12)
+    : [];
 
-
-
+  const destinosCriticos = primeira && ultima
+    ? compararGenerico(primeira, ultima, agruparPorDestino)
+        .filter((r) => n(r.ctesPerdidos) > 0 || n(r.faturamentoNaoCapturado) > 0)
+        .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))
+        .slice(0, 12)
+    : [];
 
   const recomendacaoExecutivo = classificarRecomendacao(comparativo, rotasCriticas);
   const recomendacaoTransp = recomendacaoTransportador(rotasCriticas, rotasMelhoraram);
@@ -1003,27 +1110,13 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
     mesorregiaoFaixas,
     destinoFaixaPareto,
     cidadesParetoVolume,
-    mesorregiaoFaixas,
-    destinoFaixaPareto,
-    cidadesParetoVolume,
-    mesorregiaoFaixas,
-    destinoFaixaPareto,
-    cidadesParetoVolume,
     veiculoOperacional,
-    mesorregiaoFaixas,
-    destinoFaixaPareto,
-    cidadesParetoVolume,
-    mesorregiaoFaixas,
-    destinoFaixaPareto,
-    cidadesParetoVolume,
-    mesorregiaoFaixas,
-    destinoFaixaPareto,
-    paretoCidades,
+    paretoCidades: paretoFinal,
     faixasDetalhadas,
   };
 
   const relatorioExecutivo = montarRelatorioExecutivo({ tabela, comparativo, evolucaoRodadas, rotasCriticas, rotasMelhoraram, ufsCriticas, faixasCriticas, recomendacao: recomendacaoExecutivo });
-  const relatorioTransportador = montarRelatorioTransportador({ tabela, comparativo, evolucaoRodadas, rotasCriticas, rotasMelhoraram, ufsCriticas, destinoFaixaPareto, paretoCidades, recomendacao: recomendacaoTransp });
+  const relatorioTransportador = montarRelatorioTransportador({ tabela, comparativo, evolucaoRodadas, rotasCriticas, rotasMelhoraram, ufsCriticas, destinoFaixaPareto, paretoCidades: paretoFinal, recomendacao: recomendacaoTransp });
 
   return {
     executivo: {
@@ -1055,4 +1148,4 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
   };
 }
 
-export const formatadoresLaudoRodadas = { dinheiro, numero, percentual, dataBR };
+export const formatadoresLaudoRodadas = { dinheiro, numero, percentual, dataBR, exibirCidade };

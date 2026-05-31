@@ -62,7 +62,99 @@ function rotasPerdidas(resultado = {}) {
     .slice(0, 8);
 }
 
+function tipoNegociacaoLaudo(resultado = {}, contexto = {}) {
+  return String(contexto.tipoNegociacao || resultado.tipoNegociacao || resultado.tipo_negociacao || resultado.filtros?.tipoNegociacao || '').trim().toUpperCase();
+}
+
+function montarLaudosImpacto(resultado = {}, contexto = {}, tipo = 'REAJUSTE_TABELA_EXISTENTE') {
+  const transportadora = contexto.transportadora || resultado.filtros?.transportadora || 'Transportadora';
+  const base = contexto.transportadoraBase || resultado.transportadoraBaseRealizado || resultado.filtros?.transportadoraBaseRealizado || transportadora;
+  const canal = contexto.canal || resultado.filtros?.canal || '';
+  const origem = contexto.origem || resultado.filtros?.origem || '';
+  const geradoEm = new Date().toISOString();
+  const periodoAnalise = periodo(resultado);
+  const valorAtual = Number(resultado.valor_atual_realizado ?? resultado.freteRealizadoComTabelaSelecionada ?? resultado.freteRealizado ?? 0);
+  const valorNovo = Number(resultado.valor_simulado_nova_tabela ?? resultado.freteSelecionada ?? 0);
+  const impacto = Number(resultado.impacto_valor ?? (valorNovo - valorAtual));
+  const impactoPct = Number(resultado.impacto_percentual ?? (valorAtual ? (impacto / valorAtual) * 100 : 0));
+  const impactoMes = Number(resultado.impacto_mensal ?? impacto);
+  const impactoAno = Number(resultado.impacto_anual ?? impactoMes * 12);
+  const qtd = Number(resultado.qtd_registros_analisados ?? resultado.ctesAnalisados ?? resultado.viagensAnalisadas ?? 0);
+  const qtdComTabela = Number(resultado.qtd_registros_com_tabela ?? resultado.ctesComTabelaSelecionada ?? resultado.viagensComTabela ?? 0);
+  const fretePctAtual = Number(resultado.frete_percentual_nf_atual ?? resultado.percentualFreteRealizadoComTabela ?? resultado.percentualFreteRealizado ?? 0);
+  const fretePctNovo = Number(resultado.frete_percentual_nf_simulado ?? resultado.percentualFreteSelecionadaComTabela ?? resultado.percentualFreteSelecionada ?? 0);
+  const labelRegistro = tipo === 'TABELA_LOTACAO' ? 'viagens/DIST' : 'CT-es';
+  const tipoTitulo = tipo === 'TABELA_LOTACAO' ? 'tabela de lotacao' : 'reajuste de tabela existente';
+  const direcao = impacto > 0 ? 'aumento' : impacto < 0 ? 'reducao' : 'estabilidade';
+  const rotasImpacto = (resultado.rotas || [])
+    .slice()
+    .sort((a, b) => Math.abs(Number(b.diferenca || b.impactoValor || 0)) - Math.abs(Number(a.diferenca || a.impactoValor || 0)))
+    .slice(0, 8);
+
+  const assunto = `Impacto de ${tipoTitulo} - ${transportadora}`;
+  const corpo = resumoTexto([
+    'Prezados,',
+    '',
+    `Segue analise de ${tipoTitulo} para ${transportadora}, comparando a base atual de ${base} no ${periodoAnalise} contra a nova tabela em negociacao.`,
+    '',
+    `Foram analisados ${numero(qtd)} ${labelRegistro}, com cobertura de tabela em ${numero(qtdComTabela)} registros. A nova tabela indica ${direcao} de ${dinheiro(impactoMes)} por mes (${percentual(impactoPct)}), projetando ${dinheiro(impactoAno)} em 12 meses.`,
+    '',
+    'Resumo do impacto',
+    `- Valor atual analisado: ${dinheiro(valorAtual)}.`,
+    `- Valor simulado com nova tabela: ${dinheiro(valorNovo)}.`,
+    `- Diferenca total: ${dinheiro(impacto)} (${percentual(impactoPct)}).`,
+    `- Frete % NF atual: ${percentual(fretePctAtual)}.`,
+    `- Frete % NF novo: ${percentual(fretePctNovo)}.`,
+    '',
+    'Rotas/operacoes com maior impacto',
+    ...(rotasImpacto.length ? rotasImpacto.map((item) => `- ${item.rota || item.origem + ' -> ' + item.destino || 'Rota'}: ${dinheiro(item.diferenca || item.impactoValor || 0)} em ${numero(item.ctes || item.viagens || item.comTabela || 0)} registro(s).`) : ['- Nao disponivel no recorte atual.']),
+    '',
+    'Recomendacao',
+    impacto > 0
+      ? 'Aprovar somente se o aumento estiver aderente a estrategia e houver justificativa operacional/comercial para absorcao do impacto.'
+      : 'A proposta apresenta reducao ou neutralidade frente ao realizado atual e pode seguir para avaliacao de vigencia e implantacao.',
+  ]);
+
+  const indicadores = {
+    ctesAnalisados: qtd,
+    ctesComTabela: qtdComTabela,
+    valorAtual,
+    valorNovo,
+    impacto,
+    impactoPercentual: impactoPct,
+    impactoMes,
+    impactoAno,
+    fretePctAtual,
+    fretePctNovo,
+  };
+
+  const baseComum = {
+    transportadora,
+    canal,
+    origem,
+    periodo: periodoAnalise,
+    geradoEm,
+    indicadores,
+    rotasGanhas: impacto <= 0 ? rotasImpacto : [],
+    rotasPerdidas: impacto > 0 ? rotasImpacto : [],
+    assunto,
+    corpoEmail: corpo,
+    relatorioTexto: corpo,
+    laudoCompleto: `Assunto: ${assunto}\n\n${corpo}`,
+  };
+
+  return {
+    executivo: { ...baseComum, usoInterno: true },
+    transportador: { ...baseComum, usoInterno: false },
+  };
+}
+
 export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
+  const tipoNegociacao = tipoNegociacaoLaudo(resultado, contexto);
+  if (tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE' || tipoNegociacao === 'TABELA_LOTACAO') {
+    return montarLaudosImpacto(resultado, contexto, tipoNegociacao);
+  }
+
   const transportadora = contexto.transportadora || resultado.filtros?.transportadora || 'Transportadora';
   const canal = contexto.canal || resultado.filtros?.canal || '';
   const origem = contexto.origem || resultado.filtros?.origem || '';

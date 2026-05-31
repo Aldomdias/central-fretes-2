@@ -136,7 +136,9 @@ function toNumber(value) {
   const text = String(value).trim();
   if (!text) return 0;
   if (/nao|não|encontrado|data/i.test(text)) return 0;
-  const normalized = text.includes(',') ? text.replace(/\./g, '').replace(',', '.') : text;
+  const normalized = text.includes(',')
+    ? text.replace(/\./g, '').replace(',', '.')
+    : text.replace(/,(?=\d{3}\b)/g, '');
   return Number(normalized.replace(/[^0-9.-]/g, '')) || 0;
 }
 
@@ -201,15 +203,29 @@ function headerKey(value) {
   return normalize(value).replace(/[^A-Z0-9]+/g, ' ').trim();
 }
 
+function headerCompact(value) {
+  return headerKey(value).replace(/\s+/g, '');
+}
+
 function findCol(headers, terms = []) {
   const normalized = headers.map(headerKey);
+  const compact = headers.map(headerCompact);
   const normalizedTerms = terms.map(headerKey);
+  const compactTerms = terms.map(headerCompact);
   for (const term of normalizedTerms) {
     const exact = normalized.findIndex((h) => h === term);
     if (exact >= 0) return exact;
   }
+  for (const term of compactTerms) {
+    const exact = compact.findIndex((h) => h === term);
+    if (exact >= 0) return exact;
+  }
   for (const term of normalizedTerms) {
     const contains = normalized.findIndex((h) => term && h.includes(term));
+    if (contains >= 0) return contains;
+  }
+  for (const term of compactTerms) {
+    const contains = compact.findIndex((h) => term && h.includes(term));
     if (contains >= 0) return contains;
   }
   return -1;
@@ -227,14 +243,16 @@ function detectHeader(rows = []) {
   let best = { index: -1, score: -1 };
   rows.slice(0, 30).forEach((row, index) => {
     const h = row.map(headerKey).join(' | ');
+    const c = row.map(headerCompact).join('|');
     let score = 0;
-    if (h.includes('NF CHAVE') || h.includes('NF NUMERO')) score += 6;
+    if (h.includes('NF CHAVE') || h.includes('NF NUMERO') || c.includes('CHAVENF') || c.includes('NUMERONF')) score += 6;
+    if (h.includes('CHAVE CTE') || h.includes('NUMERO CTE') || c.includes('CHAVECTE') || c.includes('NUMEROCTE')) score += 5;
     if (h.includes('PEDIDO ERP') || h.includes('PEDIDO LOJISTA')) score += 4;
-    if (h.includes('CIDADE DE ORIGEM') || h.includes('CIDADE ORIGEM')) score += 4;
+    if (h.includes('CIDADE DE ORIGEM') || h.includes('CIDADE ORIGEM') || h.includes('UF ORIGEM')) score += 4;
     if (h.includes('CIDADE DESTINO')) score += 4;
-    if (h.includes('PESO DECLARADO')) score += 3;
+    if (h.includes('PESO DECLARADO') || h.includes('PESO')) score += 3;
     if (h.includes('PESO CUBADO')) score += 3;
-    if (h.includes('VALOR DA NF')) score += 3;
+    if (h.includes('VALOR DA NF') || h.includes('VALOR NF')) score += 3;
     if (score > best.score) best = { index, score };
   });
   return best.score >= 5 ? best.index : 0;
@@ -243,6 +261,10 @@ function detectHeader(rows = []) {
 function get(row, col) {
   if (col === null || col === undefined || col < 0) return '';
   return row[col] ?? '';
+}
+
+function getTrimmed(row, col) {
+  return text(get(row, col));
 }
 
 function mapColumns(headers = []) {
@@ -300,6 +322,26 @@ function mapColumns(headers = []) {
     modoEnvio: findCol(headers, ['MODO DE ENVIO DO PEDIDO']),
     deposito: findCol(headers, ['DEPOSITO', 'DEPÓSITO']),
     emailCompra: findCol(headers, ['EMAIL DE COMPRA']),
+  };
+}
+
+function firstValid(...values) {
+  return values.find((value) => Number(value) >= 0) ?? -1;
+}
+
+function mapColumnsCompat(headers = []) {
+  const col = mapColumns(headers);
+  return {
+    ...col,
+    competencia: firstValid(col.competencia, findCol(headers, ['COMPETENCIA'])),
+    dataGenerica: findCol(headers, ['DATA']),
+    chaveCte: firstValid(col.chaveCte, findCol(headers, ['CHAVE CTE', 'CHAVE_CTE'])),
+    cteNumero: firstValid(col.cteNumero, findCol(headers, ['NUMERO CTE', 'NUMERO_CTE'])),
+    chaveNfe: firstValid(col.chaveNfe, findCol(headers, ['CHAVE NF', 'CHAVE_NF', 'CHAVE NFE', 'CHAVE_NFE'])),
+    notaFiscal: firstValid(col.notaFiscal, findCol(headers, ['NUMERO NF', 'NUMERO_NF'])),
+    valorNF: firstValid(col.valorNF, findCol(headers, ['VALOR NF', 'VALOR_NF'])),
+    pesoDeclarado: firstValid(col.pesoDeclarado, findCol(headers, ['PESO'])),
+    totalUnidades: firstValid(col.totalUnidades, findCol(headers, ['VOLUMES', 'VOLUME', 'QTD VOLUMES'])),
   };
 }
 
@@ -401,29 +443,70 @@ function inferirUfOrigem(cidade = '', cdOrigem = '', centroExpedicao = '', ibgeO
   return UF_POR_CIDADE_ORIGEM[normalizeLoose(cidade)] || '';
 }
 
+function hashTrackingKey(value = '') {
+  let hash = 2166136261;
+  const input = String(value || '');
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function buildTrackingId(row = {}, fileName = '', lineNumber = '') {
+  const chaveCte = onlyDigits(row.chaveCte);
+  const chaveNfe = onlyDigits(row.chaveNfe);
+  const notaFiscal = onlyDigits(row.notaFiscal);
+  if (chaveCte && chaveNfe) return `cte-nf-${chaveCte}-${chaveNfe}`.slice(0, 240);
+  if (chaveCte && notaFiscal) return `cte-nfnum-${chaveCte}-${notaFiscal}`.slice(0, 240);
+  if (chaveNfe) return `nf-${chaveNfe}`.slice(0, 240);
+  if (chaveCte) return `cte-${chaveCte}`.slice(0, 240);
+
+  const parts = [
+    row.cteNumero,
+    row.notaFiscal,
+    row.pedido,
+    row.data,
+    row.transportadora,
+    row.cidadeOrigem,
+    row.ufOrigem,
+    row.cidadeDestino,
+    row.ufDestino,
+    row.valorNF,
+    row.peso,
+    row.qtdVolumes,
+  ].map((item) => normalizeLoose(item)).filter(Boolean);
+
+  if (parts.length >= 3) return `trk-${hashTrackingKey(parts.join('|'))}`.slice(0, 240);
+  return `linha-${hashTrackingKey(`${fileName}|${lineNumber}|${parts.join('|')}`)}`.slice(0, 240);
+}
+
 function buildRowsFromMatrix(matriz = [], file, options = {}) {
   const headerIndex = detectHeader(matriz);
   const headers = matriz[headerIndex] || [];
-  const col = mapColumns(headers);
+  const col = mapColumnsCompat(headers);
   const mapas = montarMapasMunicipios(options.municipios || []);
   const rows = [];
+  if (!matriz.length || !headers.length || !rowHasValue(headers)) return [];
 
   matriz.slice(headerIndex + 1).forEach((linha, index) => {
     if (!rowHasValue(linha)) return;
 
-    const notaFiscal = text(get(linha, col.notaFiscal));
+    const notaFiscal = getTrimmed(linha, col.notaFiscal);
     const chaveNfe = onlyDigits(get(linha, col.chaveNfe));
-    const pedido = text(get(linha, col.pedido));
-    const origem = text(get(linha, col.origem));
-    const destino = text(get(linha, col.destino));
+    const pedido = getTrimmed(linha, col.pedido);
+    const origem = getTrimmed(linha, col.origem);
+    const destino = getTrimmed(linha, col.destino);
     if (!notaFiscal && !chaveNfe && !pedido && !origem && !destino) return;
 
     const data = parseDate(
       get(linha, col.dataFaturamento) ||
       get(linha, col.dataExpedicao) ||
       get(linha, col.dataCriacao) ||
+      get(linha, col.dataGenerica) ||
       get(linha, col.dataEmissaoCte)
     );
+    const competencia = text(get(linha, col.competencia)) || (data ? data.slice(0, 7) : '');
 
     const ibgeOrigemInformado = onlyDigits(get(linha, col.ibgeOrigem)).slice(0, 7);
     const ufOrigem = text(get(linha, col.ufOrigem)).toUpperCase().slice(0, 2) || inferirUfOrigem(origem, get(linha, col.cdOrigem), get(linha, col.centroExpedicao), ibgeOrigemInformado);
@@ -436,36 +519,35 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
     const pesoDeclarado = toNumber(get(linha, col.pesoDeclarado));
     const cubagemTracking = toNumber(get(linha, col.cubagem)) || toNumber(get(linha, col.pesoCubado));
     const volumes = toNumber(get(linha, col.totalUnidades)) || toNumber(get(linha, col.quantidadeItens));
-    const canalOriginal = text(get(linha, col.canal));
-    const regiao = text(get(linha, col.regiao));
-    const modoEnvio = text(get(linha, col.modoEnvio));
+    const canalOriginal = getTrimmed(linha, col.canal);
+    const regiao = getTrimmed(linha, col.regiao);
+    const modoEnvio = getTrimmed(linha, col.modoEnvio);
 
     const row = {
-      id: chaveNfe || `${normalizeLoose(notaFiscal || pedido || file.name)}-${headerIndex + index + 2}`.slice(0, 240),
       notaFiscal,
       chaveNfe,
       pedido,
-      pedidoLojista: text(get(linha, col.pedidoLojista)),
-      pedidoMarketplace: text(get(linha, col.pedidoMarketplace)),
-      pedidoErp: text(get(linha, col.pedidoErp)),
+      pedidoLojista: getTrimmed(linha, col.pedidoLojista),
+      pedidoMarketplace: getTrimmed(linha, col.pedidoMarketplace),
+      pedidoErp: getTrimmed(linha, col.pedidoErp),
       data,
-      competencia: data ? data.slice(0, 7) : '',
+      competencia,
       canal: categoriaCanal(canalOriginal || text(get(linha, col.loja)) || regiao || modoEnvio),
       canalOriginal: corrigirMojibakeCanal(canalOriginal),
-      loja: text(get(linha, col.loja)),
-      statusPedido: text(get(linha, col.statusPedido)),
-      transportadora: text(get(linha, col.transportadora)),
-      transportadoraOriginal: text(get(linha, col.transportadoraOriginal)),
-      transportadoraContratada: text(get(linha, col.transportadoraContratada)),
+      loja: getTrimmed(linha, col.loja),
+      statusPedido: getTrimmed(linha, col.statusPedido),
+      transportadora: getTrimmed(linha, col.transportadora),
+      transportadoraOriginal: getTrimmed(linha, col.transportadoraOriginal),
+      transportadoraContratada: getTrimmed(linha, col.transportadoraContratada),
       cidadeOrigem: origem,
       ufOrigem,
       ibgeOrigem,
-      cdOrigem: text(get(linha, col.cdOrigem)),
-      centroExpedicao: text(get(linha, col.centroExpedicao)),
+      cdOrigem: getTrimmed(linha, col.cdOrigem),
+      centroExpedicao: getTrimmed(linha, col.centroExpedicao),
       cidadeDestino: destino,
       ufDestino,
       ibgeDestino,
-      regiaoDestino: text(get(linha, col.regiaoDestino)),
+      regiaoDestino: getTrimmed(linha, col.regiaoDestino),
       chaveRotaIbge: ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '',
       peso: pesoDeclarado,
       pesoDeclarado,
@@ -475,36 +557,37 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
       qtdVolumes: volumes,
       quantidadeItens: toNumber(get(linha, col.quantidadeItens)),
       totalUnidades: toNumber(get(linha, col.totalUnidades)),
-      cteNumero: text(get(linha, col.cteNumero)),
-      cteAdicional: text(get(linha, col.cteAdicional)),
+      cteNumero: getTrimmed(linha, col.cteNumero),
+      cteAdicional: getTrimmed(linha, col.cteAdicional),
       dataEmissaoCte: parseDate(get(linha, col.dataEmissaoCte)),
       chaveCte: onlyDigits(get(linha, col.chaveCte)),
-      entregaCte: text(get(linha, col.entregaCte)),
+      entregaCte: getTrimmed(linha, col.entregaCte),
       valorCalculadoFrete: toNumber(get(linha, col.valorCalculadoFrete)),
       valorCte: toNumber(get(linha, col.valorCte)),
       percentualFrete: toNumber(get(linha, col.percentualFrete)),
-      descricaoCalculo: text(get(linha, col.descricaoCalculo)),
-      situacao: text(get(linha, col.situacao)) || text(get(linha, col.statusPedido)),
-      status: text(get(linha, col.situacao)) || text(get(linha, col.statusPedido)),
+      descricaoCalculo: getTrimmed(linha, col.descricaoCalculo),
+      situacao: getTrimmed(linha, col.situacao) || getTrimmed(linha, col.statusPedido),
+      status: getTrimmed(linha, col.situacao) || getTrimmed(linha, col.statusPedido),
       previsaoCliente: parseDate(get(linha, col.previsaoCliente)),
       prevTransportadora: parseDate(get(linha, col.prevTransportadora)),
       dataTransporte: parseDate(get(linha, col.dataTransporte)),
       entrega: parseDate(get(linha, col.dataEntrega)),
-      tipoOrdem: text(get(linha, col.tipoOrdem)),
-      modelo: text(get(linha, col.modelo)),
-      segmento: text(get(linha, col.segmento)),
+      tipoOrdem: getTrimmed(linha, col.tipoOrdem),
+      modelo: getTrimmed(linha, col.modelo),
+      segmento: getTrimmed(linha, col.segmento),
       regiao,
-      tipoMovimentacao: text(get(linha, col.tipoMovimentacao)),
+      tipoMovimentacao: getTrimmed(linha, col.tipoMovimentacao),
       modoEnvio,
-      numeroRomaneio: text(get(linha, col.numeroRomaneio)),
-      deposito: text(get(linha, col.deposito)),
-      emailCompra: text(get(linha, col.emailCompra)),
+      numeroRomaneio: getTrimmed(linha, col.numeroRomaneio),
+      deposito: getTrimmed(linha, col.deposito),
+      emailCompra: getTrimmed(linha, col.emailCompra),
       arquivoOrigem: file.name || '',
       abaOrigem: isCsvFile(file) ? 'CSV' : 'Planilha',
       linhaExcel: headerIndex + index + 2,
       ibgeOk: Boolean(ibgeOrigem && ibgeDestino),
       criadoEm: new Date().toISOString(),
     };
+    row.id = buildTrackingId(row, file.name || '', row.linhaExcel);
     rows.push(row);
   });
 
@@ -515,6 +598,7 @@ async function parseFile(file, options = {}) {
   if (isCsvFile(file)) {
     const matriz = parseCsvMatrix(await file.text());
     const rows = buildRowsFromMatrix(matriz, file, options);
+    if (!rows.length) throw new Error(`Arquivo "${file.name}" vazio ou sem linhas validas de Tracking.`);
     return { rows, abas: [{ nome: 'CSV', linhas: rows.length }] };
   }
 
@@ -531,6 +615,7 @@ async function parseFile(file, options = {}) {
     abas.push({ nome: sheetName, linhas: abaRows.length });
   });
 
+  if (!rows.length) throw new Error(`Arquivo "${file.name}" vazio ou sem linhas validas de Tracking.`);
   return { rows, abas };
 }
 
@@ -538,26 +623,45 @@ export async function importarTrackingLocal(files = [], options = {}) {
   const lista = Array.from(files || []);
   const db = await openDb();
   let total = 0;
+  let duplicadosArquivo = 0;
   const detalhes = [];
+  const idsImportados = new Set();
 
-  for (const file of lista) {
-    const { rows, abas } = await parseFile(file, options);
-    detalhes.push({ arquivo: file.name, linhas: rows.length, abas });
-    for (let index = 0; index < rows.length; index += 1000) {
-      const chunk = rows.slice(index, index + 1000);
-      const tx = db.transaction([STORE_TRACKING, STORE_META], 'readwrite');
-      const store = tx.objectStore(STORE_TRACKING);
-      chunk.forEach((row) => store.put(row));
-      tx.objectStore(STORE_META).put({ key: 'ultimaAtualizacao', value: new Date().toISOString() });
-      await txComplete(tx);
-      total += chunk.length;
-      options.onProgress?.({ total, arquivo: file.name });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+  try {
+    for (const file of lista) {
+      options.onProgress?.({ etapa: 'lendo', total, arquivo: file.name });
+      const { rows, abas } = await parseFile(file, options);
+      options.onProgress?.({ etapa: 'processando', total, arquivo: file.name });
+      const rowsUnicas = [];
+      rows.forEach((row) => {
+        if (idsImportados.has(row.id)) {
+          duplicadosArquivo += 1;
+          return;
+        }
+        idsImportados.add(row.id);
+        rowsUnicas.push(row);
+      });
+      detalhes.push({ arquivo: file.name, linhas: rowsUnicas.length, duplicadosArquivo: rows.length - rowsUnicas.length, abas });
+
+      const totalLotes = Math.ceil(rowsUnicas.length / 1000) || 1;
+      for (let index = 0; index < rowsUnicas.length; index += 1000) {
+        const chunk = rowsUnicas.slice(index, index + 1000);
+        const lote = Math.floor(index / 1000) + 1;
+        const tx = db.transaction([STORE_TRACKING, STORE_META], 'readwrite');
+        const store = tx.objectStore(STORE_TRACKING);
+        chunk.forEach((row) => store.put(row));
+        tx.objectStore(STORE_META).put({ key: 'ultimaAtualizacao', value: new Date().toISOString() });
+        await txComplete(tx);
+        total += chunk.length;
+        options.onProgress?.({ etapa: 'importando', total, arquivo: file.name, lote, totalLotes, duplicadosArquivo });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
+  } finally {
+    db.close();
   }
 
-  db.close();
-  return { total, detalhes };
+  return { total, detalhes, duplicadosArquivo };
 }
 
 function normalizarCanalTrackingRow(row = {}) {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import {
@@ -6,13 +6,22 @@ import {
   listarPendenciasIbgeRealizadoMensal,
   verificarCompetenciaRealizadoMensal,
 } from '../services/realizadoMensalService';
+import {
+  buscarCompetenciaCtesResumoExistente,
+  listarCompetenciasCtesResumo,
+  salvarCompetenciaCtesResumo,
+} from '../services/ctesCompetenciasResumoService';
+import {
+  aplicarVinculoTransportadora,
+  carregarVinculosTransportadoras,
+  criarMapaVinculosTransportadoras,
+} from '../services/vinculosTransportadorasService';
 import { CANAIS_OPERACIONAIS, CANAL_A_DEFINIR, normalizarCanalOperacional } from '../utils/canalTransportadora';
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 const TABELA = 'realizado_local_ctes';
 const PAGE_SIZE = 50;
-const ANALISE_BATCH_SIZE = 300;
-const ANALISE_MAX_REGISTROS = 5000;
+const ANALISE_BATCH_SIZE = 1000;
 
 const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GP PNEUS'];
 
@@ -120,6 +129,76 @@ function getTransportadora(row) {
   return campo(row, 'transportadora', 'nome_transportadora', 'transportadora_realizada');
 }
 
+function getTransportadoraOriginal(row) {
+  return campo(row, 'transportadora_cte_original', 'transportadora_original_cte', 'transportadora_original') || getTransportadora(row);
+}
+
+function aplicarVinculosTransportadorasRows(rows = [], mapaVinculos) {
+  if (!mapaVinculos || !mapaVinculos.size) return rows || [];
+
+  return (rows || []).map((row) => {
+    const nomeOriginal = getTransportadora(row);
+    const nomeVinculado = aplicarVinculoTransportadora(nomeOriginal, mapaVinculos);
+    if (!nomeOriginal || nomeVinculado === nomeOriginal) return row;
+
+    return {
+      ...row,
+      transportadora_cte_original: nomeOriginal,
+      transportadora_vinculada: nomeVinculado,
+      transportadora: nomeVinculado,
+    };
+  });
+}
+
+function aplicarVinculosResumoTransportadoras(lista = [], mapaVinculos) {
+  if (!mapaVinculos || !mapaVinculos.size) return lista || [];
+
+  const mapa = new Map();
+  (lista || []).forEach((item) => {
+    const nomeOriginal = item.key || item.label || '';
+    const nomeVinculado = aplicarVinculoTransportadora(nomeOriginal, mapaVinculos) || nomeOriginal;
+    const atual = mapa.get(nomeVinculado) || {
+      ...item,
+      key: nomeVinculado,
+      label: nomeVinculado,
+      nomesOriginais: new Set(),
+      ctes: 0,
+      valorCte: 0,
+      valorNf: 0,
+      peso: 0,
+      volumes: 0,
+      rotas: 0,
+      transportadoras: 0,
+    };
+
+    if (nomeOriginal && nomeOriginal !== nomeVinculado) atual.nomesOriginais.add(nomeOriginal);
+    atual.ctes += Number(item.ctes || 0);
+    atual.valorCte += Number(item.valorCte || 0);
+    atual.valorNf += Number(item.valorNf || 0);
+    atual.peso += Number(item.peso || 0);
+    atual.volumes += Number(item.volumes || 0);
+    atual.rotas += Number(item.rotas || 0);
+    atual.transportadoras += Number(item.transportadoras || 1);
+    mapa.set(nomeVinculado, atual);
+  });
+
+  return [...mapa.values()].map((item) => ({
+    ...item,
+    nomesOriginais: [...(item.nomesOriginais || [])],
+    percentualFrete: item.valorNf > 0 ? (item.valorCte / item.valorNf) * 100 : 0,
+    ticketMedio: item.ctes > 0 ? item.valorCte / item.ctes : 0,
+  }));
+}
+
+function aplicarVinculosCompetenciasResumo(rows = [], mapaVinculos) {
+  if (!mapaVinculos || !mapaVinculos.size) return rows || [];
+
+  return (rows || []).map((row) => ({
+    ...row,
+    resumo_transportadoras_json: aplicarVinculosResumoTransportadoras(row.resumo_transportadoras_json || [], mapaVinculos),
+  }));
+}
+
 function getOrigem(row) {
   return campo(row, 'cidade_origem', 'cidadeOrigem', 'origem');
 }
@@ -206,6 +285,32 @@ function getRotaLabel(row) {
   return `${origemFmt} → ${destinoFmt}`;
 }
 
+function getOrigemLabel(row) {
+  const origem = getOrigem(row) || 'Não informado';
+  const uf = getUfOrigem(row);
+  return uf ? `${origem}/${uf}` : origem;
+}
+
+function getDestinoLabel(row) {
+  const destino = getDestino(row) || 'Não informado';
+  const uf = getUfDestino(row);
+  return uf ? `${destino}/${uf}` : destino;
+}
+
+function getTipoOperacao(row) {
+  return getTipoVeiculo(row) || 'Não informado';
+}
+
+function getStatusCalculo(row) {
+  return getValorCalculado(row) > 0 ? 'com_calculo' : 'sem_calculo';
+}
+
+function labelStatusCalculo(valor) {
+  if (valor === 'com_calculo') return 'Com cálculo';
+  if (valor === 'sem_calculo') return 'Sem cálculo';
+  return valor || 'Não informado';
+}
+
 function getRegiaoPorUf(uf) {
   const u = String(uf || '').toUpperCase();
   if (['AC', 'AP', 'AM', 'PA', 'RO', 'RR', 'TO'].includes(u)) return 'Norte';
@@ -214,6 +319,60 @@ function getRegiaoPorUf(uf) {
   if (['ES', 'MG', 'RJ', 'SP'].includes(u)) return 'Sudeste';
   if (['PR', 'RS', 'SC'].includes(u)) return 'Sul';
   return 'Não informado';
+}
+
+const FILTROS_INTERATIVOS_INICIAIS = {
+  transportadora: null,
+  regiaoDestino: null,
+  ufDestino: null,
+  ufOrigem: null,
+  origem: null,
+  destino: null,
+  canal: null,
+  rota: null,
+  tipoOperacao: null,
+  statusCalculo: null,
+};
+
+const LABEL_FILTROS_INTERATIVOS = {
+  transportadora: 'Transportadora',
+  regiaoDestino: 'Região destino',
+  ufDestino: 'UF destino',
+  ufOrigem: 'UF origem',
+  origem: 'Origem',
+  destino: 'Destino',
+  canal: 'Canal',
+  rota: 'Rota',
+  tipoOperacao: 'Tipo operação',
+  statusCalculo: 'Status cálculo',
+};
+
+function filtrosInterativosAtivos(filtros = {}) {
+  return Object.entries(filtros).filter(([, valor]) => valor !== null && valor !== undefined && valor !== '');
+}
+
+function labelValorFiltroInterativo(tipo, valor) {
+  if (tipo === 'statusCalculo') return labelStatusCalculo(valor);
+  return valor || 'Não informado';
+}
+
+function aplicarFiltrosInterativos(rows = [], filtros = {}) {
+  const ativos = filtrosInterativosAtivos(filtros);
+  if (!ativos.length) return rows;
+
+  return (rows || []).filter((row) => {
+    if (filtros.transportadora && (getTransportadora(row) || 'Não informado') !== filtros.transportadora) return false;
+    if (filtros.regiaoDestino && getRegiaoPorUf(getUfDestino(row)) !== filtros.regiaoDestino) return false;
+    if (filtros.ufDestino && (getUfDestino(row) || 'Não informado') !== filtros.ufDestino) return false;
+    if (filtros.ufOrigem && (getUfOrigem(row) || 'Não informado') !== filtros.ufOrigem) return false;
+    if (filtros.origem && getOrigemLabel(row) !== filtros.origem) return false;
+    if (filtros.destino && getDestinoLabel(row) !== filtros.destino) return false;
+    if (filtros.canal && (getCanal(row) || 'Não informado') !== filtros.canal) return false;
+    if (filtros.rota && getRotaKey(row) !== filtros.rota) return false;
+    if (filtros.tipoOperacao && getTipoOperacao(row) !== filtros.tipoOperacao) return false;
+    if (filtros.statusCalculo && getStatusCalculo(row) !== filtros.statusCalculo) return false;
+    return true;
+  });
 }
 
 function diasEntre(inicio, fim, fallbackRows = []) {
@@ -325,13 +484,17 @@ async function executarQuerySupabaseComRetry(montarQuery, contexto = 'consulta S
 function aplicarFiltros(query, filtros = {}) {
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
-  if (filtros.canal) query = query.eq('canal', filtros.canal);
   if (filtros.transportadoraRealizada) query = query.ilike('transportadora', `%${filtros.transportadoraRealizada}%`);
   if (filtros.origem) query = query.ilike('cidade_origem', `${filtros.origem}%`);
   if (filtros.destino) query = query.ilike('cidade_destino', `${filtros.destino}%`);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
   return query;
+}
+
+function aplicarFiltroCanalNormalizado(rows = [], filtros = {}) {
+  if (!filtros.canal) return rows || [];
+  return (rows || []).filter((row) => getCanal(row) === filtros.canal);
 }
 
 async function buscarCtesPagina(filtros = {}, pagina = 1) {
@@ -358,7 +521,7 @@ async function buscarCtesPagina(filtros = {}, pagina = 1) {
   const { data, error } = resposta || {};
   if (error) throw new Error(`Erro Supabase (${TABELA}): ${error.message}`);
 
-  const linhas = data || [];
+  const linhas = aplicarFiltroCanalNormalizado(data || [], filtros);
 
   return {
     data: linhas.slice(0, PAGE_SIZE),
@@ -374,14 +537,15 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
 
   const supabase = getSupabaseClient();
   const acumulado = [];
+  let total = null;
 
-  for (let inicio = 0; inicio < ANALISE_MAX_REGISTROS; inicio += ANALISE_BATCH_SIZE) {
-    const fim = Math.min(inicio + ANALISE_BATCH_SIZE - 1, ANALISE_MAX_REGISTROS - 1);
+  for (let inicio = 0; ; inicio += ANALISE_BATCH_SIZE) {
+    const fim = inicio + ANALISE_BATCH_SIZE - 1;
 
     const resposta = await executarQuerySupabaseComRetry(async () => {
       let query = supabase
         .from(TABELA)
-        .select('*')
+        .select('*', inicio === 0 ? { count: 'exact' } : undefined)
         .order('data_emissao', { ascending: false, nullsFirst: false })
         .range(inicio, fim);
 
@@ -389,22 +553,34 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
       return query;
     }, `Erro Supabase (${TABELA}) ao montar análise de CT-es`);
 
-    const { data, error } = resposta || {};
+    const { data, error, count } = resposta || {};
     if (error) throw new Error(`Erro Supabase (${TABELA}): ${error.message}`);
+    if (Number.isFinite(count)) total = count;
 
-    const lote = data || [];
+    const loteBruto = data || [];
+    const lote = aplicarFiltroCanalNormalizado(loteBruto, filtros);
     acumulado.push(...lote);
-    onProgress?.({ carregados: acumulado.length, limite: ANALISE_MAX_REGISTROS });
+    onProgress?.({ carregados: acumulado.length, total });
 
-    if (lote.length < ANALISE_BATCH_SIZE) break;
+    if (loteBruto.length < ANALISE_BATCH_SIZE) break;
   }
 
   return acumulado;
 }
 
-function SummaryCard({ title, value, subtitle, tone }) {
+function SummaryCard({ title, value, subtitle, tone, onClick, active = false, titleAttr }) {
+  const clicavel = typeof onClick === 'function';
   return (
-    <div className="summary-card">
+    <div
+      className="summary-card"
+      onClick={onClick}
+      title={titleAttr || (clicavel ? `Clique para filtrar por ${title}` : undefined)}
+      style={clicavel ? {
+        cursor: 'pointer',
+        border: active ? '2px solid #185FA5' : undefined,
+        background: active ? '#eff6ff' : undefined,
+      } : undefined}
+    >
       <span>{title}</span>
       <strong className={tone || ''}>{value}</strong>
       <small>{subtitle}</small>
@@ -459,9 +635,39 @@ function Barra({ valor, maximo, tone = 'ok' }) {
   );
 }
 
-function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10 }) {
+function GraficoBarrasMensal({ titulo, linhas = [], campo, tipo = 'numero', cor = '#185FA5', style }) {
+  const valores = (linhas || []).map((row) => Number(row[campo] || 0));
+  const maximo = Math.max(...valores, 0);
+
+  return (
+    <div className="panel-card" style={{ alignContent: 'start', ...style }}>
+      <div className="panel-title">{titulo}</div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'end', minHeight: 210, overflowX: 'auto', padding: '12px 2px 4px' }}>
+        {!linhas.length && <p>Sem dados para exibir.</p>}
+        {linhas.map((row) => {
+          const valor = Number(row[campo] || 0);
+          const altura = maximo > 0 ? Math.max((valor / maximo) * 150, 4) : 0;
+          return (
+            <div key={`${row.id || row.competencia}-${campo}`} style={{ minWidth: 86, display: 'grid', gridTemplateRows: '44px 160px 22px', gap: 6, alignItems: 'end', justifyItems: 'center', fontSize: 12 }}>
+              <span style={{ textAlign: 'center', fontWeight: 700, alignSelf: 'end' }}>
+                {tipo === 'moeda' ? fmt(valor) : tipo === 'pct' ? fmtPct(valor) : tipo === 'kg' ? `${fmtN(valor)} kg` : fmtN(valor)}
+              </span>
+              <div style={{ width: 34, height: 150, borderRadius: 8, background: '#e8edf5', display: 'flex', alignItems: 'end', overflow: 'hidden' }}>
+                <div title={`${row.competencia}: ${valor}`} style={{ width: '100%', height: `${altura}px`, borderRadius: 8, background: cor }} />
+              </div>
+              <strong>{row.competencia}</strong>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10, filtroTipo, filtroAtivo, onToggleFiltro }) {
   const ordenadas = [...(linhas || [])].sort((a, b) => b.valorCte - a.valorCte).slice(0, maxLinhas);
   const maximo = ordenadas[0]?.valorCte || 1;
+  const clicavel = Boolean(filtroTipo && onToggleFiltro);
 
   if (!ordenadas.length) {
     return (
@@ -488,7 +694,16 @@ function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10 }) {
           </thead>
           <tbody>
             {ordenadas.map((item) => (
-              <tr key={item.key}>
+              <tr
+                key={item.key}
+                onClick={clicavel ? () => onToggleFiltro(filtroTipo, item.filtroValor ?? item.key) : undefined}
+                title={clicavel ? `Clique para filtrar por ${item.label || item.key}` : undefined}
+                style={clicavel ? {
+                  cursor: 'pointer',
+                  background: filtroAtivo === (item.filtroValor ?? item.key) ? '#eff6ff' : undefined,
+                  boxShadow: filtroAtivo === (item.filtroValor ?? item.key) ? 'inset 3px 0 0 #185FA5' : undefined,
+                } : undefined}
+              >
                 <td><strong>{item.label || item.key}</strong></td>
                 <td>{fmtN(item.ctes)}</td>
                 <td>{fmt(item.valorCte)}</td>
@@ -503,7 +718,7 @@ function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10 }) {
   );
 }
 
-function PainelGestaoTransportador({ analise, filtros }) {
+function PainelGestaoTransportador({ analise, filtros, interactiveFilters, onToggleFiltro }) {
   const [modoRota, setModoRota] = useState('valor');
 
   const topRotas = useMemo(() => {
@@ -534,13 +749,23 @@ function PainelGestaoTransportador({ analise, filtros }) {
       </div>
 
       <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
-        <RankingTabela titulo="Transportadoras no filtro" linhas={analise.transportadoras} />
-        <RankingTabela titulo="Regiões de destino" linhas={analise.regioesDestino} />
+        <RankingTabela titulo="Transportadoras no filtro" linhas={analise.transportadoras} filtroTipo="transportadora" filtroAtivo={interactiveFilters.transportadora} onToggleFiltro={onToggleFiltro} />
+        <RankingTabela titulo="Regiões de destino" linhas={analise.regioesDestino} filtroTipo="regiaoDestino" filtroAtivo={interactiveFilters.regiaoDestino} onToggleFiltro={onToggleFiltro} />
       </div>
 
       <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
-        <RankingTabela titulo="Origens mais relevantes" linhas={analise.origens} />
-        <RankingTabela titulo="Destinos mais relevantes" linhas={analise.destinos} />
+        <RankingTabela titulo="Origens mais relevantes" linhas={analise.origens} filtroTipo="origem" filtroAtivo={interactiveFilters.origem} onToggleFiltro={onToggleFiltro} />
+        <RankingTabela titulo="Destinos mais relevantes" linhas={analise.destinos} filtroTipo="destino" filtroAtivo={interactiveFilters.destino} onToggleFiltro={onToggleFiltro} />
+      </div>
+
+      <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
+        <RankingTabela titulo="UFs destino" linhas={analise.ufsDestino} tipo="ctes" filtroTipo="ufDestino" filtroAtivo={interactiveFilters.ufDestino} onToggleFiltro={onToggleFiltro} />
+        <RankingTabela titulo="Canais" linhas={analise.canais} tipo="ctes" filtroTipo="canal" filtroAtivo={interactiveFilters.canal} onToggleFiltro={onToggleFiltro} />
+      </div>
+
+      <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
+        <RankingTabela titulo="UFs origem" linhas={analise.ufsOrigem} tipo="ctes" filtroTipo="ufOrigem" filtroAtivo={interactiveFilters.ufOrigem} onToggleFiltro={onToggleFiltro} />
+        <RankingTabela titulo="Tipos de operação" linhas={analise.tiposOperacao} tipo="ctes" filtroTipo="tipoOperacao" filtroAtivo={interactiveFilters.tipoOperacao} onToggleFiltro={onToggleFiltro} />
       </div>
 
       <div className="panel-card">
@@ -577,7 +802,16 @@ function PainelGestaoTransportador({ analise, filtros }) {
               {topRotas.map((rota) => {
                 const prioridade = rota.ctes >= 50 || rota.valorCte >= analise.totalCte * 0.08 ? 'Alta' : rota.ctes >= 15 ? 'Média' : 'Baixa';
                 return (
-                  <tr key={rota.key}>
+                  <tr
+                    key={rota.key}
+                    onClick={() => onToggleFiltro('rota', rota.key)}
+                    title="Clique para filtrar por esta rota"
+                    style={{
+                      cursor: 'pointer',
+                      background: interactiveFilters.rota === rota.key ? '#eff6ff' : undefined,
+                      boxShadow: interactiveFilters.rota === rota.key ? 'inset 3px 0 0 #185FA5' : undefined,
+                    }}
+                  >
                     <td><strong>{rota.label}</strong></td>
                     <td>{rota.tipo || '-'}</td>
                     <td>{fmtN(rota.ctes)}</td>
@@ -633,6 +867,10 @@ function montarAnalise(rows = [], filtros = {}) {
   });
   const regioesDestino = agrupar(rows, (row) => getRegiaoPorUf(getUfDestino(row)));
   const canais = agrupar(rows, (row) => getCanal(row) || 'Não informado');
+  const ufsDestino = agrupar(rows, (row) => getUfDestino(row) || 'Não informado');
+  const ufsOrigem = agrupar(rows, (row) => getUfOrigem(row) || 'Não informado');
+  const tiposOperacao = agrupar(rows, (row) => getTipoOperacao(row));
+  const statusCalculo = agrupar(rows, (row) => labelStatusCalculo(getStatusCalculo(row)));
 
   const rotasMapa = new Map();
   rows.forEach((row) => {
@@ -695,9 +933,533 @@ function montarAnalise(rows = [], filtros = {}) {
     destinos,
     regioesDestino,
     canais,
+    ufsDestino,
+    ufsOrigem,
+    tiposOperacao,
+    statusCalculo,
     rotas,
     rotasUnicas: rotas.length,
   };
+}
+
+function competenciaDePeriodo(inicio, fim) {
+  const base = String(inicio || fim || '').slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(base) ? base : monthNow();
+}
+
+function nomeCompetencia(competencia) {
+  const [ano, mes] = String(competencia || '').split('-');
+  if (!ano || !mes) return competencia || '';
+  const data = new Date(Number(ano), Number(mes) - 1, 1);
+  return data.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }).replace(/^\w/, (letra) => letra.toUpperCase());
+}
+
+function ordenarResumo(lista = []) {
+  return [...lista].sort((a, b) => Number(b.valorCte || 0) - Number(a.valorCte || 0));
+}
+
+function hashFiltrosCte(filtros = {}) {
+  const normalizados = Object.keys(filtros)
+    .sort()
+    .reduce((acc, key) => ({ ...acc, [key]: filtros[key] || '' }), {});
+  return btoa(unescape(encodeURIComponent(JSON.stringify(normalizados)))).slice(0, 180);
+}
+
+function montarPayloadCompetenciaCte({ competencia, nome, inicio, fim, observacao, filtros, analise }) {
+  return {
+    competencia,
+    nome_competencia: nome || nomeCompetencia(competencia),
+    data_inicio: inicio || null,
+    data_fim: fim || null,
+    total_ctes: analise.totalCtes,
+    valor_total_cte: analise.totalCte,
+    valor_total_nf: analise.totalNf,
+    percentual_frete_nf: analise.percentualFrete,
+    peso_total: analise.totalPeso,
+    peso_medio_cte: analise.pesoMedio,
+    volumes_total: analise.totalVolumes,
+    volumes_dia: analise.volumesDia,
+    cargas_dia: analise.cargasDia,
+    ticket_medio_cte: analise.ticketMedio,
+    total_transportadoras: analise.transportadoras.length,
+    total_rotas: analise.rotasUnicas,
+    total_com_calculo: analise.comCalculo,
+    total_sem_calculo: Math.max(analise.totalCtes - analise.comCalculo, 0),
+    filtros_hash: hashFiltrosCte(filtros),
+    filtros_json: filtros || {},
+    resumo_transportadoras_json: ordenarResumo(analise.transportadoras),
+    resumo_regioes_json: ordenarResumo(analise.regioesDestino),
+    resumo_ufs_destino_json: ordenarResumo(analise.ufsDestino),
+    resumo_ufs_origem_json: ordenarResumo(analise.ufsOrigem),
+    resumo_origens_json: ordenarResumo(analise.origens),
+    resumo_destinos_json: ordenarResumo(analise.destinos),
+    resumo_rotas_json: ordenarResumo(analise.rotas),
+    resumo_canais_json: ordenarResumo(analise.canais),
+    observacao: observacao || '',
+    usuario: '',
+  };
+}
+
+function aplicarFiltrosComparativo(rows = [], filtros = {}) {
+  return (rows || []).filter((row) => {
+    if (filtros.inicio && row.competencia < filtros.inicio) return false;
+    if (filtros.fim && row.competencia > filtros.fim) return false;
+    if (filtros.transportadora && !(row.resumo_transportadoras_json || []).some((item) => item.key === filtros.transportadora)) return false;
+    if (filtros.origem && !(row.resumo_origens_json || []).some((item) => item.key === filtros.origem)) return false;
+    if (filtros.regiaoDestino && !(row.resumo_regioes_json || []).some((item) => item.key === filtros.regiaoDestino)) return false;
+    if (filtros.ufDestino && !(row.resumo_ufs_destino_json || []).some((item) => item.key === filtros.ufDestino)) return false;
+    if (filtros.canal && !(row.resumo_canais_json || []).some((item) => item.key === filtros.canal)) return false;
+    return true;
+  });
+}
+
+const TIPOS_ANALISE_VARIACAO = {
+  transportadora: { label: 'Transportadora', campo: 'resumo_transportadoras_json' },
+  rota: { label: 'Rota', campo: 'resumo_rotas_json' },
+  origem: { label: 'Origem', campo: 'resumo_origens_json' },
+  destino: { label: 'Destino', campo: 'resumo_destinos_json' },
+  ufDestino: { label: 'UF destino', campo: 'resumo_ufs_destino_json' },
+  ufOrigem: { label: 'UF origem', campo: 'resumo_ufs_origem_json' },
+  regiaoDestino: { label: 'Região destino', campo: 'resumo_regioes_json' },
+  canal: { label: 'Canal', campo: 'resumo_canais_json' },
+};
+
+function numeroResumo(item = {}, campo, fallback = 0) {
+  const valor = Number(item[campo] ?? fallback);
+  return Number.isFinite(valor) ? valor : 0;
+}
+
+function normalizarResumoComparativo(item = {}) {
+  const ctes = numeroResumo(item, 'ctes');
+  const valorCte = numeroResumo(item, 'valorCte');
+  const valorNf = numeroResumo(item, 'valorNf');
+  const peso = numeroResumo(item, 'peso');
+  return {
+    key: item.key || item.label || '',
+    label: item.label || item.key || 'Não informado',
+    ctes,
+    valorCte,
+    valorNf,
+    percentualFrete: numeroResumo(item, 'percentualFrete', valorNf > 0 ? (valorCte / valorNf) * 100 : 0),
+    ticketMedio: numeroResumo(item, 'ticketMedio', ctes > 0 ? valorCte / ctes : 0),
+    peso,
+    volumes: numeroResumo(item, 'volumes'),
+    rotas: numeroResumo(item, 'rotas'),
+    transportadoras: numeroResumo(item, 'transportadoras'),
+    canais: numeroResumo(item, 'canais'),
+    tipo: item.tipo || '',
+    origem: item.origem || '',
+    ufOrigem: item.ufOrigem || '',
+    destino: item.destino || '',
+    ufDestino: item.ufDestino || '',
+  };
+}
+
+function mapaResumo(lista = []) {
+  return new Map((lista || []).map((item) => {
+    const normalizado = normalizarResumoComparativo(item);
+    return [normalizado.key, normalizado];
+  }).filter(([key]) => key));
+}
+
+function causaVariacao(atual = {}, anterior = {}) {
+  const deltaCtes = atual.ctes - anterior.ctes;
+  const deltaValor = atual.valorCte - anterior.valorCte;
+  const deltaNf = atual.valorNf - anterior.valorNf;
+  const deltaTicket = atual.ticketMedio - anterior.ticketMedio;
+  const pesoMedioAtual = atual.ctes > 0 ? atual.peso / atual.ctes : 0;
+  const pesoMedioAnterior = anterior.ctes > 0 ? anterior.peso / anterior.ctes : 0;
+  const deltaPesoMedio = pesoMedioAtual - pesoMedioAnterior;
+  const deltaPp = atual.percentualFrete - anterior.percentualFrete;
+
+  if (deltaCtes < 0 && deltaTicket > 0) return 'Ticket subiu com volume menor';
+  if (deltaCtes > 0 && deltaValor > 0 && Math.abs(deltaPp) < 1) return 'Aumento de volume';
+  if (deltaPp >= 2 && Math.abs(deltaCtes) <= Math.max(5, anterior.ctes * 0.08)) return 'Possível aumento de custo';
+  if (deltaNf < 0 && deltaPp > 0) return 'Mix da carteira';
+  if (deltaPesoMedio > 10) return 'Perfil de carga mais pesada';
+  if (deltaValor > deltaNf && deltaPp > 0) return 'Valor CT-e subiu mais que NF';
+  return 'Analisar composição';
+}
+
+function criticidadeVariacao(item = {}) {
+  const impactoAbs = Math.abs(Number(item.deltaValorCte || 0));
+  const volume = Math.max(Number(item.ctesDepois || 0), Number(item.ctesAntes || 0));
+  if (item.deltaPp >= 3 || impactoAbs >= 250000 || (volume >= 1000 && item.deltaPp >= 1.5)) return 'Crítico';
+  if (item.deltaPp >= 1 || impactoAbs >= 75000) return 'Atenção';
+  return 'Normal';
+}
+
+function temVolumeComparavel(anterior = {}, atual = {}) {
+  return Number(anterior.ctes || 0) > 0 && Number(atual.ctes || 0) > 0;
+}
+
+function montarVariacoesDimensao(rows = [], tipo = 'transportadora') {
+  const config = TIPOS_ANALISE_VARIACAO[tipo] || TIPOS_ANALISE_VARIACAO.transportadora;
+  const ordenadas = [...(rows || [])].sort((a, b) => String(a.competencia || '').localeCompare(String(b.competencia || '')));
+  const variacoes = [];
+
+  for (let i = 1; i < ordenadas.length; i += 1) {
+    const anteriorRow = ordenadas[i - 1];
+    const atualRow = ordenadas[i];
+    const anteriorMapa = mapaResumo(anteriorRow[config.campo] || []);
+    const atualMapa = mapaResumo(atualRow[config.campo] || []);
+    const keys = new Set([...anteriorMapa.keys(), ...atualMapa.keys()]);
+
+    keys.forEach((key) => {
+      const anterior = anteriorMapa.get(key) || normalizarResumoComparativo({ key, label: key });
+      const atual = atualMapa.get(key) || normalizarResumoComparativo({ key, label: key });
+      if (!temVolumeComparavel(anterior, atual)) return;
+      const deltaPp = atual.percentualFrete - anterior.percentualFrete;
+      const deltaValorCte = atual.valorCte - anterior.valorCte;
+      const deltaCtes = atual.ctes - anterior.ctes;
+      const aumentoRelativoPct = anterior.percentualFrete ? (deltaPp / anterior.percentualFrete) * 100 : (atual.percentualFrete > 0 ? 100 : 0);
+      const variacao = {
+        key: `${tipo}-${key}-${anteriorRow.competencia}-${atualRow.competencia}`,
+        itemKey: key,
+        item: atual.label || anterior.label || key,
+        tipo: config.label,
+        competenciaAnterior: anteriorRow.competencia,
+        competenciaAtual: atualRow.competencia,
+        ctesAntes: anterior.ctes,
+        ctesDepois: atual.ctes,
+        deltaCtes,
+        valorCteAntes: anterior.valorCte,
+        valorCteDepois: atual.valorCte,
+        deltaValorCte,
+        valorNfAntes: anterior.valorNf,
+        valorNfDepois: atual.valorNf,
+        percentualAntes: anterior.percentualFrete,
+        percentualDepois: atual.percentualFrete,
+        deltaPp,
+        aumentoRelativoPct,
+        ticketAntes: anterior.ticketMedio,
+        ticketDepois: atual.ticketMedio,
+        pesoAntes: anterior.peso,
+        pesoDepois: atual.peso,
+        impactoFinanceiro: deltaValorCte,
+        causa: causaVariacao(atual, anterior),
+        origem: atual.origem || anterior.origem,
+        ufOrigem: atual.ufOrigem || anterior.ufOrigem,
+        destino: atual.destino || anterior.destino,
+        ufDestino: atual.ufDestino || anterior.ufDestino,
+        tipoOperacao: atual.tipo || anterior.tipo,
+      };
+      variacao.criticidade = criticidadeVariacao(variacao);
+      variacoes.push(variacao);
+    });
+  }
+
+  return variacoes;
+}
+
+function filtrarOrdenarVariacoes(variacoes = [], { mostrar = 'todos', ordenar = 'maior_aumento', busca = '' } = {}) {
+  const termo = normalizarTexto(busca);
+  let lista = (variacoes || []).filter((item) => {
+    if (termo && !normalizarTexto(`${item.item} ${item.tipo} ${item.origem} ${item.destino} ${item.ufOrigem} ${item.ufDestino}`).includes(termo)) return false;
+    if (mostrar === 'aumentos') return item.deltaPp > 0;
+    if (mostrar === 'reducoes') return item.deltaPp < 0;
+    if (mostrar === 'criticos') return item.criticidade === 'Crítico';
+    return true;
+  });
+
+  const ordenadores = {
+    maior_aumento: (a, b) => b.deltaPp - a.deltaPp,
+    maior_reducao: (a, b) => a.deltaPp - b.deltaPp,
+    impacto: (a, b) => Math.abs(b.impactoFinanceiro) - Math.abs(a.impactoFinanceiro),
+    variacao_ctes: (a, b) => Math.abs(b.deltaCtes) - Math.abs(a.deltaCtes),
+    variacao_valor: (a, b) => Math.abs(b.deltaValorCte) - Math.abs(a.deltaValorCte),
+    percentual: (a, b) => b.percentualDepois - a.percentualDepois,
+    ticket: (a, b) => b.ticketDepois - a.ticketDepois,
+    volume: (a, b) => b.ctesDepois - a.ctesDepois,
+  };
+  return lista.sort(ordenadores[ordenar] || ordenadores.maior_aumento);
+}
+
+function resumoComparativoSelecionado(row = {}, filtros = {}) {
+  const dimensoes = [
+    ['transportadora', 'resumo_transportadoras_json'],
+    ['origem', 'resumo_origens_json'],
+    ['canal', 'resumo_canais_json'],
+    ['ufDestino', 'resumo_ufs_destino_json'],
+    ['regiaoDestino', 'resumo_regioes_json'],
+  ];
+
+  for (const [tipo, campo] of dimensoes) {
+    if (!filtros[tipo]) continue;
+    const item = (row[campo] || []).find((resumo) => resumo.key === filtros[tipo]);
+    if (item) return { tipo, item };
+  }
+
+  return null;
+}
+
+function linhaComparativoComFiltros(row = {}, filtros = {}) {
+  const selecionado = resumoComparativoSelecionado(row, filtros);
+  if (!selecionado) return row;
+
+  const item = selecionado.item || {};
+  const totalCtes = Number(item.ctes || 0);
+  const totalOriginal = Number(row.total_ctes || 0);
+  const proporcao = totalOriginal > 0 ? totalCtes / totalOriginal : 0;
+  const comCalculo = Math.round(Number(row.total_com_calculo || 0) * proporcao);
+  const semCalculo = Math.max(totalCtes - comCalculo, 0);
+
+  return {
+    ...row,
+    nome_competencia: `${row.nome_competencia || row.competencia} · ${item.label || item.key}`,
+    total_ctes: totalCtes,
+    valor_total_cte: Number(item.valorCte || 0),
+    valor_total_nf: Number(item.valorNf || 0),
+    percentual_frete_nf: Number(item.percentualFrete || 0),
+    peso_total: Number(item.peso || 0),
+    ticket_medio_cte: Number(item.ticketMedio || 0),
+    total_transportadoras: Number(item.transportadoras || (selecionado.tipo === 'transportadora' ? 1 : 0)),
+    total_rotas: Number(item.rotas || 0),
+    total_com_calculo: comCalculo,
+    total_sem_calculo: semCalculo,
+  };
+}
+
+function diagnosticarCausaAumento(atual = {}, anterior = {}) {
+  const deltaTicket = Number(atual.ticketMedio || 0) - Number(anterior.ticketMedio || 0);
+  const deltaValor = Number(atual.valorCte || 0) - Number(anterior.valorCte || 0);
+  const deltaNf = Number(atual.valorNf || 0) - Number(anterior.valorNf || 0);
+  const deltaCtes = Number(atual.ctes || 0) - Number(anterior.ctes || 0);
+
+  if (deltaTicket > 0 && deltaCtes <= 0) return 'Ticket subiu com volume menor';
+  if (deltaValor > 0 && deltaNf <= 0) return 'Frete subiu com NF menor/estável';
+  if (deltaTicket > 0) return 'Ticket médio subiu';
+  if (deltaCtes > 0) return 'Mix/volume maior';
+  return 'Mix da carteira';
+}
+
+function temFiltroTransversalComparativo(filtros = {}) {
+  return Boolean(filtros.origem || filtros.regiaoDestino || filtros.ufDestino || filtros.canal);
+}
+
+function labelRecorteComparativo(filtros = {}) {
+  const partes = [];
+  if (filtros.transportadora) partes.push(`Transportadora: ${filtros.transportadora}`);
+  if (filtros.origem) partes.push(`Origem: ${filtros.origem}`);
+  if (filtros.regiaoDestino) partes.push(`Região: ${filtros.regiaoDestino}`);
+  if (filtros.ufDestino) partes.push(`UF destino: ${filtros.ufDestino}`);
+  if (filtros.canal) partes.push(`Canal: ${filtros.canal}`);
+  return partes.length ? partes.join(' · ') : 'Recorte filtrado';
+}
+
+function montarPainelRecorteComparativo(rows = [], filtros = {}) {
+  const label = labelRecorteComparativo(filtros);
+  const meses = [...(rows || [])]
+    .sort((a, b) => String(a.competencia || '').localeCompare(String(b.competencia || '')))
+    .map((row) => {
+      const ctes = Number(row.total_ctes || 0);
+      const valorCte = Number(row.valor_total_cte || 0);
+      const valorNf = Number(row.valor_total_nf || 0);
+      return {
+        competencia: row.competencia,
+        ctes,
+        valorCte,
+        valorNf,
+        peso: Number(row.peso_total || 0),
+        percentualFrete: Number(row.percentual_frete_nf || (valorNf > 0 ? (valorCte / valorNf) * 100 : 0)),
+        ticketMedio: Number(row.ticket_medio_cte || (ctes > 0 ? valorCte / ctes : 0)),
+      };
+    });
+
+  const consolidado = meses.reduce((acc, mes) => {
+    acc.ctes += mes.ctes;
+    acc.valorCte += mes.valorCte;
+    acc.valorNf += mes.valorNf;
+    acc.peso += mes.peso;
+    return acc;
+  }, { key: 'recorte-filtrado', label, ctes: 0, valorCte: 0, valorNf: 0, peso: 0 });
+
+  const variacoes = [];
+  for (let i = 1; i < meses.length; i += 1) {
+    const anterior = meses[i - 1];
+    const atual = meses[i];
+    if (!temVolumeComparavel(anterior, atual)) continue;
+    const deltaPct = Number(atual.percentualFrete || 0) - Number(anterior.percentualFrete || 0);
+    if (deltaPct > 0) {
+      variacoes.push({
+        transportadora: label,
+        de: anterior.competencia,
+        para: atual.competencia,
+        anterior: anterior.percentualFrete,
+        atual: atual.percentualFrete,
+        deltaPct,
+        deltaValor: atual.valorCte - anterior.valorCte,
+        deltaTicket: atual.ticketMedio - anterior.ticketMedio,
+        ctesAtual: atual.ctes,
+        causa: diagnosticarCausaAumento(atual, anterior),
+      });
+    }
+  }
+
+  const item = {
+    ...consolidado,
+    meses,
+    percentualFrete: consolidado.valorNf > 0 ? (consolidado.valorCte / consolidado.valorNf) * 100 : 0,
+    ticketMedio: consolidado.ctes > 0 ? consolidado.valorCte / consolidado.ctes : 0,
+  };
+
+  return {
+    recorteConsolidado: true,
+    maisCaras: consolidado.ctes ? [item] : [],
+    maioresAumentos: variacoes.sort((a, b) => b.deltaPct - a.deltaPct).slice(0, 12),
+  };
+}
+
+function montarPainelTransportadorasComparativo(rows = [], filtros = {}, linhasFiltradas = []) {
+  if (temFiltroTransversalComparativo(filtros)) {
+    return montarPainelRecorteComparativo(linhasFiltradas, filtros);
+  }
+
+  const porTransportadora = new Map();
+
+  (rows || []).forEach((row) => {
+    const competencia = row.competencia;
+    const lista = row.resumo_transportadoras_json || [];
+    lista.forEach((item) => {
+      if (filtros.transportadora && item.key !== filtros.transportadora) return;
+      const atual = porTransportadora.get(item.key) || {
+        key: item.key,
+        label: item.label || item.key,
+        ctes: 0,
+        valorCte: 0,
+        valorNf: 0,
+        peso: 0,
+        meses: [],
+      };
+
+      const mes = {
+        competencia,
+        ctes: Number(item.ctes || 0),
+        valorCte: Number(item.valorCte || 0),
+        valorNf: Number(item.valorNf || 0),
+        peso: Number(item.peso || 0),
+        percentualFrete: Number(item.percentualFrete || 0),
+        ticketMedio: Number(item.ticketMedio || 0),
+      };
+
+      atual.ctes += mes.ctes;
+      atual.valorCte += mes.valorCte;
+      atual.valorNf += mes.valorNf;
+      atual.peso += mes.peso;
+      atual.meses.push(mes);
+      porTransportadora.set(item.key, atual);
+    });
+  });
+
+  const transportadoras = [...porTransportadora.values()].map((item) => {
+    const meses = item.meses.sort((a, b) => a.competencia.localeCompare(b.competencia));
+    const variacoes = [];
+
+    for (let i = 1; i < meses.length; i += 1) {
+      const anterior = meses[i - 1];
+      const atual = meses[i];
+      if (!temVolumeComparavel(anterior, atual)) continue;
+      const deltaPct = Number(atual.percentualFrete || 0) - Number(anterior.percentualFrete || 0);
+      variacoes.push({
+        transportadora: item.label,
+        de: anterior.competencia,
+        para: atual.competencia,
+        anterior: anterior.percentualFrete,
+        atual: atual.percentualFrete,
+        deltaPct,
+        deltaValor: atual.valorCte - anterior.valorCte,
+        deltaTicket: atual.ticketMedio - anterior.ticketMedio,
+        ctesAtual: atual.ctes,
+        causa: diagnosticarCausaAumento(atual, anterior),
+      });
+    }
+
+    return {
+      ...item,
+      meses,
+      variacoes,
+      percentualFrete: item.valorNf > 0 ? (item.valorCte / item.valorNf) * 100 : 0,
+      ticketMedio: item.ctes > 0 ? item.valorCte / item.ctes : 0,
+    };
+  });
+
+  return {
+    recorteConsolidado: false,
+    maisCaras: [...transportadoras].sort((a, b) => b.percentualFrete - a.percentualFrete).slice(0, 12),
+    maioresAumentos: transportadoras
+      .flatMap((item) => item.variacoes)
+      .filter((item) => item.deltaPct > 0)
+      .sort((a, b) => b.deltaPct - a.deltaPct)
+      .slice(0, 12),
+  };
+}
+
+function montarParticipacaoTransportadoras(rows = []) {
+  const ordenadas = [...(rows || [])].sort((a, b) => String(a.competencia || '').localeCompare(String(b.competencia || '')));
+  const variacoes = [];
+
+  for (let i = 1; i < ordenadas.length; i += 1) {
+    const anteriorRow = ordenadas[i - 1];
+    const atualRow = ordenadas[i];
+    const totalCtesAnterior = Number(anteriorRow.total_ctes || 0);
+    const totalCtesAtual = Number(atualRow.total_ctes || 0);
+    const totalValorAnterior = Number(anteriorRow.valor_total_cte || 0);
+    const totalValorAtual = Number(atualRow.valor_total_cte || 0);
+    const anteriorMapa = mapaResumo(anteriorRow.resumo_transportadoras_json || []);
+    const atualMapa = mapaResumo(atualRow.resumo_transportadoras_json || []);
+    const keys = new Set([...anteriorMapa.keys(), ...atualMapa.keys()]);
+
+    keys.forEach((key) => {
+      const anterior = anteriorMapa.get(key) || normalizarResumoComparativo({ key, label: key });
+      const atual = atualMapa.get(key) || normalizarResumoComparativo({ key, label: key });
+      const partCtesAntes = totalCtesAnterior > 0 ? (anterior.ctes / totalCtesAnterior) * 100 : 0;
+      const partCtesDepois = totalCtesAtual > 0 ? (atual.ctes / totalCtesAtual) * 100 : 0;
+      const partCustoAntes = totalValorAnterior > 0 ? (anterior.valorCte / totalValorAnterior) * 100 : 0;
+      const partCustoDepois = totalValorAtual > 0 ? (atual.valorCte / totalValorAtual) * 100 : 0;
+      variacoes.push({
+        key: `${key}-${anteriorRow.competencia}-${atualRow.competencia}`,
+        transportadora: atual.label || anterior.label || key,
+        partCtesAntes,
+        partCtesDepois,
+        deltaPartCtes: partCtesDepois - partCtesAntes,
+        partCustoAntes,
+        partCustoDepois,
+        deltaPartCusto: partCustoDepois - partCustoAntes,
+        ctesAntes: anterior.ctes,
+        ctesDepois: atual.ctes,
+        valorAntes: anterior.valorCte,
+        valorDepois: atual.valorCte,
+      });
+    });
+  }
+
+  return variacoes;
+}
+
+function montarAlertasComparativo({ variacoes = [], linhas = [], participacao = [] } = {}) {
+  const alertas = [];
+  variacoes.forEach((item) => {
+    if (item.tipo === 'Transportadora' && item.deltaPp >= 2) alertas.push({ tipo: 'Transportadora', texto: `${item.item} subiu ${fmtPct(item.deltaPp)} em ${item.competenciaAtual}.`, criticidade: item.criticidade });
+    if (item.tipo === 'Rota' && item.deltaPp >= 3) alertas.push({ tipo: 'Rota', texto: `${item.item} subiu ${fmtPct(item.deltaPp)} no % frete/NF.`, criticidade: item.criticidade });
+    if (item.tipo === 'Origem' && item.deltaPp >= 2) alertas.push({ tipo: 'Origem', texto: `${item.item} teve aumento relevante de ${fmtPct(item.deltaPp)}.`, criticidade: item.criticidade });
+    if (item.deltaPp > 0 && item.deltaCtes < 0 && item.ticketDepois > item.ticketAntes) alertas.push({ tipo: 'Mix', texto: `${item.item}: ticket médio subiu com volume menor.`, criticidade: item.criticidade });
+    if (item.deltaValorCte > 0 && (item.valorNfDepois - item.valorNfAntes) <= 0) alertas.push({ tipo: 'Custo', texto: `${item.item}: valor CT-e subiu mais que valor NF.`, criticidade: item.criticidade });
+  });
+
+  participacao.forEach((item) => {
+    if (item.deltaPartCtes > 2 && item.deltaPartCusto > item.deltaPartCtes) {
+      alertas.push({ tipo: 'Participação', texto: `${item.transportadora} ganhou participação e aumentou participação de custo.`, criticidade: 'Atenção' });
+    }
+  });
+
+  linhas.forEach((row) => {
+    const semCalculo = Number(row.total_sem_calculo || 0);
+    const total = Number(row.total_ctes || 0);
+    const pct = total > 0 ? (semCalculo / total) * 100 : 0;
+    if (pct >= 10) alertas.push({ tipo: 'Base sem cálculo', texto: `${row.competencia}: ${fmtPct(pct)} da base está sem cálculo.`, criticidade: pct >= 20 ? 'Crítico' : 'Atenção' });
+  });
+
+  return alertas.slice(0, 20);
 }
 
 function ValidacaoUpload({ validacao }) {
@@ -764,6 +1526,7 @@ export default function CtePage() {
   const [incluirCpsLog, setIncluirCpsLog] = useState(false);
   const [rows, setRows] = useState(null);
   const [rowsAnalise, setRowsAnalise] = useState([]);
+  const [mapaVinculosTransportadoras, setMapaVinculosTransportadoras] = useState(() => new Map());
   const [pagina, setPagina] = useState(1);
   const [temProximaPagina, setTemProximaPagina] = useState(false);
   const [ultimaBuscaTemFiltro, setUltimaBuscaTemFiltro] = useState(false);
@@ -772,12 +1535,157 @@ export default function CtePage() {
   const [progressoAnalise, setProgressoAnalise] = useState(null);
   const [erro, setErro] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [interactiveFilters, setInteractiveFilters] = useState(FILTROS_INTERATIVOS_INICIAIS);
+  const [modalCompetenciaAberto, setModalCompetenciaAberto] = useState(false);
+  const [salvandoCompetencia, setSalvandoCompetencia] = useState(false);
+  const [erroSalvarCompetencia, setErroSalvarCompetencia] = useState('');
+  const [formCompetencia, setFormCompetencia] = useState({
+    competencia: monthNow(),
+    nome: nomeCompetencia(monthNow()),
+    inicio: '',
+    fim: '',
+    observacao: '',
+  });
+  const [competenciasSalvas, setCompetenciasSalvas] = useState([]);
+  const [carregandoComparativo, setCarregandoComparativo] = useState(false);
+  const [erroComparativo, setErroComparativo] = useState('');
+  const [filtrosComparativo, setFiltrosComparativo] = useState({
+    inicio: '',
+    fim: '',
+    transportadora: '',
+    regiaoDestino: '',
+    ufDestino: '',
+    origem: '',
+    canal: '',
+  });
+  const [analiseVariacao, setAnaliseVariacao] = useState({
+    tipo: 'transportadora',
+    mostrar: 'todos',
+    ordenar: 'maior_aumento',
+    busca: '',
+    verTodos: '',
+  });
 
   const podeImportar = Boolean(competenciaUpload && arquivoUpload && !importando);
+
+  useEffect(() => {
+    carregarComparativoMensal();
+  }, []);
+
+  useEffect(() => {
+    let ativo = true;
+
+    async function carregarVinculosCte() {
+      try {
+        const vinculos = await carregarVinculosTransportadoras();
+        if (ativo) setMapaVinculosTransportadoras(criarMapaVinculosTransportadoras(vinculos));
+      } catch {
+        if (ativo) setMapaVinculosTransportadoras(new Map());
+      }
+    }
+
+    carregarVinculosCte();
+    return () => {
+      ativo = false;
+    };
+  }, []);
 
   const set = (nomeCampo, valor) => {
     setFiltros((prev) => ({ ...prev, [nomeCampo]: valor }));
   };
+
+  function toggleInteractiveFilter(tipo, valor) {
+    setInteractiveFilters((prev) => ({
+      ...prev,
+      [tipo]: prev[tipo] === valor ? null : valor,
+    }));
+    setPagina(1);
+  }
+
+  function limparFiltrosInterativos() {
+    setInteractiveFilters(FILTROS_INTERATIVOS_INICIAIS);
+    setPagina(1);
+  }
+
+  function removerFiltroInterativo(tipo) {
+    setInteractiveFilters((prev) => ({ ...prev, [tipo]: null }));
+    setPagina(1);
+  }
+
+  async function carregarComparativoMensal() {
+    setCarregandoComparativo(true);
+    setErroComparativo('');
+
+    try {
+      const lista = await listarCompetenciasCtesResumo();
+      setCompetenciasSalvas(lista);
+      if (lista.length) setFeedback(`${fmtN(lista.length)} competência(s) salva(s) carregada(s) no comparativo mensal.`);
+    } catch (error) {
+      setErroComparativo(error.message || 'Erro ao carregar comparativo mensal.');
+    } finally {
+      setCarregandoComparativo(false);
+    }
+  }
+
+  function abrirSalvarCompetencia() {
+    const competencia = competenciaDePeriodo(filtros.inicio, filtros.fim);
+    setErroSalvarCompetencia('');
+    setFormCompetencia({
+      competencia,
+      nome: nomeCompetencia(competencia),
+      inicio: filtros.inicio || '',
+      fim: filtros.fim || '',
+      observacao: '',
+    });
+    setModalCompetenciaAberto(true);
+  }
+
+  async function confirmarSalvarCompetencia({ substituir = false } = {}) {
+    if (!analiseSnapshot?.totalCtes) {
+      setErro('Busque CT-es antes de salvar uma competência.');
+      return;
+    }
+
+    setSalvandoCompetencia(true);
+    setErro('');
+    setErroSalvarCompetencia('');
+
+    try {
+      const payload = montarPayloadCompetenciaCte({
+        competencia: formCompetencia.competencia,
+        nome: formCompetencia.nome,
+        inicio: formCompetencia.inicio,
+        fim: formCompetencia.fim,
+        observacao: formCompetencia.observacao,
+        filtros,
+        analise: analiseSnapshot,
+      });
+
+      const existente = await buscarCompetenciaCtesResumoExistente({
+        competencia: payload.competencia,
+        filtrosHash: payload.filtros_hash,
+      });
+
+      if (existente && !substituir) {
+        const confirma = window.confirm(`A competência ${payload.competencia} já existe com os mesmos filtros principais. Deseja substituir o resumo salvo?`);
+        if (!confirma) {
+          setFeedback('Salvamento da competência cancelado. Nada foi alterado.');
+          return;
+        }
+      }
+
+      await salvarCompetenciaCtesResumo(payload, { substituir: Boolean(existente || substituir) });
+      setFeedback(`Competência ${payload.competencia} salva com ${fmtN(payload.total_ctes)} CT-e(s), sem recarregar CT-es brutos.`);
+      setModalCompetenciaAberto(false);
+      await carregarComparativoMensal();
+    } catch (error) {
+      const mensagem = error.message || 'Erro ao salvar competência.';
+      setErro(mensagem);
+      setErroSalvarCompetencia(mensagem);
+    } finally {
+      setSalvandoCompetencia(false);
+    }
+  }
 
   async function consultarCompetenciaUpload() {
     if (!competenciaUpload) {
@@ -930,6 +1838,7 @@ export default function CtePage() {
     setCarregandoAnalise(true);
     setProgressoAnalise(null);
     setErro('');
+    limparFiltrosInterativos();
     setUltimaBuscaTemFiltro(temFiltroAtivo(filtrosBusca));
 
     try {
@@ -961,37 +1870,146 @@ export default function CtePage() {
 
   const trocarPagina = async (novaPagina) => {
     const paginaSegura = Math.max(Number(novaPagina || 1), 1);
-    setCarregando(true);
-    setErro('');
-
-    try {
-      const paginaResposta = await buscarCtesPagina(filtros, paginaSegura);
-      setRows(paginaResposta.data);
-      setTemProximaPagina(paginaResposta.hasNext);
-      setPagina(paginaResposta.pagina);
-    } catch (error) {
-      setErro(error.message || String(error));
-    } finally {
-      setCarregando(false);
-    }
+    setPagina(paginaSegura);
   };
 
+  const rowsAnaliseComVinculos = useMemo(
+    () => aplicarVinculosTransportadorasRows(rowsAnalise || [], mapaVinculosTransportadoras),
+    [rowsAnalise, mapaVinculosTransportadoras]
+  );
+
+  const totalVinculosAplicados = useMemo(
+    () => rowsAnaliseComVinculos.filter((row) => getTransportadora(row) !== getTransportadoraOriginal(row)).length,
+    [rowsAnaliseComVinculos]
+  );
+
+  const baseAnalisePadrao = useMemo(
+    () => aplicarFiltrosPadraoCte(rowsAnaliseComVinculos || [], { ocultarEbazar, incluirCpsLog }),
+    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog]
+  );
+
+  const analiseSnapshot = useMemo(
+    () => montarAnalise(baseAnalisePadrao, filtros),
+    [baseAnalisePadrao, filtros]
+  );
+
+  const rowsAnaliseInterativas = useMemo(
+    () => aplicarFiltrosInterativos(baseAnalisePadrao, interactiveFilters),
+    [baseAnalisePadrao, interactiveFilters]
+  );
+
   const analise = useMemo(
-    () => {
-      const base = aplicarFiltrosPadraoCte(rowsAnalise || [], { ocultarEbazar, incluirCpsLog });
-      return montarAnalise(base, filtros);
-    },
-    [rowsAnalise, filtros, ocultarEbazar, incluirCpsLog]
+    () => montarAnalise(rowsAnaliseInterativas, filtros),
+    [rowsAnaliseInterativas, filtros]
   );
 
   const rowsFiltradas = useMemo(() => {
     if (!rows) return null;
-    return aplicarFiltrosPadraoCte(rows, { ocultarEbazar, incluirCpsLog });
-  }, [rows, ocultarEbazar, incluirCpsLog]);
+    const inicio = (pagina - 1) * PAGE_SIZE;
+    return rowsAnaliseInterativas.slice(inicio, inicio + PAGE_SIZE);
+  }, [rows, rowsAnaliseInterativas, pagina]);
 
-  const avisoAnaliseLimitada = rowsAnalise.length >= ANALISE_MAX_REGISTROS;
+  const filtrosAtivos = filtrosInterativosAtivos(interactiveFilters);
+  const totalPaginasTabela = Math.max(Math.ceil((rowsAnaliseInterativas.length || 0) / PAGE_SIZE), 1);
+  const temProximaTabela = pagina < totalPaginasTabela;
+  const competenciasSalvasComVinculos = useMemo(
+    () => aplicarVinculosCompetenciasResumo(competenciasSalvas, mapaVinculosTransportadoras),
+    [competenciasSalvas, mapaVinculosTransportadoras]
+  );
+  const competenciasComparativo = useMemo(
+    () => aplicarFiltrosComparativo(competenciasSalvasComVinculos, filtrosComparativo),
+    [competenciasSalvasComVinculos, filtrosComparativo]
+  );
+  const linhasComparativo = useMemo(
+    () => competenciasComparativo.map((row) => linhaComparativoComFiltros(row, filtrosComparativo)),
+    [competenciasComparativo, filtrosComparativo]
+  );
+  const variacoesBase = useMemo(
+    () => montarVariacoesDimensao(competenciasComparativo, analiseVariacao.tipo),
+    [competenciasComparativo, analiseVariacao.tipo]
+  );
+  const variacoesFiltradas = useMemo(
+    () => filtrarOrdenarVariacoes(variacoesBase, analiseVariacao),
+    [variacoesBase, analiseVariacao]
+  );
+  const maioresAumentosCompletos = useMemo(
+    () => filtrarOrdenarVariacoes(variacoesBase, { mostrar: 'aumentos', ordenar: 'maior_aumento' }),
+    [variacoesBase]
+  );
+  const maioresReducoes = useMemo(
+    () => filtrarOrdenarVariacoes(variacoesBase, { mostrar: 'reducoes', ordenar: 'maior_reducao' }),
+    [variacoesBase]
+  );
+  const maioresImpactos = useMemo(
+    () => filtrarOrdenarVariacoes(variacoesBase, { mostrar: 'todos', ordenar: 'impacto' }),
+    [variacoesBase]
+  );
+  const totaisComparativo = useMemo(
+    () => linhasComparativo.reduce((acc, row) => {
+      acc.totalCtes += Number(row.total_ctes || 0);
+      acc.valorCte += Number(row.valor_total_cte || 0);
+      acc.valorNf += Number(row.valor_total_nf || 0);
+      acc.pesoTotal += Number(row.peso_total || 0);
+      acc.transportadoras += Number(row.total_transportadoras || 0);
+      acc.rotas += Number(row.total_rotas || 0);
+      return acc;
+    }, { totalCtes: 0, valorCte: 0, valorNf: 0, pesoTotal: 0, transportadoras: 0, rotas: 0 }),
+    [linhasComparativo]
+  );
+  const painelTransportadoras = useMemo(
+    () => montarPainelTransportadorasComparativo(competenciasComparativo, filtrosComparativo, linhasComparativo),
+    [competenciasComparativo, filtrosComparativo, linhasComparativo]
+  );
+  const participacaoTransportadoras = useMemo(
+    () => montarParticipacaoTransportadoras(competenciasComparativo),
+    [competenciasComparativo]
+  );
+  const alertasComparativo = useMemo(
+    () => montarAlertasComparativo({ variacoes: variacoesBase, linhas: linhasComparativo, participacao: participacaoTransportadoras }),
+    [variacoesBase, linhasComparativo, participacaoTransportadoras]
+  );
+  const topParticipacaoGanha = useMemo(
+    () => [...participacaoTransportadoras].sort((a, b) => b.deltaPartCtes - a.deltaPartCtes).slice(0, 10),
+    [participacaoTransportadoras]
+  );
+  const topParticipacaoPerde = useMemo(
+    () => [...participacaoTransportadoras].sort((a, b) => a.deltaPartCtes - b.deltaPartCtes).slice(0, 10),
+    [participacaoTransportadoras]
+  );
+  const rotasCriticas = useMemo(
+    () => filtrarOrdenarVariacoes(montarVariacoesDimensao(competenciasComparativo, 'rota'), { mostrar: 'criticos', ordenar: 'impacto' }).slice(0, 10),
+    [competenciasComparativo]
+  );
+  const origensCriticas = useMemo(
+    () => filtrarOrdenarVariacoes(montarVariacoesDimensao(competenciasComparativo, 'origem'), { mostrar: 'criticos', ordenar: 'impacto' }).slice(0, 10),
+    [competenciasComparativo]
+  );
+  const destinosCriticos = useMemo(
+    () => filtrarOrdenarVariacoes(montarVariacoesDimensao(competenciasComparativo, 'destino'), { mostrar: 'criticos', ordenar: 'impacto' }).slice(0, 10),
+    [competenciasComparativo]
+  );
+  const ufsMaisCaras = useMemo(
+    () => filtrarOrdenarVariacoes(montarVariacoesDimensao(competenciasComparativo, 'ufDestino'), { mostrar: 'todos', ordenar: 'percentual' }).slice(0, 10),
+    [competenciasComparativo]
+  );
+  const canaisMaisCaros = useMemo(
+    () => filtrarOrdenarVariacoes(montarVariacoesDimensao(competenciasComparativo, 'canal'), { mostrar: 'todos', ordenar: 'percentual' }).slice(0, 10),
+    [competenciasComparativo]
+  );
+  const opcoesComparativo = useMemo(() => {
+    const coletar = (campo) => [...new Set(competenciasSalvasComVinculos.flatMap((row) => (row[campo] || []).map((item) => item.key).filter(Boolean)))].sort();
+    return {
+      transportadoras: coletar('resumo_transportadoras_json'),
+      origens: coletar('resumo_origens_json'),
+      regioes: coletar('resumo_regioes_json'),
+      ufsDestino: coletar('resumo_ufs_destino_json'),
+      canais: coletar('resumo_canais_json'),
+    };
+  }, [competenciasSalvasComVinculos]);
+
+  const totalProgressoAnalise = Number.isFinite(progressoAnalise?.total) ? progressoAnalise.total : null;
   const inicioExibicao = rowsFiltradas ? (pagina - 1) * PAGE_SIZE + 1 : 0;
-  const fimExibicao = rowsFiltradas ? inicioExibicao + rowsFiltradas.length - 1 : 0;
+  const fimExibicao = rowsFiltradas ? Math.min(inicioExibicao + rowsFiltradas.length - 1, rowsAnaliseInterativas.length) : 0;
 
   return (
     <div className="page-shell cte-page">
@@ -1011,6 +2029,55 @@ export default function CtePage() {
       {feedback && (
         <div className="sim-alert info" style={{ marginBottom: 12 }}>
           {feedback}
+        </div>
+      )}
+
+      {modalCompetenciaAberto && (
+        <div className="panel-card" style={{ border: '2px solid #185FA5', marginBottom: 12 }}>
+          <div className="section-row compact-top">
+            <div>
+              <div className="panel-title">Salvar competência</div>
+              <p className="compact">O resumo será salvo a partir da análise já carregada, sem buscar CT-es novamente.</p>
+            </div>
+            <button type="button" className="btn-secondary" onClick={() => setModalCompetenciaAberto(false)} disabled={salvandoCompetencia}>
+              Fechar
+            </button>
+          </div>
+          {erroSalvarCompetencia && (
+            <div className="sim-alert warn" style={{ marginBottom: 12 }}>
+              {erroSalvarCompetencia}
+            </div>
+          )}
+          <div className="form-grid" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 10 }}>
+            <div className="field">
+              <label>Competência</label>
+              <input value={formCompetencia.competencia} onChange={(e) => setFormCompetencia((prev) => ({ ...prev, competencia: e.target.value, nome: nomeCompetencia(e.target.value) }))} placeholder="2026-01" />
+            </div>
+            <div className="field">
+              <label>Nome amigável</label>
+              <input value={formCompetencia.nome} onChange={(e) => setFormCompetencia((prev) => ({ ...prev, nome: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>Data inicial</label>
+              <input type="date" value={formCompetencia.inicio} onChange={(e) => setFormCompetencia((prev) => ({ ...prev, inicio: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>Data final</label>
+              <input type="date" value={formCompetencia.fim} onChange={(e) => setFormCompetencia((prev) => ({ ...prev, fim: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>Observação</label>
+              <input value={formCompetencia.observacao} onChange={(e) => setFormCompetencia((prev) => ({ ...prev, observacao: e.target.value }))} placeholder="Opcional" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+            <button type="button" className="btn-primary" onClick={() => confirmarSalvarCompetencia()} disabled={salvandoCompetencia || !formCompetencia.competencia}>
+              {salvandoCompetencia ? 'Salvando...' : 'Confirmar salvar'}
+            </button>
+            <span style={{ color: 'var(--muted)', fontSize: 13 }}>
+              Snapshot: {fmtN(analiseSnapshot.totalCtes)} CT-es · {fmt(analiseSnapshot.totalCte)} · {fmtPct(analiseSnapshot.percentualFrete)} frete/NF.
+            </span>
+          </div>
         </div>
       )}
 
@@ -1157,6 +2224,384 @@ export default function CtePage() {
         ) : null}
       </ExpandCard>
 
+      <ExpandCard
+        title="Comparativo mensal"
+        subtitle="Evolução mês a mês usando apenas competências salvas, sem recarregar CT-es brutos."
+        badge={`${fmtN(competenciasComparativo.length)} competência(s)`}
+        defaultOpen={false}
+      >
+        {erroComparativo && (
+          <div className="sim-alert warn" style={{ marginBottom: 12 }}>{erroComparativo}</div>
+        )}
+
+        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 10, marginBottom: 12 }}>
+          <div className="field">
+            <label>Competência inicial</label>
+            <input type="month" value={filtrosComparativo.inicio} onChange={(e) => setFiltrosComparativo((prev) => ({ ...prev, inicio: e.target.value }))} />
+          </div>
+          <div className="field">
+            <label>Competência final</label>
+            <input type="month" value={filtrosComparativo.fim} onChange={(e) => setFiltrosComparativo((prev) => ({ ...prev, fim: e.target.value }))} />
+          </div>
+          <div className="field">
+            <label>Transportadora</label>
+            <select value={filtrosComparativo.transportadora} onChange={(e) => setFiltrosComparativo((prev) => ({ ...prev, transportadora: e.target.value }))}>
+              <option value="">Todas</option>
+              {opcoesComparativo.transportadoras.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Região destino</label>
+            <select value={filtrosComparativo.regiaoDestino} onChange={(e) => setFiltrosComparativo((prev) => ({ ...prev, regiaoDestino: e.target.value }))}>
+              <option value="">Todas</option>
+              {opcoesComparativo.regioes.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Origem</label>
+            <select value={filtrosComparativo.origem} onChange={(e) => setFiltrosComparativo((prev) => ({ ...prev, origem: e.target.value }))}>
+              <option value="">Todas</option>
+              {opcoesComparativo.origens.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>UF destino</label>
+            <select value={filtrosComparativo.ufDestino} onChange={(e) => setFiltrosComparativo((prev) => ({ ...prev, ufDestino: e.target.value }))}>
+              <option value="">Todas</option>
+              {opcoesComparativo.ufsDestino.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Canal</label>
+            <select value={filtrosComparativo.canal} onChange={(e) => setFiltrosComparativo((prev) => ({ ...prev, canal: e.target.value }))}>
+              <option value="">Todos</option>
+              {opcoesComparativo.canais.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+          <button type="button" className="btn-secondary" onClick={carregarComparativoMensal} disabled={carregandoComparativo}>
+            {carregandoComparativo ? 'Carregando...' : 'Atualizar comparativo'}
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => setFiltrosComparativo({ inicio: '', fim: '', transportadora: '', regiaoDestino: '', ufDestino: '', origem: '', canal: '' })}>
+            Limpar filtros do comparativo
+          </button>
+        </div>
+
+        <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 12 }}>
+          <SummaryCard title="CT-es acumulados" value={fmtN(totaisComparativo.totalCtes)} subtitle="competências filtradas" />
+          <SummaryCard title="Valor CT-e" value={fmt(totaisComparativo.valorCte)} subtitle="recorte filtrado" />
+          <SummaryCard title="Valor NF" value={fmt(totaisComparativo.valorNf)} subtitle="recorte filtrado" />
+          <SummaryCard title="Frete sobre NF" value={fmtPct(totaisComparativo.valorNf ? (totaisComparativo.valorCte / totaisComparativo.valorNf) * 100 : 0)} subtitle="média ponderada" />
+          <SummaryCard title="Peso total" value={`${fmtN(totaisComparativo.pesoTotal)} kg`} subtitle="competências salvas" />
+          <SummaryCard title="Rotas somadas" value={fmtN(totaisComparativo.rotas)} subtitle="soma mês a mês" />
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <GraficoBarrasMensal titulo="CT-es por mês" linhas={linhasComparativo} campo="total_ctes" />
+          <GraficoBarrasMensal titulo="Valor CT-e por mês" linhas={linhasComparativo} campo="valor_total_cte" tipo="moeda" cor="#1D9E75" />
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <GraficoBarrasMensal titulo="Faturamento mensal" linhas={linhasComparativo} campo="valor_total_nf" tipo="moeda" cor="#7A5CCF" style={{ gridColumn: '1 / -1' }} />
+          <GraficoBarrasMensal titulo="Frete sobre NF por mês" linhas={linhasComparativo} campo="percentual_frete_nf" tipo="pct" cor="#D85A30" />
+          <GraficoBarrasMensal titulo="Peso total por mês" linhas={linhasComparativo} campo="peso_total" tipo="kg" cor="#6D5BD0" />
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <div className="panel-card">
+            <div className="panel-title">{painelTransportadoras.recorteConsolidado ? 'Recorte filtrado' : 'Transportadoras mais caras'}</div>
+            {painelTransportadoras.recorteConsolidado && (
+              <p className="compact">Indicadores consolidados conforme os filtros do comparativo.</p>
+            )}
+            <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+              <table className="sim-analise-tabela">
+                <thead>
+                  <tr>
+                    <th>{painelTransportadoras.recorteConsolidado ? 'Recorte' : 'Transportadora'}</th>
+                    <th>% frete NF</th>
+                    <th>Ticket médio</th>
+                    <th>Valor CT-e</th>
+                    <th>CT-es</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!painelTransportadoras.maisCaras.length && (
+                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem transportadoras no recorte.</td></tr>
+                  )}
+                  {painelTransportadoras.maisCaras.map((item) => (
+                    <tr key={item.key}>
+                      <td><strong>{item.label}</strong></td>
+                      <td>{fmtPct(item.percentualFrete)}</td>
+                      <td>{fmt(item.ticketMedio)}</td>
+                      <td>{fmt(item.valorCte)}</td>
+                      <td>{fmtN(item.ctes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="panel-card">
+            <div className="panel-title">{painelTransportadoras.recorteConsolidado ? 'Aumentos do recorte mês a mês' : 'Maiores aumentos mês a mês'}</div>
+            {painelTransportadoras.recorteConsolidado && (
+              <p className="compact">Comparando o mesmo recorte filtrado entre as competências.</p>
+            )}
+            <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+              <table className="sim-analise-tabela">
+                <thead>
+                  <tr>
+                    <th>{painelTransportadoras.recorteConsolidado ? 'Recorte' : 'Transportadora'}</th>
+                    <th>Período</th>
+                    <th>Antes</th>
+                    <th>Depois</th>
+                    <th>Aumento</th>
+                    <th>Causa provável</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!painelTransportadoras.maioresAumentos.length && (
+                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem aumento no recorte.</td></tr>
+                  )}
+                  {painelTransportadoras.maioresAumentos.map((item) => (
+                    <tr key={`${item.transportadora}-${item.de}-${item.para}`}>
+                      <td><strong>{item.transportadora}</strong></td>
+                      <td>{item.de} → {item.para}</td>
+                      <td>{fmtPct(item.anterior)}</td>
+                      <td>{fmtPct(item.atual)}</td>
+                      <td style={{ color: '#D85A30', fontWeight: 800 }}>+{fmtPct(item.deltaPct)}</td>
+                      <td>{item.causa}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel-card" style={{ marginBottom: 12 }}>
+          <div className="section-row compact-top">
+            <div>
+              <div className="panel-title">Análise completa de variações mês a mês</div>
+              <p className="compact">Compara competências salvas por dimensão, sem consultar CT-es brutos.</p>
+            </div>
+            <button type="button" className="btn-secondary" onClick={() => setAnaliseVariacao((prev) => ({ ...prev, verTodos: prev.verTodos === 'variacoes' ? '' : 'variacoes' }))}>
+              {analiseVariacao.verTodos === 'variacoes' ? 'Ver menos' : 'Ver todos'}
+            </button>
+          </div>
+
+          <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 12 }}>
+            <div className="field">
+              <label>Tipo de análise</label>
+              <select value={analiseVariacao.tipo} onChange={(e) => setAnaliseVariacao((prev) => ({ ...prev, tipo: e.target.value }))}>
+                {Object.entries(TIPOS_ANALISE_VARIACAO).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Mostrar</label>
+              <select value={analiseVariacao.mostrar} onChange={(e) => setAnaliseVariacao((prev) => ({ ...prev, mostrar: e.target.value }))}>
+                <option value="todos">Todos</option>
+                <option value="aumentos">Só aumentos</option>
+                <option value="reducoes">Só reduções</option>
+                <option value="criticos">Só críticos</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Ordenar por</label>
+              <select value={analiseVariacao.ordenar} onChange={(e) => setAnaliseVariacao((prev) => ({ ...prev, ordenar: e.target.value }))}>
+                <option value="maior_aumento">Maior aumento em p.p.</option>
+                <option value="maior_reducao">Maior redução em p.p.</option>
+                <option value="impacto">Maior impacto R$</option>
+                <option value="variacao_ctes">Maior variação de CT-es</option>
+                <option value="variacao_valor">Maior variação de valor CT-e</option>
+                <option value="percentual">Maior % frete/NF</option>
+                <option value="ticket">Maior ticket médio</option>
+                <option value="volume">Maior volume</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Buscar</label>
+              <input value={analiseVariacao.busca} onChange={(e) => setAnaliseVariacao((prev) => ({ ...prev, busca: e.target.value }))} placeholder="Item, origem, destino..." />
+            </div>
+          </div>
+
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Tipo</th>
+                  <th>Anterior</th>
+                  <th>Atual</th>
+                  <th>CT-es antes</th>
+                  <th>CT-es depois</th>
+                  <th>Var. CT-es</th>
+                  <th>Valor antes</th>
+                  <th>Valor depois</th>
+                  <th>Var. R$</th>
+                  <th>NF antes</th>
+                  <th>NF depois</th>
+                  <th>% antes</th>
+                  <th>% depois</th>
+                  <th>Var. p.p.</th>
+                  <th>Aumento rel.</th>
+                  <th>Ticket antes</th>
+                  <th>Ticket depois</th>
+                  <th>Peso antes</th>
+                  <th>Peso depois</th>
+                  <th>Causa provável</th>
+                  <th>Criticidade</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(analiseVariacao.verTodos === 'variacoes' ? variacoesFiltradas : variacoesFiltradas.slice(0, 25)).map((item) => (
+                  <tr key={item.key}>
+                    <td
+                      onClick={() => ['transportadora', 'origem', 'regiaoDestino', 'ufDestino', 'canal'].includes(analiseVariacao.tipo) && setFiltrosComparativo((prev) => ({ ...prev, [analiseVariacao.tipo]: item.itemKey }))}
+                      title="Clique para filtrar o comparativo por este item"
+                      style={{ cursor: ['transportadora', 'origem', 'regiaoDestino', 'ufDestino', 'canal'].includes(analiseVariacao.tipo) ? 'pointer' : undefined }}
+                    ><strong>{item.item}</strong></td>
+                    <td>{item.tipo}</td>
+                    <td>{item.competenciaAnterior}</td>
+                    <td>{item.competenciaAtual}</td>
+                    <td>{fmtN(item.ctesAntes)}</td>
+                    <td>{fmtN(item.ctesDepois)}</td>
+                    <td style={{ color: item.deltaCtes >= 0 ? '#1D9E75' : '#D85A30', fontWeight: 700 }}>{fmtN(item.deltaCtes)}</td>
+                    <td>{fmt(item.valorCteAntes)}</td>
+                    <td>{fmt(item.valorCteDepois)}</td>
+                    <td style={{ color: item.deltaValorCte >= 0 ? '#D85A30' : '#1D9E75', fontWeight: 700 }}>{fmt(item.deltaValorCte)}</td>
+                    <td>{fmt(item.valorNfAntes)}</td>
+                    <td>{fmt(item.valorNfDepois)}</td>
+                    <td>{fmtPct(item.percentualAntes)}</td>
+                    <td>{fmtPct(item.percentualDepois)}</td>
+                    <td style={{ color: item.deltaPp >= 0 ? '#D85A30' : '#1D9E75', fontWeight: 800 }}>{item.deltaPp >= 0 ? '+' : ''}{fmtPct(item.deltaPp)}</td>
+                    <td>{item.aumentoRelativoPct >= 0 ? '+' : ''}{fmtPct(item.aumentoRelativoPct, 0)}</td>
+                    <td>{fmt(item.ticketAntes)}</td>
+                    <td>{fmt(item.ticketDepois)}</td>
+                    <td>{fmtN(item.pesoAntes)} kg</td>
+                    <td>{fmtN(item.pesoDepois)} kg</td>
+                    <td>{item.causa}</td>
+                    <td><span className={`coverage-badge ${item.criticidade === 'Crítico' ? 'warn' : item.criticidade === 'Atenção' ? '' : 'ok'}`}>{item.criticidade}</span></td>
+                  </tr>
+                ))}
+                {!variacoesFiltradas.length && <tr><td colSpan={22} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem variações no recorte.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <div className="panel-card">
+            <div className="section-row compact-top">
+              <div className="panel-title">Maiores reduções mês a mês</div>
+              <button type="button" className="btn-secondary" onClick={() => setAnaliseVariacao((prev) => ({ ...prev, mostrar: 'reducoes', ordenar: 'maior_reducao', verTodos: 'variacoes' }))}>Ver todos</button>
+            </div>
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Item</th><th>Período</th><th>Antes</th><th>Depois</th><th>Redução p.p.</th><th>Redução R$</th><th>Causa provável</th></tr></thead>
+                <tbody>{maioresReducoes.slice(0, 8).map((item) => (<tr key={item.key}><td><strong>{item.item}</strong></td><td>{item.competenciaAnterior} → {item.competenciaAtual}</td><td>{fmtPct(item.percentualAntes)}</td><td>{fmtPct(item.percentualDepois)}</td><td style={{ color: '#1D9E75', fontWeight: 800 }}>{fmtPct(item.deltaPp)}</td><td>{fmt(item.deltaValorCte)}</td><td>{item.causa}</td></tr>))}</tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="panel-card">
+            <div className="section-row compact-top">
+              <div className="panel-title">Maiores impactos financeiros R$</div>
+              <button type="button" className="btn-secondary" onClick={() => setAnaliseVariacao((prev) => ({ ...prev, ordenar: 'impacto', verTodos: 'variacoes' }))}>Ver todos</button>
+            </div>
+            <div className="sim-analise-tabela-wrap">
+              <table className="sim-analise-tabela">
+                <thead><tr><th>Item</th><th>Tipo</th><th>Valor antes</th><th>Valor depois</th><th>Diferença R$</th><th>CT-es antes/depois</th><th>% antes/depois</th></tr></thead>
+                <tbody>{maioresImpactos.slice(0, 8).map((item) => (<tr key={item.key}><td><strong>{item.item}</strong></td><td>{item.tipo}</td><td>{fmt(item.valorCteAntes)}</td><td>{fmt(item.valorCteDepois)}</td><td style={{ fontWeight: 800 }}>{fmt(item.deltaValorCte)}</td><td>{fmtN(item.ctesAntes)} → {fmtN(item.ctesDepois)}</td><td>{fmtPct(item.percentualAntes)} → {fmtPct(item.percentualDepois)}</td></tr>))}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <div className="panel-card">
+            <div className="panel-title">Transportadoras que ganharam participação</div>
+            <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>Transportadora</th><th>Part. CT-es antes</th><th>Part. CT-es depois</th><th>Var. p.p.</th><th>Part. custo antes</th><th>Part. custo depois</th><th>CT-es</th><th>Valor CT-e</th></tr></thead><tbody>{topParticipacaoGanha.map((item) => (<tr key={item.key}><td><strong>{item.transportadora}</strong></td><td>{fmtPct(item.partCtesAntes)}</td><td>{fmtPct(item.partCtesDepois)}</td><td>{fmtPct(item.deltaPartCtes)}</td><td>{fmtPct(item.partCustoAntes)}</td><td>{fmtPct(item.partCustoDepois)}</td><td>{fmtN(item.ctesAntes)} → {fmtN(item.ctesDepois)}</td><td>{fmt(item.valorAntes)} → {fmt(item.valorDepois)}</td></tr>))}</tbody></table></div>
+          </div>
+          <div className="panel-card">
+            <div className="panel-title">Transportadoras que perderam participação</div>
+            <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>Transportadora</th><th>Part. CT-es antes</th><th>Part. CT-es depois</th><th>Var. p.p.</th><th>Part. custo antes</th><th>Part. custo depois</th><th>CT-es</th><th>Valor CT-e</th></tr></thead><tbody>{topParticipacaoPerde.map((item) => (<tr key={item.key}><td><strong>{item.transportadora}</strong></td><td>{fmtPct(item.partCtesAntes)}</td><td>{fmtPct(item.partCtesDepois)}</td><td>{fmtPct(item.deltaPartCtes)}</td><td>{fmtPct(item.partCustoAntes)}</td><td>{fmtPct(item.partCustoDepois)}</td><td>{fmtN(item.ctesAntes)} → {fmtN(item.ctesDepois)}</td><td>{fmt(item.valorAntes)} → {fmt(item.valorDepois)}</td></tr>))}</tbody></table></div>
+          </div>
+        </div>
+
+        <div className="panel-card" style={{ marginBottom: 12 }}>
+          <div className="panel-title">Alertas do comparativo</div>
+          <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+            {!alertasComparativo.length && <p>Sem alertas relevantes no recorte.</p>}
+            {alertasComparativo.map((alerta, idx) => (
+              <div key={`${alerta.tipo}-${idx}`} className={`sim-alert ${alerta.criticidade === 'Crítico' ? 'warn' : 'info'}`} style={{ margin: 0 }}>
+                <strong>{alerta.tipo} · {alerta.criticidade}</strong> {alerta.texto}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <RankingTabela titulo="Rotas críticas" linhas={rotasCriticas.map((item) => ({ key: item.key, label: item.item, ctes: item.ctesDepois, valorCte: item.valorCteDepois, valorNf: item.valorNfDepois, percentualFrete: item.percentualDepois, ticketMedio: item.ticketDepois }))} maxLinhas={10} />
+          <RankingTabela titulo="Origens críticas" linhas={origensCriticas.map((item) => ({ key: item.key, label: item.item, ctes: item.ctesDepois, valorCte: item.valorCteDepois, valorNf: item.valorNfDepois, percentualFrete: item.percentualDepois, ticketMedio: item.ticketDepois }))} maxLinhas={10} />
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <RankingTabela titulo="Destinos críticos" linhas={destinosCriticos.map((item) => ({ key: item.key, label: item.item, ctes: item.ctesDepois, valorCte: item.valorCteDepois, valorNf: item.valorNfDepois, percentualFrete: item.percentualDepois, ticketMedio: item.ticketDepois }))} maxLinhas={10} />
+          <RankingTabela titulo="UFs destino mais caras" linhas={ufsMaisCaras.map((item) => ({ key: item.key, label: item.item, ctes: item.ctesDepois, valorCte: item.valorCteDepois, valorNf: item.valorNfDepois, percentualFrete: item.percentualDepois, ticketMedio: item.ticketDepois }))} maxLinhas={10} />
+        </div>
+
+        <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <RankingTabela titulo="Canais mais caros" linhas={canaisMaisCaros.map((item) => ({ key: item.key, label: item.item, ctes: item.ctesDepois, valorCte: item.valorCteDepois, valorNf: item.valorNfDepois, percentualFrete: item.percentualDepois, ticketMedio: item.ticketDepois }))} maxLinhas={10} />
+          <div className="panel-card">
+            <div className="panel-title">Base com cálculo x sem cálculo</div>
+            <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>Competência</th><th>Total</th><th>Com cálculo</th><th>% com cálculo</th><th>Sem cálculo</th><th>% sem cálculo</th></tr></thead><tbody>{linhasComparativo.map((row) => { const total = Number(row.total_ctes || 0); const com = Number(row.total_com_calculo || 0); const sem = Number(row.total_sem_calculo || 0); const pctSem = total ? (sem / total) * 100 : 0; return (<tr key={`${row.id}-calc`} style={{ background: pctSem >= 10 ? '#fff7ed' : undefined }}><td><strong>{row.competencia}</strong></td><td>{fmtN(total)}</td><td>{fmtN(com)}</td><td>{fmtPct(total ? (com / total) * 100 : 0)}</td><td>{fmtN(sem)}</td><td>{fmtPct(pctSem)}</td></tr>); })}</tbody></table></div>
+          </div>
+        </div>
+
+        <div className="sim-analise-tabela-wrap">
+          <table className="sim-analise-tabela">
+            <thead>
+              <tr>
+                <th>Competência</th>
+                <th>CT-es</th>
+                <th>Valor CT-e</th>
+                <th>Valor NF</th>
+                <th>% frete NF</th>
+                <th>Peso total</th>
+                <th>Ticket médio</th>
+                <th>Transportadoras</th>
+                <th>Rotas</th>
+                <th>Com cálculo</th>
+                <th>Sem cálculo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!linhasComparativo.length && (
+                <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>Nenhuma competência salva encontrada.</td></tr>
+              )}
+              {linhasComparativo.map((row) => (
+                <tr key={row.id || `${row.competencia}-${row.filtros_hash}`}>
+                  <td><strong>{row.nome_competencia || row.competencia}</strong></td>
+                  <td>{fmtN(row.total_ctes)}</td>
+                  <td>{fmt(row.valor_total_cte)}</td>
+                  <td>{fmt(row.valor_total_nf)}</td>
+                  <td>{fmtPct(row.percentual_frete_nf)}</td>
+                  <td>{fmtN(row.peso_total)} kg</td>
+                  <td>{fmt(row.ticket_medio_cte)}</td>
+                  <td>{fmtN(row.total_transportadoras)}</td>
+                  <td>{fmtN(row.total_rotas)}</td>
+                  <td>{fmtN(row.total_com_calculo)}</td>
+                  <td>{fmtN(row.total_sem_calculo)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </ExpandCard>
+
       <div className="panel-card">
         <div className="panel-title">Filtros</div>
         <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
@@ -1242,6 +2687,7 @@ export default function CtePage() {
               setPagina(1);
               setTemProximaPagina(false);
               setUltimaBuscaTemFiltro(false);
+              limparFiltrosInterativos();
             }}
             disabled={carregando || carregandoAnalise}
           >
@@ -1285,9 +2731,44 @@ export default function CtePage() {
 
       {rows && ultimaBuscaTemFiltro && (
         <>
+          <div className="panel-card" style={{ marginBottom: 12 }}>
+            <div className="section-row compact-top">
+              <div>
+                <div className="panel-title">Filtros interativos</div>
+                <p className="compact">Clique nos rankings, rotas, canais ou status para recalcular o painel em memória.</p>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" className="btn-primary" onClick={abrirSalvarCompetencia} disabled={carregandoAnalise || !analiseSnapshot.totalCtes}>
+                  Salvar competência
+                </button>
+                <button type="button" className="btn-secondary" onClick={limparFiltrosInterativos} disabled={!filtrosAtivos.length}>
+                  Limpar filtros interativos
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ color: 'var(--muted)', fontSize: 13 }}>Filtros aplicados:</span>
+              {!filtrosAtivos.length && <span className="status-pill">Nenhum</span>}
+              {filtrosAtivos.map(([tipo, valor]) => (
+                <button
+                  key={tipo}
+                  type="button"
+                  className="status-pill dark"
+                  onClick={() => removerFiltroInterativo(tipo)}
+                  title={`Remover filtro ${LABEL_FILTROS_INTERATIVOS[tipo] || tipo}`}
+                  style={{ cursor: 'pointer', border: 'none' }}
+                >
+                  {LABEL_FILTROS_INTERATIVOS[tipo] || tipo}: {labelValorFiltroInterativo(tipo, valor)} ×
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
-            <SummaryCard title="CT-es analisados" value={fmtN(analise.totalCtes)} subtitle={avisoAnaliseLimitada ? `limitado a ${fmtN(ANALISE_MAX_REGISTROS)}` : 'conforme filtros'} />
-            <SummaryCard title="Com cálculo" value={fmtN(analise.comCalculo)} subtitle={`${fmtPct(analise.totalCtes > 0 ? (analise.comCalculo / analise.totalCtes) * 100 : 0)} da base`} />
+            <SummaryCard title="CT-es analisados" value={fmtN(analise.totalCtes)} subtitle="base completa conforme filtros" />
+            <SummaryCard title="Com cálculo" value={fmtN(analise.comCalculo)} subtitle={`${fmtPct(analise.totalCtes > 0 ? (analise.comCalculo / analise.totalCtes) * 100 : 0)} da base`} onClick={() => toggleInteractiveFilter('statusCalculo', 'com_calculo')} active={interactiveFilters.statusCalculo === 'com_calculo'} />
+            <SummaryCard title="Sem cálculo" value={fmtN(Math.max(analise.totalCtes - analise.comCalculo, 0))} subtitle="CT-es sem valor calculado" onClick={() => toggleInteractiveFilter('statusCalculo', 'sem_calculo')} active={interactiveFilters.statusCalculo === 'sem_calculo'} />
             <SummaryCard title="Valor total CT-e" value={fmt(analise.totalCte)} subtitle={carregandoAnalise ? 'calculando análise...' : 'base filtrada'} />
             <SummaryCard title="Valor calculado" value={fmt(analise.totalCalculado)} subtitle="campo valor_calculado" />
             <SummaryCard title="Diferença" value={fmt(analise.totalDiferenca)} subtitle="CT-e - calculado" />
@@ -1299,26 +2780,21 @@ export default function CtePage() {
           {carregandoAnalise && (
             <div className="sim-alert info">
               Montando painel de gestão com os CT-es filtrados...
-              {progressoAnalise ? ` ${fmtN(progressoAnalise.carregados)} de até ${fmtN(progressoAnalise.limite)} carregados para análise.` : ''}
+              {progressoAnalise ? ` ${fmtN(progressoAnalise.carregados)}${totalProgressoAnalise !== null ? ` de ${fmtN(totalProgressoAnalise)}` : ''} carregados para análise.` : ''}
             </div>
           )}
 
-          {avisoAnaliseLimitada && (
-            <div className="sim-alert info">
-              O dossiê foi limitado aos primeiros {fmtN(ANALISE_MAX_REGISTROS)} registros filtrados para manter a tela rápida. Refine por mês, origem, transportadora ou canal para uma análise mais exata.
-            </div>
-          )}
-
-          <PainelGestaoTransportador analise={analise} filtros={filtros} />
+          <PainelGestaoTransportador analise={analise} filtros={filtros} interactiveFilters={interactiveFilters} onToggleFiltro={toggleInteractiveFilter} />
 
           <div className="table-card">
             <div className="section-row compact-top" style={{ padding: '16px 18px 0' }}>
               <div>
                 <div className="panel-title">CT-es filtrados</div>
                 <p className="compact">
-                  Exibindo {fmtN(inicioExibicao)} a {fmtN(fimExibicao)}. Página {fmtN(pagina)}{temProximaPagina ? ' · há mais registros' : ''}.
+                  Exibindo {fmtN(inicioExibicao)} a {fmtN(fimExibicao)} de {fmtN(rowsAnaliseInterativas.length)}. Página {fmtN(pagina)} de {fmtN(totalPaginasTabela)}.
                   {ocultarEbazar && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>EBAZAR ocultado.</span>}
                     {!incluirCpsLog && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>CPS LOG ocultado.</span>}
+                    {totalVinculosAplicados > 0 && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>{fmtN(totalVinculosAplicados)} nome(s) padronizado(s) por vínculo.</span>}
                 </p>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1328,7 +2804,7 @@ export default function CtePage() {
                 <button type="button" className="btn-secondary" disabled={pagina <= 1 || carregando} onClick={() => trocarPagina(pagina - 1)}>
                   Anterior
                 </button>
-                <button type="button" className="btn-secondary" disabled={!temProximaPagina || carregando} onClick={() => trocarPagina(pagina + 1)}>
+                <button type="button" className="btn-secondary" disabled={!temProximaTabela || carregando} onClick={() => trocarPagina(pagina + 1)}>
                   Próxima
                 </button>
               </div>
@@ -1368,6 +2844,8 @@ export default function CtePage() {
                   {(rowsFiltradas || []).map((row, idx) => {
                     const dataEmissao = getDataEmissao(row);
                     const transp = getTransportadora(row);
+                    const transpOriginal = getTransportadoraOriginal(row);
+                    const transpVinculada = transp && transpOriginal && transp !== transpOriginal;
                     const tomador = getTomador(row);
                     const cidOrig = getOrigem(row);
                     const ufOrig = getUfOrigem(row);
@@ -1389,10 +2867,29 @@ export default function CtePage() {
                       <tr key={row.id || row.chave_cte || `${nroCte}-${idx}`}>
                         <td>{fmtDate(dataEmissao)}</td>
                         <td>{competencia ? fmtMes(competencia) : '-'}</td>
-                        <td><strong>{transp || '-'}</strong></td>
+                        <td
+                          onClick={() => transp && toggleInteractiveFilter('transportadora', transp || 'Não informado')}
+                          title="Clique para filtrar por esta transportadora"
+                          style={{ cursor: transp ? 'pointer' : undefined, color: interactiveFilters.transportadora === transp ? '#185FA5' : undefined, fontWeight: interactiveFilters.transportadora === transp ? 800 : undefined }}
+                        >
+                          <strong>{transp || '-'}</strong>
+                          {transpVinculada && (
+                            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }} title={`Nome original no CT-e: ${transpOriginal}`}>
+                              CT-e: {transpOriginal}
+                            </div>
+                          )}
+                        </td>
                         <td style={{ fontSize: 12 }}>{tomador}</td>
-                        <td>{cidOrig ? `${cidOrig}${ufOrig ? `/${ufOrig}` : ''}` : ufOrig || '-'}</td>
-                        <td>{cidDest ? `${cidDest}${ufDest ? `/${ufDest}` : ''}` : ufDest || '-'}</td>
+                        <td
+                          onClick={() => toggleInteractiveFilter('origem', getOrigemLabel(row))}
+                          title="Clique para filtrar por esta origem"
+                          style={{ cursor: 'pointer', color: interactiveFilters.origem === getOrigemLabel(row) ? '#185FA5' : undefined, fontWeight: interactiveFilters.origem === getOrigemLabel(row) ? 800 : undefined }}
+                        >{cidOrig ? `${cidOrig}${ufOrig ? `/${ufOrig}` : ''}` : ufOrig || '-'}</td>
+                        <td
+                          onClick={() => toggleInteractiveFilter('destino', getDestinoLabel(row))}
+                          title="Clique para filtrar por este destino"
+                          style={{ cursor: 'pointer', color: interactiveFilters.destino === getDestinoLabel(row) ? '#185FA5' : undefined, fontWeight: interactiveFilters.destino === getDestinoLabel(row) ? 800 : undefined }}
+                        >{cidDest ? `${cidDest}${ufDest ? `/${ufDest}` : ''}` : ufDest || '-'}</td>
                         <td>{nroCte || '-'}</td>
                         <td>{fmt(valCte)}</td>
                         <td>{valCalc > 0 ? fmt(valCalc) : '-'}</td>
@@ -1403,7 +2900,7 @@ export default function CtePage() {
                         <td>{valNf > 0 ? fmtPct(percentual) : '-'}</td>
                         <td>{peso ? `${fmtN(peso)} kg` : '-'}</td>
                         <td>{volumes ? fmtN(volumes) : '-'}</td>
-                        <td>
+                        <td onClick={() => toggleInteractiveFilter('canal', canal || 'Não informado')} title="Clique para filtrar por este canal" style={{ cursor: 'pointer' }}>
                           <span
                             className={`coverage-badge ${canal === CANAL_A_DEFINIR ? 'warn' : canal === 'ATACADO' ? '' : 'ok'}`}
                             title={canal === CANAL_A_DEFINIR ? `Canal original: ${campo(row, 'canal_original', 'canalOriginal', 'canal_vendas', 'canalVendas') || '-'}` : ''}
