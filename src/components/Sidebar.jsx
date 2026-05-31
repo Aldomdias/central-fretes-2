@@ -1,4 +1,5 @@
 import { usuarioTemAcesso } from '../utils/authLocal';
+import amdLogo from '../assets/amd-log.png';
 
 const ICONS = {
   dashboard: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm10 0a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zm10 0a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />,
@@ -60,93 +61,79 @@ const menuConta = [
 
 function Icon({ chave }) {
   return (
-    <svg style={{ width: 16, height: 16, flexShrink: 0 }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <svg className="nav-icon-svg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       {ICONS[chave] || <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />}
     </svg>
   );
 }
 
-function BotaoMenu({ item, paginaAtual, onMudarPagina }) {
+function BotaoMenu({ item, paginaAtual, onMudarPagina, recolhida, onFecharMobile }) {
   const ativo = paginaAtual === item.chave;
 
   return (
     <button
-      onClick={() => onMudarPagina(item.chave)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        width: '100%',
-        padding: '9px 12px',
-        borderRadius: 8,
-        marginBottom: 2,
-        border: 'none',
-        background: ativo ? 'rgba(255,255,255,0.10)' : 'transparent',
-        color: ativo ? '#ffffff' : 'rgba(255,255,255,0.50)',
-        fontSize: 13,
-        fontWeight: 500,
-        textAlign: 'left',
-        cursor: 'pointer',
-        transition: 'background 0.15s, color 0.15s',
+      type="button"
+      title={recolhida ? item.label : undefined}
+      aria-label={item.label}
+      onClick={() => {
+        onMudarPagina(item.chave);
+        onFecharMobile?.();
       }}
-      onMouseEnter={(e) => {
-        if (!ativo) {
-          e.currentTarget.style.color = '#ffffff';
-          e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!ativo) {
-          e.currentTarget.style.color = 'rgba(255,255,255,0.50)';
-          e.currentTarget.style.background = 'transparent';
-        }
-      }}
+      className={`nav-item ${ativo ? 'active' : ''} ${recolhida ? 'is-collapsed' : ''}`}
     >
       <Icon chave={item.chave} />
-      <span>{item.label}</span>
+      <span className="nav-label">{item.label}</span>
     </button>
   );
 }
 
-function SecaoLabel({ texto }) {
-  return (
-    <div
-      style={{
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: '0.08em',
-        color: 'rgba(255,255,255,0.25)',
-        padding: '4px 12px 6px',
-        marginTop: 16,
-      }}
-    >
-      {texto}
-    </div>
-  );
+function SecaoLabel({ texto, recolhida }) {
+  if (recolhida) return <div className="menu-section-divider" />;
+  return <div className="menu-section-title">{texto}</div>;
 }
 
-export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout }) {
+export default function Sidebar({
+  paginaAtual,
+  onMudarPagina,
+  usuario,
+  onLogout,
+  recolhida = false,
+  menuMobileAberto = false,
+  onAlternarRecolhida,
+  onFecharMobile,
+}) {
   const principais = menuPrincipal.filter((i) => usuarioTemAcesso(usuario, i.chave));
   const cadastros  = menuCadastros.filter((i) => usuarioTemAcesso(usuario, i.chave));
   const conta      = menuConta.filter((i) => usuarioTemAcesso(usuario, i.chave));
   const inicial    = (usuario?.nome || 'A')[0].toUpperCase();
 
   return (
+    <>
+    <button
+      type="button"
+      className={`sidebar-backdrop ${menuMobileAberto ? 'show' : ''}`}
+      onClick={onFecharMobile}
+      aria-label="Fechar menu"
+    />
     <aside
+      className={`sidebar-app ${recolhida ? 'is-collapsed' : ''} ${menuMobileAberto ? 'is-mobile-open' : ''}`}
       style={{
         position: 'fixed',
         left: 0,
         top: 0,
         height: '100vh',
-        width: 224,
+        width: recolhida ? 76 : 224,
         display: 'flex',
         flexDirection: 'column',
         background: '#0F2347',
         zIndex: 30,
+        transition: 'width 0.2s ease, transform 0.2s ease',
       }}
     >
-      <div style={{ padding: '20px 20px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+      <div style={{ padding: recolhida ? '18px 12px' : '20px 20px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)', position: 'relative' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {!recolhida && <img src={amdLogo} alt="AMD LOG" style={{ width: 118, height: 'auto', display: 'block' }} />}
+          {recolhida && (
           <div
             style={{
               background: '#CC2020',
@@ -163,39 +150,49 @@ export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout 
               <circle cx="17.5" cy="18" r="1.8" fill="#CC2020" />
             </svg>
           </div>
+          )}
 
-          <div>
+          {!recolhida && <div style={{ display: 'none' }}>
             <div style={{ fontWeight: 900, fontSize: 18, lineHeight: 1, color: '#fff' }}>
               AMD<span style={{ color: '#CC2020' }}>LOG</span>
             </div>
             <div style={{ fontSize: 11, marginTop: 2, color: 'rgba(255,255,255,0.35)' }}>
               Central de Fretes
             </div>
-          </div>
+          </div>}
         </div>
+        <button
+          type="button"
+          className="sidebar-collapse-button"
+          onClick={onAlternarRecolhida}
+          aria-label={recolhida ? 'Expandir menu' : 'Recolher menu'}
+          title={recolhida ? 'Expandir menu' : 'Recolher menu'}
+        >
+          {recolhida ? '›' : '‹'}
+        </button>
       </div>
 
       <nav style={{ flex: 1, padding: '12px 12px', overflowY: 'auto' }}>
-        <SecaoLabel texto="OPERAÇÃO" />
+        <SecaoLabel texto="OPERAÇÃO" recolhida={recolhida} />
 
         {principais.map((item) => (
-          <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} />
+          <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} recolhida={recolhida} onFecharMobile={onFecharMobile} />
         ))}
 
         {cadastros.length > 0 && (
           <>
-            <SecaoLabel texto="CADASTROS" />
+            <SecaoLabel texto="CADASTROS" recolhida={recolhida} />
             {cadastros.map((item) => (
-              <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} />
+              <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} recolhida={recolhida} onFecharMobile={onFecharMobile} />
             ))}
           </>
         )}
 
         {conta.length > 0 && (
           <>
-            <SecaoLabel texto="CONTA" />
+            <SecaoLabel texto="CONTA" recolhida={recolhida} />
             {conta.map((item) => (
-              <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} />
+              <BotaoMenu key={item.chave} item={item} paginaAtual={paginaAtual} onMudarPagina={onMudarPagina} recolhida={recolhida} onFecharMobile={onFecharMobile} />
             ))}
           </>
         )}
@@ -221,7 +218,7 @@ export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout 
             {inicial}
           </div>
 
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ flex: 1, minWidth: 0, display: recolhida ? 'none' : 'block' }}>
             <div
               style={{
                 fontSize: 13,
@@ -254,5 +251,6 @@ export default function Sidebar({ paginaAtual, onMudarPagina, usuario, onLogout 
         </div>
       </div>
     </aside>
+    </>
   );
 }

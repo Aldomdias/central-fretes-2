@@ -43,6 +43,8 @@ export default function App() {
   const store = useFreteStore();
   const [sessao, setSessao] = useState(() => carregarSessao());
   const [paginaAtual, setPaginaAtual] = useState('dashboard');
+  const [sidebarRecolhida, setSidebarRecolhida] = useState(false);
+  const [menuMobileAberto, setMenuMobileAberto] = useState(false);
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
   const [origemSelecionadaId, setOrigemSelecionadaId] = useState(null);
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
@@ -71,6 +73,7 @@ export default function App() {
   const mudarPagina = (pagina) => {
     if (!usuarioTemAcesso(sessao, pagina)) return;
     setPaginaAtual(pagina);
+    setMenuMobileAberto(false);
     if (pagina !== 'transportadoras') {
       setTransportadoraSelecionadaId(null);
       setOrigemSelecionadaId(null);
@@ -147,8 +150,27 @@ export default function App() {
   );
 
   return (
-    <div className="app-layout">
-      <Sidebar paginaAtual={paginaAtual} onMudarPagina={mudarPagina} usuario={sessao} onLogout={sair} />
+    <div className={`app-layout ${sidebarRecolhida ? 'sidebar-collapsed' : ''}`}>
+      <button
+        type="button"
+        className="mobile-menu-button"
+        onClick={() => setMenuMobileAberto(true)}
+        aria-label="Abrir menu"
+      >
+        <span />
+        <span />
+        <span />
+      </button>
+      <Sidebar
+        paginaAtual={paginaAtual}
+        onMudarPagina={mudarPagina}
+        usuario={sessao}
+        onLogout={sair}
+        recolhida={sidebarRecolhida}
+        menuMobileAberto={menuMobileAberto}
+        onAlternarRecolhida={() => setSidebarRecolhida((valor) => !valor)}
+        onFecharMobile={() => setMenuMobileAberto(false)}
+      />
       <main className="app-content">{content}</main>
     </div>
   );
