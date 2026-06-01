@@ -241,6 +241,14 @@ self.onmessage = async (event) => {
       const valorGanhadora = ganhadoraAtiva.total;
       const perda = fmt2(valorPago - valorGanhadora);
       const temPerda = perda > 0.01;
+      const alternativasAtivas = calculadosAtivos.slice(0, 12).map((item) => ({
+        transportadora: item.transportadora,
+        valor: fmt2(item.total),
+        prazo: numeroValido(item.prazo),
+        faixaPeso: item.faixaPeso || '',
+        tipoCalculo: item.tipoCalculo || '',
+        detalhe: detalheCalculo(item),
+      }));
 
       detalhes.push({
         chaveCte: cte.chaveCte || '',
@@ -274,6 +282,7 @@ self.onmessage = async (event) => {
         tipoCalculoRealizada: realizadaCalc.tipoCalculo || '',
         calculoGanhadora: detalheCalculo(ganhadoraAtiva),
         calculoRealizada: detalheCalculo(realizadaCalc),
+        alternativasAtivas,
         menorInativa: menorInativa ? detalheCalculo(menorInativa) : null,
       });
     }
