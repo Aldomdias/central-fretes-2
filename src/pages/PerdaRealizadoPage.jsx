@@ -34,17 +34,22 @@ function safeNumber(v) { const n = Number(v || 0); return Number.isFinite(n) ? n
 function chunkArray(arr, size) { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; }
 function normText(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase(); }
 function incluiTexto(valor, filtro) { const f = normText(filtro); return !f || normText(valor).includes(f); }
+function selecionadosLista(value) { return Array.isArray(value) ? value : (value ? [value] : []); }
+function passaLista(valor, selecionados = []) {
+  const lista = selecionadosLista(selecionados).map(normText).filter(Boolean);
+  return !lista.length || lista.includes(normText(valor));
+}
 
 const FILTROS_BI_PADRAO = {
   emissaoInicio: '',
   emissaoFim: '',
-  canal: '',
-  ufOrigem: '',
-  ufDestino: '',
-  cidadeOrigem: '',
-  cidadeDestino: '',
-  transportadoraRealizada: '',
-  transportadoraGanhadora: '',
+  canais: [],
+  ufsOrigem: [],
+  ufsDestino: [],
+  cidadesOrigem: [],
+  cidadesDestino: [],
+  transportadorasRealizadas: [],
+  transportadorasGanhadoras: [],
   soPerda: false,
 };
 
@@ -96,14 +101,14 @@ function passaFiltrosBiDetalhe(d = {}, filtros = {}) {
   const emissao = String(d.emissao || '').slice(0, 10);
   if (filtros.emissaoInicio && (!emissao || emissao < filtros.emissaoInicio)) return false;
   if (filtros.emissaoFim && (!emissao || emissao > filtros.emissaoFim)) return false;
-  if (filtros.canal && normText(d.canal) !== normText(filtros.canal)) return false;
-  if (filtros.ufOrigem && normUf(d.ufOrigem) !== normUf(filtros.ufOrigem)) return false;
-  if (filtros.ufDestino && normUf(d.ufDestino) !== normUf(filtros.ufDestino)) return false;
+  if (!passaLista(d.canal, filtros.canais)) return false;
+  if (!passaLista(d.ufOrigem, filtros.ufsOrigem)) return false;
+  if (!passaLista(d.ufDestino, filtros.ufsDestino)) return false;
   if (filtros.soPerda && !d.temPerda) return false;
-  if (!incluiTexto(d.cidadeOrigem, filtros.cidadeOrigem)) return false;
-  if (!incluiTexto(d.cidadeDestino, filtros.cidadeDestino)) return false;
-  if (!incluiTexto(d.transportadoraRealizada, filtros.transportadoraRealizada)) return false;
-  if (!incluiTexto(d.transportadoraGanhadora, filtros.transportadoraGanhadora)) return false;
+  if (!passaLista(d.cidadeOrigem, filtros.cidadesOrigem)) return false;
+  if (!passaLista(d.cidadeDestino, filtros.cidadesDestino)) return false;
+  if (!passaLista(d.transportadoraRealizada, filtros.transportadorasRealizadas)) return false;
+  if (!passaLista(d.transportadoraGanhadora, filtros.transportadorasGanhadoras)) return false;
   return true;
 }
 
@@ -113,13 +118,13 @@ function passaFiltrosBiInativa(d = {}, filtros = {}) {
   const [cidadeDestino = '', ufDestino = ''] = String(d.destino || '').split('/');
   if (filtros.emissaoInicio && (!emissao || emissao < filtros.emissaoInicio)) return false;
   if (filtros.emissaoFim && (!emissao || emissao > filtros.emissaoFim)) return false;
-  if (filtros.canal && normText(d.canal) !== normText(filtros.canal)) return false;
-  if (filtros.ufOrigem && normUf(ufOrigem) !== normUf(filtros.ufOrigem)) return false;
-  if (filtros.ufDestino && normUf(ufDestino) !== normUf(filtros.ufDestino)) return false;
-  if (!incluiTexto(cidadeOrigem, filtros.cidadeOrigem)) return false;
-  if (!incluiTexto(cidadeDestino, filtros.cidadeDestino)) return false;
-  if (!incluiTexto(d.transportadoraRealizada, filtros.transportadoraRealizada)) return false;
-  if (!incluiTexto(d.transportadoraAtivaMaisBarata, filtros.transportadoraGanhadora)) return false;
+  if (!passaLista(d.canal, filtros.canais)) return false;
+  if (!passaLista(ufOrigem, filtros.ufsOrigem)) return false;
+  if (!passaLista(ufDestino, filtros.ufsDestino)) return false;
+  if (!passaLista(cidadeOrigem, filtros.cidadesOrigem)) return false;
+  if (!passaLista(cidadeDestino, filtros.cidadesDestino)) return false;
+  if (!passaLista(d.transportadoraRealizada, filtros.transportadorasRealizadas)) return false;
+  if (!passaLista(d.transportadoraAtivaMaisBarata, filtros.transportadorasGanhadoras)) return false;
   return true;
 }
 
@@ -139,7 +144,11 @@ function recalcularResultadoBi(resultado = {}, filtros = {}) {
 }
 
 function filtrosBiAtivos(filtros = {}) {
-  return Object.entries(filtros).some(([k, v]) => k === 'soPerda' ? Boolean(v) : Boolean(String(v || '').trim()));
+  return Object.entries(filtros).some(([k, v]) => {
+    if (k === 'soPerda') return Boolean(v);
+    if (Array.isArray(v)) return v.length > 0;
+    return Boolean(String(v || '').trim());
+  });
 }
 
 function opcoesUnicas(lista = [], seletor) {
@@ -214,6 +223,26 @@ function CalculoBox({ titulo, calc, cor = '#9153F0' }) {
   </div>;
 }
 function DetalheCalculo({ item }) { return <details style={{ minWidth: 170 }}><summary style={{ cursor: 'pointer', color: '#9153F0', fontWeight: 700 }}>Ver cálculo</summary><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0.75rem', background: '#f8f6ff', borderRadius: 8, marginTop: 6, maxWidth: 1050 }}><CalculoBox titulo="Realizada/tabela" calc={item.calculoRealizada} cor="#4E008F" /><CalculoBox titulo="Mais barata ativa" calc={item.calculoGanhadora} cor="#04C7A4" />{item.menorInativa && <CalculoBox titulo="Menor inativa" calc={item.menorInativa} cor="#f59e0b" />}</div></details>; }
+
+function MultiSelectBusca({ label, options = [], value = [], onChange, placeholder = 'Buscar...' }) {
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
+  const selecionados = selecionadosLista(value);
+  const selecionadosNorm = new Set(selecionados.map(normText));
+  const opcoes = options.filter((op) => incluiTexto(op, busca));
+  const toggle = (opcao) => {
+    const jaSelecionado = selecionadosNorm.has(normText(opcao));
+    onChange(jaSelecionado ? selecionados.filter((item) => normText(item) !== normText(opcao)) : [...selecionados, opcao]);
+  };
+  const marcarVisiveis = () => {
+    const mapa = new Map(selecionados.map((item) => [normText(item), item]));
+    opcoes.forEach((opcao) => mapa.set(normText(opcao), opcao));
+    onChange(Array.from(mapa.values()));
+  };
+  const textoResumo = selecionados.length ? `${selecionados.length} selecionada${selecionados.length > 1 ? 's' : ''}` : 'Todas';
+
+  return <div className="field" style={{ position: 'relative' }}><span>{label}</span><button type="button" className="btn-secondary" onClick={() => setAberto((v) => !v)} style={{ width: '100%', justifyContent: 'space-between', textAlign: 'left', padding: '7px 10px', fontWeight: 700 }}>{textoResumo}<span>{aberto ? '▲' : '▼'}</span></button>{aberto && <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, background: '#fff', border: '1px solid #cfd8ea', borderRadius: 8, boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)', padding: 10, marginTop: 4 }}><input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder={placeholder} style={{ width: '100%', marginBottom: 8 }} /><div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}><button type="button" className="btn-secondary" style={{ padding: '3px 8px', fontSize: '0.76rem' }} onClick={marcarVisiveis}>Todas</button><button type="button" className="btn-secondary" style={{ padding: '3px 8px', fontSize: '0.76rem' }} onClick={() => onChange([])}>Nenhuma</button><button type="button" className="btn-primary" style={{ padding: '3px 10px', fontSize: '0.76rem' }} onClick={() => setAberto(false)}>Aplicar</button></div><div style={{ maxHeight: 230, overflow: 'auto', display: 'grid', gap: 4 }}>{!opcoes.length && <div style={{ color: '#667085', fontSize: '0.82rem', padding: '6px 2px' }}>Nenhuma opção encontrada.</div>}{opcoes.map((opcao) => { const marcado = selecionadosNorm.has(normText(opcao)); return <label key={opcao} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.82rem', cursor: 'pointer', padding: '4px 2px' }}><input type="checkbox" checked={marcado} onChange={() => toggle(opcao)} /><span>{opcao}</span></label>; })}</div></div>}</div>;
+}
 
 function PainelUfs({ titulo, cor, ufs, onChange }) {
   const toggleUf = (uf) => onChange(ufs.includes(uf) ? ufs.filter((u) => u !== uf) : [...ufs, uf]);
@@ -313,13 +342,25 @@ export default function PerdaRealizadoPage() {
 
   const resultadoBi = useMemo(() => resultado ? recalcularResultadoBi(resultado, filtrosBi) : null, [resultado, filtrosBi]);
   const biAtivo = filtrosBiAtivos(filtrosBi);
-  const opcoesBi = useMemo(() => ({
-    canais: opcoesUnicas(resultado?.detalhes || [], (d) => d.canal),
-    ufsOrigem: opcoesUnicas(resultado?.detalhes || [], (d) => d.ufOrigem),
-    ufsDestino: opcoesUnicas(resultado?.detalhes || [], (d) => d.ufDestino),
-    transportadorasRealizadas: opcoesUnicas(resultado?.detalhes || [], (d) => d.transportadoraRealizada),
-    transportadorasGanhadoras: opcoesUnicas(resultado?.detalhes || [], (d) => d.transportadoraGanhadora),
-  }), [resultado]);
+  const opcoesBi = useMemo(() => {
+    const detalhes = resultado?.detalhes || [];
+    const inativasDetalhes = resultado?.inativasDetalhes || [];
+    const origemInativas = inativasDetalhes.map((d) => {
+      const [cidadeOrigem = '', ufOrigem = ''] = String(d.origem || '').split('/');
+      const [cidadeDestino = '', ufDestino = ''] = String(d.destino || '').split('/');
+      return { ...d, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino, transportadoraGanhadora: d.transportadoraAtivaMaisBarata };
+    });
+    const base = [...detalhes, ...origemInativas];
+    return {
+      canais: opcoesUnicas(base, (d) => d.canal),
+      ufsOrigem: opcoesUnicas(base, (d) => d.ufOrigem),
+      ufsDestino: opcoesUnicas(base, (d) => d.ufDestino),
+      cidadesOrigem: opcoesUnicas(base, (d) => d.cidadeOrigem),
+      cidadesDestino: opcoesUnicas(base, (d) => d.cidadeDestino),
+      transportadorasRealizadas: opcoesUnicas(base, (d) => d.transportadoraRealizada),
+      transportadorasGanhadoras: opcoesUnicas(base, (d) => d.transportadoraGanhadora),
+    };
+  }, [resultado]);
 
   const detalhesVisiveis = useMemo(() => {
     if (!resultadoBi?.detalhes) return [];
@@ -341,7 +382,7 @@ export default function PerdaRealizadoPage() {
     <div className="page-header"><span className="amd-mini-brand">Realizado · Análise</span><h1>Perda por Transportadora Mais Cara</h1><p>Compara o frete pago com a opção mais barata ativa disponível nas tabelas. O processamento é feito por lotes de rotas para evitar timeout.</p></div>
     <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div><div className="form-grid three" style={{ marginBottom: '1rem' }}><label className="field">Data início<input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} /></label><label className="field">Data fim<input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} /></label><label className="field">Canal<select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}><option value="">Todos os canais</option>{CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><label className="field">Transportadora realizada<input placeholder="Nome da transportadora que carregou" value={filtros.transportadoraRealizada} onChange={(e) => set('transportadoraRealizada', e.target.value)} /></label><label className="field">Cidade de origem<input placeholder="Ex: São Paulo, Campinas..." value={filtros.cidadeOrigem} onChange={(e) => set('cidadeOrigem', e.target.value)} /></label></div><div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}><PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} /></div><div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}><PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} /></div><div style={{ marginTop: '1rem' }}><button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>{processando ? '⟳ Processando...' : '▶ Processar'}</button>{processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}</div></div>
     {info && !processando && <div className="hint-box compact" style={{ marginBottom: '0.75rem', background: '#f0f7ff', border: '1px solid #c8deff' }}>ℹ️ {info}</div>}{aviso && <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '0.75rem' }}>⚠️ {aviso}</div>}{erro && <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '0.75rem' }}>⚠️ {erro}</div>}
-    {resultadoBi && <><div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><span>Filtros da análise carregada</span><span style={{ fontSize: '0.78rem', color: '#667085', fontWeight: 500 }}>{biAtivo ? `${resultadoBi.totalCtes.toLocaleString('pt-BR')} de ${resultado.totalCtes.toLocaleString('pt-BR')} CT-es comparáveis` : 'Base completa carregada'}</span></div><div className="form-grid three" style={{ marginBottom: '0.75rem' }}><label className="field">Emissão início<input type="date" value={filtrosBi.emissaoInicio} onChange={(e) => setBi('emissaoInicio', e.target.value)} /></label><label className="field">Emissão fim<input type="date" value={filtrosBi.emissaoFim} onChange={(e) => setBi('emissaoFim', e.target.value)} /></label><label className="field">Canal<select value={filtrosBi.canal} onChange={(e) => setBi('canal', e.target.value)}><option value="">Todos</option>{opcoesBi.canais.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><label className="field">Transportadora realizada<input list="bi-transp-realizada" placeholder="Filtrar realizada" value={filtrosBi.transportadoraRealizada} onChange={(e) => setBi('transportadoraRealizada', e.target.value)} /><datalist id="bi-transp-realizada">{opcoesBi.transportadorasRealizadas.map((t) => <option key={t} value={t} />)}</datalist></label><label className="field">Mais barata ativa<input list="bi-transp-ganhadora" placeholder="Filtrar ganhadora" value={filtrosBi.transportadoraGanhadora} onChange={(e) => setBi('transportadoraGanhadora', e.target.value)} /><datalist id="bi-transp-ganhadora">{opcoesBi.transportadorasGanhadoras.map((t) => <option key={t} value={t} />)}</datalist></label><label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 22 }}><input type="checkbox" checked={filtrosBi.soPerda} onChange={(e) => setBi('soPerda', e.target.checked)} />Apenas CT-es com perda</label><label className="field">Cidade origem<input placeholder="Filtrar origem" value={filtrosBi.cidadeOrigem} onChange={(e) => setBi('cidadeOrigem', e.target.value)} /></label><label className="field">Cidade destino<input placeholder="Filtrar destino" value={filtrosBi.cidadeDestino} onChange={(e) => setBi('cidadeDestino', e.target.value)} /></label><label className="field">UF origem<select value={filtrosBi.ufOrigem} onChange={(e) => setBi('ufOrigem', e.target.value)}><option value="">Todas</option>{opcoesBi.ufsOrigem.map((u) => <option key={u} value={u}>{u}</option>)}</select></label><label className="field">UF destino<select value={filtrosBi.ufDestino} onChange={(e) => setBi('ufDestino', e.target.value)}><option value="">Todas</option>{opcoesBi.ufsDestino.map((u) => <option key={u} value={u}>{u}</option>)}</select></label></div><button className="btn-secondary" onClick={limparFiltrosBi} disabled={!biAtivo}>Limpar filtros da análise</button></div><div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}><Card label="CT-es comparáveis" valor={resultadoBi.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub={biAtivo ? 'recorte filtrado' : 'com tabela ativa e prazo'} /><Card label="CT-es com perda" valor={resultadoBi.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultadoBi.totalCtes > 0 ? (resultadoBi.ctesComPerda / resultadoBi.totalCtes) * 100 : 0)} cor="#e67e22" /><Card label="Perda total" valor={fmt(resultadoBi.perdaTotal)} cor="#9b1111" destaque={resultadoBi.perdaTotal > 0} /><Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" /><Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" /><Card label="Inativas bloqueadas" valor={(resultadoBi.inativas || 0).toLocaleString('pt-BR')} sub={`potencial vs ativa: ${fmt(resultadoBi.economiaInativaTotal)}`} cor="#f59e0b" /><Card label="Sem comparação" valor={(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')} sub={biAtivo ? 'total da carga inicial' : 'sem tabela, prazo ou realizada ativa'} cor="#888" /></div>
+    {resultadoBi && <><div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><span>Filtros da análise carregada</span><span style={{ fontSize: '0.78rem', color: '#667085', fontWeight: 500 }}>{biAtivo ? `${resultadoBi.totalCtes.toLocaleString('pt-BR')} de ${resultado.totalCtes.toLocaleString('pt-BR')} CT-es comparáveis` : 'Base completa carregada'}</span></div><div className="form-grid three" style={{ marginBottom: '0.75rem' }}><label className="field">Emissão início<input type="date" value={filtrosBi.emissaoInicio} onChange={(e) => setBi('emissaoInicio', e.target.value)} /></label><label className="field">Emissão fim<input type="date" value={filtrosBi.emissaoFim} onChange={(e) => setBi('emissaoFim', e.target.value)} /></label><MultiSelectBusca label="Canal" options={opcoesBi.canais} value={filtrosBi.canais} onChange={(v) => setBi('canais', v)} placeholder="Buscar canal..." /><MultiSelectBusca label="Transportadora realizada" options={opcoesBi.transportadorasRealizadas} value={filtrosBi.transportadorasRealizadas} onChange={(v) => setBi('transportadorasRealizadas', v)} placeholder="Buscar transportadora..." /><MultiSelectBusca label="Mais barata ativa" options={opcoesBi.transportadorasGanhadoras} value={filtrosBi.transportadorasGanhadoras} onChange={(v) => setBi('transportadorasGanhadoras', v)} placeholder="Buscar transportadora..." /><label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 22 }}><input type="checkbox" checked={filtrosBi.soPerda} onChange={(e) => setBi('soPerda', e.target.checked)} />Apenas CT-es com perda</label><MultiSelectBusca label="Cidade origem" options={opcoesBi.cidadesOrigem} value={filtrosBi.cidadesOrigem} onChange={(v) => setBi('cidadesOrigem', v)} placeholder="Buscar origem..." /><MultiSelectBusca label="Cidade destino" options={opcoesBi.cidadesDestino} value={filtrosBi.cidadesDestino} onChange={(v) => setBi('cidadesDestino', v)} placeholder="Buscar destino..." /><MultiSelectBusca label="UF origem" options={opcoesBi.ufsOrigem} value={filtrosBi.ufsOrigem} onChange={(v) => setBi('ufsOrigem', v)} placeholder="Buscar UF..." /><MultiSelectBusca label="UF destino" options={opcoesBi.ufsDestino} value={filtrosBi.ufsDestino} onChange={(v) => setBi('ufsDestino', v)} placeholder="Buscar UF..." /></div><button className="btn-secondary" onClick={limparFiltrosBi} disabled={!biAtivo}>Limpar filtros da análise</button></div><div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}><Card label="CT-es comparáveis" valor={resultadoBi.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub={biAtivo ? 'recorte filtrado' : 'com tabela ativa e prazo'} /><Card label="CT-es com perda" valor={resultadoBi.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultadoBi.totalCtes > 0 ? (resultadoBi.ctesComPerda / resultadoBi.totalCtes) * 100 : 0)} cor="#e67e22" /><Card label="Perda total" valor={fmt(resultadoBi.perdaTotal)} cor="#9b1111" destaque={resultadoBi.perdaTotal > 0} /><Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" /><Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" /><Card label="Inativas bloqueadas" valor={(resultadoBi.inativas || 0).toLocaleString('pt-BR')} sub={`potencial vs ativa: ${fmt(resultadoBi.economiaInativaTotal)}`} cor="#f59e0b" /><Card label="Sem comparação" valor={(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')} sub={biAtivo ? 'total da carga inicial' : 'sem tabela, prazo ou realizada ativa'} cor="#888" /></div>
     <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem', flexWrap: 'wrap' }}>{[{ id: 'origens', label: `Top 10 Origens (${resultadoBi.top10Origens.length})` }, { id: 'transportadoras', label: `Por Transportadora (${resultadoBi.porTransportadora.length})` }, { id: 'detalhes', label: `Detalhes (${detalhesVisiveis.length.toLocaleString('pt-BR')})` }, { id: 'inativas', label: `Inativas (${inativas.length.toLocaleString('pt-BR')})` }, { id: 'sem-malha', label: `Sem comparação (${resultado.semComparacao || resultado.semMalha || 0})` }].map((a) => <button key={a.id} onClick={() => { setAba(a.id); setPagina(0); }} style={{ padding: '4px 14px', border: 'none', borderRadius: '4px 4px 0 0', cursor: 'pointer', background: aba === a.id ? '#9153F0' : '#f0f0f0', color: aba === a.id ? '#fff' : '#555', fontWeight: aba === a.id ? 700 : 400, fontSize: '0.85rem' }}>{a.label}</button>)}</div>
     {aba === 'origens' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 10 origens por valor de perda</div>{resultadoBi.top10Origens.length === 0 ? <p style={{ color: '#888' }}>Nenhuma origem com perda encontrada.</p> : <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Origem</th><th>CT-es</th><th>Perda total</th><th>% sobre pago</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultadoBi.top10Origens.map((o, i) => <tr key={o.origem}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{o.origem}</strong></td><td>{o.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(o.perdaTotal)}</td><td>{pct(o.perdaPercentual)}</td><td><Barra valor={o.perdaTotal} maximo={maxTop10} cor="#9b1111" /></td></tr>)}</tbody></table></div>}</div>}
     {aba === 'transportadoras' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Perda por transportadora realizada</div><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Transportadora realizada</th><th>CT-es</th><th>Perda total</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultadoBi.porTransportadora.map((t, i) => <tr key={t.transportadora}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{t.transportadora}</strong></td><td>{t.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(t.perdaTotal)}</td><td><Barra valor={t.perdaTotal} maximo={resultadoBi.porTransportadora[0]?.perdaTotal || 1} cor="#e67e22" /></td></tr>)}</tbody></table></div></div>}
