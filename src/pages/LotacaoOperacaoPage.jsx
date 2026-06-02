@@ -716,7 +716,6 @@ export default function LotacaoOperacaoPage() {
         <div className="hint-box compact">Carregando histórico de cargas da Lotação...</div>
       )}
       <KpisFluxo resumo={resumo} />
-      <AutorizacoesOperacao solicitacoes={solicitacoes} onAtualizar={atualizarSolicitacao} />
       <CustoAdicionalOperacao baseFluxo={baseFluxo} onCriado={criarCustoAdicional} />
 
       <div className="panel-card">
