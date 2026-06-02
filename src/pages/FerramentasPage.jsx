@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { ImportarFluxoCard } from './LotacaoOperacaoPage';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
 import { carregarSessao } from '../utils/authLocal';
@@ -29,6 +30,10 @@ import {
   definirCanalTransportadora,
   listarPendenciasCanalTransportadora,
 } from '../services/canalTransportadoraService';
+import {
+  carregarFluxoCargasLotacao,
+  resumirFluxoCargas,
+} from '../utils/lotacaoFluxoCargas';
 import {
   carregarGradeFrete,
   salvarGradeFrete,
@@ -597,6 +602,8 @@ export default function FerramentasPage({ transportadoras = [] }) {
   const [pendenciasCanal, setPendenciasCanal] = useState([]);
   const [carregandoPendenciasCanal, setCarregandoPendenciasCanal] = useState(false);
   const [salvandoCanalPendencia, setSalvandoCanalPendencia] = useState('');
+  const [baseFluxoLotacao, setBaseFluxoLotacao] = useState(() => carregarFluxoCargasLotacao());
+  const resumoLotacao = useMemo(() => resumirFluxoCargas(baseFluxoLotacao), [baseFluxoLotacao]);
 
   const resumoPendenciasCanal = pendenciasCanal.reduce((acc, item) => {
     acc.transportadoras += 1;
@@ -1020,6 +1027,8 @@ export default function FerramentasPage({ transportadoras = [] }) {
       {sessao?.perfil === 'GESTAO' && (
         <SlaAuditoriaConfig canal="LOTACAO" />
       )}
+
+      <ImportarFluxoCard onImportado={setBaseFluxoLotacao} resumo={resumoLotacao} />
 
       {/* Pendencias de canal */}
       <div className="panel-card" style={{padding:0,overflow:'hidden'}}>

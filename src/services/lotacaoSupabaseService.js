@@ -393,6 +393,32 @@ export async function carregarCargasLotacaoSupabase(filtros = {}) {
   return todas;
 }
 
+export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
+  if (!isSupabaseConfigured()) return [];
+  const busca = String(termo || '').trim();
+  if (!busca) return [];
+  const supabase = ensureClient();
+  const buscaLike = `%${busca}%`;
+  const digitos = busca.replace(/\D/g, '');
+  const filtros = [
+    `chave_cte.ilike.${buscaLike}`,
+    `numero_cte.ilike.${buscaLike}`,
+  ];
+  if (digitos && digitos !== busca) {
+    filtros.push(`chave_cte.ilike.%${digitos}%`);
+    filtros.push(`numero_cte.ilike.%${digitos}%`);
+  }
+
+  const { data, error } = await supabase
+    .from('realizado_ctes')
+    .select('id, competencia, transportadora, cnpj_transportadora, emissao, chave_cte, numero_cte, serie_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, metros_cubicos, volume, canal, valor_nf, cidade_origem, cidade_destino, transportadora_contratada, raw')
+    .or(filtros.join(','))
+    .order('emissao', { ascending: false })
+    .limit(20);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
 export async function resumoRotasLotacaoSupabase(filtros = {}) {
   if (!isSupabaseConfigured()) return [];
   const supabase = ensureClient();

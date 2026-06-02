@@ -80,7 +80,7 @@ function StatusMensagem({ mensagem }) {
   return <div className={`hint-box compact ${mensagem.tipo === 'erro' ? 'error-text' : ''}`}>{mensagem.texto}</div>;
 }
 
-function ImportarFluxoCard({ onImportado, resumo }) {
+export function ImportarFluxoCard({ onImportado, resumo }) {
   const [arquivos, setArquivos] = useState([]);
   const [aliquota, setAliquota] = useState(12);
   const [modo, setModo] = useState('atualizar');
@@ -715,7 +715,6 @@ export default function LotacaoOperacaoPage() {
       {carregandoHistorico && (
         <div className="hint-box compact">Carregando histórico de cargas da Lotação...</div>
       )}
-      <ImportarFluxoCard onImportado={setBaseFluxo} resumo={resumo} />
       <KpisFluxo resumo={resumo} />
       <AutorizacoesOperacao solicitacoes={solicitacoes} onAtualizar={atualizarSolicitacao} />
       <CustoAdicionalOperacao baseFluxo={baseFluxo} onCriado={criarCustoAdicional} />
