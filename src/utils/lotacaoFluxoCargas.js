@@ -758,10 +758,10 @@ export function totalAdicionalAutorizadoCarga(solicitacoes = [], carga) {
   if (!carga) return 0;
   const distKey = chaveDist(carga.dist);
   return (solicitacoes || [])
-    .filter((item) => item.distKey === distKey && item.status === 'APROVADO')
+    .filter((item) => (item.distKey || item.dist_key) === distKey && ['APROVADO', 'APROVADO_OPERACAO'].includes(item.status))
     .reduce((acc, item) => {
       if (item.tipo === 'CUSTO_ADICIONAL') return acc + (Number(item.valorAdicional) || Number(item.valorLancado) || 0);
-      return acc + (Number(item.excedente) || 0);
+      return acc + (Number(item.valorAdicionalAprovado ?? item.valor_adicional_aprovado ?? item.valorAdicional ?? item.excedente ?? item.valor_excedente) || 0);
     }, 0);
 }
 
@@ -787,7 +787,7 @@ export function solicitacoesDaCarga(solicitacoes = [], carga) {
   if (!carga) return [];
   const distKey = chaveDist(carga.dist);
   return (solicitacoes || [])
-    .filter((item) => item.distKey === distKey)
+    .filter((item) => (item.distKey || item.dist_key) === distKey)
     .sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
 }
 

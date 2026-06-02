@@ -23,6 +23,20 @@ function horasDesde(dt) {
   return (Date.now() - new Date(dt).getTime()) / 3600000;
 }
 
+function valorOriginalPendencia(pendencia = {}) {
+  return Number(pendencia.valor_original ?? pendencia.valor_autorizado ?? 0) || 0;
+}
+
+function valorAdicionalPendencia(pendencia = {}) {
+  return Number(pendencia.valor_adicional_aprovado ?? pendencia.valor_excedente ?? 0) || 0;
+}
+
+function valorFinalPendencia(pendencia = {}) {
+  const finalGravado = Number(pendencia.valor_final_autorizado);
+  if (Number.isFinite(finalGravado) && finalGravado > 0) return finalGravado;
+  return valorOriginalPendencia(pendencia) + valorAdicionalPendencia(pendencia);
+}
+
 function Card({ label, valor, sub, cor, destaque }) {
   return (
     <div
@@ -42,6 +56,9 @@ function ModalAprovacao({ pendencia, onConfirmar, onCancelar }) {
   const [motivo, setMotivo] = useState('');
 
   if (!pendencia) return null;
+  const valorOriginal = valorOriginalPendencia(pendencia);
+  const valorAdicional = valorAdicionalPendencia(pendencia);
+  const valorFinal = valorOriginal + valorAdicional;
 
   const textoMotivo = acao === 'APROVADO_OPERACAO'
     ? 'Justificativa da aprovacao'
@@ -73,7 +90,9 @@ function ModalAprovacao({ pendencia, onConfirmar, onCancelar }) {
           <div><span>Transportadora</span><strong>{pendencia.transportadora || '-'}</strong></div>
           <div><span>DIST</span><strong>{pendencia.dist || '-'}</strong></div>
           <div><span>CT-e</span><strong>{pendencia.cte || '-'}</strong></div>
-          <div><span>Excedente</span><strong style={{ color: '#9b1111' }}>{fmt(pendencia.valor_excedente)}</strong></div>
+          <div><span>Valor original</span><strong>{fmt(valorOriginal)}</strong></div>
+          <div><span>Adicional solicitado</span><strong style={{ color: '#9b1111' }}>{fmt(valorAdicional)}</strong></div>
+          <div><span>Final autorizado</span><strong style={{ color: '#0f7a58' }}>{fmt(valorFinal)}</strong></div>
           <div><span>Auditor</span><strong>{pendencia.audited_by_name || '-'}</strong></div>
         </div>
         {pendencia.observation && (
@@ -105,7 +124,7 @@ function ModalAprovacao({ pendencia, onConfirmar, onCancelar }) {
 
         {acao === 'APROVADO_OPERACAO' && (
           <div className="hint-box compact" style={{ marginTop: '0.5rem' }}>
-            Ao confirmar, o excedente sera aprovado pela operacao, registrado no historico e liberado para acompanhamento da auditoria.
+            Ao confirmar, o sistema libera o adicional e registra: {fmt(valorOriginal)} + {fmt(valorAdicional)} = {fmt(valorFinal)}.
           </div>
         )}
 
@@ -167,9 +186,9 @@ export default function PainelOperacaoPage() {
   const acimaSla = useMemo(() => aguardando.filter((p) => horasDesde(p.created_at) > slaHoras), [aguardando, slaHoras]);
   const acimaEscalonamento = useMemo(() => aguardando.filter((p) => horasDesde(p.created_at) > slaEscalonamento), [aguardando, slaEscalonamento]);
 
-  const valorPendente = useMemo(() => aguardando.reduce((s, p) => s + Number(p.valor_excedente || 0), 0), [aguardando]);
-  const valorAprovado = useMemo(() => aprovados.reduce((s, p) => s + Number(p.valor_excedente || 0), 0), [aprovados]);
-  const valorRecusado = useMemo(() => recusados.reduce((s, p) => s + Number(p.valor_excedente || 0), 0), [recusados]);
+  const valorPendente = useMemo(() => aguardando.reduce((s, p) => s + valorAdicionalPendencia(p), 0), [aguardando]);
+  const valorAprovado = useMemo(() => aprovados.reduce((s, p) => s + valorAdicionalPendencia(p), 0), [aprovados]);
+  const valorRecusado = useMemo(() => recusados.reduce((s, p) => s + valorAdicionalPendencia(p), 0), [recusados]);
 
   // â”€â”€ Filtragem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const lista = useMemo(() => {
@@ -184,12 +203,20 @@ export default function PainelOperacaoPage() {
   const confirmarAprovacao = async (id, novoStatus, comentario) => {
     try {
       const pend = pendencias.find((p) => p.id === id);
+      const valorOriginal = valorOriginalPendencia(pend);
+      const valorAdicional = novoStatus === 'APROVADO_OPERACAO' ? valorAdicionalPendencia(pend) : 0;
+      const valorFinal = valorOriginal + valorAdicional;
       await atualizarPendenciaAuditoriaSupabase(id, novoStatus, {
         aprovado_por_user_id: sessao?.id || '',
         aprovado_por_name: sessao?.nome || sessao?.email || '',
+        aprovado_por_email: sessao?.email || '',
         aprovado_em: new Date().toISOString(),
+        valor_original: valorOriginal,
+        valor_adicional_aprovado: valorAdicional,
+        valor_final_autorizado: valorFinal,
         motivo_recusa: novoStatus === 'RECUSADO_OPERACAO' ? comentario : '',
         resposta_operacao: comentario,
+        justificativa_operacao: comentario,
       });
       await registrarEventoHistoricoSupabase({
         pendenciaId: id,
@@ -199,7 +226,9 @@ export default function PainelOperacaoPage() {
         acao: novoStatus,
         statusAnterior: pend?.status || '',
         statusNovo: novoStatus,
-        comentario,
+        comentario: novoStatus === 'APROVADO_OPERACAO'
+          ? `${comentario} | Autorizado: ${fmt(valorOriginal)} + ${fmt(valorAdicional)} = ${fmt(valorFinal)}`
+          : comentario,
         origemTela: 'PAINEL_OPERACAO',
       });
       setMensagem(`âœ“ PendÃªncia ${novoStatus === 'APROVADO_OPERACAO' ? 'aprovada' : novoStatus === 'RECUSADO_OPERACAO' ? 'recusada' : 'atualizada'} com sucesso.`);
@@ -297,7 +326,9 @@ export default function PainelOperacaoPage() {
                 <th>DIST</th>
                 <th>CT-e</th>
                 <th>Fatura</th>
+                <th>Original</th>
                 <th>Excedente</th>
+                <th>Final autorizado</th>
                 <th>Tempo</th>
                 <th>Justificativa auditoria</th>
                 <th>Status</th>
@@ -322,7 +353,9 @@ export default function PainelOperacaoPage() {
                     <td><strong>{p.dist || '-'}</strong></td>
                     <td>{p.cte || '-'}</td>
                     <td>{p.fatura || '-'}</td>
-                    <td className="negativo">{fmt(p.valor_excedente)}</td>
+                    <td>{fmt(valorOriginalPendencia(p))}</td>
+                    <td className="negativo">{fmt(valorAdicionalPendencia(p))}</td>
+                    <td>{p.status === 'APROVADO_OPERACAO' ? fmt(valorFinalPendencia(p)) : '-'}</td>
                     <td style={{ color: critico ? '#9b1111' : emAtraso ? '#e67e22' : undefined }}>
                       {horas.toFixed(0)}h
                       {critico && ' ðŸ”´'}
@@ -358,10 +391,10 @@ export default function PainelOperacaoPage() {
                 );
               })}
               {!lista.length && !carregando && (
-                <tr><td colSpan="11">Nenhuma pendÃªncia encontrada.</td></tr>
+                <tr><td colSpan="13">Nenhuma pendÃªncia encontrada.</td></tr>
               )}
               {carregando && (
-                <tr><td colSpan="11">Carregando...</td></tr>
+                <tr><td colSpan="13">Carregando...</td></tr>
               )}
             </tbody>
           </table>

@@ -5,6 +5,8 @@ import {
   carregarPendenciasAuditoriaSupabase,
   carregarSolicitacoesInfoSupabase,
   carregarFaturasSupabase,
+  atualizarPendenciaAuditoriaSupabase,
+  registrarEventoHistoricoSupabase,
 } from '../services/lotacaoSupabaseService';
 import { carregarSessao } from '../utils/authLocal';
 
@@ -22,6 +24,20 @@ function fmtData(v) {
 function horasDesde(dt) {
   if (!dt) return 0;
   return (Date.now() - new Date(dt).getTime()) / 3600000;
+}
+
+function valorOriginalPendencia(pendencia = {}) {
+  return Number(pendencia.valor_original ?? pendencia.valor_autorizado ?? 0) || 0;
+}
+
+function valorAdicionalPendencia(pendencia = {}) {
+  return Number(pendencia.valor_adicional_aprovado ?? pendencia.valor_excedente ?? 0) || 0;
+}
+
+function valorFinalPendencia(pendencia = {}) {
+  const finalGravado = Number(pendencia.valor_final_autorizado);
+  if (Number.isFinite(finalGravado) && finalGravado > 0) return finalGravado;
+  return valorOriginalPendencia(pendencia) + valorAdicionalPendencia(pendencia);
 }
 
 function Card({ label, valor, sub, cor, destaque }) {
@@ -126,6 +142,37 @@ export default function PainelAuditoriaPage() {
       lista = lista.filter((p) => (p.audited_by_email || '').toLowerCase() === sessao.email.toLowerCase());
     return lista;
   }, [pendencias, filtros, sessao]);
+
+  const concluirPendencia = async (pendencia, statusNovo) => {
+    const comentario = statusNovo === 'FINALIZADO'
+      ? 'Auditoria finalizada apos aprovacao da operacao.'
+      : 'Pendencia devolvida pela auditoria apos retorno da operacao.';
+    setCarregando(true);
+    try {
+      await atualizarPendenciaAuditoriaSupabase(pendencia.id, statusNovo, {
+        resposta_auditoria: comentario,
+        auditado_ok_em: statusNovo === 'FINALIZADO' ? new Date().toISOString() : null,
+        devolvido_auditoria_em: statusNovo === 'DEVOLVIDO_AUDITORIA' ? new Date().toISOString() : null,
+      });
+      await registrarEventoHistoricoSupabase({
+        pendenciaId: pendencia.id,
+        lancamentoId: pendencia.lancamento_id || '',
+        userId: sessao?.id || '',
+        userName: sessao?.nome || '',
+        userEmail: sessao?.email || '',
+        acao: statusNovo,
+        statusAnterior: pendencia.status || '',
+        statusNovo,
+        comentario,
+        origemTela: 'PAINEL_AUDITORIA',
+      });
+      await carregar();
+    } catch (err) {
+      setMensagem(`Erro ao atualizar pendencia: ${err.message}`);
+    } finally {
+      setCarregando(false);
+    }
+  };
 
   return (
     <div className="page-shell">
@@ -245,9 +292,11 @@ export default function PainelAuditoriaPage() {
                 <th>Fatura</th>
                 <th>Valor lançado</th>
                 <th>Excedente</th>
+                <th>Final autorizado</th>
                 <th>Tempo (h)</th>
                 <th>Status</th>
                 <th>Justificativa</th>
+                <th>Acao</th>
               </tr>
             </thead>
             <tbody>
@@ -265,7 +314,8 @@ export default function PainelAuditoriaPage() {
                     <td>{p.cte || '-'}</td>
                     <td>{p.fatura || '-'}</td>
                     <td>{fmt(p.valor_lancado)}</td>
-                    <td className="negativo">{fmt(p.valor_excedente)}</td>
+                    <td className="negativo">{fmt(valorAdicionalPendencia(p))}</td>
+                    <td>{p.status === 'APROVADO_OPERACAO' || p.status === 'FINALIZADO' ? fmt(valorFinalPendencia(p)) : '-'}</td>
                     <td style={{ color: atrasado ? '#e67e22' : undefined }}>
                       {horas.toFixed(0)}h {horas > 48 && '🔴'}
                       {horas > 24 && horas <= 48 && '🟡'}
@@ -276,14 +326,34 @@ export default function PainelAuditoriaPage() {
                     <td style={{ maxWidth: 200, whiteSpace: 'normal', fontSize: '0.82rem' }}>
                       {p.observation || '-'}
                     </td>
+                    <td>
+                      {p.status === 'APROVADO_OPERACAO' && (
+                        <button
+                          className="btn-primary"
+                          style={{ padding: '2px 10px', fontSize: '0.8rem' }}
+                          onClick={() => concluirPendencia(p, 'FINALIZADO')}
+                        >
+                          Auditado OK
+                        </button>
+                      )}
+                      {p.status === 'RECUSADO_OPERACAO' && (
+                        <button
+                          className="btn-secondary"
+                          style={{ padding: '2px 10px', fontSize: '0.8rem' }}
+                          onClick={() => concluirPendencia(p, 'DEVOLVIDO_AUDITORIA')}
+                        >
+                          Devolver
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
               {!pendenciasFiltradas.length && !carregando && (
-                <tr><td colSpan="11">Nenhuma pendência encontrada.</td></tr>
+                <tr><td colSpan="13">Nenhuma pendência encontrada.</td></tr>
               )}
               {carregando && (
-                <tr><td colSpan="11">Carregando...</td></tr>
+                <tr><td colSpan="13">Carregando...</td></tr>
               )}
             </tbody>
           </table>

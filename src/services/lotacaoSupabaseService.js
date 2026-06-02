@@ -18,6 +18,35 @@ function detalheErroSupabase(error) {
   return msg;
 }
 
+function erroColunasAprovacaoPendencia(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return [
+    'valor_original',
+    'valor_adicional_aprovado',
+    'valor_final_autorizado',
+    'aprovado_por_email',
+    'justificativa_operacao',
+    'resposta_auditoria',
+    'auditado_ok_em',
+    'devolvido_auditoria_em',
+  ].some((coluna) => msg.includes(coluna));
+}
+
+function semColunasAprovacaoPendencia(row = {}) {
+  const {
+    valor_original,
+    valor_adicional_aprovado,
+    valor_final_autorizado,
+    aprovado_por_email,
+    justificativa_operacao,
+    resposta_auditoria,
+    auditado_ok_em,
+    devolvido_auditoria_em,
+    ...compat
+  } = row;
+  return compat;
+}
+
 function calcularTipoNomeKey(tabela = {}) {
   const tipo = normalizarTipoTabela(tabela.tipo);
   if (tipo === 'ANTT') return 'ANTT';
@@ -590,6 +619,9 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
     valor_lancado: pendencia.valorLancado != null ? Number(pendencia.valorLancado) : null,
     valor_autorizado: pendencia.valorAutorizado != null ? Number(pendencia.valorAutorizado) : null,
     valor_excedente: pendencia.valorExcedente != null ? Number(pendencia.valorExcedente) : null,
+    valor_original: pendencia.valorOriginal != null ? Number(pendencia.valorOriginal) : null,
+    valor_adicional_aprovado: pendencia.valorAdicionalAprovado != null ? Number(pendencia.valorAdicionalAprovado) : null,
+    valor_final_autorizado: pendencia.valorFinalAutorizado != null ? Number(pendencia.valorFinalAutorizado) : null,
     status: String(pendencia.status || 'EXCEDEU_AGUARDANDO_OPERACAO'),
     audited_by_user_id: String(pendencia.auditedByUserId || ''),
     audited_by_name: String(pendencia.auditedByName || ''),
@@ -599,7 +631,15 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
     updated_at: new Date().toISOString(),
   };
   const { error } = await supabase.from('audit_pendencias').upsert(row, { onConflict: 'id' });
-  if (error) throw new Error(detalheErroSupabase(error));
+  if (error) {
+    if (erroColunasAprovacaoPendencia(error)) {
+      const fallback = semColunasAprovacaoPendencia(row);
+      const retry = await supabase.from('audit_pendencias').upsert(fallback, { onConflict: 'id' });
+      if (!retry.error) return { ok: true, compat: true };
+      throw new Error(detalheErroSupabase(retry.error));
+    }
+    throw new Error(detalheErroSupabase(error));
+  }
   return { ok: true };
 }
 
@@ -612,7 +652,15 @@ export async function atualizarPendenciaAuditoriaSupabase(id, status, dadosExtra
     ...dadosExtra,
   };
   const { error } = await supabase.from('audit_pendencias').update(update).eq('id', id);
-  if (error) throw new Error(detalheErroSupabase(error));
+  if (error) {
+    if (erroColunasAprovacaoPendencia(error)) {
+      const fallback = semColunasAprovacaoPendencia(update);
+      const retry = await supabase.from('audit_pendencias').update(fallback).eq('id', id);
+      if (!retry.error) return { ok: true, compat: true };
+      throw new Error(detalheErroSupabase(retry.error));
+    }
+    throw new Error(detalheErroSupabase(error));
+  }
   return { ok: true };
 }
 

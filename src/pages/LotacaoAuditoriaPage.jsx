@@ -24,8 +24,11 @@ import {
 import {
   carregarCargasLotacaoSupabase,
   carregarLancamentosAuditoriaSupabase,
+  carregarPendenciasAuditoriaSupabase,
   carregarSolicitacoesSupabase,
+  registrarEventoHistoricoSupabase,
   salvarLancamentoAuditoriaSupabase,
+  salvarPendenciaAuditoriaSupabase,
   salvarSolicitacaoSupabase,
 } from '../services/lotacaoSupabaseService';
 import { carregarSessao } from '../utils/authLocal';
@@ -34,6 +37,31 @@ function classeSaldo(valor) {
   if (valor < -0.01) return 'negativo';
   if (valor > 0.01) return 'positivo';
   return '';
+}
+
+function pendenciaParaMovimentoAutorizacao(pendencia = {}) {
+  return {
+    id: pendencia.id,
+    tipo: 'EXCEDENTE_AUDITORIA',
+    origemSolicitacao: 'AUDITORIA',
+    cargaId: pendencia.carga_id || '',
+    dist: pendencia.dist || '',
+    distKey: pendencia.dist_key || '',
+    cte: pendencia.cte || '',
+    fatura: pendencia.fatura || '',
+    transportadora: pendencia.transportadora || '',
+    valorAutorizadoCarga: pendencia.valor_original ?? pendencia.valor_autorizado,
+    valorLancado: pendencia.valor_lancado,
+    excedente: pendencia.valor_excedente,
+    valorAdicional: pendencia.valor_adicional_aprovado ?? pendencia.valor_excedente,
+    valorAdicionalAprovado: pendencia.valor_adicional_aprovado,
+    valorFinalAutorizado: pendencia.valor_final_autorizado,
+    status: pendencia.status || '',
+    observacao: pendencia.observation || '',
+    resposta: pendencia.resposta_operacao || pendencia.motivo_recusa || '',
+    criadoEm: pendencia.created_at || '',
+    atualizadoEm: pendencia.updated_at || '',
+  };
 }
 
 function ListaResultados({ resultados, selecionada, onSelecionar }) {
@@ -576,17 +604,20 @@ export default function LotacaoAuditoriaPage() {
 
     (async () => {
       try {
-        const [lancs, sols] = await Promise.all([
+        const [lancs, sols, pends] = await Promise.all([
           carregarLancamentosAuditoriaSupabase(),
           carregarSolicitacoesSupabase(),
+          carregarPendenciasAuditoriaSupabase({}).catch(() => null),
         ]);
         if (lancs !== null) {
           setLancamentos(lancs);
           salvarLancamentosAuditoria(lancs);
         }
         if (sols !== null) {
-          setSolicitacoes(sols);
-          salvarSolicitacoesPagamento(sols);
+          const movimentosPendencias = Array.isArray(pends) ? pends.map(pendenciaParaMovimentoAutorizacao) : [];
+          const solicitacoesComPendencias = [...movimentosPendencias, ...sols];
+          setSolicitacoes(solicitacoesComPendencias);
+          salvarSolicitacoesPagamento(solicitacoesComPendencias);
         }
       } catch (err) {
         console.warn('[Auditoria] Usando localStorage para lançamentos/solicitações:', err.message);
@@ -647,6 +678,7 @@ export default function LotacaoAuditoriaPage() {
 
       if (lancamentoComAuditor.excedente > 0) {
         const solicitacao = criarSolicitacaoPagamento(selecionada, lancamentoComAuditor);
+        const pendenciaId = globalThis.crypto?.randomUUID?.();
         const solicitacaoComAuditor = {
           ...solicitacao,
           auditedByName: lancamentoComAuditor.auditedByName,
@@ -663,6 +695,47 @@ export default function LotacaoAuditoriaPage() {
           await salvarSolicitacaoSupabase(solicitacaoComAuditor);
         } catch (error) {
           console.warn('[Auditoria] Solicitação salva localmente; falha ao salvar no Supabase:', error.message);
+        }
+
+        try {
+          await salvarPendenciaAuditoriaSupabase({
+            id: pendenciaId,
+            lancamentoId: lancamentoComAuditor.id,
+            dist: selecionada.dist,
+            distKey: selecionada.distKey,
+            cte: lancamentoComAuditor.cte,
+            fatura: lancamentoComAuditor.fatura,
+            transportadora: selecionada.transportadora,
+            cargaId: selecionada.id,
+            valorLancado: lancamentoComAuditor.valorLancado,
+            valorAutorizado: lancamentoComAuditor.saldoAnterior,
+            valorExcedente: lancamentoComAuditor.excedente,
+            valorOriginal: Number(selecionada.valorComparacao) || 0,
+            valorAdicionalAprovado: 0,
+            valorFinalAutorizado: Number(selecionada.valorComparacao) || 0,
+            status: 'EXCEDEU_AGUARDANDO_OPERACAO',
+            auditedByUserId: lancamentoComAuditor.auditedByUserId,
+            auditedByName: lancamentoComAuditor.auditedByName,
+            auditedByEmail: lancamentoComAuditor.auditedByEmail,
+            auditedAt: lancamentoComAuditor.auditedAt,
+            observation: lancamentoComAuditor.observacao,
+          });
+          if (pendenciaId) {
+            await registrarEventoHistoricoSupabase({
+              pendenciaId,
+              lancamentoId: lancamentoComAuditor.id,
+              userId: lancamentoComAuditor.auditedByUserId,
+              userName: lancamentoComAuditor.auditedByName,
+              userEmail: lancamentoComAuditor.auditedByEmail,
+              acao: 'ENVIADO_OPERACAO',
+              statusAnterior: 'AUDITORIA',
+              statusNovo: 'EXCEDEU_AGUARDANDO_OPERACAO',
+              comentario: lancamentoComAuditor.observacao,
+              origemTela: 'AUDITORIA_LOTACAO',
+            });
+          }
+        } catch (error) {
+          console.warn('[Auditoria] Solicitação antiga salva; falha ao criar pendência no painel novo:', error.message);
         }
 
         setMensagem('✓ Lançamento registrado e pendência criada para aprovação em Lotação Operação.');
