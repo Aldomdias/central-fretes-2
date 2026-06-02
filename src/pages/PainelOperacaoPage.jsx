@@ -37,6 +37,12 @@ function valorFinalPendencia(pendencia = {}) {
   return valorOriginalPendencia(pendencia) + valorAdicionalPendencia(pendencia);
 }
 
+function adicionarHorasIso(dataBase, horas) {
+  const base = dataBase ? new Date(dataBase) : new Date();
+  if (Number.isNaN(base.getTime())) return new Date().toISOString();
+  return new Date(base.getTime() + (Number(horas || 0) * 3600000)).toISOString();
+}
+
 function Card({ label, valor, sub, cor, destaque }) {
   return (
     <div
@@ -206,14 +212,16 @@ export default function PainelOperacaoPage() {
       const valorOriginal = valorOriginalPendencia(pend);
       const valorAdicional = novoStatus === 'APROVADO_OPERACAO' ? valorAdicionalPendencia(pend) : 0;
       const valorFinal = valorOriginal + valorAdicional;
+      const agora = new Date().toISOString();
       await atualizarPendenciaAuditoriaSupabase(id, novoStatus, {
         aprovado_por_user_id: sessao?.id || '',
         aprovado_por_name: sessao?.nome || sessao?.email || '',
         aprovado_por_email: sessao?.email || '',
-        aprovado_em: new Date().toISOString(),
+        aprovado_em: agora,
         valor_original: valorOriginal,
         valor_adicional_aprovado: valorAdicional,
         valor_final_autorizado: valorFinal,
+        prazo_auditoria_em: novoStatus === 'APROVADO_OPERACAO' ? adicionarHorasIso(agora, slaHoras) : null,
         motivo_recusa: novoStatus === 'RECUSADO_OPERACAO' ? comentario : '',
         resposta_operacao: comentario,
         justificativa_operacao: comentario,

@@ -29,6 +29,8 @@ function erroColunasAprovacaoPendencia(error) {
     'resposta_auditoria',
     'auditado_ok_em',
     'devolvido_auditoria_em',
+    'prazo_operacao_em',
+    'prazo_auditoria_em',
   ].some((coluna) => msg.includes(coluna));
 }
 
@@ -42,6 +44,8 @@ function semColunasAprovacaoPendencia(row = {}) {
     resposta_auditoria,
     auditado_ok_em,
     devolvido_auditoria_em,
+    prazo_operacao_em,
+    prazo_auditoria_em,
     ...compat
   } = row;
   return compat;
@@ -622,6 +626,8 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
     valor_original: pendencia.valorOriginal != null ? Number(pendencia.valorOriginal) : null,
     valor_adicional_aprovado: pendencia.valorAdicionalAprovado != null ? Number(pendencia.valorAdicionalAprovado) : null,
     valor_final_autorizado: pendencia.valorFinalAutorizado != null ? Number(pendencia.valorFinalAutorizado) : null,
+    prazo_operacao_em: pendencia.prazoOperacaoEm || pendencia.prazo_operacao_em || null,
+    prazo_auditoria_em: pendencia.prazoAuditoriaEm || pendencia.prazo_auditoria_em || null,
     status: String(pendencia.status || 'EXCEDEU_AGUARDANDO_OPERACAO'),
     audited_by_user_id: String(pendencia.auditedByUserId || ''),
     audited_by_name: String(pendencia.auditedByName || ''),

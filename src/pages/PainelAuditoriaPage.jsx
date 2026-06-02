@@ -21,6 +21,13 @@ function fmtData(v) {
   return `${d}/${m}/${y}`;
 }
 
+function fmtDataHora(v) {
+  if (!v) return '-';
+  const data = new Date(v);
+  if (Number.isNaN(data.getTime())) return fmtData(v);
+  return data.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
 function horasDesde(dt) {
   if (!dt) return 0;
   return (Date.now() - new Date(dt).getTime()) / 3600000;
@@ -38,6 +45,70 @@ function valorFinalPendencia(pendencia = {}) {
   const finalGravado = Number(pendencia.valor_final_autorizado);
   if (Number.isFinite(finalGravado) && finalGravado > 0) return finalGravado;
   return valorOriginalPendencia(pendencia) + valorAdicionalPendencia(pendencia);
+}
+
+function adicionarHorasIso(dataBase, horas) {
+  const base = dataBase ? new Date(dataBase) : new Date();
+  if (Number.isNaN(base.getTime())) return '';
+  return new Date(base.getTime() + (Number(horas || 0) * 3600000)).toISOString();
+}
+
+function statusSla(pendencia = {}, slaHoras = 24) {
+  const prazo = pendencia.status === 'APROVADO_OPERACAO'
+    ? (pendencia.prazo_auditoria_em || adicionarHorasIso(pendencia.aprovado_em, slaHoras))
+    : (pendencia.prazo_operacao_em || adicionarHorasIso(pendencia.created_at, slaHoras));
+  if (!prazo) return { label: '-', atrasado: false };
+  const atraso = Date.now() > new Date(prazo).getTime();
+  return {
+    label: `${atraso ? 'Vencido' : 'Prazo'} ${fmtDataHora(prazo)}`,
+    atrasado: atraso,
+  };
+}
+
+function normalizarChave(valor = '') {
+  return String(valor || '').trim().toUpperCase();
+}
+
+function ModalConclusaoAuditoria({ pendencia, onConfirmar, onCancelar }) {
+  const [justificativa, setJustificativa] = useState('');
+  if (!pendencia) return null;
+  const confirmar = () => {
+    if (!justificativa.trim()) return;
+    onConfirmar(pendencia, justificativa.trim());
+  };
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+      }}
+    >
+      <div className="panel-card" style={{ maxWidth: 560, width: '92%', margin: 0 }}>
+        <div className="panel-title">Concluir auditoria</div>
+        <div className="sim-analise-resumo" style={{ marginTop: '0.75rem' }}>
+          <div><span>DIST</span><strong>{pendencia.dist || '-'}</strong></div>
+          <div><span>CT-e</span><strong>{pendencia.cte || '-'}</strong></div>
+          <div><span>Final autorizado</span><strong>{fmt(valorFinalPendencia(pendencia))}</strong></div>
+          <div><span>Operacao</span><strong>{pendencia.resposta_operacao || '-'}</strong></div>
+        </div>
+        <label className="field" style={{ marginTop: '0.75rem' }}>
+          Justificativa da auditoria <span style={{ color: '#c0392b' }}>*</span>
+          <textarea
+            value={justificativa}
+            onChange={(e) => setJustificativa(e.target.value)}
+            placeholder="Informe a conclusao da auditoria antes de dar OK."
+            style={{ minHeight: 90 }}
+          />
+        </label>
+        <div className="actions-right" style={{ marginTop: '0.75rem' }}>
+          <button className="btn-secondary" onClick={onCancelar}>Cancelar</button>
+          <button className="btn-primary" onClick={confirmar} disabled={!justificativa.trim()}>
+            Registrar Auditado OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function Card({ label, valor, sub, cor, destaque }) {
@@ -66,6 +137,7 @@ export default function PainelAuditoriaPage() {
   const [faturas, setFaturas] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
+  const [pendenciaConclusao, setPendenciaConclusao] = useState(null);
 
   const [filtros, setFiltros] = useState({
     transportadora: '',
@@ -128,6 +200,14 @@ export default function PainelAuditoriaPage() {
     () => faturas.filter((f) => f.data_vencimento && f.data_vencimento < hoje && f.status !== 'PAGA'),
     [faturas, hoje],
   );
+  const faturasPorNumero = useMemo(() => {
+    const mapa = new Map();
+    (faturas || []).forEach((fatura) => {
+      const numero = normalizarChave(fatura.numero_fatura || fatura.fatura || '');
+      if (numero) mapa.set(numero, fatura);
+    });
+    return mapa;
+  }, [faturas]);
 
   // ── Filtragem da lista de pendências ─────────────────────────────────────
   const pendenciasFiltradas = useMemo(() => {
@@ -143,10 +223,10 @@ export default function PainelAuditoriaPage() {
     return lista;
   }, [pendencias, filtros, sessao]);
 
-  const concluirPendencia = async (pendencia, statusNovo) => {
-    const comentario = statusNovo === 'FINALIZADO'
+  const concluirPendencia = async (pendencia, statusNovo, justificativa = '') => {
+    const comentario = justificativa || (statusNovo === 'FINALIZADO'
       ? 'Auditoria finalizada apos aprovacao da operacao.'
-      : 'Pendencia devolvida pela auditoria apos retorno da operacao.';
+      : 'Pendencia devolvida pela auditoria apos retorno da operacao.');
     setCarregando(true);
     try {
       await atualizarPendenciaAuditoriaSupabase(pendencia.id, statusNovo, {
@@ -166,6 +246,7 @@ export default function PainelAuditoriaPage() {
         comentario,
         origemTela: 'PAINEL_AUDITORIA',
       });
+      setPendenciaConclusao(null);
       await carregar();
     } catch (err) {
       setMensagem(`Erro ao atualizar pendencia: ${err.message}`);
@@ -290,9 +371,11 @@ export default function PainelAuditoriaPage() {
                 <th>DIST</th>
                 <th>CT-e</th>
                 <th>Fatura</th>
+                <th>Venc. fatura</th>
                 <th>Valor lançado</th>
                 <th>Excedente</th>
                 <th>Final autorizado</th>
+                <th>SLA</th>
                 <th>Tempo (h)</th>
                 <th>Status</th>
                 <th>Justificativa</th>
@@ -303,6 +386,9 @@ export default function PainelAuditoriaPage() {
               {pendenciasFiltradas.map((p) => {
                 const horas = horasDesde(p.created_at);
                 const atrasado = horas > 24;
+                const sla = statusSla(p, 24);
+                const fatura = faturasPorNumero.get(normalizarChave(p.fatura));
+                const faturaVencida = fatura?.data_vencimento && fatura.data_vencimento < hoje && fatura.status !== 'PAGA';
                 return (
                   <tr key={p.id} style={{ background: horas > 48 ? '#fff5f5' : horas > 24 ? '#fffbf0' : undefined }}>
                     <td>{fmtData(p.created_at)}</td>
@@ -313,9 +399,15 @@ export default function PainelAuditoriaPage() {
                     <td><strong>{p.dist || '-'}</strong></td>
                     <td>{p.cte || '-'}</td>
                     <td>{p.fatura || '-'}</td>
+                    <td style={{ color: faturaVencida ? '#9b1111' : undefined }}>
+                      {fatura?.data_vencimento ? fmtData(fatura.data_vencimento) : '-'}
+                    </td>
                     <td>{fmt(p.valor_lancado)}</td>
                     <td className="negativo">{fmt(valorAdicionalPendencia(p))}</td>
                     <td>{p.status === 'APROVADO_OPERACAO' || p.status === 'FINALIZADO' ? fmt(valorFinalPendencia(p)) : '-'}</td>
+                    <td style={{ color: sla.atrasado ? '#9b1111' : undefined }}>
+                      {sla.label}
+                    </td>
                     <td style={{ color: atrasado ? '#e67e22' : undefined }}>
                       {horas.toFixed(0)}h {horas > 48 && '🔴'}
                       {horas > 24 && horas <= 48 && '🟡'}
@@ -331,7 +423,7 @@ export default function PainelAuditoriaPage() {
                         <button
                           className="btn-primary"
                           style={{ padding: '2px 10px', fontSize: '0.8rem' }}
-                          onClick={() => concluirPendencia(p, 'FINALIZADO')}
+                          onClick={() => setPendenciaConclusao(p)}
                         >
                           Auditado OK
                         </button>
@@ -350,10 +442,10 @@ export default function PainelAuditoriaPage() {
                 );
               })}
               {!pendenciasFiltradas.length && !carregando && (
-                <tr><td colSpan="13">Nenhuma pendência encontrada.</td></tr>
+                <tr><td colSpan="15">Nenhuma pendência encontrada.</td></tr>
               )}
               {carregando && (
-                <tr><td colSpan="13">Carregando...</td></tr>
+                <tr><td colSpan="15">Carregando...</td></tr>
               )}
             </tbody>
           </table>
@@ -403,6 +495,13 @@ export default function PainelAuditoriaPage() {
             </table>
           </div>
         </div>
+      )}
+      {pendenciaConclusao && (
+        <ModalConclusaoAuditoria
+          pendencia={pendenciaConclusao}
+          onConfirmar={(pendencia, justificativa) => concluirPendencia(pendencia, 'FINALIZADO', justificativa)}
+          onCancelar={() => setPendenciaConclusao(null)}
+        />
       )}
     </div>
   );

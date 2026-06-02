@@ -11,7 +11,9 @@ alter table if exists audit_pendencias
   add column if not exists justificativa_operacao text,
   add column if not exists resposta_auditoria text,
   add column if not exists auditado_ok_em timestamptz,
-  add column if not exists devolvido_auditoria_em timestamptz;
+  add column if not exists devolvido_auditoria_em timestamptz,
+  add column if not exists prazo_operacao_em timestamptz,
+  add column if not exists prazo_auditoria_em timestamptz;
 
 update audit_pendencias
 set
@@ -20,9 +22,13 @@ set
   valor_final_autorizado = coalesce(
     valor_final_autorizado,
     coalesce(valor_autorizado, 0) + case when status = 'APROVADO_OPERACAO' then coalesce(valor_excedente, 0) else 0 end
-  )
+  ),
+  prazo_operacao_em = coalesce(prazo_operacao_em, created_at + interval '24 hours'),
+  prazo_auditoria_em = coalesce(prazo_auditoria_em, aprovado_em + interval '24 hours')
 where valor_original is null
-   or valor_final_autorizado is null;
+   or valor_final_autorizado is null
+   or prazo_operacao_em is null
+   or (status = 'APROVADO_OPERACAO' and prazo_auditoria_em is null);
 
 create index if not exists idx_audit_pendencias_dist_status
   on audit_pendencias (dist_key, status);

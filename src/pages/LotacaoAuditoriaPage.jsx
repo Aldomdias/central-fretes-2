@@ -64,6 +64,12 @@ function pendenciaParaMovimentoAutorizacao(pendencia = {}) {
   };
 }
 
+function adicionarHorasIso(dataBase, horas) {
+  const base = dataBase ? new Date(dataBase) : new Date();
+  if (Number.isNaN(base.getTime())) return new Date().toISOString();
+  return new Date(base.getTime() + (Number(horas || 0) * 3600000)).toISOString();
+}
+
 function ListaResultados({ resultados, selecionada, onSelecionar }) {
   if (!resultados.length) return null;
   return (
@@ -713,6 +719,7 @@ export default function LotacaoAuditoriaPage() {
             valorOriginal: Number(selecionada.valorComparacao) || 0,
             valorAdicionalAprovado: 0,
             valorFinalAutorizado: Number(selecionada.valorComparacao) || 0,
+            prazoOperacaoEm: adicionarHorasIso(lancamentoComAuditor.auditedAt, 24),
             status: 'EXCEDEU_AGUARDANDO_OPERACAO',
             auditedByUserId: lancamentoComAuditor.auditedByUserId,
             auditedByName: lancamentoComAuditor.auditedByName,
