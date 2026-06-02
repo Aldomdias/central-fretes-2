@@ -243,15 +243,15 @@ self.onmessage = async (event) => {
       const valorGanhadora = ganhadoraAtiva.total;
       const perda = fmt2(valorPago - valorGanhadora);
       const temPerda = perda > 0.01;
-      const alternativasAtivas = calculadosAtivos.slice(0, 12).map((item) => ({
+      const alternativasAtivas = calculadosAtivos.map((item) => ({
         transportadora: item.transportadora,
+        total: fmt2(item.total),
         valor: fmt2(item.total),
         prazo: numeroValido(item.prazo),
         criterioSelecao: item.criterioSelecao || 'MENOR_PRECO',
         scorePonderado: item.scorePonderado ?? null,
         faixaPeso: item.faixaPeso || '',
         tipoCalculo: item.tipoCalculo || '',
-        detalhe: detalheCalculo(item),
       }));
 
       detalhes.push({

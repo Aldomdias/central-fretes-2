@@ -4,7 +4,7 @@ import { buscarBaseSimulacaoPorRotasDb } from '../services/freteDatabaseService'
 import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import { carregarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { buscarRealizadoRemotoParaPerda } from '../services/perdaRealizadoDb';
-import { categoriaCanalRealizado } from '../utils/realizadoLocalEngine';
+import { categoriaCanalRealizado, ordenarCalculadosPorCriterio } from '../utils/realizadoLocalEngine';
 
 const REGIOES = [
   { label: 'Sul', ufs: ['RS', 'SC', 'PR'] },
@@ -17,7 +17,7 @@ const TODAS_UFS = REGIOES.flatMap((r) => r.ufs);
 const CANAIS = ['ATACADO', 'B2C', 'REVERSA', 'INTERCOMPANY', 'A DEFINIR'];
 const LIMITE_DB = 50000;
 const PAGE_SIZE = 50;
-const ROUTE_CHUNK_SIZE = 90;
+const ROUTE_CHUNK_SIZE = 30;
 
 const ETAPAS = [
   { id: 'municipios', label: 'Municípios' },
@@ -147,6 +147,56 @@ function recalcularResultadoBi(resultado = {}, filtros = {}) {
     economiaInativaTotal,
     economiaInativaVsPagoTotal,
   });
+}
+
+function aplicarCriterioB2cResultado(resultado = {}, criterioB2c = {}) {
+  if (!resultado?.detalhes?.length) return resultado;
+
+  const detalhes = (resultado.detalhes || []).map((d) => {
+    const alternativas = Array.isArray(d.alternativasAtivas) ? d.alternativasAtivas : [];
+    if (!alternativas.length) return d;
+
+    const ordenadas = ordenarCalculadosPorCriterio(
+      alternativas.map((item) => ({
+        ...item,
+        total: safeNumber(item.total ?? item.valor),
+        prazo: safeNumber(item.prazo),
+      })),
+      d.canal,
+      criterioB2c
+    ).map((item) => ({
+      ...item,
+      total: Math.round(safeNumber(item.total ?? item.valor) * 100) / 100,
+      valor: Math.round(safeNumber(item.total ?? item.valor) * 100) / 100,
+    }));
+
+    const ganhadora = ordenadas[0];
+    if (!ganhadora) return d;
+
+    const valorGanhadora = safeNumber(ganhadora.valor ?? ganhadora.total);
+    const valorPago = safeNumber(d.valorPago);
+    const perda = Math.round((valorPago - valorGanhadora) * 100) / 100;
+
+    return {
+      ...d,
+      transportadoraGanhadora: ganhadora.transportadora,
+      valorGanhadora,
+      perda,
+      perdaPercentual: valorPago > 0 ? Math.round((perda / valorPago) * 10000) / 100 : 0,
+      temPerda: perda > 0.01,
+      criterioSelecao: ganhadora.criterioSelecao || 'MENOR_PRECO',
+      scorePonderado: ganhadora.scorePonderado ?? null,
+      pesoPrecoScore: ganhadora.pesoPrecoScore ?? null,
+      pesoPrazoScore: ganhadora.pesoPrazoScore ?? null,
+      prazoGanhadora: ganhadora.prazo,
+      difPrazo: safeNumber(ganhadora.prazo) - safeNumber(d.prazoRealizada),
+      faixaGanhadora: ganhadora.faixaPeso || d.faixaGanhadora,
+      tipoCalculoGanhadora: ganhadora.tipoCalculo || d.tipoCalculoGanhadora,
+      alternativasAtivas: ordenadas,
+    };
+  });
+
+  return recalcularAgregados({ ...resultado, detalhes });
 }
 
 function escolherSubstitutaRetirada(detalhe = {}, transportadorasRetiradas = []) {
@@ -432,7 +482,8 @@ export default function PerdaRealizadoPage() {
     } catch (e) { setErro(e.message || 'Erro inesperado.'); setStatus('erro'); }
   };
 
-  const resultadoCenario = useMemo(() => resultado ? aplicarCenarioRetirada(resultado, cenarioRetirada) : null, [resultado, cenarioRetirada]);
+  const resultadoCriterio = useMemo(() => resultado ? aplicarCriterioB2cResultado(resultado, criterioB2c) : null, [resultado, criterioB2c]);
+  const resultadoCenario = useMemo(() => resultadoCriterio ? aplicarCenarioRetirada(resultadoCriterio, cenarioRetirada) : null, [resultadoCriterio, cenarioRetirada]);
   const resultadoBi = useMemo(() => resultadoCenario ? recalcularResultadoBi(resultadoCenario, filtrosBi) : null, [resultadoCenario, filtrosBi]);
   const biAtivo = filtrosBiAtivos(filtrosBi);
   const opcoesBi = useMemo(() => {
