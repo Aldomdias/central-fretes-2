@@ -340,7 +340,8 @@ function RankingHistorico({ ranking }) {
 
 function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
   const [resposta, setResposta] = useState('');
-  const pendentes = solicitacoes.filter((item) => item.status === 'PENDENTE');
+  const statusPendentes = ['PENDENTE', 'EXCEDEU_AGUARDANDO_OPERACAO'];
+  const pendentes = solicitacoes.filter((item) => statusPendentes.includes(item.status));
   const recentes = solicitacoes.slice(0, 120);
 
   const copiar = async (item) => {
@@ -367,7 +368,7 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
     }
 
     const valor = formatarMoeda(item.valorAdicional || item.excedente || item.valorLancado);
-    const acao = status === 'APROVADO' ? 'aprovar' : 'recusar';
+    const acao = status === 'APROVADO' || status === 'APROVADO_OPERACAO' ? 'aprovar' : 'recusar';
     const confirmado = window.confirm(
       `Confirmar ${acao} a solicitacao da DIST ${item.dist} no valor de ${valor}?\n\nJustificativa: ${justificativa}`
     );
@@ -423,10 +424,10 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
                     <div className="row-actions lotacao-auditoria-actions">
                       <button type="button" className="btn-secondary" onClick={() => copiar(item)}>Copiar</button>
                       <a className="btn-secondary link-button" href={emailHref(item)}>E-mail</a>
-                      {item.status === 'PENDENTE' && (
+                      {statusPendentes.includes(item.status) && (
                         <>
-                          <button type="button" className="btn-primary" onClick={() => responder(item, 'APROVADO')}>Aprovar</button>
-                          <button type="button" className="btn-danger" onClick={() => responder(item, 'RECUSADO')}>Recusar</button>
+                          <button type="button" className="btn-primary" onClick={() => responder(item, item.status === 'EXCEDEU_AGUARDANDO_OPERACAO' ? 'APROVADO_OPERACAO' : 'APROVADO')}>Aprovar</button>
+                          <button type="button" className="btn-danger" onClick={() => responder(item, item.status === 'EXCEDEU_AGUARDANDO_OPERACAO' ? 'RECUSADO_OPERACAO' : 'RECUSADO')}>Recusar</button>
                         </>
                       )}
                     </div>
