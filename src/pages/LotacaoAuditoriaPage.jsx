@@ -1051,7 +1051,6 @@ export default function LotacaoAuditoriaPage() {
         salvando={salvando}
         usuarioAtual={usuarioAtual}
       />
-      <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} />
       <HistoricoLancamentos carga={selecionada} lancamentos={lancamentos} />
       <MovimentosAutorizacao carga={selecionada} solicitacoes={solicitacoes} />
     </div>
