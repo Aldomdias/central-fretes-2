@@ -270,7 +270,7 @@ function getTipoVeiculo(row) {
 }
 
 function getRotaKey(row) {
-  return [getOrigem(row), getUfOrigem(row), getDestino(row), getUfDestino(row), getTipoVeiculo(row)]
+  return [getOrigem(row), getUfOrigem(row), getDestino(row), getUfDestino(row), getTipoVeiculo(row), getCanal(row)]
     .map(normalizarTexto)
     .join('|');
 }
@@ -883,6 +883,7 @@ function montarAnalise(rows = [], filtros = {}) {
       ufOrigem: getUfOrigem(row),
       destino: getDestino(row),
       ufDestino: getUfDestino(row),
+      canal: getCanal(row) || 'NÃ£o informado',
       ctes: 0,
       valorCte: 0,
       valorCalculado: 0,
@@ -1052,6 +1053,7 @@ function normalizarResumoComparativo(item = {}) {
     ufOrigem: item.ufOrigem || '',
     destino: item.destino || '',
     ufDestino: item.ufDestino || '',
+    canal: item.canal || '',
   };
 }
 
@@ -1434,6 +1436,242 @@ function montarParticipacaoTransportadoras(rows = []) {
   }
 
   return variacoes;
+}
+
+function fluxoUfFromRota(item = {}) {
+  const rota = normalizarResumoComparativo(item);
+  const ufOrigem = String(rota.ufOrigem || '').trim().toUpperCase() || 'NI';
+  const ufDestino = String(rota.ufDestino || '').trim().toUpperCase() || 'NI';
+  const origem = rota.origem || ufOrigem || 'Nao informado';
+  const destino = rota.destino || ufDestino || 'Nao informado';
+  return {
+    ...rota,
+    fluxoKey: `${ufOrigem}->${ufDestino}`,
+    fluxoLabel: `${ufOrigem} -> ${ufDestino}`,
+    ufOrigem,
+    ufDestino,
+    origem,
+    destino,
+    canal: rota.canal || '',
+  };
+}
+
+function filtroRotaComparativo(rota = {}, filtros = {}) {
+  if (filtros.origem && rota.origem && `${rota.origem}/${rota.ufOrigem}` !== filtros.origem && rota.origem !== filtros.origem) return false;
+  if (filtros.ufDestino && rota.ufDestino !== filtros.ufDestino) return false;
+  if (filtros.regiaoDestino && getRegiaoPorUf(rota.ufDestino) !== filtros.regiaoDestino) return false;
+  if (filtros.canal && rota.canal !== filtros.canal) return false;
+  return true;
+}
+
+function variacaoPct(depois = 0, antes = 0) {
+  if (!antes) return depois > 0 ? 100 : 0;
+  return ((depois - antes) / antes) * 100;
+}
+
+function valorFiltroOriginalCompetencia(row = {}, campo = '') {
+  const filtros = row.filtros_json || row.filtros || {};
+  return filtros?.[campo] || '';
+}
+
+function canalUnicoResumoCompetencia(row = {}) {
+  const canais = (row.resumo_canais_json || []).filter((item) => Number(item.ctes || 0) > 0);
+  if (canais.length !== 1) return '';
+  return canais[0].key || canais[0].label || '';
+}
+
+function canalDaRotaComparativo(item = {}, row = {}) {
+  if (item.canal) return item.canal;
+  const canalOriginal = valorFiltroOriginalCompetencia(row, 'canal');
+  if (canalOriginal) return canalOriginal;
+  return canalUnicoResumoCompetencia(row);
+}
+
+function filtroSemDetalheRotaOrigemDestino(rows = [], filtros = {}) {
+  const exigeTransportadora = Boolean(filtros.transportadora);
+  if (!exigeTransportadora) return null;
+
+  const linhasComRotas = (rows || []).filter((row) => (row.resumo_rotas_json || []).length);
+  const transportadoraJaFechadaNaCompetencia = !exigeTransportadora || linhasComRotas.every((row) => valorFiltroOriginalCompetencia(row, 'transportadoraRealizada') === filtros.transportadora);
+
+  if (transportadoraJaFechadaNaCompetencia) return null;
+
+  return 'transportadora';
+}
+
+function montarAnaliseEstrategicaOrigemDestino(rows = [], filtros = {}) {
+  const filtroBloqueado = filtroSemDetalheRotaOrigemDestino(rows, filtros);
+  if (filtroBloqueado) {
+    return {
+      bloqueado: true,
+      aviso: `A analise Origem x Destino usa o resumo salvo de rotas. Esse resumo nao guarda ${filtroBloqueado} em cada rota; por isso o painel fica bloqueado para nao exibir indicador misturado. Para esse recorte aparecer, salve a competencia ja processada com esse filtro.`,
+      fluxos: [],
+      piores: [],
+      oportunidades: [],
+      comparativoFluxos: [],
+      aumentos: [],
+      reducoes: [],
+      heatmap: new Map(),
+      heatmapOrigens: [],
+      heatmapDestinos: [],
+    };
+  }
+
+  const ordenadas = [...(rows || [])].sort((a, b) => String(a.competencia || '').localeCompare(String(b.competencia || '')));
+  const fluxosMapa = new Map();
+  const heatmap = new Map();
+  const competenciasIgnoradasCanal = new Set();
+
+  ordenadas.forEach((row) => {
+    (row.resumo_rotas_json || []).forEach((item) => {
+      const canalRota = canalDaRotaComparativo(item, row);
+      if (filtros.canal && canalRota !== filtros.canal) {
+        if (!canalRota) competenciasIgnoradasCanal.add(row.competencia || row.nome_competencia || 'sem competencia');
+        return;
+      }
+      const rota = fluxoUfFromRota({ ...item, canal: canalRota });
+      if (!filtroRotaComparativo(rota, filtros)) return;
+
+      const atual = fluxosMapa.get(rota.fluxoKey) || {
+        key: rota.fluxoKey,
+        label: rota.fluxoLabel,
+        origem: rota.ufOrigem,
+        destino: rota.ufDestino,
+        ctes: 0,
+        valorNf: 0,
+        valorCte: 0,
+        peso: 0,
+        cidadesOrigem: new Set(),
+        cidadesDestino: new Set(),
+        meses: new Map(),
+      };
+
+      const ctes = Number(rota.ctes || 0);
+      const valorNf = Number(rota.valorNf || 0);
+      const valorCte = Number(rota.valorCte || 0);
+      const peso = Number(rota.peso || 0);
+
+      atual.ctes += ctes;
+      atual.valorNf += valorNf;
+      atual.valorCte += valorCte;
+      atual.peso += peso;
+      if (rota.origem) atual.cidadesOrigem.add(rota.origem);
+      if (rota.destino) atual.cidadesDestino.add(rota.destino);
+
+      const mes = atual.meses.get(row.competencia) || { competencia: row.competencia, ctes: 0, valorNf: 0, valorCte: 0, peso: 0 };
+      mes.ctes += ctes;
+      mes.valorNf += valorNf;
+      mes.valorCte += valorCte;
+      mes.peso += peso;
+      atual.meses.set(row.competencia, mes);
+      fluxosMapa.set(rota.fluxoKey, atual);
+    });
+  });
+
+  const fluxos = [...fluxosMapa.values()].map((item) => {
+    const meses = [...item.meses.values()]
+      .sort((a, b) => String(a.competencia || '').localeCompare(String(b.competencia || '')))
+      .map((mes) => ({
+        ...mes,
+        percentualFrete: mes.valorNf > 0 ? (mes.valorCte / mes.valorNf) * 100 : 0,
+      }));
+
+    const fluxo = {
+      ...item,
+      cidadesOrigem: [...item.cidadesOrigem].slice(0, 4),
+      cidadesDestino: [...item.cidadesDestino].slice(0, 4),
+      meses,
+      percentualFrete: item.valorNf > 0 ? (item.valorCte / item.valorNf) * 100 : 0,
+    };
+
+    const heat = heatmap.get(fluxo.origem) || new Map();
+    const celula = heat.get(fluxo.destino) || { valorCte: 0, valorNf: 0, ctes: 0 };
+    celula.valorCte += fluxo.valorCte;
+    celula.valorNf += fluxo.valorNf;
+    celula.ctes += fluxo.ctes;
+    heat.set(fluxo.destino, celula);
+    heatmap.set(fluxo.origem, heat);
+
+    return fluxo;
+  });
+
+  const piores = [...fluxos]
+    .filter((item) => item.valorNf > 0 && item.ctes > 0)
+    .sort((a, b) => b.percentualFrete - a.percentualFrete)
+    .slice(0, 20);
+
+  const oportunidades = [...fluxos]
+    .filter((item) => item.origem !== item.destino && item.ctes >= 10)
+    .map((item) => {
+      const regiaoOrigem = getRegiaoPorUf(item.origem);
+      const regiaoDestino = getRegiaoPorUf(item.destino);
+      const longo = item.origem !== item.destino && regiaoOrigem !== regiaoDestino;
+      return {
+        ...item,
+        score: (item.ctes || 0) * Math.max(item.percentualFrete || 0, 1),
+        fluxoLongo: longo,
+        operacaoLocal: item.origem === item.destino ? 'Sim' : 'Checar',
+        cdProximo: longo ? 'Avaliar' : 'Possivel',
+        abastecimentoAlternativo: item.percentualFrete >= 8 ? 'Priorizar' : 'Avaliar',
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
+
+  const variacoes = [];
+  fluxos.forEach((fluxo) => {
+    for (let i = 1; i < fluxo.meses.length; i += 1) {
+      const anterior = fluxo.meses[i - 1];
+      const atual = fluxo.meses[i];
+      if (!temVolumeComparavel(anterior, atual)) continue;
+      variacoes.push({
+        key: `${fluxo.key}-${anterior.competencia}-${atual.competencia}`,
+        fluxo: fluxo.label,
+        competenciaAnterior: anterior.competencia,
+        competenciaAtual: atual.competencia,
+        ctesAntes: anterior.ctes,
+        ctesDepois: atual.ctes,
+        deltaCtes: atual.ctes - anterior.ctes,
+        deltaCtesPct: variacaoPct(atual.ctes, anterior.ctes),
+        pesoAntes: anterior.peso,
+        pesoDepois: atual.peso,
+        deltaPesoPct: variacaoPct(atual.peso, anterior.peso),
+        valorNfAntes: anterior.valorNf,
+        valorNfDepois: atual.valorNf,
+        deltaNfPct: variacaoPct(atual.valorNf, anterior.valorNf),
+        valorCteAntes: anterior.valorCte,
+        valorCteDepois: atual.valorCte,
+        deltaCtePct: variacaoPct(atual.valorCte, anterior.valorCte),
+      });
+    }
+  });
+
+  const heatmapOrigens = [...heatmap.keys()].sort((a, b) => {
+    const soma = (uf) => [...(heatmap.get(uf)?.values() || [])].reduce((acc, item) => acc + Number(item.ctes || 0), 0);
+    return soma(b) - soma(a);
+  }).slice(0, 10);
+  const heatmapDestinos = [...new Set([...heatmap.values()].flatMap((mapa) => [...mapa.keys()]))]
+    .sort((a, b) => {
+      const soma = (uf) => [...heatmap.values()].reduce((acc, mapa) => acc + Number(mapa.get(uf)?.ctes || 0), 0);
+      return soma(b) - soma(a);
+    })
+    .slice(0, 10);
+
+  return {
+    bloqueado: false,
+    aviso: competenciasIgnoradasCanal.size
+      ? `Algumas competencias antigas sem canal no resumo de rotas foram ignoradas neste recorte: ${[...competenciasIgnoradasCanal].slice(0, 5).join(', ')}. Reprocesse/salve essas competencias para comparar por canal.`
+      : '',
+    fluxos,
+    piores,
+    oportunidades,
+    comparativoFluxos: piores.slice(0, 6),
+    aumentos: [...variacoes].filter((item) => item.deltaCtes > 0).sort((a, b) => b.deltaCtesPct - a.deltaCtesPct).slice(0, 20),
+    reducoes: [...variacoes].filter((item) => item.deltaCtes < 0).sort((a, b) => a.deltaCtesPct - b.deltaCtesPct).slice(0, 20),
+    heatmap,
+    heatmapOrigens,
+    heatmapDestinos,
+  };
 }
 
 function montarAlertasComparativo({ variacoes = [], linhas = [], participacao = [] } = {}) {
@@ -1964,6 +2202,10 @@ export default function CtePage() {
     () => montarParticipacaoTransportadoras(competenciasComparativo),
     [competenciasComparativo]
   );
+  const analiseOrigemDestino = useMemo(
+    () => montarAnaliseEstrategicaOrigemDestino(competenciasComparativo, filtrosComparativo),
+    [competenciasComparativo, filtrosComparativo]
+  );
   const alertasComparativo = useMemo(
     () => montarAlertasComparativo({ variacoes: variacoesBase, linhas: linhasComparativo, participacao: participacaoTransportadoras }),
     [variacoesBase, linhasComparativo, participacaoTransportadoras]
@@ -2310,6 +2552,190 @@ export default function CtePage() {
         </div>
 
         <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+          <div className="panel-card" style={{ marginBottom: 12, gridColumn: '1 / -1' }}>
+            <div className="section-row compact-top">
+              <div>
+                <div className="panel-title">Analise estrategica Origem x Destino</div>
+                <p className="compact">Ranking, oportunidades, variacao mensal e mapa de calor por fluxo UF origem - UF destino, usando apenas as competencias salvas.</p>
+              </div>
+              <span className="coverage-badge ok">{fmtN(analiseOrigemDestino.fluxos.length)} fluxo(s)</span>
+            </div>
+
+            {(analiseOrigemDestino.bloqueado || analiseOrigemDestino.aviso) && (
+              <div className="sim-alert warn" style={{ marginTop: 10, marginBottom: 10 }}>
+                {analiseOrigemDestino.aviso}
+              </div>
+            )}
+
+            <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+              <table className="sim-analise-tabela">
+                <thead>
+                  <tr>
+                    <th>Origem - Destino</th>
+                    <th>% Frete</th>
+                    <th>Valor NF</th>
+                    <th>Valor CT-e</th>
+                    <th>CT-es</th>
+                    <th>Peso</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!analiseOrigemDestino.piores.length && (
+                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem fluxos origem/destino no recorte.</td></tr>
+                  )}
+                  {analiseOrigemDestino.piores.slice(0, 12).map((item) => (
+                    <tr key={item.key}>
+                      <td><strong>{item.label}</strong></td>
+                      <td style={{ color: item.percentualFrete >= 8 ? '#D85A30' : undefined, fontWeight: 800 }}>{fmtPct(item.percentualFrete)}</td>
+                      <td>{fmt(item.valorNf)}</td>
+                      <td>{fmt(item.valorCte)}</td>
+                      <td>{fmtN(item.ctes)}</td>
+                      <td>{fmtN(item.peso)} kg</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="feature-grid import-grid" style={{ marginTop: 12, marginBottom: 12 }}>
+              <div>
+                <div className="panel-title">Oportunidades logisticas</div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>Fluxo</th><th>CT-es</th><th>Valor NF</th><th>% Frete</th><th>Operacao local</th><th>CD proximo</th><th>Abastecimento alternativo</th></tr></thead>
+                    <tbody>
+                      {!analiseOrigemDestino.oportunidades.length && (
+                        <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem oportunidade logistica sinalizada no recorte.</td></tr>
+                      )}
+                      {analiseOrigemDestino.oportunidades.map((item) => (
+                        <tr key={`${item.key}-opp`}>
+                          <td><strong>{item.label}</strong></td>
+                          <td>{fmtN(item.ctes)}</td>
+                          <td>{fmt(item.valorNf)}</td>
+                          <td>{fmtPct(item.percentualFrete)}</td>
+                          <td>{item.operacaoLocal}</td>
+                          <td>{item.cdProximo}</td>
+                          <td>{item.abastecimentoAlternativo}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <div className="panel-title">Comparativo mes a mes por fluxo</div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>Fluxo</th><th>Mes</th><th>CT-es</th><th>Peso</th><th>Valor NF</th><th>Valor CT-e</th><th>% Frete</th></tr></thead>
+                    <tbody>
+                      {!analiseOrigemDestino.comparativoFluxos.length && (
+                        <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem historico mensal por fluxo.</td></tr>
+                      )}
+                      {analiseOrigemDestino.comparativoFluxos.flatMap((fluxo) => fluxo.meses.map((mes) => (
+                        <tr key={`${fluxo.key}-${mes.competencia}`}>
+                          <td><strong>{fluxo.label}</strong></td>
+                          <td>{mes.competencia}</td>
+                          <td>{fmtN(mes.ctes)}</td>
+                          <td>{fmtN(mes.peso)} kg</td>
+                          <td>{fmt(mes.valorNf)}</td>
+                          <td>{fmt(mes.valorCte)}</td>
+                          <td>{fmtPct(mes.percentualFrete)}</td>
+                        </tr>
+                      )))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div className="feature-grid import-grid" style={{ marginBottom: 12 }}>
+              <div>
+                <div className="panel-title">Top 20 aumentos de fluxo</div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>Fluxo</th><th>Periodo</th><th>Antes</th><th>Depois</th><th>Variacao</th><th>Peso transportado</th><th>Soma NF</th><th>Soma CT-e</th><th>% medio rota</th></tr></thead>
+                    <tbody>
+                      {!analiseOrigemDestino.aumentos.length && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem aumento de fluxo.</td></tr>}
+                      {analiseOrigemDestino.aumentos.map((item) => (
+                        <tr key={item.key}>
+                          <td><strong>{item.fluxo}</strong></td>
+                          <td>{item.competenciaAnterior} - {item.competenciaAtual}</td>
+                          <td>{fmtN(item.ctesAntes)}</td>
+                          <td>{fmtN(item.ctesDepois)}</td>
+                          <td style={{ color: '#D85A30', fontWeight: 800 }}>+{fmtPct(item.deltaCtesPct, 0)}</td>
+                          <td>{fmtN(item.pesoDepois)} kg</td>
+                          <td>{fmt(item.valorNfDepois)}</td>
+                          <td>{fmt(item.valorCteDepois)}</td>
+                          <td>{fmtPct(item.valorNfDepois > 0 ? (item.valorCteDepois / item.valorNfDepois) * 100 : 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <div className="panel-title">Maiores reducoes de fluxo</div>
+                <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+                  <table className="sim-analise-tabela">
+                    <thead><tr><th>Fluxo</th><th>Periodo</th><th>Antes</th><th>Depois</th><th>Variacao</th><th>Peso transportado</th><th>Soma NF</th><th>Soma CT-e</th><th>% medio rota</th></tr></thead>
+                    <tbody>
+                      {!analiseOrigemDestino.reducoes.length && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem reducao de fluxo.</td></tr>}
+                      {analiseOrigemDestino.reducoes.map((item) => (
+                        <tr key={item.key}>
+                          <td><strong>{item.fluxo}</strong></td>
+                          <td>{item.competenciaAnterior} - {item.competenciaAtual}</td>
+                          <td>{fmtN(item.ctesAntes)}</td>
+                          <td>{fmtN(item.ctesDepois)}</td>
+                          <td style={{ color: '#1D9E75', fontWeight: 800 }}>{fmtPct(item.deltaCtesPct, 0)}</td>
+                          <td>{fmtN(item.pesoDepois)} kg</td>
+                          <td>{fmt(item.valorNfDepois)}</td>
+                          <td>{fmt(item.valorCteDepois)}</td>
+                          <td>{fmtPct(item.valorNfDepois > 0 ? (item.valorCteDepois / item.valorNfDepois) * 100 : 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="panel-title">Mapa de calor Origem x Destino (% Frete)</div>
+              <div className="sim-analise-tabela-wrap" style={{ marginTop: 10 }}>
+                <table className="sim-analise-tabela">
+                  <thead>
+                    <tr>
+                      <th>Origem / Destino</th>
+                      {analiseOrigemDestino.heatmapDestinos.map((uf) => <th key={`heat-dest-${uf}`}>{uf}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {!analiseOrigemDestino.heatmapOrigens.length && (
+                      <tr><td colSpan={Math.max(analiseOrigemDestino.heatmapDestinos.length + 1, 2)} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem mapa de calor no recorte.</td></tr>
+                    )}
+                    {analiseOrigemDestino.heatmapOrigens.map((origemUf) => (
+                      <tr key={`heat-origem-${origemUf}`}>
+                        <td><strong>{origemUf}</strong></td>
+                        {analiseOrigemDestino.heatmapDestinos.map((destinoUf) => {
+                          const celula = analiseOrigemDestino.heatmap.get(origemUf)?.get(destinoUf);
+                          const pct = celula?.valorNf > 0 ? (celula.valorCte / celula.valorNf) * 100 : 0;
+                          const cor = pct >= 12 ? '#fee2e2' : pct >= 8 ? '#ffedd5' : pct >= 5 ? '#fef3c7' : pct > 0 ? '#dcfce7' : undefined;
+                          return (
+                            <td key={`heat-${origemUf}-${destinoUf}`} style={{ background: cor, fontWeight: pct >= 8 ? 800 : 600 }}>
+                              {pct > 0 ? fmtPct(pct) : '-'}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
           <div className="panel-card">
             <div className="panel-title">{painelTransportadoras.recorteConsolidado ? 'Recorte filtrado' : 'Transportadoras mais caras'}</div>
             {painelTransportadoras.recorteConsolidado && (
