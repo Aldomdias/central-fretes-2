@@ -419,7 +419,7 @@ export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
   async function buscarLocal(filtros) {
     const { data, error } = await supabase
       .from('realizado_local_ctes')
-      .select('id, competencia, transportadora, cnpj_transportadora, data_emissao, chave_cte, numero_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, cubagem, qtd_volumes, canal, valor_nf, cidade_origem, cidade_destino, raw')
+      .select('id, competencia, transportadora, cnpj_transportadora, data_emissao, chave_cte, numero_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, cubagem, qtd_volumes, canal, valor_nf, cidade_origem, cidade_destino')
       .or(filtros.join(','))
       .order('data_emissao', { ascending: false })
       .limit(20);
@@ -433,15 +433,10 @@ export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
   }
 
   try {
-    const local = await buscarLocal(filtrosComRaw);
+    const local = await buscarLocal(filtrosDiretos);
     if (local.length) return local;
-  } catch (error) {
-    try {
-      const local = await buscarLocal(filtrosDiretos);
-      if (local.length) return local;
-    } catch {
-      // segue para base legada abaixo
-    }
+  } catch {
+    // segue para base legada abaixo
   }
 
   let { data, error } = await supabase

@@ -118,7 +118,7 @@ function termoBuscaLike(valor = '') {
   return String(valor || '').trim().replace(/[%*,()]/g, ' ');
 }
 
-function filtrosBuscaCteOuNf(termo = '', { incluirRaw = true } = {}) {
+function filtrosBuscaCteOuNf(termo = '', { incluirRaw = false } = {}) {
   const busca = termoBuscaLike(termo);
   if (!busca) return [];
   const digitos = busca.replace(/\D/g, '');
@@ -3103,12 +3103,12 @@ export default function CtePage() {
         <div className="panel-title">Filtros</div>
         <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
           <div className="field">
-            <label>Chave CT-e / NF / Nº CT-e</label>
+            <label>Chave CT-e / Nº CT-e</label>
             <input
               value={filtros.buscaDocumento}
               onChange={(e) => set('buscaDocumento', e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') buscar(1, filtros); }}
-              placeholder="Chave, NF ou número"
+              placeholder="Chave CT-e ou número"
             />
           </div>
 
