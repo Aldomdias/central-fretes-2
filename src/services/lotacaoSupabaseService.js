@@ -401,6 +401,8 @@ export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
   const termoSeguro = busca.replace(/[%*,()]/g, ' ');
   const digitos = termoSeguro.replace(/\D/g, '');
   const valores = [...new Set([termoSeguro, digitos].filter(Boolean))];
+  const numeroCteDaChave = digitos.length >= 34 ? String(Number(digitos.slice(25, 34)) || '') : '';
+  const numerosPossiveis = [...new Set([digitos, numeroCteDaChave].filter(Boolean))];
   const filtrosDiretos = valores.flatMap((valor) => [
     `chave_cte.ilike.%${valor}%`,
     `numero_cte.ilike.%${valor}%`,
@@ -416,15 +418,8 @@ export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
     `raw->>nf.ilike.%${valor}%`,
   ]);
 
-  async function buscarLocal(filtros) {
-    const { data, error } = await supabase
-      .from('realizado_local_ctes')
-      .select('id, competencia, transportadora, cnpj_transportadora, data_emissao, chave_cte, numero_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, cubagem, qtd_volumes, canal, valor_nf, cidade_origem, cidade_destino')
-      .or(filtros.join(','))
-      .order('data_emissao', { ascending: false })
-      .limit(20);
-    if (error) throw error;
-    return (data || []).map((row) => ({
+  function normalizarLocal(rows = []) {
+    return (rows || []).map((row) => ({
       ...row,
       emissao: row.data_emissao,
       metros_cubicos: row.cubagem,
@@ -432,9 +427,27 @@ export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
     }));
   }
 
+  async function buscarLocalPorColuna(coluna, valor) {
+    if (!valor) return [];
+    const { data, error } = await supabase
+      .from('realizado_local_ctes')
+      .select('id, competencia, transportadora, cnpj_transportadora, data_emissao, chave_cte, numero_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, cubagem, qtd_volumes, canal, valor_nf, cidade_origem, cidade_destino')
+      .ilike(coluna, `%${valor}%`)
+      .order('data_emissao', { ascending: false })
+      .limit(20);
+    if (error) throw error;
+    return normalizarLocal(data || []);
+  }
+
   try {
-    const local = await buscarLocal(filtrosDiretos);
-    if (local.length) return local;
+    for (const valor of valores) {
+      const porChave = await buscarLocalPorColuna('chave_cte', valor);
+      if (porChave.length) return porChave;
+    }
+    for (const valor of numerosPossiveis) {
+      const porNumero = await buscarLocalPorColuna('numero_cte', valor);
+      if (porNumero.length) return porNumero;
+    }
   } catch {
     // segue para base legada abaixo
   }

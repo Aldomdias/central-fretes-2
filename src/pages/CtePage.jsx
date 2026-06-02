@@ -2193,8 +2193,11 @@ export default function CtePage() {
   );
 
   const baseAnalisePadrao = useMemo(
-    () => aplicarFiltrosPadraoCte(rowsAnaliseComVinculos || [], { ocultarEbazar, incluirCpsLog }),
-    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog]
+    () => {
+      if (String(filtros.buscaDocumento || '').trim()) return rowsAnaliseComVinculos || [];
+      return aplicarFiltrosPadraoCte(rowsAnaliseComVinculos || [], { ocultarEbazar, incluirCpsLog });
+    },
+    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog, filtros.buscaDocumento]
   );
 
   const analiseSnapshot = useMemo(
@@ -3220,7 +3223,9 @@ export default function CtePage() {
             Incluir CPS LOG
           </label>
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-            Base padrão: tomadores {TOMADORES_PERMITIDOS.join(', ')}, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador.
+            {String(filtros.buscaDocumento || '').trim()
+              ? 'Busca direta por documento: exibindo CT-e encontrado sem aplicar exclusões padrão de tomador/EBAZAR/CPS LOG.'
+              : `Base padrão: tomadores ${TOMADORES_PERMITIDOS.join(', ')}, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador.`}
           </span>
         </div>
       </div>
