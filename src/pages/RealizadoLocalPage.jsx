@@ -832,6 +832,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
   const [salvandoTabelaLocal, setSalvandoTabelaLocal] = useState(false);
   const [usarMalhaAutomatica, setUsarMalhaAutomatica] = useState(true);
   const [modoSimulacao, setModoSimulacao] = useState('completo');
+  const [criterioB2c, setCriterioB2c] = useState({ usarPonderadoB2c: false, pesoPreco: 80, pesoPrazo: 20 });
   const [gradeFrete, setGradeFrete] = useState(() => carregarGradeFrete());
   const [escopoSimulacao, setEscopoSimulacao] = useState(null);
   const [grupoDetalhe, setGrupoDetalhe] = useState(null);
@@ -1708,6 +1709,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
         nomeTransportadora: aliasesTransportadora,
         modoSimulacao,
         gradeFrete: gradeAtual,
+        criterioB2c,
       }, ({ atual = 0, total = rows.length, etapa = 'Calculando frete local' }) => {
         setProgress({
           etapa,
@@ -2088,6 +2090,19 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
             <small>
               Completo compara concorrentes das mesmas rotas IBGE filtradas e preenche líder/substituta. Rápido não calcula substituta.
             </small>
+          </div>
+          <div className="sim-parametros-box subtle top-space-sm">
+            <label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <input type="checkbox" checked={criterioB2c.usarPonderadoB2c} onChange={(e) => setCriterioB2c((p) => ({ ...p, usarPonderadoB2c: e.target.checked }))} />
+              <span>
+                Usar criterio ponderado preco + prazo no B2C
+                <small style={{ display: 'block' }}>Quando marcado, CT-es B2C escolhem o vencedor pelo score configurado. Atacado continua por menor preco.</small>
+              </span>
+            </label>
+            <div className="form-grid two" style={{ marginTop: 8 }}>
+              <div className="field"><label>Peso preco (%)</label><input type="number" min="0" max="100" value={criterioB2c.pesoPreco} onChange={(e) => setCriterioB2c((p) => ({ ...p, pesoPreco: Number(e.target.value || 0) }))} disabled={!criterioB2c.usarPonderadoB2c} /></div>
+              <div className="field"><label>Peso prazo (%)</label><input type="number" min="0" max="100" value={criterioB2c.pesoPrazo} onChange={(e) => setCriterioB2c((p) => ({ ...p, pesoPrazo: Number(e.target.value || 0) }))} disabled={!criterioB2c.usarPonderadoB2c} /></div>
+            </div>
           </div>
           <div className="sim-parametros-box subtle top-space-sm">
             <div className="sim-parametros-header">

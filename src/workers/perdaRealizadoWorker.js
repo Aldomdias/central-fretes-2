@@ -10,6 +10,7 @@ import {
   calcularItemTabela,
   construirIndiceFretesPorRota,
   categoriaCanalRealizado,
+  ordenarCalculadosPorCriterio,
 } from '../utils/realizadoLocalEngine';
 import {
   criarMapaVinculosTransportadoras,
@@ -127,7 +128,7 @@ self.onmessage = async (event) => {
   if (msg.type !== 'analisar-perda') return;
 
   try {
-    const { realizados = [], transportadoras = [], municipios = [], vinculos = [] } = msg;
+    const { realizados = [], transportadoras = [], municipios = [], vinculos = [], criterioB2c = {} } = msg;
     const mapaVinculos = criarMapaVinculosTransportadoras(vinculos);
 
     self.postMessage({ type: 'progress', etapa: 'Construindo índice de tabelas...', pct: 5 });
@@ -168,16 +169,15 @@ self.onmessage = async (event) => {
             return null;
           }
         })
-        .filter(Boolean)
-        .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
+        .filter(Boolean);
 
       if (!calculados.length) {
         registrarIgnorado(semMalha, cte, 'Nenhuma cotação/faixa de peso válida para a rota');
         continue;
       }
 
-      const calculadosAtivos = calculados.filter((item) => item.ativa !== false);
-      const calculadosInativos = calculados.filter((item) => item.ativa === false);
+      const calculadosAtivos = ordenarCalculadosPorCriterio(calculados.filter((item) => item.ativa !== false), canalCte, criterioB2c);
+      const calculadosInativos = ordenarCalculadosPorCriterio(calculados.filter((item) => item.ativa === false), canalCte, criterioB2c);
       const ganhadoraAtiva = calculadosAtivos[0] || null;
       const menorInativa = calculadosInativos[0] || null;
 
@@ -199,6 +199,8 @@ self.onmessage = async (event) => {
           valorAtivaMaisBarata: ganhadoraAtiva ? fmt2(ganhadoraAtiva.total) : null,
           economiaVsAtiva: ganhadoraAtiva ? fmt2(ganhadoraAtiva.total - menorInativa.total) : 0,
           economiaVsPago: fmt2(valorPago - menorInativa.total),
+          criterioSelecao: ganhadoraAtiva?.criterioSelecao || 'MENOR_PRECO',
+          scoreAtivaMaisBarata: ganhadoraAtiva?.scorePonderado ?? null,
           prazoInativa: numeroValido(menorInativa.prazo),
           prazoAtivaMaisBarata: numeroValido(ganhadoraAtiva?.prazo),
           fontePrazo: 'Tabela de Frete > Rota > prazoEntregaDias',
@@ -245,6 +247,8 @@ self.onmessage = async (event) => {
         transportadora: item.transportadora,
         valor: fmt2(item.total),
         prazo: numeroValido(item.prazo),
+        criterioSelecao: item.criterioSelecao || 'MENOR_PRECO',
+        scorePonderado: item.scorePonderado ?? null,
         faixaPeso: item.faixaPeso || '',
         tipoCalculo: item.tipoCalculo || '',
         detalhe: detalheCalculo(item),
@@ -268,6 +272,10 @@ self.onmessage = async (event) => {
         valorGanhadora: fmt2(valorGanhadora),
         perda,
         perdaPercentual: valorPago > 0 ? fmt2((perda / valorPago) * 100) : 0,
+        criterioSelecao: ganhadoraAtiva.criterioSelecao || 'MENOR_PRECO',
+        scorePonderado: ganhadoraAtiva.scorePonderado ?? null,
+        pesoPrecoScore: ganhadoraAtiva.pesoPrecoScore ?? null,
+        pesoPrazoScore: ganhadoraAtiva.pesoPrazoScore ?? null,
         prazoGanhadora,
         prazoRealizada,
         difPrazo: prazoGanhadora - prazoRealizada,

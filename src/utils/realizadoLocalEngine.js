@@ -42,6 +42,61 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+export function normalizarConfigScoreB2c(config = {}) {
+  const pesoPrecoRaw = Number(config.pesoPreco ?? config.preco ?? 80);
+  const pesoPrazoRaw = Number(config.pesoPrazo ?? config.prazo ?? 20);
+  const pesoPreco = Number.isFinite(pesoPrecoRaw) && pesoPrecoRaw >= 0 ? pesoPrecoRaw : 80;
+  const pesoPrazo = Number.isFinite(pesoPrazoRaw) && pesoPrazoRaw >= 0 ? pesoPrazoRaw : 20;
+  const total = pesoPreco + pesoPrazo;
+  return {
+    usarPonderadoB2c: Boolean(config.usarPonderadoB2c || config.ativo || config.usar),
+    pesoPreco: total > 0 ? pesoPreco : 80,
+    pesoPrazo: total > 0 ? pesoPrazo : 20,
+  };
+}
+
+export function ordenarCalculadosPorCriterio(calculados = [], canal = '', config = {}) {
+  const lista = (calculados || []).filter(Boolean);
+  const cfg = normalizarConfigScoreB2c(config);
+  const canalNormalizado = categoriaCanalRealizado(canal);
+  const ordenarPreco = (a, b) => toNumber(a.total) - toNumber(b.total) || toNumber(a.prazo) - toNumber(b.prazo) || String(a.transportadora || '').localeCompare(String(b.transportadora || ''), 'pt-BR');
+
+  if (!cfg.usarPonderadoB2c || canalNormalizado !== 'B2C') {
+    return [...lista].sort(ordenarPreco).map((item) => ({
+      ...item,
+      criterioSelecao: 'MENOR_PRECO',
+      scorePonderado: null,
+      pesoPrecoScore: null,
+      pesoPrazoScore: null,
+    }));
+  }
+
+  const menorPreco = Math.min(...lista.map((item) => toNumber(item.total)).filter((n) => n > 0));
+  const menorPrazo = Math.min(...lista.map((item) => toNumber(item.prazo)).filter((n) => n > 0));
+  if (!Number.isFinite(menorPreco) || !Number.isFinite(menorPrazo) || menorPreco <= 0 || menorPrazo <= 0) {
+    return [...lista].sort(ordenarPreco);
+  }
+
+  const pesoTotal = cfg.pesoPreco + cfg.pesoPrazo || 100;
+  const pesoPrecoNorm = cfg.pesoPreco / pesoTotal;
+  const pesoPrazoNorm = cfg.pesoPrazo / pesoTotal;
+
+  return lista
+    .map((item) => {
+      const precoRelativo = toNumber(item.total) > 0 ? toNumber(item.total) / menorPreco : Infinity;
+      const prazoRelativo = toNumber(item.prazo) > 0 ? toNumber(item.prazo) / menorPrazo : Infinity;
+      const scorePonderado = (pesoPrecoNorm * precoRelativo) + (pesoPrazoNorm * prazoRelativo);
+      return {
+        ...item,
+        criterioSelecao: 'B2C_PRECO_PRAZO',
+        scorePonderado,
+        pesoPrecoScore: cfg.pesoPreco,
+        pesoPrazoScore: cfg.pesoPrazo,
+      };
+    })
+    .sort((a, b) => a.scorePonderado - b.scorePonderado || ordenarPreco(a, b));
+}
+
 function faixaLabel(cotacao = {}, peso = 0) {
   const min = toNumber(cotacao.pesoMin);
   const maxRaw = cotacao.pesoMax ?? cotacao.pesoLimite;
@@ -883,6 +938,10 @@ function montarDetalhe({ cte, escolhido, lider, substituta, ranking, rankingCalc
     rankingCalculado,
     ganhaRanking,
     ganharia,
+    criterioSelecao: escolhido.criterioSelecao || 'MENOR_PRECO',
+    scorePonderado: escolhido.scorePonderado ?? null,
+    pesoPrecoScore: escolhido.pesoPrecoScore ?? null,
+    pesoPrazoScore: escolhido.pesoPrazoScore ?? null,
     liderTransportadora: lider?.transportadora || '',
     transportadoraSubstituta: substituta?.transportadora || '',
     freteSubstituta: rankingCalculado ? (substituta?.total || 0) : 0,
@@ -1049,6 +1108,7 @@ export async function simularRealizadoLocalRapido({
   nomeTransportadora,
   modoSimulacao = 'rapido',
   gradeFrete = {},
+  criterioB2c = {},
   onProgress,
 }) {
   const modo = modoSimulacao === 'completo' ? 'completo' : 'rapido';
@@ -1093,41 +1153,32 @@ export async function simularRealizadoLocalRapido({
         const calculadosSimulada = candidatosDaSimulada
           .map((item) => calcularItemTabela({ ...item, cte, gradeCanal }))
           .filter(Boolean)
-          .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
+        const calculadosSimuladaOrdenados = ordenarCalculadosPorCriterio(calculadosSimulada, canalCte, criterioB2c);
 
-        escolhido = calculadosSimulada[0] || null;
+        escolhido = calculadosSimuladaOrdenados[0] || null;
 
         let substituta = null;
 
         if (rankingCalculado && escolhido) {
-          lider = escolhido;
-          let menoresQueEscolhido = 0;
+          const calculadosConcorrentes = [];
 
           for (const candidato of candidatos) {
             if (transportadoraMatch(candidato.transportadora?.nome, nomeTransportadora, { exato: true })) continue;
             const calculado = calcularItemTabela({ ...candidato, cte, gradeCanal });
             if (!calculado) continue;
-
-            if (
-              calculado.total < (substituta?.total ?? Infinity) ||
-              (calculado.total === substituta?.total && calculado.prazo < (substituta?.prazo ?? Infinity))
-            ) {
-              substituta = calculado;
-            }
-
-            if (
-              calculado.total < (lider?.total ?? Infinity) ||
-              (calculado.total === lider?.total && calculado.prazo < (lider?.prazo ?? Infinity))
-            ) {
-              lider = calculado;
-            }
-
-            if (calculado.total < escolhido.total - 0.009) {
-              menoresQueEscolhido += 1;
-            }
+            calculadosConcorrentes.push(calculado);
           }
 
-          ranking = menoresQueEscolhido + 1;
+          const concorrentesOrdenados = ordenarCalculadosPorCriterio(calculadosConcorrentes, canalCte, criterioB2c);
+          substituta = concorrentesOrdenados[0] || null;
+          const rankingCompleto = ordenarCalculadosPorCriterio([...calculadosSimuladaOrdenados, ...concorrentesOrdenados], canalCte, criterioB2c);
+          lider = rankingCompleto[0] || escolhido;
+          const posicao = rankingCompleto.findIndex((item) =>
+            item.transportadora === escolhido.transportadora &&
+            toNumber(item.total) === toNumber(escolhido.total) &&
+            toNumber(item.prazo) === toNumber(escolhido.prazo)
+          );
+          ranking = posicao >= 0 ? posicao + 1 : null;
         } else {
           lider = null;
           ranking = null;
