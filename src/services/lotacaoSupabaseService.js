@@ -398,23 +398,68 @@ export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
   const busca = String(termo || '').trim();
   if (!busca) return [];
   const supabase = ensureClient();
-  const buscaLike = `%${busca}%`;
-  const digitos = busca.replace(/\D/g, '');
-  const filtros = [
-    `chave_cte.ilike.${buscaLike}`,
-    `numero_cte.ilike.${buscaLike}`,
-  ];
-  if (digitos && digitos !== busca) {
-    filtros.push(`chave_cte.ilike.%${digitos}%`);
-    filtros.push(`numero_cte.ilike.%${digitos}%`);
+  const termoSeguro = busca.replace(/[%*,()]/g, ' ');
+  const digitos = termoSeguro.replace(/\D/g, '');
+  const valores = [...new Set([termoSeguro, digitos].filter(Boolean))];
+  const filtrosDiretos = valores.flatMap((valor) => [
+    `chave_cte.ilike.%${valor}%`,
+    `numero_cte.ilike.%${valor}%`,
+  ]);
+  const filtrosComRaw = valores.flatMap((valor) => [
+    ...filtrosDiretos.filter((filtro) => filtro.includes(`%${valor}%`)),
+    `raw->>chaveCte.ilike.%${valor}%`,
+    `raw->>chaveNfe.ilike.%${valor}%`,
+    `raw->>chaveNf.ilike.%${valor}%`,
+    `raw->>notaFiscal.ilike.%${valor}%`,
+    `raw->>numeroNf.ilike.%${valor}%`,
+    `raw->>nfNumero.ilike.%${valor}%`,
+    `raw->>nf.ilike.%${valor}%`,
+  ]);
+
+  async function buscarLocal(filtros) {
+    const { data, error } = await supabase
+      .from('realizado_local_ctes')
+      .select('id, competencia, transportadora, cnpj_transportadora, data_emissao, chave_cte, numero_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, cubagem, qtd_volumes, canal, valor_nf, cidade_origem, cidade_destino, raw')
+      .or(filtros.join(','))
+      .order('data_emissao', { ascending: false })
+      .limit(20);
+    if (error) throw error;
+    return (data || []).map((row) => ({
+      ...row,
+      emissao: row.data_emissao,
+      metros_cubicos: row.cubagem,
+      volume: row.qtd_volumes,
+    }));
   }
 
-  const { data, error } = await supabase
+  try {
+    const local = await buscarLocal(filtrosComRaw);
+    if (local.length) return local;
+  } catch (error) {
+    try {
+      const local = await buscarLocal(filtrosDiretos);
+      if (local.length) return local;
+    } catch {
+      // segue para base legada abaixo
+    }
+  }
+
+  let { data, error } = await supabase
     .from('realizado_ctes')
     .select('id, competencia, transportadora, cnpj_transportadora, emissao, chave_cte, numero_cte, serie_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, metros_cubicos, volume, canal, valor_nf, cidade_origem, cidade_destino, transportadora_contratada, raw')
-    .or(filtros.join(','))
+    .or(filtrosComRaw.join(','))
     .order('emissao', { ascending: false })
     .limit(20);
+  if (error) {
+    const respostaDireta = await supabase
+      .from('realizado_ctes')
+      .select('id, competencia, transportadora, cnpj_transportadora, emissao, chave_cte, numero_cte, serie_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, metros_cubicos, volume, canal, valor_nf, cidade_origem, cidade_destino, transportadora_contratada, raw')
+      .or(filtrosDiretos.join(','))
+      .order('emissao', { ascending: false })
+      .limit(20);
+    data = respostaDireta.data;
+    error = respostaDireta.error;
+  }
   if (error) throw new Error(detalheErroSupabase(error));
   return data || [];
 }
