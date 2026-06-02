@@ -147,6 +147,18 @@ export function categoriaCanalRealizado(value) {
   return canal;
 }
 
+function canaisIndiceRealizado(value) {
+  const canal = normalize(value);
+  if (!canal) return [];
+
+  const atendeAtacado = canal.includes('AMBOS') || CANAIS_ATACADO.some((item) => canal === item || canal.includes(item));
+  const atendeB2c = canal.includes('AMBOS') || CANAIS_B2C.some((item) => canal === item || canal.includes(item));
+
+  if (atendeAtacado && atendeB2c) return ['ATACADO', 'B2C'];
+  const categoria = categoriaCanalRealizado(canal);
+  return categoria ? [categoria] : [];
+}
+
 export function splitCidadeUf(value, ufRaw = '') {
   let cidade = normalizeTextRealizado(value);
   let uf = String(ufRaw || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
@@ -763,7 +775,7 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
     stats.transportadoras += 1;
     (transportadora.origens || []).forEach((origem) => {
       stats.origens += 1;
-      const canal = categoriaCanalRealizado(origem.canal || '');
+      const canais = canaisIndiceRealizado(origem.canal || '');
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;
       const origemUfPelaRota = getUfByIbge(origem.rotas?.[0]?.ibgeOrigem || '');
       const ibgeOrigemFallback = resolverIbgeLocal(origemCidade, origemUfPelaRota, mapasIbge);
@@ -778,10 +790,12 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
           return;
         }
         stats.rotasComIbge += 1;
-        const key = `${canal}|${ibgeOrigem}-${ibgeDestino}`;
-        const list = index.get(key) || [];
-        list.push({ transportadora, origem, rota: { ...rota, ibgeOrigem, ibgeDestino } });
-        index.set(key, list);
+        canais.forEach((canal) => {
+          const key = `${canal}|${ibgeOrigem}-${ibgeDestino}`;
+          const list = index.get(key) || [];
+          list.push({ transportadora, origem, rota: { ...rota, ibgeOrigem, ibgeDestino } });
+          index.set(key, list);
+        });
       });
     });
   });
