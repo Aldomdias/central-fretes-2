@@ -26,10 +26,50 @@ import {
 import {
   salvarCargasLotacaoSupabase,
   carregarCargasLotacaoSupabase,
+  carregarPendenciasAuditoriaSupabase,
   carregarSolicitacoesSupabase,
+  registrarEventoHistoricoSupabase,
+  atualizarPendenciaAuditoriaSupabase,
   salvarSolicitacaoSupabase,
   atualizarSolicitacaoSupabase,
 } from '../services/lotacaoSupabaseService';
+import { carregarSessao } from '../utils/authLocal';
+
+function adicionarHorasIso(dataBase, horas) {
+  const base = dataBase ? new Date(dataBase) : new Date();
+  if (Number.isNaN(base.getTime())) return new Date().toISOString();
+  return new Date(base.getTime() + (Number(horas || 0) * 3600000)).toISOString();
+}
+
+function chaveSolicitacaoLotacao(item = {}) {
+  return [item.distKey || item.dist_key || item.dist, item.cte || '', item.fatura || ''].join('|').toUpperCase();
+}
+
+function pendenciaParaSolicitacaoOperacao(pendencia = {}) {
+  return {
+    id: pendencia.id,
+    fonteFluxo: 'AUDIT_PENDENCIA',
+    tipo: 'EXCEDENTE_AUDITORIA',
+    origemSolicitacao: 'AUDITORIA',
+    cargaId: pendencia.carga_id || '',
+    dist: pendencia.dist || '',
+    distKey: pendencia.dist_key || '',
+    cte: pendencia.cte || '',
+    fatura: pendencia.fatura || '',
+    transportadora: pendencia.transportadora || '',
+    origem: pendencia.origem || '',
+    destino: pendencia.destino || '',
+    valorAutorizadoCarga: pendencia.valor_original ?? pendencia.valor_autorizado,
+    valorLancado: pendencia.valor_lancado,
+    excedente: pendencia.valor_excedente,
+    valorAdicional: pendencia.valor_adicional_aprovado ?? pendencia.valor_excedente,
+    status: pendencia.status || '',
+    observacao: pendencia.observation || '',
+    resposta: pendencia.resposta_operacao || pendencia.motivo_recusa || '',
+    criadoEm: pendencia.created_at || '',
+    atualizadoEm: pendencia.updated_at || '',
+  };
+}
 
 function arquivosValidos(files = []) {
   return Array.from(files || []).filter((file) => /\.xls[xm]?$/i.test(file.name || ''));
@@ -340,6 +380,7 @@ function RankingHistorico({ ranking }) {
 
 function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
   const [resposta, setResposta] = useState('');
+  const [feedback, setFeedback] = useState(null);
   const statusPendentes = ['PENDENTE', 'EXCEDEU_AGUARDANDO_OPERACAO'];
   const pendentes = solicitacoes.filter((item) => statusPendentes.includes(item.status));
   const recentes = solicitacoes.slice(0, 120);
@@ -360,7 +401,7 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
     return `mailto:?subject=${subject}&body=${body}`;
   };
 
-  const responder = (item, status) => {
+  const responder = async (item, status) => {
     const justificativa = resposta.trim();
     if (!justificativa) {
       window.alert('Informe uma justificativa antes de aprovar ou recusar a solicitacao.');
@@ -374,8 +415,14 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
     );
     if (!confirmado) return;
 
-    onAtualizar(item.id, status, justificativa);
-    setResposta('');
+    setFeedback(null);
+    try {
+      await onAtualizar(item, status, justificativa);
+      setResposta('');
+      setFeedback({ tipo: 'ok', texto: `Solicitacao ${acao === 'aprovar' ? 'aprovada' : 'recusada'} com sucesso.` });
+    } catch (error) {
+      setFeedback({ tipo: 'erro', texto: error.message || String(error) });
+    }
   };
 
   return (
@@ -392,6 +439,7 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
         Observação da resposta
         <input value={resposta} onChange={(event) => setResposta(event.target.value)} placeholder="Obrigatoria para aprovar ou recusar" />
       </label>
+      <StatusMensagem mensagem={feedback} />
 
       {!recentes.length ? (
         <div className="hint-box compact top-space-sm">Nenhuma solicitação de autorização criada até agora.</div>
@@ -532,6 +580,7 @@ function CustoAdicionalOperacao({ baseFluxo, onCriado }) {
 }
 
 export default function LotacaoOperacaoPage() {
+  const sessao = carregarSessao();
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
   const [tabelas, setTabelas] = useState([]);
@@ -567,10 +616,17 @@ export default function LotacaoOperacaoPage() {
   useEffect(() => {
     (async () => {
       try {
-        const sols = await carregarSolicitacoesSupabase();
+        const [sols, pends] = await Promise.all([
+          carregarSolicitacoesSupabase(),
+          carregarPendenciasAuditoriaSupabase({}).catch(() => null),
+        ]);
         if (sols !== null) {
-          setSolicitacoes(sols);
-          salvarSolicitacoesPagamento(sols); // espelha no cache local
+          const pendencias = Array.isArray(pends) ? pends.map(pendenciaParaSolicitacaoOperacao) : [];
+          const chavesPendencias = new Set(pendencias.map(chaveSolicitacaoLotacao));
+          const legadasSemDuplicar = (sols || []).filter((sol) => !chavesPendencias.has(chaveSolicitacaoLotacao(sol)));
+          const lista = [...pendencias, ...legadasSemDuplicar];
+          setSolicitacoes(lista);
+          salvarSolicitacoesPagamento(lista); // espelha no cache local
         }
       } catch (err) {
         console.warn('[Operação] Usando localStorage para solicitações:', err.message);
@@ -585,12 +641,42 @@ export default function LotacaoOperacaoPage() {
 
   const atualizarFiltro = (campo, valor) => setFiltros((prev) => ({ ...prev, [campo]: valor }));
 
-  const atualizarSolicitacao = async (id, status, observacao) => {
-    // Atualiza no Supabase primeiro
-    try {
+  const atualizarSolicitacao = async (item, status, observacao) => {
+    const id = item?.id;
+    if (!id) throw new Error('Solicitacao sem identificador.');
+    const isPendencia = item.fonteFluxo === 'AUDIT_PENDENCIA';
+    if (isPendencia) {
+      const valorOriginal = Number(item.valorAutorizadoCarga || 0);
+      const valorAdicional = status === 'APROVADO_OPERACAO' ? Number(item.valorAdicional || item.excedente || 0) : 0;
+      const valorFinal = valorOriginal + valorAdicional;
+      const agora = new Date().toISOString();
+      await atualizarPendenciaAuditoriaSupabase(id, status, {
+        aprovado_por_user_id: sessao?.id || '',
+        aprovado_por_name: sessao?.nome || sessao?.email || '',
+        aprovado_por_email: sessao?.email || '',
+        aprovado_em: agora,
+        valor_original: valorOriginal,
+        valor_adicional_aprovado: valorAdicional,
+        valor_final_autorizado: valorFinal,
+        prazo_auditoria_em: status === 'APROVADO_OPERACAO' ? adicionarHorasIso(agora, 24) : null,
+        motivo_recusa: status === 'RECUSADO_OPERACAO' ? observacao : '',
+        resposta_operacao: observacao,
+        justificativa_operacao: observacao,
+      });
+      await registrarEventoHistoricoSupabase({
+        pendenciaId: id,
+        userId: sessao?.id || '',
+        userName: sessao?.nome || '',
+        userEmail: sessao?.email || '',
+        acao: status,
+        statusAnterior: item.status || '',
+        statusNovo: status,
+        comentario: observacao,
+        origemTela: 'LOTACAO_OPERACAO',
+      });
+    } else {
+      // Atualiza no Supabase primeiro
       await atualizarSolicitacaoSupabase(id, status, observacao);
-    } catch (err) {
-      console.warn('[Operação] Falha ao atualizar solicitação no Supabase:', err.message);
     }
     // Atualiza estado local e cache
     const base = solicitacoes.length ? solicitacoes : carregarSolicitacoesPagamento();
