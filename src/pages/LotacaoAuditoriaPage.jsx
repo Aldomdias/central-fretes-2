@@ -12,6 +12,7 @@ import {
   formatarDataCurta,
   formatarMoeda,
   lancamentosDaCarga,
+  normalizarTexto,
   salvarLancamentosAuditoria,
   salvarSolicitacoesPagamento,
   separarCtes,
@@ -22,18 +23,203 @@ import {
   totalLancadoCarga,
 } from '../utils/lotacaoFluxoCargas';
 import {
+  buscarCtesLotacaoAuditoriaSupabase,
   carregarCargasLotacaoSupabase,
   carregarLancamentosAuditoriaSupabase,
+  carregarPendenciasAuditoriaSupabase,
   carregarSolicitacoesSupabase,
+  carregarTabelasLotacaoSupabase,
+  registrarEventoHistoricoSupabase,
   salvarLancamentoAuditoriaSupabase,
+  salvarPendenciaAuditoriaSupabase,
   salvarSolicitacaoSupabase,
 } from '../services/lotacaoSupabaseService';
+import {
+  carregarTabelasLotacao,
+  pesquisarRotaLotacao,
+} from '../utils/lotacaoTables';
 import { carregarSessao } from '../utils/authLocal';
 
 function classeSaldo(valor) {
   if (valor < -0.01) return 'negativo';
   if (valor > 0.01) return 'positivo';
   return '';
+}
+
+function pendenciaParaMovimentoAutorizacao(pendencia = {}) {
+  return {
+    id: pendencia.id,
+    tipo: 'EXCEDENTE_AUDITORIA',
+    origemSolicitacao: 'AUDITORIA',
+    cargaId: pendencia.carga_id || '',
+    dist: pendencia.dist || '',
+    distKey: pendencia.dist_key || '',
+    cte: pendencia.cte || '',
+    fatura: pendencia.fatura || '',
+    transportadora: pendencia.transportadora || '',
+    valorAutorizadoCarga: pendencia.valor_original ?? pendencia.valor_autorizado,
+    valorLancado: pendencia.valor_lancado,
+    excedente: pendencia.valor_excedente,
+    valorAdicional: pendencia.valor_adicional_aprovado ?? pendencia.valor_excedente,
+    valorAdicionalAprovado: pendencia.valor_adicional_aprovado,
+    valorFinalAutorizado: pendencia.valor_final_autorizado,
+    status: pendencia.status || '',
+    observacao: pendencia.observation || '',
+    resposta: pendencia.resposta_operacao || pendencia.motivo_recusa || '',
+    criadoEm: pendencia.created_at || '',
+    atualizadoEm: pendencia.updated_at || '',
+  };
+}
+
+function adicionarHorasIso(dataBase, horas) {
+  const base = dataBase ? new Date(dataBase) : new Date();
+  if (Number.isNaN(base.getTime())) return new Date().toISOString();
+  return new Date(base.getTime() + (Number(horas || 0) * 3600000)).toISOString();
+}
+
+function cteParaFiltrosRota(cte = {}) {
+  return {
+    origem: cte.cidade_origem || '',
+    destino: cte.cidade_destino || '',
+    transportadora: cte.transportadora || cte.transportadora_contratada || '',
+    tipo: '',
+  };
+}
+
+function scoreSugestaoHistorico(carga = {}, cte = {}) {
+  const origem = normalizarTexto(cte.cidade_origem || '');
+  const destino = normalizarTexto(cte.cidade_destino || '');
+  const transp = normalizarTexto(cte.transportadora || cte.transportadora_contratada || '');
+  const cteNumero = normalizarTexto(cte.numero_cte || '');
+  let score = 0;
+  const motivos = [];
+  if (cteNumero && normalizarTexto(carga.cteRaw || '').includes(cteNumero)) {
+    score += 45;
+    motivos.push('CT-e encontrado na carga');
+  }
+  if (origem && normalizarTexto(carga.origem).includes(origem)) {
+    score += 18;
+    motivos.push('mesma origem');
+  }
+  if (destino && normalizarTexto(carga.destino).includes(destino)) {
+    score += 18;
+    motivos.push('mesmo destino');
+  }
+  if (transp && normalizarTexto(carga.transportadora).includes(transp)) {
+    score += 14;
+    motivos.push('mesma transportadora');
+  }
+  const emissao = cte.emissao ? new Date(cte.emissao).getTime() : 0;
+  const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
+  if (emissao && dataCarga) {
+    const dias = Math.abs(emissao - dataCarga) / 86400000;
+    if (dias <= 7) {
+      score += 10;
+      motivos.push('data próxima');
+    } else if (dias <= 30) {
+      score += 4;
+      motivos.push('mesmo período aproximado');
+    }
+  }
+  const valorCte = Number(cte.valor_cte || 0);
+  const valorCarga = Number(carga.valorComparacao || 0);
+  if (valorCte && valorCarga) {
+    const dif = Math.abs(valorCte - valorCarga) / Math.max(valorCte, valorCarga);
+    if (dif <= 0.12) {
+      score += 8;
+      motivos.push('valor próximo');
+    }
+  }
+  return { score, motivos };
+}
+
+function sugerirHistoricoPorCte(cargas = [], cte = {}) {
+  return (cargas || [])
+    .map((carga) => ({ carga, ...scoreSugestaoHistorico(carga, cte) }))
+    .filter((item) => item.score >= 18)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+}
+
+function CardCteEncontrado({ cte, onUsar }) {
+  if (!cte) return null;
+  return (
+    <div className="panel-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Dados encontrados no CT-e</div>
+          <p>{cte.numero_cte || '-'} · {cte.transportadora || cte.transportadora_contratada || '-'} · {cte.cidade_origem || '-'} x {cte.cidade_destino || '-'}</p>
+        </div>
+        <button type="button" className="btn-secondary" onClick={() => onUsar(cte)}>Usar dados do CT-e</button>
+      </div>
+      <div className="sim-analise-resumo">
+        <div><span>Chave CT-e</span><strong style={{ fontSize: '0.78rem' }}>{cte.chave_cte || '-'}</strong></div>
+        <div><span>Emissão</span><strong>{formatarDataCurta(cte.emissao)}</strong></div>
+        <div><span>Canal</span><strong>{cte.canal || '-'}</strong></div>
+        <div><span>Valor CT-e</span><strong>{formatarMoeda(cte.valor_cte)}</strong></div>
+        <div><span>Valor NF</span><strong>{formatarMoeda(cte.valor_nf)}</strong></div>
+        <div><span>Peso</span><strong>{Number(cte.peso_declarado || cte.peso_cubado || 0).toLocaleString('pt-BR')} kg</strong></div>
+        <div><span>Cubagem</span><strong>{Number(cte.metros_cubicos || 0).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} m³</strong></div>
+        <div><span>Volumes</span><strong>{Number(cte.volume || 0).toLocaleString('pt-BR')}</strong></div>
+      </div>
+    </div>
+  );
+}
+
+function ValidacaoTabelaLotacao({ resultados }) {
+  if (!resultados?.length) {
+    return <div className="hint-box compact">Tabela de lotação não encontrada para esta rota/transportadora.</div>;
+  }
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>Tabela de lotação aplicável</div>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead><tr><th>Transportadora</th><th>Origem</th><th>Destino</th><th>Tipo</th><th>Valor tabela</th></tr></thead>
+          <tbody>
+            {resultados.slice(0, 5).map((item, idx) => (
+              <tr key={`${item.tabelaId || item.id}-${idx}`}>
+                <td><strong>{item.tabelaNome || item.transportadora || '-'}</strong></td>
+                <td>{item.origem}/{item.ufOrigem || ''}</td>
+                <td>{item.destino}/{item.ufDestino || ''}</td>
+                <td>{item.tipo || '-'}</td>
+                <td><strong>{formatarMoeda(item.valor)}</strong></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SugestoesHistorico({ sugestoes, onUsar }) {
+  if (!sugestoes?.length) return <div className="hint-box compact">Nenhuma DIST provável encontrada no histórico por aproximação.</div>;
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>DIST provável encontrada</div>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead><tr><th>DIST</th><th>CT-e</th><th>Transportadora</th><th>Rota</th><th>Data</th><th>Valor</th><th>Confiança</th><th>Motivo</th><th>Ação</th></tr></thead>
+          <tbody>
+            {sugestoes.map(({ carga, score, motivos }) => (
+              <tr key={carga.id}>
+                <td><strong>{carga.dist}</strong></td>
+                <td>{carga.cteRaw || '-'}</td>
+                <td>{carga.transportadora}</td>
+                <td>{carga.origem} x {carga.destino}</td>
+                <td>{formatarDataCurta(carga.coletaRealizada || carga.coletaPlanejada)}</td>
+                <td>{formatarMoeda(carga.valorComparacao)}</td>
+                <td>{score >= 70 ? 'Alta' : score >= 40 ? 'Média' : 'Baixa'}</td>
+                <td>{motivos.join(', ') || '-'}</td>
+                <td><button type="button" className="btn-secondary" onClick={() => onUsar(carga)}>Usar esta DIST</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function ListaResultados({ resultados, selecionada, onSelecionar }) {
@@ -529,6 +715,9 @@ export default function LotacaoAuditoriaPage() {
 
   const [busca, setBusca] = useState('');
   const [selecionada, setSelecionada] = useState(null);
+  const [ctesEncontrados, setCtesEncontrados] = useState([]);
+  const [cteSelecionado, setCteSelecionado] = useState(null);
+  const [tabelasLotacao, setTabelasLotacao] = useState([]);
 
   const [lancamentos, setLancamentos] = useState(() => carregarLancamentosAuditoria());
   const [solicitacoes, setSolicitacoes] = useState(() => carregarSolicitacoesPagamento());
@@ -576,17 +765,20 @@ export default function LotacaoAuditoriaPage() {
 
     (async () => {
       try {
-        const [lancs, sols] = await Promise.all([
+        const [lancs, sols, pends] = await Promise.all([
           carregarLancamentosAuditoriaSupabase(),
           carregarSolicitacoesSupabase(),
+          carregarPendenciasAuditoriaSupabase({}).catch(() => null),
         ]);
         if (lancs !== null) {
           setLancamentos(lancs);
           salvarLancamentosAuditoria(lancs);
         }
         if (sols !== null) {
-          setSolicitacoes(sols);
-          salvarSolicitacoesPagamento(sols);
+          const movimentosPendencias = Array.isArray(pends) ? pends.map(pendenciaParaMovimentoAutorizacao) : [];
+          const solicitacoesComPendencias = [...movimentosPendencias, ...sols];
+          setSolicitacoes(solicitacoesComPendencias);
+          salvarSolicitacoesPagamento(solicitacoesComPendencias);
         }
       } catch (err) {
         console.warn('[Auditoria] Usando localStorage para lançamentos/solicitações:', err.message);
@@ -596,20 +788,57 @@ export default function LotacaoAuditoriaPage() {
     })();
   }, []);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await carregarTabelasLotacaoSupabase();
+        setTabelasLotacao(resp?.tabelas || []);
+      } catch (error) {
+        setTabelasLotacao(carregarTabelasLotacao());
+      }
+    })();
+  }, []);
+
   const resultados = useMemo(
     () => buscarCargaPorDistOuCte(baseFluxo.cargas, busca),
     [baseFluxo.cargas, busca],
   );
 
-  const pesquisar = useCallback(() => {
-    if (!resultados.length) {
+  const tabelaAplicavel = useMemo(() => {
+    if (!cteSelecionado && !selecionada) return [];
+    const filtros = cteSelecionado ? cteParaFiltrosRota(cteSelecionado) : {
+      origem: selecionada?.origem || '',
+      destino: selecionada?.destino || '',
+      transportadora: selecionada?.transportadora || '',
+      tipo: selecionada?.tipoVeiculo || '',
+    };
+    return pesquisarRotaLotacao(tabelasLotacao, filtros).slice(0, 10);
+  }, [tabelasLotacao, cteSelecionado, selecionada]);
+
+  const sugestoesHistorico = useMemo(
+    () => cteSelecionado ? sugerirHistoricoPorCte(baseFluxo.cargas, cteSelecionado) : [],
+    [baseFluxo.cargas, cteSelecionado],
+  );
+
+  const pesquisar = useCallback(async () => {
+    setMensagem('');
+    let ctes = [];
+    try {
+      ctes = await buscarCtesLotacaoAuditoriaSupabase(busca);
+      setCtesEncontrados(ctes);
+      setCteSelecionado(ctes[0] || null);
+    } catch (error) {
+      setCtesEncontrados([]);
+      setCteSelecionado(null);
+      console.warn('[Auditoria] Falha ao buscar CT-e no realizado:', error.message);
+    }
+    if (!resultados.length && !ctes.length) {
       setSelecionada(null);
-      setMensagem('Nenhuma DIST ou CT-e encontrado no histórico. Importe o fluxo de carga na tela Lotação Operação.');
+      setMensagem('Nenhuma DIST, CT-e ou chave CT-e encontrada no histórico/base CT-e.');
       return;
     }
-    setSelecionada(resultados[0]);
-    setMensagem('');
-  }, [resultados]);
+    setSelecionada(resultados[0] || null);
+  }, [busca, resultados]);
 
   // ── Registra lançamento com dados do auditor ──────────────────────────────
   const registrarLancamento = useCallback(async (form) => {
@@ -647,6 +876,7 @@ export default function LotacaoAuditoriaPage() {
 
       if (lancamentoComAuditor.excedente > 0) {
         const solicitacao = criarSolicitacaoPagamento(selecionada, lancamentoComAuditor);
+        const pendenciaId = globalThis.crypto?.randomUUID?.();
         const solicitacaoComAuditor = {
           ...solicitacao,
           auditedByName: lancamentoComAuditor.auditedByName,
@@ -663,6 +893,48 @@ export default function LotacaoAuditoriaPage() {
           await salvarSolicitacaoSupabase(solicitacaoComAuditor);
         } catch (error) {
           console.warn('[Auditoria] Solicitação salva localmente; falha ao salvar no Supabase:', error.message);
+        }
+
+        try {
+          await salvarPendenciaAuditoriaSupabase({
+            id: pendenciaId,
+            lancamentoId: lancamentoComAuditor.id,
+            dist: selecionada.dist,
+            distKey: selecionada.distKey,
+            cte: lancamentoComAuditor.cte,
+            fatura: lancamentoComAuditor.fatura,
+            transportadora: selecionada.transportadora,
+            cargaId: selecionada.id,
+            valorLancado: lancamentoComAuditor.valorLancado,
+            valorAutorizado: lancamentoComAuditor.saldoAnterior,
+            valorExcedente: lancamentoComAuditor.excedente,
+            valorOriginal: Number(selecionada.valorComparacao) || 0,
+            valorAdicionalAprovado: 0,
+            valorFinalAutorizado: Number(selecionada.valorComparacao) || 0,
+            prazoOperacaoEm: adicionarHorasIso(lancamentoComAuditor.auditedAt, 24),
+            status: 'EXCEDEU_AGUARDANDO_OPERACAO',
+            auditedByUserId: lancamentoComAuditor.auditedByUserId,
+            auditedByName: lancamentoComAuditor.auditedByName,
+            auditedByEmail: lancamentoComAuditor.auditedByEmail,
+            auditedAt: lancamentoComAuditor.auditedAt,
+            observation: lancamentoComAuditor.observacao,
+          });
+          if (pendenciaId) {
+            await registrarEventoHistoricoSupabase({
+              pendenciaId,
+              lancamentoId: lancamentoComAuditor.id,
+              userId: lancamentoComAuditor.auditedByUserId,
+              userName: lancamentoComAuditor.auditedByName,
+              userEmail: lancamentoComAuditor.auditedByEmail,
+              acao: 'ENVIADO_OPERACAO',
+              statusAnterior: 'AUDITORIA',
+              statusNovo: 'EXCEDEU_AGUARDANDO_OPERACAO',
+              comentario: lancamentoComAuditor.observacao,
+              origemTela: 'AUDITORIA_LOTACAO',
+            });
+          }
+        } catch (error) {
+          console.warn('[Auditoria] Solicitação antiga salva; falha ao criar pendência no painel novo:', error.message);
         }
 
         setMensagem('✓ Lançamento registrado e pendência criada para aprovação em Lotação Operação.');
@@ -719,19 +991,19 @@ export default function LotacaoAuditoriaPage() {
         <div className="section-row compact-top">
           <div>
             <div className="panel-title">Pesquisar carga</div>
-            <p>Use o número da coluna B/DIST ou um dos CT-es da coluna CTE TRANSP.</p>
+            <p>Use DIST, CT-e, chave CT-e, NF ou chave NF para cruzar histórico, base CT-e e tabelas.</p>
           </div>
           <span className="status-pill dark">{totalCargas} cargas no histórico</span>
         </div>
 
         <div className="form-grid three">
           <label className="field full-span">
-            DIST ou CT-e
+            DIST / CT-e / Chave CT-e / NF
             <input
               value={busca}
               onChange={(e) => setBusca(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') pesquisar(); }}
-              placeholder="Ex.: DIST-9372 ou 19379"
+              placeholder="Ex.: DIST-9372, 19379 ou chave CT-e"
             />
           </label>
         </div>
@@ -741,9 +1013,34 @@ export default function LotacaoAuditoriaPage() {
           </button>
         </div>
         {mensagem && <div className="hint-box compact">{mensagem}</div>}
-        <ListaResultados resultados={resultados} selecionada={selecionada} onSelecionar={setSelecionada} />
+        <ListaResultados
+          resultados={resultados}
+          selecionada={selecionada}
+          onSelecionar={(carga) => {
+            setSelecionada(carga);
+            setCteSelecionado(null);
+          }}
+        />
+        {ctesEncontrados.length > 1 && (
+          <div className="mini-list top-space-sm">
+            {ctesEncontrados.map((cte) => (
+              <button
+                key={cte.id || cte.chave_cte || cte.numero_cte}
+                type="button"
+                className={cteSelecionado?.id === cte.id ? 'mini-list-row clickable active' : 'mini-list-row clickable'}
+                onClick={() => setCteSelecionado(cte)}
+              >
+                <span><strong>{cte.numero_cte || '-'}</strong> · {cte.transportadora || '-'} · {cte.cidade_origem || '-'} x {cte.cidade_destino || '-'}</span>
+                <strong>{formatarMoeda(cte.valor_cte)}</strong>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
+      <CardCteEncontrado cte={cteSelecionado} onUsar={setCteSelecionado} />
+      {(cteSelecionado || selecionada) && <ValidacaoTabelaLotacao resultados={tabelaAplicavel} />}
+      {cteSelecionado && <SugestoesHistorico sugestoes={sugestoesHistorico} onUsar={setSelecionada} />}
       <ResumoCarga carga={selecionada} lancamentos={lancamentos} solicitacoes={solicitacoes} />
       <FormLancamento
         key={selecionada?.id || 'sem-carga'}
@@ -754,7 +1051,6 @@ export default function LotacaoAuditoriaPage() {
         salvando={salvando}
         usuarioAtual={usuarioAtual}
       />
-      <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} />
       <HistoricoLancamentos carga={selecionada} lancamentos={lancamentos} />
       <MovimentosAutorizacao carga={selecionada} solicitacoes={solicitacoes} />
     </div>

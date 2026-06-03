@@ -4,7 +4,7 @@ import { buscarBaseSimulacaoPorRotasDb } from '../services/freteDatabaseService'
 import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import { carregarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { buscarRealizadoRemotoParaPerda } from '../services/perdaRealizadoDb';
-import { categoriaCanalRealizado } from '../utils/realizadoLocalEngine';
+import { categoriaCanalRealizado, ordenarCalculadosPorCriterio } from '../utils/realizadoLocalEngine';
 
 const REGIOES = [
   { label: 'Sul', ufs: ['RS', 'SC', 'PR'] },
@@ -17,7 +17,7 @@ const TODAS_UFS = REGIOES.flatMap((r) => r.ufs);
 const CANAIS = ['ATACADO', 'B2C', 'REVERSA', 'INTERCOMPANY', 'A DEFINIR'];
 const LIMITE_DB = 50000;
 const PAGE_SIZE = 50;
-const ROUTE_CHUNK_SIZE = 90;
+const ROUTE_CHUNK_SIZE = 30;
 
 const ETAPAS = [
   { id: 'municipios', label: 'Municípios' },
@@ -147,6 +147,56 @@ function recalcularResultadoBi(resultado = {}, filtros = {}) {
     economiaInativaTotal,
     economiaInativaVsPagoTotal,
   });
+}
+
+function aplicarCriterioB2cResultado(resultado = {}, criterioB2c = {}) {
+  if (!resultado?.detalhes?.length) return resultado;
+
+  const detalhes = (resultado.detalhes || []).map((d) => {
+    const alternativas = Array.isArray(d.alternativasAtivas) ? d.alternativasAtivas : [];
+    if (!alternativas.length) return d;
+
+    const ordenadas = ordenarCalculadosPorCriterio(
+      alternativas.map((item) => ({
+        ...item,
+        total: safeNumber(item.total ?? item.valor),
+        prazo: safeNumber(item.prazo),
+      })),
+      d.canal,
+      criterioB2c
+    ).map((item) => ({
+      ...item,
+      total: Math.round(safeNumber(item.total ?? item.valor) * 100) / 100,
+      valor: Math.round(safeNumber(item.total ?? item.valor) * 100) / 100,
+    }));
+
+    const ganhadora = ordenadas[0];
+    if (!ganhadora) return d;
+
+    const valorGanhadora = safeNumber(ganhadora.valor ?? ganhadora.total);
+    const valorPago = safeNumber(d.valorPago);
+    const perda = Math.round((valorPago - valorGanhadora) * 100) / 100;
+
+    return {
+      ...d,
+      transportadoraGanhadora: ganhadora.transportadora,
+      valorGanhadora,
+      perda,
+      perdaPercentual: valorPago > 0 ? Math.round((perda / valorPago) * 10000) / 100 : 0,
+      temPerda: perda > 0.01,
+      criterioSelecao: ganhadora.criterioSelecao || 'MENOR_PRECO',
+      scorePonderado: ganhadora.scorePonderado ?? null,
+      pesoPrecoScore: ganhadora.pesoPrecoScore ?? null,
+      pesoPrazoScore: ganhadora.pesoPrazoScore ?? null,
+      prazoGanhadora: ganhadora.prazo,
+      difPrazo: safeNumber(ganhadora.prazo) - safeNumber(d.prazoRealizada),
+      faixaGanhadora: ganhadora.faixaPeso || d.faixaGanhadora,
+      tipoCalculoGanhadora: ganhadora.tipoCalculo || d.tipoCalculoGanhadora,
+      alternativasAtivas: ordenadas,
+    };
+  });
+
+  return recalcularAgregados({ ...resultado, detalhes });
 }
 
 function escolherSubstitutaRetirada(detalhe = {}, transportadorasRetiradas = []) {
@@ -346,6 +396,7 @@ function Progresso({ etapaId, msg, pctVal }) {
 export default function PerdaRealizadoPage() {
   const workerRef = useRef(null);
   const [filtros, setFiltros] = useState({ inicio: new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1).toISOString().slice(0, 10), fim: new Date().toISOString().slice(0, 10), canal: '', transportadoraRealizada: '', cidadeOrigem: '', ufsOrigem: [], ufsDestino: [] });
+  const [criterioB2c, setCriterioB2c] = useState({ usarPonderadoB2c: false, pesoPreco: 80, pesoPrazo: 20 });
   const set = (k, v) => setFiltros((p) => ({ ...p, [k]: v }));
   const [status, setStatus] = useState('idle');
   const [etapaId, setEtapaId] = useState('');
@@ -417,7 +468,7 @@ export default function PerdaRealizadoPage() {
         const transportadoras = await buscarBaseSimulacaoPorRotasDb({ routeKeys: loteKeys, canal: filtros.canal || '' });
         if (!transportadoras.length) continue;
         step('analise', `Lote ${i + 1}/${lotes.length}: analisando ${ctesLote.length.toLocaleString('pt-BR')} CT-es...`, Math.min(95, pctBase + 5));
-        const parcial = await analisarLote({ realizados: ctesLote, transportadoras, municipios, vinculos });
+        const parcial = await analisarLote({ realizados: ctesLote, transportadoras, municipios, vinculos, criterioB2c });
         resultados.push(parcial);
       }
 
@@ -431,7 +482,8 @@ export default function PerdaRealizadoPage() {
     } catch (e) { setErro(e.message || 'Erro inesperado.'); setStatus('erro'); }
   };
 
-  const resultadoCenario = useMemo(() => resultado ? aplicarCenarioRetirada(resultado, cenarioRetirada) : null, [resultado, cenarioRetirada]);
+  const resultadoCriterio = useMemo(() => resultado ? aplicarCriterioB2cResultado(resultado, criterioB2c) : null, [resultado, criterioB2c]);
+  const resultadoCenario = useMemo(() => resultadoCriterio ? aplicarCenarioRetirada(resultadoCriterio, cenarioRetirada) : null, [resultadoCriterio, cenarioRetirada]);
   const resultadoBi = useMemo(() => resultadoCenario ? recalcularResultadoBi(resultadoCenario, filtrosBi) : null, [resultadoCenario, filtrosBi]);
   const biAtivo = filtrosBiAtivos(filtrosBi);
   const opcoesBi = useMemo(() => {
@@ -533,6 +585,7 @@ export default function PerdaRealizadoPage() {
   };
 
   return <div className="page-shell">
+    <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Criterio B2C</div><label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}><input type="checkbox" checked={criterioB2c.usarPonderadoB2c} onChange={(e) => setCriterioB2c((p) => ({ ...p, usarPonderadoB2c: e.target.checked }))} /><span>Usar criterio ponderado preco + prazo<small style={{ display: 'block' }}>Aplica somente em CT-es B2C. Atacado continua por menor preco.</small></span></label><div className="form-grid two" style={{ marginTop: 8 }}><label className="field">Peso preco (%)<input type="number" min="0" max="100" value={criterioB2c.pesoPreco} onChange={(e) => setCriterioB2c((p) => ({ ...p, pesoPreco: Number(e.target.value || 0) }))} disabled={!criterioB2c.usarPonderadoB2c} /></label><label className="field">Peso prazo (%)<input type="number" min="0" max="100" value={criterioB2c.pesoPrazo} onChange={(e) => setCriterioB2c((p) => ({ ...p, pesoPrazo: Number(e.target.value || 0) }))} disabled={!criterioB2c.usarPonderadoB2c} /></label></div></div>
     <div className="page-header"><span className="amd-mini-brand">Realizado · Análise</span><h1>Perda por Transportadora Mais Cara</h1><p>Compara o frete pago com a opção mais barata ativa disponível nas tabelas. O processamento é feito por lotes de rotas para evitar timeout.</p></div>
     <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div><div className="form-grid three" style={{ marginBottom: '1rem' }}><label className="field">Data início<input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} /></label><label className="field">Data fim<input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} /></label><label className="field">Canal<select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}><option value="">Todos os canais</option>{CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><label className="field">Transportadora realizada<input placeholder="Nome da transportadora que carregou" value={filtros.transportadoraRealizada} onChange={(e) => set('transportadoraRealizada', e.target.value)} /></label><label className="field">Cidade de origem<input placeholder="Ex: São Paulo, Campinas..." value={filtros.cidadeOrigem} onChange={(e) => set('cidadeOrigem', e.target.value)} /></label></div><div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}><PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} /></div><div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}><PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} /></div><div style={{ marginTop: '1rem' }}><button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>{processando ? '⟳ Processando...' : '▶ Processar'}</button>{processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}</div></div>
     {info && !processando && <div className="hint-box compact" style={{ marginBottom: '0.75rem', background: '#f0f7ff', border: '1px solid #c8deff' }}>ℹ️ {info}</div>}{aviso && <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '0.75rem' }}>⚠️ {aviso}</div>}{erro && <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '0.75rem' }}>⚠️ {erro}</div>}

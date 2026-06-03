@@ -114,6 +114,32 @@ function temFiltroAtivo(filtros = {}) {
   return Object.values(filtros).some((valor) => String(valor || '').trim() !== '');
 }
 
+function termoBuscaLike(valor = '') {
+  return String(valor || '').trim().replace(/[%*,()]/g, ' ');
+}
+
+function filtrosBuscaCteOuNf(termo = '', { incluirRaw = false } = {}) {
+  const busca = termoBuscaLike(termo);
+  if (!busca) return [];
+  const digitos = busca.replace(/\D/g, '');
+  const valores = [...new Set([busca, digitos].filter(Boolean))];
+  const colunasDiretas = [
+    'chave_cte',
+    'numero_cte',
+  ];
+  const colunasRaw = [
+    'raw->>chaveCte',
+    'raw->>chaveNfe',
+    'raw->>chaveNf',
+    'raw->>notaFiscal',
+    'raw->>numeroNf',
+    'raw->>nfNumero',
+    'raw->>nf',
+  ];
+  const colunas = incluirRaw ? [...colunasDiretas, ...colunasRaw] : colunasDiretas;
+  return valores.flatMap((valor) => colunas.map((coluna) => `${coluna}.ilike.%${valor}%`));
+}
+
 function campo(row, ...chaves) {
   for (const k of chaves) {
     if (row?.[k] !== undefined && row?.[k] !== null && row?.[k] !== '') return row[k];
@@ -248,6 +274,22 @@ function getVolumes(row) {
 
 function getNumeroCte(row) {
   return campo(row, 'numero_cte', 'numeroCte', 'cte', 'nro_cte');
+}
+
+function getChaveCte(row) {
+  return campo(row, 'chave_cte', 'chaveCte', 'chave');
+}
+
+function getNotaFiscal(row) {
+  const raw = row?.raw || {};
+  return campo(row, 'nota_fiscal', 'notaFiscal', 'numero_nf', 'numeroNf', 'nf', 'nfNumero')
+    || campo(raw, 'notaFiscal', 'numeroNf', 'nfNumero', 'nf', 'NF Numero', 'Nota Fiscal');
+}
+
+function getChaveNf(row) {
+  const raw = row?.raw || {};
+  return campo(row, 'chave_nfe', 'chaveNfe', 'chave_nf', 'chaveNf', 'chaveNota')
+    || campo(raw, 'chaveNfe', 'chaveNf', 'chaveNota', 'NF Chave', 'Chave NF', 'Chave NFe');
 }
 
 function getSituacao(row) {
@@ -481,7 +523,7 @@ async function executarQuerySupabaseComRetry(montarQuery, contexto = 'consulta S
   throw new Error(`${contexto}: ${detalhe}`);
 }
 
-function aplicarFiltros(query, filtros = {}) {
+function aplicarFiltros(query, filtros = {}, opcoes = {}) {
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
   if (filtros.transportadoraRealizada) query = query.ilike('transportadora', `%${filtros.transportadoraRealizada}%`);
@@ -489,6 +531,8 @@ function aplicarFiltros(query, filtros = {}) {
   if (filtros.destino) query = query.ilike('cidade_destino', `${filtros.destino}%`);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+  const busca = filtrosBuscaCteOuNf(filtros.buscaDocumento, opcoes);
+  if (busca.length) query = query.or(busca.join(','));
   return query;
 }
 
@@ -507,7 +551,7 @@ async function buscarCtesPagina(filtros = {}, pagina = 1) {
   const inicio = (Number(pagina || 1) - 1) * PAGE_SIZE;
   const fim = inicio + PAGE_SIZE - 1;
 
-  const resposta = await executarQuerySupabaseComRetry(async () => {
+  let resposta = await executarQuerySupabaseComRetry(async () => {
     let query = supabase
       .from(TABELA)
       .select('*')
@@ -518,7 +562,20 @@ async function buscarCtesPagina(filtros = {}, pagina = 1) {
     return query;
   }, `Erro Supabase (${TABELA}) ao buscar página de CT-es`);
 
-  const { data, error } = resposta || {};
+  let { data, error } = resposta || {};
+  if (error && filtros.buscaDocumento) {
+    resposta = await executarQuerySupabaseComRetry(async () => {
+      let query = supabase
+        .from(TABELA)
+        .select('*')
+        .order('data_emissao', { ascending: false, nullsFirst: false })
+        .range(inicio, fim + 1);
+
+      query = aplicarFiltros(query, filtros, { incluirRaw: false });
+      return query;
+    }, `Erro Supabase (${TABELA}) ao buscar pÃ¡gina de CT-es por chave/nÃºmero`);
+    ({ data, error } = resposta || {});
+  }
   if (error) throw new Error(`Erro Supabase (${TABELA}): ${error.message}`);
 
   const linhas = aplicarFiltroCanalNormalizado(data || [], filtros);
@@ -542,7 +599,7 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
   for (let inicio = 0; ; inicio += ANALISE_BATCH_SIZE) {
     const fim = inicio + ANALISE_BATCH_SIZE - 1;
 
-    const resposta = await executarQuerySupabaseComRetry(async () => {
+    let resposta = await executarQuerySupabaseComRetry(async () => {
       let query = supabase
         .from(TABELA)
         .select('*', inicio === 0 ? { count: 'exact' } : undefined)
@@ -553,7 +610,20 @@ async function buscarCtesParaAnalise(filtros = {}, onProgress) {
       return query;
     }, `Erro Supabase (${TABELA}) ao montar análise de CT-es`);
 
-    const { data, error, count } = resposta || {};
+    let { data, error, count } = resposta || {};
+    if (error && filtros.buscaDocumento) {
+      resposta = await executarQuerySupabaseComRetry(async () => {
+        let query = supabase
+          .from(TABELA)
+          .select('*', inicio === 0 ? { count: 'exact' } : undefined)
+          .order('data_emissao', { ascending: false, nullsFirst: false })
+          .range(inicio, fim);
+
+        query = aplicarFiltros(query, filtros, { incluirRaw: false });
+        return query;
+      }, `Erro Supabase (${TABELA}) ao montar anÃ¡lise por chave/nÃºmero`);
+      ({ data, error, count } = resposta || {});
+    }
     if (error) throw new Error(`Erro Supabase (${TABELA}): ${error.message}`);
     if (Number.isFinite(count)) total = count;
 
@@ -1747,6 +1817,7 @@ export default function CtePage() {
     inicio: '',
     fim: '',
     canal: '',
+    buscaDocumento: '',
   });
 
   const [competenciaUpload, setCompetenciaUpload] = useState(monthNow());
@@ -2122,8 +2193,11 @@ export default function CtePage() {
   );
 
   const baseAnalisePadrao = useMemo(
-    () => aplicarFiltrosPadraoCte(rowsAnaliseComVinculos || [], { ocultarEbazar, incluirCpsLog }),
-    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog]
+    () => {
+      if (String(filtros.buscaDocumento || '').trim()) return rowsAnaliseComVinculos || [];
+      return aplicarFiltrosPadraoCte(rowsAnaliseComVinculos || [], { ocultarEbazar, incluirCpsLog });
+    },
+    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog, filtros.buscaDocumento]
   );
 
   const analiseSnapshot = useMemo(
@@ -3032,6 +3106,16 @@ export default function CtePage() {
         <div className="panel-title">Filtros</div>
         <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
           <div className="field">
+            <label>Chave CT-e / Nº CT-e</label>
+            <input
+              value={filtros.buscaDocumento}
+              onChange={(e) => set('buscaDocumento', e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') buscar(1, filtros); }}
+              placeholder="Chave CT-e ou número"
+            />
+          </div>
+
+          <div className="field">
             <label>Transportadora</label>
             <input
               value={filtros.transportadoraRealizada}
@@ -3104,6 +3188,7 @@ export default function CtePage() {
                 inicio: '',
                 fim: '',
                 canal: '',
+                buscaDocumento: '',
               };
               setFiltros(limpo);
               setRows(null);
@@ -3138,7 +3223,9 @@ export default function CtePage() {
             Incluir CPS LOG
           </label>
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-            Base padrão: tomadores {TOMADORES_PERMITIDOS.join(', ')}, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador.
+            {String(filtros.buscaDocumento || '').trim()
+              ? 'Busca direta por documento: exibindo CT-e encontrado sem aplicar exclusões padrão de tomador/EBAZAR/CPS LOG.'
+              : `Base padrão: tomadores ${TOMADORES_PERMITIDOS.join(', ')}, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador.`}
           </span>
         </div>
       </div>
@@ -3247,6 +3334,8 @@ export default function CtePage() {
                     <th>Origem</th>
                     <th>Destino</th>
                     <th>Nº CT-e</th>
+                    <th>Chave CT-e</th>
+                    <th>NF</th>
                     <th>Valor CT-e</th>
                     <th>Valor calculado</th>
                     <th>Diferença</th>
@@ -3261,7 +3350,7 @@ export default function CtePage() {
                 <tbody>
                   {(!rowsFiltradas || rowsFiltradas.length === 0) && (
                     <tr>
-                      <td colSpan={16} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
+                      <td colSpan={18} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>
                         Nenhum CT-e encontrado. Ajuste os filtros.
                       </td>
                     </tr>
@@ -3278,6 +3367,9 @@ export default function CtePage() {
                     const cidDest = getDestino(row);
                     const ufDest = getUfDestino(row);
                     const nroCte = getNumeroCte(row);
+                    const chaveCte = getChaveCte(row);
+                    const notaFiscal = getNotaFiscal(row);
+                    const chaveNf = getChaveNf(row);
                     const valCte = getValorCte(row);
                     const valCalc = getValorCalculado(row);
                     const diferenca = getDiferenca(row);
@@ -3317,6 +3409,8 @@ export default function CtePage() {
                           style={{ cursor: 'pointer', color: interactiveFilters.destino === getDestinoLabel(row) ? '#185FA5' : undefined, fontWeight: interactiveFilters.destino === getDestinoLabel(row) ? 800 : undefined }}
                         >{cidDest ? `${cidDest}${ufDest ? `/${ufDest}` : ''}` : ufDest || '-'}</td>
                         <td>{nroCte || '-'}</td>
+                        <td title={chaveCte || ''} style={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{chaveCte || '-'}</td>
+                        <td title={chaveNf || notaFiscal || ''} style={{ maxWidth: 150, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{notaFiscal || chaveNf || '-'}</td>
                         <td>{fmt(valCte)}</td>
                         <td>{valCalc > 0 ? fmt(valCalc) : '-'}</td>
                         <td style={{ color: Math.abs(diferenca) > 0.05 ? '#D85A30' : 'inherit', fontWeight: Math.abs(diferenca) > 0.05 ? 700 : 400 }}>

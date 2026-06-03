@@ -16,6 +16,7 @@ self.onmessage = async (event) => {
       nomeTransportadora: msg.nomeTransportadora || '',
       modoSimulacao: msg.modoSimulacao || 'rapido',
       gradeFrete: msg.gradeFrete || {},
+      criterioB2c: msg.criterioB2c || {},
       onProgress: (payload) => postProgress(payload || {}),
     });
     self.postMessage({ type: 'done', result });

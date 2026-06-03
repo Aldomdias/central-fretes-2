@@ -18,6 +18,39 @@ function detalheErroSupabase(error) {
   return msg;
 }
 
+function erroColunasAprovacaoPendencia(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return [
+    'valor_original',
+    'valor_adicional_aprovado',
+    'valor_final_autorizado',
+    'aprovado_por_email',
+    'justificativa_operacao',
+    'resposta_auditoria',
+    'auditado_ok_em',
+    'devolvido_auditoria_em',
+    'prazo_operacao_em',
+    'prazo_auditoria_em',
+  ].some((coluna) => msg.includes(coluna));
+}
+
+function semColunasAprovacaoPendencia(row = {}) {
+  const {
+    valor_original,
+    valor_adicional_aprovado,
+    valor_final_autorizado,
+    aprovado_por_email,
+    justificativa_operacao,
+    resposta_auditoria,
+    auditado_ok_em,
+    devolvido_auditoria_em,
+    prazo_operacao_em,
+    prazo_auditoria_em,
+    ...compat
+  } = row;
+  return compat;
+}
+
 function calcularTipoNomeKey(tabela = {}) {
   const tipo = normalizarTipoTabela(tabela.tipo);
   if (tipo === 'ANTT') return 'ANTT';
@@ -360,6 +393,85 @@ export async function carregarCargasLotacaoSupabase(filtros = {}) {
   return todas;
 }
 
+export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
+  if (!isSupabaseConfigured()) return [];
+  const busca = String(termo || '').trim();
+  if (!busca) return [];
+  const supabase = ensureClient();
+  const termoSeguro = busca.replace(/[%*,()]/g, ' ');
+  const digitos = termoSeguro.replace(/\D/g, '');
+  const valores = [...new Set([termoSeguro, digitos].filter(Boolean))];
+  const numeroCteDaChave = digitos.length >= 34 ? String(Number(digitos.slice(25, 34)) || '') : '';
+  const numerosPossiveis = [...new Set([digitos, numeroCteDaChave].filter(Boolean))];
+  const filtrosDiretos = valores.flatMap((valor) => [
+    `chave_cte.ilike.%${valor}%`,
+    `numero_cte.ilike.%${valor}%`,
+  ]);
+  const filtrosComRaw = valores.flatMap((valor) => [
+    ...filtrosDiretos.filter((filtro) => filtro.includes(`%${valor}%`)),
+    `raw->>chaveCte.ilike.%${valor}%`,
+    `raw->>chaveNfe.ilike.%${valor}%`,
+    `raw->>chaveNf.ilike.%${valor}%`,
+    `raw->>notaFiscal.ilike.%${valor}%`,
+    `raw->>numeroNf.ilike.%${valor}%`,
+    `raw->>nfNumero.ilike.%${valor}%`,
+    `raw->>nf.ilike.%${valor}%`,
+  ]);
+
+  function normalizarLocal(rows = []) {
+    return (rows || []).map((row) => ({
+      ...row,
+      emissao: row.data_emissao,
+      metros_cubicos: row.cubagem,
+      volume: row.qtd_volumes,
+    }));
+  }
+
+  async function buscarLocalPorColuna(coluna, valor) {
+    if (!valor) return [];
+    const { data, error } = await supabase
+      .from('realizado_local_ctes')
+      .select('id, competencia, transportadora, cnpj_transportadora, data_emissao, chave_cte, numero_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, cubagem, qtd_volumes, canal, valor_nf, cidade_origem, cidade_destino')
+      .ilike(coluna, `%${valor}%`)
+      .order('data_emissao', { ascending: false })
+      .limit(20);
+    if (error) throw error;
+    return normalizarLocal(data || []);
+  }
+
+  try {
+    for (const valor of valores) {
+      const porChave = await buscarLocalPorColuna('chave_cte', valor);
+      if (porChave.length) return porChave;
+    }
+    for (const valor of numerosPossiveis) {
+      const porNumero = await buscarLocalPorColuna('numero_cte', valor);
+      if (porNumero.length) return porNumero;
+    }
+  } catch {
+    // segue para base legada abaixo
+  }
+
+  let { data, error } = await supabase
+    .from('realizado_ctes')
+    .select('id, competencia, transportadora, cnpj_transportadora, emissao, chave_cte, numero_cte, serie_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, metros_cubicos, volume, canal, valor_nf, cidade_origem, cidade_destino, transportadora_contratada, raw')
+    .or(filtrosComRaw.join(','))
+    .order('emissao', { ascending: false })
+    .limit(20);
+  if (error) {
+    const respostaDireta = await supabase
+      .from('realizado_ctes')
+      .select('id, competencia, transportadora, cnpj_transportadora, emissao, chave_cte, numero_cte, serie_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, metros_cubicos, volume, canal, valor_nf, cidade_origem, cidade_destino, transportadora_contratada, raw')
+      .or(filtrosDiretos.join(','))
+      .order('emissao', { ascending: false })
+      .limit(20);
+    data = respostaDireta.data;
+    error = respostaDireta.error;
+  }
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
 export async function resumoRotasLotacaoSupabase(filtros = {}) {
   if (!isSupabaseConfigured()) return [];
   const supabase = ensureClient();
@@ -590,6 +702,11 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
     valor_lancado: pendencia.valorLancado != null ? Number(pendencia.valorLancado) : null,
     valor_autorizado: pendencia.valorAutorizado != null ? Number(pendencia.valorAutorizado) : null,
     valor_excedente: pendencia.valorExcedente != null ? Number(pendencia.valorExcedente) : null,
+    valor_original: pendencia.valorOriginal != null ? Number(pendencia.valorOriginal) : null,
+    valor_adicional_aprovado: pendencia.valorAdicionalAprovado != null ? Number(pendencia.valorAdicionalAprovado) : null,
+    valor_final_autorizado: pendencia.valorFinalAutorizado != null ? Number(pendencia.valorFinalAutorizado) : null,
+    prazo_operacao_em: pendencia.prazoOperacaoEm || pendencia.prazo_operacao_em || null,
+    prazo_auditoria_em: pendencia.prazoAuditoriaEm || pendencia.prazo_auditoria_em || null,
     status: String(pendencia.status || 'EXCEDEU_AGUARDANDO_OPERACAO'),
     audited_by_user_id: String(pendencia.auditedByUserId || ''),
     audited_by_name: String(pendencia.auditedByName || ''),
@@ -599,7 +716,15 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
     updated_at: new Date().toISOString(),
   };
   const { error } = await supabase.from('audit_pendencias').upsert(row, { onConflict: 'id' });
-  if (error) throw new Error(detalheErroSupabase(error));
+  if (error) {
+    if (erroColunasAprovacaoPendencia(error)) {
+      const fallback = semColunasAprovacaoPendencia(row);
+      const retry = await supabase.from('audit_pendencias').upsert(fallback, { onConflict: 'id' });
+      if (!retry.error) return { ok: true, compat: true };
+      throw new Error(detalheErroSupabase(retry.error));
+    }
+    throw new Error(detalheErroSupabase(error));
+  }
   return { ok: true };
 }
 
@@ -612,7 +737,15 @@ export async function atualizarPendenciaAuditoriaSupabase(id, status, dadosExtra
     ...dadosExtra,
   };
   const { error } = await supabase.from('audit_pendencias').update(update).eq('id', id);
-  if (error) throw new Error(detalheErroSupabase(error));
+  if (error) {
+    if (erroColunasAprovacaoPendencia(error)) {
+      const fallback = semColunasAprovacaoPendencia(update);
+      const retry = await supabase.from('audit_pendencias').update(fallback).eq('id', id);
+      if (!retry.error) return { ok: true, compat: true };
+      throw new Error(detalheErroSupabase(retry.error));
+    }
+    throw new Error(detalheErroSupabase(error));
+  }
   return { ok: true };
 }
 
