@@ -817,16 +817,19 @@ async function listarTodasTaxasDestinoTabela(tabelaId) {
   return todos;
 }
 
-export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
+// Colunas da "capa" da negociação. Nunca inclui itens/rotas/taxas.
+const COLUNAS_CAPA_NEGOCIACAO_SIMULACAO =
+  'id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,resumo_simulacao,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto';
+
+// Lista LEVE: apenas as capas das negociações elegíveis à simulação.
+// Não carrega itens/rotas/taxas — é uma única query rápida usada para
+// montar a lista de seleção do Simulador do Realizado.
+export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
   const supabase = supabaseOrThrow();
 
-  // Não usar select aninhado com todos os itens aqui.
-  // Quando a negociação tem mais de 1000 rotas/fretes, o Supabase pode demorar muito
-  // ou devolver dados incompletos. Primeiro buscamos só as capas das negociações e,
-  // depois, carregamos itens/taxas paginados por tabela.
   let query = supabase
     .from('tabelas_negociacao')
-    .select('id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto')
+    .select(COLUNAS_CAPA_NEGOCIACAO_SIMULACAO)
     .eq('incluir_simulacao', true)
     .in('status', ['EM NEGOCIAÇÃO', 'EM TESTE', 'APROVADA'])
     .order('criado_em', { ascending: false });
@@ -835,23 +838,58 @@ export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
   if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
   if (filtros.canal) query = query.eq('canal', filtros.canal);
 
-  const { data: tabelas, error } = await query;
-  if (error) throw new Error(error.message || 'Erro ao buscar tabelas para simulação.');
+  const { data, error } = await query;
+  if (error) throw new Error(error.message || 'Erro ao buscar lista de negociações para simulação.');
+  return data || [];
+}
 
-  const lista = tabelas || [];
-  const completas = [];
+// Detalhe de UMA negociação: itens (rotas/fretes) + taxas de destino.
+// Buscamos itens e taxas em paralelo para a tabela selecionada.
+export async function carregarDetalhesNegociacaoParaSimulacao(tabela) {
+  const capa = tabela && typeof tabela === 'object' ? tabela : null;
+  const tabelaId = capa ? capa.id : tabela;
+  if (!tabelaId) throw new Error('Negociação inválida para carregar detalhes.');
 
-  for (const tabela of lista) {
-    const itens = await listarTodosItensTabelaNegociacao(tabela.id);
-    const taxasDestino = await listarTodasTaxasDestinoTabela(tabela.id);
-    completas.push({
-      ...tabela,
-      tabelas_negociacao_itens: itens,
-      tabelas_negociacao_taxas_destino: taxasDestino,
-    });
-  }
+  const [itens, taxasDestino] = await Promise.all([
+    listarTodosItensTabelaNegociacao(tabelaId),
+    listarTodasTaxasDestinoTabela(tabelaId),
+  ]);
 
-  return completas;
+  const base = capa || { id: tabelaId };
+  return {
+    ...base,
+    tabelas_negociacao_itens: itens,
+    tabelas_negociacao_taxas_destino: taxasDestino,
+  };
+}
+
+// Executa tarefas assíncronas com limite de concorrência, preservando a ordem
+// de entrada. Evita disparar centenas de queries simultâneas no Supabase.
+async function executarComConcorrencia(itens, limite, executor) {
+  const resultados = new Array(itens.length);
+  let cursor = 0;
+
+  const trabalhadores = new Array(Math.min(limite, itens.length)).fill(null).map(async () => {
+    while (cursor < itens.length) {
+      const indiceAtual = cursor;
+      cursor += 1;
+      resultados[indiceAtual] = await executor(itens[indiceAtual], indiceAtual);
+    }
+  });
+
+  await Promise.all(trabalhadores);
+  return resultados;
+}
+
+// Carrega capas + itens/taxas de TODAS as negociações elegíveis.
+// Continua disponível para fluxos que precisam comparar com várias tabelas em
+// negociação ao mesmo tempo. Agora a hidratação é feita em paralelo (com limite
+// de concorrência) para não travar a tela em "atualizando negociações...".
+export async function buscarTabelasNegociacaoParaSimulacao(filtros = {}) {
+  const capas = await listarCapasNegociacaoParaSimulacao(filtros);
+  if (!capas.length) return [];
+
+  return executarComConcorrencia(capas, 4, (capa) => carregarDetalhesNegociacaoParaSimulacao(capa));
 }
 
 function tipoNegociacaoResultado(resultado = {}, tabela = {}) {

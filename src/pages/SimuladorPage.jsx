@@ -19,10 +19,13 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import {
   buscarTabelasNegociacaoParaSimulacao,
+  listarCapasNegociacaoParaSimulacao,
+  carregarDetalhesNegociacaoParaSimulacao,
   salvarResultadoSimulacaoNegociacao,
 } from '../services/tabelasNegociacaoService';
 import {
   converterTabelasNegociacaoParaSimulador,
+  nomesTabelasNegociacaoSimulador,
   labelTabelaNegociacaoSimulador,
 } from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { LaudoNegociacaoTemplate } from '../components/laudos';
@@ -2811,6 +2814,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [carregandoNegociacoesSimulador, setCarregandoNegociacoesSimulador] = useState(false);
   const [erroNegociacoesSimulador, setErroNegociacoesSimulador] = useState('');
   const [negociacoesAtualizadasEm, setNegociacoesAtualizadasEm] = useState('');
+  // Etapa de carregamento das negociações (status claro por fase):
+  // '' | 'lista' | 'detalhe' | 'concluido' | 'erro'
+  const [etapaNegociacoesSimulador, setEtapaNegociacoesSimulador] = useState('');
+  const [carregandoDetalheNegociacao, setCarregandoDetalheNegociacao] = useState(false);
+  const negociacoesHidratadasRef = useRef(new Set());
+  const capasNegociacaoCarregadasRef = useRef(false);
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
@@ -3129,20 +3138,117 @@ export default function SimuladorPage({ transportadoras = [] }) {
   };
 
 
+  // Carrega apenas a LISTA LEVE (capas) das negociações. Resolve rápido e
+  // sempre finaliza o loading — nunca deixa preso em "atualizando negociações...".
+  // Os itens/rotas/taxas só são buscados quando a negociação é selecionada.
   const carregarNegociacoesSimulador = async () => {
     setCarregandoNegociacoesSimulador(true);
     setErroNegociacoesSimulador('');
+    setEtapaNegociacoesSimulador('lista');
 
     try {
-      const dados = await buscarTabelasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO' });
-      setNegociacoesSimulador(dados || []);
+      const capas = await listarCapasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO' });
+
+      // Preserva os detalhes já hidratados (itens/taxas) ao recarregar a lista,
+      // para não perder o que já foi buscado da negociação selecionada.
+      setNegociacoesSimulador((anteriores) => {
+        const detalhesPorId = new Map();
+        (anteriores || []).forEach((tabela) => {
+          if (tabela?.tabelas_negociacao_itens || tabela?.tabelas_negociacao_taxas_destino) {
+            detalhesPorId.set(tabela.id, tabela);
+          }
+        });
+
+        const idsAtuais = new Set((capas || []).map((capa) => capa.id));
+        // Limpa do controle de hidratação as negociações que não existem mais.
+        negociacoesHidratadasRef.current.forEach((id) => {
+          if (!idsAtuais.has(id)) negociacoesHidratadasRef.current.delete(id);
+        });
+
+        return (capas || []).map((capa) => {
+          const detalhe = detalhesPorId.get(capa.id);
+          if (!detalhe) return capa;
+          return {
+            ...capa,
+            tabelas_negociacao_itens: detalhe.tabelas_negociacao_itens,
+            tabelas_negociacao_taxas_destino: detalhe.tabelas_negociacao_taxas_destino,
+          };
+        });
+      });
+
       setNegociacoesAtualizadasEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-      return dados || [];
+      setEtapaNegociacoesSimulador('concluido');
+      capasNegociacaoCarregadasRef.current = true;
+      return capas || [];
     } catch (error) {
-      setErroNegociacoesSimulador(error.message || 'Erro ao carregar tabelas em negociação para simulação.');
-      setNegociacoesSimulador([]);
-      setNegociacoesAtualizadasEm('');
+      setErroNegociacoesSimulador(error.message || 'Erro ao carregar a lista de negociações para simulação.');
+      setEtapaNegociacoesSimulador('erro');
       return [];
+    } finally {
+      setCarregandoNegociacoesSimulador(false);
+    }
+  };
+
+  // Hidrata UMA negociação (itens/rotas/taxas) sob demanda e mescla na lista.
+  // Idempotente: não rebusca a mesma negociação já hidratada.
+  const hidratarNegociacaoSimulador = async (capa) => {
+    if (!capa?.id) return null;
+    if (negociacoesHidratadasRef.current.has(capa.id)) return capa;
+
+    setCarregandoDetalheNegociacao(true);
+    setErroNegociacoesSimulador('');
+    setEtapaNegociacoesSimulador('detalhe');
+
+    try {
+      const detalhada = await carregarDetalhesNegociacaoParaSimulacao(capa);
+      negociacoesHidratadasRef.current.add(capa.id);
+      setNegociacoesSimulador((anteriores) => (anteriores || []).map((tabela) => (
+        tabela.id === capa.id ? { ...tabela, ...detalhada } : tabela
+      )));
+      setEtapaNegociacoesSimulador('concluido');
+      return detalhada;
+    } catch (error) {
+      setErroNegociacoesSimulador(error.message || 'Erro ao carregar os detalhes da negociação selecionada.');
+      setEtapaNegociacoesSimulador('erro');
+      return null;
+    } finally {
+      setCarregandoDetalheNegociacao(false);
+    }
+  };
+
+  // Hidrata TODAS as negociações do canal ativo de uma vez (apenas itens/taxas
+  // das tabelas do canal/origem/filtro atual). Usado ao comparar a simulação
+  // com várias tabelas em negociação ao mesmo tempo. Mostra loading claro e
+  // sempre finaliza.
+  const hidratarNegociacoesCanalSimulador = async () => {
+    if (!capasNegociacaoCarregadasRef.current) {
+      await carregarNegociacoesSimulador();
+    }
+
+    setCarregandoNegociacoesSimulador(true);
+    setErroNegociacoesSimulador('');
+    setEtapaNegociacoesSimulador('detalhe');
+
+    try {
+      const filtros = { tipoTabela: 'FRACIONADO' };
+      if (canalRealizado) filtros.canal = canalRealizado;
+      const completas = await buscarTabelasNegociacaoParaSimulacao(filtros);
+      const detalhePorId = new Map((completas || []).map((tabela) => [tabela.id, tabela]));
+      (completas || []).forEach((tabela) => negociacoesHidratadasRef.current.add(tabela.id));
+
+      setNegociacoesSimulador((anteriores) => {
+        const base = (anteriores && anteriores.length) ? anteriores : (completas || []);
+        return base.map((tabela) => {
+          const detalhe = detalhePorId.get(tabela.id);
+          return detalhe ? { ...tabela, ...detalhe } : tabela;
+        });
+      });
+
+      setNegociacoesAtualizadasEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      setEtapaNegociacoesSimulador('concluido');
+    } catch (error) {
+      setErroNegociacoesSimulador(error.message || 'Erro ao carregar as negociações do canal para comparação.');
+      setEtapaNegociacoesSimulador('erro');
     } finally {
       setCarregandoNegociacoesSimulador(false);
     }
@@ -3152,13 +3258,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
     atualizarOpcoesSimulador();
   }, []);
 
-  // Carrega as negociações automaticamente ao entrar no Simulador Realizado.
-  // Assim o usuário não precisa expandir opções só para atualizar a lista.
+  // Ao abrir o Simulador do Realizado, carrega apenas a LISTA LEVE uma única vez.
+  // Guardado por ref para não entrar em loop quando não houver negociações.
   useEffect(() => {
-    if (aba === 'realizado' && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
+    if (aba === 'realizado' && !capasNegociacaoCarregadasRef.current && !carregandoNegociacoesSimulador) {
       carregarNegociacoesSimulador();
     }
-  }, [aba, negociacoesSimulador.length, carregandoNegociacoesSimulador]);
+  }, [aba]);
 
   useEffect(() => {
     let ativo = true;
@@ -3276,15 +3382,28 @@ export default function SimuladorPage({ transportadoras = [] }) {
     [negociacoesSimulador, canalRealizado]
   );
 
+  // Lista de seleção montada a partir da LISTA LEVE (capas). Aparece mesmo antes
+  // de a negociação ter os itens/taxas carregados (que são buscados sob demanda).
   const nomesNegociacaoRealizado = useMemo(
-    () => transportadorasNegociacaoRealizado.map((item) => item.nome).sort((a, b) => a.localeCompare(b, 'pt-BR')),
-    [transportadorasNegociacaoRealizado]
+    () => nomesTabelasNegociacaoSimulador(negociacoesSimulador, { canal: canalRealizado }),
+    [negociacoesSimulador, canalRealizado]
   );
 
   const ehTabelaNegociacaoRealizadoSelecionada = useMemo(
     () => nomesNegociacaoRealizado.includes(transportadoraRealizado),
     [nomesNegociacaoRealizado, transportadoraRealizado]
   );
+
+  // Status claro por etapa do carregamento das negociações. Nunca fica preso:
+  // ou está em uma etapa ativa, ou concluiu, ou mostra erro/aguardando.
+  const statusNegociacoesRealizado = useMemo(() => {
+    if (erroNegociacoesSimulador) return `erro ao carregar negociações: ${erroNegociacoesSimulador}`;
+    if (carregandoNegociacoesSimulador && etapaNegociacoesSimulador === 'lista') return 'carregando lista de negociações...';
+    if (carregandoNegociacoesSimulador) return 'carregando negociações do canal...';
+    if (carregandoDetalheNegociacao) return 'carregando negociação selecionada (itens e taxas)...';
+    if (negociacoesAtualizadasEm) return `negociações atualizadas às ${negociacoesAtualizadasEm}`;
+    return 'negociações aguardando atualização';
+  }, [erroNegociacoesSimulador, carregandoNegociacoesSimulador, carregandoDetalheNegociacao, etapaNegociacoesSimulador, negociacoesAtualizadasEm]);
 
   const basesMalhaRealizadoSelecionada = useMemo(() => {
     if (!transportadoraRealizado) return [];
@@ -3368,6 +3487,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
     () => negociacoesSimulador.find((tabela) => labelTabelaNegociacaoSimulador(tabela) === transportadoraRealizado) || null,
     [negociacoesSimulador, transportadoraRealizado]
   );
+
+  // Ao selecionar uma negociação, busca os detalhes (itens/rotas/taxas) apenas
+  // dessa negociação. Não carrega itens das demais. Guardado por ref para não
+  // rebuscar nem entrar em loop.
+  useEffect(() => {
+    const capa = negociacaoSelecionadaRealizado;
+    if (!capa?.id) return;
+    if (negociacoesHidratadasRef.current.has(capa.id)) return;
+    if (capa.tabelas_negociacao_itens || capa.tabelas_negociacao_taxas_destino) {
+      negociacoesHidratadasRef.current.add(capa.id);
+      return;
+    }
+    hidratarNegociacaoSimulador(capa);
+  }, [negociacaoSelecionadaRealizado]);
 
   const isReajusteRealizadoSelecionado = useMemo(
     () => isReajusteNegociacaoSimulador(negociacaoSelecionadaRealizado),
@@ -4018,7 +4151,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
       let baseSelecionada = [];
 
       if (ehNegociacaoSelecionada) {
-        baseSelecionada = transportadorasNegociacaoRealizado.filter((item) =>
+        // Garante que os detalhes (itens/rotas/taxas) da negociação selecionada
+        // já foram carregados antes de montar a base. Se ainda não estiverem,
+        // busca somente os dessa negociação (carregamento sob demanda).
+        let capaNegociacao = negociacaoRealizadoAtual;
+        if (capaNegociacao?.id && !capaNegociacao.tabelas_negociacao_itens && !capaNegociacao.tabelas_negociacao_taxas_destino) {
+          atualizarProcessamentoUi('Carregando itens e taxas da negociação selecionada...', 22);
+          const detalhada = await carregarDetalhesNegociacaoParaSimulacao(capaNegociacao);
+          negociacoesHidratadasRef.current.add(capaNegociacao.id);
+          setNegociacoesSimulador((anteriores) => (anteriores || []).map((tabela) => (
+            tabela.id === capaNegociacao.id ? { ...tabela, ...detalhada } : tabela
+          )));
+          capaNegociacao = detalhada;
+        }
+
+        const negociacoesConvertidas = capaNegociacao
+          ? converterTabelasNegociacaoParaSimulador([capaNegociacao], { canal: canalRealizado })
+          : transportadorasNegociacaoRealizado;
+
+        baseSelecionada = negociacoesConvertidas.filter((item) =>
           normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(nomeTabelaSelecionada)
           || transportadoraCompativelSimulador(item.nome, nomeTabelaSelecionada)
         );
@@ -4505,11 +4656,28 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setAtualizandoNegociacaoRealizado(true);
     iniciarProcessamentoUi('Atualizar negociação', 'Recarregando dados da negociação selecionada...', 30);
     try {
-      const dadosAtualizados = await carregarNegociacoesSimulador();
-      const negociacoesConvertidas = converterTabelasNegociacaoParaSimulador(dadosAtualizados || [], { canal: canalRealizado });
-      const negociacaoAtualizada = (dadosAtualizados || []).find(
+      // Recarrega a lista leve (capas) para refletir mudanças de rótulo/status.
+      const capasAtualizadas = await carregarNegociacoesSimulador();
+
+      // Re-busca de forma forçada os detalhes (itens/rotas/taxas) da negociação
+      // selecionada, refletindo edições feitas na tela de Negociações.
+      const capaSelecionada = (capasAtualizadas || []).find(
         (tabela) => labelTabelaNegociacaoSimulador(tabela) === transportadoraRealizado
       ) || null;
+
+      let negociacaoAtualizada = null;
+      if (capaSelecionada?.id) {
+        negociacoesHidratadasRef.current.delete(capaSelecionada.id);
+        negociacaoAtualizada = await carregarDetalhesNegociacaoParaSimulacao(capaSelecionada);
+        negociacoesHidratadasRef.current.add(capaSelecionada.id);
+        setNegociacoesSimulador((anteriores) => (anteriores || []).map((tabela) => (
+          tabela.id === capaSelecionada.id ? { ...tabela, ...negociacaoAtualizada } : tabela
+        )));
+      }
+
+      const negociacoesConvertidas = negociacaoAtualizada
+        ? converterTabelasNegociacaoParaSimulador([negociacaoAtualizada], { canal: canalRealizado })
+        : [];
       const baseNegociacaoAtualizada = negociacoesConvertidas.filter((item) => (
         normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(transportadoraRealizado)
         || transportadoraCompativelSimulador(item.nome, transportadoraRealizado)
@@ -5985,7 +6153,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <div>
                 <strong>Base da simulação: {baseRealizadoTracking === 'com_tracking' ? 'somente CT-es com Tracking' : 'todos os CT-es'}</strong>
                 <div style={{ color: '#64748b', fontSize: '0.82rem', marginTop: 3 }}>
-                  CPS LOG excluído por padrão • Concorrentes {compararConcorrentesRealizado ? 'ativos' : 'desativados'} • Negociações {incluirNegociacoesRealizado ? 'ativas' : 'desativadas'} • {carregandoNegociacoesSimulador ? 'atualizando negociações...' : negociacoesAtualizadasEm ? `negociações atualizadas às ${negociacoesAtualizadasEm}` : 'negociações aguardando atualização'}
+                  CPS LOG excluído por padrão • Concorrentes {compararConcorrentesRealizado ? 'ativos' : 'desativados'} • Negociações {incluirNegociacoesRealizado ? 'ativas' : 'desativadas'} • {statusNegociacoesRealizado}
                 </div>
               </div>
               <button
@@ -6006,8 +6174,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     onChange={(event) => {
                       const marcado = event.target.checked;
                       setIncluirNegociacoesRealizado(marcado);
-                      if (marcado && !negociacoesSimulador.length && !carregandoNegociacoesSimulador) {
-                        carregarNegociacoesSimulador();
+
+                      // Só hidrata negociações como concorrentes quando a comparação estiver ativa.
+                      // Evita carregar itens/taxas à toa quando concorrentes estão desativados.
+                      if (marcado && compararConcorrentesRealizado && !carregandoNegociacoesSimulador) {
+                        hidratarNegociacoesCanalSimulador();
                       }
                     }}
                   />
@@ -6017,12 +6188,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', color: '#475569' }}>
                   <span>
                     Negociações disponíveis no canal atual: <strong>{nomesNegociacaoRealizado.length}</strong>
-                    {carregandoNegociacoesSimulador
-                      ? ' · atualizando automaticamente...'
-                      : negociacoesAtualizadasEm
-                        ? ` · atualizado às ${negociacoesAtualizadasEm}`
-                        : ' · aguardando atualização automática'}
+                    {` · ${statusNegociacoesRealizado}`}
                   </span>
+                  <button
+                    type="button"
+                    className="sim-tab"
+                    onClick={carregarNegociacoesSimulador}
+                    disabled={carregandoNegociacoesSimulador}
+                    title="Recarrega a lista leve de negociações (sem carregar todos os itens)"
+                  >
+                    {carregandoNegociacoesSimulador ? 'Atualizando...' : '↻ Atualizar negociações'}
+                  </button>
                 </div>
 
                 <div style={{ display: 'grid', gap: 6 }}>
@@ -6063,7 +6239,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <input
                     type="checkbox"
                     checked={compararConcorrentesRealizado}
-                    onChange={(event) => setCompararConcorrentesRealizado(event.target.checked)}
+                    onChange={(event) => {
+                      const marcado = event.target.checked;
+                      setCompararConcorrentesRealizado(marcado);
+
+                      // Se negociações já estiverem marcadas e agora ativar concorrentes,
+                      // hidrata somente nesse momento as negociações do canal ativo.
+                      if (marcado && incluirNegociacoesRealizado && !carregandoNegociacoesSimulador) {
+                        hidratarNegociacoesCanalSimulador();
+                      }
+                    }}
                   />
                   Comparar com tabelas oficiais/concorrentes
                 </label>

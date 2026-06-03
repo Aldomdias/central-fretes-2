@@ -466,3 +466,17 @@ export function converterTabelasNegociacaoParaSimulador(tabelas = [], filtros = 
     .map(converterTabelaNegociacaoParaSimulador)
     .filter((transportadora) => transportadora.origens.length);
 }
+
+// Versão LEVE: gera apenas os rótulos de seleção a partir das capas das
+// negociações, sem depender de itens/rotas/taxas. Usa exatamente o mesmo
+// filtro de canal de converterTabelasNegociacaoParaSimulador, para que a lista
+// de seleção apareça mesmo antes de a negociação ter os detalhes carregados.
+export function nomesTabelasNegociacaoSimulador(tabelas = [], filtros = {}) {
+  const canalFiltro = normalizarCanal(filtros.canal || '');
+
+  return (tabelas || [])
+    .filter((tabela) => tabela && tabela.incluir_simulacao)
+    .filter((tabela) => !canalFiltro || normalizarCanal(tabela.canal) === canalFiltro)
+    .map((tabela) => labelTabelaNegociacaoSimulador(tabela))
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
