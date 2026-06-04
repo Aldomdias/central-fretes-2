@@ -40,8 +40,27 @@ function safeUuid(value, usedIds) {
 
 function toNumberOrNull(value) {
   if (value === '' || value === null || value === undefined) return null;
-  const normalized = Number(String(value).replace(',', '.'));
-  return Number.isFinite(normalized) ? normalized : null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+  let text = String(value).trim();
+  if (!text) return null;
+  text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
+
+  const hasComma = text.includes(',');
+  const hasDot = text.includes('.');
+
+  if (hasComma && hasDot) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  } else if (hasComma) {
+    text = text.replace(',', '.');
+  } else if (hasDot) {
+    const parts = text.split('.');
+    const pareceMilhar = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+    if (pareceMilhar) text = parts.join('');
+  }
+
+  const parsed = Number(text.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function normalizarCepDb(value) {

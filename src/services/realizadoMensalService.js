@@ -5,6 +5,8 @@ const TMP_INSERT_RETRIES = 3;
 const TMP_RETRY_DELAY_MS = 900;
 const PROCESSAMENTO_LIMITE_LOTE = 35000;
 const PROCESSAMENTO_MAX_LOOPS = 20;
+const RESET_LIMITE_LOTE = 10000;
+const RESET_MAX_LOOPS = 80;
 
 function ensureSupabase() {
   const client = getSupabaseClient();
@@ -15,7 +17,27 @@ function ensureSupabase() {
 }
 
 function toSafeNumber(value, max = 999999999999) {
-  const number = Number(value || 0);
+  let number = 0;
+  if (value !== null && value !== undefined && value !== '') {
+    if (typeof value === 'number') {
+      number = value;
+    } else {
+      let text = String(value).trim();
+      text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
+      const hasComma = text.includes(',');
+      const hasDot = text.includes('.');
+      if (hasComma && hasDot) {
+        text = text.replace(/\./g, '').replace(',', '.');
+      } else if (hasComma) {
+        text = text.replace(',', '.');
+      } else if (hasDot) {
+        const parts = text.split('.');
+        const pareceMilhar = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+        if (pareceMilhar) text = parts.join('');
+      }
+      number = Number(text.replace(/[^0-9.-]/g, ''));
+    }
+  }
   if (!Number.isFinite(number)) return 0;
   if (number > max) return max;
   if (number < -max) return -max;
@@ -196,6 +218,28 @@ export async function verificarCompetenciaRealizadoMensal(competencia) {
 
 export async function resetarCompetenciaRealizadoMensal(competencia, limparTemporaria = true) {
   const supabase = ensureSupabase();
+  const respostaLote = await rpcOpcional(supabase, 'resetar_realizado_ctes_mes_lote', {
+    p_competencia: competencia,
+    p_limit: RESET_LIMITE_LOTE,
+    p_limpar_temporaria: limparTemporaria,
+  });
+  if (respostaLote.disponivel) {
+    let retorno = respostaLote.data || {};
+    let apagadosTotal = Number(retorno.apagados_total || 0);
+    for (let tentativa = 2; tentativa <= RESET_MAX_LOOPS && Number(retorno.restante || 0) > 0; tentativa += 1) {
+      const proximo = await rpcOpcional(supabase, 'resetar_realizado_ctes_mes_lote', {
+        p_competencia: competencia,
+        p_limit: RESET_LIMITE_LOTE,
+        p_limpar_temporaria: limparTemporaria,
+      });
+      if (!proximo.disponivel) break;
+      retorno = proximo.data || {};
+      apagadosTotal += Number(retorno.apagados_total || 0);
+      await sleep(40);
+    }
+    return { ...retorno, apagados_total: apagadosTotal, resetado: Number(retorno.restante || 0) === 0 };
+  }
+
   const resposta = await rpcOpcional(supabase, 'resetar_realizado_ctes_mes', { p_competencia: competencia, p_limpar_temporaria: limparTemporaria });
   if (resposta.disponivel) return resposta.data;
 
@@ -296,7 +340,13 @@ export async function importarRealizadoMensalEnxuto({ competencia, arquivoOrigem
   onProgress?.({ etapa: 'validacao', mensagem: 'Colunas validadas.', validacao });
 
   const payloadEstimado = (registros || []).filter((row) => getChaveCte(row) || cleanText(row.numeroCte ?? row.numero_cte)).length;
-  const statusInicial = await verificarCompetenciaRealizadoMensal(competencia);
+  let statusInicial = null;
+  try {
+    statusInicial = await verificarCompetenciaRealizadoMensal(competencia);
+  } catch (error) {
+    if (!substituir) throw error;
+    onProgress?.({ etapa: 'status', mensagem: `Consulta inicial da competência demorou demais. Seguindo com reimportação/substituição de ${competencia}.` });
+  }
 
   if (!substituir && Number(statusInicial?.detalhado || 0) > 0) {
     const erro = new Error(`A competência ${competencia} já possui ${Number(statusInicial.detalhado).toLocaleString('pt-BR')} CT-e(s) na base enxuta.`);
@@ -314,7 +364,10 @@ export async function importarRealizadoMensalEnxuto({ competencia, arquivoOrigem
   } else {
     if (substituir) {
       onProgress?.({ etapa: 'reset', mensagem: 'Resetando competência e limpando temporária...' });
-      await resetarCompetenciaRealizadoMensal(competencia, true);
+      const reset = await resetarCompetenciaRealizadoMensal(competencia, true);
+      if (!reset?.resetado) {
+        throw new Error(`A limpeza da competência ${competencia} não terminou. Restante informado: ${Number(reset?.restante || 0).toLocaleString('pt-BR')}. Tente novamente.`);
+      }
     } else {
       await limparTemporariaRealizadoMensal(competencia);
     }

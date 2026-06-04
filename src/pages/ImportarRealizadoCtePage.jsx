@@ -135,11 +135,17 @@ export default function ImportarRealizadoCtePage() {
     setFeedback('Lendo arquivo e validando colunas...');
 
     try {
-      const statusAtual = await verificarCompetenciaRealizadoMensal(competencia);
-      setStatusCompetencia(statusAtual);
-
-      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0;
       let substituir = Boolean(forcarSubstituir || modoSubstituir);
+      let statusAtual = null;
+      try {
+        statusAtual = await verificarCompetenciaRealizadoMensal(competencia);
+        setStatusCompetencia(statusAtual);
+      } catch (statusError) {
+        if (!substituir) throw statusError;
+        setFeedback('Consulta da competência demorou demais. Seguindo com reimportação/substituição em lotes.');
+      }
+
+      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0 || (substituir && !statusAtual);
 
       if (jaTemBase && !substituir) {
         setErro(
@@ -173,6 +179,14 @@ export default function ImportarRealizadoCtePage() {
           if (event.etapa === 'validacao') {
             setValidacao(event.validacao);
             setProgresso({ etapa: 'validacao', mensagem: event.mensagem, percentual: 20 });
+          }
+
+          if (event.etapa === 'status') {
+            setProgresso({ etapa: 'status', mensagem: event.mensagem, percentual: 18 });
+          }
+
+          if (event.etapa === 'reset') {
+            setProgresso({ etapa: 'reset', mensagem: event.mensagem, percentual: 22 });
           }
 
           if (event.etapa === 'temporaria') {

@@ -417,9 +417,24 @@ function numeroValorCte(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
   let text = String(value).trim();
   if (!text) return 0;
-  if (text.includes(',')) text = text.replace(/\./g, '').replace(',', '.');
+  text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
+  const hasComma = text.includes(',');
+  const hasDot = text.includes('.');
+  if (hasComma && hasDot) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  } else if (hasComma) {
+    text = text.replace(',', '.');
+  } else if (hasDot) {
+    const parts = text.split('.');
+    const pareceMilhar = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+    if (pareceMilhar) text = parts.join('');
+  }
   const parsed = Number(text.replace(/[^0-9.-]/g, ''));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function valorAuditoriaCte(row = {}, pick = () => '') {
+  return numeroValorCte(pick(['valor_cte', 'valorCte', 'valor_frete', 'frete']));
 }
 
 function normalizarCteLotacaoAuditoria(row = {}, fonte = '') {
@@ -444,7 +459,9 @@ function normalizarCteLotacaoAuditoria(row = {}, fonte = '') {
     canal: pick(['canal', 'canal_original', 'canais']) || null,
     tomador: pick(['tomador', 'tomador_servico', 'tomadorServico', 'nomeTomador']) || null,
     valor_nf: numeroValorCte(pick(['valor_nf', 'valorNF', 'nf_venda', 'valor_nota'])),
-    valor_cte: numeroValorCte(pick(['valor_cte', 'valorCte', 'valor_frete', 'frete'])),
+    valor_cte_original: numeroValorCte(pick(['valor_cte', 'valorCte', 'valor_frete', 'frete'])),
+    valor_cte: valorAuditoriaCte(row, pick),
+    percentual_frete: numeroValorCte(pick(['percentual_frete', 'percentualFrete', 'frete_percentual'])),
     peso_declarado: numeroValorCte(pick(['peso_declarado', 'pesoDeclarado', 'peso', 'peso_final', 'pesoFinal'])),
     peso_cubado: numeroValorCte(pick(['peso_cubado', 'pesoCubado'])),
     metros_cubicos: numeroValorCte(pick(['metros_cubicos', 'cubagem', 'cubagem_total', 'cubagemTotal'])),
@@ -512,9 +529,27 @@ export async function buscarCteLotacaoAuditoriaPorChaveSupabase(chave = '') {
   return consultarCtesComFallbacks({
     campo: 'chave_cte',
     valores: [digitos],
-    operadores: ['eq', 'ilike'],
+    operadores: ['eq'],
     limite: 5,
   });
+}
+
+export async function buscarCtesLotacaoAuditoriaPorChavesSupabase(chaves = []) {
+  if (!isSupabaseConfigured()) return [];
+  const unicas = [...new Set((Array.isArray(chaves) ? chaves : [])
+    .map((chave) => somenteDigitos(chave))
+    .filter((chave) => chave.length === 44))];
+
+  const resultados = [];
+  for (const chave of unicas) {
+    try {
+      const ctes = await buscarCteLotacaoAuditoriaPorChaveSupabase(chave);
+      resultados.push({ chave, ctes, erro: '' });
+    } catch (error) {
+      resultados.push({ chave, ctes: [], erro: error.message || String(error) });
+    }
+  }
+  return resultados;
 }
 
 export async function buscarCtesLotacaoAuditoriaPorNumeroSupabase(numero = '') {

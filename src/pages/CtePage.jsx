@@ -69,7 +69,27 @@ function fmtMes(v) {
 }
 
 function safeNumber(v) {
-  const n = Number(v || 0);
+  let n = 0;
+  if (v !== null && v !== undefined && v !== '') {
+    if (typeof v === 'number') {
+      n = v;
+    } else {
+      let text = String(v).trim();
+      text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
+      const hasComma = text.includes(',');
+      const hasDot = text.includes('.');
+      if (hasComma && hasDot) {
+        text = text.replace(/\./g, '').replace(',', '.');
+      } else if (hasComma) {
+        text = text.replace(',', '.');
+      } else if (hasDot) {
+        const parts = text.split('.');
+        const pareceMilhar = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+        if (pareceMilhar) text = parts.join('');
+      }
+      n = Number(text.replace(/[^0-9.-]/g, ''));
+    }
+  }
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -2047,11 +2067,17 @@ export default function CtePage() {
     setProgressoUpload({ etapa: 'leitura', mensagem: 'Lendo arquivo...', percentual: 5 });
 
     try {
-      const statusAtual = await verificarCompetenciaRealizadoMensal(competenciaUpload);
-      setStatusCompetencia(statusAtual);
-
-      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0;
       const substituir = Boolean(forcarSubstituir || substituirCompetencia);
+      let statusAtual = null;
+      try {
+        statusAtual = await verificarCompetenciaRealizadoMensal(competenciaUpload);
+        setStatusCompetencia(statusAtual);
+      } catch (statusError) {
+        if (!substituir) throw statusError;
+        setFeedback('Consulta da competência demorou demais. Seguindo com reimportação/substituição em lotes.');
+      }
+
+      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0 || (substituir && !statusAtual);
 
       if (jaTemBase && !substituir) {
         setErro(
@@ -2084,6 +2110,14 @@ export default function CtePage() {
           if (event.etapa === 'validacao') {
             setValidacaoUpload(event.validacao);
             setProgressoUpload({ etapa: 'validacao', mensagem: event.mensagem, percentual: 20 });
+          }
+
+          if (event.etapa === 'status') {
+            setProgressoUpload({ etapa: 'status', mensagem: event.mensagem, percentual: 18 });
+          }
+
+          if (event.etapa === 'reset') {
+            setProgressoUpload({ etapa: 'reset', mensagem: event.mensagem, percentual: 22 });
           }
 
           if (event.etapa === 'temporaria') {

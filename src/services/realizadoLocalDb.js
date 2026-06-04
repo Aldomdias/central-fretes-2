@@ -83,7 +83,27 @@ function isTransportadoraEbazar(value) {
 }
 
 function toNumber(value) {
-  const n = Number(value || 0);
+  let n = 0;
+  if (value !== null && value !== undefined && value !== '') {
+    if (typeof value === 'number') {
+      n = value;
+    } else {
+      let text = String(value).trim();
+      text = text.replace(/R\$|%/gi, '').replace(/\s+/g, '');
+      const hasComma = text.includes(',');
+      const hasDot = text.includes('.');
+      if (hasComma && hasDot) {
+        text = text.replace(/\./g, '').replace(',', '.');
+      } else if (hasComma) {
+        text = text.replace(',', '.');
+      } else if (hasDot) {
+        const parts = text.split('.');
+        const pareceMilhar = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+        if (pareceMilhar) text = parts.join('');
+      }
+      n = Number(text.replace(/[^0-9.-]/g, ''));
+    }
+  }
   return Number.isFinite(n) ? n : 0;
 }
 

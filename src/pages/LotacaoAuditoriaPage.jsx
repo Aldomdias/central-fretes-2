@@ -17,6 +17,7 @@ import {
 } from '../utils/lotacaoFluxoCargas';
 import {
   buscarCteLotacaoAuditoriaPorChaveSupabase,
+  buscarCtesLotacaoAuditoriaPorChavesSupabase,
   buscarCtesLotacaoAuditoriaPorNumeroSupabase,
   carregarCargasLotacaoSupabase,
   carregarLancamentosAuditoriaSupabase,
@@ -32,6 +33,11 @@ import {
   carregarTabelasLotacao,
   pesquisarRotaLotacao,
 } from '../utils/lotacaoTables';
+import {
+  carregarVinculosTransportadoras,
+  salvarVinculosTransportadoras,
+  removerVinculoTransportadora,
+} from '../services/vinculosTransportadorasService';
 import { carregarSessao } from '../utils/authLocal';
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -107,6 +113,59 @@ function numeroAuditoria(valor) {
     .replace(/[^0-9.-]/g, '');
   const numero = Number(texto);
   return Number.isFinite(numero) ? numero : 0;
+}
+
+function analisarChavesCteLote(texto = '') {
+  const tokens = String(texto || '')
+    .split(/[\s,;]+/g)
+    .map((item) => item.replace(/\D/g, ''))
+    .filter(Boolean);
+  const vistas = new Set();
+  const validas = [];
+  const duplicadas = [];
+  const invalidas = [];
+
+  tokens.forEach((token) => {
+    if (token.length !== 44) {
+      invalidas.push(token);
+      return;
+    }
+    if (vistas.has(token)) {
+      duplicadas.push(token);
+      return;
+    }
+    vistas.add(token);
+    validas.push(token);
+  });
+
+  return {
+    lidas: tokens.length,
+    validas,
+    invalidas,
+    duplicadas,
+  };
+}
+
+function identificadoresCteAuditoria(cte = {}, chaveFallback = '') {
+  const registro = cte || {};
+  return [
+    registro.chave_cte,
+    registro.numero_cte,
+    registro.cte,
+    chaveFallback,
+  ].map((item) => normalizarTexto(item || '')).filter(Boolean);
+}
+
+function cteJaLancadoEmOutraViagem(lancamentos = [], viagem, identificadores = []) {
+  const ids = new Set((identificadores || []).map((item) => normalizarTexto(item)).filter(Boolean));
+  if (!ids.size) return false;
+  const chaveViagemAtual = viagem ? (viagem.chaveViagem || consolidarChaveViagem(viagem.dist)) : '';
+
+  return (lancamentos || []).some((item) => {
+    const chaveLancamento = consolidarChaveViagem(item.dist || item.distKey || '');
+    if (chaveViagemAtual && chaveLancamento === chaveViagemAtual) return false;
+    return ids.has(normalizarTexto(item.cte || item.cteKey || ''));
+  });
 }
 
 function adicionarCandidatoValor(lista, fonte, valor, detalhe = '') {
@@ -298,11 +357,13 @@ function resumoViagem(viagem, lancamentos = []) {
 }
 
 // ─── SUGESTÕES DE CASAMENTO COM O REALIZADO ───────────────────────────────────
-function scoreSugestaoHistorico(carga = {}, cte = {}) {
+function scoreSugestaoHistorico(carga = {}, cte = {}, vinculos = []) {
   const origem = normalizarTexto(cte.cidade_origem || '');
   const destino = normalizarTexto(cte.cidade_destino || '');
   const ufDestino = normalizarTexto(cte.uf_destino || '');
   const transp = normalizarTexto(cte.transportadora || cte.transportadora_contratada || '');
+  const transpCteCanonica = normalizarTexto(nomeCanonicoTransportadora(cte.transportadora || cte.transportadora_contratada || '', vinculos));
+  const transpCargaCanonica = normalizarTexto(nomeCanonicoTransportadora(carga.transportadora || '', vinculos));
   const cteNumero = normalizarTexto(cte.numero_cte || '');
   let score = 0;
   const motivos = [];
@@ -322,9 +383,15 @@ function scoreSugestaoHistorico(carga = {}, cte = {}) {
     score += 8;
     motivos.push('mesma UF destino');
   }
-  if (transp && normalizarTexto(carga.transportadora).includes(transp)) {
+  if (
+    transp
+    && (
+      normalizarTexto(carga.transportadora).includes(transp)
+      || (transpCteCanonica && transpCargaCanonica && transpCteCanonica === transpCargaCanonica)
+    )
+  ) {
     score += 14;
-    motivos.push('mesma transportadora');
+    motivos.push(transpCteCanonica === transpCargaCanonica ? 'transportadora vinculada' : 'mesma transportadora');
   }
   const emissao = cte.emissao ? new Date(cte.emissao).getTime() : 0;
   const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
@@ -347,14 +414,14 @@ function scoreSugestaoHistorico(carga = {}, cte = {}) {
 }
 
 // Sugere VIAGENS CONSOLIDADAS (cada viagem aparece uma única vez).
-function sugerirViagensPorCte(cargas = [], cte = {}) {
+function sugerirViagensPorCte(cargas = [], cte = {}, vinculos = []) {
   const viagens = consolidarViagens(cargas);
   return viagens
     .map((viagem) => {
       // melhor score entre os registros originais da viagem
       let melhor = { score: 0, motivos: [] };
       for (const reg of viagem.registrosOriginais || [viagem]) {
-        const r = scoreSugestaoHistorico(reg, cte);
+        const r = scoreSugestaoHistorico(reg, cte, vinculos);
         if (r.score > melhor.score) melhor = r;
       }
       return { viagem, ...melhor };
@@ -364,9 +431,8 @@ function sugerirViagensPorCte(cargas = [], cte = {}) {
     .slice(0, 8);
 }
 
-// ─── VÍNCULOS DE TRANSPORTADORA (estrutura preparada, sem tocar no banco) ──────
-// Persistência local hoje; pronto para apontar para uma tabela Supabase
-// (ex.: lotacao_transportadora_vinculos) quando ela existir.
+// ─── VÍNCULOS DE TRANSPORTADORA ────────────────────────────────────────────────
+// Usa a tabela central transportadora_vinculos via service e mantém fallback local.
 function carregarVinculos() {
   try {
     const parsed = JSON.parse(localStorage.getItem(VINCULOS_STORAGE_KEY) || '[]');
@@ -384,13 +450,35 @@ function salvarVinculos(vinculos = []) {
   }
 }
 
+function vinculoGlobalParaAuditoria(item = {}) {
+  return {
+    id: item.id || `${normalizarTexto(item.nomeCte || item.nome_cte)}__${normalizarTexto(item.nomeTabela || item.nome_tabela)}`,
+    nomeRealizado: item.nomeTabela || item.nome_tabela || item.nomeRealizado || '',
+    nomeCteTabela: item.nomeCte || item.nome_cte || item.nomeCteTabela || '',
+    cnpj: item.cnpj || item.cnpj_transportadora || '',
+    atualizadoEm: item.updatedAt || item.updated_at || item.atualizadoEm || '',
+    origem: item.origem || 'manual',
+  };
+}
+
+function vinculoAuditoriaParaGlobal(item = {}) {
+  return {
+    id: item.id,
+    nomeCte: item.nomeCteTabela || item.nomeCte || item.nome_cte || '',
+    nomeTabela: item.nomeRealizado || item.nomeTabela || item.nome_tabela || '',
+    origem: item.origem || 'auditoria_lotacao',
+  };
+}
+
 function nomeCanonicoTransportadora(nome, vinculos = []) {
   const alvo = normalizarTexto(nome || '');
   if (!alvo) return nome || '';
   const achado = (vinculos || []).find(
-    (v) => normalizarTexto(v.nomeRealizado) === alvo || normalizarTexto(v.nomeCteTabela) === alvo,
+    (v) => normalizarTexto(v.nomeRealizado || v.nomeTabela || v.nome_tabela) === alvo
+      || normalizarTexto(v.nomeCteTabela || v.nomeCte || v.nome_cte) === alvo
+      || normalizarTexto(v.cnpj) === alvo,
   );
-  return achado ? achado.nomeCteTabela : (nome || '');
+  return achado ? (achado.nomeRealizado || achado.nomeTabela || nome || '') : (nome || '');
 }
 
 // ════════════════════════════ COMPONENTES ════════════════════════════════════
@@ -767,6 +855,173 @@ function FormLancamento({ viagem, lancamentos, solicitacoes, onRegistrar, salvan
   );
 }
 
+function AuditoriaLoteCtes({
+  viagem,
+  lancamentos,
+  texto,
+  onTextoChange,
+  analise,
+  resultados,
+  selecionados,
+  buscando,
+  salvando,
+  onBuscar,
+  onToggle,
+  onToggleTodos,
+  onVincular,
+  onUsarCte,
+  sugestoesViagens = [],
+  onUsarViagem,
+  mostrarEntrada = true,
+}) {
+  const resumo = viagem ? resumoViagem(viagem, lancamentos) : null;
+  const selecionadosSet = new Set(selecionados || []);
+  const validos = (resultados || []).filter((item) => item.selecionavel);
+  const encontrados = (resultados || []).filter((item) => item.cte).length;
+  const naoEncontrados = (resultados || []).filter((item) => item.status === 'NAO_ENCONTRADO').length;
+  const vinculados = (resultados || []).filter((item) => item.status === 'JA_VINCULADO' || item.status === 'JA_VINCULADO_OUTRA').length;
+  const valorSelecionado = (resultados || [])
+    .filter((item) => selecionadosSet.has(item.chave))
+    .reduce((acc, item) => acc + numeroAuditoria(item.cte?.valor_cte), 0);
+  const saldoAtual = resumo?.saldoPendente || 0;
+  const saldoApos = Number((saldoAtual - valorSelecionado).toFixed(2));
+  const todosValidosSelecionados = validos.length > 0 && validos.every((item) => selecionadosSet.has(item.chave));
+
+  return (
+    <div className="panel-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Auditoria em lote por chaves CT-e</div>
+          <p>Cole várias chaves para buscar, selecionar e vincular à mesma viagem consolidada.</p>
+        </div>
+        {viagem ? <span className="status-pill dark">Viagem: {viagem.dist}</span> : <span className="status-pill error">Selecione uma viagem</span>}
+      </div>
+
+      {mostrarEntrada && (
+        <>
+          <label className="field">
+            Cole uma ou várias chaves CT-e
+            <textarea
+              value={texto}
+              onChange={(e) => onTextoChange(e.target.value)}
+              placeholder="Cole chaves por linha, vírgula, ponto e vírgula, espaço ou tab"
+              style={{ minHeight: 90 }}
+            />
+          </label>
+
+          <div className="actions-right top-space-sm">
+            <button type="button" className="btn-secondary" onClick={onBuscar} disabled={buscando || salvando || !texto.trim()}>
+              {buscando ? 'Buscando...' : 'Buscar CT-es'}
+            </button>
+          </div>
+        </>
+      )}
+
+      <div className="summary-strip lotacao-summary-mini top-space-sm">
+        <div className="summary-card"><span>Chaves lidas</span><strong>{analise.lidas}</strong></div>
+        <div className="summary-card"><span>Válidas</span><strong>{analise.validas.length}</strong></div>
+        <div className="summary-card"><span>Duplicadas ignoradas</span><strong>{analise.duplicadas.length}</strong></div>
+        <div className="summary-card"><span>Encontradas</span><strong>{encontrados}</strong></div>
+        <div className="summary-card"><span>Não encontradas</span><strong>{naoEncontrados}</strong></div>
+        <div className="summary-card"><span>Já vinculadas</span><strong>{vinculados}</strong></div>
+      </div>
+
+      {analise.invalidas.length > 0 && (
+        <div className="hint-box compact error-text">
+          Chave(s) inválida(s) ignorada(s): {analise.invalidas.slice(0, 8).join(', ')}
+          {analise.invalidas.length > 8 ? ` e mais ${analise.invalidas.length - 8}` : ''}.
+        </div>
+      )}
+
+      {resultados.length > 0 && (
+        <>
+          <div className="sim-analise-resumo top-space-sm">
+            <div><span>Valor total da viagem</span><strong>{formatarMoeda(resumo?.valorTotal || 0)}</strong></div>
+            <div><span>Já auditado/vinculado</span><strong>{formatarMoeda(resumo?.valorAuditado || 0)}</strong></div>
+            <div><span>Saldo pendente atual</span><strong>{formatarMoeda(saldoAtual)}</strong></div>
+            <div><span>Valor selecionado</span><strong>{formatarMoeda(valorSelecionado)}</strong></div>
+            <div><span>Saldo após lote</span><strong className={classeSaldo(saldoApos)}>{formatarMoeda(saldoApos)}</strong></div>
+          </div>
+
+          {saldoApos < -0.01 && (
+            <div className="hint-box compact error-text">
+              O lote selecionado ultrapassa o saldo pendente. Ao vincular, a regra atual abrirá pendência para aprovação quando houver excedente.
+            </div>
+          )}
+
+          <div className="actions-right top-space-sm">
+            <button type="button" className="btn-secondary" onClick={onToggleTodos} disabled={!validos.length || salvando}>
+              {todosValidosSelecionados ? 'Limpar seleção' : 'Selecionar todos válidos'}
+            </button>
+            <button type="button" className="btn-primary" onClick={onVincular} disabled={!viagem || salvando || !selecionados.length}>
+              {salvando ? 'Salvando...' : 'Vincular selecionados à viagem'}
+            </button>
+          </div>
+
+          {!viagem && sugestoesViagens.length > 0 && (
+            <div className="table-card lotacao-table-card top-space-sm">
+              <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>Escolha a viagem/DIST para liberar seleção</div>
+              <div className="mini-list" style={{ padding: '0 1rem 1rem' }}>
+                {sugestoesViagens.slice(0, 5).map(({ viagem: item, score, motivos }) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="mini-list-row clickable"
+                    onClick={() => onUsarViagem?.(item)}
+                  >
+                    <span>
+                      <strong>{item.dist}</strong>{item.qtdRegistros > 1 ? ` · ${item.qtdRegistros} registros` : ''} · {item.transportadora} · {item.origem} x {item.destino}
+                      <small style={{ display: 'block', color: 'var(--muted)' }}>{motivos?.join(', ') || 'Sugestão por proximidade'} · {score >= 70 ? 'Alta' : score >= 40 ? 'Média' : 'Baixa'}</small>
+                    </span>
+                    <strong>{formatarMoeda(item.valorComparacao)}</strong>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="sim-analise-tabela-wrap top-space-sm">
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr><th>Selecionar</th><th>Ação</th><th>Chave CT-e</th><th>Número</th><th>Transportadora</th><th>Origem</th><th>Destino</th><th>Valor CT-e</th><th>Status</th><th>Observação</th></tr>
+              </thead>
+              <tbody>
+                {resultados.map((item) => (
+                  <tr key={item.chave}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selecionadosSet.has(item.chave)}
+                        disabled={!item.selecionavel || salvando}
+                        onChange={() => onToggle(item.chave)}
+                      />
+                    </td>
+                    <td>
+                      {item.cte ? (
+                        <button type="button" className="btn-secondary" onClick={() => onUsarCte(item.cte)}>
+                          Ver DIST
+                        </button>
+                      ) : '-'}
+                    </td>
+                    <td style={{ fontSize: 11 }}>{item.chave}</td>
+                    <td>{item.cte?.numero_cte || '-'}</td>
+                    <td>{item.cte?.transportadora || item.cte?.transportadora_contratada || '-'}</td>
+                    <td>{item.cte?.cidade_origem || '-'}/{item.cte?.uf_origem || '-'}</td>
+                    <td>{item.cte?.cidade_destino || '-'}/{item.cte?.uf_destino || '-'}</td>
+                    <td>{formatarMoeda(item.cte?.valor_cte || 0)}</td>
+                    <td><span className={`status-pill ${item.selecionavel ? '' : 'error'}`}>{item.statusLabel}</span></td>
+                    <td>{item.observacao || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function HistoricoLancamentos({ viagem, lancamentos }) {
   if (!viagem) return null;
   const lista = lancamentosDaViagem(lancamentos, viagem.chaveViagem || consolidarChaveViagem(viagem.dist))
@@ -923,7 +1178,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes }) {
 }
 
 // ─── Aba Vínculos de Transportadora ───────────────────────────────────────────
-function PainelVinculos({ vinculos, onSalvar, sugestaoRealizado, sugestaoCte }) {
+function PainelVinculos({ vinculos, onSalvar, onRemover, sugestaoRealizado, sugestaoCte, fonte = 'local', salvando = false }) {
   const [editando, setEditando] = useState(null);
   const [form, setForm] = useState({ nomeRealizado: sugestaoRealizado || '', nomeCteTabela: sugestaoCte || '', cnpj: '' });
 
@@ -952,7 +1207,10 @@ function PainelVinculos({ vinculos, onSalvar, sugestaoRealizado, sugestaoCte }) 
     setForm({ nomeRealizado: v.nomeRealizado || '', nomeCteTabela: v.nomeCteTabela || '', cnpj: v.cnpj || '' });
   };
 
-  const remover = (id) => onSalvar(vinculos.filter((v) => v.id !== id));
+  const remover = (id) => {
+    if (typeof onRemover === 'function') onRemover(id);
+    else onSalvar(vinculos.filter((v) => v.id !== id));
+  };
 
   return (
     <div className="panel-card">
@@ -961,11 +1219,11 @@ function PainelVinculos({ vinculos, onSalvar, sugestaoRealizado, sugestaoCte }) 
           <div className="panel-title">Vínculos de transportadora</div>
           <p>Liga o nome da transportadora no realizado/lotação ao nome oficial na base CT-e / tabela de frete. Ex.: <strong>LIBARDO</strong> → <strong>LIBARDO TRANSPORTES LTDA</strong>.</p>
         </div>
-        <span className="status-pill dark">{vinculos.length} vínculo(s)</span>
+        <span className="status-pill dark">{vinculos.length} vínculo(s) · {fonte === 'supabase' ? 'Supabase' : 'local'}</span>
       </div>
 
       <div className="hint-box compact">
-        Hoje os vínculos ficam salvos localmente neste navegador (estrutura pronta para virar tabela Supabase depois, sem alterar o banco agora).
+        Os vínculos são compartilhados via Supabase e também ficam em cache local como segurança.
       </div>
 
       <div className="form-grid three top-space-sm">
@@ -988,8 +1246,8 @@ function PainelVinculos({ vinculos, onSalvar, sugestaoRealizado, sugestaoCte }) 
             Cancelar edição
           </button>
         )}
-        <button type="button" className="btn-primary" disabled={!form.nomeRealizado.trim() || !form.nomeCteTabela.trim()} onClick={salvar}>
-          {editando ? 'Salvar alteração' : 'Adicionar vínculo'}
+        <button type="button" className="btn-primary" disabled={salvando || !form.nomeRealizado.trim() || !form.nomeCteTabela.trim()} onClick={salvar}>
+          {salvando ? 'Salvando...' : editando ? 'Salvar alteração' : 'Adicionar vínculo'}
         </button>
       </div>
 
@@ -1003,8 +1261,8 @@ function PainelVinculos({ vinculos, onSalvar, sugestaoRealizado, sugestaoCte }) 
                 <td>{v.nomeCteTabela}</td>
                 <td>{v.cnpj || '-'}</td>
                 <td>
-                  <button type="button" className="btn-secondary" style={{ marginRight: 6 }} onClick={() => editar(v)}>Editar</button>
-                  <button type="button" className="btn-secondary" onClick={() => remover(v.id)}>Remover</button>
+                  <button type="button" className="btn-secondary" style={{ marginRight: 6 }} disabled={salvando} onClick={() => editar(v)}>Editar</button>
+                  <button type="button" className="btn-secondary" disabled={salvando} onClick={() => remover(v.id)}>Remover</button>
                 </td>
               </tr>
             ))}
@@ -1061,6 +1319,10 @@ export default function LotacaoAuditoriaPage() {
   const [cteSelecionado, setCteSelecionado] = useState(null);
   const [sugestoesViagens, setSugestoesViagens] = useState([]);
   const [buscandoSugestoes, setBuscandoSugestoes] = useState(false);
+  const [loteChavesTexto, setLoteChavesTexto] = useState('');
+  const [loteResultados, setLoteResultados] = useState([]);
+  const [loteSelecionados, setLoteSelecionados] = useState([]);
+  const [buscandoLote, setBuscandoLote] = useState(false);
 
   const [tabelasLotacao, setTabelasLotacao] = useState([]);
   const [lancamentos, setLancamentos] = useState(() => carregarLancamentosAuditoria());
@@ -1068,6 +1330,8 @@ export default function LotacaoAuditoriaPage() {
   const [carregandoAuditoria, setCarregandoAuditoria] = useState(false);
 
   const [vinculos, setVinculos] = useState(() => carregarVinculos());
+  const [fonteVinculos, setFonteVinculos] = useState('local');
+  const [salvandoVinculos, setSalvandoVinculos] = useState(false);
 
   const [salvando, setSalvando] = useState(false);
   const [mensagem, setMensagem] = useState('');
@@ -1133,6 +1397,26 @@ export default function LotacaoAuditoriaPage() {
     })();
   }, []);
 
+  useEffect(() => {
+    let ativo = true;
+    (async () => {
+      try {
+        const lista = await carregarVinculosTransportadoras();
+        if (!ativo) return;
+        const adaptados = (lista || []).map(vinculoGlobalParaAuditoria).filter((item) => item.nomeRealizado && item.nomeCteTabela);
+        if (adaptados.length) {
+          setVinculos(adaptados);
+          salvarVinculos(adaptados);
+        }
+        setFonteVinculos('supabase');
+      } catch (error) {
+        console.warn('[Auditoria] Vínculos no Supabase indisponíveis; usando fallback local:', error.message || error);
+        if (ativo) setFonteVinculos('local');
+      }
+    })();
+    return () => { ativo = false; };
+  }, []);
+
   const tabelaAplicavel = useMemo(() => {
     if (!cteSelecionado && !viagemSelecionada) return [];
     const filtros = cteSelecionado ? cteParaFiltrosRota(cteSelecionado) : {
@@ -1147,6 +1431,11 @@ export default function LotacaoAuditoriaPage() {
   const viagemParaAuditoria = useMemo(
     () => aplicarReferenciaAuditoria(viagemSelecionada, cteSelecionado),
     [viagemSelecionada, cteSelecionado],
+  );
+
+  const analiseLoteChaves = useMemo(
+    () => analisarChavesCteLote(loteChavesTexto),
+    [loteChavesTexto],
   );
 
   // ── Busca por chave CT-e (somente chave de 44 dígitos na base CT-e) ──
@@ -1200,16 +1489,168 @@ export default function LotacaoAuditoriaPage() {
   const buscarSugestoesNoRealizado = useCallback(() => {
     if (!cteSelecionado) return;
     setBuscandoSugestoes(true);
-    const sugestoes = sugerirViagensPorCte(baseFluxo.cargas, cteSelecionado);
+    const sugestoes = sugerirViagensPorCte(baseFluxo.cargas, cteSelecionado, vinculos);
     setSugestoesViagens(sugestoes);
     if (sugestoes.length) setViagemSelecionada((atual) => atual || sugestoes[0].viagem);
     setBuscandoSugestoes(false);
-  }, [cteSelecionado, baseFluxo.cargas]);
+  }, [cteSelecionado, baseFluxo.cargas, vinculos]);
 
-  const salvarVinculosState = useCallback((novos) => {
-    setVinculos(novos);
-    salvarVinculos(novos);
+  const montarResultadoLote = useCallback((chave, respostaPorChave, lancamentosBase) => {
+    const resposta = respostaPorChave.get(chave);
+    const cte = resposta?.ctes?.[0] || null;
+    const erro = resposta?.erro || '';
+    const lancConsolidados = reKeyLancamentosPorViagem(lancamentosBase);
+    const ids = identificadoresCteAuditoria(cte, chave);
+    const vinculadoNaViagem = viagemParaAuditoria && ids.some((id) => cteJaLancado(lancConsolidados, viagemParaAuditoria, id));
+    const vinculadoOutraViagem = cteJaLancadoEmOutraViagem(lancConsolidados, viagemParaAuditoria, ids);
+
+    if (erro) {
+      return { chave, cte, status: 'ERRO', statusLabel: 'erro', selecionavel: false, observacao: erro };
+    }
+    if (!cte) {
+      return { chave, cte: null, status: 'NAO_ENCONTRADO', statusLabel: 'não encontrado', selecionavel: false, observacao: 'Chave não localizada na base de CT-es.' };
+    }
+    if (vinculadoNaViagem) {
+      return { chave, cte, status: 'JA_VINCULADO', statusLabel: 'já vinculado', selecionavel: false, observacao: 'CT-e já vinculado nesta viagem.' };
+    }
+    if (vinculadoOutraViagem) {
+      return { chave, cte, status: 'JA_VINCULADO_OUTRA', statusLabel: 'já vinculado', selecionavel: false, observacao: 'CT-e já vinculado em outra viagem.' };
+    }
+    if (!viagemParaAuditoria) {
+      return { chave, cte, status: 'SEM_VIAGEM', statusLabel: 'encontrado', selecionavel: false, observacao: 'Selecione uma viagem consolidada para permitir vínculo.' };
+    }
+    return { chave, cte, status: 'VALIDO', statusLabel: 'válido para seleção', selecionavel: true, observacao: 'Pronto para vincular.' };
+  }, [viagemParaAuditoria]);
+
+  useEffect(() => {
+    if (!loteResultados.length) return;
+    const lancConsolidados = reKeyLancamentosPorViagem(lancamentos);
+    setLoteResultados((atuais) => atuais.map((item) => {
+      const cte = item.cte || null;
+      if (!cte) return item;
+      const ids = identificadoresCteAuditoria(cte, item.chave);
+      const vinculadoNaViagem = viagemParaAuditoria && ids.some((id) => cteJaLancado(lancConsolidados, viagemParaAuditoria, id));
+      const vinculadoOutraViagem = cteJaLancadoEmOutraViagem(lancConsolidados, viagemParaAuditoria, ids);
+
+      if (vinculadoNaViagem) {
+        return { ...item, status: 'JA_VINCULADO', statusLabel: 'já vinculado', selecionavel: false, observacao: 'CT-e já vinculado nesta viagem.' };
+      }
+      if (vinculadoOutraViagem) {
+        return { ...item, status: 'JA_VINCULADO_OUTRA', statusLabel: 'já vinculado', selecionavel: false, observacao: 'CT-e já vinculado em outra viagem.' };
+      }
+      if (!viagemParaAuditoria) {
+        return { ...item, status: 'SEM_VIAGEM', statusLabel: 'encontrado', selecionavel: false, observacao: 'Selecione uma viagem consolidada para permitir vínculo.' };
+      }
+      return { ...item, status: 'VALIDO', statusLabel: 'válido para seleção', selecionavel: true, observacao: 'Pronto para vincular.' };
+    }));
+    setLoteSelecionados((atuais) => atuais.filter((chave) => (
+      loteResultados.some((item) => item.chave === chave && item.selecionavel)
+    )));
+  }, [viagemParaAuditoria, lancamentos]);
+
+  const pesquisarLoteChaves = useCallback(async () => {
+    setMensagem('');
+    setLoteSelecionados([]);
+    const textoPesquisa = loteChavesTexto || buscaChave;
+    const analise = analisarChavesCteLote(textoPesquisa);
+    if (!analise.validas.length) {
+      setLoteResultados([]);
+      setMensagem('Cole ao menos uma chave CT-e válida com 44 dígitos.');
+      return;
+    }
+
+    setBuscandoLote(true);
+    try {
+      const respostas = await buscarCtesLotacaoAuditoriaPorChavesSupabase(analise.validas);
+      const respostaPorChave = new Map((respostas || []).map((item) => [item.chave, item]));
+      const resultados = analise.validas.map((chave) => montarResultadoLote(chave, respostaPorChave, lancamentos));
+      setLoteResultados(resultados);
+      const encontrados = resultados.filter((item) => item.cte).length;
+      const primeiroEncontrado = resultados.find((item) => item.cte)?.cte || null;
+      if (primeiroEncontrado && resultados.length === 1) {
+        setCtesEncontrados([primeiroEncontrado]);
+        setCteSelecionado(primeiroEncontrado);
+        setSugestoesViagens([]);
+      } else {
+        setCtesEncontrados([]);
+        setCteSelecionado(null);
+        setSugestoesViagens([]);
+      }
+      setMensagem(`Lote analisado: ${resultados.length} chave(s), ${encontrados} encontrada(s).`);
+    } catch (error) {
+      setLoteResultados([]);
+      setMensagem(`Falha ao buscar CT-es em lote: ${error.message || String(error)}`);
+    } finally {
+      setBuscandoLote(false);
+    }
+  }, [loteChavesTexto, buscaChave, lancamentos, montarResultadoLote]);
+
+  const alternarSelecaoLote = useCallback((chave) => {
+    setLoteSelecionados((atuais) => (
+      atuais.includes(chave) ? atuais.filter((item) => item !== chave) : atuais.concat(chave)
+    ));
   }, []);
+
+  const alternarTodosLote = useCallback(() => {
+    const validos = loteResultados.filter((item) => item.selecionavel).map((item) => item.chave);
+    setLoteSelecionados((atuais) => (
+      validos.length && validos.every((chave) => atuais.includes(chave)) ? [] : validos
+    ));
+  }, [loteResultados]);
+
+  const usarCteDoLote = useCallback((cte) => {
+    if (!cte) return;
+    setCteSelecionado(cte);
+    setCtesEncontrados([cte]);
+    const sugestoes = sugerirViagensPorCte(baseFluxo.cargas, cte, vinculos);
+    setSugestoesViagens(sugestoes);
+    if (sugestoes.length) {
+      setViagemSelecionada(sugestoes[0].viagem);
+      setMensagem('CT-e selecionado no lote. Sugestão de viagem aplicada; revise antes de vincular.');
+    } else {
+      setMensagem('CT-e selecionado no lote. Nenhuma viagem provável encontrada no realizado.');
+    }
+  }, [baseFluxo.cargas, vinculos]);
+
+  const salvarVinculosState = useCallback(async (novos) => {
+    const adaptados = (novos || []).filter((item) => item.nomeRealizado && item.nomeCteTabela);
+    setVinculos(adaptados);
+    salvarVinculos(adaptados);
+    setSalvandoVinculos(true);
+    try {
+      const resultado = await salvarVinculosTransportadoras(adaptados.map(vinculoAuditoriaParaGlobal));
+      const salvos = (resultado.vinculos || []).map(vinculoGlobalParaAuditoria).filter((item) => item.nomeRealizado && item.nomeCteTabela);
+      if (salvos.length) {
+        setVinculos(salvos);
+        salvarVinculos(salvos);
+      }
+      setFonteVinculos(resultado.modo || 'supabase');
+      setMensagem(`Vínculos de transportadora salvos em ${resultado.modo === 'supabase' ? 'Supabase' : 'localStorage'}.`);
+    } catch (error) {
+      setFonteVinculos('local');
+      setMensagem(`Vínculos salvos localmente, mas não no Supabase: ${error.message || String(error)}`);
+    } finally {
+      setSalvandoVinculos(false);
+    }
+  }, []);
+
+  const removerVinculoState = useCallback(async (id) => {
+    const alvo = (vinculos || []).find((item) => String(item.id) === String(id));
+    const restantes = (vinculos || []).filter((item) => String(item.id) !== String(id));
+    setVinculos(restantes);
+    salvarVinculos(restantes);
+    setSalvandoVinculos(true);
+    try {
+      await removerVinculoTransportadora(alvo?.nomeCteTabela || id, (vinculos || []).map(vinculoAuditoriaParaGlobal));
+      setFonteVinculos('supabase');
+      setMensagem('Vínculo removido do Supabase.');
+    } catch (error) {
+      setFonteVinculos('local');
+      setMensagem(`Vínculo removido localmente, mas não no Supabase: ${error.message || String(error)}`);
+    } finally {
+      setSalvandoVinculos(false);
+    }
+  }, [vinculos]);
 
   // ── Registrar lançamento (vincular CT-e à viagem consolidada) ──
   const registrarLancamento = useCallback(async (form) => {
@@ -1315,6 +1756,142 @@ export default function LotacaoAuditoriaPage() {
     }
   }, [viagemParaAuditoria, lancamentos, solicitacoes, usuarioAtual]);
 
+  const vincularLoteSelecionado = useCallback(async () => {
+    if (!viagemParaAuditoria) {
+      setMensagem('Selecione uma viagem consolidada antes de vincular o lote.');
+      return;
+    }
+    const selecionadosSet = new Set(loteSelecionados);
+    const itens = loteResultados.filter((item) => item.selecionavel && selecionadosSet.has(item.chave));
+    if (!itens.length) {
+      setMensagem('Selecione ao menos um CT-e válido para vincular.');
+      return;
+    }
+
+    setSalvando(true);
+    setMensagem('');
+
+    const salvos = [];
+    const falhas = [];
+    let novosLancamentos = [...lancamentos];
+    let novasSolicitacoes = [...solicitacoes];
+
+    for (const item of itens) {
+      try {
+        const valorCte = numeroAuditoria(item.cte?.valor_cte);
+        const numeroCte = item.cte?.numero_cte || item.chave;
+        const lancConsolidados = reKeyLancamentosPorViagem(novosLancamentos);
+        const lancamento = criarLancamentoAuditoria(viagemParaAuditoria, {
+          cte: numeroCte,
+          valorLancado: valorCte,
+          fatura: '',
+          observacao: 'Auditoria em lote por chaves CT-e',
+        }, lancConsolidados, novasSolicitacoes);
+
+        const lancamentoComAuditor = {
+          ...lancamento,
+          auditedByUserId: usuarioAtual?.id || '',
+          auditedByName: usuarioAtual?.nome || '',
+          auditedByEmail: usuarioAtual?.email || '',
+          auditedAt: new Date().toISOString(),
+          auditStatus: lancamento.excedente > 0 ? 'EXCEDEU_AGUARDANDO_OPERACAO' : 'AUDITADO_OK',
+          auditExceededAmount: lancamento.excedente,
+          auditAllowedAmount: lancamento.saldoAnterior,
+          auditEnteredAmount: lancamento.valorLancado,
+          observacao: 'Auditoria em lote por chaves CT-e',
+          origemTela: 'AUDITORIA_LOTACAO',
+        };
+
+        novosLancamentos = [lancamentoComAuditor, ...novosLancamentos];
+        try {
+          await salvarLancamentoAuditoriaSupabase(lancamentoComAuditor);
+        } catch (error) {
+          console.warn('[Auditoria em lote] Lançamento salvo localmente; falha no Supabase:', error.message);
+        }
+
+        if (lancamentoComAuditor.excedente > 0) {
+          const solicitacao = criarSolicitacaoPagamento(viagemParaAuditoria, lancamentoComAuditor);
+          const pendenciaId = globalThis.crypto?.randomUUID?.();
+          const solicitacaoComAuditor = {
+            ...solicitacao,
+            auditedByName: lancamentoComAuditor.auditedByName,
+            auditedByEmail: lancamentoComAuditor.auditedByEmail,
+            auditedAt: lancamentoComAuditor.auditedAt,
+            observation: lancamentoComAuditor.observacao,
+            status: 'EXCEDEU_AGUARDANDO_OPERACAO',
+          };
+          novasSolicitacoes = [solicitacaoComAuditor, ...novasSolicitacoes];
+
+          try { await salvarSolicitacaoSupabase(solicitacaoComAuditor); }
+          catch (error) { console.warn('[Auditoria em lote] Solicitação salva localmente; falha no Supabase:', error.message); }
+
+          try {
+            await salvarPendenciaAuditoriaSupabase({
+              id: pendenciaId,
+              lancamentoId: lancamentoComAuditor.id,
+              dist: viagemParaAuditoria.dist,
+              distKey: viagemParaAuditoria.distKey,
+              cte: lancamentoComAuditor.cte,
+              fatura: lancamentoComAuditor.fatura,
+              transportadora: viagemParaAuditoria.transportadora,
+              cargaId: viagemParaAuditoria.id,
+              valorLancado: lancamentoComAuditor.valorLancado,
+              valorAutorizado: lancamentoComAuditor.saldoAnterior,
+              valorExcedente: lancamentoComAuditor.excedente,
+              valorOriginal: Number(viagemParaAuditoria.valorComparacao) || 0,
+              valorAdicionalAprovado: 0,
+              valorFinalAutorizado: Number(viagemParaAuditoria.valorComparacao) || 0,
+              prazoOperacaoEm: adicionarHorasIso(lancamentoComAuditor.auditedAt, 24),
+              status: 'EXCEDEU_AGUARDANDO_OPERACAO',
+              auditedByUserId: lancamentoComAuditor.auditedByUserId,
+              auditedByName: lancamentoComAuditor.auditedByName,
+              auditedByEmail: lancamentoComAuditor.auditedByEmail,
+              auditedAt: lancamentoComAuditor.auditedAt,
+              observation: lancamentoComAuditor.observacao,
+            });
+            if (pendenciaId) {
+              await registrarEventoHistoricoSupabase({
+                pendenciaId,
+                lancamentoId: lancamentoComAuditor.id,
+                userId: lancamentoComAuditor.auditedByUserId,
+                userName: lancamentoComAuditor.auditedByName,
+                userEmail: lancamentoComAuditor.auditedByEmail,
+                acao: 'ENVIADO_OPERACAO',
+                statusAnterior: 'AUDITORIA',
+                statusNovo: 'EXCEDEU_AGUARDANDO_OPERACAO',
+                comentario: lancamentoComAuditor.observacao,
+                origemTela: 'AUDITORIA_LOTACAO',
+              });
+            }
+          } catch (error) {
+            console.warn('[Auditoria em lote] Pendência não registrada no painel novo:', error.message);
+          }
+        }
+
+        salvos.push(item.chave);
+      } catch (error) {
+        falhas.push(`${item.cte?.numero_cte || item.chave}: ${error.message || String(error)}`);
+      }
+    }
+
+    salvarLancamentosAuditoria(novosLancamentos);
+    salvarSolicitacoesPagamento(novasSolicitacoes);
+    setLancamentos(novosLancamentos);
+    setSolicitacoes(novasSolicitacoes);
+    setLoteSelecionados([]);
+    setLoteResultados((atuais) => atuais.map((item) => (
+      salvos.includes(item.chave)
+        ? { ...item, status: 'JA_VINCULADO', statusLabel: 'já vinculado', selecionavel: false, observacao: 'Vinculado neste lote.' }
+        : item
+    )));
+    setMensagem(
+      falhas.length
+        ? `Lote processado com ${salvos.length} vínculo(s) salvo(s) e ${falhas.length} falha(s): ${falhas.slice(0, 3).join(' | ')}`
+        : `✓ ${salvos.length} CT-e(s) vinculado(s) à viagem com sucesso.`,
+    );
+    setSalvando(false);
+  }, [viagemParaAuditoria, loteSelecionados, loteResultados, lancamentos, solicitacoes, usuarioAtual]);
+
   const totalCargas = baseFluxo.cargas?.length || 0;
   const pendenciasAbertas = (solicitacoes || []).filter((i) => i.status === 'PENDENTE' || i.status === 'EXCEDEU_AGUARDANDO_OPERACAO').length;
 
@@ -1357,16 +1934,24 @@ export default function LotacaoAuditoriaPage() {
             <div className="form-grid three">
               <label className="field full-span">
                 Buscar por chave CT-e
-                <input
+                <textarea
                   value={buscaChave}
-                  onChange={(e) => setBuscaChave(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') pesquisarPorChave(); }}
-                  placeholder="Ex.: 42260527736323000102570010000697041040495412"
+                  onChange={(e) => {
+                    setBuscaChave(e.target.value);
+                    setLoteChavesTexto(e.target.value);
+                    setLoteResultados([]);
+                    setLoteSelecionados([]);
+                  }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pesquisarLoteChaves(); } }}
+                  placeholder="Cole uma ou várias chaves CT-e"
+                  style={{ minHeight: 74 }}
                 />
               </label>
             </div>
             <div className="actions-right">
-              <button type="button" className="btn-primary" onClick={pesquisarPorChave}>Buscar chave CT-e</button>
+              <button type="button" className="btn-primary" onClick={pesquisarLoteChaves} disabled={buscandoLote}>
+                {buscandoLote ? 'Buscando...' : 'Buscar CT-e(s)'}
+              </button>
             </div>
 
             <div className="form-grid three top-space-sm">
@@ -1400,6 +1985,33 @@ export default function LotacaoAuditoriaPage() {
             </div>
 
             {mensagem && <div className="hint-box compact">{mensagem}</div>}
+
+            {(loteResultados.length > 0 || analiseLoteChaves.lidas > 0) && (
+              <AuditoriaLoteCtes
+                viagem={viagemParaAuditoria}
+                lancamentos={lancamentos}
+                texto={buscaChave}
+                onTextoChange={(valor) => {
+                  setBuscaChave(valor);
+                  setLoteChavesTexto(valor);
+                  setLoteResultados([]);
+                  setLoteSelecionados([]);
+                }}
+                analise={analiseLoteChaves}
+                resultados={loteResultados}
+                selecionados={loteSelecionados}
+                buscando={buscandoLote}
+                salvando={salvando}
+                onBuscar={pesquisarLoteChaves}
+                onToggle={alternarSelecaoLote}
+                onToggleTodos={alternarTodosLote}
+                onVincular={vincularLoteSelecionado}
+                onUsarCte={usarCteDoLote}
+                sugestoesViagens={sugestoesViagens}
+                onUsarViagem={setViagemSelecionada}
+                mostrarEntrada={false}
+              />
+            )}
 
             {ctesEncontrados.length > 1 && (
               <div className="mini-list top-space-sm">
@@ -1457,8 +2069,11 @@ export default function LotacaoAuditoriaPage() {
         <PainelVinculos
           vinculos={vinculos}
           onSalvar={salvarVinculosState}
+          onRemover={removerVinculoState}
           sugestaoRealizado={viagemSelecionada?.transportadora || ''}
           sugestaoCte={cteSelecionado?.transportadora || cteSelecionado?.transportadora_contratada || ''}
+          fonte={fonteVinculos}
+          salvando={salvandoVinculos}
         />
       )}
 
