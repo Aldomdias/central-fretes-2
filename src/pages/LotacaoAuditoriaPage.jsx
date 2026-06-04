@@ -8,22 +8,16 @@ import {
   criarLancamentoAuditoria,
   criarSolicitacaoPagamento,
   cteJaLancado,
-  ctesLancadosCarga,
   formatarDataCurta,
   formatarMoeda,
-  lancamentosDaCarga,
   normalizarTexto,
   salvarLancamentosAuditoria,
   salvarSolicitacoesPagamento,
   separarCtes,
-  saldoDisponivelCarga,
-  solicitacoesDaCarga,
-  totalAdicionalAutorizadoCarga,
-  totalAutorizadoCarga,
-  totalLancadoCarga,
 } from '../utils/lotacaoFluxoCargas';
 import {
-  buscarCtesLotacaoAuditoriaSupabase,
+  buscarCteLotacaoAuditoriaPorChaveSupabase,
+  buscarCtesLotacaoAuditoriaPorNumeroSupabase,
   carregarCargasLotacaoSupabase,
   carregarLancamentosAuditoriaSupabase,
   carregarPendenciasAuditoriaSupabase,
@@ -39,6 +33,17 @@ import {
   pesquisarRotaLotacao,
 } from '../utils/lotacaoTables';
 import { carregarSessao } from '../utils/authLocal';
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ 4.34A — Auditoria Lotação como central única de auditoria operacional      ║
+// ║                                                                            ║
+// ║ Toda a lógica nova (consolidação DIST/HUB, saldo por viagem consolidada e  ║
+// ║ vínculos de transportadora) vive NESTE arquivo, para não tocar no motor de ║
+// ║ cálculo, services, simulador, tabelas de negociação ou laudos.             ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+const TOLERANCIA_SALDO = 1.0; // R$ — saldo <= isso (em módulo) => viagem fechada
+const VINCULOS_STORAGE_KEY = 'central_fretes_lotacao_vinculos_transportadora_v1';
 
 function classeSaldo(valor) {
   if (valor < -0.01) return 'negativo';
@@ -86,24 +91,236 @@ function cteParaFiltrosRota(cte = {}) {
   };
 }
 
+
+// ─── VALOR DE REFERÊNCIA DA AUDITORIA (4.34A.3) ─────────────────────────────
+// A lotação pode trazer Valor da viagem, Frete Cantu e Frete Transportadora.
+// Como alguns fretes vêm com ICMS e outros sem ICMS, a auditoria deve usar o
+// valor disponível que estiver MAIS PRÓXIMO do valor do CT-e encontrado.
+function numeroAuditoria(valor) {
+  if (valor === null || valor === undefined || valor === '') return 0;
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+  const texto = String(valor)
+    .replace(/R\$/gi, '')
+    .replace(/\s/g, '')
+    .replace(/\./g, '')
+    .replace(',', '.')
+    .replace(/[^0-9.-]/g, '');
+  const numero = Number(texto);
+  return Number.isFinite(numero) ? numero : 0;
+}
+
+function adicionarCandidatoValor(lista, fonte, valor, detalhe = '') {
+  const numero = numeroAuditoria(valor);
+  if (!numero || numero <= 0) return;
+  const chave = `${fonte}|${numero.toFixed(2)}|${detalhe}`;
+  if (lista.some((item) => item.chave === chave)) return;
+  lista.push({ chave, fonte, valor: Number(numero.toFixed(2)), detalhe });
+}
+
+function candidatosValorAuditoria(viagem = {}) {
+  const candidatos = [];
+  adicionarCandidatoValor(candidatos, 'Valor informado da viagem', viagem.valorComparacao);
+  adicionarCandidatoValor(candidatos, 'Frete Cantu', viagem.freteCantu);
+  adicionarCandidatoValor(candidatos, 'Frete Transportadora', viagem.freteTransp);
+
+  for (const [idx, reg] of (viagem.registrosOriginais || []).entries()) {
+    const detalhe = reg.dist ? `registro ${reg.dist}` : `registro ${idx + 1}`;
+    adicionarCandidatoValor(candidatos, 'Valor informado da viagem', reg.valorComparacao, detalhe);
+    adicionarCandidatoValor(candidatos, 'Frete Cantu', reg.freteCantu, detalhe);
+    adicionarCandidatoValor(candidatos, 'Frete Transportadora', reg.freteTransp, detalhe);
+  }
+
+  // Remove duplicidades por valor+fonte, mantendo a primeira ocorrência para a tela ficar limpa.
+  const vistos = new Set();
+  return candidatos.filter((item) => {
+    const chave = `${item.fonte}|${item.valor.toFixed(2)}`;
+    if (vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+}
+
+function calcularReferenciaAuditoria(viagem = {}, cte = {}) {
+  const candidatos = candidatosValorAuditoria(viagem);
+  const fallback = numeroAuditoria(viagem.valorComparacao) || candidatos[0]?.valor || 0;
+  const valorCte = numeroAuditoria(cte?.valor_cte ?? cte?.valorCte ?? cte?.valor_total);
+
+  if (!valorCte || !candidatos.length) {
+    return {
+      valorReferencia: Number(fallback.toFixed(2)),
+      fonte: candidatos[0]?.fonte || 'Valor informado da viagem',
+      detalhe: candidatos[0]?.detalhe || 'sem CT-e selecionado para comparação',
+      valorCte: 0,
+      diferenca: 0,
+      candidatos,
+      criterio: 'Sem valor CT-e selecionado; usando a regra base da viagem.',
+    };
+  }
+
+  const ordenados = candidatos
+    .map((item) => ({
+      ...item,
+      diferenca: Number(Math.abs(item.valor - valorCte).toFixed(2)),
+      acimaOuIgualCte: item.valor >= valorCte,
+    }))
+    .sort((a, b) => {
+      if (a.diferenca !== b.diferenca) return a.diferenca - b.diferenca;
+      // Em empate, preferimos o valor acima do CT-e para não liberar saldo menor por arredondamento/ICMS.
+      if (a.acimaOuIgualCte !== b.acimaOuIgualCte) return a.acimaOuIgualCte ? -1 : 1;
+      return b.valor - a.valor;
+    });
+
+  const escolhido = ordenados[0];
+  return {
+    valorReferencia: escolhido.valor,
+    fonte: escolhido.fonte,
+    detalhe: escolhido.detalhe || '',
+    valorCte,
+    diferenca: escolhido.diferenca,
+    candidatos: ordenados,
+    criterio: `${escolhido.fonte} escolhido por ser o valor mais próximo do CT-e.`,
+  };
+}
+
+function aplicarReferenciaAuditoria(viagem, cte) {
+  if (!viagem) return null;
+  const referencia = calcularReferenciaAuditoria(viagem, cte);
+  return {
+    ...viagem,
+    valorComparacaoOriginal: viagem.valorComparacao,
+    valorComparacao: referencia.valorReferencia || viagem.valorComparacao || 0,
+    valorReferenciaAuditoria: referencia,
+  };
+}
+
+// ─── CONSOLIDAÇÃO DE DIST / HUB ───────────────────────────────────────────────
+// Remove sufixos de parte/ocorrência (" 1", "-2", "/3") tratando-os como
+// pedaços da MESMA viagem, não como viagens independentes.
+//   DIST-12651 1 => DIST-12651   |  12651-2 => 12651  |  HUB-12651 2 => HUB-12651
+function distExibicao(distRaw = '') {
+  const bruto = String(distRaw || '').trim();
+  if (!bruto) return '';
+  const base = bruto.replace(/[\s\-_/]+\d{1,2}\s*$/, '').trim();
+  return base || bruto;
+}
+
+function consolidarChaveViagem(distRaw = '') {
+  const base = distExibicao(distRaw);
+  return normalizarTexto(base || distRaw);
+}
+
+// Recarrega lançamentos re-chaveados pela viagem consolidada, para que os
+// utilitários de saldo (que filtram por distKey) enxerguem lançamentos antigos
+// gravados com sufixo (ex.: "DIST-12651 1") junto com os novos consolidados.
+function reKeyLancamentosPorViagem(lancamentos = []) {
+  return (lancamentos || []).map((item) => ({
+    ...item,
+    distKey: consolidarChaveViagem(item.dist || item.distKey || ''),
+  }));
+}
+
+function lancamentosDaViagem(lancamentos = [], chaveViagem = '') {
+  if (!chaveViagem) return [];
+  return (lancamentos || []).filter(
+    (item) => consolidarChaveViagem(item.dist || item.distKey || '') === chaveViagem,
+  );
+}
+
+// Agrupa cargas que pertencem à mesma viagem em um único objeto "viagem
+// consolidada" que se comporta como uma carga para os utilitários existentes.
+function consolidarViagens(cargas = []) {
+  const mapa = new Map();
+  for (const carga of cargas || []) {
+    const chave = consolidarChaveViagem(carga.dist) || normalizarTexto(carga.dist || '');
+    if (!chave) continue;
+    if (!mapa.has(chave)) mapa.set(chave, []);
+    mapa.get(chave).push(carga);
+  }
+
+  const viagens = [];
+  for (const [chave, registros] of mapa.entries()) {
+    const base = registros[0] || {};
+    const distLabel = distExibicao(base.dist) || base.dist || chave;
+
+    // Valor total da viagem: as linhas duplicadas trazem o MESMO total.
+    // Usamos o maior valor informado como total da viagem (= valor único
+    // quando todas as linhas coincidem). Nunca somamos as duplicatas.
+    const valoresInformados = [
+      ...new Set(
+        registros
+          .map((r) => Number(r.valorComparacao) || 0)
+          .filter((v) => v > 0)
+          .map((v) => Number(v.toFixed(2))),
+      ),
+    ].sort((a, b) => b - a);
+    const valorTotalViagem = valoresInformados[0] || 0;
+
+    const ctesConsolidados = [
+      ...new Set(
+        registros.flatMap((r) => (r.ctes?.length ? r.ctes : separarCtes(r.cteRaw || ''))),
+      ),
+    ].filter(Boolean);
+
+    viagens.push({
+      // herda campos de exibição/rota do primeiro registro
+      ...base,
+      id: `viagem:${chave}`,
+      chaveViagem: chave,
+      dist: distLabel,         // chaveDist(dist) => chave consolidada
+      distKey: chave,
+      valorComparacao: valorTotalViagem,
+      valoresInformados,
+      ctes: ctesConsolidados,
+      cteRaw: registros.map((r) => r.cteRaw).filter(Boolean).join('; '),
+      registrosOriginais: registros,
+      qtdRegistros: registros.length,
+    });
+  }
+
+  return viagens;
+}
+
+// Resumo de saldo de uma viagem consolidada (regra 4.34A).
+function resumoViagem(viagem, lancamentos = []) {
+  if (!viagem) return null;
+  const valorTotal = Number(viagem.valorComparacao) || 0;
+  const lancs = lancamentosDaViagem(lancamentos, viagem.chaveViagem || consolidarChaveViagem(viagem.dist));
+  const valorAuditado = lancs.reduce((acc, l) => acc + (Number(l.valorLancado) || 0), 0);
+  const saldoPendente = Number((valorTotal - valorAuditado).toFixed(2));
+  const ctesVinculados = lancs.map((l) => l.cte).filter(Boolean);
+
+  let status = 'PENDENTE';
+  if (valorAuditado > 0.009) {
+    status = Math.abs(saldoPendente) <= TOLERANCIA_SALDO ? 'AUDITADA' : 'PARCIAL';
+  }
+
+  return { valorTotal, valorAuditado, saldoPendente, ctesVinculados, lancamentos: lancs, status };
+}
+
+// ─── SUGESTÕES DE CASAMENTO COM O REALIZADO ───────────────────────────────────
 function scoreSugestaoHistorico(carga = {}, cte = {}) {
   const origem = normalizarTexto(cte.cidade_origem || '');
   const destino = normalizarTexto(cte.cidade_destino || '');
+  const ufDestino = normalizarTexto(cte.uf_destino || '');
   const transp = normalizarTexto(cte.transportadora || cte.transportadora_contratada || '');
   const cteNumero = normalizarTexto(cte.numero_cte || '');
   let score = 0;
   const motivos = [];
+
   if (cteNumero && normalizarTexto(carga.cteRaw || '').includes(cteNumero)) {
     score += 45;
-    motivos.push('CT-e encontrado na carga');
+    motivos.push('CT-e encontrado na viagem');
   }
   if (origem && normalizarTexto(carga.origem).includes(origem)) {
     score += 18;
     motivos.push('mesma origem');
   }
   if (destino && normalizarTexto(carga.destino).includes(destino)) {
-    score += 18;
+    score += 16;
     motivos.push('mesmo destino');
+  } else if (ufDestino && normalizarTexto(carga.ufDestino || '') === ufDestino) {
+    score += 8;
+    motivos.push('mesma UF destino');
   }
   if (transp && normalizarTexto(carga.transportadora).includes(transp)) {
     score += 14;
@@ -113,54 +330,99 @@ function scoreSugestaoHistorico(carga = {}, cte = {}) {
   const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
   if (emissao && dataCarga) {
     const dias = Math.abs(emissao - dataCarga) / 86400000;
-    if (dias <= 7) {
-      score += 10;
-      motivos.push('data próxima');
-    } else if (dias <= 30) {
-      score += 4;
-      motivos.push('mesmo período aproximado');
-    }
+    if (dias <= 7) { score += 10; motivos.push('data próxima'); }
+    else if (dias <= 30) { score += 4; motivos.push('mesmo período aproximado'); }
   }
-  const valorCte = Number(cte.valor_cte || 0);
-  const valorCarga = Number(carga.valorComparacao || 0);
+  const valorCte = numeroAuditoria(cte.valor_cte || 0);
+  const referenciaValor = calcularReferenciaAuditoria(carga, cte);
+  const valorCarga = referenciaValor.valorReferencia || numeroAuditoria(carga.valorComparacao || 0);
   if (valorCte && valorCarga) {
     const dif = Math.abs(valorCte - valorCarga) / Math.max(valorCte, valorCarga);
     if (dif <= 0.12) {
       score += 8;
-      motivos.push('valor próximo');
+      motivos.push(`valor próximo (${referenciaValor.fonte})`);
     }
   }
   return { score, motivos };
 }
 
-function sugerirHistoricoPorCte(cargas = [], cte = {}) {
-  return (cargas || [])
-    .map((carga) => ({ carga, ...scoreSugestaoHistorico(carga, cte) }))
+// Sugere VIAGENS CONSOLIDADAS (cada viagem aparece uma única vez).
+function sugerirViagensPorCte(cargas = [], cte = {}) {
+  const viagens = consolidarViagens(cargas);
+  return viagens
+    .map((viagem) => {
+      // melhor score entre os registros originais da viagem
+      let melhor = { score: 0, motivos: [] };
+      for (const reg of viagem.registrosOriginais || [viagem]) {
+        const r = scoreSugestaoHistorico(reg, cte);
+        if (r.score > melhor.score) melhor = r;
+      }
+      return { viagem, ...melhor };
+    })
     .filter((item) => item.score >= 18)
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
 }
 
+// ─── VÍNCULOS DE TRANSPORTADORA (estrutura preparada, sem tocar no banco) ──────
+// Persistência local hoje; pronto para apontar para uma tabela Supabase
+// (ex.: lotacao_transportadora_vinculos) quando ela existir.
+function carregarVinculos() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(VINCULOS_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function salvarVinculos(vinculos = []) {
+  try {
+    localStorage.setItem(VINCULOS_STORAGE_KEY, JSON.stringify(vinculos));
+  } catch (e) {
+    console.warn('[Auditoria] Não foi possível salvar vínculos localmente:', e.message);
+  }
+}
+
+function nomeCanonicoTransportadora(nome, vinculos = []) {
+  const alvo = normalizarTexto(nome || '');
+  if (!alvo) return nome || '';
+  const achado = (vinculos || []).find(
+    (v) => normalizarTexto(v.nomeRealizado) === alvo || normalizarTexto(v.nomeCteTabela) === alvo,
+  );
+  return achado ? achado.nomeCteTabela : (nome || '');
+}
+
+// ════════════════════════════ COMPONENTES ════════════════════════════════════
+
 function CardCteEncontrado({ cte, onUsar }) {
   if (!cte) return null;
+  const tomador = cte.tomador || cte.raw?.tomador || cte.raw?.nomeTomador || '-';
   return (
     <div className="panel-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Dados encontrados no CT-e</div>
-          <p>{cte.numero_cte || '-'} · {cte.transportadora || cte.transportadora_contratada || '-'} · {cte.cidade_origem || '-'} x {cte.cidade_destino || '-'}</p>
+          <div className="panel-title">Dados oficiais do CT-e</div>
+          <p>
+            {cte.numero_cte || '-'} · {cte.transportadora || cte.transportadora_contratada || '-'} ·{' '}
+            {cte.cidade_origem || '-'} x {cte.cidade_destino || '-'}/{cte.uf_destino || '-'}
+          </p>
         </div>
         <button type="button" className="btn-secondary" onClick={() => onUsar(cte)}>Usar dados do CT-e</button>
       </div>
       <div className="sim-analise-resumo">
-        <div><span>Chave CT-e</span><strong style={{ fontSize: '0.78rem' }}>{cte.chave_cte || '-'}</strong></div>
+        <div><span>Chave CT-e</span><strong style={{ fontSize: '0.74rem' }}>{cte.chave_cte || '-'}</strong></div>
+        <div><span>Número CT-e</span><strong>{cte.numero_cte || '-'}</strong></div>
+        <div><span>Transportadora</span><strong>{cte.transportadora || cte.transportadora_contratada || '-'}</strong></div>
+        <div><span>CNPJ transp.</span><strong>{cte.cnpj_transportadora || '-'}</strong></div>
+        <div><span>Origem</span><strong>{cte.cidade_origem || '-'}/{cte.uf_origem || '-'}</strong></div>
+        <div><span>Destino</span><strong>{cte.cidade_destino || '-'}/{cte.uf_destino || '-'}</strong></div>
         <div><span>Emissão</span><strong>{formatarDataCurta(cte.emissao)}</strong></div>
-        <div><span>Canal</span><strong>{cte.canal || '-'}</strong></div>
+        <div><span>Canal/Operação</span><strong>{cte.canal || '-'}</strong></div>
+        <div><span>Tomador</span><strong>{tomador}</strong></div>
         <div><span>Valor CT-e</span><strong>{formatarMoeda(cte.valor_cte)}</strong></div>
         <div><span>Valor NF</span><strong>{formatarMoeda(cte.valor_nf)}</strong></div>
         <div><span>Peso</span><strong>{Number(cte.peso_declarado || cte.peso_cubado || 0).toLocaleString('pt-BR')} kg</strong></div>
-        <div><span>Cubagem</span><strong>{Number(cte.metros_cubicos || 0).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} m³</strong></div>
-        <div><span>Volumes</span><strong>{Number(cte.volume || 0).toLocaleString('pt-BR')}</strong></div>
       </div>
     </div>
   );
@@ -193,26 +455,27 @@ function ValidacaoTabelaLotacao({ resultados }) {
   );
 }
 
-function SugestoesHistorico({ sugestoes, onUsar }) {
-  if (!sugestoes?.length) return <div className="hint-box compact">Nenhuma DIST provável encontrada no histórico por aproximação.</div>;
+function SugestoesViagens({ sugestoes, onUsar }) {
+  if (!sugestoes?.length) {
+    return <div className="hint-box compact">Nenhuma viagem provável encontrada no realizado por aproximação.</div>;
+  }
   return (
     <div className="table-card lotacao-table-card">
-      <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>DIST provável encontrada</div>
+      <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>Sugestões de casamento com o realizado</div>
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
-          <thead><tr><th>DIST</th><th>CT-e</th><th>Transportadora</th><th>Rota</th><th>Data</th><th>Valor</th><th>Confiança</th><th>Motivo</th><th>Ação</th></tr></thead>
+          <thead><tr><th>Viagem</th><th>Transportadora</th><th>Rota</th><th>Data</th><th>Total viagem</th><th>Confiança</th><th>Motivo</th><th>Ação</th></tr></thead>
           <tbody>
-            {sugestoes.map(({ carga, score, motivos }) => (
-              <tr key={carga.id}>
-                <td><strong>{carga.dist}</strong></td>
-                <td>{carga.cteRaw || '-'}</td>
-                <td>{carga.transportadora}</td>
-                <td>{carga.origem} x {carga.destino}</td>
-                <td>{formatarDataCurta(carga.coletaRealizada || carga.coletaPlanejada)}</td>
-                <td>{formatarMoeda(carga.valorComparacao)}</td>
+            {sugestoes.map(({ viagem, score, motivos }) => (
+              <tr key={viagem.id}>
+                <td><strong>{viagem.dist}</strong>{viagem.qtdRegistros > 1 ? ` · ${viagem.qtdRegistros} reg.` : ''}</td>
+                <td>{viagem.transportadora}</td>
+                <td>{viagem.origem} x {viagem.destino}</td>
+                <td>{formatarDataCurta(viagem.coletaRealizada || viagem.coletaPlanejada)}</td>
+                <td>{formatarMoeda(viagem.valorComparacao)}</td>
                 <td>{score >= 70 ? 'Alta' : score >= 40 ? 'Média' : 'Baixa'}</td>
                 <td>{motivos.join(', ') || '-'}</td>
-                <td><button type="button" className="btn-secondary" onClick={() => onUsar(carga)}>Usar esta DIST</button></td>
+                <td><button type="button" className="btn-secondary" onClick={() => onUsar(viagem)}>Usar esta viagem</button></td>
               </tr>
             ))}
           </tbody>
@@ -222,11 +485,11 @@ function SugestoesHistorico({ sugestoes, onUsar }) {
   );
 }
 
-function ListaResultados({ resultados, selecionada, onSelecionar }) {
-  if (!resultados.length) return null;
+function ListaViagens({ viagens, selecionada, onSelecionar }) {
+  if (!viagens.length) return null;
   return (
     <div className="mini-list top-space-sm">
-      {resultados.map((item) => (
+      {viagens.map((item) => (
         <button
           key={item.id}
           type="button"
@@ -234,7 +497,7 @@ function ListaResultados({ resultados, selecionada, onSelecionar }) {
           onClick={() => onSelecionar(item)}
         >
           <span>
-            <strong>{item.dist}</strong> · {item.transportadora} · {item.origem} x {item.destino}
+            <strong>{item.dist}</strong>{item.qtdRegistros > 1 ? ` · ${item.qtdRegistros} registros` : ''} · {item.transportadora} · {item.origem} x {item.destino}
           </span>
           <strong>{formatarMoeda(item.valorComparacao)}</strong>
         </button>
@@ -243,91 +506,125 @@ function ListaResultados({ resultados, selecionada, onSelecionar }) {
   );
 }
 
-function ResumoCarga({ carga, lancamentos, solicitacoes }) {
-  if (!carga) return null;
-  const totalLancado = totalLancadoCarga(lancamentos, carga);
-  const autorizadoBase = Number(carga.valorComparacao) || 0;
-  const adicionalAutorizado = totalAdicionalAutorizadoCarga(solicitacoes, carga);
-  const totalAutorizado = totalAutorizadoCarga(solicitacoes, carga);
-  const saldo = totalAutorizado - totalLancado;
-  const ctes = carga.ctes?.length ? carga.ctes : separarCtes(carga.cteRaw);
+function ResumoViagemCard({ viagem, lancamentos, cte }) {
+  if (!viagem) return null;
+  const resumo = resumoViagem(viagem, lancamentos);
+  const referencia = viagem.valorReferenciaAuditoria || calcularReferenciaAuditoria(viagem, cte);
+  const ctes = viagem.ctes?.length ? viagem.ctes : separarCtes(viagem.cteRaw);
+  const statusLabel = resumo.status === 'AUDITADA'
+    ? 'Auditada / fechada'
+    : resumo.status === 'PARCIAL'
+    ? 'Parcialmente auditada'
+    : 'Pendente';
 
   return (
     <div className="panel-card lotacao-auditoria-carga-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Carga encontrada</div>
-          <p>{carga.dist} · {carga.transportadora} · {carga.origem} x {carga.destino}</p>
+          <div className="panel-title">Viagem consolidada</div>
+          <p>{viagem.dist} · {viagem.transportadora} · {viagem.origem} x {viagem.destino}/{viagem.ufDestino || '-'}</p>
         </div>
-        <span className="status-pill dark">{ctes.length > 1 ? `${ctes.length} CT-es` : '1 CT-e'}</span>
+        <span className={`status-pill ${resumo.status === 'PARCIAL' ? '' : resumo.status === 'PENDENTE' ? 'error' : 'dark'}`}>
+          {statusLabel}
+        </span>
       </div>
 
       <div className="summary-strip lotacao-summary-mini">
         <div className="summary-card">
-          <span>Valor auditável base</span>
-          <strong>{formatarMoeda(autorizadoBase)}</strong>
-          <small>Sem pedágio e com ajuste de ICMS</small>
+          <span>Valor referência auditoria</span>
+          <strong>{formatarMoeda(resumo.valorTotal)}</strong>
+          <small>{referencia.fonte}{referencia.valorCte ? ` · diferença ${formatarMoeda(referencia.diferenca)}` : ''}</small>
         </div>
         <div className="summary-card">
-          <span>Adicional autorizado</span>
-          <strong>{formatarMoeda(adicionalAutorizado)}</strong>
-          <small>Aprovado pela operação</small>
+          <span>Valor original da viagem</span>
+          <strong>{formatarMoeda(viagem.valorComparacaoOriginal ?? viagem.valorComparacao)}</strong>
+          <small>{viagem.valoresInformados?.length > 1 ? 'não soma duplicidades' : 'valor base carregado'}</small>
         </div>
         <div className="summary-card">
-          <span>Total já lançado</span>
-          <strong>{formatarMoeda(totalLancado)}</strong>
-          <small>{lancamentosDaCarga(lancamentos, carga).length} lançamento(s)</small>
+          <span>Já auditado / vinculado</span>
+          <strong>{formatarMoeda(resumo.valorAuditado)}</strong>
+          <small>{resumo.ctesVinculados.length} CT-e(s) vinculado(s)</small>
         </div>
         <div className="summary-card">
-          <span>Saldo disponível</span>
-          <strong className={classeSaldo(saldo)}>{formatarMoeda(saldo)}</strong>
-          <small>Base para próximos CT-es</small>
+          <span>Saldo pendente</span>
+          <strong className={classeSaldo(resumo.saldoPendente)}>{formatarMoeda(resumo.saldoPendente)}</strong>
+          <small>total − auditado</small>
+        </div>
+        <div className="summary-card">
+          <span>Registros originais</span>
+          <strong>{viagem.qtdRegistros}</strong>
+          <small>consolidados em 1 viagem</small>
         </div>
       </div>
+
+      {viagem.qtdRegistros > 1 && (
+        <div className="sim-analise-tabela-wrap top-space-sm">
+          <table className="sim-analise-tabela">
+            <thead><tr><th>Registro original (DIST/HUB)</th><th>Origem</th><th>Destino</th><th>CT-e(s)</th><th>Valor informado</th></tr></thead>
+            <tbody>
+              {viagem.registrosOriginais.map((reg, idx) => (
+                <tr key={`${reg.id || reg.dist}-${idx}`}>
+                  <td><strong>{reg.dist}</strong></td>
+                  <td>{reg.origem}</td>
+                  <td>{reg.destino}</td>
+                  <td>{reg.cteRaw || (reg.ctes || []).join('; ') || '-'}</td>
+                  <td>{formatarMoeda(reg.valorComparacao)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="sim-analise-resumo top-space-sm">
-        <div><span>Frete Cantu</span><strong>{formatarMoeda(carga.freteCantu)}</strong></div>
-        <div><span>Frete Transportadora</span><strong>{formatarMoeda(carga.freteTransp)}</strong></div>
-        <div><span>ICMS removido</span><strong>{formatarMoeda(carga.icmsRemovido)}</strong></div>
-        <div><span>Pedágio separado</span><strong>{formatarMoeda(carga.pedagio)}</strong></div>
-        <div><span>Tipo de veículo</span><strong>{carga.tipoVeiculo}</strong></div>
-        <div><span>CT-e(s)</span><strong>{carga.cteRaw || (carga.ctes || []).join('; ') || '-'}</strong></div>
+        <div><span>Frete Cantu</span><strong>{formatarMoeda(viagem.freteCantu)}</strong></div>
+        <div><span>Frete Transportadora</span><strong>{formatarMoeda(viagem.freteTransp)}</strong></div>
+        <div><span>ICMS removido</span><strong>{formatarMoeda(viagem.icmsRemovido)}</strong></div>
+        <div><span>Pedágio separado</span><strong>{formatarMoeda(viagem.pedagio)}</strong></div>
+        <div><span>Tipo de veículo</span><strong>{viagem.tipoVeiculo || '-'}</strong></div>
+        <div><span>CT-e(s) da viagem</span><strong>{ctes.join('; ') || '-'}</strong></div>
+        <div><span>Critério auditoria</span><strong>{referencia.valorCte ? 'mais próximo do CT-e' : 'regra base'}</strong></div>
+        <div><span>Valor CT-e comparado</span><strong>{referencia.valorCte ? formatarMoeda(referencia.valorCte) : '-'}</strong></div>
       </div>
 
-      <div className="hint-box compact top-space-sm">
-        Regra aplicada: {carga.regraCalculo}.{' '}
-        {carga.icmsEstimado
-          ? `Alíquota usada: ${carga.aliquotaIcmsUsada}%.`
-          : 'Quando V e W estavam diferentes, o sistema usou o valor sem ICMS informado.'}
-      </div>
+      {referencia.candidatos?.length > 1 && (
+        <div className="hint-box compact top-space-sm">
+          Valor de referência escolhido: <strong>{referencia.fonte}</strong> {referencia.detalhe ? `(${referencia.detalhe}) ` : ''}
+          por menor diferença contra o CT-e. Candidatos: {referencia.candidatos.map((item) => `${item.fonte}: ${formatarMoeda(item.valor)}${item.diferenca !== undefined ? ` (dif. ${formatarMoeda(item.diferenca)})` : ''}`).join(' · ')}
+        </div>
+      )}
+
+      {viagem.regraCalculo && (
+        <div className="hint-box compact top-space-sm">Regra aplicada na base: {viagem.regraCalculo}.</div>
+      )}
     </div>
   );
 }
 
 // ─── FORMULÁRIO DE LANÇAMENTO ─────────────────────────────────────────────────
-// FASE 1: observação obrigatória quando há excedente + dados do auditor
+function FormLancamento({ viagem, lancamentos, solicitacoes, onRegistrar, salvando, usuarioAtual, valorSugerido, cteSugerido }) {
+  const ctes = viagem?.ctes?.length ? viagem.ctes : separarCtes(viagem?.cteRaw || '');
+  const lancConsolidados = useMemo(() => reKeyLancamentosPorViagem(lancamentos), [lancamentos]);
 
-function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvando, usuarioAtual }) {
-  const ctes = carga?.ctes?.length ? carga.ctes : separarCtes(carga?.cteRaw || '');
   const [form, setForm] = useState({
-    cte: ctes[0] || '',
-    cteOutro: '',
-    valorLancado: '',
+    cte: cteSugerido && ctes.includes(cteSugerido) ? cteSugerido : (ctes[0] || (cteSugerido ? 'OUTRO' : '')),
+    cteOutro: cteSugerido && !ctes.includes(cteSugerido) ? cteSugerido : '',
+    valorLancado: valorSugerido ? String(valorSugerido) : '',
     fatura: '',
     observacao: '',
   });
 
-  if (!carga) return null;
+  if (!viagem) return null;
 
-  const totalLancado = totalLancadoCarga(lancamentos, carga);
-  const saldo = saldoDisponivelCarga(lancamentos, solicitacoes, carga);
+  const resumo = resumoViagem(viagem, lancamentos);
+  const totalLancado = resumo.valorAuditado;
+  const saldo = resumo.saldoPendente;
   const valorDigitado = Number(String(form.valorLancado || '').replace(',', '.')) || 0;
   const excedentePrevisto = Math.max(0, valorDigitado - Math.max(0, saldo));
   const cteEfetivo = form.cte === 'OUTRO' ? form.cteOutro : form.cte;
-  const duplicado = cteJaLancado(lancamentos, carga, cteEfetivo);
-  const ctesLancados = ctesLancadosCarga(lancamentos, carga);
+  const duplicado = cteJaLancado(lancConsolidados, viagem, cteEfetivo);
+  const ctesLancados = resumo.ctesVinculados;
 
-  // REGRA FASE 1: observação obrigatória quando excede o saldo
   const observacaoObrigatoria = excedentePrevisto > 0;
   const observacaoVazia = !form.observacao || !form.observacao.trim();
   const bloqueadoPorObservacao = observacaoObrigatoria && observacaoVazia;
@@ -337,7 +634,6 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
     onRegistrar({
       ...form,
       cte: cteEfetivo,
-      // Dados do auditor — gravados junto com o lançamento
       auditedByUserId: usuarioAtual?.id || '',
       auditedByName: usuarioAtual?.nome || '',
       auditedByEmail: usuarioAtual?.email || '',
@@ -347,8 +643,19 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
       auditAllowedAmount: Math.max(0, saldo),
       auditEnteredAmount: valorDigitado,
     });
+
+    // 4.34A.4 — após salvar, não manter o CT-e recém-vinculado selecionado.
+    // Como o pai atualiza os lançamentos em seguida, deixar o mesmo CT-e no select
+    // fazia a tela exibir imediatamente o aviso de duplicidade, apesar do registro
+    // ter sido salvo corretamente. O aviso deve aparecer apenas quando o usuário
+    // consultar/tentar selecionar novamente um CT-e já vinculado.
+    const cteSalvo = normalizarTexto(cteEfetivo || '');
+    const proximoCteDisponivel = ctes.find((c) => (
+      !cteJaLancado(lancConsolidados, viagem, c) && normalizarTexto(c) !== cteSalvo
+    ));
+
     setForm({
-      cte: ctes.find((c) => !cteJaLancado(lancamentos, carga, c)) || 'OUTRO',
+      cte: proximoCteDisponivel || 'OUTRO',
       cteOutro: '',
       valorLancado: '',
       fatura: '',
@@ -362,14 +669,10 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
     <div className="panel-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Registrar lançamento auditado</div>
-          <p>Informe o CT-e, o valor lançado e a fatura. CT-e já utilizado na DIST fica bloqueado para evitar duplicidade.</p>
+          <div className="panel-title">Vincular CT-e à viagem</div>
+          <p>Informe o CT-e, o valor e a fatura. O saldo é controlado pela viagem consolidada; CT-e já usado na viagem fica bloqueado.</p>
         </div>
-        {usuarioAtual && (
-          <span className="status-pill">
-            Auditor: {usuarioAtual.nome || usuarioAtual.email}
-          </span>
-        )}
+        {usuarioAtual && <span className="status-pill">Auditor: {usuarioAtual.nome || usuarioAtual.email}</span>}
       </div>
 
       <div className="form-grid three">
@@ -378,65 +681,48 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
           {ctes.length ? (
             <select value={form.cte} onChange={(e) => atualizar('cte', e.target.value)}>
               {ctes.map((cte) => {
-                const usado = cteJaLancado(lancamentos, carga, cte);
+                const usado = cteJaLancado(lancConsolidados, viagem, cte);
                 return (
                   <option key={cte} value={cte} disabled={usado}>
-                    {cte}{usado ? ' · já lançado' : ''}
+                    {cte}{usado ? ' · já vinculado' : ''}
                   </option>
                 );
               })}
-              <option value="DIST">Lançamento pela DIST</option>
+              <option value="DIST">Lançamento pela viagem</option>
               <option value="OUTRO">Outro CT-e</option>
             </select>
           ) : (
-            <input value={form.cte} onChange={(e) => atualizar('cte', e.target.value)} placeholder="CT-e ou DIST" />
+            <input value={form.cte} onChange={(e) => atualizar('cte', e.target.value)} placeholder="CT-e ou viagem" />
           )}
         </label>
 
         {form.cte === 'OUTRO' && (
           <label className="field">
             Informar outro CT-e
-            <input
-              value={form.cteOutro}
-              onChange={(e) => atualizar('cteOutro', e.target.value)}
-              placeholder="Número do CT-e"
-            />
+            <input value={form.cteOutro} onChange={(e) => atualizar('cteOutro', e.target.value)} placeholder="Número do CT-e" />
           </label>
         )}
 
         <label className="field">
           Valor lançado
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.valorLancado}
-            onChange={(e) => atualizar('valorLancado', e.target.value)}
-            placeholder="Ex.: 5000"
-          />
+          <input type="number" min="0" step="0.01" value={form.valorLancado}
+            onChange={(e) => atualizar('valorLancado', e.target.value)} placeholder="Ex.: 10000" />
         </label>
 
         <label className="field">
           Fatura
-          <input
-            value={form.fatura}
-            onChange={(e) => atualizar('fatura', e.target.value)}
-            placeholder="Número da fatura"
-          />
+          <input value={form.fatura} onChange={(e) => atualizar('fatura', e.target.value)} placeholder="Número da fatura" />
         </label>
       </div>
 
-      {/* OBSERVAÇÃO — obrigatória quando há excedente */}
       <label className="field" style={{ marginTop: '0.75rem' }}>
         Observação{observacaoObrigatoria ? <span style={{ color: '#c0392b', marginLeft: 4 }}>*</span> : ''}
         <textarea
           value={form.observacao}
           onChange={(e) => atualizar('observacao', e.target.value)}
-          placeholder={
-            observacaoObrigatoria
-              ? 'Justificativa obrigatória — informe o motivo do excedente para a operação.'
-              : 'Observação da auditoria ou justificativa'
-          }
+          placeholder={observacaoObrigatoria
+            ? 'Justificativa obrigatória — informe o motivo do excedente para a operação.'
+            : 'Observação da auditoria ou justificativa'}
           style={{
             borderColor: observacaoObrigatoria && observacaoVazia ? '#c0392b' : undefined,
             minHeight: observacaoObrigatoria ? 80 : 60,
@@ -444,114 +730,73 @@ function FormLancamento({ carga, lancamentos, solicitacoes, onRegistrar, salvand
         />
       </label>
 
-      {/* ALERTA FASE 1: observação obrigatória */}
       {observacaoObrigatoria && observacaoVazia && (
         <div className="hint-box compact error-text" style={{ marginTop: '0.5rem' }}>
-          ⚠ Informe uma justificativa para enviar à operação. O campo Observação é obrigatório quando o valor lançado ultrapassa o saldo disponível.
+          ⚠ Informe uma justificativa. O campo Observação é obrigatório quando o valor lançado ultrapassa o saldo da viagem.
         </div>
       )}
 
       <div className="sim-analise-resumo">
         <div><span>Saldo antes do lançamento</span><strong>{formatarMoeda(saldo)}</strong></div>
         <div><span>Valor digitado</span><strong>{formatarMoeda(valorDigitado)}</strong></div>
-        <div>
-          <span>Excedente previsto</span>
-          <strong className={excedentePrevisto > 0 ? 'negativo' : ''}>{formatarMoeda(excedentePrevisto)}</strong>
-        </div>
-        <div><span>Total já lançado</span><strong>{formatarMoeda(totalLancado)}</strong></div>
+        <div><span>Excedente previsto</span><strong className={excedentePrevisto > 0 ? 'negativo' : ''}>{formatarMoeda(excedentePrevisto)}</strong></div>
+        <div><span>Já auditado na viagem</span><strong>{formatarMoeda(totalLancado)}</strong></div>
       </div>
 
       {ctesLancados.length > 0 && (
-        <div className="hint-box compact">
-          CT-e(s) já lançados nesta DIST: <strong>{ctesLancados.join(', ')}</strong>.
-        </div>
+        <div className="hint-box compact">CT-e(s) já vinculados nesta viagem: <strong>{ctesLancados.join(', ')}</strong>.</div>
       )}
       {duplicado && (
-        <div className="hint-box compact error-text">
-          Este CT-e já foi lançado nesta DIST. Não é permitido registrar o mesmo CT-e duas vezes.
-        </div>
+        <div className="hint-box compact error-text">Este CT-e já foi vinculado nesta viagem. Não é permitido vincular o mesmo CT-e duas vezes.</div>
       )}
       {excedentePrevisto > 0 && !duplicado && (
         <div className="hint-box compact error-text">
-          Este lançamento passa do saldo da DIST. Ao registrar, o sistema cria uma pendência para aprovação na tela Lotação Operação.
+          Este lançamento passa do saldo da viagem. Ao registrar, o sistema cria uma pendência para aprovação na tela Lotação Operação.
         </div>
       )}
 
       <div className="actions-right">
-        <button
-          type="button"
-          className="btn-primary"
-          disabled={
-            salvando ||
-            !valorDigitado ||
-            valorDigitado <= 0 ||
-            duplicado ||
-            (form.cte === 'OUTRO' && !form.cteOutro.trim()) ||
-            bloqueadoPorObservacao
-          }
+        <button type="button" className="btn-primary"
+          disabled={salvando || !valorDigitado || valorDigitado <= 0 || duplicado || (form.cte === 'OUTRO' && !form.cteOutro.trim()) || bloqueadoPorObservacao}
           title={bloqueadoPorObservacao ? 'Preencha a justificativa antes de registrar' : ''}
-          onClick={registrar}
-        >
-          {salvando
-            ? 'Salvando...'
-            : excedentePrevisto > 0
-            ? 'Registrar e abrir pendência'
-            : 'Registrar auditado'}
+          onClick={registrar}>
+          {salvando ? 'Salvando...' : excedentePrevisto > 0 ? 'Vincular e abrir pendência' : 'Vincular CT-e à viagem'}
         </button>
       </div>
     </div>
   );
 }
 
-function HistoricoLancamentos({ carga, lancamentos }) {
-  if (!carga) return null;
-  const lista = lancamentosDaCarga(lancamentos, carga);
-  if (!lista.length) {
-    return <div className="hint-box compact">Nenhum lançamento auditado para esta DIST.</div>;
-  }
+function HistoricoLancamentos({ viagem, lancamentos }) {
+  if (!viagem) return null;
+  const lista = lancamentosDaViagem(lancamentos, viagem.chaveViagem || consolidarChaveViagem(viagem.dist))
+    .sort((a, b) => new Date(b.auditedAt || b.criadoEm).getTime() - new Date(a.auditedAt || a.criadoEm).getTime());
+  if (!lista.length) return <div className="hint-box compact">Nenhum CT-e vinculado a esta viagem.</div>;
 
   return (
     <div className="table-card lotacao-table-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Lançamentos da DIST</div>
+          <div className="panel-title">CT-es vinculados à viagem</div>
           <p className="compact">Controle de saldo por CT-e/fatura.</p>
         </div>
       </div>
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
           <thead>
-            <tr>
-              <th>Data/Hora</th>
-              <th>Auditor</th>
-              <th>CT-e</th>
-              <th>Fatura</th>
-              <th>Valor lançado</th>
-              <th>Saldo anterior</th>
-              <th>Excedente</th>
-              <th>Status</th>
-              <th>Observação / Justificativa</th>
-            </tr>
+            <tr><th>Data/Hora</th><th>Auditor</th><th>CT-e</th><th>Fatura</th><th>Valor lançado</th><th>Saldo anterior</th><th>Excedente</th><th>Status</th><th>Observação</th></tr>
           </thead>
           <tbody>
             {lista.map((item) => (
               <tr key={item.id}>
                 <td>{formatarDataCurta(item.auditedAt || item.criadoEm)}</td>
-                <td>
-                  <span title={item.auditedByEmail || item.audited_by_email || ''}>
-                    {item.auditedByName || item.audited_by_name || '-'}
-                  </span>
-                </td>
+                <td><span title={item.auditedByEmail || item.audited_by_email || ''}>{item.auditedByName || item.audited_by_name || '-'}</span></td>
                 <td>{item.cte || '-'}</td>
                 <td>{item.fatura || '-'}</td>
                 <td>{formatarMoeda(item.valorLancado)}</td>
                 <td>{formatarMoeda(item.saldoAnterior ?? item.totalAnterior)}</td>
                 <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
-                <td>
-                  <span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>
-                    {item.auditStatus || item.audit_status || item.status}
-                  </span>
-                </td>
+                <td><span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>{item.auditStatus || item.audit_status || item.status}</span></td>
                 <td>{item.observacao || item.audit_observation || '-'}</td>
               </tr>
             ))}
@@ -562,9 +807,12 @@ function HistoricoLancamentos({ carga, lancamentos }) {
   );
 }
 
-function MovimentosAutorizacao({ carga, solicitacoes }) {
-  if (!carga) return null;
-  const lista = solicitacoesDaCarga(solicitacoes, carga);
+function MovimentosAutorizacao({ viagem, solicitacoes }) {
+  if (!viagem) return null;
+  const chave = viagem.chaveViagem || consolidarChaveViagem(viagem.dist);
+  const lista = (solicitacoes || [])
+    .filter((item) => consolidarChaveViagem(item.dist || item.distKey || item.dist_key || '') === chave)
+    .sort((a, b) => new Date(b.criadoEm || 0).getTime() - new Date(a.criadoEm || 0).getTime());
   if (!lista.length) return null;
 
   return (
@@ -572,23 +820,13 @@ function MovimentosAutorizacao({ carga, solicitacoes }) {
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Autorizações e custos da operação</div>
-          <p className="compact">
-            Aprovações ficam na tela Lotação Operação e, quando aprovadas, aumentam o saldo disponível para auditoria.
-          </p>
+          <p className="compact">Aprovações ficam em Lotação Operação e, quando aprovadas, liberam saldo adicional para auditoria.</p>
         </div>
       </div>
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
           <thead>
-            <tr>
-              <th>Data</th>
-              <th>Tipo</th>
-              <th>Status</th>
-              <th>Valor</th>
-              <th>CT-e</th>
-              <th>Observação</th>
-              <th>Resposta</th>
-            </tr>
+            <tr><th>Data</th><th>Tipo</th><th>Status</th><th>Valor</th><th>CT-e</th><th>Observação</th><th>Resposta</th></tr>
           </thead>
           <tbody>
             {lista.map((item) => (
@@ -609,87 +847,70 @@ function MovimentosAutorizacao({ carga, solicitacoes }) {
   );
 }
 
-// ─── Painel de acompanhamento geral ──────────────────────────────────────────
+// ─── Painel-resumo (topo) ─────────────────────────────────────────────────────
+function PainelAuditoriaGeral({ lancamentos, solicitacoes, totalCargas, fonteCargas }) {
+  const pendentes = (solicitacoes || []).filter((item) => item.status === 'PENDENTE' || item.status === 'EXCEDEU_AGUARDANDO_OPERACAO');
+  const aprovados = (solicitacoes || []).filter((item) => item.status === 'APROVADO' || item.status === 'APROVADO_OPERACAO');
+  const recusados = (solicitacoes || []).filter((item) => item.status === 'RECUSADO' || item.status === 'RECUSADO_OPERACAO');
 
-function PainelAuditoriaGeral({ lancamentos, solicitacoes }) {
+  return (
+    <div className="panel-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Resumo da auditoria de lotação</div>
+          <p className="compact">Central única: base CT-e como fonte, casamento com o realizado e controle de saldo por viagem.</p>
+        </div>
+        <span className="status-pill dark" style={{ background: fonteCargas === 'supabase' ? undefined : '#b9770e' }}>
+          {totalCargas.toLocaleString('pt-BR')} cargas {fonteCargas === 'supabase' ? '(Supabase)' : '(local)'}
+        </span>
+      </div>
+      <div className="summary-strip lotacao-summary-mini">
+        <div className="summary-card"><span>CT-es vinculados</span><strong>{(lancamentos || []).length.toLocaleString('pt-BR')}</strong><small>lançamentos auditados</small></div>
+        <div className="summary-card"><span>Em aprovação</span><strong>{pendentes.length.toLocaleString('pt-BR')}</strong><small>excedentes pendentes</small></div>
+        <div className="summary-card"><span>Aprovados</span><strong>{aprovados.length.toLocaleString('pt-BR')}</strong><small>liberam saldo</small></div>
+        <div className="summary-card"><span>Recusados</span><strong>{recusados.length.toLocaleString('pt-BR')}</strong><small>sem liberação</small></div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Aba Histórico / Pendências ───────────────────────────────────────────────
+function HistoricoPendencias({ lancamentos, solicitacoes }) {
   const pendentes = (solicitacoes || []).filter((item) => item.status === 'PENDENTE' || item.status === 'EXCEDEU_AGUARDANDO_OPERACAO');
   const recentes = [...(lancamentos || [])]
-    .sort((a, b) => new Date(b.auditedAt || b.criadoEm).getTime() - new Date(a.auditedAt || a.criadoEm).getTime())
-    .slice(0, 80);
+    .sort((a, b) => new Date(b.auditedAt || b.criadoEm || 0).getTime() - new Date(a.auditedAt || a.criadoEm || 0).getTime())
+    .slice(0, 100);
 
   return (
     <div className="table-card lotacao-table-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Acompanhamento da auditoria</div>
-          <p className="compact">Visão geral do que foi lançado e do que está aguardando aprovação da operação.</p>
+          <div className="panel-title">Histórico de auditorias recentes</div>
+          <p className="compact">Últimos lançamentos e o que está aguardando aprovação da operação.</p>
         </div>
         <span className="status-pill dark">{pendentes.length} em aprovação</span>
       </div>
-
-      <div className="summary-strip lotacao-summary-mini">
-        <div className="summary-card">
-          <span>Lançamentos registrados</span>
-          <strong>{(lancamentos || []).length.toLocaleString('pt-BR')}</strong>
-          <small>CT-e/fatura auditados</small>
-        </div>
-        <div className="summary-card">
-          <span>Em aprovação</span>
-          <strong>{pendentes.length.toLocaleString('pt-BR')}</strong>
-          <small>excedentes pendentes</small>
-        </div>
-        <div className="summary-card">
-          <span>Aprovados</span>
-          <strong>{(solicitacoes || []).filter((item) => item.status === 'APROVADO' || item.status === 'APROVADO_OPERACAO').length.toLocaleString('pt-BR')}</strong>
-          <small>liberam saldo adicional</small>
-        </div>
-        <div className="summary-card">
-          <span>Recusados</span>
-          <strong>{(solicitacoes || []).filter((item) => item.status === 'RECUSADO' || item.status === 'RECUSADO_OPERACAO').length.toLocaleString('pt-BR')}</strong>
-          <small>sem liberação de saldo</small>
-        </div>
-      </div>
-
       {pendentes.length > 0 && (
         <div className="hint-box compact top-space-sm">
-          Há {pendentes.length.toLocaleString('pt-BR')} solicitação(ões) aguardando a operação validar em Lotação Operação.
+          Há {pendentes.length.toLocaleString('pt-BR')} solicitação(ões) aguardando validação em Lotação Operação.
         </div>
       )}
-
       <div className="sim-analise-tabela-wrap top-space-sm">
         <table className="sim-analise-tabela">
           <thead>
-            <tr>
-              <th>Data</th>
-              <th>Auditor</th>
-              <th>DIST</th>
-              <th>CT-e</th>
-              <th>Fatura</th>
-              <th>Valor lançado</th>
-              <th>Excedente</th>
-              <th>Status</th>
-              <th>Justificativa</th>
-            </tr>
+            <tr><th>Data</th><th>Auditor</th><th>Viagem</th><th>CT-e</th><th>Fatura</th><th>Valor lançado</th><th>Excedente</th><th>Status</th><th>Justificativa</th></tr>
           </thead>
           <tbody>
             {recentes.map((item) => (
               <tr key={item.id}>
                 <td>{formatarDataCurta(item.auditedAt || item.criadoEm)}</td>
-                <td>
-                  <span title={item.auditedByEmail || ''}>
-                    {item.auditedByName || '-'}
-                  </span>
-                </td>
-                <td><strong>{item.dist}</strong></td>
+                <td><span title={item.auditedByEmail || ''}>{item.auditedByName || '-'}</span></td>
+                <td><strong>{distExibicao(item.dist) || item.dist}</strong></td>
                 <td>{item.cte || '-'}</td>
                 <td>{item.fatura || '-'}</td>
                 <td>{formatarMoeda(item.valorLancado)}</td>
                 <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
-                <td>
-                  <span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>
-                    {item.auditStatus || item.status}
-                  </span>
-                </td>
+                <td><span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>{item.auditStatus || item.status}</span></td>
                 <td>{item.observacao || '-'}</td>
               </tr>
             ))}
@@ -701,36 +922,160 @@ function PainelAuditoriaGeral({ lancamentos, solicitacoes }) {
   );
 }
 
-// ─── Página principal ─────────────────────────────────────────────────────────
+// ─── Aba Vínculos de Transportadora ───────────────────────────────────────────
+function PainelVinculos({ vinculos, onSalvar, sugestaoRealizado, sugestaoCte }) {
+  const [editando, setEditando] = useState(null);
+  const [form, setForm] = useState({ nomeRealizado: sugestaoRealizado || '', nomeCteTabela: sugestaoCte || '', cnpj: '' });
 
+  const atualizar = (campo, valor) => setForm((prev) => ({ ...prev, [campo]: valor }));
+
+  const salvar = () => {
+    const nomeRealizado = (form.nomeRealizado || '').trim();
+    const nomeCteTabela = (form.nomeCteTabela || '').trim();
+    if (!nomeRealizado || !nomeCteTabela) return;
+    let novos;
+    if (editando) {
+      novos = vinculos.map((v) => (v.id === editando ? { ...v, nomeRealizado, nomeCteTabela, cnpj: (form.cnpj || '').trim(), atualizadoEm: new Date().toISOString() } : v));
+    } else {
+      novos = [
+        { id: globalThis.crypto?.randomUUID?.() || `vinc-${Date.now()}`, nomeRealizado, nomeCteTabela, cnpj: (form.cnpj || '').trim(), criadoEm: new Date().toISOString() },
+        ...vinculos,
+      ];
+    }
+    onSalvar(novos);
+    setEditando(null);
+    setForm({ nomeRealizado: '', nomeCteTabela: '', cnpj: '' });
+  };
+
+  const editar = (v) => {
+    setEditando(v.id);
+    setForm({ nomeRealizado: v.nomeRealizado || '', nomeCteTabela: v.nomeCteTabela || '', cnpj: v.cnpj || '' });
+  };
+
+  const remover = (id) => onSalvar(vinculos.filter((v) => v.id !== id));
+
+  return (
+    <div className="panel-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Vínculos de transportadora</div>
+          <p>Liga o nome da transportadora no realizado/lotação ao nome oficial na base CT-e / tabela de frete. Ex.: <strong>LIBARDO</strong> → <strong>LIBARDO TRANSPORTES LTDA</strong>.</p>
+        </div>
+        <span className="status-pill dark">{vinculos.length} vínculo(s)</span>
+      </div>
+
+      <div className="hint-box compact">
+        Hoje os vínculos ficam salvos localmente neste navegador (estrutura pronta para virar tabela Supabase depois, sem alterar o banco agora).
+      </div>
+
+      <div className="form-grid three top-space-sm">
+        <label className="field">
+          Nome no realizado / lotação
+          <input value={form.nomeRealizado} onChange={(e) => atualizar('nomeRealizado', e.target.value)} placeholder="Ex.: LIBARDO" />
+        </label>
+        <label className="field">
+          Nome no CT-e / tabela
+          <input value={form.nomeCteTabela} onChange={(e) => atualizar('nomeCteTabela', e.target.value)} placeholder="Ex.: LIBARDO TRANSPORTES LTDA" />
+        </label>
+        <label className="field">
+          CNPJ (opcional)
+          <input value={form.cnpj} onChange={(e) => atualizar('cnpj', e.target.value)} placeholder="00.000.000/0000-00" />
+        </label>
+      </div>
+      <div className="actions-right">
+        {editando && (
+          <button type="button" className="btn-secondary" onClick={() => { setEditando(null); setForm({ nomeRealizado: '', nomeCteTabela: '', cnpj: '' }); }}>
+            Cancelar edição
+          </button>
+        )}
+        <button type="button" className="btn-primary" disabled={!form.nomeRealizado.trim() || !form.nomeCteTabela.trim()} onClick={salvar}>
+          {editando ? 'Salvar alteração' : 'Adicionar vínculo'}
+        </button>
+      </div>
+
+      <div className="sim-analise-tabela-wrap top-space-sm">
+        <table className="sim-analise-tabela">
+          <thead><tr><th>Nome no realizado</th><th>Nome no CT-e / tabela</th><th>CNPJ</th><th>Ações</th></tr></thead>
+          <tbody>
+            {vinculos.map((v) => (
+              <tr key={v.id}>
+                <td><strong>{v.nomeRealizado}</strong></td>
+                <td>{v.nomeCteTabela}</td>
+                <td>{v.cnpj || '-'}</td>
+                <td>
+                  <button type="button" className="btn-secondary" style={{ marginRight: 6 }} onClick={() => editar(v)}>Editar</button>
+                  <button type="button" className="btn-secondary" onClick={() => remover(v.id)}>Remover</button>
+                </td>
+              </tr>
+            ))}
+            {!vinculos.length && <tr><td colSpan="4">Nenhum vínculo cadastrado ainda.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Barra de abas ────────────────────────────────────────────────────────────
+function AbasAuditoria({ ativa, onMudar, pendencias }) {
+  const abas = [
+    { id: 'auditar', label: 'Auditar' },
+    { id: 'vinculos', label: 'Vínculos de Transportadora' },
+    { id: 'historico', label: `Histórico / Pendências${pendencias ? ` (${pendencias})` : ''}` },
+  ];
+  return (
+    <div className="mini-list" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', background: 'transparent', padding: 0 }}>
+      {abas.map((aba) => (
+        <button
+          key={aba.id}
+          type="button"
+          className={ativa === aba.id ? 'btn-primary' : 'btn-secondary'}
+          onClick={() => onMudar(aba.id)}
+        >
+          {aba.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ════════════════════════════ PÁGINA PRINCIPAL ═══════════════════════════════
 export default function LotacaoAuditoriaPage() {
   const mounted = useRef(true);
-
-  // Carrega usuário da sessão para rastrear quem auditou
   const [usuarioAtual] = useState(() => carregarSessao());
 
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
   const [fonteCargas, setFonteCargas] = useState('local');
 
-  const [busca, setBusca] = useState('');
-  const [selecionada, setSelecionada] = useState(null);
+  const [abaAtiva, setAbaAtiva] = useState('auditar');
+
+  // buscas separadas (4.34A)
+  const [buscaChave, setBuscaChave] = useState('');
+  const [buscaNumeroCte, setBuscaNumeroCte] = useState('');
+  const [buscaDist, setBuscaDist] = useState('');
+
+  const [viagensResultado, setViagensResultado] = useState([]);
+  const [viagemSelecionada, setViagemSelecionada] = useState(null);
   const [ctesEncontrados, setCtesEncontrados] = useState([]);
   const [cteSelecionado, setCteSelecionado] = useState(null);
-  const [tabelasLotacao, setTabelasLotacao] = useState([]);
+  const [sugestoesViagens, setSugestoesViagens] = useState([]);
+  const [buscandoSugestoes, setBuscandoSugestoes] = useState(false);
 
+  const [tabelasLotacao, setTabelasLotacao] = useState([]);
   const [lancamentos, setLancamentos] = useState(() => carregarLancamentosAuditoria());
   const [solicitacoes, setSolicitacoes] = useState(() => carregarSolicitacoesPagamento());
   const [carregandoAuditoria, setCarregandoAuditoria] = useState(false);
 
+  const [vinculos, setVinculos] = useState(() => carregarVinculos());
+
   const [salvando, setSalvando] = useState(false);
   const [mensagem, setMensagem] = useState('');
 
-  // ── Carrega cargas (Supabase > local) ──────────────────────────────────────
+  // ── cargas (Supabase > local) ──
   useEffect(() => {
     mounted.current = true;
     setCarregandoHistorico(true);
-
     (async () => {
       try {
         const cargasSupabase = await carregarCargasLotacaoSupabase({});
@@ -742,27 +1087,19 @@ export default function LotacaoAuditoriaPage() {
       } catch (err) {
         console.warn('[Auditoria] Supabase indisponível para cargas, usando local:', err.message);
       }
-
       try {
         const base = await carregarFluxoCargasLotacaoCompleto();
-        if (mounted.current) {
-          setBaseFluxo(base);
-          setFonteCargas('local');
-        }
+        if (mounted.current) { setBaseFluxo(base); setFonteCargas('local'); }
       } catch (err) {
         console.error('[Auditoria] Erro ao carregar histórico local:', err);
       }
-    })().finally(() => {
-      if (mounted.current) setCarregandoHistorico(false);
-    });
-
+    })().finally(() => { if (mounted.current) setCarregandoHistorico(false); });
     return () => { mounted.current = false; };
   }, []);
 
-  // ── Carrega lançamentos e solicitações (Supabase > local) ──────────────────
+  // ── lançamentos e solicitações (Supabase > local) ──
   useEffect(() => {
     setCarregandoAuditoria(true);
-
     (async () => {
       try {
         const [lancs, sols, pends] = await Promise.all([
@@ -770,10 +1107,7 @@ export default function LotacaoAuditoriaPage() {
           carregarSolicitacoesSupabase(),
           carregarPendenciasAuditoriaSupabase({}).catch(() => null),
         ]);
-        if (lancs !== null) {
-          setLancamentos(lancs);
-          salvarLancamentosAuditoria(lancs);
-        }
+        if (lancs !== null) { setLancamentos(lancs); salvarLancamentosAuditoria(lancs); }
         if (sols !== null) {
           const movimentosPendencias = Array.isArray(pends) ? pends.map(pendenciaParaMovimentoAutorizacao) : [];
           const solicitacoesComPendencias = [...movimentosPendencias, ...sols];
@@ -793,63 +1127,99 @@ export default function LotacaoAuditoriaPage() {
       try {
         const resp = await carregarTabelasLotacaoSupabase();
         setTabelasLotacao(resp?.tabelas || []);
-      } catch (error) {
+      } catch {
         setTabelasLotacao(carregarTabelasLotacao());
       }
     })();
   }, []);
 
-  const resultados = useMemo(
-    () => buscarCargaPorDistOuCte(baseFluxo.cargas, busca),
-    [baseFluxo.cargas, busca],
-  );
-
   const tabelaAplicavel = useMemo(() => {
-    if (!cteSelecionado && !selecionada) return [];
+    if (!cteSelecionado && !viagemSelecionada) return [];
     const filtros = cteSelecionado ? cteParaFiltrosRota(cteSelecionado) : {
-      origem: selecionada?.origem || '',
-      destino: selecionada?.destino || '',
-      transportadora: selecionada?.transportadora || '',
-      tipo: selecionada?.tipoVeiculo || '',
+      origem: viagemSelecionada?.origem || '',
+      destino: viagemSelecionada?.destino || '',
+      transportadora: viagemSelecionada?.transportadora || '',
+      tipo: viagemSelecionada?.tipoVeiculo || '',
     };
     return pesquisarRotaLotacao(tabelasLotacao, filtros).slice(0, 10);
-  }, [tabelasLotacao, cteSelecionado, selecionada]);
+  }, [tabelasLotacao, cteSelecionado, viagemSelecionada]);
 
-  const sugestoesHistorico = useMemo(
-    () => cteSelecionado ? sugerirHistoricoPorCte(baseFluxo.cargas, cteSelecionado) : [],
-    [baseFluxo.cargas, cteSelecionado],
+  const viagemParaAuditoria = useMemo(
+    () => aplicarReferenciaAuditoria(viagemSelecionada, cteSelecionado),
+    [viagemSelecionada, cteSelecionado],
   );
 
-  const pesquisar = useCallback(async () => {
+  // ── Busca por chave CT-e (somente chave de 44 dígitos na base CT-e) ──
+  const pesquisarPorChave = useCallback(async () => {
     setMensagem('');
-    let ctes = [];
+    const chave = String(buscaChave || '').replace(/\D/g, '');
+    if (!chave) { setMensagem('Informe a chave CT-e para buscar na base de CT-es.'); return; }
+    if (chave.length !== 44) { setMensagem('Informe uma chave CT-e válida com 44 dígitos.'); return; }
     try {
-      ctes = await buscarCtesLotacaoAuditoriaSupabase(busca);
+      const ctes = await buscarCteLotacaoAuditoriaPorChaveSupabase(chave);
       setCtesEncontrados(ctes);
       setCteSelecionado(ctes[0] || null);
+      setSugestoesViagens([]);
+      if (!ctes.length) setMensagem('Nenhum CT-e encontrado na base de CT-es para essa chave.');
     } catch (error) {
-      setCtesEncontrados([]);
-      setCteSelecionado(null);
-      console.warn('[Auditoria] Falha ao buscar CT-e no realizado:', error.message);
+      setCtesEncontrados([]); setCteSelecionado(null);
+      setMensagem(`Falha ao buscar chave CT-e: ${error.message || String(error)}`);
     }
-    if (!resultados.length && !ctes.length) {
-      setSelecionada(null);
-      setMensagem('Nenhuma DIST, CT-e ou chave CT-e encontrada no histórico/base CT-e.');
-      return;
-    }
-    setSelecionada(resultados[0] || null);
-  }, [busca, resultados]);
+  }, [buscaChave]);
 
-  // ── Registra lançamento com dados do auditor ──────────────────────────────
+  // ── Busca por número CT-e (somente número na base CT-e) ──
+  const pesquisarPorNumeroCte = useCallback(async () => {
+    setMensagem('');
+    const numero = String(buscaNumeroCte || '').replace(/\D/g, '');
+    if (!numero) { setMensagem('Informe o número do CT-e para buscar na base de CT-es.'); return; }
+    try {
+      const ctes = await buscarCtesLotacaoAuditoriaPorNumeroSupabase(numero);
+      setCtesEncontrados(ctes);
+      setCteSelecionado(ctes[0] || null);
+      setSugestoesViagens([]);
+      if (!ctes.length) setMensagem('Nenhum CT-e encontrado na base de CT-es para esse número.');
+    } catch (error) {
+      setCtesEncontrados([]); setCteSelecionado(null);
+      setMensagem(`Falha ao buscar número CT-e: ${error.message || String(error)}`);
+    }
+  }, [buscaNumeroCte]);
+
+  // ── Busca por DIST / viagem (somente no realizado, já consolidado) ──
+  const pesquisarPorDist = useCallback(() => {
+    setMensagem('');
+    const termo = buscaDist.trim();
+    if (!termo) { setMensagem('Informe DIST, HUB ou número da viagem.'); return; }
+    const cargas = buscarCargaPorDistOuCte(baseFluxo.cargas, termo);
+    const viagens = consolidarViagens(cargas);
+    setViagensResultado(viagens);
+    setViagemSelecionada(viagens[0] || null);
+    if (!viagens.length) setMensagem('Nenhuma viagem encontrada no realizado para esse DIST/viagem.');
+  }, [buscaDist, baseFluxo.cargas]);
+
+  // ── Sugestões no realizado a partir do CT-e ──
+  const buscarSugestoesNoRealizado = useCallback(() => {
+    if (!cteSelecionado) return;
+    setBuscandoSugestoes(true);
+    const sugestoes = sugerirViagensPorCte(baseFluxo.cargas, cteSelecionado);
+    setSugestoesViagens(sugestoes);
+    if (sugestoes.length) setViagemSelecionada((atual) => atual || sugestoes[0].viagem);
+    setBuscandoSugestoes(false);
+  }, [cteSelecionado, baseFluxo.cargas]);
+
+  const salvarVinculosState = useCallback((novos) => {
+    setVinculos(novos);
+    salvarVinculos(novos);
+  }, []);
+
+  // ── Registrar lançamento (vincular CT-e à viagem consolidada) ──
   const registrarLancamento = useCallback(async (form) => {
-    if (!selecionada) return;
+    if (!viagemParaAuditoria) return;
     setSalvando(true);
     setMensagem('');
-
     try {
-      const lancamento = criarLancamentoAuditoria(selecionada, form, lancamentos, solicitacoes);
+      const lancConsolidados = reKeyLancamentosPorViagem(lancamentos);
+      const lancamento = criarLancamentoAuditoria(viagemParaAuditoria, form, lancConsolidados, solicitacoes);
 
-      // FASE 1: enriquecer com dados do auditor
       const lancamentoComAuditor = {
         ...lancamento,
         auditedByUserId: form.auditedByUserId || usuarioAtual?.id || '',
@@ -871,11 +1241,11 @@ export default function LotacaoAuditoriaPage() {
       try {
         await salvarLancamentoAuditoriaSupabase(lancamentoComAuditor);
       } catch (error) {
-        console.warn('[Auditoria] Lançamento salvo localmente; falha ao salvar no Supabase:', error.message);
+        console.warn('[Auditoria] Lançamento salvo localmente; falha no Supabase:', error.message);
       }
 
       if (lancamentoComAuditor.excedente > 0) {
-        const solicitacao = criarSolicitacaoPagamento(selecionada, lancamentoComAuditor);
+        const solicitacao = criarSolicitacaoPagamento(viagemParaAuditoria, lancamentoComAuditor);
         const pendenciaId = globalThis.crypto?.randomUUID?.();
         const solicitacaoComAuditor = {
           ...solicitacao,
@@ -889,28 +1259,25 @@ export default function LotacaoAuditoriaPage() {
         salvarSolicitacoesPagamento(novasSolicitacoes);
         setSolicitacoes(novasSolicitacoes);
 
-        try {
-          await salvarSolicitacaoSupabase(solicitacaoComAuditor);
-        } catch (error) {
-          console.warn('[Auditoria] Solicitação salva localmente; falha ao salvar no Supabase:', error.message);
-        }
+        try { await salvarSolicitacaoSupabase(solicitacaoComAuditor); }
+        catch (error) { console.warn('[Auditoria] Solicitação salva localmente; falha no Supabase:', error.message); }
 
         try {
           await salvarPendenciaAuditoriaSupabase({
             id: pendenciaId,
             lancamentoId: lancamentoComAuditor.id,
-            dist: selecionada.dist,
-            distKey: selecionada.distKey,
+            dist: viagemParaAuditoria.dist,
+            distKey: viagemParaAuditoria.distKey,
             cte: lancamentoComAuditor.cte,
             fatura: lancamentoComAuditor.fatura,
-            transportadora: selecionada.transportadora,
-            cargaId: selecionada.id,
+            transportadora: viagemParaAuditoria.transportadora,
+            cargaId: viagemParaAuditoria.id,
             valorLancado: lancamentoComAuditor.valorLancado,
             valorAutorizado: lancamentoComAuditor.saldoAnterior,
             valorExcedente: lancamentoComAuditor.excedente,
-            valorOriginal: Number(selecionada.valorComparacao) || 0,
+            valorOriginal: Number(viagemParaAuditoria.valorComparacao) || 0,
             valorAdicionalAprovado: 0,
-            valorFinalAutorizado: Number(selecionada.valorComparacao) || 0,
+            valorFinalAutorizado: Number(viagemParaAuditoria.valorComparacao) || 0,
             prazoOperacaoEm: adicionarHorasIso(lancamentoComAuditor.auditedAt, 24),
             status: 'EXCEDEU_AGUARDANDO_OPERACAO',
             auditedByUserId: lancamentoComAuditor.auditedByUserId,
@@ -934,32 +1301,30 @@ export default function LotacaoAuditoriaPage() {
             });
           }
         } catch (error) {
-          console.warn('[Auditoria] Solicitação antiga salva; falha ao criar pendência no painel novo:', error.message);
+          console.warn('[Auditoria] Pendência não registrada no painel novo:', error.message);
         }
 
-        setMensagem('✓ Lançamento registrado e pendência criada para aprovação em Lotação Operação.');
+        setMensagem('✓ CT-e vinculado e pendência criada para aprovação em Lotação Operação.');
       } else {
-        setMensagem('✓ Lançamento auditado registrado com sucesso.');
+        setMensagem('✓ CT-e vinculado à viagem com sucesso.');
       }
     } catch (error) {
       setMensagem(`Erro ao registrar: ${error.message || String(error)}`);
     } finally {
       setSalvando(false);
     }
-  }, [selecionada, lancamentos, solicitacoes, usuarioAtual]);
+  }, [viagemParaAuditoria, lancamentos, solicitacoes, usuarioAtual]);
 
   const totalCargas = baseFluxo.cargas?.length || 0;
+  const pendenciasAbertas = (solicitacoes || []).filter((i) => i.status === 'PENDENTE' || i.status === 'EXCEDEU_AGUARDANDO_OPERACAO').length;
 
   return (
     <div className="page-shell lotacao-page lotacao-auditoria-page">
       <header className="page-top between">
         <div className="page-header">
           <span className="amd-mini-brand">Lotação · Auditoria</span>
-          <h1>Auditoria de CT-e por DIST</h1>
-          <p>
-            Digite a DIST ou o CT-e para localizar a carga, validar o frete auditável e controlar o
-            saldo lançado quando houver mais de um CT-e vinculado.
-          </p>
+          <h1>Auditoria Lotação</h1>
+          <p>Central única de auditoria operacional: parta do CT-e ou do DIST, case com o realizado, consolide a viagem e controle o saldo.</p>
         </div>
         {usuarioAtual && (
           <div style={{ textAlign: 'right', fontSize: '0.85rem', opacity: 0.75 }}>
@@ -971,88 +1336,135 @@ export default function LotacaoAuditoriaPage() {
 
       {(carregandoHistorico || carregandoAuditoria) && (
         <div className="hint-box compact">
-          {carregandoHistorico && 'Carregando histórico de cargas do Supabase...'}
-          {!carregandoHistorico && carregandoAuditoria && 'Carregando lançamentos e solicitações...'}
+          {carregandoHistorico ? 'Carregando histórico de cargas do Supabase...' : 'Carregando lançamentos e solicitações...'}
         </div>
       )}
 
-      {!carregandoHistorico && !carregandoAuditoria && (
-        <div
-          className="hint-box compact"
-          style={{ background: fonteCargas === 'supabase' ? '#e8f5e9' : '#fff8e1' }}
-        >
-          {fonteCargas === 'supabase'
-            ? `✓ ${totalCargas} cargas carregadas do Supabase.`
-            : `⚠ ${totalCargas} cargas carregadas localmente.`}
-        </div>
-      )}
+      <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} totalCargas={totalCargas} fonteCargas={fonteCargas} />
 
-      <div className="panel-card">
-        <div className="section-row compact-top">
-          <div>
-            <div className="panel-title">Pesquisar carga</div>
-            <p>Use DIST, CT-e, chave CT-e, NF ou chave NF para cruzar histórico, base CT-e e tabelas.</p>
+      <AbasAuditoria ativa={abaAtiva} onMudar={setAbaAtiva} pendencias={pendenciasAbertas} />
+
+      {abaAtiva === 'auditar' && (
+        <>
+          <div className="panel-card">
+            <div className="section-row compact-top">
+              <div>
+                <div className="panel-title">Auditar</div>
+                <p>Use buscas separadas: chave CT-e e número CT-e consultam a base de CT-es; DIST/HUB consulta somente o realizado.</p>
+              </div>
+            </div>
+
+            <div className="form-grid three">
+              <label className="field full-span">
+                Buscar por chave CT-e
+                <input
+                  value={buscaChave}
+                  onChange={(e) => setBuscaChave(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') pesquisarPorChave(); }}
+                  placeholder="Ex.: 42260527736323000102570010000697041040495412"
+                />
+              </label>
+            </div>
+            <div className="actions-right">
+              <button type="button" className="btn-primary" onClick={pesquisarPorChave}>Buscar chave CT-e</button>
+            </div>
+
+            <div className="form-grid three top-space-sm">
+              <label className="field full-span">
+                Buscar por número CT-e
+                <input
+                  value={buscaNumeroCte}
+                  onChange={(e) => setBuscaNumeroCte(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') pesquisarPorNumeroCte(); }}
+                  placeholder="Ex.: 69704"
+                />
+              </label>
+            </div>
+            <div className="actions-right">
+              <button type="button" className="btn-secondary" onClick={pesquisarPorNumeroCte}>Buscar número CT-e</button>
+            </div>
+
+            <div className="form-grid three top-space-sm">
+              <label className="field full-span">
+                Buscar por DIST / viagem
+                <input
+                  value={buscaDist}
+                  onChange={(e) => setBuscaDist(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') pesquisarPorDist(); }}
+                  placeholder="Ex.: 12651, DIST-12651 ou HUB-12651"
+                />
+              </label>
+            </div>
+            <div className="actions-right">
+              <button type="button" className="btn-secondary" onClick={pesquisarPorDist}>Buscar DIST / viagem</button>
+            </div>
+
+            {mensagem && <div className="hint-box compact">{mensagem}</div>}
+
+            {ctesEncontrados.length > 1 && (
+              <div className="mini-list top-space-sm">
+                {ctesEncontrados.map((cte) => (
+                  <button
+                    key={cte.id || cte.chave_cte || cte.numero_cte}
+                    type="button"
+                    className={cteSelecionado?.id === cte.id ? 'mini-list-row clickable active' : 'mini-list-row clickable'}
+                    onClick={() => setCteSelecionado(cte)}
+                  >
+                    <span><strong>{cte.numero_cte || '-'}</strong> · {cte.transportadora || '-'} · {cte.cidade_origem || '-'} x {cte.cidade_destino || '-'}</span>
+                    <strong>{formatarMoeda(cte.valor_cte)}</strong>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <ListaViagens viagens={viagensResultado} selecionada={viagemSelecionada} onSelecionar={setViagemSelecionada} />
           </div>
-          <span className="status-pill dark">{totalCargas} cargas no histórico</span>
-        </div>
 
-        <div className="form-grid three">
-          <label className="field full-span">
-            DIST / CT-e / Chave CT-e / NF
-            <input
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') pesquisar(); }}
-              placeholder="Ex.: DIST-9372, 19379 ou chave CT-e"
-            />
-          </label>
-        </div>
-        <div className="actions-right">
-          <button type="button" className="btn-primary" onClick={pesquisar}>
-            Pesquisar
-          </button>
-        </div>
-        {mensagem && <div className="hint-box compact">{mensagem}</div>}
-        <ListaResultados
-          resultados={resultados}
-          selecionada={selecionada}
-          onSelecionar={(carga) => {
-            setSelecionada(carga);
-            setCteSelecionado(null);
-          }}
-        />
-        {ctesEncontrados.length > 1 && (
-          <div className="mini-list top-space-sm">
-            {ctesEncontrados.map((cte) => (
-              <button
-                key={cte.id || cte.chave_cte || cte.numero_cte}
-                type="button"
-                className={cteSelecionado?.id === cte.id ? 'mini-list-row clickable active' : 'mini-list-row clickable'}
-                onClick={() => setCteSelecionado(cte)}
-              >
-                <span><strong>{cte.numero_cte || '-'}</strong> · {cte.transportadora || '-'} · {cte.cidade_origem || '-'} x {cte.cidade_destino || '-'}</span>
-                <strong>{formatarMoeda(cte.valor_cte)}</strong>
+          {cteSelecionado && <CardCteEncontrado cte={cteSelecionado} onUsar={setCteSelecionado} />}
+
+          {cteSelecionado && (
+            <div className="actions-right">
+              <button type="button" className="btn-primary" onClick={buscarSugestoesNoRealizado} disabled={buscandoSugestoes}>
+                {buscandoSugestoes ? 'Buscando...' : 'Buscar sugestões no realizado'}
               </button>
-            ))}
-          </div>
-        )}
-      </div>
+            </div>
+          )}
 
-      <CardCteEncontrado cte={cteSelecionado} onUsar={setCteSelecionado} />
-      {(cteSelecionado || selecionada) && <ValidacaoTabelaLotacao resultados={tabelaAplicavel} />}
-      {cteSelecionado && <SugestoesHistorico sugestoes={sugestoesHistorico} onUsar={setSelecionada} />}
-      <ResumoCarga carga={selecionada} lancamentos={lancamentos} solicitacoes={solicitacoes} />
-      <FormLancamento
-        key={selecionada?.id || 'sem-carga'}
-        carga={selecionada}
-        lancamentos={lancamentos}
-        solicitacoes={solicitacoes}
-        onRegistrar={registrarLancamento}
-        salvando={salvando}
-        usuarioAtual={usuarioAtual}
-      />
-      <HistoricoLancamentos carga={selecionada} lancamentos={lancamentos} />
-      <MovimentosAutorizacao carga={selecionada} solicitacoes={solicitacoes} />
+          {cteSelecionado && sugestoesViagens.length > 0 && (
+            <SugestoesViagens sugestoes={sugestoesViagens} onUsar={setViagemSelecionada} />
+          )}
+
+          {(cteSelecionado || viagemSelecionada) && <ValidacaoTabelaLotacao resultados={tabelaAplicavel} />}
+
+          <ResumoViagemCard viagem={viagemParaAuditoria} lancamentos={lancamentos} cte={cteSelecionado} />
+          <FormLancamento
+            key={`${viagemParaAuditoria?.id || 'sem-viagem'}-${viagemParaAuditoria?.valorComparacao || 0}`}
+            viagem={viagemParaAuditoria}
+            lancamentos={lancamentos}
+            solicitacoes={solicitacoes}
+            onRegistrar={registrarLancamento}
+            salvando={salvando}
+            usuarioAtual={usuarioAtual}
+            valorSugerido={cteSelecionado?.valor_cte}
+            cteSugerido={cteSelecionado?.numero_cte}
+          />
+          <HistoricoLancamentos viagem={viagemParaAuditoria} lancamentos={lancamentos} />
+          <MovimentosAutorizacao viagem={viagemParaAuditoria} solicitacoes={solicitacoes} />
+        </>
+      )}
+
+      {abaAtiva === 'vinculos' && (
+        <PainelVinculos
+          vinculos={vinculos}
+          onSalvar={salvarVinculosState}
+          sugestaoRealizado={viagemSelecionada?.transportadora || ''}
+          sugestaoCte={cteSelecionado?.transportadora || cteSelecionado?.transportadora_contratada || ''}
+        />
+      )}
+
+      {abaAtiva === 'historico' && (
+        <HistoricoPendencias lancamentos={lancamentos} solicitacoes={solicitacoes} />
+      )}
     </div>
   );
 }

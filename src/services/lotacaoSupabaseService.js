@@ -1,4 +1,4 @@
-﻿import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
+import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
 import { normalizarTexto, normalizarTipoTabela } from '../utils/lotacaoTables';
 
 const PAGE_SIZE = 1000;
@@ -393,83 +393,152 @@ export async function carregarCargasLotacaoSupabase(filtros = {}) {
   return todas;
 }
 
-export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
+
+const FONTES_CTE_AUDITORIA_LOTACAO = [
+  { tabela: 'realizado_local_ctes', campoData: 'data_emissao', prioridade: 1 },
+  { tabela: 'realizado_ctes_enxuta', campoData: 'data_emissao', prioridade: 2 },
+  { tabela: 'realizado_ctes', campoData: 'emissao', prioridade: 3 },
+];
+
+function somenteDigitos(valor = '') {
+  return String(valor || '').replace(/\D/g, '');
+}
+
+function pickCteCampo(row = {}, keys = []) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+}
+
+function numeroValorCte(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  let text = String(value).trim();
+  if (!text) return 0;
+  if (text.includes(',')) text = text.replace(/\./g, '').replace(',', '.');
+  const parsed = Number(text.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizarCteLotacaoAuditoria(row = {}, fonte = '') {
+  const raw = row.raw && typeof row.raw === 'object' ? row.raw : {};
+  const pick = (keys) => pickCteCampo(row, keys) || pickCteCampo(raw, keys);
+  const dataEmissao = pick(['data_emissao', 'emissao', 'dataEmissao']);
+  return {
+    ...row,
+    fonte_cte: fonte || row.fonte_cte || '',
+    emissao: dataEmissao || null,
+    data_emissao: dataEmissao || row.data_emissao || row.emissao || null,
+    chave_cte: pick(['chave_cte', 'chaveCte', 'chave', 'chave_acesso', 'chaveAcesso']) || null,
+    numero_cte: pick(['numero_cte', 'numeroCte', 'cte', 'nro_cte', 'numero']) || null,
+    serie_cte: pick(['serie_cte', 'serieCte', 'serie']) || row.serie_cte || null,
+    transportadora: pick(['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador', 'transportadora_contratada']) || null,
+    transportadora_contratada: pick(['transportadora_contratada', 'transportadora', 'nome_transportadora']) || null,
+    cnpj_transportadora: pick(['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador']) || null,
+    cidade_origem: pick(['cidade_origem', 'cidadeOrigem', 'origem']) || null,
+    uf_origem: String(pick(['uf_origem', 'ufOrigem']) || '').toUpperCase() || null,
+    cidade_destino: pick(['cidade_destino', 'cidadeDestino', 'destino']) || null,
+    uf_destino: String(pick(['uf_destino', 'ufDestino']) || '').toUpperCase() || null,
+    canal: pick(['canal', 'canal_original', 'canais']) || null,
+    tomador: pick(['tomador', 'tomador_servico', 'tomadorServico', 'nomeTomador']) || null,
+    valor_nf: numeroValorCte(pick(['valor_nf', 'valorNF', 'nf_venda', 'valor_nota'])),
+    valor_cte: numeroValorCte(pick(['valor_cte', 'valorCte', 'valor_frete', 'frete'])),
+    peso_declarado: numeroValorCte(pick(['peso_declarado', 'pesoDeclarado', 'peso', 'peso_final', 'pesoFinal'])),
+    peso_cubado: numeroValorCte(pick(['peso_cubado', 'pesoCubado'])),
+    metros_cubicos: numeroValorCte(pick(['metros_cubicos', 'cubagem', 'cubagem_total', 'cubagemTotal'])),
+    volume: numeroValorCte(pick(['volume', 'qtd_volumes', 'qtdVolumes', 'volumes'])),
+    raw,
+  };
+}
+
+async function consultarCtesPorFiltro({ supabase, fonte, campo, operador, valor, limite = 20 }) {
+  let query = supabase
+    .from(fonte.tabela)
+    .select('*')
+    .limit(limite);
+
+  if (operador === 'eq') query = query.eq(campo, valor);
+  else query = query.ilike(campo, `%${valor}%`);
+
+  if (fonte.campoData) query = query.order(fonte.campoData, { ascending: false });
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map((row) => normalizarCteLotacaoAuditoria(row, fonte.tabela));
+}
+
+async function consultarCtesComFallbacks({ campo, valores = [], operadores = ['eq', 'ilike'], limite = 20 }) {
+  const supabase = ensureClient();
+  const erros = [];
+  const encontradosPorChave = new Map();
+
+  for (const fonte of FONTES_CTE_AUDITORIA_LOTACAO) {
+    for (const valor of valores.filter(Boolean)) {
+      for (const operador of operadores) {
+        try {
+          const rows = await consultarCtesPorFiltro({ supabase, fonte, campo, operador, valor, limite });
+          for (const row of rows) {
+            const chave = row.id || row.chave_cte || `${fonte.tabela}|${row.numero_cte}|${row.emissao}|${Math.random()}`;
+            encontradosPorChave.set(String(chave), row);
+          }
+          if (encontradosPorChave.size && operador === 'eq') break;
+        } catch (error) {
+          erros.push(`${fonte.tabela}.${campo}: ${error.message || String(error)}`);
+          break;
+        }
+      }
+      if (encontradosPorChave.size) break;
+    }
+    if (encontradosPorChave.size) break;
+  }
+
+  if (!encontradosPorChave.size && erros.length) {
+    console.warn('[Auditoria Lotação] Busca CT-e sem resultado. Tentativas:', erros);
+  }
+
+  return Array.from(encontradosPorChave.values()).slice(0, limite);
+}
+
+export async function buscarCteLotacaoAuditoriaPorChaveSupabase(chave = '') {
   if (!isSupabaseConfigured()) return [];
+  const digitos = somenteDigitos(chave);
+  if (!digitos) return [];
+  if (digitos.length !== 44) {
+    throw new Error('Informe uma chave CT-e válida com 44 dígitos.');
+  }
+
+  return consultarCtesComFallbacks({
+    campo: 'chave_cte',
+    valores: [digitos],
+    operadores: ['eq', 'ilike'],
+    limite: 5,
+  });
+}
+
+export async function buscarCtesLotacaoAuditoriaPorNumeroSupabase(numero = '') {
+  if (!isSupabaseConfigured()) return [];
+  const digitos = somenteDigitos(numero);
+  const termo = String(numero || '').trim().replace(/[%*,()]/g, ' ');
+  const semZeros = digitos ? String(Number(digitos) || digitos) : '';
+  const valores = [...new Set([digitos, semZeros, termo].filter(Boolean))];
+  if (!valores.length) return [];
+
+  return consultarCtesComFallbacks({
+    campo: 'numero_cte',
+    valores,
+    operadores: ['eq', 'ilike'],
+    limite: 30,
+  });
+}
+
+export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
   const busca = String(termo || '').trim();
   if (!busca) return [];
-  const supabase = ensureClient();
-  const termoSeguro = busca.replace(/[%*,()]/g, ' ');
-  const digitos = termoSeguro.replace(/\D/g, '');
-  const valores = [...new Set([termoSeguro, digitos].filter(Boolean))];
-  const numeroCteDaChave = digitos.length >= 34 ? String(Number(digitos.slice(25, 34)) || '') : '';
-  const numerosPossiveis = [...new Set([digitos, numeroCteDaChave].filter(Boolean))];
-  const filtrosDiretos = valores.flatMap((valor) => [
-    `chave_cte.ilike.%${valor}%`,
-    `numero_cte.ilike.%${valor}%`,
-  ]);
-  const filtrosComRaw = valores.flatMap((valor) => [
-    ...filtrosDiretos.filter((filtro) => filtro.includes(`%${valor}%`)),
-    `raw->>chaveCte.ilike.%${valor}%`,
-    `raw->>chaveNfe.ilike.%${valor}%`,
-    `raw->>chaveNf.ilike.%${valor}%`,
-    `raw->>notaFiscal.ilike.%${valor}%`,
-    `raw->>numeroNf.ilike.%${valor}%`,
-    `raw->>nfNumero.ilike.%${valor}%`,
-    `raw->>nf.ilike.%${valor}%`,
-  ]);
-
-  function normalizarLocal(rows = []) {
-    return (rows || []).map((row) => ({
-      ...row,
-      emissao: row.data_emissao,
-      metros_cubicos: row.cubagem,
-      volume: row.qtd_volumes,
-    }));
-  }
-
-  async function buscarLocalPorColuna(coluna, valor) {
-    if (!valor) return [];
-    const { data, error } = await supabase
-      .from('realizado_local_ctes')
-      .select('id, competencia, transportadora, cnpj_transportadora, data_emissao, chave_cte, numero_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, cubagem, qtd_volumes, canal, valor_nf, cidade_origem, cidade_destino')
-      .ilike(coluna, `%${valor}%`)
-      .order('data_emissao', { ascending: false })
-      .limit(20);
-    if (error) throw error;
-    return normalizarLocal(data || []);
-  }
-
-  try {
-    for (const valor of valores) {
-      const porChave = await buscarLocalPorColuna('chave_cte', valor);
-      if (porChave.length) return porChave;
-    }
-    for (const valor of numerosPossiveis) {
-      const porNumero = await buscarLocalPorColuna('numero_cte', valor);
-      if (porNumero.length) return porNumero;
-    }
-  } catch {
-    // segue para base legada abaixo
-  }
-
-  let { data, error } = await supabase
-    .from('realizado_ctes')
-    .select('id, competencia, transportadora, cnpj_transportadora, emissao, chave_cte, numero_cte, serie_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, metros_cubicos, volume, canal, valor_nf, cidade_origem, cidade_destino, transportadora_contratada, raw')
-    .or(filtrosComRaw.join(','))
-    .order('emissao', { ascending: false })
-    .limit(20);
-  if (error) {
-    const respostaDireta = await supabase
-      .from('realizado_ctes')
-      .select('id, competencia, transportadora, cnpj_transportadora, emissao, chave_cte, numero_cte, serie_cte, valor_cte, uf_origem, uf_destino, peso_declarado, peso_cubado, metros_cubicos, volume, canal, valor_nf, cidade_origem, cidade_destino, transportadora_contratada, raw')
-      .or(filtrosDiretos.join(','))
-      .order('emissao', { ascending: false })
-      .limit(20);
-    data = respostaDireta.data;
-    error = respostaDireta.error;
-  }
-  if (error) throw new Error(detalheErroSupabase(error));
-  return data || [];
+  const digitos = somenteDigitos(busca);
+  if (digitos.length === 44) return buscarCteLotacaoAuditoriaPorChaveSupabase(digitos);
+  return buscarCtesLotacaoAuditoriaPorNumeroSupabase(busca);
 }
 
 export async function resumoRotasLotacaoSupabase(filtros = {}) {
