@@ -293,6 +293,16 @@ function exportarXlsx(linhas, nomeArquivo, aba) {
   XLSX.writeFile(wb, nomeArquivo);
 }
 
+function aguardarTela() {
+  return new Promise(function(resolve) {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function() { setTimeout(resolve, 0); });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
 // Monta as linhas intermediárias de rotas e cotações a partir do resultado
 // bruto do importador. A saída é usada apenas para preview e para alimentar
 // montarItensVerum — não é salva diretamente no banco.
@@ -338,11 +348,28 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
   return { rotas: rotas, cotacoes: cotacoes };
 }
 
-// Converte as cotações formatadas para itens prontos para salvar em
-// tabelas_negociacao_itens. Gera SOMENTE linhas COTAÇÃO/FAIXA (igual ao Cantu),
-// sem linhas técnicas de ROTA.
+// Converte rotas e cotacoes formatadas para itens prontos para salvar em
+// tabelas_negociacao_itens.
 function montarItensVerum(formatado) {
   if (!formatado) return [];
+
+  var itensRotas = (formatado.rotas || []).map(function(rota) {
+    return {
+      cidade_origem: rota.cidadeOrigem || '',
+      uf_origem: rota.ufOrigem || '',
+      ibge_origem: rota.ibgeOrigem || '',
+      cidade_destino: rota.cidadeDestino || '',
+      uf_destino: rota.ufDestino || '',
+      ibge_destino: rota.ibgeDestino || '',
+      faixa_peso: 'ROTA',
+      peso_inicial: '',
+      peso_final: '',
+      prazo: rota.prazoEntregaDias || '',
+      observacao: rota.cotacaoFinal || rota.nomeRota || '',
+      origem_importacao: 'VERUM_ROTAS_FRETES',
+      dados_originais: { tipo_item: 'ROTA', ...rota },
+    };
+  });
 
   var itensCotacoes = (formatado.cotacoes || []).map(function(cotacao) {
     // ── faixa_peso: "COTAÇÃO | FAIXA" ou "COTAÇÃO" (igual ao padrão Cantu) ──
@@ -381,7 +408,7 @@ function montarItensVerum(formatado) {
     };
   });
 
-  return itensCotacoes;
+  return itensRotas.concat(itensCotacoes);
 }
 
 function getTipoItem(item) {
@@ -599,6 +626,8 @@ export default function TabelasNegociacaoPage() {
   const [resultadoTemplate, setResultadoTemplate] = useState(null);
   const [formatado, setFormatado] = useState(null);
   const [mostrarPreview, setMostrarPreview] = useState(false);
+  const [statusVerum, setStatusVerum] = useState('');
+  const [lendoVerum, setLendoVerum] = useState(false);
 
   const [arquivoCantu, setArquivoCantu] = useState(null);
   const [resultadoCantu, setResultadoCantu] = useState(null);
@@ -707,9 +736,15 @@ export default function TabelasNegociacaoPage() {
 
   function limparImport() {
     setResultadoTemplate(null); setFormatado(null); setMostrarPreview(false);
+    setStatusVerum(''); setLendoVerum(false);
     setResultadoCantu(null); setResultadoLotacao(null);
     setArquivoRotas(null); setArquivoFretes(null);
     setArquivoCantu(null); setArquivoLotacao(null);
+  }
+
+  async function reportarStatusVerum(mensagem) {
+    setStatusVerum(mensagem || '');
+    await aguardarTela();
   }
 
   async function copiarTextoLaudoSalvo(texto, label) {
@@ -996,10 +1031,15 @@ export default function TabelasNegociacaoPage() {
     } catch (e) { setErro(e.message || 'Erro.'); }
   }
 
-  async function salvarItens(itens, origemImportacao, extraUpdate) {
+  async function salvarItens(itens, origemImportacao, extraUpdate, opcoesSalvar) {
     setSalvando(true); setErro(''); setSucesso('');
     try {
-      var salvos = await substituirItensTabelaNegociacao(selecionada, itens);
+      if (opcoesSalvar && opcoesSalvar.statusInicial) {
+        await reportarStatusVerum(opcoesSalvar.statusInicial);
+      }
+      var salvos = await substituirItensTabelaNegociacao(selecionada, itens, {
+        onProgress: opcoesSalvar && opcoesSalvar.onProgress,
+      });
       var updates = Object.assign({
         data_inicio_prevista: inicioVigencia,
         status: selecionada.status === 'EM NEGOCIAÇÃO' ? 'EM TESTE' : selecionada.status,
@@ -1010,6 +1050,7 @@ export default function TabelasNegociacaoPage() {
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       setItensSelecionada(salvos);
       setSucesso(salvos.length + ' item(ns) salvos.');
+      if (opcoesSalvar && opcoesSalvar.limparStatusAoFinal) setStatusVerum('');
     } catch (e) { setErro(e.message || 'Erro ao salvar itens.'); }
     finally { setSalvando(false); }
   }
@@ -1017,22 +1058,35 @@ export default function TabelasNegociacaoPage() {
   async function processarVerum() {
     if (!selecionada) return setErro('Abra uma tabela antes de importar.');
     setErro(''); setSucesso(''); setResultadoTemplate(null); setFormatado(null);
+    setLendoVerum(true);
     try {
-      var r = await importarTemplatePadraoSeparado({ arquivoRotas: arquivoRotas, arquivoFretes: arquivoFretes });
+      await reportarStatusVerum('Preparando leitura dos arquivos Verum...');
+      var r = await importarTemplatePadraoSeparado({
+        arquivoRotas: arquivoRotas,
+        arquivoFretes: arquivoFretes,
+        onProgress: reportarStatusVerum,
+      });
       setResultadoTemplate(r);
+      setStatusVerum('Leitura concluida. Revise os totais e clique em Formatar.');
       setSucesso('Lido: ' + r.rotas.length + ' rota(s), ' + r.quebrasFaixa.length + ' quebra(s), ' + r.fretes.length + ' frete(s). Clique em "Formatar".');
     } catch (e) { setErro(e.message || 'Erro ao importar template.'); }
+    finally { setLendoVerum(false); }
   }
 
-  function formatarVerum() {
+  async function formatarVerum() {
     if (!resultadoTemplate) return setErro('Leia o template primeiro.');
+    setLendoVerum(true);
+    setErro(''); setSucesso('');
+    await reportarStatusVerum('Formatando no padrao do sistema...');
     var f = montarLinhasFormatadas({
       resultado: resultadoTemplate, transportadora: selecionada.transportadora,
       canal: selecionada.canal, inicioVigencia: inicioVigencia, fimVigencia: fimVigencia,
       origemFallback: selecionada.origem || '', ufOrigemFallback: selecionada.uf_origem || '',
     });
     setFormatado(f); setMostrarPreview(true);
-    setSucesso('Formatado: ' + f.cotacoes.length + ' cotação(ões) prontas para salvar.');
+    setStatusVerum('Formatado: ' + f.rotas.length + ' rota(s) e ' + f.cotacoes.length + ' cotacao(oes) prontas.');
+    setSucesso('Formatado: ' + f.rotas.length + ' rota(s) e ' + f.cotacoes.length + ' cotação(ões) prontas para salvar.');
+    setLendoVerum(false);
   }
 
   async function processarCantu() {
@@ -1762,26 +1816,34 @@ export default function TabelasNegociacaoPage() {
                   <div className="sim-form-grid sim-grid-4" style={{ marginTop: 14 }}>
                     <label>Início vigência<input type="date" value={inicioVigencia} onChange={function(e) { setInicioVigencia(e.target.value); }} /></label>
                     <label>Fim vigência<input type="date" value={fimVigencia} onChange={function(e) { setFimVigencia(e.target.value); }} /></label>
-                    <label>Arquivo de Rotas<input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={function(e) { setArquivoRotas(e.target.files ? e.target.files[0] : null); }} /></label>
-                    <label>Arquivo de Fretes<input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={function(e) { setArquivoFretes(e.target.files ? e.target.files[0] : null); }} /></label>
+                    <label>Arquivo de Rotas<input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={function(e) { setArquivoRotas(e.target.files ? e.target.files[0] : null); setResultadoTemplate(null); setFormatado(null); setStatusVerum(''); }} /></label>
+                    <label>Arquivo de Fretes<input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={function(e) { setArquivoFretes(e.target.files ? e.target.files[0] : null); setResultadoTemplate(null); setFormatado(null); setStatusVerum(''); }} /></label>
                   </div>
+                  {statusVerum ? <div className="sim-alert info" style={{ marginTop: 12 }}><strong>Status:</strong> {statusVerum}</div> : null}
                   <div className="sim-actions" style={{ marginTop: 12 }}>
-                    <button className="primary" type="button" onClick={processarVerum}>Ler template</button>
-                    <button className="sim-tab" type="button" onClick={formatarVerum} disabled={!resultadoTemplate}>Formatar no padrão do sistema</button>
-                    <button className="sim-tab" type="button" onClick={function() { setMostrarPreview(function(p) { return !p; }); }} disabled={!formatado}>{mostrarPreview ? 'Recolher' : 'Visualizar tabela'}</button>
-                    <button className="sim-tab" type="button" onClick={function() { exportarXlsx(formatado ? formatado.cotacoes : [], 'fretes-negoc-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Fretes'); }} disabled={!formatado}>Baixar fretes</button>
-                    <button className="primary" type="button" onClick={function() { salvarItens(montarItensVerum(formatado), 'VERUM_ROTAS_FRETES'); }} disabled={!formatado || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
+                    <button className="primary" type="button" onClick={processarVerum} disabled={lendoVerum || salvando}>{lendoVerum ? 'Lendo...' : 'Ler template'}</button>
+                    <button className="sim-tab" type="button" onClick={formatarVerum} disabled={!resultadoTemplate || lendoVerum || salvando}>Formatar no padrão do sistema</button>
+                    <button className="sim-tab" type="button" onClick={function() { setMostrarPreview(function(p) { return !p; }); }} disabled={!formatado || lendoVerum || salvando}>{mostrarPreview ? 'Recolher' : 'Visualizar tabela'}</button>
+                    <button className="sim-tab" type="button" onClick={function() { exportarXlsx(formatado ? formatado.cotacoes : [], 'fretes-negoc-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Fretes'); }} disabled={!formatado || lendoVerum || salvando}>Baixar fretes</button>
+                    <button className="primary" type="button" onClick={function() {
+                      var itens = montarItensVerum(formatado);
+                      salvarItens(itens, 'VERUM_ROTAS_FRETES', null, {
+                        statusInicial: 'Salvando ' + itens.length + ' itens na negociacao...',
+                        onProgress: reportarStatusVerum,
+                      });
+                    }} disabled={!formatado || salvando || lendoVerum}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
                   </div>
                   {resultadoTemplate ? (
                     <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginTop: 14 }}>
                       <div className="summary-card"><span>Rotas lidas</span><strong>{resultadoTemplate.rotas.length}</strong></div>
                       <div className="summary-card"><span>Quebras</span><strong>{resultadoTemplate.quebrasFaixa.length}</strong></div>
                       <div className="summary-card"><span>Fretes lidos</span><strong>{resultadoTemplate.fretes.length}</strong></div>
+                      <div className="summary-card"><span>Total para salvar</span><strong>{formatado ? ((formatado.rotas || []).length + (formatado.cotacoes || []).length) : '-'}</strong></div>
                     </div>
                   ) : null}
                   {formatado && mostrarPreview ? (
                     <div className="sim-parametros-box" style={{ marginTop: 14 }}>
-                      <div className="sim-parametros-header"><div><strong>Revisão</strong><p>{formatado.cotacoes.length} cotação(ões) prontas.</p></div></div>
+                      <div className="sim-parametros-header"><div><strong>Revisão</strong><p>{formatado.rotas.length} rota(s) e {formatado.cotacoes.length} cotação(ões) prontas.</p></div></div>
                       <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                         <table className="sim-analise-tabela">
                           <thead><tr><th>Faixa/Rota</th><th>Origem</th><th>Destino</th><th>IBGE</th><th>Peso ini</th><th>Peso fim</th><th>Taxa</th><th>% NF</th><th>Mín</th><th>ADV%</th><th>Excedente</th><th>Prazo</th></tr></thead>

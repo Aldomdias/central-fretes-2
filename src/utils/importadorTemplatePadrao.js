@@ -56,7 +56,10 @@ function cotacaoCompativel(frete, rota) {
     rota.cotacaoBase,
     rota.cotacao,
     rota.cotacaoFinal,
-  ].map(normalizarComparacao).filter(Boolean);
+  ].flatMap((valor) => [
+    normalizarComparacao(valor),
+    normalizarComparacao(removerUfDaCotacao(valor, ufRota)),
+  ]).filter(Boolean);
 
   return candidatosRota.includes(cotacaoFrete);
 }
@@ -154,11 +157,47 @@ function selecionarAba(workbook, termosPreferidos) {
   return workbook.Sheets[abaPreferida || nomes[0]];
 }
 
+function linhaTemCabecalhoVerum(cells = []) {
+  const normalizados = cells.map(normalizarTexto);
+  const grupos = [
+    ['NOME DA TRANSPORTADORA', 'CODIGO DA UNIDADE'],
+    ['COTACAO', 'CODIGO IBGE DESTINO'],
+    ['ROTA DO FRETE', 'PESO LIMITE'],
+    ['REGRA DE CALCULO', 'TAXA APLICADA'],
+  ];
+
+  return grupos.some((grupo) => grupo.every((header) => normalizados.includes(header)));
+}
+
 function sheetParaLinhas(sheet) {
-  return XLSX.utils.sheet_to_json(sheet, {
+  const aoa = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
     defval: '',
     raw: false,
   });
+
+  let headerIndex = 0;
+  for (let i = 0; i < Math.min(aoa.length, 30); i += 1) {
+    if (linhaTemCabecalhoVerum(aoa[i] || [])) {
+      headerIndex = i;
+      break;
+    }
+  }
+
+  const headers = (aoa[headerIndex] || []).map((cell, index) => {
+    const header = limparTexto(cell);
+    return header || `__coluna_${index + 1}`;
+  });
+
+  return aoa.slice(headerIndex + 1)
+    .filter((row) => !row.every((cell) => limparTexto(cell) === ''))
+    .map((row) => {
+      const item = {};
+      headers.forEach((header, index) => {
+        item[header] = row[index] ?? '';
+      });
+      return item;
+    });
 }
 
 function montarChaveRota(valor) {
@@ -385,6 +424,8 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'Peso Max',
     'Peso Máximo',
     'Peso Maximo',
+    'Peso Limite',
+    'PESO LIMITE',
     'Peso Até',
     'Peso Ate',
     'Até',
@@ -495,12 +536,41 @@ function normalizarFrete(linha, indice, rotasPorChave) {
   return temAlgumValor ? frete : null;
 }
 
+function chavesBuscaRota(rota = {}) {
+  return [
+    rota.cotacaoBase,
+    rota.cotacao,
+    rota.cotacaoFinal,
+  ].flatMap((valor) => [
+    normalizarComparacao(valor),
+    normalizarComparacao(removerUfDaCotacao(valor, rota.ufDestino)),
+  ]).filter(Boolean);
+}
+
+function chaveBuscaFrete(frete = {}) {
+  return normalizarComparacao(removerUfDaCotacao(frete.cotacao || frete.cotacaoFinal, frete.ufDestino));
+}
+
+function indexarRotasPorCotacao(rotas = []) {
+  const mapa = new Map();
+
+  (rotas || []).forEach((rota) => {
+    chavesBuscaRota(rota).forEach((chave) => {
+      if (!mapa.has(chave)) mapa.set(chave, []);
+      mapa.get(chave).push(rota);
+    });
+  });
+
+  return mapa;
+}
 
 function expandirFretesPorRotas(fretes, rotas) {
   const resultado = [];
+  const rotasPorCotacao = indexarRotasPorCotacao(rotas);
 
   (fretes || []).forEach((frete, indiceFrete) => {
-    const rotasCompativeis = (rotas || []).filter((rota) => cotacaoCompativel(frete, rota));
+    const candidatas = rotasPorCotacao.get(chaveBuscaFrete(frete)) || [];
+    const rotasCompativeis = candidatas.filter((rota) => cotacaoCompativel(frete, rota));
 
     if (!rotasCompativeis.length) {
       resultado.push(frete);
@@ -559,7 +629,13 @@ function montarQuebrasFaixa(fretes) {
   return Array.from(mapa.values());
 }
 
-export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes }) {
+async function reportarProgresso(onProgress, mensagem) {
+  if (typeof onProgress === 'function') {
+    await onProgress(mensagem);
+  }
+}
+
+export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFretes, onProgress }) {
   if (!arquivoRotas) {
     throw new Error('Selecione o arquivo de Rotas.');
   }
@@ -568,15 +644,19 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     throw new Error('Selecione o arquivo de Fretes.');
   }
 
+  await reportarProgresso(onProgress, 'Lendo arquivo de rotas...');
   const workbookRotas = await lerWorkbook(arquivoRotas);
+  await reportarProgresso(onProgress, 'Lendo arquivo de fretes...');
   const workbookFretes = await lerWorkbook(arquivoFretes);
 
   const sheetRotas = selecionarAba(workbookRotas, ['ROTAS', 'ROTA']);
   const sheetFretes = selecionarAba(workbookFretes, ['FRETES', 'FRETE', 'COTACOES', 'COTAÇÕES', 'TABELA']);
 
+  await reportarProgresso(onProgress, 'Localizando cabecalhos Verum...');
   const linhasRotas = sheetParaLinhas(sheetRotas);
   const linhasFretes = sheetParaLinhas(sheetFretes);
 
+  await reportarProgresso(onProgress, 'Normalizando rotas...');
   const rotas = linhasRotas
     .map((linha, indice) => normalizarRota(linha, indice))
     .filter(Boolean);
@@ -594,12 +674,15 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     });
   });
 
+  await reportarProgresso(onProgress, `Normalizando fretes (${rotas.length} rotas lidas)...`);
   const fretesLidos = linhasFretes
     .map((linha, indice) => normalizarFrete(linha, indice, rotasPorChave))
     .filter(Boolean);
 
+  await reportarProgresso(onProgress, `Cruzando ${fretesLidos.length} fretes com ${rotas.length} rotas...`);
   const fretes = expandirFretesPorRotas(fretesLidos, rotas);
 
+  await reportarProgresso(onProgress, `Montando quebras de faixa (${fretes.length} cotacoes)...`);
   const quebrasFaixa = montarQuebrasFaixa(fretes);
 
   return {

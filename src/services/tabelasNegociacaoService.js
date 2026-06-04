@@ -436,6 +436,7 @@ export async function listarItensTabelaNegociacao(tabelaId) {
 export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes = {}) {
   const supabase = supabaseOrThrow();
   if (!tabela?.id) throw new Error('Tabela de negociação inválida.');
+  const onProgress = typeof opcoes.onProgress === 'function' ? opcoes.onProgress : null;
 
   const itensEntrada = Array.isArray(itens) ? itens : [];
   const modo = opcoes.modo || 'porTipo';
@@ -444,6 +445,7 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     return listarItensTabelaNegociacao(tabela.id);
   }
 
+  if (onProgress) await onProgress('Carregando itens atuais da negociacao...');
   const itensAtuais = await listarTodosItensTabelaNegociacao(tabela.id);
   const tiposEntrada = [...new Set(itensEntrada.map(normalizarTipoItem))];
   const substituirTudo = modo === 'total' || tiposEntrada.length > 1 || opcoes.substituirTudo === true;
@@ -463,6 +465,7 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
   const linhasNovas = itensEntrada.map((item) => montarLinhaItem(tabela, item, rodadaNumero));
   const linhas = linhasPreservadas.concat(linhasNovas);
 
+  if (onProgress) await onProgress('Limpando itens antigos desta importacao...');
   const { error: deleteError } = await supabase
     .from('tabelas_negociacao_itens').delete().eq('tabela_negociacao_id', tabela.id);
   if (deleteError) throw new Error(deleteError.message || 'Erro ao limpar itens antigos.');
@@ -473,6 +476,9 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     const pageSize = 1000;
     for (let i = 0; i < linhas.length; i += pageSize) {
       const lote = linhas.slice(i, i + pageSize);
+      if (onProgress) {
+        await onProgress(`Salvando lote ${Math.min(i + pageSize, linhas.length)} de ${linhas.length} itens...`);
+      }
       const { data, error } = await supabase
         .from('tabelas_negociacao_itens').insert(lote).select();
       if (error) throw new Error(error.message || 'Erro ao salvar itens da tabela.');
