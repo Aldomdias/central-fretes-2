@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buscarCargaPorDistOuCte,
   carregarFluxoCargasLotacao,
@@ -357,25 +357,69 @@ function resumoViagem(viagem, lancamentos = []) {
 }
 
 // ─── SUGESTÕES DE CASAMENTO COM O REALIZADO ───────────────────────────────────
+// 4.34A.5.1 — Transportadora é critério obrigatório para casamento.
+// Viagem de transportadora diferente NÃO entra na lista principal.
+// 4.34A.5.1.1 — Se não houver casamento válido, mostrar seção separada para avaliar vínculo.
+
+function normalizarTransportadoraAuditoria(nome = '') {
+  return normalizarTexto(nome || '')
+    .replace(/\bS\s*A\b/g, ' ')
+    .replace(/\b(LTDA|EIRELI|ME|EPP|SA|S\/A|LOGISTICA|TRANSPORTES|TRANSPORTE|TRANSPORTADORA|TRANS|EXPRESSO|EXPRESS)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function transportadorasEquivalentesAuditoria(nomeCte = '', nomeViagem = '', vinculos = []) {
+  const brutoCte = normalizarTexto(nomeCte || '');
+  const brutoViagem = normalizarTexto(nomeViagem || '');
+  if (!brutoCte || !brutoViagem) return false;
+
+  if (brutoCte === brutoViagem) return true;
+
+  const simplesCte = normalizarTransportadoraAuditoria(nomeCte);
+  const simplesViagem = normalizarTransportadoraAuditoria(nomeViagem);
+  if (simplesCte && simplesViagem && simplesCte === simplesViagem) return true;
+
+  const canonCte = nomeCanonicoTransportadora(nomeCte, vinculos);
+  const canonViagem = nomeCanonicoTransportadora(nomeViagem, vinculos);
+
+  const canonCteNorm = normalizarTexto(canonCte || '');
+  const canonViagemNorm = normalizarTexto(canonViagem || '');
+  if (canonCteNorm && canonViagemNorm && canonCteNorm === canonViagemNorm) return true;
+
+  const canonCteSimples = normalizarTransportadoraAuditoria(canonCte);
+  const canonViagemSimples = normalizarTransportadoraAuditoria(canonViagem);
+  return Boolean(canonCteSimples && canonViagemSimples && canonCteSimples === canonViagemSimples);
+}
+
 function scoreSugestaoHistorico(carga = {}, cte = {}, vinculos = []) {
   const origem = normalizarTexto(cte.cidade_origem || '');
   const destino = normalizarTexto(cte.cidade_destino || '');
   const ufDestino = normalizarTexto(cte.uf_destino || '');
-  const transp = normalizarTexto(cte.transportadora || cte.transportadora_contratada || '');
-  const transpCteCanonica = normalizarTexto(nomeCanonicoTransportadora(cte.transportadora || cte.transportadora_contratada || '', vinculos));
-  const transpCargaCanonica = normalizarTexto(nomeCanonicoTransportadora(carga.transportadora || '', vinculos));
+  const nomeCte = cte.transportadora || cte.transportadora_contratada || '';
+  const nomeCarga = carga.transportadora || '';
   const cteNumero = normalizarTexto(cte.numero_cte || '');
-  let score = 0;
-  const motivos = [];
+
+  const transportadoraOk = transportadorasEquivalentesAuditoria(nomeCte, nomeCarga, vinculos);
+
+  // Regra mandatória: se a transportadora não bate, não existe sugestão de casamento.
+  if (!transportadoraOk) {
+    return { score: 0, motivos: [], transportadoraOk: false };
+  }
+
+  let score = 35;
+  const motivos = ['mesma transportadora'];
 
   if (cteNumero && normalizarTexto(carga.cteRaw || '').includes(cteNumero)) {
     score += 45;
     motivos.push('CT-e encontrado na viagem');
   }
+
   if (origem && normalizarTexto(carga.origem).includes(origem)) {
     score += 18;
     motivos.push('mesma origem');
   }
+
   if (destino && normalizarTexto(carga.destino).includes(destino)) {
     score += 16;
     motivos.push('mesmo destino');
@@ -383,23 +427,20 @@ function scoreSugestaoHistorico(carga = {}, cte = {}, vinculos = []) {
     score += 8;
     motivos.push('mesma UF destino');
   }
-  if (
-    transp
-    && (
-      normalizarTexto(carga.transportadora).includes(transp)
-      || (transpCteCanonica && transpCargaCanonica && transpCteCanonica === transpCargaCanonica)
-    )
-  ) {
-    score += 14;
-    motivos.push(transpCteCanonica === transpCargaCanonica ? 'transportadora vinculada' : 'mesma transportadora');
-  }
+
   const emissao = cte.emissao ? new Date(cte.emissao).getTime() : 0;
   const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
   if (emissao && dataCarga) {
     const dias = Math.abs(emissao - dataCarga) / 86400000;
-    if (dias <= 7) { score += 10; motivos.push('data próxima'); }
-    else if (dias <= 30) { score += 4; motivos.push('mesmo período aproximado'); }
+    if (dias <= 7) {
+      score += 10;
+      motivos.push('data próxima');
+    } else if (dias <= 30) {
+      score += 4;
+      motivos.push('mesmo período aproximado');
+    }
   }
+
   const valorCte = numeroAuditoria(cte.valor_cte || 0);
   const referenciaValor = calcularReferenciaAuditoria(carga, cte);
   const valorCarga = referenciaValor.valorReferencia || numeroAuditoria(carga.valorComparacao || 0);
@@ -410,25 +451,97 @@ function scoreSugestaoHistorico(carga = {}, cte = {}, vinculos = []) {
       motivos.push(`valor próximo (${referenciaValor.fonte})`);
     }
   }
+
+  return { score, motivos, transportadoraOk: true };
+}
+
+function scoreSugestaoVinculoTransportadora(carga = {}, cte = {}, vinculos = []) {
+  const nomeCte = cte.transportadora || cte.transportadora_contratada || '';
+  const nomeCarga = carga.transportadora || '';
+
+  if (!nomeCte || !nomeCarga) return { score: 0, motivos: [] };
+  if (transportadorasEquivalentesAuditoria(nomeCte, nomeCarga, vinculos)) return { score: 0, motivos: [] };
+
+  const origem = normalizarTexto(cte.cidade_origem || '');
+  const destino = normalizarTexto(cte.cidade_destino || '');
+  const ufDestino = normalizarTexto(cte.uf_destino || '');
+  const cteNumero = normalizarTexto(cte.numero_cte || '');
+
+  let score = 0;
+  const motivos = ['transportadora diferente — avaliar vínculo'];
+
+  if (cteNumero && normalizarTexto(carga.cteRaw || '').includes(cteNumero)) {
+    score += 25;
+    motivos.push('CT-e encontrado na viagem');
+  }
+
+  if (origem && normalizarTexto(carga.origem).includes(origem)) {
+    score += 18;
+    motivos.push('mesma origem');
+  }
+
+  if (destino && normalizarTexto(carga.destino).includes(destino)) {
+    score += 16;
+    motivos.push('mesmo destino');
+  } else if (ufDestino && normalizarTexto(carga.ufDestino || '') === ufDestino) {
+    score += 8;
+    motivos.push('mesma UF destino');
+  }
+
+  const emissao = cte.emissao ? new Date(cte.emissao).getTime() : 0;
+  const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
+  if (emissao && dataCarga) {
+    const dias = Math.abs(emissao - dataCarga) / 86400000;
+    if (dias <= 7) {
+      score += 10;
+      motivos.push('data próxima');
+    } else if (dias <= 30) {
+      score += 4;
+      motivos.push('mesmo período aproximado');
+    }
+  }
+
   return { score, motivos };
 }
 
-// Sugere VIAGENS CONSOLIDADAS (cada viagem aparece uma única vez).
-function sugerirViagensPorCte(cargas = [], cte = {}, vinculos = []) {
+function gerarSugestoesViagemAuditoria(cargas = [], cte = {}, vinculos = []) {
   const viagens = consolidarViagens(cargas);
-  return viagens
-    .map((viagem) => {
-      // melhor score entre os registros originais da viagem
-      let melhor = { score: 0, motivos: [] };
-      for (const reg of viagem.registrosOriginais || [viagem]) {
-        const r = scoreSugestaoHistorico(reg, cte, vinculos);
-        if (r.score > melhor.score) melhor = r;
-      }
-      return { viagem, ...melhor };
-    })
-    .filter((item) => item.score >= 18)
+
+  const analisadas = viagens.map((viagem) => {
+    let melhorCasamento = { score: 0, motivos: [], transportadoraOk: false };
+    let melhorVinculo = { score: 0, motivos: [] };
+
+    for (const reg of viagem.registrosOriginais || [viagem]) {
+      const casamento = scoreSugestaoHistorico(reg, cte, vinculos);
+      if (casamento.score > melhorCasamento.score) melhorCasamento = casamento;
+
+      const vinculo = scoreSugestaoVinculoTransportadora(reg, cte, vinculos);
+      if (vinculo.score > melhorVinculo.score) melhorVinculo = vinculo;
+    }
+
+    return { viagem, casamento: melhorCasamento, vinculo: melhorVinculo };
+  });
+
+  const casamento = analisadas
+    .filter((item) => item.casamento.transportadoraOk && item.casamento.score >= 40)
+    .map((item) => ({ viagem: item.viagem, score: item.casamento.score, motivos: item.casamento.motivos }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
+
+  const vinculosPossiveis = casamento.length
+    ? []
+    : analisadas
+      .filter((item) => item.vinculo.score >= 18)
+      .map((item) => ({ viagem: item.viagem, score: item.vinculo.score, motivos: item.vinculo.motivos }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+
+  return { casamento, vinculosPossiveis };
+}
+
+// Mantém compatibilidade com trechos antigos: retorna somente sugestões válidas de casamento.
+function sugerirViagensPorCte(cargas = [], cte = {}, vinculos = []) {
+  return gerarSugestoesViagemAuditoria(cargas, cte, vinculos).casamento;
 }
 
 // ─── VÍNCULOS DE TRANSPORTADORA ────────────────────────────────────────────────
@@ -545,11 +658,14 @@ function ValidacaoTabelaLotacao({ resultados }) {
 
 function SugestoesViagens({ sugestoes, onUsar }) {
   if (!sugestoes?.length) {
-    return <div className="hint-box compact">Nenhuma viagem provável encontrada no realizado por aproximação.</div>;
+    return <div className="hint-box compact">Nenhuma viagem provável encontrada no realizado com a mesma transportadora.</div>;
   }
   return (
     <div className="table-card lotacao-table-card">
       <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>Sugestões de casamento com o realizado</div>
+      <div className="hint-box compact" style={{ margin: '0 1rem 0.75rem' }}>
+        Lista filtrada por transportadora: só aparecem viagens da mesma transportadora ou equivalente/vinculada.
+      </div>
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
           <thead><tr><th>Viagem</th><th>Transportadora</th><th>Rota</th><th>Data</th><th>Total viagem</th><th>Confiança</th><th>Motivo</th><th>Ação</th></tr></thead>
@@ -564,6 +680,37 @@ function SugestoesViagens({ sugestoes, onUsar }) {
                 <td>{score >= 70 ? 'Alta' : score >= 40 ? 'Média' : 'Baixa'}</td>
                 <td>{motivos.join(', ') || '-'}</td>
                 <td><button type="button" className="btn-secondary" onClick={() => onUsar(viagem)}>Usar esta viagem</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SugestoesVinculoTransportadora({ sugestoes, onAnalisar }) {
+  if (!sugestoes?.length) return null;
+
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>Sugestões para vínculo de transportadora</div>
+      <div className="hint-box compact" style={{ margin: '0 1rem 0.75rem' }}>
+        Nenhuma sugestão válida de casamento foi encontrada com a mesma transportadora. As viagens abaixo são apenas para análise de possível vínculo. Não liberam auditoria direta antes da confirmação do vínculo.
+      </div>
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead><tr><th>Viagem</th><th>Transportadora da viagem</th><th>Rota</th><th>Data</th><th>Total viagem</th><th>Motivo</th><th>Ação</th></tr></thead>
+          <tbody>
+            {sugestoes.map(({ viagem, motivos }) => (
+              <tr key={`vinculo-${viagem.id}`}>
+                <td><strong>{viagem.dist}</strong>{viagem.qtdRegistros > 1 ? ` · ${viagem.qtdRegistros} reg.` : ''}</td>
+                <td>{viagem.transportadora}</td>
+                <td>{viagem.origem} x {viagem.destino}</td>
+                <td>{formatarDataCurta(viagem.coletaRealizada || viagem.coletaPlanejada)}</td>
+                <td>{formatarMoeda(viagem.valorComparacao)}</td>
+                <td>{motivos.join(', ') || 'avaliar vínculo'}</td>
+                <td><button type="button" className="btn-secondary" onClick={() => onAnalisar(viagem)}>Analisar vínculo</button></td>
               </tr>
             ))}
           </tbody>
@@ -1318,6 +1465,7 @@ export default function LotacaoAuditoriaPage() {
   const [ctesEncontrados, setCtesEncontrados] = useState([]);
   const [cteSelecionado, setCteSelecionado] = useState(null);
   const [sugestoesViagens, setSugestoesViagens] = useState([]);
+  const [sugestoesVinculoTransportadora, setSugestoesVinculoTransportadora] = useState([]);
   const [buscandoSugestoes, setBuscandoSugestoes] = useState(false);
   const [loteChavesTexto, setLoteChavesTexto] = useState('');
   const [loteResultados, setLoteResultados] = useState([]);
@@ -1449,6 +1597,7 @@ export default function LotacaoAuditoriaPage() {
       setCtesEncontrados(ctes);
       setCteSelecionado(ctes[0] || null);
       setSugestoesViagens([]);
+      setSugestoesVinculoTransportadora([]);
       if (!ctes.length) setMensagem('Nenhum CT-e encontrado na base de CT-es para essa chave.');
     } catch (error) {
       setCtesEncontrados([]); setCteSelecionado(null);
@@ -1466,6 +1615,7 @@ export default function LotacaoAuditoriaPage() {
       setCtesEncontrados(ctes);
       setCteSelecionado(ctes[0] || null);
       setSugestoesViagens([]);
+      setSugestoesVinculoTransportadora([]);
       if (!ctes.length) setMensagem('Nenhum CT-e encontrado na base de CT-es para esse número.');
     } catch (error) {
       setCtesEncontrados([]); setCteSelecionado(null);
@@ -1489,9 +1639,20 @@ export default function LotacaoAuditoriaPage() {
   const buscarSugestoesNoRealizado = useCallback(() => {
     if (!cteSelecionado) return;
     setBuscandoSugestoes(true);
-    const sugestoes = sugerirViagensPorCte(baseFluxo.cargas, cteSelecionado, vinculos);
-    setSugestoesViagens(sugestoes);
-    if (sugestoes.length) setViagemSelecionada((atual) => atual || sugestoes[0].viagem);
+
+    const resultado = gerarSugestoesViagemAuditoria(baseFluxo.cargas, cteSelecionado, vinculos);
+    setSugestoesViagens(resultado.casamento);
+    setSugestoesVinculoTransportadora(resultado.vinculosPossiveis);
+
+    if (resultado.casamento.length) {
+      setViagemSelecionada((atual) => atual || resultado.casamento[0].viagem);
+      setMensagem('');
+    } else if (resultado.vinculosPossiveis.length) {
+      setMensagem('Nenhuma sugestão válida com a mesma transportadora. Revise as sugestões de vínculo de transportadora antes de auditar.');
+    } else {
+      setMensagem('Nenhuma viagem provável encontrada com a mesma transportadora no realizado.');
+    }
+
     setBuscandoSugestoes(false);
   }, [cteSelecionado, baseFluxo.cargas, vinculos]);
 
@@ -1571,10 +1732,12 @@ export default function LotacaoAuditoriaPage() {
         setCtesEncontrados([primeiroEncontrado]);
         setCteSelecionado(primeiroEncontrado);
         setSugestoesViagens([]);
+      setSugestoesVinculoTransportadora([]);
       } else {
         setCtesEncontrados([]);
         setCteSelecionado(null);
         setSugestoesViagens([]);
+      setSugestoesVinculoTransportadora([]);
       }
       setMensagem(`Lote analisado: ${resultados.length} chave(s), ${encontrados} encontrada(s).`);
     } catch (error) {
@@ -1602,13 +1765,18 @@ export default function LotacaoAuditoriaPage() {
     if (!cte) return;
     setCteSelecionado(cte);
     setCtesEncontrados([cte]);
-    const sugestoes = sugerirViagensPorCte(baseFluxo.cargas, cte, vinculos);
-    setSugestoesViagens(sugestoes);
-    if (sugestoes.length) {
-      setViagemSelecionada(sugestoes[0].viagem);
-      setMensagem('CT-e selecionado no lote. Sugestão de viagem aplicada; revise antes de vincular.');
+
+    const resultado = gerarSugestoesViagemAuditoria(baseFluxo.cargas, cte, vinculos);
+    setSugestoesViagens(resultado.casamento);
+    setSugestoesVinculoTransportadora(resultado.vinculosPossiveis);
+
+    if (resultado.casamento.length) {
+      setViagemSelecionada(resultado.casamento[0].viagem);
+      setMensagem('CT-e selecionado no lote. Sugestão de viagem com mesma transportadora aplicada; revise antes de vincular.');
+    } else if (resultado.vinculosPossiveis.length) {
+      setMensagem('CT-e selecionado no lote. Nenhuma viagem válida com a mesma transportadora; veja sugestões para vínculo.');
     } else {
-      setMensagem('CT-e selecionado no lote. Nenhuma viagem provável encontrada no realizado.');
+      setMensagem('CT-e selecionado no lote. Nenhuma viagem provável encontrada com a mesma transportadora no realizado.');
     }
   }, [baseFluxo.cargas, vinculos]);
 
@@ -2041,9 +2209,19 @@ export default function LotacaoAuditoriaPage() {
               </button>
             </div>
           )}
-
           {cteSelecionado && sugestoesViagens.length > 0 && (
             <SugestoesViagens sugestoes={sugestoesViagens} onUsar={setViagemSelecionada} />
+          )}
+
+          {cteSelecionado && sugestoesViagens.length === 0 && sugestoesVinculoTransportadora.length > 0 && (
+            <SugestoesVinculoTransportadora
+              sugestoes={sugestoesVinculoTransportadora}
+              onAnalisar={(viagem) => {
+                setViagemSelecionada(viagem);
+                setAbaAtiva('vinculos');
+                setMensagem('Revise e confirme o vínculo de transportadora antes de auditar esta viagem.');
+              }}
+            />
           )}
 
           {(cteSelecionado || viagemSelecionada) && <ValidacaoTabelaLotacao resultados={tabelaAplicavel} />}
@@ -2083,3 +2261,4 @@ export default function LotacaoAuditoriaPage() {
     </div>
   );
 }
+
