@@ -6,48 +6,110 @@ const INSERT_CHUNK_SIZE = 500;
 
 function ensureClient() {
   const client = getSupabaseClient();
-  if (!client) throw new Error('Supabase nÃ£o configurado. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no ambiente do projeto.');
+  if (!client) throw new Error('Supabase não configurado. Confira VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no ambiente do projeto.');
   return client;
 }
 
 function detalheErroSupabase(error) {
   const msg = error?.message || String(error || 'Erro desconhecido no Supabase.');
   if (msg.includes('lotacao_tabelas') || msg.includes('lotacao_rotas') || msg.includes('lotacao_cargas') || msg.includes('lotacao_lancamentos') || msg.includes('lotacao_solicitacoes') || msg.includes('relation') || msg.includes('does not exist') || error?.code === '42P01') {
-    return `${msg}. Rode o script supabase/lotacao_schema.sql no SQL Editor do Supabase antes de usar o mÃ³dulo.`;
+    return `${msg}. Rode o script supabase/lotacao_schema.sql no SQL Editor do Supabase antes de usar o módulo.`;
   }
   return msg;
 }
 
-function erroColunasAprovacaoPendencia(error) {
+const COLUNAS_COMPAT_PENDENCIA = [
+  'valor_original',
+  'valor_adicional_aprovado',
+  'valor_final_autorizado',
+  'aprovado_por_user_id',
+  'aprovado_por_name',
+  'aprovado_por_email',
+  'aprovado_em',
+  'motivo_recusa',
+  'resposta_operacao',
+  'justificativa_operacao',
+  'resposta_auditoria',
+  'auditado_ok_em',
+  'devolvido_auditoria_em',
+  'prazo_operacao_em',
+  'prazo_auditoria_em',
+];
+
+const COLUNAS_RESPOSTA_PENDENCIA = [
+  'motivo_recusa',
+  'resposta_operacao',
+  'justificativa_operacao',
+  'resposta_auditoria',
+];
+
+function colunasPendenciaComErro(error) {
   const msg = String(error?.message || error || '').toLowerCase();
-  return [
-    'valor_original',
-    'valor_adicional_aprovado',
-    'valor_final_autorizado',
-    'aprovado_por_email',
-    'justificativa_operacao',
-    'resposta_auditoria',
-    'auditado_ok_em',
-    'devolvido_auditoria_em',
-    'prazo_operacao_em',
-    'prazo_auditoria_em',
-  ].some((coluna) => msg.includes(coluna));
+  return COLUNAS_COMPAT_PENDENCIA.filter((coluna) => msg.includes(coluna));
+}
+
+function erroColunasAprovacaoPendencia(error) {
+  return colunasPendenciaComErro(error).length > 0;
+}
+
+function removerColunasPendenciaComErro(row = {}, error) {
+  const colunas = colunasPendenciaComErro(error);
+  if (!colunas.length) return { ...row };
+
+  const colunasRespostaPerdidas = colunas.filter((coluna) => (
+    COLUNAS_RESPOSTA_PENDENCIA.includes(coluna)
+    && row[coluna] !== undefined
+    && row[coluna] !== null
+    && String(row[coluna]).trim() !== ''
+  ));
+  if (colunasRespostaPerdidas.length) {
+    throw new Error(`Campo(s) de resposta/tratamento ausente(s) em audit_pendencias: ${colunasRespostaPerdidas.join(', ')}. Ajuste o schema antes de concluir a pendência para não perder o tratamento.`);
+  }
+
+  const compat = { ...row };
+  colunas.forEach((coluna) => { delete compat[coluna]; });
+  return compat;
 }
 
 function semColunasAprovacaoPendencia(row = {}) {
-  const {
-    valor_original,
-    valor_adicional_aprovado,
-    valor_final_autorizado,
-    aprovado_por_email,
-    justificativa_operacao,
-    resposta_auditoria,
-    auditado_ok_em,
-    devolvido_auditoria_em,
-    prazo_operacao_em,
-    prazo_auditoria_em,
-    ...compat
-  } = row;
+  const compat = { ...row };
+  COLUNAS_COMPAT_PENDENCIA.forEach((coluna) => { delete compat[coluna]; });
+  return compat;
+}
+
+async function atualizarLinhaUnicaSupabase(query, descricaoRegistro) {
+  const { data, error } = await query.select('id').maybeSingle();
+  if (error) throw new Error(detalheErroSupabase(error));
+  if (!data?.id) throw new Error(`${descricaoRegistro} não foi encontrado ou nenhuma linha foi atualizada no Supabase.`);
+  return data;
+}
+
+function erroColunasSolicitacaoInfo(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return [
+    'resposta',
+    'resposta_operacao',
+    'observacao_tratamento',
+    'respondido_por_id',
+    'respondido_por_nome',
+    'respondido_por_email',
+    'respondido_em',
+  ].filter((coluna) => msg.includes(coluna));
+}
+
+function removerColunasSolicitacaoInfoComErro(row = {}, error) {
+  const colunas = erroColunasSolicitacaoInfo(error);
+  const colunasRespostaPerdidas = colunas.filter((coluna) => (
+    ['resposta', 'resposta_operacao', 'observacao_tratamento'].includes(coluna)
+    && row[coluna] !== undefined
+    && row[coluna] !== null
+    && String(row[coluna]).trim() !== ''
+  ));
+  if (colunasRespostaPerdidas.length) {
+    throw new Error(`Campo(s) de resposta/tratamento ausente(s) em audit_solicitacoes_informacao: ${colunasRespostaPerdidas.join(', ')}. Ajuste o schema antes de concluir o questionamento para não misturar resposta com a descrição original.`);
+  }
+  const compat = { ...row };
+  colunas.forEach((coluna) => { delete compat[coluna]; });
   return compat;
 }
 
@@ -219,7 +281,7 @@ export async function removerTabelaLotacaoSupabase(tabelaId) {
 }
 
 export async function diagnosticarLotacaoSupabase() {
-  if (!isSupabaseConfigured()) return { ok: false, configured: false, erro: 'Supabase nÃ£o configurado.' };
+  if (!isSupabaseConfigured()) return { ok: false, configured: false, erro: 'Supabase não configurado.' };
   const supabase = ensureClient();
   const [tabelas, rotas] = await Promise.all([
     supabase.from('lotacao_tabelas').select('id', { count: 'exact', head: true }),
@@ -336,6 +398,53 @@ function dbParaCarga(row = {}) {
   };
 }
 
+function chaveCargaIdentica(carga = {}) {
+  const numero = (valor) => {
+    const parsed = Number(valor);
+    return Number.isFinite(parsed) ? parsed.toFixed(2) : '0.00';
+  };
+  return [
+    normalizarTexto(carga.dist || ''),
+    numero(carga.valorComparacao),
+    numero(carga.freteCantu),
+    numero(carga.freteTransp),
+    numero(carga.pedagio),
+    numero(carga.icmsRemovido),
+  ].join('|');
+}
+
+export async function removerCargasDuplicadasLotacaoSupabase() {
+  if (!isSupabaseConfigured()) return { ok: false, removidas: 0 };
+
+  const supabase = ensureClient();
+  const cargas = await carregarCargasLotacaoSupabase({});
+  const ordenadas = [...cargas].sort((a, b) => {
+    const dataA = new Date(a.importadoEm || 0).getTime() || 0;
+    const dataB = new Date(b.importadoEm || 0).getTime() || 0;
+    return dataB - dataA;
+  });
+  const vistas = new Set();
+  const idsDuplicados = [];
+
+  for (const carga of ordenadas) {
+    const chave = chaveCargaIdentica(carga);
+    if (vistas.has(chave)) {
+      if (carga.id) idsDuplicados.push(carga.id);
+      continue;
+    }
+    vistas.add(chave);
+  }
+
+  const CHUNK = 200;
+  for (let i = 0; i < idsDuplicados.length; i += CHUNK) {
+    const ids = idsDuplicados.slice(i, i + CHUNK);
+    const { error } = await supabase.from('lotacao_cargas').delete().in('id', ids);
+    if (error) throw new Error(detalheErroSupabase(error));
+  }
+
+  return { ok: true, removidas: idsDuplicados.length };
+}
+
 export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '') {
   if (!isSupabaseConfigured()) return { ok: false, modo: 'local', total: 0 };
   if (!cargas.length) return { ok: true, modo: 'supabase', total: 0 };
@@ -352,7 +461,13 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
     total += chunk.length;
   }
 
-  return { ok: true, modo: 'supabase', total };
+  const deduplicacao = await removerCargasDuplicadasLotacaoSupabase();
+  return {
+    ok: true,
+    modo: 'supabase',
+    total,
+    duplicadasRemovidas: deduplicacao.removidas || 0,
+  };
 }
 
 export async function carregarCargasLotacaoSupabase(filtros = {}) {
@@ -763,13 +878,16 @@ export async function salvarSolicitacaoSupabase(solicitacao) {
 }
 
 export async function atualizarSolicitacaoSupabase(id, status, resposta = '') {
-  if (!isSupabaseConfigured()) return { ok: false };
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado. Não foi possível atualizar a solicitação.');
+  if (!id) throw new Error('Solicitação sem identificador para atualizar.');
   const supabase = ensureClient();
-  const { error } = await supabase
-    .from('lotacao_solicitacoes')
-    .update({ status, resposta, atualizado_em: new Date().toISOString() })
-    .eq('id', id);
-  if (error) throw new Error(detalheErroSupabase(error));
+  await atualizarLinhaUnicaSupabase(
+    supabase
+      .from('lotacao_solicitacoes')
+      .update({ status, resposta, atualizado_em: new Date().toISOString() })
+      .eq('id', id),
+    `Solicitação ${id}`,
+  );
   return { ok: true };
 }
 
@@ -817,12 +935,16 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
     audited_by_email: String(pendencia.auditedByEmail || ''),
     audited_at: pendencia.auditedAt || new Date().toISOString(),
     observation: String(pendencia.observation || pendencia.observacao || ''),
+    motivo_recusa: String(pendencia.motivoRecusa || pendencia.motivo_recusa || ''),
+    resposta_operacao: String(pendencia.respostaOperacao || pendencia.resposta_operacao || pendencia.resposta || ''),
+    justificativa_operacao: String(pendencia.justificativaOperacao || pendencia.justificativa_operacao || ''),
+    resposta_auditoria: String(pendencia.respostaAuditoria || pendencia.resposta_auditoria || ''),
     updated_at: new Date().toISOString(),
   };
   const { error } = await supabase.from('audit_pendencias').upsert(row, { onConflict: 'id' });
   if (error) {
     if (erroColunasAprovacaoPendencia(error)) {
-      const fallback = semColunasAprovacaoPendencia(row);
+      const fallback = removerColunasPendenciaComErro(row, error);
       const retry = await supabase.from('audit_pendencias').upsert(fallback, { onConflict: 'id' });
       if (!retry.error) return { ok: true, compat: true };
       throw new Error(detalheErroSupabase(retry.error));
@@ -833,24 +955,31 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
 }
 
 export async function atualizarPendenciaAuditoriaSupabase(id, status, dadosExtra = {}) {
-  if (!isSupabaseConfigured()) return { ok: false };
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado. Não foi possível atualizar a pendência.');
+  if (!id) throw new Error('Pendência sem identificador para atualizar.');
   const supabase = ensureClient();
   const update = {
     status,
     updated_at: new Date().toISOString(),
     ...dadosExtra,
   };
-  const { error } = await supabase.from('audit_pendencias').update(update).eq('id', id);
-  if (error) {
+  try {
+    await atualizarLinhaUnicaSupabase(
+      supabase.from('audit_pendencias').update(update).eq('id', id),
+      `Pendência ${id}`,
+    );
+    return { ok: true };
+  } catch (error) {
     if (erroColunasAprovacaoPendencia(error)) {
-      const fallback = semColunasAprovacaoPendencia(update);
-      const retry = await supabase.from('audit_pendencias').update(fallback).eq('id', id);
-      if (!retry.error) return { ok: true, compat: true };
-      throw new Error(detalheErroSupabase(retry.error));
+      const fallback = removerColunasPendenciaComErro(update, error);
+      await atualizarLinhaUnicaSupabase(
+        supabase.from('audit_pendencias').update(fallback).eq('id', id),
+        `Pendência ${id}`,
+      );
+      return { ok: true, compat: true };
     }
-    throw new Error(detalheErroSupabase(error));
+    throw error;
   }
-  return { ok: true };
 }
 
 // ============================================================
@@ -913,7 +1042,7 @@ export async function salvarSlaConfigSupabase(config) {
   const supabase = ensureClient();
   const row = {
     id: config.id || undefined,
-    nome: String(config.nome || 'PadrÃ£o'),
+    nome: String(config.nome || 'Padrão'),
     prazo_alerta_operacao_h: Number(config.prazoAlertaOperacaoH ?? config.prazo_alerta_operacao_h ?? 24),
     prazo_escalonamento_dias: Number(config.prazoEscalonamentoDias ?? config.prazo_escalonamento_dias ?? 2),
     emails_operacao: Array.isArray(config.emailsOperacao) ? config.emailsOperacao : [],
@@ -961,6 +1090,9 @@ export async function salvarSolicitacaoInfoSupabase(sol) {
     transportadora: String(sol.transportadora || ''),
     fatura: String(sol.fatura || ''),
     descricao_problema: String(sol.descricaoProblema || sol.descricao_problema || ''),
+    resposta: String(sol.resposta || ''),
+    resposta_operacao: String(sol.respostaOperacao || sol.resposta_operacao || sol.resposta || ''),
+    observacao_tratamento: String(sol.observacaoTratamento || sol.observacao_tratamento || ''),
     responsavel_id: String(sol.responsavelId || sol.responsavel_id || ''),
     responsavel_nome: String(sol.responsavelNome || sol.responsavel_nome || ''),
     prioridade: String(sol.prioridade || 'NORMAL'),
@@ -969,11 +1101,53 @@ export async function salvarSolicitacaoInfoSupabase(sol) {
     aberto_por_id: String(sol.abertoPorId || sol.aberto_por_id || ''),
     aberto_por_nome: String(sol.abertoPorNome || sol.aberto_por_nome || ''),
     aberto_por_email: String(sol.abertoPorEmail || sol.aberto_por_email || ''),
+    respondido_por_id: String(sol.respondidoPorId || sol.respondido_por_id || ''),
+    respondido_por_nome: String(sol.respondidoPorNome || sol.respondido_por_nome || ''),
+    respondido_por_email: String(sol.respondidoPorEmail || sol.respondido_por_email || ''),
+    respondido_em: sol.respondidoEm || sol.respondido_em || null,
     updated_at: new Date().toISOString(),
   };
   const { error } = await supabase.from('audit_solicitacoes_informacao').upsert(row, { onConflict: 'id' });
-  if (error) throw new Error(detalheErroSupabase(error));
+  if (error) {
+    const colunas = erroColunasSolicitacaoInfo(error);
+    if (colunas.length) {
+      const fallback = removerColunasSolicitacaoInfoComErro(row, error);
+      const retry = await supabase.from('audit_solicitacoes_informacao').upsert(fallback, { onConflict: 'id' });
+      if (!retry.error) return { ok: true, compat: true };
+      throw new Error(detalheErroSupabase(retry.error));
+    }
+    throw new Error(detalheErroSupabase(error));
+  }
   return { ok: true };
+}
+
+export async function atualizarSolicitacaoInfoSupabase(id, status, dadosExtra = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado. Não foi possível atualizar o questionamento.');
+  if (!id) throw new Error('Questionamento sem identificador para atualizar.');
+  const supabase = ensureClient();
+  const update = {
+    status,
+    updated_at: new Date().toISOString(),
+    ...dadosExtra,
+  };
+  try {
+    await atualizarLinhaUnicaSupabase(
+      supabase.from('audit_solicitacoes_informacao').update(update).eq('id', id),
+      `Questionamento ${id}`,
+    );
+    return { ok: true };
+  } catch (error) {
+    const colunas = erroColunasSolicitacaoInfo(error);
+    if (colunas.length) {
+      const fallback = removerColunasSolicitacaoInfoComErro(update, error);
+      await atualizarLinhaUnicaSupabase(
+        supabase.from('audit_solicitacoes_informacao').update(fallback).eq('id', id),
+        `Questionamento ${id}`,
+      );
+      return { ok: true, compat: true };
+    }
+    throw error;
+  }
 }
 
 // ============================================================
