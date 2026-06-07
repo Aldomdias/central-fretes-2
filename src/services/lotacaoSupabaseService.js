@@ -1,5 +1,6 @@
 import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
 import { normalizarTexto, normalizarTipoTabela } from '../utils/lotacaoTables';
+import { filtrarCpComercialCte } from './cteBasePolicy';
 
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK_SIZE = 500;
@@ -601,7 +602,13 @@ async function consultarCtesPorFiltro({ supabase, fonte, campo, operador, valor,
   return (data || []).map((row) => normalizarCteLotacaoAuditoria(row, fonte.tabela));
 }
 
-async function consultarCtesComFallbacks({ campo, valores = [], operadores = ['eq', 'ilike'], limite = 20 }) {
+async function consultarCtesComFallbacks({
+  campo,
+  valores = [],
+  operadores = ['eq', 'ilike'],
+  limite = 20,
+  opcoesBaseCte = {},
+}) {
   const supabase = ensureClient();
   const erros = [];
   const encontradosPorChave = new Map();
@@ -630,10 +637,13 @@ async function consultarCtesComFallbacks({ campo, valores = [], operadores = ['e
     console.warn('[Auditoria Lotação] Busca CT-e sem resultado. Tentativas:', erros);
   }
 
-  return Array.from(encontradosPorChave.values()).slice(0, limite);
+  return filtrarCpComercialCte(
+    Array.from(encontradosPorChave.values()).slice(0, limite),
+    opcoesBaseCte,
+  );
 }
 
-export async function buscarCteLotacaoAuditoriaPorChaveSupabase(chave = '') {
+export async function buscarCteLotacaoAuditoriaPorChaveSupabase(chave = '', opcoesBaseCte = {}) {
   if (!isSupabaseConfigured()) return [];
   const digitos = somenteDigitos(chave);
   if (!digitos) return [];
@@ -646,10 +656,11 @@ export async function buscarCteLotacaoAuditoriaPorChaveSupabase(chave = '') {
     valores: [digitos],
     operadores: ['eq'],
     limite: 5,
+    opcoesBaseCte,
   });
 }
 
-export async function buscarCtesLotacaoAuditoriaPorChavesSupabase(chaves = []) {
+export async function buscarCtesLotacaoAuditoriaPorChavesSupabase(chaves = [], opcoesBaseCte = {}) {
   if (!isSupabaseConfigured()) return [];
   const unicas = [...new Set((Array.isArray(chaves) ? chaves : [])
     .map((chave) => somenteDigitos(chave))
@@ -658,7 +669,7 @@ export async function buscarCtesLotacaoAuditoriaPorChavesSupabase(chaves = []) {
   const resultados = [];
   for (const chave of unicas) {
     try {
-      const ctes = await buscarCteLotacaoAuditoriaPorChaveSupabase(chave);
+      const ctes = await buscarCteLotacaoAuditoriaPorChaveSupabase(chave, opcoesBaseCte);
       resultados.push({ chave, ctes, erro: '' });
     } catch (error) {
       resultados.push({ chave, ctes: [], erro: error.message || String(error) });
@@ -667,7 +678,7 @@ export async function buscarCtesLotacaoAuditoriaPorChavesSupabase(chaves = []) {
   return resultados;
 }
 
-export async function buscarCtesLotacaoAuditoriaPorNumeroSupabase(numero = '') {
+export async function buscarCtesLotacaoAuditoriaPorNumeroSupabase(numero = '', opcoesBaseCte = {}) {
   if (!isSupabaseConfigured()) return [];
   const digitos = somenteDigitos(numero);
   const termo = String(numero || '').trim().replace(/[%*,()]/g, ' ');
@@ -680,15 +691,18 @@ export async function buscarCtesLotacaoAuditoriaPorNumeroSupabase(numero = '') {
     valores,
     operadores: ['eq', 'ilike'],
     limite: 30,
+    opcoesBaseCte,
   });
 }
 
-export async function buscarCtesLotacaoAuditoriaSupabase(termo = '') {
+export async function buscarCtesLotacaoAuditoriaSupabase(termo = '', opcoesBaseCte = {}) {
   const busca = String(termo || '').trim();
   if (!busca) return [];
   const digitos = somenteDigitos(busca);
-  if (digitos.length === 44) return buscarCteLotacaoAuditoriaPorChaveSupabase(digitos);
-  return buscarCtesLotacaoAuditoriaPorNumeroSupabase(busca);
+  if (digitos.length === 44) {
+    return buscarCteLotacaoAuditoriaPorChaveSupabase(digitos, opcoesBaseCte);
+  }
+  return buscarCtesLotacaoAuditoriaPorNumeroSupabase(busca, opcoesBaseCte);
 }
 
 export async function resumoRotasLotacaoSupabase(filtros = {}) {

@@ -31,8 +31,12 @@ import {
 import { LaudoNegociacaoTemplate } from '../components/laudos';
 import { prepararLaudosNegociacao, salvarLaudosNegociacao } from '../services/laudosNegociacaoService';
 import { CANAL_A_DEFINIR, normalizarCanalOperacional } from '../utils/canalTransportadora';
-
-const TOMADORES_REALIZADO_PADRAO_SIM = ['CPX', 'ITR', 'GP PNEUS'];
+import {
+  aplicarPoliticaBaseCte,
+  carregarConfiguracaoBaseCte,
+  filtrarCpComercialCte,
+  salvarConfiguracaoBaseCte,
+} from '../services/cteBasePolicy';
 
 
 function sleep(ms) {
@@ -1102,16 +1106,6 @@ function isCpsLogSimulador(nome = '') {
   return texto.includes('CPS LOG') || texto.includes('CPSLOG');
 }
 
-function isEbazarSimulador(nome = '') {
-  return normalizarTransportadoraSimulador(nome).includes('EBAZAR');
-}
-
-function isTomadorPermitidoRealizadoSim(row = {}) {
-  const tomador = normalizarTransportadoraSimulador(row.tomador || row.tomadorServico || row.tomador_servico || row.nomeTomador || '');
-  if (!tomador) return true;
-  return TOMADORES_REALIZADO_PADRAO_SIM.some((permitido) => tomador.includes(normalizarTransportadoraSimulador(permitido)));
-}
-
 function registroTemCpsLogSimulador(row = {}) {
   const campos = [
     row.transportadora,
@@ -1140,17 +1134,25 @@ function filtrarCpsLogRealizadoSim(rows = [], incluirCpsLog = false) {
   return lista.filter((row) => !registroTemCpsLogSimulador(row));
 }
 
-function aplicarFiltrosPadraoRealizadoSim(rows = [], { incluirCpsLog = false } = {}) {
-  return filtrarCpsLogRealizadoSim(
-    (rows || []).filter((row) => {
-      const transportadora = row.transportadora || '';
-      const tomador = row.tomador || '';
-      if (!isTomadorPermitidoRealizadoSim(row)) return false;
-      if (isEbazarSimulador(transportadora) || isEbazarSimulador(tomador)) return false;
-      return true;
-    }),
-    incluirCpsLog
+function filtrarOpcoesRealizadoSim(
+  rows = [],
+  { incluirCpsLog = false, incluirCpComercial = false } = {},
+) {
+  return filtrarCpComercialCte(
+    filtrarCpsLogRealizadoSim(rows, incluirCpsLog),
+    { incluirCpComercial },
   );
+}
+
+function aplicarFiltrosPadraoRealizadoSim(
+  rows = [],
+  { incluirCpsLog = false, incluirCpComercial = false } = {},
+) {
+  return aplicarPoliticaBaseCte(rows, {
+    ocultarEbazar: true,
+    incluirCpsLog,
+    incluirCpComercial,
+  });
 }
 
 function transportadoraCompativelSimulador(nomeTabela = '', nomeFiltro = '') {
@@ -2823,6 +2825,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [incluirNegociacoesRealizado, setIncluirNegociacoesRealizado] = useState(false);
   const [compararConcorrentesRealizado, setCompararConcorrentesRealizado] = useState(false);
   const [incluirCpsLogRealizado, setIncluirCpsLogRealizado] = useState(false);
+  const [incluirCpComercialRealizado, setIncluirCpComercialRealizado] = useState(
+    () => carregarConfiguracaoBaseCte().incluirCpComercial,
+  );
   const [baseRealizadoTracking, setBaseRealizadoTracking] = useState('com_tracking'); // 'com_tracking' | 'todos'
   const [baseOficialRealizadoSelecionada, setBaseOficialRealizadoSelecionada] = useState([]);
   const [carregandoBaseOficialRealizado, setCarregandoBaseOficialRealizado] = useState(false);
@@ -4251,6 +4256,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         // CPS LOG fica excluído por padrão em qualquer base.
         // Marque a opção na tela somente quando quiser analisar CPS LOG.
         incluirCpsLog: incluirCpsLogRealizado,
+        incluirCpComercial: incluirCpComercialRealizado,
       });
 
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 70);
@@ -4263,7 +4269,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
       });
 
       // Segunda barreira: depois dos vínculos, a transportadora pode virar CPS LOG.
-      let rowsComIbgeBase = filtrarCpsLogRealizadoSim(rowsComIbgeBaseAntesCps, incluirCpsLogRealizado);
+      let rowsComIbgeBase = filtrarOpcoesRealizadoSim(rowsComIbgeBaseAntesCps, {
+        incluirCpsLog: incluirCpsLogRealizado,
+        incluirCpComercial: incluirCpComercialRealizado,
+      });
 
       atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 82);
       let mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
@@ -4271,7 +4280,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       // Terceira barreira: garante que CPS LOG não entre mesmo se vier enriquecido/vinculado no Tracking.
       let linhasEnriquecidasFiltradas = filtrarRowsPorOrigensRealizado(
-        filtrarCpsLogRealizadoSim(trackingEnriquecido.linhas || [], incluirCpsLogRealizado),
+        filtrarOpcoesRealizadoSim(trackingEnriquecido.linhas || [], {
+          incluirCpsLog: incluirCpsLogRealizado,
+          incluirCpComercial: incluirCpComercialRealizado,
+        }),
         origensMarcadasFiltro
       );
 
@@ -4294,6 +4306,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
         rowsBrutosFiltrados = aplicarFiltrosPadraoRealizadoSim(rowsBrutos, {
           incluirCpsLog: incluirCpsLogRealizado,
+          incluirCpComercial: incluirCpComercialRealizado,
         });
         rowsComIbgeBaseAntesCps = rowsBrutosFiltrados.map((row) => {
           const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
@@ -4302,11 +4315,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
           const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
           return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
         });
-        rowsComIbgeBase = filtrarCpsLogRealizadoSim(rowsComIbgeBaseAntesCps, incluirCpsLogRealizado);
+        rowsComIbgeBase = filtrarOpcoesRealizadoSim(rowsComIbgeBaseAntesCps, {
+          incluirCpsLog: incluirCpsLogRealizado,
+          incluirCpComercial: incluirCpComercialRealizado,
+        });
         mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
         trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
         linhasEnriquecidasFiltradas = filtrarRowsPorOrigensRealizado(
-          filtrarCpsLogRealizadoSim(trackingEnriquecido.linhas || [], incluirCpsLogRealizado),
+          filtrarOpcoesRealizadoSim(trackingEnriquecido.linhas || [], {
+            incluirCpsLog: incluirCpsLogRealizado,
+            incluirCpComercial: incluirCpComercialRealizado,
+          }),
           origensMarcadasFiltro
         );
       }
@@ -4376,6 +4395,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fim: fimRealizado,
           limite: limiteRealizado,
           incluirCpsLog: incluirCpsLogRealizado,
+          incluirCpComercial: incluirCpComercialRealizado,
           rowsBrutos: rowsBrutos.length,
           rowsComIbgeBase: rowsComIbgeBase.length,
           rowsComIbgeBaseAntesCps: rowsComIbgeBaseAntesCps.length,
@@ -4596,6 +4616,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           ctesRemovidosFiltroPadrao: Math.max(0, ctx.rowsBrutos - ctx.rowsComIbgeBase),
           ctesRemovidosCpsAposVinculo: Math.max(0, ctx.rowsComIbgeBaseAntesCps - ctx.rowsComIbgeBase),
           incluirCpsLog: ctx.incluirCpsLog,
+          incluirCpComercial: ctx.incluirCpComercial,
           baseRealizadoTracking,
           // Filtros BI aplicados nesta simulação (somente base visível):
           filtrosBiAplicados: {
@@ -6238,6 +6259,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <label className="sim-flag">
                   <input
                     type="checkbox"
+                    checked={incluirCpComercialRealizado}
+                    onChange={(event) => {
+                      const marcado = event.target.checked;
+                      setIncluirCpComercialRealizado(marcado);
+                      salvarConfiguracaoBaseCte({ incluirCpComercial: marcado });
+                    }}
+                  />
+                  Incluir CP COMERCIAL nesta análise
+                </label>
+
+                <label className="sim-flag">
+                  <input
+                    type="checkbox"
                     checked={compararConcorrentesRealizado}
                     onChange={(event) => {
                       const marcado = event.target.checked;
@@ -6254,7 +6288,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </label>
 
                 <small style={{ color: '#64748b' }}>
-                  Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR e exclui CPS LOG por padrão. Marque CPS LOG somente quando quiser analisar esse operador.
+                  Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR, CPS LOG e CP COMERCIAL por padrão.
                 </small>
               </div>
             )}

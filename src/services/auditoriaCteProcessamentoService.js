@@ -1,6 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarBaseCompletaDb } from './freteDatabaseService';
 import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
+import { filtrarCpComercialCte } from './cteBasePolicy';
 
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK = 500;
@@ -385,7 +386,7 @@ async function buscarCtesMesBruto({ supabase, competencia, onProgress }) {
       from += PAGE_SIZE;
     }
 
-    return acumulado;
+    return filtrarCpComercialCte(acumulado);
   };
 
   const porData = await carregarPorFiltro('data');

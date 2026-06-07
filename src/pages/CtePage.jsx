@@ -16,14 +16,18 @@ import {
   carregarVinculosTransportadoras,
   criarMapaVinculosTransportadoras,
 } from '../services/vinculosTransportadorasService';
+import {
+  aplicarPoliticaBaseCte,
+  carregarConfiguracaoBaseCte,
+  salvarConfiguracaoBaseCte,
+  TOMADORES_CTE_PADRAO,
+} from '../services/cteBasePolicy';
 import { CANAIS_OPERACIONAIS, CANAL_A_DEFINIR, normalizarCanalOperacional } from '../utils/canalTransportadora';
 
 const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 const TABELA = 'realizado_local_ctes';
 const PAGE_SIZE = 50;
 const ANALISE_BATCH_SIZE = 1000;
-
-const TOMADORES_PERMITIDOS = ['CPX', 'ITR', 'GP PNEUS'];
 
 function monthNow() {
   const date = new Date();
@@ -99,35 +103,6 @@ function normalizarTexto(valor) {
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toUpperCase();
-}
-
-function transportadoraOuTomadorContem(row, termo) {
-  const alvo = `${getTransportadora(row)} ${getTomador(row)}`;
-  return normalizarTexto(alvo).includes(normalizarTexto(termo));
-}
-
-function isEbazarCte(row) {
-  return transportadoraOuTomadorContem(row, 'EBAZAR');
-}
-
-function isCpsLogCte(row) {
-  const texto = normalizarTexto(`${getTransportadora(row)} ${getTomador(row)}`);
-  return texto.includes('CPS LOG') || texto.includes('CPSLOG');
-}
-
-function isTomadorPermitidoCte(row) {
-  const tomador = normalizarTexto(getTomador(row));
-  if (!tomador || tomador === '-') return true;
-  return TOMADORES_PERMITIDOS.some((permitido) => tomador.includes(normalizarTexto(permitido)));
-}
-
-function aplicarFiltrosPadraoCte(rows = [], { ocultarEbazar = true, incluirCpsLog = false } = {}) {
-  return (rows || []).filter((row) => {
-    if (!isTomadorPermitidoCte(row)) return false;
-    if (ocultarEbazar && isEbazarCte(row)) return false;
-    if (!incluirCpsLog && isCpsLogCte(row)) return false;
-    return true;
-  });
 }
 
 function temFiltroAtivo(filtros = {}) {
@@ -1853,6 +1828,9 @@ export default function CtePage() {
 
   const [ocultarEbazar, setOcultarEbazar] = useState(true);
   const [incluirCpsLog, setIncluirCpsLog] = useState(false);
+  const [incluirCpComercial, setIncluirCpComercial] = useState(
+    () => carregarConfiguracaoBaseCte().incluirCpComercial,
+  );
   const [rows, setRows] = useState(null);
   const [rowsAnalise, setRowsAnalise] = useState([]);
   const [mapaVinculosTransportadoras, setMapaVinculosTransportadoras] = useState(() => new Map());
@@ -1986,7 +1964,7 @@ export default function CtePage() {
         inicio: formCompetencia.inicio,
         fim: formCompetencia.fim,
         observacao: formCompetencia.observacao,
-        filtros,
+        filtros: { ...filtros, incluirCpComercial },
         analise: analiseSnapshot,
       });
 
@@ -2227,11 +2205,12 @@ export default function CtePage() {
   );
 
   const baseAnalisePadrao = useMemo(
-    () => {
-      if (String(filtros.buscaDocumento || '').trim()) return rowsAnaliseComVinculos || [];
-      return aplicarFiltrosPadraoCte(rowsAnaliseComVinculos || [], { ocultarEbazar, incluirCpsLog });
-    },
-    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog, filtros.buscaDocumento]
+    () => aplicarPoliticaBaseCte(rowsAnaliseComVinculos || [], {
+      ocultarEbazar,
+      incluirCpsLog,
+      incluirCpComercial,
+    }),
+    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog, incluirCpComercial]
   );
 
   const analiseSnapshot = useMemo(
@@ -2262,9 +2241,15 @@ export default function CtePage() {
     () => aplicarVinculosCompetenciasResumo(competenciasSalvas, mapaVinculosTransportadoras),
     [competenciasSalvas, mapaVinculosTransportadoras]
   );
+  const competenciasDaPoliticaAtual = useMemo(
+    () => competenciasSalvasComVinculos.filter((row) => (
+      Boolean(row.filtros_json?.incluirCpComercial) === incluirCpComercial
+    )),
+    [competenciasSalvasComVinculos, incluirCpComercial]
+  );
   const competenciasComparativo = useMemo(
-    () => aplicarFiltrosComparativo(competenciasSalvasComVinculos, filtrosComparativo),
-    [competenciasSalvasComVinculos, filtrosComparativo]
+    () => aplicarFiltrosComparativo(competenciasDaPoliticaAtual, filtrosComparativo),
+    [competenciasDaPoliticaAtual, filtrosComparativo]
   );
   const linhasComparativo = useMemo(
     () => competenciasComparativo.map((row) => linhaComparativoComFiltros(row, filtrosComparativo)),
@@ -3256,10 +3241,21 @@ export default function CtePage() {
             />
             Incluir CPS LOG
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={incluirCpComercial}
+              onChange={(e) => {
+                const marcado = e.target.checked;
+                setIncluirCpComercial(marcado);
+                salvarConfiguracaoBaseCte({ incluirCpComercial: marcado });
+              }}
+              style={{ width: 15, height: 15 }}
+            />
+            Incluir CP COMERCIAL
+          </label>
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-            {String(filtros.buscaDocumento || '').trim()
-              ? 'Busca direta por documento: exibindo CT-e encontrado sem aplicar exclusões padrão de tomador/EBAZAR/CPS LOG.'
-              : `Base padrão: tomadores ${TOMADORES_PERMITIDOS.join(', ')}, sem EBAZAR e sem CPS LOG. Marque CPS LOG somente quando quiser analisar esse operador.`}
+            {`Base padrão: tomadores ${TOMADORES_CTE_PADRAO.join(', ')}, sem EBAZAR, CPS LOG e CP COMERCIAL. As buscas por chave/número também respeitam estas opções.`}
           </span>
         </div>
       </div>
@@ -3341,6 +3337,7 @@ export default function CtePage() {
                   Exibindo {fmtN(inicioExibicao)} a {fmtN(fimExibicao)} de {fmtN(rowsAnaliseInterativas.length)}. Página {fmtN(pagina)} de {fmtN(totalPaginasTabela)}.
                   {ocultarEbazar && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>EBAZAR ocultado.</span>}
                     {!incluirCpsLog && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>CPS LOG ocultado.</span>}
+                    {!incluirCpComercial && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>CP COMERCIAL ocultado.</span>}
                     {totalVinculosAplicados > 0 && <span style={{ marginLeft: 8, color: 'var(--muted)' }}>{fmtN(totalVinculosAplicados)} nome(s) padronizado(s) por vínculo.</span>}
                 </p>
               </div>

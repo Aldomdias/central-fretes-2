@@ -12,6 +12,7 @@
 
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
+import { filtrarCpComercialCte } from './cteBasePolicy';
 
 export const DIVERGENCIA_THRESHOLD = 0.05;
 export const META_STORAGE_KEY = 'central_fretes_auditoria_meta_v1';
@@ -189,6 +190,10 @@ function isEbazar(row) {
   return normNome(nome).includes('EBAZAR');
 }
 
+function aplicarFiltrosBaseAuditoria(rows = []) {
+  return filtrarCpComercialCte((rows || []).filter((row) => !isEbazar(row)));
+}
+
 function erroTabelaInexistente(error) {
   const msg = String(error?.message || '').toLowerCase();
   return msg.includes('does not exist')
@@ -201,7 +206,7 @@ function erroTabelaInexistente(error) {
 
 function montarResumoFonte({ fonte, filtro, data = [], error = null, parcial = false, limiteAtingido = false }) {
   const registros = (data || []).map((row) => normalizarRegistroAuditoria(row, fonte));
-  const registrosValidos = registros.filter((row) => !isEbazar(row));
+  const registrosValidos = aplicarFiltrosBaseAuditoria(registros);
   const metricas = calcularMetricasAuditoria(registrosValidos);
 
   return {
@@ -311,14 +316,14 @@ export async function carregarDadosAuditoria({ competencia = '', onProgress } = 
       }
     } else if ((porCompetencia.data || []).length > 0) {
       const registros = (porCompetencia.data || [])
-        .map((row) => normalizarRegistroAuditoria(row, fonte))
-        .filter((row) => !isEbazar(row));
+        .map((row) => normalizarRegistroAuditoria(row, fonte));
+      const registrosFiltrados = aplicarFiltrosBaseAuditoria(registros);
 
       if (porCompetencia.limiteAtingido) {
         avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
       }
 
-      return { registros, fonte, diagnostico, avisos };
+      return { registros: registrosFiltrados, fonte, diagnostico, avisos };
     }
 
     const porData = await consultarFontePaginada({
@@ -345,14 +350,14 @@ export async function carregarDadosAuditoria({ competencia = '', onProgress } = 
       }
     } else if ((porData.data || []).length > 0) {
       const registros = (porData.data || [])
-        .map((row) => normalizarRegistroAuditoria(row, fonte))
-        .filter((row) => !isEbazar(row));
+        .map((row) => normalizarRegistroAuditoria(row, fonte));
+      const registrosFiltrados = aplicarFiltrosBaseAuditoria(registros);
 
       if (porData.limiteAtingido) {
         avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
       }
 
-      return { registros, fonte, diagnostico, avisos };
+      return { registros: registrosFiltrados, fonte, diagnostico, avisos };
     }
   }
 
@@ -373,9 +378,9 @@ async function buscarRealizadoLocalCompletoPorCompetencia({ supabase, competenci
     throw new Error(`Erro ao buscar CT-es para salvar: ${resposta.error.message}`);
   }
 
-  return (resposta.data || [])
-    .map((row) => normalizarRegistroAuditoria(row, FONTES_AUDITORIA[0]))
-    .filter((row) => !isEbazar(row));
+  return aplicarFiltrosBaseAuditoria(
+    (resposta.data || []).map((row) => normalizarRegistroAuditoria(row, FONTES_AUDITORIA[0])),
+  );
 }
 
 function montarLinhaResultadoAuditoria(row = {}, competencia = '') {
