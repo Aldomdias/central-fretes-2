@@ -6,7 +6,10 @@ import {
   calcularFretePercentual,
   resolverTaxas,
 } from '../src/services/freteCalcEngine.js';
-import { resolverCubagemTracking } from '../src/utils/trackingCubagem.js';
+import {
+  agregarCubagemLinhasTracking,
+  resolverCubagemTracking,
+} from '../src/utils/trackingCubagem.js';
 
 test('percentual usa o maior entre kg garantia, frete percentual e minimo', () => {
   const resultado = calcularFretePercentual({
@@ -79,4 +82,29 @@ test('cubagem do Tracking nao multiplica novamente pelo total de volumes', () =>
   assert.equal(resultado.cubagemAplicada, 0.265);
   assert.equal(resultado.pesoCubado, 79.5);
   assert.equal(resultado.pesoConsiderado, 95.42);
+});
+
+test('cubagem de CT-e com varias NFs soma as cubagens originais de cada linha', () => {
+  const linhas = [
+    {
+      cubagem_unitaria: 0.121,
+      cubagem_total: 3.63,
+      qtd_volumes: 30,
+      peso: 224.639,
+    },
+    {
+      cubagem_unitaria: 0.246,
+      cubagem_total: 9.348,
+      qtd_volumes: 38,
+      peso: 284.2,
+    },
+  ];
+
+  const agregado = agregarCubagemLinhasTracking(linhas);
+
+  assert.equal(agregado.corrigiuMultiplicacao, true);
+  assert.ok(Math.abs(agregado.cubagemTotalArmazenada - 12.978) < 0.000001);
+  assert.ok(Math.abs(agregado.cubagemAplicada - 0.367) < 0.000001);
+  assert.ok(Math.abs(agregado.pesoCubado - 110.1) < 0.000001);
+  assert.ok(Math.abs(agregado.pesoFisico - 508.839) < 0.000001);
 });

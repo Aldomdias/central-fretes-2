@@ -759,22 +759,26 @@ function criarTrackingAgregado(item = {}, origem = 'raw') {
   const qtdVolumes = numeroTracking(item.qtd_volumes ?? item.volumes ?? item.volume ?? 0);
   const cubagemUnitaria = numeroTracking(item.cubagem_unitaria ?? 0);
   const cubagemTotalDireta = numeroTracking(item.cubagem_total ?? item.cubagem ?? 0);
-  const cubagemTotal = cubagemTotalDireta > 0
-    ? cubagemTotalDireta
-    : cubagemUnitaria > 0 && qtdVolumes > 0
-      ? cubagemUnitaria * qtdVolumes
-      : 0;
+  const cubagemResolvida = resolverCubagemTracking({
+    cubagemUnitaria,
+    cubagemTotal: cubagemTotalDireta,
+    volumes: qtdVolumes,
+    pesoFisico: numeroTracking(item.peso ?? item.peso_tracking ?? 0),
+  });
+  const cubagemTotal = cubagemResolvida.cubagemAplicada;
 
   return {
     ...item,
     origem_vinculo_tracking: origem,
     linhas_tracking: Number(item.linhas_tracking || 1),
     qtd_volumes: qtdVolumes,
-    cubagem_unitaria: cubagemUnitaria,
+    cubagem_unitaria: cubagemTotal,
     cubagem_total: cubagemTotal,
+    cubagem_total_armazenada: cubagemTotalDireta,
+    cubagem_corrigida: cubagemResolvida.totalFoiMultiplicadoPorVolumes,
     peso: numeroTracking(item.peso ?? item.peso_tracking ?? 0),
     peso_declarado: numeroTracking(item.peso_declarado ?? 0),
-    peso_cubado: numeroTracking(item.peso_cubado ?? 0),
+    peso_cubado: cubagemResolvida.pesoCubado,
     valor_nf: numeroTracking(item.valor_nf ?? 0),
   };
 }
@@ -789,11 +793,13 @@ function somarTrackingAgregado(atual, proximo) {
     ),
     linhas_tracking: numeroTracking(atual.linhas_tracking) + numeroTracking(item.linhas_tracking || 1),
     qtd_volumes: numeroTracking(atual.qtd_volumes) + numeroTracking(item.qtd_volumes),
-    cubagem_unitaria: numeroTracking(atual.cubagem_unitaria) || numeroTracking(item.cubagem_unitaria),
+    cubagem_unitaria: numeroTracking(atual.cubagem_unitaria) + numeroTracking(item.cubagem_unitaria),
     cubagem_total: numeroTracking(atual.cubagem_total) + numeroTracking(item.cubagem_total),
+    cubagem_total_armazenada: numeroTracking(atual.cubagem_total_armazenada) + numeroTracking(item.cubagem_total_armazenada),
+    cubagem_corrigida: Boolean(atual.cubagem_corrigida || item.cubagem_corrigida),
     peso: numeroTracking(atual.peso) + numeroTracking(item.peso),
     peso_declarado: numeroTracking(atual.peso_declarado) || numeroTracking(item.peso_declarado),
-    peso_cubado: numeroTracking(atual.peso_cubado) || numeroTracking(item.peso_cubado),
+    peso_cubado: numeroTracking(atual.peso_cubado) + numeroTracking(item.peso_cubado),
     valor_nf: numeroTracking(atual.valor_nf) || numeroTracking(item.valor_nf),
     origem_vinculo_tracking: atual.origem_vinculo_tracking || item.origem_vinculo_tracking || 'raw',
   };
@@ -831,10 +837,10 @@ async function buscarTrackingParaRealizado(rows = []) {
   let totalEncontrado = 0;
   let erroView = '';
 
-  async function consultarViewAgregadaPorChaveCte() {
-    if (!chavesCte.length) return false;
+  async function consultarViewAgregadaPorChaveCte(chavesConsulta = chavesCte) {
+    if (!chavesConsulta.length) return false;
     let consultou = false;
-    for (const parte of chunksTracking(chavesCte, 300)) {
+    for (const parte of chunksTracking(chavesConsulta, 300)) {
       if (!parte.length) continue;
       const { data, error } = await supabase
         .from('vw_tracking_cte_agregado')
@@ -876,12 +882,24 @@ async function buscarTrackingParaRealizado(rows = []) {
   }
 
   try {
-    const viewOk = await consultarViewAgregadaPorChaveCte();
+    let erroRawChaves = null;
+    if (chavesCte.length) {
+      try {
+        // As linhas brutas preservam a cubagem original de cada NF do CT-e.
+        // A view pode somar totais que ja vieram multiplicados pelos volumes.
+        await consultarRawPorColuna('chave_cte', chavesCte, 'CHAVE_CTE');
+      } catch (error) {
+        erroRawChaves = error;
+      }
+    }
 
-    // Fallback: mantém compatibilidade se a view ainda não existir ou se alguma chave vier exatamente igual na tabela raw.
-    // Mesmo quando a view existe, as demais buscas complementam NF/nota em casos sem chave CT-e.
-    if (!viewOk && chavesCte.length) {
-      await consultarRawPorColuna('chave_cte', chavesCte, 'CHAVE_CTE');
+    const chavesSemRaw = chavesCte.filter((chave) => !mapaChaveCte.has(chave));
+    const viewOk = chavesSemRaw.length
+      ? await consultarViewAgregadaPorChaveCte(chavesSemRaw)
+      : true;
+
+    if (erroRawChaves && !viewOk) {
+      throw erroRawChaves;
     }
 
     if (chavesNfe.length) await consultarRawPorColuna('chave_nfe', chavesNfe, 'CHAVE_NFE');

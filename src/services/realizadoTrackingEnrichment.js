@@ -1,5 +1,5 @@
-import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { resolverCubagemTracking } from '../utils/trackingCubagem';
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient.js';
+import { resolverCubagemTracking } from '../utils/trackingCubagem.js';
 
 function numero(value) {
   const n = Number(value || 0);
@@ -64,22 +64,26 @@ function criarTrackingAgregado(item = {}, origem = '') {
   const qtdVolumes = numero(item.qtd_volumes ?? item.volumes ?? item.volume ?? 0);
   const cubagemUnitaria = numero(item.cubagem_unitaria ?? 0);
   const cubagemTotalDireta = numero(item.cubagem_total ?? item.cubagem ?? 0);
-  const cubagemTotal = cubagemTotalDireta > 0
-    ? cubagemTotalDireta
-    : cubagemUnitaria > 0 && qtdVolumes > 0
-      ? cubagemUnitaria * qtdVolumes
-      : 0;
+  const cubagemResolvida = resolverCubagemTracking({
+    cubagemUnitaria,
+    cubagemTotal: cubagemTotalDireta,
+    volumes: qtdVolumes,
+    pesoFisico: numero(item.peso ?? item.peso_tracking ?? 0),
+  });
+  const cubagemTotal = cubagemResolvida.cubagemAplicada;
 
   return {
     ...item,
     origem_vinculo_tracking: origemVinculo,
     linhas_tracking: Number(item.linhas_tracking || 1),
     qtd_volumes: qtdVolumes,
-    cubagem_unitaria: cubagemUnitaria,
+    cubagem_unitaria: cubagemTotal,
     cubagem_total: cubagemTotal,
+    cubagem_total_armazenada: cubagemTotalDireta,
+    cubagem_corrigida: cubagemResolvida.totalFoiMultiplicadoPorVolumes,
     peso: numero(item.peso ?? item.peso_tracking ?? 0),
     peso_declarado: numero(item.peso_declarado ?? 0),
-    peso_cubado: numero(item.peso_cubado ?? 0),
+    peso_cubado: cubagemResolvida.pesoCubado,
     valor_nf: numero(item.valor_nf ?? 0),
   };
 }
@@ -94,11 +98,13 @@ function somarTrackingAgregado(atual, proximo) {
     ),
     linhas_tracking: numero(atual.linhas_tracking) + numero(item.linhas_tracking || 1),
     qtd_volumes: numero(atual.qtd_volumes) + numero(item.qtd_volumes),
-    cubagem_unitaria: numero(atual.cubagem_unitaria) || numero(item.cubagem_unitaria),
+    cubagem_unitaria: numero(atual.cubagem_unitaria) + numero(item.cubagem_unitaria),
     cubagem_total: numero(atual.cubagem_total) + numero(item.cubagem_total),
+    cubagem_total_armazenada: numero(atual.cubagem_total_armazenada) + numero(item.cubagem_total_armazenada),
+    cubagem_corrigida: Boolean(atual.cubagem_corrigida || item.cubagem_corrigida),
     peso: numero(atual.peso) + numero(item.peso),
     peso_declarado: numero(atual.peso_declarado) || numero(item.peso_declarado),
-    peso_cubado: numero(atual.peso_cubado) || numero(item.peso_cubado),
+    peso_cubado: numero(atual.peso_cubado) + numero(item.peso_cubado),
     valor_nf: numero(atual.valor_nf) || numero(item.valor_nf),
     origem_vinculo_tracking: atual.origem_vinculo_tracking || item.origem_vinculo_tracking || 'raw',
   };
@@ -142,10 +148,10 @@ export async function buscarTrackingParaRealizado(rows = []) {
   let totalEncontrado = 0;
   let erroView = '';
 
-  async function consultarViewAgregadaPorChaveCte() {
-    if (!chavesCte.length) return false;
+  async function consultarViewAgregadaPorChaveCte(chavesConsulta = chavesCte) {
+    if (!chavesConsulta.length) return false;
     let consultou = false;
-    for (const parte of chunksTracking(chavesCte, 300)) {
+    for (const parte of chunksTracking(chavesConsulta, 300)) {
       if (!parte.length) continue;
       const { data, error } = await supabase
         .from('vw_tracking_cte_agregado')
@@ -187,8 +193,23 @@ export async function buscarTrackingParaRealizado(rows = []) {
   }
 
   try {
-    const viewOk = await consultarViewAgregadaPorChaveCte();
-    if (!viewOk && chavesCte.length) await consultarRawPorColuna('chave_cte', chavesCte, 'CHAVE_CTE');
+    let erroRawChaves = null;
+    if (chavesCte.length) {
+      try {
+        // As linhas brutas preservam a cubagem original de cada NF do CT-e.
+        // A view pode somar totais que ja vieram multiplicados pelos volumes.
+        await consultarRawPorColuna('chave_cte', chavesCte, 'CHAVE_CTE');
+      } catch (error) {
+        erroRawChaves = error;
+      }
+    }
+
+    const chavesSemRaw = chavesCte.filter((chave) => !mapaChaveCte.has(chave));
+    const viewOk = chavesSemRaw.length
+      ? await consultarViewAgregadaPorChaveCte(chavesSemRaw)
+      : true;
+
+    if (erroRawChaves && !viewOk) throw erroRawChaves;
     if (chavesNfe.length) await consultarRawPorColuna('chave_nfe', chavesNfe, 'CHAVE_NFE');
     if (notas.length) await consultarRawPorColuna('nota_fiscal', notas, 'NOTA');
     if (numerosCteFallback.length) await consultarRawPorColuna('cte_numero', numerosCteFallback, 'NUMERO_CTE');
