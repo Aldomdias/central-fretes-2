@@ -90,6 +90,32 @@ function montarLaudosImpacto(resultado = {}, contexto = {}, tipo = 'REAJUSTE_TAB
     .slice()
     .sort((a, b) => Math.abs(Number(b.diferenca || b.impactoValor || 0)) - Math.abs(Number(a.diferenca || a.impactoValor || 0)))
     .slice(0, 8);
+  const analiseReajuste = resultado.analiseReajuste || {};
+  const competitivo = analiseReajuste.competitividade || {};
+  const captura = analiseReajuste.capturaRealizado || {};
+  const rotasAumento = analiseReajuste.impactoProprio?.rotasAumento || [];
+  const rotasReducao = analiseReajuste.impactoProprio?.rotasReducao || [];
+  const rotasGanhasCompetitivas = competitivo.rotasGanhamCompetitividade || [];
+  const rotasPerdidasCompetitivas = competitivo.rotasPerdemCompetitividade || [];
+  const rotasMantidasCompetitivas = competitivo.rotasMantemCompetitividade || [];
+  const freteMedioAtual = qtdComTabela ? valorAtual / qtdComTabela : 0;
+  const freteMedioNovo = qtdComTabela ? valorNovo / qtdComTabela : 0;
+  const variacaoCtes = Number(competitivo.ganhosProjetados || 0) - Number(competitivo.ganhosAtuais || 0);
+  const variacaoVolumes = Number(competitivo.volumesProjetados || 0) - Number(competitivo.volumesAtuais || 0);
+  const pareto = tipo === 'REAJUSTE_TABELA_EXISTENTE'
+    ? montarParetoReajuste(
+        resultado.ctesDetalhes || [],
+        resultado.gradeFrete,
+        canal,
+      )
+    : { peso: [], valorNF: [], cubagem: [], totalCtes: 0 };
+  const recomendacao = tipo !== 'REAJUSTE_TABELA_EXISTENTE'
+    ? (impacto > 0 ? 'Aprovar somente com justificativa operacional e comercial.' : 'Aprovar e seguir para implantação.')
+    : impactoPct > 8 || Number(competitivo.aderenciaProjetada || 0) < Number(competitivo.aderenciaAtual || 0) - 5
+      ? 'Aprovar parcialmente ou negociar as rotas específicas com maior aumento e perda de aderência.'
+      : impactoPct > 0
+        ? 'Aprovar com ressalvas, priorizando revisão das rotas de maior aumento.'
+        : 'Aprovar o reajuste, mantendo acompanhamento das rotas que perderam competitividade.';
 
   const assunto = `Impacto de ${tipoTitulo} - ${transportadora}`;
   const corpo = resumoTexto([
@@ -105,14 +131,21 @@ function montarLaudosImpacto(resultado = {}, contexto = {}, tipo = 'REAJUSTE_TAB
     `- Diferenca total: ${dinheiro(impacto)} (${percentual(impactoPct)}).`,
     `- Frete % NF atual: ${percentual(fretePctAtual)}.`,
     `- Frete % NF novo: ${percentual(fretePctNovo)}.`,
+    `- Frete medio atual: ${dinheiro(freteMedioAtual)}.`,
+    `- Frete medio novo: ${dinheiro(freteMedioNovo)}.`,
+    tipo === 'REAJUSTE_TABELA_EXISTENTE' ? `- Ganhos atuais x projetados: ${numero(competitivo.ganhosAtuais)} x ${numero(competitivo.ganhosProjetados)} CT-es.` : '',
+    tipo === 'REAJUSTE_TABELA_EXISTENTE' ? `- Aderencia atual x projetada: ${percentual(competitivo.aderenciaAtual)} x ${percentual(competitivo.aderenciaProjetada)}.` : '',
+    tipo === 'REAJUSTE_TABELA_EXISTENTE' ? `- Variacao de CT-es: ${numero(variacaoCtes)}; variacao de volumes: ${numero(variacaoVolumes)}.` : '',
+    tipo === 'REAJUSTE_TABELA_EXISTENTE' ? `- Faturamento potencial competitivo: ${dinheiro(competitivo.freteTotalCompetitivo)}.` : '',
+    tipo === 'REAJUSTE_TABELA_EXISTENTE' ? `- Rotas ganhas/perdidas/mantidas: ${numero(competitivo.rotasGanhas)} / ${numero(competitivo.rotasPerdidas)} / ${numero(competitivo.rotasMantidas)}.` : '',
+    tipo === 'REAJUSTE_TABELA_EXISTENTE' && analiseReajuste.compararConcorrentes ? `- Ranking medio projetado: ${numero(competitivo.rankingMedioNovo, 2)}; primeiros lugares: ${numero(competitivo.primeirosLugares)}.` : '',
+    tipo === 'REAJUSTE_TABELA_EXISTENTE' ? `- Rotas com aumento/reducao: ${numero(rotasAumento.length)} / ${numero(rotasReducao.length)}.` : '',
     '',
     'Rotas/operacoes com maior impacto',
     ...(rotasImpacto.length ? rotasImpacto.map((item) => `- ${item.rota || item.origem + ' -> ' + item.destino || 'Rota'}: ${dinheiro(item.diferenca || item.impactoValor || 0)} em ${numero(item.ctes || item.viagens || item.comTabela || 0)} registro(s).`) : ['- Nao disponivel no recorte atual.']),
     '',
     'Recomendacao',
-    impacto > 0
-      ? 'Aprovar somente se o aumento estiver aderente a estrategia e houver justificativa operacional/comercial para absorcao do impacto.'
-      : 'A proposta apresenta reducao ou neutralidade frente ao realizado atual e pode seguir para avaliacao de vigencia e implantacao.',
+    recomendacao,
   ]);
 
   const indicadores = {
@@ -126,6 +159,29 @@ function montarLaudosImpacto(resultado = {}, contexto = {}, tipo = 'REAJUSTE_TAB
     impactoAno,
     fretePctAtual,
     fretePctNovo,
+    freteMedioAtual,
+    freteMedioNovo,
+    tipoLaudo: tipo === 'REAJUSTE_TABELA_EXISTENTE' ? 'REAJUSTE' : 'IMPACTO',
+    compararConcorrentes: analiseReajuste.compararConcorrentes === true,
+    ganhosAtuais: competitivo.ganhosAtuais || 0,
+    ganhosProjetados: competitivo.ganhosProjetados || 0,
+    variacaoCtes,
+    aderenciaAtual: competitivo.aderenciaAtual || 0,
+    aderenciaProjetada: competitivo.aderenciaProjetada || 0,
+    volumesAtuais: competitivo.volumesAtuais || 0,
+    volumesProjetados: competitivo.volumesProjetados || 0,
+    variacaoVolumes,
+    faturamentoPotencial: competitivo.freteTotalCompetitivo || resultado.freteSelecionadaGanhadora || 0,
+    rotasGanhasCompetitivas: competitivo.rotasGanhas || 0,
+    rotasPerdidasCompetitivas: competitivo.rotasPerdidas || 0,
+    rotasMantidasCompetitivas: competitivo.rotasMantidas || 0,
+    rankingMedioNovo: competitivo.rankingMedioNovo || 0,
+    primeirosLugares: competitivo.primeirosLugares || 0,
+    ctesCapturados: captura.ctesCapturados || resultado.ctesCapturadosDeOutras || 0,
+    volumesCapturados: captura.volumesCapturados || resultado.volumesCapturados || 0,
+    freteCapturado: captura.freteRealCapturado || resultado.freteCapturadoRealizado || 0,
+    rotasAumento: rotasAumento.length,
+    rotasReducao: rotasReducao.length,
   };
 
   const baseComum = {
@@ -141,6 +197,40 @@ function montarLaudosImpacto(resultado = {}, contexto = {}, tipo = 'REAJUSTE_TAB
     corpoEmail: corpo,
     relatorioTexto: corpo,
     laudoCompleto: `Assunto: ${assunto}\n\n${corpo}`,
+    recomendacao,
+    analiseReajuste,
+    visaoFinanceira: {
+      valorAtual,
+      valorNovo,
+      impacto,
+      impactoPct,
+      impactoMes,
+      impactoAno,
+      fretePctAtual,
+      fretePctNovo,
+      freteMedioAtual,
+      freteMedioNovo,
+      rotasAumento,
+      rotasReducao,
+    },
+    visaoCompetitiva: {
+      disponivel: analiseReajuste.compararConcorrentes === true,
+      ganhosAtuais: competitivo.ganhosAtuais || 0,
+      ganhosProjetados: competitivo.ganhosProjetados || 0,
+      variacaoCtes,
+      aderenciaAtual: competitivo.aderenciaAtual || 0,
+      aderenciaProjetada: competitivo.aderenciaProjetada || 0,
+      volumesAtuais: competitivo.volumesAtuais || 0,
+      volumesProjetados: competitivo.volumesProjetados || 0,
+      variacaoVolumes,
+      faturamentoPotencial: competitivo.freteTotalCompetitivo || resultado.freteSelecionadaGanhadora || 0,
+      rankingMedioNovo: competitivo.rankingMedioNovo || 0,
+      primeirosLugares: competitivo.primeirosLugares || 0,
+      rotasGanhas: rotasGanhasCompetitivas,
+      rotasPerdidas: rotasPerdidasCompetitivas,
+      rotasMantidas: rotasMantidasCompetitivas,
+    },
+    pareto,
   };
 
   return {
@@ -332,3 +422,4 @@ export function montarLaudosNegociacao(resultado = {}, contexto = {}) {
     },
   };
 }
+import { montarParetoReajuste } from './paretoReajuste.js';

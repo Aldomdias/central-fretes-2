@@ -37,6 +37,7 @@ import {
   filtrarCpComercialCte,
   salvarConfiguracaoBaseCte,
 } from '../services/cteBasePolicy';
+import { resolverCubagemTracking } from '../utils/trackingCubagem';
 
 
 function sleep(ms) {
@@ -964,17 +965,34 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
         ? cubagemUnitariaTracking * qtdVolumesTracking
         : 0;
 
-    const pesoRefTracking = numeroRealizado(tracking.peso) || numeroRealizado(tracking.peso_declarado) || numeroRealizado(row.pesoDeclarado);
-    const cubagemValidada = validarCubagemTracking({
+    const pesoFisico = numeroRealizado(row.peso)
+      || numeroRealizado(tracking.peso)
+      || numeroRealizado(row.pesoDeclarado)
+      || numeroRealizado(tracking.peso_declarado);
+    const cubagemResolvida = resolverCubagemTracking({
+      cubagemUnitaria: cubagemUnitariaTracking,
       cubagemTotal: cubagemTotalTracking,
-      qtdVolumes: qtdVolumesTracking,
-      peso: pesoRefTracking,
+      volumes: qtdVolumesTracking,
+      pesoFisico,
     });
+    const cubagemFoiMultiplicadaPorVolumes = cubagemResolvida.totalFoiMultiplicadoPorVolumes;
+    const cubagemCandidata = cubagemResolvida.cubagemAplicada;
+    const cubagemValidada = validarCubagemTracking({
+      cubagemTotal: cubagemCandidata,
+      qtdVolumes: qtdVolumesTracking,
+      peso: pesoFisico,
+    });
+    const cubagemUnitariaComoTotal = cubagemValidada.outlier
+      && cubagemUnitariaTracking > 0
+      && cubagemUnitariaTracking <= cubagemValidada.limiteCubagem
+      ? cubagemUnitariaTracking
+      : 0;
+    const cubagemTotalAplicada = cubagemUnitariaComoTotal || cubagemValidada.cubagemTotal;
     const pesoCubadoTracking = cubagemValidada.outlier ? 0 : numeroRealizado(tracking.peso_cubado);
 
     if (cubagemValidada.outlier) cubagemOutliers += 1;
     if (qtdVolumesTracking > 0) volumesTracking += qtdVolumesTracking;
-    if (cubagemValidada.cubagemTotal > 0) cubagemTracking += cubagemValidada.cubagemTotal;
+    if (cubagemTotalAplicada > 0) cubagemTracking += cubagemTotalAplicada;
 
     return {
       ...row,
@@ -993,14 +1011,17 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
       // Se a cubagem do Tracking vier fora de escala, ela é zerada para o cálculo usar peso real.
       qtdVolumes: qtdVolumesTracking,
       cubagemUnitaria: cubagemUnitariaTracking,
-      cubagemTotal: cubagemValidada.cubagemTotal,
+      cubagemTotal: cubagemTotalAplicada,
       cubagemTotalOriginalTracking: cubagemValidada.cubagemOriginal,
       cubagemOutlierTracking: cubagemValidada.outlier,
+      cubagemCorrigidaTracking: Boolean(cubagemFoiMultiplicadaPorVolumes || cubagemUnitariaComoTotal),
+      cubagemTotalArmazenadaTracking: cubagemTotalTracking,
       limiteCubagemTracking: cubagemValidada.limiteCubagem,
       pesoCubado: pesoCubadoTracking,
 
-      // Peso pode ser complementado pelo Tracking, mas mantém CT-e se o Tracking não trouxer peso.
-      pesoDeclarado: numeroRealizado(tracking.peso_declarado) || numeroRealizado(tracking.peso) || row.pesoDeclarado,
+      // O peso físico do CT-e prevalece. O Tracking apenas complementa quando o CT-e não informa peso.
+      // Isso impede reutilizar peso cubado do Tracking depois que sua cubagem foi rejeitada como outlier.
+      pesoDeclarado: pesoFisico,
 
       // Valor NF continua priorizando o CT-e por enquanto para não misturar regras nesta entrega.
       valorNF: numeroRealizado(row.valorNF) || numeroRealizado(tracking.valor_nf),
@@ -1071,7 +1092,7 @@ function registroDaTransportadoraBaseSimulador(row = {}, transportadoraBase = ''
   });
 }
 
-function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, transportadoraBase = '') {
+function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, transportadoraBase = '', compararConcorrentes = false) {
   const valorAtual = numeroRealizado(resultado.freteRealizadoComTabelaSelecionada || resultado.freteRealizado || 0);
   const valorNovo = numeroRealizado(resultado.freteSelecionada || 0);
   const impactoValor = valorNovo - valorAtual;
@@ -1081,6 +1102,109 @@ function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, 
   const impactoAnual = impactoMensal * 12;
   const qtdComTabela = Number(resultado.ctesComTabelaSelecionada || 0);
   const qtdAnalisados = Number(resultado.ctesAnalisados || 0);
+  const detalhes = Array.isArray(resultado.ctesDetalhes) ? resultado.ctesDetalhes : [];
+  const porRota = new Map();
+
+  detalhes.forEach((item) => {
+    const rota = `${item.origem || '-'}${item.ufOrigem ? `/${item.ufOrigem}` : ''} -> ${item.destino || '-'}${item.ufDestino ? `/${item.ufDestino}` : ''}`;
+    const faixa = item.selecionadaDetalhes?.frete?.faixaPeso || item.faixaPeso || '';
+    const chave = [rota, faixa, item.canal || ''].join('|');
+    const atual = porRota.get(chave) || {
+      chave,
+      rota,
+      origem: item.origem || '',
+      destino: item.destino || '',
+      ufOrigem: item.ufOrigem || '',
+      ufDestino: item.ufDestino || '',
+      faixaPeso: faixa,
+      canal: item.canal || '',
+      ctes: 0,
+      volumes: 0,
+      valorNF: 0,
+      freteAtual: 0,
+      freteNovo: 0,
+      ganhosAtuais: 0,
+      ganhosProjetados: 0,
+    };
+    atual.ctes += 1;
+    atual.volumes += numeroRealizado(item.volumes);
+    atual.valorNF += numeroRealizado(item.valorNF);
+    atual.freteAtual += numeroRealizado(item.freteRealizado);
+    atual.freteNovo += numeroRealizado(item.freteSelecionada);
+    if (item.ganhouRealizado) atual.ganhosAtuais += 1;
+    if (item.statusSelecionada === 'Ganharia') atual.ganhosProjetados += 1;
+    porRota.set(chave, atual);
+  });
+
+  const rotasImpacto = [...porRota.values()].map((item) => {
+    const diferenca = item.freteNovo - item.freteAtual;
+    return {
+      ...item,
+      diferenca,
+      diferencaPercentual: item.freteAtual ? (diferenca / item.freteAtual) * 100 : 0,
+      fretePctAtual: item.valorNF ? (item.freteAtual / item.valorNF) * 100 : 0,
+      fretePctNovo: item.valorNF ? (item.freteNovo / item.valorNF) * 100 : 0,
+      variacaoGanhos: item.ganhosProjetados - item.ganhosAtuais,
+    };
+  });
+
+  const rotasAumento = rotasImpacto.filter((item) => item.diferenca > 0.01).sort((a, b) => b.diferenca - a.diferenca);
+  const rotasReducao = rotasImpacto.filter((item) => item.diferenca < -0.01).sort((a, b) => a.diferenca - b.diferenca);
+  const rotasGanhamCompetitividade = rotasImpacto.filter((item) => item.variacaoGanhos > 0).sort((a, b) => b.variacaoGanhos - a.variacaoGanhos);
+  const rotasPerdemCompetitividade = rotasImpacto.filter((item) => item.variacaoGanhos < 0).sort((a, b) => a.variacaoGanhos - b.variacaoGanhos);
+  const rotasMantemCompetitividade = rotasImpacto.filter((item) => item.variacaoGanhos === 0 && item.ganhosProjetados > 0);
+  const ganhosAtuais = rotasImpacto.reduce((acc, item) => acc + item.ganhosAtuais, 0);
+  const ganhosProjetados = rotasImpacto.reduce((acc, item) => acc + item.ganhosProjetados, 0);
+  const volumesAtuais = rotasImpacto.filter((item) => item.ganhosAtuais > 0).reduce((acc, item) => acc + item.volumes, 0);
+  const volumesProjetados = rotasImpacto.filter((item) => item.ganhosProjetados > 0).reduce((acc, item) => acc + item.volumes, 0);
+  const detalhesComRanking = detalhes.filter((item) => Number(item.rankingSelecionada || 0) > 0);
+  const rankingMedioNovo = detalhesComRanking.length
+    ? detalhesComRanking.reduce((acc, item) => acc + Number(item.rankingSelecionada || 0), 0) / detalhesComRanking.length
+    : 0;
+
+  const analiseReajuste = {
+    compararConcorrentes: Boolean(compararConcorrentes),
+    impactoProprio: {
+      valorAtual,
+      valorNovo,
+      impactoValor,
+      impactoPercentual,
+      impactoMensal,
+      impactoAnual,
+      fretePctAtual: numeroRealizado(resultado.percentualFreteRealizadoComTabela || resultado.percentualFreteRealizado || 0),
+      fretePctNovo: numeroRealizado(resultado.percentualFreteSelecionadaComTabela || resultado.percentualFreteSelecionada || 0),
+      rotasAumento: rotasAumento.slice(0, 30),
+      rotasReducao: rotasReducao.slice(0, 30),
+      volumetriaImpactada: rotasImpacto.reduce((acc, item) => acc + item.volumes, 0),
+    },
+    capturaRealizado: {
+      ctesCapturados: numeroRealizado(resultado.ctesCapturadosDeOutras),
+      freteRealCapturado: numeroRealizado(resultado.freteCapturadoRealizado),
+      freteNovaTabela: numeroRealizado(resultado.freteCapturadoTabela),
+      savingCapturado: numeroRealizado(resultado.savingCapturado),
+      volumesCapturados: numeroRealizado(resultado.volumesCapturados),
+      transportadoras: (resultado.transportadorasPerdaDestaque || resultado.impactoTransportadoras || [])
+        .filter((item) => numeroRealizado(item.freteCedidoSelecionada) > 0)
+        .slice(0, 30),
+    },
+    competitividade: {
+      ganhosAtuais,
+      ganhosProjetados,
+      rotasGanhas: rotasGanhamCompetitividade.length,
+      rotasPerdidas: rotasPerdemCompetitividade.length,
+      rotasMantidas: rotasMantemCompetitividade.length,
+      aderenciaAtual: qtdAnalisados ? (ganhosAtuais / qtdAnalisados) * 100 : 0,
+      aderenciaProjetada: qtdAnalisados ? (ganhosProjetados / qtdAnalisados) * 100 : 0,
+      volumesAtuais,
+      volumesProjetados,
+      freteTotalCompetitivo: numeroRealizado(resultado.freteSelecionadaGanhadora || resultado.freteSelecionada || 0),
+      rankingMedioNovo,
+      primeirosLugares: detalhesComRanking.filter((item) => Number(item.rankingSelecionada) === 1).length,
+      rotasGanhamCompetitividade: rotasGanhamCompetitividade.slice(0, 30),
+      rotasPerdemCompetitividade: rotasPerdemCompetitividade.slice(0, 30),
+      rotasMantemCompetitividade: rotasMantemCompetitividade.slice(0, 30),
+    },
+  };
 
   return {
     ...resultado,
@@ -1098,6 +1222,7 @@ function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, 
     qtd_registros_analisados: qtdAnalisados,
     qtd_registros_com_tabela: qtdComTabela,
     aderenciaSelecionada: qtdAnalisados ? (qtdComTabela / qtdAnalisados) * 100 : 0,
+    analiseReajuste,
   };
 }
 
@@ -2579,7 +2704,9 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       peso: pesoLinha,
       cubagem: cubagemLinha,
       cubagemOriginalTracking: numeroRealizado(row.cubagemTotalOriginalTracking),
+      cubagemTotalArmazenadaTracking: numeroRealizado(row.cubagemTotalArmazenadaTracking),
       cubagemOutlierTracking: Boolean(row.cubagemOutlierTracking),
+      cubagemCorrigidaTracking: Boolean(row.cubagemCorrigidaTracking),
       limiteCubagemTracking: numeroRealizado(row.limiteCubagemTracking),
       valorNF: nf,
       percentualFreteRealizado: nf ? (valorCte / nf) * 100 : 0,
@@ -2589,6 +2716,9 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       savingTabelaSelecionadaBruto: economiaTabelaSelecionadaVsRealBruto,
       savingVencedor: Math.max(valorCte - freteVenc, 0),
       trackingMatch: Boolean(row.trackingMatch),
+      trackingOrigemVinculo: row.trackingOrigemVinculo || '',
+      trackingLinhas: Number(row.trackingLinhas || 0),
+      chaveCte: row.chaveCte || '',
       chaveNfe: row.chaveNfe || '',
       statusSelecionada,
       rankingSelecionada: itemSelecionada?.ranking || '',
@@ -3614,8 +3744,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return { total, visiveis, comTracking, semTracking: visiveis - comTracking, valorFrete };
   }, [baseRealizadoCarregada, rowsRealizadoVisiveis]);
 
+  const negociacaoResultadoRealizado = useMemo(() => {
+    const negociacaoId = resultadoRealizado?.negociacaoId;
+    if (!negociacaoId) return null;
+
+    return negociacoesSimulador.find((tabela) => tabela.id === negociacaoId)
+      || resultadoRealizado.negociacao
+      || null;
+  }, [negociacoesSimulador, resultadoRealizado]);
+
   const salvarResultadoNegociacaoRealizado = async () => {
-    if (!negociacaoSelecionadaRealizado?.id || !resultadoRealizado) return;
+    if (!resultadoRealizado) return;
+
+    const negociacaoId = resultadoRealizado.negociacaoId;
+    if (!negociacaoId) {
+      setErroSimulacao('Este resultado não está vinculado a uma negociação. Busque os CT-es e simule novamente selecionando a negociação correta.');
+      return;
+    }
 
     setSalvandoResultadoNegociacao(true);
     setErroSimulacao('');
@@ -3625,15 +3770,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
         transportadora: resultadoRealizado.filtros?.transportadora,
         canal: resultadoRealizado.filtros?.canal,
         origem: resultadoRealizado.filtros?.origem,
-        tipoNegociacao: resultadoRealizado.tipoNegociacao || resultadoRealizado.filtros?.tipoNegociacao || tipoNegociacaoSimulador(negociacaoSelecionadaRealizado),
+        tipoNegociacao: resultadoRealizado.tipoNegociacao || resultadoRealizado.filtros?.tipoNegociacao || tipoNegociacaoSimulador(negociacaoResultadoRealizado),
         transportadoraBase: resultadoRealizado.transportadoraBaseRealizado || transportadoraBaseReajusteRealizado,
       };
-      await salvarResultadoSimulacaoNegociacao(negociacaoSelecionadaRealizado.id, {
+      const negociacaoAtualizada = await salvarResultadoSimulacaoNegociacao(negociacaoId, {
         ...resultadoRealizado,
         laudosEmail: laudosEmailRealizado,
         laudos: prepararLaudosNegociacao(resultadoRealizado, contextoLaudos),
       });
-      alert('Resultado projetado salvo na negociação.');
+      setNegociacoesSimulador((anteriores) => (anteriores || []).map((tabela) => (
+        tabela.id === negociacaoId ? { ...tabela, ...negociacaoAtualizada } : tabela
+      )));
+      alert(`Resultado projetado salvo em ${negociacaoAtualizada.transportadora || resultadoRealizado.negociacaoNome || 'negociação'}.`);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
     } finally {
@@ -4463,15 +4611,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const ufsDestinoEfetivasRealizado = ctx.ufsDestinoEfetivasRealizado || [];
       const negociacaoRealizadoAtual = ctx.negociacaoRealizadoAtual;
 
-      const rowsComIbgeEscopoNegociacao = ehReajusteSelecionado
-        ? rowsBase.filter((row) => registroDaTransportadoraBaseSimulador(row, transportadoraBaseReajuste))
-        : rowsBase;
-
-      if (ehReajusteSelecionado && !rowsComIbgeEscopoNegociacao.length) {
-        setErroSimulacao(`Nenhum CT-e visível pertence a transportadora base ${transportadoraBaseReajuste || 'informada'}. Ajuste os filtros.`);
-        finalizarProcessamentoUi('Sem CT-es da transportadora base', 'O reajuste compara somente contra o próprio realizado da transportadora.', 100);
-        return;
-      }
+      // A transportadora base identifica a negociação. O reajuste disputa todos
+      // os CT-es realizados no recorte para mostrar de quem capturaria volume.
+      const rowsComIbgeEscopoNegociacao = rowsBase;
 
       atualizarProcessamentoUi('Aplicando malha da transportadora/tabela...', 40);
 
@@ -4493,7 +4635,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         : rowsComIbgeEscopoNegociacao;
 
       const routeKeysRealizado = criarRouteKeysRealizado(rowsFiltrados, ctx.canal);
-      const deveCompararConcorrentes = ehReajusteSelecionado ? false : Boolean(compararConcorrentesRealizado);
+      const deveCompararConcorrentes = Boolean(compararConcorrentesRealizado);
       const basesParaMesclar = [baseSelecionada].filter((base) => Array.isArray(base) ? base.length : Boolean(base));
 
       if (deveCompararConcorrentes && incluirNegociacoesRealizado && transportadorasNegociacaoRealizado.length) {
@@ -4539,7 +4681,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       if (!baseParaSimulacao.length) {
         setErroSimulacao('Não encontrei nenhuma tabela compatível para simular. Confira se as tabelas estão no Supabase e se a origem/canal existem no cadastro.');
-        setResultadoRealizado(simularRealizadoComTabela({
+        const resultadoSemTabela = simularRealizadoComTabela({
           rows: rowsFiltrados,
           baseOnline: [],
           transportadoraSelecionada: nomeTabelaSelecionada,
@@ -4556,7 +4698,22 @@ export default function SimuladorPage({ transportadoras = [] }) {
           cidadePorIbge: cidadePorIbgeCompleto,
           gradePorCanal: grade,
           municipioPorCidade,
-        }));
+        });
+        setResultadoRealizado({
+          ...resultadoSemTabela,
+          compararConcorrentes: deveCompararConcorrentes,
+          negociacaoId: negociacaoRealizadoAtual?.id || '',
+          negociacaoNome: negociacaoRealizadoAtual?.transportadora || '',
+          negociacaoLabel: negociacaoRealizadoAtual ? labelTabelaNegociacaoSimulador(negociacaoRealizadoAtual) : '',
+          negociacao: negociacaoRealizadoAtual
+            ? {
+                id: negociacaoRealizadoAtual.id,
+                transportadora: negociacaoRealizadoAtual.transportadora,
+                canal: negociacaoRealizadoAtual.canal,
+                tipo_negociacao: negociacaoRealizadoAtual.tipo_negociacao,
+              }
+            : null,
+        });
         finalizarProcessamentoUi('Sem tabelas para simular', 'A base foi carregada, mas não há tabela concorrente disponível.', 100);
         return;
       }
@@ -4588,17 +4745,36 @@ export default function SimuladorPage({ transportadoras = [] }) {
         municipioPorCidade,
       });
       const resultadoComTipo = ehReajusteSelecionado
-        ? enriquecerResultadoReajusteNegociacao(resultado, negociacaoRealizadoAtual, transportadoraBaseReajuste)
+        ? enriquecerResultadoReajusteNegociacao(
+            resultado,
+            negociacaoRealizadoAtual,
+            transportadoraBaseReajuste,
+            deveCompararConcorrentes,
+          )
         : resultado;
 
       setResultadoRealizado({
         ...resultadoComTipo,
+        gradeFrete: grade,
+        compararConcorrentes: deveCompararConcorrentes,
+        negociacaoId: negociacaoRealizadoAtual?.id || '',
+        negociacaoNome: negociacaoRealizadoAtual?.transportadora || '',
+        negociacaoLabel: negociacaoRealizadoAtual ? labelTabelaNegociacaoSimulador(negociacaoRealizadoAtual) : '',
+        negociacao: negociacaoRealizadoAtual
+          ? {
+              id: negociacaoRealizadoAtual.id,
+              transportadora: negociacaoRealizadoAtual.transportadora,
+              canal: negociacaoRealizadoAtual.canal,
+              tipo_negociacao: negociacaoRealizadoAtual.tipo_negociacao,
+            }
+          : null,
         filtros: {
           transportadora: ctx.transportadora,
           transportadoraTabelaUsada: nomeTabelaSelecionada,
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
           transportadoraBaseRealizado: transportadoraBaseReajuste,
           compararComProprioRealizado: ehReajusteSelecionado,
+          compararConcorrentes: deveCompararConcorrentes,
           canal: ctx.canal,
           modo: ctx.modo,
           origem: ctx.origem,
@@ -5938,12 +6114,21 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </button>
             <button className="sim-tab" type="button"
               onClick={salvarResultadoNegociacaoRealizado}
-              disabled={!resultadoRealizado?.ctesAnalisados || !negociacaoSelecionadaRealizado || salvandoResultadoNegociacao}
-              title="Salva saving, aderência, faturamento e volumetria na tabela em negociação"
+              disabled={!resultadoRealizado?.ctesAnalisados || !resultadoRealizado?.negociacaoId || salvandoResultadoNegociacao}
+              title={resultadoRealizado?.negociacaoLabel
+                ? `Salva o resultado em ${resultadoRealizado.negociacaoLabel}`
+                : 'O resultado precisa ser gerado a partir de uma tabela em negociação'}
               style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
               {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar resultado na negociação'}
             </button>
           </div>
+          {resultadoRealizado?.negociacaoId && (
+            <div className="sim-alert info" style={{ marginTop: 10 }}>
+              <strong>Destino do salvamento:</strong>{' '}
+              {resultadoRealizado.negociacaoLabel || resultadoRealizado.negociacaoNome || resultadoRealizado.negociacaoId}.
+              O resultado será salvo na negociação usada quando a base foi buscada e simulada.
+            </div>
+          )}
 
           <div className="sim-form-grid sim-grid-5">
             <label>
@@ -6477,7 +6662,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>Com Tracking</span><strong>{resultadoRealizado.filtros?.ctesComTracking ?? resultadoRealizado.linhasComTracking ?? 0}</strong></div>
                 <div><span>Sem Tracking</span><strong>{resultadoRealizado.filtros?.ctesSemTracking ?? 0}</strong></div>
                 <div><span>Base simulada</span><strong>{resultadoRealizado.filtros?.ctesBaseSimulada ?? resultadoRealizado.ctesAnalisados}</strong></div>
-                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>{compararConcorrentesRealizado ? 'com tabela concorrente' : 'vs realizado'}</small></div>
+                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>{resultadoRealizado.compararConcorrentes ? 'com tabelas concorrentes' : 'tabela selecionada vs realizado'}</small></div>
                 <div><span>Sem tabela geral</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
                 <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
                 <div><span>Sem tabela selecionada</span><strong>{resultadoRealizado.ctesSemTabelaSelecionada}</strong></div>
@@ -6489,7 +6674,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {/* 4 estados */}
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
                 const detalhesStatus = resultadoRealizado.ctesDetalhes || [];
-                if (!compararConcorrentesRealizado) {
+                if (!resultadoRealizado.compararConcorrentes) {
                   const vencedor = detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && i.ganhouRealizado).length;
                   const perdedor = detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && !i.ganhouRealizado).length;
                   const total = vencedor + perdedor;
@@ -7323,7 +7508,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>Peso considerado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
                                                 <div>Peso cubado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong> (fator {item.vencedorDetalhes?.frete?.fatorCubagem})</div>
                                                 <div>Cubagem usada: <strong>{Number(item.vencedorDetalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
-                                                {item.cubagemOutlierTracking && (
+                                                <div>
+                                                  Origem da cubagem:{' '}
+                                                  <strong>{item.trackingMatch ? 'Tracking vinculado ao CT-e' : 'sem vínculo com Tracking'}</strong>
+                                                </div>
+                                                {item.trackingMatch && (
+                                                  <div style={{ color: '#475569' }}>
+                                                    Chave CT-e: <strong>{item.chaveCte || 'não informada'}</strong>
+                                                    {' · '}Vínculo: <strong>{item.trackingOrigemVinculo || 'não identificado'}</strong>
+                                                    {' · '}Linha(s) agregada(s): <strong>{item.trackingLinhas || 1}</strong>
+                                                    {' · '}Cubagem recebida: <strong>{Number(item.cubagemOriginalTracking || item.cubagem || 0).toFixed(6)} m³</strong>
+                                                  </div>
+                                                )}
+                                                {item.cubagemCorrigidaTracking ? (
+                                                  <div style={{ color: '#b45309', fontWeight: 700 }}>
+                                                    ⚠ Cubagem total calculada pelo Tracking corrigida: {Number(item.cubagemTotalArmazenadaTracking || item.cubagemOriginalTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³ estava multiplicada pelos volumes. Foi usada a cubagem original da linha: {Number(item.cubagem || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³.
+                                                  </div>
+                                                ) : item.cubagemOutlierTracking && (
                                                   <div style={{ color: '#b45309', fontWeight: 700 }}>
                                                     ⚠ Cubagem do Tracking desconsiderada: {Number(item.cubagemOriginalTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³ acima do limite estimado de {Number(item.limiteCubagemTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} m³. Cálculo feito pelo peso real.
                                                   </div>
@@ -7332,6 +7533,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>% aplicado: <strong style={{ color: Number(item.vencedorDetalhes?.frete?.percentualAplicado || 0) < 1 ? '#dc2626' : undefined }}>{formatPercent(item.vencedorDetalhes?.frete?.percentualAplicado)}</strong></div>
                                                 <div>Valor NF usado: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorNFInformado)}</strong></div>
                                                 <div>Valor fixo/faixa: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorFixoAplicado)}</strong></div>
+                                                {item.vencedorDetalhes?.frete?.tipoCalculo === 'PERCENTUAL' && (
+                                                  <div style={{ padding: '6px 8px', background: '#eff6ff', borderRadius: 6 }}>
+                                                    <strong>Maior valor:</strong>{' '}
+                                                    kg garantia {formatMoney(item.vencedorDetalhes?.frete?.valorKgGarantia)}
+                                                    {' × '}frete % {formatMoney(item.vencedorDetalhes?.frete?.valorPercentualCalculado)}
+                                                    {' × '}frete mínimo {formatMoney(item.vencedorDetalhes?.frete?.minimoAplicavel)}
+                                                    {' → '}<strong>{formatMoney(item.vencedorDetalhes?.frete?.valorBase)}</strong>
+                                                  </div>
+                                                )}
                                                 {(() => {
                                                   const frete = item.vencedorDetalhes?.frete || {};
                                                   const limiteExcedente = Number(frete.pesoLimiteExcedente || 0);
@@ -7346,7 +7556,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                       <div>Peso excedente: <strong>{pesoExcedente.toFixed(2)} kg</strong></div>
                                                       <div>R$/kg excedente: <strong>{valorExcedenteUnitario > 0 ? formatMoney(valorExcedenteUnitario) : '—'}</strong></div>
                                                       <div>Valor excedente: <strong>{formatMoney(valorExcedente)}</strong></div>
-                                                      <div>Base faixa + excedente: <strong>{formatMoney(valorFaixaSemExcedente)}</strong> + <strong>{formatMoney(valorExcedente)}</strong> = <strong>{formatMoney(valorFaixaComExcedente)}</strong></div>
+                                                      {frete.tipoCalculo === 'FAIXA_DE_PESO' && (
+                                                        <div>
+                                                          Base da faixa: <strong>{formatMoney(valorFaixaSemExcedente)}</strong>
+                                                          {' + percentual '}{formatMoney(frete.valorPercentualCalculado)}
+                                                          {' + excedente '}{formatMoney(valorExcedente)}
+                                                          {' = '}<strong>{formatMoney(valorFaixaComExcedente)}</strong>
+                                                        </div>
+                                                      )}
                                                     </>
                                                   );
                                                 })()}

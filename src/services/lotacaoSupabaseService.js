@@ -87,10 +87,20 @@ async function atualizarLinhaUnicaSupabase(query, descricaoRegistro) {
 
 function erroColunasSolicitacaoInfo(error) {
   const msg = String(error?.message || error || '').toLowerCase();
+  const erroSchema = error?.code === 'PGRST204'
+    || error?.code === '42703'
+    || msg.includes('could not find')
+    || msg.includes('schema cache')
+    || (msg.includes('column') && msg.includes('does not exist'));
+  if (!erroSchema) return [];
   return [
     'resposta',
     'resposta_operacao',
+    'justificativa_operacao',
     'observacao_tratamento',
+    'dist',
+    'dist_key',
+    'carga_id',
     'respondido_por_id',
     'respondido_por_nome',
     'respondido_por_email',
@@ -101,7 +111,7 @@ function erroColunasSolicitacaoInfo(error) {
 function removerColunasSolicitacaoInfoComErro(row = {}, error) {
   const colunas = erroColunasSolicitacaoInfo(error);
   const colunasRespostaPerdidas = colunas.filter((coluna) => (
-    ['resposta', 'resposta_operacao', 'observacao_tratamento'].includes(coluna)
+    ['resposta', 'resposta_operacao', 'justificativa_operacao', 'observacao_tratamento', 'dist', 'dist_key', 'carga_id'].includes(coluna)
     && row[coluna] !== undefined
     && row[coluna] !== null
     && String(row[coluna]).trim() !== ''
@@ -112,6 +122,40 @@ function removerColunasSolicitacaoInfoComErro(row = {}, error) {
   const compat = { ...row };
   colunas.forEach((coluna) => { delete compat[coluna]; });
   return compat;
+}
+
+function statusExigeVinculoDistSolicitacaoInfo(status = '') {
+  return String(status || '').trim().toUpperCase() === 'RESPONDIDO_OPERACAO';
+}
+
+async function validarVinculoDistSolicitacaoInfo(supabase, status, dados = {}) {
+  if (!statusExigeVinculoDistSolicitacaoInfo(status)) return;
+
+  const dist = String(dados.dist || '').trim();
+  const distKey = String(dados.dist_key || dados.distKey || '').trim();
+  const cargaId = String(dados.carga_id || dados.cargaId || '').trim();
+  const resposta = String(dados.resposta_operacao || dados.resposta || '').trim();
+  const justificativa = String(dados.justificativa_operacao || '').trim();
+
+  if (!dist || !distKey || !cargaId) {
+    throw new Error('Selecione uma DIST/viagem existente antes de concluir a resposta da Operação.');
+  }
+  if (!resposta || !justificativa) {
+    throw new Error('Resposta e justificativa da Operação são obrigatórias.');
+  }
+
+  const { data, error } = await supabase
+    .from('lotacao_cargas')
+    .select('id, dist')
+    .eq('id', cargaId)
+    .maybeSingle();
+  if (error) throw new Error(detalheErroSupabase(error));
+  if (!data?.id || !String(data.dist || '').trim()) {
+    throw new Error('A DIST/viagem selecionada não existe mais no Supabase. Pesquise e selecione outra viagem.');
+  }
+  if (normalizarTexto(data.dist) !== normalizarTexto(dist)) {
+    throw new Error('A DIST informada não corresponde à viagem selecionada. Pesquise e selecione novamente.');
+  }
 }
 
 function calcularTipoNomeKey(tabela = {}) {
@@ -1106,7 +1150,11 @@ export async function salvarSolicitacaoInfoSupabase(sol) {
     descricao_problema: String(sol.descricaoProblema || sol.descricao_problema || ''),
     resposta: String(sol.resposta || ''),
     resposta_operacao: String(sol.respostaOperacao || sol.resposta_operacao || sol.resposta || ''),
+    justificativa_operacao: String(sol.justificativaOperacao || sol.justificativa_operacao || ''),
     observacao_tratamento: String(sol.observacaoTratamento || sol.observacao_tratamento || ''),
+    dist: String(sol.dist || ''),
+    dist_key: String(sol.distKey || sol.dist_key || ''),
+    carga_id: String(sol.cargaId || sol.carga_id || ''),
     responsavel_id: String(sol.responsavelId || sol.responsavel_id || ''),
     responsavel_nome: String(sol.responsavelNome || sol.responsavel_nome || ''),
     prioridade: String(sol.prioridade || 'NORMAL'),
@@ -1139,6 +1187,7 @@ export async function atualizarSolicitacaoInfoSupabase(id, status, dadosExtra = 
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado. Não foi possível atualizar o questionamento.');
   if (!id) throw new Error('Questionamento sem identificador para atualizar.');
   const supabase = ensureClient();
+  await validarVinculoDistSolicitacaoInfo(supabase, status, dadosExtra);
   const update = {
     status,
     updated_at: new Date().toISOString(),

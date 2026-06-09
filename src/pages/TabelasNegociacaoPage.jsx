@@ -132,10 +132,11 @@ function getLaudosTabela(tabela) {
     tipoNegociacao: getTipoNegociacaoTabela(tabela),
     transportadoraBase: tabela?.transportadora_base_nome || tabela?.transportadora,
   });
+  var regenerarReajuste = getTipoNegociacaoTabela(tabela) === 'REAJUSTE_TABELA_EXISTENTE';
 
   return {
-    executivo: laudosSalvos.executivo || laudosGerados.executivo,
-    transportador: laudosSalvos.transportador || laudosGerados.transportador,
+    executivo: regenerarReajuste ? laudosGerados.executivo : (laudosSalvos.executivo || laudosGerados.executivo),
+    transportador: regenerarReajuste ? laudosGerados.transportador : (laudosSalvos.transportador || laudosGerados.transportador),
   };
 }
 function getDadosLaudoSalvo(laudo) {
@@ -204,6 +205,7 @@ function getIndicadoresTabela(tabela) {
     estadosGanhadores: Array.isArray(resumo.estadosGanhadoresDestaque) ? resumo.estadosGanhadoresDestaque : [],
     transportadorasPerda: Array.isArray(resumo.transportadorasPerdaDestaque) ? resumo.transportadorasPerdaDestaque : [],
     rotasGanhasDestaque: Array.isArray(resumo.rotasGanhasDestaque) ? resumo.rotasGanhasDestaque : [],
+    analiseReajuste: resumo.analiseReajuste || {},
   };
 }
 function origemTabelaLabel(tabela) {
@@ -231,6 +233,78 @@ function origemTabelaLabel(tabela) {
 }
 
 // ─── constantes ───────────────────────────────────────────────────────────────
+
+function PainelAnaliseReajuste({ analise = {} }) {
+  var impacto = analise.impactoProprio || {};
+  var captura = analise.capturaRealizado || {};
+  var competitivo = analise.competitividade || {};
+  var compararConcorrentes = analise.compararConcorrentes === true;
+  var aumentos = Array.isArray(impacto.rotasAumento) ? impacto.rotasAumento : [];
+  var reducoes = Array.isArray(impacto.rotasReducao) ? impacto.rotasReducao : [];
+  var transportadoras = Array.isArray(captura.transportadoras) ? captura.transportadoras : [];
+  var perdas = Array.isArray(competitivo.rotasPerdemCompetitividade) ? competitivo.rotasPerdemCompetitividade : [];
+  var ganhos = Array.isArray(competitivo.rotasGanhamCompetitividade) ? competitivo.rotasGanhamCompetitividade : [];
+  if (!Object.keys(impacto).length && !Object.keys(competitivo).length) return null;
+
+  return (
+    <div style={{ display: 'grid', gap: 16, marginBottom: 18 }}>
+      <div className="sim-parametros-box">
+        <div className="sim-parametros-header"><div><strong>Visão 1 · Impacto contra o realizado</strong><p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>Quanto o custo muda ao aplicar a tabela reajustada nos CT-es cobertos do recorte realizado.</p></div></div>
+        <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', marginTop: 12 }}>
+          <div className="summary-card"><span>Frete atual</span><strong>{formatMoney(impacto.valorAtual)}</strong></div>
+          <div className="summary-card"><span>Frete reajustado</span><strong>{formatMoney(impacto.valorNovo)}</strong></div>
+          <div className="summary-card"><span>Impacto financeiro</span><strong style={{ color: Number(impacto.impactoValor) > 0 ? '#dc2626' : '#15803d' }}>{formatMoney(impacto.impactoValor)}</strong><small>{formatPercent(impacto.impactoPercentual)}</small></div>
+          <div className="summary-card"><span>Frete sobre NF</span><strong>{formatPercent(impacto.fretePctNovo)}</strong><small>Atual: {formatPercent(impacto.fretePctAtual)}</small></div>
+          <div className="summary-card"><span>Rotas alteradas</span><strong>{aumentos.length + reducoes.length}</strong><small>{aumentos.length} aumentos · {reducoes.length} reduções</small></div>
+          <div className="summary-card"><span>Volumetria impactada</span><strong>{formatNumber(impacto.volumetriaImpactada, 0)}</strong></div>
+        </div>
+        <div className="feature-grid import-grid" style={{ marginTop: 12 }}>
+          <div className="sim-cobertura-lista"><strong>Maiores aumentos</strong>{aumentos.slice(0, 6).map(function(item) { return <div key={'reaj-aum-' + item.chave}>{item.rota} · {formatMoney(item.diferenca)} ({formatPercent(item.diferencaPercentual)})</div>; })}{!aumentos.length ? <div>Sem aumento por rota.</div> : null}</div>
+          <div className="sim-cobertura-lista"><strong>Maiores reduções</strong>{reducoes.slice(0, 6).map(function(item) { return <div key={'reaj-red-' + item.chave}>{item.rota} · {formatMoney(item.diferenca)} ({formatPercent(item.diferencaPercentual)})</div>; })}{!reducoes.length ? <div>Sem redução por rota.</div> : null}</div>
+        </div>
+      </div>
+
+      <div className="sim-parametros-box">
+        {compararConcorrentes ? (
+          <>
+            <div className="sim-parametros-header"><div><strong>Visão 2 · Comparação com tabelas concorrentes</strong><p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>Exibida porque a comparação com tabelas oficiais/concorrentes foi selecionada na simulação.</p></div></div>
+            <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', marginTop: 12 }}>
+              <div className="summary-card"><span>Ganhos atuais</span><strong>{formatNumber(competitivo.ganhosAtuais, 0)}</strong></div>
+              <div className="summary-card"><span>Ganhos projetados</span><strong>{formatNumber(competitivo.ganhosProjetados, 0)}</strong></div>
+              <div className="summary-card"><span>Aderência atual</span><strong>{formatPercent(competitivo.aderenciaAtual)}</strong></div>
+              <div className="summary-card"><span>Aderência projetada</span><strong>{formatPercent(competitivo.aderenciaProjetada)}</strong></div>
+              <div className="summary-card"><span>Rotas ganhas/perdidas</span><strong>{formatNumber(competitivo.rotasGanhas, 0)} / {formatNumber(competitivo.rotasPerdidas, 0)}</strong></div>
+              <div className="summary-card"><span>Volume atual/projetado</span><strong>{formatNumber(competitivo.volumesAtuais, 0)} / {formatNumber(competitivo.volumesProjetados, 0)}</strong></div>
+            </div>
+            <div className="feature-grid import-grid" style={{ marginTop: 12 }}>
+              <div className="sim-cobertura-lista"><strong>Passa a ganhar</strong>{ganhos.slice(0, 6).map(function(item) { return <div key={'reaj-ganho-' + item.chave}>{item.rota} · +{formatNumber(item.variacaoGanhos, 0)} CT-e(s)</div>; })}{!ganhos.length ? <div>Nenhuma rota ganhou aderência.</div> : null}</div>
+              <div className="sim-cobertura-lista"><strong>Perde aderência</strong>{perdas.slice(0, 6).map(function(item) { return <div key={'reaj-perda-' + item.chave}>{item.rota} · {formatNumber(item.variacaoGanhos, 0)} CT-e(s)</div>; })}{!perdas.length ? <div>Nenhuma rota perdeu aderência.</div> : null}</div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="sim-parametros-header"><div><strong>Visão 2 · Captura sobre o realizado</strong><p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>Compara a nova tabela com os CT-es realizados por todas as transportadoras que carregaram, sem consultar outras tabelas.</p></div></div>
+            <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', marginTop: 12 }}>
+              <div className="summary-card"><span>CT-es capturados</span><strong>{formatNumber(captura.ctesCapturados, 0)}</strong></div>
+              <div className="summary-card"><span>Frete que migra</span><strong>{formatMoney(captura.freteRealCapturado)}</strong></div>
+              <div className="summary-card"><span>Frete na nova tabela</span><strong>{formatMoney(captura.freteNovaTabela)}</strong></div>
+              <div className="summary-card"><span>Diferença capturada</span><strong>{formatMoney(captura.savingCapturado)}</strong></div>
+              <div className="summary-card"><span>Volumes capturados</span><strong>{formatNumber(captura.volumesCapturados, 0)}</strong></div>
+              <div className="summary-card"><span>Transportadoras afetadas</span><strong>{formatNumber(transportadoras.length, 0)}</strong></div>
+            </div>
+            <div className="sim-cobertura-lista" style={{ marginTop: 12 }}>
+              <strong>De quem a nova tabela retira volume</strong>
+              {transportadoras.slice(0, 10).map(function(item) {
+                return <div key={'reaj-captura-' + item.transportadora}><strong>{item.transportadora}</strong> · {formatNumber(item.ctesCedidosSelecionada, 0)} CT-e(s) · {formatNumber(item.volumesCedidosSelecionada, 0)} volume(s) · {formatMoney(item.freteCedidoSelecionada)}</div>;
+              })}
+              {!transportadoras.length ? <div>Nenhuma transportadora perderia volume para a nova tabela neste recorte.</div> : null}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const CANAIS = ['ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA'];
 const UF_OPTIONS = ['','AC','AL','AM','AP','BA','CE','DF','ES','GO','MA','MG','MS','MT','PA','PB','PE','PI','PR','RJ','RN','RO','RR','RS','SC','SE','SP','TO'];
@@ -1659,6 +1733,7 @@ export default function TabelasNegociacaoPage() {
             var laudos = getLaudosTabela(selecionada);
             return ind.temSimulacao ? (
               <>
+              {ind.isReajuste ? <PainelAnaliseReajuste analise={ind.analiseReajuste} /> : null}
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginBottom: 18 }}>
                 {(ind.isReajuste || ind.isLotacao) ? (
                   <>

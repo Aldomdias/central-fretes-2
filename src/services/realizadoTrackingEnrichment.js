@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { resolverCubagemTracking } from '../utils/trackingCubagem';
 
 function numero(value) {
   const n = Number(value || 0);
@@ -266,17 +267,34 @@ export function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
         ? cubagemUnitariaTracking * qtdVolumesTracking
         : 0;
 
-    const pesoRefTracking = numero(tracking.peso) || numero(tracking.peso_declarado) || numero(row.pesoDeclarado);
-    const cubagemValidada = validarCubagemTracking({
+    const pesoFisico = numero(row.peso)
+      || numero(tracking.peso)
+      || numero(row.pesoDeclarado)
+      || numero(tracking.peso_declarado);
+    const cubagemResolvida = resolverCubagemTracking({
+      cubagemUnitaria: cubagemUnitariaTracking,
       cubagemTotal: cubagemTotalTracking,
-      qtdVolumes: qtdVolumesTracking,
-      peso: pesoRefTracking,
+      volumes: qtdVolumesTracking,
+      pesoFisico,
     });
+    const cubagemFoiMultiplicadaPorVolumes = cubagemResolvida.totalFoiMultiplicadoPorVolumes;
+    const cubagemCandidata = cubagemResolvida.cubagemAplicada;
+    const cubagemValidada = validarCubagemTracking({
+      cubagemTotal: cubagemCandidata,
+      qtdVolumes: qtdVolumesTracking,
+      peso: pesoFisico,
+    });
+    const cubagemUnitariaComoTotal = cubagemValidada.outlier
+      && cubagemUnitariaTracking > 0
+      && cubagemUnitariaTracking <= cubagemValidada.limiteCubagem
+      ? cubagemUnitariaTracking
+      : 0;
+    const cubagemTotalAplicada = cubagemUnitariaComoTotal || cubagemValidada.cubagemTotal;
     const pesoCubadoTracking = cubagemValidada.outlier ? 0 : numero(tracking.peso_cubado);
 
     if (cubagemValidada.outlier) cubagemOutliers += 1;
     if (qtdVolumesTracking > 0) volumesTracking += qtdVolumesTracking;
-    if (cubagemValidada.cubagemTotal > 0) cubagemTracking += cubagemValidada.cubagemTotal;
+    if (cubagemTotalAplicada > 0) cubagemTracking += cubagemTotalAplicada;
 
     return {
       ...row,
@@ -292,16 +310,19 @@ export function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
       numeroCte: row.numeroCte || tracking.cte_numero || '',
 
       qtdVolumes: qtdVolumesTracking,
-      cubagem: cubagemValidada.cubagemTotal,
+      cubagem: cubagemTotalAplicada,
       cubagemUnitaria: cubagemUnitariaTracking,
-      cubagemTotal: cubagemValidada.cubagemTotal,
-      metrosCubicos: cubagemValidada.cubagemTotal,
+      cubagemTotal: cubagemTotalAplicada,
+      metrosCubicos: cubagemTotalAplicada,
       cubagemTotalOriginalTracking: cubagemValidada.cubagemOriginal,
       cubagemOutlierTracking: cubagemValidada.outlier,
+      cubagemCorrigidaTracking: Boolean(cubagemFoiMultiplicadaPorVolumes || cubagemUnitariaComoTotal),
+      cubagemTotalArmazenadaTracking: cubagemTotalTracking,
       limiteCubagemTracking: cubagemValidada.limiteCubagem,
       pesoCubado: pesoCubadoTracking,
 
-      pesoDeclarado: numero(tracking.peso_declarado) || numero(tracking.peso) || row.pesoDeclarado,
+      // Preserva o peso físico do CT-e; Tracking é somente fallback.
+      pesoDeclarado: pesoFisico,
       valorNF: numero(row.valorNF) || numero(tracking.valor_nf),
 
       canal: row.canal || tracking.canal || '',

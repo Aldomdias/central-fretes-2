@@ -1,5 +1,6 @@
 import React from 'react';
 import { montarLaudosNegociacao } from '../../utils/laudosNegociacaoHtml';
+import { LaudoReajusteTemplate } from './LaudoReajusteTemplate';
 import './LaudoNegociacaoTemplate.css';
 
 function dinheiro(valor) {
@@ -47,15 +48,21 @@ export function LaudoNegociacaoTemplate({ tipo = 'executivo', resultado = null, 
   const laudo = normalizarDados({ tipo, resultado, dados });
   const externo = tipo === 'transportador';
   const indicadores = laudo.indicadores || {};
+  const isReajuste = indicadores.tipoLaudo === 'REAJUSTE';
+  if (isReajuste) {
+    return <LaudoReajusteTemplate tipo={tipo} laudo={laudo} />;
+  }
   const rotasBoas = (laudo.rotasGanhas || []).slice(0, 8);
   const rotasCriticas = (laudo.rotasPerdidas || []).slice(0, 10);
-  const titulo = externo ? 'Devolutiva de Competitividade' : 'Analise Executiva de Competitividade';
+  const titulo = isReajuste
+    ? (externo ? 'Devolutiva do Reajuste' : 'Analise Executiva do Reajuste')
+    : (externo ? 'Devolutiva de Competitividade' : 'Analise Executiva de Competitividade');
   const subtitulo = externo ? 'Oportunidades de ajuste comercial' : 'Uso interno - diretoria e gestao';
 
   return (
     <article className="laudo-page">
       <header className="laudo-header">
-        <div className="laudo-header__label">Analise de Competitividade de Tabela de Frete</div>
+        <div className="laudo-header__label">{isReajuste ? 'Impacto Financeiro e Competitividade do Reajuste' : 'Analise de Competitividade de Tabela de Frete'}</div>
         <h1>{laudo.transportadora || 'Transportadora'}</h1>
         <p>{titulo} - {subtitulo}</p>
         <div className="laudo-header__meta">
@@ -74,7 +81,18 @@ export function LaudoNegociacaoTemplate({ tipo = 'executivo', resultado = null, 
         ) : null}
 
         <section className="laudo-kpis">
-          {externo ? (
+          {isReajuste ? (
+            <>
+              <div className="laudo-kpi info"><span>Frete atual</span><strong>{dinheiro(indicadores.valorAtual)}</strong><small>{percentual(indicadores.fretePctAtual)} da NF</small></div>
+              <div className="laudo-kpi warn"><span>Frete reajustado</span><strong>{dinheiro(indicadores.valorNovo)}</strong><small>{percentual(indicadores.fretePctNovo)} da NF</small></div>
+              <div className="laudo-kpi warn"><span>Impacto mensal</span><strong>{dinheiro(indicadores.impactoMes)}</strong><small>{percentual(indicadores.impactoPercentual)}</small></div>
+              <div className="laudo-kpi info"><span>Ganhos atuais/projetados</span><strong>{numero(indicadores.ganhosAtuais)} / {numero(indicadores.ganhosProjetados)}</strong><small>CT-es competitivos</small></div>
+              <div className="laudo-kpi info"><span>Aderencia atual/projetada</span><strong>{percentual(indicadores.aderenciaAtual)} / {percentual(indicadores.aderenciaProjetada)}</strong></div>
+              <div className="laudo-kpi info"><span>Volume atual/projetado</span><strong>{numero(indicadores.volumesAtuais)} / {numero(indicadores.volumesProjetados)}</strong></div>
+              <div className="laudo-kpi warn"><span>Rotas com aumento</span><strong>{numero(indicadores.rotasAumento)}</strong></div>
+              <div className="laudo-kpi good"><span>Rotas com reducao</span><strong>{numero(indicadores.rotasReducao)}</strong></div>
+            </>
+          ) : externo ? (
             <>
               <div className="laudo-kpi info"><span>CT-es analisados</span><strong>{numero(indicadores.ctesAnalisados)}</strong><small>Base considerada</small></div>
               <div className="laudo-kpi good"><span>Boa competitividade</span><strong>{numero(indicadores.ctesGanhas)}</strong><small>CT-es competitivos</small></div>
@@ -92,7 +110,9 @@ export function LaudoNegociacaoTemplate({ tipo = 'executivo', resultado = null, 
         </section>
 
         <section className="laudo-callout">
-          {externo ? (
+          {isReajuste ? (
+            <><strong>Recomendacao executiva:</strong> {laudo.recomendacao || 'Revisar impacto e aderencia antes da decisao.'}</>
+          ) : externo ? (
             <>
               <strong>Resumo da devolutiva:</strong> a tabela apresentou boa competitividade em parte das rotas avaliadas, mas tambem possui oportunidades de ajuste. A recomendacao e priorizar as rotas com maior volume de CT-es e maior percentual medio de reducao necessaria.
             </>

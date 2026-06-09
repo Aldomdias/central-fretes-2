@@ -258,6 +258,7 @@ function montarNomeRota({ origem, cidadeDestino, ufDestino, ibgeDestino }) {
 }
 
 function montarCotacao({ item, nomeRota, generalidades, indice }) {
+  const dados = parseDadosOriginais(item.dados_originais);
   const percentual = numero(item.frete_percentual);
   const taxaAplicada = numero(item.taxa_aplicada);
   const freteMinimo = numero(item.frete_minimo);
@@ -265,19 +266,22 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   const pesoFinalInformado = numero(item.peso_final);
   const excessoKg = numero(item.excesso_kg);
   const valorExcedente = numero(item.valor_excedente);
+  const tipoCalculoTabela = normalizarTipoCalculo(generalidades.tipoCalculo);
 
   const temEstruturaFaixa =
     taxaAplicada > 0 ||
-    pesoInicial > 0 ||
-    pesoFinalInformado > 0 ||
     excessoKg > 0 ||
     valorExcedente > 0;
 
-  const tipoCalculoItem = percentual > 0 && !temEstruturaFaixa
+  // Importações percentuais podem preencher 0..999999999 apenas como faixa técnica.
+  // Esse limite não transforma uma tabela percentual em faixa de peso.
+  const tipoCalculoItem = tipoCalculoTabela === 'PERCENTUAL' && percentual > 0
     ? 'PERCENTUAL'
-    : temEstruturaFaixa
+    : percentual > 0 && !temEstruturaFaixa
+      ? 'PERCENTUAL'
+      : temEstruturaFaixa || pesoInicial > 0 || (pesoFinalInformado > 0 && pesoFinalInformado < 999999999)
       ? 'FAIXA_DE_PESO'
-      : normalizarTipoCalculo(generalidades.tipoCalculo);
+      : tipoCalculoTabela;
 
   return {
     id: item.id || `cotacao-neg-${indice}`,
@@ -288,11 +292,16 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
     pesoLimite: pesoFinalInformado > 0 ? pesoFinalInformado : 999999999,
     taxaAplicada,
     valorFixo: taxaAplicada,
+    // Em tabela percentual, a coluna "kg excedente" representa o kg garantia:
+    // peso considerado x valor por kg, comparado com frete % e frete mínimo.
+    rsKg: tipoCalculoItem === 'PERCENTUAL'
+      ? numero(item.excesso_kg || dados.excesso || dados.rsKg)
+      : numero(dados.rsKg),
     percentual,
     fretePercentual: percentual,
     freteMinimo,
-    excesso: valorExcedente,
-    excessoPeso: excessoKg,
+    excesso: tipoCalculoItem === 'FAIXA_DE_PESO' ? valorExcedente : 0,
+    excessoPeso: tipoCalculoItem === 'FAIXA_DE_PESO' ? excessoKg : 0,
     tipoCalculo: tipoCalculoItem,
     origemNegociacao: true,
   };

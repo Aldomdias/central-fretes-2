@@ -128,7 +128,7 @@ export default function App() {
     'torre-controle': <TorreControlePage />,
     reajustes: <ReajustesPage transportadoras={transportadorasMemo} />,
     lotacao: <LotacaoPage />,
-    'lotacao-operacao': <LotacaoOperacaoPage />,
+    'lotacao-operacao': <LotacaoOperacaoPage onRespostaConcluida={() => mudarPagina('lotacao-auditoria')} />,
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'painel-auditoria': <PainelAuditoriaPage />,
     'painel-operacao': <PainelOperacaoPage />,

@@ -1343,6 +1343,8 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
         }
       : null,
     diagnostico: resultado.diagnostico || {},
+    analiseReajuste: resultado.analiseReajuste || null,
+    gradeFrete: resultado.gradeFrete || null,
 
     // Detalhes por CT-e: base dos agrupamentos do laudo de rodadas
     // Limitado a 800 itens para nao estourar o payload do Supabase.
@@ -1367,6 +1369,15 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       savingSelecionada:     item.savingSelecionada || 0,
       faixaPeso:             item.selecionadaDetalhes?.frete?.faixaPeso || '',
       trackingMatch:         item.trackingMatch || false,
+      trackingOrigemVinculo: item.trackingOrigemVinculo || '',
+      trackingLinhas:        item.trackingLinhas || 0,
+      chaveCte:              item.chaveCte || '',
+      chaveNfe:              item.chaveNfe || '',
+      cubagemOriginalTracking: item.cubagemOriginalTracking || 0,
+      cubagemTotalArmazenadaTracking: item.cubagemTotalArmazenadaTracking || 0,
+      cubagemOutlierTracking: item.cubagemOutlierTracking || false,
+      cubagemCorrigidaTracking: item.cubagemCorrigidaTracking || false,
+      limiteCubagemTracking: item.limiteCubagemTracking || 0,
     })),
 
     // Totais agregados usados como fallback pelo motor de veiculo sugerido
@@ -1540,6 +1551,16 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
 
   if (error) {
     throw new Error(error.message || 'Erro ao salvar resultado da simulação na negociação.');
+  }
+
+  if (!data?.id || data.id !== id) {
+    throw new Error('O Supabase não confirmou a atualização da negociação correta.');
+  }
+
+  const historicoConfirmado = getHistoricoRodadas(data);
+  const rodadaConfirmada = historicoConfirmado.some((item) => item?.id === entradaRodada.id);
+  if (!rodadaConfirmada) {
+    throw new Error('O Supabase respondeu, mas não confirmou a nova rodada no histórico da negociação.');
   }
 
   return data;

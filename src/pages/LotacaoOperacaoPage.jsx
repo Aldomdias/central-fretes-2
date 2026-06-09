@@ -7,7 +7,9 @@ import {
   formatarDataCurta,
   formatarMoeda,
   carregarSolicitacoesPagamento,
+  criarLancamentoAuditoria,
   criarCustoAdicionalLotacao,
+  cteJaLancado,
   atualizarStatusSolicitacao,
   importarMultiplosFluxos,
   limparFluxoCargasLotacao,
@@ -16,6 +18,7 @@ import {
   rankingHistoricoPorTransportadora,
   resumirFluxoCargas,
   salvarFluxoCargasLotacaoCompleto,
+  salvarLancamentosAuditoria,
   salvarSolicitacoesPagamento,
   textoSolicitacaoPagamento,
   carregarLancamentosAuditoria,
@@ -41,6 +44,7 @@ import {
   carregarSolicitacoesInfoSupabase,
   registrarEventoHistoricoSupabase,
   atualizarPendenciaAuditoriaSupabase,
+  salvarLancamentoAuditoriaSupabase,
   salvarSolicitacaoSupabase,
   atualizarSolicitacaoSupabase,
   atualizarSolicitacaoInfoSupabase,
@@ -105,15 +109,16 @@ function solicitacaoInfoParaOperacao(info = {}) {
   const destino = extrairCampoDescricao(descricao, ['Destino']);
   const valorCte = extrairMoedaDescricao(descricao, ['Valor CT-e', 'Valor CTe', 'Valor']);
   const valorNf = extrairMoedaDescricao(descricao, ['Valor NF']);
+  const dist = info.dist || extrairCampoDescricao(descricao, ['DIST', 'Viagem']) || '';
 
   return {
     id: info.id,
     fonteFluxo: 'AUDIT_INFO',
     tipo: 'QUESTIONAMENTO_OPERACAO',
     origemSolicitacao: 'AUDITORIA',
-    cargaId: '',
-    dist: info.dist || extrairCampoDescricao(descricao, ['DIST', 'Viagem']) || '-',
-    distKey: normalizarDistKey(info.dist || ''),
+    cargaId: info.carga_id || '',
+    dist: dist || '-',
+    distKey: dist ? normalizarDistKey(dist) : '',
     cte: chave || numero || '',
     fatura: info.fatura || extrairCampoDescricao(descricao, ['Fatura']) || '',
     transportadora,
@@ -126,6 +131,7 @@ function solicitacaoInfoParaOperacao(info = {}) {
     status: info.status || 'AGUARDANDO_INFORMACAO',
     observacao: descricao,
     resposta: info.resposta_operacao || info.resposta || info.observacao_tratamento || '',
+    justificativaOperacao: info.justificativa_operacao || '',
     criadoEm: info.created_at || info.criadoEm || '',
     atualizadoEm: info.updated_at || info.atualizadoEm || '',
   };
@@ -359,10 +365,14 @@ function resumoViagemOperacao(viagem, lancamentos = [], solicitacoes = []) {
     return { auditado: 0, adicional: 0, saldo: 0, lancamentos: [], solicitacoes: [] };
   }
   const carga = viagem.cargaPrincipal;
+  const adicional = totalAdicionalAutorizadoCarga(solicitacoes, carga);
+  const auditado = totalLancadoCarga(lancamentos, carga);
+  const autorizado = (Number(viagem.valorBase) || Number(carga.valorComparacao) || 0) + adicional;
   return {
-    auditado: totalLancadoCarga(lancamentos, carga),
-    adicional: totalAdicionalAutorizadoCarga(solicitacoes, carga),
-    saldo: saldoDisponivelCarga(lancamentos, solicitacoes, carga),
+    auditado,
+    adicional,
+    autorizado,
+    saldo: autorizado - auditado,
     lancamentos: lancamentosDaCarga(lancamentos, carga),
     solicitacoes: solicitacoesDaCarga(solicitacoes, carga),
   };
@@ -583,7 +593,7 @@ function ResultadoViagensConsolidadas({ viagens, selecionadaKey, onSelecionar, l
             <th>Transportadora</th>
             <th>Rota</th>
             <th>Tipo</th>
-            <th>Valor base</th>
+            <th>Valor autorizado</th>
             <th>Auditado</th>
             <th>Saldo</th>
             <th>CT-es</th>
@@ -604,8 +614,11 @@ function ResultadoViagensConsolidadas({ viagens, selecionadaKey, onSelecionar, l
                 <td>{viagem.origem} x {viagem.destino}</td>
                 <td>{viagem.tipoVeiculo || '-'}</td>
                 <td>
-                  <strong>{formatarMoeda(viagem.valorBase)}</strong>
-                  {viagem.valorAlternativo && <div className="muted small">Alt.: {formatarMoeda(viagem.valorAlternativo)}</div>}
+                  <strong>{formatarMoeda(resumo.autorizado)}</strong>
+                  <div className="muted small">
+                    Base {formatarMoeda(viagem.valorBase)}
+                    {resumo.adicional > 0 ? ` + ${formatarMoeda(resumo.adicional)}` : ''}
+                  </div>
                 </td>
                 <td>{formatarMoeda(resumo.auditado)}</td>
                 <td className={resumo.saldo < 0 ? 'negativo' : ''}><strong>{formatarMoeda(resumo.saldo)}</strong></td>
@@ -691,9 +704,9 @@ function DetalheViagemOperacao({ viagem, tabelas, lancamentos, solicitacoes, onA
 
       <div className="summary-strip lotacao-summary-mini">
         <div className="summary-card">
-          <span>Valor base</span>
-          <strong>{formatarMoeda(viagem.valorBase)}</strong>
-          <small>{viagem.valorAlternativo ? `Alternativo ${formatarMoeda(viagem.valorAlternativo)}` : 'Base da viagem'}</small>
+          <span>Valor autorizado</span>
+          <strong>{formatarMoeda(resumo.autorizado)}</strong>
+          <small>Base {formatarMoeda(viagem.valorBase)} + adicionais {formatarMoeda(resumo.adicional)}</small>
         </div>
         <div className="summary-card">
           <span>Já auditado</span>
@@ -875,16 +888,28 @@ function rotuloTipoSolicitacao(item = {}) {
   return 'Excedente auditoria';
 }
 
+function isQuestionamentoAuditoria(item = {}) {
+  return item?.fonteFluxo === 'AUDIT_INFO'
+    || item?.tipo === 'QUESTIONAMENTO_OPERACAO'
+    || item?.categoria === 'QUESTIONAMENTO_OPERACAO'
+    || item?.origemSolicitacao === 'AUDITORIA_LOTACAO';
+}
+
 function statusAprovarSolicitacao(item = {}) {
-  if (item.fonteFluxo === 'AUDIT_INFO') return 'RESPONDIDO_OPERACAO';
+  if (isQuestionamentoAuditoria(item)) return 'RESPONDIDO_OPERACAO';
   if (item.fonteFluxo === 'AUDIT_PENDENCIA') return 'APROVADO_OPERACAO';
   return 'APROVADO';
 }
 
 function statusRecusarSolicitacao(item = {}) {
-  if (item.fonteFluxo === 'AUDIT_INFO') return 'DEVOLVIDO_AUDITORIA';
+  if (isQuestionamentoAuditoria(item)) return 'DEVOLVIDO_AUDITORIA';
   if (item.fonteFluxo === 'AUDIT_PENDENCIA') return 'RECUSADO_OPERACAO';
   return 'RECUSADO';
+}
+
+function statusExigeVinculoDistOperacao(item = {}, status = '') {
+  return isQuestionamentoAuditoria(item)
+    && statusKey(status) === 'RESPONDIDO_OPERACAO';
 }
 
 function resumoSolicitacaoCurto(item = {}) {
@@ -893,14 +918,107 @@ function resumoSolicitacaoCurto(item = {}) {
   return texto.length > 95 ? `${texto.slice(0, 95)}...` : texto;
 }
 
-function SolicitacaoDetalhesModal({ item, resposta, onFechar, onResposta, onResponder, onCopiar, emailHref }) {
+function localidadeCompativelOperacao(alvo = '', candidato = '') {
+  const normalizarLocalidade = (valor) => normalizarTexto(valor || '')
+    .replace(/\s*\/\s*[A-Z]{2}$/, '')
+    .replace(/\s+-\s+[A-Z]{2}$/, '')
+    .trim();
+  const a = normalizarLocalidade(alvo);
+  const b = normalizarLocalidade(candidato);
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+
+function sugestoesDistOperacao(cargas = [], item = {}, busca = '') {
+  const termo = String(busca || '').trim();
+  if (termo && termo !== '-') return buscarCargaPorDistOuCte(cargas, termo);
+
+  const transportadora = normalizarTexto(item.transportadora || '');
+  const valorCte = Number(item.valorLancado) || 0;
+  return (cargas || [])
+    .map((carga) => {
+      const transportadoraCarga = normalizarTexto(carga.transportadora || '');
+      const transportadoraOk = Boolean(
+        transportadora
+        && transportadoraCarga
+        && (transportadora === transportadoraCarga
+          || transportadora.includes(transportadoraCarga)
+          || transportadoraCarga.includes(transportadora))
+      );
+      const origemOk = localidadeCompativelOperacao(item.origem, carga.origem);
+      const destinoOk = localidadeCompativelOperacao(item.destino, carga.destino);
+      if (!transportadoraOk || !origemOk || !destinoOk) return null;
+
+      const valorDist = Number(carga.valorComparacao) || 0;
+      const diferencaValor = valorCte > 0 && valorDist > 0 ? Math.abs(valorDist - valorCte) : Number.MAX_SAFE_INTEGER;
+      const contemCte = normalizarTexto(carga.cteRaw || '').includes(normalizarTexto(item.cte || ''));
+      return {
+        carga,
+        score: 100 + (contemCte ? 50 : 0) - Math.min(diferencaValor, 999999) / 1000,
+        diferencaValor,
+        motivos: [
+          'mesma transportadora',
+          'mesma origem',
+          'mesmo destino',
+          ...(contemCte ? ['CT-e encontrado na viagem'] : []),
+        ],
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .filter((resultado, index, lista) => (
+      lista.findIndex((outro) => normalizarDistKey(outro.carga.dist) === normalizarDistKey(resultado.carga.dist)) === index
+    ))
+    .map((resultado) => ({ ...resultado.carga, sugestaoOperacao: resultado }))
+    .slice(0, 8);
+}
+
+function compararQuestionamentoComViagem(item = {}, viagem = null, lancamentos = [], solicitacoes = []) {
+  const valorCte = Number(item.valorLancado) || 0;
+  const saldoDist = viagem ? Math.max(0, saldoDisponivelCarga(lancamentos, solicitacoes, viagem)) : 0;
+  const aumentoNecessario = viagem && valorCte > 0
+    ? Number(Math.max(0, valorCte - saldoDist).toFixed(2))
+    : 0;
+  return {
+    valorCte,
+    saldoDist,
+    aumentoNecessario,
+    cabeNoSaldo: Boolean(viagem && valorCte > 0 && aumentoNecessario <= 0.01),
+  };
+}
+
+function SolicitacaoDetalhesModal({
+  item,
+  tratamento,
+  cargas,
+  lancamentos,
+  solicitacoes,
+  onFechar,
+  onTratamento,
+  onResponder,
+  onCopiar,
+  emailHref,
+}) {
+  const isQuestionamento = isQuestionamentoAuditoria(item);
+  const resultadosDist = useMemo(() => {
+    if (!isQuestionamento) return [];
+    return sugestoesDistOperacao(cargas || [], item || {}, tratamento?.buscaDist);
+  }, [cargas, isQuestionamento, item, tratamento?.buscaDist]);
+
   if (!item) return null;
 
   const tempo = calcularTempoAguardando(item);
   const pendente = isPendente(item.status);
   const diferenca = valorDiferencaSolicitacao(item);
   const rota = [item.origem, item.destino].filter(Boolean).join(' x ') || '-';
-  const tituloAcao = item.fonteFluxo === 'AUDIT_INFO' ? 'Responder questionamento' : 'Tratar aprovação';
+  const tituloAcao = isQuestionamento ? 'Responder questionamento' : 'Tratar aprovação';
+  const statusResposta = statusAprovarSolicitacao(item);
+  const viagemSelecionada = (cargas || []).find((carga) => String(carga.id) === String(tratamento?.cargaId));
+  const comparacao = compararQuestionamentoComViagem(item, viagemSelecionada, lancamentos, solicitacoes);
+  const podeConcluirQuestionamento = !isQuestionamento || (
+    Boolean(viagemSelecionada?.dist)
+    && Boolean(String(tratamento?.resposta || '').trim())
+    && Boolean(String(tratamento?.justificativa || '').trim())
+  );
 
   return (
     <div
@@ -986,17 +1104,107 @@ function SolicitacaoDetalhesModal({ item, resposta, onFechar, onResposta, onResp
           </div>
         </div>
 
+        {isQuestionamento && pendente && (
+          <div className="panel-card top-space-sm" style={{ padding: 14 }}>
+            <div className="panel-title">DIST/viagem correta <span className="error-text">*</span></div>
+            <div className="hint-box compact top-space-sm">
+              A resposta só poderá ser concluída depois que uma viagem existente for selecionada. Todo custo operacional deve permanecer dentro de uma DIST.
+            </div>
+            <label className="field top-space-sm">
+              Buscar na lista de DIST/viagens
+              <input
+                value={tratamento?.buscaDist || ''}
+                onChange={(event) => onTratamento(item.id, 'buscaDist', event.target.value)}
+                placeholder="Digite a DIST, HUB ou CT-e para localizar a viagem existente"
+              />
+            </label>
+            <label className="field top-space-sm">
+              Vincular resposta a
+              <select
+                value={tratamento?.cargaId || ''}
+                onChange={(event) => onTratamento(item.id, 'cargaId', event.target.value)}
+              >
+                <option value="">Selecione uma DIST/viagem existente</option>
+                {resultadosDist.map((carga) => (
+                  <option key={carga.id} value={carga.id}>
+                    {carga.dist} · {carga.transportadora || '-'} · {carga.origem || '-'} x {carga.destino || '-'} · {formatarMoeda(carga.valorComparacao)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="muted small top-space-sm">
+              {resultadosDist.length} sugestão(ões) com a mesma transportadora, origem e destino. O valor mais próximo do CT-e aparece primeiro.
+            </div>
+            {viagemSelecionada && (
+              <>
+                <div className="hint-box compact top-space-sm">
+                  <strong>DIST vinculada:</strong> {viagemSelecionada.dist}<br />
+                  <span className="muted">
+                    Carga: {viagemSelecionada.id} · {viagemSelecionada.transportadora || '-'} ·
+                    {' '}{viagemSelecionada.origem || '-'} x {viagemSelecionada.destino || '-'}
+                  </span>
+                </div>
+                <div className="summary-strip lotacao-summary-mini top-space-sm">
+                  <div className="summary-card">
+                    <span>Valor do CT-e</span>
+                    <strong>{formatarMoeda(comparacao.valorCte)}</strong>
+                    <small>valor que será auditado</small>
+                  </div>
+                  <div className="summary-card">
+                    <span>Saldo disponível na DIST</span>
+                    <strong>{formatarMoeda(comparacao.saldoDist)}</strong>
+                    <small>já considera lançamentos e adicionais</small>
+                  </div>
+                  <div className="summary-card">
+                    <span>Resultado</span>
+                    <strong className={comparacao.aumentoNecessario > 0 ? 'negativo' : 'positivo'}>
+                      {comparacao.aumentoNecessario > 0
+                        ? `Aumento de ${formatarMoeda(comparacao.aumentoNecessario)}`
+                        : 'Dentro do saldo'}
+                    </strong>
+                    <small>
+                      {comparacao.aumentoNecessario > 0
+                        ? 'exigirá confirmação da Operação'
+                        : 'será registrado como auditado'}
+                    </small>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         <div className="panel-card top-space-sm" style={{ padding: 14 }}>
-          <div className="panel-title">Resposta / tratamento da Operação</div>
+          <div className="panel-title">{isQuestionamento ? 'Resposta formal da Operação' : 'Resposta / tratamento da Operação'}</div>
           {pendente ? (
-            <textarea
-              value={resposta || ''}
-              onChange={(event) => onResposta(item.id, event.target.value)}
-              placeholder="Informe a resposta, tratativa ou justificativa da Operação antes de responder/aprovar/recusar."
-              style={{ minHeight: 110 }}
-            />
+            <>
+              <textarea
+                value={tratamento?.resposta || ''}
+                onChange={(event) => onTratamento(item.id, 'resposta', event.target.value)}
+                placeholder={isQuestionamento
+                  ? 'Responda objetivamente ao questionamento original da Auditoria.'
+                  : 'Informe a resposta, tratativa ou justificativa da Operação antes de aprovar/recusar.'}
+                style={{ minHeight: 110 }}
+              />
+              {isQuestionamento && (
+                <label className="field top-space-sm">
+                  Justificativa da Operação
+                  <textarea
+                    value={tratamento?.justificativa || ''}
+                    onChange={(event) => onTratamento(item.id, 'justificativa', event.target.value)}
+                    placeholder="Explique a correção da DIST/viagem e o motivo da resposta."
+                    style={{ minHeight: 90 }}
+                  />
+                </label>
+              )}
+            </>
           ) : (
-            <div className="hint-box compact top-space-sm">{item.resposta || 'Sem resposta registrada.'}</div>
+            <>
+              <div className="hint-box compact top-space-sm">{item.resposta || 'Sem resposta registrada.'}</div>
+              {isQuestionamento && item.justificativaOperacao && (
+                <div className="hint-box compact top-space-sm"><strong>Justificativa:</strong><br />{item.justificativaOperacao}</div>
+              )}
+            </>
           )}
         </div>
 
@@ -1005,11 +1213,17 @@ function SolicitacaoDetalhesModal({ item, resposta, onFechar, onResposta, onResp
           <a className="btn-secondary link-button" href={emailHref(item)}>E-mail</a>
           {pendente && (
             <>
-              <button type="button" className="btn-primary" onClick={() => onResponder(item, statusAprovarSolicitacao(item))}>
-                {item.fonteFluxo === 'AUDIT_INFO' ? 'Responder' : 'Aprovar'}
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => onResponder(item, statusResposta)}
+                disabled={!podeConcluirQuestionamento}
+                title={!podeConcluirQuestionamento ? 'Selecione a DIST e informe resposta e justificativa para concluir' : ''}
+              >
+                {isQuestionamento ? 'Responder' : 'Aprovar'}
               </button>
               <button type="button" className="btn-danger" onClick={() => onResponder(item, statusRecusarSolicitacao(item))}>
-                {item.fonteFluxo === 'AUDIT_INFO' ? 'Devolver' : 'Recusar'}
+                {isQuestionamento ? 'Devolver' : 'Recusar'}
               </button>
             </>
           )}
@@ -1019,8 +1233,8 @@ function SolicitacaoDetalhesModal({ item, resposta, onFechar, onResposta, onResp
   );
 }
 
-function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
-  const [respostas, setRespostas] = useState({});
+function AutorizacoesOperacao({ solicitacoes, cargas, lancamentos, onAtualizar, onRespostaConcluida }) {
+  const [tratamentos, setTratamentos] = useState({});
   const [feedback, setFeedback] = useState(null);
   const [filtros, setFiltros] = useState({ status: 'pendentes', tipo: 'todos', termo: '' });
   const [detalheAberto, setDetalheAberto] = useState(null);
@@ -1028,6 +1242,7 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
   const listaFiltrada = useMemo(() => {
     const termo = normalizarTexto(filtros.termo || '');
     return [...(solicitacoes || [])]
+      .filter(Boolean)
       .filter((item) => {
         if (filtros.status === 'pendentes') return isPendente(item.status);
         if (filtros.status === 'aprovadas') return isAprovado(item.status);
@@ -1065,26 +1280,78 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
     return `mailto:?subject=${subject}&body=${body}`;
   };
 
-  const atualizarResposta = (id, valor) => setRespostas((prev) => ({ ...prev, [id]: valor }));
+  const atualizarTratamento = (id, campo, valor) => {
+    setTratamentos((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), [campo]: valor },
+    }));
+  };
+
+  const abrirDetalhe = (item) => {
+    const cargaExistente = (cargas || []).find((carga) => String(carga.id) === String(item.cargaId))
+      || buscarCargaPorDistOuCte(cargas || [], item.dist || '')[0];
+    setTratamentos((prev) => ({
+      ...prev,
+      [item.id]: {
+        resposta: prev[item.id]?.resposta || item.resposta || '',
+        justificativa: prev[item.id]?.justificativa || item.justificativaOperacao || '',
+        buscaDist: prev[item.id]?.buscaDist || item.dist || '',
+        cargaId: prev[item.id]?.cargaId || cargaExistente?.id || '',
+      },
+    }));
+    setDetalheAberto(item);
+  };
 
   const responder = async (item, status) => {
-    const justificativa = String(respostas[item.id] || '').trim();
-    if (!justificativa) {
-      window.alert('Informe uma justificativa antes de aprovar, recusar ou responder a solicitação.');
+    const tratamento = tratamentos[item.id] || {};
+    const resposta = String(tratamento.resposta || '').trim();
+    const justificativa = String(tratamento.justificativa || resposta).trim();
+    const isQuestionamento = isQuestionamentoAuditoria(item);
+    const viagem = isQuestionamento
+      ? (cargas || []).find((carga) => String(carga.id) === String(tratamento.cargaId))
+      : null;
+    if (!resposta) {
+      window.alert('Informe a resposta ou tratamento da Operação.');
+      return;
+    }
+    if (isQuestionamento && !String(tratamento.justificativa || '').trim()) {
+      window.alert('Informe a justificativa da Operação.');
+      return;
+    }
+    if (statusExigeVinculoDistOperacao(item, status) && !viagem?.dist) {
+      window.alert('Selecione a DIST/viagem existente relacionada ao questionamento.');
+      return;
+    }
+
+    const concluirQuestionamento = statusExigeVinculoDistOperacao(item, status);
+    const comparacao = compararQuestionamentoComViagem(item, viagem, lancamentos, solicitacoes);
+    if (concluirQuestionamento && comparacao.valorCte <= 0) {
+      window.alert('O valor do CT-e não foi identificado no questionamento. A Auditoria deve reenviar a solicitação com o valor para permitir a comparação.');
       return;
     }
 
     const valor = formatarMoeda(valorPrincipalSolicitacao(item));
     const acao = isAprovado(status) ? 'aprovar' : statusKey(status) === 'RESPONDIDO_OPERACAO' ? 'responder' : 'recusar/devolver';
-    const confirmado = window.confirm(`Confirmar ${acao} a solicitação da DIST ${item.dist || '-'} no valor de ${valor}?\n\nJustificativa: ${justificativa}`);
+    const mensagemFinanceira = concluirQuestionamento
+      ? comparacao.aumentoNecessario > 0
+        ? `\n\nATENÇÃO: o CT-e é ${formatarMoeda(comparacao.valorCte)}, o saldo da DIST é ${formatarMoeda(comparacao.saldoDist)} e será autorizado um aumento de ${formatarMoeda(comparacao.aumentoNecessario)}.`
+        : `\n\nO CT-e de ${formatarMoeda(comparacao.valorCte)} cabe no saldo de ${formatarMoeda(comparacao.saldoDist)} e será registrado como auditado.`
+      : '';
+    const confirmado = window.confirm(`Confirmar ${acao} a solicitação da DIST ${viagem?.dist || item.dist || '-'} no valor de ${valor}?${mensagemFinanceira}\n\nJustificativa: ${justificativa}`);
     if (!confirmado) return;
 
     setFeedback(null);
     try {
-      await onAtualizar(item, status, justificativa);
-      setRespostas((prev) => ({ ...prev, [item.id]: '' }));
+      await onAtualizar(item, status, {
+        resposta,
+        justificativa,
+        viagem,
+        aumentoConfirmado: concluirQuestionamento && comparacao.aumentoNecessario > 0,
+      });
+      setTratamentos((prev) => ({ ...prev, [item.id]: {} }));
       setDetalheAberto(null);
       setFeedback({ tipo: 'ok', texto: `Solicitação atualizada com sucesso.` });
+      if (statusExigeVinculoDistOperacao(item, status)) onRespostaConcluida?.();
     } catch (error) {
       setFeedback({ tipo: 'erro', texto: error.message || String(error) });
     }
@@ -1176,10 +1443,10 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
                     </td>
                     <td style={{ minWidth: 180 }}>
                       <div className="row-actions lotacao-auditoria-actions">
-                        <button type="button" className="btn-primary" onClick={() => setDetalheAberto(item)}>Detalhes</button>
+                        <button type="button" className="btn-primary" onClick={() => abrirDetalhe(item)}>Detalhes</button>
                         {pendente && (
-                          <button type="button" className="btn-secondary" onClick={() => setDetalheAberto(item)}>
-                            {item.fonteFluxo === 'AUDIT_INFO' ? 'Responder' : 'Tratar'}
+                          <button type="button" className="btn-secondary" onClick={() => abrirDetalhe(item)}>
+                            {isQuestionamentoAuditoria(item) ? 'Responder' : 'Tratar'}
                           </button>
                         )}
                       </div>
@@ -1194,9 +1461,12 @@ function AutorizacoesOperacao({ solicitacoes, onAtualizar }) {
 
       <SolicitacaoDetalhesModal
         item={detalheAberto}
-        resposta={detalheAberto ? respostas[detalheAberto.id] : ''}
+        tratamento={detalheAberto ? tratamentos[detalheAberto.id] : null}
+        cargas={cargas}
+        lancamentos={lancamentos}
+        solicitacoes={solicitacoes}
         onFechar={() => setDetalheAberto(null)}
-        onResposta={atualizarResposta}
+        onTratamento={atualizarTratamento}
         onResponder={responder}
         onCopiar={copiar}
         emailHref={emailHref}
@@ -1314,7 +1584,7 @@ function CustoAdicionalOperacao({ baseFluxo, onCriado, distSugerida }) {
   );
 }
 
-export default function LotacaoOperacaoPage() {
+export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
   const sessao = carregarSessao();
   const [baseFluxo, setBaseFluxo] = useState(() => carregarFluxoCargasLotacao());
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
@@ -1414,16 +1684,80 @@ export default function LotacaoOperacaoPage() {
   const atualizarFiltro = (campo, valor) => setFiltros((prev) => ({ ...prev, [campo]: valor }));
   const limparFiltros = () => setFiltros({ origem: '', destino: '', tipo: '', transportadora: '' });
 
-  const atualizarSolicitacao = async (item, status, observacao) => {
+  const atualizarSolicitacao = async (item, status, tratamento = {}) => {
     const id = item?.id;
     if (!id) throw new Error('Solicitação sem identificador.');
+    const resposta = String(tratamento.resposta || '').trim();
+    const justificativa = String(tratamento.justificativa || resposta).trim();
+    const viagem = tratamento.viagem || null;
     const isPendencia = item.fonteFluxo === 'AUDIT_PENDENCIA';
-    if (item.fonteFluxo === 'AUDIT_INFO') {
+    let custoAumento = null;
+    let lancamentoAuditado = null;
+    if (isQuestionamentoAuditoria(item)) {
+      if (!resposta) throw new Error('A resposta da Operação é obrigatória.');
+      if (!justificativa) throw new Error('A justificativa da Operação é obrigatória.');
+      if (statusExigeVinculoDistOperacao(item, status) && (!viagem?.id || !viagem?.dist)) {
+        throw new Error('Selecione uma DIST/viagem existente antes de responder.');
+      }
+      const comparacao = compararQuestionamentoComViagem(item, viagem, lancamentos, solicitacoes);
+      if (statusExigeVinculoDistOperacao(item, status) && comparacao.valorCte <= 0) {
+        throw new Error('O valor do CT-e não foi identificado no questionamento e não pode ser auditado.');
+      }
+      if (statusExigeVinculoDistOperacao(item, status) && comparacao.aumentoNecessario > 0 && !tratamento.aumentoConfirmado) {
+        throw new Error(`Confirme o aumento de ${formatarMoeda(comparacao.aumentoNecessario)} antes de concluir.`);
+      }
+
+      const cteJaAuditado = cteJaLancado(lancamentos, viagem, item.cte);
+      if (!cteJaAuditado && statusExigeVinculoDistOperacao(item, status)) {
+        if (comparacao.aumentoNecessario > 0) {
+          custoAumento = {
+            ...criarCustoAdicionalLotacao(viagem, {
+              tipoCusto: 'Aumento confirmado na resposta da Operação',
+              valorAdicional: comparacao.aumentoNecessario,
+              cte: item.cte,
+              fatura: item.fatura,
+              observacao: justificativa,
+            }),
+            status: 'APROVADO_OPERACAO',
+            resposta,
+            atualizadoEm: new Date().toISOString(),
+          };
+          await salvarSolicitacaoSupabase(custoAumento);
+        }
+
+        const solicitacoesComAumento = custoAumento ? [custoAumento, ...solicitacoes] : solicitacoes;
+        lancamentoAuditado = criarLancamentoAuditoria(viagem, {
+          cte: item.cte,
+          fatura: item.fatura,
+          valorLancado: comparacao.valorCte,
+          observacao: `Auditado após resposta da Operação. ${justificativa}`,
+        }, lancamentos, solicitacoesComAumento);
+        lancamentoAuditado = {
+          ...lancamentoAuditado,
+          auditedByUserId: sessao?.id || '',
+          auditedByName: sessao?.nome || sessao?.email || '',
+          auditedByEmail: sessao?.email || '',
+          auditedAt: new Date().toISOString(),
+          auditStatus: 'AUDITADO_OK',
+          auditExceededAmount: 0,
+          auditAllowedAmount: comparacao.aumentoNecessario,
+          auditEnteredAmount: comparacao.valorCte,
+          origemTela: 'LOTACAO_OPERACAO',
+        };
+        await salvarLancamentoAuditoriaSupabase(lancamentoAuditado);
+      }
+
       const agora = new Date().toISOString();
       await atualizarSolicitacaoInfoSupabase(id, status, {
-        resposta: observacao,
-        resposta_operacao: observacao,
-        observacao_tratamento: observacao,
+        resposta,
+        resposta_operacao: resposta,
+        justificativa_operacao: justificativa,
+        observacao_tratamento: justificativa,
+        ...(viagem ? {
+          dist: viagem.dist,
+          dist_key: viagem.distKey || normalizarDistKey(viagem.dist),
+          carga_id: String(viagem.id),
+        } : {}),
         respondido_por_id: sessao?.id || '',
         respondido_por_nome: sessao?.nome || sessao?.email || '',
         respondido_por_email: sessao?.email || '',
@@ -1436,7 +1770,7 @@ export default function LotacaoOperacaoPage() {
         acao: status,
         statusAnterior: item.status || '',
         statusNovo: status,
-        comentario: observacao,
+        comentario: `${resposta}\n\nJustificativa: ${justificativa}${viagem?.dist ? `\nDIST/viagem: ${viagem.dist}` : ''}`,
         origemTela: 'LOTACAO_OPERACAO',
       });
     } else if (isPendencia) {
@@ -1453,9 +1787,9 @@ export default function LotacaoOperacaoPage() {
         valor_adicional_aprovado: valorAdicional,
         valor_final_autorizado: valorFinal,
         prazo_auditoria_em: status === 'APROVADO_OPERACAO' ? adicionarHorasIso(agora, 24) : null,
-        motivo_recusa: status === 'RECUSADO_OPERACAO' ? observacao : '',
-        resposta_operacao: observacao,
-        justificativa_operacao: observacao,
+        motivo_recusa: status === 'RECUSADO_OPERACAO' ? justificativa : '',
+        resposta_operacao: resposta,
+        justificativa_operacao: justificativa,
       });
       await registrarEventoHistoricoSupabase({
         pendenciaId: id,
@@ -1465,14 +1799,30 @@ export default function LotacaoOperacaoPage() {
         acao: status,
         statusAnterior: item.status || '',
         statusNovo: status,
-        comentario: observacao,
+        comentario: justificativa,
         origemTela: 'LOTACAO_OPERACAO',
       });
     } else {
-      await atualizarSolicitacaoSupabase(id, status, observacao);
+      await atualizarSolicitacaoSupabase(id, status, resposta);
     }
-    const base = solicitacoes.length ? solicitacoes : carregarSolicitacoesPagamento();
-    const atualizadas = atualizarStatusSolicitacao(base, id, status, observacao).sort((a, b) => dataOrdenacaoItem(b) - dataOrdenacaoItem(a));
+    if (lancamentoAuditado) {
+      const novosLancamentos = [lancamentoAuditado, ...lancamentos];
+      salvarLancamentosAuditoria(novosLancamentos);
+      setLancamentos(novosLancamentos);
+    }
+
+    const baseOriginal = solicitacoes.length ? solicitacoes : carregarSolicitacoesPagamento();
+    const base = custoAumento ? [custoAumento, ...baseOriginal] : baseOriginal;
+    const atualizadas = atualizarStatusSolicitacao(base, id, status, resposta)
+      .map((solicitacao) => solicitacao.id === id ? {
+        ...solicitacao,
+        resposta,
+        justificativaOperacao: justificativa,
+        dist: viagem?.dist || solicitacao.dist,
+        distKey: viagem?.distKey || (viagem?.dist ? normalizarDistKey(viagem.dist) : solicitacao.distKey),
+        cargaId: viagem?.id || solicitacao.cargaId,
+      } : solicitacao)
+      .sort((a, b) => dataOrdenacaoItem(b) - dataOrdenacaoItem(a));
     salvarSolicitacoesPagamento(atualizadas);
     setSolicitacoes(atualizadas);
   };
@@ -1579,7 +1929,13 @@ export default function LotacaoOperacaoPage() {
       )}
 
       {abaAtiva === 'aprovacoes' && (
-        <AutorizacoesOperacao solicitacoes={solicitacoes} onAtualizar={atualizarSolicitacao} />
+        <AutorizacoesOperacao
+          solicitacoes={solicitacoes}
+          cargas={baseFluxo.cargas}
+          lancamentos={lancamentos}
+          onAtualizar={atualizarSolicitacao}
+          onRespostaConcluida={onRespostaConcluida}
+        />
       )}
 
       {abaAtiva === 'custos' && (

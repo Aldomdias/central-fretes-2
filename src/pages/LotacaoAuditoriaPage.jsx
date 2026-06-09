@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buscarCargaPorDistOuCte,
   carregarFluxoCargasLotacao,
@@ -114,7 +114,10 @@ function solicitacaoInfoParaMovimentoOperacao(sol = {}) {
     descricaoProblema: sol.descricaoProblema || sol.descricao_problema || sol.observacao || '',
     resposta: sol.resposta || sol.resposta_operacao || sol.observacao_tratamento || '',
     resposta_operacao: sol.resposta_operacao || sol.resposta || '',
+    justificativaOperacao: sol.justificativaOperacao || sol.justificativa_operacao || '',
+    justificativa_operacao: sol.justificativa_operacao || sol.justificativaOperacao || '',
     observacaoTratamento: sol.observacaoTratamento || sol.observacao_tratamento || '',
+    cargaId: sol.cargaId || sol.carga_id || '',
     respondidoPorNome: sol.respondido_por_nome || sol.respondidoPorNome || '',
     respondidoEm: sol.respondido_em || sol.respondidoEm || '',
     criadoEm,
@@ -2167,6 +2170,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
     somenteTratadas: false,
   });
   const [detalhe, setDetalhe] = useState(null);
+  const [expandidoId, setExpandidoId] = useState('');
   const [statusNovo, setStatusNovo] = useState('');
   const [respostaTratamento, setRespostaTratamento] = useState('');
 
@@ -2392,9 +2396,29 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
           <div className="summary-strip lotacao-summary-mini">
             <div className="summary-card"><span>Tipo</span><strong>{detalhe.tipoGestao === 'QUESTIONAMENTO' ? 'Questionamento' : 'Excedente'}</strong><small>{detalhe.prioridade || '-'}</small></div>
             <div className="summary-card"><span>CT-e</span><strong>{detalhe.cte || detalhe.numeroInformado || detalhe.numero_informado || '-'}</strong><small>{detalhe.chaveCte || detalhe.chave_informada || '-'}</small></div>
-            <div className="summary-card"><span>Transportadora</span><strong>{detalhe.transportadora || '-'}</strong><small>{detalhe.dist || detalhe.distKey || '-'}</small></div>
+            <div className="summary-card">
+              <span>Transportadora</span>
+              <strong>{detalhe.transportadora || '-'}</strong>
+              <small>DIST: {detalhe.dist || detalhe.distKey || '-'}</small>
+              {detalhe.cargaId && <small>Carga: {detalhe.cargaId}</small>}
+            </div>
             <div className="summary-card"><span>Valor</span><strong>{formatarMoeda(detalhe.valorAdicional || detalhe.excedente || detalhe.valorLancado || 0)}</strong><small>excedente/lançado</small></div>
           </div>
+
+          {detalhe.tipoGestao === 'QUESTIONAMENTO' && (
+            <div className="form-grid two top-space-sm">
+              <div className="hint-box compact" style={{ whiteSpace: 'pre-wrap' }}>
+                <strong>Questionamento original da Auditoria</strong><br />
+                {detalhe.descricaoProblema || detalhe.descricao_problema || detalhe.observacao || '-'}
+              </div>
+              <div className="hint-box compact" style={{ whiteSpace: 'pre-wrap' }}>
+                <strong>Resposta da Operação</strong><br />
+                {detalhe.resposta_operacao || detalhe.respostaOperacao || detalhe.resposta || '-'}
+                <br /><br /><strong>Justificativa da Operação</strong><br />
+                {detalhe.justificativa_operacao || detalhe.justificativaOperacao || '-'}
+              </div>
+            </div>
+          )}
 
           <div className="form-grid three top-space-sm">
             <label className="field">
@@ -2425,33 +2449,78 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
         <table className="sim-analise-tabela">
           <thead>
             <tr>
-              <th>Data</th><th>Tipo</th><th>Status</th><th>CT-e / Fatura</th><th>Transportadora</th><th>DIST/viagem</th><th>Valor</th><th>Motivo/descrição</th><th>Resposta</th><th>Ações</th>
+              <th>Data</th><th>Tipo / status</th><th>CT-e / Fatura</th><th>Transportadora</th><th>DIST/viagem</th><th>Valor</th><th>Resumo</th><th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {movimentosFiltrados.slice(0, 250).map((item, idx) => (
-              <tr key={item.id || `${chaveSolicitacaoAuditoria(item)}-${idx}`}>
-                <td>{formatarDataCurta(item.dataBase)}</td>
-                <td>{item.tipoGestao === 'QUESTIONAMENTO' ? 'Questionamento' : 'Excedente'}</td>
-                <td>
-                  <span className={`status-pill ${classeStatus(item)}`}>{item.status || '-'}</span>
-                  {item.atrasado && <small style={{ display: 'block' }}>atrasada</small>}
-                </td>
-                <td>
-                  <strong>{item.cte || item.numeroInformado || item.numero_informado || '-'}</strong>
-                  <small style={{ display: 'block' }}>{item.fatura || item.chaveCte || item.chave_informada || '-'}</small>
-                </td>
-                <td>{item.transportadora || '-'}</td>
-                <td>{distExibicao(item.dist || item.distKey || item.dist_key || '') || '-'}</td>
-                <td>{formatarMoeda(item.valorAdicional || item.excedente || item.valorLancado || 0)}</td>
-                <td style={{ maxWidth: 360, whiteSpace: 'pre-wrap' }}>
-                  {item.motivoQuestionamento || item.motivo_questionamento || item.observacao || item.descricaoProblema || item.descricao_problema || '-'}
-                </td>
-                <td style={{ maxWidth: 260, whiteSpace: 'pre-wrap' }}>{item.respostaTratamento || '-'}</td>
-                <td><button type="button" className="btn-secondary" onClick={() => abrirDetalhe(item)}>Tratar</button></td>
-              </tr>
-            ))}
-            {!movimentosFiltrados.length && <tr><td colSpan="10">Nenhuma pendência/questionamento encontrado para os filtros selecionados.</td></tr>}
+            {movimentosFiltrados.slice(0, 250).map((item, idx) => {
+              const idLinha = item.id || `${chaveSolicitacaoAuditoria(item)}-${idx}`;
+              const expandido = expandidoId === idLinha;
+              const descricao = item.motivoQuestionamento || item.motivo_questionamento || item.observacao || item.descricaoProblema || item.descricao_problema || '-';
+              return (
+                <Fragment key={idLinha}>
+                  <tr
+                    onClick={() => setExpandidoId(expandido ? '' : idLinha)}
+                    style={{ cursor: 'pointer' }}
+                    title="Clique para expandir os detalhes"
+                  >
+                    <td>{formatarDataCurta(item.dataBase)}</td>
+                    <td>
+                      <strong>{item.tipoGestao === 'QUESTIONAMENTO' ? 'Questionamento' : 'Excedente'}</strong>
+                      <div><span className={`status-pill ${classeStatus(item)}`}>{item.status || '-'}</span></div>
+                    </td>
+                    <td>
+                      <strong>{item.cte || item.numeroInformado || item.numero_informado || '-'}</strong>
+                      <small style={{ display: 'block' }}>{item.fatura || item.chaveCte || item.chave_informada || '-'}</small>
+                    </td>
+                    <td>{item.transportadora || '-'}</td>
+                    <td><strong>{distExibicao(item.dist || item.distKey || item.dist_key || '') || '-'}</strong></td>
+                    <td>{formatarMoeda(item.valorAdicional || item.excedente || item.valorLancado || 0)}</td>
+                    <td style={{ maxWidth: 360 }}>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{descricao}</div>
+                      <small className="muted">{expandido ? 'Clique para recolher' : 'Clique para ver detalhes'}</small>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          abrirDetalhe(item);
+                        }}
+                      >
+                        Tratar
+                      </button>
+                    </td>
+                  </tr>
+                  {expandido && (
+                    <tr>
+                      <td colSpan="8" style={{ background: '#f8fafc' }}>
+                        <div className="form-grid three" style={{ padding: 8 }}>
+                          <div className="hint-box compact" style={{ whiteSpace: 'pre-wrap' }}>
+                            <strong>Descrição original</strong><br />{descricao}
+                          </div>
+                          <div className="hint-box compact" style={{ whiteSpace: 'pre-wrap' }}>
+                            <strong>Resposta da Operação</strong><br />
+                            {item.resposta_operacao || item.respostaOperacao || item.resposta || '-'}
+                            <br /><br /><strong>Justificativa</strong><br />
+                            {item.justificativa_operacao || item.justificativaOperacao || '-'}
+                          </div>
+                          <div className="hint-box compact">
+                            <strong>Vínculo operacional</strong><br />
+                            DIST: {distExibicao(item.dist || item.distKey || item.dist_key || '') || '-'}<br />
+                            Carga: {item.cargaId || item.carga_id || '-'}<br />
+                            Responsável: {item.respondidoPorNome || item.respondido_por_nome || '-'}<br />
+                            Respondido em: {formatarDataCurta(item.respondidoEm || item.respondido_em)}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!movimentosFiltrados.length && <tr><td colSpan="8">Nenhuma pendência/questionamento encontrado para os filtros selecionados.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -3391,13 +3460,7 @@ export default function LotacaoAuditoriaPage() {
     try {
       if (isQuestionamento) {
         await atualizarSolicitacaoInfoSupabase(item.id, statusNovoItem, {
-          resposta: respostaLimpa,
-          resposta_operacao: respostaLimpa,
           observacao_tratamento: respostaLimpa,
-          respondido_por_id: usuarioAtual?.id || '',
-          respondido_por_nome: usuarioAtual?.nome || usuarioAtual?.email || '',
-          respondido_por_email: usuarioAtual?.email || '',
-          respondido_em: agora,
         });
       } else {
         const statusUpper = String(statusNovoItem || '').toUpperCase();
@@ -3449,8 +3512,8 @@ export default function LotacaoAuditoriaPage() {
           ? {
               ...sol,
               status: statusNovoItem,
-              resposta: respostaLimpa || sol.resposta || '',
-              resposta_operacao: isQuestionamento || ['APROVADO_OPERACAO', 'RECUSADO_OPERACAO', 'DEVOLVIDO_AUDITORIA'].includes(String(statusNovoItem || '').toUpperCase())
+              resposta: sol.resposta || '',
+              resposta_operacao: !isQuestionamento && ['APROVADO_OPERACAO', 'RECUSADO_OPERACAO', 'DEVOLVIDO_AUDITORIA'].includes(String(statusNovoItem || '').toUpperCase())
                 ? (respostaLimpa || sol.resposta_operacao || '')
                 : sol.resposta_operacao,
               resposta_auditoria: !isQuestionamento && ['FINALIZADO', 'TRATADO', 'LIBERADO_PAGAMENTO'].includes(String(statusNovoItem || '').toUpperCase())

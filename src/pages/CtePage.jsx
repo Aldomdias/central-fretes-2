@@ -2242,9 +2242,12 @@ export default function CtePage() {
     [competenciasSalvas, mapaVinculosTransportadoras]
   );
   const competenciasDaPoliticaAtual = useMemo(
-    () => competenciasSalvasComVinculos.filter((row) => (
-      Boolean(row.filtros_json?.incluirCpComercial) === incluirCpComercial
-    )),
+    () => competenciasSalvasComVinculos.filter((row) => {
+      const politicaSalva = row.filtros_json?.incluirCpComercial;
+      // Competencias antigas nao registravam esta politica. Elas devem continuar
+      // visiveis; o filtro so se aplica quando o valor foi salvo explicitamente.
+      return typeof politicaSalva !== 'boolean' || politicaSalva === incluirCpComercial;
+    }),
     [competenciasSalvasComVinculos, incluirCpComercial]
   );
   const competenciasComparativo = useMemo(

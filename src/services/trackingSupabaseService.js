@@ -31,9 +31,11 @@ function somaRows(rows = []) {
 }
 
 function cubagemTotal(row = {}) {
-  const cubagemUnitaria = toNumber(row.cubagem);
-  const volumes = toNumber(row.qtdVolumes || row.volume || row.volumes);
-  return cubagemUnitaria * Math.max(volumes || 1, 1);
+  const totalInformado = toNumber(row.cubagemTotal || row.cubagem_total);
+  if (totalInformado > 0) return totalInformado;
+
+  // Nos arquivos de Tracking, CUBAGEM/M3 já representa o total do CT-e.
+  return toNumber(row.cubagem);
 }
 
 function toDbRow(row = {}) {

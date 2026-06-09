@@ -188,13 +188,11 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
   const { minimoRota, minimoCotacao, minimoGeneralidade, minimoAplicavel } = resolverMinimoFrete({ rota, cotacao, generalidades });
   const valorKg = toNumber(cotacao.rsKg) * peso;
   const valorPercentual = nf * toPercent(cotacao.percentual || cotacao.fretePercentual);
-  const valorFixo = toNumber(cotacao.valorFixo || cotacao.taxaAplicada);
 
   const componenteBase = escolherComponenteBase({
-    valorKg,
-    valorPercentual,
-    valorFixo,
-    minimoAplicavel,
+    kgGarantia: valorKg,
+    fretePercentual: valorPercentual,
+    freteMinimo: minimoAplicavel,
   });
   const valorBase = componenteBase.valor;
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
@@ -211,7 +209,7 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
     componentesBase: {
       valorKg,
       valorPercentual,
-      valorFixo,
+      valorFixo: 0,
       minimoRota,
       minimoCotacao,
       minimoGeneralidade,
@@ -237,8 +235,6 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
 
   const valorFaixa = toNumber(cotacao.valorFixo || cotacao.taxaAplicada);
   const valorPercentual = nf * toPercent(cotacao.percentual || cotacao.fretePercentual);
-  const valorKg = toNumber(cotacao.rsKg) * peso;
-
   const excedenteKg = excessoPorKg > 0 && pesoLimiteExcedente > 0
     ? Math.max(0, peso - pesoLimiteExcedente)
     : 0;
@@ -246,12 +242,7 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
 
   const { minimoRota, minimoCotacao, minimoGeneralidade, minimoAplicavel } = resolverMinimoFrete({ rota, cotacao, generalidades });
   const valorFaixaComExcedente = valorFaixa + valorExcedente + valorPercentual;
-  const componenteBase = escolherComponenteBase({
-    valorFaixaComExcedente,
-    valorKg,
-    minimoAplicavel,
-  });
-  const valorBase = componenteBase.valor;
+  const valorBase = valorFaixaComExcedente;
 
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
   const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras;
@@ -266,13 +257,13 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     valorExcedente,
     pesoLimiteExcedente,
     excedenteKg,
-    componenteBase: componenteBase.nome,
+    componenteBase: 'valorFaixaComExcedente',
     componentesBase: {
       valorFaixa,
       valorExcedente,
       valorFaixaComExcedente,
       valorPercentual,
-      valorKg,
+      valorKg: 0,
       minimoRota,
       minimoCotacao,
       minimoGeneralidade,

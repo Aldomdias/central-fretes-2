@@ -147,9 +147,11 @@ function text(value) {
 }
 
 function cubagemTotalTracking(row = {}) {
-  const cubagemUnitaria = toNumber(row.cubagem);
-  const volumes = toNumber(row.qtdVolumes || row.volume || row.volumes);
-  return cubagemUnitaria * Math.max(volumes || 1, 1);
+  const totalInformado = toNumber(row.cubagemTotal || row.cubagem_total);
+  if (totalInformado > 0) return totalInformado;
+
+  // A coluna CUBAGEM/M3 do Tracking já contém a cubagem total da carga.
+  return toNumber(row.cubagem);
 }
 
 function parseDate(value) {
