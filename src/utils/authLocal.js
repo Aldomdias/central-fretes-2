@@ -19,6 +19,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'tracking', label: 'Tracking', grupo: 'Operação' },
   { chave: 'torre-controle', label: 'Torre de Controle', grupo: 'Operação' },
   { chave: 'reajustes', label: 'Reajustes', grupo: 'Fretes' },
+  { chave: 'avaliacao-prazos', label: 'Avaliação de Prazos', grupo: 'Transportadoras' },
   { chave: 'importacao', label: 'Importação', grupo: 'Suprimentos' },
   { chave: 'formatacao', label: 'Formatação de Tabelas', grupo: 'Suprimentos' },
   { chave: 'importar-template', label: 'Importar Template', grupo: 'Suprimentos' },
@@ -55,6 +56,7 @@ export const PERFIS_USUARIO = {
       'tracking',
       'torre-controle',
       'reajustes',
+      'avaliacao-prazos',
       'formatacao',
       'importar-template',
       'consulta-ibge',
@@ -65,7 +67,7 @@ export const PERFIS_USUARIO = {
   OPERACAO_LOTACAO: {
     nome: 'Operação Lotação',
     descricao: 'Consulta lotação, histórico de cargas, custos adicionais e aprovações.',
-    paginas: ['dashboard', 'lotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas'],
+    paginas: ['dashboard', 'lotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
   },
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',
@@ -84,6 +86,7 @@ export const PERFIS_USUARIO = {
       'tracking',
       'torre-controle',
       'reajustes',
+      'avaliacao-prazos',
     ],
   },
 };

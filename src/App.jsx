@@ -17,6 +17,7 @@ import FerramentasPage from './pages/FerramentasPage';
 import TrackingPage from './pages/TrackingPage';
 import TorreControlePage from './pages/TorreControlePage';
 import ReajustesPage from './pages/ReajustesPage';
+import AvaliacaoPrazosPage from './pages/AvaliacaoPrazosPage';
 import CtePage from './pages/CtePage';
 import TabelasNegociacaoPageWithEditor from './pages/TabelasNegociacaoPageWithEditor';
 import AuditoriaCtePage from './pages/AuditoriaCtePage';
@@ -30,7 +31,7 @@ import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
-  'torre-controle', 'reajustes', 'importacao', 'formatacao', 'importar-template',
+  'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'tratativas', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
 ];
@@ -127,6 +128,7 @@ export default function App() {
     tracking: <TrackingPage />,
     'torre-controle': <TorreControlePage />,
     reajustes: <ReajustesPage transportadoras={transportadorasMemo} />,
+    'avaliacao-prazos': <AvaliacaoPrazosPage />,
     lotacao: <LotacaoPage />,
     'lotacao-operacao': <LotacaoOperacaoPage onRespostaConcluida={() => mudarPagina('lotacao-auditoria')} />,
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
