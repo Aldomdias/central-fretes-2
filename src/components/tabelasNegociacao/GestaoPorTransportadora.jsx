@@ -10,6 +10,7 @@ export default function GestaoPorTransportadora({
   tabelas = [],
   sessao = null,
   onAbrirOrigem,
+  onAdicionarOrigem,
   filtroTransportadora = '',
   onFiltroTransportadoraChange,
 }) {
@@ -80,6 +81,20 @@ export default function GestaoPorTransportadora({
             <div style={{ textAlign: 'right', fontSize: 12 }}>
               <div>Saving: <strong>{formatarMoeda(grupo.savingTotal)}</strong></div>
               {grupo.impactoTotal ? <div>Impacto reajuste: {formatarMoeda(grupo.impactoTotal)}</div> : null}
+              {onAdicionarOrigem ? (
+                <button
+                  className="sim-tab"
+                  type="button"
+                  style={{ marginTop: 8 }}
+                  onClick={function(event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onAdicionarOrigem(grupo.transportadora);
+                  }}
+                >
+                  + Adicionar origem
+                </button>
+              ) : null}
             </div>
           </div>
 

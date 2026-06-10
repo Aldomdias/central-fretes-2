@@ -299,6 +299,51 @@ async function listarTodosItensTabelaNegociacao(tabelaId) {
 
 // ─── TABELAS NEGOCIAÇÃO ───────────────────────────────────────────────────────
 
+const COLUNAS_GESTAO_TABELAS_NEGOCIACAO = [
+  'criado_por',
+  'criado_por_nome',
+  'negociador_id',
+  'negociador_nome',
+  'aprovador_id',
+  'aprovador_nome',
+  'status_gestao',
+  'status_aprovacao',
+  'aprovado_em',
+  'publicado_em',
+  'enviado_aprovacao_em',
+  'historico_gestao',
+];
+
+function erroColunaGestaoAusente(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return msg.includes('schema cache')
+    && COLUNAS_GESTAO_TABELAS_NEGOCIACAO.some((col) => msg.includes(col));
+}
+
+function semColunasGestao(payload = {}) {
+  const next = Object.assign({}, payload);
+  COLUNAS_GESTAO_TABELAS_NEGOCIACAO.forEach(function(col) { delete next[col]; });
+  return next;
+}
+
+async function inserirTabelaNegociacaoComFallback(supabase, payload) {
+  let result = await supabase.from('tabelas_negociacao').insert(payload).select().single();
+  if (result.error && erroColunaGestaoAusente(result.error)) {
+    result = await supabase.from('tabelas_negociacao').insert(semColunasGestao(payload)).select().single();
+  }
+  if (result.error) throw new Error(result.error.message || 'Erro ao criar tabela em negociação.');
+  return result.data;
+}
+
+async function atualizarTabelaNegociacaoComFallback(supabase, id, payload) {
+  let result = await supabase.from('tabelas_negociacao').update(payload).eq('id', id).select().single();
+  if (result.error && erroColunaGestaoAusente(result.error)) {
+    result = await supabase.from('tabelas_negociacao').update(semColunasGestao(payload)).eq('id', id).select().single();
+  }
+  if (result.error) throw new Error(result.error.message || 'Erro ao atualizar tabela em negociação.');
+  return result.data;
+}
+
 export async function listarTabelasNegociacao(filtros = {}) {
   const supabase = supabaseOrThrow();
   let query = supabase
@@ -382,10 +427,7 @@ export async function criarTabelaNegociacao(payload = {}) {
   if (!TIPOS_TABELA_NEGOCIACAO.includes(novo.tipo_tabela)) throw new Error('Tipo de tabela inválido.');
   if (!TIPOS_NEGOCIACAO_VALUES.includes(novo.tipo_negociacao)) throw new Error('Tipo de negociação inválido.');
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao').insert(novo).select().single();
-  if (error) throw new Error(error.message || 'Erro ao criar tabela em negociação.');
-  return data;
+  return inserirTabelaNegociacaoComFallback(supabase, novo);
 }
 
 export async function atualizarTabelaNegociacao(id, payload = {}) {
@@ -462,10 +504,7 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     if (atualizacao[key] === undefined) delete atualizacao[key];
   });
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao').update(atualizacao).eq('id', id).select().single();
-  if (error) throw new Error(error.message || 'Erro ao atualizar tabela em negociação.');
-  return data;
+  return atualizarTabelaNegociacaoComFallback(supabase, id, atualizacao);
 }
 
 export async function excluirTabelaNegociacao(id) {

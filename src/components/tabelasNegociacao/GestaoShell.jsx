@@ -40,6 +40,7 @@ const ABAS = [
 export default function GestaoShell({
   tabelas = [],
   onAbrirNegociacao,
+  onAdicionarOrigem,
   onEnviarAprovacao,
   onAlternarSimulacao,
   onAprovarGestor,
@@ -120,6 +121,7 @@ export default function GestaoShell({
             tabelas={tabelas}
             sessao={sessao}
             onAbrirOrigem={(id) => onAbrirNegociacao(id)}
+            onAdicionarOrigem={onAdicionarOrigem}
             filtroTransportadora={filtroTransportadora}
             onFiltroTransportadoraChange={setFiltroTransportadora}
           />

@@ -751,6 +751,7 @@ export default function TabelasNegociacaoPage() {
   const [abaGestao, setAbaGestao] = useState(function() { return lerEstadoUrlNegociacao().aba; });
   const urlNegociacaoRef = useRef('');
   const detalheLoadSeq = useRef(0);
+  const modalNovaOrigemAbertoEm = useRef(0);
   const [urlReopenTick, setUrlReopenTick] = useState(0);
   const sessao = useMemo(function() { return carregarSessao(); }, []);
 
@@ -990,10 +991,10 @@ export default function TabelasNegociacaoPage() {
       var estadoUrl = lerEstadoUrlNegociacao();
       var negociacaoId = estadoUrl.negociacaoId;
       if (!negociacaoId) return;
-      if (urlNegociacaoRef.current === negociacaoId && selecionada && String(selecionada.id) === negociacaoId) return;
       if (carregando) return;
+      if (urlNegociacaoRef.current === negociacaoId) return;
 
-      var alvo = tabelas.find(function(t) { return t.id === negociacaoId; });
+      var alvo = tabelas.find(function(t) { return String(t.id) === negociacaoId; });
       if (!alvo) {
         try {
           alvo = await obterTabelaNegociacao(negociacaoId);
@@ -1011,7 +1012,7 @@ export default function TabelasNegociacaoPage() {
       await abrirTabela(alvo, { telaNegociacao: true, sincronizarUrl: false });
     }
     abrirNegociacaoDaUrl();
-  }, [carregando, tabelas, urlReopenTick, selecionada]); // eslint-disable-line
+  }, [carregando, tabelas, urlReopenTick]); // eslint-disable-line
 
   useEffect(function() {
     function onPopState() {
@@ -1422,8 +1423,13 @@ export default function TabelasNegociacaoPage() {
     }
   }
 
+  function fecharModalNovaOrigem() {
+    setModalNovaOrigem(null);
+  }
+
   function abrirModalNovaOrigem(tabela) {
     if (!tabela?.id) return;
+    modalNovaOrigemAbertoEm.current = Date.now();
     setErro('');
     setSucesso('');
     setModalNovaOrigem(tabela);
@@ -1442,6 +1448,14 @@ export default function TabelasNegociacaoPage() {
     var origem = normalizarTexto(novaOrigem.origem);
     var ufOrigem = normalizarTexto(novaOrigem.uf_origem).toUpperCase();
     if (!origem && !ufOrigem) return setErro('Informe a cidade ou UF da nova origem.');
+
+    var duplicada = tabelas.find(function(t) {
+      if (String(t.id) === String(modalNovaOrigem.id)) return false;
+      return normalizarTexto(t.transportadora).toUpperCase() === normalizarTexto(modalNovaOrigem.transportadora).toUpperCase()
+        && normalizarTexto(t.origem).toUpperCase() === origem.toUpperCase()
+        && normalizarTexto(t.uf_origem).toUpperCase() === ufOrigem;
+    });
+    if (duplicada) return setErro('Já existe uma negociação para ' + modalNovaOrigem.transportadora + ' · ' + origemTabelaLabel(duplicada) + '.');
 
     setSalvando(true); setErro(''); setSucesso('');
     try {
@@ -1475,12 +1489,30 @@ export default function TabelasNegociacaoPage() {
         negociador_id: sessao?.id,
         negociador_nome: sessao?.nome,
       }));
-      setModalNovaOrigem(null);
+      fecharModalNovaOrigem();
+      abrirNegociacaoNaUrl(criada.id, abaGestao);
+      urlNegociacaoRef.current = String(criada.id);
       setTabelas(function(p) { return [criada].concat((p || []).filter(function(i) { return i.id !== criada.id; })); });
-      await abrirTabela(criada, { telaNegociacao: true });
+      await abrirTabela(criada, { telaNegociacao: true, sincronizarUrl: false });
       setSucesso('Nova origem criada para ' + criada.transportadora + '. Importe a tabela desta origem na aba Importação.');
     } catch (e) { setErro(e.message || 'Erro ao criar nova origem.'); }
     finally { setSalvando(false); }
+  }
+
+  async function abrirModalNovaOrigemTransportadora(nomeTransportadora) {
+    var nomeBase = normalizarTexto(nomeTransportadora).toUpperCase();
+    if (!nomeBase) return;
+    var lista = tabelas
+      .filter(function(t) { return normalizarTexto(t.transportadora).toUpperCase() === nomeBase; })
+      .sort(function(a, b) {
+        var origemA = (normalizarTexto(a.origem) + '/' + normalizarTexto(a.uf_origem)).toUpperCase();
+        var origemB = (normalizarTexto(b.origem) + '/' + normalizarTexto(b.uf_origem)).toUpperCase();
+        return origemA.localeCompare(origemB, 'pt-BR');
+      });
+    if (!lista.length) return setErro('Nenhuma negociação encontrada para ' + nomeTransportadora + '.');
+    var base = lista[0];
+    await abrirTabela(base, { telaNegociacao: true });
+    abrirModalNovaOrigem(base);
   }
 
   async function handleAbrirNovaRodadaTabela(tabelaBase) {
@@ -1498,7 +1530,7 @@ export default function TabelasNegociacaoPage() {
         observacao: 'Nova rodada aberta manualmente na tela de negociação',
       });
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      await abrirTabela(at);
+      await abrirTabela(at, { telaNegociacao: telaAtiva === 'negociacao', sincronizarUrl: telaAtiva === 'negociacao' });
       setAbaNegoc('importacao');
       setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Já está disponível no Simulador — importe a nova proposta se necessário.');
     } catch (e) { setErro(e.message || 'Erro ao abrir nova rodada.'); }
@@ -1719,6 +1751,7 @@ export default function TabelasNegociacaoPage() {
       <GestaoShell
         tabelas={tabelas}
         onAbrirNegociacao={abrirNegociacaoGestao}
+        onAdicionarOrigem={abrirModalNovaOrigemTransportadora}
         onEnviarAprovacao={handleEnviarAprovacaoGestao}
         onAlternarSimulacao={gerenciarSimulacaoLista}
         onAprovarGestor={handleAprovarGestor}
@@ -1875,7 +1908,7 @@ export default function TabelasNegociacaoPage() {
                   </>
                 );
               })() : null}
-              <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
+              <button className="sim-tab" type="button" onClick={function(event) { event.preventDefault(); event.stopPropagation(); abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
               <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada, { telaNegociacao: emTelaNegociacao }); }}>Recarregar</button>
               <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(selecionada); }}>
                 {podePublicarOficial(selecionada) && usuarioEhGestor(sessao) ? 'Publicar' : 'Enviar p/ gestor'}
@@ -1993,7 +2026,7 @@ export default function TabelasNegociacaoPage() {
                     })}
                   </div>
                 </div>
-                <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(selecionada); }}>+ Adicionar outra origem</button>
+                <button className="sim-tab" type="button" onClick={function(event) { event.preventDefault(); event.stopPropagation(); abrirModalNovaOrigem(selecionada); }}>+ Adicionar outra origem</button>
               </div>
             </div>
           ) : null}
@@ -2488,7 +2521,7 @@ export default function TabelasNegociacaoPage() {
                 <div className="sim-actions" style={{ marginBottom: 14 }}>
                   <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo rodada...' : '+ Abrir próxima rodada'}</button>
                   <button className="sim-tab" type="button" onClick={function() { setAbaNegoc('importacao'); }}>Ir para importação</button>
-                  <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
+                  <button className="sim-tab" type="button" onClick={function(event) { event.preventDefault(); event.stopPropagation(); abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
                 </div>
 
                 {simulacoes.length > 1 ? (
@@ -2685,17 +2718,22 @@ export default function TabelasNegociacaoPage() {
       {renderModalPortal(modalNovaOrigem ? (
         <div
           style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100000, display: 'grid', placeItems: 'center', padding: 20 }}
-          onClick={function() { setModalNovaOrigem(null); }}
+          onMouseDown={function(event) {
+            if (event.target !== event.currentTarget) return;
+            if (Date.now() - modalNovaOrigemAbertoEm.current < 400) return;
+            fecharModalNovaOrigem();
+          }}
         >
           <div
             className="sim-card"
             style={{ width: 'min(760px,100%)', maxHeight: '90vh', overflow: 'auto' }}
-            onClick={function(event) { event.stopPropagation(); }}
+            onMouseDown={function(event) { event.stopPropagation(); }}
           >
             <h2>Adicionar origem na negociação</h2>
             <p>
               Transportadora: <strong>{modalNovaOrigem.transportadora}</strong>. A nova origem será criada como uma negociação separada da mesma transportadora, mantendo o histórico por origem e rodada.
             </p>
+            {erro ? <div className="sim-alert error" style={{ marginTop: 12 }}>{erro}</div> : null}
             <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
               <label>Origem
                 <input value={novaOrigem.origem} onChange={function(e) { setNovaOrigem(function(p) { return Object.assign({}, p, { origem: e.target.value }); }); }} placeholder="Ex: Joinville" />
@@ -2734,7 +2772,7 @@ export default function TabelasNegociacaoPage() {
             </div>
             <div className="sim-actions" style={{ marginTop: 14 }}>
               <button className="primary" type="button" onClick={confirmarNovaOrigem} disabled={salvando}>{salvando ? 'Criando...' : 'Criar origem'}</button>
-              <button className="sim-tab" type="button" onClick={function() { setModalNovaOrigem(null); }}>Cancelar</button>
+              <button className="sim-tab" type="button" onClick={fecharModalNovaOrigem}>Cancelar</button>
             </div>
           </div>
         </div>
