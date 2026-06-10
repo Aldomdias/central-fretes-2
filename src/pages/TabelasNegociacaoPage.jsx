@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { importarTemplatePadraoSeparado } from '../utils/importadorTemplatePadrao';
 import { baixarModeloTemplateFretes, baixarModeloTemplateRotas } from '../utils/modelosTemplateFormatacao';
@@ -749,6 +750,7 @@ export default function TabelasNegociacaoPage() {
   const [carregandoDetalhe, setCarregandoDetalhe] = useState(false);
   const [abaGestao, setAbaGestao] = useState(function() { return lerEstadoUrlNegociacao().aba; });
   const urlNegociacaoRef = useRef('');
+  const detalheLoadSeq = useRef(0);
   const [urlReopenTick, setUrlReopenTick] = useState(0);
   const sessao = useMemo(function() { return carregarSessao(); }, []);
 
@@ -987,7 +989,8 @@ export default function TabelasNegociacaoPage() {
     async function abrirNegociacaoDaUrl() {
       var estadoUrl = lerEstadoUrlNegociacao();
       var negociacaoId = estadoUrl.negociacaoId;
-      if (!negociacaoId || urlNegociacaoRef.current === negociacaoId) return;
+      if (!negociacaoId) return;
+      if (urlNegociacaoRef.current === negociacaoId && selecionada && String(selecionada.id) === negociacaoId) return;
       if (carregando) return;
 
       var alvo = tabelas.find(function(t) { return t.id === negociacaoId; });
@@ -1008,7 +1011,7 @@ export default function TabelasNegociacaoPage() {
       await abrirTabela(alvo, { telaNegociacao: true, sincronizarUrl: false });
     }
     abrirNegociacaoDaUrl();
-  }, [carregando, tabelas, urlReopenTick]); // eslint-disable-line
+  }, [carregando, tabelas, urlReopenTick, selecionada]); // eslint-disable-line
 
   useEffect(function() {
     function onPopState() {
@@ -1038,11 +1041,13 @@ export default function TabelasNegociacaoPage() {
   }
 
   async function abrirTabela(tabela, opcoes = {}) {
+    if (!tabela?.id) return;
+    var loadSeq = ++detalheLoadSeq.current;
     setSelecionada(tabela);
     if (opcoes.telaNegociacao) {
       setTelaAtiva('negociacao');
       if (opcoes.sincronizarUrl !== false) abrirNegociacaoNaUrl(tabela.id, abaGestao);
-      urlNegociacaoRef.current = tabela.id;
+      urlNegociacaoRef.current = String(tabela.id);
     }
     setCarregandoDetalhe(true);
     limparImport(); setErro(''); setSucesso('');
@@ -1076,7 +1081,9 @@ export default function TabelasNegociacaoPage() {
       if (isLotacaoNegociacao(tabelaAtual)) setTipoImportacao('LOTACAO_TRANSPORTADORA');
       else if (itens.length > 0 && itens[0].origem_importacao) setTipoImportacao(itens[0].origem_importacao);
     } catch (e) { setErro(e.message || 'Erro ao abrir itens.'); }
-    finally { setCarregandoDetalhe(false); }
+    finally {
+      if (loadSeq === detalheLoadSeq.current) setCarregandoDetalhe(false);
+    }
   }
 
   async function salvarNovaTabela() {
@@ -1416,7 +1423,9 @@ export default function TabelasNegociacaoPage() {
   }
 
   function abrirModalNovaOrigem(tabela) {
-    if (!tabela) return;
+    if (!tabela?.id) return;
+    setErro('');
+    setSucesso('');
     setModalNovaOrigem(tabela);
     setNovaOrigem(Object.assign({}, NOVA_ORIGEM_VAZIA, {
       uf_origem: tabela.uf_origem || '',
@@ -1466,8 +1475,8 @@ export default function TabelasNegociacaoPage() {
         negociador_id: sessao?.id,
         negociador_nome: sessao?.nome,
       }));
-      setTabelas(function(p) { return [criada].concat((p || []).filter(function(i) { return i.id !== criada.id; })); });
       setModalNovaOrigem(null);
+      setTabelas(function(p) { return [criada].concat((p || []).filter(function(i) { return i.id !== criada.id; })); });
       await abrirTabela(criada, { telaNegociacao: true });
       setSucesso('Nova origem criada para ' + criada.transportadora + '. Importe a tabela desta origem na aba Importação.');
     } catch (e) { setErro(e.message || 'Erro ao criar nova origem.'); }
@@ -1688,6 +1697,11 @@ export default function TabelasNegociacaoPage() {
   ];
 
   var emTelaNegociacao = telaAtiva === 'negociacao';
+
+  function renderModalPortal(conteudo) {
+    if (typeof document === 'undefined' || !conteudo) return null;
+    return createPortal(conteudo, document.body);
+  }
 
   return (
     <div className="simulador-shell">
@@ -1970,7 +1984,7 @@ export default function TabelasNegociacaoPage() {
                           key={t.id}
                           type="button"
                           className="sim-tab"
-                          onClick={function() { abrirTabela(t); }}
+                          onClick={function() { abrirTabela(t, { telaNegociacao: emTelaNegociacao, sincronizarUrl: emTelaNegociacao }); }}
                           style={ativo ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
                         >
                           {origemTabelaLabel(t)} · R{getRodadaAtualTabela(t)}
@@ -2668,9 +2682,16 @@ export default function TabelasNegociacaoPage() {
       ) : null}
 
       {/* MODAL NOVA ORIGEM */}
-      {modalNovaOrigem ? (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 9999, display: 'grid', placeItems: 'center', padding: 20 }}>
-          <div className="sim-card" style={{ width: 'min(760px,100%)', maxHeight: '90vh', overflow: 'auto' }}>
+      {renderModalPortal(modalNovaOrigem ? (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100000, display: 'grid', placeItems: 'center', padding: 20 }}
+          onClick={function() { setModalNovaOrigem(null); }}
+        >
+          <div
+            className="sim-card"
+            style={{ width: 'min(760px,100%)', maxHeight: '90vh', overflow: 'auto' }}
+            onClick={function(event) { event.stopPropagation(); }}
+          >
             <h2>Adicionar origem na negociação</h2>
             <p>
               Transportadora: <strong>{modalNovaOrigem.transportadora}</strong>. A nova origem será criada como uma negociação separada da mesma transportadora, mantendo o histórico por origem e rodada.
@@ -2717,12 +2738,19 @@ export default function TabelasNegociacaoPage() {
             </div>
           </div>
         </div>
-      ) : null}
+      ) : null)}
 
       {/* MODAL APROVAÇÃO */}
-      {modalAprovacao ? (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 9999, display: 'grid', placeItems: 'center', padding: 20 }}>
-          <div className="sim-card" style={{ width: 'min(720px,100%)', maxHeight: '90vh', overflow: 'auto' }}>
+      {renderModalPortal(modalAprovacao ? (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100000, display: 'grid', placeItems: 'center', padding: 20 }}
+          onClick={function() { setModalAprovacao(null); }}
+        >
+          <div
+            className="sim-card"
+            style={{ width: 'min(720px,100%)', maxHeight: '90vh', overflow: 'auto' }}
+            onClick={function(event) { event.stopPropagation(); }}
+          >
             <h2>
               {aprovacao.modo === 'publicar' ? 'Publicar na base oficial' : aprovacao.modo === 'aprovar_gestor' ? 'Aprovar como gestor' : 'Enviar para aprovação do gestor'}
             </h2>
@@ -2775,7 +2803,7 @@ export default function TabelasNegociacaoPage() {
             </div>
           </div>
         </div>
-      ) : null}
+      ) : null)}
     </div>
   );
 }
