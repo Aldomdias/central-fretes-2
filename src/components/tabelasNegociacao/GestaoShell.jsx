@@ -119,7 +119,7 @@ export default function GestaoShell({
           <GestaoPorTransportadora
             tabelas={tabelas}
             sessao={sessao}
-            onAbrirOrigem={(id) => onAbrirNegociacao({ id })}
+            onAbrirOrigem={(id) => onAbrirNegociacao(id)}
             filtroTransportadora={filtroTransportadora}
             onFiltroTransportadoraChange={setFiltroTransportadora}
           />

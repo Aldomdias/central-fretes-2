@@ -1623,9 +1623,26 @@ export default function TabelasNegociacaoPage() {
     finally { setSalvandoGestao(false); }
   }
 
-  async function abrirNegociacaoGestao(tabela) {
-    var alvo = typeof tabela === 'object' ? tabela : tabelas.find(function(t) { return t.id === tabela; });
-    if (!alvo) return;
+  async function abrirNegociacaoGestao(tabelaOuId) {
+    var id = typeof tabelaOuId === 'string' || typeof tabelaOuId === 'number'
+      ? String(tabelaOuId)
+      : (tabelaOuId && tabelaOuId.id ? String(tabelaOuId.id) : '');
+    if (!id) return;
+
+    var alvo = tabelas.find(function(t) { return String(t.id) === id; });
+    if (!alvo || !alvo.transportadora) {
+      try {
+        alvo = await obterTabelaNegociacao(id);
+        setTabelas(function(p) {
+          return p.some(function(t) { return String(t.id) === id; })
+            ? p.map(function(t) { return String(t.id) === id ? alvo : t; })
+            : [alvo].concat(p);
+        });
+      } catch (e) {
+        setErro(e.message || 'Negociação não encontrada.');
+        return;
+      }
+    }
     await abrirTabela(alvo, { telaNegociacao: true });
   }
 
