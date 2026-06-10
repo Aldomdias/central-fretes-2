@@ -1,4 +1,4 @@
-import { isTomadorServicoValidoRealizado } from '../utils/realizadoCtes';
+import { avaliarCteParaBase, getOpcoesImportacaoPadrao } from './cteBasePolicy';
 import { CANAL_A_DEFINIR } from '../utils/canalTransportadora';
 import { carregarMunicipiosIbgeDb, listarRealizadoCtes } from './freteDatabaseService';
 
@@ -531,7 +531,7 @@ export async function limparNaoTomadoresRealizadoLocal(options = {}) {
       if (!cursor) return;
       avaliados += 1;
       const row = cursor.value || {};
-      if (!isTomadorServicoValidoRealizado(row.tomadorServico)) {
+      if (!avaliarCteParaBase(row, getOpcoesImportacaoPadrao()).aceito) {
         cursor.delete();
         removidos += 1;
       } else {

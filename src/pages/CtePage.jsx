@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import {
+  competenciaPrecisaEnxuta,
+  competenciaPrecisaProcessamento,
+  continuarProcessamentoRealizadoMensal,
   importarRealizadoMensalEnxuto,
   listarPendenciasIbgeRealizadoMensal,
   verificarCompetenciaRealizadoMensal,
@@ -18,7 +21,10 @@ import {
 } from '../services/vinculosTransportadorasService';
 import {
   aplicarPoliticaBaseCte,
+  avaliarCteParaBase,
   carregarConfiguracaoBaseCte,
+  diagnosticarChaveCte,
+  MOTIVOS_EXCLUSAO_CTE,
   salvarConfiguracaoBaseCte,
   TOMADORES_CTE_PADRAO,
 } from '../services/cteBasePolicy';
@@ -28,6 +34,35 @@ const UF_OPTIONS = ['', 'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'M
 const TABELA = 'realizado_local_ctes';
 const PAGE_SIZE = 50;
 const ANALISE_BATCH_SIZE = 1000;
+const CTE_IGNORADOS_UPLOAD_STORAGE_KEY = 'central_fretes_cte_ignorados_upload_v1';
+
+const LABEL_STATUS_DIAGNOSTICO = {
+  na_base: 'Encontrado na base oficial',
+  ignorado_importacao: 'Ignorado no último upload',
+  ignorado_reprocessavel: 'Ignorado, mas passaria com as flags atuais',
+  aceito_arquivo: 'Aceito pela política (não encontrado na base)',
+  rejeitado_politica: 'Rejeitado pela política atual',
+  nao_encontrado: 'Não encontrado na base nem no último upload',
+};
+
+function carregarIgnoradosUploadSessao() {
+  if (typeof sessionStorage === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem(CTE_IGNORADOS_UPLOAD_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function salvarIgnoradosUploadSessao(lista = []) {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(CTE_IGNORADOS_UPLOAD_STORAGE_KEY, JSON.stringify(lista));
+  } catch {
+    // Mantém os ignorados apenas em memória se a sessão não persistir.
+  }
+}
 
 function monthNow() {
   const date = new Date();
@@ -113,10 +148,20 @@ function termoBuscaLike(valor = '') {
   return String(valor || '').trim().replace(/[%*,()]/g, ' ');
 }
 
+function somenteDigitosChave(valor = '') {
+  return String(valor || '').replace(/\D/g, '');
+}
+
+function extrairChaveCteExata(termo = '') {
+  const digitos = somenteDigitosChave(termo);
+  return digitos.length === 44 ? digitos : '';
+}
+
 function filtrosBuscaCteOuNf(termo = '', { incluirRaw = false } = {}) {
   const busca = termoBuscaLike(termo);
   if (!busca) return [];
-  const digitos = busca.replace(/\D/g, '');
+  const digitos = somenteDigitosChave(busca);
+  if (digitos.length === 44) return [];
   const valores = [...new Set([busca, digitos].filter(Boolean))];
   const colunasDiretas = [
     'chave_cte',
@@ -133,6 +178,32 @@ function filtrosBuscaCteOuNf(termo = '', { incluirRaw = false } = {}) {
   ];
   const colunas = incluirRaw ? [...colunasDiretas, ...colunasRaw] : colunasDiretas;
   return valores.flatMap((valor) => colunas.map((coluna) => `${coluna}.ilike.%${valor}%`));
+}
+
+async function buscarRegistroCtePorChave(supabase, chaveNorm = '') {
+  const chave = somenteDigitosChave(chaveNorm);
+  if (!chave) return null;
+
+  const { data: exatos, error: erroExato } = await supabase
+    .from(TABELA)
+    .select('*')
+    .eq('chave_cte', chave)
+    .limit(1);
+
+  if (erroExato) throw new Error(erroExato.message);
+  if (exatos?.[0]) return exatos[0];
+
+  const { data: parciais, error: erroParcial } = await supabase
+    .from(TABELA)
+    .select('*')
+    .ilike('chave_cte', `%${chave}%`)
+    .limit(5);
+
+  if (erroParcial) throw new Error(erroParcial.message);
+
+  return (parciais || []).find((row) => somenteDigitosChave(getChaveCte(row)) === chave)
+    || parciais?.[0]
+    || null;
 }
 
 function campo(row, ...chaves) {
@@ -526,6 +597,13 @@ function aplicarFiltros(query, filtros = {}, opcoes = {}) {
   if (filtros.destino) query = query.ilike('cidade_destino', `${filtros.destino}%`);
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+
+  const chaveExata = extrairChaveCteExata(filtros.buscaDocumento);
+  if (chaveExata) {
+    query = query.eq('chave_cte', chaveExata);
+    return query;
+  }
+
   const busca = filtrosBuscaCteOuNf(filtros.buscaDocumento, opcoes);
   if (busca.length) query = query.or(busca.join(','));
   return query;
@@ -1822,15 +1900,21 @@ export default function CtePage() {
   const [metaUpload, setMetaUpload] = useState(null);
   const [progressoUpload, setProgressoUpload] = useState(null);
   const [resultadoUpload, setResultadoUpload] = useState(null);
-  const [substituirCompetencia, setSubstituirCompetencia] = useState(false);
+  const [modoImportacao, setModoImportacao] = useState('complementar');
   const [importando, setImportando] = useState(false);
   const [pendencias, setPendencias] = useState([]);
 
   const [ocultarEbazar, setOcultarEbazar] = useState(true);
-  const [incluirCpsLog, setIncluirCpsLog] = useState(false);
+  const [incluirCpsLog, setIncluirCpsLog] = useState(
+    () => carregarConfiguracaoBaseCte().incluirCpsLog,
+  );
   const [incluirCpComercial, setIncluirCpComercial] = useState(
     () => carregarConfiguracaoBaseCte().incluirCpComercial,
   );
+  const [ignoradosUpload, setIgnoradosUpload] = useState(() => carregarIgnoradosUploadSessao());
+  const [chaveDiagnostico, setChaveDiagnostico] = useState('');
+  const [resultadoDiagnostico, setResultadoDiagnostico] = useState(null);
+  const [diagnosticandoChave, setDiagnosticandoChave] = useState(false);
   const [rows, setRows] = useState(null);
   const [rowsAnalise, setRowsAnalise] = useState([]);
   const [mapaVinculosTransportadoras, setMapaVinculosTransportadoras] = useState(() => new Map());
@@ -1874,6 +1958,36 @@ export default function CtePage() {
   });
 
   const podeImportar = Boolean(competenciaUpload && arquivoUpload && !importando);
+
+  const pendenciaProcessamento = useMemo(
+    () => competenciaPrecisaProcessamento(statusCompetencia),
+    [statusCompetencia],
+  );
+
+  const resumoPendenciaProcessamento = useMemo(() => {
+    if (!statusCompetencia) return '';
+    const temporaria = Number(statusCompetencia.temporaria || 0);
+    const detalhado = Number(statusCompetencia.detalhado || 0);
+    const enxuta = Number(statusCompetencia.enxuta || 0);
+    const partes = [];
+    if (temporaria > 0) partes.push(`${fmtN(temporaria)} na temporária (use Continuar processamento)`);
+    if (detalhado > 0) partes.push(`${fmtN(detalhado)} na base oficial`);
+    if (competenciaPrecisaEnxuta(statusCompetencia)) {
+      partes.push(`enxuta opcional: ${fmtN(detalhado - enxuta)} faltando (não bloqueia a tela CT-e)`);
+    }
+    return partes.join(' · ');
+  }, [statusCompetencia]);
+
+  const opcoesPoliticaCte = useMemo(() => ({
+    ocultarEbazar,
+    incluirCpsLog,
+    incluirCpComercial,
+  }), [ocultarEbazar, incluirCpsLog, incluirCpComercial]);
+
+  const ignoradosReprocessaveis = useMemo(
+    () => ignoradosUpload.filter((row) => avaliarCteParaBase(row, opcoesPoliticaCte).aceito),
+    [ignoradosUpload, opcoesPoliticaCte],
+  );
 
   useEffect(() => {
     carregarComparativoMensal();
@@ -2045,27 +2159,19 @@ export default function CtePage() {
     setProgressoUpload({ etapa: 'leitura', mensagem: 'Lendo arquivo...', percentual: 5 });
 
     try {
-      const substituir = Boolean(forcarSubstituir || substituirCompetencia);
+      const modo = forcarSubstituir ? 'substituir' : modoImportacao;
       let statusAtual = null;
       try {
         statusAtual = await verificarCompetenciaRealizadoMensal(competenciaUpload);
         setStatusCompetencia(statusAtual);
       } catch (statusError) {
-        if (!substituir) throw statusError;
+        if (modo !== 'substituir') throw statusError;
         setFeedback('Consulta da competência demorou demais. Seguindo com reimportação/substituição em lotes.');
       }
 
-      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0 || (substituir && !statusAtual);
+      const jaTemBase = Number(statusAtual?.detalhado || 0) > 0 || (modo === 'substituir' && !statusAtual);
 
-      if (jaTemBase && !substituir) {
-        setErro(
-          `A competência ${competenciaUpload} já possui ${fmtN(statusAtual.detalhado)} CT-e(s). Para subir novamente, marque "Substituir competência existente" ou clique em "Reimportar e substituir".`
-        );
-        setFeedback('Upload bloqueado para evitar duplicidade.');
-        return;
-      }
-
-      if (jaTemBase && substituir) {
+      if (jaTemBase && modo === 'substituir') {
         const confirmou = window.confirm(
           `A competência ${competenciaUpload} já tem ${fmtN(statusAtual.detalhado)} CT-e(s). Deseja apagar essa competência e subir novamente?`
         );
@@ -2075,15 +2181,17 @@ export default function CtePage() {
         }
       }
 
-      const { registros, meta } = await parseRealizadoCtesFile(arquivoUpload);
+      const { registros, ignorados, meta } = await parseRealizadoCtesFile(arquivoUpload, opcoesPoliticaCte);
       setMetaUpload(meta);
+      setIgnoradosUpload(ignorados);
+      salvarIgnoradosUploadSessao(ignorados);
       setProgressoUpload({ etapa: 'validacao', mensagem: `${fmtN(registros.length)} CT-e(s) lidos. Validando campos...`, percentual: 15 });
 
       const resposta = await importarRealizadoMensalEnxuto({
         competencia: competenciaUpload,
         arquivoOrigem: arquivoUpload.name,
         registros,
-        substituir,
+        modo,
         onProgress: (event) => {
           if (event.etapa === 'validacao') {
             setValidacaoUpload(event.validacao);
@@ -2094,6 +2202,16 @@ export default function CtePage() {
             setProgressoUpload({ etapa: 'status', mensagem: event.mensagem, percentual: 18 });
           }
 
+          if (event.etapa === 'filtro') {
+            const pct = event.complementar?.novos ? 25 : 30;
+            setProgressoUpload({
+              etapa: 'filtro',
+              mensagem: event.mensagem,
+              percentual: pct,
+              complementar: event.complementar || null,
+            });
+          }
+
           if (event.etapa === 'reset') {
             setProgressoUpload({ etapa: 'reset', mensagem: event.mensagem, percentual: 22 });
           }
@@ -2101,20 +2219,37 @@ export default function CtePage() {
           if (event.etapa === 'temporaria') {
             const total = Number(event.total || registros.length || 1);
             const enviados = Number(event.enviados || 0);
-            const pct = total ? 20 + Math.round((enviados / total) * 45) : 25;
+            const pct = total ? 30 + Math.round((enviados / total) * 45) : 35;
             setProgressoUpload({
               etapa: 'temporaria',
               mensagem: `${fmtN(enviados)} de ${fmtN(total)} CT-e(s) enviados para a temporária...`,
-              percentual: Math.min(65, pct),
+              percentual: Math.min(75, pct),
+              complementar: event.complementar || null,
             });
           }
 
           if (event.etapa === 'processamento') {
-            setProgressoUpload({ etapa: 'processamento', mensagem: event.mensagem, percentual: 75 });
+            setProgressoUpload({ etapa: 'processamento', mensagem: event.mensagem, percentual: 78, complementar: event.complementar || null });
+          }
+
+          if (event.etapa === 'processamento_lote' || event.etapa === 'processamento_enxuta_lote') {
+            const total = Number(event.total || event.restante || 1);
+            const inseridos = Number(event.inseridos || 0);
+            const basePct = event.etapa === 'processamento_lote' ? 78 : 90;
+            const faixa = event.etapa === 'processamento_lote' ? 12 : 8;
+            const pct = total > 0
+              ? basePct + Math.round((inseridos / total) * faixa)
+              : basePct;
+            setProgressoUpload({
+              etapa: event.etapa,
+              mensagem: event.mensagem,
+              percentual: Math.min(event.etapa === 'processamento_lote' ? 90 : 98, pct),
+              complementar: event.complementar || null,
+            });
           }
 
           if (event.etapa === 'concluido') {
-            setProgressoUpload({ etapa: 'concluido', mensagem: event.mensagem, percentual: 100 });
+            setProgressoUpload({ etapa: 'concluido', mensagem: event.mensagem, percentual: 100, complementar: event.complementar || null });
           }
         },
       });
@@ -2127,15 +2262,89 @@ export default function CtePage() {
         setPendencias(lista);
       }
 
-      setFeedback(
-        `${substituir ? 'Reimportação' : 'Importação'} concluída: ${fmtN(resposta.statusFinal?.detalhado)} CT-e(s) na base, ${fmtN(resposta.statusFinal?.consolidado)} rota(s) consolidadas e ${fmtN(resposta.statusFinal?.pendencias)} pendência(s).`
-      );
+      const comp = resposta.complementar;
+      const sufixoTemp = Number(resposta.statusFinal?.temporaria || 0) > 0
+        ? ` Ainda há ${fmtN(resposta.statusFinal?.temporaria)} na temporária — use Continuar processamento.`
+        : '';
+      if (comp && Number(comp.novos || 0) === 0 && Number(comp.jaNaBase || 0) > 0) {
+        setFeedback(
+          `Complementação concluída: ${fmtN(comp.lidos)} lidos, ${fmtN(comp.jaNaBase)} já na base (pulados). Nenhum CT-e novo importado.${sufixoTemp}`
+        );
+      } else if (comp) {
+        setFeedback(
+          `${modo === 'substituir' ? 'Reimportação' : 'Complementação'} concluída: ${fmtN(comp.novos)} novo(s) importado(s), ${fmtN(comp.jaNaBase)} pulado(s). Base com ${fmtN(resposta.statusFinal?.detalhado)} CT-e(s), ${fmtN(resposta.statusFinal?.consolidado)} rota(s) e ${fmtN(resposta.statusFinal?.pendencias)} pendência(s).${sufixoTemp}`
+        );
+      } else {
+        setFeedback(
+          `${modo === 'substituir' ? 'Reimportação' : 'Importação'} concluída: ${fmtN(resposta.statusFinal?.detalhado)} CT-e(s) na base, ${fmtN(resposta.statusFinal?.consolidado)} rota(s) consolidadas e ${fmtN(resposta.statusFinal?.pendencias)} pendência(s).${sufixoTemp}`
+        );
+      }
+      setErro('');
 
       if (filtros.inicio || filtros.fim || filtros.canal || filtros.transportadoraRealizada || filtros.origem || filtros.destino || filtros.ufOrigem || filtros.ufDestino) {
         await buscar(1, filtros);
       }
     } catch (error) {
       setErro(error.message || 'Erro ao importar CT-e.');
+    } finally {
+      setImportando(false);
+    }
+  }
+
+  async function continuarProcessamentoPendente() {
+    if (!competenciaUpload) {
+      setErro('Selecione a competência para continuar o processamento.');
+      return;
+    }
+
+    setImportando(true);
+    setErro('');
+    setFeedback('Gravando temporária na base oficial (processamento direto)...');
+    setProgressoUpload({ etapa: 'processamento_lote', mensagem: 'Lendo temporária e gravando na base oficial...', percentual: 75 });
+
+    try {
+      const resposta = await continuarProcessamentoRealizadoMensal({
+        competencia: competenciaUpload,
+        onProgress: (event) => {
+          if (event.etapa === 'processamento') {
+            setProgressoUpload({ etapa: 'processamento', mensagem: event.mensagem, percentual: 78 });
+          }
+          if (event.etapa === 'processamento_lote' || event.etapa === 'processamento_enxuta_lote') {
+            const total = Number(event.total || event.restante || 1);
+            const inseridos = Number(event.inseridos || 0);
+            const basePct = event.etapa === 'processamento_lote' ? 78 : 90;
+            const faixa = event.etapa === 'processamento_lote' ? 12 : 8;
+            const pct = total > 0 ? basePct + Math.round((inseridos / total) * faixa) : basePct;
+            setProgressoUpload({
+              etapa: event.etapa,
+              mensagem: event.mensagem,
+              percentual: Math.min(event.etapa === 'processamento_lote' ? 90 : 98, pct),
+            });
+          }
+          if (event.etapa === 'concluido') {
+            setProgressoUpload({ etapa: 'concluido', mensagem: event.mensagem, percentual: 100 });
+          }
+        },
+      });
+
+      setResultadoUpload(resposta);
+      setStatusCompetencia(resposta.statusFinal);
+      setProgressoUpload({
+        etapa: 'concluido',
+        mensagem: Number(resposta.statusFinal?.temporaria || 0) > 0
+          ? 'Temporária ainda pendente. Clique Continuar processamento novamente.'
+          : 'Processamento concluído. Base oficial pronta para consulta.',
+        percentual: 100,
+      });
+      const sufixoTemp = Number(resposta.statusFinal?.temporaria || 0) > 0
+        ? ` Ainda há ${fmtN(resposta.statusFinal?.temporaria)} na temporária.`
+        : '';
+      setFeedback(
+        `Processamento: ${fmtN(resposta.statusFinal?.detalhado)} CT-e(s) na base oficial, ${fmtN(resposta.statusFinal?.temporaria || 0)} na temporária.${sufixoTemp}`
+      );
+      setErro('');
+    } catch (error) {
+      setErro(error.message || 'Erro ao continuar processamento.');
     } finally {
       setImportando(false);
     }
@@ -2148,10 +2357,53 @@ export default function CtePage() {
     setResultadoUpload(null);
     setProgressoUpload(null);
     setPendencias([]);
+    setIgnoradosUpload([]);
+    salvarIgnoradosUploadSessao([]);
+    setResultadoDiagnostico(null);
+    setChaveDiagnostico('');
     setErro('');
     setFeedback('Seleção de arquivo limpa.');
     const input = document.getElementById('cte-upload-file-input');
     if (input) input.value = '';
+  }
+
+  async function diagnosticarChaveInformada() {
+    const chave = chaveDiagnostico.trim();
+    if (!chave) {
+      setErro('Informe uma chave CT-e para diagnosticar.');
+      return;
+    }
+
+    setDiagnosticandoChave(true);
+    setResultadoDiagnostico(null);
+    setErro('');
+
+    try {
+      const chaveNorm = chave.replace(/\D/g, '');
+      const ignoradoLocal = ignoradosUpload.find((row) => {
+        const ch = String(row.chaveCte || '').replace(/\D/g, '');
+        return ch && ch === chaveNorm;
+      });
+
+      let registroBase = null;
+      if (isSupabaseConfigured()) {
+        const supabase = getSupabaseClient();
+        registroBase = await buscarRegistroCtePorChave(supabase, chaveNorm);
+      }
+
+      const resultado = diagnosticarChaveCte(chaveNorm, {
+        registroBase,
+        registroIgnorado: ignoradoLocal,
+        opcoes: opcoesPoliticaCte,
+      });
+
+      setResultadoDiagnostico(resultado);
+      setFeedback(`Diagnóstico concluído para a chave ${chaveNorm.slice(0, 8)}...`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao diagnosticar chave.');
+    } finally {
+      setDiagnosticandoChave(false);
+    }
   }
 
   const buscar = async (paginaSolicitada = 1, filtrosBusca = filtros) => {
@@ -2204,13 +2456,22 @@ export default function CtePage() {
     [rowsAnaliseComVinculos]
   );
 
+  const chaveBuscaExata = useMemo(
+    () => extrairChaveCteExata(filtros.buscaDocumento),
+    [filtros.buscaDocumento],
+  );
+
   const baseAnalisePadrao = useMemo(
-    () => aplicarPoliticaBaseCte(rowsAnaliseComVinculos || [], {
-      ocultarEbazar,
-      incluirCpsLog,
-      incluirCpComercial,
-    }),
-    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog, incluirCpComercial]
+    () => {
+      const linhas = rowsAnaliseComVinculos || [];
+      if (chaveBuscaExata) return linhas;
+      return aplicarPoliticaBaseCte(linhas, {
+        ocultarEbazar,
+        incluirCpsLog,
+        incluirCpComercial,
+      });
+    },
+    [rowsAnaliseComVinculos, ocultarEbazar, incluirCpsLog, incluirCpComercial, chaveBuscaExata]
   );
 
   const analiseSnapshot = useMemo(
@@ -2437,7 +2698,7 @@ export default function CtePage() {
           </div>
 
           <div className="field">
-            <label>Arquivo CT-e completo</label>
+            <label>Arquivo CT-e (completo ou parcial)</label>
             <input
               id="cte-upload-file-input"
               type="file"
@@ -2463,42 +2724,138 @@ export default function CtePage() {
           </div>
         </div>
 
-        <label
-          style={{
-            display: 'flex',
-            gap: 10,
-            alignItems: 'flex-start',
-            padding: 12,
-            borderRadius: 12,
-            background: substituirCompetencia ? '#fff7ed' : '#f8fafc',
-            border: `1px solid ${substituirCompetencia ? '#fdba74' : '#e2e8f0'}`,
-            margin: '12px 0',
-            cursor: 'pointer',
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={substituirCompetencia}
-            onChange={(event) => setSubstituirCompetencia(event.target.checked)}
-            disabled={importando}
-            style={{ marginTop: 3 }}
-          />
-          <span>
-            <strong>Substituir competência existente</strong>
-            <br />
-            <small>Use para subir novamente janeiro/fevereiro etc. O sistema apaga a competência atual e grava o novo arquivo, evitando duplicidade.</small>
+        <div style={{ display: 'grid', gap: 10, margin: '12px 0' }}>
+          <label
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+              padding: 12,
+              borderRadius: 12,
+              background: modoImportacao === 'complementar' ? '#f0fdf4' : '#f8fafc',
+              border: `1px solid ${modoImportacao === 'complementar' ? '#86efac' : '#e2e8f0'}`,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="radio"
+              name="modo-importacao-cte"
+              value="complementar"
+              checked={modoImportacao === 'complementar'}
+              onChange={() => setModoImportacao('complementar')}
+              disabled={importando}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <strong>Complementar competência (só novos)</strong>
+              <br />
+              <small>Importa apenas CT-e(s) cuja chave ainda não está na base. Ideal para upload semanal do mesmo mês.</small>
+            </span>
+          </label>
+
+          <label
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+              padding: 12,
+              borderRadius: 12,
+              background: modoImportacao === 'substituir' ? '#fff7ed' : '#f8fafc',
+              border: `1px solid ${modoImportacao === 'substituir' ? '#fdba74' : '#e2e8f0'}`,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="radio"
+              name="modo-importacao-cte"
+              value="substituir"
+              checked={modoImportacao === 'substituir'}
+              onChange={() => setModoImportacao('substituir')}
+              disabled={importando}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <strong>Substituir competência (apagar e reimportar)</strong>
+              <br />
+              <small>Apaga todos os CT-e(s) da competência e grava o arquivo inteiro. Use para corrigir o mês completo.</small>
+            </span>
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', margin: '0 0 12px', alignItems: 'center' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={ocultarEbazar}
+              onChange={(event) => setOcultarEbazar(event.target.checked)}
+              disabled={importando}
+            />
+            Ocultar EBAZAR na importação
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={incluirCpsLog}
+              onChange={(event) => {
+                const marcado = event.target.checked;
+                setIncluirCpsLog(marcado);
+                salvarConfiguracaoBaseCte({ incluirCpsLog: marcado });
+              }}
+              disabled={importando}
+            />
+            Incluir CPS LOG
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={incluirCpComercial}
+              onChange={(event) => {
+                const marcado = event.target.checked;
+                setIncluirCpComercial(marcado);
+                salvarConfiguracaoBaseCte({ incluirCpComercial: marcado });
+              }}
+              disabled={importando}
+            />
+            Incluir CP COMERCIAL
+          </label>
+          <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+            Tomadores padrão: {TOMADORES_CTE_PADRAO.join(', ')}. CP COMERCIAL (S/A, SA, etc.) só sobe com esta opção marcada — use <strong>Complementar / importar novos</strong> depois de marcar. Remetente não filtra inclusão.
           </span>
-        </label>
+        </div>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button className="btn-primary" type="button" onClick={() => importarArquivoCte({ forcarSubstituir: false })} disabled={!podeImportar || substituirCompetencia}>
-            {importando ? 'Importando...' : 'Importar mês novo'}
+          <button className="btn-primary" type="button" onClick={() => importarArquivoCte({ forcarSubstituir: false })} disabled={!podeImportar || modoImportacao === 'substituir'}>
+            {importando ? 'Importando...' : 'Complementar / importar novos'}
           </button>
           <button className="btn-primary" type="button" onClick={() => importarArquivoCte({ forcarSubstituir: true })} disabled={!podeImportar}>
             {importando ? 'Reimportando...' : 'Reimportar e substituir'}
           </button>
+          {pendenciaProcessamento ? (
+            <button className="btn-secondary" type="button" onClick={continuarProcessamentoPendente} disabled={importando || !competenciaUpload}>
+              {importando ? 'Processando...' : 'Continuar processamento'}
+            </button>
+          ) : null}
           {arquivoUpload ? <span style={{ fontSize: 13, color: 'var(--muted)' }}>Arquivo: <strong>{arquivoUpload.name}</strong></span> : null}
         </div>
+
+        {pendenciaProcessamento ? (
+          <div className="sim-alert warn" style={{ marginTop: 10 }}>
+            Temporária pendente em {competenciaUpload || '—'}: {resumoPendenciaProcessamento}.
+            Recarregue a página e use <strong>Continuar processamento</strong> — não precisa reler o Excel. A base enxuta não é mais gerada automaticamente (RPC lenta).
+          </div>
+        ) : competenciaPrecisaEnxuta(statusCompetencia) ? (
+          <div className="hint-box" style={{ marginTop: 10 }}>
+            Base oficial com {fmtN(statusCompetencia?.detalhado)} CT-e(s). Enxuta opcional ainda incompleta — a consulta na tela CT-e já funciona pela base oficial.
+          </div>
+        ) : null}
+
+        {progressoUpload?.complementar ? (
+          <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', marginTop: 12 }}>
+            <SummaryCard title="Lidos" value={fmtN(progressoUpload.complementar.lidos)} subtitle="no arquivo" />
+            <SummaryCard title="Já na base" value={fmtN(progressoUpload.complementar.jaNaBase)} subtitle="pulados" tone={Number(progressoUpload.complementar.jaNaBase || 0) > 0 ? 'warn' : ''} />
+            <SummaryCard title="Novos" value={fmtN(progressoUpload.complementar.novos)} subtitle="a importar" />
+          </div>
+        ) : null}
 
         {progressoUpload ? (
           <div className="sim-alert info" style={{ marginTop: 12 }}>
@@ -2516,15 +2873,37 @@ export default function CtePage() {
         ) : null}
 
         {metaUpload ? (
-          <div className="hint-box" style={{ marginTop: 12 }}>
-            Leitura: aba <strong>{metaUpload.aba || '—'}</strong> · {fmtN(metaUpload.registrosValidos)} CT-e(s) válido(s) · {fmtN(metaUpload.linhasOriginais)} linha(s).
-          </div>
+          <>
+            <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginTop: 12 }}>
+              <SummaryCard title="Lidos" value={fmtN(metaUpload.registrosLidos ?? metaUpload.registrosAntesTomador)} subtitle="linhas com CT-e/valor" />
+              <SummaryCard title="Importados" value={fmtN(metaUpload.registrosImportados ?? metaUpload.registrosValidos)} subtitle="aceitos pela política" />
+              <SummaryCard title="Ignorados" value={fmtN(metaUpload.registrosIgnorados ?? metaUpload.registrosIgnoradosTomador)} subtitle="fora da regra" tone={Number(metaUpload.registrosIgnorados || metaUpload.registrosIgnoradosTomador || 0) > 0 ? 'warn' : ''} />
+              <SummaryCard title="Duplicados" value={fmtN(metaUpload.duplicados || 0)} subtitle="chaves repetidas" />
+              <SummaryCard title="Linhas arquivo" value={fmtN(metaUpload.linhasOriginais)} subtitle={`aba ${metaUpload.aba || '—'}`} />
+            </div>
+            {metaUpload.resumoExclusoes && Object.keys(metaUpload.resumoExclusoes).length > 0 ? (
+              <div className="hint-box" style={{ marginTop: 8 }}>
+                Exclusões: {Object.entries(metaUpload.resumoExclusoes).map(([codigo, qtd]) => (
+                  <span key={codigo} style={{ marginRight: 12 }}>
+                    <strong>{MOTIVOS_EXCLUSAO_CTE[codigo]?.label || codigo}</strong>: {fmtN(qtd)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </>
         ) : null}
 
         <ValidacaoUpload validacao={validacaoUpload} />
 
         {resultadoUpload ? (
           <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', marginTop: 12 }}>
+            {resultadoUpload.complementar ? (
+              <>
+                <SummaryCard title="Lidos" value={fmtN(resultadoUpload.complementar.lidos)} subtitle="no arquivo" />
+                <SummaryCard title="Já na base" value={fmtN(resultadoUpload.complementar.jaNaBase)} subtitle="pulados" tone={Number(resultadoUpload.complementar.jaNaBase || 0) > 0 ? 'warn' : ''} />
+                <SummaryCard title="Novos importados" value={fmtN(resultadoUpload.complementar.novos)} subtitle="neste upload" />
+              </>
+            ) : null}
             <SummaryCard title="Temporária enviada" value={fmtN(resultadoUpload.temporaria?.enviados)} subtitle="linhas processadas" />
             <SummaryCard title="Base oficial" value={fmtN(resultadoUpload.statusFinal?.detalhado)} subtitle="CT-e(s) na competência" />
             <SummaryCard title="Consolidado" value={fmtN(resultadoUpload.statusFinal?.consolidado)} subtitle="rotas geradas" />
@@ -2558,6 +2937,101 @@ export default function CtePage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        ) : null}
+      </ExpandCard>
+
+      {ignoradosUpload.length > 0 ? (
+        <ExpandCard
+          title="CT-es ignorados no upload"
+          subtitle="Registros lidos do arquivo que não entraram na base por regra de tomador/política."
+          badge={`${fmtN(ignoradosUpload.length)} ignorado(s)`}
+          defaultOpen={false}
+        >
+          {ignoradosReprocessaveis.length > 0 ? (
+            <div className="sim-alert info" style={{ marginBottom: 12 }}>
+              {fmtN(ignoradosReprocessaveis.length)} CT-e(s) passariam com as flags atuais. Reimporte o arquivo para incluí-los na base.
+            </div>
+          ) : null}
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>Chave</th>
+                  <th>Nº CT-e</th>
+                  <th>Transportadora</th>
+                  <th>Remetente</th>
+                  <th>Destinatário</th>
+                  <th>Tomador</th>
+                  <th>CNPJ tomador</th>
+                  <th>Motivo</th>
+                  <th>Arquivo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ignoradosUpload.slice(0, 200).map((item) => (
+                  <tr key={item.id || item.chaveCte || `${item.numeroCte}-${item.emissao}`}>
+                    <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{item.chaveCte || '—'}</td>
+                    <td>{item.numeroCte || '—'}</td>
+                    <td>{item.transportadora || '—'}</td>
+                    <td>{item.remetenteExclusao || item.remetente || '—'}</td>
+                    <td>{item.destinatarioExclusao || item.destinatario || '—'}</td>
+                    <td>{item.tomadorExclusao || item.tomadorServico || '—'}</td>
+                    <td>{item.cnpjTomadorExclusao || item.cnpjTomador || '—'}</td>
+                    <td>{item.motivoExclusao || MOTIVOS_EXCLUSAO_CTE[item.codigoExclusao]?.label || item.codigoExclusao || '—'}</td>
+                    <td>{item.arquivoOrigem || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {ignoradosUpload.length > 200 ? (
+            <div className="empty-note">Mostrando 200 de {fmtN(ignoradosUpload.length)} ignorados.</div>
+          ) : null}
+        </ExpandCard>
+      ) : null}
+
+      <ExpandCard
+        title="Diagnóstico por chave"
+        subtitle="Busca na base oficial e no último upload ignorado para explicar por que um CT-e entrou ou ficou de fora."
+        badge="Chave CT-e"
+        defaultOpen={false}
+      >
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="field" style={{ flex: '1 1 320px' }}>
+            <label>Chave CT-e (44 dígitos)</label>
+            <input
+              value={chaveDiagnostico}
+              onChange={(event) => setChaveDiagnostico(event.target.value)}
+              placeholder="Ex.: 29260503279710000786570120000267391409363475"
+              disabled={diagnosticandoChave}
+            />
+          </div>
+          <button className="btn-primary" type="button" onClick={diagnosticarChaveInformada} disabled={diagnosticandoChave || !chaveDiagnostico.trim()}>
+            {diagnosticandoChave ? 'Diagnosticando...' : 'Diagnosticar'}
+          </button>
+        </div>
+
+        {resultadoDiagnostico ? (
+          <div className="hint-box" style={{ marginTop: 12 }}>
+            <div><strong>Status:</strong> {LABEL_STATUS_DIAGNOSTICO[resultadoDiagnostico.status] || resultadoDiagnostico.status}</div>
+            {resultadoDiagnostico.avaliacao ? (
+              <>
+                <div style={{ marginTop: 8 }}>
+                  <strong>Política atual:</strong> {resultadoDiagnostico.avaliacao.aceito ? 'Aceito' : 'Rejeitado'}
+                  {!resultadoDiagnostico.avaliacao.aceito && resultadoDiagnostico.avaliacao.motivo ? ` — ${resultadoDiagnostico.avaliacao.motivo}` : ''}
+                </div>
+                <div style={{ marginTop: 8, display: 'grid', gap: 4, fontSize: 13 }}>
+                  <span><strong>Tomador:</strong> {resultadoDiagnostico.avaliacao.tomador || '—'}</span>
+                  <span><strong>Remetente:</strong> {resultadoDiagnostico.avaliacao.remetente || '—'}</span>
+                  <span><strong>Destinatário:</strong> {resultadoDiagnostico.avaliacao.destinatario || '—'}</span>
+                  <span><strong>CNPJ tomador:</strong> {resultadoDiagnostico.avaliacao.cnpjTomador || '—'}</span>
+                </div>
+              </>
+            ) : null}
+            {resultadoDiagnostico.motivoIgnorado ? (
+              <div style={{ marginTop: 8 }}><strong>Motivo no upload:</strong> {resultadoDiagnostico.motivoIgnorado}</div>
+            ) : null}
           </div>
         ) : null}
       </ExpandCard>
@@ -3239,7 +3713,11 @@ export default function CtePage() {
             <input
               type="checkbox"
               checked={incluirCpsLog}
-              onChange={(e) => setIncluirCpsLog(e.target.checked)}
+              onChange={(e) => {
+                const marcado = e.target.checked;
+                setIncluirCpsLog(marcado);
+                salvarConfiguracaoBaseCte({ incluirCpsLog: marcado });
+              }}
               style={{ width: 15, height: 15 }}
             />
             Incluir CPS LOG

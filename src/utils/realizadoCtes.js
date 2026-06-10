@@ -1,4 +1,10 @@
 import * as XLSX from 'xlsx';
+import {
+  TOMADORES_CTE_PADRAO,
+  avaliarCteParaBase,
+  getOpcoesImportacaoPadrao,
+  particionarCtesPorPolitica,
+} from '../services/cteBasePolicy';
 
 const HEADER_MAP = {
   'transportadora': 'transportadora',
@@ -13,8 +19,11 @@ const HEADER_MAP = {
   'tomador servico cte': 'tomadorServico',
   'tomador de servico cte': 'tomadorServico',
   'nome tomador': 'tomadorServico',
+  'nome do tomador': 'tomadorServico',
   'razao social tomador': 'tomadorServico',
   'razao social do tomador': 'tomadorServico',
+  'razao social do tomador de servico': 'tomadorServico',
+  'tomador do servico do cte': 'tomadorServico',
   'cliente tomador': 'tomadorServico',
   'emissao': 'emissao',
   'data emissao': 'emissao',
@@ -96,6 +105,17 @@ const HEADER_MAP = {
   'municipio de destino': 'cidadeDestino',
   'destino': 'cidadeDestino',
   'transportadora contratada': 'transportadoraContratada',
+  'remetente': 'remetente',
+  'nome remetente': 'remetente',
+  'razao social remetente': 'remetente',
+  'razao social do remetente': 'remetente',
+  'destinatario': 'destinatario',
+  'nome destinatario': 'destinatario',
+  'razao social destinatario': 'destinatario',
+  'razao social do destinatario': 'destinatario',
+  'cnpj tomador': 'cnpjTomador',
+  'cnpj do tomador': 'cnpjTomador',
+  'cnpj tomador servico': 'cnpjTomador',
   'prazo de entrega para o cliente': 'prazoEntregaCliente',
   'entrega de cte': 'entregaCte',
   'entrega de ct e': 'entregaCte',
@@ -105,7 +125,7 @@ const HEADER_MAP = {
   'data de expedicao do pedido': 'dataExpedicaoPedido',
 };
 
-export const TOMADORES_SERVICO_VALIDOS_REALIZADO = ['CPX', 'ITR', 'GRIP', 'GP PNEUS'];
+export const TOMADORES_SERVICO_VALIDOS_REALIZADO = TOMADORES_CTE_PADRAO;
 
 export function normalizarTomadorServicoRealizado(value) {
   return String(value ?? '')
@@ -117,10 +137,11 @@ export function normalizarTomadorServicoRealizado(value) {
     .trim();
 }
 
-export function isTomadorServicoValidoRealizado(value) {
-  const texto = normalizarTomadorServicoRealizado(value);
-  if (!texto) return false;
-  return TOMADORES_SERVICO_VALIDOS_REALIZADO.some((tomador) => texto.includes(normalizarTomadorServicoRealizado(tomador)));
+export function isTomadorServicoValidoRealizado(value, opcoes) {
+  return avaliarCteParaBase(
+    { tomador_servico: value },
+    opcoes || getOpcoesImportacaoPadrao(),
+  ).aceito;
 }
 
 export function regraTomadorServicoRealizadoTexto() {
@@ -292,6 +313,9 @@ function normalizeRegistro(row = {}, arquivoOrigem = '') {
     transportadora: normalizeTextRealizado(item.transportadora),
     cnpjTransportadora: String(item.cnpjTransportadora || '').replace(/\D/g, ''),
     tomadorServico: normalizeTextRealizado(item.tomadorServico || item.tomador || ''),
+    remetente: normalizeTextRealizado(item.remetente),
+    destinatario: normalizeTextRealizado(item.destinatario),
+    cnpjTomador: String(item.cnpjTomador || '').replace(/\D/g, ''),
     emissao,
     chaveCte,
     numeroCte: String(item.numeroCte || '').trim(),
@@ -381,8 +405,25 @@ function contarLinhasPelaRef(ref = '') {
   }
 }
 
-export async function parseRealizadoCtesFile(file) {
-  if (!file) return { registros: [], meta: { arquivo: '', linhasOriginais: 0 } };
+function montarResumoExclusoes(ignorados = []) {
+  const resumo = {};
+  ignorados.forEach((row) => {
+    const codigo = row.codigoExclusao || 'desconhecido';
+    resumo[codigo] = (resumo[codigo] || 0) + 1;
+  });
+  return resumo;
+}
+
+export async function parseRealizadoCtesFile(file, opcoesImportacao) {
+  const opcoes = opcoesImportacao || getOpcoesImportacaoPadrao();
+
+  if (!file) {
+    return {
+      registros: [],
+      ignorados: [],
+      meta: { arquivo: '', linhasOriginais: 0, resumoExclusoes: {} },
+    };
+  }
 
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, raw: false });
@@ -401,11 +442,14 @@ export async function parseRealizadoCtesFile(file) {
     .filter((row) => row.chaveCte || row.numeroCte)
     .filter((row) => row.valorCte > 0 || row.valorNF > 0);
 
-  const comTomadorValido = normalizados.filter((row) => isTomadorServicoValidoRealizado(row.tomadorServico));
-  const registros = deduplicateRows(comTomadorValido);
+  const { aceitos, ignorados } = particionarCtesPorPolitica(normalizados, opcoes);
+  const registros = deduplicateRows(aceitos);
+  const duplicados = Math.max(0, aceitos.length - registros.length);
+  const resumoExclusoes = montarResumoExclusoes(ignorados);
 
   return {
     registros,
+    ignorados,
     meta: {
       arquivo: file.name || '',
       tamanhoBytes: file.size || 0,
@@ -415,10 +459,16 @@ export async function parseRealizadoCtesFile(file) {
       refFoiCorrigida: refInfo.corrigida,
       linhasEstimadas: contarLinhasPelaRef(refInfo.refCorrigida),
       linhasOriginais: rows.length,
+      registrosLidos: normalizados.length,
       registrosAntesTomador: normalizados.length,
-      registrosIgnoradosTomador: Math.max(0, normalizados.length - comTomadorValido.length),
+      registrosIgnoradosTomador: ignorados.length,
+      registrosIgnorados: ignorados.length,
+      duplicados,
+      resumoExclusoes,
       regraTomador: regraTomadorServicoRealizadoTexto(),
       registrosValidos: registros.length,
+      registrosImportados: registros.length,
+      opcoesImportacao: opcoes,
     },
   };
 }
