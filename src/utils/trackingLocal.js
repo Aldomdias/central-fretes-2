@@ -455,7 +455,13 @@ function hashTrackingKey(value = '') {
   return (hash >>> 0).toString(36);
 }
 
-function buildTrackingId(row = {}, fileName = '', lineNumber = '') {
+export function getChaveNfeLookup(row = {}) {
+  const chave = onlyDigits(row.chaveNfe || row.chave_nfe);
+  if (chave.length >= 20) return chave.slice(0, 44);
+  return '';
+}
+
+export function buildTrackingId(row = {}, fileName = '', lineNumber = '') {
   const chaveCte = onlyDigits(row.chaveCte);
   const chaveNfe = onlyDigits(row.chaveNfe);
   const notaFiscal = onlyDigits(row.notaFiscal);
@@ -596,7 +602,7 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
   return rows;
 }
 
-async function parseFile(file, options = {}) {
+export async function parseTrackingArquivo(file, options = {}) {
   if (isCsvFile(file)) {
     const matriz = parseCsvMatrix(await file.text());
     const rows = buildRowsFromMatrix(matriz, file, options);
@@ -632,7 +638,7 @@ export async function importarTrackingLocal(files = [], options = {}) {
   try {
     for (const file of lista) {
       options.onProgress?.({ etapa: 'lendo', total, arquivo: file.name });
-      const { rows, abas } = await parseFile(file, options);
+      const { rows, abas } = await parseTrackingArquivo(file, options);
       options.onProgress?.({ etapa: 'processando', total, arquivo: file.name });
       const rowsUnicas = [];
       rows.forEach((row) => {

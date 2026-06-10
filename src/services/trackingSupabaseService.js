@@ -1,7 +1,9 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { buildTrackingId, getChaveNfeLookup, parseTrackingArquivo } from '../utils/trackingLocal';
 
 const TABELA_TRACKING = 'tracking_rows';
 const CHUNK_SIZE = 500;
+const CHAVE_NFE_LOOKUP_CHUNK = 300;
 
 function toNumber(value) {
   if (typeof value === 'string') {
@@ -38,14 +40,35 @@ function cubagemTotal(row = {}) {
   return toNumber(row.cubagem);
 }
 
+function onlyDigits(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function extrairChaveNfeRegistro(row = {}) {
+  const chave = getChaveNfeLookup(row) || onlyDigits(row.chave_nfe);
+  if (chave.length >= 20) return chave.slice(0, 44);
+  const id = String(row.id || '');
+  const match = id.match(/^nf-(\d{20,44})/);
+  if (match) return match[1].slice(0, 44);
+  return '';
+}
+
 function toDbRow(row = {}) {
   const data = row.data || row.dataFaturamento || '';
+  const chaveNfe = getChaveNfeLookup(row);
+  const id = String(
+    row.id
+    || buildTrackingId(row, row.arquivoOrigem || '', row.linhaExcel || '')
+    || (chaveNfe ? `nf-${chaveNfe}` : '')
+    || row.notaFiscal
+    || `${Date.now()}-${Math.random()}`
+  ).slice(0, 240);
   return {
-    id: String(row.id || row.chaveNfe || row.notaFiscal || `${Date.now()}-${Math.random()}`).slice(0, 240),
+    id,
     data,
     competencia: row.competencia || (data ? String(data).slice(0, 7) : ''),
     nota_fiscal: row.notaFiscal || row.numeroNf || row.nfNumero || '',
-    chave_nfe: row.chaveNfe || '',
+    chave_nfe: chaveNfe || row.chaveNfe || '',
     chave_cte: row.chaveCte || '',
     cte_numero: row.cteNumero || '',
     pedido: row.pedido || '',
@@ -77,6 +100,171 @@ function toDbRow(row = {}) {
     ibge_ok: Boolean(row.ibgeOk),
     raw: row.raw || null,
     updated_at: new Date().toISOString(),
+  };
+}
+
+function deduplicarLinhasTracking(rows = []) {
+  const vistos = new Set();
+  const unicos = [];
+  let duplicadosArquivo = 0;
+
+  (rows || []).forEach((row) => {
+    const chave = getChaveNfeLookup(row);
+    const chaveDedup = chave || String(row.id || buildTrackingId(row, row.arquivoOrigem || '', row.linhaExcel || ''));
+    if (!chaveDedup) return;
+    if (vistos.has(chaveDedup)) {
+      duplicadosArquivo += 1;
+      return;
+    }
+    vistos.add(chaveDedup);
+    unicos.push(row);
+  });
+
+  return { unicos, duplicadosArquivo };
+}
+
+async function consultarChavesNfeExistentes(supabase, chavesArquivo = [], onProgress) {
+  const existentes = new Set();
+  const unicas = [...new Set((chavesArquivo || []).map((chave) => onlyDigits(chave)).filter((chave) => chave.length >= 20))];
+  if (!unicas.length) return existentes;
+
+  for (let i = 0; i < unicas.length; i += CHAVE_NFE_LOOKUP_CHUNK) {
+    const parte = unicas.slice(i, i + CHAVE_NFE_LOOKUP_CHUNK);
+    const idsNf = parte.map((chave) => `nf-${chave}`.slice(0, 240));
+
+    const [{ data: porChave, error: erroChave }, { data: porId, error: erroId }] = await Promise.all([
+      supabase.from(TABELA_TRACKING).select('chave_nfe').in('chave_nfe', parte),
+      supabase.from(TABELA_TRACKING).select('id,chave_nfe').in('id', idsNf),
+    ]);
+
+    if (erroChave && erroId) {
+      throw new Error(`Erro ao consultar chaves NF existentes: ${erroChave.message || erroId.message}`);
+    }
+
+    (porChave || []).forEach((row) => {
+      const chave = extrairChaveNfeRegistro(row);
+      if (chave) existentes.add(chave);
+    });
+    (porId || []).forEach((row) => {
+      const chave = extrairChaveNfeRegistro(row);
+      if (chave) existentes.add(chave);
+    });
+
+    onProgress?.({
+      etapa: 'filtro',
+      mensagem: `Consultando chaves NF na base: ${Math.min(i + parte.length, unicas.length).toLocaleString('pt-BR')} de ${unicas.length.toLocaleString('pt-BR')}...`,
+      complementar: { consultadas: Math.min(i + parte.length, unicas.length), totalChaves: unicas.length },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return existentes;
+}
+
+function filtrarTrackingPorChaveExistente(rows = [], chavesExistentes = new Set()) {
+  const stats = { lidos: rows.length, jaNaBase: 0, novos: 0, semChave: 0 };
+  const novos = [];
+
+  rows.forEach((row) => {
+    const chave = getChaveNfeLookup(row);
+    if (!chave) {
+      stats.semChave += 1;
+      novos.push(row);
+      stats.novos += 1;
+      return;
+    }
+    if (chavesExistentes.has(chave)) {
+      stats.jaNaBase += 1;
+      return;
+    }
+    novos.push(row);
+    stats.novos += 1;
+  });
+
+  return { novos, stats };
+}
+
+export async function importarTrackingSupabase({
+  arquivos = [],
+  rows: rowsInformados = null,
+  modo = 'complementar',
+  municipios = [],
+  onProgress,
+} = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+
+  const supabase = getSupabaseClient();
+  let rows = Array.isArray(rowsInformados) ? rowsInformados : [];
+
+  if (!rows.length && arquivos?.length) {
+    const detalhes = [];
+    for (const file of arquivos) {
+      onProgress?.({ etapa: 'leitura', mensagem: `Lendo ${file.name}...` });
+      const parsed = await parseTrackingArquivo(file, { municipios });
+      rows = rows.concat(parsed.rows || []);
+      detalhes.push({ arquivo: file.name, linhas: parsed.rows?.length || 0, abas: parsed.abas });
+    }
+    onProgress?.({ etapa: 'validacao', mensagem: `${rows.length.toLocaleString('pt-BR')} linha(s) lida(s) do arquivo.` });
+  }
+
+  if (!rows.length) throw new Error('Nenhuma linha válida de Tracking encontrada no arquivo.');
+
+  const { unicos, duplicadosArquivo } = deduplicarLinhasTracking(rows);
+  let registros = unicos;
+  let statsComplementar = {
+    lidos: rows.length,
+    unicosArquivo: unicos.length,
+    duplicadosArquivo,
+    jaNaBase: 0,
+    novos: unicos.length,
+    semChave: 0,
+  };
+
+  if (modo === 'complementar') {
+    onProgress?.({ etapa: 'filtro', mensagem: 'Consultando chaves NF já gravadas no Supabase...' });
+    const chavesArquivo = unicos.map((row) => getChaveNfeLookup(row)).filter(Boolean);
+    const existentes = await consultarChavesNfeExistentes(supabase, chavesArquivo, onProgress);
+    const filtrado = filtrarTrackingPorChaveExistente(unicos, existentes);
+    registros = filtrado.novos;
+    statsComplementar = {
+      ...statsComplementar,
+      ...filtrado.stats,
+      unicosArquivo: unicos.length,
+      duplicadosArquivo,
+    };
+    onProgress?.({
+      etapa: 'filtro',
+      mensagem: `${statsComplementar.novos.toLocaleString('pt-BR')} novo(s), ${statsComplementar.jaNaBase.toLocaleString('pt-BR')} já na base (pulados).`,
+      complementar: statsComplementar,
+    });
+
+    if (!registros.length) {
+      return {
+        enviados: 0,
+        total: 0,
+        duplicadosIgnorados: duplicadosArquivo,
+        modo,
+        complementar: statsComplementar,
+        mensagem: 'Nenhuma linha nova para enviar. Todas as chaves NF do arquivo já estão no Supabase.',
+      };
+    }
+  }
+
+  const resultado = await subirTrackingSupabase(registros, (event) => {
+    onProgress?.({
+      ...event,
+      etapa: 'envio',
+      complementar: statsComplementar,
+    });
+  });
+
+  return {
+    ...resultado,
+    modo,
+    complementar: statsComplementar,
+    mensagem: modo === 'complementar'
+      ? `${resultado.enviados.toLocaleString('pt-BR')} linha(s) nova(s) gravada(s) no Supabase.`
+      : `${resultado.enviados.toLocaleString('pt-BR')} linha(s) gravada(s)/atualizada(s) no Supabase.`,
   };
 }
 
