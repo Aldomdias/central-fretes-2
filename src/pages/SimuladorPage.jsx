@@ -3797,9 +3797,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
         laudos: prepararLaudosNegociacao(resultadoRealizado, contextoLaudos),
       });
       setNegociacoesSimulador((anteriores) => (anteriores || []).map((tabela) => (
-        tabela.id === negociacaoId ? { ...tabela, ...negociacaoAtualizada } : tabela
+        tabela.id === negociacaoId
+          ? { ...tabela, ...negociacaoAtualizada, incluir_simulacao: negociacaoAtualizada.incluir_simulacao ?? false }
+          : tabela
       )));
-      alert(`Resultado projetado salvo em ${negociacaoAtualizada.transportadora || resultadoRealizado.negociacaoNome || 'negociação'}.`);
+      alert(`Resultado salvo em ${negociacaoAtualizada.transportadora || resultadoRealizado.negociacaoNome || 'negociação'}. A negociação saiu do Simulador — use "Simular novamente" na central ou abra "+ Nova rodada" para nova proposta.`);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao salvar resultado na negociação.');
     } finally {

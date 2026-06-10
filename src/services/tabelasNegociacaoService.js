@@ -3,6 +3,11 @@ import { salvarSecaoDb } from './freteDatabaseService';
 import { converterTabelaNegociacaoParaSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { carregarCargasLotacaoSupabase } from './lotacaoSupabaseService';
 import { normalizarTexto as normalizarTextoLotacao } from '../utils/lotacaoTables';
+import {
+  normalizarStatusGestao,
+  statusLegadoPorGestao,
+  podePublicarOficial,
+} from '../utils/tabelasNegociacaoGestao';
 
 export const STATUS_TABELA_NEGOCIACAO = [
   'EM NEGOCIAÇÃO',
@@ -95,6 +100,33 @@ function inteiro(value) {
 function dataOuNull(value) {
   const raw = texto(value);
   return raw || null;
+}
+
+/** Amostra representativa para o laudo: evita enviesar só CT-es com maior saving (quase sempre ganhos). */
+function selecionarCtesDetalhesParaPersistencia(detalhes = [], limite = 800) {
+  if (!Array.isArray(detalhes) || !detalhes.length) return [];
+  if (detalhes.length <= limite) return detalhes;
+
+  const porRelevancia = (a, b) => numero(b.volumes || 1) - numero(a.volumes || 1)
+    || numero(b.peso || 0) - numero(a.peso || 0)
+    || String(b.destino || '').localeCompare(String(a.destino || ''), 'pt-BR');
+
+  const perdidas = detalhes.filter((item) => item.statusSelecionada === 'Perderia').sort(porRelevancia);
+  const ganhas = detalhes.filter((item) => item.statusSelecionada === 'Ganharia').sort(porRelevancia);
+  const outros = detalhes.filter((item) => item.statusSelecionada !== 'Perderia' && item.statusSelecionada !== 'Ganharia').sort(porRelevancia);
+
+  const total = detalhes.length;
+  const pctPerdidas = perdidas.length / total;
+  const minPerdidas = perdidas.length ? Math.min(perdidas.length, Math.max(250, Math.round(limite * 0.35))) : 0;
+  const quotaPerdidas = Math.min(perdidas.length, Math.max(Math.round(limite * pctPerdidas), minPerdidas));
+  const quotaGanhas = Math.min(ganhas.length, limite - quotaPerdidas);
+  const quotaOutros = Math.max(limite - quotaPerdidas - quotaGanhas, 0);
+
+  return [
+    ...perdidas.slice(0, quotaPerdidas),
+    ...ganhas.slice(0, quotaGanhas),
+    ...outros.slice(0, quotaOutros),
+  ].slice(0, limite);
 }
 
 export function normalizarTipoNegociacao(payload = {}) {
@@ -328,6 +360,22 @@ export async function criarTabelaNegociacao(payload = {}) {
     aderencia_projetada: numero(payload.aderencia_projetada),
     origem_importacao: texto(payload.origem_importacao),
     generalidades: payload.generalidades || DEFAULT_GENERALIDADES,
+    criado_por: texto(payload.criado_por || payload.usuario?.id),
+    criado_por_nome: texto(payload.criado_por_nome || payload.usuario?.nome || payload.usuario_nome),
+    negociador_id: texto(payload.negociador_id || payload.usuario?.id),
+    negociador_nome: texto(payload.negociador_nome || payload.usuario?.nome || payload.usuario_nome),
+    status_gestao: payload.status_gestao || 'EM_NEGOCIACAO',
+    status_aprovacao: 'PENDENTE',
+    historico_gestao: [{
+      id: `CRIACAO-${Date.now()}`,
+      tipo: 'CRIACAO',
+      criado_em: dataISO(),
+      usuario_id: texto(payload.criado_por || payload.usuario?.id),
+      usuario_nome: texto(payload.criado_por_nome || payload.usuario?.nome),
+      observacao: texto(payload.observacao) || 'Negociação criada',
+      status_anterior: null,
+      status_novo: payload.status_gestao || 'EM_NEGOCIACAO',
+    }],
   };
 
   if (!novo.transportadora) throw new Error('Informe a transportadora.');
@@ -396,6 +444,18 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     percentual_medio_impacto:  payload.percentual_medio_impacto !== undefined ? numero(payload.percentual_medio_impacto) : undefined,
     origem_importacao:         payload.origem_importacao !== undefined ? texto(payload.origem_importacao) : undefined,
     generalidades:             payload.generalidades !== undefined ? payload.generalidades : undefined,
+    criado_por:                payload.criado_por !== undefined ? texto(payload.criado_por) : undefined,
+    criado_por_nome:           payload.criado_por_nome !== undefined ? texto(payload.criado_por_nome) : undefined,
+    negociador_id:             payload.negociador_id !== undefined ? texto(payload.negociador_id) : undefined,
+    negociador_nome:           payload.negociador_nome !== undefined ? texto(payload.negociador_nome) : undefined,
+    aprovador_id:              payload.aprovador_id !== undefined ? texto(payload.aprovador_id) : undefined,
+    aprovador_nome:            payload.aprovador_nome !== undefined ? texto(payload.aprovador_nome) : undefined,
+    status_gestao:             payload.status_gestao !== undefined ? payload.status_gestao : undefined,
+    status_aprovacao:          payload.status_aprovacao !== undefined ? texto(payload.status_aprovacao) : undefined,
+    aprovado_em:               payload.aprovado_em !== undefined ? payload.aprovado_em : undefined,
+    publicado_em:               payload.publicado_em !== undefined ? payload.publicado_em : undefined,
+    enviado_aprovacao_em:      payload.enviado_aprovacao_em !== undefined ? payload.enviado_aprovacao_em : undefined,
+    historico_gestao:          payload.historico_gestao !== undefined ? payload.historico_gestao : undefined,
   };
 
   Object.keys(atualizacao).forEach((key) => {
@@ -737,7 +797,18 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
   const supabase = supabaseOrThrow();
   let promocaoOficial = null;
 
+  const { data: tabelaPrevia } = await supabase
+    .from('tabelas_negociacao')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
   if (dados.promover_para_oficial || dados.promoverParaOficial) {
+    if (!podePublicarOficial(tabelaPrevia || {})) {
+      throw new Error(
+        'Publicação na base oficial bloqueada: a negociação precisa estar aprovada pelo gestor antes de ser promovida.'
+      );
+    }
     promocaoOficial = await promoverTabelaNegociacaoParaOficialInterno(id, dados);
   }
 
@@ -1348,7 +1419,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
 
     // Detalhes por CT-e: base dos agrupamentos do laudo de rodadas
     // Limitado a 800 itens para nao estourar o payload do Supabase.
-    ctesDetalhes: (resultado.ctesDetalhes || []).slice(0, 800).map((item) => ({
+    ctesDetalhes: selecionarCtesDetalhesParaPersistencia(resultado.ctesDetalhes || [], 800).map((item) => ({
       origem:                item.origem || '',
       ufOrigem:              item.ufOrigem || '',
       destino:               item.destino || '',
@@ -1366,6 +1437,10 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
                                || (Number(item.diferencaParaVencedor || 0) > 0 && !item.ganhouRealizado),
       diferencaParaVencedor: item.diferencaParaVencedor || 0,
       reducaoMediaNecessaria: item.reducaoNecessaria || 0,
+      percentualFreteRealizado: item.percentualFreteRealizado || 0,
+      percentualFreteSelecionada: item.percentualFreteSelecionada || 0,
+      variacaoPctFreteSelecionada: item.variacaoPctFreteSelecionada || 0,
+      freteVencedor:         item.freteVencedor || 0,
       savingSelecionada:     item.savingSelecionada || 0,
       faixaPeso:             item.selecionadaDetalhes?.frete?.faixaPeso || '',
       trackingMatch:         item.trackingMatch || false,
@@ -1546,7 +1621,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     .from('tabelas_negociacao')
     .update(payload)
     .eq('id', id)
-    .select('id,transportadora,canal,status,resumo_simulacao')
+    .select('id,transportadora,canal,status,resumo_simulacao,incluir_simulacao,aderencia_projetada,saving_projetado,faturamento_projetado,impacto_projetado')
     .single();
 
   if (error) {
@@ -1760,4 +1835,260 @@ export async function simularLotacaoNegociacao(id, filtros = {}) {
 
   const tabelaAtualizada = await salvarResultadoSimulacaoNegociacao(id, resultado);
   return { resultado, tabela: tabelaAtualizada };
+}
+
+// ─── GESTÃO 4.37 — fluxo de aprovação e histórico ───────────────────────────
+
+function getHistoricoGestao(tabela = {}) {
+  return Array.isArray(tabela.historico_gestao) ? tabela.historico_gestao : [];
+}
+
+function montarEventoGestao(tipo, tabela, dados = {}) {
+  const statusAnterior = normalizarStatusGestao(tabela);
+  const statusNovo = dados.status_gestao || statusAnterior;
+  return {
+    id: `${tipo}-${Date.now()}`,
+    tipo,
+    criado_em: dataISO(),
+    usuario_id: texto(dados.usuario_id || dados.usuario?.id),
+    usuario_nome: texto(dados.usuario_nome || dados.usuario?.nome || dados.usuario),
+    observacao: texto(dados.observacao || dados.justificativa || dados.observacao_aprovacao),
+    status_anterior: statusAnterior,
+    status_novo: statusNovo,
+  };
+}
+
+async function aplicarTransicaoGestao(id, transicao = {}) {
+  const supabase = supabaseOrThrow();
+  const tabela = await obterTabelaNegociacao(id);
+  const historico = getHistoricoGestao(tabela);
+  const evento = montarEventoGestao(transicao.tipo, tabela, transicao);
+  const statusGestao = transicao.status_gestao || normalizarStatusGestao(tabela);
+  const statusLegado = statusLegadoPorGestao(statusGestao);
+
+  const payload = {
+    status_gestao: statusGestao,
+    status: statusLegado,
+    status_aprovacao: transicao.status_aprovacao,
+    historico_gestao: historico.concat([evento]).slice(-100),
+    negociador_id: transicao.negociador_id !== undefined ? texto(transicao.negociador_id) : undefined,
+    negociador_nome: transicao.negociador_nome !== undefined ? texto(transicao.negociador_nome) : undefined,
+    aprovador_id: transicao.aprovador_id !== undefined ? texto(transicao.aprovador_id) : undefined,
+    aprovador_nome: transicao.aprovador_nome !== undefined ? texto(transicao.aprovador_nome) : undefined,
+    aprovado_em: transicao.aprovado_em,
+    publicado_em: transicao.publicado_em,
+    enviado_aprovacao_em: transicao.enviado_aprovacao_em,
+    observacao_aprovacao: transicao.observacao_aprovacao !== undefined ? texto(transicao.observacao_aprovacao) : undefined,
+    justificativa_aprovacao: transicao.justificativa_aprovacao !== undefined ? texto(transicao.justificativa_aprovacao) : undefined,
+    usuario_aprovacao: transicao.usuario_aprovacao !== undefined ? texto(transicao.usuario_aprovacao) : undefined,
+    data_aprovacao: transicao.data_aprovacao,
+    data_inicio_vigencia: transicao.data_inicio_vigencia,
+    substituir_tabela_anterior: transicao.substituir_tabela_anterior,
+  };
+
+  Object.keys(payload).forEach((key) => {
+    if (payload[key] === undefined) delete payload[key];
+  });
+
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) throw new Error(error.message || 'Erro ao atualizar gestão da negociação.');
+  return data;
+}
+
+export async function enviarParaAprovacaoGestor(id, dados = {}) {
+  const tabela = await obterTabelaNegociacao(id);
+  const statusAtual = normalizarStatusGestao(tabela);
+  if (['PUBLICADA_OFICIAL', 'CANCELADA', 'AGUARDANDO_APROVACAO_GESTOR'].includes(statusAtual)) {
+    throw new Error('Esta negociação não pode ser enviada para aprovação no status atual.');
+  }
+
+  return aplicarTransicaoGestao(id, {
+    tipo: 'ENVIO_APROVACAO',
+    status_gestao: 'AGUARDANDO_APROVACAO_GESTOR',
+    status_aprovacao: 'AGUARDANDO_GESTOR',
+    enviado_aprovacao_em: dataISO(),
+    ...dados,
+  });
+}
+
+export async function aprovarGestorNegociacao(id, dados = {}) {
+  const supabase = supabaseOrThrow();
+  const agora = dataISO();
+  const tabelaAtual = await obterTabelaNegociacao(id);
+  const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
+  const historicoAnterior = getHistoricoRodadas(tabelaAtual);
+  const impactoAtual = calcularImpactoResultado(tabelaAtual?.resultado_simulacao_json || resumoAnterior || {}, tabelaAtual || {});
+
+  const entradaAprovacao = {
+    id: `APROVACAO-GESTOR-${Date.now()}`,
+    tipo_registro: 'APROVACAO_GESTOR',
+    rodada: inteiro(resumoAnterior.rodada_atual || 1) || 1,
+    criado_em: agora,
+    data_inicio_vigencia: dados.data_inicio_vigencia || null,
+    usuario_aprovacao: texto(dados.aprovador_nome || dados.usuario?.nome || dados.usuario_aprovacao),
+    observacao: dados.observacao_aprovacao || dados.justificativa_aprovacao || '',
+    percentual_medio_impacto: numero(dados.percentual_medio_impacto ?? impactoAtual.impactoPercentual),
+  };
+
+  const eventoGestao = montarEventoGestao('APROVACAO_GESTOR', tabelaAtual, {
+    ...dados,
+    status_gestao: 'APROVADA_GESTOR',
+    observacao: dados.observacao_aprovacao || dados.justificativa_aprovacao,
+  });
+
+  const payload = {
+    status_gestao: 'APROVADA_GESTOR',
+    status: 'APROVADA',
+    status_aprovacao: 'APROVADA',
+    aprovado_em: agora,
+    data_aprovacao: agora,
+    data_inicio_vigencia: dados.data_inicio_vigencia || null,
+    justificativa_aprovacao: texto(dados.justificativa_aprovacao),
+    usuario_aprovacao: texto(dados.aprovador_nome || dados.usuario?.nome || dados.usuario_aprovacao),
+    observacao_aprovacao: texto(dados.observacao_aprovacao || dados.justificativa_aprovacao),
+    aprovador_id: texto(dados.aprovador_id || dados.usuario?.id),
+    aprovador_nome: texto(dados.aprovador_nome || dados.usuario?.nome || dados.usuario_aprovacao),
+    substituir_tabela_anterior: Boolean(dados.substituir_tabela_anterior),
+    percentual_medio_impacto: numero(dados.percentual_medio_impacto ?? impactoAtual.impactoPercentual),
+    incluir_simulacao: false,
+    historico_gestao: getHistoricoGestao(tabelaAtual).concat([eventoGestao]).slice(-100),
+    resumo_simulacao: {
+      ...resumoAnterior,
+      aprovada_em: agora,
+      ultima_aprovacao: entradaAprovacao,
+      historico_rodadas: historicoAnterior.concat([entradaAprovacao]).slice(-30),
+    },
+  };
+
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) throw new Error(error.message || 'Erro ao aprovar negociação pelo gestor.');
+  return data;
+}
+
+export async function recusarGestorNegociacao(id, dados = {}) {
+  if (!texto(dados.observacao || dados.justificativa)) {
+    throw new Error('Informe o motivo da recusa.');
+  }
+  return aplicarTransicaoGestao(id, {
+    tipo: 'RECUSA_GESTOR',
+    status_gestao: 'RECUSADA',
+    status_aprovacao: 'RECUSADA',
+    ...dados,
+  });
+}
+
+export async function devolverParaAjusteNegociacao(id, dados = {}) {
+  if (!texto(dados.observacao || dados.justificativa)) {
+    throw new Error('Informe o motivo da devolução.');
+  }
+  return aplicarTransicaoGestao(id, {
+    tipo: 'DEVOLUCAO_AJUSTE',
+    status_gestao: 'DEVOLVIDA_AJUSTE',
+    status_aprovacao: 'DEVOLVIDA',
+    ...dados,
+  });
+}
+
+export async function solicitarComplementoNegociacao(id, dados = {}) {
+  return aplicarTransicaoGestao(id, {
+    tipo: 'SOLICITAR_COMPLEMENTO',
+    status_gestao: 'EM_ANALISE',
+    status_aprovacao: 'COMPLEMENTO_SOLICITADO',
+    ...dados,
+  });
+}
+
+export async function publicarNegociacaoNaBaseOficial(id, dados = {}) {
+  const tabela = await obterTabelaNegociacao(id);
+  if (!podePublicarOficial(tabela)) {
+    throw new Error('Somente negociações aprovadas pelo gestor podem ser publicadas na base oficial.');
+  }
+
+  const promocaoOficial = await promoverTabelaNegociacaoParaOficialInterno(id, dados);
+  const agora = dataISO();
+
+  const atualizada = await aplicarTransicaoGestao(id, {
+    tipo: 'PUBLICACAO_OFICIAL',
+    status_gestao: 'PUBLICADA_OFICIAL',
+    status_aprovacao: 'PUBLICADA',
+    publicado_em: agora,
+    data_inicio_vigencia: dados.data_inicio_vigencia || tabela.data_inicio_vigencia || null,
+    substituir_tabela_anterior: Boolean(dados.substituir_tabela_anterior),
+    observacao: texto(dados.observacao) || 'Publicada na base oficial',
+    ...dados,
+  });
+
+  const resumoAnterior = getResumoSimulacaoSeguro(atualizada);
+  const historicoAnterior = getHistoricoRodadas(atualizada);
+  const entradaAprovacao = {
+    id: `PROMOCAO-${Date.now()}`,
+    tipo_registro: 'PROMOCAO_OFICIAL',
+    rodada: inteiro(resumoAnterior.rodada_atual || 1) || 1,
+    criado_em: agora,
+    data_inicio_vigencia: dados.data_inicio_vigencia || null,
+    usuario_aprovacao: texto(dados.usuario?.nome || dados.usuario_aprovacao),
+    observacao: dados.observacao || '',
+    promocao_oficial: promocaoOficial,
+  };
+
+  return atualizarTabelaNegociacao(id, {
+    status: 'PROMOVIDA PARA OFICIAL',
+    incluir_simulacao: false,
+    nova_tabela_aprovada_snapshot: promocaoOficial,
+    resumo_simulacao: {
+      ...resumoAnterior,
+      promocao_oficial: promocaoOficial,
+      ultima_aprovacao: entradaAprovacao,
+      historico_rodadas: historicoAnterior.concat([entradaAprovacao]).slice(-30),
+    },
+  });
+}
+
+export async function garantirNegociadorAoAbrir(id, usuario = {}) {
+  if (!id || !usuario?.id) return null;
+  const tabela = await obterTabelaNegociacao(id);
+  if (texto(tabela.negociador_id) || texto(tabela.negociador_nome)) return tabela;
+
+  return atualizarNegociadorResponsavel(id, {
+    negociador_id: texto(usuario.id),
+    negociador_nome: texto(usuario.nome),
+    observacao: 'Negociador atribuído ao abrir a negociação',
+    usuario,
+  });
+}
+
+export async function atualizarNegociadorResponsavel(id, dados = {}) {
+  const tabela = await obterTabelaNegociacao(id);
+  const historico = getHistoricoGestao(tabela);
+  const evento = montarEventoGestao('ALTERACAO_NEGOCIADOR', tabela, {
+    ...dados,
+    observacao: texto(dados.observacao) || `Negociador alterado para ${texto(dados.negociador_nome)}`,
+  });
+
+  return atualizarTabelaNegociacao(id, {
+    negociador_id: texto(dados.negociador_id),
+    negociador_nome: texto(dados.negociador_nome),
+    historico_gestao: historico.concat([evento]).slice(-100),
+  });
+}
+
+export async function marcarAprovadaNegociador(id, dados = {}) {
+  return aplicarTransicaoGestao(id, {
+    tipo: 'APROVACAO_NEGOCIADOR',
+    status_gestao: 'APROVADA_NEGOCIADOR',
+    status_aprovacao: 'APROVADA_NEGOCIADOR',
+    ...dados,
+  });
 }

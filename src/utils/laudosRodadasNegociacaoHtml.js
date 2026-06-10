@@ -1,3 +1,6 @@
+import { classificarCteNaGrade } from './paretoReajuste.js';
+import { carregarGradeFrete, normalizarGradeFrete } from './gradeFreteConfig.js';
+
 function dinheiro(valor) {
   return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
@@ -152,48 +155,65 @@ function getUfDestino(item = {}) {
   return upper(item.ufDestino || item.uf_destino || item.uf || item.destinoUf || item.destino_uf || item.estadoDestino || item.estado_destino) || '-';
 }
 
-const FAIXAS_B2C_OFICIAIS = [
-  { min: 0, max: 2, label: '0 a 2 kg' },
-  { min: 2, max: 5, label: '2 a 5 kg' },
-  { min: 5, max: 10, label: '5 a 10 kg' },
-  { min: 10, max: 20, label: '10 a 20 kg' },
-  { min: 20, max: 30, label: '20 a 30 kg' },
-  { min: 30, max: 50, label: '30 a 50 kg' },
-  { min: 50, max: 70, label: '50 a 70 kg' },
-  { min: 70, max: 100, label: '70 a 100 kg' },
-  { min: 100, max: Infinity, label: 'Acima de 100 kg' },
-];
+function gradeDoContexto(resumo = {}, opcoes = {}) {
+  if (opcoes.grade) return normalizarGradeFrete(opcoes.grade);
+  if (resumo.gradeFrete) return normalizarGradeFrete(resumo.gradeFrete);
+  return carregarGradeFrete();
+}
 
-function normalizarFaixaB2C(valor) {
+function opcoesFaixaDoResumo(resumo = {}, opcoesExtras = {}) {
+  return {
+    resumo,
+    grade: gradeDoContexto(resumo, opcoesExtras),
+    canalPadrao: opcoesExtras.canalPadrao || resumo.canal || resumo.filtros?.canal || '',
+  };
+}
+
+function qtdCtesItem(item = {}) {
+  return n(item.ctes || item.qtd || item.qtdCtes || item.qtdAnalisados || item.qtdGanhasSelecionada || item.qtdPerdidasSelecionada || 0);
+}
+
+function pesoConsideradoCte(item = {}) {
+  const valores = [
+    item.peso, item.pesoRealizado, item.peso_realizado, item.pesoCte, item.peso_cte,
+    item.pesoCobrado, item.peso_cobrado, item.pesoCubado, item.peso_cubado,
+    item.pesoTaxado, item.peso_taxado, item.pesoDeclarado, item.peso_declarado,
+    item.pesoFinalCalculado, item.peso_final_calculado, item.pesoMedio, item.peso_medio,
+  ].map((v) => n(v));
+  return Math.max(...valores, 0);
+}
+
+function pesoUnitarioCte(item = {}) {
+  const peso = pesoConsideradoCte(item);
+  const qtd = qtdCtesItem(item);
+  if (qtd > 1 && peso > 0) return peso / qtd;
+  if (peso > 0) return peso;
+  const pesoTotal = n(item.pesoTotal || item.peso_total);
+  const divisor = qtd || 1;
+  if (pesoTotal > 0) return pesoTotal / divisor;
+  return 0;
+}
+
+function faixaExplicitaPeso(valor) {
   const raw = texto(valor);
-  if (!raw) return '';
-  const s = raw.toLowerCase().replace(',', '.');
-  const nums = s.match(/\d+(?:\.\d+)?/g) || [];
-  if ((s.includes('acima') || s.includes('+')) && nums.length) {
-    const base = Number(nums[0]);
-    if (base >= 100) return 'Acima de 100 kg';
-  }
-  if (nums.length >= 2) {
-    const ini = Number(nums[0]);
-    const fim = Number(nums[1]);
-    const achou = FAIXAS_B2C_OFICIAIS.find((f) => Number.isFinite(f.max) && Math.abs(f.min - ini) < 0.01 && Math.abs(f.max - fim) < 0.01);
-    return achou ? achou.label : '';
+  if (!raw || /^rota$/i.test(raw)) return '';
+  if (/\|/.test(raw) && !/\d+\s*(?:a|ate|até|-)\s*\d+/i.test(raw)) return '';
+  const lower = raw.toLowerCase();
+  if (/\d/.test(raw) && (lower.includes('kg') || lower.includes('acima') || /\d+\s*(?:a|ate|até|-)\s*\d+/i.test(raw))) {
+    return raw;
   }
   return '';
 }
 
-function mapearPesoParaFaixa(peso) {
-  if (!peso || peso <= 0) return 'Sem faixa';
-  const faixa = FAIXAS_B2C_OFICIAIS.find((f) => peso > f.min && peso <= f.max);
-  return faixa ? faixa.label : 'Acima de 100 kg';
-}
-
-function pesoIndividualCte(item = {}) {
-  return n(
-    item.pesoRealizado || item.peso_realizado || item.pesoCte || item.peso_cte || item.pesoCobrado || item.peso_cobrado ||
-    item.pesoCubado || item.peso_cubado || item.pesoTaxado || item.peso_taxado || item.pesoDeclarado || item.peso_declarado ||
-    item.pesoFinalCalculado || item.peso_final_calculado || item.pesoMedio || item.peso_medio || item.peso
-  );
+function classificarFaixaPeso(item = {}, opcoes = {}) {
+  const peso = pesoUnitarioCte(item);
+  if (peso <= 0) return 'Sem faixa';
+  const canalPadrao = opcoes.canalPadrao || '';
+  return classificarCteNaGrade(
+    { ...item, peso, canal: item.canal || canalPadrao },
+    opcoes.grade || gradeDoContexto(opcoes.resumo || {}, opcoes),
+    canalPadrao,
+  ).peso;
 }
 
 function itemTemIdentificadorOperacional(item = {}) {
@@ -204,37 +224,24 @@ function itemTemIdentificadorOperacional(item = {}) {
   );
 }
 
-function itemTemFaixaB2CConfiavel(item = {}) {
-  const faixa = normalizarFaixaB2C(item.faixaPeso || item.faixa_peso || item.faixa || item.pesoFaixa || item.faixa_peso_padrao);
-  return Boolean(faixa);
-}
-
 function itemPareceLinhaAgregada(item = {}) {
-  const qtd = n(item.ctes || item.qtd || item.qtdCtes || item.qtdAnalisados || item.qtdGanhasSelecionada || item.qtdPerdidasSelecionada || item.ctesGanhos || item.ctesPerdidos);
-  if (qtd > 1 && !itemTemFaixaB2CConfiavel(item)) return true;
-  if ((item.rota || item.nomeRota || item.cotacao || item.cotacaoFinal) && qtd > 1 && !itemTemFaixaB2CConfiavel(item)) return true;
+  const qtd = qtdCtesItem(item) || n(item.ctesGanhos) + n(item.ctesPerdidos);
+  if (qtd > 1 && !item.chaveCte && !item.cte && !item.numeroCte) return true;
+  if ((item.rota || item.nomeRota || item.cotacao || item.cotacaoFinal) && qtd > 1 && !item.chaveCte && !item.cte) return true;
   return false;
 }
 
-function itemValidoParaFaixaB2C(item = {}) {
+function itemValidoParaFaixa(item = {}, opcoes = {}) {
   if (!item || typeof item !== 'object') return false;
-  if (itemTemFaixaB2CConfiavel(item)) return true;
   if (itemPareceLinhaAgregada(item)) return false;
-  return itemTemIdentificadorOperacional(item) && pesoIndividualCte(item) > 0;
+  return itemTemIdentificadorOperacional(item) || pesoUnitarioCte(item) > 0 || Boolean(faixaExplicitaPeso(item.faixaPeso || item.faixa_peso));
 }
 
-function getFaixa(item = {}) {
-  // 1. faixa explícita no campo
-  const direta = normalizarFaixaB2C(item.faixaPeso || item.faixa_peso || item.faixa || item.pesoFaixa || item.faixa_peso_padrao);
-  if (direta) return direta;
-  // 2. peso individual do CT-e
-  const pesoUnit = pesoIndividualCte(item);
-  if (pesoUnit > 0) return mapearPesoParaFaixa(pesoUnit);
-  // 3. fallback: peso total / quantidade de CT-es (nunca usa peso total somado diretamente)
-  const qtd = n(item.ctes || item.qtd || item.qtdCtes || 1) || 1;
-  const pesoTotalCampo = n(item.pesoTotal || item.peso_total);
-  if (pesoTotalCampo > 0 && qtd > 0) return mapearPesoParaFaixa(pesoTotalCampo / qtd);
-  return 'Sem faixa';
+function getFaixa(item = {}, opcoes = {}) {
+  const viaPeso = classificarFaixaPeso(item, opcoes);
+  if (viaPeso !== 'Sem faixa') return viaPeso;
+  const explicita = faixaExplicitaPeso(item.faixaPeso || item.faixa_peso || item.faixa || item.pesoFaixa || item.faixa_peso_padrao);
+  return explicita || 'Sem faixa';
 }
 
 function isGanha(item = {}) {
@@ -267,6 +274,90 @@ function reducaoItem(item = {}) {
   return n(item.reducaoMediaNecessaria || item.reducaoNecessaria || item.percentualReducaoNecessaria || item.diferencaPercentual || item.gapPercentual);
 }
 
+function percentualFreteSobreNf(frete, valorNf) {
+  const nf = n(valorNf);
+  const valorFrete = n(frete);
+  return nf > 0 && valorFrete > 0 ? (valorFrete / nf) * 100 : 0;
+}
+
+function itemGanhoAjuste(item = {}) {
+  if (item.statusSelecionada === 'Ganharia') return true;
+  if (item.statusSelecionada === 'Perderia') return false;
+  if (item.ganhouRealizado === true) return true;
+  if (item.perdeuRealizado === true) return false;
+  return isGanha(item) && !isPerdida(item);
+}
+
+function ajusteItemCte(item = {}) {
+  const ganha = itemGanhoAjuste(item);
+  const reducao = reducaoItem(item);
+  const freteReal = n(item.freteRealizado || item.valorCte || item.valorCTe);
+  const freteTabela = n(item.freteSelecionada || item.freteTabelaSelecionada);
+  const valorNf = n(item.valorNF || item.valor_nf);
+
+  if (!ganha) {
+    if (reducao > 0) return reducao;
+    if (freteTabela > 0 && n(item.diferencaParaVencedor) > 0) {
+      return (n(item.diferencaParaVencedor) / freteTabela) * 100;
+    }
+    const referencias = [freteReal, n(item.freteVencedor)].filter((v) => v > 0);
+    const menorRef = referencias.length ? Math.min(...referencias) : 0;
+    if (freteTabela > 0 && menorRef > 0 && freteTabela > menorRef) {
+      return ((freteTabela - menorRef) / freteTabela) * 100;
+    }
+    return 0;
+  }
+
+  const variacaoSalva = n(item.variacaoPctFreteSelecionada || item.variacao_pct_frete_selecionada);
+  if (variacaoSalva) return Math.abs(variacaoSalva);
+
+  const pctReal = n(item.percentualFreteRealizado || item.percentual_frete_realizado)
+    || (valorNf > 0 && freteReal > 0 ? percentualFreteSobreNf(freteReal, valorNf) : 0);
+  const pctTabela = n(item.percentualFreteSelecionada || item.percentual_frete_selecionada || item.percentualFreteSimulado || item.percentual_frete_simulado)
+    || (valorNf > 0 && freteTabela > 0 ? percentualFreteSobreNf(freteTabela, valorNf) : 0);
+  if (pctReal > 0 && pctTabela > 0) return Math.abs(pctReal - pctTabela);
+
+  if (freteReal > 0 && freteTabela > 0) {
+    return Math.abs(((freteTabela - freteReal) / freteReal) * 100);
+  }
+  return 0;
+}
+
+function acumularAjusteMedio(acc, item, peso = 1) {
+  const qtd = Math.max(n(peso), 1);
+  const ajuste = ajusteItemCte(item);
+  if (!ajuste) return;
+  acc.reducaoSoma += ajuste * qtd;
+  acc.reducaoQtd += qtd;
+}
+
+/** No Pareto, redução média = só CT-es perdidos (potencial a recuperar). */
+function acumularReducaoPerdidos(acc, item, qtdPerdida = 0) {
+  const qtd = Math.max(n(qtdPerdida), 0);
+  if (!qtd) return;
+  const reducao = reducaoItem(item);
+  let ajuste = reducao;
+  if (!ajuste) {
+    const freteSel = n(item.freteSelecionada);
+    if (freteSel > 0 && n(item.diferencaParaVencedor) > 0) {
+      ajuste = (n(item.diferencaParaVencedor) / freteSel) * 100;
+    }
+  }
+  if (!ajuste) return;
+  acc.reducaoSoma += ajuste * qtd;
+  acc.reducaoQtd += qtd;
+}
+
+function finalizarLinhaPareto(item = {}) {
+  const base = n(item.ctesGanhos) + n(item.ctesPerdidos) || n(item.ctes) || n(item.ctesAnalisados);
+  return {
+    ...item,
+    aderencia: base ? (n(item.ctesGanhos) / base) * 100 : 0,
+    ajusteMedio: item.reducaoQtd ? item.reducaoSoma / item.reducaoQtd : 0,
+    prioridade: n(item.ctesPerdidos) || n(item.faturamentoNaoCapturado) ? 'ALTA' : 'BAIXA',
+  };
+}
+
 // CORRIGIDO: extrai ganhos/perdidos sem dupla contagem.
 // Se o item já traz ctesGanhos/ctesPerdidos como campos numéricos diretos (linha agregada),
 // usa direto. Se é linha individual (CT-e único), usa isGanha/isPerdida.
@@ -285,7 +376,7 @@ function extrairContagemItem(item) {
   return { qtdAnalisada, qtdGanha, qtdPerdida };
 }
 
-function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}) {
+function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}, opcoesFaixa = {}) {
   if (!mapa.has(chave)) {
     mapa.set(chave, {
       chave,
@@ -293,7 +384,7 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}) {
       destino: texto(item.destino || item.cidadeDestino || item.cidade_destino || item.ufDestino || item.uf_destino),
       ufDestino: getUfDestino(item),
       rota: texto(item.nomeRota || item.nomeRotaCotacao || item.cotacaoComercial || item.rotaCotacao || item.rota || item.cotacao || item.cotacaoFinal || item.faixaCotacao || item.regiao || item.nome) || chave,
-      faixa: getFaixa(item),
+      faixa: getFaixa(item, opcoesFaixa),
       ctesAnalisados: 0,
       ctesGanhos: 0,
       ctesPerdidos: 0,
@@ -313,7 +404,6 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}) {
   const volumes = n(item.volumes || item.qtdVolumes || item.volumesCapturados || item.volumesGanhas);
   const potencial = valorPotencial(item);
   const capturado = qtdGanha > 0 ? valorCapturado(item) : 0;
-  const reducao = reducaoItem(item);
 
   acc.ctesAnalisados += qtdAnalisada;
   acc.ctesGanhos += qtdGanha;
@@ -321,13 +411,10 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}) {
   acc.volumes += volumes;
   acc.faturamentoPotencial += potencial;
   acc.faturamentoCapturado += capturado;
-  if (reducao && qtdPerdida > 0) {
-    acc.reducaoSoma += reducao * qtdPerdida;
-    acc.reducaoQtd += qtdPerdida;
-  }
+  acumularAjusteMedio(acc, item, qtdAnalisada);
 
   if (!acc.ufDestino || acc.ufDestino === '-') acc.ufDestino = getUfDestino(item);
-  if (!acc.faixa || acc.faixa === 'Sem faixa') acc.faixa = getFaixa(item);
+  if (!acc.faixa || acc.faixa === 'Sem faixa') acc.faixa = getFaixa(item, opcoesFaixa);
   if (!acc.origem) acc.origem = texto(item.origem || item.cidadeOrigem || item.cidade_origem || rodadaIndicadores.origem);
 }
 
@@ -356,6 +443,11 @@ function finalizarAgrupados(lista = []) {
   });
 }
 
+function extrairCtesIndividuaisResumo(resumo = {}) {
+  const candidatos = [resumo.ctesDetalhes, resumo.detalhes, resumo.linhasDetalhe];
+  return candidatos.reduce((acc, lista) => Array.isArray(lista) ? acc.concat(lista) : acc, []);
+}
+
 function extrairDetalhesResumo(resumo = {}) {
   const candidatos = [
     resumo.ctesDetalhes,
@@ -380,24 +472,25 @@ function extrairDetalhesOperacionais(resumo = {}) {
   return candidatos.reduce((acc, lista) => Array.isArray(lista) ? acc.concat(lista) : acc, []);
 }
 
-function extrairDetalhesFaixaB2C(resumo = {}) {
-  const candidatos = [resumo.ctesDetalhes, resumo.detalhes, resumo.linhasDetalhe];
-  return candidatos
-    .reduce((acc, lista) => Array.isArray(lista) ? acc.concat(lista) : acc, [])
-    .filter(itemValidoParaFaixaB2C)
-    .filter((item) => getFaixa(item) !== 'Sem faixa');
+function extrairDetalhesFaixaB2C(resumo = {}, opcoesFaixa = {}) {
+  return extrairCtesIndividuaisResumo(resumo)
+    .filter((item) => itemValidoParaFaixa(item, opcoesFaixa))
+    .filter((item) => getFaixa(item, opcoesFaixa) !== 'Sem faixa');
 }
 
 function agruparDetalhes(simulacao, agrupador, opcoes = {}) {
   const resumo = getResumoRodada(simulacao);
   const ind = getIndicadoresRodada(simulacao);
-  const detalhes = opcoes.somenteFaixaB2C ? extrairDetalhesFaixaB2C(resumo) : extrairDetalhesOperacionais(resumo);
+  const opcoesFaixa = opcoesFaixaDoResumo(resumo, opcoes);
+  const detalhes = opcoes.somenteFaixaB2C
+    ? extrairDetalhesFaixaB2C(resumo, opcoesFaixa)
+    : extrairDetalhesOperacionais(resumo);
   const mapa = new Map();
 
   detalhes.forEach((item) => {
-    const chave = agrupador(item);
+    const chave = agrupador(item, opcoesFaixa);
     if (!chave || chave === 'Sem faixa' || chave === '-') return;
-    agregarRegistro(mapa, chave, item, ind);
+    agregarRegistro(mapa, chave, item, ind, opcoesFaixa);
   });
 
   return finalizarAgrupados(Array.from(mapa.values()));
@@ -423,8 +516,8 @@ function chaveDestinoAnalitico(item = {}) {
   return [origem || 'Origem', cidade || 'Destino', ufDestino].filter(Boolean).join(' > ');
 }
 
-function chaveFaixaB2CAnalitica(item = {}) {
-  const faixa = getFaixa(item);
+function chaveFaixaB2CAnalitica(item = {}, opcoesFaixa = {}) {
+  const faixa = getFaixa(item, opcoesFaixa);
   if (!faixa || faixa === 'Sem faixa') return 'Sem faixa';
   return chaveDestinoAnalitico(item) + ' | ' + faixa;
 }
@@ -468,6 +561,12 @@ function agruparPorDestino(simulacao) {
 
 function agruparPorFaixaB2C(simulacao) {
   return agruparDetalhes(simulacao, chaveFaixaB2CAnalitica, { somenteFaixaB2C: true });
+}
+
+function agruparSomentePorFaixa(simulacao) {
+  const resumo = getResumoRodada(simulacao);
+  const opcoesFaixa = opcoesFaixaDoResumo(resumo);
+  return agruparDetalhes(simulacao, (item, op) => getFaixa(item, op), { somenteFaixaB2C: true, ...opcoesFaixa });
 }
 
 function compararRotas(primeira, ultima) {
@@ -518,42 +617,32 @@ function compararGenerico(primeira, ultima, agrupador) {
   });
 }
 
-function calcularParetoCidadesSalvos(simulacao) {
-  const resumo = getResumoRodada(simulacao);
-  const detalhes = Array.isArray(resumo.ctesDetalhes) ? resumo.ctesDetalhes : [];
-  if (!detalhes.length) return [];
-  const mapa = new Map();
-  detalhes.forEach((item) => {
-    const cidade = texto(item.destino || item.cidadeDestino || '');
-    const uf = upper(item.ufDestino || '');
-    if (!cidade && !uf) return;
-    const chave = cidade + '|' + uf;
-    if (!mapa.has(chave)) mapa.set(chave, { cidade, ufDestino: uf, ctes: 0, volumes: 0, freteRealizado: 0, ctesGanhos: 0, ctesPerdidos: 0, faturamentoNaoCapturado: 0 });
-    const acc = mapa.get(chave);
-    acc.ctes += 1;
-    acc.volumes += n(item.volumes);
-    acc.freteRealizado += n(item.freteRealizado);
-    if (item.statusSelecionada === 'Ganharia' || item.ganhouRealizado === true) acc.ctesGanhos += 1;
-    if (item.statusSelecionada === 'Perderia' || item.perdeuRealizado === true) {
-      acc.ctesPerdidos += 1;
-      acc.faturamentoNaoCapturado += n(item.diferencaParaVencedor || item.freteRealizado);
-    }
-  });
-  const lista = Array.from(mapa.values());
-  const totalVolume = lista.reduce((acc, item) => acc + (item.volumes || item.ctes), 0);
-  if (!totalVolume) return [];
-  const ordenada = lista.map((item) => ({ ...item, volumePareto: item.volumes || item.ctes })).sort((a, b) => b.volumePareto - a.volumePareto);
+function pesoParetoItem(item = {}, metrica = 'volumes') {
+  if (metrica === 'ctes') return n(item.ctes || item.ctesAnalisados || item.qtd || 1) || 1;
+  return n(item.volumes || item.ctes || item.ctesAnalisados || 1) || 1;
+}
+
+function aplicarCortePareto80(lista = [], { metrica = 'volumes', fallback = 20 } = {}) {
+  const ordenada = [...lista].sort((a, b) => pesoParetoItem(b, metrica) - pesoParetoItem(a, metrica));
+  const total = ordenada.reduce((acc, item) => acc + pesoParetoItem(item, metrica), 0);
+  if (!total) return [];
   let acumulado = 0;
-  const resultado = [];
-  for (const item of ordenada) {
-    acumulado += item.volumePareto;
-    const pctVolume = totalVolume ? (item.volumePareto / totalVolume) * 100 : 0;
-    const pctAcumulado = totalVolume ? (acumulado / totalVolume) * 100 : 0;
-    const base = item.ctesGanhos + item.ctesPerdidos;
-    resultado.push({ ...item, pctVolume, pctAcumulado, aderencia: base ? (item.ctesGanhos / base) * 100 : 0 });
-    if (pctAcumulado >= 80) break;
-  }
-  return resultado;
+  const enriquecida = ordenada.map((item) => {
+    const peso = pesoParetoItem(item, metrica);
+    const pct = total ? (peso / total) * 100 : 0;
+    const antes = acumulado;
+    acumulado += pct;
+    return {
+      ...item,
+      pctVolume: metrica === 'volumes' ? pct : n(item.pctVolume),
+      pctCtes: metrica === 'ctes' ? pct : n(item.pctCtes),
+      pctPareto: pct,
+      pctAcumulado: acumulado,
+      pareto80: antes < 80,
+    };
+  });
+  const pareto = enriquecida.filter((item) => item.pareto80);
+  return pareto.length ? pareto : enriquecida.slice(0, fallback);
 }
 
 function getMesorregiaoLaudo(item = {}) {
@@ -562,18 +651,18 @@ function getMesorregiaoLaudo(item = {}) {
 
 function agruparMesorregiaoFaixa(simulacao) {
   const resumo = getResumoRodada(simulacao);
-  const detalhes = extrairDetalhesResumo(resumo);
+  const opcoesFaixa = opcoesFaixaDoResumo(resumo);
+  const detalhes = extrairCtesIndividuaisResumo(resumo).filter((item) => getFaixa(item, opcoesFaixa) !== 'Sem faixa');
   const mapa = new Map();
   detalhes.forEach((item) => {
     const origem = texto(item.origem || item.cidadeOrigem || item.cidade_origem || 'Origem');
     const ufDestino = getUfDestino(item);
     const mesorregiao = getMesorregiaoLaudo(item);
-    const faixa = getFaixa(item);
+    const faixa = getFaixa(item, opcoesFaixa);
     const chave = [upper(origem), ufDestino, upper(mesorregiao), upper(faixa)].join('|');
     if (!mapa.has(chave)) mapa.set(chave, { chave, origem, ufDestino, mesorregiao, rota: mesorregiao, faixa, ctesAnalisados: 0, ctesGanhos: 0, ctesPerdidos: 0, volumes: 0, faturamentoPotencial: 0, faturamentoCapturado: 0, faturamentoNaoCapturado: 0, reducaoSoma: 0, reducaoQtd: 0, prioridade: 'BAIXA' });
     const acc = mapa.get(chave);
     const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
-    const reducao = reducaoItem(item);
     acc.ctesAnalisados += qtdAnalisada;
     acc.ctesGanhos += qtdGanha;
     acc.ctesPerdidos += qtdPerdida;
@@ -581,7 +670,7 @@ function agruparMesorregiaoFaixa(simulacao) {
     acc.faturamentoPotencial += valorPotencial(item);
     acc.faturamentoCapturado += qtdGanha > 0 ? n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado) : 0;
     acc.faturamentoNaoCapturado += qtdPerdida > 0 ? n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado) : 0;
-    if (reducao && qtdPerdida > 0) { acc.reducaoSoma += reducao * qtdPerdida; acc.reducaoQtd += qtdPerdida; }
+    acumularAjusteMedio(acc, item, qtdAnalisada);
   });
   return finalizarAgrupados(Array.from(mapa.values())).sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos)).slice(0, 30);
 }
@@ -606,7 +695,6 @@ function agruparPorOrigemUf(simulacao) {
       destino: ufDestino, faixa: 'Todas', ctesAnalisados: 0, ctesGanhos: 0, ctesPerdidos: 0, volumes: 0, faturamentoPotencial: 0, faturamentoCapturado: 0, faturamentoNaoCapturado: 0, reducaoSoma: 0, reducaoQtd: 0 });
     const acc = mapa.get(chave);
     const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
-    const reducao = reducaoItem(item);
     acc.ctesAnalisados += qtdAnalisada;
     acc.ctesGanhos += qtdGanha;
     acc.ctesPerdidos += qtdPerdida;
@@ -614,44 +702,37 @@ function agruparPorOrigemUf(simulacao) {
     acc.faturamentoPotencial += valorPotencial(item);
     acc.faturamentoCapturado += qtdGanha > 0 ? n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado) : 0;
     acc.faturamentoNaoCapturado += qtdPerdida > 0 ? n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado) : 0;
-    if (reducao && qtdPerdida > 0) { acc.reducaoSoma += reducao * qtdPerdida; acc.reducaoQtd += qtdPerdida; }
+    acumularAjusteMedio(acc, item, qtdAnalisada);
   });
   return finalizarAgrupados(Array.from(mapa.values())).sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos));
 }
 
 function montarParetoDestinoFaixa(simulacao) {
   const resumo = getResumoRodada(simulacao);
-  const detalhes = extrairDetalhesResumo(resumo);
+  const opcoesFaixa = opcoesFaixaDoResumo(resumo);
+  const detalhes = extrairCtesIndividuaisResumo(resumo).filter((item) => getFaixa(item, opcoesFaixa) !== 'Sem faixa');
   const mapa = new Map();
   detalhes.forEach((item) => {
     const origem = origemLabelLaudo(item);
     const cidade = padraoComercialLaudo(item.destino || item.cidadeDestino || item.cidade_destino || 'DESTINO');
     const ufDestino = getUfDestino(item);
-    // CORRIGIDO: getFaixa usa peso individual do CT-e, não peso acumulado
-    const faixa = getFaixa(item);
+    const faixa = getFaixa(item, opcoesFaixa);
     const chave = [upper(origem), upper(cidade), ufDestino, upper(faixa)].join('|');
     if (!mapa.has(chave)) mapa.set(chave, { chave, origem, destino: cidade, ufDestino, faixa, rotaDestino: origem + ' → ' + cidade + (ufDestino && ufDestino !== '-' ? '/' + ufDestino : ''), ctes: 0, volumes: 0, ctesGanhos: 0, ctesPerdidos: 0, faturamentoCapturado: 0, faturamentoNaoCapturado: 0, reducaoSoma: 0, reducaoQtd: 0 });
     const acc = mapa.get(chave);
     const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
-    const reducao = reducaoItem(item);
     acc.ctes += qtdAnalisada;
     acc.volumes += n(item.volumes || item.qtdVolumes || qtdAnalisada);
     acc.ctesGanhos += qtdGanha;
     acc.ctesPerdidos += qtdPerdida;
     if (qtdGanha > 0) acc.faturamentoCapturado += n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado);
-    if (qtdPerdida > 0) acc.faturamentoNaoCapturado += n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado);
-    if (reducao && qtdPerdida > 0) { acc.reducaoSoma += reducao * qtdPerdida; acc.reducaoQtd += qtdPerdida; }
+    if (qtdPerdida > 0) {
+      acc.faturamentoNaoCapturado += n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado);
+      acumularReducaoPerdidos(acc, item, qtdPerdida);
+    }
   });
-  const totalVolumes = Array.from(mapa.values()).reduce((s, i) => s + n(i.volumes), 0);
-  let acumulado = 0;
-  const lista = Array.from(mapa.values()).sort((a, b) => n(b.volumes) - n(a.volumes) || n(b.ctes) - n(a.ctes)).map((item) => {
-    const pctVolume = totalVolumes ? (n(item.volumes) / totalVolumes) * 100 : 0;
-    const antes = acumulado;
-    acumulado += pctVolume;
-    const base = n(item.ctesGanhos) + n(item.ctesPerdidos) || n(item.ctes);
-    return { ...item, pctVolume, pctAcumulado: acumulado, pareto80: antes < 80, aderencia: base ? (n(item.ctesGanhos) / base) * 100 : 0, ajusteMedio: item.reducaoQtd ? item.reducaoSoma / item.reducaoQtd : 0, prioridade: n(item.ctesPerdidos) || n(item.faturamentoNaoCapturado) ? 'ALTA' : 'BAIXA' };
-  });
-  return (lista.filter((item) => item.pareto80).length ? lista.filter((item) => item.pareto80) : lista.slice(0, 20));
+  const listaBase = Array.from(mapa.values()).map(finalizarLinhaPareto);
+  return aplicarCortePareto80(listaBase, { metrica: 'volumes' });
 }
 
 
@@ -704,36 +785,43 @@ function agruparAnaliseSalvaPorCampo(lista = [], campo = 'rota') {
 
 function montarParetoCidadesVolume(simulacao = {}) {
   const resumo = getResumoRodada(simulacao);
-  const candidatos = [resumo.ctesDetalhes, resumo.detalhes, resumo.linhasDetalhe];
-  const detalhes = candidatos.reduce((acc, lista) => Array.isArray(lista) ? acc.concat(lista) : acc, []);
+  const detalhes = extrairCtesIndividuaisResumo(resumo);
   const mapa = new Map();
   detalhes.forEach((item) => {
     const cidade = padraoComercialLaudo(item.destino || item.cidadeDestino || item.cidade_destino || item.municipioDestino || item.municipio_destino);
     const uf = getUfDestino(item);
     if (!cidade && (!uf || uf === '-')) return;
     const chave = [cidade || 'Destino', uf || '-'].join('|');
-    if (!mapa.has(chave)) mapa.set(chave, { chave, cidade: cidade || 'Destino', ufDestino: uf || '-', ctes: 0, volumes: 0, peso: 0, freteRealizado: 0, valorNF: 0 });
+    if (!mapa.has(chave)) {
+      mapa.set(chave, {
+        chave,
+        cidade: cidade || 'Destino',
+        ufDestino: uf || '-',
+        ctes: 0,
+        volumes: 0,
+        ctesGanhos: 0,
+        ctesPerdidos: 0,
+        faturamentoCapturado: 0,
+        faturamentoNaoCapturado: 0,
+        reducaoSoma: 0,
+        reducaoQtd: 0,
+      });
+    }
     const acc = mapa.get(chave);
-    const qtd = n(item.ctes || item.qtd || item.qtdCtes || 1) || 1;
-    const vols = n(item.volumes || item.qtdVolumes || item.volumesTotal || item.volume) || qtd;
-    acc.ctes += qtd;
+    const { qtdAnalisada, qtdGanha, qtdPerdida } = extrairContagemItem(item);
+    const vols = n(item.volumes || item.qtdVolumes || item.volumesTotal || item.volume) || qtdAnalisada;
+    acc.ctes += qtdAnalisada;
     acc.volumes += vols;
-    acc.peso += n(item.peso || item.pesoRealizado || item.pesoDeclarado || item.pesoCubado);
-    acc.freteRealizado += n(item.freteRealizado || item.valorCte || item.valorCTe || item.faturamentoPotencial);
-    acc.valorNF += n(item.valorNF || item.valor_nf);
+    acc.ctesGanhos += qtdGanha;
+    acc.ctesPerdidos += qtdPerdida;
+    if (qtdGanha > 0) acc.faturamentoCapturado += n(item.freteSelecionada || item.faturamentoCapturado || item.freteRealizado);
+    if (qtdPerdida > 0) {
+      acc.faturamentoNaoCapturado += n(item.faturamentoNaoCapturado || item.diferencaParaVencedor || item.freteRealizado);
+      acumularReducaoPerdidos(acc, item, qtdPerdida);
+    }
   });
-  const totalVolumes = Array.from(mapa.values()).reduce((s, i) => s + n(i.volumes), 0);
-  let acumulado = 0;
-  const lista = Array.from(mapa.values())
-    .sort((a, b) => n(b.volumes) - n(a.volumes) || n(b.ctes) - n(a.ctes))
-    .map((item) => {
-      const pctVolume = totalVolumes ? (n(item.volumes) / totalVolumes) * 100 : 0;
-      const acumuladoAntes = acumulado;
-      acumulado += pctVolume;
-      return { ...item, pctVolume, pctAcumulado: acumulado, pareto80: acumuladoAntes < 80 };
-    });
-  const pareto = lista.filter((item) => item.pareto80);
-  return pareto.length ? pareto : lista.slice(0, 10);
+  const listaBase = Array.from(mapa.values()).map(finalizarLinhaPareto);
+  return aplicarCortePareto80(listaBase, { metrica: 'volumes', fallback: 10 });
 }
 
 
@@ -772,7 +860,7 @@ function cubagemOperacionalItemLaudo(item = {}) {
 }
 
 function pesoOperacionalItemLaudo(item = {}) {
-  return n(item.peso || item.pesoRealizado || item.pesoDeclarado || item.peso_declarado || item.pesoCubado || item.peso_cubado || item.pesoConsiderado);
+  return pesoUnitarioCte(item);
 }
 
 function calcularIndicadorVeiculoOperacionalLaudo({ cubagemDia = 0, pesoDia = 0, cubagemDisponivel = true } = {}) {
@@ -1039,16 +1127,12 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
         .slice(0, 12)
     : [];
 
-  const faixasCriticas = primeira && ultima ? compararGenerico(primeira, ultima, (sim) => agruparDetalhes(sim, getFaixa))
+  const faixasCriticas = primeira && ultima ? compararGenerico(primeira, ultima, agruparSomentePorFaixa)
     .filter((f) => n(f.ctesPerdidos) > 0 || n(f.faturamentoNaoCapturado) > 0)
     .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))
     .slice(0, 12) : [];
 
-  // Pareto de cidades: usa cidadesParetoVolume como fonte única
-  const paretoCidades = ultima ? calcularParetoCidadesSalvos(ultima) : [];
-  // Se calcularParetoCidadesSalvos não trouxe dados (sem ctesDetalhes com statusSelecionada),
-  // usa cidadesParetoVolume como fallback
-  const paretoFinal = paretoCidades.length > 0 ? paretoCidades : cidadesParetoVolume;
+  const paretoFinal = cidadesParetoVolume;
 
   const faixasDetalhadas = ultima ? agruparDetalhes(ultima, chaveRota)
     .sort((a, b) => n(b.faturamentoNaoCapturado) - n(a.faturamentoNaoCapturado) || n(b.ctesPerdidos) - n(a.ctesPerdidos))

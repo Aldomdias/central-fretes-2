@@ -305,6 +305,8 @@ function TabelaEvolucao({ linhas = [], externo, baseMudou = false }) {
             <th className="right">CT-es ganhos</th>
             <th className="right">Volumes</th>
             <th className="right">Aderência</th>
+            <th className="right">% atual</th>
+            <th className="right">Percentual tabela (% da NF)</th>
             <th className="right">Faturamento/mês</th>
             {!externo ? <th className="right">Saving/mês</th> : null}
             <th className="right">Ajuste médio</th>
@@ -319,12 +321,14 @@ function TabelaEvolucao({ linhas = [], externo, baseMudou = false }) {
               <td className="right">{numero(item.ctesGanhos)}</td>
               <td className="right">{numero(item.volumesGanhos)}</td>
               <td className="right">{percentual(item.aderencia)}</td>
+              <td className="right">{percentual(item.percentualFreteReal)}</td>
+              <td className="right">{percentual(item.percentualFreteTabela)}</td>
               <td className="right">{dinheiro(item.faturamentoMes)}</td>
               {!externo ? <td className="right">{dinheiro(item.savingMes)}</td> : null}
               <td className="right">{percentual(item.reducaoMedia)}</td>
             </tr>
           ))}
-          {!linhas.length ? <tr><td colSpan={externo ? 8 : 9}>Nenhuma simulação salva para montar evolução.</td></tr> : null}
+          {!linhas.length ? <tr><td colSpan={externo ? 10 : 11}>Nenhuma simulação salva para montar evolução.</td></tr> : null}
         </tbody>
       </table>
     </div>
@@ -409,10 +413,10 @@ function TabelaDestinoFaixaPareto({ linhas = [] }) {
   return (
     <section className="laudo-rodadas-section">
       <h2>Pareto 80% — Destino x Faixa</h2>
-      <p>Mostra onde o volume está concentrado por origem, destino e faixa de peso.</p>
+      <p>Recorte com ~80% do volume total (ganhos + perdidos) por origem, destino e faixa. O objetivo é mostrar onde está o volume e quanto se perde — redução média só nos CT-es perdidos.</p>
       <div className="laudo-rodadas-table-wrap">
         <table className="laudo-rodadas-table">
-          <thead><tr><th>Origem → Destino/UF</th><th>Faixa</th><th className="right">CT-es</th><th className="right">Volumes</th><th className="right">% volume</th><th className="right">% acumulado</th><th className="right">CT-es ganhos</th><th className="right">CT-es perdidos</th><th className="right">Aderência</th><th className="right">Fat. não capturado</th><th className="right">Ajuste médio</th></tr></thead>
+          <thead><tr><th>Origem → Destino/UF</th><th>Faixa</th><th className="right">CT-es</th><th className="right">Volumes</th><th className="right">% volume</th><th className="right">% acumulado</th><th className="right">CT-es ganhos</th><th className="right">CT-es perdidos</th><th className="right">Aderência</th><th className="right">Fat. não capturado</th><th className="right">Redução média (perdidos)</th></tr></thead>
           <tbody>
             {linhas.map((item, idx) => (
               <tr key={item.chave || idx}>
@@ -420,7 +424,7 @@ function TabelaDestinoFaixaPareto({ linhas = [] }) {
                 <td>{item.faixa || '-'}</td>
                 <td className="right">{numero(item.ctes)}</td>
                 <td className="right">{numero(item.volumes)}</td>
-                <td className="right">{percentual(item.pctVolume)}</td>
+                <td className="right">{percentual(item.pctVolume ?? item.pctPareto)}</td>
                 <td className="right">{percentual(item.pctAcumulado)}</td>
                 <td className="right">{numero(item.ctesGanhos)}</td>
                 <td className="right">{numero(item.ctesPerdidos)}</td>
@@ -457,11 +461,11 @@ function TabelaParetoCidades({ linhas = [] }) {
   return (
     <section className="laudo-rodadas-section">
       <h2>Pareto 80% das cidades por volume total</h2>
-      <p>Cidades que concentram aproximadamente 80% do volume total da última rodada analisada, independentemente de ganho ou perda.</p>
+      <p>Cidades que concentram ~80% do volume total da última rodada (todos os CT-es). Dentro desse recorte aparecem ganhos, perdas e faturamento não capturado — para priorizar onde baixar preço.</p>
       <div className="laudo-rodadas-table-wrap">
         <table className="laudo-rodadas-table">
-          <thead><tr><th>Origem → Destino/UF</th><th className="right">CT-es</th><th className="right">Volumes</th><th className="right">% volume</th><th className="right">% acumulado</th><th className="right">CT-es ganhos</th><th className="right">CT-es perdidos</th><th className="right">Fat. capturado</th><th className="right">Fat. não capturado</th><th className="right">Redução média</th></tr></thead>
-          <tbody>{linhas.map((item) => (<tr key={item.chave || item.rotaDestino || item.cidade}><td><strong>{exibirCidade(item.rotaDestino || [item.origem, item.cidade ? item.cidade + (item.ufDestino ? '/' + item.ufDestino : '') : item.ufDestino].filter(Boolean).join(' → ') || '-')}</strong></td><td className="right">{numero(item.ctes)}</td><td className="right">{numero(item.volumes)}</td><td className="right">{percentual(item.pctVolume)}</td><td className="right">{percentual(item.pctAcumulado)}</td><td className="right">{numero(item.ctesGanhos)}</td><td className="right">{numero(item.ctesPerdidos)}</td><td className="right">{dinheiro(item.faturamentoCapturado || item.freteRealizado)}</td><td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td><td className="right">{percentual(item.ajusteMedio || item.reducaoMedia)}</td></tr>))}</tbody>
+          <thead><tr><th>Origem → Destino/UF</th><th className="right">CT-es</th><th className="right">Volumes</th><th className="right">% volume</th><th className="right">% acumulado</th><th className="right">CT-es ganhos</th><th className="right">CT-es perdidos</th><th className="right">Aderência</th><th className="right">Fat. capturado</th><th className="right">Fat. não capturado</th><th className="right">Redução média (perdidos)</th></tr></thead>
+          <tbody>{linhas.map((item) => (<tr key={item.chave || item.rotaDestino || item.cidade}><td><strong>{exibirCidade(item.rotaDestino || [item.origem, item.cidade ? item.cidade + (item.ufDestino ? '/' + item.ufDestino : '') : item.ufDestino].filter(Boolean).join(' → ') || '-')}</strong></td><td className="right">{numero(item.ctes)}</td><td className="right">{numero(item.volumes)}</td><td className="right">{percentual(item.pctVolume ?? item.pctPareto)}</td><td className="right">{percentual(item.pctAcumulado)}</td><td className="right">{numero(item.ctesGanhos)}</td><td className="right">{numero(item.ctesPerdidos)}</td><td className="right">{percentual(item.aderencia)}</td><td className="right">{dinheiro(item.faturamentoCapturado || item.freteRealizado)}</td><td className="right">{dinheiro(item.faturamentoNaoCapturado)}</td><td className="right">{percentual(item.ajusteMedio || item.reducaoMedia)}</td></tr>))}</tbody>
         </table>
       </div>
     </section>

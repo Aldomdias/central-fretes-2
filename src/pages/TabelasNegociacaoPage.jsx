@@ -21,6 +21,7 @@ import {
   excluirRodadaNegociacao,
   listarItensTabelaNegociacao,
   listarTabelasNegociacao,
+  obterTabelaNegociacao,
   substituirItensTabelaNegociacao,
   listarTaxasDestino,
   salvarTaxaDestino,
@@ -28,9 +29,26 @@ import {
   substituirTaxasDestino,
   salvarGeneralidades,
   simularLotacaoNegociacao,
+  enviarParaAprovacaoGestor,
+  aprovarGestorNegociacao,
+  recusarGestorNegociacao,
+  devolverParaAjusteNegociacao,
+  solicitarComplementoNegociacao,
+  publicarNegociacaoNaBaseOficial,
+  garantirNegociadorAoAbrir,
 } from '../services/tabelasNegociacaoService';
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
+import { carregarSessao } from '../utils/authLocal';
+import { podePublicarOficial, usuarioEhGestor, enriquecerTabelaGestao, getEstadoSimulacaoNegociacao } from '../utils/tabelasNegociacaoGestao';
+import GestaoShell from '../components/tabelasNegociacao/GestaoShell';
+import NegociacaoDetalheCabecalho from '../components/tabelasNegociacao/NegociacaoDetalheCabecalho';
+import {
+  lerEstadoUrlNegociacao,
+  abrirNegociacaoNaUrl,
+  limparNegociacaoDaUrl,
+  escreverEstadoUrlNegociacao,
+} from '../utils/negociacaoUrlState';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -724,6 +742,15 @@ export default function TabelasNegociacaoPage() {
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
   const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
   const [simulandoLotacao, setSimulandoLotacao] = useState(false);
+  const [salvandoGestao, setSalvandoGestao] = useState(false);
+  const [telaAtiva, setTelaAtiva] = useState(function() {
+    return lerEstadoUrlNegociacao().negociacaoId ? 'negociacao' : 'central';
+  });
+  const [carregandoDetalhe, setCarregandoDetalhe] = useState(false);
+  const [abaGestao, setAbaGestao] = useState(function() { return lerEstadoUrlNegociacao().aba; });
+  const urlNegociacaoRef = useRef('');
+  const [urlReopenTick, setUrlReopenTick] = useState(0);
+  const sessao = useMemo(function() { return carregarSessao(); }, []);
 
   const negociacoesMesmaTransportadora = useMemo(function() {
     if (!selecionada) return [];
@@ -956,45 +983,136 @@ export default function TabelasNegociacaoPage() {
 
   useEffect(function() { carregar(); }, []); // eslint-disable-line
 
-  async function abrirTabela(tabela) {
-    setSelecionada(tabela); limparImport(); setErro(''); setSucesso('');
+  useEffect(function() {
+    async function abrirNegociacaoDaUrl() {
+      var estadoUrl = lerEstadoUrlNegociacao();
+      var negociacaoId = estadoUrl.negociacaoId;
+      if (!negociacaoId || urlNegociacaoRef.current === negociacaoId) return;
+      if (carregando) return;
+
+      var alvo = tabelas.find(function(t) { return t.id === negociacaoId; });
+      if (!alvo) {
+        try {
+          alvo = await obterTabelaNegociacao(negociacaoId);
+          setTabelas(function(p) { return p.some(function(t) { return t.id === alvo.id; }) ? p : [alvo].concat(p); });
+        } catch (_e) {
+          setErro('Link inválido ou negociação não encontrada.');
+          limparNegociacaoDaUrl(abaGestao);
+          urlNegociacaoRef.current = '';
+          setTelaAtiva('central');
+          return;
+        }
+      }
+
+      urlNegociacaoRef.current = negociacaoId;
+      await abrirTabela(alvo, { telaNegociacao: true, sincronizarUrl: false });
+    }
+    abrirNegociacaoDaUrl();
+  }, [carregando, tabelas, urlReopenTick]); // eslint-disable-line
+
+  useEffect(function() {
+    function onPopState() {
+      var estadoUrl = lerEstadoUrlNegociacao();
+      setAbaGestao(estadoUrl.aba);
+      if (!estadoUrl.negociacaoId) {
+        urlNegociacaoRef.current = '';
+        setTelaAtiva('central');
+        setSelecionada(null);
+        limparImport();
+        return;
+      }
+      if (!selecionada || selecionada.id !== estadoUrl.negociacaoId) {
+        urlNegociacaoRef.current = '';
+        setUrlReopenTick(function(n) { return n + 1; });
+      }
+    }
+    window.addEventListener('popstate', onPopState);
+    return function() { window.removeEventListener('popstate', onPopState); };
+  }, [selecionada]);
+
+  function handleAbaGestaoChange(aba) {
+    setAbaGestao(aba);
+    if (telaAtiva === 'central') {
+      escreverEstadoUrlNegociacao({ page: 'tabelas-negociacao', negociacaoId: '', aba: aba });
+    }
+  }
+
+  async function abrirTabela(tabela, opcoes = {}) {
+    setSelecionada(tabela);
+    if (opcoes.telaNegociacao) {
+      setTelaAtiva('negociacao');
+      if (opcoes.sincronizarUrl !== false) abrirNegociacaoNaUrl(tabela.id, abaGestao);
+      urlNegociacaoRef.current = tabela.id;
+    }
+    setCarregandoDetalhe(true);
+    limparImport(); setErro(''); setSucesso('');
     setAbaNegoc('importacao');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
+      var tabelaAtual = tabela;
+      if (sessao?.id) {
+        try {
+          var comNegociador = await garantirNegociadorAoAbrir(tabela.id, sessao);
+          if (comNegociador) {
+            tabelaAtual = comNegociador;
+            setSelecionada(comNegociador);
+            setTabelas(function(p) { return p.map(function(i) { return i.id === comNegociador.id ? comNegociador : i; }); });
+          }
+        } catch (_err) {
+          // Colunas de gestão podem ainda não existir no Supabase — segue sem bloquear abertura.
+        }
+      }
       var results = await Promise.all([
-        listarItensTabelaNegociacao(tabela.id),
-        listarTaxasDestino(tabela.id).catch(function() { return []; }),
+        listarItensTabelaNegociacao(tabelaAtual.id),
+        listarTaxasDestino(tabelaAtual.id).catch(function() { return []; }),
       ]);
       var itens = results[0];
       var taxas = results[1];
       setItensSelecionada(itens);
       setTaxasDestino(taxas);
-      setGeneralidades(Object.assign({}, DEFAULT_GENERALIDADES, tabela.generalidades || {}));
-      setInicioVigencia(tabela.data_inicio_prevista || hojeISO());
+      setGeneralidades(Object.assign({}, DEFAULT_GENERALIDADES, tabelaAtual.generalidades || {}));
+      setInicioVigencia(tabelaAtual.data_inicio_prevista || hojeISO());
       setFimVigencia(fimTresAnosISO());
-      if (isLotacaoNegociacao(tabela)) setTipoImportacao('LOTACAO_TRANSPORTADORA');
+      if (isLotacaoNegociacao(tabelaAtual)) setTipoImportacao('LOTACAO_TRANSPORTADORA');
       else if (itens.length > 0 && itens[0].origem_importacao) setTipoImportacao(itens[0].origem_importacao);
     } catch (e) { setErro(e.message || 'Erro ao abrir itens.'); }
+    finally { setCarregandoDetalhe(false); }
   }
 
   async function salvarNovaTabela() {
     setSalvando(true); setErro(''); setSucesso('');
     try {
-      var nova = await criarTabelaNegociacao(form);
+      var nova = await criarTabelaNegociacao(Object.assign({}, form, {
+        usuario: sessao,
+        criado_por: sessao?.id,
+        criado_por_nome: sessao?.nome,
+        negociador_id: sessao?.id,
+        negociador_nome: sessao?.nome,
+      }));
       setSucesso('Tabela criada com sucesso.');
       setForm(Object.assign({}, FORM_VAZIO));
       await carregar();
-      await abrirTabela(nova);
+      await abrirTabela(nova, { telaNegociacao: true });
     } catch (e) { setErro(e.message || 'Erro ao salvar.'); }
     finally { setSalvando(false); }
+  }
+
+  function atualizarTabelaNaLista(atualizada) {
+    if (!atualizada?.id) return;
+    setTabelas(function(p) { return p.map(function(i) { return i.id === atualizada.id ? Object.assign({}, i, atualizada) : i; }); });
+    if (selecionada && selecionada.id === atualizada.id) setSelecionada(function(s) { return Object.assign({}, s, atualizada); });
   }
 
   async function alternarSimulacao(tabela) {
     setErro(''); setSucesso('');
     try {
       var at = await alternarTabelaNegociacaoNaSimulacao(tabela.id, !tabela.incluir_simulacao);
-      setTabelas(function(p) { return p.map(function(i) { return i.id === tabela.id ? at : i; }); });
-      if (selecionada && selecionada.id === tabela.id) setSelecionada(at);
-      setSucesso(at.incluir_simulacao ? 'Marcada para simulação.' : 'Removida da simulação.');
+      atualizarTabelaNaLista(at);
+      if (at.incluir_simulacao) {
+        setSucesso('Disponível no Simulador Realizado. Após salvar a análise, ela sai automaticamente da lista do simulador.');
+      } else {
+        setSucesso('Removida do Simulador. A análise já salva foi preservada na rodada atual.');
+      }
     } catch (e) { setErro(e.message || 'Erro.'); }
   }
 
@@ -1009,15 +1127,25 @@ export default function TabelasNegociacaoPage() {
     }
     setErro(''); setSucesso('');
     try {
+      var estado = getEstadoSimulacaoNegociacao(tabela);
       var at = tabela.incluir_simulacao
         ? tabela
         : await alternarTabelaNegociacaoNaSimulacao(tabela.id, true);
-      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      if (selecionada && selecionada.id === tabela.id) setSelecionada(at);
-      setSucesso(isReajusteNegociacao(at)
-        ? 'Reajuste marcado para simulacao. No Simulador Realizado, selecione esta negociacao; a base sera filtrada pela transportadora base.'
-        : 'Tabela marcada para simulacao. No Simulador Realizado, selecione esta negociacao.');
+      atualizarTabelaNaLista(at);
+      if (estado.temSimulacao) {
+        setSucesso((estado.rodada || getRodadaAtualTabela(at)) + 'ª rodada liberada para simular novamente no Simulador Realizado.');
+      } else if (isReajusteNegociacao(at)) {
+        setSucesso('Reajuste disponível no Simulador Realizado. A base será filtrada pela transportadora base.');
+      } else {
+        setSucesso('Disponível no Simulador Realizado. Após salvar, sairá da lista até clicar em "Simular novamente" ou abrir "+ Nova rodada".');
+      }
     } catch (e) { setErro(e.message || 'Erro ao preparar simulacao.'); }
+  }
+
+  async function gerenciarSimulacaoLista(tabela) {
+    if (!tabela) return;
+    if (tabela.incluir_simulacao) return alternarSimulacao(tabela);
+    return prepararSimulacao(tabela);
   }
 
   async function handleSimularLotacaoNegociacao() {
@@ -1331,10 +1459,16 @@ export default function TabelasNegociacaoPage() {
           ? Object.assign({}, DEFAULT_GENERALIDADES, modalNovaOrigem.generalidades || generalidades || {})
           : Object.assign({}, DEFAULT_GENERALIDADES),
       };
-      var criada = await criarTabelaNegociacao(payload);
+      var criada = await criarTabelaNegociacao(Object.assign({}, payload, {
+        usuario: sessao,
+        criado_por: sessao?.id,
+        criado_por_nome: sessao?.nome,
+        negociador_id: sessao?.id,
+        negociador_nome: sessao?.nome,
+      }));
       setTabelas(function(p) { return [criada].concat((p || []).filter(function(i) { return i.id !== criada.id; })); });
       setModalNovaOrigem(null);
-      await abrirTabela(criada);
+      await abrirTabela(criada, { telaNegociacao: true });
       setSucesso('Nova origem criada para ' + criada.transportadora + '. Importe a tabela desta origem na aba Importação.');
     } catch (e) { setErro(e.message || 'Erro ao criar nova origem.'); }
     finally { setSalvando(false); }
@@ -1357,7 +1491,7 @@ export default function TabelasNegociacaoPage() {
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       await abrirTabela(at);
       setAbaNegoc('importacao');
-      setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Agora importe a nova proposta desta origem.');
+      setSucesso(proximaRodada + 'ª rodada aberta para ' + at.transportadora + '. Já está disponível no Simulador — importe a nova proposta se necessário.');
     } catch (e) { setErro(e.message || 'Erro ao abrir nova rodada.'); }
     finally { setAbrindoRodada(false); }
   }
@@ -1372,11 +1506,12 @@ export default function TabelasNegociacaoPage() {
       data_inicio_vigencia: hojeISO(),
       substituir_tabela_anterior: isReajusteNegociacao(tabela),
       promover_para_oficial: false,
-      usuario_aprovacao: '',
+      usuario_aprovacao: sessao?.nome || '',
       observacao_aprovacao: '',
       justificativa_aprovacao: '',
       tabela_base_id: tabela?.tabela_base_id || '',
       transportadora_base_nome: tabela?.transportadora_base_nome || tabela?.transportadora || '',
+      modo: podePublicarOficial(tabela) && usuarioEhGestor(sessao) ? 'publicar' : 'enviar',
     });
   }
 
@@ -1385,13 +1520,136 @@ export default function TabelasNegociacaoPage() {
     if (!aprovacao.justificativa_aprovacao.trim()) return setErro('Informe uma justificativa.');
     setSalvando(true); setErro(''); setSucesso('');
     try {
-      var at = await aprovarTabelaNegociacao(modalAprovacao.id, aprovacao);
+      var at;
+      if (aprovacao.modo === 'publicar' && podePublicarOficial(modalAprovacao)) {
+        at = await publicarNegociacaoNaBaseOficial(modalAprovacao.id, Object.assign({}, aprovacao, {
+          usuario: sessao,
+          observacao: aprovacao.observacao_aprovacao || aprovacao.justificativa_aprovacao,
+        }));
+        setSucesso('Negociação publicada na base oficial.');
+      } else if (aprovacao.modo === 'aprovar_gestor' && usuarioEhGestor(sessao)) {
+        at = await aprovarGestorNegociacao(modalAprovacao.id, Object.assign({}, aprovacao, {
+          usuario: sessao,
+          aprovador_id: sessao?.id,
+          aprovador_nome: sessao?.nome,
+        }));
+        setSucesso('Negociação aprovada pelo gestor. Use a aba Aprovações para publicar na base oficial.');
+      } else {
+        at = await enviarParaAprovacaoGestor(modalAprovacao.id, {
+          usuario: sessao,
+          observacao: aprovacao.justificativa_aprovacao,
+        });
+        setSucesso('Negociação enviada para aprovação do gestor.');
+      }
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       if (selecionada && selecionada.id === at.id) setSelecionada(at);
       setModalAprovacao(null);
-      setSucesso('Tabela aprovada.');
-    } catch (e) { setErro(e.message || 'Erro ao aprovar.'); }
+    } catch (e) { setErro(e.message || 'Erro ao processar aprovação.'); }
     finally { setSalvando(false); }
+  }
+
+  async function handleEnviarAprovacaoGestao(tabela) {
+    if (!tabela?.id) return;
+    var ok = window.confirm('Enviar ' + tabela.transportadora + ' para aprovação do gestor?');
+    if (!ok) return;
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await enviarParaAprovacaoGestor(tabela.id, { usuario: sessao, observacao: 'Enviada pela lista gerencial' });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setSucesso('Enviada para aprovação do gestor.');
+    } catch (e) { setErro(e.message || 'Erro ao enviar para aprovação.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
+  async function handleAprovarGestor(tabela, obs) {
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await aprovarGestorNegociacao(tabela.id, {
+        usuario: sessao,
+        aprovador_id: sessao?.id,
+        aprovador_nome: sessao?.nome,
+        observacao_aprovacao: obs,
+        justificativa_aprovacao: obs || 'Aprovada pelo gestor',
+      });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setSucesso('Aprovada pelo gestor.');
+    } catch (e) { setErro(e.message || 'Erro ao aprovar.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
+  async function handleRecusarGestor(tabela, obs) {
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await recusarGestorNegociacao(tabela.id, { usuario: sessao, observacao: obs, justificativa: obs });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setSucesso('Negociação recusada.');
+    } catch (e) { setErro(e.message || 'Erro ao recusar.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
+  async function handleDevolverGestor(tabela, obs) {
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await devolverParaAjusteNegociacao(tabela.id, { usuario: sessao, observacao: obs, justificativa: obs });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setSucesso('Devolvida para ajuste.');
+    } catch (e) { setErro(e.message || 'Erro ao devolver.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
+  async function handleComplementoGestor(tabela, obs) {
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await solicitarComplementoNegociacao(tabela.id, { usuario: sessao, observacao: obs });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setSucesso('Complemento solicitado ao negociador.');
+    } catch (e) { setErro(e.message || 'Erro ao solicitar complemento.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
+  async function handlePublicarOficial(tabela) {
+    var ok = window.confirm('Publicar ' + tabela.transportadora + ' na base oficial? Esta ação só é permitida após aprovação do gestor.');
+    if (!ok) return;
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await publicarNegociacaoNaBaseOficial(tabela.id, {
+        usuario: sessao,
+        data_inicio_vigencia: hojeISO(),
+        substituir_tabela_anterior: isReajusteNegociacao(tabela),
+      });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      setSucesso('Publicada na base oficial.');
+    } catch (e) { setErro(e.message || 'Erro ao publicar.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
+  async function abrirNegociacaoGestao(tabela) {
+    var alvo = typeof tabela === 'object' ? tabela : tabelas.find(function(t) { return t.id === tabela; });
+    if (!alvo) return;
+    await abrirTabela(alvo, { telaNegociacao: true });
+  }
+
+  function voltarListaGestao() {
+    if (window.history.state && window.history.state.nfNegociacao) {
+      window.history.back();
+      return;
+    }
+    setTelaAtiva('central');
+    setSelecionada(null);
+    urlNegociacaoRef.current = '';
+    limparImport();
+    limparNegociacaoDaUrl(abaGestao);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function copiarLinkNegociacao() {
+    if (!selecionada?.id) return;
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setSucesso('Link da negociação copiado.');
+    } catch (_e) {
+      setErro('Não foi possível copiar o link.');
+    }
   }
 
   var styBtn = function(active) {
@@ -1412,28 +1670,36 @@ export default function TabelasNegociacaoPage() {
     { key: 'rodadas', label: '🔁 Rodadas' },
   ];
 
+  var emTelaNegociacao = telaAtiva === 'negociacao';
+
   return (
     <div className="simulador-shell">
-      <div className="simulador-header compact-top">
-        <div className="simulador-subtitulo">Central Fretes • Negociações</div>
-        <h1>Tabelas em Negociação</h1>
-        <p>Cadastre tabelas temporárias, simule aderência e promova para o cadastro oficial após aprovação.</p>
-      </div>
-
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {sucesso ? <div className="sim-alert success">{sucesso}</div> : null}
 
-      <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
-        <div className="summary-card"><span>Total</span><strong>{resumo.total}</strong><small>em negociação</small></div>
-        <div className="summary-card"><span>Novas</span><strong>{resumo.novas}</strong><small>novo transportador</small></div>
-        <div className="summary-card"><span>Reajustes</span><strong>{resumo.reajustes}</strong><small>proprio realizado</small></div>
-        <div className="summary-card"><span>Neg. Lotacao</span><strong>{resumo.negociacaoLotacao}</strong><small>lotacao</small></div>
-        <div className="summary-card"><span>Em simulação</span><strong>{resumo.emSimulacao}</strong><small>entram no simulador</small></div>
-        <div className="summary-card"><span>Em teste</span><strong>{resumo.emTeste}</strong><small>em análise</small></div>
-        <div className="summary-card"><span>Aprovadas</span><strong>{resumo.aprovadas}</strong><small>aguardando promoção</small></div>
-        <div className="summary-card"><span>Fracionado</span><strong>{resumo.fracionado}</strong><small>Atacado/B2C</small></div>
-        <div className="summary-card"><span>Lotação</span><strong>{resumo.lotacao}</strong><small>lotação</small></div>
+      {!emTelaNegociacao ? (
+      <>
+      <div className="simulador-header compact-top">
+        <div className="simulador-subtitulo">Central Fretes • Negociações</div>
+        <h1>Central de Gestão — Tabelas de Negociação</h1>
+        <p>Acompanhe negociações por transportadora, negociador, saving e reajustes. A publicação na base oficial exige aprovação final do gestor.</p>
       </div>
+
+      <GestaoShell
+        tabelas={tabelas}
+        onAbrirNegociacao={abrirNegociacaoGestao}
+        onEnviarAprovacao={handleEnviarAprovacaoGestao}
+        onAlternarSimulacao={gerenciarSimulacaoLista}
+        onAprovarGestor={handleAprovarGestor}
+        onRecusarGestor={handleRecusarGestor}
+        onDevolverGestor={handleDevolverGestor}
+        onComplementoGestor={handleComplementoGestor}
+        onPublicarOficial={handlePublicarOficial}
+        salvandoGestao={salvandoGestao}
+        selecionadaId={selecionada?.id}
+        abaInicial={abaGestao}
+        onAbaChange={handleAbaGestaoChange}
+      />
 
       {/* NOVA TABELA */}
       <section className="sim-card">
@@ -1533,185 +1799,21 @@ export default function TabelasNegociacaoPage() {
           <button className="sim-tab" type="button" onClick={function() { setForm(Object.assign({}, FORM_VAZIO)); }}>Limpar</button>
         </div>
       </section>
-
-      {/* LISTA */}
-      <section className="sim-card">
-        <div className="sim-resultado-topo compact-top">
-          <div><h2 style={{ margin: 0 }}>Tabelas cadastradas</h2></div>
-          <button className="sim-tab" type="button" onClick={carregar} disabled={carregando}>{carregando ? 'Atualizando...' : 'Atualizar'}</button>
-        </div>
-        <div className="sim-form-grid sim-grid-5">
-          <label>Status
-            <select value={filtros.status} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { status: e.target.value }); }); }}>
-              <option value="">Todos</option>
-              {STATUS_TABELA_NEGOCIACAO.map(function(s) { return <option key={s}>{s}</option>; })}
-            </select>
-          </label>
-          <label>Tipo
-            <select value={filtros.tipoTabela} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { tipoTabela: e.target.value }); }); }}>
-              <option value="">Todos</option>
-              {TIPOS_TABELA_NEGOCIACAO.map(function(t) { return <option key={t}>{t}</option>; })}
-            </select>
-          </label>
-          <label>Tipo negociacao
-            <select value={filtros.tipoNegociacao} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { tipoNegociacao: e.target.value }); }); }}>
-              <option value="">Todos</option>
-              {TIPOS_NEGOCIACAO.map(function(t) { return <option key={t.value} value={t.value}>{t.label}</option>; })}
-            </select>
-          </label>
-          <label>Canal
-            <select value={filtros.canal} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { canal: e.target.value }); }); }}>
-              <option value="">Todos</option>
-              {CANAIS.map(function(c) { return <option key={c}>{c}</option>; })}
-            </select>
-          </label>
-          <label>Transportadora
-            <input value={filtros.transportadora} onChange={function(e) { setFiltros(function(p) { return Object.assign({}, p, { transportadora: e.target.value }); }); }} placeholder="Buscar" />
-          </label>
-        </div>
-        <div className="sim-actions" style={{ marginTop: 12 }}>
-          <button className="primary" type="button" onClick={carregar}>Filtrar</button>
-          <button className="sim-tab" type="button" onClick={function() { setFiltros({ status: '', tipoTabela: '', tipoNegociacao: '', canal: '', transportadora: '' }); }}>Limpar filtros</button>
-        </div>
-        <div className="sim-analise-tabela-wrap" style={{ marginTop: 14 }}>
-          <table className="sim-analise-tabela">
-            <thead>
-              <tr>
-                <th>Negociação</th>
-                <th>Status</th>
-                <th>Rodada</th>
-                <th>Simulação</th>
-                <th>Indicadores principais</th>
-                <th>Operação</th>
-                <th>Frete % NF</th>
-                <th>Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tabelas.map(function(tabela) {
-                var ind = getIndicadoresTabela(tabela);
-                var historicoRodadas = getHistoricoRodadasTabela(tabela);
-                var laudos = getLaudosTabela(tabela);
-                var tipoNegociacaoLabel = getTipoNegociacaoLabel(ind.tipoNegociacao);
-                return (
-                  <tr key={tabela.id}>
-                    <td style={{ minWidth: 230 }}>
-                      <strong>{tabela.transportadora}</strong>
-                      <BadgeImportacao tipo={tabela.origem_importacao} />
-                      <span style={{ marginLeft: 6, borderRadius: 999, padding: '3px 7px', fontSize: 11, fontWeight: 800, background: ind.isReajuste ? '#fff7ed' : ind.isLotacao ? '#ecfeff' : '#eef2ff', color: ind.isReajuste ? '#c2410c' : ind.isLotacao ? '#0e7490' : '#3730a3', border: '1px solid rgba(148,163,184,0.35)' }}>
-                        {ind.isReajuste ? 'REAJUSTE' : ind.isLotacao ? 'LOTACAO' : 'NOVA'}
-                      </span>
-                      <div style={{ fontSize: 12, color: '#334155', marginTop: 3 }}>{origemTabelaLabel(tabela)}</div>
-                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
-                        {tabela.descricao || tabela.regiao || 'Sem descrição'}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
-                        {tipoNegociacaoLabel} · {tabela.tipo_tabela} · {tabela.canal} · Recebida em {formatDateBR(tabela.data_recebimento)}
-                      </div>
-                      {ind.isReajuste ? (
-                        <div style={{ fontSize: 11, color: '#b45309', marginTop: 3 }}>Base: {tabela.transportadora_base_nome || tabela.transportadora}</div>
-                      ) : null}
-                    </td>
-                    <td>
-                      <span style={Object.assign({}, statusStyle(tabela.status), { borderRadius: 999, padding: '4px 8px', fontSize: 12, fontWeight: 700 })}>
-                        {tabela.status}
-                      </span>
-                    </td>
-                    <td>
-                      <strong>{ind.rodada}ª</strong>
-                      <div style={{ fontSize: 11, color: '#64748b' }}>{historicoRodadas.length} registro(s)</div>
-                    </td>
-                    <td>
-                      <button className="sim-tab" type="button" onClick={function() { alternarSimulacao(tabela); }}>
-                        {tabela.incluir_simulacao ? 'Sim' : 'Não'}
-                      </button>
-                      <div style={{ fontSize: 11, color: ind.temSimulacao ? '#15803d' : '#64748b', marginTop: 4 }}>
-                        {ind.temSimulacao ? 'Com análise salva' : 'Ainda sem simulação'}
-                      </div>
-                    </td>
-                    <td style={{ minWidth: 240 }}>
-                      {ind.temSimulacao ? (
-                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                          {(ind.isReajuste || ind.isLotacao) ? (
-                            <>
-                              <div><strong>{ind.isLotacao ? 'Valor atual:' : 'Realizado atual:'}</strong> {formatMoney(ind.valorAtualRealizado)}</div>
-                              <div><strong>Nova tabela:</strong> {formatMoney(ind.valorSimuladoNovaTabela)}</div>
-                              <div style={{ color: ind.impactoValor > 0 ? '#dc2626' : '#15803d' }}><strong>Impacto:</strong> {formatMoney(ind.impactoValor)} ({formatPercent(ind.impactoPercentual)})</div>
-                              <div><strong>Mensal:</strong> {formatMoney(ind.impactoMensal)} · <strong>Anual:</strong> {formatMoney(ind.impactoAnual)}</div>
-                              <div style={{ color: '#475569' }}><strong>{ind.isLotacao ? 'Viagens' : 'CT-es'}:</strong> {formatNumber(ind.ctesAtendidos, 0)}/{formatNumber(ind.ctesAnalisados, 0)} com tabela</div>
-                            </>
-                          ) : null}
-                          {!(ind.isReajuste || ind.isLotacao) ? (
-                            <>
-                          <div><strong>Aderência:</strong> {formatPercent(ind.aderencia)}</div>
-                          <div><strong>Saving mês:</strong> {formatMoney(ind.savingMes)} · <strong>ano:</strong> {formatMoney(ind.savingAno)}</div>
-                          <div><strong>Faturamento mês:</strong> {formatMoney(ind.faturamentoMes)} · <strong>ano:</strong> {formatMoney(ind.faturamentoAno)}</div>
-                          <div style={{ color: '#475569' }}><strong>Rotas ganhas:</strong> {formatNumber(ind.rotasComGanho, 0)} · <strong>UFs:</strong> {(ind.estadosGanhadores || []).slice(0, 3).map(function(item) { return item.uf; }).join(', ') || '-'}</div>
-                          <div style={{ color: '#475569' }}><strong>Perda transportadoras:</strong> {formatMoney(ind.freteCapturado)} · {formatNumber(ind.ctesCapturados, 0)} CT-es</div>
-                            </>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <span style={{ color: '#64748b', fontSize: 12 }}>Execute o Simulador Realizado e salve o resultado.</span>
-                      )}
-                    </td>
-                    <td style={{ minWidth: 180 }}>
-                      {ind.temSimulacao ? (
-                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                          <div><strong>NF/dia:</strong> {formatNumber(ind.pedidosDia, 1)} · <strong>mês:</strong> {formatNumber(ind.pedidosMes, 0)}</div>
-                          <div><strong>Volumes/dia:</strong> {formatNumber(ind.volumesDia, 1)} · <strong>ano:</strong> {formatNumber(ind.volumesAno, 0)}</div>
-                          <div style={{ color: '#64748b' }}>{ind.ctesAtendidos}/{ind.ctesAnalisados} CT-es com tabela</div>
-                        </div>
-                      ) : '-' }
-                    </td>
-                    <td style={{ minWidth: 150 }}>
-                      {ind.temSimulacao ? (
-                        <div style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                          <div>Atual: <strong>{formatPercent(ind.isReajuste || ind.isLotacao ? ind.fretePctAtual : ind.percentualReal)}</strong></div>
-                          <div>Novo: <strong>{formatPercent(ind.isReajuste || ind.isLotacao ? ind.fretePctSimulado : ind.percentualTabela)}</strong></div>
-                          <div style={{ color: ind.reducaoPercentual >= 0 ? '#15803d' : '#dc2626' }}>
-                            {(ind.isReajuste || ind.isLotacao)
-                              ? (ind.impactoValor > 0 ? 'Aumento' : 'Reducao')
-                              : (ind.reducaoPercentual >= 0 ? 'Redução' : 'Aumento')}: {formatPercent(Math.abs(ind.isReajuste || ind.isLotacao ? ind.impactoPercentual : ind.reducaoPercentual))}
-                          </div>
-                        </div>
-                      ) : '-' }
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <button className="sim-tab" type="button" onClick={function() { abrirTabela(tabela); }}>Abrir</button>
-                        <button className="primary" type="button" onClick={function() { prepararSimulacao(tabela); }}>Simular</button>
-                        <button className="primary" type="button" onClick={function() { handleAbrirNovaRodadaTabela(tabela); }} disabled={abrindoRodada}>+ Rodada</button>
-                        <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(tabela); }}>+ Origem</button>
-                        {laudos.executivo ? (
-                          <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'executivo', dados: getDadosLaudoSalvo(laudos.executivo) }); }}>
-                            Laudo Diretoria
-                          </button>
-                        ) : null}
-                        {laudos.transportador ? (
-                          <button className="sim-tab" type="button" onClick={function() { setLaudoSalvoAberto({ tipo: 'transportador', dados: getDadosLaudoSalvo(laudos.transportador) }); }}>
-                            Laudo Transportador
-                          </button>
-                        ) : null}
-                        <select value={tabela.status} onChange={function(e) { atualizarStatus(tabela, e.target.value); }}>
-                          {STATUS_TABELA_NEGOCIACAO.map(function(s) { return <option key={s}>{s}</option>; })}
-                        </select>
-                        <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(tabela); }}>Aprovar</button>
-                        <button className="sim-tab" type="button" onClick={function() { excluirTabela(tabela); }}>Excluir</button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {!tabelas.length && <tr><td colSpan="8">Nenhuma tabela encontrada.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      </>
+      ) : (
+      <>
+      <NegociacaoDetalheCabecalho
+        tabela={selecionada}
+        sessao={sessao}
+        onVoltar={voltarListaGestao}
+        onCopiarLink={copiarLinkNegociacao}
+        carregando={carregandoDetalhe}
+      />
+      {carregandoDetalhe ? <div className="sim-alert info">Carregando negociação...</div> : null}
 
       {/* PAINEL DE DETALHE */}
       {selecionada ? (
-        <section className="sim-card">
+        <section className="sim-card" id="painel-detalhe-negociacao">
           <div className="sim-resultado-topo compact-top">
             <div>
               <h2 style={{ margin: 0 }}>
@@ -1720,11 +1822,33 @@ export default function TabelasNegociacaoPage() {
               </h2>
               <p>{selecionada.tipo_tabela} · {selecionada.canal} · {selecionada.status} · Rodada {getRodadaAtualTabela(selecionada)}ª</p>
               <p style={{ marginTop: 4, color: '#475569' }}>{origemTabelaLabel(selecionada)}{selecionada.descricao ? ' · ' + selecionada.descricao : ''}</p>
+              {selecionada ? (function() {
+                var estSim = getEstadoSimulacaoNegociacao(selecionada);
+                return (
+                  <p style={{ marginTop: 6, fontSize: 12, color: estSim.statusCor }}>
+                    <strong>{estSim.rotuloStatus}</strong>
+                    {estSim.temSimulacao && !estSim.disponivel ? ' · Use "+ Nova rodada" quando chegar nova proposta do transportador.' : null}
+                  </p>
+                );
+              })() : null}
             </div>
             <div className="sim-actions" style={{ justifyContent: 'flex-end' }}>
+              {selecionada ? (function() {
+                var estSim = getEstadoSimulacaoNegociacao(selecionada);
+                return (
+                  <>
+                    <button className={estSim.disponivel ? 'sim-tab' : 'primary'} type="button" onClick={function() { gerenciarSimulacaoLista(selecionada); }}>
+                      {estSim.rotuloAcao}
+                    </button>
+                    <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo...' : '+ Nova rodada'}</button>
+                  </>
+                );
+              })() : null}
               <button className="sim-tab" type="button" onClick={function() { abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
-              <button className="primary" type="button" onClick={handleAbrirNovaRodada} disabled={abrindoRodada}>{abrindoRodada ? 'Abrindo...' : '+ Nova rodada'}</button>
-              <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada); }}>Recarregar</button>
+              <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada, { telaNegociacao: emTelaNegociacao }); }}>Recarregar</button>
+              <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(selecionada); }}>
+                {podePublicarOficial(selecionada) && usuarioEhGestor(sessao) ? 'Publicar' : 'Enviar p/ gestor'}
+              </button>
             </div>
           </div>
 
@@ -2324,7 +2448,10 @@ export default function TabelasNegociacaoPage() {
               <div>
                 <h3 style={{ margin: '0 0 12px' }}>Histórico de rodadas e análises</h3>
                 <div className="sim-alert info" style={{ marginBottom: 14 }}>
-                  Rotas e fretes da mesma proposta ficam na mesma rodada. Uma nova rodada deve ser aberta somente quando chegar uma nova proposta/tabela do transportador; os resultados salvos continuam guardados para comparação.
+                  <strong>Fluxo:</strong> disponibilize para o Simulador → salve a análise → a negociação sai do Simulador automaticamente.
+                  Para rodar de novo na <em>mesma</em> proposta, clique em <strong>Simular novamente</strong>.
+                  Para uma <em>nova</em> proposta do transportador, abra <strong>+ Nova rodada</strong> (isso já libera o Simulador de novo).
+                  Os resultados anteriores ficam guardados para comparação.
                 </div>
 
                 <div className="sim-actions" style={{ marginBottom: 14 }}>
@@ -2348,100 +2475,108 @@ export default function TabelasNegociacaoPage() {
                   </div>
                 ) : null}
 
-                
-                <div className="sim-card" style={{ marginBottom: 14 }}>
-                  <div className="sim-parametros-header" style={{ alignItems: 'flex-start', gap: 12 }}>
-                    <div>
-                      <h3 style={{ margin: 0 }}>Laudo geral das rodadas</h3>
-                      <p style={{ margin: '6px 0 0', color: '#64748b' }}>
-                        Analisa a evolução da negociação por rodada e mostra onde a transportadora melhorou, onde ainda perde e quais rotas, cotações, UFs e faixas precisam de ajuste.
-                      </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(300px, 380px)', gap: 16, alignItems: 'start' }}>
+                  <div className="sim-card" style={{ marginBottom: 0 }}>
+                    <div className="sim-parametros-header" style={{ alignItems: 'flex-start', gap: 12 }}>
+                      <div>
+                        <h3 style={{ margin: 0 }}>Laudo geral das rodadas</h3>
+                        <p style={{ margin: '6px 0 0', color: '#64748b' }}>
+                          Analisa a evolução da negociação por rodada e mostra onde a transportadora melhorou, onde ainda perde e quais rotas, cotações, UFs e faixas precisam de ajuste.
+                        </p>
+                      </div>
+                      <div className="sim-actions" style={{ margin: 0 }}>
+                        <button
+                          className={tipoLaudoRodadas === 'transportador' ? 'primary' : 'sim-tab'}
+                          type="button"
+                          onClick={function() { setTipoLaudoRodadas('transportador'); }}
+                        >
+                          Transportador
+                        </button>
+                        <button
+                          className={tipoLaudoRodadas === 'executivo' ? 'primary' : 'sim-tab'}
+                          type="button"
+                          onClick={function() { setTipoLaudoRodadas('executivo'); }}
+                        >
+                          Diretoria
+                        </button>
+                      </div>
                     </div>
-                    <div className="sim-actions" style={{ margin: 0 }}>
-                      <button
-                        className={tipoLaudoRodadas === 'transportador' ? 'primary' : 'sim-tab'}
-                        type="button"
-                        onClick={function() { setTipoLaudoRodadas('transportador'); }}
-                      >
-                        Transportador
-                      </button>
-                      <button
-                        className={tipoLaudoRodadas === 'executivo' ? 'primary' : 'sim-tab'}
-                        type="button"
-                        onClick={function() { setTipoLaudoRodadas('executivo'); }}
-                      >
-                        Diretoria
-                      </button>
+
+                    {simulacoes.length < 2 ? (
+                      <div className="sim-alert info" style={{ marginTop: 12 }}>
+                        Para uma análise completa de evolução, o ideal é ter pelo menos duas simulações salvas. Com uma única simulação, o laudo mostra o diagnóstico atual sem comparação entre rodadas.
+                      </div>
+                    ) : null}
+
+                    <div style={{ marginTop: 14 }}>
+                      <LaudoRodadasErrorBoundary key={(selecionada?.id || 'sem-tabela') + '-' + tipoLaudoRodadas}>
+                        <LaudoRodadasNegociacaoTemplate tipo={tipoLaudoRodadas} tabela={selecionada} />
+                      </LaudoRodadasErrorBoundary>
                     </div>
                   </div>
 
-                  {simulacoes.length < 2 ? (
-                    <div className="sim-alert info" style={{ marginTop: 12 }}>
-                      Para uma análise completa de evolução, o ideal é ter pelo menos duas simulações salvas. Com uma única simulação, o laudo mostra o diagnóstico atual sem comparação entre rodadas.
-                    </div>
-                  ) : null}
-
-                  <div style={{ marginTop: 14 }}>
-                    <LaudoRodadasErrorBoundary key={(selecionada?.id || 'sem-tabela') + '-' + tipoLaudoRodadas}>
-                      <LaudoRodadasNegociacaoTemplate tipo={tipoLaudoRodadas} tabela={selecionada} />
-                    </LaudoRodadasErrorBoundary>
-                  </div>
-                </div>
-
-<div className="sim-analise-tabela-wrap">
-                  <table className="sim-analise-tabela">
-                    <thead>
-                      <tr>
-                        <th>Rodada</th>
-                        <th>Tipo</th>
-                        <th>Data</th>
-                        <th>Aderência</th>
-                        <th>Saving mês/ano</th>
-                        <th>Faturamento mês/ano</th>
-                        <th>Pedidos/Volumes</th>
-                        <th>Frete % NF</th>
-                        <th>Observação</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {historico.map(function(rodada, idx) {
-                        var ind = rodada.indicadores || {};
-                        var imp = rodada.itens_importados || {};
-                        var salvos = rodada.itens_salvos_apos_importacao || {};
-                        var isSim = rodada.tipo_registro === 'SIMULACAO';
-                        return (
-                          <tr key={rodada.id || rodada.criado_em || idx}>
-                            <td>
-                              <strong>{rodada.rodada || '-' }ª</strong>
-                              <br />
-                              <button
-                                className="sim-tab"
-                                type="button"
-                                disabled={salvando}
-                                onClick={function(event) {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  handleExcluirRodadaCompleta(rodada);
-                                }}
-                                style={{ marginTop: 6, color: '#dc2626', borderColor: '#fecaca', fontSize: 11 }}
-                              >
-                                Apagar análise
-                              </button>
-                            </td>
-                            <td>{isSim ? 'SIMULAÇÃO' : 'IMPORTAÇÃO'}</td>
-                            <td>{formatDateBR(rodada.criado_em)}</td>
-                            <td>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
-                            <td>{isSim ? <span>{formatMoney(ind.saving_mes || 0)}<br /><small>{formatMoney(ind.saving_ano || 0)}</small></span> : '-'}</td>
-                            <td>{isSim ? <span>{formatMoney(ind.faturamento_mes || 0)}<br /><small>{formatMoney(ind.faturamento_ano || 0)}</small></span> : '-'}</td>
-                            <td>{isSim ? <span>{formatNumber(ind.pedidos_dia || 0, 1)} NF/dia<br /><small>{formatNumber(ind.volumes_dia || 0, 1)} vol/dia</small></span> : <span>{imp.rotas || 0} rotas · {imp.cotacoes || 0} fretes<br /><small>Ativo: {salvos.rotas || 0} rotas · {salvos.cotacoes || 0} fretes</small></span>}</td>
-                            <td>{isSim ? <span>Real: {formatPercent(ind.percentual_frete_realizado || 0)}<br /><small>Tabela: {formatPercent(ind.percentual_frete_simulado || 0)}</small></span> : '-'}</td>
-                            <td style={{ fontSize: 12, color: '#475569' }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
+                  <aside
+                    className="sim-card"
+                    style={{ position: 'sticky', top: 12, maxHeight: 'calc(100vh - 24px)', overflow: 'auto', marginBottom: 0 }}
+                  >
+                    <h3 style={{ margin: '0 0 8px' }}>Histórico de rodadas</h3>
+                    <p style={{ margin: '0 0 12px', color: '#64748b', fontSize: 13 }}>
+                      Importações e simulações salvas desta negociação.
+                    </p>
+                    <div className="sim-analise-tabela-wrap">
+                      <table className="sim-analise-tabela">
+                        <thead>
+                          <tr>
+                            <th>Rodada</th>
+                            <th>Tipo</th>
+                            <th>Data</th>
+                            <th>Aderência</th>
+                            <th>% atual</th>
+                            <th>% tabela</th>
+                            <th>Saving</th>
+                            <th>Obs.</th>
                           </tr>
-                        );
-                      })}
-                      {!historico.length ? <tr><td colSpan="10">Nenhuma rodada registrada ainda.</td></tr> : null}
-                    </tbody>
-                  </table>
+                        </thead>
+                        <tbody>
+                          {historico.map(function(rodada, idx) {
+                            var ind = rodada.indicadores || {};
+                            var imp = rodada.itens_importados || {};
+                            var salvos = rodada.itens_salvos_apos_importacao || {};
+                            var isSim = rodada.tipo_registro === 'SIMULACAO';
+                            return (
+                              <tr key={rodada.id || rodada.criado_em || idx}>
+                                <td>
+                                  <strong>{rodada.rodada || '-' }ª</strong>
+                                  <br />
+                                  <button
+                                    className="sim-tab"
+                                    type="button"
+                                    disabled={salvando}
+                                    onClick={function(event) {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      handleExcluirRodadaCompleta(rodada);
+                                    }}
+                                    style={{ marginTop: 6, color: '#dc2626', borderColor: '#fecaca', fontSize: 11 }}
+                                  >
+                                    Apagar
+                                  </button>
+                                </td>
+                                <td style={{ fontSize: 11 }}>{isSim ? 'SIM' : 'IMP'}</td>
+                                <td style={{ fontSize: 11 }}>{formatDateBR(rodada.criado_em)}</td>
+                                <td style={{ fontSize: 11 }}>{isSim ? formatPercent(ind.aderencia || 0) : '-'}</td>
+                                <td style={{ fontSize: 11 }}>{isSim ? formatPercent(ind.percentual_frete_realizado || 0) : '-'}</td>
+                                <td style={{ fontSize: 11 }}>{isSim ? formatPercent(ind.percentual_frete_simulado || 0) : '-'}</td>
+                                <td style={{ fontSize: 11 }}>{isSim ? formatMoney(ind.saving_mes || 0) : <span>{imp.rotas || 0}r · {imp.cotacoes || 0}f<br /><small>{salvos.rotas || 0}r · {salvos.cotacoes || 0}f</small></span>}</td>
+                                <td style={{ fontSize: 11, color: '#475569', maxWidth: 120 }}>{rodada.observacao || rodada.origem_importacao || rodada.modo_substituicao || '-'}</td>
+                              </tr>
+                            );
+                          })}
+                          {!historico.length ? <tr><td colSpan="8">Nenhuma rodada registrada ainda.</td></tr> : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </aside>
                 </div>
               </div>
             );
@@ -2449,6 +2584,8 @@ export default function TabelasNegociacaoPage() {
 
         </section>
       ) : null}
+      </>
+      )}
 
       {laudoSalvoAberto ? (
         <div
@@ -2569,8 +2706,15 @@ export default function TabelasNegociacaoPage() {
       {modalAprovacao ? (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 9999, display: 'grid', placeItems: 'center', padding: 20 }}>
           <div className="sim-card" style={{ width: 'min(720px,100%)', maxHeight: '90vh', overflow: 'auto' }}>
-            <h2>Aprovar tabela</h2>
-            <p>A tabela de <strong>{modalAprovacao.transportadora}</strong> sera marcada como aprovada. Tipo: <strong>{getTipoNegociacaoLabel(getTipoNegociacaoTabela(modalAprovacao))}</strong>.</p>
+            <h2>
+              {aprovacao.modo === 'publicar' ? 'Publicar na base oficial' : aprovacao.modo === 'aprovar_gestor' ? 'Aprovar como gestor' : 'Enviar para aprovação do gestor'}
+            </h2>
+            <p>
+              Transportadora <strong>{modalAprovacao.transportadora}</strong> · Tipo: <strong>{getTipoNegociacaoLabel(getTipoNegociacaoTabela(modalAprovacao))}</strong>.
+              {aprovacao.modo === 'publicar'
+                ? ' Esta negociação já foi aprovada pelo gestor e pode ser promovida para a base oficial.'
+                : ' A negociação não irá direto para a base oficial — o gestor precisa aprovar antes da publicação.'}
+            </p>
             <div className="sim-form-grid sim-grid-2">
               <label>Data início de vigência
                 <input type="date" value={aprovacao.data_inicio_vigencia} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { data_inicio_vigencia: e.target.value }); }); }} />
@@ -2584,10 +2728,16 @@ export default function TabelasNegociacaoPage() {
               <label>Usuario aprovador
                 <input value={aprovacao.usuario_aprovacao} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { usuario_aprovacao: e.target.value }); }); }} placeholder="Nome ou e-mail" />
               </label>
-              <label className="sim-flag" style={{ justifyContent: 'end' }}>
-                <input type="checkbox" checked={aprovacao.promover_para_oficial} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { promover_para_oficial: e.target.checked }); }); }} />
-                Promover para tabela oficial
-              </label>
+              {aprovacao.modo === 'publicar' ? (
+                <label className="sim-flag" style={{ justifyContent: 'end' }}>
+                  <input type="checkbox" checked readOnly />
+                  Publicação na base oficial autorizada
+                </label>
+              ) : (
+                <label className="sim-flag" style={{ justifyContent: 'end', color: '#64748b' }}>
+                  Publicação bloqueada até aprovação do gestor
+                </label>
+              )}
             </div>
             {isReajusteNegociacao(modalAprovacao) ? (
               <div className="sim-alert info" style={{ marginTop: 12 }}>
@@ -2601,7 +2751,9 @@ export default function TabelasNegociacaoPage() {
               <textarea value={aprovacao.justificativa_aprovacao} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { justificativa_aprovacao: e.target.value }); }); }} placeholder="Explique o motivo da aprovação..." style={{ minHeight: 100 }} />
             </label>
             <div className="sim-actions" style={{ marginTop: 14 }}>
-              <button className="primary" type="button" onClick={confirmarAprovacao} disabled={salvando}>{salvando ? 'Aprovando...' : 'Confirmar aprovação'}</button>
+              <button className="primary" type="button" onClick={confirmarAprovacao} disabled={salvando}>
+                {salvando ? 'Processando...' : aprovacao.modo === 'publicar' ? 'Publicar na base oficial' : aprovacao.modo === 'aprovar_gestor' ? 'Aprovar como gestor' : 'Enviar para aprovação do gestor'}
+              </button>
               <button className="sim-tab" type="button" onClick={function() { setModalAprovacao(null); }}>Cancelar</button>
             </div>
           </div>

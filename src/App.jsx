@@ -28,6 +28,7 @@ import PainelOperacaoPage from './pages/PainelOperacaoPage';
 import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
+import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
 
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
@@ -49,6 +50,12 @@ export default function App() {
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
   const [origemSelecionadaId, setOrigemSelecionadaId] = useState(null);
   const transportadorasMemo = useMemo(() => store.transportadoras, [store.transportadoras]);
+
+  useEffect(() => {
+    if (!sessao) return;
+    const paginaUrl = lerEstadoUrlNegociacao().page;
+    if (paginaUrl && usuarioTemAcesso(sessao, paginaUrl)) setPaginaAtual(paginaUrl);
+  }, [sessao]);
 
   useEffect(() => {
     if (sessao && !usuarioTemAcesso(sessao, paginaAtual)) setPaginaAtual(primeiraPaginaPermitida(sessao));
@@ -75,6 +82,7 @@ export default function App() {
     if (!usuarioTemAcesso(sessao, pagina)) return;
     setPaginaAtual(pagina);
     setMenuMobileAberto(false);
+    sincronizarPaginaAppNaUrl(pagina);
     if (pagina !== 'transportadoras') {
       setTransportadoraSelecionadaId(null);
       setOrigemSelecionadaId(null);
