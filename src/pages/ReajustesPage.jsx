@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import {
@@ -16,15 +16,18 @@ import {
 import {
   aplicarVinculoAutomatico,
   calcularImpactosReajustes,
+  calcularSerieMensalReajustes,
   carregarConfigReajustes,
   carregarReajustes,
   criarReajusteManual,
   detectarMelhoresVinculos,
+  formatarMesReferencia,
   formatarMoedaReajuste,
   formatarPercentualReajuste,
   importarControleReajustes,
   isEfetivado,
   mesAtualPadrao,
+  mesesDisponiveisRealizado,
   normalizarTextoReajuste,
   obterPeriodoConsultaImpactoReajustes,
   parsePercentReajuste,
@@ -44,6 +47,25 @@ const FORM_MANUAL_VAZIO = {
   status: 'EM ANÁLISE',
   observacao: '',
 };
+const REALIZADO_IMPACTO_CACHE_KEY = 'central_fretes_reajustes_realizado_cache_v1';
+
+function carregarCacheRealizadoImpacto() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(REALIZADO_IMPACTO_CACHE_KEY) || 'null');
+    if (parsed?.rows?.length) return parsed;
+  } catch {}
+  return null;
+}
+
+function salvarCacheRealizadoImpacto(rows = [], consultaInicio = '') {
+  try {
+    sessionStorage.setItem(REALIZADO_IMPACTO_CACHE_KEY, JSON.stringify({
+      rows: rows.slice(0, 500000),
+      consultaInicio: String(consultaInicio || '').slice(0, 10),
+      savedAt: new Date().toISOString(),
+    }));
+  } catch {}
+}
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0;
@@ -157,6 +179,37 @@ function linhasRelatorio(itens = [], fimPeriodo = '') {
     Percentual_Frete_Realizado: toNumber(item.percentualFreteRealizadoReajuste),
     Variacao_Percentual_Frete_pontos: toNumber(item.variacaoPercentualFreteRealizado),
     Observacao: item.observacao || '',
+  }));
+}
+
+function linhasImpactoMensal(serie) {
+  return (serie?.meses || []).map((mes) => ({
+    Mes: mes.mes,
+    Mes_Referencia: mes.mesLabel,
+    Reajustes_Vigentes: toNumber(mes.itensVigentes),
+    CTEs_Mes: toNumber(mes.ctes),
+    Frete_Realizado_Mes: toNumber(mes.freteRealizado),
+    Impacto_Previsto_Solicitado_Mes: toNumber(mes.impactoPrevistoSolicitado),
+    Impacto_Previsto_Repassado_Mes: toNumber(mes.impactoPrevistoRepassado),
+    Saving_Previsto_Mes: toNumber(mes.savingPrevisto),
+    Impacto_Realizado_Solicitado_Mes: toNumber(mes.impactoRealizadoSolicitado),
+    Impacto_Realizado_Repassado_Mes: toNumber(mes.impactoRealizadoRepassado),
+    Saving_Realizado_Mes: toNumber(mes.savingRealizado),
+  }));
+}
+
+function linhasImpactoMensalDetalhe(serie) {
+  return (serie?.porItem || []).map((linha) => ({
+    Mes: linha.mes,
+    Mes_Referencia: linha.mesLabel,
+    Transportadora: linha.transportadora,
+    Canal: linha.canal,
+    CTEs_Mes: toNumber(linha.ctes),
+    Frete_Realizado_Mes: toNumber(linha.freteRealizado),
+    Impacto_Realizado_Solicitado_Mes: toNumber(linha.impactoRealizadoSolicitado),
+    Impacto_Realizado_Repassado_Mes: toNumber(linha.impactoRealizadoRepassado),
+    Saving_Realizado_Mes: toNumber(linha.savingRealizado),
+    Impacto_Previsto_Repassado_Mes: toNumber(linha.impactoPrevistoRepassado),
   }));
 }
 
@@ -352,20 +405,48 @@ function totalCtesRealizado(rows = []) {
   return (rows || []).reduce((acc, row) => acc + Math.max(toNumber(row.ctes ?? row.totalCtes ?? row.quantidadeCtes), 1), 0);
 }
 
+function ultimaDataRows(rows = []) {
+  return (rows || [])
+    .map((row) => String(row.dataEmissao || row.emissao || row.data || '').slice(0, 10))
+    .filter((d) => /^20\d{2}-\d{2}-\d{2}$/.test(d))
+    .sort()
+    .at(-1) || '';
+}
+
 async function carregarRealizadoParaReajustes(filtros = {}, options = {}) {
   const limitLocal = Number(options.limit || 500000) || 500000;
   const limitSupabase = Math.min(Number(options.limit || 100000) || 100000, 100000);
-  const remoto = await listarRealizadoDiarioReajustes({
-    ...filtros,
-    limit: limitSupabase,
-  }).catch((error) => ({
-    rows: [],
-    erro: error,
-  }));
-  const rowsRemotos = Array.isArray(remoto) ? remoto : (remoto.rows || []);
-  const erroRemoto = Array.isArray(remoto) ? null : remoto.erro;
 
-  if (rowsRealizadoComValor(rowsRemotos).length) {
+  const [remotoResult, localResult] = await Promise.allSettled([
+    listarRealizadoDiarioReajustes({ ...filtros, limit: limitSupabase }),
+    exportarRealizadoLocal(filtros, { ...options, limit: limitLocal }),
+  ]);
+
+  const rowsRemotos = remotoResult.status === 'fulfilled'
+    ? (Array.isArray(remotoResult.value) ? remotoResult.value : (remotoResult.value?.rows || []))
+    : [];
+  const erroRemoto = remotoResult.status === 'rejected' ? remotoResult.reason : null;
+
+  const localData = localResult.status === 'fulfilled' ? localResult.value : { rows: [], totalCompativel: 0, limit: limitLocal };
+  const rowsLocais = localData.rows || [];
+
+  const temRemoto = rowsRealizadoComValor(rowsRemotos).length > 0;
+  const temLocal = rowsRealizadoComValor(rowsLocais).length > 0;
+
+  if (!temRemoto && !temLocal) {
+    if (erroRemoto && !rowsLocais.length) {
+      throw new Error(`Não consegui carregar realizado do Supabase (${erroRemoto?.message || erroRemoto}) e o Realizado Local está vazio.`);
+    }
+    return {
+      rows: [],
+      totalCompativel: 0,
+      limit: limitSupabase,
+      origem: 'Vazio',
+      erroSupabase: erroRemoto?.message || '',
+    };
+  }
+
+  if (temRemoto && !temLocal) {
     return {
       rows: rowsRemotos,
       totalCompativel: totalCtesRealizado(rowsRemotos),
@@ -374,34 +455,33 @@ async function carregarRealizadoParaReajustes(filtros = {}, options = {}) {
     };
   }
 
-  const local = await exportarRealizadoLocal(filtros, { ...options, limit: limitLocal }).catch((error) => ({
-    rows: [],
-    totalCompativel: 0,
-    limit: limitLocal,
-    erro: error,
-  }));
-
-  if (rowsRealizadoComValor(local.rows || []).length) {
+  if (!temRemoto && temLocal) {
     return {
-      rows: local.rows || [],
-      totalCompativel: Number(local.totalCompativel || local.rows?.length || 0),
-      limit: Number(local.limit || limitLocal),
+      rows: rowsLocais,
+      totalCompativel: Number(localData.totalCompativel || rowsLocais.length),
+      limit: Number(localData.limit || limitLocal),
       origem: 'Realizado Local',
     };
   }
 
-  if (erroRemoto && !rowsRemotos.length && !local.rows?.length) {
-    throw new Error(`Não consegui carregar realizado_local_ctes do Supabase (${erroRemoto.message || erroRemoto}) e o Realizado Local está vazio.`);
+  // Ambos têm dados — preferir quem tem a data mais recente
+  const ultimaRemota = ultimaDataRows(rowsRemotos);
+  const ultimaLocal = ultimaDataRows(rowsLocais);
+
+  if (ultimaLocal > ultimaRemota) {
+    return {
+      rows: rowsLocais,
+      totalCompativel: Number(localData.totalCompativel || rowsLocais.length),
+      limit: Number(localData.limit || limitLocal),
+      origem: `Realizado Local (mais recente: ${ultimaLocal} vs Supabase: ${ultimaRemota})`,
+    };
   }
 
   return {
-    rows: rowsRemotos.length ? rowsRemotos : (local.rows || []),
-    totalCompativel: rowsRemotos.length ? totalCtesRealizado(rowsRemotos) : Number(local.totalCompativel || local.rows?.length || 0),
-    limit: rowsRemotos.length ? limitSupabase : Number(local.limit || limitLocal),
-    origem: rowsRemotos.length ? 'Supabase realizado_local_ctes' : 'Realizado Local',
-    fallbackLocalVazio: !local.rows?.length,
-    erroSupabase: erroRemoto?.message || '',
-    erroLocal: local.erro?.message || '',
+    rows: rowsRemotos,
+    totalCompativel: totalCtesRealizado(rowsRemotos),
+    limit: limitSupabase,
+    origem: `Supabase realizado_local_ctes (mais recente: ${ultimaRemota})`,
   };
 }
 
@@ -443,6 +523,59 @@ function atualizarPercentualTemporario(setPercentuais, id, campo, valor) {
       [campo]: valor,
     },
   }));
+}
+
+function GraficoBarrasMensal({ dados = [], barras = [], altura = 200, formatar }) {
+  if (!dados.length) {
+    return <p className="compact" style={{ color: '#64748b' }}>Sem dados mensais. Calcule o impacto para ver os gráficos.</p>;
+  }
+
+  const valores = dados.flatMap((linha) => barras.map((barra) => Math.abs(toNumber(linha[barra.key]))));
+  const max = Math.max(...valores, 1);
+  const larguraGrupo = Math.max(barras.length * 16 + 24, 52);
+  const larguraTotal = dados.length * larguraGrupo;
+  const areaAltura = altura - 30;
+  const larguraBarra = Math.max((larguraGrupo - 20) / barras.length, 6);
+  const formatarValor = formatar || ((valor) => String(toNumber(valor)));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 6 }}>
+        {barras.map((barra) => (
+          <span key={barra.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569' }}>
+            <span style={{ width: 12, height: 12, borderRadius: 3, background: barra.cor, display: 'inline-block' }} />
+            {barra.nome}
+          </span>
+        ))}
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <svg width={Math.max(larguraTotal, 280)} height={altura} role="img" style={{ display: 'block' }}>
+          <line x1="0" y1={areaAltura} x2={Math.max(larguraTotal, 280)} y2={areaAltura} stroke="#e2e8f0" strokeWidth="1" />
+          {dados.map((linha, indice) => {
+            const x0 = indice * larguraGrupo + 10;
+            return (
+              <g key={linha.mes || indice}>
+                {barras.map((barra, posicao) => {
+                  const valor = Math.abs(toNumber(linha[barra.key]));
+                  const altBarra = max ? (valor / max) * areaAltura : 0;
+                  const x = x0 + posicao * larguraBarra;
+                  const y = areaAltura - altBarra;
+                  return (
+                    <rect key={barra.key} x={x} y={y} width={Math.max(larguraBarra - 2, 4)} height={altBarra} fill={barra.cor} rx="2">
+                      <title>{`${barra.nome} • ${linha.mesLabel || linha.mes}: ${formatarValor(linha[barra.key])}`}</title>
+                    </rect>
+                  );
+                })}
+                <text x={x0 + (larguraGrupo - 20) / 2} y={altura - 8} textAnchor="middle" fontSize="10" fill="#64748b">
+                  {linha.mesLabel || linha.mes}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
 }
 
 function PainelVinculo({
@@ -596,17 +729,20 @@ export default function ReajustesPage() {
   const [filtroTexto, setFiltroTexto] = useState('');
   const [filtroStatus, setFiltroStatus] = useState('');
   const [somenteEfetivados, setSomenteEfetivados] = useState(false);
+  const [mesReferencia, setMesReferencia] = useState('');
   const [opcoesRealizado, setOpcoesRealizado] = useState([]);
   const [buscasVinculo, setBuscasVinculo] = useState({});
   const [vinculoAtivoId, setVinculoAtivoId] = useState(null);
   const [percentuaisEditando, setPercentuaisEditando] = useState({});
   const [mostrarManual, setMostrarManual] = useState(false);
   const [manual, setManual] = useState(FORM_MANUAL_VAZIO);
-  const [realizadoImpactoRows, setRealizadoImpactoRows] = useState([]);
+  const [realizadoImpactoRows, setRealizadoImpactoRows] = useState(() => carregarCacheRealizadoImpacto()?.rows || []);
   const [fontePersistencia, setFontePersistencia] = useState(() => reajustesSupabaseConfigurado() ? 'supabase' : 'local');
   const [persistenciaPronta, setPersistenciaPronta] = useState(false);
   const [sincronizandoSupabase, setSincronizandoSupabase] = useState(false);
   const [ultimoSyncSupabase, setUltimoSyncSupabase] = useState('');
+  const [diagRealizado, setDiagRealizado] = useState(null);
+  const autoImpactoDisparadoRef = useRef(false);
 
   useEffect(() => {
     let cancelado = false;
@@ -702,7 +838,118 @@ export default function ReajustesPage() {
     return () => window.clearTimeout(handle);
   }, [itens, fontePersistencia, persistenciaPronta]);
 
+  useEffect(() => {
+    if (!persistenciaPronta || !itens.length || autoImpactoDisparadoRef.current) return undefined;
+    const consulta = obterPeriodoConsultaImpactoReajustes(itens, config);
+    if (!consulta.inicio) return undefined;
+
+    autoImpactoDisparadoRef.current = true;
+    calcularImpacto({ automatico: true }).catch(() => {});
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistenciaPronta, itens.length, config.mesesBaseImpacto]);
+
+  const mesRefAplicadoRef = useRef('');
+
+  useEffect(() => {
+    if (!persistenciaPronta) return;
+    if (mesRefAplicadoRef.current === mesReferencia) return;
+    mesRefAplicadoRef.current = mesReferencia;
+    const rows = realizadoImpactoRows.length
+      ? realizadoImpactoRows
+      : (carregarCacheRealizadoImpacto()?.rows || []);
+    if (!rows.length) return;
+    setItens((prev) => {
+      const recalc = calcularImpactosReajustes(prev, rows, { ...config, mesReferencia });
+      salvarReajustes(recalc);
+      return recalc;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mesReferencia, persistenciaPronta]);
+
   const resumo = useMemo(() => resumoReajustes(itens), [itens]);
+
+  const serieMensal = useMemo(
+    () => calcularSerieMensalReajustes(itens, realizadoImpactoRows, config),
+    [itens, realizadoImpactoRows, config],
+  );
+
+  const dashboard = useMemo(() => {
+    const meses = serieMensal.meses || [];
+    const previstoRepassadoAcum = meses.reduce((acc, mes) => acc + toNumber(mes.impactoPrevistoRepassado), 0);
+    const realizadoRepassadoAcum = meses.reduce((acc, mes) => acc + toNumber(mes.impactoRealizadoRepassado), 0);
+    const savingRealizadoAcum = meses.reduce((acc, mes) => acc + toNumber(mes.savingRealizado), 0);
+    const savingPrevistoAcum = meses.reduce((acc, mes) => acc + toNumber(mes.savingPrevisto), 0);
+    const ctesAcum = meses.reduce((acc, mes) => acc + toNumber(mes.ctes), 0);
+    const mesesComRealizado = meses.filter((mes) => toNumber(mes.freteRealizado) > 0).length;
+    const aderencia = previstoRepassadoAcum ? realizadoRepassadoAcum / previstoRepassadoAcum : 0;
+    const hoje = new Date().toISOString().slice(0, 10);
+    const reajustesVigentes = itens.filter((item) => {
+      const inicio = String(item.dataInicio || item.dataPrimeiraParcela || '').slice(0, 10);
+      return inicio && inicio <= hoje;
+    }).length;
+    const melhorMes = [...meses].sort((a, b) => toNumber(b.impactoRealizadoRepassado) - toNumber(a.impactoRealizadoRepassado))[0] || null;
+    return {
+      meses,
+      previstoRepassadoAcum,
+      realizadoRepassadoAcum,
+      savingRealizadoAcum,
+      savingPrevistoAcum,
+      ctesAcum,
+      mesesComRealizado,
+      aderencia,
+      reajustesVigentes,
+      melhorMes,
+    };
+  }, [serieMensal, itens]);
+
+  const ranking = useMemo(() => {
+    const base = (itens || [])
+      .map((item) => ({
+        nome: item.transportadoraInformada || 'Sem nome',
+        canal: item.canal || '',
+        previsto: toNumber(item.impactoPrevistoRepassado || item.impactoPrevisto || item.impactoPeriodo),
+        realizado: toNumber(item.impactoRealizadoRepassado || item.impactoRealizado),
+        savingRealizado: toNumber(item.reducaoImpactoRealizada),
+      }))
+      .filter((linha) => linha.previsto > 0 || linha.realizado > 0);
+
+    const totalRealizado = base.reduce((acc, linha) => acc + linha.realizado, 0);
+    const usarRealizado = totalRealizado > 0;
+    const ordenadas = base
+      .sort((a, b) => (usarRealizado ? b.realizado - a.realizado : b.previsto - a.previsto)
+        || b.previsto - a.previsto
+        || a.nome.localeCompare(b.nome, 'pt-BR'))
+      .slice(0, 10);
+
+    const totalMetrica = ordenadas.reduce((acc, linha) => acc + (usarRealizado ? linha.realizado : linha.previsto), 0);
+    let acumulado = 0;
+    return {
+      usarRealizado,
+      linhas: ordenadas.map((linha) => {
+        const metrica = usarRealizado ? linha.realizado : linha.previsto;
+        acumulado += metrica;
+        return {
+          ...linha,
+          percentual: totalMetrica ? metrica / totalMetrica : 0,
+          percentualAcumulado: totalMetrica ? acumulado / totalMetrica : 0,
+        };
+      }),
+    };
+  }, [itens]);
+
+  const mesesRealizadoDisponiveis = useMemo(
+    () => mesesDisponiveisRealizado(realizadoImpactoRows),
+    [realizadoImpactoRows],
+  );
+  const mesReferenciaLabel = formatarMesReferencia(mesReferencia);
+  const sufixoRealizado = mesReferencia ? ` ${mesReferenciaLabel}` : '/mês';
+
+  const minDataInicioReajuste = useMemo(() => itens
+    .map((item) => String(item.dataInicio || item.dataPrimeiraParcela || '').slice(0, 10))
+    .filter((d) => /^20\d{2}-\d{2}-\d{2}$/.test(d))
+    .sort()[0] || '', [itens]);
+
   const itemVinculoAtivo = useMemo(() => itens.find((item) => item.id === vinculoAtivoId) || null, [itens, vinculoAtivoId]);
 
   const itensFiltrados = useMemo(() => {
@@ -715,10 +962,16 @@ export default function ReajustesPage() {
   }, [itens, filtroTexto, filtroStatus, somenteEfetivados]);
 
   function persistir(novos, options = {}) {
-    const deveRecalcular = options.recalcularImpacto && realizadoImpactoRows.length;
+    const rowsImpacto = realizadoImpactoRows.length
+      ? realizadoImpactoRows
+      : (carregarCacheRealizadoImpacto()?.rows || []);
+    const deveRecalcular = options.recalcularImpacto && rowsImpacto.length;
     const base = deveRecalcular
-      ? calcularImpactosReajustes(novos, realizadoImpactoRows, config)
+      ? calcularImpactosReajustes(novos, rowsImpacto, { ...config, mesReferencia })
       : novos;
+    if (deveRecalcular && !realizadoImpactoRows.length && rowsImpacto.length) {
+      setRealizadoImpactoRows(rowsImpacto);
+    }
     setItens(base);
     salvarReajustes(base);
     return base;
@@ -844,39 +1097,74 @@ export default function ReajustesPage() {
     setErro('');
   }
 
-  async function calcularImpacto() {
-    setCarregando(true);
+  async function calcularImpacto(options = {}) {
+    const automatico = options.automatico === true;
+    if (!automatico) {
+      setCarregando(true);
+    }
     setErro('');
     const consulta = obterPeriodoConsultaImpactoReajustes(itens, config);
     if (!consulta.inicio) {
-      setCarregando(false);
-      setErro('Informe a Data_Inicio dos reajustes antes de calcular. O impacto agora é sempre automático pela data de início, sem período manual.');
+      if (!automatico) {
+        setCarregando(false);
+        setErro('Informe a Data_Inicio dos reajustes antes de calcular. O impacto agora é sempre automático pela data de início, sem período manual.');
+      }
       return;
     }
 
-    setMensagem(`Buscando Realizado a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
+    if (!automatico) {
+      setMensagem(`Buscando Realizado a partir de ${formatDate(consulta.inicio)}. O realizado será medido até a data mais recente encontrada na base.`);
+    }
     try {
       const { rows, totalCompativel, limit, origem } = await carregarRealizadoParaReajustes({
         inicio: consulta.inicio,
       }, { limit: 500000 });
 
-      const calculados = calcularImpactosReajustes(itens, rows || [], config);
+      if (automatico && !(rows || []).length) return;
+
+      const datas = (rows || [])
+        .map((row) => String(row.dataEmissao || row.emissao || row.data || '').slice(0, 10))
+        .filter((d) => /^20\d{2}-\d{2}-\d{2}$/.test(d))
+        .sort();
+      const primeiraDataBase = datas[0] || '';
+      const ultimaDataBase = datas.at(-1) || '';
+      setDiagRealizado({
+        totalRows: (rows || []).length,
+        totalCompativel: Number(totalCompativel || totalCtesRealizado(rows || [])),
+        primeiraData: primeiraDataBase,
+        ultimaData: ultimaDataBase,
+        origem,
+        consultaInicio: consulta.inicio,
+        calculadoEm: new Date().toISOString(),
+      });
+
+      const calculados = calcularImpactosReajustes(itens, rows || [], { ...config, mesReferencia });
       setRealizadoImpactoRows(rows || []);
+      salvarCacheRealizadoImpacto(rows || [], consulta.inicio);
       const nomesCalculados = nomesUnicosRealizado(rows || []);
       if (nomesCalculados.length) setOpcoesRealizado(nomesCalculados);
       persistir(calculados);
       const resumoCalculado = resumoReajustes(calculados);
+      const semRealizado = calculados.filter((item) => item.semRealizadoAposInicio).length;
+      const ultimaBase = formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base';
 
       setMensagem(
-        `Impacto calculado com ${Number(totalCompativel || totalCtesRealizado(rows || [])).toLocaleString('pt-BR')} CT-e(s). `
+        `${automatico ? 'Impacto recalculado automaticamente' : 'Impacto calculado'} com ${Number(totalCompativel || totalCtesRealizado(rows || [])).toLocaleString('pt-BR')} CT-e(s). `
         + `Fonte: ${origem}. `
         + `Base prevista: média dos ${Number(config.mesesBaseImpacto || 3).toLocaleString('pt-BR')} mês(es) anteriores à Data_Inicio. `
-        + `Realizado: da Data_Inicio até ${formatDate(resumoCalculado.ultimaDataRealizado) || 'a última data da base'}${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`
+        + `Realizado: da Data_Inicio até ${ultimaBase}${totalCompativel > limit ? ' dentro do limite exportado' : ''}.`
+        + (semRealizado
+          ? ` ${semRealizado.toLocaleString('pt-BR')} reajuste(s) ainda sem CT-es após a vigência${ultimaBase !== '-' ? ` (base atual até ${ultimaBase})` : ''}.`
+          : '')
       );
     } catch (error) {
-      setErro(error.message || 'Erro ao calcular impacto pelo Realizado.');
+      if (!automatico) {
+        setErro(error.message || 'Erro ao calcular impacto pelo Realizado.');
+      }
     } finally {
-      setCarregando(false);
+      if (!automatico) {
+        setCarregando(false);
+      }
     }
   }
 
@@ -902,9 +1190,16 @@ export default function ReajustesPage() {
       Reducao_Realizada_Efetivada: resumo.reducaoImpactoRealizadaEfetivada,
     }];
 
+    const rowsImpacto = realizadoImpactoRows.length
+      ? realizadoImpactoRows
+      : (carregarCacheRealizadoImpacto()?.rows || []);
+    const serie = calcularSerieMensalReajustes(itens, rowsImpacto, config);
+
     baixarXlsx(`controle-reajustes-impacto-${new Date().toISOString().slice(0, 10)}.xlsx`, {
       Resumo: resumoRows,
       Controle_Reajustes: relatorio,
+      Impacto_Mensal: linhasImpactoMensal(serie),
+      Impacto_Mensal_Detalhe: linhasImpactoMensalDetalhe(serie),
       Efetivados: efetivados,
       Sem_Vinculo: semVinculo,
     });
@@ -1017,8 +1312,8 @@ export default function ReajustesPage() {
           <div className="summary-card"><span>3. Frete base médio/mês</span><strong>{formatarMoedaReajuste(resumo.freteBase)}</strong><small>{toNumber(config.mesesBaseImpacto || 3)} mês(es) antes</small></div>
           <div className="summary-card"><span>4. Previsto repassado/mês</span><strong>{formatarMoedaReajuste(resumo.impactoTotal)}</strong><small>média base × aplicado</small></div>
           <div className="summary-card"><span>5. Saving previsto/mês</span><strong>{formatarMoedaReajuste(resumo.reducaoImpactoPrevisto)}</strong><small>solicitado - aplicado</small></div>
-          <div className="summary-card"><span>6. Realizado repassado/mês</span><strong>{formatarMoedaReajuste(resumo.impactoRealizado)}</strong><small>mensalizado após início</small></div>
-          <div className="summary-card"><span>7. Saving realizado/mês</span><strong>{formatarMoedaReajuste(resumo.reducaoImpactoRealizada)}</strong><small>solicitado - aplicado</small></div>
+          <div className="summary-card"><span>6. Realizado repassado{mesReferencia ? ` ${mesReferenciaLabel}` : '/mês'}</span><strong>{formatarMoedaReajuste(resumo.impactoRealizado)}</strong><small>{mesReferencia ? `total do mês ${mesReferenciaLabel}` : 'mensalizado após início'}</small></div>
+          <div className="summary-card"><span>7. Saving realizado{mesReferencia ? ` ${mesReferenciaLabel}` : '/mês'}</span><strong>{formatarMoedaReajuste(resumo.reducaoImpactoRealizada)}</strong><small>solicitado - aplicado</small></div>
         </div>
 
         <div className="hint-box compact">
@@ -1135,8 +1430,12 @@ export default function ReajustesPage() {
               <option value="3">3 meses anteriores à vigência</option>
             </select>
           </label>
-          <label className="field">Realizado até
-            <input value={resumo.ultimaDataRealizado ? formatDate(resumo.ultimaDataRealizado) : 'Data mais recente da base'} readOnly />
+          <label className="field">Última data base CT-es
+            <input
+              value={resumo.ultimaDataRealizado ? formatDate(resumo.ultimaDataRealizado) : 'Sem cálculo ainda'}
+              readOnly
+              title="Data mais recente encontrada na base de CT-es durante o último cálculo de impacto. Não é editável — reflete o que há na base. Se anterior à data de início dos reajustes, o realizado ficará zerado."
+            />
           </label>
           <label className="field">Busca
             <input value={filtroTexto} onChange={(event) => setFiltroTexto(event.target.value)} placeholder="Transportadora, vínculo, observação..." />
@@ -1144,6 +1443,14 @@ export default function ReajustesPage() {
         </div>
 
         <div className="form-grid three">
+          <label className="field">Mês de referência (realizado)
+            <select value={mesReferencia} onChange={(event) => setMesReferencia(event.target.value)}>
+              <option value="">Todo o período (mensalizado)</option>
+              {mesesRealizadoDisponiveis.map((mes) => (
+                <option key={mes} value={mes}>{formatarMesReferencia(mes)}</option>
+              ))}
+            </select>
+          </label>
           <label className="field">Status
             <select value={filtroStatus} onChange={(event) => setFiltroStatus(event.target.value)}>
               <option value="">Todos</option>
@@ -1154,9 +1461,132 @@ export default function ReajustesPage() {
             <input type="checkbox" checked={somenteEfetivados} onChange={(event) => setSomenteEfetivados(event.target.checked)} />
             Mostrar apenas reajustes efetivados/vigentes
           </label>
-          <div className="hint-box compact" style={{ margin: 0 }}>
-            Sem período manual: cada linha usa sua própria Data_Inicio para formar a base anterior e medir o realizado.
+        </div>
+
+        <div className="hint-box compact" style={{ marginTop: 8 }}>
+          {mesReferencia
+            ? <>Filtrando o realizado pelo <strong>mês civil de {mesReferenciaLabel}</strong> (do dia 1 ao último dia do mês, a partir da Data_Inicio de cada reajuste). O valor exibido é o total do mês, sem mensalização. O previsto continua sendo a média mensal da base anterior, para comparação.</>
+            : <>Sem período manual: cada linha usa sua própria Data_Inicio para formar a base anterior e medir o realizado. Selecione um <strong>mês de referência</strong> acima para isolar o impacto realizado de um mês civil específico.</>}
+        </div>
+
+        {resumo.ultimaDataRealizado && minDataInicioReajuste && resumo.ultimaDataRealizado < minDataInicioReajuste && (
+          <div className="hint-box compact" style={{ marginTop: 10, background: '#fff3cd', borderColor: '#ffc107', color: '#856404' }}>
+            <strong>Por que o realizado está zerado?</strong>{' '}
+            A consulta retornou CT-es até <strong>{formatDate(resumo.ultimaDataRealizado)}</strong>,
+            mas os reajustes iniciam a partir de <strong>{formatDate(minDataInicioReajuste)}</strong>.{' '}
+            Possíveis causas: <strong>(1)</strong> O RPC <code>reajustes_realizado_diario_local</code> no Supabase ainda tem o filtro antigo de canal —
+            aplique o arquivo <code>supabase/reajustes_realizado_local_rpc.sql</code> no SQL Editor do Supabase para corrigir.{' '}
+            <strong>(2)</strong> A tabela <code>realizado_local_ctes</code> realmente não possui CT-es após {formatDate(minDataInicioReajuste)} — verifique no Supabase.{' '}
+            Após aplicar o SQL, clique em <strong>Calcular impacto</strong> novamente.
           </div>
+        )}
+
+        {diagRealizado && (
+          <div className="hint-box compact" style={{ marginTop: 8, background: '#e8f4fd', borderColor: '#2196f3', color: '#0d47a1', fontSize: '0.82em' }}>
+            <strong>Diagnóstico da última consulta de CT-es</strong>{' '}
+            (calculado em {new Date(diagRealizado.calculadoEm).toLocaleTimeString('pt-BR')}):
+            {' '}<strong>{diagRealizado.totalCompativel.toLocaleString('pt-BR')}</strong> CT-e(s) encontrado(s)
+            {diagRealizado.primeiraData && diagRealizado.ultimaData
+              ? <> no período <strong>{formatDate(diagRealizado.primeiraData)}</strong> — <strong>{formatDate(diagRealizado.ultimaData)}</strong></>
+              : ' (sem data identificada)'}
+            {' '}· Fonte: <strong>{diagRealizado.origem}</strong>
+            {' '}· Início consulta: <strong>{formatDate(diagRealizado.consultaInicio)}</strong>
+            {diagRealizado.totalRows !== diagRealizado.totalCompativel
+              ? <> · Linhas brutas: {diagRealizado.totalRows.toLocaleString('pt-BR')}</>
+              : null}
+          </div>
+        )}
+      </section>
+
+      <section className="panel-card">
+        <div className="section-row compact-top">
+          <div>
+            <div className="panel-title">Painel de impacto</div>
+            <p className="compact">Evolução mensal do impacto, comparativo previsto × realizado e ranking dos reajustes com maior peso. Fonte única: série mensal usada também no relatório (aba Impacto_Mensal).</p>
+          </div>
+          {dashboard.melhorMes ? (
+            <span className="pill-soft">Maior realizado: {dashboard.melhorMes.mesLabel} • {formatarMoedaReajuste(dashboard.melhorMes.impactoRealizadoRepassado)}</span>
+          ) : null}
+        </div>
+
+        <div className="summary-strip lotacao-summary-mini">
+          <div className="summary-card"><span>Reajustes vigentes</span><strong>{dashboard.reajustesVigentes.toLocaleString('pt-BR')}</strong><small>com início até hoje</small></div>
+          <div className="summary-card"><span>Meses com realizado</span><strong>{dashboard.mesesComRealizado.toLocaleString('pt-BR')}</strong><small>{dashboard.ctesAcum.toLocaleString('pt-BR')} CT-es no total</small></div>
+          <div className="summary-card"><span>Previsto repassado acumulado</span><strong>{formatarMoedaReajuste(dashboard.previstoRepassadoAcum)}</strong><small>referência mensal somada</small></div>
+          <div className="summary-card"><span>Realizado repassado acumulado</span><strong>{formatarMoedaReajuste(dashboard.realizadoRepassadoAcum)}</strong><small>medido na base de CT-es</small></div>
+          <div className="summary-card"><span>Aderência realizado × previsto</span><strong>{formatarPercentualReajuste(dashboard.aderencia)}</strong><small>realizado ÷ previsto</small></div>
+          <div className="summary-card"><span>Saving realizado acumulado</span><strong>{formatarMoedaReajuste(dashboard.savingRealizadoAcum)}</strong><small>solicitado − repassado</small></div>
+        </div>
+
+        <div className="form-grid two" style={{ marginTop: 14, alignItems: 'start' }}>
+          <div className="hint-box" style={{ margin: 0 }}>
+            <div className="panel-title" style={{ fontSize: 15 }}>Evolução do impacto realizado por mês</div>
+            <GraficoBarrasMensal
+              dados={dashboard.meses}
+              barras={[
+                { key: 'impactoRealizadoRepassado', cor: '#0b1f52', nome: 'Realizado repassado' },
+                { key: 'savingRealizado', cor: '#16a34a', nome: 'Saving realizado' },
+              ]}
+              formatar={formatarMoedaReajuste}
+            />
+          </div>
+          <div className="hint-box" style={{ margin: 0 }}>
+            <div className="panel-title" style={{ fontSize: 15 }}>Previsto × realizado (repassado) por mês</div>
+            <GraficoBarrasMensal
+              dados={dashboard.meses}
+              barras={[
+                { key: 'impactoPrevistoRepassado', cor: '#94a3b8', nome: 'Previsto (referência)' },
+                { key: 'impactoRealizadoRepassado', cor: '#2563eb', nome: 'Realizado' },
+              ]}
+              formatar={formatarMoedaReajuste}
+            />
+          </div>
+        </div>
+
+        <div className="hint-box" style={{ marginTop: 14 }}>
+          <div className="section-row compact-top">
+            <div className="panel-title" style={{ fontSize: 15 }}>
+              Classificação por impacto — top {ranking.linhas.length} ({ranking.usarRealizado ? 'realizado' : 'previsto'} repassado)
+            </div>
+          </div>
+          {ranking.linhas.length ? (
+            <div className="sim-analise-tabela-wrap" style={{ maxHeight: 320 }}>
+              <table className="sim-analise-tabela">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Transportadora</th>
+                    <th>Previsto repassado/mês</th>
+                    <th>Realizado repassado</th>
+                    <th>Saving realizado</th>
+                    <th>% do total</th>
+                    <th>% acumulado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ranking.linhas.map((linha, indice) => (
+                    <tr key={`${linha.nome}-${indice}`}>
+                      <td>{indice + 1}</td>
+                      <td>
+                        <strong>{linha.nome}</strong>
+                        <small style={{ display: 'block', color: '#64748b' }}>{linha.canal || 'Sem canal'}</small>
+                      </td>
+                      <td>{formatarMoedaReajuste(linha.previsto)}</td>
+                      <td><strong>{formatarMoedaReajuste(linha.realizado)}</strong></td>
+                      <td>{formatarMoedaReajuste(linha.savingRealizado)}</td>
+                      <td>{formatarPercentualReajuste(linha.percentual)}</td>
+                      <td>
+                        {formatarPercentualReajuste(linha.percentualAcumulado)}
+                        {linha.percentualAcumulado <= 0.8 ? <span className="pill-soft" style={{ marginLeft: 6, padding: '1px 6px' }}>Pareto</span> : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="compact" style={{ color: '#64748b' }}>Nenhum reajuste com impacto calculado ainda. Informe a Data_Inicio, vincule a transportadora e calcule o impacto.</p>
+          )}
         </div>
       </section>
 
@@ -1196,11 +1626,11 @@ export default function ReajustesPage() {
                 <th>Previsto solicitado/mês</th>
                 <th>Previsto repassado/mês</th>
                 <th>Saving previsto/mês</th>
-                <th>Período realizado</th>
+                <th>{mesReferencia ? `Período realizado (${mesReferenciaLabel})` : 'Período realizado'}</th>
                 <th>CT-es realizado</th>
-                <th>Realizado solicitado/mês</th>
-                <th>Realizado repassado/mês</th>
-                <th>Saving realizado/mês</th>
+                <th>{`Realizado solicitado${sufixoRealizado}`}</th>
+                <th>{`Realizado repassado${sufixoRealizado}`}</th>
+                <th>{`Saving realizado${sufixoRealizado}`}</th>
                 <th>% base</th>
                 <th>% realizado</th>
                 <th>Dif. p.p.</th>
@@ -1261,7 +1691,13 @@ export default function ReajustesPage() {
                     <td>{formatarMoedaReajuste(item.impactoPrevistoSolicitado)}</td>
                     <td><strong>{formatarMoedaReajuste(item.impactoPrevistoRepassado || item.impactoPrevisto || item.impactoPeriodo)}</strong></td>
                     <td><strong>{formatarMoedaReajuste(item.reducaoImpactoPrevisto)}</strong></td>
-                    <td>{periodoLabel(item.inicioImpactoRealizado || item.dataInicio, item.fimImpactoRealizado)}<small style={{ display: 'block', color: '#64748b' }}>{item.diasRealizadosImpacto ? `${toNumber(item.diasRealizadosImpacto).toLocaleString('pt-BR')} dia(s)` : ''}</small></td>
+                    <td>
+                      {periodoLabel(item.inicioImpactoRealizado || item.dataInicio, item.fimImpactoRealizado)}
+                      <small style={{ display: 'block', color: '#64748b' }}>{item.diasRealizadosImpacto ? `${toNumber(item.diasRealizadosImpacto).toLocaleString('pt-BR')} dia(s)` : ''}</small>
+                      {item.semRealizadoAposInicio && item.motivoRealizadoIndisponivel ? (
+                        <small style={{ display: 'block', color: '#b45309', maxWidth: 220 }}>{item.motivoRealizadoIndisponivel}</small>
+                      ) : null}
+                    </td>
                     <td>{toNumber(item.ctesRealizadoReajuste).toLocaleString('pt-BR')}</td>
                     <td>{formatarMoedaReajuste(item.impactoRealizadoSolicitado)}</td>
                     <td><strong>{formatarMoedaReajuste(item.impactoRealizadoRepassado || item.impactoRealizado)}</strong></td>

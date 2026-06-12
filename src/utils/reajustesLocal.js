@@ -294,7 +294,15 @@ function rowPertenceAoItem(rowNorm, nomes = [], usarExato = false) {
 
 
 function dataRealizadoRow(row = {}) {
-  const value = row.data || row.dataRef || row.data_ref || row.dataEmissao || row.dataEmissaoCte || row.emissao || row.competencia || row.mes;
+  const value = row.data
+    || row.dataRef
+    || row.data_ref
+    || row.data_emissao
+    || row.dataEmissao
+    || row.dataEmissaoCte
+    || row.emissao
+    || row.competencia
+    || row.mes;
   const raw = String(value || '').slice(0, 10);
   if (/^20\d{2}-\d{2}-\d{2}$/.test(raw)) return raw;
   if (/^20\d{2}-\d{2}$/.test(raw)) return `${raw}-01`;
@@ -347,6 +355,41 @@ function mesesBaseImpacto(periodo = {}) {
   return Math.min(Math.max(1, Math.round(raw)), 12);
 }
 
+function mesReferenciaPeriodo(periodo = {}) {
+  const raw = String(periodo?.mesReferencia || periodo?.mesRef || '').slice(0, 7);
+  return /^20\d{2}-\d{2}$/.test(raw) ? raw : '';
+}
+
+function ultimoDiaMes(mesRef = '') {
+  const match = String(mesRef || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match) return '';
+  const ano = Number(match[1]);
+  const mes = Number(match[2]);
+  if (mes < 1 || mes > 12) return '';
+  const dia = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+  return `${match[1]}-${match[2]}-${String(dia).padStart(2, '0')}`;
+}
+
+const MESES_ABREV_REAJUSTE = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+
+export function formatarMesReferencia(mesRef = '') {
+  const match = String(mesRef || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match) return '';
+  const mes = Number(match[2]);
+  if (mes < 1 || mes > 12) return '';
+  return `${MESES_ABREV_REAJUSTE[mes - 1]}/${match[1]}`;
+}
+
+export function mesesDisponiveisRealizado(rows = []) {
+  const meses = new Set();
+  (rows || []).forEach((row) => {
+    const data = row?.dataRealizado || dataRealizadoRow(row);
+    const mes = String(data || '').slice(0, 7);
+    if (/^20\d{2}-\d{2}$/.test(mes)) meses.add(mes);
+  });
+  return [...meses].sort();
+}
+
 function dataInicioItem(item = {}) {
   return isoDate(item.dataInicio || item.dataPrimeiraParcela || '');
 }
@@ -375,7 +418,16 @@ function mesesEquivalentes(inicio = '', fim = '') {
   return dias / 30;
 }
 
-function calcularJanelaItem(item = {}, periodo = {}, ultimaDataRealizado = '') {
+function ultimaDataRealizadoLinhas(linhas = [], inicio = '') {
+  const inicioIso = isoDate(inicio);
+  return (linhas || [])
+    .map((row) => row.dataRealizado || dataRealizadoRow(row))
+    .filter((data) => data && (!inicioIso || data >= inicioIso))
+    .sort()
+    .at(-1) || '';
+}
+
+function calcularJanelaItem(item = {}, periodo = {}, ultimaDataRealizado = '', linhasTransportadora = []) {
   const inicio = dataInicioItem(item);
   const meses = mesesBaseImpacto(periodo);
 
@@ -389,10 +441,13 @@ function calcularJanelaItem(item = {}, periodo = {}, ultimaDataRealizado = '') {
       temDataInicio: false,
       diasRealizados: 0,
       mesesRealizados: 0,
+      ultimaDataRealizadoBase: ultimaDataRealizado || '',
     };
   }
 
-  const fimRealizado = ultimaDataRealizado && ultimaDataRealizado >= inicio ? ultimaDataRealizado : '';
+  const ultimaDataCarrier = ultimaDataRealizadoLinhas(linhasTransportadora, inicio);
+  const fimRealizado = ultimaDataCarrier
+    || (ultimaDataRealizado && ultimaDataRealizado >= inicio ? ultimaDataRealizado : '');
   const diasRealizados = fimRealizado ? diffDaysInclusive(inicio, fimRealizado) : 0;
 
   return {
@@ -404,7 +459,39 @@ function calcularJanelaItem(item = {}, periodo = {}, ultimaDataRealizado = '') {
     temDataInicio: true,
     diasRealizados,
     mesesRealizados: mesesEquivalentes(inicio, fimRealizado),
+    ultimaDataRealizadoBase: ultimaDataRealizado || '',
   };
+}
+
+export function motivoRealizadoIndisponivel(item = {}) {
+  const inicio = dataInicioItem(item);
+  if (!inicio) return 'Informe a data de início do reajuste.';
+
+  const mesRef = String(item.mesReferenciaImpacto || '');
+  if (mesRef && item.mesReferenciaAntesInicio) {
+    return `O reajuste inicia em ${inicio.split('-').reverse().join('/')}; o mês ${formatarMesReferencia(mesRef)} é anterior à vigência.`;
+  }
+
+  if (item.fimImpactoRealizado) return '';
+
+  const temVinculo = Boolean(
+    (Array.isArray(item.transportadorasRealizado) && item.transportadorasRealizado.length)
+    || item.transportadoraSistema
+  );
+
+  if (mesRef) {
+    if (!temVinculo && !item.vinculado) return 'Vincule a transportadora ao Realizado Local.';
+    return `Sem CT-es de ${formatarMesReferencia(mesRef)} para esta transportadora.`;
+  }
+
+  const ultimaBase = isoDate(item.ultimaDataRealizadoImpacto || item.ultimaDataRealizadoBase || '');
+  if (ultimaBase && ultimaBase < inicio) {
+    return `A base de realizado vai até ${ultimaBase.split('-').reverse().join('/')}; o reajuste inicia em ${inicio.split('-').reverse().join('/')}.`;
+  }
+
+  if (!temVinculo && !item.vinculado) return 'Vincule a transportadora ao Realizado Local.';
+
+  return 'Clique em "Calcular impacto" após atualizar a base de realizado.';
 }
 
 export function obterPeriodoConsultaImpactoReajustes(itens = [], periodo = {}) {
@@ -438,15 +525,53 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
     .sort()
     .at(-1) || '';
 
+  const mesRef = mesReferenciaPeriodo(periodo);
+
   return (itens || []).map((item) => {
     const { nomes, usarExato } = nomesPossiveis(item);
     const linhasTransportadora = realizadosNorm.filter((row) => rowPertenceAoItem(row.transportadoraNorm, nomes, usarExato));
-    const janela = calcularJanelaItem(item, periodo, ultimaDataRealizado);
+    const janela = calcularJanelaItem(item, periodo, ultimaDataRealizado, linhasTransportadora);
 
     const linhasBase = janela.temDataInicio ? filtrarPorData(linhasTransportadora, janela.inicioBase, janela.fimBase) : [];
-    const linhasRealizadoReajuste = janela.inicioRealizado && janela.fimRealizado
-      ? filtrarPorData(linhasTransportadora, janela.inicioRealizado, janela.fimRealizado)
-      : [];
+
+    // Janela de realizado: período completo (mensalizado) ou um único mês civil de referência.
+    let inicioRealizadoEfetivo = janela.inicioRealizado;
+    let fimRealizadoEfetivo = janela.fimRealizado;
+    let mesesRealizados = janela.mesesRealizados > 0 ? janela.mesesRealizados : 0;
+    let diasRealizados = janela.diasRealizados;
+    let mesReferenciaAntesInicio = false;
+    let linhasRealizadoReajuste;
+
+    if (mesRef) {
+      const inicioItem = dataInicioItem(item);
+      const mesItem = inicioItem ? inicioItem.slice(0, 7) : '';
+      const inicioMesRef = `${mesRef}-01`;
+      const fimMesRef = ultimoDiaMes(mesRef);
+      const elegivel = Boolean(inicioItem && mesRef >= mesItem);
+      mesReferenciaAntesInicio = Boolean(inicioItem && mesRef < mesItem);
+
+      if (elegivel) {
+        // No mês de início, conta a partir da vigência; nos meses seguintes, o mês civil inteiro.
+        const inicioFiltro = inicioItem > inicioMesRef ? inicioItem : inicioMesRef;
+        linhasRealizadoReajuste = filtrarPorData(linhasTransportadora, inicioFiltro, fimMesRef);
+        const ultimaNoMes = ultimaDataRealizadoLinhas(linhasRealizadoReajuste, inicioFiltro);
+        inicioRealizadoEfetivo = linhasRealizadoReajuste.length ? inicioFiltro : '';
+        fimRealizadoEfetivo = ultimaNoMes || '';
+        diasRealizados = fimRealizadoEfetivo ? diffDaysInclusive(inicioFiltro, fimRealizadoEfetivo) : 0;
+        // Mês civil único: sem mensalização (1 mês equivalente).
+        mesesRealizados = linhasRealizadoReajuste.length ? 1 : 0;
+      } else {
+        linhasRealizadoReajuste = [];
+        inicioRealizadoEfetivo = '';
+        fimRealizadoEfetivo = '';
+        diasRealizados = 0;
+        mesesRealizados = 0;
+      }
+    } else {
+      linhasRealizadoReajuste = janela.inicioRealizado && janela.fimRealizado
+        ? filtrarPorData(linhasTransportadora, janela.inicioRealizado, janela.fimRealizado)
+        : [];
+    }
 
     const valorFreteBaseTotal = linhasBase.reduce((acc, row) => acc + row.valorCteNum, 0);
     const valorNFBaseTotal = linhasBase.reduce((acc, row) => acc + row.valorNfNum, 0);
@@ -463,7 +588,6 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
     const pesoRealizadoTotal = linhasRealizadoReajuste.reduce((acc, row) => acc + row.pesoNum, 0);
     const ctesRealizadoReajuste = linhasRealizadoReajuste.reduce((acc, row) => acc + row.ctesNum, 0);
 
-    const mesesRealizados = janela.mesesRealizados > 0 ? janela.mesesRealizados : 0;
     const valorFreteRealizadoReajuste = mesesRealizados ? valorFreteRealizadoTotal / mesesRealizados : 0;
     const valorNFRealizadoReajuste = mesesRealizados ? valorNFRealizadoTotal / mesesRealizados : 0;
     const pesoRealizadoReajuste = mesesRealizados ? pesoRealizadoTotal / mesesRealizados : 0;
@@ -531,16 +655,153 @@ export function calcularImpactosReajustes(itens = [], realizados = [], periodo =
       variacaoPercentualFreteRealizado,
       inicioImpactoBase: janela.inicioBase,
       fimImpactoBase: janela.fimBase,
-      inicioImpactoRealizado: janela.inicioRealizado,
-      fimImpactoRealizado: janela.fimRealizado,
+      inicioImpactoRealizado: inicioRealizadoEfetivo,
+      fimImpactoRealizado: fimRealizadoEfetivo,
       mesesBaseImpacto: janela.meses,
-      diasRealizadosImpacto: janela.diasRealizados,
-      mesesRealizadosImpacto: janela.mesesRealizados,
+      diasRealizadosImpacto: diasRealizados,
+      mesesRealizadosImpacto: mesesRealizados,
+      mesReferenciaImpacto: mesRef,
+      mesReferenciaAntesInicio,
       ultimaDataRealizadoImpacto: ultimaDataRealizado,
+      ultimaDataRealizadoBase: janela.ultimaDataRealizadoBase || ultimaDataRealizado,
       semDataInicioImpacto: !janela.temDataInicio,
+      semRealizadoAposInicio: Boolean(janela.temDataInicio && !fimRealizadoEfetivo),
+      motivoRealizadoIndisponivel: '',
       vinculado: Boolean((item.transportadorasRealizado || []).length || item.transportadoraSistema || linhasTransportadora.length),
     };
+  }).map((item) => ({
+    ...item,
+    motivoRealizadoIndisponivel: motivoRealizadoIndisponivel(item),
+  }));
+}
+
+function enumerarMeses(mesInicial = '', mesFinal = '') {
+  if (!/^20\d{2}-\d{2}$/.test(mesInicial) || !/^20\d{2}-\d{2}$/.test(mesFinal)) return [];
+  if (mesFinal < mesInicial) return [];
+  const meses = [];
+  let atual = `${mesInicial}-01`;
+  let guard = 0;
+  while (atual.slice(0, 7) <= mesFinal && guard < 600) {
+    meses.push(atual.slice(0, 7));
+    atual = addMonthsIso(atual, 1);
+    guard += 1;
+  }
+  return meses;
+}
+
+export function calcularSerieMensalReajustes(itens = [], realizados = [], periodo = {}) {
+  const realizadosNorm = (realizados || []).map((row) => {
+    const dataRealizado = dataRealizadoRow(row);
+    return {
+      data: dataRealizado,
+      dataRealizado,
+      transportadoraNorm: normalizarTextoReajuste(row.transportadora || row.nomeTransportadora || row.transportadoraRealizada),
+      valorCteNum: toNumber(row.valorCte || row.valorCTe || row.valorFrete || row.freteRealizado),
+      ctesNum: Math.max(toNumber(row.ctes ?? row.totalCtes ?? row.quantidadeCtes), 1),
+    };
+  }).filter((row) => row.dataRealizado);
+
+  const ultimaDataRealizado = realizadosNorm
+    .map((row) => row.dataRealizado)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || '';
+
+  const itensCalc = (itens || []).map((item) => {
+    const { nomes, usarExato } = nomesPossiveis(item);
+    const linhas = realizadosNorm.filter((row) => rowPertenceAoItem(row.transportadoraNorm, nomes, usarExato));
+    const janela = calcularJanelaItem(item, periodo, ultimaDataRealizado, linhas);
+    const inicio = dataInicioItem(item);
+    const mesItem = inicio ? inicio.slice(0, 7) : '';
+    const linhasBase = janela.temDataInicio ? filtrarPorData(linhas, janela.inicioBase, janela.fimBase) : [];
+    const valorFreteBaseTotal = linhasBase.reduce((acc, row) => acc + row.valorCteNum, 0);
+    const mesesBase = Math.max(Number(janela.meses || mesesBaseImpacto(periodo)), 1);
+    const valorFretePeriodo = valorFreteBaseTotal / mesesBase;
+    const pctSolicitado = toNumber(item.reajusteSolicitado) || reajusteBase(item);
+    const pctRepassado = toNumber(item.reajusteAplicado) || toNumber(item.propostaFinal) || pctSolicitado;
+
+    return {
+      item,
+      linhas,
+      inicio,
+      mesItem,
+      pctSolicitado,
+      pctRepassado,
+      previstoSolicitadoMes: valorFretePeriodo * pctSolicitado,
+      previstoRepassadoMes: valorFretePeriodo * pctRepassado,
+      inicioBaseMes: janela.inicioBase ? janela.inicioBase.slice(0, 7) : '',
+    };
   });
+
+  const iniciosBase = itensCalc.map((calc) => calc.inicioBaseMes).filter(Boolean).sort();
+  const mesInicial = iniciosBase[0] || '';
+  const mesFinal = ultimaDataRealizado ? ultimaDataRealizado.slice(0, 7) : '';
+  const mesesLista = (mesInicial && mesFinal) ? enumerarMeses(mesInicial, mesFinal) : [];
+
+  const porItem = [];
+
+  const meses = mesesLista.map((mes) => {
+    const fimMes = ultimoDiaMes(mes);
+    let freteRealizado = 0;
+    let ctes = 0;
+    let impactoRealizadoSolicitado = 0;
+    let impactoRealizadoRepassado = 0;
+    let impactoPrevistoSolicitado = 0;
+    let impactoPrevistoRepassado = 0;
+    let itensVigentes = 0;
+
+    itensCalc.forEach((calc) => {
+      const vigente = Boolean(calc.inicio && mes >= calc.mesItem);
+      if (!vigente) return;
+      itensVigentes += 1;
+      impactoPrevistoSolicitado += calc.previstoSolicitadoMes;
+      impactoPrevistoRepassado += calc.previstoRepassadoMes;
+
+      const inicioFiltro = mes === calc.mesItem ? calc.inicio : `${mes}-01`;
+      const linhasMes = filtrarPorData(calc.linhas, inicioFiltro, fimMes);
+      const freteItem = linhasMes.reduce((acc, row) => acc + row.valorCteNum, 0);
+      const ctesItem = linhasMes.reduce((acc, row) => acc + row.ctesNum, 0);
+
+      freteRealizado += freteItem;
+      ctes += ctesItem;
+      const realizadoSolicitadoItem = freteItem * calc.pctSolicitado;
+      const realizadoRepassadoItem = freteItem * calc.pctRepassado;
+      impactoRealizadoSolicitado += realizadoSolicitadoItem;
+      impactoRealizadoRepassado += realizadoRepassadoItem;
+
+      if (freteItem > 0 || ctesItem > 0) {
+        porItem.push({
+          id: calc.item.id || '',
+          transportadora: calc.item.transportadoraInformada || '',
+          canal: calc.item.canal || '',
+          mes,
+          mesLabel: formatarMesReferencia(mes),
+          ctes: ctesItem,
+          freteRealizado: freteItem,
+          impactoRealizadoSolicitado: realizadoSolicitadoItem,
+          impactoRealizadoRepassado: realizadoRepassadoItem,
+          savingRealizado: Math.max(realizadoSolicitadoItem - realizadoRepassadoItem, 0),
+          impactoPrevistoRepassado: calc.previstoRepassadoMes,
+        });
+      }
+    });
+
+    return {
+      mes,
+      mesLabel: formatarMesReferencia(mes),
+      itensVigentes,
+      ctes,
+      freteRealizado,
+      impactoRealizadoSolicitado,
+      impactoRealizadoRepassado,
+      savingRealizado: Math.max(impactoRealizadoSolicitado - impactoRealizadoRepassado, 0),
+      impactoPrevistoSolicitado,
+      impactoPrevistoRepassado,
+      savingPrevisto: Math.max(impactoPrevistoSolicitado - impactoPrevistoRepassado, 0),
+    };
+  });
+
+  return { meses, porItem };
 }
 
 export function isEfetivado(item = {}, fimPeriodo = '') {

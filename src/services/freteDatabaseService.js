@@ -2641,6 +2641,76 @@ export async function listarTransportadorasRealizadoReajustes() {
   return (data || []).map(normalizeReajustesTransportadoraRow).filter((row) => row.nome);
 }
 
+// Tamanho de cada página. O PostgREST/Supabase aplica um max-rows padrão de 1000
+// em respostas de RPC e SELECT. Sem paginação a consulta agregada por dia×transportadora
+// era truncada em 1000 linhas (cobrindo só os primeiros dias do período por causa do
+// ORDER BY crescente), zerando o realizado. Paginar com .range() busca todas as linhas.
+const REAJUSTES_DIARIO_PAGINA = 1000;
+
+async function buscarRpcRealizadoDiarioPaginado(supabase, filtros, limit) {
+  const todos = [];
+  let from = 0;
+
+  while (todos.length < limit) {
+    const to = Math.min(from + REAJUSTES_DIARIO_PAGINA, limit) - 1;
+    const { data, error } = await executarComTimeout(
+      supabase
+        .rpc('reajustes_realizado_diario_local', {
+          p_inicio: filtros.inicio || null,
+          p_fim: filtros.fim || null,
+        })
+        .range(from, to),
+      30000,
+      'A consulta consolidada de CT-es para reajustes demorou demais.'
+    );
+    if (error) throw error;
+
+    const pagina = data || [];
+    todos.push(...pagina);
+
+    // Página incompleta = chegamos ao fim dos resultados.
+    if (pagina.length < (to - from + 1)) break;
+    from = to + 1;
+  }
+
+  return todos;
+}
+
+async function buscarSelectRealizadoDiarioPaginado(supabase, filtros, limit) {
+  const todos = [];
+  let from = 0;
+
+  while (todos.length < limit) {
+    const to = Math.min(from + REAJUSTES_DIARIO_PAGINA, limit) - 1;
+
+    let query = supabase
+      .from('realizado_local_ctes')
+      .select(REALIZADO_LOCAL_SELECT_COLUMNS);
+
+    if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
+    if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
+    // Ordenar decrescente garante que, mesmo em caso de truncamento inesperado,
+    // os CT-es mais recentes (que definem ultimaDataRealizado) venham primeiro.
+    query = query.order('data_emissao', { ascending: false, nullsFirst: false });
+    query = query.range(from, to);
+
+    const { data, error } = await executarComTimeout(
+      query,
+      30000,
+      'A consulta direta de CT-es para reajustes demorou demais.'
+    );
+    if (error) throw error;
+
+    const pagina = data || [];
+    todos.push(...pagina);
+
+    if (pagina.length < (to - from + 1)) break;
+    from = to + 1;
+  }
+
+  return todos;
+}
+
 export async function listarRealizadoDiarioReajustes(filtros = {}) {
   const limit = Math.max(1, Math.min(Number(filtros.limit || 100000) || 100000, 100000));
 
@@ -2651,37 +2721,15 @@ export async function listarRealizadoDiarioReajustes(filtros = {}) {
   const supabase = ensureClient();
 
   try {
-    const { data, error } = await executarComTimeout(
-      supabase.rpc('reajustes_realizado_diario_local', {
-        p_inicio: filtros.inicio || null,
-        p_fim: filtros.fim || null,
-      }),
-      30000,
-      'A consulta consolidada de CT-es para reajustes demorou demais.'
-    );
-    if (error) throw error;
-    return (data || []).map(normalizeReajustesRealizadoDiaRow).filter((row) => row.transportadora && row.dataEmissao);
+    const data = await buscarRpcRealizadoDiarioPaginado(supabase, filtros, limit);
+    return data.map(normalizeReajustesRealizadoDiaRow).filter((row) => row.transportadora && row.dataEmissao);
   } catch (rpcError) {
-    let query = supabase
-      .from('realizado_local_ctes')
-      .select(REALIZADO_LOCAL_SELECT_COLUMNS)
-      .not('canal', 'is', null)
-      .neq('canal', '')
-      .limit(limit);
-
-    if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
-    if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
-    query = query.order('data_emissao', { ascending: true, nullsFirst: false });
-
-    const { data, error } = await executarComTimeout(
-      query,
-      30000,
-      'A consulta direta de CT-es para reajustes demorou demais.'
-    );
-    if (error) {
-      throw new Error(`Erro ao carregar realizado_local_ctes para reajustes. RPC: ${rpcError.message || rpcError}. Select: ${error.message || error}`);
+    try {
+      const data = await buscarSelectRealizadoDiarioPaginado(supabase, filtros, limit);
+      return data.map(normalizeRealizadoDbRow);
+    } catch (selectError) {
+      throw new Error(`Erro ao carregar realizado_local_ctes para reajustes. RPC: ${rpcError.message || rpcError}. Select: ${selectError.message || selectError}`);
     }
-    return (data || []).map(normalizeRealizadoDbRow);
   }
 }
 

@@ -20,10 +20,13 @@ import {
   criarTabelaNegociacao,
   excluirTabelaNegociacao,
   excluirRodadaNegociacao,
-  listarItensTabelaNegociacao,
+  contarItensTabelaNegociacao,
+  carregarItensTabelaNegociacaoParaUI,
+  extrairQtdItensResumoTabela,
   listarTabelasNegociacao,
   obterTabelaNegociacao,
   substituirItensTabelaNegociacao,
+  limparItensTabelaNegociacao,
   listarTaxasDestino,
   salvarTaxaDestino,
   excluirTaxaDestino,
@@ -251,6 +254,33 @@ function origemTabelaLabel(tabela) {
   return partes.join(' · ') || '-';
 }
 
+function normalizarOrigemComparacao(valor) {
+  return normalizarTexto(valor)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+function itemOrigemDivergeNegociacao(tabela, item) {
+  if (!tabela || !item) return false;
+  var origemNeg = normalizarOrigemComparacao(tabela.origem);
+  var ufNeg = normalizarOrigemComparacao(tabela.uf_origem);
+  if (!origemNeg && !ufNeg) return false;
+  var origemItem = normalizarOrigemComparacao(item.cidade_origem || item.origem);
+  var ufItem = normalizarOrigemComparacao(item.uf_origem);
+  if (origemNeg && origemItem && origemItem !== origemNeg) return true;
+  if (ufNeg && ufItem && ufItem !== ufNeg) return true;
+  return false;
+}
+
+function origemItemLabel(item) {
+  var cidade = normalizarTexto(item && item.cidade_origem);
+  var uf = normalizarTexto(item && item.uf_origem);
+  if (!cidade && !uf) return '-';
+  return cidade + (uf ? '/' + uf : '');
+}
+
 // ─── constantes ───────────────────────────────────────────────────────────────
 
 function PainelAnaliseReajuste({ analise = {} }) {
@@ -407,8 +437,8 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
       id: gerarId('rota'),
       nomeRota: item.cotacaoFinal || item.cotacao || (item.origem + ' - ' + item.ufDestino + ' - ' + item.cotacaoBase),
       ibgeOrigem: item.ibgeOrigem || '',
-      cidadeOrigem: item.origem || origemFallback || '',
-      ufOrigem: item.ufOrigem || ufOrigemFallback || '',
+      cidadeOrigem: origemFallback || item.origem || '',
+      ufOrigem: ufOrigemFallback || item.ufOrigem || '',
       ibgeDestino: item.ibgeDestino || '', cidadeDestino: item.cidadeDestino || '', ufDestino: item.ufDestino || '',
       canal: c, prazoEntregaDias: item.prazo || '', cotacaoBase: item.cotacaoBase || '',
       cotacaoFinal: item.cotacaoFinal || item.cotacao || '', inicioVigencia: inicioVigencia, fimVigencia: fimVigencia,
@@ -419,8 +449,8 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
       id: gerarId('cotacao'),
       // rota = nome limpo da cotação (após expansão, já sem prefixo UF)
       rota: item.cotacaoFinal || item.cotacao || (item.origem + ' - ' + item.ufDestino + ' - ' + item.cotacaoBase),
-      origem: item.origem || origemFallback || '',
-      ufOrigem: item.ufOrigem || ufOrigemFallback || '',
+      origem: origemFallback || item.origem || '',
+      ufOrigem: ufOrigemFallback || item.ufOrigem || '',
       cidadeDestino: item.cidadeDestino || '',
       ufDestino: item.ufDestino || '',
       ibgeDestino: item.ibgeDestino || '',
@@ -696,6 +726,8 @@ export default function TabelasNegociacaoPage() {
   const [tabelas, setTabelas] = useState([]);
   const [selecionada, setSelecionada] = useState(null);
   const [itensSelecionada, setItensSelecionada] = useState([]);
+  const [qtdItensDb, setQtdItensDb] = useState(0);
+  const [itensCarregamentoParcial, setItensCarregamentoParcial] = useState(false);
   const [generalidades, setGeneralidades] = useState(Object.assign({}, DEFAULT_GENERALIDADES));
   const [salvandoGen, setSalvandoGen] = useState(false);
   const [taxasDestino, setTaxasDestino] = useState([]);
@@ -780,12 +812,49 @@ export default function TabelasNegociacaoPage() {
     negociacaoLotacao: tabelas.filter(function(t) { return getTipoNegociacaoTabela(t) === 'TABELA_LOTACAO'; }).length,
   }), [tabelas]);
 
+  const qtdItensResumo = useMemo(function() {
+    return extrairQtdItensResumoTabela(selecionada || {});
+  }, [selecionada]);
+
+  const qtdItensExibicao = Math.max(qtdItensDb, itensSelecionada.length, qtdItensResumo);
+  const temItensSalvos = qtdItensExibicao > 0;
+  const suspeitaContagemZerada = Boolean(
+    selecionada
+    && qtdItensDb === 0
+    && itensSelecionada.length === 0
+    && qtdItensResumo > 0
+    && !carregandoDetalhe
+  );
+
   const resumoItens = useMemo(() => {
+    var totaisResumo = getResumoTabela(selecionada).totais_itens || {};
+    if (itensCarregamentoParcial && Number(totaisResumo.total || 0) > 0) {
+      var ufsResumo = new Set(itensSelecionada.map(function(i) { return i.uf_destino; }).filter(Boolean));
+      return {
+        rotas: Number(totaisResumo.rotas || 0),
+        cotacoes: Number(totaisResumo.cotacoes || 0),
+        ufs: ufsResumo.size,
+        parcial: true,
+      };
+    }
     var rotas = itensSelecionada.filter(function(i) { return getTipoItem(i) === 'ROTA'; });
     var cotacoes = itensSelecionada.filter(function(i) { return getTipoItem(i) !== 'ROTA'; });
     var ufs = new Set(itensSelecionada.map(function(i) { return i.uf_destino; }).filter(Boolean));
-    return { rotas: rotas.length, cotacoes: cotacoes.length, ufs: ufs.size };
-  }, [itensSelecionada]);
+    return { rotas: rotas.length, cotacoes: cotacoes.length, ufs: ufs.size, parcial: false };
+  }, [itensSelecionada, itensCarregamentoParcial, selecionada]);
+
+  const itensOrigemDivergente = useMemo(function() {
+    if (!selecionada || !itensSelecionada.length) return null;
+    var divergentes = itensSelecionada.filter(function(item) {
+      return itemOrigemDivergeNegociacao(selecionada, item);
+    });
+    if (!divergentes.length) return null;
+    return {
+      total: divergentes.length,
+      origemItem: origemItemLabel(divergentes[0]),
+      origemNegociacao: origemTabelaLabel(selecionada),
+    };
+  }, [selecionada, itensSelecionada]);
 
   const itensVisualizacao = useMemo(function() {
     return [].concat(itensSelecionada || []).sort(function(a, b) {
@@ -832,10 +901,7 @@ export default function TabelasNegociacaoPage() {
   }
 
   function origemItem(item) {
-    var cidade = normalizarTexto(item.cidade_origem);
-    var uf = normalizarTexto(item.uf_origem);
-    if (!cidade && !uf) return '-';
-    return cidade + (uf ? '/' + uf : '');
+    return origemItemLabel(item);
   }
 
   function limparImport() {
@@ -846,9 +912,13 @@ export default function TabelasNegociacaoPage() {
     setArquivoCantu(null); setArquivoLotacao(null);
   }
 
-  async function reportarStatusVerum(mensagem) {
+  async function reportarStatusImportacao(mensagem) {
     setStatusVerum(mensagem || '');
     await aguardarTela();
+  }
+
+  async function reportarStatusVerum(mensagem) {
+    return reportarStatusImportacao(mensagem);
   }
 
   async function copiarTextoLaudoSalvo(texto, label) {
@@ -1044,7 +1114,12 @@ export default function TabelasNegociacaoPage() {
   async function abrirTabela(tabela, opcoes = {}) {
     if (!tabela?.id) return;
     var loadSeq = ++detalheLoadSeq.current;
+    var tabelaId = tabela.id;
     setSelecionada(tabela);
+    setItensSelecionada([]);
+    setQtdItensDb(0);
+    setItensCarregamentoParcial(false);
+    setTaxasDestino([]);
     if (opcoes.telaNegociacao) {
       setTelaAtiva('negociacao');
       if (opcoes.sincronizarUrl !== false) abrirNegociacaoNaUrl(tabela.id, abaGestao);
@@ -1055,11 +1130,20 @@ export default function TabelasNegociacaoPage() {
     setAbaNegoc('importacao');
     window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
-      var tabelaAtual = tabela;
+      var detalheItensPromise = carregarItensTabelaNegociacaoParaUI(tabelaId);
+      var taxasPromise = listarTaxasDestino(tabelaId).catch(function() { return []; });
+      var tabelaAtual = await obterTabelaNegociacao(tabelaId).catch(function() { return tabela; });
+      if (loadSeq !== detalheLoadSeq.current) return;
+      setSelecionada(tabelaAtual);
+      setTabelas(function(p) {
+        return p.map(function(i) { return i.id === tabelaAtual.id ? Object.assign({}, i, tabelaAtual) : i; });
+      });
+
       if (sessao?.id) {
         try {
-          var comNegociador = await garantirNegociadorAoAbrir(tabela.id, sessao);
+          var comNegociador = await garantirNegociadorAoAbrir(tabelaId, sessao);
           if (comNegociador) {
+            if (loadSeq !== detalheLoadSeq.current) return;
             tabelaAtual = comNegociador;
             setSelecionada(comNegociador);
             setTabelas(function(p) { return p.map(function(i) { return i.id === comNegociador.id ? comNegociador : i; }); });
@@ -1068,20 +1152,70 @@ export default function TabelasNegociacaoPage() {
           // Colunas de gestão podem ainda não existir no Supabase — segue sem bloquear abertura.
         }
       }
-      var results = await Promise.all([
-        listarItensTabelaNegociacao(tabelaAtual.id),
-        listarTaxasDestino(tabelaAtual.id).catch(function() { return []; }),
-      ]);
-      var itens = results[0];
+
+      var results = await Promise.all([detalheItensPromise, taxasPromise]);
+      if (loadSeq !== detalheLoadSeq.current) return;
+      var detalheItens = results[0];
       var taxas = results[1];
-      setItensSelecionada(itens);
+      var totalDb = Number(detalheItens.total || 0);
+      var qtdResumo = extrairQtdItensResumoTabela(tabelaAtual);
+
+      if (!totalDb && qtdResumo > 0) {
+        try {
+          totalDb = await contarItensTabelaNegociacao(tabelaId);
+          if (loadSeq !== detalheLoadSeq.current) return;
+        } catch (_retryErr) {
+          // Mantém fallback do resumo para não esconder botões de apagar/recarregar.
+        }
+      }
+
+      setQtdItensDb(totalDb);
+      setItensCarregamentoParcial(Boolean(detalheItens.carregamentoParcial) || (totalDb > (detalheItens.itens || []).length));
+      setItensSelecionada(detalheItens.itens || []);
       setTaxasDestino(taxas);
+      var itens = detalheItens.itens || [];
       setGeneralidades(Object.assign({}, DEFAULT_GENERALIDADES, tabelaAtual.generalidades || {}));
       setInicioVigencia(tabelaAtual.data_inicio_prevista || hojeISO());
       setFimVigencia(fimTresAnosISO());
       if (isLotacaoNegociacao(tabelaAtual)) setTipoImportacao('LOTACAO_TRANSPORTADORA');
       else if (itens.length > 0 && itens[0].origem_importacao) setTipoImportacao(itens[0].origem_importacao);
-    } catch (e) { setErro(e.message || 'Erro ao abrir itens.'); }
+
+      if (loadSeq === detalheLoadSeq.current) {
+        if (totalDb === 0 && !itens.length && qtdResumo > 0) {
+          setErro(
+            'O resumo desta negociação indica '
+            + qtdResumo.toLocaleString('pt-BR')
+            + ' item(ns) importados, mas o carregamento retornou 0. Clique em Recarregar itens.'
+          );
+        } else if (detalheItens.erroPreview && totalDb > 0) {
+          setSucesso(
+            'Contagem confirmada: '
+            + totalDb.toLocaleString('pt-BR')
+            + ' item(ns) no banco. A amostra para visualização não carregou — use Recarregar itens.'
+          );
+        } else if (detalheItens.erroContagem && (itens.length || qtdResumo > 0)) {
+          setSucesso(
+            'Não foi possível confirmar a contagem ao vivo'
+            + (qtdResumo > 0 ? ' (resumo: ' + qtdResumo.toLocaleString('pt-BR') + ' itens)' : '')
+            + '. Use Recarregar itens se os totais parecerem incorretos.'
+          );
+        }
+      }
+    } catch (e) {
+      if (loadSeq === detalheLoadSeq.current) {
+        var qtdResumoErro = extrairQtdItensResumoTabela(tabela);
+        if (qtdResumoErro > 0) {
+          setErro(
+            (e.message || 'Erro ao abrir itens.')
+            + ' O resumo indica '
+            + qtdResumoErro.toLocaleString('pt-BR')
+            + ' item(ns) — clique em Recarregar itens.'
+          );
+        } else {
+          setErro(e.message || 'Erro ao abrir itens.');
+        }
+      }
+    }
     finally {
       if (loadSeq === detalheLoadSeq.current) setCarregandoDetalhe(false);
     }
@@ -1235,21 +1369,96 @@ export default function TabelasNegociacaoPage() {
     setErro(''); setSucesso('');
     try {
       await excluirTabelaNegociacao(tabela.id);
-      if (selecionada && selecionada.id === tabela.id) { setSelecionada(null); setItensSelecionada([]); }
+      if (selecionada && selecionada.id === tabela.id) {
+        setSelecionada(null);
+        setItensSelecionada([]);
+        setQtdItensDb(0);
+        setItensCarregamentoParcial(false);
+      }
       await carregar();
       setSucesso('Tabela excluída.');
     } catch (e) { setErro(e.message || 'Erro.'); }
   }
 
-  async function salvarItens(itens, origemImportacao, extraUpdate, opcoesSalvar) {
+  async function apagarItensImportados() {
+    if (!selecionada) return setErro('Abra uma negociação antes de apagar.');
+
+    var qtdApagar = Math.max(qtdItensDb, itensSelecionada.length, extrairQtdItensResumoTabela(selecionada));
+    if (!qtdApagar) {
+      try {
+        qtdApagar = await contarItensTabelaNegociacao(selecionada.id);
+      } catch (e) {
+        return setErro(e.message || 'Erro ao verificar itens no banco de dados.');
+      }
+    }
+    if (!qtdApagar) return setErro('Esta negociação não tem itens importados no banco de dados.');
+
+    var origem = origemTabelaLabel(selecionada);
+    var mensagem = 'Apagar toda a tabela importada desta negociação'
+      + (origem && origem !== '-' ? ' (' + origem + ')' : '')
+      + '?\n\nSerão removidos ' + qtdApagar.toLocaleString('pt-BR') + ' item(ns) (rotas + cotações) diretamente no banco.'
+      + ' Depois disso você poderá subir a nova proposta do zero.';
+    if (!window.confirm(mensagem)) return;
+
     setSalvando(true); setErro(''); setSucesso('');
     try {
-      if (opcoesSalvar && opcoesSalvar.statusInicial) {
-        await reportarStatusVerum(opcoesSalvar.statusInicial);
-      }
-      var salvos = await substituirItensTabelaNegociacao(selecionada, itens, {
-        onProgress: opcoesSalvar && opcoesSalvar.onProgress,
+      await reportarStatusImportacao('Apagando tabela importada (' + qtdApagar.toLocaleString('pt-BR') + ' itens)...');
+      await limparItensTabelaNegociacao(selecionada, {
+        observacao: 'Tabela importada apagada manualmente antes de nova subida',
+        onProgress: reportarStatusImportacao,
       });
+      var at = await atualizarTabelaNegociacao(selecionada.id, {
+        status: 'EM NEGOCIAÇÃO',
+        origem_importacao: '',
+      });
+      setSelecionada(at);
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      limparImport();
+      await abrirTabela(at, { telaNegociacao: telaAtiva === 'negociacao', sincronizarUrl: false });
+      await reportarStatusImportacao('Tabela importada apagada. Você já pode subir a nova proposta.');
+      setSucesso('Tabela importada apagada (' + qtdApagar.toLocaleString('pt-BR') + ' itens removidos). Agora você pode subir a nova proposta na aba Importação.');
+    } catch (e) { setErro(e.message || 'Erro ao apagar itens importados.'); }
+    finally { setSalvando(false); }
+  }
+
+  async function salvarItens(itens, origemImportacao, extraUpdate, opcoesSalvar) {
+    if (!selecionada) return setErro('Abra uma negociação antes de salvar.');
+    if (!Array.isArray(itens) || !itens.length) return setErro('Nenhum item para salvar.');
+
+    var qtdAtual = Math.max(qtdItensDb, itensSelecionada.length, extrairQtdItensResumoTabela(selecionada));
+    if (!qtdAtual) {
+      try {
+        qtdAtual = await contarItensTabelaNegociacao(selecionada.id);
+      } catch (_e) {
+        qtdAtual = 0;
+      }
+    }
+    var origemLabel = origemTabelaLabel(selecionada);
+    if (qtdAtual > 0) {
+      var mensagemConfirm = 'Já existe uma tabela cadastrada nesta negociação'
+        + (origemLabel && origemLabel !== '-' ? ' (' + origemLabel + ')' : '')
+        + ' com ' + qtdAtual.toLocaleString('pt-BR') + ' item(ns).\n\n'
+        + 'Deseja apagar a tabela anterior antes de subir a nova?\n\n'
+        + 'Nova proposta: ' + itens.length.toLocaleString('pt-BR') + ' item(ns).';
+      if (!window.confirm(mensagemConfirm)) return;
+    }
+
+    setSalvando(true); setErro(''); setSucesso('');
+    var onProgress = (opcoesSalvar && opcoesSalvar.onProgress) || reportarStatusImportacao;
+
+    try {
+      if (!(qtdAtual > 0) && opcoesSalvar && opcoesSalvar.statusInicial) {
+        await onProgress(opcoesSalvar.statusInicial);
+      } else if (!(qtdAtual > 0)) {
+        await onProgress('Subindo nova tabela (' + itens.length.toLocaleString('pt-BR') + ' itens)...');
+      }
+
+      var salvos = await substituirItensTabelaNegociacao(selecionada, itens, {
+        onProgress: onProgress,
+        substituirTudo: !(opcoesSalvar && opcoesSalvar.substituirPorTipo),
+        origemImportacao: origemImportacao,
+      });
+      await onProgress('Finalizando cadastro da nova tabela...');
       var updates = Object.assign({
         data_inicio_prevista: inicioVigencia,
         status: selecionada.status === 'EM NEGOCIAÇÃO' ? 'EM TESTE' : selecionada.status,
@@ -1259,10 +1468,19 @@ export default function TabelasNegociacaoPage() {
       setSelecionada(at);
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
       setItensSelecionada(salvos);
-      setSucesso(salvos.length + ' item(ns) salvos.');
-      if (opcoesSalvar && opcoesSalvar.limparStatusAoFinal) setStatusVerum('');
-    } catch (e) { setErro(e.message || 'Erro ao salvar itens.'); }
-    finally { setSalvando(false); }
+      setQtdItensDb(salvos.length);
+      setItensCarregamentoParcial(salvos.length > 500);
+      await onProgress('Concluído: ' + salvos.length.toLocaleString('pt-BR') + ' item(ns) salvos.');
+      setSucesso(salvos.length.toLocaleString('pt-BR') + ' item(ns) salvos com sucesso.');
+      if (!(opcoesSalvar && opcoesSalvar.manterStatusAoFinal)) {
+        window.setTimeout(function() { setStatusVerum(''); }, 4000);
+      }
+    } catch (e) {
+      setErro(e.message || 'Erro ao salvar itens.');
+      await onProgress('Erro: ' + (e.message || 'falha ao salvar itens.'));
+    } finally {
+      setSalvando(false);
+    }
   }
 
   async function processarVerum() {
@@ -1303,22 +1521,34 @@ export default function TabelasNegociacaoPage() {
     if (!selecionada) return setErro('Abra uma tabela antes de importar.');
     if (!arquivoCantu) return setErro('Selecione o arquivo Cantu.');
     setErro(''); setSucesso(''); setResultadoCantu(null);
+    setSalvando(true);
     try {
+      await reportarStatusImportacao('Lendo arquivo Cantu...');
       var r = await importarTemplateCantu(arquivoCantu, subtipoCantu, selecionada.origem || '');
       setResultadoCantu(r);
+      await reportarStatusImportacao('Leitura Cantu concluida. Revise e clique em Salvar na negociacao.');
       setSucesso('Cantu lido: ' + r.meta.totalItens + ' item(ns). Canal: ' + r.meta.canal + '. Revise e salve.');
-    } catch (e) { setErro(e.message || 'Erro ao importar Cantu.'); }
+    } catch (e) {
+      setErro(e.message || 'Erro ao importar Cantu.');
+      await reportarStatusImportacao('');
+    } finally { setSalvando(false); }
   }
 
   async function processarLotacao() {
     if (!selecionada) return setErro('Abra uma tabela antes de importar.');
     if (!arquivoLotacao) return setErro('Selecione o arquivo de Lotação.');
     setErro(''); setSucesso(''); setResultadoLotacao(null);
+    setSalvando(true);
     try {
+      await reportarStatusImportacao('Lendo arquivo de Lotacao...');
       var r = await importarModeloLotacao(arquivoLotacao, selecionada.origem || '');
       setResultadoLotacao(r);
+      await reportarStatusImportacao('Leitura de Lotacao concluida. Revise e clique em Salvar na negociacao.');
       setSucesso('Lotação lida: ' + r.meta.totalItens + ' rota(s). Revise e salve.');
-    } catch (e) { setErro(e.message || 'Erro ao importar Lotação.'); }
+    } catch (e) {
+      setErro(e.message || 'Erro ao importar Lotação.');
+      await reportarStatusImportacao('');
+    } finally { setSalvando(false); }
   }
 
   async function handleSalvarGeneralidades() {
@@ -1724,7 +1954,7 @@ export default function TabelasNegociacaoPage() {
     { key: 'importacao', label: '📥 Importação' },
     { key: 'generalidades', label: '⚙️ Generalidades' },
     { key: 'taxas', label: '🏷️ Taxas por Destino' },
-    { key: 'itens', label: '📋 Itens (' + itensSelecionada.length + ')' },
+    { key: 'itens', label: '📋 Itens (' + qtdItensExibicao.toLocaleString('pt-BR') + ')' },
     { key: 'rodadas', label: '🔁 Rodadas' },
   ];
 
@@ -1909,7 +2139,26 @@ export default function TabelasNegociacaoPage() {
                 );
               })() : null}
               <button className="sim-tab" type="button" onClick={function(event) { event.preventDefault(); event.stopPropagation(); abrirModalNovaOrigem(selecionada); }}>+ Adicionar origem</button>
-              <button className="sim-tab" type="button" onClick={function() { abrirTabela(selecionada, { telaNegociacao: emTelaNegociacao }); }}>Recarregar</button>
+              {temItensSalvos ? (
+                <button
+                  className="sim-tab"
+                  type="button"
+                  onClick={apagarItensImportados}
+                  disabled={salvando}
+                  style={{ color: '#dc2626', borderColor: '#fecaca' }}
+                >
+                  Apagar tabela importada ({qtdItensExibicao.toLocaleString('pt-BR')})
+                </button>
+              ) : null}
+              <button
+                className="primary"
+                type="button"
+                onClick={function() { abrirTabela(selecionada, { telaNegociacao: emTelaNegociacao }); }}
+                disabled={carregandoDetalhe}
+                style={{ minWidth: 148 }}
+              >
+                {carregandoDetalhe ? 'Recarregando...' : 'Recarregar itens'}
+              </button>
               <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(selecionada); }}>
                 {podePublicarOficial(selecionada) && usuarioEhGestor(sessao) ? 'Publicar' : 'Enviar p/ gestor'}
               </button>
@@ -2050,6 +2299,43 @@ export default function TabelasNegociacaoPage() {
           {/* ABA: IMPORTAÇÃO */}
           {abaNegoc === 'importacao' ? (
             <div>
+              <div className="sim-actions" style={{ marginBottom: 16, alignItems: 'center' }}>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={function() { abrirTabela(selecionada, { telaNegociacao: emTelaNegociacao, sincronizarUrl: false }); }}
+                  disabled={carregandoDetalhe || !selecionada}
+                  style={{ minWidth: 168, fontWeight: 700 }}
+                >
+                  {carregandoDetalhe ? 'Recarregando itens...' : 'Recarregar itens'}
+                </button>
+                {suspeitaContagemZerada ? (
+                  <span style={{ color: '#b45309', fontSize: 13 }}>
+                    Resumo indica {qtdItensResumo.toLocaleString('pt-BR')} itens, mas a tela mostra 0 — recarregue.
+                  </span>
+                ) : null}
+              </div>
+              {suspeitaContagemZerada ? (
+                <div className="sim-alert danger" style={{ marginBottom: 16 }}>
+                  <strong>Contagem possivelmente desatualizada:</strong> o resumo desta negociação registra{' '}
+                  {qtdItensResumo.toLocaleString('pt-BR')} item(ns), mas o carregamento retornou 0.
+                  {' '}Clique em <strong>Recarregar itens</strong>. Se persistir, use <strong>Apagar tabela importada</strong> apenas se tiver certeza.
+                </div>
+              ) : null}
+              {(statusVerum || salvando) ? (
+                <div className="sim-alert info" style={{ marginBottom: 16 }}>
+                  <strong>{salvando ? 'Processando importação...' : 'Status:'}</strong>{' '}
+                  {statusVerum || 'Aguarde, operação em andamento...'}
+                </div>
+              ) : null}
+              {temItensSalvos ? (
+                <div className="sim-alert info" style={{ marginBottom: 16 }}>
+                  <strong>Tabela atual:</strong> {qtdItensExibicao.toLocaleString('pt-BR')} item(ns) no banco
+                  {resumoItens.parcial ? ' (resumo por tipo do último import)' : ''}
+                  {' — '}{resumoItens.rotas.toLocaleString('pt-BR')} rota(s) · {resumoItens.cotacoes.toLocaleString('pt-BR')} cotação(ões) · {resumoItens.ufs} UF(s).
+                  {' '}Ao clicar em <strong>Salvar na negociação</strong>, o sistema perguntará se deseja apagar a tabela anterior antes de subir a nova.
+                </div>
+              ) : null}
               <div className="sim-parametros-box" style={{ marginBottom: 20 }}>
                 <div className="sim-parametros-header"><div><strong>Tipo de importação</strong><p>Escolha o modelo de acordo com o arquivo recebido.</p></div></div>
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
@@ -2066,9 +2352,23 @@ export default function TabelasNegociacaoPage() {
                 </div>
               </div>
 
+              {temItensSalvos ? (
+                <div className="sim-actions" style={{ marginBottom: 16 }}>
+                  <button
+                    className="sim-tab"
+                    type="button"
+                    onClick={apagarItensImportados}
+                    disabled={salvando}
+                    style={{ color: '#dc2626', borderColor: '#fecaca' }}
+                  >
+                    {salvando ? 'Apagando...' : 'Apagar tabela importada (' + qtdItensExibicao.toLocaleString('pt-BR') + ' itens)'}
+                  </button>
+                </div>
+              ) : null}
+
               {tipoImportacao === 'VERUM_ROTAS_FRETES' ? (
                 <div>
-                  <div className="sim-alert info">Usa o motor da tela <strong>Importar Template</strong>: dois arquivos separados (Rotas e Fretes).</div>
+                  <div className="sim-alert info">Usa o motor da tela <strong>Importar Template</strong>: dois arquivos separados (Rotas e Fretes). Ao salvar, a proposta inteira substitui a anterior.</div>
                   <div className="sim-parametros-box" style={{ marginTop: 14 }}>
                     <div className="sim-parametros-header"><div><strong>Modelos oficiais</strong></div></div>
                     <div className="sim-actions" style={{ marginTop: 12 }}>
@@ -2082,7 +2382,6 @@ export default function TabelasNegociacaoPage() {
                     <label>Arquivo de Rotas<input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={function(e) { setArquivoRotas(e.target.files ? e.target.files[0] : null); setResultadoTemplate(null); setFormatado(null); setStatusVerum(''); }} /></label>
                     <label>Arquivo de Fretes<input type="file" accept=".xlsx,.xls,.xlsb,.csv" onChange={function(e) { setArquivoFretes(e.target.files ? e.target.files[0] : null); setResultadoTemplate(null); setFormatado(null); setStatusVerum(''); }} /></label>
                   </div>
-                  {statusVerum ? <div className="sim-alert info" style={{ marginTop: 12 }}><strong>Status:</strong> {statusVerum}</div> : null}
                   <div className="sim-actions" style={{ marginTop: 12 }}>
                     <button className="primary" type="button" onClick={processarVerum} disabled={lendoVerum || salvando}>{lendoVerum ? 'Lendo...' : 'Ler template'}</button>
                     <button className="sim-tab" type="button" onClick={formatarVerum} disabled={!resultadoTemplate || lendoVerum || salvando}>Formatar no padrão do sistema</button>
@@ -2091,8 +2390,7 @@ export default function TabelasNegociacaoPage() {
                     <button className="primary" type="button" onClick={function() {
                       var itens = montarItensVerum(formatado);
                       salvarItens(itens, 'VERUM_ROTAS_FRETES', null, {
-                        statusInicial: 'Salvando ' + itens.length + ' itens na negociacao...',
-                        onProgress: reportarStatusVerum,
+                        onProgress: reportarStatusImportacao,
                       });
                     }} disabled={!formatado || salvando || lendoVerum}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
                   </div>
@@ -2157,7 +2455,11 @@ export default function TabelasNegociacaoPage() {
                   <div className="sim-actions" style={{ marginTop: 12 }}>
                     <button className="primary" type="button" onClick={processarCantu} disabled={!arquivoCantu}>Ler modelo Cantu</button>
                     <button className="sim-tab" type="button" onClick={function() { exportarXlsx(resultadoCantu ? resultadoCantu.itens.map(function(i) { return { IBGE: i.ibge_destino, Cidade: i.cidade_destino, UF: i.uf_destino, Regiao: i.faixa_peso, Perc: i.frete_percentual, Min: i.frete_minimo, TDA: i.tda, Prazo: i.prazo }; }) : [], 'cantu-prev-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Prévia'); }} disabled={!resultadoCantu}>Exportar prévia</button>
-                    <button className="primary" type="button" onClick={function() { salvarItens(resultadoCantu ? resultadoCantu.itens : [], 'CANTU_MODELO_UNICO', { canal: resultadoCantu ? resultadoCantu.meta.canal : undefined }); }} disabled={!resultadoCantu || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
+                    <button className="primary" type="button" onClick={function() {
+                      salvarItens(resultadoCantu ? resultadoCantu.itens : [], 'CANTU_MODELO_UNICO', { canal: resultadoCantu ? resultadoCantu.meta.canal : undefined }, {
+                        onProgress: reportarStatusImportacao,
+                      });
+                    }} disabled={!resultadoCantu || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
                   </div>
                   {resultadoCantu ? (
                     <div>
@@ -2220,8 +2522,12 @@ export default function TabelasNegociacaoPage() {
                   <div className="sim-actions" style={{ marginTop: 12 }}>
                     <button className="primary" type="button" onClick={processarLotacao} disabled={!arquivoLotacao}>Ler modelo de Lotação</button>
                     <button className="sim-tab" type="button" onClick={function() { exportarXlsx(resultadoLotacao ? resultadoLotacao.itens.map(function(i) { return { Origem: i.cidade_origem, UFOrig: i.uf_origem, Destino: i.cidade_destino, UFDest: i.uf_destino, KM: i.km, Tipo: i.tipo_veiculo, Target: i.valor_lotacao, ICMS: i.icms, Pedagio: i.pedagio, Prazo: i.prazo }; }) : [], 'lotacao-prev-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Lotação'); }} disabled={!resultadoLotacao}>Exportar prévia</button>
-                    <button className="primary" type="button" onClick={function() { salvarItens(resultadoLotacao ? resultadoLotacao.itens : [], 'LOTACAO_TRANSPORTADORA', { tipo_tabela: 'LOTACAO', tipo_negociacao: 'TABELA_LOTACAO', canal: 'LOTACAO' }); }} disabled={!resultadoLotacao || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
-                    <button className="sim-tab" type="button" onClick={handleSimularLotacaoNegociacao} disabled={simulandoLotacao || salvando || !itensSelecionada.length}>{simulandoLotacao ? 'Simulando...' : 'Simular Lotacao'}</button>
+                    <button className="primary" type="button" onClick={function() {
+                      salvarItens(resultadoLotacao ? resultadoLotacao.itens : [], 'LOTACAO_TRANSPORTADORA', { tipo_tabela: 'LOTACAO', tipo_negociacao: 'TABELA_LOTACAO', canal: 'LOTACAO' }, {
+                        onProgress: reportarStatusImportacao,
+                      });
+                    }} disabled={!resultadoLotacao || salvando}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
+                    <button className="sim-tab" type="button" onClick={handleSimularLotacaoNegociacao} disabled={simulandoLotacao || salvando || !temItensSalvos}>{simulandoLotacao ? 'Simulando...' : 'Simular Lotacao'}</button>
                   </div>
                   {resultadoLotacao ? (
                     <div>
@@ -2416,8 +2722,32 @@ export default function TabelasNegociacaoPage() {
           {abaNegoc === 'itens' ? (
             <div>
               <h3 style={{ margin: '0 0 12px' }}>Itens salvos nesta negociação</h3>
+              {carregandoDetalhe ? (
+                <div className="sim-alert info" style={{ marginBottom: 14 }}>Carregando itens desta origem...</div>
+              ) : null}
+              {suspeitaContagemZerada ? (
+                <div className="sim-alert danger" style={{ marginBottom: 14 }}>
+                  <strong>Contagem possivelmente desatualizada:</strong> resumo com {qtdItensResumo.toLocaleString('pt-BR')} item(ns), tela com 0.
+                  {' '}Use <strong>Recarregar itens</strong> na aba Importação.
+                </div>
+              ) : null}
+              {itensOrigemDivergente ? (
+                <div className="sim-alert danger" style={{ marginBottom: 14 }}>
+                  <strong>Atenção:</strong> {itensOrigemDivergente.total.toLocaleString('pt-BR')} item(ns) desta negociação estão gravados com origem{' '}
+                  <strong>{itensOrigemDivergente.origemItem}</strong>, mas esta negociação é de{' '}
+                  <strong>{itensOrigemDivergente.origemNegociacao}</strong>.
+                  {' '}Use <strong>Apagar tabela importada</strong> e importe novamente o arquivo correto desta origem.
+                </div>
+              ) : null}
+              {itensCarregamentoParcial ? (
+                <div className="sim-alert info" style={{ marginBottom: 14 }}>
+                  <strong>Grande volume:</strong> há {qtdItensExibicao.toLocaleString('pt-BR')} itens no banco.
+                  A tela carrega uma amostra de {itensSelecionada.length.toLocaleString('pt-BR')} para visualização.
+                  O total exibido vem da contagem no Supabase — use <strong>Recarregar</strong> ou <strong>Apagar tabela importada</strong> conforme necessário.
+                </div>
+              ) : null}
               <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginBottom: 14 }}>
-                <div className="summary-card"><span>Total</span><strong>{itensSelecionada.length}</strong></div>
+                <div className="summary-card"><span>Total</span><strong>{qtdItensExibicao.toLocaleString('pt-BR')}</strong></div>
                 <div className="summary-card"><span>Rotas</span><strong>{resumoItens.rotas}</strong></div>
                 <div className="summary-card"><span>Cotações/Faixas</span><strong>{resumoItens.cotacoes}</strong></div>
                 <div className="summary-card"><span>UF destino</span><strong>{resumoItens.ufs}</strong></div>
@@ -2446,8 +2776,19 @@ export default function TabelasNegociacaoPage() {
                   onClick={function() { setFiltroItens('TODOS'); }}
                   style={filtroItens === 'TODOS' ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
                 >
-                  Todos ({itensSelecionada.length})
+                  Todos ({qtdItensExibicao.toLocaleString('pt-BR')})
                 </button>
+                {temItensSalvos ? (
+                  <button
+                    className="sim-tab"
+                    type="button"
+                    onClick={apagarItensImportados}
+                    disabled={salvando}
+                    style={{ color: '#dc2626', borderColor: '#fecaca' }}
+                  >
+                    Apagar tabela importada ({qtdItensExibicao.toLocaleString('pt-BR')})
+                  </button>
+                ) : null}
               </div>
 
               <div className="sim-analise-tabela-wrap">
@@ -2496,9 +2837,10 @@ export default function TabelasNegociacaoPage() {
                   </tbody>
                 </table>
               </div>
-              {itensFiltrados.length > 120 ? (
+              {itensFiltrados.length > 120 || itensCarregamentoParcial ? (
                 <div className="empty-note">
-                  Mostrando 120 de {itensFiltrados.length} itens filtrados. Total salvo: {itensSelecionada.length}.
+                  Mostrando {Math.min(120, itensFiltrados.length).toLocaleString('pt-BR')} de {itensFiltrados.length.toLocaleString('pt-BR')} itens na amostra carregada.
+                  Total no banco: {qtdItensExibicao.toLocaleString('pt-BR')}.
                 </div>
               ) : null}
             </div>

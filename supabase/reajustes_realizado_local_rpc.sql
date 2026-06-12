@@ -25,7 +25,6 @@ as $$
   from public.realizado_local_ctes r
   where r.data_emissao is not null
     and nullif(trim(coalesce(r.transportadora, '')), '') is not null
-    and nullif(trim(coalesce(r.canal, '')), '') is not null
     and (p_inicio is null or r.data_emissao::date >= p_inicio)
     and (p_fim is null or r.data_emissao::date <= p_fim)
   group by trim(r.transportadora), r.data_emissao::date

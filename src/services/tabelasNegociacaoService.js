@@ -167,7 +167,8 @@ function normalizarTipoItem(item = {}) {
 }
 
 function getResumoSimulacaoSeguro(tabela = {}) {
-  const resumo = tabela.resumo_simulacao;
+  const capa = tabela && typeof tabela === 'object' ? tabela : {};
+  const resumo = capa.resumo_simulacao;
   if (!resumo || typeof resumo !== 'object' || Array.isArray(resumo)) {
     return {};
   }
@@ -223,6 +224,8 @@ function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
   const dadosOriginaisBase = item.dados_originais && typeof item.dados_originais === 'object'
     ? item.dados_originais
     : item;
+  const origemNegociacao = texto(tabela?.origem);
+  const ufOrigemNegociacao = upper(tabela?.uf_origem);
 
   return {
     tabela_negociacao_id: tabela.id,
@@ -230,8 +233,8 @@ function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
     canal: tabela.canal,
     tipo_tabela: tabela.tipo_tabela,
 
-    cidade_origem:    texto(item.cidade_origem || item.origem),
-    uf_origem:        upper(item.uf_origem),
+    cidade_origem:    origemNegociacao || texto(item.cidade_origem || item.origem),
+    uf_origem:        ufOrigemNegociacao || upper(item.uf_origem),
     ibge_origem:      texto(item.ibge_origem),
 
     cidade_destino:   texto(item.cidade_destino || item.destino),
@@ -273,6 +276,8 @@ function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
   };
 }
 
+const LIMITE_CARREGAMENTO_ITENS_UI = 500;
+
 async function listarTodosItensTabelaNegociacao(tabelaId) {
   const supabase = supabaseOrThrow();
   const pageSize = 1000;
@@ -284,6 +289,7 @@ async function listarTodosItensTabelaNegociacao(tabelaId) {
       .from('tabelas_negociacao_itens')
       .select('*')
       .eq('tabela_negociacao_id', tabelaId)
+      .order('id', { ascending: true })
       .range(inicio, inicio + pageSize - 1);
 
     if (error) throw new Error(error.message || 'Erro ao listar itens atuais da negociação.');
@@ -295,6 +301,94 @@ async function listarTodosItensTabelaNegociacao(tabelaId) {
   }
 
   return todos;
+}
+
+export async function contarItensTabelaNegociacao(tabelaId) {
+  const supabase = supabaseOrThrow();
+  const { count, error } = await supabase
+    .from('tabelas_negociacao_itens')
+    .select('id', { count: 'exact', head: true })
+    .eq('tabela_negociacao_id', tabelaId);
+  if (error) throw new Error(error.message || 'Erro ao contar itens da negociação.');
+  return count || 0;
+}
+
+export async function listarItensTabelaNegociacaoPreview(tabelaId, limite = LIMITE_CARREGAMENTO_ITENS_UI) {
+  const supabase = supabaseOrThrow();
+  const { data, error } = await supabase
+    .from('tabelas_negociacao_itens')
+    .select('*')
+    .eq('tabela_negociacao_id', tabelaId)
+    .order('id', { ascending: true })
+    .limit(limite);
+  if (error) throw new Error(error.message || 'Erro ao listar amostra de itens da negociação.');
+  return data || [];
+}
+
+/** Quantidade de itens gravada no resumo da negociação (fallback quando a contagem ao vivo falha). */
+export function extrairQtdItensResumoTabela(tabela = {}) {
+  const capa = tabela && typeof tabela === 'object' ? tabela : {};
+  const resumo = getResumoSimulacaoSeguro(capa);
+  const totais = resumo.totais_itens || {};
+  let total = inteiro(totais.total || 0);
+  if (total > 0) return total;
+
+  const ultima = resumo.ultima_importacao || {};
+  const salvos = ultima.itens_salvos_apos_importacao || ultima.itens_importados || {};
+  total = inteiro(salvos.total || 0);
+  if (total > 0) return total;
+
+  const somaTipos = inteiro(salvos.rotas || 0) + inteiro(salvos.cotacoes || 0);
+  if (somaTipos > 0) return somaTipos;
+
+  const historico = getHistoricoRodadas(capa);
+  for (let i = historico.length - 1; i >= 0; i -= 1) {
+    const entrada = historico[i] || {};
+    if (String(entrada.tipo_registro || '').toUpperCase() !== 'IMPORTACAO') continue;
+    const importados = entrada.itens_salvos_apos_importacao || entrada.itens_importados || {};
+    total = inteiro(importados.total || 0);
+    if (total > 0) return total;
+    const somaHist = inteiro(importados.rotas || 0) + inteiro(importados.cotacoes || 0);
+    if (somaHist > 0) return somaHist;
+  }
+
+  return 0;
+}
+
+/** Contagem confiável no banco + amostra leve para a UI (evita carregar centenas de milhares de linhas). */
+export async function carregarItensTabelaNegociacaoParaUI(tabelaId) {
+  let total = 0;
+  let itens = [];
+  let erroContagem = null;
+  let erroPreview = null;
+
+  try {
+    total = await contarItensTabelaNegociacao(tabelaId);
+  } catch (error) {
+    erroContagem = error?.message || 'Erro ao contar itens da negociação.';
+  }
+
+  try {
+    itens = await listarItensTabelaNegociacaoPreview(tabelaId);
+  } catch (error) {
+    erroPreview = error?.message || 'Erro ao listar amostra de itens da negociação.';
+  }
+
+  if (erroContagem && erroPreview) {
+    throw new Error(erroContagem);
+  }
+
+  if (!total && itens.length) {
+    total = itens.length;
+  }
+
+  return {
+    total,
+    itens,
+    carregamentoParcial: total > itens.length,
+    erroContagem,
+    erroPreview,
+  };
 }
 
 // ─── TABELAS NEGOCIAÇÃO ───────────────────────────────────────────────────────
@@ -544,10 +638,20 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     return listarItensTabelaNegociacao(tabela.id);
   }
 
-  if (onProgress) await onProgress('Carregando itens atuais da negociacao...');
-  const itensAtuais = await listarTodosItensTabelaNegociacao(tabela.id);
   const tiposEntrada = [...new Set(itensEntrada.map(normalizarTipoItem))];
   const substituirTudo = modo === 'total' || tiposEntrada.length > 1 || opcoes.substituirTudo === true;
+  const limparSomente = !itensEntrada.length && opcoes.limparQuandoVazio;
+
+  let itensAtuais = [];
+  if (!substituirTudo) {
+    if (onProgress) await onProgress('Carregando itens atuais da negociacao...');
+    itensAtuais = await listarTodosItensTabelaNegociacao(tabela.id);
+  } else if (limparSomente) {
+    if (onProgress) await onProgress('Apagando itens salvos desta negociacao...');
+  } else if (onProgress) {
+    await onProgress('Substituindo tabela importada (' + itensEntrada.length.toLocaleString('pt-BR') + ' itens)...');
+  }
+
   const tiposSubstituidos = substituirTudo ? ['ROTA', 'COTACAO'] : (tiposEntrada.length ? tiposEntrada : ['COTACAO']);
   // Rodada não deve aumentar automaticamente a cada reimportação.
   // Rotas e fretes da mesma proposta podem ser importados em momentos diferentes
@@ -564,7 +668,11 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
   const linhasNovas = itensEntrada.map((item) => montarLinhaItem(tabela, item, rodadaNumero));
   const linhas = linhasPreservadas.concat(linhasNovas);
 
-  if (onProgress) await onProgress('Limpando itens antigos desta importacao...');
+  if (onProgress) {
+    await onProgress(linhas.length
+      ? 'Apagando registros antigos antes de salvar a nova tabela...'
+      : 'Removendo itens antigos desta negociacao...');
+  }
   const { error: deleteError } = await supabase
     .from('tabelas_negociacao_itens').delete().eq('tabela_negociacao_id', tabela.id);
   if (deleteError) throw new Error(deleteError.message || 'Erro ao limpar itens antigos.');
@@ -572,17 +680,22 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
   let salvos = [];
 
   if (linhas.length) {
+    if (onProgress) {
+      await onProgress('Tabela anterior apagada. Subindo nova tabela agora (' + linhas.length.toLocaleString('pt-BR') + ' itens)...');
+    }
     const pageSize = 1000;
     for (let i = 0; i < linhas.length; i += pageSize) {
       const lote = linhas.slice(i, i + pageSize);
       if (onProgress) {
-        await onProgress(`Salvando lote ${Math.min(i + pageSize, linhas.length)} de ${linhas.length} itens...`);
+        await onProgress('Salvando lote ' + Math.min(i + pageSize, linhas.length).toLocaleString('pt-BR') + ' de ' + linhas.length.toLocaleString('pt-BR') + ' itens...');
       }
       const { data, error } = await supabase
         .from('tabelas_negociacao_itens').insert(lote).select();
       if (error) throw new Error(error.message || 'Erro ao salvar itens da tabela.');
       salvos = salvos.concat(data || []);
     }
+  } else if (onProgress && limparSomente) {
+    await onProgress('Itens removidos com sucesso.');
   }
 
   const resumoAtual = getResumoSimulacaoSeguro(tabela);
@@ -623,6 +736,16 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     .eq('id', tabela.id);
 
   return salvos;
+}
+
+export async function limparItensTabelaNegociacao(tabela, opcoes = {}) {
+  if (!tabela?.id) throw new Error('Tabela de negociação inválida.');
+  return substituirItensTabelaNegociacao(tabela, [], {
+    limparQuandoVazio: true,
+    modo: 'total',
+    observacao: opcoes.observacao || 'Itens importados apagados manualmente',
+    onProgress: opcoes.onProgress,
+  });
 }
 
 // ─── TAXAS ESPECIAIS POR IBGE DESTINO ────────────────────────────────────────
@@ -891,8 +1014,18 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
     substituir_tabela_anterior: Boolean(dados.substituir_tabela_anterior),
     // Persiste o periodo analisado para que rodadas subsequentes possam
     // ser automaticamente preenchidas com o mesmo recorte de dados.
-    periodo_realizado_inicio: dataOuNull(resultado.filtros?.inicio || null),
-    periodo_realizado_fim:    dataOuNull(resultado.filtros?.fim    || null),
+    periodo_realizado_inicio: dataOuNull(
+      tabelaAtual?.resultado_simulacao_json?.filtros?.inicio
+      || resumoAnterior?.filtros?.inicio
+      || tabelaAtual?.periodo_realizado_inicio
+      || null
+    ),
+    periodo_realizado_fim: dataOuNull(
+      tabelaAtual?.resultado_simulacao_json?.filtros?.fim
+      || resumoAnterior?.filtros?.fim
+      || tabelaAtual?.periodo_realizado_fim
+      || null
+    ),
 
     incluir_simulacao: false,
     resumo_simulacao: {
