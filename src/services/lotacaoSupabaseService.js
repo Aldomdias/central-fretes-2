@@ -35,6 +35,19 @@ const COLUNAS_COMPAT_PENDENCIA = [
   'devolvido_auditoria_em',
   'prazo_operacao_em',
   'prazo_auditoria_em',
+  'complemento_auditoria',
+  'complemento_solicitado_em',
+  'complemento_solicitado_por_id',
+  'complemento_solicitado_por_nome',
+  'complemento_solicitado_por_email',
+];
+
+const COLUNAS_COMPLEMENTO_PENDENCIA = [
+  'complemento_auditoria',
+  'complemento_solicitado_em',
+  'complemento_solicitado_por_id',
+  'complemento_solicitado_por_nome',
+  'complemento_solicitado_por_email',
 ];
 
 const COLUNAS_RESPOSTA_PENDENCIA = [
@@ -46,7 +59,11 @@ const COLUNAS_RESPOSTA_PENDENCIA = [
 
 function colunasPendenciaComErro(error) {
   const msg = String(error?.message || error || '').toLowerCase();
-  return COLUNAS_COMPAT_PENDENCIA.filter((coluna) => msg.includes(coluna));
+  const colunas = COLUNAS_COMPAT_PENDENCIA.filter((coluna) => msg.includes(coluna));
+  if (colunas.some((coluna) => COLUNAS_COMPLEMENTO_PENDENCIA.includes(coluna))) {
+    return [...new Set([...colunas, ...COLUNAS_COMPLEMENTO_PENDENCIA])];
+  }
+  return colunas;
 }
 
 function erroColunasAprovacaoPendencia(error) {
@@ -68,6 +85,9 @@ function removerColunasPendenciaComErro(row = {}, error) {
   }
 
   const compat = { ...row };
+  if (colunas.some((coluna) => COLUNAS_COMPLEMENTO_PENDENCIA.includes(coluna)) && row.complemento_auditoria) {
+    compat.resposta_auditoria = compat.resposta_auditoria || row.complemento_auditoria;
+  }
   colunas.forEach((coluna) => { delete compat[coluna]; });
   return compat;
 }
@@ -93,7 +113,7 @@ function erroColunasSolicitacaoInfo(error) {
     || msg.includes('schema cache')
     || (msg.includes('column') && msg.includes('does not exist'));
   if (!erroSchema) return [];
-  return [
+  const colunas = [
     'resposta',
     'resposta_operacao',
     'justificativa_operacao',
@@ -105,7 +125,23 @@ function erroColunasSolicitacaoInfo(error) {
     'respondido_por_nome',
     'respondido_por_email',
     'respondido_em',
+    'complemento_auditoria',
+    'complemento_solicitado_em',
+    'complemento_solicitado_por_id',
+    'complemento_solicitado_por_nome',
+    'complemento_solicitado_por_email',
   ].filter((coluna) => msg.includes(coluna));
+  const colunasComplemento = [
+    'complemento_auditoria',
+    'complemento_solicitado_em',
+    'complemento_solicitado_por_id',
+    'complemento_solicitado_por_nome',
+    'complemento_solicitado_por_email',
+  ];
+  if (colunas.some((coluna) => colunasComplemento.includes(coluna))) {
+    return [...new Set([...colunas, ...colunasComplemento])];
+  }
+  return colunas;
 }
 
 function removerColunasSolicitacaoInfoComErro(row = {}, error) {
@@ -120,6 +156,9 @@ function removerColunasSolicitacaoInfoComErro(row = {}, error) {
     throw new Error(`Campo(s) de resposta/tratamento ausente(s) em audit_solicitacoes_informacao: ${colunasRespostaPerdidas.join(', ')}. Ajuste o schema antes de concluir o questionamento para não misturar resposta com a descrição original.`);
   }
   const compat = { ...row };
+  if (colunas.includes('complemento_auditoria') && row.complemento_auditoria) {
+    compat.observacao_tratamento = compat.observacao_tratamento || row.complemento_auditoria;
+  }
   colunas.forEach((coluna) => { delete compat[coluna]; });
   return compat;
 }
@@ -997,6 +1036,11 @@ export async function salvarPendenciaAuditoriaSupabase(pendencia) {
     resposta_operacao: String(pendencia.respostaOperacao || pendencia.resposta_operacao || pendencia.resposta || ''),
     justificativa_operacao: String(pendencia.justificativaOperacao || pendencia.justificativa_operacao || ''),
     resposta_auditoria: String(pendencia.respostaAuditoria || pendencia.resposta_auditoria || ''),
+    complemento_auditoria: String(pendencia.complementoAuditoria || pendencia.complemento_auditoria || ''),
+    complemento_solicitado_em: pendencia.complementoSolicitadoEm || pendencia.complemento_solicitado_em || null,
+    complemento_solicitado_por_id: String(pendencia.complementoSolicitadoPorId || pendencia.complemento_solicitado_por_id || ''),
+    complemento_solicitado_por_nome: String(pendencia.complementoSolicitadoPorNome || pendencia.complemento_solicitado_por_nome || ''),
+    complemento_solicitado_por_email: String(pendencia.complementoSolicitadoPorEmail || pendencia.complemento_solicitado_por_email || ''),
     updated_at: new Date().toISOString(),
   };
   const { error } = await supabase.from('audit_pendencias').upsert(row, { onConflict: 'id' });
@@ -1049,6 +1093,7 @@ export async function registrarEventoHistoricoSupabase(evento) {
   const supabase = ensureClient();
   const row = {
     pendencia_id: evento.pendenciaId || evento.pendencia_id || null,
+    solicitacao_info_id: evento.solicitacaoInfoId || evento.solicitacao_info_id || null,
     lancamento_id: String(evento.lancamentoId || evento.lancamento_id || ''),
     data_hora: evento.dataHora || new Date().toISOString(),
     user_id: String(evento.userId || evento.user_id || ''),
@@ -1072,6 +1117,18 @@ export async function carregarHistoricoEventosSupabase(pendenciaId) {
     .from('audit_historico_eventos')
     .select('*')
     .eq('pendencia_id', pendenciaId)
+    .order('data_hora', { ascending: true });
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
+export async function carregarHistoricoSolicitacaoInfoSupabase(solicitacaoInfoId) {
+  if (!isSupabaseConfigured() || !solicitacaoInfoId) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase
+    .from('audit_historico_eventos')
+    .select('*')
+    .eq('solicitacao_info_id', solicitacaoInfoId)
     .order('data_hora', { ascending: true });
   if (error) throw new Error(detalheErroSupabase(error));
   return data || [];
@@ -1167,6 +1224,11 @@ export async function salvarSolicitacaoInfoSupabase(sol) {
     respondido_por_nome: String(sol.respondidoPorNome || sol.respondido_por_nome || ''),
     respondido_por_email: String(sol.respondidoPorEmail || sol.respondido_por_email || ''),
     respondido_em: sol.respondidoEm || sol.respondido_em || null,
+    complemento_auditoria: String(sol.complementoAuditoria || sol.complemento_auditoria || ''),
+    complemento_solicitado_em: sol.complementoSolicitadoEm || sol.complemento_solicitado_em || null,
+    complemento_solicitado_por_id: String(sol.complementoSolicitadoPorId || sol.complemento_solicitado_por_id || ''),
+    complemento_solicitado_por_nome: String(sol.complementoSolicitadoPorNome || sol.complemento_solicitado_por_nome || ''),
+    complemento_solicitado_por_email: String(sol.complementoSolicitadoPorEmail || sol.complemento_solicitado_por_email || ''),
     updated_at: new Date().toISOString(),
   };
   const { error } = await supabase.from('audit_solicitacoes_informacao').upsert(row, { onConflict: 'id' });

@@ -25,6 +25,8 @@ import {
   carregarSolicitacoesInfoSupabase,
   carregarSolicitacoesSupabase,
   carregarTabelasLotacaoSupabase,
+  carregarHistoricoEventosSupabase,
+  carregarHistoricoSolicitacaoInfoSupabase,
   registrarEventoHistoricoSupabase,
   atualizarPendenciaAuditoriaSupabase,
   atualizarSolicitacaoInfoSupabase,
@@ -33,6 +35,12 @@ import {
   salvarSolicitacaoInfoSupabase,
   salvarSolicitacaoSupabase,
 } from '../services/lotacaoSupabaseService';
+import {
+  PREFIXO_QUESTIONAMENTO_AUDITORIA_LOTACAO,
+  STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO,
+  TIPO_SOLICITACAO_EXCECAO_SEM_CTE,
+  montarComentarioDevolucaoOperacao,
+} from '../services/lotacaoPendenciaFlow';
 import {
   carregarTabelasLotacao,
   pesquisarRotaLotacao,
@@ -81,6 +89,8 @@ function pendenciaParaMovimentoAutorizacao(pendencia = {}) {
     status: pendencia.status || '',
     observacao: pendencia.observation || '',
     resposta: pendencia.resposta_operacao || pendencia.motivo_recusa || '',
+    complementoAuditoria: pendencia.complemento_auditoria || (String(pendencia.status || '').toUpperCase() === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO ? (pendencia.resposta_auditoria || '') : ''),
+    complementoSolicitadoEm: pendencia.complemento_solicitado_em || pendencia.updated_at || '',
     criadoEm: pendencia.created_at || '',
     atualizadoEm: pendencia.updated_at || '',
   };
@@ -120,6 +130,8 @@ function solicitacaoInfoParaMovimentoOperacao(sol = {}) {
     cargaId: sol.cargaId || sol.carga_id || '',
     respondidoPorNome: sol.respondido_por_nome || sol.respondidoPorNome || '',
     respondidoEm: sol.respondido_em || sol.respondidoEm || '',
+    complementoAuditoria: sol.complemento_auditoria || sol.complementoAuditoria || (String(sol.status || '').toUpperCase() === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO ? (sol.observacao_tratamento || '') : ''),
+    complementoSolicitadoEm: sol.complemento_solicitado_em || sol.complementoSolicitadoEm || sol.updated_at || '',
     criadoEm,
     created_at: criadoEm,
     atualizadoEm: sol.updated_at || sol.atualizadoEm || '',
@@ -138,6 +150,7 @@ function statusGestaoAuditoria(status = '') {
     'AGUARDANDO_OPERACAO',
     'AGUARDANDO_INFORMACAO',
     'AGUARDANDO_INFORMAÇÃO',
+    'AGUARDANDO_COMPLEMENTO_OPERACAO',
     'EXCEDEU_AGUARDANDO_OPERACAO',
     'EM_ANALISE',
     'EM_ANÁLISE',
@@ -167,6 +180,20 @@ function statusAbertoGestaoAuditoria(status = '') {
 
 function statusTratadoGestaoAuditoria(status = '') {
   return ['APROVADO', 'RECUSADO', 'TRATADO'].includes(statusGestaoAuditoria(status));
+}
+
+function movimentoProntoPagamento(item = {}) {
+  const status = String(item.status || '').trim().toUpperCase();
+  const questionamento = item.tipo === 'QUESTIONAMENTO_OPERACAO'
+    || item.categoria === 'QUESTIONAMENTO_OPERACAO'
+    || item.tipoGestao === 'QUESTIONAMENTO';
+  return !questionamento && ['APROVADO', 'APROVADO_OPERACAO', 'AUTORIZADO'].includes(status);
+}
+
+function movimentoTratado(item = {}) {
+  const status = String(item.status || '').trim().toUpperCase();
+  return ['TRATADO', 'CONCLUIDO', 'CONCLUÍDO', 'FINALIZADO', 'AUDITADO_OK', 'BAIXADO', 'ENCERRADO', 'LIBERADO_PAGAMENTO']
+    .includes(status);
 }
 
 function dataMovimentoAuditoria(item = {}) {
@@ -248,7 +275,7 @@ function mesclarSolicitacoesAuditoria({ solicitacoesLegadas = [], pendencias = [
 
 function ehQuestionamentoAuditoriaLotacao(sol = {}) {
   return String(sol.descricaoProblema || sol.descricao_problema || '')
-    .startsWith('Questionamento para Operação — Auditoria Lotação');
+    .startsWith(PREFIXO_QUESTIONAMENTO_AUDITORIA_LOTACAO);
 }
 
 function cteContidoNaCargaAuditoria(carga = {}, cte = {}) {
@@ -331,7 +358,7 @@ function montarDescricaoQuestionamentoOperacao({ cte, viagem, tabelaAuditoria = 
   const cteInfo = dadosResumoCteQuestionamento(cte);
   const tabela = tabelaAuditoria?.[0] || null;
   const linhas = [
-    'Questionamento para Operação — Auditoria Lotação',
+    PREFIXO_QUESTIONAMENTO_AUDITORIA_LOTACAO,
     '',
     `Motivo principal: ${motivo || '-'}`,
     `Observação do auditor: ${observacao || '-'}`,
@@ -392,6 +419,34 @@ function montarDescricaoQuestionamentoOperacao({ cte, viagem, tabelaAuditoria = 
       linhas.push(`${index + 1}. ${item.dist || '-'} · ${item.transportadora || '-'} · ${item.origem || '-'} x ${item.destino || '-'} · ${motivos?.join(', ') || '-'}`);
     });
   }
+
+  return linhas.join('\n');
+}
+
+function montarDescricaoExcecaoSemCte({ form = {}, anexo = null }) {
+  const linhas = [
+    PREFIXO_QUESTIONAMENTO_AUDITORIA_LOTACAO,
+    '',
+    'Tipo de solicitação: Exceção sem chave CT-e/CTU',
+    `Motivo principal: ${form.motivo || 'Auditor sem chave CT-e/CTU para consulta'}`,
+    `Justificativa do auditor: ${form.justificativa || '-'}`,
+    '',
+    'Dados informados manualmente pela Auditoria:',
+    `- Transportadora: ${form.transportadora || '-'}`,
+    `- Referência manual: ${form.referencia || '-'}`,
+    `- Fatura/documento: ${form.fatura || '-'}`,
+    `- Origem: ${form.origem || '-'}`,
+    `- Destino: ${form.destino || '-'}`,
+    `- Valor estimado/informado: ${form.valor || '-'}`,
+    `- Observações adicionais: ${form.observacao || '-'}`,
+    '',
+    'Anexo informado:',
+    anexo
+      ? `- ${anexo.name || '-'} (${anexo.type || 'tipo não informado'}, ${Number(anexo.size || 0).toLocaleString('pt-BR')} bytes)`
+      : '- Nenhum arquivo anexado no navegador.',
+    '',
+    'Orientação para Operação: validar manualmente e responder vinculando uma DIST/viagem existente. Não há busca automática por chave CT-e/CTU neste caso.',
+  ];
 
   return linhas.join('\n');
 }
@@ -2068,6 +2123,138 @@ function QuestionamentoOperacaoCard({ cte, viagem, tabelasCompativeis = [], tabe
   );
 }
 
+function ExcecaoSemCteCard({ onEnviar, salvando }) {
+  const [aberto, setAberto] = useState(false);
+  const [form, setForm] = useState({
+    motivo: 'Auditor sem chave CT-e/CTU para consulta',
+    transportadora: '',
+    referencia: '',
+    fatura: '',
+    origem: '',
+    destino: '',
+    valor: '',
+    justificativa: '',
+    observacao: '',
+  });
+  const [anexo, setAnexo] = useState(null);
+
+  const atualizar = (campo, valor) => setForm((prev) => ({ ...prev, [campo]: valor }));
+  const justificativaObrigatoria = !String(form.justificativa || '').trim();
+  const transportadoraObrigatoria = !String(form.transportadora || '').trim();
+  const bloqueado = salvando || justificativaObrigatoria || transportadoraObrigatoria;
+
+  const enviar = () => {
+    if (bloqueado) return;
+    onEnviar?.({ ...form, anexo });
+    setForm({
+      motivo: 'Auditor sem chave CT-e/CTU para consulta',
+      transportadora: '',
+      referencia: '',
+      fatura: '',
+      origem: '',
+      destino: '',
+      valor: '',
+      justificativa: '',
+      observacao: '',
+    });
+    setAnexo(null);
+    setAberto(false);
+  };
+
+  return (
+    <div className="panel-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Exceção sem chave CT-e/CTU</div>
+          <p>
+            Use quando a Auditoria não possui chave para pesquisar. O pedido segue para Operação validar manualmente e responder com uma DIST/viagem.
+          </p>
+        </div>
+        <button type="button" className={aberto ? 'btn-secondary' : 'btn-primary'} onClick={() => setAberto((valor) => !valor)}>
+          {aberto ? 'Ocultar exceção' : 'Abrir exceção'}
+        </button>
+      </div>
+
+      {aberto && (
+        <>
+          <div className="hint-box compact">
+            Transportadora e justificativa são obrigatórias. O arquivo anexado fica registrado como metadado neste pedido; upload real depende de storage/bucket no Supabase.
+          </div>
+
+          <div className="form-grid three top-space-sm">
+            <label className="field">
+              Transportadora <span className="error-text">*</span>
+              <input value={form.transportadora} onChange={(e) => atualizar('transportadora', e.target.value)} placeholder="Nome da transportadora" />
+            </label>
+            <label className="field">
+              Referência manual
+              <input value={form.referencia} onChange={(e) => atualizar('referencia', e.target.value)} placeholder="Pedido, CTU, protocolo ou outro identificador" />
+            </label>
+            <label className="field">
+              Fatura/documento
+              <input value={form.fatura} onChange={(e) => atualizar('fatura', e.target.value)} placeholder="Número da fatura ou documento" />
+            </label>
+            <label className="field">
+              Origem
+              <input value={form.origem} onChange={(e) => atualizar('origem', e.target.value)} placeholder="Cidade/UF de origem" />
+            </label>
+            <label className="field">
+              Destino
+              <input value={form.destino} onChange={(e) => atualizar('destino', e.target.value)} placeholder="Cidade/UF de destino" />
+            </label>
+            <label className="field">
+              Valor estimado/informado
+              <input value={form.valor} onChange={(e) => atualizar('valor', e.target.value)} placeholder="Ex.: 2500,00" />
+            </label>
+          </div>
+
+          <label className="field top-space-sm">
+            Justificativa da exceção <span className="error-text">*</span>
+            <textarea
+              value={form.justificativa}
+              onChange={(e) => atualizar('justificativa', e.target.value)}
+              placeholder="Explique por que não há chave CT-e/CTU e quais dados precisam ser validados pela Operação."
+              style={{ minHeight: 90 }}
+            />
+          </label>
+
+          <label className="field top-space-sm">
+            Anexo de apoio
+            <input type="file" onChange={(e) => setAnexo(e.target.files?.[0] || null)} />
+          </label>
+          {anexo && (
+            <div className="hint-box compact">
+              Anexo selecionado: <strong>{anexo.name}</strong> · {Number(anexo.size || 0).toLocaleString('pt-BR')} bytes.
+            </div>
+          )}
+
+          <label className="field top-space-sm">
+            Observações adicionais
+            <textarea
+              value={form.observacao}
+              onChange={(e) => atualizar('observacao', e.target.value)}
+              placeholder="Campos adicionais, contexto operacional ou instruções para validação manual."
+              style={{ minHeight: 70 }}
+            />
+          </label>
+
+          <div className="actions-right">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={bloqueado}
+              title={bloqueado ? 'Informe transportadora e justificativa para enviar' : ''}
+              onClick={enviar}
+            >
+              {salvando ? 'Enviando...' : 'Enviar exceção para Operação'}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function HistoricoLancamentos({ viagem, lancamentos }) {
   if (!viagem) return null;
   const lista = lancamentosDaViagem(lancamentos, viagem.chaveViagem || consolidarChaveViagem(viagem.dist))
@@ -2176,7 +2363,7 @@ function PainelAuditoriaGeral({ lancamentos, solicitacoes, totalCargas, fonteCar
 }
 
 // ─── Aba Histórico / Pendências ───────────────────────────────────────────────
-function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, salvando = false }) {
+function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, salvando = false, visao = 'pendencias' }) {
   const [filtros, setFiltros] = useState({
     status: '',
     tipo: '',
@@ -2195,6 +2382,13 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
   const [expandidoId, setExpandidoId] = useState('');
   const [statusNovo, setStatusNovo] = useState('');
   const [respostaTratamento, setRespostaTratamento] = useState('');
+  const [modoDetalhe, setModoDetalhe] = useState('tratar');
+  const [historicoDetalhe, setHistoricoDetalhe] = useState([]);
+  const [carregandoHistoricoDetalhe, setCarregandoHistoricoDetalhe] = useState(false);
+  const [selecionados, setSelecionados] = useState([]);
+  const [observacaoLote, setObservacaoLote] = useState('');
+  const [resultadoLote, setResultadoLote] = useState('');
+  const [processandoLote, setProcessandoLote] = useState(false);
 
   const movimentos = useMemo(() => {
     const lista = deduplicarSolicitacoesAuditoria(solicitacoes || []).map((item) => {
@@ -2259,6 +2453,9 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
         item.descricao_problema,
       ].filter(Boolean).join(' '));
 
+      if (visao === 'pendencias' && (movimentoProntoPagamento(item) || movimentoTratado(item))) return false;
+      if (visao === 'pagamento' && !movimentoProntoPagamento(item)) return false;
+      if (visao === 'tratados' && !movimentoTratado(item)) return false;
       if (filtros.status && statusItem !== filtros.status) return false;
       if (filtros.tipo && item.tipoGestao !== filtros.tipo) return false;
       if (filtros.transportadora && !normalizarTexto(item.transportadora || '').includes(normalizarTexto(filtros.transportadora))) return false;
@@ -2273,19 +2470,43 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
       if (filtros.somenteTratadas && !statusTratadoGestaoAuditoria(item.status)) return false;
       return true;
     });
-  }, [filtros, movimentos]);
+  }, [filtros, movimentos, visao]);
+
+  const devolviveis = useMemo(() => movimentosFiltrados.filter((item) => (
+    visao === 'pendencias'
+    && String(item.status || '').toUpperCase() !== STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
+    && !statusTratadoGestaoAuditoria(item.status)
+    && Boolean(item.resposta_operacao || item.respostaOperacao || item.resposta)
+  )), [movimentosFiltrados, visao]);
+
+  const selecionadosSet = useMemo(() => new Set(selecionados), [selecionados]);
+  const todosSelecionados = devolviveis.length > 0 && devolviveis.every((item) => selecionadosSet.has(item.id));
 
   const atualizarFiltro = (campo, valor) => setFiltros((prev) => ({ ...prev, [campo]: valor }));
 
-  const abrirDetalhe = (item) => {
+  const abrirDetalhe = async (item, modo = 'tratar') => {
     setDetalhe(item);
-    setStatusNovo(item.status || '');
-    setRespostaTratamento(item.respostaTratamento || '');
+    setModoDetalhe(modo);
+    setStatusNovo(modo === 'devolver' ? STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO : (item.status || ''));
+    setRespostaTratamento(modo === 'devolver' ? '' : (item.respostaTratamento || ''));
+    setHistoricoDetalhe([]);
+    setCarregandoHistoricoDetalhe(true);
+    try {
+      const eventos = item.tipoGestao === 'QUESTIONAMENTO'
+        ? await carregarHistoricoSolicitacaoInfoSupabase(item.id)
+        : await carregarHistoricoEventosSupabase(item.id);
+      setHistoricoDetalhe(eventos || []);
+    } catch {
+      setHistoricoDetalhe([]);
+    } finally {
+      setCarregandoHistoricoDetalhe(false);
+    }
   };
 
   const statusDisponiveis = detalhe?.tipoGestao === 'QUESTIONAMENTO'
     ? [
         ['AGUARDANDO_INFORMACAO', 'Aguardando informação'],
+        ['AGUARDANDO_COMPLEMENTO_OPERACAO', 'Aguardando complemento da Operação'],
         ['EM_ANALISE', 'Em análise'],
         ['DEVOLVIDO_AUDITORIA', 'Devolvido para auditoria'],
         ['TRATADO', 'Tratado'],
@@ -2293,6 +2514,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
       ]
     : [
         ['EXCEDEU_AGUARDANDO_OPERACAO', 'Aguardando operação'],
+        ['AGUARDANDO_COMPLEMENTO_OPERACAO', 'Aguardando complemento da Operação'],
         ['APROVADO_OPERACAO', 'Aprovado pela operação'],
         ['RECUSADO_OPERACAO', 'Recusado pela operação'],
         ['DEVOLVIDO_AUDITORIA', 'Devolvido para auditoria'],
@@ -2302,6 +2524,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
 
   const salvarTratamento = async () => {
     if (!detalhe || !statusNovo || typeof onAtualizarStatus !== 'function') return;
+    if (modoDetalhe === 'devolver' && !String(respostaTratamento || '').trim()) return;
     try {
       await onAtualizarStatus(detalhe, statusNovo, respostaTratamento);
       setDetalhe(null);
@@ -2310,6 +2533,45 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
     } catch {
       // A mensagem de erro é exibida pela tela principal; mantém o painel aberto para correção.
     }
+  };
+
+  const alternarSelecionado = (id) => {
+    setSelecionados((atuais) => (
+      atuais.includes(id) ? atuais.filter((item) => item !== id) : [...atuais, id]
+    ));
+  };
+
+  const alternarTodos = () => {
+    setSelecionados(todosSelecionados ? [] : devolviveis.map((item) => item.id));
+  };
+
+  const devolverSelecionados = async () => {
+    const itens = devolviveis.filter((item) => selecionadosSet.has(item.id));
+    if (!itens.length || !String(observacaoLote || '').trim()) return;
+    setProcessandoLote(true);
+    setResultadoLote('');
+    const enviados = [];
+    const falhas = [];
+    for (const item of itens) {
+      try {
+        await onAtualizarStatus(item, STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO, observacaoLote);
+        enviados.push(item.id);
+      } catch (error) {
+        falhas.push(`${item.cte || item.numeroInformado || item.id}: ${error.message || String(error)}`);
+      }
+    }
+    setSelecionados((atuais) => atuais.filter((id) => !enviados.includes(id)));
+    if (!falhas.length) {
+      setObservacaoLote('');
+      setResultadoLote(`${enviados.length} item(ns) devolvido(s) para a Operação.`);
+    } else {
+      setResultadoLote(`${enviados.length} enviado(s) e ${falhas.length} com falha. ${falhas.slice(0, 2).join(' | ')}`);
+    }
+    setProcessandoLote(false);
+  };
+
+  const confirmarPagamento = async (item) => {
+    await onAtualizarStatus(item, 'FINALIZADO', 'Conferido pela Auditoria e encaminhado para pagamento.');
   };
 
   const classeStatus = (item) => {
@@ -2323,8 +2585,16 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
     <div className="table-card lotacao-table-card">
       <div className="section-row compact-top">
         <div>
-          <div className="panel-title">Histórico / Pendências da Auditoria Lotação</div>
-          <p className="compact">Tela de gestão operacional para excedentes, questionamentos, retornos da Operação e liberações de pagamento.</p>
+          <div className="panel-title">
+            {visao === 'pagamento' ? 'Pronto para pagar' : visao === 'tratados' ? 'Tratados' : 'Pendências da Auditoria Lotação'}
+          </div>
+          <p className="compact">
+            {visao === 'pagamento'
+              ? 'Itens aprovados pela Operação, aguardando conferência final da Auditoria.'
+              : visao === 'tratados'
+                ? 'Itens já conferidos, encerrados ou recusados.'
+                : 'Somente itens que ainda exigem retorno ou ação da Auditoria.'}
+          </p>
         </div>
         <span className="status-pill dark">{indicadores.aguardando} aberta(s)</span>
       </div>
@@ -2345,6 +2615,7 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
             <option value="">Todos</option>
             <option value="EXCEDEU_AGUARDANDO_OPERACAO">Aguardando operação</option>
             <option value="AGUARDANDO_INFORMACAO">Aguardando informação</option>
+            <option value="AGUARDANDO_COMPLEMENTO_OPERACAO">Aguardando complemento da Operação</option>
             <option value="APROVADO_OPERACAO">Aprovado operação</option>
             <option value="RECUSADO_OPERACAO">Recusado operação</option>
             <option value="DEVOLVIDO_AUDITORIA">Devolvido auditoria</option>
@@ -2403,15 +2674,54 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
       </div>
 
       <div className="hint-box compact top-space-sm">
-        Exibindo {movimentosFiltrados.length.toLocaleString('pt-BR')} registro(s). Excedentes vindos de <code>audit_pendencias</code> prevalecem sobre solicitações legadas para evitar duplicidade após recarregar.
+        Exibindo {movimentosFiltrados.length.toLocaleString('pt-BR')} registro(s) nesta etapa do fluxo.
       </div>
+
+      {visao === 'pendencias' && devolviveis.length > 0 && (
+        <div className="panel-card top-space-sm" style={{ padding: 14 }}>
+          <div className="section-row compact-top">
+            <div>
+              <div className="panel-title">Devolver selecionados para a Operação</div>
+              <p className="compact">Marque os retornos incompletos e informe uma única orientação para o lote.</p>
+            </div>
+            <span className="status-pill">{selecionados.length} selecionado(s)</span>
+          </div>
+          <div className="form-grid two top-space-sm">
+            <label className="field full-span">
+              O que ainda falta?
+              <textarea
+                value={observacaoLote}
+                onChange={(event) => setObservacaoLote(event.target.value)}
+                placeholder="Ex.: Informar a DIST correta e anexar o comprovante."
+                style={{ minHeight: 72 }}
+              />
+            </label>
+          </div>
+          <div className="actions-right">
+            <button
+              type="button"
+              className="btn-primary"
+              style={{ width: 'auto', padding: '7px 12px', fontSize: '0.82rem' }}
+              onClick={devolverSelecionados}
+              disabled={salvando || processandoLote || !selecionados.length || !observacaoLote.trim()}
+            >
+              {processandoLote ? 'Enviando...' : `Devolver ${selecionados.length || ''} selecionado(s)`}
+            </button>
+          </div>
+          {resultadoLote && <div className="hint-box compact top-space-sm">{resultadoLote}</div>}
+        </div>
+      )}
 
       {detalhe && (
         <div className="panel-card top-space-sm">
           <div className="section-row compact-top">
             <div>
-              <div className="panel-title">Tratar pendência</div>
-              <p className="compact">A resposta/tratamento será salvo em campo próprio, sem alterar a descrição original da solicitação.</p>
+              <div className="panel-title">{modoDetalhe === 'devolver' ? 'Solicitar complemento da Operação' : 'Tratar pendência'}</div>
+              <p className="compact">
+                {modoDetalhe === 'devolver'
+                  ? 'A solicitação original e a resposta anterior serão preservadas. O item voltará para a fila da Operação.'
+                  : 'A resposta/tratamento será salvo em campo próprio, sem alterar a descrição original da solicitação.'}
+              </p>
             </div>
             <button type="button" className="btn-secondary" onClick={() => setDetalhe(null)} disabled={salvando}>Fechar</button>
           </div>
@@ -2442,26 +2752,56 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
             </div>
           )}
 
+          {detalhe.complementoAuditoria && (
+            <div className="hint-box compact top-space-sm" style={{ whiteSpace: 'pre-wrap', background: '#fff7ed', borderColor: '#fdba74' }}>
+              <strong>Último complemento solicitado pela Auditoria</strong><br />
+              {detalhe.complementoAuditoria}
+            </div>
+          )}
+
+          <div className="panel-card top-space-sm" style={{ padding: 14 }}>
+            <div className="panel-title">Histórico do fluxo</div>
+            {carregandoHistoricoDetalhe ? (
+              <p className="compact">Carregando histórico...</p>
+            ) : historicoDetalhe.length ? (
+              <div className="top-space-sm">
+                {historicoDetalhe.map((evento) => (
+                  <div key={evento.id} className="hint-box compact" style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>
+                    <strong>{evento.acao || evento.status_novo || 'Atualização'}</strong>
+                    {' '}· {formatarDataCurta(evento.data_hora || evento.created_at)}
+                    <br />
+                    <span className="muted">{evento.user_name || evento.user_email || 'Sistema'}</span>
+                    {evento.comentario ? <><br />{evento.comentario}</> : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="compact muted">Nenhum evento vinculado encontrado.</p>
+            )}
+          </div>
+
           <div className="form-grid three top-space-sm">
             <label className="field">
               Novo status
-              <select value={statusNovo} onChange={(e) => setStatusNovo(e.target.value)}>
+              <select value={statusNovo} onChange={(e) => setStatusNovo(e.target.value)} disabled={modoDetalhe === 'devolver'}>
                 {statusDisponiveis.map(([valor, label]) => <option key={valor} value={valor}>{label}</option>)}
               </select>
             </label>
             <label className="field full-span">
-              Resposta / observação de tratamento
+              {modoDetalhe === 'devolver' ? 'O que ainda falta para a Operação responder?' : 'Resposta / observação de tratamento'}
               <textarea
                 value={respostaTratamento}
                 onChange={(e) => setRespostaTratamento(e.target.value)}
-                placeholder="Informe o retorno da Operação ou a conclusão da Auditoria. Não será gravado junto da descrição original."
+                placeholder={modoDetalhe === 'devolver'
+                  ? 'Descreva objetivamente a informação, documento ou correção que ainda falta.'
+                  : 'Informe o retorno da Operação ou a conclusão da Auditoria. Não será gravado junto da descrição original.'}
                 style={{ minHeight: 90 }}
               />
             </label>
           </div>
           <div className="actions-right">
             <button type="button" className="btn-primary" onClick={salvarTratamento} disabled={salvando || !statusNovo}>
-              {salvando ? 'Salvando...' : 'Salvar tratamento'}
+              {salvando ? 'Salvando...' : modoDetalhe === 'devolver' ? 'Devolver para Operação' : 'Salvar tratamento'}
             </button>
           </div>
         </div>
@@ -2471,6 +2811,11 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
         <table className="sim-analise-tabela">
           <thead>
             <tr>
+              {visao === 'pendencias' && (
+                <th>
+                  <input type="checkbox" checked={todosSelecionados} onChange={alternarTodos} title="Selecionar todos os itens devolvíveis" />
+                </th>
+              )}
               <th>Data</th><th>Tipo / status</th><th>CT-e / Fatura</th><th>Transportadora</th><th>DIST/viagem</th><th>Valor</th><th>Resumo</th><th>Ações</th>
             </tr>
           </thead>
@@ -2486,6 +2831,16 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                     style={{ cursor: 'pointer' }}
                     title="Clique para expandir os detalhes"
                   >
+                    {visao === 'pendencias' && (
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selecionadosSet.has(item.id)}
+                          disabled={!devolviveis.some((devolvivel) => devolvivel.id === item.id) || salvando}
+                          onChange={() => alternarSelecionado(item.id)}
+                        />
+                      </td>
+                    )}
                     <td>{formatarDataCurta(item.dataBase)}</td>
                     <td>
                       <strong>{item.tipoGestao === 'QUESTIONAMENTO' ? 'Questionamento' : 'Excedente'}</strong>
@@ -2503,21 +2858,66 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                       <small className="muted">{expandido ? 'Clique para recolher' : 'Clique para ver detalhes'}</small>
                     </td>
                     <td>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          abrirDetalhe(item);
-                        }}
-                      >
-                        Tratar
-                      </button>
+                      <div className="row-actions">
+                        {visao === 'pendencias' && (
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ width: 'auto', padding: '5px 9px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              abrirDetalhe(item, 'tratar');
+                            }}
+                          >
+                            Tratar
+                          </button>
+                        )}
+                        {visao === 'pendencias' && !statusTratadoGestaoAuditoria(item.status) && (item.resposta_operacao || item.respostaOperacao || item.resposta) && (
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            style={{ width: 'auto', padding: '5px 9px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              abrirDetalhe(item, 'devolver');
+                            }}
+                          >
+                            Devolver para OperaÃ§Ã£o
+                          </button>
+                        )}
+                        {visao === 'pagamento' && (
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            style={{ width: 'auto', padding: '5px 9px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+                            disabled={salvando}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              confirmarPagamento(item);
+                            }}
+                          >
+                            OK, conferido
+                          </button>
+                        )}
+                        {visao === 'tratados' && (
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ width: 'auto', padding: '5px 9px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              abrirDetalhe(item, 'tratar');
+                            }}
+                          >
+                            Ver histórico
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                   {expandido && (
                     <tr>
-                      <td colSpan="8" style={{ background: '#f8fafc' }}>
+                      <td colSpan={visao === 'pendencias' ? 9 : 8} style={{ background: '#f8fafc' }}>
                         <div className="form-grid three" style={{ padding: 8 }}>
                           <div className="hint-box compact" style={{ whiteSpace: 'pre-wrap' }}>
                             <strong>Descrição original</strong><br />{descricao}
@@ -2542,44 +2942,9 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                 </Fragment>
               );
             })}
-            {!movimentosFiltrados.length && <tr><td colSpan="8">Nenhuma pendência/questionamento encontrado para os filtros selecionados.</td></tr>}
+            {!movimentosFiltrados.length && <tr><td colSpan={visao === 'pendencias' ? 9 : 8}>Nenhum item encontrado nesta etapa.</td></tr>}
           </tbody>
         </table>
-      </div>
-
-      <div className="table-card lotacao-table-card top-space-sm">
-        <div className="section-row compact-top">
-          <div>
-            <div className="panel-title">Últimos CT-es auditados</div>
-            <p className="compact">Lista de apoio para confirmar se o CT-e/fatura já foi auditado.</p>
-          </div>
-        </div>
-        <div className="sim-analise-tabela-wrap">
-          <table className="sim-analise-tabela">
-            <thead>
-              <tr><th>Data</th><th>Auditor</th><th>Viagem</th><th>CT-e</th><th>Fatura</th><th>Valor lançado</th><th>Excedente</th><th>Status</th><th>Observação</th></tr>
-            </thead>
-            <tbody>
-              {[...(lancamentos || [])]
-                .sort((a, b) => new Date(b.auditedAt || b.criadoEm || 0).getTime() - new Date(a.auditedAt || a.criadoEm || 0).getTime())
-                .slice(0, 100)
-                .map((item) => (
-                  <tr key={item.id}>
-                    <td>{formatarDataCurta(item.auditedAt || item.criadoEm)}</td>
-                    <td><span title={item.auditedByEmail || ''}>{item.auditedByName || '-'}</span></td>
-                    <td><strong>{distExibicao(item.dist) || item.dist}</strong></td>
-                    <td>{item.cte || '-'}</td>
-                    <td>{item.fatura || '-'}</td>
-                    <td>{formatarMoeda(item.valorLancado)}</td>
-                    <td className={item.excedente > 0 ? 'negativo' : ''}>{formatarMoeda(item.excedente)}</td>
-                    <td><span className={`status-pill ${item.excedente > 0 ? 'error' : ''}`}>{item.auditStatus || item.status}</span></td>
-                    <td>{item.observacao || '-'}</td>
-                  </tr>
-                ))}
-              {!(lancamentos || []).length && <tr><td colSpan="9">Nenhum lançamento registrado até agora.</td></tr>}
-            </tbody>
-          </table>
-        </div>
       </div>
     </div>
   );
@@ -2683,11 +3048,13 @@ function PainelVinculos({ vinculos, onSalvar, onRemover, sugestaoRealizado, suge
 }
 
 // ─── Barra de abas ────────────────────────────────────────────────────────────
-function AbasAuditoria({ ativa, onMudar, pendencias }) {
+function AbasAuditoria({ ativa, onMudar, pendencias, prontosPagamento, tratados }) {
   const abas = [
     { id: 'auditar', label: 'Auditar' },
     { id: 'vinculos', label: 'Vínculos de Transportadora' },
-    { id: 'historico', label: `Histórico / Pendências${pendencias ? ` (${pendencias})` : ''}` },
+    { id: 'pendencias', label: `Pendências${pendencias ? ` (${pendencias})` : ''}` },
+    { id: 'pagamento', label: `Pronto para pagar${prontosPagamento ? ` (${prontosPagamento})` : ''}` },
+    { id: 'tratados', label: `Tratados${tratados ? ` (${tratados})` : ''}` },
   ];
   return (
     <div className="mini-list" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', background: 'transparent', padding: 0 }}>
@@ -3311,6 +3678,7 @@ export default function LotacaoAuditoriaPage() {
       try {
         await registrarEventoHistoricoSupabase({
           pendenciaId: null,
+          solicitacaoInfoId: id,
           lancamentoId: id,
           userId: usuarioAtual?.id || '',
           userName: usuarioAtual?.nome || '',
@@ -3326,13 +3694,112 @@ export default function LotacaoAuditoriaPage() {
       }
 
       setMensagem('✓ Questionamento enviado para a Operação com os dados do CT-e encontrado.');
-      setAbaAtiva('historico');
+      setAbaAtiva('pendencias');
     } catch (error) {
       setMensagem(`Erro ao enviar questionamento: ${error.message || String(error)}`);
     } finally {
       setSalvando(false);
     }
   }, [cteSelecionado, viagemParaAuditoria, viagemSelecionada, tabelaAplicavel, sugestoesViagens, sugestoesVinculoTransportadora, solicitacoes, usuarioAtual]);
+
+  const enviarExcecaoSemCteOperacao = useCallback(async (dados = {}) => {
+    const transportadora = String(dados.transportadora || '').trim();
+    const justificativa = String(dados.justificativa || '').trim();
+    if (!transportadora || !justificativa) {
+      setMensagem('Informe transportadora e justificativa para enviar a exceção sem CT-e.');
+      return;
+    }
+
+    const agora = new Date().toISOString();
+    const id = globalThis.crypto?.randomUUID?.() || `quest-exc-${Date.now()}`;
+    const anexo = dados.anexo
+      ? {
+          name: dados.anexo.name || '',
+          size: dados.anexo.size || 0,
+          type: dados.anexo.type || '',
+          lastModified: dados.anexo.lastModified || null,
+        }
+      : null;
+    const descricao = montarDescricaoExcecaoSemCte({
+      form: { ...dados, transportadora, justificativa },
+      anexo,
+    });
+
+    const questionamento = solicitacaoInfoParaMovimentoOperacao({
+      id,
+      tipo: TIPO_SOLICITACAO_EXCECAO_SEM_CTE,
+      chaveInformada: '',
+      numeroInformado: dados.referencia || '',
+      cte: dados.referencia || '',
+      fatura: dados.fatura || '',
+      transportadora,
+      dist: '',
+      distKey: '',
+      motivoQuestionamento: dados.motivo || 'Exceção sem chave CT-e/CTU',
+      descricaoProblema: descricao,
+      observacao: descricao,
+      prioridade: 'ALTA',
+      status: 'AGUARDANDO_INFORMACAO',
+      abertoPorId: usuarioAtual?.id || '',
+      abertoPorNome: usuarioAtual?.nome || '',
+      abertoPorEmail: usuarioAtual?.email || '',
+      criadoEm: agora,
+      created_at: agora,
+      anexo,
+    });
+
+    setSalvando(true);
+    setMensagem('');
+    try {
+      const novasSolicitacoes = [questionamento, ...solicitacoes];
+      setSolicitacoes(novasSolicitacoes);
+      salvarSolicitacoesPagamento(novasSolicitacoes);
+
+      try {
+        await salvarSolicitacaoInfoSupabase({
+          id,
+          tipo: TIPO_SOLICITACAO_EXCECAO_SEM_CTE,
+          chaveInformada: '',
+          numeroInformado: dados.referencia || '',
+          transportadora,
+          fatura: dados.fatura || '',
+          descricaoProblema: descricao,
+          prioridade: 'ALTA',
+          status: 'AGUARDANDO_INFORMACAO',
+          abertoPorId: usuarioAtual?.id || '',
+          abertoPorNome: usuarioAtual?.nome || '',
+          abertoPorEmail: usuarioAtual?.email || '',
+        });
+      } catch (error) {
+        console.warn('[Auditoria] Exceção sem CT-e salva localmente; falha no Supabase:', error.message || error);
+      }
+
+      try {
+        await registrarEventoHistoricoSupabase({
+          pendenciaId: null,
+          solicitacaoInfoId: id,
+          lancamentoId: id,
+          userId: usuarioAtual?.id || '',
+          userName: usuarioAtual?.nome || '',
+          userEmail: usuarioAtual?.email || '',
+          acao: 'EXCECAO_SEM_CTE_OPERACAO',
+          statusAnterior: 'AUDITORIA_LOTACAO',
+          statusNovo: 'AGUARDANDO_INFORMACAO',
+          comentario: descricao,
+          origemTela: 'AUDITORIA_LOTACAO',
+        });
+      } catch (error) {
+        console.warn('[Auditoria] Histórico da exceção não registrado:', error.message || error);
+      }
+
+      setMensagem('✓ Exceção sem chave CT-e/CTU enviada para validação da Operação.');
+      setAbaAtiva('pendencias');
+    } catch (error) {
+      setMensagem(`Erro ao enviar exceção: ${error.message || String(error)}`);
+    } finally {
+      setSalvando(false);
+    }
+  }, [solicitacoes, usuarioAtual]);
 
   const vincularLoteSelecionado = useCallback(async () => {
     if (!viagemParaAuditoria) {
@@ -3484,7 +3951,14 @@ export default function LotacaoAuditoriaPage() {
     setMensagem('');
     try {
       if (isQuestionamento) {
-        await atualizarSolicitacaoInfoSupabase(item.id, statusNovoItem, {
+        const devolvendoOperacao = statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO;
+        await atualizarSolicitacaoInfoSupabase(item.id, statusNovoItem, devolvendoOperacao ? {
+          complemento_auditoria: respostaLimpa,
+          complemento_solicitado_em: agora,
+          complemento_solicitado_por_id: usuarioAtual?.id || '',
+          complemento_solicitado_por_nome: usuarioAtual?.nome || usuarioAtual?.email || '',
+          complemento_solicitado_por_email: usuarioAtual?.email || '',
+        } : {
           observacao_tratamento: respostaLimpa,
         });
       } else {
@@ -3496,6 +3970,7 @@ export default function LotacaoAuditoriaPage() {
         const valorFinal = valorOriginal + valorAdicional;
         const respostaOperacao = ['APROVADO_OPERACAO', 'RECUSADO_OPERACAO', 'DEVOLVIDO_AUDITORIA'].includes(statusUpper) ? respostaLimpa : (item.resposta_operacao || item.resposta || '');
         const respostaAuditoria = ['FINALIZADO', 'TRATADO', 'LIBERADO_PAGAMENTO'].includes(statusUpper) ? respostaLimpa : (item.resposta_auditoria || '');
+        const devolvendoOperacao = statusUpper === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO;
 
         await atualizarPendenciaAuditoriaSupabase(item.id, statusNovoItem, {
           aprovado_por_user_id: usuarioAtual?.id || '',
@@ -3512,12 +3987,21 @@ export default function LotacaoAuditoriaPage() {
           resposta_auditoria: respostaAuditoria,
           auditado_ok_em: ['FINALIZADO', 'TRATADO', 'LIBERADO_PAGAMENTO'].includes(statusUpper) ? agora : (item.auditado_ok_em || null),
           devolvido_auditoria_em: statusUpper === 'DEVOLVIDO_AUDITORIA' ? agora : (item.devolvido_auditoria_em || null),
+          ...(devolvendoOperacao ? {
+            complemento_auditoria: respostaLimpa,
+            complemento_solicitado_em: agora,
+            complemento_solicitado_por_id: usuarioAtual?.id || '',
+            complemento_solicitado_por_nome: usuarioAtual?.nome || usuarioAtual?.email || '',
+            complemento_solicitado_por_email: usuarioAtual?.email || '',
+            prazo_operacao_em: adicionarHorasIso(agora, 24),
+          } : {}),
         });
       }
 
       try {
         await registrarEventoHistoricoSupabase({
           pendenciaId: isQuestionamento ? null : item.id,
+          solicitacaoInfoId: isQuestionamento ? item.id : null,
           lancamentoId: isQuestionamento ? item.id : (item.lancamentoId || item.lancamento_id || ''),
           userId: usuarioAtual?.id || '',
           userName: usuarioAtual?.nome || '',
@@ -3525,16 +4009,19 @@ export default function LotacaoAuditoriaPage() {
           acao: statusNovoItem,
           statusAnterior: item.status || '',
           statusNovo: statusNovoItem,
-          comentario: respostaLimpa,
+          comentario: statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
+            ? montarComentarioDevolucaoOperacao(item, respostaLimpa)
+            : respostaLimpa,
           origemTela: 'AUDITORIA_LOTACAO_HISTORICO',
         });
       } catch (error) {
         console.warn('[Auditoria] Status atualizado, mas histórico não registrado:', error.message || error);
       }
 
-      const atualizadas = deduplicarSolicitacoesAuditoria((solicitacoes || []).map((sol) => (
-        sol.id === item.id
-          ? {
+      setSolicitacoes((atuais) => {
+        const atualizadas = deduplicarSolicitacoesAuditoria((atuais || []).map((sol) => (
+          sol.id === item.id
+            ? {
               ...sol,
               status: statusNovoItem,
               resposta: sol.resposta || '',
@@ -3545,13 +4032,23 @@ export default function LotacaoAuditoriaPage() {
                 ? (respostaLimpa || sol.resposta_auditoria || '')
                 : sol.resposta_auditoria,
               observacaoTratamento: respostaLimpa || sol.observacaoTratamento || '',
+              complementoAuditoria: statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
+                ? respostaLimpa
+                : (sol.complementoAuditoria || sol.complemento_auditoria || ''),
+              complementoSolicitadoEm: statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
+                ? agora
+                : (sol.complementoSolicitadoEm || sol.complemento_solicitado_em || ''),
               atualizadoEm: agora,
               updated_at: agora,
-            }
-          : sol
-      )));
-      setSolicitacoes(atualizadas);
-      salvarSolicitacoesPagamento(atualizadas);
+              }
+            : sol
+        )));
+        salvarSolicitacoesPagamento(atualizadas);
+        return atualizadas;
+      });
+      globalThis.dispatchEvent?.(new CustomEvent('lotacao-solicitacoes-atualizadas', {
+        detail: { id: item.id, status: statusNovoItem },
+      }));
       setMensagem('✓ Histórico/Pendências atualizado com sucesso.');
     } catch (error) {
       setMensagem(`Erro ao atualizar Histórico/Pendências: ${error.message || String(error)}`);
@@ -3562,7 +4059,11 @@ export default function LotacaoAuditoriaPage() {
   }, [solicitacoes, usuarioAtual]);
 
   const totalCargas = baseFluxo.cargas?.length || 0;
-  const pendenciasAbertas = (solicitacoes || []).filter((i) => statusAbertoGestaoAuditoria(i.status)).length;
+  const pendenciasAbertas = (solicitacoes || []).filter((item) => (
+    !movimentoProntoPagamento(item) && !movimentoTratado(item)
+  )).length;
+  const prontosPagamento = (solicitacoes || []).filter(movimentoProntoPagamento).length;
+  const tratados = (solicitacoes || []).filter(movimentoTratado).length;
 
   return (
     <div className="page-shell lotacao-page lotacao-auditoria-page">
@@ -3588,7 +4089,13 @@ export default function LotacaoAuditoriaPage() {
 
       <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} totalCargas={totalCargas} fonteCargas={fonteCargas} />
 
-      <AbasAuditoria ativa={abaAtiva} onMudar={setAbaAtiva} pendencias={pendenciasAbertas} />
+      <AbasAuditoria
+        ativa={abaAtiva}
+        onMudar={setAbaAtiva}
+        pendencias={pendenciasAbertas}
+        prontosPagamento={prontosPagamento}
+        tratados={tratados}
+      />
 
       {abaAtiva === 'auditar' && (
         <>
@@ -3654,6 +4161,11 @@ export default function LotacaoAuditoriaPage() {
             </div>
 
             {mensagem && <div className="hint-box compact">{mensagem}</div>}
+
+            <ExcecaoSemCteCard
+              onEnviar={enviarExcecaoSemCteOperacao}
+              salvando={salvando}
+            />
 
             {(loteResultados.length > 0 || analiseLoteChaves.lidas > 0) && (
               <AuditoriaLoteCtes
@@ -3781,12 +4293,13 @@ export default function LotacaoAuditoriaPage() {
         />
       )}
 
-      {abaAtiva === 'historico' && (
+      {['pendencias', 'pagamento', 'tratados'].includes(abaAtiva) && (
         <HistoricoPendencias
           lancamentos={lancamentos}
           solicitacoes={solicitacoes}
           onAtualizarStatus={atualizarStatusHistorico}
           salvando={salvando}
+          visao={abaAtiva}
         />
       )}
     </div>
