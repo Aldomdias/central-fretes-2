@@ -251,22 +251,30 @@ function ehQuestionamentoAuditoriaLotacao(sol = {}) {
     .startsWith('Questionamento para Operação — Auditoria Lotação');
 }
 
-function cteContidoNaViagemAuditoria(viagem = {}, cte = {}) {
-  if (!viagem || !cte) return false;
+function cteContidoNaCargaAuditoria(carga = {}, cte = {}) {
+  if (!carga || !cte) return false;
   const idsCte = identificadoresCteAuditoria(cte, cte.chave_cte || '')
     .map((item) => normalizarTexto(item))
     .filter(Boolean);
   if (!idsCte.length) return false;
-  const ctesViagem = [
-    ...(viagem.ctes || []),
-    ...separarCtes(viagem.cteRaw || ''),
-    ...((viagem.registrosOriginais || []).flatMap((reg) => [
-      ...(reg.ctes || []),
-      ...separarCtes(reg.cteRaw || ''),
-    ])),
+
+  const cteRawNorm = normalizarTexto(carga.cteRaw || '');
+  const ctesLista = [
+    ...(carga.ctes || []),
+    ...separarCtes(carga.cteRaw || ''),
   ].map((item) => normalizarTexto(item)).filter(Boolean);
-  if (!ctesViagem.length) return false;
-  return idsCte.some((id) => ctesViagem.includes(id));
+
+  return idsCte.some((id) => {
+    if (!id) return false;
+    if (ctesLista.some((item) => item === id || item.includes(id) || id.includes(item))) return true;
+    return Boolean(cteRawNorm && cteRawNorm.includes(id));
+  });
+}
+
+function cteContidoNaViagemAuditoria(viagem = {}, cte = {}) {
+  if (!viagem || !cte) return false;
+  if (cteContidoNaCargaAuditoria(viagem, cte)) return true;
+  return (viagem.registrosOriginais || []).some((reg) => cteContidoNaCargaAuditoria(reg, cte));
 }
 
 function dadosResumoCteQuestionamento(cte = {}) {
@@ -795,45 +803,71 @@ function transportadorasEquivalentesAuditoria(nomeCte = '', nomeViagem = '', vin
 
   if (brutoCte === brutoViagem) return true;
 
+  const canonCte = normalizarTexto(nomeCanonicoTransportadora(nomeCte, vinculos));
+  const canonViagem = normalizarTexto(nomeCanonicoTransportadora(nomeViagem, vinculos));
+  if (canonCte && canonViagem && canonCte === canonViagem) return true;
+
   const simplesCte = normalizarTransportadoraAuditoria(nomeCte);
   const simplesViagem = normalizarTransportadoraAuditoria(nomeViagem);
   if (!simplesCte || !simplesViagem) return false;
   return simplesCte === simplesViagem
     || simplesCte.startsWith(`${simplesViagem} `)
-    || simplesViagem.startsWith(`${simplesCte} `);
+    || simplesViagem.startsWith(`${simplesCte} `)
+    || simplesCte.includes(simplesViagem)
+    || simplesViagem.includes(simplesCte);
+}
+
+function cidadeCompativelAuditoria(alvo = '', candidato = '', ufAlvo = '', ufCandidato = '') {
+  if (!alvo || !candidato) return false;
+  const origemA = normalizarCidadeAuditoria(alvo);
+  const origemB = normalizarCidadeAuditoria(candidato);
+  const cidadeOk = origemA === origemB || origemA.includes(origemB) || origemB.includes(origemA);
+  if (!cidadeOk) return false;
+  return !ufAlvo || !ufCandidato || ufCompativelAuditoria(ufAlvo, ufCandidato);
 }
 
 function scoreSugestaoHistorico(carga = {}, cte = {}, vinculos = []) {
-  const origem = normalizarTexto(cte.cidade_origem || '');
-  const destino = normalizarTexto(cte.cidade_destino || '');
-  const ufOrigem = normalizarTexto(cte.uf_origem || '');
-  const ufDestino = normalizarTexto(cte.uf_destino || '');
+  const origem = cte.cidade_origem || '';
+  const destino = cte.cidade_destino || '';
+  const ufOrigem = cte.uf_origem || '';
+  const ufDestino = cte.uf_destino || '';
   const nomeCte = cte.transportadora || cte.transportadora_contratada || '';
   const nomeCarga = carga.transportadora || '';
-  const cteNumero = normalizarTexto(cte.numero_cte || '');
 
   const transportadoraOk = transportadorasEquivalentesAuditoria(nomeCte, nomeCarga, vinculos);
-  const origemCarga = normalizarTexto(carga.origem || '');
-  const destinoCarga = normalizarTexto(carga.destino || '');
-  const ufOrigemCarga = normalizarTexto(carga.ufOrigem || '');
-  const ufDestinoCarga = normalizarTexto(carga.ufDestino || '');
-  const origemOk = Boolean(origem && origemCarga && origem === origemCarga)
-    && (!ufOrigem || !ufOrigemCarga || ufOrigem === ufOrigemCarga);
-  const destinoOk = Boolean(destino && destinoCarga && destino === destinoCarga)
-    && (!ufDestino || !ufDestinoCarga || ufDestino === ufDestinoCarga);
+  const origemOk = cidadeCompativelAuditoria(origem, carga.origem || '', ufOrigem, carga.ufOrigem || '');
+  const destinoOk = cidadeCompativelAuditoria(destino, carga.destino || '', ufDestino, carga.ufDestino || '');
+  const cteNaViagem = cteContidoNaCargaAuditoria(carga, cte);
+  const referenciaValor = calcularReferenciaAuditoria(carga, cte);
 
-  // Auditoria não oferece aproximações: transportadora, origem e destino são obrigatórios.
+  // CT-e listado na viagem é prova direta de pertencimento — prioriza sobre rota/transportadora.
+  if (cteNaViagem) {
+    let score = 95;
+    const motivos = ['CT-e encontrado na viagem'];
+    if (transportadoraOk) motivos.unshift('mesma transportadora');
+    if (origemOk) motivos.push('mesma origem');
+    if (destinoOk) motivos.push('mesmo destino');
+
+    const emissao = cte.emissao ? new Date(cte.emissao).getTime() : 0;
+    const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
+    if (emissao && dataCarga) {
+      const dias = Math.abs(emissao - dataCarga) / 86400000;
+      if (dias <= 7) {
+        score += 5;
+        motivos.push('data próxima');
+      }
+    }
+
+    return { score, motivos, transportadoraOk: true, referenciaValor };
+  }
+
+  // Sem CT-e na viagem: transportadora, origem e destino são obrigatórios.
   if (!transportadoraOk || !origemOk || !destinoOk) {
-    return { score: 0, motivos: [], transportadoraOk: false };
+    return { score: 0, motivos: [], transportadoraOk: false, referenciaValor };
   }
 
   let score = 69;
   const motivos = ['mesma transportadora', 'mesma origem', 'mesmo destino'];
-
-  if (cteNumero && normalizarTexto(carga.cteRaw || '').includes(cteNumero)) {
-    score += 45;
-    motivos.push('CT-e encontrado na viagem');
-  }
 
   const emissao = cte.emissao ? new Date(cte.emissao).getTime() : 0;
   const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
@@ -849,7 +883,6 @@ function scoreSugestaoHistorico(carga = {}, cte = {}, vinculos = []) {
   }
 
   const valorCte = numeroAuditoria(cte.valor_cte || 0);
-  const referenciaValor = calcularReferenciaAuditoria(carga, cte);
   const casamentoValor = referenciaValor.casamentoValor;
 
   if (valorCte && casamentoValor?.valor) {
@@ -878,29 +911,18 @@ function scoreSugestaoVinculoTransportadora(carga = {}, cte = {}, vinculos = [])
   if (!nomeCte || !nomeCarga) return { score: 0, motivos: [] };
   if (transportadorasEquivalentesAuditoria(nomeCte, nomeCarga, vinculos)) return { score: 0, motivos: [] };
 
-  const origem = normalizarTexto(cte.cidade_origem || '');
-  const destino = normalizarTexto(cte.cidade_destino || '');
-  const ufOrigem = normalizarTexto(cte.uf_origem || '');
-  const ufDestino = normalizarTexto(cte.uf_destino || '');
-  const cteNumero = normalizarTexto(cte.numero_cte || '');
-  const origemCarga = normalizarTexto(carga.origem || '');
-  const destinoCarga = normalizarTexto(carga.destino || '');
-  const ufOrigemCarga = normalizarTexto(carga.ufOrigem || '');
-  const ufDestinoCarga = normalizarTexto(carga.ufDestino || '');
-  const rotaExata = Boolean(origem && origemCarga && origem === origemCarga)
-    && Boolean(destino && destinoCarga && destino === destinoCarga)
-    && (!ufOrigem || !ufOrigemCarga || ufOrigem === ufOrigemCarga)
-    && (!ufDestino || !ufDestinoCarga || ufDestino === ufDestinoCarga);
+  const rotaExata = cidadeCompativelAuditoria(cte.cidade_origem || '', carga.origem || '', cte.uf_origem || '', carga.ufOrigem || '')
+    && cidadeCompativelAuditoria(cte.cidade_destino || '', carga.destino || '', cte.uf_destino || '', carga.ufDestino || '');
+  const cteNaViagem = cteContidoNaCargaAuditoria(carga, cte);
 
-  if (!rotaExata) return { score: 0, motivos: [] };
+  if (!rotaExata && !cteNaViagem) return { score: 0, motivos: [] };
 
-  let score = 34;
-  const motivos = ['transportadora diferente', 'mesma origem', 'mesmo destino'];
+  let score = cteNaViagem ? 55 : 34;
+  const motivos = cteNaViagem
+    ? ['CT-e encontrado na viagem', 'transportadora diferente']
+    : ['transportadora diferente', 'mesma origem', 'mesmo destino'];
 
-  if (cteNumero && normalizarTexto(carga.cteRaw || '').includes(cteNumero)) {
-    score += 25;
-    motivos.push('CT-e encontrado na viagem');
-  }
+  if (cteNaViagem && rotaExata) motivos.push('mesma origem', 'mesmo destino');
 
   const emissao = cte.emissao ? new Date(cte.emissao).getTime() : 0;
   const dataCarga = new Date(carga.coletaRealizada || carga.coletaPlanejada || carga.importadoEm || 0).getTime();
@@ -2860,6 +2882,26 @@ export default function LotacaoAuditoriaPage() {
     [loteChavesTexto],
   );
 
+  const aplicarSugestoesDoCte = useCallback((cte) => {
+    if (!cte) {
+      setSugestoesViagens([]);
+      setSugestoesVinculoTransportadora([]);
+      setSugestoesConsultadas(false);
+      return;
+    }
+    const resultado = gerarSugestoesViagemAuditoria(baseFluxo.cargas, cte, vinculos);
+    setSugestoesConsultadas(true);
+    setSugestoesViagens(resultado.casamento);
+    setSugestoesVinculoTransportadora(resultado.vinculosPossiveis);
+    if (resultado.casamento.length) {
+      setMensagem('Correspondências encontradas. Selecione manualmente a DIST/viagem que será auditada.');
+    } else if (resultado.vinculosPossiveis.length) {
+      setMensagem('Nenhuma DIST/viagem com a mesma transportadora. Verifique sugestões com transportadora diferente abaixo.');
+    } else {
+      setMensagem('Nenhuma DIST/viagem encontrada para este CT-e no realizado.');
+    }
+  }, [baseFluxo.cargas, vinculos]);
+
   // ── Busca por chave CT-e (somente chave de 44 dígitos na base CT-e) ──
   const pesquisarPorChave = useCallback(async () => {
     setMensagem('');
@@ -2873,15 +2915,19 @@ export default function LotacaoAuditoriaPage() {
       setViagemSelecionada(null);
       setViagensResultado([]);
       setTabelaSelecionadaChave('');
-      setSugestoesViagens([]);
-      setSugestoesVinculoTransportadora([]);
-      setSugestoesConsultadas(false);
-      if (!ctes.length) setMensagem('Nenhum CT-e encontrado na base de CT-es para essa chave.');
+      if (!ctes.length) {
+        setSugestoesViagens([]);
+        setSugestoesVinculoTransportadora([]);
+        setSugestoesConsultadas(false);
+        setMensagem('Nenhum CT-e encontrado na base de CT-es para essa chave.');
+        return;
+      }
+      aplicarSugestoesDoCte(ctes[0]);
     } catch (error) {
       setCtesEncontrados([]); setCteSelecionado(null);
       setMensagem(`Falha ao buscar chave CT-e: ${error.message || String(error)}`);
     }
-  }, [buscaChave]);
+  }, [buscaChave, aplicarSugestoesDoCte]);
 
   // ── Busca por número CT-e (somente número na base CT-e) ──
   const pesquisarPorNumeroCte = useCallback(async () => {
@@ -2895,15 +2941,19 @@ export default function LotacaoAuditoriaPage() {
       setViagemSelecionada(null);
       setViagensResultado([]);
       setTabelaSelecionadaChave('');
-      setSugestoesViagens([]);
-      setSugestoesVinculoTransportadora([]);
-      setSugestoesConsultadas(false);
-      if (!ctes.length) setMensagem('Nenhum CT-e encontrado na base de CT-es para esse número.');
+      if (!ctes.length) {
+        setSugestoesViagens([]);
+        setSugestoesVinculoTransportadora([]);
+        setSugestoesConsultadas(false);
+        setMensagem('Nenhum CT-e encontrado na base de CT-es para esse número.');
+        return;
+      }
+      aplicarSugestoesDoCte(ctes[0]);
     } catch (error) {
       setCtesEncontrados([]); setCteSelecionado(null);
       setMensagem(`Falha ao buscar número CT-e: ${error.message || String(error)}`);
     }
-  }, [buscaNumeroCte]);
+  }, [buscaNumeroCte, aplicarSugestoesDoCte]);
 
   // ── Busca por DIST / viagem (somente no realizado, já consolidado) ──
   const pesquisarPorDist = useCallback(() => {
@@ -2922,22 +2972,9 @@ export default function LotacaoAuditoriaPage() {
   const buscarSugestoesNoRealizado = useCallback(() => {
     if (!cteSelecionado) return;
     setBuscandoSugestoes(true);
-
-    const resultado = gerarSugestoesViagemAuditoria(baseFluxo.cargas, cteSelecionado, vinculos);
-    setSugestoesConsultadas(true);
-    setSugestoesViagens(resultado.casamento);
-    setSugestoesVinculoTransportadora(resultado.vinculosPossiveis);
-
-    if (resultado.casamento.length) {
-      setMensagem('Correspondências exatas encontradas. Selecione manualmente a DIST/viagem que será auditada.');
-    } else if (resultado.vinculosPossiveis.length) {
-      setMensagem('Nenhuma DIST/viagem encontrada com transportadora, origem e destino iguais aos do CT-e.');
-    } else {
-      setMensagem('Nenhuma DIST/viagem encontrada com transportadora, origem e destino iguais aos do CT-e.');
-    }
-
+    aplicarSugestoesDoCte(cteSelecionado);
     setBuscandoSugestoes(false);
-  }, [cteSelecionado, baseFluxo.cargas, vinculos]);
+  }, [cteSelecionado, aplicarSugestoesDoCte]);
 
   const montarResultadoLote = useCallback((chave, respostaPorChave, lancamentosBase) => {
     const resposta = respostaPorChave.get(chave);
@@ -3056,20 +3093,8 @@ export default function LotacaoAuditoriaPage() {
     setCtesEncontrados([cte]);
     setViagemSelecionada(null);
     setTabelaSelecionadaChave('');
-
-    const resultado = gerarSugestoesViagemAuditoria(baseFluxo.cargas, cte, vinculos);
-    setSugestoesConsultadas(true);
-    setSugestoesViagens(resultado.casamento);
-    setSugestoesVinculoTransportadora(resultado.vinculosPossiveis);
-
-    if (resultado.casamento.length) {
-      setMensagem('CT-e selecionado no lote. Selecione manualmente uma DIST/viagem com correspondência exata.');
-    } else if (resultado.vinculosPossiveis.length) {
-      setMensagem('CT-e selecionado no lote. Nenhuma DIST/viagem possui transportadora, origem e destino iguais.');
-    } else {
-      setMensagem('CT-e selecionado no lote. Nenhuma viagem provável encontrada com a mesma transportadora no realizado.');
-    }
-  }, [baseFluxo.cargas, vinculos]);
+    aplicarSugestoesDoCte(cte);
+  }, [aplicarSugestoesDoCte]);
 
   const salvarVinculosState = useCallback(async (novos) => {
     const adaptados = (novos || []).filter((item) => item.nomeRealizado && item.nomeCteTabela);
