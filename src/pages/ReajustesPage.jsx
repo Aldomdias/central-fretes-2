@@ -14,6 +14,16 @@ import {
   salvarReajustesSupabase,
 } from '../services/reajustesSupabaseService';
 import {
+  baixarEmlOutlookReajuste,
+  baixarHtmlEmailReajuste,
+  copiarHtmlEmailReajuste,
+  gerarDadosEmailReajuste,
+  gerarHtmlEmailReajuste,
+  gerarTextoSimplesEmailReajuste,
+  nomeArquivoEmailReajuste,
+  obterPeriodoPadraoEmailReajuste,
+} from '../services/reajusteEmailService';
+import {
   aplicarVinculoAutomatico,
   calcularImpactosReajustes,
   calcularSerieMensalReajustes,
@@ -742,6 +752,12 @@ export default function ReajustesPage() {
   const [sincronizandoSupabase, setSincronizandoSupabase] = useState(false);
   const [ultimoSyncSupabase, setUltimoSyncSupabase] = useState('');
   const [diagRealizado, setDiagRealizado] = useState(null);
+  const [emailExecutivoAberto, setEmailExecutivoAberto] = useState(false);
+  const [emailFiltros, setEmailFiltros] = useState({
+    mesInicial: '',
+    mesFinal: '',
+    somenteMesesFechados: true,
+  });
   const autoImpactoDisparadoRef = useRef(false);
 
   useEffect(() => {
@@ -872,6 +888,21 @@ export default function ReajustesPage() {
   const serieMensal = useMemo(
     () => calcularSerieMensalReajustes(itens, realizadoImpactoRows, config),
     [itens, realizadoImpactoRows, config],
+  );
+
+  const mesesEmailDisponiveis = useMemo(
+    () => (serieMensal.meses || []).map((linha) => linha.mes).filter(Boolean),
+    [serieMensal],
+  );
+
+  const dadosEmailExecutivo = useMemo(
+    () => gerarDadosEmailReajuste(serieMensal, emailFiltros),
+    [serieMensal, emailFiltros],
+  );
+
+  const htmlEmailExecutivo = useMemo(
+    () => gerarHtmlEmailReajuste(dadosEmailExecutivo),
+    [dadosEmailExecutivo],
   );
 
   const dashboard = useMemo(() => {
@@ -1205,6 +1236,44 @@ export default function ReajustesPage() {
     });
   }
 
+  function abrirEmailExecutivo() {
+    if (!serieMensal.meses?.length) {
+      setErro('Calcule o impacto para carregar a serie mensal antes de gerar o e-mail executivo.');
+      return;
+    }
+    setEmailFiltros(obterPeriodoPadraoEmailReajuste(serieMensal));
+    setEmailExecutivoAberto(true);
+    setErro('');
+  }
+
+  async function copiarEmailExecutivo() {
+    try {
+      await copiarHtmlEmailReajuste(
+        htmlEmailExecutivo,
+        gerarTextoSimplesEmailReajuste(dadosEmailExecutivo),
+      );
+      setMensagem('Corpo HTML copiado. No Outlook, crie uma nova mensagem e cole no corpo do e-mail.');
+      setErro('');
+    } catch (error) {
+      setErro(error.message || 'Nao foi possivel copiar o corpo do e-mail.');
+    }
+  }
+
+  function baixarEmailExecutivo() {
+    baixarHtmlEmailReajuste(
+      htmlEmailExecutivo,
+      nomeArquivoEmailReajuste(dadosEmailExecutivo),
+    );
+    setMensagem('HTML do e-mail executivo baixado.');
+    setErro('');
+  }
+
+  function prepararEmailOutlook() {
+    baixarEmlOutlookReajuste(dadosEmailExecutivo, htmlEmailExecutivo);
+    setMensagem('Arquivo .eml preparado. Abra o arquivo baixado para carregar o HTML diretamente no corpo do Outlook.');
+    setErro('');
+  }
+
   function exportarPreenchimento() {
     if (!itens.length) {
       setErro('Não há reajustes carregados para gerar o modelo de preenchimento.');
@@ -1416,6 +1485,9 @@ export default function ReajustesPage() {
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={tentarVincular} disabled={!itens.length || carregando}>Sugerir vínculos</button>
             <button className="btn-secondary" type="button" onClick={exportarRelatorio} disabled={!itens.length}>Exportar relatório</button>
+            <button className="btn-secondary" type="button" onClick={abrirEmailExecutivo} disabled={!serieMensal.meses?.length}>
+              Gerar e-mail executivo
+            </button>
             <button className="btn-primary" type="button" onClick={calcularImpacto} disabled={!itens.length || carregando}>
               {carregando ? 'Calculando...' : 'Calcular impacto'}
             </button>
@@ -1600,6 +1672,101 @@ export default function ReajustesPage() {
         onLimpar={() => setVinculosItem(vinculoAtivoId, [])}
         onFechar={() => setVinculoAtivoId(null)}
       />
+
+      {emailExecutivoAberto ? (
+        <div className="modal-overlay" onClick={() => setEmailExecutivoAberto(false)} role="presentation">
+          <div
+            className="modal-card"
+            style={{ width: 'min(1180px, 100%)' }}
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="email-executivo-titulo"
+          >
+            <div className="modal-header">
+              <div>
+                <div className="amd-mini-brand">Reajustes • Comunicação executiva</div>
+                <h2 id="email-executivo-titulo" style={{ margin: '5px 0 4px' }}>Gerar e-mail executivo</h2>
+                <p className="compact">A prévia abaixo é o mesmo HTML que será copiado ou baixado.</p>
+              </div>
+              <button type="button" className="btn-secondary" onClick={() => setEmailExecutivoAberto(false)}>Fechar</button>
+            </div>
+
+            <div className="form-grid three">
+              <label className="field">Mês inicial
+                <select
+                  value={emailFiltros.mesInicial}
+                  onChange={(event) => setEmailFiltros((prev) => ({ ...prev, mesInicial: event.target.value }))}
+                >
+                  {mesesEmailDisponiveis.map((mes) => (
+                    <option key={mes} value={mes}>{formatarMesReferencia(mes)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">Mês final
+                <select
+                  value={emailFiltros.mesFinal}
+                  onChange={(event) => setEmailFiltros((prev) => ({ ...prev, mesFinal: event.target.value }))}
+                >
+                  {mesesEmailDisponiveis.map((mes) => (
+                    <option key={mes} value={mes}>{formatarMesReferencia(mes)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={emailFiltros.somenteMesesFechados}
+                  onChange={(event) => setEmailFiltros((prev) => ({
+                    ...prev,
+                    somenteMesesFechados: event.target.checked,
+                  }))}
+                />
+                Somente meses fechados
+              </label>
+            </div>
+
+            <div className="hint-box compact" style={{ marginTop: 12 }}>
+              <strong>Assunto:</strong> {dadosEmailExecutivo.assunto}
+              {' '}• <strong>Período efetivo:</strong> {dadosEmailExecutivo.periodoLabel || 'sem dados'}
+            </div>
+
+            <div className="actions-right gap-row" style={{ margin: '14px 0' }}>
+              <button type="button" className="btn-secondary" onClick={copiarEmailExecutivo} disabled={!dadosEmailExecutivo.meses.length}>
+                Copiar corpo para Outlook
+              </button>
+              <button type="button" className="btn-secondary" onClick={baixarEmailExecutivo} disabled={!dadosEmailExecutivo.meses.length}>
+                Baixar HTML
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={prepararEmailOutlook}
+                disabled={!dadosEmailExecutivo.meses.length}
+                title="Gera um arquivo .eml com o HTML completo no corpo. Abra o arquivo baixado no Outlook."
+              >
+                Preparar e-mail no Outlook
+              </button>
+            </div>
+
+            {dadosEmailExecutivo.meses.length ? (
+              <iframe
+                title="Prévia do e-mail executivo de reajustes"
+                srcDoc={htmlEmailExecutivo}
+                style={{
+                  width: '100%',
+                  height: '62vh',
+                  border: '1px solid #dbe3ef',
+                  borderRadius: 12,
+                  background: '#eef2f7',
+                }}
+              />
+            ) : (
+              <div className="sim-alert error">Não há dados mensais no período selecionado.</div>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <section className="table-card">
         <div className="section-row compact-top">
