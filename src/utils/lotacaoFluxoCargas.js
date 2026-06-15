@@ -691,10 +691,32 @@ export function buscarCargaPorDistOuCte(cargas = [], termo = '') {
   return (cargas || [])
     .filter((item) => {
       if (normalizarTexto(item.dist).includes(busca)) return true;
+      if (normalizarTexto(item.referencia).includes(busca)) return true;
+      if (normalizarTexto(item.operacao).includes(busca)) return true;
       if (normalizarTexto(item.cteRaw).includes(busca)) return true;
       return (item.cteKeys || []).some((cte) => cte.includes(busca));
     })
-    .slice(0, 40);
+    .sort((a, b) => {
+      const distA = normalizarTexto(a.dist);
+      const distB = normalizarTexto(b.dist);
+      const exatoA = distA === busca ? 1 : 0;
+      const exatoB = distB === busca ? 1 : 0;
+      if (exatoA !== exatoB) return exatoB - exatoA;
+      return new Date(b.importadoEm || b.coletaRealizada || 0).getTime()
+        - new Date(a.importadoEm || a.coletaRealizada || 0).getTime();
+    });
+}
+
+export function buscarViagensUnicasPorDistOuCte(cargas = [], termo = '', limite = 100) {
+  const vistas = new Set();
+  return buscarCargaPorDistOuCte(cargas, termo)
+    .filter((carga) => {
+      const chave = normalizarTexto(carga.dist || carga.id || '');
+      if (!chave || vistas.has(chave)) return false;
+      vistas.add(chave);
+      return true;
+    })
+    .slice(0, Math.max(1, Number(limite) || 100));
 }
 
 export function carregarLancamentosAuditoria() {

@@ -3,6 +3,7 @@ import {
   carregarFluxoCargasLotacao,
   carregarFluxoCargasLotacaoCompleto,
   buscarCargaPorDistOuCte,
+  buscarViagensUnicasPorDistOuCte,
   buscarHistoricoLotacao,
   formatarDataCurta,
   formatarMoeda,
@@ -951,7 +952,7 @@ function localidadeCompativelOperacao(alvo = '', candidato = '') {
 
 function sugestoesDistOperacao(cargas = [], item = {}, busca = '') {
   const termo = String(busca || '').trim();
-  if (termo && termo !== '-') return buscarCargaPorDistOuCte(cargas, termo);
+  if (termo && termo !== '-') return buscarViagensUnicasPorDistOuCte(cargas, termo);
 
   const transportadora = normalizarTexto(item.transportadora || '');
   const valorCte = Number(item.valorLancado) || 0;
@@ -1547,7 +1548,7 @@ function CustoAdicionalOperacao({ baseFluxo, onCriado, distSugerida }) {
     if (distSugerida) setBusca(distSugerida);
   }, [distSugerida]);
 
-  const resultados = useMemo(() => buscarCargaPorDistOuCte(baseFluxo.cargas, busca).slice(0, 20), [baseFluxo.cargas, busca]);
+  const resultados = useMemo(() => buscarViagensUnicasPorDistOuCte(baseFluxo.cargas, busca, 20), [baseFluxo.cargas, busca]);
   const selecionada = resultados.find((item) => item.id === selecionadaId) || resultados[0] || null;
 
   const atualizar = (campo, valor) => setForm((prev) => ({ ...prev, [campo]: valor }));
