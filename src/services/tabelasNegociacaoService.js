@@ -1,4 +1,17 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import {
+  anexarResumoCapaNoPayload,
+  erroColunaResumoCapaAusente,
+  removerResumoCapaDoSelect,
+} from '../utils/tabelasNegociacaoResumoCapa';
+import {
+  carregarHistoricoGestaoNegociacoes,
+  carregarLaudoTransportadoraConsolidado,
+  carregarResumoCompletoNegociacao,
+  listarNegociacoesCapaEditor,
+  listarNegociacoesResumo,
+  obterNegociacaoCapa,
+} from './tabelasNegociacaoSnapshotService';
 import { salvarSecaoDb } from './freteDatabaseService';
 import { converterTabelaNegociacaoParaSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { carregarCargasLotacaoSupabase } from './lotacaoSupabaseService';
@@ -414,6 +427,22 @@ function erroColunaGestaoAusente(error) {
     && COLUNAS_GESTAO_TABELAS_NEGOCIACAO.some((col) => msg.includes(col));
 }
 
+function prepararPayloadPersistencia(payload = {}) {
+  return anexarResumoCapaNoPayload(payload);
+}
+
+async function atualizarNegociacaoPersistencia(supabase, id, payload, selectCols = '*') {
+  let finalPayload = prepararPayloadPersistencia(payload);
+  let result = await supabase.from('tabelas_negociacao').update(finalPayload).eq('id', id).select(selectCols).single();
+  if (result.error && erroColunaResumoCapaAusente(result.error)) {
+    finalPayload = { ...payload };
+    delete finalPayload.resumo_capa;
+    const selectFallback = removerResumoCapaDoSelect(selectCols);
+    result = await supabase.from('tabelas_negociacao').update(finalPayload).eq('id', id).select(selectFallback).single();
+  }
+  return result;
+}
+
 function semColunasGestao(payload = {}) {
   const next = Object.assign({}, payload);
   COLUNAS_GESTAO_TABELAS_NEGOCIACAO.forEach(function(col) { delete next[col]; });
@@ -439,31 +468,30 @@ async function atualizarTabelaNegociacaoComFallback(supabase, id, payload) {
 }
 
 export async function listarTabelasNegociacao(filtros = {}) {
-  const supabase = supabaseOrThrow();
-  let query = supabase
-    .from('tabelas_negociacao')
-    .select('*')
-    .order('criado_em', { ascending: false });
-
-  if (filtros.status) query = query.eq('status', filtros.status);
-  if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
-  if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
-  if (filtros.canal) query = query.eq('canal', filtros.canal);
-  if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
-  if (filtros.somenteSimulacao) query = query.eq('incluir_simulacao', true);
-
-  const { data, error } = await query;
-  if (error) throw new Error(error.message || 'Erro ao listar tabelas em negociação.');
-  return data || [];
+  return listarNegociacoesResumo(filtros);
 }
 
-export async function obterTabelaNegociacao(id) {
-  const supabase = supabaseOrThrow();
-  const { data, error } = await supabase
-    .from('tabelas_negociacao').select('*').eq('id', id).single();
-  if (error) throw new Error(error.message || 'Erro ao buscar tabela em negociação.');
-  return data;
+export async function listarTabelasNegociacaoEditor() {
+  return listarNegociacoesCapaEditor();
 }
+
+export { carregarHistoricoGestaoNegociacoes };
+
+export async function obterTabelaNegociacao(id, opcoes = {}) {
+  if (opcoes.completo) {
+    const supabase = supabaseOrThrow();
+    const { data, error } = await supabase
+      .from('tabelas_negociacao')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (error) throw new Error(error.message || 'Erro ao buscar tabela em negociação.');
+    return data;
+  }
+  return obterNegociacaoCapa(id);
+}
+
+export { carregarResumoCompletoNegociacao, carregarLaudoTransportadoraConsolidado };
 
 export async function criarTabelaNegociacao(payload = {}) {
   const supabase = supabaseOrThrow();
@@ -730,10 +758,7 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     historico_rodadas: historico.concat([entradaImportacao]).slice(-30),
   };
 
-  await supabase
-    .from('tabelas_negociacao')
-    .update({ resumo_simulacao: resumoAtualizado })
-    .eq('id', tabela.id);
+  await atualizarNegociacaoPersistencia(supabase, tabela.id, { resumo_simulacao: resumoAtualizado }, 'id');
 
   return salvos;
 }
@@ -1314,12 +1339,7 @@ export async function excluirRegistroRodadaNegociacao(id, registroId) {
     rotas_sem_cobertura: inteiro(resumoUltima.ctesSemTabelaSelecionada || 0),
   };
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao')
-    .update(payload)
-    .eq('id', id)
-    .select()
-    .single();
+  const { data, error } = await atualizarNegociacaoPersistencia(supabase, id, payload);
 
   if (error) {
     throw new Error(error.message || 'Erro ao excluir registro da rodada.');
@@ -1456,12 +1476,7 @@ export async function excluirRodadaNegociacao(id, rodadaNumero) {
     rotas_sem_cobertura: inteiro(resumoUltima.ctesSemTabelaSelecionada || 0),
   };
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao')
-    .update(payload)
-    .eq('id', id)
-    .select()
-    .single();
+  const { data, error } = await atualizarNegociacaoPersistencia(supabase, id, payload);
 
   if (error) {
     throw new Error(error.message || 'Erro ao excluir rodada.');
@@ -1543,6 +1558,10 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
 
     cargasDia: resultado.cargasDia || 0,
     volumesDia: resultado.volumesDia || 0,
+    dias: resultado.dias || 0,
+    meses: resultado.meses || 1,
+    freteRealizadoMes: resultado.freteRealizadoMes || 0,
+    freteRealizadoAno: resultado.freteRealizadoAno || 0,
     volumes: resultado.volumes || 0,
     peso: resultado.peso || 0,
     valorNF: resultado.valorNF || 0,
@@ -1789,12 +1808,12 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     },
   };
 
-  const { data, error } = await supabase
-    .from('tabelas_negociacao')
-    .update(payload)
-    .eq('id', id)
-    .select('id,transportadora,canal,status,resumo_simulacao,incluir_simulacao,aderencia_projetada,saving_projetado,faturamento_projetado,impacto_projetado')
-    .single();
+  const { data, error } = await atualizarNegociacaoPersistencia(
+    supabase,
+    id,
+    payload,
+    'id,transportadora,canal,status,resumo_simulacao,resumo_capa,incluir_simulacao,aderencia_projetada,saving_projetado,faturamento_projetado,impacto_projetado',
+  );
 
   if (error) {
     throw new Error(error.message || 'Erro ao salvar resultado da simulação na negociação.');

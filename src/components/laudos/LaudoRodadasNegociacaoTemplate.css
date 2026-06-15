@@ -191,6 +191,16 @@
   color: #166534;
 }
 
+.laudo-destaque-percentual {
+  color: #b45309;
+  font-weight: 800;
+}
+
+.laudo-rotas-prioritarias-tabela .right {
+  text-align: right;
+  white-space: nowrap;
+}
+
 .laudo-rodadas-recomendacao {
   background: #f5f3ff;
   border: 1px solid #ddd6fe;
@@ -213,9 +223,39 @@
   line-height: 1.55;
 }
 
+.laudo-rodadas-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.laudo-rodadas-actions .primary,
+.laudo-rodadas-actions .sim-tab {
+  margin: 0;
+}
+
+@media print {
+  .laudo-rodadas-actions {
+    display: none !important;
+  }
+}
+
 @media print {
   .laudo-rodadas-page {
     box-shadow: none;
     border-radius: 0;
   }
+}
+
+.laudo-subsecao-titulo {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
 }

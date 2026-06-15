@@ -41,6 +41,8 @@ export default function GestaoShell({
   tabelas = [],
   onAbrirNegociacao,
   onAdicionarOrigem,
+  onGerarLaudoTransportadora,
+  carregandoLaudoTransportadora = false,
   onEnviarAprovacao,
   onAlternarSimulacao,
   onAprovarGestor,
@@ -122,6 +124,8 @@ export default function GestaoShell({
             sessao={sessao}
             onAbrirOrigem={(id) => onAbrirNegociacao(id)}
             onAdicionarOrigem={onAdicionarOrigem}
+            onGerarLaudoTransportadora={onGerarLaudoTransportadora}
+            carregandoLaudoTransportadora={carregandoLaudoTransportadora}
             filtroTransportadora={filtroTransportadora}
             onFiltroTransportadoraChange={setFiltroTransportadora}
           />

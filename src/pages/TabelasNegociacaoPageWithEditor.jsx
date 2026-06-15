@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import TabelasNegociacaoPage from './TabelasNegociacaoPage';
 import {
   TIPOS_NEGOCIACAO,
   atualizarTabelaNegociacao,
-  listarTabelasNegociacao,
+  listarTabelasNegociacaoEditor,
 } from '../services/tabelasNegociacaoService';
 
 const CANAIS = ['ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA', 'LOTACAO'];
@@ -81,19 +81,30 @@ export default function TabelasNegociacaoPageWithEditor() {
   const [erro, setErro] = useState('');
   const [sucesso, setSucesso] = useState('');
   const [salvando, setSalvando] = useState(false);
-  const [aberto, setAberto] = useState(true);
+  const [aberto, setAberto] = useState(false);
+  const [carregandoLista, setCarregandoLista] = useState(false);
+  const [listaCarregada, setListaCarregada] = useState(false);
 
   async function carregar() {
     setErro('');
+    setCarregandoLista(true);
     try {
-      const lista = await listarTabelasNegociacao({});
+      const lista = await listarTabelasNegociacaoEditor();
       setTabelas(lista || []);
+      setListaCarregada(true);
     } catch (e) {
       setErro(e.message || 'Erro ao carregar negociações.');
+    } finally {
+      setCarregandoLista(false);
     }
   }
 
-  useEffect(() => { carregar(); }, []);
+  function abrirEditor() {
+    setAberto(true);
+    if (!listaCarregada && !carregandoLista) {
+      carregar();
+    }
+  }
 
   const tabelaSelecionada = useMemo(() => tabelas.find((t) => t.id === id) || null, [tabelas, id]);
 
@@ -153,8 +164,8 @@ export default function TabelasNegociacaoPageWithEditor() {
             <p style={{ margin: '6px 0 0', color: '#64748b' }}>Corrige uma negociação criada como nova, reajuste ou lotação sem apagar itens, laudos ou histórico.</p>
           </div>
           <div className="sim-actions" style={{ justifyContent: 'flex-end' }}>
-            <button className="sim-tab" type="button" onClick={() => setAberto((p) => !p)}>{aberto ? 'Recolher' : 'Abrir'}</button>
-            <button className="sim-tab" type="button" onClick={carregar}>Atualizar lista</button>
+            <button className="sim-tab" type="button" onClick={() => (aberto ? setAberto(false) : abrirEditor())}>{aberto ? 'Recolher' : 'Abrir'}</button>
+            <button className="sim-tab" type="button" onClick={carregar} disabled={carregandoLista}>{carregandoLista ? 'Carregando...' : 'Atualizar lista'}</button>
           </div>
         </div>
 
@@ -163,6 +174,9 @@ export default function TabelasNegociacaoPageWithEditor() {
 
         {aberto ? (
           <div style={{ marginTop: 14 }}>
+            {!listaCarregada && !carregandoLista ? (
+              <div className="sim-alert info">Lista ainda não carregada. Clique em <strong>Atualizar lista</strong> para buscar negociações (consulta leve).</div>
+            ) : null}
             <div className="sim-form-grid sim-grid-3">
               <label>Buscar
                 <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Transportadora, origem, tipo..." />

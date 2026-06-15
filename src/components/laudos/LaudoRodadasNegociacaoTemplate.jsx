@@ -1,6 +1,14 @@
 import React, { useRef } from 'react';
-import * as XLSX from 'xlsx';
 import { montarLaudosRodadasNegociacao, formatadoresLaudoRodadas } from '../../utils/laudosRodadasNegociacaoHtml';
+import {
+  baixarLaudoRodadasEmail,
+  baixarLaudoRodadasExcel,
+  baixarLaudoRodadasHtml,
+  baixarLaudoRodadasTexto,
+  gerarLaudoRodadasPdf,
+  laudoRodadasExterno,
+} from '../../utils/laudoRodadasExport';
+import LaudoEmailAcoes from './LaudoEmailAcoes';
 import './LaudoRodadasNegociacaoTemplate.css';
 
 const { dinheiro, numero, percentual, dataBR, exibirCidade } = formatadoresLaudoRodadas;
@@ -116,176 +124,6 @@ function prioridadeClasse(valor) {
   if (v.includes('alta')) return 'alta';
   if (v.includes('média') || v.includes('media')) return 'media';
   return 'baixa';
-}
-
-function nomeArquivoSeguro(v, fallback = 'laudo-rodadas') {
-  return String(v || fallback)
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gi, '-')
-    .replace(/^-+|-+$/g, '') || fallback;
-}
-
-function baixarArquivo(conteudo, nomeArquivo, tipo) {
-  const blob = new Blob([conteudo], { type: tipo });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = nomeArquivo;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(link.href);
-}
-
-function montarHtmlExportavel(laudoNode, titulo) {
-  const estilos = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
-    .map((node) => node.outerHTML)
-    .join('\n');
-  return `<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${titulo}</title>
-  ${estilos}
-  <style>
-    body { margin: 0; background: #f8fafc; color: #0f172a; font-family: Arial, sans-serif; }
-    .laudo-export-shell { padding: 24px; }
-    .laudo-rodadas-page { max-width: 1200px; margin: 0 auto; }
-    .laudo-rodadas-actions { display: none !important; }
-    @media print {
-      body { background: #fff; }
-      .laudo-export-shell { padding: 0; }
-      .laudo-rodadas-page { box-shadow: none !important; border-radius: 0 !important; max-width: none !important; width: 100% !important; }
-    }
-  </style>
-</head>
-<body>
-  <main class="laudo-export-shell">
-    ${laudoNode.outerHTML}
-  </main>
-</body>
-</html>`;
-}
-
-function abrirPdf(laudoNode, titulo) {
-  const html = montarHtmlExportavel(laudoNode, titulo);
-  const janela = window.open('', '_blank', 'width=1200,height=900');
-  if (!janela) {
-    window.print();
-    return;
-  }
-  janela.document.write(html);
-  janela.document.close();
-  janela.focus();
-  setTimeout(() => {
-    janela.print();
-  }, 350);
-}
-
-function linhaResumoExcel(laudo = {}) {
-  const comparativo = laudo.comparativo || {};
-  const inicial = comparativo.inicial || {};
-  const atual = comparativo.atual || {};
-  return [{
-    Transportadora: laudo.transportadora || '',
-    Canal: laudo.canal || '',
-    Origem: laudo.origem || '',
-    Periodo: laudo.periodo || '',
-    Tipo: laudo.tipo || '',
-    Rodadas: laudo.quantidadeSimulacoes || 0,
-    Aderencia_Inicial: inicial.aderencia || 0,
-    Aderencia_Atual: atual.aderencia || 0,
-    Evolucao_Aderencia: comparativo.evolucaoAderencia || 0,
-    CTEs_Ganhos_Inicial: inicial.ctesGanhos || 0,
-    CTEs_Ganhos_Atual: atual.ctesGanhos || 0,
-    Volumes_Atual: atual.volumesGanhos || 0,
-    Faturamento_Capturado_Mes: atual.faturamentoMes || 0,
-    Saving_Mes: atual.savingMes || 0,
-    Ajuste_Medio_Atual: atual.reducaoMedia || 0,
-    Recomendacao: laudo.recomendacao || '',
-  }];
-}
-
-function evolucaoExcel(linhas = []) {
-  return linhas.map((item) => ({
-    Rodada: item.rodada,
-    Data: dataBR(item.criadoEm),
-    CTEs_Analisados: item.ctesAnalisados || 0,
-    CTEs_Com_Tabela: item.ctesComTabela || 0,
-    CTEs_Ganhos: item.ctesGanhos || 0,
-    CTEs_Perdidos: item.ctesPerdidos || 0,
-    Volumes_Ganhos: item.volumesGanhos || 0,
-    Pedidos_Dia: item.pedidosDia || 0,
-    Pedidos_Mes: item.pedidosMes || 0,
-    Volumes_Dia: item.volumesDia || 0,
-    Volumes_Mes: item.volumesMes || 0,
-    Aderencia: item.aderencia || 0,
-    Faturamento_Mes: item.faturamentoMes || 0,
-    Faturamento_Ano: item.faturamentoAno || 0,
-    Saving_Mes: item.savingMes || 0,
-    Saving_Ano: item.savingAno || 0,
-    Percentual_Frete_Real: item.percentualFreteReal || 0,
-    Percentual_Frete_Tabela: item.percentualFreteTabela || 0,
-    Ajuste_Medio: item.reducaoMedia || 0,
-  }));
-}
-
-function oportunidadesExcel(linhas = []) {
-  return linhas.map((item) => ({
-    Rota_Cotacao: item.rota || item.chave || '',
-    Origem: item.origem || '',
-    Destino: item.destino || '',
-    UF_Destino: item.ufDestino || '',
-    Faixa: item.faixa || '',
-    CTEs_Analisados: item.ctesAnalisados || 0,
-    CTEs_Ganhos: item.ctesGanhos || 0,
-    CTEs_Perdidos: item.ctesPerdidos || 0,
-    Volumes: item.volumes || 0,
-    Faturamento_Potencial: item.faturamentoPotencial || 0,
-    Faturamento_Capturado: item.faturamentoCapturado || 0,
-    Faturamento_Nao_Capturado: item.faturamentoNaoCapturado || 0,
-    Aderencia: item.aderencia || item.aderenciaAtual || 0,
-    Ajuste_Medio: item.ajusteMedio || 0,
-    Prioridade: item.prioridade || '',
-    Status: item.status || '',
-    Ganhos_Inicial: item.ctesGanhosInicial || 0,
-    Ganhos_Final: item.ctesGanhosFinal || 0,
-    Evolucao_CTEs: item.evolucaoCtes || 0,
-  }));
-}
-
-function paretoCidadesExcel(linhas = []) {
-  return linhas.map((item, idx) => ({
-    Posicao: idx + 1,
-    Cidade: item.cidade || '',
-    UF_Destino: item.ufDestino || '',
-    CTEs: item.ctes || 0,
-    Volumes: item.volumes || 0,
-    Percentual_Volume: item.pctVolume || 0,
-    Percentual_Acumulado: item.pctAcumulado || 0,
-    Frete_Realizado: item.freteRealizado || 0,
-    Valor_NF: item.valorNF || 0,
-  }));
-}
-
-function exportarExcel(laudo = {}, externo) {
-  const poucaBase = Number(laudo.quantidadeSimulacoes || 0) < 2;
-  const mesorregioesReais = (laudo.mesorregiaoFaixas || []).filter((item) => mesorregiaoReal(item.mesorregiao || item.rota));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhaResumoExcel(laudo)), 'Resumo');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(evolucaoExcel(laudo.evolucaoRodadas || [])), 'Evolucao Rodadas');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.rotasCriticas || laudo.ondeAjustar || [])), 'Rotas Criticas');
-  if (!poucaBase) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.rotasMelhoraram || laudo.ondeMelhorou || [])), 'Rotas Melhoraram');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(listaLaudoSegura(laudo?.ufsCriticas, laudo?.ufsPrioritarias))), 'UFs Prioritarias');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paretoCidadesExcel(laudo.paretoCidades || laudo.cidadesParetoVolume || [])), 'Pareto Cidades');
-  if (mesorregioesReais.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(mesorregioesReais)), 'Mesorregiao Faixa');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(oportunidadesExcel(laudo.destinoFaixaPareto || [])), 'Pareto Destino Faixa');
-
-  const tipo = externo ? 'transportador' : 'diretoria';
-  const nome = `laudo-rodadas-${tipo}-${nomeArquivoSeguro(laudo.transportadora)}.xlsx`;
-  XLSX.writeFile(wb, nome);
 }
 
 function TabelaEvolucao({ linhas = [], externo, baseMudou = false }) {
@@ -509,35 +347,38 @@ function TabelaSimples({ titulo, linhas = [], tipo = 'uf' }) {
   );
 }
 
-export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = null, dados = null }) {
+export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = null, dados = null, onFeedback = null }) {
   const laudoRef = useRef(null);
   const laudos = dados ? null : montarLaudosRodadasNegociacao(tabela || {});
   const laudo = dados || (tipo === 'transportador' ? laudos.transportador : laudos.executivo);
-  const externo = tipo === 'transportador' || laudo.tipo === 'transportador_rodadas';
+  const externo = laudoRodadasExterno(laudo, tipo);
   const comparativo = laudo.comparativo || {};
   const inicial = comparativo.inicial || {};
   const atual = comparativo.atual || {};
   const poucaBase = Number(laudo.quantidadeSimulacoes || 0) < 2;
   const mesorregioesReais = (laudo.mesorregiaoFaixas || []).filter((item) => mesorregiaoReal(item.mesorregiao || item.rota));
-  // Fonte única de pareto de cidades
   const paretoLinhas = (laudo.paretoCidades || laudo.cidadesParetoVolume || []).slice(0, 20);
-
-  const tipoArquivo = externo ? 'transportador' : 'diretoria';
-  const tituloExport = `${laudo.titulo || 'Laudo de rodadas'} - ${laudo.transportadora || 'Transportadora'}`;
 
   function handlePdf() {
     if (!laudoRef.current) return;
-    abrirPdf(laudoRef.current, tituloExport);
+    gerarLaudoRodadasPdf(laudoRef.current, laudo);
   }
 
   function handleHtml() {
     if (!laudoRef.current) return;
-    const html = montarHtmlExportavel(laudoRef.current, tituloExport);
-    baixarArquivo(html, `laudo-rodadas-${tipoArquivo}-${nomeArquivoSeguro(laudo.transportadora)}.html`, 'text/html;charset=utf-8');
+    baixarLaudoRodadasHtml(laudoRef.current, laudo, tipo);
   }
 
   function handleExcel() {
-    exportarExcel(laudo, externo);
+    baixarLaudoRodadasExcel(laudo, tipo);
+  }
+
+  function handleTexto() {
+    baixarLaudoRodadasTexto(laudo, tipo);
+  }
+
+  function handleEmail() {
+    baixarLaudoRodadasEmail(laudo, tipo);
   }
 
   // Label dinâmico: "Redução" ou "Variação" dependendo do sinal
@@ -562,8 +403,11 @@ export function LaudoRodadasNegociacaoTemplate({ tipo = 'executivo', tabela = nu
       <div className="laudo-rodadas-body">
         <div className="laudo-rodadas-actions">
           <button type="button" className="primary" onClick={handlePdf}>Gerar PDF</button>
-          <button type="button" className="sim-tab" onClick={handleHtml}>Baixar HTML</button>
+          <button type="button" className="sim-tab" onClick={handleHtml}>Exportar HTML</button>
           <button type="button" className="sim-tab" onClick={handleExcel}>Baixar Excel</button>
+          <button type="button" className="sim-tab" onClick={handleTexto}>Baixar laudo (.txt)</button>
+          <button type="button" className="sim-tab" onClick={handleEmail}>Baixar e-mail (.txt)</button>
+          <LaudoEmailAcoes laudo={laudo} onFeedback={onFeedback} compact />
         </div>
 
         {externo ? (

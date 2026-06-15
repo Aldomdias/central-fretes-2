@@ -441,6 +441,7 @@ export function agruparPorTransportadora(tabelas = [], sessao = null) {
     grupo.qtdNegociacoes += 1;
 
     const origemChave = upper(t.origem_label);
+    if (!origemChave || origemChave === 'NÃO INFORMADA') return;
     let origem = grupo.origens.find((o) => upper(o.label) === origemChave);
     if (!origem) {
       origem = {

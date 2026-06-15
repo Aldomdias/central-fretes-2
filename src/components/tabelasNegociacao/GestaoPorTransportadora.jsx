@@ -11,6 +11,8 @@ export default function GestaoPorTransportadora({
   sessao = null,
   onAbrirOrigem,
   onAdicionarOrigem,
+  onGerarLaudoTransportadora,
+  carregandoLaudoTransportadora = false,
   filtroTransportadora = '',
   onFiltroTransportadoraChange,
 }) {
@@ -81,6 +83,21 @@ export default function GestaoPorTransportadora({
             <div style={{ textAlign: 'right', fontSize: 12 }}>
               <div>Saving: <strong>{formatarMoeda(grupo.savingTotal)}</strong></div>
               {grupo.impactoTotal ? <div>Impacto reajuste: {formatarMoeda(grupo.impactoTotal)}</div> : null}
+              {onGerarLaudoTransportadora ? (
+                <button
+                  className="primary"
+                  type="button"
+                  style={{ marginTop: 8, marginRight: 8 }}
+                  disabled={carregandoLaudoTransportadora}
+                  onClick={function(event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onGerarLaudoTransportadora(grupo.transportadora);
+                  }}
+                >
+                  {carregandoLaudoTransportadora ? 'Gerando laudo...' : 'Laudo devolutiva'}
+                </button>
+              ) : null}
               {onAdicionarOrigem ? (
                 <button
                   className="sim-tab"

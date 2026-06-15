@@ -24,7 +24,10 @@ import {
   carregarItensTabelaNegociacaoParaUI,
   extrairQtdItensResumoTabela,
   listarTabelasNegociacao,
+  carregarHistoricoGestaoNegociacoes,
   obterTabelaNegociacao,
+  carregarResumoCompletoNegociacao,
+  carregarLaudoTransportadoraConsolidado,
   substituirItensTabelaNegociacao,
   limparItensTabelaNegociacao,
   listarTaxasDestino,
@@ -42,7 +45,22 @@ import {
   garantirNegociadorAoAbrir,
 } from '../services/tabelasNegociacaoService';
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
+import LaudoTransportadoraConsolidadoTemplate from '../components/laudos/LaudoTransportadoraConsolidadoTemplate';
+import LaudoEmailAcoes from '../components/laudos/LaudoEmailAcoes';
+import { laudoConsolidadoPorAudience, LAUDO_AUDIENCE } from '../utils/laudoTransportadoraConsolidado';
 import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
+import { montarLaudosRodadasNegociacao } from '../utils/laudosRodadasNegociacaoHtml';
+import {
+  baixarLaudoRodadasEmail,
+  baixarLaudoRodadasExcel,
+  baixarLaudoRodadasHtml,
+  baixarLaudoRodadasTexto,
+  baixarLaudoTransportadoraConsolidadoHtml,
+  baixarLaudoTransportadoraConsolidadoTexto,
+  baixarLaudoTransportadoraConsolidadoEmail,
+  gerarLaudoRodadasPdf,
+  gerarLaudoTransportadoraConsolidadoPdf,
+} from '../utils/laudoRodadasExport';
 import { carregarSessao } from '../utils/authLocal';
 import { podePublicarOficial, usuarioEhGestor, enriquecerTabelaGestao, getEstadoSimulacaoNegociacao } from '../utils/tabelasNegociacaoGestao';
 import GestaoShell from '../components/tabelasNegociacao/GestaoShell';
@@ -252,6 +270,29 @@ function origemTabelaLabel(tabela) {
 
   if (ufDestino) partes.push('Destino: ' + ufDestino);
   return partes.join(' · ') || '-';
+}
+
+function origemTabelaChipLabel(tabela) {
+  var origem = normalizarTexto(tabela && tabela.origem);
+  var ufOrigem = normalizarTexto(tabela && tabela.uf_origem);
+  if (origem || ufOrigem) {
+    return (origem || 'Todas') + (ufOrigem ? '/' + ufOrigem : '');
+  }
+  var resumo = getResumoTabela(tabela);
+  var origensDetectadas = Array.isArray(resumo.origens_detectadas) ? resumo.origens_detectadas : [];
+  var detectada = origensDetectadas.find(function(o) {
+    return normalizarTexto(o && o.cidade) || normalizarTexto(o && o.uf);
+  });
+  if (detectada) {
+    var cidade = normalizarTexto(detectada.cidade);
+    var uf = normalizarTexto(detectada.uf);
+    return (cidade || 'Origem') + (uf ? '/' + uf : '');
+  }
+  return '';
+}
+
+function negociacaoTemOrigemIdentificavel(tabela) {
+  return Boolean(origemTabelaChipLabel(tabela));
 }
 
 function normalizarOrigemComparacao(valor) {
@@ -774,6 +815,12 @@ export default function TabelasNegociacaoPage() {
   const [abrindoRodada, setAbrindoRodada] = useState(false);
   const [laudoSalvoAberto, setLaudoSalvoAberto] = useState(null);
   const [tipoLaudoRodadas, setTipoLaudoRodadas] = useState('transportador');
+  const [tipoLaudoConsolidado, setTipoLaudoConsolidado] = useState(LAUDO_AUDIENCE.TRANSPORTADORA);
+  const [exibirFaturamentoGanhoConsolidado, setExibirFaturamentoGanhoConsolidado] = useState(true);
+  const [laudoTransportadora, setLaudoTransportadora] = useState(null);
+  const [carregandoLaudoTransportadora, setCarregandoLaudoTransportadora] = useState(false);
+  const [carregandoItensNegociacao, setCarregandoItensNegociacao] = useState(false);
+  const [carregandoResumoCompleto, setCarregandoResumoCompleto] = useState(false);
   const [simulandoLotacao, setSimulandoLotacao] = useState(false);
   const [salvandoGestao, setSalvandoGestao] = useState(false);
   const [telaAtiva, setTelaAtiva] = useState(function() {
@@ -783,6 +830,9 @@ export default function TabelasNegociacaoPage() {
   const [abaGestao, setAbaGestao] = useState(function() { return lerEstadoUrlNegociacao().aba; });
   const urlNegociacaoRef = useRef('');
   const detalheLoadSeq = useRef(0);
+  const itensLoadSeq = useRef(0);
+  const resumoLoadSeq = useRef(0);
+  const historicoGestaoCarregadoRef = useRef(false);
   const modalNovaOrigemAbertoEm = useRef(0);
   const [urlReopenTick, setUrlReopenTick] = useState(0);
   const sessao = useMemo(function() { return carregarSessao(); }, []);
@@ -793,6 +843,7 @@ export default function TabelasNegociacaoPage() {
     if (!nomeBase) return [];
     return tabelas
       .filter(function(t) { return normalizarTexto(t.transportadora).toUpperCase() === nomeBase; })
+      .filter(negociacaoTemOrigemIdentificavel)
       .sort(function(a, b) {
         var origemA = (normalizarTexto(a.origem) + '/' + normalizarTexto(a.uf_origem)).toUpperCase();
         var origemB = (normalizarTexto(b.origem) + '/' + normalizarTexto(b.uf_origem)).toUpperCase();
@@ -1047,11 +1098,95 @@ export default function TabelasNegociacaoPage() {
     URL.revokeObjectURL(link.href);
   }
 
+  function obterLaudoGeralRodadasAtual() {
+    if (!selecionada) return null;
+    var laudos = montarLaudosRodadasNegociacao(selecionada);
+    return tipoLaudoRodadas === 'transportador' ? laudos.transportador : laudos.executivo;
+  }
+
+  function obterNoLaudoGeralRodadas() {
+    return document.querySelector('.laudo-rodadas-page');
+  }
+
+  function exportarLaudoGeralRodadas(tipoExport) {
+    var laudo = obterLaudoGeralRodadasAtual();
+    if (!laudo) {
+      setErro('Não há dados suficientes para exportar o laudo geral das rodadas.');
+      return;
+    }
+    var laudoNode = obterNoLaudoGeralRodadas();
+    var ok = false;
+    if (tipoExport === 'pdf') ok = gerarLaudoRodadasPdf(laudoNode, laudo);
+    else if (tipoExport === 'html') ok = baixarLaudoRodadasHtml(laudoNode, laudo, tipoLaudoRodadas);
+    else if (tipoExport === 'excel') ok = baixarLaudoRodadasExcel(laudo, tipoLaudoRodadas);
+    else if (tipoExport === 'texto') ok = baixarLaudoRodadasTexto(laudo, tipoLaudoRodadas);
+    else if (tipoExport === 'email') ok = baixarLaudoRodadasEmail(laudo, tipoLaudoRodadas);
+    if (!ok && tipoExport !== 'pdf') {
+      setErro('Não foi possível gerar o arquivo do laudo geral.');
+      return;
+    }
+    if (ok || tipoExport === 'pdf') {
+      setSucesso('Exportação do laudo geral iniciada.');
+    }
+  }
+
+  function feedbackLaudo(mensagem, erro) {
+    if (erro) setErro(mensagem);
+    else setSucesso(mensagem);
+  }
+
+  function obterLaudoConsolidadoAtual() {
+    if (!laudoTransportadora) return null;
+    return laudoConsolidadoPorAudience(laudoTransportadora, tipoLaudoConsolidado, {
+      exibirFaturamentoGanho: exibirFaturamentoGanhoConsolidado,
+    });
+  }
+
+  function exportarLaudoTransportadoraConsolidado(tipoExport) {
+    var laudo = obterLaudoConsolidadoAtual();
+    if (!laudo) return;
+    var laudoNode = document.querySelector('[data-laudo-consolidado="1"] .laudo-page');
+    var ok = false;
+    if (tipoExport === 'pdf') ok = gerarLaudoTransportadoraConsolidadoPdf(laudoNode, laudo);
+    else if (tipoExport === 'html') ok = baixarLaudoTransportadoraConsolidadoHtml(laudoNode, laudo, tipoLaudoConsolidado);
+    else if (tipoExport === 'texto') ok = baixarLaudoTransportadoraConsolidadoTexto(laudo, { exibirFaturamentoGanho: exibirFaturamentoGanhoConsolidado });
+    else if (tipoExport === 'email') ok = baixarLaudoTransportadoraConsolidadoEmail(laudo, { exibirFaturamentoGanho: exibirFaturamentoGanhoConsolidado });
+    if (!ok && tipoExport !== 'pdf') {
+      setErro('Não foi possível gerar o arquivo do laudo consolidado.');
+      return;
+    }
+    if (ok || tipoExport === 'pdf') {
+      setSucesso('Exportação do laudo consolidado iniciada.');
+    }
+  }
+
   async function carregar() {
     setCarregando(true); setErro('');
     try { setTabelas(await listarTabelasNegociacao(filtros)); }
-    catch (e) { setErro(e.message || 'Erro ao carregar.'); }
+    catch (e) {
+      const msg = String(e?.message || 'Erro ao carregar.');
+      if (/statement timeout|canceling statement/i.test(msg)) {
+        setErro('Consulta cancelada por timeout no Supabase. Rode a migration resumo_capa, evite abrir várias telas pesadas ao mesmo tempo e considere upgrade do compute.');
+      } else {
+        setErro(msg);
+      }
+    }
     finally { setCarregando(false); }
+  }
+
+  async function carregarHistoricoGestaoSeNecessario() {
+    if (historicoGestaoCarregadoRef.current) return;
+    try {
+      const rows = await carregarHistoricoGestaoNegociacoes();
+      historicoGestaoCarregadoRef.current = true;
+      const porId = new Map((rows || []).map((row) => [row.id, row.historico_gestao]));
+      setTabelas((prev) => prev.map((t) => ({
+        ...t,
+        historico_gestao: porId.get(t.id) || t.historico_gestao || [],
+      })));
+    } catch (e) {
+      setErro(e.message || 'Erro ao carregar histórico de gestão.');
+    }
   }
 
   useEffect(function() { carregar(); }, []); // eslint-disable-line
@@ -1106,10 +1241,110 @@ export default function TabelasNegociacaoPage() {
 
   function handleAbaGestaoChange(aba) {
     setAbaGestao(aba);
+    if (aba === 'historico' || aba === 'transportadora') {
+      carregarHistoricoGestaoSeNecessario();
+    }
     if (telaAtiva === 'central') {
       escreverEstadoUrlNegociacao({ page: 'tabelas-negociacao', negociacaoId: '', aba: aba });
     }
   }
+
+  async function carregarItensNegociacao(tabelaId, tabelaRef) {
+    if (!tabelaId) return;
+    var loadSeq = ++itensLoadSeq.current;
+    setCarregandoItensNegociacao(true);
+    try {
+      var detalheItens = await carregarItensTabelaNegociacaoParaUI(tabelaId);
+      if (loadSeq !== itensLoadSeq.current) return;
+      var tabelaAtual = tabelaRef || selecionada;
+      var totalDb = Number(detalheItens.total || 0);
+      var qtdResumo = extrairQtdItensResumoTabela(tabelaAtual);
+
+      if (!totalDb && qtdResumo > 0) {
+        try {
+          totalDb = await contarItensTabelaNegociacao(tabelaId);
+          if (loadSeq !== itensLoadSeq.current) return;
+        } catch (_retryErr) {
+          // mantém fallback do resumo
+        }
+      }
+
+      setQtdItensDb(totalDb);
+      setItensCarregamentoParcial(Boolean(detalheItens.carregamentoParcial) || (totalDb > (detalheItens.itens || []).length));
+      setItensSelecionada(detalheItens.itens || []);
+    } catch (e) {
+      if (loadSeq === itensLoadSeq.current) {
+        setErro(e.message || 'Erro ao carregar itens da negociação.');
+      }
+    } finally {
+      if (loadSeq === itensLoadSeq.current) setCarregandoItensNegociacao(false);
+    }
+  }
+
+  async function carregarTaxasNegociacao(tabelaId) {
+    if (!tabelaId) return;
+    try {
+      var taxas = await listarTaxasDestino(tabelaId);
+      setTaxasDestino(taxas);
+    } catch (_e) {
+      setTaxasDestino([]);
+    }
+  }
+
+  async function carregarResumoCompletoNegociacaoSelecionada(tabelaId) {
+    if (!tabelaId) return;
+    var loadSeq = ++resumoLoadSeq.current;
+    setCarregandoResumoCompleto(true);
+    try {
+      var resposta = await carregarResumoCompletoNegociacao(tabelaId);
+      if (loadSeq !== resumoLoadSeq.current) return;
+      if (!resposta?.resumo_simulacao) return;
+      setSelecionada(function(prev) {
+        if (!prev || prev.id !== tabelaId) return prev;
+        return Object.assign({}, prev, { resumo_simulacao: resposta.resumo_simulacao, resumo_completo_disponivel: true });
+      });
+      setTabelas(function(prev) {
+        return prev.map(function(item) {
+          if (item.id !== tabelaId) return item;
+          return Object.assign({}, item, { resumo_simulacao: resposta.resumo_simulacao, resumo_completo_disponivel: true });
+        });
+      });
+    } catch (e) {
+      if (loadSeq === resumoLoadSeq.current) {
+        setErro(e.message || 'Erro ao carregar histórico completo das rodadas.');
+      }
+    } finally {
+      if (loadSeq === resumoLoadSeq.current) setCarregandoResumoCompleto(false);
+    }
+  }
+
+  async function handleGerarLaudoTransportadora(transportadoraNome) {
+    if (!transportadoraNome) return;
+    setCarregandoLaudoTransportadora(true);
+    setErro('');
+    try {
+      var laudo = await carregarLaudoTransportadoraConsolidado(transportadoraNome, tabelas);
+      setTipoLaudoConsolidado(LAUDO_AUDIENCE.TRANSPORTADORA);
+      setLaudoTransportadora(laudo);
+    } catch (e) {
+      setErro(e.message || 'Erro ao gerar laudo consolidado da transportadora.');
+    } finally {
+      setCarregandoLaudoTransportadora(false);
+    }
+  }
+
+  useEffect(function() {
+    if (!selecionada?.id) return;
+    if (abaNegoc === 'importacao' || abaNegoc === 'itens') {
+      carregarItensNegociacao(selecionada.id, selecionada);
+    }
+    if (abaNegoc === 'taxas') {
+      carregarTaxasNegociacao(selecionada.id);
+    }
+    if (abaNegoc === 'rodadas') {
+      carregarResumoCompletoNegociacaoSelecionada(selecionada.id);
+    }
+  }, [abaNegoc, selecionada?.id]); // eslint-disable-line
 
   async function abrirTabela(tabela, opcoes = {}) {
     if (!tabela?.id) return;
@@ -1127,11 +1362,9 @@ export default function TabelasNegociacaoPage() {
     }
     setCarregandoDetalhe(true);
     limparImport(); setErro(''); setSucesso('');
-    setAbaNegoc('importacao');
+    if (!opcoes.manterAba) setAbaNegoc('importacao');
     window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
-      var detalheItensPromise = carregarItensTabelaNegociacaoParaUI(tabelaId);
-      var taxasPromise = listarTaxasDestino(tabelaId).catch(function() { return []; });
       var tabelaAtual = await obterTabelaNegociacao(tabelaId).catch(function() { return tabela; });
       if (loadSeq !== detalheLoadSeq.current) return;
       setSelecionada(tabelaAtual);
@@ -1153,67 +1386,20 @@ export default function TabelasNegociacaoPage() {
         }
       }
 
-      var results = await Promise.all([detalheItensPromise, taxasPromise]);
-      if (loadSeq !== detalheLoadSeq.current) return;
-      var detalheItens = results[0];
-      var taxas = results[1];
-      var totalDb = Number(detalheItens.total || 0);
-      var qtdResumo = extrairQtdItensResumoTabela(tabelaAtual);
-
-      if (!totalDb && qtdResumo > 0) {
-        try {
-          totalDb = await contarItensTabelaNegociacao(tabelaId);
-          if (loadSeq !== detalheLoadSeq.current) return;
-        } catch (_retryErr) {
-          // Mantém fallback do resumo para não esconder botões de apagar/recarregar.
-        }
-      }
-
-      setQtdItensDb(totalDb);
-      setItensCarregamentoParcial(Boolean(detalheItens.carregamentoParcial) || (totalDb > (detalheItens.itens || []).length));
-      setItensSelecionada(detalheItens.itens || []);
-      setTaxasDestino(taxas);
-      var itens = detalheItens.itens || [];
       setGeneralidades(Object.assign({}, DEFAULT_GENERALIDADES, tabelaAtual.generalidades || {}));
       setInicioVigencia(tabelaAtual.data_inicio_prevista || hojeISO());
       setFimVigencia(fimTresAnosISO());
       if (isLotacaoNegociacao(tabelaAtual)) setTipoImportacao('LOTACAO_TRANSPORTADORA');
-      else if (itens.length > 0 && itens[0].origem_importacao) setTipoImportacao(itens[0].origem_importacao);
 
-      if (loadSeq === detalheLoadSeq.current) {
-        if (totalDb === 0 && !itens.length && qtdResumo > 0) {
-          setErro(
-            'O resumo desta negociação indica '
-            + qtdResumo.toLocaleString('pt-BR')
-            + ' item(ns) importados, mas o carregamento retornou 0. Clique em Recarregar itens.'
-          );
-        } else if (detalheItens.erroPreview && totalDb > 0) {
-          setSucesso(
-            'Contagem confirmada: '
-            + totalDb.toLocaleString('pt-BR')
-            + ' item(ns) no banco. A amostra para visualização não carregou — use Recarregar itens.'
-          );
-        } else if (detalheItens.erroContagem && (itens.length || qtdResumo > 0)) {
-          setSucesso(
-            'Não foi possível confirmar a contagem ao vivo'
-            + (qtdResumo > 0 ? ' (resumo: ' + qtdResumo.toLocaleString('pt-BR') + ' itens)' : '')
-            + '. Use Recarregar itens se os totais parecerem incorretos.'
-          );
-        }
+      if (opcoes.carregarItens === true) {
+        await carregarItensNegociacao(tabelaId, tabelaAtual);
+      }
+      if (opcoes.carregarResumoCompleto === true) {
+        await carregarResumoCompletoNegociacaoSelecionada(tabelaId);
       }
     } catch (e) {
       if (loadSeq === detalheLoadSeq.current) {
-        var qtdResumoErro = extrairQtdItensResumoTabela(tabela);
-        if (qtdResumoErro > 0) {
-          setErro(
-            (e.message || 'Erro ao abrir itens.')
-            + ' O resumo indica '
-            + qtdResumoErro.toLocaleString('pt-BR')
-            + ' item(ns) — clique em Recarregar itens.'
-          );
-        } else {
-          setErro(e.message || 'Erro ao abrir itens.');
-        }
+        setErro(e.message || 'Erro ao abrir negociação.');
       }
     }
     finally {
@@ -1407,6 +1593,31 @@ export default function TabelasNegociacaoPage() {
         observacao: 'Tabela importada apagada manualmente antes de nova subida',
         onProgress: reportarStatusImportacao,
       });
+      var detalhe = await obterTabelaNegociacao(selecionada.id).catch(function() { return selecionada; });
+      if (!negociacaoTemOrigemIdentificavel(detalhe)) {
+        var transportadoraRemovida = detalhe.transportadora;
+        var negociacaoRemovidaId = detalhe.id;
+        await excluirTabelaNegociacao(negociacaoRemovidaId);
+        setItensSelecionada([]);
+        setQtdItensDb(0);
+        limparImport();
+        var listaAtualizada = await listarTabelasNegociacao(filtros);
+        setTabelas(listaAtualizada);
+        var proxima = listaAtualizada.find(function(t) {
+          return t.id !== negociacaoRemovidaId
+            && normalizarTexto(t.transportadora).toUpperCase() === normalizarTexto(transportadoraRemovida).toUpperCase()
+            && negociacaoTemOrigemIdentificavel(t);
+        });
+        if (proxima) {
+          await abrirTabela(proxima, { telaNegociacao: telaAtiva === 'negociacao', sincronizarUrl: true });
+          setSucesso('Origem removida. Aberta a negociação de ' + origemTabelaChipLabel(proxima) + '.');
+        } else {
+          setSelecionada(null);
+          if (telaAtiva === 'negociacao') voltarListaGestao();
+          setSucesso('Origem removida da negociação desta transportadora.');
+        }
+        return;
+      }
       var at = await atualizarTabelaNegociacao(selecionada.id, {
         status: 'EM NEGOCIAÇÃO',
         origem_importacao: '',
@@ -1982,6 +2193,8 @@ export default function TabelasNegociacaoPage() {
         tabelas={tabelas}
         onAbrirNegociacao={abrirNegociacaoGestao}
         onAdicionarOrigem={abrirModalNovaOrigemTransportadora}
+        onGerarLaudoTransportadora={handleGerarLaudoTransportadora}
+        carregandoLaudoTransportadora={carregandoLaudoTransportadora}
         onEnviarAprovacao={handleEnviarAprovacaoGestao}
         onAlternarSimulacao={gerenciarSimulacaoLista}
         onAprovarGestor={handleAprovarGestor}
@@ -2153,11 +2366,11 @@ export default function TabelasNegociacaoPage() {
               <button
                 className="primary"
                 type="button"
-                onClick={function() { abrirTabela(selecionada, { telaNegociacao: emTelaNegociacao }); }}
-                disabled={carregandoDetalhe}
+                onClick={function() { abrirTabela(selecionada, { telaNegociacao: emTelaNegociacao, carregarItens: true }); }}
+                disabled={carregandoDetalhe || carregandoItensNegociacao}
                 style={{ minWidth: 148 }}
               >
-                {carregandoDetalhe ? 'Recarregando...' : 'Recarregar itens'}
+                {carregandoItensNegociacao ? 'Carregando itens...' : 'Recarregar itens'}
               </button>
               <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(selecionada); }}>
                 {podePublicarOficial(selecionada) && usuarioEhGestor(sessao) ? 'Publicar' : 'Enviar p/ gestor'}
@@ -2261,6 +2474,8 @@ export default function TabelasNegociacaoPage() {
                   <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {negociacoesMesmaTransportadora.map(function(t) {
                       var ativo = selecionada && selecionada.id === t.id;
+                      var chipLabel = origemTabelaChipLabel(t);
+                      if (!chipLabel) return null;
                       return (
                         <button
                           key={t.id}
@@ -2269,7 +2484,7 @@ export default function TabelasNegociacaoPage() {
                           onClick={function() { abrirTabela(t, { telaNegociacao: emTelaNegociacao, sincronizarUrl: emTelaNegociacao }); }}
                           style={ativo ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
                         >
-                          {origemTabelaLabel(t)} · R{getRodadaAtualTabela(t)}
+                          {chipLabel} · R{getRodadaAtualTabela(t)}
                         </button>
                       );
                     })}
@@ -2299,6 +2514,7 @@ export default function TabelasNegociacaoPage() {
           {/* ABA: IMPORTAÇÃO */}
           {abaNegoc === 'importacao' ? (
             <div>
+              {carregandoItensNegociacao ? <div className="sim-alert info">Carregando amostra de itens importados...</div> : null}
               <div className="sim-actions" style={{ marginBottom: 16, alignItems: 'center' }}>
                 <button
                   className="primary"
@@ -2848,6 +3064,9 @@ export default function TabelasNegociacaoPage() {
 
           {/* ABA: RODADAS */}
           {abaNegoc === 'rodadas' ? (function() {
+            if (carregandoResumoCompleto) {
+              return <div className="sim-alert info">Carregando histórico completo das rodadas...</div>;
+            }
             var historico = getHistoricoRodadasTabela(selecionada).slice().reverse();
             var simulacoes = historico.filter(function(r) { return r.tipo_registro === 'SIMULACAO'; });
             return (
@@ -2883,29 +3102,37 @@ export default function TabelasNegociacaoPage() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(300px, 380px)', gap: 16, alignItems: 'start' }}>
                   <div className="sim-card" style={{ marginBottom: 0 }}>
-                    <div className="sim-parametros-header" style={{ alignItems: 'flex-start', gap: 12 }}>
-                      <div>
+                    <div className="sim-parametros-header" style={{ alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+                      <div style={{ flex: '1 1 240px', minWidth: 0 }}>
                         <h3 style={{ margin: 0 }}>Laudo geral das rodadas</h3>
                         <p style={{ margin: '6px 0 0', color: '#64748b' }}>
                           Analisa a evolução da negociação por rodada e mostra onde a transportadora melhorou, onde ainda perde e quais rotas, cotações, UFs e faixas precisam de ajuste.
                         </p>
                       </div>
-                      <div className="sim-actions" style={{ margin: 0 }}>
+                      <div className="sim-actions" style={{ margin: 0, flexWrap: 'wrap' }}>
                         <button
                           className={tipoLaudoRodadas === 'transportador' ? 'primary' : 'sim-tab'}
                           type="button"
                           onClick={function() { setTipoLaudoRodadas('transportador'); }}
                         >
-                          Transportador
+                          Versão Transportadora
                         </button>
                         <button
                           className={tipoLaudoRodadas === 'executivo' ? 'primary' : 'sim-tab'}
                           type="button"
                           onClick={function() { setTipoLaudoRodadas('executivo'); }}
                         >
-                          Diretoria
+                          Versão Diretoria
                         </button>
                       </div>
+                    </div>
+
+                    <div className="sim-actions" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+                      <button className="primary" type="button" onClick={function() { exportarLaudoGeralRodadas('pdf'); }}>Gerar PDF</button>
+                      <button className="sim-tab" type="button" onClick={function() { exportarLaudoGeralRodadas('html'); }}>Exportar HTML</button>
+                      <button className="sim-tab" type="button" onClick={function() { exportarLaudoGeralRodadas('excel'); }}>Baixar Excel</button>
+                      <button className="sim-tab" type="button" onClick={function() { exportarLaudoGeralRodadas('texto'); }}>Baixar laudo (.txt)</button>
+                      <button className="sim-tab" type="button" onClick={function() { exportarLaudoGeralRodadas('email'); }}>Baixar e-mail (.txt)</button>
                     </div>
 
                     {simulacoes.length < 2 ? (
@@ -2916,7 +3143,11 @@ export default function TabelasNegociacaoPage() {
 
                     <div style={{ marginTop: 14 }}>
                       <LaudoRodadasErrorBoundary key={(selecionada?.id || 'sem-tabela') + '-' + tipoLaudoRodadas}>
-                        <LaudoRodadasNegociacaoTemplate tipo={tipoLaudoRodadas} tabela={selecionada} />
+                        <LaudoRodadasNegociacaoTemplate
+                          tipo={tipoLaudoRodadas}
+                          tabela={selecionada}
+                          onFeedback={feedbackLaudo}
+                        />
                       </LaudoRodadasErrorBoundary>
                     </div>
                   </div>
@@ -3115,6 +3346,68 @@ export default function TabelasNegociacaoPage() {
             <div className="sim-actions" style={{ marginTop: 14 }}>
               <button className="primary" type="button" onClick={confirmarNovaOrigem} disabled={salvando}>{salvando ? 'Criando...' : 'Criar origem'}</button>
               <button className="sim-tab" type="button" onClick={fecharModalNovaOrigem}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      ) : null)}
+
+      {renderModalPortal(laudoTransportadora ? (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100000, display: 'grid', placeItems: 'center', padding: 20 }}
+          onClick={function() { setLaudoTransportadora(null); }}
+        >
+          <div
+            className="sim-card"
+            style={{ width: 'min(960px,100%)', maxHeight: '92vh', overflow: 'auto' }}
+            onClick={function(event) { event.stopPropagation(); }}
+          >
+            <div className="laudo-consolidado-toolbar sim-actions" style={{ justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Laudo consolidado</h2>
+                <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 13 }}>
+                  {laudoTransportadora.transportadora}
+                </p>
+              </div>
+              <div className="sim-actions" style={{ margin: 0, flexWrap: 'wrap' }}>
+                <button
+                  className={tipoLaudoConsolidado === LAUDO_AUDIENCE.TRANSPORTADORA ? 'primary' : 'sim-tab'}
+                  type="button"
+                  onClick={function() { setTipoLaudoConsolidado(LAUDO_AUDIENCE.TRANSPORTADORA); }}
+                >
+                  Versão Transportadora
+                </button>
+                <button
+                  className={tipoLaudoConsolidado === LAUDO_AUDIENCE.DIRETORIA ? 'primary' : 'sim-tab'}
+                  type="button"
+                  onClick={function() { setTipoLaudoConsolidado(LAUDO_AUDIENCE.DIRETORIA); }}
+                >
+                  Versão Diretoria
+                </button>
+              </div>
+            </div>
+            <div className="laudo-consolidado-toolbar sim-actions" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+              <label className="sim-tab" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={exibirFaturamentoGanhoConsolidado}
+                  onChange={function(event) { setExibirFaturamentoGanhoConsolidado(event.target.checked); }}
+                />
+                Exibir faturamento ganho (proposta)
+              </label>
+              <button className="sim-tab" type="button" onClick={function() { exportarLaudoTransportadoraConsolidado('pdf'); }}>Gerar PDF</button>
+              <button className="sim-tab" type="button" onClick={function() { exportarLaudoTransportadoraConsolidado('html'); }}>Exportar HTML</button>
+              <button className="sim-tab" type="button" onClick={function() { exportarLaudoTransportadoraConsolidado('texto'); }}>Baixar laudo (.txt)</button>
+              <button className="sim-tab" type="button" onClick={function() { exportarLaudoTransportadoraConsolidado('email'); }}>Baixar e-mail (.txt)</button>
+              <LaudoEmailAcoes laudo={obterLaudoConsolidadoAtual()} onFeedback={feedbackLaudo} compact />
+              <button className="sim-tab" type="button" onClick={function() { setLaudoTransportadora(null); }}>Fechar</button>
+            </div>
+            <div data-laudo-consolidado="1">
+              <LaudoTransportadoraConsolidadoTemplate
+                key={tipoLaudoConsolidado + '-' + (exibirFaturamentoGanhoConsolidado ? '1' : '0')}
+                laudo={laudoTransportadora}
+                audience={tipoLaudoConsolidado}
+                exibirFaturamentoGanho={exibirFaturamentoGanhoConsolidado}
+              />
             </div>
           </div>
         </div>

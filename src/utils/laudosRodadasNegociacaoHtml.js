@@ -392,6 +392,9 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}, opcoesF
       faturamentoPotencial: 0,
       faturamentoCapturado: 0,
       faturamentoNaoCapturado: 0,
+      freteRealizado: 0,
+      freteRealizadoGanhos: 0,
+      freteRealizadoPerdido: 0,
       reducaoSoma: 0,
       reducaoQtd: 0,
       aderencia: 0,
@@ -411,6 +414,12 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}, opcoesF
   acc.volumes += volumes;
   acc.faturamentoPotencial += potencial;
   acc.faturamentoCapturado += capturado;
+  const freteReal = n(item.freteRealizado || item.valorCte || item.valorCTe);
+  if (freteReal > 0) {
+    acc.freteRealizado += freteReal;
+    if (qtdPerdida > 0) acc.freteRealizadoPerdido += freteReal;
+    if (qtdGanha > 0) acc.freteRealizadoGanhos += freteReal;
+  }
   acumularAjusteMedio(acc, item, qtdAnalisada);
 
   if (!acc.ufDestino || acc.ufDestino === '-') acc.ufDestino = getUfDestino(item);
@@ -418,9 +427,25 @@ function agregarRegistro(mapa, chave, item = {}, rodadaIndicadores = {}, opcoesF
   if (!acc.origem) acc.origem = texto(item.origem || item.cidadeOrigem || item.cidade_origem || rodadaIndicadores.origem);
 }
 
+function freteRealizadoPerdidosAgrupado(item = {}) {
+  const fretePerdido = n(item.freteRealizadoPerdido);
+  if (fretePerdido > 0) return fretePerdido;
+  const freteTotal = n(item.freteRealizado);
+  const perdidos = n(item.ctesPerdidos);
+  const ganhos = n(item.ctesGanhos);
+  const total = ganhos + perdidos || n(item.ctesAnalisados);
+  if (freteTotal > 0 && perdidos > 0) {
+    const freteGanhos = n(item.freteRealizadoGanhos);
+    if (freteGanhos > 0) return Math.max(freteTotal - freteGanhos, 0);
+    if (ganhos === 0) return freteTotal;
+    if (total > 0) return (freteTotal / total) * perdidos;
+  }
+  return Math.max(n(item.faturamentoPotencial) - n(item.freteRealizadoGanhos || item.faturamentoCapturado), 0);
+}
+
 function finalizarAgrupados(lista = []) {
   return lista.map((item) => {
-    const faturamentoNaoCapturado = Math.max(n(item.faturamentoPotencial) - n(item.faturamentoCapturado), 0);
+    const faturamentoNaoCapturado = freteRealizadoPerdidosAgrupado(item);
     const base = n(item.ctesGanhos) + n(item.ctesPerdidos) || n(item.ctesAnalisados);
     const aderencia = base ? (n(item.ctesGanhos) / base) * 100 : 0;
     const ajuste = item.reducaoQtd ? item.reducaoSoma / item.reducaoQtd : 0;
@@ -445,7 +470,8 @@ function finalizarAgrupados(lista = []) {
 
 function extrairCtesIndividuaisResumo(resumo = {}) {
   const candidatos = [resumo.ctesDetalhes, resumo.detalhes, resumo.linhasDetalhe];
-  return candidatos.reduce((acc, lista) => Array.isArray(lista) ? acc.concat(lista) : acc, []);
+  const fonte = candidatos.find((lista) => Array.isArray(lista) && lista.length);
+  return fonte || [];
 }
 
 function extrairDetalhesResumo(resumo = {}) {
@@ -457,7 +483,8 @@ function extrairDetalhesResumo(resumo = {}) {
     resumo.rotasPerdidasDestaque,
     resumo.rotasGanhasDestaque,
   ];
-  return candidatos.reduce((acc, lista) => Array.isArray(lista) ? acc.concat(lista) : acc, []);
+  const fonte = candidatos.find((lista) => Array.isArray(lista) && lista.length);
+  return fonte || [];
 }
 
 function extrairDetalhesOperacionais(resumo = {}) {
@@ -469,7 +496,8 @@ function extrairDetalhesOperacionais(resumo = {}) {
     resumo.rotasPerdidasDestaque,
     resumo.rotasGanhasDestaque,
   ];
-  return candidatos.reduce((acc, lista) => Array.isArray(lista) ? acc.concat(lista) : acc, []);
+  const fonte = candidatos.find((lista) => Array.isArray(lista) && lista.length);
+  return fonte || [];
 }
 
 function extrairDetalhesFaixaB2C(resumo = {}, opcoesFaixa = {}) {
@@ -618,11 +646,14 @@ function compararGenerico(primeira, ultima, agrupador) {
 }
 
 function pesoParetoItem(item = {}, metrica = 'volumes') {
+  if (metrica === 'faturamentoEmRisco') {
+    return n(item.faturamentoMensalEmRisco ?? item.faturamentoNaoCapturado);
+  }
   if (metrica === 'ctes') return n(item.ctes || item.ctesAnalisados || item.qtd || 1) || 1;
   return n(item.volumes || item.ctes || item.ctesAnalisados || 1) || 1;
 }
 
-function aplicarCortePareto80(lista = [], { metrica = 'volumes', fallback = 20 } = {}) {
+export function aplicarCortePareto80(lista = [], { metrica = 'volumes', fallback = 20 } = {}) {
   const ordenada = [...lista].sort((a, b) => pesoParetoItem(b, metrica) - pesoParetoItem(a, metrica));
   const total = ordenada.reduce((acc, item) => acc + pesoParetoItem(item, metrica), 0);
   if (!total) return [];
@@ -643,6 +674,29 @@ function aplicarCortePareto80(lista = [], { metrica = 'volumes', fallback = 20 }
   });
   const pareto = enriquecida.filter((item) => item.pareto80);
   return pareto.length ? pareto : enriquecida.slice(0, fallback);
+}
+
+/** Pareto 80%; se o corte tiver menos que minRotas, usa as minRotas primeiras por ranking. */
+export function aplicarCortePareto80ComMinimoRotas(lista = [], { metrica = 'volumes', minRotas = 20 } = {}) {
+  const ordenada = [...lista].sort((a, b) => pesoParetoItem(b, metrica) - pesoParetoItem(a, metrica));
+  const total = ordenada.reduce((acc, item) => acc + pesoParetoItem(item, metrica), 0);
+  if (!total) return [];
+  let acumulado = 0;
+  const enriquecida = ordenada.map((item) => {
+    const peso = pesoParetoItem(item, metrica);
+    const pct = total ? (peso / total) * 100 : 0;
+    const antes = acumulado;
+    acumulado += pct;
+    return {
+      ...item,
+      pctPareto: pct,
+      pctAcumulado: acumulado,
+      pareto80: antes < 80,
+    };
+  });
+  const pareto = enriquecida.filter((item) => item.pareto80);
+  if (pareto.length >= minRotas) return pareto;
+  return ordenada.slice(0, Math.min(minRotas, ordenada.length));
 }
 
 function getMesorregiaoLaudo(item = {}) {
@@ -1211,6 +1265,7 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
       corpoEmail: relatorioExecutivo,
       relatorio: relatorioExecutivo,
       relatorioTexto: relatorioExecutivo,
+      laudoCompleto: `Assunto: Laudo geral das rodadas - ${base.transportadora}\n\n${relatorioExecutivo}`,
       indicadores: comparativo.atual || {},
       recomendacao: recomendacaoExecutivo,
     },
@@ -1222,6 +1277,7 @@ export function montarLaudosRodadasNegociacao(tabela = {}) {
       corpoEmail: relatorioTransportador,
       relatorio: relatorioTransportador,
       relatorioTexto: relatorioTransportador,
+      laudoCompleto: `Assunto: Devolutiva de rodadas - ${base.transportadora}\n\n${relatorioTransportador}`,
       indicadores: comparativo.atual || {},
       ondeMelhorou: rotasMelhoraram,
       ondeAjustar: rotasCriticas,
