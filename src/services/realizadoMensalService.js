@@ -1,6 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
-const TMP_CHUNK_SIZE = 500;
+const TMP_CHUNK_SIZE = 1000;
 const TMP_INSERT_RETRIES = 3;
 const TMP_RETRY_DELAY_MS = 900;
 const PROCESSAMENTO_LIMITE_LOTE = 1500;
@@ -20,9 +20,9 @@ export const ENXUTA_AUTOMATICA_NO_IMPORT = false;
 const RESET_LIMITE_LOTE = 10000;
 const RESET_MAX_LOOPS = 80;
 const CHAVE_LOOKUP_PAGE = 1000;
-const TMP_PARA_LOCAL_PAGE = 200;
-const TMP_PARA_LOCAL_INSERT = 80;
-const TMP_PARA_LOCAL_CHAVE_CHUNK = 80;
+const TMP_PARA_LOCAL_PAGE = 800;
+const TMP_PARA_LOCAL_INSERT = 200;
+const TMP_PARA_LOCAL_CHAVE_CHUNK = 200;
 
 function ensureSupabase() {
   const client = getSupabaseClient();
@@ -162,6 +162,7 @@ async function listarChavesCteCompetencia(supabase, competencia, onProgress) {
       .from('realizado_local_ctes')
       .select('chave_cte')
       .eq('competencia', competencia)
+      .order('chave_cte', { ascending: true })
       .range(offset, offset + CHAVE_LOOKUP_PAGE - 1);
 
     if (error) throw new Error(`Erro ao consultar chaves existentes. Detalhe: ${error.message}`);
