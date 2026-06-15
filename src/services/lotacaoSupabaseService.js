@@ -1,4 +1,4 @@
-import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
+﻿import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib/supabaseClient';
 import { normalizarTexto, normalizarTipoTabela } from '../utils/lotacaoTables';
 import { filtrarCpComercialCte } from './cteBasePolicy';
 
@@ -585,7 +585,10 @@ export async function carregarCargasLotacaoSupabase(filtros = {}) {
     if (!filtros.limit) {
       continuar = (data || []).length === PAGE;
       pagina++;
-      if (pagina > 50) break;
+      if (pagina > 500) {
+        console.warn('[Lotação] Limite de segurança atingido ao carregar lotacao_cargas. A base pode estar maior que o previsto.');
+        break;
+      }
     }
   }
 
@@ -1106,7 +1109,15 @@ export async function registrarEventoHistoricoSupabase(evento) {
     origem_tela: String(evento.origemTela || evento.origem_tela || ''),
   };
   const { error } = await supabase.from('audit_historico_eventos').insert(row);
-  if (error) throw new Error(detalheErroSupabase(error));
+  if (error) {
+    if (String(error.message || '').includes('solicitacao_info_id')) {
+      const { solicitacao_info_id: _dropped, ...rowSemColuna } = row;
+      const { error: error2 } = await supabase.from('audit_historico_eventos').insert(rowSemColuna);
+      if (error2) throw new Error(detalheErroSupabase(error2));
+      return { ok: true, compat: true };
+    }
+    throw new Error(detalheErroSupabase(error));
+  }
   return { ok: true };
 }
 
@@ -1388,3 +1399,4 @@ export async function carregarLaudosSimulacaoSupabase({ simulationId, carrierId,
   if (error) throw new Error(detalheErroSupabase(error));
   return data || [];
 }
+

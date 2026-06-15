@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   carregarFluxoCargasLotacao,
   carregarFluxoCargasLotacaoCompleto,
@@ -1039,7 +1039,6 @@ function SolicitacaoDetalhesModal({
   const comparacao = compararQuestionamentoComViagem(item, viagemSelecionada, lancamentos, solicitacoes);
   const podeConcluirQuestionamento = !isQuestionamento || (
     Boolean(viagemSelecionada?.dist)
-    && Boolean(String(tratamento?.resposta || '').trim())
     && Boolean(String(tratamento?.justificativa || '').trim())
   );
 
@@ -1278,11 +1277,23 @@ function SolicitacaoDetalhesModal({
                 className="btn-primary"
                 onClick={() => onResponder(item, statusResposta)}
                 disabled={!podeConcluirQuestionamento}
-                title={!podeConcluirQuestionamento ? 'Selecione a DIST e informe resposta e justificativa para concluir' : ''}
+                title={!podeConcluirQuestionamento ? 'Selecione a DIST e informe a justificativa para concluir' : ''}
               >
-                {isQuestionamento ? 'Responder' : 'Aprovar'}
+                Aprovar
               </button>
-              <button type="button" className="btn-danger" onClick={() => onResponder(item, statusRecusarSolicitacao(item))}>
+              <button
+                type="button"
+                className="btn-danger"
+                onClick={() => {
+                  if (isQuestionamento) {
+                    const confirmado = window.confirm(
+                      'Tem certeza que precisa devolver?\n\nPara aprovar, é necessário vincular a viagem (DIST) e informar a justificativa.',
+                    );
+                    if (!confirmado) return;
+                  }
+                  onResponder(item, statusRecusarSolicitacao(item));
+                }}
+              >
                 {isQuestionamento ? 'Devolver' : 'Recusar'}
               </button>
             </>
@@ -1371,12 +1382,13 @@ function AutorizacoesOperacao({ solicitacoes, cargas, lancamentos, onAtualizar, 
     const viagem = isQuestionamento
       ? (cargas || []).find((carga) => String(carga.id) === String(tratamento.cargaId))
       : null;
-    if (!resposta) {
-      window.alert('Informe a resposta ou tratamento da Operação.');
+    const justificativaPreenchida = Boolean(String(tratamento.justificativa || '').trim());
+    if (isQuestionamento && !justificativaPreenchida) {
+      window.alert('Informe a justificativa da Operação.');
       return;
     }
-    if (isQuestionamento && !String(tratamento.justificativa || '').trim()) {
-      window.alert('Informe a justificativa da Operação.');
+    if (!isQuestionamento && !resposta) {
+      window.alert('Informe a resposta ou tratamento da Operação.');
       return;
     }
     if (statusExigeVinculoDistOperacao(item, status) && !viagem?.dist) {
@@ -1414,7 +1426,6 @@ function AutorizacoesOperacao({ solicitacoes, cargas, lancamentos, onAtualizar, 
       setTratamentos((prev) => ({ ...prev, [item.id]: {} }));
       setDetalheAberto(null);
       setFeedback({ tipo: 'ok', texto: `Solicitação atualizada com sucesso.` });
-      if (statusExigeVinculoDistOperacao(item, status)) onRespostaConcluida?.();
     } catch (error) {
       setFeedback({ tipo: 'erro', texto: error.message || String(error) });
     }
@@ -1766,15 +1777,14 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
   const atualizarSolicitacao = async (item, status, tratamento = {}) => {
     const id = item?.id;
     if (!id) throw new Error('Solicitação sem identificador.');
-    const resposta = String(tratamento.resposta || '').trim();
-    const justificativa = String(tratamento.justificativa || resposta).trim();
+    const justificativa = String(tratamento.justificativa || tratamento.resposta || '').trim();
+    const resposta = String(tratamento.resposta || justificativa).trim();
     const viagem = tratamento.viagem || null;
     const isPendencia = item.fonteFluxo === 'AUDIT_PENDENCIA';
     const excecaoSemCte = isQuestionamentoExcecaoSemCte(item);
     let custoAumento = null;
     let lancamentoAuditado = null;
     if (isQuestionamentoAuditoria(item)) {
-      if (!resposta) throw new Error('A resposta da Operação é obrigatória.');
       if (!justificativa) throw new Error('A justificativa da Operação é obrigatória.');
       if (statusExigeVinculoDistOperacao(item, status) && (!viagem?.id || !viagem?.dist)) {
         throw new Error('Selecione uma DIST/viagem existente antes de responder.');
@@ -2033,3 +2043,4 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
     </div>
   );
 }
+
