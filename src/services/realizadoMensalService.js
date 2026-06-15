@@ -677,7 +677,9 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
       const payload = parte.map(montarLinhaLocalFromTmp);
       if (!payload.length) continue;
 
-      const { error: erroInsert } = await supabase.from('realizado_local_ctes').insert(payload);
+      const { error: erroInsert } = await supabase
+        .from('realizado_local_ctes')
+        .upsert(payload, { onConflict: 'chave_cte', ignoreDuplicates: false });
       if (erroInsert) {
         throw new Error(`Erro ao gravar base oficial. Detalhe: ${erroInsert.message}`);
       }
