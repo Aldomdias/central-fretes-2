@@ -21,7 +21,7 @@ import AvaliacaoPrazosPage from './pages/AvaliacaoPrazosPage';
 import CtePage from './pages/CtePage';
 import TabelasNegociacaoPageWithEditor from './pages/TabelasNegociacaoPageWithEditor';
 import AuditoriaCtePage from './pages/AuditoriaCtePage';
-import FaturasPage from './pages/FaturasPage';
+import CentralAuditoriaFretesPage from './pages/CentralAuditoriaFretesPage';
 import TratativasPage from './pages/TratativasPage';
 import PainelAuditoriaPage from './pages/PainelAuditoriaPage';
 import PainelOperacaoPage from './pages/PainelOperacaoPage';
@@ -34,7 +34,8 @@ const PAGINAS_PERMITIDAS = [
   'dashboard', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
-  'faturas', 'tratativas', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+  'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas',
+  'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -142,7 +143,9 @@ export default function App() {
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'painel-auditoria': <PainelAuditoriaPage />,
     'painel-operacao': <PainelOperacaoPage />,
-    faturas: <FaturasPage />,
+    faturas: <CentralAuditoriaFretesPage initialTab="faturas" />,
+    'gestao-auditoria-fretes': <CentralAuditoriaFretesPage initialTab="gestao" />,
+    'financeiro-auditoria': <CentralAuditoriaFretesPage initialTab="financeiro" />,
     tratativas: <TratativasPage />,
     'perda-realizado': <PerdaRealizadoPage />,
     'consulta-ibge': <ConsultaIbgePage />,

@@ -1472,3 +1472,95 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
   .torre-bar-row { grid-template-columns: 1fr; }
   .torre-kpi-card strong { font-size: 28px; }
 }
+
+/* Plataforma de Auditoria de Fretes - Demanda 4.40 */
+.audit-platform-page { gap: 16px; }
+.audit-mode-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border: 1px solid #d8e1f1; border-radius: 14px;
+  background: #f5f8fd; color: #30405e; font-size: 12px;
+}
+.audit-main-tabs {
+  position: sticky; top: 8px; z-index: 5; padding: 10px;
+  border: 1px solid var(--border); border-radius: 16px;
+  background: rgba(255, 255, 255, 0.96); box-shadow: 0 8px 24px rgba(15, 35, 71, 0.08);
+}
+.audit-section-title {
+  margin-top: 4px; color: #0f2347; font-size: 14px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.audit-summary-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.audit-kpi small { color: var(--muted); font-size: 10px; }
+.audit-detail { border-color: rgba(49, 94, 231, 0.28); }
+.audit-flow {
+  display: grid; grid-template-columns: repeat(8, minmax(90px, 1fr));
+  gap: 4px; overflow-x: auto;
+}
+.audit-flow span {
+  position: relative; padding: 8px 18px 8px 10px; background: #edf2ff;
+  color: #1f3f8f; font-size: 10px; font-weight: 800; text-align: center; white-space: nowrap;
+}
+.audit-flow span:not(:last-child)::after {
+  position: absolute; top: 50%; right: 3px; content: ">"; transform: translateY(-50%);
+}
+.audit-action-bar {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.audit-action-bar span { margin-right: auto; color: var(--muted); font-size: 12px; }
+.audit-timeline { display: grid; gap: 8px; }
+.audit-timeline > div {
+  display: grid; grid-template-columns: minmax(140px, .7fr) minmax(240px, 2fr) minmax(120px, .6fr);
+  gap: 12px; align-items: center; padding: 10px 12px; border-left: 3px solid #315ee7;
+  border-radius: 8px; background: #f7f9fd; font-size: 12px;
+}
+.audit-days { display: block; margin-top: 2px; color: inherit; font-weight: 500; }
+.audit-small-button { min-height: 32px; padding: 4px 10px; border-radius: 8px; font-size: 11px; }
+.audit-table-title { padding: 14px 16px 0; }
+.audit-form-actions { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; }
+.audit-finance-search { min-width: 280px; }
+.audit-finance-attendance { border-color: rgba(4, 164, 132, 0.35); }
+.audit-finance-request {
+  padding: 12px 14px; border-left: 4px solid #315ee7; border-radius: 8px;
+  background: #f5f8fd; color: #203352; font-size: 13px;
+}
+.audit-status {
+  max-width: 190px; line-height: 1.15; text-align: center; white-space: normal;
+}
+.audit-status-vencida,
+.audit-status-fora_sla,
+.audit-status-com_divergencia,
+.audit-status-paga_com_divergencia,
+.audit-status-sem_boleto,
+.audit-status-divergente {
+  border-color: #efc4c4; background: #fff1f1; color: #9b2323;
+}
+.audit-status-pronta_para_pagamento,
+.audit-status-paga,
+.audit-status-recebido,
+.audit-status-pago,
+.audit-status-dentro_sla,
+.audit-status-ok {
+  border-color: #a9dfcf; background: #ebfaf5; color: #087157;
+}
+.audit-status-aguardando_transportadora,
+.audit-status-aguardando_nova_fatura,
+.audit-status-vencendo_sla,
+.audit-status-laranja,
+.audit-status-critico {
+  border-color: #f0cfaa; background: #fff6e9; color: #9b5a0c;
+}
+.audit-status-enviada_ao_financeiro,
+.audit-status-enviado,
+.audit-status-enviado_financeiro,
+.audit-status-reauditada_central {
+  border-color: #c1d0ff; background: #edf2ff; color: #234cac;
+}
+@media (max-width: 1180px) {
+  .audit-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .audit-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .audit-timeline > div { grid-template-columns: 1fr; }
+  .audit-mode-banner { align-items: flex-start; flex-direction: column; }
+}
