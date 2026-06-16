@@ -354,6 +354,7 @@ function normalizarFrete(linha, indice, rotasPorChave) {
   ]));
 
   const rota = rotasPorChave.get(montarChaveRota(cotacaoInformada)) || null;
+  const _rotaNaoEncontrada = !rota && cotacaoInformada ? cotacaoInformada : null;
 
   const origem = limparTexto(valorPorAlias(mapa, [
     'Origem',
@@ -522,6 +523,7 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     freteMinimo,
     advalorem,
     dadosOriginais: linha,
+    _rotaNaoEncontrada,
   };
 
   const temAlgumValor =
@@ -565,45 +567,27 @@ function indexarRotasPorCotacao(rotas = []) {
 }
 
 function expandirFretesPorRotas(fretes, rotas) {
-  const resultado = [];
   const rotasPorCotacao = indexarRotasPorCotacao(rotas);
 
-  (fretes || []).forEach((frete, indiceFrete) => {
+  return (fretes || []).map((frete) => {
     const candidatas = rotasPorCotacao.get(chaveBuscaFrete(frete)) || [];
-    const rotasCompativeis = candidatas.filter((rota) => cotacaoCompativel(frete, rota));
+    const rota = candidatas.find((r) => cotacaoCompativel(frete, r)) || null;
 
-    if (!rotasCompativeis.length) {
-      resultado.push(frete);
-      return;
-    }
+    if (!rota) return frete;
 
-    rotasCompativeis.forEach((rota, indiceRota) => {
-      resultado.push({
-        ...frete,
-        id: `${frete.id || 'frete'}-rota-${indiceFrete}-${indiceRota}`,
-        cotacao: rota.cotacaoFinal || rota.cotacao || frete.cotacao,
-        cotacaoFinal: rota.cotacaoFinal || rota.cotacao || frete.cotacaoFinal,
-        cotacaoBase: rota.cotacaoBase || frete.cotacaoBase,
-
-        origem: frete.origem || rota.origem || rota.cidadeOrigem || '',
-        ufOrigem: frete.ufOrigem || rota.ufOrigem || '',
-
-        cidadeDestino: rota.cidadeDestino || frete.cidadeDestino || '',
-        ufDestino: rota.ufDestino || frete.ufDestino || '',
-        ibgeDestino: rota.ibgeDestino || frete.ibgeDestino || '',
-
-        prazo: rota.prazo || frete.prazo || '',
-
-        dadosOriginais: {
-          ...(frete.dadosOriginais || {}),
-          rota_expandida: rota,
-          origem_expansao: 'ROTAS_FRETES_SIMPLIFICADO',
-        },
-      });
-    });
+    return {
+      ...frete,
+      cotacao: rota.cotacaoFinal || rota.cotacao || frete.cotacao,
+      cotacaoFinal: rota.cotacaoFinal || rota.cotacao || frete.cotacaoFinal,
+      cotacaoBase: rota.cotacaoBase || frete.cotacaoBase,
+      origem: frete.origem || rota.origem || rota.cidadeOrigem || '',
+      ufOrigem: frete.ufOrigem || rota.ufOrigem || '',
+      cidadeDestino: rota.cidadeDestino || frete.cidadeDestino || '',
+      ufDestino: rota.ufDestino || frete.ufDestino || '',
+      ibgeDestino: rota.ibgeDestino || frete.ibgeDestino || '',
+      prazo: rota.prazo || frete.prazo || '',
+    };
   });
-
-  return resultado;
 }
 
 
@@ -679,6 +663,10 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     .map((linha, indice) => normalizarFrete(linha, indice, rotasPorChave))
     .filter(Boolean);
 
+  const rotasNaoEncontradas = [...new Set(
+    fretesLidos.filter((f) => f._rotaNaoEncontrada).map((f) => f._rotaNaoEncontrada),
+  )].sort();
+
   await reportarProgresso(onProgress, `Cruzando ${fretesLidos.length} fretes com ${rotas.length} rotas...`);
   const fretes = expandirFretesPorRotas(fretesLidos, rotas);
 
@@ -689,6 +677,7 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     rotas,
     fretes,
     quebrasFaixa,
+    rotasNaoEncontradas,
     meta: {
       totalRotas: rotas.length,
       totalFretes: fretes.length,

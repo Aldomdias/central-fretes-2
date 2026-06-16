@@ -1664,7 +1664,8 @@ export default function TabelasNegociacaoPage() {
         await onProgress('Subindo nova tabela (' + itens.length.toLocaleString('pt-BR') + ' itens)...');
       }
 
-      var salvos = await substituirItensTabelaNegociacao(selecionada, itens, {
+      var totalItens = itens.length;
+      await substituirItensTabelaNegociacao(selecionada, itens, {
         onProgress: onProgress,
         substituirTudo: !(opcoesSalvar && opcoesSalvar.substituirPorTipo),
         origemImportacao: origemImportacao,
@@ -1678,11 +1679,11 @@ export default function TabelasNegociacaoPage() {
       var at = await atualizarTabelaNegociacao(selecionada.id, updates);
       setSelecionada(at);
       setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
-      setItensSelecionada(salvos);
-      setQtdItensDb(salvos.length);
-      setItensCarregamentoParcial(salvos.length > 500);
-      await onProgress('Concluído: ' + salvos.length.toLocaleString('pt-BR') + ' item(ns) salvos.');
-      setSucesso(salvos.length.toLocaleString('pt-BR') + ' item(ns) salvos com sucesso.');
+      setItensSelecionada(totalItens > 500 ? [] : itens);
+      setQtdItensDb(totalItens);
+      setItensCarregamentoParcial(totalItens > 500);
+      await onProgress('Concluído: ' + totalItens.toLocaleString('pt-BR') + ' item(ns) salvos.');
+      setSucesso(totalItens.toLocaleString('pt-BR') + ' item(ns) salvos com sucesso.');
       if (!(opcoesSalvar && opcoesSalvar.manterStatusAoFinal)) {
         window.setTimeout(function() { setStatusVerum(''); }, 4000);
       }
@@ -2477,15 +2478,24 @@ export default function TabelasNegociacaoPage() {
                       var chipLabel = origemTabelaChipLabel(t);
                       if (!chipLabel) return null;
                       return (
-                        <button
-                          key={t.id}
-                          type="button"
-                          className="sim-tab"
-                          onClick={function() { abrirTabela(t, { telaNegociacao: emTelaNegociacao, sincronizarUrl: emTelaNegociacao }); }}
-                          style={ativo ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
-                        >
-                          {chipLabel} · R{getRodadaAtualTabela(t)}
-                        </button>
+                        <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                          <button
+                            type="button"
+                            className="sim-tab"
+                            onClick={function() { abrirTabela(t, { telaNegociacao: emTelaNegociacao, sincronizarUrl: emTelaNegociacao }); }}
+                            style={ativo ? { background: '#dbeafe', color: '#1d4ed8', borderColor: '#93c5fd' } : null}
+                          >
+                            {chipLabel} · R{getRodadaAtualTabela(t)}
+                          </button>
+                          {!ativo && (
+                            <button
+                              type="button"
+                              title={'Excluir origem ' + chipLabel}
+                              onClick={function(e) { e.stopPropagation(); excluirTabela(t); }}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 14, padding: '0 2px', lineHeight: 1 }}
+                            >×</button>
+                          )}
+                        </span>
                       );
                     })}
                   </div>
@@ -2611,12 +2621,25 @@ export default function TabelasNegociacaoPage() {
                     }} disabled={!formatado || salvando || lendoVerum}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
                   </div>
                   {resultadoTemplate ? (
-                    <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginTop: 14 }}>
-                      <div className="summary-card"><span>Rotas lidas</span><strong>{resultadoTemplate.rotas.length}</strong></div>
-                      <div className="summary-card"><span>Quebras</span><strong>{resultadoTemplate.quebrasFaixa.length}</strong></div>
-                      <div className="summary-card"><span>Fretes lidos</span><strong>{resultadoTemplate.fretes.length}</strong></div>
-                      <div className="summary-card"><span>Total para salvar</span><strong>{formatado ? ((formatado.rotas || []).length + (formatado.cotacoes || []).length) : '-'}</strong></div>
-                    </div>
+                    <>
+                      <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginTop: 14 }}>
+                        <div className="summary-card"><span>Rotas lidas</span><strong>{resultadoTemplate.rotas.length}</strong></div>
+                        <div className="summary-card"><span>Quebras</span><strong>{resultadoTemplate.quebrasFaixa.length}</strong></div>
+                        <div className="summary-card"><span>Fretes lidos</span><strong>{resultadoTemplate.fretes.length}</strong></div>
+                        <div className="summary-card"><span>Total para salvar</span><strong>{formatado ? ((formatado.rotas || []).length + (formatado.cotacoes || []).length) : '-'}</strong></div>
+                      </div>
+                      {resultadoTemplate.rotasNaoEncontradas && resultadoTemplate.rotasNaoEncontradas.length > 0 ? (
+                        <div className="sim-alert warn" style={{ marginTop: 10, fontSize: 13 }}>
+                          <strong>⚠ {resultadoTemplate.rotasNaoEncontradas.length} cotação(ões) do arquivo de Fretes sem rota correspondente no arquivo de Prazos</strong> — IBGE e Destino ficarão em branco para essas rotas. A tabela será salva normalmente.
+                          <details style={{ marginTop: 6 }}>
+                            <summary style={{ cursor: 'pointer', color: '#92400e' }}>Ver cotações sem rota ({resultadoTemplate.rotasNaoEncontradas.length})</summary>
+                            <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+                              {resultadoTemplate.rotasNaoEncontradas.map(function(r) { return <li key={r}>{r}</li>; })}
+                            </ul>
+                          </details>
+                        </div>
+                      ) : null}
+                    </>
                   ) : null}
                   {formatado && mostrarPreview ? (
                     <div className="sim-parametros-box" style={{ marginTop: 14 }}>

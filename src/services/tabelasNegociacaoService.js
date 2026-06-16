@@ -705,8 +705,6 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     .from('tabelas_negociacao_itens').delete().eq('tabela_negociacao_id', tabela.id);
   if (deleteError) throw new Error(deleteError.message || 'Erro ao limpar itens antigos.');
 
-  let salvos = [];
-
   if (linhas.length) {
     if (onProgress) {
       await onProgress('Tabela anterior apagada. Subindo nova tabela agora (' + linhas.length.toLocaleString('pt-BR') + ' itens)...');
@@ -717,10 +715,9 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
       if (onProgress) {
         await onProgress('Salvando lote ' + Math.min(i + pageSize, linhas.length).toLocaleString('pt-BR') + ' de ' + linhas.length.toLocaleString('pt-BR') + ' itens...');
       }
-      const { data, error } = await supabase
-        .from('tabelas_negociacao_itens').insert(lote).select();
+      const { error } = await supabase
+        .from('tabelas_negociacao_itens').insert(lote);
       if (error) throw new Error(error.message || 'Erro ao salvar itens da tabela.');
-      salvos = salvos.concat(data || []);
     }
   } else if (onProgress && limparSomente) {
     await onProgress('Itens removidos com sucesso.');
@@ -728,9 +725,9 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
 
   const resumoAtual = getResumoSimulacaoSeguro(tabela);
   const historico = getHistoricoRodadas(tabela);
-  const totaisSalvos = resumirItensPorTipo(salvos);
+  const totaisSalvos = resumirItensPorTipo(linhas);
   const totaisImportados = resumirItensPorTipo(itensEntrada);
-  const origensDetectadas = resumirOrigensItens(salvos);
+  const origensDetectadas = resumirOrigensItens(linhas);
   const agora = dataISO();
 
   const entradaImportacao = {
@@ -756,11 +753,10 @@ export async function substituirItensTabelaNegociacao(tabela, itens = [], opcoes
     totais_itens: totaisSalvos,
     origens_detectadas: origensDetectadas,
     historico_rodadas: historico.concat([entradaImportacao]).slice(-30),
+    ...(linhas.length === 0 ? { ultima_simulacao: null, salvo_em: null } : {}),
   };
 
   await atualizarNegociacaoPersistencia(supabase, tabela.id, { resumo_simulacao: resumoAtualizado }, 'id');
-
-  return salvos;
 }
 
 export async function limparItensTabelaNegociacao(tabela, opcoes = {}) {
