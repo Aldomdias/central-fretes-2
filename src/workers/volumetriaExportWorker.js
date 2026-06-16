@@ -1004,7 +1004,7 @@ function criarQueryTrackingSupabase(supabase, filtros = {}) {
     supabase.from(TABELA_TRACKING_SUPABASE).select(TRACKING_SUPABASE_COLUMNS),
     filtros,
     'data'
-  );
+  ).order('id', { ascending: true });
 }
 
 async function buscarPaginasSupabase({ supabase, tabelaDescricao, criarQuery, mapRow, filtros = {}, options = {}, percentualInicio = 5, percentualFim = 20 }) {
@@ -1074,7 +1074,7 @@ function criarQueryCtesSupabase(supabase, filtros = {}) {
     supabase.from(TABELA_CTES_SUPABASE).select(CTE_SUPABASE_COLUMNS),
     filtros,
     'data_emissao'
-  );
+  ).order('id', { ascending: true });
 }
 
 async function exportarRealizadoSupabaseParaVolumetria(filtros = {}, options = {}) {

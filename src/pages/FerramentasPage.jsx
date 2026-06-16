@@ -1025,10 +1025,36 @@ export default function FerramentasPage({ transportadoras = [] }) {
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
 
       {sessao?.perfil === 'GESTAO' && (
-        <SlaAuditoriaConfig canal="LOTACAO" />
+        <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+          <button type="button" onClick={() => toggleAba('sla')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='sla'?'1px solid var(--border-soft)':'none'}}>
+            <div>
+              <div className="panel-title" style={{margin:0}}>🔔 Configurações de SLA e Alertas da Auditoria</div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Prazos de alerta e e-mails de escalonamento da Auditoria Lotação</div>
+            </div>
+            <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='sla'?'△':'▽'}</span>
+          </button>
+          {abaAberta === 'sla' && (
+            <div style={{padding:'0 0 4px'}}>
+              <SlaAuditoriaConfig canal="LOTACAO" />
+            </div>
+          )}
+        </div>
       )}
 
-      <ImportarFluxoCard onImportado={setBaseFluxoLotacao} resumo={resumoLotacao} />
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => toggleAba('historico')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='historico'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>📦 Atualizar histórico de cargas</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Alimenta a Lotação e a Auditoria Lotação — {resumoLotacao?.totalCargas || 0} cargas na base atual</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='historico'?'△':'▽'}</span>
+        </button>
+        {abaAberta === 'historico' && (
+          <div style={{padding:'0 0 4px'}}>
+            <ImportarFluxoCard onImportado={setBaseFluxoLotacao} resumo={resumoLotacao} />
+          </div>
+        )}
+      </div>
 
       {/* Pendencias de canal */}
       <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
