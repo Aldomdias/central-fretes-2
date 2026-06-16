@@ -51,6 +51,9 @@ import {
   removerVinculoTransportadora,
 } from '../services/vinculosTransportadorasService';
 import { carregarSessao } from '../utils/authLocal';
+import { montarLaudoExcedentes, exportarRelatorioExcedentesExcel, gerarLaudoExcedentesPdf } from '../utils/laudoExcedentesLotacao';
+import { LaudoExcedentesTemplate } from '../components/laudos/LaudoExcedentesTemplate';
+import LaudoEmailAcoes from '../components/laudos/LaudoEmailAcoes';
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║ 4.34A — Auditoria Lotação como central única de auditoria operacional      ║
@@ -192,8 +195,73 @@ function movimentoProntoPagamento(item = {}) {
 
 function movimentoTratado(item = {}) {
   const status = String(item.status || '').trim().toUpperCase();
-  return ['TRATADO', 'CONCLUIDO', 'CONCLUÍDO', 'FINALIZADO', 'AUDITADO_OK', 'BAIXADO', 'ENCERRADO', 'LIBERADO_PAGAMENTO']
-    .includes(status);
+  if (['TRATADO', 'CONCLUIDO', 'CONCLUÍDO', 'FINALIZADO', 'AUDITADO_OK', 'BAIXADO', 'ENCERRADO', 'LIBERADO_PAGAMENTO']
+    .includes(status)) return true;
+  // Questionamento já respondido pela Operação e com DIST vinculada: a resposta
+  // já é a confirmação necessária, não precisa de tratamento manual adicional.
+  const distVinculada = Boolean(item.dist || item.distKey || item.dist_key);
+  return status === 'RESPONDIDO_OPERACAO' && distVinculada;
+}
+
+function labelTratamentoConcluido(item = {}) {
+  // Excedente que precisou de aprovação/autorização da Operação para seguir.
+  if (item.tipoGestao === 'EXCEDENTE') return 'OK - com autorização';
+  // Questionamento respondido pela Operação (com DIST) ou lançamento auditado direto, sem exceção.
+  return 'Auditado OK';
+}
+
+function montarMovimentosGestaoAuditoria(lancamentos = [], solicitacoes = []) {
+  const lista = deduplicarSolicitacoesAuditoria(solicitacoes || []).map((item) => {
+    const categoria = statusGestaoAuditoria(item.status);
+    const questionamento = item.tipo === 'QUESTIONAMENTO_OPERACAO' || item.categoria === 'QUESTIONAMENTO_OPERACAO';
+    const cte = item.cte || item.numeroInformado || item.numero_informado || item.chaveCte || item.chave_informada || '';
+    const jaAuditado = (lancamentos || []).some((lanc) => (
+      normalizarTexto(lanc.cte || lanc.cteKey || '')
+      && normalizarTexto(lanc.cte || lanc.cteKey || '') === normalizarTexto(cte)
+    ));
+
+    return {
+      ...item,
+      tipoGestao: questionamento ? 'QUESTIONAMENTO' : 'EXCEDENTE',
+      categoriaStatus: categoria,
+      dataBase: dataMovimentoAuditoria(item),
+      atrasado: estaAtrasadoGestaoAuditoria(item),
+      jaAuditado,
+      respostaTratamento: item.resposta_auditoria || item.respostaAuditoria || item.resposta_operacao || item.respostaOperacao || item.resposta || item.observacaoTratamento || item.observacao_tratamento || '',
+    };
+  });
+
+  // Lançamentos auditados sem excedente/questionamento (OK direto) não têm
+  // entrada em "solicitacoes" — sem isso eles ficam invisíveis em todas as
+  // abas (Pendências/Pronto pagar/Tratados). Incluímos aqui como "tratados".
+  const idsComSolicitacao = new Set(lista.map((item) => normalizarTexto(item.cte || item.numeroInformado || item.numero_informado || item.chaveCte || item.chave_informada || '')));
+  const lancamentosOk = (lancamentos || [])
+    .filter((lanc) => Number(lanc.excedente || 0) <= 0)
+    .filter((lanc) => {
+      const chave = normalizarTexto(lanc.cte || lanc.cteKey || '');
+      return chave && !idsComSolicitacao.has(chave);
+    })
+    .map((lanc) => ({
+      id: `lancamento-${lanc.id}`,
+      tipoGestao: 'AUDITORIA',
+      status: lanc.auditStatus || lanc.audit_status || 'AUDITADO_OK',
+      categoriaStatus: 'TRATADO',
+      cte: lanc.cte || lanc.cteKey || '',
+      fatura: lanc.fatura || '',
+      transportadora: lanc.transportadora || '',
+      dist: lanc.dist || '',
+      distKey: lanc.distKey || lanc.dist_key || '',
+      valorLancado: lanc.valorLancado || 0,
+      excedente: 0,
+      observacao: lanc.observacao || lanc.auditObservation || lanc.audit_observation || '',
+      respondidoPorNome: lanc.auditedByName || lanc.audited_by_name || '',
+      dataBase: lanc.auditedAt || lanc.audited_at || lanc.criadoEm || lanc.criado_em || '',
+      atrasado: false,
+      jaAuditado: true,
+      respostaTratamento: lanc.observacao || lanc.auditObservation || lanc.audit_observation || '',
+    }));
+
+  return [...lista, ...lancamentosOk].sort((a, b) => new Date(b.dataBase || 0).getTime() - new Date(a.dataBase || 0).getTime());
 }
 
 function dataMovimentoAuditoria(item = {}) {
@@ -2389,29 +2457,12 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
   const [observacaoLote, setObservacaoLote] = useState('');
   const [resultadoLote, setResultadoLote] = useState('');
   const [processandoLote, setProcessandoLote] = useState(false);
+  const [laudoAberto, setLaudoAberto] = useState(false);
+  const laudoNodeRef = useRef(null);
 
-  const movimentos = useMemo(() => {
-    const lista = deduplicarSolicitacoesAuditoria(solicitacoes || []).map((item) => {
-      const categoria = statusGestaoAuditoria(item.status);
-      const questionamento = item.tipo === 'QUESTIONAMENTO_OPERACAO' || item.categoria === 'QUESTIONAMENTO_OPERACAO';
-      const cte = item.cte || item.numeroInformado || item.numero_informado || item.chaveCte || item.chave_informada || '';
-      const jaAuditado = (lancamentos || []).some((lanc) => (
-        normalizarTexto(lanc.cte || lanc.cteKey || '')
-        && normalizarTexto(lanc.cte || lanc.cteKey || '') === normalizarTexto(cte)
-      ));
-
-      return {
-        ...item,
-        tipoGestao: questionamento ? 'QUESTIONAMENTO' : 'EXCEDENTE',
-        categoriaStatus: categoria,
-        dataBase: dataMovimentoAuditoria(item),
-        atrasado: estaAtrasadoGestaoAuditoria(item),
-        jaAuditado,
-        respostaTratamento: item.resposta_auditoria || item.respostaAuditoria || item.resposta_operacao || item.respostaOperacao || item.resposta || item.observacaoTratamento || item.observacao_tratamento || '',
-      };
-    });
-    return lista.sort((a, b) => new Date(b.dataBase || 0).getTime() - new Date(a.dataBase || 0).getTime());
-  }, [lancamentos, solicitacoes]);
+  const movimentos = useMemo(() => (
+    montarMovimentosGestaoAuditoria(lancamentos, solicitacoes)
+  ), [lancamentos, solicitacoes]);
 
   const indicadores = useMemo(() => {
     const aguardando = movimentos.filter((item) => statusAbertoGestaoAuditoria(item.status));
@@ -2471,6 +2522,14 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
       return true;
     });
   }, [filtros, movimentos, visao]);
+
+  const itensExcedenteFiltrados = useMemo(() => (
+    movimentosFiltrados.filter((item) => item.tipoGestao === 'EXCEDENTE')
+  ), [movimentosFiltrados]);
+
+  const laudoExcedentes = useMemo(() => (
+    montarLaudoExcedentes(itensExcedenteFiltrados, { periodo: visao === 'tratados' ? 'Tratados' : visao === 'pagamento' ? 'Pronto para pagar' : 'Pendências' })
+  ), [itensExcedenteFiltrados, visao]);
 
   const devolviveis = useMemo(() => movimentosFiltrados.filter((item) => (
     visao === 'pendencias'
@@ -2596,8 +2655,34 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                 : 'Somente itens que ainda exigem retorno ou ação da Auditoria.'}
           </p>
         </div>
-        <span className="status-pill dark">{indicadores.aguardando} aberta(s)</span>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span className="status-pill dark">{indicadores.aguardando} aberta(s)</span>
+          <button type="button" className="sim-tab" onClick={() => exportarRelatorioExcedentesExcel(itensExcedenteFiltrados, { periodo: visao })} disabled={!itensExcedenteFiltrados.length}>
+            Relatório de excedentes (Excel)
+          </button>
+          <button type="button" className="sim-tab" onClick={() => setLaudoAberto(true)} disabled={!itensExcedenteFiltrados.length}>
+            Ver laudo de excedentes
+          </button>
+        </div>
       </div>
+
+      {laudoAberto ? (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100001, display: 'grid', placeItems: 'center', padding: 20, overflow: 'auto' }}
+          onClick={() => setLaudoAberto(false)}
+        >
+          <div style={{ width: 'min(1100px, 100%)', maxHeight: '92vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 10 }}>
+              <LaudoEmailAcoes laudo={laudoExcedentes} compact />
+              <button type="button" className="sim-tab" onClick={() => gerarLaudoExcedentesPdf(laudoNodeRef.current, laudoExcedentes)}>Imprimir / PDF</button>
+              <button type="button" className="sim-tab" onClick={() => setLaudoAberto(false)}>Fechar</button>
+            </div>
+            <div ref={laudoNodeRef}>
+              <LaudoExcedentesTemplate laudo={laudoExcedentes} />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="summary-strip lotacao-summary-mini top-space-sm">
         <div className="summary-card"><span>Total em gestão</span><strong>{indicadores.total.toLocaleString('pt-BR')}</strong><small>sem duplicar excedente legado</small></div>
@@ -2845,6 +2930,9 @@ function HistoricoPendencias({ lancamentos, solicitacoes, onAtualizarStatus, sal
                     <td>
                       <strong>{item.tipoGestao === 'QUESTIONAMENTO' ? 'Questionamento' : 'Excedente'}</strong>
                       <div><span className={`status-pill ${classeStatus(item)}`}>{item.status || '-'}</span></div>
+                      {visao === 'tratados' && (
+                        <small className="muted" style={{ display: 'block', marginTop: 2 }}>{labelTratamentoConcluido(item)}</small>
+                      )}
                     </td>
                     <td>
                       <strong>{item.cte || item.numeroInformado || item.numero_informado || '-'}</strong>
@@ -4059,11 +4147,12 @@ export default function LotacaoAuditoriaPage() {
   }, [solicitacoes, usuarioAtual]);
 
   const totalCargas = baseFluxo.cargas?.length || 0;
-  const pendenciasAbertas = (solicitacoes || []).filter((item) => (
+  const movimentosGestaoAuditoria = montarMovimentosGestaoAuditoria(lancamentos, solicitacoes);
+  const pendenciasAbertas = movimentosGestaoAuditoria.filter((item) => (
     !movimentoProntoPagamento(item) && !movimentoTratado(item)
   )).length;
-  const prontosPagamento = (solicitacoes || []).filter(movimentoProntoPagamento).length;
-  const tratados = (solicitacoes || []).filter(movimentoTratado).length;
+  const prontosPagamento = movimentosGestaoAuditoria.filter(movimentoProntoPagamento).length;
+  const tratados = movimentosGestaoAuditoria.filter(movimentoTratado).length;
 
   return (
     <div className="page-shell lotacao-page lotacao-auditoria-page">
