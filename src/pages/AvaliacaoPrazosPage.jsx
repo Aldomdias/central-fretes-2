@@ -32,6 +32,10 @@ import {
   aplicarBaseSnapshot,
   carregarBaseRegionalSnapshots,
 } from '../services/avaliacaoPrazosSnapshotFiltroService';
+import {
+  carregarRealizadoTransportadorasAvaliacao,
+  competenciaAtualAvaliacaoRealizado,
+} from '../services/avaliacaoPrazosRealizadoService';
 
 const FILTROS_INICIAIS = {
   busca: '',
@@ -378,6 +382,136 @@ function estiloCardMapa(qtdTransportadorasOficiais, qtdTransportadorasTotal) {
   return { background: '#f1f5f9', borderColor: '#cbd5e1', color: '#475569' };
 }
 
+function normalizarTexto(valor = '') {
+  return String(valor ?? '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+}
+
+function calcularResumoTransportadoras(linhas = []) {
+  const linhasValidas = (linhas || []).filter((linha) => linha?.transportadora);
+  const menorValorPorRota = new Map();
+
+  linhasValidas.forEach((linha) => {
+    const valor = Number(linha.valorReferencia || 0);
+    if (!(valor > 0) || !linha.rotaKey) return;
+    const atual = menorValorPorRota.get(linha.rotaKey);
+    if (!atual || valor < atual) menorValorPorRota.set(linha.rotaKey, valor);
+  });
+
+  const mapa = new Map();
+  linhasValidas.forEach((linha) => {
+    const chave = normalizarTexto(linha.transportadora);
+    if (!chave) return;
+
+    if (!mapa.has(chave)) {
+      mapa.set(chave, {
+        transportadora: linha.transportadora,
+        linhas: 0,
+        rotas: new Set(),
+        rotasComCusto: new Set(),
+        rotasComPrazo: new Set(),
+        valorSoma: 0,
+        valorQtd: 0,
+        prazoSoma: 0,
+        prazoQtd: 0,
+        menorPrazo: 0,
+        pctSoma: 0,
+        pctQtd: 0,
+      });
+    }
+
+    const item = mapa.get(chave);
+    const valor = Number(linha.valorReferencia || 0);
+    const prazo = Number(linha.prazo || 0);
+    const menorValorRota = menorValorPorRota.get(linha.rotaKey);
+
+    item.linhas += 1;
+    if (linha.rotaKey) item.rotas.add(linha.rotaKey);
+
+    if (valor > 0) {
+      item.valorSoma += valor;
+      item.valorQtd += 1;
+      if (linha.rotaKey) item.rotasComCusto.add(linha.rotaKey);
+      if (menorValorRota > 0) {
+        item.pctSoma += ((valor / menorValorRota) - 1) * 100;
+        item.pctQtd += 1;
+      }
+    }
+
+    if (prazo > 0) {
+      item.prazoSoma += prazo;
+      item.prazoQtd += 1;
+      if (linha.rotaKey) item.rotasComPrazo.add(linha.rotaKey);
+      item.menorPrazo = item.menorPrazo > 0 ? Math.min(item.menorPrazo, prazo) : prazo;
+    }
+  });
+
+  return Array.from(mapa.values())
+    .map((item) => ({
+      transportadora: item.transportadora,
+      linhas: item.linhas,
+      qtdRotas: item.rotas.size,
+      qtdRotasComCusto: item.rotasComCusto.size,
+      qtdRotasComPrazo: item.rotasComPrazo.size,
+      custoMedio: item.valorQtd ? item.valorSoma / item.valorQtd : 0,
+      prazoMedio: item.prazoQtd ? item.prazoSoma / item.prazoQtd : 0,
+      menorPrazo: item.menorPrazo,
+      pctMedioSobreMenor: item.pctQtd ? item.pctSoma / item.pctQtd : null,
+    }))
+    .sort((a, b) => {
+      const pa = a.pctMedioSobreMenor ?? 999999;
+      const pb = b.pctMedioSobreMenor ?? 999999;
+      return pa - pb || a.prazoMedio - b.prazoMedio || b.qtdRotas - a.qtdRotas || a.transportadora.localeCompare(b.transportadora);
+    });
+}
+
+function mesclarResumoComRealizado(resumo = [], realizado = []) {
+  const porTransportadora = new Map(
+    (realizado || []).map((item) => [normalizarTexto(item.transportadora), item]).filter(([key]) => key),
+  );
+
+  const chavesResumo = new Set();
+  const mesclado = (resumo || []).map((item) => {
+    const chave = normalizarTexto(item.transportadora);
+    chavesResumo.add(chave);
+    return {
+      ...item,
+      realizado: porTransportadora.get(chave) || null,
+    };
+  });
+
+  (realizado || []).forEach((item) => {
+    const chave = normalizarTexto(item.transportadora);
+    if (!chave || chavesResumo.has(chave)) return;
+    mesclado.push({
+      transportadora: item.transportadora,
+      linhas: 0,
+      qtdRotas: 0,
+      qtdRotasComCusto: 0,
+      qtdRotasComPrazo: 0,
+      custoMedio: 0,
+      prazoMedio: 0,
+      menorPrazo: 0,
+      pctMedioSobreMenor: null,
+      realizado: item,
+    });
+  });
+
+  return mesclado.sort((a, b) => {
+    const ar = a.realizado?.pctMedioSobreMenorRota;
+    const br = b.realizado?.pctMedioSobreMenorRota;
+    if (ar !== null && ar !== undefined && br !== null && br !== undefined) return ar - br;
+    if (ar !== null && ar !== undefined) return -1;
+    if (br !== null && br !== undefined) return 1;
+    return a.transportadora.localeCompare(b.transportadora);
+  });
+}
+
 export default function AvaliacaoPrazosPage() {
   const [opcoes, setOpcoes] = useState({
     canais: ['ATACADO', 'B2C'],
@@ -419,6 +553,10 @@ export default function AvaliacaoPrazosPage() {
   const [modoSnapshot, setModoSnapshot] = useState(false);
   const [mostrarGerenciarSnapshots, setMostrarGerenciarSnapshots] = useState(false);
   const [filtroLacuna, setFiltroLacuna] = useState('');
+  const [competenciaRealizado, setCompetenciaRealizado] = useState(competenciaAtualAvaliacaoRealizado());
+  const [realizadoTransportadoras, setRealizadoTransportadoras] = useState({ competencia: '', linhas: [], totalCtes: 0, valorCteTotal: 0 });
+  const [carregandoRealizado, setCarregandoRealizado] = useState(false);
+  const [erroRealizado, setErroRealizado] = useState('');
   // Guarda trechos que ficaram pendentes (timeout repetido) na última
   // exportação, junto com o que já foi baixado, para o botão "Continuar
   // exportação" tentar só essa parte e juntar com o resto — sem refazer tudo.
@@ -440,6 +578,15 @@ export default function AvaliacaoPrazosPage() {
   const analiseAgregadaPronta = analise.totalLinhas > 0 && (analise.mapa || []).some((uf) => uf.qtdRotas > 0 || uf.qtdTransportadorasOficiais > 0);
 
   const analiseCompleta = analise.totalLinhas > 0 && analise.linhas.length >= analise.totalLinhas;
+  const resumoTransportadoras = useMemo(
+    () => calcularResumoTransportadoras(analise.linhas),
+    [analise.linhas],
+  );
+  const transportadorasComRealizado = useMemo(
+    () => mesclarResumoComRealizado(resumoTransportadoras, realizadoTransportadoras.linhas),
+    [resumoTransportadoras, realizadoTransportadoras.linhas],
+  );
+  const resumoTransportadorasParcial = analise.totalLinhas > analise.linhas.length;
 
   const filtroTemRecorte = useMemo(() => temAlgumFiltro(filtros), [filtros]);
 
@@ -832,6 +979,26 @@ export default function AvaliacaoPrazosPage() {
       setAviso(error.message || 'Não foi possível carregar mais linhas do relatório.');
     } finally {
       setCarregandoRelatorio(false);
+    }
+  };
+
+  const carregarRealizadoTransportadoras = async () => {
+    setCarregandoRealizado(true);
+    setErroRealizado('');
+    try {
+      const resultado = await carregarRealizadoTransportadorasAvaliacao(filtros, {
+        competencia: competenciaRealizado,
+        limite: 300,
+      });
+      setRealizadoTransportadoras(resultado);
+      setAviso(
+        `Realizado CT-e carregado: ${numero(resultado.totalCtes)} CT-es em ${resultado.competencia}`
+        + ` (${numero(resultado.totalTransportadoras)} transportadoras).`,
+      );
+    } catch (error) {
+      setErroRealizado(error.message || 'Nao foi possivel carregar realizado CT-e.');
+    } finally {
+      setCarregandoRealizado(false);
     }
   };
 
@@ -1325,6 +1492,7 @@ export default function AvaliacaoPrazosPage() {
       <div style={styles.abas}>
         {[
           ['dashboard', 'Dashboard'],
+          ['transportadoras', 'Transportadoras'],
           ['mapa', 'Mapa por UF'],
           ['lacunas', 'Lacunas'],
           ['rotas', 'Rotas críticas'],
@@ -1370,6 +1538,132 @@ export default function AvaliacaoPrazosPage() {
             </div>
           </section>
         </div>
+      )}
+
+      {aba === 'transportadoras' && (
+        <section style={styles.cardPainel}>
+          <div style={styles.headerSecao}>
+            <div>
+              <h2 style={styles.tituloSecao}>Visao por transportadora no recorte</h2>
+              <div style={styles.textoSuave}>
+                Comece pelo realizado CT-e; o valor minimo vem da rota cadastrada quando existir.
+              </div>
+            </div>
+            <span style={styles.textoSuave}>
+              {numero(transportadorasComRealizado.length)} transportadoras - {numero(analise.linhas.length)} linhas de tabela
+            </span>
+          </div>
+
+          <div style={styles.realizadoToolbar}>
+            <label style={styles.campoFiltroCompacto}>
+              <span>Mes realizado</span>
+              <input
+                type="month"
+                value={competenciaRealizado}
+                onChange={(event) => setCompetenciaRealizado(event.target.value)}
+                style={styles.input}
+              />
+            </label>
+            <button type="button" onClick={carregarRealizadoTransportadoras} disabled={carregandoRealizado} style={styles.botaoPrimario}>
+              {carregandoRealizado ? 'Carregando...' : 'Carregar realizado'}
+            </button>
+            {realizadoTransportadoras.linhas.length > 0 && (
+              <span style={styles.textoSuave}>
+                {numero(realizadoTransportadoras.totalCtes)} CT-es - {moeda(realizadoTransportadoras.valorCteTotal)} em {realizadoTransportadoras.competencia}
+              </span>
+            )}
+          </div>
+
+          {erroRealizado && <div style={{ ...styles.alertaAviso, marginBottom: 12 }}>{erroRealizado}</div>}
+
+          {resumoTransportadorasParcial && (
+            <div style={{ ...styles.alertaAviso, marginBottom: 12 }}>
+              Visao parcial: a analise tem {numero(analise.totalLinhas)} linhas no recorte, mas {numero(analise.linhas.length)} estao em memoria.
+              Use o relatorio/CSV para a base completa ou carregue mais linhas para ampliar esta leitura.
+              <div style={{ marginTop: 10 }}>
+                <button type="button" onClick={carregarMaisRelatorio} disabled={carregandoRelatorio} style={styles.botaoSecundario}>
+                  {carregandoRelatorio ? 'Carregando...' : `Carregar mais ${LIMITE_EXIBICAO_RELATORIO} linhas`}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {transportadorasComRealizado.length === 0 && (
+            <div style={styles.empty}>
+              Execute uma analise ou carregue o realizado do mes para ver valores por transportadora.
+            </div>
+          )}
+
+          {transportadorasComRealizado.length > 0 && (
+            <div style={styles.tabelaWrapper}>
+              <table style={styles.tabela}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>#</th>
+                    <th style={styles.th}>Transportadora</th>
+                    <th style={styles.th}>Rotas</th>
+                    <th style={styles.th}>CT-es realizado</th>
+                    <th style={styles.th}>Ticket medio realizado</th>
+                    <th style={styles.th}>% vs menor realizado</th>
+                    <th style={styles.th}>% frete/NF</th>
+                    <th style={styles.th}>% participacao</th>
+                    <th style={styles.th}>Valor min. medio</th>
+                    <th style={styles.th}>Prazo medio</th>
+                    <th style={styles.th}>Menor prazo</th>
+                    <th style={styles.th}>Amostra</th>
+                    <th style={styles.th}>Acao</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transportadorasComRealizado.slice(0, 80).map((item, indice) => {
+                    const realizado = item.realizado;
+                    const pctRealizado = realizado?.pctMedioSobreMenorRota;
+                    return (
+                      <tr key={item.transportadora}>
+                        <td style={styles.td}>{indice + 1}</td>
+                        <td style={styles.td}><strong>{item.transportadora}</strong></td>
+                        <td style={styles.td}>{numero(Math.max(item.qtdRotas || 0, realizado?.rotas || 0))}</td>
+                        <td style={styles.td}>{realizado ? numero(realizado.ctes) : '-'}</td>
+                        <td style={styles.td}>{realizado?.ticketMedio ? moeda(realizado.ticketMedio) : '-'}</td>
+                        <td style={styles.td}>
+                          {pctRealizado === null || pctRealizado === undefined ? '-' : (
+                            <span style={pctRealizado <= 5 ? styles.badgeCustoOk : pctRealizado <= 20 ? styles.badgeCustoAlerta : styles.badgeCritico}>
+                              {pctRealizado >= 0 ? '+' : ''}{numero(pctRealizado, 1)}%
+                            </span>
+                          )}
+                        </td>
+                        <td style={styles.td}>{realizado?.percentualFreteNf ? `${numero(realizado.percentualFreteNf, 1)}%` : '-'}</td>
+                        <td style={styles.td}>{realizado?.percentualParticipacao ? `${numero(realizado.percentualParticipacao, 1)}%` : '-'}</td>
+                        <td style={styles.td}>{item.custoMedio ? moeda(item.custoMedio) : '-'}</td>
+                        <td style={styles.td}>{item.prazoMedio ? `${numero(item.prazoMedio, 1)}d` : 'Sem prazo'}</td>
+                        <td style={styles.td}>{item.menorPrazo ? `${item.menorPrazo}d` : 'Sem prazo'}</td>
+                        <td style={styles.td}>
+                          {numero(item.linhas)} linhas tabela
+                          <div style={styles.textoSuave}>
+                            {realizado ? `${numero(realizado.rotas)} rotas realizado` : `${numero(item.qtdRotasComCusto)} rotas com valor min.`}
+                          </div>
+                        </td>
+                        <td style={styles.td}>
+                          <button
+                            type="button"
+                            style={styles.linkBotao}
+                            onClick={() => {
+                              setFiltroRelatorio({ ufDestino: '', transportadora: item.transportadora });
+                              setRelatorioLimite(LIMITE_EXIBICAO_RELATORIO);
+                              setAba('relatorio');
+                            }}
+                          >
+                            Ver linhas
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       )}
 
       {aba === 'mapa' && (
@@ -1634,8 +1928,10 @@ const styles = {
   recorteAtivo: { border: '1px solid #CC2020', background: '#fff1f2', color: '#991b1b', borderRadius: 999, padding: '8px 12px', fontWeight: 800, fontSize: 12, cursor: 'pointer' },
   filtrosBox: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 16, padding: 16, boxShadow: '0 8px 24px rgba(15,35,71,0.05)' },
   campoFiltro: { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#475569', fontWeight: 800 },
+  campoFiltroCompacto: { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#475569', fontWeight: 800, minWidth: 150 },
   input: { border: '1px solid #d6dee8', borderRadius: 10, padding: '10px 11px', fontSize: 14, outline: 'none', background: '#fff', color: '#0F2347' },
   filtroAcoes: { display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap' },
+  realizadoToolbar: { display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', margin: '12px 0' },
   indicadoresGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 },
   cardIndicador: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 16, padding: 16, boxShadow: '0 8px 24px rgba(15,35,71,0.05)' },
   cardTitulo: { color: '#64748b', fontSize: 12, fontWeight: 800, textTransform: 'uppercase' },
@@ -1653,6 +1949,8 @@ const styles = {
   itemLista: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc' },
   textoSuave: { color: '#64748b', fontSize: 12, marginTop: 3 },
   badgePrazo: { background: '#e8f7ee', color: '#166534', borderRadius: 999, padding: '6px 10px', fontWeight: 900, whiteSpace: 'nowrap' },
+  badgeCustoOk: { background: '#e8f7ee', color: '#166534', borderRadius: 999, padding: '6px 10px', fontWeight: 900, whiteSpace: 'nowrap' },
+  badgeCustoAlerta: { background: '#fff7e6', color: '#92400e', borderRadius: 999, padding: '6px 10px', fontWeight: 900, whiteSpace: 'nowrap' },
   badgeCritico: { background: '#fff1f2', color: '#9f1239', borderRadius: 999, padding: '6px 10px', fontWeight: 900, whiteSpace: 'nowrap' },
   badgeFonte: { display: 'inline-block', borderRadius: 999, padding: '5px 8px', fontWeight: 900, fontSize: 11, whiteSpace: 'nowrap' },
   badgeFonteOficial: { background: '#e8f7ee', color: '#166534' },
@@ -1675,7 +1973,7 @@ const styles = {
   ufNumero: { fontSize: 28, fontWeight: 900, marginTop: 8 },
   ufDetalhe: { fontSize: 11, marginTop: 4 },
   tabelaWrapper: { overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 12 },
-  tabela: { width: '100%', borderCollapse: 'collapse', minWidth: 1120, background: '#fff' },
+  tabela: { width: '100%', borderCollapse: 'collapse', minWidth: 1280, background: '#fff' },
   th: { textAlign: 'left', padding: '11px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', color: '#475569', fontSize: 12, textTransform: 'uppercase' },
   td: { padding: '11px 12px', borderBottom: '1px solid #eef2f7', color: '#0F2347', verticalAlign: 'top', fontSize: 13 },
   paginacao: { display: 'flex', justifyContent: 'center', marginTop: 12 },

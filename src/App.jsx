@@ -35,7 +35,7 @@ const PAGINAS_PERMITIDAS = [
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas',
-  'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+  'perda-realizado', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
 ];
 
 function primeiraPaginaPermitida(usuario) {
