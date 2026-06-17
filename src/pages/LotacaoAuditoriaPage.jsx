@@ -4061,6 +4061,43 @@ export default function LotacaoAuditoriaPage() {
 
     setSalvando(true);
     setMensagem('');
+
+    // Atualiza a tela e o armazenamento local ANTES de gravar no Supabase.
+    // Itens legados (sem linha em audit_pendencias) faziam o update remoto falhar;
+    // como o update local vinha depois do await, o item nunca saía da lista e a
+    // tela só piscava. Agora ele sempre reflete a ação imediatamente.
+    setSolicitacoes((atuais) => {
+      const atualizadas = deduplicarSolicitacoesAuditoria((atuais || []).map((sol) => (
+        sol.id === item.id
+          ? {
+            ...sol,
+            status: statusNovoItem,
+            resposta: sol.resposta || '',
+            resposta_operacao: !isQuestionamento && ['APROVADO_OPERACAO', 'RECUSADO_OPERACAO', 'DEVOLVIDO_AUDITORIA'].includes(String(statusNovoItem || '').toUpperCase())
+              ? (respostaLimpa || sol.resposta_operacao || '')
+              : sol.resposta_operacao,
+            resposta_auditoria: !isQuestionamento && ['FINALIZADO', 'TRATADO', 'LIBERADO_PAGAMENTO'].includes(String(statusNovoItem || '').toUpperCase())
+              ? (respostaLimpa || sol.resposta_auditoria || '')
+              : sol.resposta_auditoria,
+            observacaoTratamento: respostaLimpa || sol.observacaoTratamento || '',
+            complementoAuditoria: statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
+              ? respostaLimpa
+              : (sol.complementoAuditoria || sol.complemento_auditoria || ''),
+            complementoSolicitadoEm: statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
+              ? agora
+              : (sol.complementoSolicitadoEm || sol.complemento_solicitado_em || ''),
+            atualizadoEm: agora,
+            updated_at: agora,
+            }
+          : sol
+      )));
+      salvarSolicitacoesPagamento(atualizadas);
+      return atualizadas;
+    });
+    globalThis.dispatchEvent?.(new CustomEvent('lotacao-solicitacoes-atualizadas', {
+      detail: { id: item.id, status: statusNovoItem },
+    }));
+
     try {
       if (isQuestionamento) {
         const devolvendoOperacao = statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO;
@@ -4130,41 +4167,18 @@ export default function LotacaoAuditoriaPage() {
         console.warn('[Auditoria] Status atualizado, mas histórico não registrado:', error.message || error);
       }
 
-      setSolicitacoes((atuais) => {
-        const atualizadas = deduplicarSolicitacoesAuditoria((atuais || []).map((sol) => (
-          sol.id === item.id
-            ? {
-              ...sol,
-              status: statusNovoItem,
-              resposta: sol.resposta || '',
-              resposta_operacao: !isQuestionamento && ['APROVADO_OPERACAO', 'RECUSADO_OPERACAO', 'DEVOLVIDO_AUDITORIA'].includes(String(statusNovoItem || '').toUpperCase())
-                ? (respostaLimpa || sol.resposta_operacao || '')
-                : sol.resposta_operacao,
-              resposta_auditoria: !isQuestionamento && ['FINALIZADO', 'TRATADO', 'LIBERADO_PAGAMENTO'].includes(String(statusNovoItem || '').toUpperCase())
-                ? (respostaLimpa || sol.resposta_auditoria || '')
-                : sol.resposta_auditoria,
-              observacaoTratamento: respostaLimpa || sol.observacaoTratamento || '',
-              complementoAuditoria: statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
-                ? respostaLimpa
-                : (sol.complementoAuditoria || sol.complemento_auditoria || ''),
-              complementoSolicitadoEm: statusNovoItem === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO
-                ? agora
-                : (sol.complementoSolicitadoEm || sol.complemento_solicitado_em || ''),
-              atualizadoEm: agora,
-              updated_at: agora,
-              }
-            : sol
-        )));
-        salvarSolicitacoesPagamento(atualizadas);
-        return atualizadas;
-      });
-      globalThis.dispatchEvent?.(new CustomEvent('lotacao-solicitacoes-atualizadas', {
-        detail: { id: item.id, status: statusNovoItem },
-      }));
       setMensagem('✓ Histórico/Pendências atualizado com sucesso.');
     } catch (error) {
-      setMensagem(`Erro ao atualizar Histórico/Pendências: ${error.message || String(error)}`);
-      throw error;
+      const msg = error?.message || String(error);
+      // Registro sem linha em audit_pendencias = item legado (existe só localmente).
+      // A tela e o armazenamento local já foram atualizados acima, então não é erro fatal.
+      if (/não foi encontrado ou nenhuma linha foi atualizada|nenhuma linha/i.test(msg)) {
+        console.warn('[Auditoria] Item sem correspondência no Supabase, mantido localmente:', msg);
+        setMensagem('✓ Atualizado (registro local; sem correspondência no Supabase para sincronizar).');
+      } else {
+        console.warn('[Auditoria] Falha ao sincronizar com o Supabase (mantido localmente):', msg);
+        setMensagem(`Atualizado na tela, mas falhou ao sincronizar com o Supabase: ${msg}`);
+      }
     } finally {
       setSalvando(false);
     }
