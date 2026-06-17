@@ -30,6 +30,7 @@ import {
   registrarEventoHistoricoSupabase,
   atualizarPendenciaAuditoriaSupabase,
   atualizarSolicitacaoInfoSupabase,
+  atualizarSolicitacaoSupabase,
   salvarLancamentoAuditoriaSupabase,
   salvarPendenciaAuditoriaSupabase,
   salvarSolicitacaoInfoSupabase,
@@ -4120,7 +4121,14 @@ export default function LotacaoAuditoriaPage() {
         const respostaOperacao = ['APROVADO_OPERACAO', 'RECUSADO_OPERACAO', 'DEVOLVIDO_AUDITORIA'].includes(statusUpper) ? respostaLimpa : (item.resposta_operacao || item.resposta || '');
         const respostaAuditoria = ['FINALIZADO', 'TRATADO', 'LIBERADO_PAGAMENTO'].includes(statusUpper) ? respostaLimpa : (item.resposta_auditoria || '');
         const devolvendoOperacao = statusUpper === STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO;
+        // O item pode vir de audit_pendencias (pendência) ou de lotacao_solicitacoes
+        // (solicitação legada). Cada origem grava na sua própria tabela; sem isso, a
+        // legada atualizava só na tela e voltava ao recarregar do Supabase.
+        const ehPendenciaAuditoria = item.tipo === 'EXCEDENTE_AUDITORIA' || item.origemSolicitacao === 'AUDITORIA';
 
+        if (!ehPendenciaAuditoria) {
+          await atualizarSolicitacaoSupabase(item.id, statusNovoItem, respostaOperacao || respostaLimpa);
+        } else
         await atualizarPendenciaAuditoriaSupabase(item.id, statusNovoItem, {
           aprovado_por_user_id: usuarioAtual?.id || '',
           aprovado_por_name: usuarioAtual?.nome || usuarioAtual?.email || '',
