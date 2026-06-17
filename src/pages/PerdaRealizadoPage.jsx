@@ -4,6 +4,7 @@ import { buscarBaseSimulacaoPorRotasDb } from '../services/freteDatabaseService'
 import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
 import { carregarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { buscarRealizadoRemotoParaPerda } from '../services/perdaRealizadoDb';
+import { listarPerdaSnapshots, salvarPerdaSnapshot, excluirPerdaSnapshot } from '../services/perdaRealizadoSnapshotService';
 import { categoriaCanalRealizado, ordenarCalculadosPorCriterio } from '../utils/realizadoLocalEngine';
 
 const REGIOES = [
@@ -134,14 +135,26 @@ function passaFiltrosBiInativa(d = {}, filtros = {}) {
   return true;
 }
 
+// "Mesma transportadora": a que carregou é também a mais barata (pagou acima da
+// própria tabela). Não é perda por escolha de transportadora — é auditoria de
+// fatura. Comparado por nome de CADASTRO dos dois lados (via vínculo no worker).
+function ehMesmaTransportadora(d = {}) {
+  const a = normText(d.transportadoraGanhadora);
+  const b = normText(d.transportadoraRealizadaCadastro);
+  return Boolean(a && b && a === b);
+}
+
 function recalcularResultadoBi(resultado = {}, filtros = {}) {
-  const detalhes = (resultado.detalhes || []).filter((d) => passaFiltrosBiDetalhe(d, filtros));
+  const detalhesBi = (resultado.detalhes || []).filter((d) => passaFiltrosBiDetalhe(d, filtros));
+  const mesmaTransportadoraDetalhes = detalhesBi.filter(ehMesmaTransportadora);
+  const detalhes = detalhesBi.filter((d) => !ehMesmaTransportadora(d));
   const inativasDetalhes = (resultado.inativasDetalhes || []).filter((d) => passaFiltrosBiInativa(d, filtros));
   const economiaInativaTotal = Math.round(inativasDetalhes.reduce((acc, item) => acc + Math.max(0, safeNumber(item.economiaVsAtiva)), 0) * 100) / 100;
   const economiaInativaVsPagoTotal = Math.round(inativasDetalhes.reduce((acc, item) => acc + Math.max(0, safeNumber(item.economiaVsPago)), 0) * 100) / 100;
   return recalcularAgregados({
     ...resultado,
     detalhes,
+    mesmaTransportadoraDetalhes,
     inativasDetalhes,
     inativas: inativasDetalhes.length,
     economiaInativaTotal,
@@ -393,6 +406,117 @@ function Progresso({ etapaId, msg, pctVal }) {
   return <div style={{ marginTop: '0.75rem' }}><div style={{ display: 'flex', marginBottom: '0.5rem' }}>{ETAPAS.map((e, i) => { const feito = i < idx; const atual = i === idx; return <div key={e.id} style={{ flex: 1, textAlign: 'center', position: 'relative' }}>{i > 0 && <div style={{ position: 'absolute', left: 0, top: 10, width: '50%', height: 2, background: feito || atual ? '#9153F0' : '#ddd' }} />}{i < ETAPAS.length - 1 && <div style={{ position: 'absolute', right: 0, top: 10, width: '50%', height: 2, background: feito ? '#9153F0' : '#ddd' }} />}<div style={{ width: 20, height: 20, borderRadius: '50%', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 700, position: 'relative', zIndex: 1, background: feito ? '#9153F0' : atual ? '#fff' : '#eee', border: `2px solid ${feito || atual ? '#9153F0' : '#ddd'}`, color: feito ? '#fff' : atual ? '#9153F0' : '#aaa' }}>{feito ? '✓' : i + 1}</div><div style={{ fontSize: '0.63rem', marginTop: 3, color: atual ? '#9153F0' : feito ? '#555' : '#bbb', fontWeight: atual ? 700 : 400 }}>{e.label}</div></div>; })}</div><div style={{ fontSize: '0.8rem', color: '#555', marginBottom: 5 }}>{msg}</div><div style={{ background: '#eee', borderRadius: 99, height: 8, overflow: 'hidden' }}><div style={{ background: 'linear-gradient(90deg,#9153F0,#6366f1)', height: '100%', borderRadius: 99, width: `${pctVal}%`, transition: 'width .4s' }} /></div>{pctVal > 0 && <div style={{ fontSize: '0.7rem', color: '#888', textAlign: 'right', marginTop: 2 }}>{pctVal}%</div>}</div>;
 }
 
+// Estatística de prazo sobre os CT-es COM perda: o quanto a mais barata é mais
+// lenta. difPrazo = prazoGanhadora - prazoRealizada (>0 = mais barata mais lenta).
+// Permite responder "a economia compensa o atraso?".
+function calcularPrazoStatsPerda(detalhes = []) {
+  const s = {
+    totalComPerda: 0, igualOuRapido: 0, ate2d: 0, ate5d: 0, acima5d: 0,
+    perdaIgualOuRapido: 0, perdaAte2d: 0, perdaAte5d: 0, perdaAcima5d: 0,
+  };
+  (detalhes || []).forEach((d) => {
+    if (!d.temPerda) return;
+    s.totalComPerda += 1;
+    const dif = Number(d.difPrazo || 0);
+    const perda = Number(d.perda || 0);
+    if (dif <= 0) { s.igualOuRapido += 1; s.perdaIgualOuRapido += perda; }
+    else if (dif <= 2) { s.ate2d += 1; s.perdaAte2d += perda; }
+    else if (dif <= 5) { s.ate5d += 1; s.perdaAte5d += perda; }
+    else { s.acima5d += 1; s.perdaAcima5d += perda; }
+  });
+  return s;
+}
+
+// Ranking padronizado a partir dos detalhes (CT-es com perda). Cada item carrega
+// perda, volume (valor NF) e info de prazo (em quantos casos a mais barata é mais
+// lenta e a soma do atraso) — base de "exposição/impacto por ação".
+function rankingFromDetalhes(comPerda, keyFn) {
+  const mapa = new Map();
+  (comPerda || []).forEach((d) => {
+    const k = keyFn(d);
+    if (!k || k === '/') return;
+    const g = mapa.get(k) || { chave: k, ctes: 0, perda: 0, volumeNF: 0, valorPago: 0, maisLentaCtes: 0, somaDifPrazo: 0 };
+    g.ctes += 1;
+    g.perda += Number(d.perda || 0);
+    g.volumeNF += Number(d.valorNF || 0);
+    g.valorPago += Number(d.valorPago || 0);
+    const dif = Number(d.difPrazo || 0);
+    if (dif > 0) { g.maisLentaCtes += 1; g.somaDifPrazo += dif; }
+    mapa.set(k, g);
+  });
+  return [...mapa.values()].sort((a, b) => b.perda - a.perda);
+}
+
+// Monta todos os agregados do dashboard a partir dos detalhes (no momento de salvar).
+function construirAgregadosPerda(detalhes = []) {
+  const comPerda = (detalhes || []).filter((d) => d.temPerda);
+  const topCasos = [...comPerda]
+    .sort((a, b) => Number(b.perda || 0) - Number(a.perda || 0))
+    .slice(0, 100)
+    .map((d) => ({
+      chaveCte: d.chaveCte || '', numeroCte: d.numeroCte || '', emissao: d.emissao || '', canal: d.canal || '',
+      origem: `${d.cidadeOrigem || ''}/${d.ufOrigem || ''}`, destino: `${d.cidadeDestino || ''}/${d.ufDestino || ''}`,
+      realizada: d.transportadoraRealizada || '', ganhadora: d.transportadoraGanhadora || '',
+      valorPago: Number(d.valorPago || 0), valorGanhadora: Number(d.valorGanhadora || 0), perda: Number(d.perda || 0), valorNF: Number(d.valorNF || 0),
+      prazoRealizada: Number(d.prazoRealizada || 0), prazoGanhadora: Number(d.prazoGanhadora || 0), difPrazo: Number(d.difPrazo || 0),
+    }));
+  return {
+    porRealizada: rankingFromDetalhes(comPerda, (d) => d.transportadoraRealizada).slice(0, 30),
+    porGanhadora: rankingFromDetalhes(comPerda, (d) => d.transportadoraGanhadora).slice(0, 30),
+    porOrigem: rankingFromDetalhes(comPerda, (d) => `${d.cidadeOrigem || ''}/${d.ufOrigem || ''}`).slice(0, 30),
+    porDestino: rankingFromDetalhes(comPerda, (d) => `${d.cidadeDestino || ''}/${d.ufDestino || ''}`).slice(0, 30),
+    topCasos,
+  };
+}
+
+// Consolida um ranking (mesmo formato acima) somando vários snapshots.
+function mergeRanking(snapshots = [], campo) {
+  const mapa = new Map();
+  (snapshots || []).forEach((s) => (s[campo] || []).forEach((it) => {
+    const k = it.chave || it.origem || it.transportadora || '—';
+    const g = mapa.get(k) || { chave: k, ctes: 0, perda: 0, volumeNF: 0, valorPago: 0, maisLentaCtes: 0, somaDifPrazo: 0 };
+    g.ctes += Number(it.ctes || 0);
+    g.perda += Number(it.perda ?? it.perdaTotal ?? 0);
+    g.volumeNF += Number(it.volumeNF || 0);
+    g.valorPago += Number(it.valorPago ?? it.valorPagoTotal ?? 0);
+    g.maisLentaCtes += Number(it.maisLentaCtes || 0);
+    g.somaDifPrazo += Number(it.somaDifPrazo || 0);
+    mapa.set(k, g);
+  }));
+  return [...mapa.values()].sort((a, b) => b.perda - a.perda);
+}
+
+function mergeTopCasos(snapshots = []) {
+  const todos = [];
+  (snapshots || []).forEach((s) => (s.top_casos || []).forEach((c) => todos.push({ ...c, competencia: s.competencia })));
+  return todos.sort((a, b) => Number(b.perda || 0) - Number(a.perda || 0)).slice(0, 200);
+}
+
+function agregarPrazoSnapshots(snapshots = []) {
+  const acc = {
+    totalComPerda: 0, igualOuRapido: 0, ate2d: 0, ate5d: 0, acima5d: 0,
+    perdaIgualOuRapido: 0, perdaAte2d: 0, perdaAte5d: 0, perdaAcima5d: 0,
+  };
+  (snapshots || []).forEach((s) => {
+    const p = s.prazo_stats || {};
+    Object.keys(acc).forEach((k) => { acc[k] += Number(p[k] || 0); });
+  });
+  return acc;
+}
+
+// Célula de "dias médios da mais barata": + = mais lenta, − = mais rápida.
+function DiasMedios({ stat }) {
+  if (!stat || !stat.n) return <td style={{ color: '#bbb' }}>—</td>;
+  const m = Math.round((stat.soma / stat.n) * 10) / 10;
+  const cor = m > 0 ? '#e67e22' : m < 0 ? '#04C7A4' : '#555';
+  const txt = m > 0 ? `+${m.toFixed(1)}d` : m < 0 ? `${m.toFixed(1)}d` : '0d';
+  return <td style={{ color: cor, fontWeight: 600 }} title={m > 0 ? 'A mais barata é mais lenta em média' : m < 0 ? 'A mais barata é mais rápida em média' : 'Mesmo prazo'}>{txt}</td>;
+}
+
+function chipStyle(ativo) {
+  return { padding: '4px 12px', border: 'none', borderRadius: 14, cursor: 'pointer', fontSize: '0.8rem', fontWeight: ativo ? 700 : 500, background: ativo ? '#9153F0' : '#eee', color: ativo ? '#fff' : '#555' };
+}
+
 export default function PerdaRealizadoPage() {
   const workerRef = useRef(null);
   const [filtros, setFiltros] = useState({ inicio: new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1).toISOString().slice(0, 10), fim: new Date().toISOString().slice(0, 10), canal: '', transportadoraRealizada: '', cidadeOrigem: '', ufsOrigem: [], ufsDestino: [] });
@@ -411,6 +535,13 @@ export default function PerdaRealizadoPage() {
   const [pagina, setPagina] = useState(0);
   const [aba, setAba] = useState('origens');
   const [ordem, setOrdem] = useState({ campo: 'perda', dir: 'desc' });
+  const [snapshots, setSnapshots] = useState([]);
+  const [carregandoSnaps, setCarregandoSnaps] = useState(false);
+  const [salvandoSnap, setSalvandoSnap] = useState(false);
+  const [msgSnap, setMsgSnap] = useState('');
+  const [mostrarIndicadores, setMostrarIndicadores] = useState(false);
+  const [snapFocado, setSnapFocado] = useState('TODOS');
+  const [rankAtivo, setRankAtivo] = useState('ganhadora');
 
   useEffect(() => () => workerRef.current?.terminate(), []);
   const step = (id, m, p = 0) => { setEtapaId(id); setMsg(m); setPctVal(p); };
@@ -516,13 +647,106 @@ export default function PerdaRealizadoPage() {
   }, [resultadoBi, ordem]);
 
   const inativas = resultadoBi?.inativasDetalhes || [];
+  const mesmaTransp = resultadoBi?.mesmaTransportadoraDetalhes || [];
+  const mesmaTranspTotal = useMemo(() => Math.round(mesmaTransp.reduce((s, d) => s + safeNumber(d.perda), 0) * 100) / 100, [mesmaTransp]);
   const totalPags = Math.ceil(detalhesVisiveis.length / PAGE_SIZE);
   const pagAtual = detalhesVisiveis.slice(pagina * PAGE_SIZE, (pagina + 1) * PAGE_SIZE);
   const maxTop10 = resultadoBi?.top10Origens?.[0]?.perdaTotal || 1;
   const prazoResumo = useMemo(() => calcularResumoPrazo(resultadoBi), [resultadoBi]);
+  const prazoImpacto = useMemo(() => {
+    const porOrigem = new Map();
+    const porTransp = new Map();
+    (resultadoBi?.detalhes || []).forEach((d) => {
+      if (!d.temPerda) return;
+      const dif = Number(d.difPrazo || 0);
+      const ko = `${d.cidadeOrigem}/${d.ufOrigem}`;
+      const o = porOrigem.get(ko) || { soma: 0, n: 0 }; o.soma += dif; o.n += 1; porOrigem.set(ko, o);
+      const kt = d.transportadoraRealizada;
+      const t = porTransp.get(kt) || { soma: 0, n: 0 }; t.soma += dif; t.n += 1; porTransp.set(kt, t);
+    });
+    return { porOrigem, porTransp };
+  }, [resultadoBi]);
   const processando = status === 'carregando' || status === 'processando';
   const ordenarPor = (campo) => { setOrdem((p) => ({ campo, dir: p.campo === campo && p.dir === 'desc' ? 'asc' : 'desc' })); setPagina(0); };
   const Th = ({ campo, label }) => <th style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} onClick={() => ordenarPor(campo)}>{label} {ordem.campo === campo ? (ordem.dir === 'desc' ? '▼' : '▲') : ''}</th>;
+
+  const recarregarSnapshots = async () => {
+    setCarregandoSnaps(true);
+    try { setSnapshots(await listarPerdaSnapshots()); }
+    catch (e) { setMsgSnap(e.message || 'Erro ao carregar indicadores salvos.'); }
+    finally { setCarregandoSnaps(false); }
+  };
+  useEffect(() => { recarregarSnapshots(); }, []);
+
+  const salvarResultadoAtual = async () => {
+    if (!resultadoBi) return;
+    setSalvandoSnap(true); setMsgSnap('');
+    try {
+      const competencia = String(filtros.inicio || '').slice(0, 7);
+      const canal = filtros.canal || 'TODOS';
+      const prazoStats = calcularPrazoStatsPerda(resultadoBi.detalhes || []);
+      const ag = construirAgregadosPerda(resultadoBi.detalhes || []);
+      await salvarPerdaSnapshot({
+        competencia,
+        canal,
+        periodoInicio: filtros.inicio || null,
+        periodoFim: filtros.fim || null,
+        filtros: { ...filtros, biAtivo },
+        resumo: {
+          totalCtes: resultadoBi.totalCtes,
+          ctesComPerda: resultadoBi.ctesComPerda,
+          perdaTotal: resultadoBi.perdaTotal,
+          perdaMedia: resultadoBi.perdaMedia,
+          semComparacao: resultado?.semComparacao || resultado?.semMalha || 0,
+          inativas: resultadoBi.inativas || 0,
+          economiaInativaTotal: resultadoBi.economiaInativaTotal || 0,
+        },
+        topOrigens: ag.porOrigem,
+        porTransportadora: ag.porRealizada,
+        porGanhadora: ag.porGanhadora,
+        porDestino: ag.porDestino,
+        topCasos: ag.topCasos,
+        prazoStats,
+        totalCtes: resultadoBi.totalCtes,
+        ctesComPerda: resultadoBi.ctesComPerda,
+        perdaTotal: resultadoBi.perdaTotal,
+        perdaMedia: resultadoBi.perdaMedia,
+      });
+      setMsgSnap(`✅ ${competencia} · ${canal} salvo nos indicadores.`);
+      await recarregarSnapshots();
+      setMostrarIndicadores(true);
+    } catch (e) {
+      setMsgSnap(`⚠️ ${e.message || 'Erro ao salvar.'}`);
+    } finally {
+      setSalvandoSnap(false);
+    }
+  };
+
+  const excluirSnap = async (id) => {
+    try { await excluirPerdaSnapshot(id); await recarregarSnapshots(); }
+    catch (e) { setMsgSnap(`⚠️ ${e.message || 'Erro ao excluir.'}`); }
+  };
+
+  const perdaTotalSalva = useMemo(() => snapshots.reduce((s, x) => s + Number(x.perda_total || 0), 0), [snapshots]);
+  const snapSelecionado = useMemo(() => (snapFocado === 'TODOS' ? null : snapshots.find((s) => s.id === snapFocado) || null), [snapFocado, snapshots]);
+  const dadosDash = useMemo(() => {
+    const escopo = snapSelecionado ? [snapSelecionado] : snapshots;
+    return {
+      multi: !snapSelecionado,
+      totalCtes: escopo.reduce((s, x) => s + Number(x.total_ctes || 0), 0),
+      ctesComPerda: escopo.reduce((s, x) => s + Number(x.ctes_com_perda || 0), 0),
+      perdaTotal: escopo.reduce((s, x) => s + Number(x.perda_total || 0), 0),
+      porGanhadora: mergeRanking(escopo, 'por_ganhadora'),
+      porRealizada: mergeRanking(escopo, 'por_transportadora'),
+      porOrigem: mergeRanking(escopo, 'top_origens'),
+      porDestino: mergeRanking(escopo, 'por_destino'),
+      prazo: agregarPrazoSnapshots(escopo),
+      topCasos: mergeTopCasos(escopo),
+    };
+  }, [snapSelecionado, snapshots]);
+  const perdaRecuperavelSemPiorar = (dadosDash.prazo.perdaIgualOuRapido || 0) + (dadosDash.prazo.perdaAte2d || 0);
+  const rankAtual = dadosDash[rankAtivo === 'realizada' ? 'porRealizada' : rankAtivo === 'origem' ? 'porOrigem' : rankAtivo === 'destino' ? 'porDestino' : 'porGanhadora'] || [];
+  const rankMax = rankAtual[0]?.perda || 1;
   const exportarAnaliseExcel = () => {
     if (!resultadoBi) return;
     const wb = XLSX.utils.book_new();
@@ -588,14 +812,69 @@ export default function PerdaRealizadoPage() {
     <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Criterio B2C</div><label className="check-row" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}><input type="checkbox" checked={criterioB2c.usarPonderadoB2c} onChange={(e) => setCriterioB2c((p) => ({ ...p, usarPonderadoB2c: e.target.checked }))} /><span>Usar criterio ponderado preco + prazo<small style={{ display: 'block' }}>Aplica somente em CT-es B2C. Atacado continua por menor preco.</small></span></label><div className="form-grid two" style={{ marginTop: 8 }}><label className="field">Peso preco (%)<input type="number" min="0" max="100" value={criterioB2c.pesoPreco} onChange={(e) => setCriterioB2c((p) => ({ ...p, pesoPreco: Number(e.target.value || 0) }))} disabled={!criterioB2c.usarPonderadoB2c} /></label><label className="field">Peso prazo (%)<input type="number" min="0" max="100" value={criterioB2c.pesoPrazo} onChange={(e) => setCriterioB2c((p) => ({ ...p, pesoPrazo: Number(e.target.value || 0) }))} disabled={!criterioB2c.usarPonderadoB2c} /></label></div></div>
     <div className="page-header"><span className="amd-mini-brand">Realizado · Análise</span><h1>Perda por Transportadora Mais Cara</h1><p>Compara o frete pago com a opção mais barata ativa disponível nas tabelas. O processamento é feito por lotes de rotas para evitar timeout.</p></div>
     <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Filtros</div><div className="form-grid three" style={{ marginBottom: '1rem' }}><label className="field">Data início<input type="date" value={filtros.inicio} onChange={(e) => set('inicio', e.target.value)} /></label><label className="field">Data fim<input type="date" value={filtros.fim} onChange={(e) => set('fim', e.target.value)} /></label><label className="field">Canal<select value={filtros.canal} onChange={(e) => set('canal', e.target.value)}><option value="">Todos os canais</option>{CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}</select></label><label className="field">Transportadora realizada<input placeholder="Nome da transportadora que carregou" value={filtros.transportadoraRealizada} onChange={(e) => set('transportadoraRealizada', e.target.value)} /></label><label className="field">Cidade de origem<input placeholder="Ex: São Paulo, Campinas..." value={filtros.cidadeOrigem} onChange={(e) => set('cidadeOrigem', e.target.value)} /></label></div><div style={{ marginBottom: '0.75rem', padding: '0.65rem', background: '#f8f6ff', borderRadius: 8, border: '1px solid #e0d8ff' }}><PainelUfs titulo="Estados de origem" cor="#9153F0" ufs={filtros.ufsOrigem} onChange={(v) => set('ufsOrigem', v)} /></div><div style={{ padding: '0.65rem', background: '#f0f7ff', borderRadius: 8, border: '1px solid #c8deff' }}><PainelUfs titulo="Estados de destino" cor="#2563eb" ufs={filtros.ufsDestino} onChange={(v) => set('ufsDestino', v)} /></div><div style={{ marginTop: '1rem' }}><button className="btn-primary" onClick={processar} disabled={processando} style={{ minWidth: 160 }}>{processando ? '⟳ Processando...' : '▶ Processar'}</button>{processando && <Progresso etapaId={etapaId} msg={msg} pctVal={pctVal} />}</div></div>
+    <div className="panel-card" style={{ marginBottom: '1rem' }}>
+      <div className="panel-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span>📊 Indicadores (histórico salvo){snapshots.length ? ` · ${snapshots.length} análise(s) · perda acumulada ${fmt(perdaTotalSalva)}` : ''}</span>
+        <span style={{ display: 'flex', gap: 8 }}>
+          <button className="btn-secondary" onClick={recarregarSnapshots} disabled={carregandoSnaps}>{carregandoSnaps ? '...' : '↻ Atualizar'}</button>
+          <button className="btn-secondary" onClick={() => setMostrarIndicadores((v) => !v)}>{mostrarIndicadores ? 'Ocultar' : `Mostrar${snapshots.length ? ` (${snapshots.length})` : ''}`}</button>
+        </span>
+      </div>
+      {msgSnap && <div className="hint-box compact" style={{ marginTop: 8 }}>{msgSnap}</div>}
+      {mostrarIndicadores && (snapshots.length === 0
+        ? <p style={{ color: '#888', marginTop: 8 }}>Nenhum resultado salvo ainda. Rode uma análise (mês + canal) e clique em <strong>💾 Salvar nos indicadores</strong>. Depois volte aqui para o dashboard multi-mês.</p>
+        : <div style={{ display: 'grid', gap: '1.25rem', marginTop: '0.85rem' }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.8rem', color: '#667085', fontWeight: 600 }}>Ver:</span>
+              <button onClick={() => setSnapFocado('TODOS')} style={chipStyle(snapFocado === 'TODOS')}>Todos combinados</button>
+              {snapshots.map((s) => <button key={s.id} onClick={() => setSnapFocado(s.id)} style={chipStyle(snapFocado === s.id)}>{s.competencia} · {s.canal}</button>)}
+            </div>
+            <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem' }}>
+              <Card label={dadosDash.multi ? 'Análises combinadas' : 'Análise focada'} valor={dadosDash.multi ? `${snapshots.length} mês(es)` : `${snapSelecionado?.competencia} · ${snapSelecionado?.canal}`} cor="#9153F0" />
+              <Card label="CT-es comparáveis" valor={dadosDash.totalCtes.toLocaleString('pt-BR')} cor="#6366f1" />
+              <Card label="CT-es com perda" valor={dadosDash.ctesComPerda.toLocaleString('pt-BR')} cor="#e67e22" />
+              <Card label="Perda total" valor={fmt(dadosDash.perdaTotal)} cor="#9b1111" destaque={dadosDash.perdaTotal > 0} />
+              <Card label="Recuperável sem piorar prazo" valor={fmt(perdaRecuperavelSemPiorar)} sub="mais barata igual ou só +2d" cor="#04C7A4" destaque={perdaRecuperavelSemPiorar > 0} />
+            </div>
+            <div className="form-grid two">
+              <div>
+                <div className="panel-title" style={{ fontSize: '0.92rem', marginBottom: 6 }}>Perda por mês · canal (clique pra focar)</div>
+                <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>Mês</th><th>Canal</th><th>CT-es</th><th>Perda</th><th></th></tr></thead><tbody>{snapshots.map((s) => <tr key={s.id} onClick={() => setSnapFocado(s.id)} style={{ cursor: 'pointer', background: snapFocado === s.id ? '#f3effe' : undefined }}><td><strong>{s.competencia}</strong></td><td>{s.canal}</td><td>{Number(s.total_ctes || 0).toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(s.perda_total)}</td><td><button className="btn-secondary" style={{ padding: '2px 8px' }} onClick={(e) => { e.stopPropagation(); excluirSnap(s.id); }} title="Excluir">✕</button></td></tr>)}</tbody></table></div>
+              </div>
+              <div>
+                <div className="panel-title" style={{ fontSize: '0.92rem', marginBottom: 6 }}>A mais barata é mais lenta? (perda por faixa de atraso)</div>
+                <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.6rem' }}>
+                  <Card label="Igual/mais rápida" valor={fmt(dadosDash.prazo.perdaIgualOuRapido)} sub={`${(dadosDash.prazo.igualOuRapido || 0).toLocaleString('pt-BR')} CT-es`} cor="#04C7A4" />
+                  <Card label="Até +2 dias" valor={fmt(dadosDash.prazo.perdaAte2d)} sub={`${(dadosDash.prazo.ate2d || 0).toLocaleString('pt-BR')} CT-es`} cor="#22c55e" />
+                  <Card label="+3 a 5 dias" valor={fmt(dadosDash.prazo.perdaAte5d)} sub={`${(dadosDash.prazo.ate5d || 0).toLocaleString('pt-BR')} CT-es`} cor="#f59e0b" />
+                  <Card label=">5 dias" valor={fmt(dadosDash.prazo.perdaAcima5d)} sub={`${(dadosDash.prazo.acima5d || 0).toLocaleString('pt-BR')} CT-es`} cor="#9b1111" />
+                </div>
+                <p style={{ fontSize: '0.8rem', color: '#667085', marginTop: 6 }}>Verde = troca sem (quase) piorar prazo. Vermelho = economia com atraso relevante — é o que o comercial usa pra justificar a mais cara.</p>
+              </div>
+            </div>
+            <div>
+              <div className="panel-title" style={{ fontSize: '0.92rem', marginBottom: 6, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <span>Ranking &amp; impacto por ação</span>
+                <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{[{ id: 'ganhadora', label: 'Mais barata que perdeu volume' }, { id: 'realizada', label: 'Quem pagou caro' }, { id: 'origem', label: 'Por origem' }, { id: 'destino', label: 'Por destino' }].map((r) => <button key={r.id} onClick={() => setRankAtivo(r.id)} style={chipStyle(rankAtivo === r.id)}>{r.label}</button>)}</span>
+              </div>
+              <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>{rankAtivo === 'origem' ? 'Origem' : rankAtivo === 'destino' ? 'Destino' : 'Transportadora'}</th><th>CT-es</th><th>Volume (NF)</th><th>Perda em jogo</th><th>Mais barata + lenta</th><th style={{ minWidth: 110 }}>Visual</th></tr></thead><tbody>{rankAtual.slice(0, 20).map((it, i) => { const pctLenta = it.ctes > 0 ? (it.maisLentaCtes / it.ctes) * 100 : 0; const difMed = it.maisLentaCtes > 0 ? it.somaDifPrazo / it.maisLentaCtes : 0; return <tr key={it.chave}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{it.chave}</strong></td><td>{it.ctes.toLocaleString('pt-BR')}</td><td>{fmt(it.volumeNF)}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(it.perda)}</td><td style={{ color: pctLenta > 50 ? '#e67e22' : '#04C7A4' }}>{it.maisLentaCtes ? `${pct(pctLenta)} · +${difMed.toFixed(1)}d` : 'no prazo'}</td><td><Barra valor={it.perda} maximo={rankMax} cor="#9b1111" /></td></tr>; })}{!rankAtual.length && <tr><td colSpan={7}>Sem dados.</td></tr>}</tbody></table></div>
+              <p style={{ fontSize: '0.8rem', color: '#667085', marginTop: 6 }}>{rankAtivo === 'ganhadora' ? 'Transportadoras mais baratas que NÃO levaram o volume — quanto deixamos de economizar com cada uma e se elas são mais lentas (o argumento do comercial).' : rankAtivo === 'realizada' ? '"Perda em jogo" = exposição se você renegociar/bloquear cada transportadora que pagou acima do mais barato.' : `Perda concentrada por ${rankAtivo === 'origem' ? 'origem' : 'destino'} — onde agir primeiro.`}</p>
+            </div>
+            <div>
+              <div className="panel-title" style={{ fontSize: '0.92rem', marginBottom: 6 }}>Principais casos (maior perda){dadosDash.multi ? ' · todos os meses' : ''}</div>
+              <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>Emissão</th>{dadosDash.multi && <th>Mês</th>}<th>Origem → Destino</th><th>Realizada → Mais barata</th><th>Pago</th><th>Mais barato</th><th>Perda</th><th>Prazo</th></tr></thead><tbody>{dadosDash.topCasos.slice(0, 50).map((c, i) => <tr key={`${c.chaveCte}-${i}`}><td>{fmtData(c.emissao)}</td>{dadosDash.multi && <td>{c.competencia}</td>}<td>{c.origem} → {c.destino}</td><td>{c.realizada} <span style={{ color: '#04C7A4' }}>→ {c.ganhadora}</span></td><td>{fmt(c.valorPago)}</td><td>{fmt(c.valorGanhadora)}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(c.perda)}</td><td style={{ whiteSpace: 'nowrap' }}>{c.prazoRealizada}d → {c.prazoGanhadora}d <span style={{ color: c.difPrazo > 0 ? '#e67e22' : c.difPrazo < 0 ? '#04C7A4' : '#555' }}>{c.difPrazo > 0 ? `+${c.difPrazo}d` : c.difPrazo < 0 ? `${c.difPrazo}d` : '='}</span></td></tr>)}{!dadosDash.topCasos.length && <tr><td colSpan={dadosDash.multi ? 8 : 7}>Sem casos salvos.</td></tr>}</tbody></table></div>
+            </div>
+          </div>)}
+    </div>
     {info && !processando && <div className="hint-box compact" style={{ marginBottom: '0.75rem', background: '#f0f7ff', border: '1px solid #c8deff' }}>ℹ️ {info}</div>}{aviso && <div className="hint-box compact" style={{ background: '#fffbf0', border: '1px solid #f0d080', marginBottom: '0.75rem' }}>⚠️ {aviso}</div>}{erro && <div className="hint-box compact" style={{ background: '#fff5f5', border: '1px solid #f5c6cb', marginBottom: '0.75rem' }}>⚠️ {erro}</div>}
-    {resultado && <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><span>Simular retirada sem remover da base</span><button className="btn-secondary" onClick={exportarAnaliseExcel} disabled={!resultadoBi}>Exportar relatório Excel</button></div><div className="form-grid three" style={{ alignItems: 'end' }}><MultiSelectBusca label="Transportadora realizada a retirar" options={opcoesRetirada} value={cenarioRetirada.transportadorasRealizadas} onChange={(v) => setRetirada('transportadorasRealizadas', v)} placeholder="Buscar transportadora..." /><button className="btn-secondary" type="button" onClick={limparRetirada} disabled={!cenarioRetirada.transportadorasRealizadas.length}>Limpar retirada</button>{retiradaResumo?.ativo && <div className="hint-box compact" style={{ margin: 0, background: retiradaResumo.semOpcao ? '#fff7ed' : '#f0fdf4', border: `1px solid ${retiradaResumo.semOpcao ? '#fed7aa' : '#bbf7d0'}` }}>CT-es afetados: <strong>{retiradaResumo.ctesAfetados.toLocaleString('pt-BR')}</strong> · impacto: <strong>{fmt(retiradaResumo.impactoTotal)}</strong> · sem opção: <strong>{retiradaResumo.semOpcao.toLocaleString('pt-BR')}</strong></div>}</div></div>}
-    {resultadoBi && <><div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><span>Filtros da análise carregada</span><span style={{ fontSize: '0.78rem', color: '#667085', fontWeight: 500 }}>{biAtivo ? `${resultadoBi.totalCtes.toLocaleString('pt-BR')} de ${resultado.totalCtes.toLocaleString('pt-BR')} CT-es comparáveis` : 'Base completa carregada'}</span></div><div className="form-grid three" style={{ marginBottom: '0.75rem' }}><label className="field">Emissão início<input type="date" value={filtrosBi.emissaoInicio} onChange={(e) => setBi('emissaoInicio', e.target.value)} /></label><label className="field">Emissão fim<input type="date" value={filtrosBi.emissaoFim} onChange={(e) => setBi('emissaoFim', e.target.value)} /></label><MultiSelectBusca label="Canal" options={opcoesBi.canais} value={filtrosBi.canais} onChange={(v) => setBi('canais', v)} placeholder="Buscar canal..." /><MultiSelectBusca label="Transportadora realizada" options={opcoesBi.transportadorasRealizadas} value={filtrosBi.transportadorasRealizadas} onChange={(v) => setBi('transportadorasRealizadas', v)} placeholder="Buscar transportadora..." /><MultiSelectBusca label="Mais barata ativa" options={opcoesBi.transportadorasGanhadoras} value={filtrosBi.transportadorasGanhadoras} onChange={(v) => setBi('transportadorasGanhadoras', v)} placeholder="Buscar transportadora..." /><label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 22 }}><input type="checkbox" checked={filtrosBi.soPerda} onChange={(e) => setBi('soPerda', e.target.checked)} />Apenas CT-es com perda</label><MultiSelectBusca label="Cidade origem" options={opcoesBi.cidadesOrigem} value={filtrosBi.cidadesOrigem} onChange={(v) => setBi('cidadesOrigem', v)} placeholder="Buscar origem..." /><MultiSelectBusca label="Cidade destino" options={opcoesBi.cidadesDestino} value={filtrosBi.cidadesDestino} onChange={(v) => setBi('cidadesDestino', v)} placeholder="Buscar destino..." /><MultiSelectBusca label="UF origem" options={opcoesBi.ufsOrigem} value={filtrosBi.ufsOrigem} onChange={(v) => setBi('ufsOrigem', v)} placeholder="Buscar UF..." /><MultiSelectBusca label="UF destino" options={opcoesBi.ufsDestino} value={filtrosBi.ufsDestino} onChange={(v) => setBi('ufsDestino', v)} placeholder="Buscar UF..." /></div><button className="btn-secondary" onClick={limparFiltrosBi} disabled={!biAtivo}>Limpar filtros da análise</button></div><div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}><Card label="CT-es comparáveis" valor={resultadoBi.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub={biAtivo ? 'recorte filtrado' : 'com tabela ativa e prazo'} /><Card label="CT-es com perda" valor={resultadoBi.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultadoBi.totalCtes > 0 ? (resultadoBi.ctesComPerda / resultadoBi.totalCtes) * 100 : 0)} cor="#e67e22" /><Card label="Perda total" valor={fmt(resultadoBi.perdaTotal)} cor="#9b1111" destaque={resultadoBi.perdaTotal > 0} /><Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" /><Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" /><Card label="Inativas bloqueadas" valor={(resultadoBi.inativas || 0).toLocaleString('pt-BR')} sub={`potencial vs ativa: ${fmt(resultadoBi.economiaInativaTotal)}`} cor="#f59e0b" /><Card label="Sem comparação" valor={(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')} sub={biAtivo ? 'total da carga inicial' : 'sem tabela, prazo ou realizada ativa'} cor="#888" /></div>
-    <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem', flexWrap: 'wrap' }}>{[{ id: 'origens', label: `Top 10 Origens (${resultadoBi.top10Origens.length})` }, { id: 'transportadoras', label: `Por Transportadora (${resultadoBi.porTransportadora.length})` }, { id: 'detalhes', label: `Detalhes (${detalhesVisiveis.length.toLocaleString('pt-BR')})` }, { id: 'inativas', label: `Inativas (${inativas.length.toLocaleString('pt-BR')})` }, { id: 'sem-malha', label: `Sem comparação (${resultado.semComparacao || resultado.semMalha || 0})` }].map((a) => <button key={a.id} onClick={() => { setAba(a.id); setPagina(0); }} style={{ padding: '4px 14px', border: 'none', borderRadius: '4px 4px 0 0', cursor: 'pointer', background: aba === a.id ? '#9153F0' : '#f0f0f0', color: aba === a.id ? '#fff' : '#555', fontWeight: aba === a.id ? 700 : 400, fontSize: '0.85rem' }}>{a.label}</button>)}</div>
-    {aba === 'origens' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 10 origens por valor de perda</div>{resultadoBi.top10Origens.length === 0 ? <p style={{ color: '#888' }}>Nenhuma origem com perda encontrada.</p> : <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Origem</th><th>CT-es</th><th>Perda total</th><th>% sobre pago</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultadoBi.top10Origens.map((o, i) => <tr key={o.origem}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{o.origem}</strong></td><td>{o.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(o.perdaTotal)}</td><td>{pct(o.perdaPercentual)}</td><td><Barra valor={o.perdaTotal} maximo={maxTop10} cor="#9b1111" /></td></tr>)}</tbody></table></div>}</div>}
-    {aba === 'transportadoras' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Perda por transportadora realizada</div><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Transportadora realizada</th><th>CT-es</th><th>Perda total</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultadoBi.porTransportadora.map((t, i) => <tr key={t.transportadora}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{t.transportadora}</strong></td><td>{t.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(t.perdaTotal)}</td><td><Barra valor={t.perdaTotal} maximo={resultadoBi.porTransportadora[0]?.perdaTotal || 1} cor="#e67e22" /></td></tr>)}</tbody></table></div></div>}
+    {resultado && <div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><span>Simular retirada sem remover da base</span><span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button className="btn-secondary" onClick={salvarResultadoAtual} disabled={!resultadoBi || salvandoSnap} title="Salva os indicadores deste mês/canal para análise multi-mês (sobrescreve o mesmo mês+canal)">{salvandoSnap ? 'Salvando...' : '💾 Salvar nos indicadores'}</button><button className="btn-secondary" onClick={exportarAnaliseExcel} disabled={!resultadoBi}>Exportar relatório Excel</button></span></div><div className="form-grid three" style={{ alignItems: 'end' }}><MultiSelectBusca label="Transportadora realizada a retirar" options={opcoesRetirada} value={cenarioRetirada.transportadorasRealizadas} onChange={(v) => setRetirada('transportadorasRealizadas', v)} placeholder="Buscar transportadora..." /><button className="btn-secondary" type="button" onClick={limparRetirada} disabled={!cenarioRetirada.transportadorasRealizadas.length}>Limpar retirada</button>{retiradaResumo?.ativo && <div className="hint-box compact" style={{ margin: 0, background: retiradaResumo.semOpcao ? '#fff7ed' : '#f0fdf4', border: `1px solid ${retiradaResumo.semOpcao ? '#fed7aa' : '#bbf7d0'}` }}>CT-es afetados: <strong>{retiradaResumo.ctesAfetados.toLocaleString('pt-BR')}</strong> · impacto: <strong>{fmt(retiradaResumo.impactoTotal)}</strong> · sem opção: <strong>{retiradaResumo.semOpcao.toLocaleString('pt-BR')}</strong></div>}</div></div>}
+    {resultadoBi && <><div className="panel-card" style={{ marginBottom: '1rem' }}><div className="panel-title" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><span>Filtros da análise carregada</span><span style={{ fontSize: '0.78rem', color: '#667085', fontWeight: 500 }}>{biAtivo ? `${resultadoBi.totalCtes.toLocaleString('pt-BR')} de ${resultado.totalCtes.toLocaleString('pt-BR')} CT-es comparáveis` : 'Base completa carregada'}</span></div><div className="form-grid three" style={{ marginBottom: '0.75rem' }}><label className="field">Emissão início<input type="date" value={filtrosBi.emissaoInicio} onChange={(e) => setBi('emissaoInicio', e.target.value)} /></label><label className="field">Emissão fim<input type="date" value={filtrosBi.emissaoFim} onChange={(e) => setBi('emissaoFim', e.target.value)} /></label><MultiSelectBusca label="Canal" options={opcoesBi.canais} value={filtrosBi.canais} onChange={(v) => setBi('canais', v)} placeholder="Buscar canal..." /><MultiSelectBusca label="Transportadora realizada" options={opcoesBi.transportadorasRealizadas} value={filtrosBi.transportadorasRealizadas} onChange={(v) => setBi('transportadorasRealizadas', v)} placeholder="Buscar transportadora..." /><MultiSelectBusca label="Mais barata ativa" options={opcoesBi.transportadorasGanhadoras} value={filtrosBi.transportadorasGanhadoras} onChange={(v) => setBi('transportadorasGanhadoras', v)} placeholder="Buscar transportadora..." /><label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 22 }}><input type="checkbox" checked={filtrosBi.soPerda} onChange={(e) => setBi('soPerda', e.target.checked)} />Apenas CT-es com perda</label><MultiSelectBusca label="Cidade origem" options={opcoesBi.cidadesOrigem} value={filtrosBi.cidadesOrigem} onChange={(v) => setBi('cidadesOrigem', v)} placeholder="Buscar origem..." /><MultiSelectBusca label="Cidade destino" options={opcoesBi.cidadesDestino} value={filtrosBi.cidadesDestino} onChange={(v) => setBi('cidadesDestino', v)} placeholder="Buscar destino..." /><MultiSelectBusca label="UF origem" options={opcoesBi.ufsOrigem} value={filtrosBi.ufsOrigem} onChange={(v) => setBi('ufsOrigem', v)} placeholder="Buscar UF..." /><MultiSelectBusca label="UF destino" options={opcoesBi.ufsDestino} value={filtrosBi.ufsDestino} onChange={(v) => setBi('ufsDestino', v)} placeholder="Buscar UF..." /></div><button className="btn-secondary" onClick={limparFiltrosBi} disabled={!biAtivo}>Limpar filtros da análise</button></div><div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}><Card label="CT-es comparáveis" valor={resultadoBi.totalCtes.toLocaleString('pt-BR')} cor="#9153F0" sub={biAtivo ? 'recorte filtrado' : 'com tabela ativa e prazo'} /><Card label="CT-es com perda" valor={resultadoBi.ctesComPerda.toLocaleString('pt-BR')} sub={pct(resultadoBi.totalCtes > 0 ? (resultadoBi.ctesComPerda / resultadoBi.totalCtes) * 100 : 0)} cor="#e67e22" /><Card label="Perda total" valor={fmt(resultadoBi.perdaTotal)} cor="#9b1111" destaque={resultadoBi.perdaTotal > 0} /><Card label="Mais barata com prazo menor" valor={pct(prazoResumo.pctMenor)} sub={`${prazoResumo.prazoMenor} CT-es · ${fmt(prazoResumo.perdaPrazoMenor)}`} cor="#04C7A4" /><Card label="Mais barata com mesmo prazo" valor={pct(prazoResumo.pctIgual)} sub={`${prazoResumo.prazoIgual} CT-es · ${fmt(prazoResumo.perdaPrazoIgual)}`} cor="#22c55e" /><Card label="Mais barata com prazo maior" valor={pct(prazoResumo.pctMaior)} sub={`${prazoResumo.prazoMaior} CT-es · ${fmt(prazoResumo.perdaPrazoMaior)}`} cor="#f59e0b" /><Card label="Mesma transp. (auditoria)" valor={mesmaTransp.length.toLocaleString('pt-BR')} sub={`fora da perda · ${fmt(mesmaTranspTotal)}`} cor="#6366f1" /><Card label="Inativas bloqueadas" valor={(resultadoBi.inativas || 0).toLocaleString('pt-BR')} sub={`potencial vs ativa: ${fmt(resultadoBi.economiaInativaTotal)}`} cor="#f59e0b" /><Card label="Sem comparação" valor={(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')} sub={biAtivo ? 'total da carga inicial' : 'sem tabela, prazo ou realizada ativa'} cor="#888" /></div>
+    <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem', flexWrap: 'wrap' }}>{[{ id: 'origens', label: `Top 10 Origens (${resultadoBi.top10Origens.length})` }, { id: 'transportadoras', label: `Por Transportadora (${resultadoBi.porTransportadora.length})` }, { id: 'detalhes', label: `Detalhes (${detalhesVisiveis.length.toLocaleString('pt-BR')})` }, { id: 'inativas', label: `Inativas (${inativas.length.toLocaleString('pt-BR')})` }, { id: 'mesma', label: `Mesma transp. (${mesmaTransp.length.toLocaleString('pt-BR')})` }, { id: 'sem-malha', label: `Sem comparação (${resultado.semComparacao || resultado.semMalha || 0})` }].map((a) => <button key={a.id} onClick={() => { setAba(a.id); setPagina(0); }} style={{ padding: '4px 14px', border: 'none', borderRadius: '4px 4px 0 0', cursor: 'pointer', background: aba === a.id ? '#9153F0' : '#f0f0f0', color: aba === a.id ? '#fff' : '#555', fontWeight: aba === a.id ? 700 : 400, fontSize: '0.85rem' }}>{a.label}</button>)}</div>
+    {aba === 'origens' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 10 origens por valor de perda</div>{resultadoBi.top10Origens.length === 0 ? <p style={{ color: '#888' }}>Nenhuma origem com perda encontrada.</p> : <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Origem</th><th>CT-es</th><th>Perda total</th><th>% sobre pago</th><th title="Dias a mais (+) ou a menos (−) que a mais barata leva, em média">Δ prazo médio (mais barata)</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultadoBi.top10Origens.map((o, i) => <tr key={o.origem}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{o.origem}</strong></td><td>{o.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(o.perdaTotal)}</td><td>{pct(o.perdaPercentual)}</td><DiasMedios stat={prazoImpacto.porOrigem.get(o.origem)} /><td><Barra valor={o.perdaTotal} maximo={maxTop10} cor="#9b1111" /></td></tr>)}</tbody></table></div>}</div>}
+    {aba === 'transportadoras' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Perda por transportadora que carregou (pagou acima da mais barata)</div><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>#</th><th>Transportadora realizada</th><th>CT-es</th><th>Perda total</th><th title="Dias a mais (+) ou a menos (−) que a mais barata leva, em média">Δ prazo médio (mais barata)</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead><tbody>{resultadoBi.porTransportadora.map((t, i) => <tr key={t.transportadora}><td style={{ fontWeight: 700, color: '#9153F0' }}>#{i + 1}</td><td><strong>{t.transportadora}</strong></td><td>{t.ctes.toLocaleString('pt-BR')}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(t.perdaTotal)}</td><DiasMedios stat={prazoImpacto.porTransp.get(t.transportadora)} /><td><Barra valor={t.perdaTotal} maximo={resultadoBi.porTransportadora[0]?.perdaTotal || 1} cor="#e67e22" /></td></tr>)}</tbody></table></div></div>}
     {aba === 'detalhes' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Detalhamento por CT-e</div><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>CT-e</th><th>Emissão</th><th>Canal</th><th>Origem</th><th>Destino</th><th>Peso</th><Th campo="transportadoraRealizada" label="Transp. realizada" /><Th campo="transportadoraGanhadora" label="Mais barata ativa" /><Th campo="valorPago" label="Pago" /><Th campo="valorGanhadora" label="Mais barato" /><Th campo="perda" label="Perda" /><th>Impacto retirada</th><th>Prazo</th><th>Fonte prazo</th><th>Cálculo</th></tr></thead><tbody>{pagAtual.map((d) => <tr key={d.chaveCte} style={{ background: d.semOpcaoRetirada ? '#fff7ed' : d.temPerda ? undefined : '#f8fff8' }}><td style={{ fontSize: '0.78rem', color: '#666' }}>{d.numeroCte || d.chaveCte?.slice(-8) || '-'}</td><td>{fmtData(d.emissao)}</td><td>{d.canal || '-'}</td><td>{d.cidadeOrigem}/{d.ufOrigem}</td><td>{d.cidadeDestino}/{d.ufDestino}</td><td>{Number(d.peso || 0).toLocaleString('pt-BR')} kg</td><td>{d.transportadoraRealizada}</td><td style={{ color: '#04C7A4', fontWeight: 600 }}>{d.semOpcaoRetirada ? 'Sem opção' : d.transportadoraGanhadora}</td><td>{fmt(d.valorPago)}</td><td>{d.semOpcaoRetirada ? '-' : fmt(d.valorGanhadora)}</td><td className={d.temPerda ? 'negativo' : ''} style={{ fontWeight: d.temPerda ? 700 : 400 }}>{d.temPerda ? `${fmt(d.perda)} · ${pct(d.perdaPercentual)}` : '—'}</td><td className={safeNumber(d.impactoRetirada) > 0 ? 'negativo' : ''} style={{ fontWeight: d.cenarioRetirada ? 700 : 400 }}>{d.semOpcaoRetirada ? 'Sem opção' : d.cenarioRetirada ? fmt(d.impactoRetirada) : '-'}</td><td>{d.prazoRealizada}d → {d.prazoGanhadora}d<br /><span style={{ color: d.difPrazo > 0 ? '#e67e22' : d.difPrazo < 0 ? '#04C7A4' : '#555' }}>{d.difPrazo > 0 ? `+${d.difPrazo}d` : d.difPrazo < 0 ? `${d.difPrazo}d` : 'Igual'}</span></td><td style={{ fontSize: '0.72rem', color: '#667085' }}>{d.fontePrazo || 'Tabela > Rota'}</td><td><DetalheCalculo item={d} /></td></tr>)}{!pagAtual.length && <tr><td colSpan={15}>Nenhum CT-e com esses filtros.</td></tr>}</tbody></table></div>{totalPags > 1 && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: '0.75rem' }}><button className="btn-secondary" onClick={() => setPagina(0)} disabled={pagina === 0}>«</button><button className="btn-secondary" onClick={() => setPagina((p) => p - 1)} disabled={pagina === 0}>‹</button><span style={{ fontSize: '0.85rem', color: '#555' }}>Página {pagina + 1} de {totalPags} · {detalhesVisiveis.length.toLocaleString('pt-BR')} registros</span><button className="btn-secondary" onClick={() => setPagina((p) => p + 1)} disabled={pagina >= totalPags - 1}>›</button><button className="btn-secondary" onClick={() => setPagina(totalPags - 1)} disabled={pagina >= totalPags - 1}>»</button></div>}</div>}
     {aba === 'inativas' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Transportadoras inativadas — potencial bloqueado</div><div className="summary-strip" style={{ marginBottom: '0.75rem' }}><Card label="Casos com inativa menor" valor={inativas.length.toLocaleString('pt-BR')} cor="#f59e0b" /><Card label="Potencial vs ativa" valor={fmt(resultadoBi.economiaInativaTotal)} cor="#f59e0b" /><Card label="Potencial vs pago" valor={fmt(resultadoBi.economiaInativaVsPagoTotal)} cor="#9b1111" /></div><p style={{ fontSize: '0.84rem', color: '#667085' }}>Essas transportadoras não entram no cálculo geral. A aba serve apenas para enxergar quanto poderia reduzir se alguma inativa voltasse a operar.</p><div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>CT-e</th><th>Origem</th><th>Destino</th><th>Realizada</th><th>Inativa menor</th><th>Ativa mais barata</th><th>Valor inativa</th><th>Valor ativa</th><th>Potencial</th><th>Prazo</th><th>Fonte prazo</th><th>Cálculo</th></tr></thead><tbody>{inativas.slice(0, 500).map((d, i) => <tr key={`${d.chaveCte}-${i}`}><td>{d.numeroCte || d.chaveCte?.slice(-8) || '-'}</td><td>{d.origem}</td><td>{d.destino}</td><td>{d.transportadoraRealizada}</td><td><strong>{d.transportadoraInativa}</strong><br /><small>{d.statusInativa}</small></td><td>{d.transportadoraAtivaMaisBarata || '-'}</td><td>{fmt(d.valorInativa)}</td><td>{d.valorAtivaMaisBarata != null ? fmt(d.valorAtivaMaisBarata) : '-'}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(d.economiaVsAtiva)}</td><td>{d.prazoInativa || '-'}d → {d.prazoAtivaMaisBarata || '-'}d</td><td style={{ fontSize: '0.72rem', color: '#667085' }}>{d.fontePrazo || 'Tabela > Rota'}</td><td><details><summary style={{ cursor: 'pointer', color: '#9153F0', fontWeight: 700 }}>Ver</summary><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0.75rem', background: '#fff8e8', borderRadius: 8, marginTop: 6 }}><CalculoBox titulo="Inativa" calc={d.detalheInativa} cor="#f59e0b" /><CalculoBox titulo="Ativa mais barata" calc={d.detalheAtiva} cor="#04C7A4" /></div></details></td></tr>)}{!inativas.length && <tr><td colSpan={12}>Nenhuma inativa menor que a ativa mais barata encontrada.</td></tr>}</tbody></table></div>{inativas.length > 500 && <p style={{ color: '#888', fontSize: '0.8rem' }}>Mostrando 500 primeiros registros. Refine os filtros para analisar menos itens.</p>}</div>}
+    {aba === 'mesma' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>Mesma transportadora — auditoria de fatura ({mesmaTransp.length.toLocaleString('pt-BR')})</div><p style={{ fontSize: '0.85rem', color: '#667085' }}>Casos em que a transportadora que <strong>carregou</strong> é também a <strong>mais barata</strong> da rota — ou seja, pagamos acima da <strong>própria tabela</strong> dela. Isso é <strong>auditoria de fatura</strong>, não perda por escolha de transportadora, então fica <strong>fora da perda principal</strong>. Total da diferença: <strong>{fmt(mesmaTranspTotal)}</strong>.</p>{mesmaTransp.length === 0 ? <p style={{ color: '#888' }}>Nenhum caso de mesma transportadora neste recorte.</p> : <div className="sim-analise-tabela-wrap"><table className="sim-analise-tabela"><thead><tr><th>CT-e</th><th>Emissão</th><th>Origem → Destino</th><th>Transportadora</th><th>Pago</th><th>Tabela</th><th>Diferença</th><th>Prazo</th><th>Cálculo</th></tr></thead><tbody>{mesmaTransp.slice(0, 500).map((d) => <tr key={d.chaveCte}><td style={{ fontSize: '0.78rem', color: '#666' }}>{d.numeroCte || d.chaveCte?.slice(-8) || '-'}</td><td>{fmtData(d.emissao)}</td><td>{d.cidadeOrigem}/{d.ufOrigem} → {d.cidadeDestino}/{d.ufDestino}</td><td><strong>{d.transportadoraRealizada}</strong></td><td>{fmt(d.valorPago)}</td><td>{fmt(d.valorGanhadora)}</td><td className="negativo" style={{ fontWeight: 700 }}>{fmt(d.perda)} · {pct(d.perdaPercentual)}</td><td style={{ whiteSpace: 'nowrap' }}>{d.prazoRealizada}d → {d.prazoGanhadora}d</td><td><DetalheCalculo item={d} /></td></tr>)}{!mesmaTransp.length && <tr><td colSpan={9}>—</td></tr>}</tbody></table></div>}{mesmaTransp.length > 500 && <p style={{ color: '#888', fontSize: '0.8rem' }}>Mostrando 500 primeiros. Refine os filtros.</p>}</div>}
     {aba === 'sem-malha' && <div className="panel-card"><div className="panel-title" style={{ marginBottom: '0.75rem' }}>CT-es sem comparação ({(resultado.semComparacao || resultado.semMalha || 0).toLocaleString('pt-BR')})</div><p style={{ fontSize: '0.85rem', color: '#888' }}>Esses CT-es não entraram na conta principal por falta de tabela ativa, faixa/cotação válida, prazo válido ou transportadora realizada encontrada nas tabelas ativas. Assim o relatório fica limpo apenas com casos realmente comparáveis.</p></div>}
     </>}
   </div>;

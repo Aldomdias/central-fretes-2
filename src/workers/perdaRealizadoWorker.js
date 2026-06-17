@@ -268,6 +268,7 @@ self.onmessage = async (event) => {
         valorNF: Number(cte.valorNF || 0),
         valorPago,
         transportadoraRealizada: cte.transportadora || '',
+        transportadoraRealizadaCadastro: realizadaCalc.transportadora || '',
         transportadoraGanhadora: ganhadoraAtiva.transportadora,
         valorGanhadora: fmt2(valorGanhadora),
         perda,
