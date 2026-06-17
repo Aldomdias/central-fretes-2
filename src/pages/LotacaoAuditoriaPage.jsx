@@ -306,18 +306,42 @@ function deduplicarSolicitacoesAuditoria(lista = []) {
     grupos.set(chaveOperacional, grupo);
   });
 
+  // Quanto mais avançado o status, maior a preferência ao escolher o
+  // representante de duplicatas (CT-e + DIST + fatura iguais com ids distintos).
+  // Sem isso, ao tratar uma cópia a gêmea ainda aparecia em "Pronto para pagar"
+  // e o item parecia nunca ir para "Tratados".
+  const rankStatus = (item = {}) => {
+    const categoria = statusGestaoAuditoria(item.status);
+    if (movimentoTratado(item) || categoria === 'TRATADO') return 4;
+    if (categoria === 'RECUSADO') return 3;
+    if (categoria === 'APROVADO') return 2;
+    if (categoria === 'DEVOLVIDO') return 1;
+    return 0;
+  };
+
   const resultado = [];
   grupos.forEach((grupo) => {
     const maiorPrioridade = Math.max(...grupo.map(prioridadeFonte));
+    const candidatos = grupo.filter((item) => prioridadeFonte(item) === maiorPrioridade);
     const idsVistos = new Set();
-    grupo
-      .filter((item) => prioridadeFonte(item) === maiorPrioridade)
-      .forEach((item) => {
-        const chaveId = item.id ? `${maiorPrioridade}|${item.id}` : null;
-        if (chaveId && idsVistos.has(chaveId)) return;
-        if (chaveId) idsVistos.add(chaveId);
-        resultado.push(item);
-      });
+    const unicosPorId = candidatos.filter((item) => {
+      const chaveId = item.id ? `${maiorPrioridade}|${item.id}` : null;
+      if (chaveId && idsVistos.has(chaveId)) return false;
+      if (chaveId) idsVistos.add(chaveId);
+      return true;
+    });
+    if (!unicosPorId.length) return;
+    // Mantém um único representante por grupo: o de status mais avançado e,
+    // em empate, o mais recente.
+    const representante = unicosPorId.reduce((melhor, atual) => {
+      const rankAtual = rankStatus(atual);
+      const rankMelhor = rankStatus(melhor);
+      if (rankAtual !== rankMelhor) return rankAtual > rankMelhor ? atual : melhor;
+      const dataAtual = new Date(dataMovimentoAuditoria(atual) || 0).getTime();
+      const dataMelhor = new Date(dataMovimentoAuditoria(melhor) || 0).getTime();
+      return dataAtual >= dataMelhor ? atual : melhor;
+    });
+    resultado.push(representante);
   });
 
   return resultado
