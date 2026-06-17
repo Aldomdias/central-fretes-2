@@ -338,10 +338,15 @@ function mapCommon(row, meta, overrides = {}) {
     String(meta.transportadora || '').trim() ||
     transportadoraPlanilha;
 
+  // Quando a própria linha já traz a coluna "Origem" preenchida (caso de
+  // arquivos com várias origens num só arquivo, ex.: generalidades em massa),
+  // ela tem prioridade sobre o nome inferido do arquivo. O nome do arquivo
+  // só decide a origem quando a planilha não traz essa coluna (rotas/cotações
+  // tradicionais, que dependem do padrão "Origem - Transportadora - Tipo").
   const origem =
     String(overrides.origem || '').trim() ||
-    String(meta.origem || '').trim() ||
-    origemPlanilha;
+    origemPlanilha ||
+    String(meta.origem || '').trim();
 
   const canalFinal =
     canalPlanilha ||

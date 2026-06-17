@@ -808,7 +808,7 @@ function tratarErroRpc(error, contexto) {
   if (!error) return;
   const msg = humanizarErroConexao(error.message || `Erro ao carregar ${contexto}.`);
   if (erroIndicaTimeout(msg)) {
-    throw new Error(`Tempo de consulta excedido ao carregar ${contexto}. Reduza o intervalo de filtros ou aplique a migration 011 no Supabase.`);
+    throw new Error(`Tempo de consulta excedido ao carregar ${contexto}. Reduza o intervalo de filtros ou aplique supabase/migrations/20260616_002_avaliacao_prazos_export_performance.sql no Supabase.`);
   }
   if (/function .* does not exist|schema cache|404/i.test(msg)) {
     throw new Error(
@@ -1252,6 +1252,7 @@ async function carregarLinhasAvaliacaoRpc(filtros = {}, { limite = 500, offset =
     ...montarParametrosRpc(filtros),
     p_limite: limite,
     p_offset: offset,
+    p_contar: contar,
   };
   const { data, error } = await supabase.rpc('rpc_avaliacao_prazos_linhas', params);
   tratarErroRpc(error, 'as linhas paginadas do recorte (RPC)');
@@ -1506,24 +1507,122 @@ export async function carregarAnalisePaginadaAvaliacao(
   };
 }
 
-// Busca em lotes para exportação CSV respeitando filtros.
-export async function buscarLinhasParaExport(filtros = {}, { teto = LIMITE_EXPORT_ANALISE, lote = SUPABASE_LOTE_MAX } = {}) {
-  const acumulado = [];
-  let offset = 0;
-  let total = Infinity;
-  const tamanhoLote = Math.min(Math.max(inteiro(lote) || SUPABASE_LOTE_MAX, 1), SUPABASE_LOTE_MAX);
+// Lote "desejado" para exportação. Na prática o servidor (PostgREST) costuma
+// limitar cada resposta a um máximo fixo de linhas independente do que a
+// gente pede aqui — por isso o passo real entre páginas é descoberto pelo
+// tamanho que efetivamente volta na primeira chamada, nunca assumido.
+const EXPORT_LOTE_MAX = 8000;
 
-  while (offset < total && acumulado.length < teto) {
-    const limite = Math.min(tamanhoLote, teto - acumulado.length);
-    // eslint-disable-next-line no-await-in-loop
-    const { linhas, total: totalServidor } = await carregarLinhasAvaliacao(filtros, { limite, offset });
-    if (Number.isFinite(totalServidor) && totalServidor >= 0) total = totalServidor;
-    if (!linhas.length) break;
-    acumulado.push(...linhas);
-    offset += linhas.length;
-    if (total !== Infinity && offset >= total) break;
+// Piso mínimo de linhas por página antes de desistir de uma página específica
+// (em vez de abortar a exportação inteira por causa de um trecho pesado).
+const EXPORT_LOTE_MIN = 200;
+
+// Busca uma página específica com retry adaptativo: se a chamada der timeout,
+// tenta de novo com um lote bem menor (a metade), até um piso mínimo. Isso
+// evita que um trecho pesado do recorte (ex.: muitas rotas concentradas numa
+// faixa de offset) derrube a exportação inteira.
+async function carregarPaginaComRetry(filtros, { limite, offset, contar }) {
+  let tentativaLimite = limite;
+  let ultimoErro = null;
+
+  while (tentativaLimite >= EXPORT_LOTE_MIN) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      return await carregarLinhasAvaliacao(filtros, { limite: tentativaLimite, offset, contar });
+    } catch (error) {
+      ultimoErro = error;
+      if (!erroIndicaTimeout(error.message)) throw error;
+      tentativaLimite = Math.floor(tentativaLimite / 2);
+    }
   }
-  return { linhas: acumulado, total: Number.isFinite(total) ? total : acumulado.length, limitado: acumulado.length < total };
+  // Mesmo no piso mínimo deu timeout: devolve vazio em vez de travar tudo, o
+  // chamador marca o trecho (offset/limite original) como pendente e segue
+  // adiante — quem chamou pode oferecer "Continuar exportação" depois para
+  // tentar só esse trecho de novo, sem refazer tudo.
+  console.warn(`Página da exportação (offset ${offset}) pulada após timeouts repetidos.`, ultimoErro?.message);
+  return { linhas: [], total: null, pulada: true, trechoPulado: { offset, limite } };
+}
+
+// Busca em lotes para exportação CSV respeitando filtros.
+// Dispara as páginas em grupos concorrentes (mesmo padrão usado em
+// listarRotasAvaliacaoPrazos) para não pagar o custo fixo de cada chamada de
+// forma 100% sequencial, mas avança o offset pelo tamanho real devolvido por
+// página — nunca pelo tamanho pedido — para não deixar buracos quando o
+// servidor devolve menos linhas do que o solicitado. Páginas que travam por
+// timeout são reduzidas e tentadas de novo em vez de derrubar tudo.
+export async function buscarLinhasParaExport(filtros = {}, { teto = LIMITE_EXPORT_ANALISE, lote = EXPORT_LOTE_MAX } = {}) {
+  const tamanhoLote = Math.min(Math.max(inteiro(lote) || EXPORT_LOTE_MAX, 1), EXPORT_LOTE_MAX);
+
+  // Primeira página: descobre o total real do recorte e o tamanho real de página que o servidor entrega.
+  const primeira = await carregarPaginaComRetry(filtros, { limite: tamanhoLote, offset: 0, contar: true });
+  const acumulado = [...primeira.linhas];
+  let total = Number.isFinite(primeira.total) && primeira.total >= 0 ? primeira.total : acumulado.length;
+  total = Math.min(total, teto);
+
+  // Se o servidor devolveu menos do que pedimos, é esse o tamanho de página
+  // real (ex.: limite de "max rows" do PostgREST) — usamos ele para não
+  // deixar lacunas no offset das próximas chamadas.
+  const passoReal = primeira.linhas.length > 0 ? primeira.linhas.length : tamanhoLote;
+
+  const trechosPulados = [];
+  if (primeira.pulada && primeira.trechoPulado) trechosPulados.push(primeira.trechoPulado);
+  let offsetCursor = passoReal;
+
+  while (offsetCursor < total && acumulado.length < teto) {
+    const offsetsRestantes = [];
+    for (let i = 0; offsetCursor < total && offsetCursor < teto && i < CONCORRENCIA; i += 1) {
+      offsetsRestantes.push(offsetCursor);
+      offsetCursor += passoReal;
+    }
+    if (!offsetsRestantes.length) break;
+
+    // eslint-disable-next-line no-await-in-loop
+    const resultados = await Promise.all(
+      offsetsRestantes.map((offset) => carregarPaginaComRetry(filtros, {
+        limite: Math.min(tamanhoLote, teto - offset),
+        offset,
+        contar: false,
+      }))
+    );
+
+    resultados.forEach(({ linhas, pulada, trechoPulado }) => {
+      acumulado.push(...linhas);
+      if (pulada && trechoPulado) trechosPulados.push(trechoPulado);
+    });
+  }
+
+  return {
+    linhas: acumulado,
+    total,
+    limitado: acumulado.length < total,
+    paginasPuladas: trechosPulados.length,
+    trechosPulados,
+  };
+}
+
+// Tenta de novo só os trechos que ficaram pendentes de uma exportação
+// anterior (ex.: pulados por timeout repetido). Mesma lógica de retry
+// adaptativo, mas sem refazer o recorte inteiro — equivalente ao "Continuar
+// processamento" usado na importação de CT-e, só que para a exportação.
+export async function retomarTrechosPendentes(filtros = {}, trechosPulados = []) {
+  if (!trechosPulados.length) return { linhas: [], trechosPulados: [] };
+
+  const linhas = [];
+  const aindaPendentes = [];
+
+  for (let indice = 0; indice < trechosPulados.length; indice += CONCORRENCIA) {
+    const grupo = trechosPulados.slice(indice, indice + CONCORRENCIA);
+    // eslint-disable-next-line no-await-in-loop
+    const resultados = await Promise.all(
+      grupo.map((trecho) => carregarPaginaComRetry(filtros, { ...trecho, contar: false }))
+    );
+    resultados.forEach((resultado, posicao) => {
+      linhas.push(...resultado.linhas);
+      if (resultado.pulada) aindaPendentes.push(grupo[posicao]);
+    });
+  }
+
+  return { linhas, trechosPulados: aindaPendentes };
 }
 
 // Recarrega a materialized view no servidor (botÃ£o "Atualizar base").

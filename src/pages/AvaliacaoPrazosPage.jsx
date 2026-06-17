@@ -9,6 +9,7 @@ import {
   carregarDetalheTransportadorasUf,
   contarRecorteAvaliacao,
   buscarLinhasParaExport,
+  retomarTrechosPendentes,
   consolidarUfDestino,
   obterRegiaoPorUf,
 } from '../services/avaliacaoPrazosService';
@@ -418,6 +419,10 @@ export default function AvaliacaoPrazosPage() {
   const [modoSnapshot, setModoSnapshot] = useState(false);
   const [mostrarGerenciarSnapshots, setMostrarGerenciarSnapshots] = useState(false);
   const [filtroLacuna, setFiltroLacuna] = useState('');
+  // Guarda trechos que ficaram pendentes (timeout repetido) na última
+  // exportação, junto com o que já foi baixado, para o botão "Continuar
+  // exportação" tentar só essa parte e juntar com o resto — sem refazer tudo.
+  const [exportacaoPendente, setExportacaoPendente] = useState(null);
   const cancelRef = useRef(false);
   const filtrosRef = useRef(filtros);
   const baseSnapshotsRef = useRef(baseSnapshots);
@@ -962,20 +967,59 @@ export default function AvaliacaoPrazosPage() {
 
     setCarregando(true);
     setAviso('Preparando exportação completa do recorte...');
+    setExportacaoPendente(null);
     try {
-      const { linhas, total, limitado } = await buscarLinhasParaExport(filtros, { teto: LIMITE_RECORTE_ANALISE });
+      const { linhas, total, limitado, trechosPulados } = await buscarLinhasParaExport(filtros, { teto: LIMITE_RECORTE_ANALISE });
       if (!linhas.length) {
         setAviso('Nenhuma linha encontrada para exportar.');
         return;
       }
       exportarCsv(linhas);
+      if (trechosPulados.length) {
+        setExportacaoPendente({ filtros, linhas, trechosPulados });
+      }
+      const avisoPulada = trechosPulados.length
+        ? ` ${trechosPulados.length} trecho(s) ficaram de fora por timeout repetido — clique em "Continuar exportação" para tentar só essa parte.`
+        : '';
       if (limitado) {
-        setAviso(`CSV exportado com ${numero(linhas.length)} de ${numero(total)} linhas (teto de segurança). Refine os filtros para exportar tudo.`);
+        setAviso(`CSV exportado com ${numero(linhas.length)} de ${numero(total)} linhas (teto de segurança).${avisoPulada} Refine os filtros para exportar tudo.`);
       } else {
-        setAviso(`CSV exportado com ${numero(linhas.length)} linhas.`);
+        setAviso(`CSV exportado com ${numero(linhas.length)} linhas.${avisoPulada}`);
       }
     } catch (error) {
       setErro(error.message || 'Erro ao exportar CSV.');
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  // Tenta de novo só os trechos pendentes da última exportação (timeout
+  // repetido) e junta com o que já tinha sido baixado — mesma lógica do
+  // "Continuar processamento" do CT-e, aplicada à exportação.
+  const continuarExportacaoPendente = async () => {
+    if (!exportacaoPendente?.trechosPulados?.length) return;
+
+    setCarregando(true);
+    setAviso(`Tentando de novo ${exportacaoPendente.trechosPulados.length} trecho(s) pendente(s)...`);
+    try {
+      const { linhas: linhasNovas, trechosPulados: aindaPendentes } = await retomarTrechosPendentes(
+        exportacaoPendente.filtros,
+        exportacaoPendente.trechosPulados
+      );
+      const linhasCompletas = [...exportacaoPendente.linhas, ...linhasNovas];
+      exportarCsv(linhasCompletas);
+
+      if (aindaPendentes.length) {
+        setExportacaoPendente({ ...exportacaoPendente, linhas: linhasCompletas, trechosPulados: aindaPendentes });
+        setAviso(
+          `CSV exportado com ${numero(linhasCompletas.length)} linhas. Ainda restam ${aindaPendentes.length} trecho(s) pendente(s) — pode clicar em "Continuar exportação" de novo.`
+        );
+      } else {
+        setExportacaoPendente(null);
+        setAviso(`CSV exportado com ${numero(linhasCompletas.length)} linhas — todos os trechos pendentes foram recuperados.`);
+      }
+    } catch (error) {
+      setErro(error.message || 'Erro ao continuar exportação.');
     } finally {
       setCarregando(false);
     }
@@ -1049,6 +1093,11 @@ export default function AvaliacaoPrazosPage() {
           <button type="button" onClick={exportar} disabled={carregando} style={styles.botaoSecundario}>
             Exportar CSV
           </button>
+          {exportacaoPendente?.trechosPulados?.length > 0 && (
+            <button type="button" onClick={continuarExportacaoPendente} disabled={carregando} style={styles.botaoPrimario}>
+              Continuar exportação ({exportacaoPendente.trechosPulados.length} pendente{exportacaoPendente.trechosPulados.length > 1 ? 's' : ''})
+            </button>
+          )}
         </div>
       </div>
 

@@ -95,10 +95,17 @@ function readLocalState() {
   }
 }
 
+function normCidade(cidade) {
+  return String(cidade || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 function sameOrigem(current, imported) {
   return (
-    String(current.cidade || '').toLowerCase() ===
-      String(imported.cidade || '').toLowerCase() &&
+    normCidade(current.cidade) === normCidade(imported.cidade) &&
     String(current.canal || 'ATACADO').toUpperCase() ===
       String(imported.canal || 'ATACADO').toUpperCase()
   );

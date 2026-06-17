@@ -1924,7 +1924,9 @@ export async function carregarOpcoesSimuladorDb() {
     canaisPorTransportadora[nome].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   });
 
-  const municipiosIbge = await carregarMunicipiosIbgeDb();
+  // IBGE carrega em paralelo sem bloquear — se timeout, retorna [] e o simulador
+  // ainda funciona (IBGE só é necessário para resolver destinos por código).
+  const municipiosIbge = await carregarMunicipiosIbgeDb().catch(() => []);
 
   return {
     transportadoras,
