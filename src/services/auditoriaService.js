@@ -165,10 +165,16 @@ function normalizarRegistroAuditoria(row = {}, fonte = {}) {
     'valorSimulado',
   ]));
 
+  // Cálculo original da Verum. Em resultados salvos vem em valor_calculado_verum;
+  // na base crua (realizado_local_ctes) o próprio valor_calculado já é o da Verum.
+  const verumInformado = pick(row, ['valor_calculado_verum', 'valorCalculadoVerum']);
+  const valorCalculadoVerum = verumInformado !== '' ? toNumber(verumInformado) : valorCalculado;
+
   const diferencaInformada = pick(row, ['diferenca', 'diferença', 'diferenca_calculada', 'diferencaCalculada']);
   const diferenca = diferencaInformada !== ''
     ? toNumber(diferencaInformada)
     : (valorCalculado > 0 ? valorCte - valorCalculado : 0);
+  const diferencaVerum = valorCalculadoVerum > 0 ? valorCte - valorCalculadoVerum : 0;
 
   const dataEmissao = pick(row, ['data_emissao', 'emissao', 'dataEmissao']);
 
@@ -177,6 +183,8 @@ function normalizarRegistroAuditoria(row = {}, fonte = {}) {
     transportadora: String(pick(row, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']) || 'Não informado').trim() || 'Não informado',
     valor_cte: valorCte,
     valor_calculado: valorCalculado,
+    valor_calculado_verum: valorCalculadoVerum,
+    diferenca_verum: diferencaVerum,
     diferenca,
     data_emissao: dataEmissao,
     competencia: getCompetenciaLinha(row),

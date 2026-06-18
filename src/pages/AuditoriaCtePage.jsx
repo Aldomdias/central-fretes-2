@@ -11,10 +11,12 @@ import {
   salvarMetaAuditoria,
   salvarMesCarregadoAuditoria,
   TOGGLE_TABELAS_KEY,
+  DIVERGENCIA_THRESHOLD,
 } from '../services/auditoriaService';
 import {
   carregarResultadosAuditoriaMes,
   carregarResumoAuditoriaMensal,
+  processarESalvarAuditoriaMes,
 } from '../services/auditoriaCteProcessamentoService';
 
 function fmt(v) {
@@ -27,6 +29,15 @@ function fmtN(v, d = 0) {
 
 function fmtP(v, d = 1) {
   return `${Number(v || 0).toFixed(d).replace('.', ',')}%`;
+}
+
+const EXCLUIDAS_AUDITORIA_KEY = 'auditoria_cte_transportadoras_excluidas';
+const BASE_CALCULO_KEY = 'auditoria_cte_base_calculo';
+const LIMITE_MATCH_VERUM = 1; // diferença (R$) tolerada para considerar recálculo == Verum
+
+// Mesma normalização usada em agruparPorTransportadora, para casar a exclusão.
+function nomeTransportadoraAuditoria(r) {
+  return String(r?.transportadora || 'Não informado').trim() || 'Não informado';
 }
 
 function semaforo(atual, meta) {
@@ -237,8 +248,206 @@ export default function AuditoriaCtePage() {
   const [editandoMeta, setEditandoMeta] = useState(false);
   const [metaTemp, setMetaTemp] = useState(meta);
 
-  const metricas = useMemo(() => calcularMetricasAuditoria(registros), [registros]);
-  const porTransportadora = useMemo(() => agruparPorTransportadora(registros), [registros]);
+  // Transportadoras fora da análise (ex.: lotação que só calcula após vínculo
+  // na Auditoria Lotação). A escolha fica salva e as métricas as ignoram.
+  const [excluidas, setExcluidas] = useState(() => {
+    try {
+      const salvo = JSON.parse(localStorage.getItem(EXCLUIDAS_AUDITORIA_KEY) || '[]');
+      return Array.isArray(salvo) ? salvo : [];
+    } catch {
+      return [];
+    }
+  });
+  const [filtroBuscaExcluir, setFiltroBuscaExcluir] = useState('');
+
+  // Base de cálculo usada nas métricas: 'recalculo' (oficial, motor da ferramenta)
+  // ou 'verum' (cálculo original importado). Flag para validar o recálculo.
+  const [baseCalculo, setBaseCalculo] = useState(() => {
+    try {
+      const salvo = localStorage.getItem(BASE_CALCULO_KEY);
+      return salvo === 'verum' ? 'verum' : 'recalculo';
+    } catch {
+      return 'recalculo';
+    }
+  });
+
+  function escolherBaseCalculo(base) {
+    setBaseCalculo(base);
+    try {
+      localStorage.setItem(BASE_CALCULO_KEY, base);
+    } catch { /* ignora */ }
+  }
+
+  // Filtros de foco: para identificar onde agir (ajuste de tabela) e, depois,
+  // recalcular só o subconjunto. Combina transportadora + origem + critério de erro.
+  const [mostrarFiltros, setMostrarFiltros] = useState(false);
+  const [filtroTransp, setFiltroTransp] = useState('');
+  const [filtroUf, setFiltroUf] = useState('');
+  const [filtroCriterio, setFiltroCriterio] = useState('todos'); // todos | sem_calculo | div_cobrado | div_verum
+
+  function limparFiltrosFoco() {
+    setFiltroTransp('');
+    setFiltroUf('');
+    setFiltroCriterio('todos');
+  }
+
+  const filtrosAtivos = Boolean(filtroTransp.trim() || filtroUf || filtroCriterio !== 'todos');
+
+  const excluidasSet = useMemo(() => new Set(excluidas), [excluidas]);
+
+  function toggleExcluida(nome) {
+    setExcluidas((atuais) => {
+      const proximas = atuais.includes(nome)
+        ? atuais.filter((n) => n !== nome)
+        : [...atuais, nome];
+      try {
+        localStorage.setItem(EXCLUIDAS_AUDITORIA_KEY, JSON.stringify(proximas));
+      } catch { /* ignora falha de storage */ }
+      return proximas;
+    });
+  }
+
+  function limparExcluidas() {
+    setExcluidas([]);
+    try {
+      localStorage.setItem(EXCLUIDAS_AUDITORIA_KEY, '[]');
+    } catch { /* ignora */ }
+  }
+
+  // Conjunto efetivamente analisado: tudo, menos as transportadoras excluídas.
+  const registrosAnalise = useMemo(
+    () => (excluidasSet.size ? registros.filter((r) => !excluidasSet.has(nomeTransportadoraAuditoria(r))) : registros),
+    [registros, excluidasSet],
+  );
+
+  // Agrupamento completo (base inteira) para a lista de seleção do filtro.
+  const porTransportadoraCompleto = useMemo(() => agruparPorTransportadora(registros), [registros]);
+  const transportadorasExcluidas = useMemo(
+    () => porTransportadoraCompleto.filter((it) => excluidasSet.has(it.transportadora)),
+    [porTransportadoraCompleto, excluidasSet],
+  );
+  const ctesExcluidos = useMemo(
+    () => transportadorasExcluidas.reduce((acc, it) => acc + it.total, 0),
+    [transportadorasExcluidas],
+  );
+
+  // UFs de origem disponíveis para o filtro de foco.
+  const ufsDisponiveis = useMemo(() => {
+    const set = new Set();
+    for (const r of registrosAnalise) {
+      const uf = String(r.uf_origem || r.ufOrigem || '').trim().toUpperCase();
+      if (uf) set.add(uf);
+    }
+    return Array.from(set).sort();
+  }, [registrosAnalise]);
+
+  // Aplica os filtros de foco (transportadora + origem + critério de erro).
+  const registrosFiltro = useMemo(() => {
+    if (!filtrosAtivos) return registrosAnalise;
+    const TOL = DIVERGENCIA_THRESHOLD;
+    const busca = filtroTransp.trim().toLowerCase();
+    const uf = filtroUf.trim().toUpperCase();
+    return registrosAnalise.filter((r) => {
+      if (busca && !nomeTransportadoraAuditoria(r).toLowerCase().includes(busca)) return false;
+      if (uf && String(r.uf_origem || r.ufOrigem || '').trim().toUpperCase() !== uf) return false;
+      if (filtroCriterio !== 'todos') {
+        const vc = Number(r.valor_cte || 0);
+        const rec = Number(r.valor_calculado || 0);
+        const ver = Number(r.valor_calculado_verum || 0);
+        if (filtroCriterio === 'sem_calculo' && (rec > 0 || ver > 0)) return false;
+        if (filtroCriterio === 'div_cobrado' && !(rec > 0 && Math.abs(vc - rec) > TOL)) return false;
+        if (filtroCriterio === 'div_verum' && !(rec > 0 && ver > 0 && Math.abs(rec - ver) > TOL)) return false;
+      }
+      return true;
+    });
+  }, [registrosAnalise, filtrosAtivos, filtroTransp, filtroUf, filtroCriterio]);
+
+  // Aplica a base escolhida: quando 'verum', o valor_calculado e a diferença passam
+  // a refletir o cálculo da Verum (recalculando a diferença sobre o valor CT-e).
+  const registrosBase = useMemo(() => {
+    if (baseCalculo !== 'verum') return registrosFiltro;
+    return registrosFiltro.map((r) => {
+      const vc = Number(r.valor_calculado_verum || 0);
+      return { ...r, valor_calculado: vc, diferenca: vc > 0 ? Number(r.valor_cte || 0) - vc : 0 };
+    });
+  }, [registrosFiltro, baseCalculo]);
+
+  // Comparação Recálculo x Verum (sempre sobre o conjunto analisado), para validar
+  // se o recálculo está batendo com a Verum.
+  const comparacaoVerum = useMemo(() => {
+    let ambos = 0;
+    let batem = 0;
+    let divergem = 0;
+    let somaDifAbs = 0;
+    for (const r of registrosFiltro) {
+      const rec = Number(r.valor_calculado || 0);
+      const ver = Number(r.valor_calculado_verum || 0);
+      if (rec > 0 && ver > 0) {
+        ambos += 1;
+        const dif = Math.abs(rec - ver);
+        somaDifAbs += dif;
+        if (dif <= LIMITE_MATCH_VERUM) batem += 1;
+        else divergem += 1;
+      }
+    }
+    return {
+      ambos,
+      batem,
+      divergem,
+      taxaMatch: ambos > 0 ? (batem / ambos) * 100 : 0,
+      difMedia: ambos > 0 ? somaDifAbs / ambos : 0,
+    };
+  }, [registrosFiltro]);
+
+  // Assertividade do sistema: para cada CT-e, vê se a Verum e/ou o Recálculo
+  // batem com o valor cobrado (realizado). Conta como assertivo se QUALQUER um
+  // dos dois bate — é o critério para a meta e para decidir a substituição.
+  const assertividadeSistema = useMemo(() => {
+    const TOL = DIVERGENCIA_THRESHOLD;
+    let comAlgumCalculo = 0;
+    let comRecalculo = 0;
+    let comVerum = 0;
+    let recBate = 0;
+    let verBate = 0;
+    let combinado = 0;
+    let soRecalculo = 0;
+    let soVerum = 0;
+    let ambosBatem = 0;
+    let nenhumBate = 0;
+    for (const r of registrosFiltro) {
+      const vc = Number(r.valor_cte || 0);
+      const rec = Number(r.valor_calculado || 0);
+      const ver = Number(r.valor_calculado_verum || 0);
+      const okRec = rec > 0 && Math.abs(vc - rec) <= TOL;
+      const okVer = ver > 0 && Math.abs(vc - ver) <= TOL;
+      if (rec > 0) comRecalculo += 1;
+      if (ver > 0) comVerum += 1;
+      if (rec > 0 || ver > 0) comAlgumCalculo += 1;
+      if (okRec) recBate += 1;
+      if (okVer) verBate += 1;
+      if (okRec || okVer) combinado += 1;
+      if (okRec && !okVer) soRecalculo += 1;
+      if (okVer && !okRec) soVerum += 1;
+      if (okRec && okVer) ambosBatem += 1;
+      if (!okRec && !okVer && (rec > 0 || ver > 0)) nenhumBate += 1;
+    }
+    return {
+      comAlgumCalculo,
+      comRecalculo,
+      comVerum,
+      taxaCombinada: comAlgumCalculo > 0 ? (combinado / comAlgumCalculo) * 100 : 0,
+      taxaRecalculo: comRecalculo > 0 ? (recBate / comRecalculo) * 100 : 0,
+      taxaVerum: comVerum > 0 ? (verBate / comVerum) * 100 : 0,
+      combinado,
+      soRecalculo,
+      soVerum,
+      ambosBatem,
+      nenhumBate,
+    };
+  }, [registrosFiltro]);
+
+  const metricas = useMemo(() => calcularMetricasAuditoria(registrosBase), [registrosBase]);
+  const porTransportadora = useMemo(() => agruparPorTransportadora(registrosBase), [registrosBase]);
   const ondeAtacar = useMemo(() => calcularOndeAtacar(porTransportadora, meta), [porTransportadora, meta]);
   const sugestaoMeta = useMemo(() => sugerirNovaMeta(metricas), [metricas]);
   const avaliacaoMeta = useMemo(() => avaliarMetaAuditoria(metricas, meta), [metricas, meta]);
@@ -367,6 +576,50 @@ export default function AuditoriaCtePage() {
     }
   }
 
+  async function recalcularComFerramenta() {
+    if (!competencia) {
+      setErro('Informe a competência antes de recalcular.');
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `Recalcular ${competencia} com as tabelas cadastradas? O recálculo será gravado em auditoria_cte_resultados (o cálculo da Verum é preservado para comparação). O resultado salvo desse mês será substituído.`
+    );
+
+    if (!confirmar) return;
+
+    setProcessando(true);
+    setErro('');
+    setSucesso('');
+    setAvisos([]);
+    setProgressoProcessamento(null);
+
+    try {
+      const resposta = await processarESalvarAuditoriaMes({
+        competencia,
+        onProgress: setProgressoProcessamento,
+      });
+
+      const dados = resposta?.registros || [];
+      setRegistros(dados);
+      setFonteAuditoria(resposta?.fonte || {
+        id: 'auditoria_cte_resultados',
+        tabela: 'auditoria_cte_resultados',
+        label: 'Auditoria recalculada / auditoria_cte_resultados',
+      });
+
+      const resumo = await carregarResumoAuditoriaMensal();
+      setResumoMensal(resumo || []);
+
+      setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) recalculados com a ferramenta para ${competencia}. Verum preservada para comparação.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao recalcular com a ferramenta.');
+    } finally {
+      setProcessando(false);
+      setProgressoProcessamento(null);
+    }
+  }
+
   async function carregarResumoMensal() {
     setCarregando(true);
     setErro('');
@@ -455,17 +708,67 @@ export default function AuditoriaCtePage() {
             <button className="primary" type="button" onClick={salvarMesCarregado} disabled={carregando || processando || !competencia}>
               {processando ? 'Salvando...' : 'Salvar mês carregado'}
             </button>
+            <button className="primary" type="button" onClick={recalcularComFerramenta} disabled={carregando || processando || !competencia} title="Recalcula cada CT-e com as tabelas de frete cadastradas e preserva a Verum para comparação">
+              {processando ? 'Processando...' : 'Recalcular com a ferramenta'}
+            </button>
             <button className="sim-tab" type="button" onClick={carregarResultadoSalvo} disabled={carregando || processando || !competencia}>
               Carregar resultado salvo
             </button>
             <button className="sim-tab" type="button" onClick={carregarResumoMensal} disabled={carregando || processando}>
               Carregar resumo mensal
             </button>
+            <button className="sim-tab" type="button" onClick={() => setMostrarFiltros((v) => !v)} style={filtrosAtivos ? { borderColor: '#2563eb', color: '#2563eb', fontWeight: 700 } : undefined}>
+              Filtros{filtrosAtivos ? ' (ativos)' : ''}
+            </button>
             <button className="sim-tab" type="button" onClick={limpar} disabled={carregando || processando}>
               Limpar
             </button>
           </div>
         </div>
+
+        {mostrarFiltros ? (
+          <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#334155', marginBottom: 10 }}>
+              Filtro de foco — identifique onde agir no cadastro da tabela
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#475569' }}>
+                Transportadora (contém)
+                <input
+                  type="text"
+                  placeholder="ex.: ATUAL"
+                  value={filtroTransp}
+                  onChange={(e) => setFiltroTransp(e.target.value)}
+                  style={{ minWidth: 200, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6 }}
+                />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#475569' }}>
+                UF origem
+                <select value={filtroUf} onChange={(e) => setFiltroUf(e.target.value)} style={{ minWidth: 120, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6 }}>
+                  <option value="">Todas</option>
+                  {ufsDisponiveis.map((uf) => <option key={uf} value={uf}>{uf}</option>)}
+                </select>
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#475569' }}>
+                Critério de erro
+                <select value={filtroCriterio} onChange={(e) => setFiltroCriterio(e.target.value)} style={{ minWidth: 220, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6 }}>
+                  <option value="todos">Todos</option>
+                  <option value="sem_calculo">Sem cálculo (nenhum dos dois)</option>
+                  <option value="div_cobrado">Recálculo diverge do cobrado</option>
+                  <option value="div_verum">Recálculo diverge da Verum</option>
+                </select>
+              </label>
+              {filtrosAtivos ? (
+                <button className="sim-tab" type="button" onClick={limparFiltrosFoco}>Limpar filtros</button>
+              ) : null}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 13, color: filtrosAtivos ? '#2563eb' : '#94a3b8', fontWeight: 600 }}>
+              {filtrosAtivos
+                ? `${fmtN(registrosFiltro.length)} CT-e(s) no foco atual — métricas, tabelas e assertividade abaixo refletem só este recorte.`
+                : 'Sem filtro — mostrando a base completa. Defina um filtro para focar.'}
+            </div>
+          </div>
+        ) : null}
 
         {progressoProcessamento ? (
           <div className="sim-alert info" style={{ marginTop: 12 }}>
@@ -496,6 +799,74 @@ export default function AuditoriaCtePage() {
             }
           />
         </div>
+
+        {temDados ? (
+          <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <strong style={{ fontSize: 13, color: '#334155' }}>Base de cálculo das métricas:</strong>
+              <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
+                <button
+                  type="button"
+                  onClick={() => escolherBaseCalculo('recalculo')}
+                  style={{ padding: '6px 14px', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, background: baseCalculo === 'recalculo' ? '#1e293b' : '#fff', color: baseCalculo === 'recalculo' ? '#fff' : '#475569' }}
+                >
+                  Recálculo (oficial)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => escolherBaseCalculo('verum')}
+                  style={{ padding: '6px 14px', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, background: baseCalculo === 'verum' ? '#1e293b' : '#fff', color: baseCalculo === 'verum' ? '#fff' : '#475569' }}
+                >
+                  Verum (original)
+                </button>
+              </div>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 13, color: '#475569' }}>
+              <strong>Recálculo × Verum:</strong>{' '}
+              {comparacaoVerum.ambos > 0 ? (
+                <>
+                  <span style={{ color: comparacaoVerum.taxaMatch >= 99 ? '#16a34a' : comparacaoVerum.taxaMatch >= 90 ? '#d97706' : '#dc2626', fontWeight: 700 }}>
+                    {fmtP(comparacaoVerum.taxaMatch)} batem
+                  </span>{' '}
+                  ({fmtN(comparacaoVerum.batem)} de {fmtN(comparacaoVerum.ambos)} com os dois cálculos) ·{' '}
+                  {fmtN(comparacaoVerum.divergem)} divergem · dif. média {fmt(comparacaoVerum.difMedia)}
+                </>
+              ) : (
+                <span style={{ color: '#94a3b8' }}>sem CTes com os dois cálculos para comparar (carregue o resultado salvo já recalculado)</span>
+              )}
+            </div>
+
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #cbd5e1' }}>
+              <div style={{ fontSize: 13, color: '#334155', fontWeight: 700, marginBottom: 8 }}>
+                Assertividade vs valor cobrado{' '}
+                <span style={{ fontWeight: 400, color: '#64748b' }}>(quantos CT-es cada cálculo acerta o realizado)</span>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 200px', padding: '10px 12px', borderRadius: 8, background: '#ecfdf5', border: '1px solid #a7f3d0' }}>
+                  <div style={{ fontSize: 12, color: '#047857', fontWeight: 700 }}>Combinada (Verum OU Recálculo)</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: '#047857' }}>{fmtP(assertividadeSistema.taxaCombinada)}</div>
+                  <div style={{ fontSize: 11, color: '#475569' }}>{fmtN(assertividadeSistema.combinado)} de {fmtN(assertividadeSistema.comAlgumCalculo)} CT-es · base para a meta</div>
+                </div>
+                <div style={{ flex: '1 1 160px', padding: '10px 12px', borderRadius: 8, background: '#fff', border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: 12, color: '#1e293b', fontWeight: 700 }}>Recálculo (ferramenta)</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: assertividadeSistema.taxaRecalculo >= 99 ? '#16a34a' : assertividadeSistema.taxaRecalculo >= 90 ? '#d97706' : '#dc2626' }}>{fmtP(assertividadeSistema.taxaRecalculo)}</div>
+                  <div style={{ fontSize: 11, color: '#475569' }}>{fmtN(assertividadeSistema.comRecalculo)} CT-es com recálculo</div>
+                </div>
+                <div style={{ flex: '1 1 160px', padding: '10px 12px', borderRadius: 8, background: '#fff', border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: 12, color: '#1e293b', fontWeight: 700 }}>Verum (original)</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: assertividadeSistema.taxaVerum >= 99 ? '#16a34a' : assertividadeSistema.taxaVerum >= 90 ? '#d97706' : '#dc2626' }}>{fmtP(assertividadeSistema.taxaVerum)}</div>
+                  <div style={{ fontSize: 11, color: '#475569' }}>{fmtN(assertividadeSistema.comVerum)} CT-es com Verum</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
+                Só recálculo acertou: <strong>{fmtN(assertividadeSistema.soRecalculo)}</strong> ·{' '}
+                Só Verum acertou: <strong>{fmtN(assertividadeSistema.soVerum)}</strong> ·{' '}
+                Ambos: <strong>{fmtN(assertividadeSistema.ambosBatem)}</strong> ·{' '}
+                Nenhum bateu: <strong style={{ color: assertividadeSistema.nenhumBate > 0 ? '#dc2626' : '#64748b' }}>{fmtN(assertividadeSistema.nenhumBate)}</strong>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       {temDados ? (
@@ -720,8 +1091,62 @@ export default function AuditoriaCtePage() {
 
       {temDados ? (
         <section className="sim-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0 }}>Transportadoras fora da análise</h2>
+            <span style={{ fontSize: 13, color: excluidas.length ? '#dc2626' : '#94a3b8', fontWeight: 600 }}>
+              {excluidas.length
+                ? `${fmtN(excluidas.length)} fora · ${fmtN(ctesExcluidos)} CTes ignorados`
+                : 'Nenhuma excluída — métricas usam a base completa'}
+            </span>
+          </div>
+          <p style={{ marginTop: 0, color: '#64748b', fontSize: 13 }}>
+            Marque transportadoras que não devem entrar nas métricas (ex.: lotação que só calcula após vínculo na Auditoria Lotação). A escolha fica salva neste navegador.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              placeholder="Buscar transportadora..."
+              value={filtroBuscaExcluir}
+              onChange={(e) => setFiltroBuscaExcluir(e.target.value)}
+              style={{ maxWidth: 320, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6 }}
+            />
+            {excluidas.length ? (
+              <button className="sim-tab" type="button" onClick={limparExcluidas}>
+                Limpar exclusões ({fmtN(excluidas.length)})
+              </button>
+            ) : null}
+          </div>
+          <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, padding: 8 }}>
+            {porTransportadoraCompleto
+              .filter((it) => !filtroBuscaExcluir.trim() || it.transportadora.toLowerCase().includes(filtroBuscaExcluir.trim().toLowerCase()))
+              .slice(0, 200)
+              .map((it) => {
+                const marcada = excluidasSet.has(it.transportadora);
+                return (
+                  <label
+                    key={it.transportadora}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', cursor: 'pointer', background: marcada ? '#fef2f2' : 'transparent', borderRadius: 6 }}
+                  >
+                    <input type="checkbox" checked={marcada} onChange={() => toggleExcluida(it.transportadora)} />
+                    <span style={{ fontWeight: marcada ? 700 : 500, color: marcada ? '#dc2626' : '#334155' }}>{it.transportadora}</span>
+                    <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                      {fmtN(it.total)} CTes · {fmtN(it.semCalculo)} sem cálculo
+                    </span>
+                  </label>
+                );
+              })}
+            {!porTransportadoraCompleto.length ? <div className="empty-note">Carregue a base primeiro.</div> : null}
+          </div>
+          {porTransportadoraCompleto.length > 200 ? (
+            <div className="empty-note">Mostrando 200 de {porTransportadoraCompleto.length}. Use a busca para encontrar as demais.</div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {temDados ? (
+        <section className="sim-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0 }}>Por transportadora</h2>
+            <h2 style={{ margin: 0 }}>Por transportadora{excluidas.length ? ` (${fmtN(excluidas.length)} fora da análise)` : ''}</h2>
             <button className="sim-tab" type="button" onClick={exportarExcel}>
               Exportar Excel
             </button>

@@ -236,6 +236,15 @@ function localizarRota(origem, cte = {}) {
 function montarResultadoBase(cte, status, motivo, extras = {}) {
   const valorCte = toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
   const valorNf = toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota']));
+  // Calculo original da Verum (vem na importacao -> realizado_local_ctes).
+  // Preservado em coluna separada para nunca ser perdido pelo recalculo.
+  const valorCalculadoVerum = toNumber(pick(cte, [
+    'valor_calculado', 'valorCalculado',
+    'frete_calculado', 'freteCalculado',
+    'valor_tabela', 'valorTabela',
+    'valor_simulado', 'valorSimulado',
+  ]));
+  const diferencaVerum = valorCalculadoVerum > 0 ? valorCte - valorCalculadoVerum : 0;
 
   return {
     competencia: String(pick(cte, ['competencia', 'mes_competencia']) || '').slice(0, 7),
@@ -260,6 +269,8 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
     valor_nf: valorNf,
     valor_cte: valorCte,
     valor_calculado: 0,
+    valor_calculado_verum: valorCalculadoVerum,
+    diferenca_verum: diferencaVerum,
     diferenca: 0,
     diferenca_abs: 0,
     percentual_diferenca: 0,

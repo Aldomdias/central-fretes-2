@@ -669,6 +669,20 @@ function resolverPesoCubagemRealizado({ cte = {}, origem = {}, gradeCanal = [] }
   };
 }
 
+// O tipo de calculo deve vir primeiro da COTACAO (faixa de peso x percentual).
+// So caímos na generalidade da origem quando a cotacao nao informa. Antes lia
+// apenas a generalidade: cotacoes FAIXA_DE_PESO em origens marcadas como
+// PERCENTUAL eram calculadas como percentual, ignorando valor fixo e excedente
+// (gerava "mais barato" irreal, ex.: R$ 60 num frete que deveria dar ~R$ 1.758).
+function resolverTipoCalculoRealizado(cotacao = {}, origem = {}) {
+  const tipoCotacao = String(cotacao.tipoCalculo || cotacao.tipo_calculo || '').toUpperCase();
+  if (tipoCotacao.includes('FAIXA')) return 'FAIXA_DE_PESO';
+  if (tipoCotacao.includes('PERCENT')) return 'PERCENTUAL';
+
+  const tipoOrigem = String(origem.generalidades?.tipoCalculo || origem.generalidades?.tipo_calculo || 'PERCENTUAL').toUpperCase();
+  return tipoOrigem.includes('FAIXA') ? 'FAIXA_DE_PESO' : 'PERCENTUAL';
+}
+
 export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCanal = [] }) {
   const pesos = resolverPesoCubagemRealizado({ cte, origem, gradeCanal });
   const peso = pesos.pesoConsiderado;
@@ -677,7 +691,7 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
   if (!cotacao) return null;
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
-  const tipoCalculo = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
+  const tipoCalculo = resolverTipoCalculoRealizado(cotacao, origem);
   const icmsInfo = inferirAliquotaIcmsRealizado(origem, rota, cte);
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),
