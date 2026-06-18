@@ -474,6 +474,49 @@ async function salvarResultadosMes({ supabase, competencia, registros, resumo, o
   }
 }
 
+// Resimula um subconjunto de registros JÁ carregados (em memória), sem gravar
+// nada no banco. Reaproveita o motor processarCte com as tabelas cadastradas e
+// preserva o cálculo Verum original de cada registro (processarCte o recomputaria
+// a partir de valor_calculado, que num resultado salvo é o recálculo anterior).
+export async function resimularRegistros({ registros, onProgress } = {}) {
+  if (!Array.isArray(registros) || !registros.length) return [];
+
+  onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
+  const transportadoras = normalizarTransportadoras(await carregarBaseCompletaDb());
+
+  if (!transportadoras.length) {
+    throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para resimular.');
+  }
+
+  const out = [];
+  for (let index = 0; index < registros.length; index += 1) {
+    const original = registros[index] || {};
+    const novo = processarCte(original, transportadoras);
+
+    const temVerum = original.valor_calculado_verum !== undefined && original.valor_calculado_verum !== null;
+    const verum = temVerum ? toNumber(original.valor_calculado_verum) : novo.valor_calculado_verum;
+    const difVerum = temVerum
+      ? (original.diferenca_verum !== undefined && original.diferenca_verum !== null
+        ? toNumber(original.diferenca_verum)
+        : (verum > 0 ? toNumber(original.valor_cte) - verum : 0))
+      : novo.diferenca_verum;
+
+    out.push({
+      ...original,
+      ...novo,
+      valor_calculado_verum: verum,
+      diferenca_verum: difVerum,
+    });
+
+    if (index % 200 === 0 || index === registros.length - 1) {
+      onProgress?.({ etapa: 'resimulando', carregados: index + 1, total: registros.length });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  return out;
+}
+
 export async function carregarResultadosAuditoriaMes({ competencia, onProgress } = {}) {
   if (!competencia) throw new Error('Informe a competência para carregar o resultado salvo.');
 

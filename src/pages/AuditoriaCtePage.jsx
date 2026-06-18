@@ -17,7 +17,14 @@ import {
   carregarResultadosAuditoriaMes,
   carregarResumoAuditoriaMensal,
   processarESalvarAuditoriaMes,
+  resimularRegistros,
 } from '../services/auditoriaCteProcessamentoService';
+
+const CRITERIOS_FILTRO = [
+  { key: 'sem_calculo', label: 'Sem cálculo (nenhum dos dois)' },
+  { key: 'div_cobrado', label: 'Calculado, mas com erro (diverge do cobrado)' },
+  { key: 'div_verum', label: 'Recálculo diverge da Verum' },
+];
 
 function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -126,6 +133,54 @@ function BarraMeta({ atual, meta, cor }) {
     <div style={{ marginTop: 8, background: '#e2e8f0', borderRadius: 4, height: 8, position: 'relative' }}>
       <div style={{ position: 'absolute', top: -4, left: `${Math.min(meta, 100)}%`, width: 2, height: 16, background: '#64748b', borderRadius: 1 }} />
       <div style={{ width: `${Math.min(atual, 100)}%`, background: cor, borderRadius: 4, height: 8, transition: 'width 0.5s' }} />
+    </div>
+  );
+}
+
+// Lista de seleção múltipla com busca. Usada nos filtros de foco para marcar
+// várias transportadoras / cidades de origem ao mesmo tempo.
+function MultiCheckList({ titulo, opcoes, selecionados, onToggle, onLimpar, busca, onBusca, placeholder, maxAltura = 170 }) {
+  const selSet = new Set(selecionados);
+  const buscaNorm = (busca || '').trim().toLowerCase();
+  const filtradas = buscaNorm
+    ? opcoes.filter((o) => o.label.toLowerCase().includes(buscaNorm))
+    : opcoes;
+
+  return (
+    <div style={{ flex: '1 1 240px', minWidth: 220 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+        <span style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>
+          {titulo}{selecionados.length ? ` (${selecionados.length})` : ''}
+        </span>
+        {selecionados.length ? (
+          <button type="button" onClick={onLimpar} style={{ border: 'none', background: 'none', color: '#2563eb', fontSize: 11, cursor: 'pointer', padding: 0 }}>
+            limpar
+          </button>
+        ) : null}
+      </div>
+      {onBusca ? (
+        <input
+          type="text"
+          placeholder={placeholder}
+          value={busca}
+          onChange={(e) => onBusca(e.target.value)}
+          style={{ width: '100%', padding: '5px 8px', border: '1px solid #cbd5e1', borderRadius: 6, marginBottom: 6, fontSize: 12 }}
+        />
+      ) : null}
+      <div style={{ maxHeight: maxAltura, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, background: '#fff' }}>
+        {filtradas.slice(0, 300).map((o) => {
+          const marcada = selSet.has(o.value);
+          return (
+            <label key={o.value} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', cursor: 'pointer', borderRadius: 4, background: marcada ? '#eff6ff' : 'transparent' }}>
+              <input type="checkbox" checked={marcada} onChange={() => onToggle(o.value)} />
+              <span style={{ fontSize: 12, fontWeight: marcada ? 700 : 500, color: marcada ? '#1d4ed8' : '#334155' }}>{o.label}</span>
+              {o.sub ? <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 'auto' }}>{o.sub}</span> : null}
+            </label>
+          );
+        })}
+        {!filtradas.length ? <div style={{ fontSize: 12, color: '#94a3b8', padding: 4 }}>Nada encontrado.</div> : null}
+        {filtradas.length > 300 ? <div style={{ fontSize: 11, color: '#94a3b8', padding: 4 }}>Mostrando 300 de {filtradas.length}. Refine a busca.</div> : null}
+      </div>
     </div>
   );
 }
@@ -281,17 +336,33 @@ export default function AuditoriaCtePage() {
   // Filtros de foco: para identificar onde agir (ajuste de tabela) e, depois,
   // recalcular só o subconjunto. Combina transportadora + origem + critério de erro.
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
-  const [filtroTransp, setFiltroTransp] = useState('');
-  const [filtroUf, setFiltroUf] = useState('');
-  const [filtroCriterio, setFiltroCriterio] = useState('todos'); // todos | sem_calculo | div_cobrado | div_verum
+  const [filtroTransps, setFiltroTransps] = useState([]);
+  const [filtroUfs, setFiltroUfs] = useState([]);
+  const [filtroCidades, setFiltroCidades] = useState([]);
+  const [filtroCriterios, setFiltroCriterios] = useState([]); // vazio = todos
+  const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
+  const [buscaCidadeFiltro, setBuscaCidadeFiltro] = useState('');
 
-  function limparFiltrosFoco() {
-    setFiltroTransp('');
-    setFiltroUf('');
-    setFiltroCriterio('todos');
+  // Preview de resimulação (apenas em memória — não grava no banco).
+  const [resimulando, setResimulando] = useState(false);
+  const [resimuladoInfo, setResimuladoInfo] = useState('');
+
+  function toggleEmLista(setter) {
+    return (valor) => setter((atuais) => (
+      atuais.includes(valor) ? atuais.filter((v) => v !== valor) : [...atuais, valor]
+    ));
   }
 
-  const filtrosAtivos = Boolean(filtroTransp.trim() || filtroUf || filtroCriterio !== 'todos');
+  function limparFiltrosFoco() {
+    setFiltroTransps([]);
+    setFiltroUfs([]);
+    setFiltroCidades([]);
+    setFiltroCriterios([]);
+  }
+
+  const filtrosAtivos = Boolean(
+    filtroTransps.length || filtroUfs.length || filtroCidades.length || filtroCriterios.length,
+  );
 
   const excluidasSet = useMemo(() => new Set(excluidas), [excluidas]);
 
@@ -341,26 +412,112 @@ export default function AuditoriaCtePage() {
     return Array.from(set).sort();
   }, [registrosAnalise]);
 
-  // Aplica os filtros de foco (transportadora + origem + critério de erro).
+  // Cidades de origem disponíveis (com contagem) para o filtro de foco.
+  const cidadesDisponiveis = useMemo(() => {
+    const mapa = new Map();
+    for (const r of registrosAnalise) {
+      const cidade = String(r.cidade_origem || r.origem || '').trim().toUpperCase();
+      if (cidade) mapa.set(cidade, (mapa.get(cidade) || 0) + 1);
+    }
+    return Array.from(mapa.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([value, qtd]) => ({ value, label: value, sub: `${fmtN(qtd)}` }));
+  }, [registrosAnalise]);
+
+  // Transportadoras disponíveis (com contagem) para o filtro de foco.
+  const transportadorasOpcoes = useMemo(
+    () => porTransportadoraCompleto
+      .filter((it) => !excluidasSet.has(it.transportadora))
+      .map((it) => ({ value: it.transportadora, label: it.transportadora, sub: `${fmtN(it.total)}` })),
+    [porTransportadoraCompleto, excluidasSet],
+  );
+
+  // Aplica os filtros de foco (transportadoras + UFs + cidades + critérios de erro),
+  // todos multi-seleção. Dentro de cada dimensão é OR; entre dimensões é AND.
   const registrosFiltro = useMemo(() => {
     if (!filtrosAtivos) return registrosAnalise;
     const TOL = DIVERGENCIA_THRESHOLD;
-    const busca = filtroTransp.trim().toLowerCase();
-    const uf = filtroUf.trim().toUpperCase();
+    const transpSet = new Set(filtroTransps);
+    const ufSet = new Set(filtroUfs);
+    const cidSet = new Set(filtroCidades);
+    const critSet = new Set(filtroCriterios);
     return registrosAnalise.filter((r) => {
-      if (busca && !nomeTransportadoraAuditoria(r).toLowerCase().includes(busca)) return false;
-      if (uf && String(r.uf_origem || r.ufOrigem || '').trim().toUpperCase() !== uf) return false;
-      if (filtroCriterio !== 'todos') {
+      if (transpSet.size && !transpSet.has(nomeTransportadoraAuditoria(r))) return false;
+      if (ufSet.size && !ufSet.has(String(r.uf_origem || r.ufOrigem || '').trim().toUpperCase())) return false;
+      if (cidSet.size && !cidSet.has(String(r.cidade_origem || r.origem || '').trim().toUpperCase())) return false;
+      if (critSet.size) {
         const vc = Number(r.valor_cte || 0);
         const rec = Number(r.valor_calculado || 0);
         const ver = Number(r.valor_calculado_verum || 0);
-        if (filtroCriterio === 'sem_calculo' && (rec > 0 || ver > 0)) return false;
-        if (filtroCriterio === 'div_cobrado' && !(rec > 0 && Math.abs(vc - rec) > TOL)) return false;
-        if (filtroCriterio === 'div_verum' && !(rec > 0 && ver > 0 && Math.abs(rec - ver) > TOL)) return false;
+        const semCalc = rec <= 0 && ver <= 0;
+        const divCobrado = rec > 0 && Math.abs(vc - rec) > TOL;
+        const divVerum = rec > 0 && ver > 0 && Math.abs(rec - ver) > TOL;
+        const passa = (critSet.has('sem_calculo') && semCalc)
+          || (critSet.has('div_cobrado') && divCobrado)
+          || (critSet.has('div_verum') && divVerum);
+        if (!passa) return false;
       }
       return true;
     });
-  }, [registrosAnalise, filtrosAtivos, filtroTransp, filtroUf, filtroCriterio]);
+  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroUfs, filtroCidades, filtroCriterios]);
+
+  // Assertividade de um conjunto: % de CT-es (com algum cálculo) em que o
+  // recálculo OU a Verum batem o valor cobrado. Mesmo critério da meta.
+  function assertividadeDe(lista = []) {
+    const TOL = DIVERGENCIA_THRESHOLD;
+    let base = 0;
+    let ok = 0;
+    for (const r of lista) {
+      const vc = Number(r.valor_cte || 0);
+      const rec = Number(r.valor_calculado || 0);
+      const ver = Number(r.valor_calculado_verum || 0);
+      if (rec <= 0 && ver <= 0) continue;
+      base += 1;
+      if ((rec > 0 && Math.abs(vc - rec) <= TOL) || (ver > 0 && Math.abs(vc - ver) <= TOL)) ok += 1;
+    }
+    return { base, ok, taxa: base > 0 ? (ok / base) * 100 : 0 };
+  }
+
+  // Resimula apenas o recorte filtrado (preview em memória, sem gravar). Atualiza
+  // os mesmos registros dentro da base carregada para as métricas refletirem.
+  async function resimularFiltrados() {
+    const alvo = registrosFiltro;
+    if (!alvo.length) {
+      setErro('Nenhum CT-e no foco atual para resimular. Ajuste os filtros.');
+      return;
+    }
+
+    setResimulando(true);
+    setErro('');
+    setResimuladoInfo('');
+    setProgressoProcessamento(null);
+
+    const antes = assertividadeDe(alvo);
+
+    try {
+      const novos = await resimularRegistros({ registros: alvo, onProgress: setProgressoProcessamento });
+      const mapa = new Map();
+      alvo.forEach((orig, i) => mapa.set(orig, novos[i]));
+      setRegistros((prev) => prev.map((r) => mapa.get(r) || r));
+
+      const depois = assertividadeDe(novos);
+      const ganho = depois.taxa - antes.taxa;
+      const resolvidos = depois.ok - antes.ok;
+      const seta = ganho > 0.05 ? '▲' : ganho < -0.05 ? '▼' : '→';
+      setResimuladoInfo(
+        `${fmtN(novos.length)} CT-e(s) resimulados (preview, não gravado). `
+        + `Assertividade do recorte: ${fmtP(antes.taxa)} ${seta} ${fmtP(depois.taxa)} `
+        + `(${resolvidos >= 0 ? '+' : ''}${fmtN(resolvidos)} corrigidos). `
+        + 'Ajuste as tabelas e resimule de novo — os que passarem saem do foco. '
+        + 'Para persistir, use “Recalcular com a ferramenta” ou “Salvar mês carregado”.',
+      );
+    } catch (e) {
+      setErro(e.message || 'Erro ao resimular o recorte filtrado.');
+    } finally {
+      setResimulando(false);
+      setProgressoProcessamento(null);
+    }
+  }
 
   // Aplica a base escolhida: quando 'verum', o valor_calculado e a diferença passam
   // a refletir o cálculo da Verum (recalculando a diferença sobre o valor CT-e).
@@ -444,6 +601,37 @@ export default function AuditoriaCtePage() {
       ambosBatem,
       nenhumBate,
     };
+  }, [registrosFiltro]);
+
+  // Diagnóstico do recálculo: onde o motor está parando (transportadora → origem →
+  // rota → faixa). Usa o status_calculo/motivo já gravado em cada registro.
+  const diagnosticoRecalculo = useMemo(() => {
+    const STATUS_LABEL = {
+      CALCULADO: 'Calculado',
+      SEM_TABELA: 'Transportadora não encontrada no cadastro',
+      SEM_ORIGEM: 'Origem/canal não encontrados',
+      SEM_ROTA: 'Rota de destino não encontrada',
+      SEM_FAIXA: 'Faixa/cotação não encontrada',
+      ERRO_CALCULO: 'Erro no cálculo',
+      SEM_STATUS: 'Sem status (carregado sem recálculo)',
+    };
+    const mapa = new Map();
+    for (const r of registrosFiltro) {
+      const st = r.status_calculo || (Number(r.valor_calculado || 0) > 0 ? 'CALCULADO' : 'SEM_STATUS');
+      const atual = mapa.get(st) || { status: st, label: STATUS_LABEL[st] || st, total: 0, motivo: '', transportadoras: new Map() };
+      atual.total += 1;
+      if (!atual.motivo && r.motivo_sem_calculo) atual.motivo = r.motivo_sem_calculo;
+      const t = nomeTransportadoraAuditoria(r);
+      atual.transportadoras.set(t, (atual.transportadoras.get(t) || 0) + 1);
+      mapa.set(st, atual);
+    }
+    const linhas = Array.from(mapa.values())
+      .map((l) => ({
+        ...l,
+        topTransp: Array.from(l.transportadoras.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3),
+      }))
+      .sort((a, b) => b.total - a.total);
+    return linhas;
   }, [registrosFiltro]);
 
   const metricas = useMemo(() => calcularMetricasAuditoria(registrosBase), [registrosBase]);
@@ -644,6 +832,7 @@ export default function AuditoriaCtePage() {
     setAvisos([]);
     setResumoMensal([]);
     setProgressoProcessamento(null);
+    setResimuladoInfo('');
     setErro('');
     setSucesso('');
   }
@@ -728,45 +917,80 @@ export default function AuditoriaCtePage() {
 
         {mostrarFiltros ? (
           <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#334155', marginBottom: 10 }}>
-              Filtro de foco — identifique onde agir no cadastro da tabela
-            </div>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#475569' }}>
-                Transportadora (contém)
-                <input
-                  type="text"
-                  placeholder="ex.: ATUAL"
-                  value={filtroTransp}
-                  onChange={(e) => setFiltroTransp(e.target.value)}
-                  style={{ minWidth: 200, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6 }}
-                />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#475569' }}>
-                UF origem
-                <select value={filtroUf} onChange={(e) => setFiltroUf(e.target.value)} style={{ minWidth: 120, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6 }}>
-                  <option value="">Todas</option>
-                  {ufsDisponiveis.map((uf) => <option key={uf} value={uf}>{uf}</option>)}
-                </select>
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#475569' }}>
-                Critério de erro
-                <select value={filtroCriterio} onChange={(e) => setFiltroCriterio(e.target.value)} style={{ minWidth: 220, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6 }}>
-                  <option value="todos">Todos</option>
-                  <option value="sem_calculo">Sem cálculo (nenhum dos dois)</option>
-                  <option value="div_cobrado">Recálculo diverge do cobrado</option>
-                  <option value="div_verum">Recálculo diverge da Verum</option>
-                </select>
-              </label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#334155' }}>
+                Filtro de foco — marque várias e resimule só o recorte
+              </div>
               {filtrosAtivos ? (
-                <button className="sim-tab" type="button" onClick={limparFiltrosFoco}>Limpar filtros</button>
+                <button className="sim-tab" type="button" onClick={limparFiltrosFoco}>Limpar todos os filtros</button>
               ) : null}
             </div>
-            <div style={{ marginTop: 10, fontSize: 13, color: filtrosAtivos ? '#2563eb' : '#94a3b8', fontWeight: 600 }}>
-              {filtrosAtivos
-                ? `${fmtN(registrosFiltro.length)} CT-e(s) no foco atual — métricas, tabelas e assertividade abaixo refletem só este recorte.`
-                : 'Sem filtro — mostrando a base completa. Defina um filtro para focar.'}
+
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <MultiCheckList
+                titulo="Transportadora"
+                opcoes={transportadorasOpcoes}
+                selecionados={filtroTransps}
+                onToggle={toggleEmLista(setFiltroTransps)}
+                onLimpar={() => setFiltroTransps([])}
+                busca={buscaTranspFiltro}
+                onBusca={setBuscaTranspFiltro}
+                placeholder="Buscar transportadora..."
+              />
+              <MultiCheckList
+                titulo="Cidade origem"
+                opcoes={cidadesDisponiveis}
+                selecionados={filtroCidades}
+                onToggle={toggleEmLista(setFiltroCidades)}
+                onLimpar={() => setFiltroCidades([])}
+                busca={buscaCidadeFiltro}
+                onBusca={setBuscaCidadeFiltro}
+                placeholder="Buscar cidade..."
+              />
+              <MultiCheckList
+                titulo="UF origem (região)"
+                opcoes={ufsDisponiveis.map((uf) => ({ value: uf, label: uf }))}
+                selecionados={filtroUfs}
+                onToggle={toggleEmLista(setFiltroUfs)}
+                onLimpar={() => setFiltroUfs([])}
+                maxAltura={170}
+              />
+              <div style={{ flex: '1 1 240px', minWidth: 220 }}>
+                <div style={{ fontSize: 12, color: '#475569', fontWeight: 700, marginBottom: 6 }}>Critério de erro</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {CRITERIOS_FILTRO.map((c) => {
+                    const marcado = filtroCriterios.includes(c.key);
+                    return (
+                      <label key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: marcado ? '#1d4ed8' : '#334155', fontWeight: marcado ? 700 : 500, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={marcado} onChange={() => toggleEmLista(setFiltroCriterios)(c.key)} />
+                        {c.label}
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Nenhum marcado = todos os CT-es.</div>
+              </div>
             </div>
+
+            <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <button
+                className="primary"
+                type="button"
+                onClick={resimularFiltrados}
+                disabled={resimulando || carregando || processando || !registrosFiltro.length}
+                title="Roda o motor de cálculo só nos CT-es do foco atual e atualiza as métricas na tela (não grava no banco)"
+              >
+                {resimulando ? 'Resimulando...' : `Resimular filtrados (${fmtN(registrosFiltro.length)})`}
+              </button>
+              <span style={{ fontSize: 13, color: filtrosAtivos ? '#2563eb' : '#94a3b8', fontWeight: 600 }}>
+                {filtrosAtivos
+                  ? `${fmtN(registrosFiltro.length)} CT-e(s) no foco — métricas, tabelas e assertividade refletem só este recorte.`
+                  : 'Sem filtro — mostrando a base completa. Marque opções para focar e resimular só elas.'}
+              </span>
+            </div>
+            {resimuladoInfo ? (
+              <div className="sim-alert success" style={{ marginTop: 10 }}>{resimuladoInfo}</div>
+            ) : null}
           </div>
         ) : null}
 
@@ -906,6 +1130,50 @@ export default function AuditoriaCtePage() {
             <small style={{ color: '#dc2626' }}>excessivo: {fmt(metricas.valorExcessivo)}</small>
           </div>
         </div>
+      ) : null}
+
+      {temDados ? (
+        <section className="sim-card">
+          <h2 style={{ marginTop: 0 }}>🔎 Diagnóstico do recálculo — onde o motor para</h2>
+          <p style={{ color: '#64748b', marginTop: -4 }}>
+            Quebra dos CT-es do foco por etapa de casamento (transportadora → origem → rota → faixa).
+            Use para saber o que cadastrar/corrigir. {filtrosAtivos ? 'Reflete só o recorte filtrado.' : 'Base completa.'}
+          </p>
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>Situação</th>
+                  <th>CT-es</th>
+                  <th>% do foco</th>
+                  <th>Motivo</th>
+                  <th>Maiores transportadoras afetadas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {diagnosticoRecalculo.map((l) => {
+                  const pct = registrosFiltro.length > 0 ? (l.total / registrosFiltro.length) * 100 : 0;
+                  const ok = l.status === 'CALCULADO';
+                  return (
+                    <tr key={l.status}>
+                      <td>
+                        <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700, background: ok ? '#dcfce7' : '#fee2e2', color: ok ? '#166534' : '#991b1b' }}>
+                          {l.label}
+                        </span>
+                      </td>
+                      <td><strong>{fmtN(l.total)}</strong></td>
+                      <td>{fmtP(pct)}</td>
+                      <td style={{ fontSize: 12, color: '#64748b' }}>{l.motivo || '—'}</td>
+                      <td style={{ fontSize: 12, color: '#475569' }}>
+                        {l.topTransp.map(([nome, qtd]) => `${nome} (${fmtN(qtd)})`).join(' · ') || '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       ) : null}
 
       {temDados ? (
