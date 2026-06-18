@@ -112,11 +112,10 @@ export default function OportunidadeOrigemPage() {
   const [soComOp, setSoComOp] = useState(true);
   const [ordem, setOrdem] = useState({ campo: 'economia', dir: 'desc' });
 
-  const podeCarregar = Boolean(competencia || dataInicio || dataFim);
+  const podeCarregar = true;
   const origemAlt = ORIGENS_ALTERNATIVAS[origemAltKey];
 
   async function processar() {
-    if (!podeCarregar) { setErro('Informe a competência ou um período.'); return; }
     setStatus('carregando'); setErro(''); setResultado(null); setPagina(0);
 
     try {
