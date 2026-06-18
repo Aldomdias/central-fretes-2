@@ -58,7 +58,13 @@ function simularDeOrigem(cte, transportadoras, origemAlt) {
 
   for (const transp of transportadoras) {
     const cteTestando = { ...cteAlt, transportadora: transp.nome, nome_transportadora: transp.nome };
-    const resultado = processarCte(cteTestando, transportadoras);
+    let resultado;
+    try {
+      resultado = processarCte(cteTestando, transportadoras);
+    } catch {
+      statusCounts.OUTRO += 1;
+      continue;
+    }
     const st = resultado.status_calculo || 'OUTRO';
     statusCounts[st in statusCounts ? st : 'OUTRO'] += 1;
 
@@ -214,7 +220,8 @@ export default function OportunidadeOrigemPage() {
       setResultado({ casos, totalCtes: ctesAlvo.length, totalOp: comOp.length, totalEconomia, rankingDestino, rankingTransp, origemAlt, diagTotal });
       setStatus('concluido'); setProgresso('');
     } catch (e) {
-      setErro(e.message || 'Erro ao processar.');
+      console.error('[OportunidadeOrigem]', e);
+      setErro(`${e.message || e}` + (e.stack ? ` — ${String(e.stack).split('\n')[1] || ''}` : ''));
       setStatus('erro'); setProgresso('');
     }
   }
