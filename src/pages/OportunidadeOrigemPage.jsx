@@ -24,10 +24,8 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
   let from = 0;
   const PAGE = 1000;
 
-  // Usa auditoria_cte_resultados: já tem ibge_destino/ibge_origem enriquecidos,
-  // necessários para o motor localizar a rota na simulação.
   while (acumulado.length < limite) {
-    let q = supabase.from('auditoria_cte_resultados').select('*').order('data_emissao', { ascending: false }).range(from, from + PAGE - 1);
+    let q = supabase.from('realizado_local_ctes').select('*').order('data_emissao', { ascending: false }).range(from, from + PAGE - 1);
     if (dataInicio || dataFim) {
       if (dataInicio) q = q.gte('data_emissao', dataInicio);
       if (dataFim) q = q.lte('data_emissao', dataFim);
@@ -47,8 +45,6 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
 }
 
 function simularDeOrigem(cte, transportadoras, origemAlt) {
-  // Cria um CTe "fantasma" com a origem trocada para o CD alternativo
-  // e tenta calcular com cada transportadora para achar a mais barata
   const cteAlt = {
     ...cte,
     cidade_origem: origemAlt.cidade,
@@ -58,13 +54,15 @@ function simularDeOrigem(cte, transportadoras, origemAlt) {
   };
 
   let melhor = null;
+  const statusCounts = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, OUTRO: 0 };
 
   for (const transp of transportadoras) {
-    // Remove o nome da transportadora do CTe para forçar o motor a testar todas
     const cteTestando = { ...cteAlt, transportadora: transp.nome, nome_transportadora: transp.nome };
     const resultado = processarCte(cteTestando, transportadoras);
+    const st = resultado.status_calculo || 'OUTRO';
+    statusCounts[st in statusCounts ? st : 'OUTRO'] += 1;
 
-    if (resultado.status_calculo !== 'CALCULADO') continue;
+    if (st !== 'CALCULADO') continue;
     const total = safeNum(resultado.valor_calculado);
     if (total <= 0) continue;
 
@@ -78,7 +76,7 @@ function simularDeOrigem(cte, transportadoras, origemAlt) {
     }
   }
 
-  return melhor;
+  return { melhor, statusCounts };
 }
 
 function Card({ label, valor, sub, cor, destaque }) {
@@ -148,12 +146,14 @@ export default function OportunidadeOrigemPage() {
       setProgresso(`Simulando ${fmtN(ctesAlvo.length)} CT-es saindo de ${origemAlt.label}...`);
 
       const casos = [];
+      const diagTotal = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, OUTRO: 0 };
       for (let i = 0; i < ctesAlvo.length; i++) {
         const cte = ctesAlvo[i];
         const valorPago = safeNum(cte.valor_cte || cte.frete_pago || cte.valor_frete);
         const prazoReal = safeNum(cte.prazo_entrega || cte.prazo);
 
-        const simulado = simularDeOrigem(cte, base, origemAlt);
+        const { melhor: simulado, statusCounts } = simularDeOrigem(cte, base, origemAlt);
+        for (const [k, v] of Object.entries(statusCounts)) diagTotal[k] = (diagTotal[k] || 0) + v;
         const temOp = Boolean(simulado && simulado.total > 0 && simulado.total < valorPago - TOLERANCIA);
 
         casos.push({
@@ -212,7 +212,7 @@ export default function OportunidadeOrigemPage() {
         .map((v) => ({ ...v, economia: Math.round(v.economia * 100) / 100 }))
         .sort((a, b) => b.economia - a.economia);
 
-      setResultado({ casos, totalCtes: ctesAlvo.length, totalOp: comOp.length, totalEconomia, rankingDestino, rankingTransp, origemAlt });
+      setResultado({ casos, totalCtes: ctesAlvo.length, totalOp: comOp.length, totalEconomia, rankingDestino, rankingTransp, origemAlt, diagTotal });
       setStatus('concluido'); setProgresso('');
     } catch (e) {
       setErro(e.message || 'Erro ao processar.');
@@ -302,7 +302,8 @@ export default function OportunidadeOrigemPage() {
           </div>
 
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#166534' }}>
-            <strong>Como ler:</strong> Para cada CT-e que saiu de outra origem, simulamos o mesmo frete saindo de <strong>{origemAlt.label}</strong> com todas as transportadoras disponíveis.
+            <strong>Diagnóstico simulação:</strong> {fmtN(resultado.diagTotal?.CALCULADO || 0)} tentativas calculadas · {fmtN(resultado.diagTotal?.SEM_ORIGEM || 0)} sem origem Itajaí cadastrada · {fmtN(resultado.diagTotal?.SEM_ROTA || 0)} sem rota (falta IBGE destino?) · {fmtN(resultado.diagTotal?.SEM_FAIXA || 0)} sem faixa de peso · {fmtN(resultado.diagTotal?.SEM_TABELA || 0)} sem tabela.
+            &nbsp;|&nbsp; <strong>Como ler:</strong> Para cada CT-e que saiu de outra origem, simulamos o mesmo frete saindo de <strong>{origemAlt.label}</strong> com todas as transportadoras disponíveis.
             A coluna <em>Economia</em> mostra quanto custaria a menos — a perda por falta de estoque no CD.
           </div>
 
