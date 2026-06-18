@@ -285,14 +285,31 @@ async function consultarFontePaginada({ supabase, fonte, competencia, datas, fil
   };
 }
 
-export async function carregarDadosAuditoria({ competencia = '', onProgress } = {}) {
+function normalizarCanalAuditoria(valor) {
+  const v = String(valor || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+  if (!v) return 'A DEFINIR';
+  if (v.includes('A DEFINIR') || v.includes('SEM TABELA') || v.includes('SEM VINCULO')) return 'A DEFINIR';
+  if (v.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (v.includes('REVERSA')) return 'REVERSA';
+  if (v.includes('ATACADO') || v === 'B2B' || v.endsWith(' B2B') || v.startsWith('B2B ')) return 'ATACADO';
+  if (v.includes('B2C') || v.includes('MARKETPLACE') || v.includes('ECOMMERCE')) return 'B2C';
+  return v;
+}
+
+export async function carregarDadosAuditoria({ competencia = '', dataInicio = '', dataFim = '', canais, onProgress } = {}) {
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
   }
 
-  const datas = competenciaParaDatas(competencia);
+  // Carga por competência OU por período (datas). Quando há período, consulta
+  // direto por data_emissao e ignora a competência (pode até cruzar meses).
+  const temPeriodo = Boolean(dataInicio || dataFim);
+  const datas = temPeriodo
+    ? { inicio: dataInicio || '0001-01-01', fim: dataFim || '9999-12-31' }
+    : competenciaParaDatas(competencia);
+
   if (!datas) {
-    throw new Error('Informe a competência (mês) no formato YYYY-MM.');
+    throw new Error('Informe a competência (mês) ou um período (datas) para carregar.');
   }
 
   const supabase = getSupabaseClient();
@@ -300,38 +317,45 @@ export async function carregarDadosAuditoria({ competencia = '', onProgress } = 
   const avisos = [];
 
   for (const fonte of FONTES_AUDITORIA) {
-    const porCompetencia = await consultarFontePaginada({
-      supabase,
-      fonte,
-      competencia,
-      datas,
-      filtro: 'competencia',
-      onProgress,
-    });
+    // No modo período, pula a consulta por competência e vai direto pela data.
+    if (!temPeriodo) {
+      const porCompetencia = await consultarFontePaginada({
+        supabase,
+        fonte,
+        competencia,
+        datas,
+        filtro: 'competencia',
+        onProgress,
+      });
 
-    diagnostico.push(montarResumoFonte({
-      fonte,
-      filtro: `competencia = ${competencia}`,
-      data: porCompetencia.data || [],
-      error: porCompetencia.error,
-      parcial: porCompetencia.parcial,
-      limiteAtingido: porCompetencia.limiteAtingido,
-    }));
+      diagnostico.push(montarResumoFonte({
+        fonte,
+        filtro: `competencia = ${competencia}`,
+        data: porCompetencia.data || [],
+        error: porCompetencia.error,
+        parcial: porCompetencia.parcial,
+        limiteAtingido: porCompetencia.limiteAtingido,
+      }));
 
-    if (porCompetencia.error) {
-      if (!erroTabelaInexistente(porCompetencia.error)) {
-        avisos.push(`${fonte.label}: ${porCompetencia.error.message}`);
+      if (porCompetencia.error) {
+        if (!erroTabelaInexistente(porCompetencia.error)) {
+          avisos.push(`${fonte.label}: ${porCompetencia.error.message}`);
+        }
+      } else if ((porCompetencia.data || []).length > 0) {
+        let registros = (porCompetencia.data || [])
+          .map((row) => normalizarRegistroAuditoria(row, fonte));
+        registros = aplicarFiltrosBaseAuditoria(registros);
+        if (canais?.length) {
+          const cSet = new Set(canais);
+          registros = registros.filter((r) => cSet.has(normalizarCanalAuditoria(r.canal || r.canal_original)));
+        }
+
+        if (porCompetencia.limiteAtingido) {
+          avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
+        }
+
+        return { registros, fonte, diagnostico, avisos };
       }
-    } else if ((porCompetencia.data || []).length > 0) {
-      const registros = (porCompetencia.data || [])
-        .map((row) => normalizarRegistroAuditoria(row, fonte));
-      const registrosFiltrados = aplicarFiltrosBaseAuditoria(registros);
-
-      if (porCompetencia.limiteAtingido) {
-        avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
-      }
-
-      return { registros: registrosFiltrados, fonte, diagnostico, avisos };
     }
 
     const porData = await consultarFontePaginada({
@@ -357,15 +381,19 @@ export async function carregarDadosAuditoria({ competencia = '', onProgress } = 
         avisos.push(`${fonte.label}: ${porData.error.message}`);
       }
     } else if ((porData.data || []).length > 0) {
-      const registros = (porData.data || [])
+      let registros = (porData.data || [])
         .map((row) => normalizarRegistroAuditoria(row, fonte));
-      const registrosFiltrados = aplicarFiltrosBaseAuditoria(registros);
+      registros = aplicarFiltrosBaseAuditoria(registros);
+      if (canais?.length) {
+        const cSet = new Set(canais);
+        registros = registros.filter((r) => cSet.has(normalizarCanalAuditoria(r.canal || r.canal_original)));
+      }
 
       if (porData.limiteAtingido) {
         avisos.push(`A leitura atingiu o limite de ${MAX_REGISTROS_POR_COMPETENCIA.toLocaleString('pt-BR')} registros. Aumente MAX_REGISTROS_POR_COMPETENCIA se necessário.`);
       }
 
-      return { registros: registrosFiltrados, fonte, diagnostico, avisos };
+      return { registros, fonte, diagnostico, avisos };
     }
   }
 
@@ -820,4 +848,56 @@ export function exportarAuditoriaExcel(porTransportadora = [], metricas = {}, co
   if (diag.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(diag), 'Diagnóstico');
 
   XLSX.writeFile(wb, `auditoria-ctes-${competencia || 'geral'}.xlsx`);
+}
+
+// Export CT-e a CT-e: uma linha por CT-e com Frete Pago, Cálculo Verum, Cálculo AMD
+// (nosso motor) e as duas diferenças, mais colunas de detalhe do cálculo.
+export function exportarCtesDetalhadoExcel(registros = [], competencia = '') {
+  const parseDetalhe = (d) => {
+    if (!d) return {};
+    if (typeof d === 'object') return d;
+    try { return JSON.parse(d); } catch { return {}; }
+  };
+
+  const linhas = (registros || []).map((r) => {
+    const det = parseDetalhe(r.detalhes_calculo);
+    const fretePago = toNumber(r.valor_cte);
+    const verum = toNumber(r.valor_calculado_verum);
+    const amd = toNumber(r.valor_calculado);
+    const difVerum = r.diferenca_verum !== undefined && r.diferenca_verum !== null
+      ? toNumber(r.diferenca_verum) : (verum > 0 ? fretePago - verum : 0);
+    const difAmd = r.diferenca !== undefined && r.diferenca !== null
+      ? toNumber(r.diferenca) : (amd > 0 ? fretePago - amd : 0);
+    return {
+      'Nº CT-e': r.numero_cte || '',
+      'Chave CT-e': r.chave_cte || '',
+      'Data emissão': r.data_emissao || '',
+      Transportadora: r.transportadora || '',
+      'Cidade origem': r.cidade_origem || '',
+      'UF origem': r.uf_origem || '',
+      'Cidade destino': r.cidade_destino || '',
+      'UF destino': r.uf_destino || '',
+      Peso: Number(toNumber(r.peso)).toFixed(2),
+      'Valor NF': Number(toNumber(r.valor_nf)).toFixed(2),
+      'Frete Pago': fretePago.toFixed(2),
+      'Cálculo Verum': verum.toFixed(2),
+      'Dif. Verum': difVerum.toFixed(2),
+      'Cálculo AMD': amd.toFixed(2),
+      'Dif. AMD': difAmd.toFixed(2),
+      'Dif. AMD %': amd > 0 ? ((difAmd / amd) * 100).toFixed(2) : '',
+      Status: r.status_calculo || '',
+      Motivo: r.motivo_sem_calculo || '',
+      'Tipo cálculo': r.tipo_calculo || det.tipo_calculo || '',
+      'Origem tabela': det.origem_cidade || '',
+      'Rota tabela': det.rota_nome || '',
+      'Valor base': det.valor_base !== undefined ? Number(toNumber(det.valor_base)).toFixed(2) : '',
+      Subtotal: det.subtotal !== undefined ? Number(toNumber(det.subtotal)).toFixed(2) : '',
+      ICMS: det.icms !== undefined ? Number(toNumber(det.icms)).toFixed(2) : '',
+      Taxas: det.taxas !== undefined ? Number(toNumber(det.taxas)).toFixed(2) : '',
+    };
+  });
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas), 'CT-es');
+  XLSX.writeFile(wb, `auditoria-ctes-detalhe-${competencia || 'geral'}.xlsx`);
 }

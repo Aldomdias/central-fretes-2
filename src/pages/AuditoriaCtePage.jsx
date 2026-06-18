@@ -7,6 +7,7 @@ import {
   sugerirNovaMeta,
   avaliarMetaAuditoria,
   exportarAuditoriaExcel,
+  exportarCtesDetalhadoExcel,
   carregarMetaAuditoria,
   salvarMetaAuditoria,
   salvarMesCarregadoAuditoria,
@@ -39,7 +40,6 @@ function fmtP(v, d = 1) {
 }
 
 const EXCLUIDAS_AUDITORIA_KEY = 'auditoria_cte_transportadoras_excluidas';
-const BASE_CALCULO_KEY = 'auditoria_cte_base_calculo';
 const LIMITE_MATCH_VERUM = 1; // diferença (R$) tolerada para considerar recálculo == Verum
 
 // Mesma normalização usada em agruparPorTransportadora, para casar a exclusão.
@@ -124,6 +124,48 @@ function ToggleSwitch({ ativo, onChange, label, sublabel }) {
         <div style={{ fontWeight: 700, color: ativo ? '#1d4ed8' : '#374151', fontSize: 14 }}>{label}</div>
         {sublabel ? <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{sublabel}</div> : null}
       </div>
+    </div>
+  );
+}
+
+// Barra de progresso das operações (carregar/recalcular/resimular/salvar).
+// Determinada quando há total conhecido; indeterminada (animada) quando não há.
+function BarraProgresso({ progresso }) {
+  if (!progresso) return null;
+
+  const etapaLabel = {
+    carregando_tabelas: 'Carregando tabelas cadastradas',
+    processando_ctes: 'Recalculando CT-es',
+    resimulando: 'Resimulando recorte',
+    salvando_resultados: 'Salvando resultados',
+    carregando_resultado_salvo: 'Carregando resultado salvo',
+    concluido: 'Concluído',
+  };
+  const carregados = Number(progresso.carregados || 0);
+  const total = Number(progresso.total || 0);
+  const determinada = total > 0;
+  const pct = determinada ? Math.min(100, Math.round((carregados / total) * 100)) : 0;
+  const etapa = etapaLabel[progresso.etapa]
+    || String(progresso.etapa || 'Processando').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+  return (
+    <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 10, background: '#eff6ff', border: '1px solid #bfdbfe' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#1d4ed8' }}>{etapa}…</span>
+        <span style={{ fontSize: 12, color: '#475569' }}>
+          {determinada
+            ? `${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} · ${pct}%`
+            : `${carregados.toLocaleString('pt-BR')} carregados`}
+        </span>
+      </div>
+      <div style={{ position: 'relative', height: 10, borderRadius: 999, background: '#dbeafe', overflow: 'hidden' }}>
+        {determinada ? (
+          <div style={{ width: `${pct}%`, height: '100%', borderRadius: 999, background: '#2563eb', transition: 'width 0.3s' }} />
+        ) : (
+          <div className="auditoria-progress-indeterminate" style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: '35%', borderRadius: 999, background: '#2563eb' }} />
+        )}
+      </div>
+      <style>{`@keyframes auditoriaProgressSlide{0%{left:-35%}100%{left:100%}}.auditoria-progress-indeterminate{animation:auditoriaProgressSlide 1.1s ease-in-out infinite}`}</style>
     </div>
   );
 }
@@ -319,23 +361,11 @@ export default function AuditoriaCtePage() {
   });
   const [filtroBuscaExcluir, setFiltroBuscaExcluir] = useState('');
 
-  // Base de cálculo usada nas métricas: 'recalculo' (oficial, motor da ferramenta)
-  // ou 'verum' (cálculo original importado). Flag para validar o recálculo.
-  const [baseCalculo, setBaseCalculo] = useState(() => {
-    try {
-      const salvo = localStorage.getItem(BASE_CALCULO_KEY);
-      return salvo === 'verum' ? 'verum' : 'recalculo';
-    } catch {
-      return 'recalculo';
-    }
-  });
+  // Seções secundárias recolhidas por padrão para despoluir a tela.
+  const [mostrarAvancado, setMostrarAvancado] = useState(false);
 
-  function escolherBaseCalculo(base) {
-    setBaseCalculo(base);
-    try {
-      localStorage.setItem(BASE_CALCULO_KEY, base);
-    } catch { /* ignora */ }
-  }
+  // Filtro pré-carga de canal: aplicado na query para trazer só os CTes do canal selecionado.
+  const [canaisPreCarga, setCanaisPreCarga] = useState([]);
 
   // Filtros de foco: para identificar onde agir (ajuste de tabela) e, depois,
   // recalcular só o subconjunto. Combina transportadora + origem + critério de erro.
@@ -343,6 +373,7 @@ export default function AuditoriaCtePage() {
   const [filtroTransps, setFiltroTransps] = useState([]);
   const [filtroUfs, setFiltroUfs] = useState([]);
   const [filtroCidades, setFiltroCidades] = useState([]);
+  const [filtroCanais, setFiltroCanais] = useState([]);
   const [filtroCriterios, setFiltroCriterios] = useState([]); // vazio = todos
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaCidadeFiltro, setBuscaCidadeFiltro] = useState('');
@@ -350,6 +381,9 @@ export default function AuditoriaCtePage() {
   // Preview de resimulação (apenas em memória — não grava no banco).
   const [resimulando, setResimulando] = useState(false);
   const [resimuladoInfo, setResimuladoInfo] = useState('');
+
+  // Detalhe por CT-e: índice da linha expandida (detalhe do cálculo).
+  const [cteExpandido, setCteExpandido] = useState(null);
 
   function toggleEmLista(setter) {
     return (valor) => setter((atuais) => (
@@ -361,12 +395,17 @@ export default function AuditoriaCtePage() {
     setFiltroTransps([]);
     setFiltroUfs([]);
     setFiltroCidades([]);
+    setFiltroCanais([]);
     setFiltroCriterios([]);
   }
 
   const filtrosAtivos = Boolean(
-    filtroTransps.length || filtroUfs.length || filtroCidades.length || filtroCriterios.length,
+    filtroTransps.length || filtroUfs.length || filtroCidades.length || filtroCanais.length || filtroCriterios.length,
   );
+
+  // Pode carregar/recalcular com competência OU período (datas) preenchido.
+  const podeCarregar = Boolean(competencia || dataInicioTeste || dataFimTeste);
+  const temPeriodoTeste = Boolean(dataInicioTeste || dataFimTeste);
 
   const excluidasSet = useMemo(() => new Set(excluidas), [excluidas]);
 
@@ -428,6 +467,18 @@ export default function AuditoriaCtePage() {
       .map(([value, qtd]) => ({ value, label: value, sub: `${fmtN(qtd)}` }));
   }, [registrosAnalise]);
 
+  // Canais disponíveis (com contagem) para o filtro de foco.
+  const canaisDisponiveis = useMemo(() => {
+    const mapa = new Map();
+    for (const r of registrosAnalise) {
+      const canal = String(r.canal || r.canal_original || '').trim().toUpperCase() || 'NÃO INFORMADO';
+      mapa.set(canal, (mapa.get(canal) || 0) + 1);
+    }
+    return Array.from(mapa.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([value, qtd]) => ({ value, label: value, sub: `${fmtN(qtd)}` }));
+  }, [registrosAnalise]);
+
   // Transportadoras disponíveis (com contagem) para o filtro de foco.
   const transportadorasOpcoes = useMemo(
     () => porTransportadoraCompleto
@@ -444,11 +495,16 @@ export default function AuditoriaCtePage() {
     const transpSet = new Set(filtroTransps);
     const ufSet = new Set(filtroUfs);
     const cidSet = new Set(filtroCidades);
+    const canalSet = new Set(filtroCanais);
     const critSet = new Set(filtroCriterios);
     return registrosAnalise.filter((r) => {
       if (transpSet.size && !transpSet.has(nomeTransportadoraAuditoria(r))) return false;
       if (ufSet.size && !ufSet.has(String(r.uf_origem || r.ufOrigem || '').trim().toUpperCase())) return false;
       if (cidSet.size && !cidSet.has(String(r.cidade_origem || r.origem || '').trim().toUpperCase())) return false;
+      if (canalSet.size) {
+        const canal = String(r.canal || r.canal_original || '').trim().toUpperCase() || 'NÃO INFORMADO';
+        if (!canalSet.has(canal)) return false;
+      }
       if (critSet.size) {
         const vc = Number(r.valor_cte || 0);
         const rec = Number(r.valor_calculado || 0);
@@ -463,7 +519,7 @@ export default function AuditoriaCtePage() {
       }
       return true;
     });
-  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroUfs, filtroCidades, filtroCriterios]);
+  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
 
   // Assertividade de um conjunto: % de CT-es (com algum cálculo) em que o
   // recálculo OU a Verum batem o valor cobrado. Mesmo critério da meta.
@@ -523,15 +579,8 @@ export default function AuditoriaCtePage() {
     }
   }
 
-  // Aplica a base escolhida: quando 'verum', o valor_calculado e a diferença passam
-  // a refletir o cálculo da Verum (recalculando a diferença sobre o valor CT-e).
-  const registrosBase = useMemo(() => {
-    if (baseCalculo !== 'verum') return registrosFiltro;
-    return registrosFiltro.map((r) => {
-      const vc = Number(r.valor_calculado_verum || 0);
-      return { ...r, valor_calculado: vc, diferenca: vc > 0 ? Number(r.valor_cte || 0) - vc : 0 };
-    });
-  }, [registrosFiltro, baseCalculo]);
+  // AMD (nosso motor) é sempre a base das métricas; a Verum fica como referência.
+  const registrosBase = registrosFiltro;
 
   // Comparação Recálculo x Verum (sempre sobre o conjunto analisado), para validar
   // se o recálculo está batendo com a Verum.
@@ -650,8 +699,8 @@ export default function AuditoriaCtePage() {
   const temDados = registros.length > 0;
 
   async function carregar() {
-    if (!competencia) {
-      setErro('Informe a competência (mês) antes de carregar.');
+    if (!podeCarregar) {
+      setErro('Informe a competência (mês) ou um período (datas) antes de carregar.');
       return;
     }
 
@@ -664,7 +713,13 @@ export default function AuditoriaCtePage() {
     setProgressoProcessamento(null);
 
     try {
-      const resposta = await carregarDadosAuditoria({ competencia });
+      const resposta = await carregarDadosAuditoria({
+        competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        onProgress: setProgressoProcessamento,
+      });
       const dados = resposta?.registros || [];
       setRegistros(dados);
       setFonteAuditoria(resposta?.fonte || null);
@@ -672,7 +727,7 @@ export default function AuditoriaCtePage() {
       setAvisos(resposta?.avisos || []);
 
       if (!dados.length) {
-        setSucesso('Nenhum CTe encontrado para esta competência nas bases verificadas.');
+        setSucesso('Nenhum CTe encontrado para este recorte nas bases verificadas.');
       } else {
         const fonte = resposta?.fonte?.label || resposta?.fonte?.tabela || 'Supabase';
         setSucesso(`${dados.length.toLocaleString('pt-BR')} CTe(s) carregados da fonte ${fonte}.`);
@@ -682,12 +737,13 @@ export default function AuditoriaCtePage() {
       setErro(e.message || 'Erro ao carregar dados do Supabase.');
     } finally {
       setCarregando(false);
+      setProgressoProcessamento(null);
     }
   }
 
   async function carregarResultadoSalvo() {
-    if (!competencia) {
-      setErro('Informe a competência antes de carregar o resultado salvo.');
+    if (!podeCarregar) {
+      setErro('Informe a competência ou um período antes de carregar o resultado salvo.');
       return;
     }
 
@@ -704,6 +760,7 @@ export default function AuditoriaCtePage() {
         competencia,
         dataInicio: dataInicioTeste || undefined,
         dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       });
 
@@ -727,6 +784,7 @@ export default function AuditoriaCtePage() {
       setErro(error.message || 'Erro ao carregar resultado salvo.');
     } finally {
       setCarregando(false);
+      setProgressoProcessamento(null);
     }
   }
 
@@ -770,17 +828,23 @@ export default function AuditoriaCtePage() {
       setErro(error.message || 'Erro ao salvar mês carregado.');
     } finally {
       setProcessando(false);
+      setProgressoProcessamento(null);
     }
   }
 
   async function recalcularComFerramenta() {
-    if (!competencia) {
-      setErro('Informe a competência antes de recalcular.');
+    if (!podeCarregar) {
+      setErro('Informe a competência ou um período antes de recalcular.');
       return;
     }
 
+    const alvo = temPeriodoTeste
+      ? `o período ${dataInicioTeste || '...'} a ${dataFimTeste || '...'}`
+      : competencia;
     const confirmar = window.confirm(
-      `Recalcular ${competencia} com as tabelas cadastradas? O recálculo será gravado em auditoria_cte_resultados (o cálculo da Verum é preservado para comparação). O resultado salvo desse mês será substituído.`
+      temPeriodoTeste
+        ? `Recalcular ${alvo} com as tabelas cadastradas? Como é um período, o resultado fica só na tela (preview, NÃO grava) para não apagar o mês salvo.`
+        : `Recalcular ${alvo} com as tabelas cadastradas? O recálculo será gravado em auditoria_cte_resultados (o cálculo da Verum é preservado). O resultado salvo desse mês será substituído.`
     );
 
     if (!confirmar) return;
@@ -794,6 +858,9 @@ export default function AuditoriaCtePage() {
     try {
       const resposta = await processarESalvarAuditoriaMes({
         competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       });
 
@@ -805,10 +872,13 @@ export default function AuditoriaCtePage() {
         label: 'Auditoria recalculada / auditoria_cte_resultados',
       });
 
-      const resumo = await carregarResumoAuditoriaMensal();
-      setResumoMensal(resumo || []);
-
-      setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) recalculados com a ferramenta para ${competencia}. Verum preservada para comparação.`);
+      if (resposta?.gravado) {
+        const resumo = await carregarResumoAuditoriaMensal();
+        setResumoMensal(resumo || []);
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) recalculados e gravados para ${competencia}. Verum preservada para comparação.`);
+      } else {
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) recalculados em ${alvo} (preview, não gravado). Verum preservada para comparação.`);
+      }
     } catch (error) {
       setErro(error.message || 'Erro ao recalcular com a ferramenta.');
     } finally {
@@ -868,6 +938,10 @@ export default function AuditoriaCtePage() {
     exportarAuditoriaExcel(porTransportadora, metricas, competencia, diagnostico);
   }
 
+  function exportarCtesDetalhe() {
+    exportarCtesDetalhadoExcel(registrosFiltro, competencia);
+  }
+
   return (
     <div className="simulador-shell">
       <div className="simulador-header compact-top">
@@ -894,7 +968,7 @@ export default function AuditoriaCtePage() {
 
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
           <label>
-            Competência (mês) <span style={{ color: '#dc2626' }}>*</span>
+            Competência (mês) <span style={{ color: '#94a3b8', fontWeight: 400 }}>— ou use o período →</span>
             <input
               type="month"
               value={competencia}
@@ -902,34 +976,54 @@ export default function AuditoriaCtePage() {
             />
           </label>
           <label>
-            Período de teste — início (opcional)
+            Período — início (opcional)
             <input
               type="date"
               value={dataInicioTeste}
               onChange={(e) => setDataInicioTeste(e.target.value)}
-              title="Limita o Carregar resultado salvo a partir desta data de emissão"
+              title="Carrega a partir desta data de emissão (dispensa a competência)"
             />
           </label>
           <label>
-            Período de teste — fim (opcional)
+            Período — fim (opcional)
             <input
               type="date"
               value={dataFimTeste}
               onChange={(e) => setDataFimTeste(e.target.value)}
-              title="Limita o Carregar resultado salvo até esta data de emissão"
+              title="Carrega até esta data de emissão (dispensa a competência)"
             />
           </label>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <div style={{ fontSize: 12, color: '#475569', fontWeight: 600, marginBottom: 6 }}>
+              Canal (pré-filtro — vazio = todos)
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {['B2C', 'ATACADO', 'INTERCOMPANY', 'REVERSA', 'A DEFINIR'].map((c) => {
+                const marcado = canaisPreCarga.includes(c);
+                return (
+                  <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: marcado ? 700 : 500, color: marcado ? '#1d4ed8' : '#334155', cursor: 'pointer', padding: '4px 10px', borderRadius: 6, background: marcado ? '#eff6ff' : '#f1f5f9', border: `1px solid ${marcado ? '#93c5fd' : '#e2e8f0'}` }}>
+                    <input type="checkbox" checked={marcado} onChange={() => setCanaisPreCarga((prev) => marcado ? prev.filter((v) => v !== c) : [...prev, c])} style={{ margin: 0 }} />
+                    {c}
+                  </label>
+                );
+              })}
+              {canaisPreCarga.length > 0 && (
+                <button type="button" className="sim-tab" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setCanaisPreCarga([])}>Limpar canal</button>
+              )}
+            </div>
+          </div>
+
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !competencia}>
+            <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !podeCarregar}>
               {carregando ? 'Carregando...' : 'Carregar CT-es do mês'}
             </button>
             <button className="primary" type="button" onClick={salvarMesCarregado} disabled={carregando || processando || !competencia}>
               {processando ? 'Salvando...' : 'Salvar mês carregado'}
             </button>
-            <button className="primary" type="button" onClick={recalcularComFerramenta} disabled={carregando || processando || !competencia} title="Recalcula cada CT-e com as tabelas de frete cadastradas e preserva a Verum para comparação">
+            <button className="primary" type="button" onClick={recalcularComFerramenta} disabled={carregando || processando || !podeCarregar} title="Recalcula cada CT-e com as tabelas de frete cadastradas e preserva a Verum para comparação">
               {processando ? 'Processando...' : 'Recalcular com a ferramenta'}
             </button>
-            <button className="sim-tab" type="button" onClick={carregarResultadoSalvo} disabled={carregando || processando || !competencia}>
+            <button className="sim-tab" type="button" onClick={carregarResultadoSalvo} disabled={carregando || processando || !podeCarregar}>
               Carregar resultado salvo
             </button>
             <button className="sim-tab" type="button" onClick={carregarResumoMensal} disabled={carregando || processando}>
@@ -984,6 +1078,14 @@ export default function AuditoriaCtePage() {
                 onLimpar={() => setFiltroUfs([])}
                 maxAltura={170}
               />
+              <MultiCheckList
+                titulo="Canal"
+                opcoes={canaisDisponiveis}
+                selecionados={filtroCanais}
+                onToggle={toggleEmLista(setFiltroCanais)}
+                onLimpar={() => setFiltroCanais([])}
+                maxAltura={170}
+              />
               <div style={{ flex: '1 1 240px', minWidth: 220 }}>
                 <div style={{ fontSize: 12, color: '#475569', fontWeight: 700, marginBottom: 6 }}>Critério de erro</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1023,16 +1125,7 @@ export default function AuditoriaCtePage() {
           </div>
         ) : null}
 
-        {progressoProcessamento ? (
-          <div className="sim-alert info" style={{ marginTop: 12 }}>
-            <strong>Processamento:</strong> {progressoProcessamento.etapa}
-            {' · '}
-            {Number(progressoProcessamento.carregados || 0).toLocaleString('pt-BR')}
-            {progressoProcessamento.total
-              ? ` de ${Number(progressoProcessamento.total).toLocaleString('pt-BR')}`
-              : ''}
-          </div>
-        ) : null}
+        <BarraProgresso progresso={progressoProcessamento} />
 
         {fonteAuditoria ? (
           <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', fontSize: 13 }}>
@@ -1055,27 +1148,14 @@ export default function AuditoriaCtePage() {
 
         {temDados ? (
           <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              <strong style={{ fontSize: 13, color: '#334155' }}>Base de cálculo das métricas:</strong>
-              <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
-                <button
-                  type="button"
-                  onClick={() => escolherBaseCalculo('recalculo')}
-                  style={{ padding: '6px 14px', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, background: baseCalculo === 'recalculo' ? '#1e293b' : '#fff', color: baseCalculo === 'recalculo' ? '#fff' : '#475569' }}
-                >
-                  Recálculo (oficial)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => escolherBaseCalculo('verum')}
-                  style={{ padding: '6px 14px', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, background: baseCalculo === 'verum' ? '#1e293b' : '#fff', color: baseCalculo === 'verum' ? '#fff' : '#475569' }}
-                >
-                  Verum (original)
-                </button>
-              </div>
+            <div style={{ fontSize: 13, color: '#334155' }}>
+              <strong>Placar Verum × AMD.</strong>{' '}
+              <span style={{ color: '#64748b' }}>
+                Verum = simulação original (referência, intocável) · AMD = nosso motor (número de trabalho que você ajusta).
+              </span>
             </div>
             <div style={{ marginTop: 8, fontSize: 13, color: '#475569' }}>
-              <strong>Recálculo × Verum:</strong>{' '}
+              <strong>AMD × Verum:</strong>{' '}
               {comparacaoVerum.ambos > 0 ? (
                 <>
                   <span style={{ color: comparacaoVerum.taxaMatch >= 99 ? '#16a34a' : comparacaoVerum.taxaMatch >= 90 ? '#d97706' : '#dc2626', fontWeight: 700 }}>
@@ -1085,7 +1165,7 @@ export default function AuditoriaCtePage() {
                   {fmtN(comparacaoVerum.divergem)} divergem · dif. média {fmt(comparacaoVerum.difMedia)}
                 </>
               ) : (
-                <span style={{ color: '#94a3b8' }}>sem CTes com os dois cálculos para comparar (carregue o resultado salvo já recalculado)</span>
+                <span style={{ color: '#94a3b8' }}>sem CTes com os dois cálculos para comparar (recalcule para gerar o AMD)</span>
               )}
             </div>
 
@@ -1096,12 +1176,12 @@ export default function AuditoriaCtePage() {
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <div style={{ flex: '1 1 200px', padding: '10px 12px', borderRadius: 8, background: '#ecfdf5', border: '1px solid #a7f3d0' }}>
-                  <div style={{ fontSize: 12, color: '#047857', fontWeight: 700 }}>Combinada (Verum OU Recálculo)</div>
+                  <div style={{ fontSize: 12, color: '#047857', fontWeight: 700 }}>Combinada (Verum OU AMD)</div>
                   <div style={{ fontSize: 22, fontWeight: 800, color: '#047857' }}>{fmtP(assertividadeSistema.taxaCombinada)}</div>
                   <div style={{ fontSize: 11, color: '#475569' }}>{fmtN(assertividadeSistema.combinado)} de {fmtN(assertividadeSistema.comAlgumCalculo)} CT-es · base para a meta</div>
                 </div>
                 <div style={{ flex: '1 1 160px', padding: '10px 12px', borderRadius: 8, background: '#fff', border: '1px solid #e2e8f0' }}>
-                  <div style={{ fontSize: 12, color: '#1e293b', fontWeight: 700 }}>Recálculo (ferramenta)</div>
+                  <div style={{ fontSize: 12, color: '#1e293b', fontWeight: 700 }}>AMD (nosso motor)</div>
                   <div style={{ fontSize: 22, fontWeight: 800, color: assertividadeSistema.taxaRecalculo >= 99 ? '#16a34a' : assertividadeSistema.taxaRecalculo >= 90 ? '#d97706' : '#dc2626' }}>{fmtP(assertividadeSistema.taxaRecalculo)}</div>
                   <div style={{ fontSize: 11, color: '#475569' }}>{fmtN(assertividadeSistema.comRecalculo)} CT-es com recálculo</div>
                 </div>
@@ -1206,6 +1286,14 @@ export default function AuditoriaCtePage() {
       ) : null}
 
       {temDados ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+          <button className="sim-tab" type="button" onClick={() => setMostrarAvancado((v) => !v)} style={mostrarAvancado ? { borderColor: '#2563eb', color: '#2563eb', fontWeight: 700 } : undefined}>
+            {mostrarAvancado ? 'Ocultar' : 'Mostrar'} seções de gestão (Meta, Por transportadora, Excluídas, Resumo mensal)
+          </button>
+        </div>
+      ) : null}
+
+      {temDados && mostrarAvancado ? (
         <section className="sim-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>📊 Status da Meta da Área</h2>
@@ -1386,7 +1474,7 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      {temDados ? (
+      {temDados && mostrarAvancado ? (
         <section className="sim-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>Transportadoras fora da análise</h2>
@@ -1440,7 +1528,7 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      {temDados ? (
+      {temDados && mostrarAvancado ? (
         <section className="sim-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>Por transportadora{excluidas.length ? ` (${fmtN(excluidas.length)} fora da análise)` : ''}</h2>
@@ -1493,7 +1581,101 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      <ResumoMensalAuditoria resumoMensal={resumoMensal} />
+      {temDados ? (
+        <section className="sim-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0 }}>📄 Detalhe por CT-e</h2>
+            <button className="sim-tab" type="button" onClick={exportarCtesDetalhe}>
+              Exportar Excel ({fmtN(registrosFiltro.length)})
+            </button>
+          </div>
+          <p style={{ marginTop: 0, color: '#64748b', fontSize: 13 }}>
+            Uma linha por CT-e do recorte. <strong>Frete Pago</strong> = cobrado · <strong>Verum</strong> = simulação original (referência) · <strong>AMD</strong> = nosso motor.
+            Clique numa linha para ver o detalhe do cálculo. {filtrosAtivos ? 'Reflete o recorte filtrado.' : 'Base completa.'}
+          </p>
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>Nº CT-e</th>
+                  <th>Transportadora</th>
+                  <th>Origem → Destino</th>
+                  <th>Peso</th>
+                  <th>Frete Pago</th>
+                  <th>Cálculo Verum</th>
+                  <th>Dif. Verum</th>
+                  <th>Cálculo AMD</th>
+                  <th>Dif. AMD</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {registrosFiltro.slice(0, 200).map((r, idx) => {
+                  const verum = Number(r.valor_calculado_verum || 0);
+                  const amd = Number(r.valor_calculado || 0);
+                  const pago = Number(r.valor_cte || 0);
+                  const difVerum = r.diferenca_verum !== undefined && r.diferenca_verum !== null
+                    ? Number(r.diferenca_verum) : (verum > 0 ? pago - verum : 0);
+                  const difAmd = r.diferenca !== undefined && r.diferenca !== null
+                    ? Number(r.diferenca) : (amd > 0 ? pago - amd : 0);
+                  const det = (() => {
+                    const d = r.detalhes_calculo;
+                    if (!d) return null;
+                    if (typeof d === 'object') return d;
+                    try { return JSON.parse(d); } catch { return null; }
+                  })();
+                  const expandida = cteExpandido === idx;
+                  const corDif = (v, base) => (base <= 0 ? '#94a3b8' : Math.abs(v) <= DIVERGENCIA_THRESHOLD ? '#16a34a' : '#dc2626');
+                  return (
+                    <React.Fragment key={r.chave_cte || r.numero_cte || idx}>
+                      <tr onClick={() => setCteExpandido(expandida ? null : idx)} style={{ cursor: 'pointer', background: expandida ? '#eff6ff' : undefined }}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
+                        <td><strong>{r.transportadora || '—'}</strong></td>
+                        <td style={{ fontSize: 12 }}>{(r.cidade_origem || '—')}/{r.uf_origem || '—'} → {(r.cidade_destino || '—')}/{r.uf_destino || '—'}</td>
+                        <td>{fmtN(Number(r.peso || 0), 0)}</td>
+                        <td>{fmt(pago)}</td>
+                        <td style={{ color: verum > 0 ? '#334155' : '#94a3b8' }}>{verum > 0 ? fmt(verum) : '—'}</td>
+                        <td style={{ color: corDif(difVerum, verum), fontWeight: 600 }}>{verum > 0 ? fmt(difVerum) : '—'}</td>
+                        <td style={{ color: amd > 0 ? '#334155' : '#94a3b8' }}>{amd > 0 ? fmt(amd) : '—'}</td>
+                        <td style={{ color: corDif(difAmd, amd), fontWeight: 600 }}>{amd > 0 ? fmt(difAmd) : '—'}</td>
+                        <td style={{ fontSize: 11 }}>
+                          <span style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: amd > 0 ? '#dcfce7' : '#fee2e2', color: amd > 0 ? '#166534' : '#991b1b' }}>
+                            {r.status_calculo || (amd > 0 ? 'CALCULADO' : 'SEM_STATUS')}
+                          </span>
+                        </td>
+                      </tr>
+                      {expandida ? (
+                        <tr>
+                          <td colSpan="10" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                            {r.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {r.motivo_sem_calculo}</div> : null}
+                            {det ? (
+                              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                                <span><strong>Tipo:</strong> {r.tipo_calculo || det.tipo_calculo || '—'}</span>
+                                <span><strong>Origem tabela:</strong> {det.origem_cidade || '—'}</span>
+                                <span><strong>Rota:</strong> {det.rota_nome || '—'}</span>
+                                <span><strong>Valor base:</strong> {fmt(det.valor_base)}</span>
+                                <span><strong>Subtotal:</strong> {fmt(det.subtotal)}</span>
+                                <span><strong>ICMS:</strong> {fmt(det.icms)}</span>
+                                <span><strong>Taxas:</strong> {fmt(det.taxas)}</span>
+                              </div>
+                            ) : <span>Sem detalhe de cálculo para este CT-e.</span>}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })}
+                {!registrosFiltro.length ? <tr><td colSpan="10" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
+              </tbody>
+            </table>
+          </div>
+          {registrosFiltro.length > 200 ? (
+            <div className="empty-note">Mostrando 200 de {fmtN(registrosFiltro.length)} CT-es. Exporte o Excel para ver todos.</div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {mostrarAvancado ? <ResumoMensalAuditoria resumoMensal={resumoMensal} /> : null}
       <DiagnosticoFontes diagnostico={diagnostico} />
 
       {!temDados && !carregando && !processando && !resumoMensal.length ? (

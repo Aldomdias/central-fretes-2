@@ -10,6 +10,20 @@ const TABELA_RESULTADOS = 'auditoria_cte_resultados';
 const TABELA_RESUMO = 'auditoria_cte_resumo_mensal';
 const LIMITE_DIVERGENCIA_ASSERTIVO = 0.05;
 
+function normalizarCanalResultado(valor) {
+  const v = String(valor || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+  if (!v) return 'A DEFINIR';
+  if (v.includes('A DEFINIR') || v.includes('SEM TABELA') || v.includes('SEM VINCULO')) return 'A DEFINIR';
+  if (v.includes('INTERCOMPANY')) return 'INTERCOMPANY';
+  if (v.includes('REVERSA')) return 'REVERSA';
+  if (v.includes('ATACADO') || v === 'B2B' || v.endsWith(' B2B') || v.startsWith('B2B ')) return 'ATACADO';
+  if (v.includes('B2C') || v.includes('MARKETPLACE') || v.includes('ECOMMERCE')) return 'B2C';
+  return v;
+}
+
+// Alias local para o cache centralizado em freteDatabaseService (carregarBaseCompletaDb já cacheia).
+let _cacheBaseFrete = null;
+
 function ensureSupabase() {
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
@@ -365,9 +379,12 @@ function processarCte(cte, transportadoras = []) {
   }
 }
 
-async function buscarCtesMesBruto({ supabase, competencia, onProgress }) {
-  const datas = competenciaParaDatas(competencia);
-  if (!datas) throw new Error('Competência inválida. Use o formato YYYY-MM.');
+async function buscarCtesMesBruto({ supabase, competencia, dataInicio, dataFim, onProgress }) {
+  const temPeriodo = Boolean(dataInicio || dataFim);
+  const datas = temPeriodo
+    ? { inicio: dataInicio || '0001-01-01', fim: dataFim || '9999-12-31' }
+    : competenciaParaDatas(competencia);
+  if (!datas) throw new Error('Informe a competência (YYYY-MM) ou um período (datas).');
 
   const carregarPorFiltro = async (modo) => {
     const acumulado = [];
@@ -401,7 +418,7 @@ async function buscarCtesMesBruto({ supabase, competencia, onProgress }) {
   };
 
   const porData = await carregarPorFiltro('data');
-  if (porData.length > 0) return porData;
+  if (porData.length > 0 || temPeriodo) return porData;
 
   return carregarPorFiltro('competencia');
 }
@@ -482,7 +499,16 @@ export async function resimularRegistros({ registros, onProgress } = {}) {
   if (!Array.isArray(registros) || !registros.length) return [];
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
-  const transportadoras = normalizarTransportadoras(await carregarBaseCompletaDb());
+  if (!_cacheBaseFrete) {
+    let _tick = 0;
+    const _hb = setInterval(() => { _tick += 1; onProgress?.({ etapa: 'carregando_tabelas', carregados: _tick, total: null }); }, 600);
+    try {
+      _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
+    } finally {
+      clearInterval(_hb);
+    }
+  }
+  const transportadoras = _cacheBaseFrete;
 
   if (!transportadoras.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para resimular.');
@@ -517,8 +543,11 @@ export async function resimularRegistros({ registros, onProgress } = {}) {
   return out;
 }
 
-export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, dataFim, limite, onProgress } = {}) {
-  if (!competencia) throw new Error('Informe a competência para carregar o resultado salvo.');
+export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, dataFim, limite, canais, onProgress } = {}) {
+  const temPeriodo = Boolean(dataInicio || dataFim);
+  if (!competencia && !temPeriodo) {
+    throw new Error('Informe a competência ou um período para carregar o resultado salvo.');
+  }
 
   const supabase = ensureSupabase();
   const acumulado = [];
@@ -528,12 +557,16 @@ export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, 
   while (true) {
     let query = supabase
       .from(TABELA_RESULTADOS)
-      .select('*')
-      .eq('competencia', competencia);
+      .select('*');
 
-    // Período de teste opcional: limita por data de emissão direto na consulta.
-    if (dataInicio) query = query.gte('data_emissao', dataInicio);
-    if (dataFim) query = query.lte('data_emissao', dataFim);
+    // Por período (datas), consulta direto por data_emissao e ignora a competência
+    // (pode cruzar meses). Sem período, filtra pela competência do mês.
+    if (temPeriodo) {
+      if (dataInicio) query = query.gte('data_emissao', dataInicio);
+      if (dataFim) query = query.lte('data_emissao', dataFim);
+    } else {
+      query = query.eq('competencia', competencia);
+    }
 
     const { data, error } = await query
       .order('data_emissao', { ascending: true, nullsFirst: false })
@@ -549,7 +582,12 @@ export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, 
     from += PAGE_SIZE;
   }
 
-  return teto !== Infinity ? acumulado.slice(0, teto) : acumulado;
+  let resultado = teto !== Infinity ? acumulado.slice(0, teto) : acumulado;
+  if (canais?.length) {
+    const cSet = new Set(canais);
+    resultado = resultado.filter((r) => cSet.has(normalizarCanalResultado(r.canal || r.canal_original)));
+  }
+  return resultado;
 }
 
 export async function carregarResumoAuditoriaMensal() {
@@ -565,22 +603,39 @@ export async function carregarResumoAuditoriaMensal() {
   return data || [];
 }
 
-export async function processarESalvarAuditoriaMes({ competencia, onProgress } = {}) {
-  if (!competencia) throw new Error('Informe a competência para processar a auditoria.');
+export async function processarESalvarAuditoriaMes({ competencia, dataInicio, dataFim, canais, onProgress } = {}) {
+  if (!competencia && !(dataInicio || dataFim)) {
+    throw new Error('Informe a competência ou um período para processar a auditoria.');
+  }
 
   const supabase = ensureSupabase();
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
-  const transportadoras = normalizarTransportadoras(await carregarBaseCompletaDb());
+  if (!_cacheBaseFrete) {
+    // heartbeat enquanto carrega (lookup de CEP→IBGE pode demorar)
+    let _tick = 0;
+    const _hb = setInterval(() => { _tick += 1; onProgress?.({ etapa: 'carregando_tabelas', carregados: _tick, total: null }); }, 600);
+    try {
+      _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
+    } finally {
+      clearInterval(_hb);
+    }
+  }
+  const transportadoras = _cacheBaseFrete;
 
   if (!transportadoras.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para processar a auditoria.');
   }
 
-  const ctes = await buscarCtesMesBruto({ supabase, competencia, onProgress });
+  let ctes = await buscarCtesMesBruto({ supabase, competencia, dataInicio, dataFim, onProgress });
+  if (canais?.length) {
+    const cSet = new Set(canais);
+    ctes = ctes.filter((r) => cSet.has(normalizarCanalResultado(r.canal || r.canal_original)));
+  }
 
   if (!ctes.length) {
-    throw new Error(`Nenhum CT-e encontrado para a competência ${competencia}.`);
+    const alvo = competencia || `período ${dataInicio || '...'} a ${dataFim || '...'}`;
+    throw new Error(`Nenhum CT-e encontrado para ${alvo}${canais?.length ? ` (canais: ${canais.join(', ')})` : ''}.`);
   }
 
   const registros = [];
@@ -595,17 +650,27 @@ export async function processarESalvarAuditoriaMes({ competencia, onProgress } =
   }
 
   const resumo = calcularResumo(registros, competencia);
-  await salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress });
+
+  // Salvar é destrutivo (deleta o mês inteiro e reinsere). Só grava quando a carga
+  // é do mês inteiro (apenas competência). Com período, devolve como preview para
+  // não apagar o restante do mês salvo.
+  const temPeriodo = Boolean(dataInicio || dataFim);
+  if (!temPeriodo) {
+    await salvarResultadosMes({ supabase, competencia, registros, resumo, onProgress });
+  }
 
   onProgress?.({ etapa: 'concluido', carregados: registros.length, total: registros.length });
 
   return {
     registros,
     resumo,
+    gravado: !temPeriodo,
     fonte: {
       id: TABELA_RESULTADOS,
       tabela: TABELA_RESULTADOS,
-      label: 'Auditoria processada / auditoria_cte_resultados',
+      label: temPeriodo
+        ? 'Recálculo do período (preview, não gravado)'
+        : 'Auditoria processada / auditoria_cte_resultados',
     },
   };
 }

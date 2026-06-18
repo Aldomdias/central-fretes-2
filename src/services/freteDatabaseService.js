@@ -3,6 +3,11 @@ import { getSupabaseClient, getSupabaseInfo, isSupabaseConfigured } from '../lib
 const SNAPSHOT_CHAVE = 'cadastro-fretes-principal';
 const FALLBACK_KEY = 'simulador-fretes-local-v6';
 const PAGE_SIZE = 1000;
+
+// Cache de sessão — evita recarregar/reenriquecer rotas a cada chamada.
+// Invalide com invalidarCacheBaseCompletaDb() quando salvar tabelas.
+let _cacheBaseCompleta = null;
+export function invalidarCacheBaseCompletaDb() { _cacheBaseCompleta = null; }
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -514,6 +519,8 @@ export async function carregarBaseCompletaDb() {
     return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
   }
 
+  if (_cacheBaseCompleta) return _cacheBaseCompleta;
+
   const supabase = ensureClient();
 
   const [transportadoras, origens, generalidades, rotas, cotacoes, taxas] =
@@ -571,12 +578,13 @@ export async function carregarBaseCompletaDb() {
     origensByTransportadora.set(key, list);
   });
 
-  return transportadoras.map((transportadora) => ({
+  _cacheBaseCompleta = transportadoras.map((transportadora) => ({
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
+  return _cacheBaseCompleta;
 }
 
 export async function carregarResumoBaseDb() {
@@ -1650,6 +1658,17 @@ async function enriquecerRotasComIbgeDestinoPorCepDb(rotas = []) {
 
   if (!pendentes.length || !isSupabaseConfigured()) return lista;
 
+  // Timeout de segurança: se o enriquecimento demorar demais, retorna lista sem ele.
+  // Rotas com IBGE direto já estão corretas; só as que dependem de CEP ficam sem o campo.
+  let _timeoutHandle;
+  const _timeoutPromise = new Promise((resolve) => { _timeoutHandle = setTimeout(() => resolve(null), 20000); });
+  const _enrichPromise = _enriquecerRotas(lista);
+  const resultado = await Promise.race([_enrichPromise, _timeoutPromise]);
+  clearTimeout(_timeoutHandle);
+  return resultado ?? lista;
+}
+
+async function _enriquecerRotas(lista) {
   const cache = new Map();
   const resultado = [];
 
