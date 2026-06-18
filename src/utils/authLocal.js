@@ -35,7 +35,8 @@ export const MODULOS_SISTEMA = [
   { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
   { chave: 'ferramentas', label: 'Ferramentas', grupo: 'Geral' },
   { chave: 'transportadoras', label: 'Transportadoras', grupo: 'Cadastros' },
-  { chave: 'perda-realizado', label: 'Perda por Transp. Mais Cara', grupo: 'Transportadoras' },
+  { chave: 'perda-realizado',      label: 'Perda por Transp. Mais Cara', grupo: 'Transportadoras' },
+  { chave: 'oportunidade-origem', label: 'Oportunidade de Origem',       grupo: 'Transportadoras' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
 ];
 
@@ -61,6 +62,7 @@ export const PERFIS_USUARIO = {
       'reajustes',
       'avaliacao-prazos',
       'perda-realizado',
+      'oportunidade-origem',
       'formatacao',
       'importar-template',
       'consulta-ibge',
@@ -107,6 +109,7 @@ export const PERFIS_USUARIO = {
       'reajustes',
       'avaliacao-prazos',
       'perda-realizado',
+      'oportunidade-origem',
     ],
   },
 };
