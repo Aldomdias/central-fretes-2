@@ -26,6 +26,7 @@ import TratativasPage from './pages/TratativasPage';
 import PainelAuditoriaPage from './pages/PainelAuditoriaPage';
 import PainelOperacaoPage from './pages/PainelOperacaoPage';
 import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
+import OportunidadeOrigemPage from './pages/OportunidadeOrigemPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
@@ -35,7 +36,7 @@ const PAGINAS_PERMITIDAS = [
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas',
-  'perda-realizado', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+  'perda-realizado', 'oportunidade-origem', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -148,6 +149,7 @@ export default function App() {
     'financeiro-auditoria': <CentralAuditoriaFretesPage initialTab="financeiro" />,
     tratativas: <TratativasPage />,
     'perda-realizado': <PerdaRealizadoPage />,
+    'oportunidade-origem': <OportunidadeOrigemPage />,
     'consulta-ibge': <ConsultaIbgePage />,
     ferramentas: <FerramentasPage transportadoras={transportadorasMemo} />,
     usuarios: <UserManagementPage usuarioAtual={sessao} />,
