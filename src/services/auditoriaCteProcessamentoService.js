@@ -517,18 +517,25 @@ export async function resimularRegistros({ registros, onProgress } = {}) {
   return out;
 }
 
-export async function carregarResultadosAuditoriaMes({ competencia, onProgress } = {}) {
+export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, dataFim, limite, onProgress } = {}) {
   if (!competencia) throw new Error('Informe a competência para carregar o resultado salvo.');
 
   const supabase = ensureSupabase();
   const acumulado = [];
   let from = 0;
+  const teto = Number(limite) > 0 ? Number(limite) : Infinity;
 
   while (true) {
-    const { data, error } = await supabase
+    let query = supabase
       .from(TABELA_RESULTADOS)
       .select('*')
-      .eq('competencia', competencia)
+      .eq('competencia', competencia);
+
+    // Período de teste opcional: limita por data de emissão direto na consulta.
+    if (dataInicio) query = query.gte('data_emissao', dataInicio);
+    if (dataFim) query = query.lte('data_emissao', dataFim);
+
+    const { data, error } = await query
       .order('data_emissao', { ascending: true, nullsFirst: false })
       .range(from, from + PAGE_SIZE - 1);
 
@@ -538,11 +545,11 @@ export async function carregarResultadosAuditoriaMes({ competencia, onProgress }
     acumulado.push(...lote);
     onProgress?.({ etapa: 'carregando_resultado_salvo', carregados: acumulado.length, total: null });
 
-    if (lote.length < PAGE_SIZE) break;
+    if (lote.length < PAGE_SIZE || acumulado.length >= teto) break;
     from += PAGE_SIZE;
   }
 
-  return acumulado;
+  return teto !== Infinity ? acumulado.slice(0, teto) : acumulado;
 }
 
 export async function carregarResumoAuditoriaMensal() {

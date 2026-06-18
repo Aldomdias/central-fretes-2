@@ -280,6 +280,10 @@ function ResumoMensalAuditoria({ resumoMensal = [] }) {
 
 export default function AuditoriaCtePage() {
   const [competencia, setCompetencia] = useState('');
+  // Período de teste opcional: limita a carga do "Carregar resultado salvo" a
+  // alguns dias, para iterar rápido sem puxar o mês inteiro.
+  const [dataInicioTeste, setDataInicioTeste] = useState('');
+  const [dataFimTeste, setDataFimTeste] = useState('');
   const [registros, setRegistros] = useState([]);
   const [fonteAuditoria, setFonteAuditoria] = useState(null);
   const [diagnostico, setDiagnostico] = useState([]);
@@ -698,6 +702,8 @@ export default function AuditoriaCtePage() {
     try {
       const dados = await carregarResultadosAuditoriaMes({
         competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
         onProgress: setProgressoProcessamento,
       });
 
@@ -708,10 +714,13 @@ export default function AuditoriaCtePage() {
         label: 'Auditoria salva / auditoria_cte_resultados',
       });
 
+      const recorteTeste = dataInicioTeste || dataFimTeste
+        ? ` (período de teste ${dataInicioTeste || '...'} a ${dataFimTeste || '...'})`
+        : '';
       if (!dados.length) {
-        setSucesso('Nenhum resultado salvo para esta competência. Use Salvar mês carregado.');
+        setSucesso(`Nenhum resultado salvo para esta competência${recorteTeste}. Use Salvar mês carregado.`);
       } else {
-        setSucesso(`${dados.length.toLocaleString('pt-BR')} resultado(s) salvo(s) carregado(s).`);
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} resultado(s) salvo(s) carregado(s)${recorteTeste}.`);
       }
     } catch (error) {
       setRegistros([]);
@@ -826,6 +835,8 @@ export default function AuditoriaCtePage() {
 
   function limpar() {
     setCompetencia('');
+    setDataInicioTeste('');
+    setDataFimTeste('');
     setRegistros([]);
     setFonteAuditoria(null);
     setDiagnostico([]);
@@ -888,6 +899,24 @@ export default function AuditoriaCtePage() {
               type="month"
               value={competencia}
               onChange={(e) => setCompetencia(e.target.value)}
+            />
+          </label>
+          <label>
+            Período de teste — início (opcional)
+            <input
+              type="date"
+              value={dataInicioTeste}
+              onChange={(e) => setDataInicioTeste(e.target.value)}
+              title="Limita o Carregar resultado salvo a partir desta data de emissão"
+            />
+          </label>
+          <label>
+            Período de teste — fim (opcional)
+            <input
+              type="date"
+              value={dataFimTeste}
+              onChange={(e) => setDataFimTeste(e.target.value)}
+              title="Limita o Carregar resultado salvo até esta data de emissão"
             />
           </label>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
