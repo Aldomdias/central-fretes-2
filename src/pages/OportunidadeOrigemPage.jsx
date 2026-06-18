@@ -24,8 +24,10 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
   let from = 0;
   const PAGE = 1000;
 
+  // Usa auditoria_cte_resultados: já tem ibge_destino/ibge_origem enriquecidos,
+  // necessários para o motor localizar a rota na simulação.
   while (acumulado.length < limite) {
-    let q = supabase.from('realizado_local_ctes').select('*').order('data_emissao', { ascending: false }).range(from, from + PAGE - 1);
+    let q = supabase.from('auditoria_cte_resultados').select('*').order('data_emissao', { ascending: false }).range(from, from + PAGE - 1);
     if (dataInicio || dataFim) {
       if (dataInicio) q = q.gte('data_emissao', dataInicio);
       if (dataFim) q = q.lte('data_emissao', dataFim);
