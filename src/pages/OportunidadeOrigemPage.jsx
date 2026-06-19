@@ -12,11 +12,29 @@ const ORIGENS_ALTERNATIVAS = [
 const PAGE_SIZE = 200;
 const TOLERANCIA = 0.05;
 
+const FILTROS_PADRAO = {
+  emissaoInicio: '',
+  emissaoFim: '',
+  canais: [],
+  ufsOrigem: [],
+  ufsDestino: [],
+  transportadorasRealizadas: [],
+  tabelasItajaiExcluidas: [],
+  soComOportunidade: true,
+};
+
 function safeNum(v) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 function fmt(v) { return safeNum(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 function fmtN(v) { return safeNum(v).toLocaleString('pt-BR', { maximumFractionDigits: 0 }); }
 function pct(v) { return `${safeNum(v).toFixed(1).replace('.', ',')}%`; }
 function fmtData(v) { return v ? String(v).slice(0, 10).split('-').reverse().join('/') : '-'; }
+function normCidade(v) {
+  return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+function passaLista(valor, lista) {
+  if (!lista || !lista.length) return true;
+  return lista.includes(String(valor || '').trim());
+}
 
 async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 5000, onProgress }) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
@@ -46,13 +64,9 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
   return filtrarCpComercialCte(acumulado).slice(0, limite);
 }
 
-function normCidade(v) {
-  return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-}
-
+// Simula o CTe saindo do CD alternativo com TODAS as transportadoras e devolve
+// a lista completa de resultados válidos (origem = Itajaí), ordenada por preço.
 function simularDeOrigem(cte, transportadoras, origemAlt, ibgeDestino) {
-  // Mantém todos os números do CTe (peso, NF, destino) e troca SÓ a origem
-  // para o CD alternativo (Itajaí). Resolve o canal real (ignora "A DEFINIR").
   const canalReal = cte.canal_original && normCidade(cte.canal) === 'ADEFINIR'
     ? cte.canal_original
     : (cte.canal || cte.canal_original || '');
@@ -69,7 +83,7 @@ function simularDeOrigem(cte, transportadoras, origemAlt, ibgeDestino) {
     ibge_corrigido_destino: ibgeDestino || '',
   };
 
-  let melhor = null;
+  const resultados = [];
   const statusCounts = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, ORIGEM_ERRADA: 0, OUTRO: 0 };
   const cidadeAltNorm = normCidade(origemAlt.cidade);
 
@@ -84,11 +98,9 @@ function simularDeOrigem(cte, transportadoras, origemAlt, ibgeDestino) {
     }
     const st = resultado.status_calculo || 'OUTRO';
     statusCounts[st in statusCounts ? st : 'OUTRO'] += 1;
-
     if (st !== 'CALCULADO') continue;
 
-    // Garante que o motor usou MESMO a origem Itajaí (não caiu no fallback
-    // candidatas[0] de outra origem da transportadora).
+    // Garante que o motor usou MESMO a origem Itajaí (não o fallback candidatas[0]).
     const origemUsada = normCidade(resultado.detalhes_calculo?.origem_cidade);
     if (origemUsada && cidadeAltNorm && !origemUsada.includes(cidadeAltNorm) && !cidadeAltNorm.includes(origemUsada)) {
       statusCounts.CALCULADO -= 1;
@@ -99,17 +111,16 @@ function simularDeOrigem(cte, transportadoras, origemAlt, ibgeDestino) {
     const total = safeNum(resultado.valor_calculado);
     if (total <= 0) continue;
 
-    if (!melhor || total < melhor.total) {
-      melhor = {
-        total,
-        transportadora: transp.nome,
-        prazo: safeNum(resultado.detalhes_calculo?.prazo ?? resultado.prazo_entrega ?? 0),
-        detalhes: resultado.detalhes_calculo,
-      };
-    }
+    resultados.push({
+      transportadora: transp.nome,
+      total,
+      prazo: safeNum(resultado.detalhes_calculo?.rota_prazo),
+      detalhes: resultado.detalhes_calculo,
+    });
   }
 
-  return { melhor, statusCounts };
+  resultados.sort((a, b) => a.total - b.total);
+  return { resultados, statusCounts };
 }
 
 function Card({ label, valor, sub, cor, destaque }) {
@@ -127,6 +138,39 @@ function Barra({ valor, maximo, cor = '#9153F0' }) {
   return <div style={{ background: '#f1f5f9', borderRadius: 99, height: 8, minWidth: 80 }}><div style={{ background: cor, height: '100%', borderRadius: 99, width: `${p}%` }} /></div>;
 }
 
+// Filtro multi-seleção (botão + painel de checkboxes)
+function MultiFiltro({ label, opcoes, selecionados, onChange }) {
+  const [aberto, setAberto] = useState(false);
+  const total = opcoes.length;
+  const sel = selecionados.length;
+  const toggle = (op) => {
+    onChange(selecionados.includes(op) ? selecionados.filter((x) => x !== op) : [...selecionados, op]);
+  };
+  return (
+    <div style={{ position: 'relative' }}>
+      <button type="button" onClick={() => setAberto((v) => !v)}
+        style={{ width: '100%', textAlign: 'left', padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, background: sel ? '#f5f3ff' : '#fff', fontSize: '0.82rem', cursor: 'pointer', color: '#334155' }}>
+        {label}: <strong>{sel ? `${sel} de ${total}` : 'Todos'}</strong> {aberto ? '▲' : '▼'}
+      </button>
+      {aberto && (
+        <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, maxHeight: 240, overflowY: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', padding: 6 }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6, borderBottom: '1px solid #eee', paddingBottom: 6 }}>
+            <button type="button" onClick={() => onChange([...opcoes])} style={{ fontSize: '0.72rem', cursor: 'pointer', border: 'none', background: 'none', color: '#9153F0' }}>Todos</button>
+            <button type="button" onClick={() => onChange([])} style={{ fontSize: '0.72rem', cursor: 'pointer', border: 'none', background: 'none', color: '#9153F0' }}>Limpar</button>
+          </div>
+          {opcoes.map((op) => (
+            <label key={op} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', fontSize: '0.8rem', cursor: 'pointer' }}>
+              <input type="checkbox" checked={selecionados.includes(op)} onChange={() => toggle(op)} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{op || '(vazio)'}</span>
+            </label>
+          ))}
+          {!opcoes.length && <div style={{ fontSize: '0.78rem', color: '#94a3b8', padding: 4 }}>Sem opções</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function OportunidadeOrigemPage() {
   const [competencia, setCompetencia] = useState('');
   const [dataInicio, setDataInicio] = useState('');
@@ -138,18 +182,20 @@ export default function OportunidadeOrigemPage() {
   const [status, setStatus] = useState('idle');
   const [progresso, setProgresso] = useState('');
   const [erro, setErro] = useState('');
-  const [resultado, setResultado] = useState(null);
+  const [bruto, setBruto] = useState(null); // { casos, totalCtes, diagTotal, origemAlt }
 
+  const [filtros, setFiltros] = useState(FILTROS_PADRAO);
   const [pagina, setPagina] = useState(0);
   const [aba, setAba] = useState('ranking');
-  const [soComOp, setSoComOp] = useState(true);
   const [ordem, setOrdem] = useState({ campo: 'economia', dir: 'desc' });
+  const [expandido, setExpandido] = useState(null);
 
-  const podeCarregar = true;
   const origemAlt = ORIGENS_ALTERNATIVAS[origemAltKey];
+  const setF = (k, v) => { setFiltros((p) => ({ ...p, [k]: v })); setPagina(0); };
 
   async function processar() {
-    setStatus('carregando'); setErro(''); setResultado(null); setPagina(0);
+    setStatus('carregando'); setErro(''); setBruto(null); setPagina(0); setExpandido(null);
+    setFiltros((p) => ({ ...FILTROS_PADRAO, soComOportunidade: p.soComOportunidade }));
 
     try {
       setProgresso('Carregando tabelas de frete...');
@@ -159,7 +205,6 @@ export default function OportunidadeOrigemPage() {
       setProgresso('Carregando municípios IBGE...');
       const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
       const mapasIbge = montarMapasIbge(municipios);
-      // IBGE da origem alternativa (Itajaí) — resolve pelo mapa, com fallback fixo
       const ibgeOrigemAlt = resolverIbgeLocal(origemAlt.cidade, origemAlt.uf, mapasIbge) || origemAlt.ibge || '';
       const origemAltResolvida = { ...origemAlt, ibge: ibgeOrigemAlt };
 
@@ -174,11 +219,9 @@ export default function OportunidadeOrigemPage() {
       });
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
-      // Exclui os que já saíram do CD alternativo
-      const norm = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-      const cidadeAltNorm = norm(origemAlt.cidade);
+      const cidadeAltNorm = normCidade(origemAlt.cidade);
       const ctesAlvo = ctes.filter((c) => {
-        const cidade = norm(c.cidade_origem || c.origem || '');
+        const cidade = normCidade(c.cidade_origem || c.origem || '');
         return !cidade.includes(cidadeAltNorm) && !cidadeAltNorm.includes(cidade.slice(0, 5));
       });
 
@@ -186,52 +229,37 @@ export default function OportunidadeOrigemPage() {
 
       const casos = [];
       const diagTotal = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, ORIGEM_ERRADA: 0, OUTRO: 0, SEM_IBGE_DESTINO: 0 };
+
       for (let i = 0; i < ctesAlvo.length; i++) {
         const cte = ctesAlvo[i];
         const valorPago = safeNum(cte.valor_cte || cte.frete_pago || cte.valor_frete);
-        const prazoReal = safeNum(cte.prazo_entrega || cte.prazo);
-
-        // Resolve o IBGE de destino do CTe (cidade+UF) — a base não o armazena
         const ibgeDestino = resolverIbgeLocal(cte.cidade_destino || cte.destino, cte.uf_destino, mapasIbge);
-        if (!ibgeDestino) {
-          diagTotal.SEM_IBGE_DESTINO += 1;
-          casos.push({
-            chaveCte: cte.chave_cte || cte.chave || '', numeroCte: cte.numero_cte || cte.numero || cte.nro_cte || '',
-            emissao: cte.data_emissao || '', canal: cte.canal_original || cte.canal || '',
-            cidadeOrigem: cte.cidade_origem || cte.origem || '', ufOrigem: cte.uf_origem || '',
-            cidadeDestino: cte.cidade_destino || cte.destino || '', ufDestino: cte.uf_destino || '',
-            transportadoraReal: cte.transportadora || cte.nome_transportadora || '',
-            peso: safeNum(cte.peso_declarado || cte.peso), valorNf: safeNum(cte.valor_nf || cte.nf_venda),
-            valorPago, prazoReal, temOp: false, valorAlt: null, transpAlt: null, prazoAlt: null, economia: 0, economiaPrazo: 0,
-          });
-          continue;
-        }
 
-        const { melhor: simulado, statusCounts } = simularDeOrigem(cte, base, origemAltResolvida, ibgeDestino);
-        for (const [k, v] of Object.entries(statusCounts)) diagTotal[k] = (diagTotal[k] || 0) + v;
-        const temOp = Boolean(simulado && simulado.total > 0 && simulado.total < valorPago - TOLERANCIA);
-
-        casos.push({
+        const baseCaso = {
           chaveCte: cte.chave_cte || cte.chave || '',
           numeroCte: cte.numero_cte || cte.numero || cte.nro_cte || '',
           emissao: cte.data_emissao || '',
-          canal: cte.canal || '',
+          canal: cte.canal_original || cte.canal || '',
           cidadeOrigem: cte.cidade_origem || cte.origem || '',
-          ufOrigem: cte.uf_origem || '',
+          ufOrigem: String(cte.uf_origem || '').toUpperCase(),
           cidadeDestino: cte.cidade_destino || cte.destino || '',
-          ufDestino: cte.uf_destino || '',
+          ufDestino: String(cte.uf_destino || '').toUpperCase(),
           transportadoraReal: cte.transportadora || cte.nome_transportadora || '',
           peso: safeNum(cte.peso_declarado || cte.peso),
           valorNf: safeNum(cte.valor_nf || cte.nf_venda),
           valorPago,
-          prazoReal,
-          temOp,
-          valorAlt: simulado?.total ?? null,
-          transpAlt: simulado?.transportadora ?? null,
-          prazoAlt: simulado?.prazo ?? null,
-          economia: temOp ? Math.round((valorPago - simulado.total) * 100) / 100 : 0,
-          economiaPrazo: temOp && simulado.prazo > 0 ? prazoReal - simulado.prazo : 0,
-        });
+          resultadosAlt: [],
+        };
+
+        if (!ibgeDestino) {
+          diagTotal.SEM_IBGE_DESTINO += 1;
+          casos.push(baseCaso);
+        } else {
+          const { resultados, statusCounts } = simularDeOrigem(cte, base, origemAltResolvida, ibgeDestino);
+          for (const [k, v] of Object.entries(statusCounts)) diagTotal[k] = (diagTotal[k] || 0) + v;
+          baseCaso.resultadosAlt = resultados;
+          casos.push(baseCaso);
+        }
 
         if (i % 100 === 0 || i === ctesAlvo.length - 1) {
           const p = Math.round(((i + 1) / ctesAlvo.length) * 100);
@@ -240,56 +268,112 @@ export default function OportunidadeOrigemPage() {
         }
       }
 
-      const comOp = casos.filter((c) => c.temOp);
-      const totalEconomia = Math.round(comOp.reduce((s, c) => s + c.economia, 0) * 100) / 100;
-
-      // Ranking por destino
-      const mapaDestino = new Map();
-      for (const c of comOp) {
-        const k = `${c.cidadeDestino}/${c.ufDestino}`;
-        const v = mapaDestino.get(k) || { chave: k, ctes: 0, economia: 0, economiaPrazoTotal: 0 };
-        v.ctes += 1; v.economia += c.economia; v.economiaPrazoTotal += c.economiaPrazo;
-        mapaDestino.set(k, v);
-      }
-      const rankingDestino = Array.from(mapaDestino.values())
-        .map((v) => ({ ...v, economia: Math.round(v.economia * 100) / 100, prazoMedio: v.ctes > 0 ? v.economiaPrazoTotal / v.ctes : 0 }))
-        .sort((a, b) => b.economia - a.economia).slice(0, 20);
-
-      // Ranking por transportadora alternativa
-      const mapaTransp = new Map();
-      for (const c of comOp) {
-        const k = c.transpAlt || 'Desconhecida';
-        const v = mapaTransp.get(k) || { chave: k, ctes: 0, economia: 0 };
-        v.ctes += 1; v.economia += c.economia;
-        mapaTransp.set(k, v);
-      }
-      const rankingTransp = Array.from(mapaTransp.values())
-        .map((v) => ({ ...v, economia: Math.round(v.economia * 100) / 100 }))
-        .sort((a, b) => b.economia - a.economia);
-
-      setResultado({ casos, totalCtes: ctesAlvo.length, totalOp: comOp.length, totalEconomia, rankingDestino, rankingTransp, origemAlt, diagTotal });
+      setBruto({ casos, totalCtes: ctesAlvo.length, diagTotal, origemAlt });
       setStatus('concluido'); setProgresso('');
     } catch (e) {
       console.error('[OportunidadeOrigem]', e);
-      setErro(`${e.message || e}` + (e.stack ? ` — ${String(e.stack).split('\n')[1] || ''}` : ''));
+      setErro(`${e.message || e}`);
       setStatus('erro'); setProgresso('');
     }
   }
 
+  // Opções de filtro derivadas dos casos brutos
+  const opcoes = useMemo(() => {
+    if (!bruto) return { canais: [], ufsOrigem: [], ufsDestino: [], transpReal: [], tabelas: [] };
+    const canais = new Set(), ufO = new Set(), ufD = new Set(), tr = new Set(), tab = new Set();
+    for (const c of bruto.casos) {
+      if (c.canal) canais.add(c.canal.trim());
+      if (c.ufOrigem) ufO.add(c.ufOrigem);
+      if (c.ufDestino) ufD.add(c.ufDestino);
+      if (c.transportadoraReal) tr.add(c.transportadoraReal.trim());
+      for (const r of c.resultadosAlt) tab.add(r.transportadora.trim());
+    }
+    const ord = (s) => Array.from(s).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return { canais: ord(canais), ufsOrigem: ord(ufO), ufsDestino: ord(ufD), transpReal: ord(tr), tabelas: ord(tab) };
+  }, [bruto]);
+
+  // Aplica filtros + escolhe a mais barata de Itajaí (respeitando tabelas excluídas)
+  const resultado = useMemo(() => {
+    if (!bruto) return null;
+    const excl = new Set(filtros.tabelasItajaiExcluidas);
+
+    const casos = bruto.casos
+      .filter((c) => {
+        const em = String(c.emissao || '').slice(0, 10);
+        if (filtros.emissaoInicio && (!em || em < filtros.emissaoInicio)) return false;
+        if (filtros.emissaoFim && (!em || em > filtros.emissaoFim)) return false;
+        if (!passaLista(c.canal.trim(), filtros.canais)) return false;
+        if (!passaLista(c.ufOrigem, filtros.ufsOrigem)) return false;
+        if (!passaLista(c.ufDestino, filtros.ufsDestino)) return false;
+        if (!passaLista(c.transportadoraReal.trim(), filtros.transportadorasRealizadas)) return false;
+        return true;
+      })
+      .map((c) => {
+        const validos = c.resultadosAlt.filter((r) => !excl.has(r.transportadora.trim()));
+        const melhor = validos[0] || null; // já vem ordenado por preço
+        const temOp = Boolean(melhor && melhor.total > 0 && melhor.total < c.valorPago - TOLERANCIA);
+        const economia = temOp ? Math.round((c.valorPago - melhor.total) * 100) / 100 : 0;
+        return {
+          ...c,
+          valorAlt: melhor?.total ?? null,
+          transpAlt: melhor?.transportadora ?? null,
+          prazoAlt: melhor?.prazo ?? null,
+          detalhesAlt: melhor?.detalhes ?? null,
+          temOp,
+          economia,
+          economiaPercentual: temOp && c.valorPago > 0 ? (economia / c.valorPago) * 100 : 0,
+        };
+      })
+      .filter((c) => (filtros.soComOportunidade ? c.temOp : true));
+
+    const comOp = casos.filter((c) => c.temOp);
+    const totalEconomia = Math.round(comOp.reduce((s, c) => s + c.economia, 0) * 100) / 100;
+
+    const mapaDestino = new Map();
+    for (const c of comOp) {
+      const k = `${c.cidadeDestino}/${c.ufDestino}`;
+      const v = mapaDestino.get(k) || { chave: k, ctes: 0, economia: 0, prazoSoma: 0, prazoN: 0 };
+      v.ctes += 1; v.economia += c.economia;
+      if (c.prazoAlt > 0) { v.prazoSoma += c.prazoAlt; v.prazoN += 1; }
+      mapaDestino.set(k, v);
+    }
+    const rankingDestino = Array.from(mapaDestino.values())
+      .map((v) => ({ ...v, economia: Math.round(v.economia * 100) / 100, prazoMedio: v.prazoN > 0 ? v.prazoSoma / v.prazoN : 0 }))
+      .sort((a, b) => b.economia - a.economia).slice(0, 20);
+
+    const mapaTransp = new Map();
+    for (const c of comOp) {
+      const k = c.transpAlt || 'Desconhecida';
+      const v = mapaTransp.get(k) || { chave: k, ctes: 0, economia: 0 };
+      v.ctes += 1; v.economia += c.economia;
+      mapaTransp.set(k, v);
+    }
+    const rankingTransp = Array.from(mapaTransp.values())
+      .map((v) => ({ ...v, economia: Math.round(v.economia * 100) / 100 }))
+      .sort((a, b) => b.economia - a.economia);
+
+    return { casos, totalCtes: bruto.totalCtes, totalAnalisados: casos.length, totalOp: comOp.length, totalEconomia, rankingDestino, rankingTransp, diagTotal: bruto.diagTotal, origemAlt: bruto.origemAlt };
+  }, [bruto, filtros, origemAlt]);
+
   const casosVisiveis = useMemo(() => {
     if (!resultado) return [];
-    const lista = soComOp ? resultado.casos.filter((c) => c.temOp) : resultado.casos;
     const { campo, dir } = ordem;
-    return [...lista].sort((a, b) => {
+    return [...resultado.casos].sort((a, b) => {
       const va = a[campo] ?? 0; const vb = b[campo] ?? 0;
+      if (typeof va === 'string' || typeof vb === 'string') {
+        return dir === 'desc' ? String(vb).localeCompare(String(va)) : String(va).localeCompare(String(vb));
+      }
       return dir === 'desc' ? (vb > va ? 1 : -1) : (va > vb ? 1 : -1);
     });
-  }, [resultado, soComOp, ordem]);
+  }, [resultado, ordem]);
 
   const totalPags = Math.ceil(casosVisiveis.length / PAGE_SIZE);
   const pagAtual = casosVisiveis.slice(pagina * PAGE_SIZE, (pagina + 1) * PAGE_SIZE);
   const maxDestino = resultado?.rankingDestino?.[0]?.economia || 1;
   const maxTransp = resultado?.rankingTransp?.[0]?.economia || 1;
+  const filtrosAtivos = filtros.canais.length || filtros.ufsOrigem.length || filtros.ufsDestino.length
+    || filtros.transportadorasRealizadas.length || filtros.tabelasItajaiExcluidas.length
+    || filtros.emissaoInicio || filtros.emissaoFim;
 
   const Th = ({ campo, label }) => (
     <th style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
@@ -333,10 +417,10 @@ export default function OportunidadeOrigemPage() {
             <input type="number" value={limiteInput} onChange={(e) => setLimiteInput(e.target.value)} min={100} max={20000} step={500} />
           </label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-            <button className="primary" type="button" onClick={processar} disabled={status === 'carregando' || !podeCarregar}>
+            <button className="primary" type="button" onClick={processar} disabled={status === 'carregando'}>
               {status === 'carregando' ? 'Processando...' : 'Analisar oportunidade'}
             </button>
-            {resultado && <button className="sim-tab" type="button" onClick={() => { setResultado(null); setStatus('idle'); }}>Limpar</button>}
+            {bruto && <button className="sim-tab" type="button" onClick={() => { setBruto(null); setStatus('idle'); }}>Limpar</button>}
           </div>
         </div>
 
@@ -350,17 +434,43 @@ export default function OportunidadeOrigemPage() {
 
       {resultado && (
         <>
+          {/* Filtros de limpeza (estilo Perda) */}
+          <section className="sim-card" style={{ marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+              <strong style={{ fontSize: '0.9rem', color: '#334155' }}>Filtros / limpeza</strong>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.82rem', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={filtros.soComOportunidade} onChange={(e) => setF('soComOportunidade', e.target.checked)} />
+                  Apenas com oportunidade
+                </label>
+                {filtrosAtivos ? <button type="button" className="sim-tab" onClick={() => { setFiltros((p) => ({ ...FILTROS_PADRAO, soComOportunidade: p.soComOportunidade })); setPagina(0); }}>Limpar filtros</button> : null}
+              </div>
+            </div>
+            <div className="sim-form-grid sim-grid-4" style={{ gap: 10, marginBottom: 10 }}>
+              <label style={{ fontSize: '0.78rem' }}>Emissão início<input type="date" value={filtros.emissaoInicio} onChange={(e) => setF('emissaoInicio', e.target.value)} /></label>
+              <label style={{ fontSize: '0.78rem' }}>Emissão fim<input type="date" value={filtros.emissaoFim} onChange={(e) => setF('emissaoFim', e.target.value)} /></label>
+              <MultiFiltro label="Canal" opcoes={opcoes.canais} selecionados={filtros.canais} onChange={(v) => setF('canais', v)} />
+              <MultiFiltro label="UF destino" opcoes={opcoes.ufsDestino} selecionados={filtros.ufsDestino} onChange={(v) => setF('ufsDestino', v)} />
+            </div>
+            <div className="sim-form-grid sim-grid-4" style={{ gap: 10 }}>
+              <MultiFiltro label="UF origem" opcoes={opcoes.ufsOrigem} selecionados={filtros.ufsOrigem} onChange={(v) => setF('ufsOrigem', v)} />
+              <MultiFiltro label="Transp. realizada (tirar realizados)" opcoes={opcoes.transpReal} selecionados={filtros.transportadorasRealizadas} onChange={(v) => setF('transportadorasRealizadas', v)} />
+              <MultiFiltro label="Tabelas de Itajaí a EXCLUIR" opcoes={opcoes.tabelas} selecionados={filtros.tabelasItajaiExcluidas} onChange={(v) => setF('tabelasItajaiExcluidas', v)} />
+              <div style={{ fontSize: '0.74rem', color: '#94a3b8', alignSelf: 'center' }}>
+                Excluir uma tabela de Itajaí recalcula a 2ª mais barata automaticamente.
+              </div>
+            </div>
+          </section>
+
           <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
-            <Card label="CT-es analisados" valor={fmtN(resultado.totalCtes)} sub={`saíram fora de ${origemAlt.label}`} cor="#9153F0" />
-            <Card label="Com oportunidade" valor={fmtN(resultado.totalOp)} sub={pct(resultado.totalCtes > 0 ? (resultado.totalOp / resultado.totalCtes) * 100 : 0)} cor="#e67e22" />
+            <Card label="CT-es analisados" valor={fmtN(resultado.totalAnalisados)} sub={`de ${fmtN(resultado.totalCtes)} fora de ${origemAlt.label}`} cor="#9153F0" />
+            <Card label="Com oportunidade" valor={fmtN(resultado.totalOp)} sub={pct(resultado.totalAnalisados > 0 ? (resultado.totalOp / resultado.totalAnalisados) * 100 : 0)} cor="#e67e22" />
             <Card label="Economia potencial" valor={fmt(resultado.totalEconomia)} sub="se tivesse estoque no CD alt." cor="#9b1111" destaque={resultado.totalEconomia > 0} />
             <Card label="Economia média / CTe" valor={fmt(resultado.totalOp > 0 ? resultado.totalEconomia / resultado.totalOp : 0)} sub="casos com oportunidade" cor="#04C7A4" />
           </div>
 
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#166534' }}>
-            <strong>Diagnóstico simulação:</strong> {fmtN(resultado.diagTotal?.CALCULADO || 0)} tentativas calculadas · {fmtN(resultado.diagTotal?.SEM_ORIGEM || 0)} transp. sem Itajaí no canal · {fmtN(resultado.diagTotal?.SEM_ROTA || 0)} Itajaí sem rota p/ destino · {fmtN(resultado.diagTotal?.SEM_FAIXA || 0)} sem faixa de peso · {fmtN(resultado.diagTotal?.ORIGEM_ERRADA || 0)} descartadas (origem ≠ Itajaí) · {fmtN(resultado.diagTotal?.SEM_IBGE_DESTINO || 0)} CT-es sem IBGE destino.
-            &nbsp;|&nbsp; <strong>Como ler:</strong> Para cada CT-e que saiu de outra origem, simulamos o mesmo frete saindo de <strong>{origemAlt.label}</strong> com todas as transportadoras disponíveis.
-            A coluna <em>Economia</em> mostra quanto custaria a menos — a perda por falta de estoque no CD.
+            <strong>Diagnóstico simulação:</strong> {fmtN(resultado.diagTotal?.CALCULADO || 0)} tentativas calculadas · {fmtN(resultado.diagTotal?.SEM_ORIGEM || 0)} transp. sem Itajaí no canal · {fmtN(resultado.diagTotal?.SEM_ROTA || 0)} Itajaí sem rota p/ destino · {fmtN(resultado.diagTotal?.SEM_FAIXA || 0)} sem faixa de peso · {fmtN(resultado.diagTotal?.SEM_IBGE_DESTINO || 0)} CT-es sem IBGE destino.
           </div>
 
           <div style={{ display: 'flex', gap: 4, marginBottom: '0.5rem', borderBottom: '2px solid #eee', paddingBottom: '0.25rem', flexWrap: 'wrap' }}>
@@ -381,7 +491,7 @@ export default function OportunidadeOrigemPage() {
               <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 20 destinos — onde mais economizaria saindo de {origemAlt.label}</div>
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
-                  <thead><tr><th>#</th><th>Destino</th><th>CT-es</th><th>Economia total</th><th>Economia / CTe</th><th>Ganho prazo médio</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead>
+                  <thead><tr><th>#</th><th>Destino</th><th>CT-es</th><th>Economia total</th><th>Economia / CTe</th><th>Prazo Itajaí médio</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead>
                   <tbody>
                     {resultado.rankingDestino.map((r, i) => (
                       <tr key={r.chave}>
@@ -390,11 +500,11 @@ export default function OportunidadeOrigemPage() {
                         <td>{fmtN(r.ctes)}</td>
                         <td className="negativo" style={{ fontWeight: 700 }}>{fmt(r.economia)}</td>
                         <td>{fmt(r.ctes > 0 ? r.economia / r.ctes : 0)}</td>
-                        <td style={{ color: r.prazoMedio > 0 ? '#04C7A4' : '#94a3b8' }}>{r.prazoMedio > 0 ? `-${r.prazoMedio.toFixed(1)}d` : '—'}</td>
+                        <td>{r.prazoMedio > 0 ? `${r.prazoMedio.toFixed(1)} dias` : '—'}</td>
                         <td><Barra valor={r.economia} maximo={maxDestino} cor="#9b1111" /></td>
                       </tr>
                     ))}
-                    {!resultado.rankingDestino.length && <tr><td colSpan={7}>Nenhuma oportunidade encontrada. Verifique se há tabelas cadastradas para {origemAlt.label}.</td></tr>}
+                    {!resultado.rankingDestino.length && <tr><td colSpan={7}>Nenhuma oportunidade encontrada com os filtros atuais.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -404,7 +514,7 @@ export default function OportunidadeOrigemPage() {
           {aba === 'transportadora' && (
             <div className="panel-card">
               <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Transportadoras que ganhariam volume saindo de {origemAlt.label}</div>
-              <p style={{ fontSize: '0.84rem', color: '#64748b', marginBottom: 12 }}>Quem seria a mais barata nos fretes simulados — mostra quais parceiros têm boa cobertura a partir deste CD.</p>
+              <p style={{ fontSize: '0.84rem', color: '#64748b', marginBottom: 12 }}>Quem seria a mais barata nos fretes simulados. Use o filtro "Tabelas de Itajaí a EXCLUIR" para tirar uma transportadora e ver quem assume.</p>
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
                   <thead><tr><th>#</th><th>Transportadora</th><th>CT-es</th><th>Economia gerada</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead>
@@ -427,13 +537,7 @@ export default function OportunidadeOrigemPage() {
 
           {aba === 'detalhes' && (
             <div className="panel-card">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-                <div className="panel-title" style={{ margin: 0 }}>CT-e a CT-e</div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={soComOp} onChange={(e) => { setSoComOp(e.target.checked); setPagina(0); }} />
-                  Apenas com oportunidade
-                </label>
-              </div>
+              <div className="panel-title" style={{ marginBottom: '0.75rem' }}>CT-e a CT-e <span style={{ fontWeight: 400, fontSize: '0.8rem', color: '#94a3b8' }}>— clique na linha para ver o detalhe do cálculo</span></div>
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
                   <thead>
@@ -445,28 +549,59 @@ export default function OportunidadeOrigemPage() {
                       <th>Transp. de {origemAlt.cidade}</th>
                       <Th campo="valorAlt" label={`Custo de ${origemAlt.cidade}`} />
                       <Th campo="economia" label="Economia" />
-                      <th>Prazo (real → alt)</th>
+                      <th>Prazo Itajaí</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {pagAtual.map((c) => (
-                      <tr key={c.chaveCte || c.numeroCte} style={{ background: c.temOp ? undefined : '#f8fff8' }}>
-                        <td style={{ fontSize: '0.78rem', color: '#666' }}>{c.numeroCte || c.chaveCte?.slice(-8) || '-'}</td>
-                        <td>{fmtData(c.emissao)}</td>
-                        <td>{c.canal || '-'}</td>
-                        <td><span style={{ color: '#e67e22' }}>{c.cidadeOrigem}/{c.ufOrigem}</span> → {c.cidadeDestino}/{c.ufDestino}</td>
-                        <td>{c.transportadoraReal}</td>
-                        <td>{fmt(c.valorPago)}</td>
-                        <td style={{ color: '#04C7A4', fontWeight: 600 }}>{c.transpAlt || '—'}</td>
-                        <td>{c.valorAlt != null ? fmt(c.valorAlt) : '—'}</td>
-                        <td className={c.temOp ? 'negativo' : ''} style={{ fontWeight: c.temOp ? 700 : 400 }}>{c.temOp ? fmt(c.economia) : '—'}</td>
-                        <td style={{ whiteSpace: 'nowrap', color: c.economiaPrazo > 0 ? '#04C7A4' : c.economiaPrazo < 0 ? '#e67e22' : '#94a3b8' }}>
-                          {c.prazoReal > 0 ? `${c.prazoReal}d` : '?'} → {c.prazoAlt > 0 ? `${c.prazoAlt}d` : '?'}
-                          {c.economiaPrazo !== 0 && c.prazoAlt > 0 && <span> ({c.economiaPrazo > 0 ? `-${c.economiaPrazo}d` : `+${Math.abs(c.economiaPrazo)}d`})</span>}
-                        </td>
-                      </tr>
-                    ))}
-                    {!pagAtual.length && <tr><td colSpan={10}>Nenhum CT-e.</td></tr>}
+                    {pagAtual.map((c) => {
+                      const id = c.chaveCte || c.numeroCte;
+                      const aberto = expandido === id;
+                      const d = c.detalhesAlt;
+                      return (
+                        <React.Fragment key={id}>
+                          <tr onClick={() => setExpandido(aberto ? null : id)} style={{ cursor: 'pointer', background: c.temOp ? undefined : '#f8fff8' }}>
+                            <td style={{ fontSize: '0.78rem', color: '#666' }}>{aberto ? '▼ ' : '▶ '}{c.numeroCte || c.chaveCte?.slice(-8) || '-'}</td>
+                            <td>{fmtData(c.emissao)}</td>
+                            <td>{c.canal || '-'}</td>
+                            <td><span style={{ color: '#e67e22' }}>{c.cidadeOrigem}/{c.ufOrigem}</span> → {c.cidadeDestino}/{c.ufDestino}</td>
+                            <td>{c.transportadoraReal}</td>
+                            <td>{fmt(c.valorPago)}</td>
+                            <td style={{ color: '#04C7A4', fontWeight: 600 }}>{c.transpAlt || '—'}</td>
+                            <td>{c.valorAlt != null ? fmt(c.valorAlt) : '—'}</td>
+                            <td className={c.temOp ? 'negativo' : ''} style={{ fontWeight: c.temOp ? 700 : 400 }}>{c.temOp ? fmt(c.economia) : '—'}</td>
+                            <td style={{ whiteSpace: 'nowrap' }}>{c.prazoAlt > 0 ? `${c.prazoAlt} dias` : '—'}</td>
+                          </tr>
+                          {aberto && (
+                            <tr>
+                              <td colSpan={10} style={{ background: '#faf5ff', padding: '12px 16px' }}>
+                                {d ? (
+                                  <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: '0.82rem' }}>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Origem cálculo</div><strong>{d.origem_cidade || '—'}</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Rota</div><strong>{d.rota_nome || '—'}</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Peso considerado</div><strong>{safeNum(d.peso_considerado).toLocaleString('pt-BR')} kg</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Valor base</div><strong>{fmt(d.valor_base)}</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Subtotal</div><strong>{fmt(d.subtotal)}</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>ICMS</div><strong>{fmt(d.icms)}</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Taxas</div><strong>{fmt(d.taxas)}</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Prazo entrega</div><strong>{d.rota_prazo != null ? `${d.rota_prazo} dias` : '—'}</strong></div>
+                                    <div><div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>Total Itajaí</div><strong style={{ color: '#04C7A4' }}>{fmt(c.valorAlt)}</strong></div>
+                                  </div>
+                                ) : <span style={{ color: '#94a3b8' }}>Sem cálculo de Itajaí para este CT-e (sem rota/tabela ou IBGE de destino não resolvido).</span>}
+                                {c.resultadosAlt.length > 1 && (
+                                  <div style={{ marginTop: 10, fontSize: '0.78rem', color: '#64748b' }}>
+                                    <span style={{ fontWeight: 600 }}>Outras opções de Itajaí: </span>
+                                    {c.resultadosAlt.slice(0, 6).map((r, idx) => (
+                                      <span key={r.transportadora} style={{ marginRight: 12 }}>{idx + 1}. {r.transportadora} {fmt(r.total)}</span>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    {!pagAtual.length && <tr><td colSpan={10}>Nenhum CT-e com os filtros atuais.</td></tr>}
                   </tbody>
                 </table>
               </div>

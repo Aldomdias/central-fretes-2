@@ -184,7 +184,7 @@ function getTipoCalculo(origem = {}, cotacao = {}) {
   return 'PERCENTUAL';
 }
 
-function normalizarTransportadoras(transportadoras = []) {
+export function normalizarTransportadoras(transportadoras = []) {
   return (transportadoras || []).map((transportadora) => ({
     ...transportadora,
     __nomeNorm: normalizeCompare(transportadora.nome),
@@ -296,7 +296,7 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
   };
 }
 
-function processarCte(cte, transportadoras = []) {
+export function processarCte(cte, transportadoras = []) {
   const transportadoraNome = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
   const transportadora = localizarTransportadora(transportadoras, transportadoraNome);
 
@@ -347,6 +347,7 @@ function processarCte(cte, transportadoras = []) {
         origem_cidade: origem.cidade || null,
         rota_id: rota.id || null,
         rota_nome: rota.nomeRota || null,
+        rota_prazo: rota.prazoEntregaDias ?? rota.prazo_entrega_dias ?? null,
         cotacao_id: cotacao.id || null,
         peso_considerado: peso,
         valor_base: calculo.valorBase,
