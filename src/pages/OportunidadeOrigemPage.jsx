@@ -31,6 +31,31 @@ function fmtData(v) { return v ? String(v).slice(0, 10).split('-').reverse().joi
 function normCidade(v) {
   return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
+function canalRealDe(cte) {
+  return cte.canal_original && normCidade(cte.canal) === 'ADEFINIR'
+    ? cte.canal_original
+    : (cte.canal || cte.canal_original || '');
+}
+// Prazo "realizado" calculado igual ao Perdas: roda o motor no CTe original
+// (origem real + transportadora real) e lê o prazoEntregaDias da rota/tabela.
+function prazoRealizadoDoCte(cte, transportadoras, ibgeOrigemReal, ibgeDestino) {
+  if (!ibgeOrigemReal || !ibgeDestino) return 0;
+  const canalReal = canalRealDe(cte);
+  const cteReal = {
+    ...cte,
+    canal: canalReal,
+    canal_original: canalReal,
+    ibge_origem: ibgeOrigemReal,
+    ibge_corrigido_origem: ibgeOrigemReal,
+    ibge_destino: ibgeDestino,
+    ibge_corrigido_destino: ibgeDestino,
+  };
+  try {
+    const r = processarCte(cteReal, transportadoras);
+    if (r.status_calculo === 'CALCULADO') return safeNum(r.detalhes_calculo?.rota_prazo);
+  } catch { /* ignora */ }
+  return 0;
+}
 function passaLista(valor, lista) {
   if (!lista || !lista.length) return true;
   return lista.includes(String(valor || '').trim());
@@ -67,9 +92,7 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
 // Simula o CTe saindo do CD alternativo com TODAS as transportadoras e devolve
 // a lista completa de resultados válidos (origem = Itajaí), ordenada por preço.
 function simularDeOrigem(cte, transportadoras, origemAlt, ibgeDestino) {
-  const canalReal = cte.canal_original && normCidade(cte.canal) === 'ADEFINIR'
-    ? cte.canal_original
-    : (cte.canal || cte.canal_original || '');
+  const canalReal = canalRealDe(cte);
 
   const cteAlt = {
     ...cte,
@@ -234,6 +257,8 @@ export default function OportunidadeOrigemPage() {
         const cte = ctesAlvo[i];
         const valorPago = safeNum(cte.valor_cte || cte.frete_pago || cte.valor_frete);
         const ibgeDestino = resolverIbgeLocal(cte.cidade_destino || cte.destino, cte.uf_destino, mapasIbge);
+        const ibgeOrigemReal = resolverIbgeLocal(cte.cidade_origem || cte.origem, cte.uf_origem, mapasIbge);
+        const prazoReal = prazoRealizadoDoCte(cte, base, ibgeOrigemReal, ibgeDestino);
 
         const baseCaso = {
           chaveCte: cte.chave_cte || cte.chave || '',
@@ -248,6 +273,7 @@ export default function OportunidadeOrigemPage() {
           peso: safeNum(cte.peso_declarado || cte.peso),
           valorNf: safeNum(cte.valor_nf || cte.nf_venda),
           valorPago,
+          prazoReal,
           resultadosAlt: [],
         };
 
@@ -313,11 +339,15 @@ export default function OportunidadeOrigemPage() {
         const melhor = validos[0] || null; // já vem ordenado por preço
         const temOp = Boolean(melhor && melhor.total > 0 && melhor.total < c.valorPago - TOLERANCIA);
         const economia = temOp ? Math.round((c.valorPago - melhor.total) * 100) / 100 : 0;
+        const prazoAlt = melhor?.prazo ?? 0;
+        // ganho > 0 = Itajaí entrega mais rápido (dias economizados)
+        const ganhoPrazo = (prazoAlt > 0 && c.prazoReal > 0) ? c.prazoReal - prazoAlt : null;
         return {
           ...c,
           valorAlt: melhor?.total ?? null,
           transpAlt: melhor?.transportadora ?? null,
-          prazoAlt: melhor?.prazo ?? null,
+          prazoAlt: prazoAlt || null,
+          ganhoPrazo,
           detalhesAlt: melhor?.detalhes ?? null,
           temOp,
           economia,
@@ -332,13 +362,13 @@ export default function OportunidadeOrigemPage() {
     const mapaDestino = new Map();
     for (const c of comOp) {
       const k = `${c.cidadeDestino}/${c.ufDestino}`;
-      const v = mapaDestino.get(k) || { chave: k, ctes: 0, economia: 0, prazoSoma: 0, prazoN: 0 };
+      const v = mapaDestino.get(k) || { chave: k, ctes: 0, economia: 0, ganhoSoma: 0, ganhoN: 0 };
       v.ctes += 1; v.economia += c.economia;
-      if (c.prazoAlt > 0) { v.prazoSoma += c.prazoAlt; v.prazoN += 1; }
+      if (c.ganhoPrazo != null) { v.ganhoSoma += c.ganhoPrazo; v.ganhoN += 1; }
       mapaDestino.set(k, v);
     }
     const rankingDestino = Array.from(mapaDestino.values())
-      .map((v) => ({ ...v, economia: Math.round(v.economia * 100) / 100, prazoMedio: v.prazoN > 0 ? v.prazoSoma / v.prazoN : 0 }))
+      .map((v) => ({ ...v, economia: Math.round(v.economia * 100) / 100, ganhoPrazoMedio: v.ganhoN > 0 ? v.ganhoSoma / v.ganhoN : null }))
       .sort((a, b) => b.economia - a.economia).slice(0, 20);
 
     const mapaTransp = new Map();
@@ -491,7 +521,7 @@ export default function OportunidadeOrigemPage() {
               <div className="panel-title" style={{ marginBottom: '0.75rem' }}>Top 20 destinos — onde mais economizaria saindo de {origemAlt.label}</div>
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
-                  <thead><tr><th>#</th><th>Destino</th><th>CT-es</th><th>Economia total</th><th>Economia / CTe</th><th>Prazo Itajaí médio</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead>
+                  <thead><tr><th>#</th><th>Destino</th><th>CT-es</th><th>Economia total</th><th>Economia / CTe</th><th>Ganho prazo médio</th><th style={{ minWidth: 120 }}>Visual</th></tr></thead>
                   <tbody>
                     {resultado.rankingDestino.map((r, i) => (
                       <tr key={r.chave}>
@@ -500,7 +530,9 @@ export default function OportunidadeOrigemPage() {
                         <td>{fmtN(r.ctes)}</td>
                         <td className="negativo" style={{ fontWeight: 700 }}>{fmt(r.economia)}</td>
                         <td>{fmt(r.ctes > 0 ? r.economia / r.ctes : 0)}</td>
-                        <td>{r.prazoMedio > 0 ? `${r.prazoMedio.toFixed(1)} dias` : '—'}</td>
+                        <td style={{ color: r.ganhoPrazoMedio > 0 ? '#04C7A4' : r.ganhoPrazoMedio < 0 ? '#e67e22' : '#94a3b8' }}>
+                          {r.ganhoPrazoMedio == null ? '—' : r.ganhoPrazoMedio > 0 ? `−${r.ganhoPrazoMedio.toFixed(1)}d` : r.ganhoPrazoMedio < 0 ? `+${Math.abs(r.ganhoPrazoMedio).toFixed(1)}d` : '0d'}
+                        </td>
                         <td><Barra valor={r.economia} maximo={maxDestino} cor="#9b1111" /></td>
                       </tr>
                     ))}
@@ -549,7 +581,7 @@ export default function OportunidadeOrigemPage() {
                       <th>Transp. de {origemAlt.cidade}</th>
                       <Th campo="valorAlt" label={`Custo de ${origemAlt.cidade}`} />
                       <Th campo="economia" label="Economia" />
-                      <th>Prazo Itajaí</th>
+                      <th>Prazo (real → Itajaí)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -569,7 +601,10 @@ export default function OportunidadeOrigemPage() {
                             <td style={{ color: '#04C7A4', fontWeight: 600 }}>{c.transpAlt || '—'}</td>
                             <td>{c.valorAlt != null ? fmt(c.valorAlt) : '—'}</td>
                             <td className={c.temOp ? 'negativo' : ''} style={{ fontWeight: c.temOp ? 700 : 400 }}>{c.temOp ? fmt(c.economia) : '—'}</td>
-                            <td style={{ whiteSpace: 'nowrap' }}>{c.prazoAlt > 0 ? `${c.prazoAlt} dias` : '—'}</td>
+                            <td style={{ whiteSpace: 'nowrap', color: c.ganhoPrazo > 0 ? '#04C7A4' : c.ganhoPrazo < 0 ? '#e67e22' : '#64748b' }}>
+                              {c.prazoReal > 0 ? `${c.prazoReal}d` : '?'} → {c.prazoAlt > 0 ? `${c.prazoAlt}d` : '?'}
+                              {c.ganhoPrazo != null && c.ganhoPrazo !== 0 && <span> ({c.ganhoPrazo > 0 ? `−${c.ganhoPrazo}d` : `+${Math.abs(c.ganhoPrazo)}d`})</span>}
+                            </td>
                           </tr>
                           {aberto && (
                             <tr>
