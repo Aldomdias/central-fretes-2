@@ -1710,14 +1710,24 @@ export async function carregarMunicipiosIbgeDb() {
   const supabase = ensureClient();
 
   try {
-    const { data, error } = await supabase
-      .from('ibge_municipios')
-      .select('*')
-      .limit(7000);
+    const PAGE = 1000; // limite padrao de linhas por requisicao do PostgREST
+    const linhas = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('ibge_municipios')
+        .select('*')
+        .range(from, from + PAGE - 1);
 
-    if (error) return [];
+      if (error) return linhas.length ? linhas.map(normalizeMunicipioIbgeRow).filter(Boolean) : [];
 
-    return (data || [])
+      const lote = data || [];
+      linhas.push(...lote);
+      if (lote.length < PAGE) break;
+      from += PAGE;
+    }
+
+    return linhas
       .map(normalizeMunicipioIbgeRow)
       .filter(Boolean)
       .sort((a, b) => `${a.cidade}/${a.uf}`.localeCompare(`${b.cidade}/${b.uf}`, 'pt-BR'));
