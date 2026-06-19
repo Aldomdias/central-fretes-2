@@ -38,6 +38,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'perda-realizado',      label: 'Perda por Transp. Mais Cara', grupo: 'Transportadoras' },
   { chave: 'oportunidade-origem', label: 'Oportunidade de Origem',       grupo: 'Transportadoras' },
   { chave: 'oportunidade-transportadora', label: 'Oportunidade Transportadora', grupo: 'Transportadoras' },
+  { chave: 'simular-saida-transportadora', label: 'Simular Saída de Transportadora', grupo: 'Transportadoras' },
   { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
 ];
@@ -66,6 +67,7 @@ export const PERFIS_USUARIO = {
       'perda-realizado',
       'oportunidade-origem',
       'oportunidade-transportadora',
+      'simular-saida-transportadora',
       'formatacao',
       'importar-template',
       'consulta-ibge',
@@ -114,6 +116,7 @@ export const PERFIS_USUARIO = {
       'perda-realizado',
       'oportunidade-origem',
       'oportunidade-transportadora',
+      'simular-saida-transportadora',
     ],
   },
 };
