@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarBaseCompletaDb } from '../services/freteDatabaseService';
+import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
+import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
 
 const ORIGENS_ALTERNATIVAS = [
-  { label: 'Itajaí / SC', cidade: 'ITAJAI', uf: 'SC', ibge: '4208302' },
+  { label: 'Itajaí / SC', cidade: 'Itajaí', uf: 'SC', ibge: '4208203' },
 ];
 
 const PAGE_SIZE = 200;
@@ -32,7 +33,8 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
     } else if (competencia) {
       q = q.eq('competencia', competencia);
     }
-    if (canal) q = q.ilike('canal', `%${canal}%`);
+    // canal real fica em canal_original (canal costuma vir "A DEFINIR")
+    if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
     const { data, error } = await q;
     if (error) throw new Error(`Erro ao carregar CT-es: ${error.message}`);
     const lote = data || [];
@@ -44,17 +46,32 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
   return filtrarCpComercialCte(acumulado).slice(0, limite);
 }
 
-function simularDeOrigem(cte, transportadoras, origemAlt) {
+function normCidade(v) {
+  return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function simularDeOrigem(cte, transportadoras, origemAlt, ibgeDestino) {
+  // Mantém todos os números do CTe (peso, NF, destino) e troca SÓ a origem
+  // para o CD alternativo (Itajaí). Resolve o canal real (ignora "A DEFINIR").
+  const canalReal = cte.canal_original && normCidade(cte.canal) === 'ADEFINIR'
+    ? cte.canal_original
+    : (cte.canal || cte.canal_original || '');
+
   const cteAlt = {
     ...cte,
+    canal: canalReal,
+    canal_original: canalReal,
     cidade_origem: origemAlt.cidade,
     uf_origem: origemAlt.uf,
     ibge_origem: origemAlt.ibge || '',
     ibge_corrigido_origem: origemAlt.ibge || '',
+    ibge_destino: ibgeDestino || '',
+    ibge_corrigido_destino: ibgeDestino || '',
   };
 
   let melhor = null;
-  const statusCounts = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, OUTRO: 0 };
+  const statusCounts = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, ORIGEM_ERRADA: 0, OUTRO: 0 };
+  const cidadeAltNorm = normCidade(origemAlt.cidade);
 
   for (const transp of transportadoras) {
     const cteTestando = { ...cteAlt, transportadora: transp.nome, nome_transportadora: transp.nome };
@@ -69,6 +86,16 @@ function simularDeOrigem(cte, transportadoras, origemAlt) {
     statusCounts[st in statusCounts ? st : 'OUTRO'] += 1;
 
     if (st !== 'CALCULADO') continue;
+
+    // Garante que o motor usou MESMO a origem Itajaí (não caiu no fallback
+    // candidatas[0] de outra origem da transportadora).
+    const origemUsada = normCidade(resultado.detalhes_calculo?.origem_cidade);
+    if (origemUsada && cidadeAltNorm && !origemUsada.includes(cidadeAltNorm) && !cidadeAltNorm.includes(origemUsada)) {
+      statusCounts.CALCULADO -= 1;
+      statusCounts.ORIGEM_ERRADA += 1;
+      continue;
+    }
+
     const total = safeNum(resultado.valor_calculado);
     if (total <= 0) continue;
 
@@ -129,6 +156,13 @@ export default function OportunidadeOrigemPage() {
       const base = normalizarTransportadoras(await carregarBaseCompletaDb());
       if (!base.length) throw new Error('Nenhuma tabela de frete cadastrada.');
 
+      setProgresso('Carregando municípios IBGE...');
+      const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
+      const mapasIbge = montarMapasIbge(municipios);
+      // IBGE da origem alternativa (Itajaí) — resolve pelo mapa, com fallback fixo
+      const ibgeOrigemAlt = resolverIbgeLocal(origemAlt.cidade, origemAlt.uf, mapasIbge) || origemAlt.ibge || '';
+      const origemAltResolvida = { ...origemAlt, ibge: ibgeOrigemAlt };
+
       setProgresso('Carregando CT-es...');
       const ctes = await carregarCtes({
         competencia,
@@ -151,13 +185,29 @@ export default function OportunidadeOrigemPage() {
       setProgresso(`Simulando ${fmtN(ctesAlvo.length)} CT-es saindo de ${origemAlt.label}...`);
 
       const casos = [];
-      const diagTotal = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, OUTRO: 0 };
+      const diagTotal = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, ORIGEM_ERRADA: 0, OUTRO: 0, SEM_IBGE_DESTINO: 0 };
       for (let i = 0; i < ctesAlvo.length; i++) {
         const cte = ctesAlvo[i];
         const valorPago = safeNum(cte.valor_cte || cte.frete_pago || cte.valor_frete);
         const prazoReal = safeNum(cte.prazo_entrega || cte.prazo);
 
-        const { melhor: simulado, statusCounts } = simularDeOrigem(cte, base, origemAlt);
+        // Resolve o IBGE de destino do CTe (cidade+UF) — a base não o armazena
+        const ibgeDestino = resolverIbgeLocal(cte.cidade_destino || cte.destino, cte.uf_destino, mapasIbge);
+        if (!ibgeDestino) {
+          diagTotal.SEM_IBGE_DESTINO += 1;
+          casos.push({
+            chaveCte: cte.chave_cte || cte.chave || '', numeroCte: cte.numero_cte || cte.numero || cte.nro_cte || '',
+            emissao: cte.data_emissao || '', canal: cte.canal_original || cte.canal || '',
+            cidadeOrigem: cte.cidade_origem || cte.origem || '', ufOrigem: cte.uf_origem || '',
+            cidadeDestino: cte.cidade_destino || cte.destino || '', ufDestino: cte.uf_destino || '',
+            transportadoraReal: cte.transportadora || cte.nome_transportadora || '',
+            peso: safeNum(cte.peso_declarado || cte.peso), valorNf: safeNum(cte.valor_nf || cte.nf_venda),
+            valorPago, prazoReal, temOp: false, valorAlt: null, transpAlt: null, prazoAlt: null, economia: 0, economiaPrazo: 0,
+          });
+          continue;
+        }
+
+        const { melhor: simulado, statusCounts } = simularDeOrigem(cte, base, origemAltResolvida, ibgeDestino);
         for (const [k, v] of Object.entries(statusCounts)) diagTotal[k] = (diagTotal[k] || 0) + v;
         const temOp = Boolean(simulado && simulado.total > 0 && simulado.total < valorPago - TOLERANCIA);
 
@@ -308,7 +358,7 @@ export default function OportunidadeOrigemPage() {
           </div>
 
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#166534' }}>
-            <strong>Diagnóstico simulação:</strong> {fmtN(resultado.diagTotal?.CALCULADO || 0)} tentativas calculadas · {fmtN(resultado.diagTotal?.SEM_ORIGEM || 0)} sem origem Itajaí cadastrada · {fmtN(resultado.diagTotal?.SEM_ROTA || 0)} sem rota (falta IBGE destino?) · {fmtN(resultado.diagTotal?.SEM_FAIXA || 0)} sem faixa de peso · {fmtN(resultado.diagTotal?.SEM_TABELA || 0)} sem tabela.
+            <strong>Diagnóstico simulação:</strong> {fmtN(resultado.diagTotal?.CALCULADO || 0)} tentativas calculadas · {fmtN(resultado.diagTotal?.SEM_ORIGEM || 0)} transp. sem Itajaí no canal · {fmtN(resultado.diagTotal?.SEM_ROTA || 0)} Itajaí sem rota p/ destino · {fmtN(resultado.diagTotal?.SEM_FAIXA || 0)} sem faixa de peso · {fmtN(resultado.diagTotal?.ORIGEM_ERRADA || 0)} descartadas (origem ≠ Itajaí) · {fmtN(resultado.diagTotal?.SEM_IBGE_DESTINO || 0)} CT-es sem IBGE destino.
             &nbsp;|&nbsp; <strong>Como ler:</strong> Para cada CT-e que saiu de outra origem, simulamos o mesmo frete saindo de <strong>{origemAlt.label}</strong> com todas as transportadoras disponíveis.
             A coluna <em>Economia</em> mostra quanto custaria a menos — a perda por falta de estoque no CD.
           </div>
