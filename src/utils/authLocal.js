@@ -37,6 +37,8 @@ export const MODULOS_SISTEMA = [
   { chave: 'transportadoras', label: 'Transportadoras', grupo: 'Cadastros' },
   { chave: 'perda-realizado',      label: 'Perda por Transp. Mais Cara', grupo: 'Transportadoras' },
   { chave: 'oportunidade-origem', label: 'Oportunidade de Origem',       grupo: 'Transportadoras' },
+  { chave: 'oportunidade-transportadora', label: 'Oportunidade Transportadora', grupo: 'Transportadoras' },
+  { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
 ];
 
@@ -63,6 +65,7 @@ export const PERFIS_USUARIO = {
       'avaliacao-prazos',
       'perda-realizado',
       'oportunidade-origem',
+      'oportunidade-transportadora',
       'formatacao',
       'importar-template',
       'consulta-ibge',
@@ -88,7 +91,7 @@ export const PERFIS_USUARIO = {
   GESTOR_AUDITORIA_FRETES: {
     nome: 'Gestor de Auditoria de Fretes',
     descricao: 'Gestao de carteiras, produtividade, riscos, vencimentos e SLA.',
-    paginas: ['dashboard', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas'],
+    paginas: ['dashboard', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte'],
   },
   FINANCEIRO: {
     nome: 'Financeiro',
@@ -110,6 +113,7 @@ export const PERFIS_USUARIO = {
       'avaliacao-prazos',
       'perda-realizado',
       'oportunidade-origem',
+      'oportunidade-transportadora',
     ],
   },
 };

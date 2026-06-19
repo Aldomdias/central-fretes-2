@@ -820,14 +820,9 @@ async function buscarTrackingParaRealizado(rows = []) {
   const notas = [...new Set(rows.map((r) => apenasDigitosTracking(r.notaFiscal)).filter(Boolean))];
 
   // Número de CT-e fica como último recurso. Não deve ser usado quando a linha possui chave.
-  const numerosCteFallback = [...new Set(
-    rows
-      .filter((r) => !normalizarChaveLongaTracking(r.chaveCte) && !normalizarChaveLongaTracking(r.chaveNfe) && !apenasDigitosTracking(r.notaFiscal))
-      .map((r) => apenasDigitosTracking(r.numeroCte))
-      .filter(Boolean)
-  )];
+  const numerosCte = [...new Set(rows.map((r) => apenasDigitosTracking(r.numeroCte)).filter(Boolean))];
 
-  if (!chavesCte.length && !chavesNfe.length && !notas.length && !numerosCteFallback.length) return vazio;
+  if (!chavesCte.length && !chavesNfe.length && !notas.length && !numerosCte.length) return vazio;
 
   const supabase = getSupabaseClient();
   const mapaChaveCte = new Map();
@@ -904,7 +899,7 @@ async function buscarTrackingParaRealizado(rows = []) {
 
     if (chavesNfe.length) await consultarRawPorColuna('chave_nfe', chavesNfe, 'CHAVE_NFE');
     if (notas.length) await consultarRawPorColuna('nota_fiscal', notas, 'NOTA');
-    if (numerosCteFallback.length) await consultarRawPorColuna('cte_numero', numerosCteFallback, 'NUMERO_CTE');
+    if (numerosCte.length) await consultarRawPorColuna('cte_numero', numerosCte, 'NUMERO_CTE');
   } catch (error) {
     console.warn('Tracking no Supabase indisponível para enriquecer realizado.', error?.message || error);
     return { ...vazio, erro: error?.message || String(error || '') };
@@ -939,9 +934,8 @@ function obterTrackingDaLinha(row = {}, mapas) {
 
   // Número CT-e é fallback de segurança somente quando não há chaves/NF na linha do realizado.
   // Isso evita falso vínculo quando o número aparece dentro de outra chave CT-e.
-  if (!chaveCte && !chaveNfe && !nota && numeroCte) {
-    return mapas.mapaNumeroCte?.get(numeroCte) || null;
-  }
+  const porNumeroCte = numeroCte ? mapas.mapaNumeroCte?.get(numeroCte) : null;
+  if (porNumeroCte) return porNumeroCte;
 
   return null;
 }

@@ -131,14 +131,9 @@ export async function buscarTrackingParaRealizado(rows = []) {
   const chavesCte = [...new Set(rows.map((r) => chaveCteTracking(r)).filter((v) => v.length >= 20))];
   const chavesNfe = [...new Set(rows.map((r) => normalizarChaveLongaTracking(r.chaveNfe)).filter((v) => v.length >= 20))];
   const notas = [...new Set(rows.map((r) => apenasDigitosTracking(r.notaFiscal)).filter(Boolean))];
-  const numerosCteFallback = [...new Set(
-    rows
-      .filter((r) => !chaveCteTracking(r) && !normalizarChaveLongaTracking(r.chaveNfe) && !apenasDigitosTracking(r.notaFiscal))
-      .map((r) => apenasDigitosTracking(r.numeroCte))
-      .filter(Boolean)
-  )];
+  const numerosCte = [...new Set(rows.map((r) => apenasDigitosTracking(r.numeroCte)).filter(Boolean))];
 
-  if (!chavesCte.length && !chavesNfe.length && !notas.length && !numerosCteFallback.length) return vazio;
+  if (!chavesCte.length && !chavesNfe.length && !notas.length && !numerosCte.length) return vazio;
 
   const supabase = getSupabaseClient();
   const mapaChaveCte = new Map();
@@ -212,7 +207,7 @@ export async function buscarTrackingParaRealizado(rows = []) {
     if (erroRawChaves && !viewOk) throw erroRawChaves;
     if (chavesNfe.length) await consultarRawPorColuna('chave_nfe', chavesNfe, 'CHAVE_NFE');
     if (notas.length) await consultarRawPorColuna('nota_fiscal', notas, 'NOTA');
-    if (numerosCteFallback.length) await consultarRawPorColuna('cte_numero', numerosCteFallback, 'NUMERO_CTE');
+    if (numerosCte.length) await consultarRawPorColuna('cte_numero', numerosCte, 'NUMERO_CTE');
   } catch (error) {
     console.warn('Tracking no Supabase indisponivel para enriquecer realizado.', error?.message || error);
     return { ...vazio, erro: error?.message || String(error || '') };
@@ -229,7 +224,7 @@ export async function buscarTrackingParaRealizado(rows = []) {
   };
 }
 
-function obterTrackingDaLinha(row = {}, mapas) {
+export function obterTrackingDaLinha(row = {}, mapas) {
   if (!mapas) return null;
   const chaveCte = chaveCteTracking(row);
   const chaveNfe = normalizarChaveLongaTracking(row.chaveNfe);
@@ -245,9 +240,8 @@ function obterTrackingDaLinha(row = {}, mapas) {
   const porNota = nota ? mapas.mapaNota?.get(nota) : null;
   if (porNota) return porNota;
 
-  if (!chaveCte && !chaveNfe && !nota && numeroCte) {
-    return mapas.mapaNumeroCte?.get(numeroCte) || null;
-  }
+  const porNumeroCte = numeroCte ? mapas.mapaNumeroCte?.get(numeroCte) : null;
+  if (porNumeroCte) return porNumeroCte;
 
   return null;
 }

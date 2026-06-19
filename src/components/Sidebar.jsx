@@ -52,6 +52,8 @@ const menuPrincipal = [
   { chave: 'tratativas',         label: 'Tratativas' },
   { chave: 'perda-realizado',      label: 'Perda por Transp. Mais Cara' },
   { chave: 'oportunidade-origem', label: 'Oportunidade de Origem' },
+  { chave: 'oportunidade-transportadora', label: 'Oportunidade Transportadora' },
+  { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e' },
   { chave: 'consulta-ibge',      label: 'Consulta IBGE' },
   { chave: 'ferramentas',        label: 'Ferramentas' },
 ];

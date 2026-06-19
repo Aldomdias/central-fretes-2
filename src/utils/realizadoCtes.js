@@ -426,12 +426,20 @@ export async function parseRealizadoCtesFile(file, opcoesImportacao) {
   }
 
   const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, raw: false });
-  const sheetName = workbook.SheetNames.find((name) => normalizeHeaderRealizado(name) === 'registros') || workbook.SheetNames[0];
-  const sheet = workbook.Sheets[sheetName];
+  let workbook;
+  try {
+    workbook = XLSX.read(buffer, { type: 'array', cellDates: false, raw: false });
+  } catch (e) {
+    throw new Error(`Não consegui ler "${file.name || 'arquivo'}". Ele pode estar protegido por senha, corrompido ou num formato não suportado. Abra no Excel e salve como "Pasta de Trabalho do Excel (.xlsx)". Detalhe: ${e.message}`);
+  }
+
+  const nomesAbas = workbook?.SheetNames || [];
+  const sheetName = nomesAbas.find((name) => normalizeHeaderRealizado(name) === 'registros') || nomesAbas[0];
+  const sheet = sheetName ? workbook.Sheets[sheetName] : null;
 
   if (!sheet) {
-    throw new Error('Não encontrei nenhuma aba válida no arquivo enviado.');
+    const detectadas = nomesAbas.length ? nomesAbas.join(', ') : '(nenhuma)';
+    throw new Error(`Não encontrei nenhuma aba de dados em "${file.name || 'arquivo'}". Abas detectadas: ${detectadas}. Se o arquivo abre no Excel, salve novamente como "Pasta de Trabalho do Excel (.xlsx)" (não HTML/CSV renomeado) e tente de novo.`);
   }
 
   const refInfo = corrigirRefDaAba(sheet);
