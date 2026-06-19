@@ -12,6 +12,21 @@ function safeNum(v) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 
 function fmt(v) { return safeNum(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 function fmtN(v) { return safeNum(v).toLocaleString('pt-BR', { maximumFractionDigits: 0 }); }
 function pct(v) { return `${safeNum(v).toFixed(1).replace('.', ',')}%`; }
+function fmtDias(v) {
+  if (v == null || !Number.isFinite(Number(v))) return '—';
+  const n = Number(v);
+  const txt = Number.isInteger(n) ? String(n) : n.toFixed(1).replace('.', ',');
+  return `${txt} d`;
+}
+function chaveCurta(chave) {
+  const s = String(chave || '');
+  return s.length > 12 ? `…${s.slice(-10)}` : (s || '—');
+}
+function fmtData(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? String(v).slice(0, 10) : d.toLocaleDateString('pt-BR');
+}
 function norm(v) {
   return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
@@ -123,6 +138,29 @@ function simularSubstitutas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, 
   return resultados;
 }
 
+// Roda o motor para UMA transportadora específica (a atual) — usado para pegar
+// o prazo de tabela e o valor que a própria transportadora deveria cobrar.
+function calcComTransportadora(cte, base, nome, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal) {
+  const canalReal = canalRealDe(cte);
+  const cteBase = {
+    ...cte,
+    canal: canalReal,
+    canal_original: canalReal,
+    ibge_origem: ibgeOrigemReal || '',
+    ibge_corrigido_origem: ibgeOrigemReal || '',
+    ibge_destino: ibgeDestino || '',
+    ibge_corrigido_destino: ibgeDestino || '',
+    transportadora: nome,
+    nome_transportadora: nome,
+  };
+  let r;
+  try { r = processarCte(cteBase, base); } catch { return null; }
+  if (r.status_calculo !== 'CALCULADO') return null;
+  if (!cidadeBate(normCmp(r.detalhes_calculo?.origem_cidade), normCmp(cidadeOrigemReal))) return null;
+  const total = safeNum(r.valor_calculado);
+  return { total, prazo: r.detalhes_calculo?.rota_prazo != null ? safeNum(r.detalhes_calculo.rota_prazo) : null };
+}
+
 const LIMITES_PADRAO = '6000';
 
 async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite, onProgress }) {
@@ -162,6 +200,92 @@ function Card({ label, valor, sub, cor, destaque }) {
   );
 }
 
+function DetalheRota({ linha }) {
+  const MAX_VIAGENS = 200;
+  const viagens = linha.viagens || [];
+  const mostradas = viagens.slice(0, MAX_VIAGENS);
+  const thStyle = { textAlign: 'left', padding: '4px 8px', fontSize: '0.72rem', color: '#64748b', borderBottom: '1px solid #e2e8f0' };
+  const tdStyle = { padding: '4px 8px', fontSize: '0.78rem', borderBottom: '1px solid #f1f5f9' };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#334155', marginBottom: 6 }}>
+          Transportadoras que cobrem esta rota ({linha.qtdSubstitutos})
+        </div>
+        {linha.qtdSubstitutos === 0
+          ? <div style={{ fontSize: '0.8rem', color: '#9b1111' }}>Nenhuma transportadora cadastrada cobre esta rota.</div>
+          : (
+            <table style={{ width: '100%', maxWidth: 680, borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Transportadora</th>
+                  <th style={thStyle}>Cobertura</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>Custo médio/CT-e</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>Prazo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linha.substitutos.map((s) => {
+                  const principal = s.transportadora === linha.substitutoPrincipal;
+                  const full = s.ctesCobertos >= linha.ctes;
+                  return (
+                    <tr key={s.transportadora}>
+                      <td style={{ ...tdStyle, fontWeight: principal ? 700 : 400 }}>
+                        {s.transportadora}
+                        {principal && <span style={{ marginLeft: 6, color: '#04C7A4', fontSize: '0.68rem', fontWeight: 700 }}>★ principal</span>}
+                      </td>
+                      <td style={{ ...tdStyle, color: full ? '#047857' : '#b45309' }}>{fmtN(s.ctesCobertos)}/{fmtN(linha.ctes)} CT-es</td>
+                      <td style={{ ...tdStyle, textAlign: 'right' }}>{fmt(s.custoMedio)}</td>
+                      <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtDias(s.prazoMedio)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#334155', marginBottom: 6 }}>
+          Viagens ({fmtN(viagens.length)}{viagens.length > MAX_VIAGENS ? ` — mostrando as ${MAX_VIAGENS} primeiras` : ''})
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Emissão</th>
+                <th style={thStyle}>CT-e</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>NF</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Peso</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Pago</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Tabela atual</th>
+                <th style={thStyle}>Substituta</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Valor subst.</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Prazo at./sub.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mostradas.map((v, i) => (
+                <tr key={v.chave || i}>
+                  <td style={tdStyle}>{fmtData(v.data)}</td>
+                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.72rem' }}>{chaveCurta(v.chave)}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{fmt(v.nf)}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtN(v.peso)} kg</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{fmt(v.valorPago)}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: '#94a3b8' }}>{v.valorTabelaAtual != null ? fmt(v.valorTabelaAtual) : '—'}</td>
+                  <td style={tdStyle}>{v.substituta || <span style={{ color: '#9b1111' }}>nenhum</span>}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: v.valorSub != null && v.valorSub < v.valorPago ? '#047857' : '#1e293b', fontWeight: 600 }}>{v.valorSub != null ? fmt(v.valorSub) : '—'}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtDias(v.prazoAtual)} / {fmtDias(v.prazoSub)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SimularSaidaTransportadoraPage() {
   const [competencia, setCompetencia] = useState('');
   const [dataInicio, setDataInicio] = useState('');
@@ -178,6 +302,15 @@ export default function SimularSaidaTransportadoraPage() {
   const [reajustePct, setReajustePct] = useState('20');
   const [statusSim, setStatusSim] = useState('idle');
   const [resultado, setResultado] = useState(null);
+  const [rotasAbertas, setRotasAbertas] = useState(() => new Set());
+
+  function toggleRota(rotaKey) {
+    setRotasAbertas((prev) => {
+      const next = new Set(prev);
+      if (next.has(rotaKey)) next.delete(rotaKey); else next.add(rotaKey);
+      return next;
+    });
+  }
 
   async function carregar() {
     setStatusCarga('carregando'); setErro(''); setBase(null); setResultado(null); setTransportadora('');
@@ -225,7 +358,7 @@ export default function SimularSaidaTransportadoraPage() {
 
   async function simularSaida() {
     if (!base || !transportadora) return;
-    setStatusSim('carregando'); setErro(''); setResultado(null);
+    setStatusSim('carregando'); setErro(''); setResultado(null); setRotasAbertas(new Set());
     try {
       const { ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge } = base;
       const ctesDaTransp = ctes.filter((c) => norm(c.transportadora || c.nome_transportadora) === norm(transportadora));
@@ -250,12 +383,25 @@ export default function SimularSaidaTransportadoraPage() {
 
         const rotaKey = `${norm(cidadeOrigem)}|${ufOrigem}=>${norm(cidadeDestino)}|${ufDestino}`;
         if (!porRota.has(rotaKey)) {
-          porRota.set(rotaKey, { rotaKey, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino, ctes: 0, valorPagoTotal: 0, melhorTotal: 0, semSubstituto: 0, candidatosUsados: new Map() });
+          porRota.set(rotaKey, {
+            rotaKey, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino,
+            ctes: 0, valorPagoTotal: 0, melhorTotal: 0, semSubstituto: 0, candidatosUsados: new Map(),
+            prazoAtualSoma: 0, prazoAtualN: 0, prazoSubSoma: 0, prazoSubN: 0, viagens: [],
+            substitutosRota: new Map(),
+          });
         }
         const rota = porRota.get(rotaKey);
         rota.ctes += 1;
         rota.valorPagoTotal += valorPago;
 
+        // prazo/tabela da própria transportadora atual (referência para auditar)
+        const atual = (ibgeDestino && ibgeOrigemReal)
+          ? calcComTransportadora(cte, baseFrete, transportadora, ibgeOrigemReal, ibgeDestino, cidadeOrigem)
+          : null;
+        const prazoAtual = atual?.prazo ?? null;
+        if (prazoAtual != null) { rota.prazoAtualSoma += prazoAtual; rota.prazoAtualN += 1; }
+
+        let melhor = null;
         if (!ibgeDestino || !ibgeOrigemReal) {
           semIbge += 1;
           rota.melhorTotal += valorPago;
@@ -266,15 +412,38 @@ export default function SimularSaidaTransportadoraPage() {
           const candidatas = [];
           if (setDestino) for (const nome of setOrigem) if (setDestino.has(nome)) { const t = mapBaseByNome.get(nome); if (t) candidatas.push(t); }
           const resultados = simularSubstitutas(cte, baseFrete, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem, transportadora);
-          const melhor = resultados[0];
+          melhor = resultados[0] || null;
+          // todas as transportadoras que cobrem esta rota (cobertura + custo + prazo)
+          for (const res of resultados) {
+            const cur = rota.substitutosRota.get(res.transportadora)
+              || { transportadora: res.transportadora, ctesCobertos: 0, somaTotal: 0, prazoSoma: 0, prazoN: 0 };
+            cur.ctesCobertos += 1;
+            cur.somaTotal += res.total;
+            if (res.prazo != null) { cur.prazoSoma += res.prazo; cur.prazoN += 1; }
+            rota.substitutosRota.set(res.transportadora, cur);
+          }
           if (melhor) {
             rota.melhorTotal += melhor.total;
             rota.candidatosUsados.set(melhor.transportadora, (rota.candidatosUsados.get(melhor.transportadora) || 0) + 1);
+            if (melhor.prazo != null) { rota.prazoSubSoma += melhor.prazo; rota.prazoSubN += 1; }
           } else {
             rota.melhorTotal += valorPago;
             rota.semSubstituto += 1;
           }
         }
+
+        rota.viagens.push({
+          chave: cte.chave_cte || '',
+          data: cte.data_emissao || '',
+          nf: safeNum(cte.valor_nf || cte.nf_venda),
+          peso: safeNum(cte.peso_declarado || cte.peso),
+          valorPago,
+          valorTabelaAtual: atual ? atual.total : null,
+          prazoAtual,
+          substituta: melhor ? melhor.transportadora : null,
+          valorSub: melhor ? melhor.total : null,
+          prazoSub: melhor ? melhor.prazo : null,
+        });
 
         if (i % 50 === 0 || i === ctesDaTransp.length - 1) {
           const feitos = i + 1;
@@ -284,11 +453,25 @@ export default function SimularSaidaTransportadoraPage() {
         }
       }
 
-      const linhas = Array.from(porRota.values()).map((r) => ({
-        ...r,
-        diferenca: r.melhorTotal - r.valorPagoTotal,
-        substitutoPrincipal: [...r.candidatosUsados.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null,
-      }));
+      const linhas = Array.from(porRota.values()).map((r) => {
+        const substitutos = [...r.substitutosRota.values()]
+          .map((s) => ({
+            transportadora: s.transportadora,
+            ctesCobertos: s.ctesCobertos,
+            custoMedio: s.ctesCobertos ? s.somaTotal / s.ctesCobertos : 0,
+            prazoMedio: s.prazoN ? s.prazoSoma / s.prazoN : null,
+          }))
+          .sort((a, b) => (b.ctesCobertos - a.ctesCobertos) || (a.custoMedio - b.custoMedio));
+        return {
+          ...r,
+          diferenca: r.melhorTotal - r.valorPagoTotal,
+          substitutoPrincipal: [...r.candidatosUsados.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+          prazoAtualMedio: r.prazoAtualN ? r.prazoAtualSoma / r.prazoAtualN : null,
+          prazoSubMedio: r.prazoSubN ? r.prazoSubSoma / r.prazoSubN : null,
+          substitutos,
+          qtdSubstitutos: substitutos.length,
+        };
+      });
       linhas.sort((a, b) => b.valorPagoTotal - a.valorPagoTotal);
 
       const custoAtual = linhas.reduce((s, l) => s + l.valorPagoTotal, 0);
@@ -298,6 +481,14 @@ export default function SimularSaidaTransportadoraPage() {
       const custoComReajuste = custoAtual * (1 + pctReajuste / 100);
       const aumentoPctSubstitutos = custoAtual > 0 ? ((custoComSubstitutos - custoAtual) / custoAtual) * 100 : 0;
       const economiaVsReajuste = custoComReajuste - custoComSubstitutos;
+
+      // prazo médio ponderado por CT-e (só onde os dois lados têm prazo de tabela)
+      const prazoAtualSomaTot = linhas.reduce((s, l) => s + l.prazoAtualSoma, 0);
+      const prazoAtualNTot = linhas.reduce((s, l) => s + l.prazoAtualN, 0);
+      const prazoSubSomaTot = linhas.reduce((s, l) => s + l.prazoSubSoma, 0);
+      const prazoSubNTot = linhas.reduce((s, l) => s + l.prazoSubN, 0);
+      const prazoAtualMedioGeral = prazoAtualNTot ? prazoAtualSomaTot / prazoAtualNTot : null;
+      const prazoSubMedioGeral = prazoSubNTot ? prazoSubSomaTot / prazoSubNTot : null;
 
       setResultado({
         linhas,
@@ -311,6 +502,8 @@ export default function SimularSaidaTransportadoraPage() {
         aumentoPctSubstitutos,
         economiaVsReajuste,
         pctReajuste,
+        prazoAtualMedioGeral,
+        prazoSubMedioGeral,
       });
       setStatusSim('concluido'); setProgresso('');
     } catch (e) {
@@ -398,6 +591,15 @@ export default function SimularSaidaTransportadoraPage() {
             <Card label={`Custo c/ reajuste (+${pct(resultado.pctReajuste)})`} valor={fmt(resultado.custoComReajuste)} cor="#9b1111" />
             <Card label="Custo c/ substitutas" valor={fmt(resultado.custoComSubstitutos)} sub={pct(resultado.aumentoPctSubstitutos) + ' vs. custo atual'} cor="#04C7A4" />
             <Card label="Economia vs. aceitar reajuste" valor={fmt(resultado.economiaVsReajuste)} cor={resultado.economiaVsReajuste >= 0 ? '#04C7A4' : '#9b1111'} destaque />
+            {(() => {
+              const pa = resultado.prazoAtualMedioGeral, ps = resultado.prazoSubMedioGeral;
+              const delta = (pa != null && ps != null) ? ps - pa : null;
+              const corPrazo = delta == null ? '#1e293b' : (delta <= 0 ? '#04C7A4' : '#9b1111');
+              const sub = delta == null ? 'prazo de tabela'
+                : delta === 0 ? 'mesmo prazo'
+                : (delta < 0 ? `${fmtDias(-delta)} mais rápido` : `${fmtDias(delta)} mais lento`);
+              return <Card label="Prazo médio (atual → subst.)" valor={`${fmtDias(pa)} → ${fmtDias(ps)}`} sub={sub} cor={corPrazo} />;
+            })()}
           </div>
 
           {resultado.semIbge > 0 && (
@@ -424,28 +626,60 @@ export default function SimularSaidaTransportadoraPage() {
                     <th>Custo atual</th>
                     <th>Custo c/ substituta</th>
                     <th>Diferença</th>
-                    <th>Substituta principal</th>
+                    <th>Prazo (atual → subst.)</th>
+                    <th>Substitutas</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {resultado.linhas.map((l) => (
-                    <tr key={l.rotaKey}>
-                      <td>{l.cidadeOrigem}/{l.ufOrigem}</td>
-                      <td>{l.cidadeDestino}/{l.ufDestino}</td>
-                      <td>{fmtN(l.ctes)}</td>
-                      <td>{fmt(l.valorPagoTotal)}</td>
-                      <td style={{ color: l.diferenca <= TOLERANCIA ? '#04C7A4' : '#9b1111', fontWeight: 600 }}>{fmt(l.melhorTotal)}</td>
-                      <td style={{ color: l.diferenca <= TOLERANCIA ? '#04C7A4' : '#9b1111' }}>
-                        {l.diferenca > TOLERANCIA ? `+${fmt(l.diferenca)}` : (l.diferenca < -TOLERANCIA ? `−${fmt(-l.diferenca)}` : '—')}
-                      </td>
-                      <td style={{ fontSize: '0.8rem' }}>
-                        {l.semSubstituto > 0
-                          ? <span style={{ color: '#9b1111', fontWeight: 600 }}>nenhum encontrado{l.semSubstituto < l.ctes ? ` (${l.semSubstituto}/${l.ctes})` : ''}</span>
-                          : (l.substitutoPrincipal || '—')}
-                      </td>
-                    </tr>
-                  ))}
-                  {!resultado.linhas.length && <tr><td colSpan={7}>Sem rotas para exibir.</td></tr>}
+                  {resultado.linhas.map((l) => {
+                    const aberta = rotasAbertas.has(l.rotaKey);
+                    const deltaPrazo = (l.prazoAtualMedio != null && l.prazoSubMedio != null) ? l.prazoSubMedio - l.prazoAtualMedio : null;
+                    const corPrazo = deltaPrazo == null ? '#64748b' : (deltaPrazo <= 0 ? '#04C7A4' : '#9b1111');
+                    return (
+                      <React.Fragment key={l.rotaKey}>
+                        <tr style={aberta ? { background: '#f8fafc' } : undefined}>
+                          <td>{l.cidadeOrigem}/{l.ufOrigem}</td>
+                          <td>{l.cidadeDestino}/{l.ufDestino}</td>
+                          <td>{fmtN(l.ctes)}</td>
+                          <td>{fmt(l.valorPagoTotal)}</td>
+                          <td style={{ color: l.diferenca <= TOLERANCIA ? '#04C7A4' : '#9b1111', fontWeight: 600 }}>{fmt(l.melhorTotal)}</td>
+                          <td style={{ color: l.diferenca <= TOLERANCIA ? '#04C7A4' : '#9b1111' }}>
+                            {l.diferenca > TOLERANCIA ? `+${fmt(l.diferenca)}` : (l.diferenca < -TOLERANCIA ? `−${fmt(-l.diferenca)}` : '—')}
+                          </td>
+                          <td style={{ fontSize: '0.82rem' }}>
+                            {fmtDias(l.prazoAtualMedio)} → <span style={{ color: corPrazo, fontWeight: 600 }}>{fmtDias(l.prazoSubMedio)}</span>
+                          </td>
+                          <td style={{ fontSize: '0.8rem' }}>
+                            {l.qtdSubstitutos === 0
+                              ? <span style={{ color: '#9b1111', fontWeight: 600 }}>nenhum encontrado</span>
+                              : (
+                                <span>
+                                  <span style={{ fontWeight: 600 }}>{l.substitutoPrincipal || '—'}</span>
+                                  {l.qtdSubstitutos === 1
+                                    ? <span style={{ marginLeft: 6, color: '#b45309', background: '#fef3c7', borderRadius: 6, padding: '1px 6px', fontSize: '0.72rem', fontWeight: 600 }}>única opção</span>
+                                    : <button type="button" onClick={() => toggleRota(l.rotaKey)} style={{ marginLeft: 6, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '1px 6px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}>+{l.qtdSubstitutos - 1} outras</button>}
+                                  {l.semSubstituto > 0 && <span style={{ marginLeft: 6, color: '#9b1111', fontSize: '0.72rem' }}>({l.semSubstituto} CT-e sem cobertura)</span>}
+                                </span>
+                              )}
+                          </td>
+                          <td>
+                            <button type="button" className="sim-tab" onClick={() => toggleRota(l.rotaKey)} style={{ padding: '2px 10px', fontSize: '0.78rem' }}>
+                              {aberta ? 'Fechar' : 'Detalhes'}
+                            </button>
+                          </td>
+                        </tr>
+                        {aberta && (
+                          <tr>
+                            <td colSpan={9} style={{ background: '#f8fafc', padding: '12px 16px' }}>
+                              <DetalheRota linha={l} />
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  {!resultado.linhas.length && <tr><td colSpan={9}>Sem rotas para exibir.</td></tr>}
                 </tbody>
               </table>
             </div>
