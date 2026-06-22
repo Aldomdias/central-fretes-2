@@ -2664,7 +2664,9 @@ export default function TabelasNegociacaoPage() {
                                   <td>{numeroOuVazio(item.percentual)}</td>
                                   <td>{numeroOuVazio(item.freteMinimo)}</td>
                                   <td>{numeroOuVazio(item.advalorem)}</td>
-                                  <td>{Number(item.excesso || 0) > 0 ? item.excesso + ' kg · R$ ' + (item.valorExcedente || 0) : '-'}</td>
+                                  <td>{Number(item.valorExcedente || 0) > 0
+                                    ? `R$ ${item.valorExcedente}/kg${Number(item.excesso || 0) > 0 ? ` (acima de ${item.excesso} kg)` : ''}`
+                                    : (Number(item.excesso || 0) > 0 ? item.excesso + ' kg' : '-')}</td>
                                   <td>{item.prazo || '-'}</td>
                                 </tr>
                               );

@@ -81,7 +81,10 @@ function numero(valor, padrao = '') {
   texto = texto
     .replace(/\s/g, '')
     .replace(/R\$/gi, '')
-    .replace(/%/g, '');
+    .replace(/%/g, '')
+    // Remove unidades/letras que vêm no texto formatado da planilha (ex.: "1,93 kg",
+    // "30 dias"). Sem isso, Number("1.93kg") = NaN e o valor (ex.: R$/kg) era perdido.
+    .replace(/[^0-9.,-]/g, '');
 
   const temVirgula = texto.includes(',');
   const temPonto = texto.includes('.');
