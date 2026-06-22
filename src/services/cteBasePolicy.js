@@ -166,6 +166,11 @@ export function resolverOpcoesBaseCte(opcoes = {}) {
     incluirCpComercial: opcoes.incluirCpComercial === undefined
       ? configuracao.incluirCpComercial
       : opcoes.incluirCpComercial === true,
+    // Quando true, ignora a whitelist de tomadores (CPX, ITR, GP PNEUS, GRIP,
+    // CANTU) e aceita tomador vazio. EBAZAR / CPS LOG / CP COMERCIAL continuam
+    // controlados pelas próprias flags. Usado pelo simulador do realizado para
+    // origens cujos CT-es têm tomadores fora da lista padrão.
+    incluirTodosTomadores: opcoes.incluirTodosTomadores === true,
   };
 }
 
@@ -224,7 +229,7 @@ export function avaliarCteParaBase(row = {}, opcoes = {}) {
     ...base,
   });
 
-  if (!tomador || tomador === '-') {
+  if (!resolvidas.incluirTodosTomadores && (!tomador || tomador === '-')) {
     return rejeitar('tomador_vazio');
   }
 
@@ -241,6 +246,12 @@ export function avaliarCteParaBase(row = {}, opcoes = {}) {
   }
 
   if (resolvidas.incluirCpComercial && isCpComercialCte(row)) {
+    return { aceito: true, codigo: null, motivo: null, ...base };
+  }
+
+  // Modo "todos os tomadores": aceita qualquer tomador (inclusive vazio), pulando
+  // a whitelist padrão. As exclusões de EBAZAR/CPS LOG/CP COMERCIAL acima continuam.
+  if (resolvidas.incluirTodosTomadores) {
     return { aceito: true, codigo: null, motivo: null, ...base };
   }
 

@@ -35,7 +35,9 @@ import {
   aplicarPoliticaBaseCte,
   carregarConfiguracaoBaseCte,
   filtrarCpComercialCte,
+  particionarCtesPorPolitica,
   salvarConfiguracaoBaseCte,
+  TOMADORES_CTE_PADRAO,
 } from '../services/cteBasePolicy';
 import { resolverCubagemTracking } from '../utils/trackingCubagem';
 
@@ -1283,12 +1285,13 @@ function filtrarOpcoesRealizadoSim(
 
 function aplicarFiltrosPadraoRealizadoSim(
   rows = [],
-  { incluirCpsLog = false, incluirCpComercial = false } = {},
+  { incluirCpsLog = false, incluirCpComercial = false, incluirTodosTomadores = false } = {},
 ) {
   return aplicarPoliticaBaseCte(rows, {
     ocultarEbazar: true,
     incluirCpsLog,
     incluirCpComercial,
+    incluirTodosTomadores,
   });
 }
 
@@ -2970,6 +2973,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [incluirCpComercialRealizado, setIncluirCpComercialRealizado] = useState(
     () => carregarConfiguracaoBaseCte().incluirCpComercial,
   );
+  const [incluirTodosTomadoresRealizado, setIncluirTodosTomadoresRealizado] = useState(false);
   const [baseRealizadoTracking, setBaseRealizadoTracking] = useState('com_tracking'); // 'com_tracking' | 'todos'
   const [baseOficialRealizadoSelecionada, setBaseOficialRealizadoSelecionada] = useState([]);
   const [carregandoBaseOficialRealizado, setCarregandoBaseOficialRealizado] = useState(false);
@@ -4419,6 +4423,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         // Marque a opção na tela somente quando quiser analisar CPS LOG.
         incluirCpsLog: incluirCpsLogRealizado,
         incluirCpComercial: incluirCpComercialRealizado,
+        incluirTodosTomadores: incluirTodosTomadoresRealizado,
       });
 
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 70);
@@ -4469,6 +4474,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         rowsBrutosFiltrados = aplicarFiltrosPadraoRealizadoSim(rowsBrutos, {
           incluirCpsLog: incluirCpsLogRealizado,
           incluirCpComercial: incluirCpComercialRealizado,
+          incluirTodosTomadores: incluirTodosTomadoresRealizado,
         });
         rowsComIbgeBaseAntesCps = rowsBrutosFiltrados.map((row) => {
           const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
@@ -4526,7 +4532,38 @@ export default function SimuladorPage({ transportadoras = [] }) {
         const detalheMalha = !ehNegociacaoSelecionada
           ? ` Malha oficial usada: ${baseSelecionada.length} tabela(s), ${origensTabelaSelecionada.length} origem(ns), ${ufsDestinoTabelaSelecionada.length} UF(s) destino.`
           : '';
-        setErroSimulacao(`Nenhum CT-e encontrado para os filtros informados. Revise período, origem, UF, canal ou aumente o limite.${detalheMalha}${detalheEtapas}`);
+        // Quando o filtro padrão de tomadores zera toda a base (brutos > 0, mas
+        // aposFiltrosPadrao = 0), mostra o motivo e os tomadores encontrados para
+        // o usuário entender por que nenhum CT-e passou e como destravar.
+        let detalheTomadores = '';
+        if (rowsBrutos.length > 0 && rowsBrutosFiltrados.length === 0) {
+          const { ignorados } = particionarCtesPorPolitica(rowsBrutos, {
+            ocultarEbazar: true,
+            incluirCpsLog: incluirCpsLogRealizado,
+            incluirCpComercial: incluirCpComercialRealizado,
+            incluirTodosTomadores: incluirTodosTomadoresRealizado,
+          });
+          const porCodigo = new Map();
+          const porTomador = new Map();
+          ignorados.forEach((row) => {
+            porCodigo.set(row.codigoExclusao, (porCodigo.get(row.codigoExclusao) || 0) + 1);
+            const tom = String(row.tomadorExclusao || '').trim() || '(vazio)';
+            porTomador.set(tom, (porTomador.get(tom) || 0) + 1);
+          });
+          const motivoPrincipal = [...porCodigo.entries()].sort((a, b) => b[1] - a[1])[0];
+          const topTomadores = [...porTomador.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([nome, qtd]) => `${nome} (${qtd})`)
+            .join(', ');
+          const ehFiltroTomador = motivoPrincipal
+            && (motivoPrincipal[0] === 'tomador_nao_aceito' || motivoPrincipal[0] === 'tomador_vazio');
+          detalheTomadores = ` Todos os ${rowsBrutos.length.toLocaleString('pt-BR')} CT-es foram removidos pelo filtro padrão (a base mantém só os tomadores ${TOMADORES_CTE_PADRAO.join(', ')}). Tomadores encontrados: ${topTomadores || '—'}.`;
+          if (ehFiltroTomador && !incluirTodosTomadoresRealizado) {
+            detalheTomadores += ' Marque "Incluir todos os tomadores" em Expandir opções para simular estes CT-es.';
+          }
+        }
+        setErroSimulacao(`Nenhum CT-e encontrado para os filtros informados. Revise período, origem, UF, canal ou aumente o limite.${detalheTomadores}${detalheMalha}${detalheEtapas}`);
         finalizarProcessamentoUi('Sem CT-es', 'Nenhum CT-e foi encontrado para os filtros informados.', 100);
         return;
       }
@@ -6471,6 +6508,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <label className="sim-flag">
                   <input
                     type="checkbox"
+                    checked={incluirTodosTomadoresRealizado}
+                    onChange={(event) => setIncluirTodosTomadoresRealizado(event.target.checked)}
+                  />
+                  Incluir todos os tomadores (ignorar lista padrão)
+                </label>
+
+                <label className="sim-flag">
+                  <input
+                    type="checkbox"
                     checked={compararConcorrentesRealizado}
                     onChange={(event) => {
                       const marcado = event.target.checked;
@@ -6487,7 +6533,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </label>
 
                 <small style={{ color: '#64748b' }}>
-                  Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR, CPS LOG e CP COMERCIAL por padrão.
+                  Padrão recomendado: simular somente CT-es com Tracking vinculado, mantendo NF, volumes e cubagem rastreáveis. Em qualquer modo, o sistema mantém tomadores CPX, ITR e GP PNEUS, exclui EBAZAR, CPS LOG e CP COMERCIAL por padrão. Marque "Incluir todos os tomadores" quando a origem tiver CT-es de tomadores fora dessa lista (ex.: operações novas) e a simulação retornar zero por causa do filtro padrão.
                 </small>
               </div>
             )}
