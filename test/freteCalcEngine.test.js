@@ -44,6 +44,34 @@ test('faixa soma valor da faixa, percentual e excedente', () => {
   assert.equal(resultado.valorBase, 150);
 });
 
+test('faixa aplica o minimo da rota como piso quando a faixa vale zero', () => {
+  // Caso real: tabela só com ad valorem / import incompleto deixa a faixa em 0,
+  // mas a rota tem mínimo de R$ 246,19. O mínimo deve virar a base.
+  const resultado = calcularFreteFaixaPeso({
+    rota: { valorMinimoFrete: 246.19 },
+    cotacao: { valorFixo: 0, fretePercentual: 0, rsKg: 0, pesoMin: 0, pesoMax: 999999 },
+    pesoKg: 61.67,
+    valorNf: 2484.34,
+  });
+
+  assert.equal(resultado.componentesBase.valorFaixaComExcedente, 0);
+  assert.equal(resultado.componentesBase.minimoAplicavel, 246.19);
+  assert.equal(resultado.valorBase, 246.19);
+  assert.equal(resultado.componenteBase, 'freteMinimo');
+});
+
+test('faixa maior que o minimo prevalece sobre o minimo', () => {
+  const resultado = calcularFreteFaixaPeso({
+    rota: { valorMinimoFrete: 50 },
+    cotacao: { valorFixo: 100, fretePercentual: 2, pesoMin: 0, pesoMax: 100 },
+    pesoKg: 80,
+    valorNf: 1000,
+  });
+
+  assert.equal(resultado.valorBase, 120);
+  assert.equal(resultado.componenteBase, 'valorFaixaComExcedente');
+});
+
 test('taxas por destino prevalecem para GRIS e Ad Valorem e somam taxas fixas', () => {
   const taxas = resolverTaxas({
     generalidades: { gris: 0.3, adValorem: 0.2 },

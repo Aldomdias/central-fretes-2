@@ -242,7 +242,11 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
 
   const { minimoRota, minimoCotacao, minimoGeneralidade, minimoAplicavel } = resolverMinimoFrete({ rota, cotacao, generalidades });
   const valorFaixaComExcedente = valorFaixa + valorExcedente + valorPercentual;
-  const valorBase = valorFaixaComExcedente;
+  // O frete mínimo (rota/cotação/generalidade) é o piso da base, igual ao caminho
+  // PERCENTUAL (via escolherComponenteBase). Sem isso, faixas com valor 0 — tabela
+  // só com ad valorem ou import incompleto — ignoravam o mínimo e geravam frete
+  // irreal (quase zero), fazendo a tabela "vencer" 100% sem sentido.
+  const valorBase = Math.max(valorFaixaComExcedente, minimoAplicavel);
 
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
   const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras;
@@ -257,7 +261,7 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     valorExcedente,
     pesoLimiteExcedente,
     excedenteKg,
-    componenteBase: 'valorFaixaComExcedente',
+    componenteBase: valorBase > valorFaixaComExcedente ? 'freteMinimo' : 'valorFaixaComExcedente',
     componentesBase: {
       valorFaixa,
       valorExcedente,
