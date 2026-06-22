@@ -60,6 +60,20 @@ test('faixa aplica o minimo da rota como piso quando a faixa vale zero', () => {
   assert.equal(resultado.componenteBase, 'freteMinimo');
 });
 
+test('faixa aberta com R$/kg e sem limiar aplica o excedente desde o peso 0', () => {
+  // Modelo "Maior valor" da Verum: R$/kg base em "Excesso de peso", faixa 0 a ~infinito.
+  const resultado = calcularFreteFaixaPeso({
+    rota: { valorMinimoFrete: 50 },
+    cotacao: { valorFixo: 0, fretePercentual: 0, pesoMin: 0, pesoMax: 999999, excesso: 0.754 },
+    pesoKg: 200,
+    valorNf: 1000,
+  });
+
+  // 200 kg × 0,754 = 150,8 > mínimo 50 → vira a base
+  assert.ok(Math.abs(resultado.componentesBase.excedenteKg - 200) < 0.001, 'excedente desde o peso 0');
+  assert.ok(Math.abs(resultado.valorBase - 150.8) < 0.01);
+});
+
 test('faixa maior que o minimo prevalece sobre o minimo', () => {
   const resultado = calcularFreteFaixaPeso({
     rota: { valorMinimoFrete: 50 },

@@ -164,7 +164,13 @@ function resolverRegraExcedente({ cotacao = {}, pesoMin = 0, pesoLimite = 0, fai
           ? limiteInformado
           : faixaAberta && limitePadraoFaixaAberta > 0
             ? limitePadraoFaixaAberta
-            : pesoLimite,
+            // Faixa aberta (0 → ~infinito) com R$/kg e sem limiar de excedente:
+            // é o modelo "Maior valor" (R$/kg base), o excedente incide desde o
+            // pesoMin (0). Sem isso o limite virava pesoLimite (~99.999.999) e o
+            // R$/kg nunca era cobrado.
+            : faixaAberta
+              ? toNumber(pesoMin)
+              : pesoLimite,
       excessoPorKg: valorInformado,
       origemRegraExcedente: 'valor_excedente',
     };
@@ -235,7 +241,9 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
 
   const valorFaixa = toNumber(cotacao.valorFixo || cotacao.taxaAplicada);
   const valorPercentual = nf * toPercent(cotacao.percentual || cotacao.fretePercentual);
-  const excedenteKg = excessoPorKg > 0 && pesoLimiteExcedente > 0
+  // pesoLimiteExcedente pode ser 0 (R$/kg base aplicado desde o peso 0). O
+  // Math.max já zera quando o peso não passa do limiar, então não exigimos > 0.
+  const excedenteKg = excessoPorKg > 0
     ? Math.max(0, peso - pesoLimiteExcedente)
     : 0;
   const valorExcedente = excedenteKg * excessoPorKg;

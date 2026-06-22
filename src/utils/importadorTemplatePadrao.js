@@ -452,6 +452,10 @@ function normalizarFrete(linha, indice, rotasPorChave) {
     'EXCEDENTE',
     'Excesso',
     'Excesso Kg',
+    // Coluna da Verum no modelo "Maior valor": o R$/kg base vem em "Excesso de peso".
+    'Excesso de peso',
+    'Excesso de Peso',
+    'Excesso Peso',
     'Valor Excedente',
     'Kg Excedente',
     'R$ Kg Excedente',
