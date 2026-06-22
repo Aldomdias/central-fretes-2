@@ -4,6 +4,7 @@ import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/fr
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 
 const LIMITE_MAX_CT = 200000;
 const TOLERANCIA = 0.5; // R$ — diferença abaixo disto é ruído
@@ -200,6 +201,115 @@ function Card({ label, valor, sub, cor, destaque }) {
   );
 }
 
+// Agrega os CT-es simulados em rotas, aplicando o conjunto de substitutas excluídas.
+// Pura: roda na hora quando muda a exclusão ou o reajuste, sem reprocessar o motor.
+function agregarRotas(ctesSimulados, exclusoesSet, pctReajuste) {
+  const porRota = new Map();
+  for (const c of ctesSimulados) {
+    if (!porRota.has(c.rotaKey)) {
+      porRota.set(c.rotaKey, {
+        rotaKey: c.rotaKey, cidadeOrigem: c.cidadeOrigem, ufOrigem: c.ufOrigem, cidadeDestino: c.cidadeDestino, ufDestino: c.ufDestino,
+        ctes: 0, valorPagoTotal: 0, melhorTotal: 0, semSubstituto: 0, candidatosUsados: new Map(),
+        prazoAtualSoma: 0, prazoAtualN: 0, prazoSubSoma: 0, prazoSubN: 0, viagens: [], substitutosRota: new Map(),
+      });
+    }
+    const rota = porRota.get(c.rotaKey);
+    rota.ctes += 1;
+    rota.valorPagoTotal += c.valorPago;
+    if (c.prazoAtual != null) { rota.prazoAtualSoma += c.prazoAtual; rota.prazoAtualN += 1; }
+
+    const disponiveis = exclusoesSet.size
+      ? c.resultados.filter((r) => !exclusoesSet.has(norm(r.transportadora)))
+      : c.resultados;
+    for (const res of disponiveis) {
+      const cur = rota.substitutosRota.get(res.transportadora)
+        || { transportadora: res.transportadora, ctesCobertos: 0, somaTotal: 0, prazoSoma: 0, prazoN: 0 };
+      cur.ctesCobertos += 1; cur.somaTotal += res.total;
+      if (res.prazo != null) { cur.prazoSoma += res.prazo; cur.prazoN += 1; }
+      rota.substitutosRota.set(res.transportadora, cur);
+    }
+    const melhor = disponiveis[0] || null;
+    if (melhor) {
+      rota.melhorTotal += melhor.total;
+      rota.candidatosUsados.set(melhor.transportadora, (rota.candidatosUsados.get(melhor.transportadora) || 0) + 1);
+      if (melhor.prazo != null) { rota.prazoSubSoma += melhor.prazo; rota.prazoSubN += 1; }
+    } else {
+      rota.melhorTotal += c.valorPago;
+      rota.semSubstituto += 1;
+    }
+    rota.viagens.push({
+      chave: c.chave, data: c.data, nf: c.nf, peso: c.peso, valorPago: c.valorPago,
+      valorTabelaAtual: c.valorTabelaAtual, prazoAtual: c.prazoAtual,
+      substituta: melhor ? melhor.transportadora : null,
+      valorSub: melhor ? melhor.total : null,
+      prazoSub: melhor ? melhor.prazo : null,
+    });
+  }
+
+  const linhas = Array.from(porRota.values()).map((r) => {
+    const substitutos = [...r.substitutosRota.values()].map((s) => ({
+      transportadora: s.transportadora, ctesCobertos: s.ctesCobertos,
+      custoMedio: s.ctesCobertos ? s.somaTotal / s.ctesCobertos : 0,
+      prazoMedio: s.prazoN ? s.prazoSoma / s.prazoN : null,
+    })).sort((a, b) => (b.ctesCobertos - a.ctesCobertos) || (a.custoMedio - b.custoMedio));
+    return {
+      ...r,
+      diferenca: r.melhorTotal - r.valorPagoTotal,
+      substitutoPrincipal: [...r.candidatosUsados.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+      prazoAtualMedio: r.prazoAtualN ? r.prazoAtualSoma / r.prazoAtualN : null,
+      prazoSubMedio: r.prazoSubN ? r.prazoSubSoma / r.prazoSubN : null,
+      substitutos, qtdSubstitutos: substitutos.length,
+    };
+  });
+  linhas.sort((a, b) => b.valorPagoTotal - a.valorPagoTotal);
+
+  const custoAtual = linhas.reduce((s, l) => s + l.valorPagoTotal, 0);
+  const custoComSubstitutos = linhas.reduce((s, l) => s + l.melhorTotal, 0);
+  const rotasSemSubstituto = linhas.filter((l) => l.semSubstituto > 0).length;
+  const pctR = safeNum(pctReajuste);
+  const custoComReajuste = custoAtual * (1 + pctR / 100);
+  const aumentoPctSubstitutos = custoAtual > 0 ? ((custoComSubstitutos - custoAtual) / custoAtual) * 100 : 0;
+  const economiaVsReajuste = custoComReajuste - custoComSubstitutos;
+  const prazoAtualSomaTot = linhas.reduce((s, l) => s + l.prazoAtualSoma, 0);
+  const prazoAtualNTot = linhas.reduce((s, l) => s + l.prazoAtualN, 0);
+  const prazoSubSomaTot = linhas.reduce((s, l) => s + l.prazoSubSoma, 0);
+  const prazoSubNTot = linhas.reduce((s, l) => s + l.prazoSubN, 0);
+
+  return {
+    linhas, totalRotas: linhas.length, rotasSemSubstituto,
+    custoAtual, custoComSubstitutos, custoComReajuste, aumentoPctSubstitutos, economiaVsReajuste, pctReajuste: pctR,
+    prazoAtualMedioGeral: prazoAtualNTot ? prazoAtualSomaTot / prazoAtualNTot : null,
+    prazoSubMedioGeral: prazoSubNTot ? prazoSubSomaTot / prazoSubNTot : null,
+  };
+}
+
+function FiltroExcluir({ opcoes, exclusoes, onToggle, onLimpar }) {
+  if (!opcoes.length) return null;
+  return (
+    <details className="sst-filtro">
+      <summary className="sim-tab" style={{ cursor: 'pointer', listStyle: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        Excluir substitutas{exclusoes.size ? ` · ${exclusoes.size}` : ''} ▾
+      </summary>
+      <div className="sst-filtro-pop">
+        <div style={{ fontSize: '0.72rem', color: '#64748b', marginBottom: 6 }}>
+          Marque quem você NÃO quer como substituta. A simulação recalcula com a próxima melhor opção.
+        </div>
+        <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+          {opcoes.map((nome) => (
+            <label key={nome} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 2px', fontSize: '0.8rem', cursor: 'pointer' }}>
+              <input type="checkbox" checked={exclusoes.has(norm(nome))} onChange={() => onToggle(nome)} />
+              {nome}
+            </label>
+          ))}
+        </div>
+        {exclusoes.size > 0 && (
+          <button type="button" className="sim-tab" onClick={onLimpar} style={{ marginTop: 8, fontSize: '0.75rem', padding: '2px 10px' }}>Limpar exclusões</button>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function DetalheRota({ linha }) {
   const MAX_VIAGENS = 200;
   const viagens = linha.viagens || [];
@@ -301,7 +411,8 @@ export default function SimularSaidaTransportadoraPage() {
   const [transportadora, setTransportadora] = useState('');
   const [reajustePct, setReajustePct] = useState('20');
   const [statusSim, setStatusSim] = useState('idle');
-  const [resultado, setResultado] = useState(null);
+  const [simulacao, setSimulacao] = useState(null); // { transportadora, ctesSimulados, semIbge }
+  const [exclusoes, setExclusoes] = useState(() => new Set()); // norm(nome) das substitutas excluídas
   const [rotasAbertas, setRotasAbertas] = useState(() => new Set());
 
   function toggleRota(rotaKey) {
@@ -312,8 +423,33 @@ export default function SimularSaidaTransportadoraPage() {
     });
   }
 
+  function toggleExcluir(nome) {
+    setExclusoes((prev) => {
+      const next = new Set(prev);
+      const k = norm(nome);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  }
+
+  const resultado = useMemo(() => {
+    if (!simulacao) return null;
+    return {
+      ...agregarRotas(simulacao.ctesSimulados, exclusoes, reajustePct),
+      totalCtes: simulacao.ctesSimulados.length,
+      semIbge: simulacao.semIbge,
+    };
+  }, [simulacao, exclusoes, reajustePct]);
+
+  const opcoesExcluir = useMemo(() => {
+    if (!simulacao) return [];
+    const set = new Set();
+    for (const c of simulacao.ctesSimulados) for (const r of c.resultados) set.add(r.transportadora);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [simulacao]);
+
   async function carregar() {
-    setStatusCarga('carregando'); setErro(''); setBase(null); setResultado(null); setTransportadora('');
+    setStatusCarga('carregando'); setErro(''); setBase(null); setSimulacao(null); setExclusoes(new Set()); setTransportadora('');
     try {
       setProgresso('Carregando tabelas de frete...');
       const baseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
@@ -326,6 +462,10 @@ export default function SimularSaidaTransportadoraPage() {
       const mapasIbge = montarMapasIbge(municipios);
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
 
+      // vínculos: unificam o nome da transportadora executada (ex.: 3 "Brasil Web" viram 1)
+      const vinculos = await carregarVinculosTransportadoras().catch(() => []);
+      const mapaVinculos = criarMapaVinculosTransportadoras(vinculos);
+
       setProgresso('Carregando CT-es...');
       const ctes = await carregarCtes({
         competencia,
@@ -337,7 +477,7 @@ export default function SimularSaidaTransportadoraPage() {
       });
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
-      setBase({ ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge });
+      setBase({ ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge, mapaVinculos });
       setStatusCarga('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -350,22 +490,25 @@ export default function SimularSaidaTransportadoraPage() {
     if (!base) return [];
     const set = new Set();
     for (const c of base.ctes) {
-      const nome = (c.transportadora || c.nome_transportadora || '').trim();
-      if (nome) set.add(nome);
+      const bruto = (c.transportadora || c.nome_transportadora || '').trim();
+      if (!bruto) continue;
+      // nome unificado pelos vínculos (ex.: "BRASIL WEB GP" -> "BRASIL WEB")
+      set.add(aplicarVinculoTransportadora(bruto, base.mapaVinculos) || bruto);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [base]);
 
   async function simularSaida() {
     if (!base || !transportadora) return;
-    setStatusSim('carregando'); setErro(''); setResultado(null); setRotasAbertas(new Set());
+    setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
     try {
-      const { ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge } = base;
-      const ctesDaTransp = ctes.filter((c) => norm(c.transportadora || c.nome_transportadora) === norm(transportadora));
+      const { ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge, mapaVinculos } = base;
+      // compara pelo nome unificado: pega todos os CT-es das variações vinculadas à transportadora escolhida
+      const ctesDaTransp = ctes.filter((c) => norm(aplicarVinculoTransportadora(c.transportadora || c.nome_transportadora, mapaVinculos)) === norm(transportadora));
       if (!ctesDaTransp.length) throw new Error('Nenhum CT-e desta transportadora no recorte carregado.');
 
       const origemCache = new Map();
-      const porRota = new Map();
+      const ctesSimulados = [];
       let semIbge = 0;
 
       setProgresso(`Simulando substitutas para ${fmtN(ctesDaTransp.length)} CT-es de ${transportadora}...`);
@@ -380,69 +523,34 @@ export default function SimularSaidaTransportadoraPage() {
 
         const ibgeDestino = ibgeDoCte(cte, 'destino', municipioPorCidade, mapasIbge);
         const ibgeOrigemReal = ibgeDoCte(cte, 'origem', municipioPorCidade, mapasIbge);
-
         const rotaKey = `${norm(cidadeOrigem)}|${ufOrigem}=>${norm(cidadeDestino)}|${ufDestino}`;
-        if (!porRota.has(rotaKey)) {
-          porRota.set(rotaKey, {
-            rotaKey, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino,
-            ctes: 0, valorPagoTotal: 0, melhorTotal: 0, semSubstituto: 0, candidatosUsados: new Map(),
-            prazoAtualSoma: 0, prazoAtualN: 0, prazoSubSoma: 0, prazoSubN: 0, viagens: [],
-            substitutosRota: new Map(),
-          });
-        }
-        const rota = porRota.get(rotaKey);
-        rota.ctes += 1;
-        rota.valorPagoTotal += valorPago;
 
         // prazo/tabela da própria transportadora atual (referência para auditar)
         const atual = (ibgeDestino && ibgeOrigemReal)
           ? calcComTransportadora(cte, baseFrete, transportadora, ibgeOrigemReal, ibgeDestino, cidadeOrigem)
           : null;
-        const prazoAtual = atual?.prazo ?? null;
-        if (prazoAtual != null) { rota.prazoAtualSoma += prazoAtual; rota.prazoAtualN += 1; }
 
-        let melhor = null;
+        let resultados = [];
         if (!ibgeDestino || !ibgeOrigemReal) {
           semIbge += 1;
-          rota.melhorTotal += valorPago;
-          rota.semSubstituto += 1;
         } else {
           const setOrigem = nomesPorOrigem(idx, dig7(ibgeOrigemReal), normCmp(cidadeOrigem), origemCache);
           const setDestino = idx.porDestinoIbge.get(dig7(ibgeDestino));
           const candidatas = [];
           if (setDestino) for (const nome of setOrigem) if (setDestino.has(nome)) { const t = mapBaseByNome.get(nome); if (t) candidatas.push(t); }
-          const resultados = simularSubstitutas(cte, baseFrete, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem, transportadora);
-          melhor = resultados[0] || null;
-          // todas as transportadoras que cobrem esta rota (cobertura + custo + prazo)
-          for (const res of resultados) {
-            const cur = rota.substitutosRota.get(res.transportadora)
-              || { transportadora: res.transportadora, ctesCobertos: 0, somaTotal: 0, prazoSoma: 0, prazoN: 0 };
-            cur.ctesCobertos += 1;
-            cur.somaTotal += res.total;
-            if (res.prazo != null) { cur.prazoSoma += res.prazo; cur.prazoN += 1; }
-            rota.substitutosRota.set(res.transportadora, cur);
-          }
-          if (melhor) {
-            rota.melhorTotal += melhor.total;
-            rota.candidatosUsados.set(melhor.transportadora, (rota.candidatosUsados.get(melhor.transportadora) || 0) + 1);
-            if (melhor.prazo != null) { rota.prazoSubSoma += melhor.prazo; rota.prazoSubN += 1; }
-          } else {
-            rota.melhorTotal += valorPago;
-            rota.semSubstituto += 1;
-          }
+          resultados = simularSubstitutas(cte, baseFrete, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem, transportadora);
         }
 
-        rota.viagens.push({
-          chave: cte.chave_cte || '',
-          data: cte.data_emissao || '',
+        ctesSimulados.push({
+          rotaKey, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino,
+          valorPago,
           nf: safeNum(cte.valor_nf || cte.nf_venda),
           peso: safeNum(cte.peso_declarado || cte.peso),
-          valorPago,
+          chave: cte.chave_cte || '',
+          data: cte.data_emissao || '',
+          prazoAtual: atual?.prazo ?? null,
           valorTabelaAtual: atual ? atual.total : null,
-          prazoAtual,
-          substituta: melhor ? melhor.transportadora : null,
-          valorSub: melhor ? melhor.total : null,
-          prazoSub: melhor ? melhor.prazo : null,
+          resultados,
         });
 
         if (i % 50 === 0 || i === ctesDaTransp.length - 1) {
@@ -453,58 +561,7 @@ export default function SimularSaidaTransportadoraPage() {
         }
       }
 
-      const linhas = Array.from(porRota.values()).map((r) => {
-        const substitutos = [...r.substitutosRota.values()]
-          .map((s) => ({
-            transportadora: s.transportadora,
-            ctesCobertos: s.ctesCobertos,
-            custoMedio: s.ctesCobertos ? s.somaTotal / s.ctesCobertos : 0,
-            prazoMedio: s.prazoN ? s.prazoSoma / s.prazoN : null,
-          }))
-          .sort((a, b) => (b.ctesCobertos - a.ctesCobertos) || (a.custoMedio - b.custoMedio));
-        return {
-          ...r,
-          diferenca: r.melhorTotal - r.valorPagoTotal,
-          substitutoPrincipal: [...r.candidatosUsados.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null,
-          prazoAtualMedio: r.prazoAtualN ? r.prazoAtualSoma / r.prazoAtualN : null,
-          prazoSubMedio: r.prazoSubN ? r.prazoSubSoma / r.prazoSubN : null,
-          substitutos,
-          qtdSubstitutos: substitutos.length,
-        };
-      });
-      linhas.sort((a, b) => b.valorPagoTotal - a.valorPagoTotal);
-
-      const custoAtual = linhas.reduce((s, l) => s + l.valorPagoTotal, 0);
-      const custoComSubstitutos = linhas.reduce((s, l) => s + l.melhorTotal, 0);
-      const rotasSemSubstituto = linhas.filter((l) => l.semSubstituto > 0).length;
-      const pctReajuste = safeNum(reajustePct);
-      const custoComReajuste = custoAtual * (1 + pctReajuste / 100);
-      const aumentoPctSubstitutos = custoAtual > 0 ? ((custoComSubstitutos - custoAtual) / custoAtual) * 100 : 0;
-      const economiaVsReajuste = custoComReajuste - custoComSubstitutos;
-
-      // prazo médio ponderado por CT-e (só onde os dois lados têm prazo de tabela)
-      const prazoAtualSomaTot = linhas.reduce((s, l) => s + l.prazoAtualSoma, 0);
-      const prazoAtualNTot = linhas.reduce((s, l) => s + l.prazoAtualN, 0);
-      const prazoSubSomaTot = linhas.reduce((s, l) => s + l.prazoSubSoma, 0);
-      const prazoSubNTot = linhas.reduce((s, l) => s + l.prazoSubN, 0);
-      const prazoAtualMedioGeral = prazoAtualNTot ? prazoAtualSomaTot / prazoAtualNTot : null;
-      const prazoSubMedioGeral = prazoSubNTot ? prazoSubSomaTot / prazoSubNTot : null;
-
-      setResultado({
-        linhas,
-        totalCtes: ctesDaTransp.length,
-        totalRotas: linhas.length,
-        rotasSemSubstituto,
-        semIbge,
-        custoAtual,
-        custoComSubstitutos,
-        custoComReajuste,
-        aumentoPctSubstitutos,
-        economiaVsReajuste,
-        pctReajuste,
-        prazoAtualMedioGeral,
-        prazoSubMedioGeral,
-      });
+      setSimulacao({ transportadora, ctesSimulados, semIbge });
       setStatusSim('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
@@ -546,7 +603,7 @@ export default function SimularSaidaTransportadoraPage() {
             <button className="primary" type="button" onClick={carregar} disabled={statusCarga === 'carregando'}>
               {statusCarga === 'carregando' ? 'Carregando...' : 'Carregar CT-es'}
             </button>
-            {base && <button className="sim-tab" type="button" onClick={() => { setBase(null); setResultado(null); setStatusCarga('idle'); }}>Limpar</button>}
+            {base && <button className="sim-tab" type="button" onClick={() => { setBase(null); setSimulacao(null); setExclusoes(new Set()); setStatusCarga('idle'); }}>Limpar</button>}
           </div>
         </div>
 
@@ -613,9 +670,24 @@ export default function SimularSaidaTransportadoraPage() {
           </div>
 
           <div className="panel-card">
-            <div className="panel-title" style={{ marginBottom: '0.5rem' }}>
-              Rotas de {transportadora} — substituta por rota
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+              <div className="panel-title" style={{ margin: 0 }}>
+                Rotas de {simulacao?.transportadora || transportadora} — substituta por rota
+              </div>
+              <FiltroExcluir opcoes={opcoesExcluir} exclusoes={exclusoes} onToggle={toggleExcluir} onLimpar={() => setExclusoes(new Set())} />
             </div>
+            {exclusoes.size > 0 && (
+              <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '8px 12px', marginBottom: '0.6rem', fontSize: '0.8rem', color: '#9a3412', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                <strong>Excluindo como substitutas:</strong>
+                {opcoesExcluir.filter((n) => exclusoes.has(norm(n))).map((n) => (
+                  <button key={n} type="button" onClick={() => toggleExcluir(n)} title="Clique para reincluir"
+                    style={{ background: '#ffedd5', border: '1px solid #fdba74', borderRadius: 12, padding: '1px 8px', fontSize: '0.74rem', color: '#9a3412', cursor: 'pointer' }}>
+                    {n} ✕
+                  </button>
+                ))}
+                <span style={{ color: '#c2410c' }}>— a simulação assume a próxima melhor opção.</span>
+              </div>
+            )}
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
                 <thead>
@@ -686,7 +758,18 @@ export default function SimularSaidaTransportadoraPage() {
           </div>
         </>
       )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .sst-filtro { position: relative; }
+        .sst-filtro > summary { white-space: nowrap; }
+        .sst-filtro > summary::-webkit-details-marker { display: none; }
+        .sst-filtro[open] > summary { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+        .sst-filtro-pop {
+          position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+          background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+          box-shadow: 0 8px 24px rgba(15,23,42,0.12); padding: 12px; width: 320px; max-width: 80vw;
+        }
+      `}</style>
     </div>
   );
 }
