@@ -2324,6 +2324,8 @@ function normalizeRealizadoDbRow(row = {}) {
     statusErp: row.status_erp || row.statusErp || '',
     ufOrigem: row.uf_origem || row.ufOrigem || '',
     ufDestino: row.uf_destino || row.ufDestino || '',
+    ibgeOrigem: row.ibge_origem || row.ibgeOrigem || '',
+    ibgeDestino: row.ibge_destino || row.ibgeDestino || '',
     peso: row.peso ?? 0,
     pesoDeclarado: row.peso_declarado ?? row.pesoDeclarado ?? row.peso ?? 0,
     pesoCubado: row.peso_cubado ?? row.pesoCubado ?? 0,
@@ -2385,6 +2387,8 @@ function sanitizeRealizadoDbRow(row = {}) {
     status_erp: row.statusErp || row.status_erp || '',
     uf_origem: row.ufOrigem || row.uf_origem || '',
     uf_destino: row.ufDestino || row.uf_destino || '',
+    ibge_origem: String(row.ibgeOrigem || row.ibge_origem || '').replace(/\D/g, '').slice(0, 7),
+    ibge_destino: String(row.ibgeDestino || row.ibge_destino || '').replace(/\D/g, '').slice(0, 7),
     peso_declarado: toSafeRealizadoNumber(row.pesoDeclarado ?? row.peso_declarado),
     peso_cubado: toSafeRealizadoNumber(row.pesoCubado ?? row.peso_cubado),
     metros_cubicos: toSafeRealizadoNumber(row.metrosCubicos ?? row.metros_cubicos),
@@ -2444,7 +2448,7 @@ function aplicarFiltroSemCanal(rows = [], filtros = {}) {
 
 const REALIZADO_SELECT_COLUMNS = [
   'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','emissao','chave_cte','numero_cte','serie_cte',
-  'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino',
+  'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino','ibge_origem','ibge_destino',
   'peso_declarado','peso_cubado','metros_cubicos','volume','canais','canal','canal_vendas','valor_nf','percentual_frete',
   'cep_destino','cep_origem','cidade_origem','cidade_destino','transportadora_contratada','prazo_entrega_cliente','criado_em','updated_at'
 ].join(',');
@@ -2452,7 +2456,7 @@ const REALIZADO_SELECT_COLUMNS = [
 const REALIZADO_LOCAL_SELECT_COLUMNS = [
   'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','data_emissao','chave_cte','numero_cte',
   'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino',
-  'peso','peso_declarado','peso_cubado','cubagem','qtd_volumes','canal','canal_original','valor_nf',
+  'ibge_origem','ibge_destino','chave_rota_ibge','peso','peso_declarado','peso_cubado','cubagem','qtd_volumes','canal','canal_original','valor_nf',
   'cidade_origem','cidade_destino','created_at','updated_at'
 ].join(',');
 
@@ -2740,6 +2744,45 @@ async function buscarSelectRealizadoDiarioPaginado(supabase, filtros, limit) {
   }
 
   return todos;
+}
+
+export async function listarRealizadoLocalCtesParaSimulacao(filtros = {}) {
+  const limit = Math.max(1, Math.min(Number(filtros.limit || 50000) || 50000, 100000));
+
+  if (!isSupabaseConfigured()) {
+    return [];
+  }
+
+  const supabase = ensureClient();
+  const origem = limparOrigemParaConsultaDb(filtros.origem || '');
+  const destino = limparOrigemParaConsultaDb(filtros.destino || '');
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
+  const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
+
+  let query = supabase
+    .from('realizado_local_ctes')
+    .select(REALIZADO_LOCAL_SELECT_COLUMNS)
+    .limit(limit);
+
+  if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.ufOrigem) query = query.eq('uf_origem', String(filtros.ufOrigem).trim().toUpperCase());
+  if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
+  if (transportadoraRealizada) query = query.ilike('transportadora', `%${transportadoraRealizada}%`);
+  if (origem) query = query.ilike('cidade_origem', `${origem}%`);
+  if (destino) query = query.ilike('cidade_destino', `${destino}%`);
+  if (canalVariantes.length) query = query.in('canal', canalVariantes);
+  if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
+  query = query.order('data_emissao', { ascending: false, nullsFirst: false });
+
+  const { data, error } = await executarComTimeout(
+    query,
+    30000,
+    'A consulta da base realizado_local_ctes para simulação demorou demais. Use filtros de período/canal/origem.'
+  );
+  if (error) throw error;
+
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal((data || []).map(normalizeRealizadoDbRow), filtros), filtros);
 }
 
 export async function listarRealizadoDiarioReajustes(filtros = {}) {

@@ -1,6 +1,6 @@
 import { avaliarCteParaBase, getOpcoesImportacaoPadrao } from './cteBasePolicy';
 import { CANAL_A_DEFINIR } from '../utils/canalTransportadora';
-import { carregarMunicipiosIbgeDb, listarRealizadoCtes } from './freteDatabaseService';
+import { carregarMunicipiosIbgeDb, listarRealizadoCtes, listarRealizadoLocalCtesParaSimulacao } from './freteDatabaseService';
 
 const DB_NAME = 'amd-realizado-local-db';
 const DB_VERSION = 3;
@@ -318,7 +318,7 @@ function normalizarCteSupabaseParaLocal(row = {}, municipioPorCidade = new Map()
     chaveRotaIbge,
     ibgeOk: Boolean(chaveRotaIbge),
     tomadorServico: row.tomadorServico || row.tomador_servico || row.tomador || '',
-    origemFonte: 'supabase-realizado-ctes',
+    origemFonte: row.origemFonte || 'supabase-realizado-ctes',
   };
 }
 
@@ -366,6 +366,31 @@ export async function buscarRealizadoLocalParaSimulacao(filtros = {}, options = 
       if (remoto.rows.length || remoto.totalCompativel > 0) return remoto;
     } catch (error) {
       erroSupabase = error?.message || String(error);
+    }
+
+    try {
+      const limitTela = Number(options.limit || 5000);
+      const municipioPorCidade = await carregarMapaMunicipiosParaRealizado();
+      const rowsBrutos = await listarRealizadoLocalCtesParaSimulacao({
+        ...filtros,
+        incluirSemCanal: false,
+        limit: Math.max(limitTela, Number(options.limitSupabase || 100000)),
+      });
+      const rows = (rowsBrutos || [])
+        .map((row) => normalizarCteSupabaseParaLocal({ ...row, origemFonte: 'supabase-realizado-local-ctes' }, municipioPorCidade))
+        .filter((row) => filtrarCteLocal(row, filtros))
+        .slice(0, limitTela);
+      if (rows.length) {
+        return {
+          rows,
+          totalCompativel: rowsBrutos.length,
+          limit: limitTela,
+          origem: 'supabase-realizado-local-ctes',
+          erroFallbackSupabase: erroSupabase,
+        };
+      }
+    } catch (error) {
+      erroSupabase = erroSupabase || (error?.message || String(error));
     }
   }
 

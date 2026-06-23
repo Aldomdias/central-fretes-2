@@ -25,6 +25,8 @@ alter table public.realizado_ctes add column if not exists status_conciliacao te
 alter table public.realizado_ctes add column if not exists status_erp text;
 alter table public.realizado_ctes add column if not exists uf_origem text;
 alter table public.realizado_ctes add column if not exists uf_destino text;
+alter table public.realizado_ctes add column if not exists ibge_origem text;
+alter table public.realizado_ctes add column if not exists ibge_destino text;
 alter table public.realizado_ctes add column if not exists peso_declarado numeric(14,4);
 alter table public.realizado_ctes add column if not exists peso_cubado numeric(14,4);
 alter table public.realizado_ctes add column if not exists metros_cubicos numeric(14,4);
@@ -50,6 +52,7 @@ create unique index if not exists ux_realizado_ctes_chave_cte on public.realizad
 create index if not exists idx_realizado_ctes_emissao on public.realizado_ctes (emissao);
 create index if not exists idx_realizado_ctes_competencia on public.realizado_ctes (competencia);
 create index if not exists idx_realizado_ctes_rota on public.realizado_ctes (canal, cidade_origem, uf_destino, cidade_destino);
+create index if not exists idx_realizado_ctes_rota_ibge on public.realizado_ctes (canal, ibge_origem, ibge_destino);
 create index if not exists idx_realizado_ctes_transportadora on public.realizado_ctes (transportadora);
 create index if not exists idx_realizado_ctes_cep_destino on public.realizado_ctes (cep_destino);
 
@@ -93,6 +96,8 @@ $$;
 grant execute on function public.diagnosticar_realizado_ctes() to anon, authenticated;
 
 -- Listagem via RPC para evitar o caso em que gravou, mas a tela não consegue puxar de volta por filtro/permissão/query.
+drop function if exists public.listar_realizado_ctes(integer, date, date, text, text, text, boolean, boolean);
+
 create or replace function public.listar_realizado_ctes(
   p_limit integer default 10000,
   p_inicio date default null,
@@ -100,6 +105,9 @@ create or replace function public.listar_realizado_ctes(
   p_canal text default null,
   p_origem text default null,
   p_uf_destino text default null,
+  p_transportadora text default null,
+  p_uf_origem text default null,
+  p_destino text default null,
   p_incluir_sem_canal boolean default true,
   p_somente_sem_canal boolean default false
 )
@@ -115,6 +123,9 @@ as $$
     and (nullif(btrim(coalesce(p_canal, '')), '') is null or upper(coalesce(r.canal, '')) = upper(btrim(p_canal)))
     and (nullif(btrim(coalesce(p_origem, '')), '') is null or lower(coalesce(r.cidade_origem, '')) like '%' || lower(btrim(p_origem)) || '%')
     and (nullif(btrim(coalesce(p_uf_destino, '')), '') is null or upper(coalesce(r.uf_destino, '')) = upper(btrim(p_uf_destino)))
+    and (nullif(btrim(coalesce(p_transportadora, '')), '') is null or lower(coalesce(r.transportadora, '')) like '%' || lower(btrim(p_transportadora)) || '%')
+    and (nullif(btrim(coalesce(p_uf_origem, '')), '') is null or upper(coalesce(r.uf_origem, '')) = upper(btrim(p_uf_origem)))
+    and (nullif(btrim(coalesce(p_destino, '')), '') is null or lower(coalesce(r.cidade_destino, '')) like '%' || lower(btrim(p_destino)) || '%')
     and (
       p_incluir_sem_canal
       or nullif(btrim(coalesce(r.canal, '')), '') is not null
@@ -127,7 +138,86 @@ as $$
   limit greatest(1, least(coalesce(p_limit, 10000), 50000));
 $$;
 
-grant execute on function public.listar_realizado_ctes(integer, date, date, text, text, text, boolean, boolean) to anon, authenticated;
+grant execute on function public.listar_realizado_ctes(integer, date, date, text, text, text, text, text, text, boolean, boolean) to anon, authenticated;
+
+create or replace function public.resumo_realizado_ctes(
+  p_inicio date default null,
+  p_fim date default null,
+  p_canal text default null,
+  p_origem text default null,
+  p_uf_destino text default null,
+  p_transportadora text default null,
+  p_uf_origem text default null,
+  p_destino text default null
+)
+returns jsonb
+language sql
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'total', count(*),
+    'comCanal', count(*) filter (where nullif(btrim(coalesce(r.canal, '')), '') is not null),
+    'semCanal', count(*) filter (where nullif(btrim(coalesce(r.canal, '')), '') is null),
+    'valorCte', coalesce(sum(coalesce(r.valor_cte, 0)), 0),
+    'valorNF', coalesce(sum(coalesce(r.valor_nf, 0)), 0),
+    'periodoInicio', min(r.emissao),
+    'periodoFim', max(r.emissao)
+  )
+  from public.realizado_ctes r
+  where (p_inicio is null or r.emissao >= p_inicio::timestamptz)
+    and (p_fim is null or r.emissao <= (p_fim::timestamp + interval '1 day' - interval '1 second')::timestamptz)
+    and (nullif(btrim(coalesce(p_canal, '')), '') is null or upper(coalesce(r.canal, '')) = upper(btrim(p_canal)))
+    and (nullif(btrim(coalesce(p_origem, '')), '') is null or lower(coalesce(r.cidade_origem, '')) like '%' || lower(btrim(p_origem)) || '%')
+    and (nullif(btrim(coalesce(p_uf_destino, '')), '') is null or upper(coalesce(r.uf_destino, '')) = upper(btrim(p_uf_destino)))
+    and (nullif(btrim(coalesce(p_transportadora, '')), '') is null or lower(coalesce(r.transportadora, '')) like '%' || lower(btrim(p_transportadora)) || '%')
+    and (nullif(btrim(coalesce(p_uf_origem, '')), '') is null or upper(coalesce(r.uf_origem, '')) = upper(btrim(p_uf_origem)))
+    and (nullif(btrim(coalesce(p_destino, '')), '') is null or lower(coalesce(r.cidade_destino, '')) like '%' || lower(btrim(p_destino)) || '%');
+$$;
+
+grant execute on function public.resumo_realizado_ctes(date, date, text, text, text, text, text, text) to anon, authenticated;
+
+create or replace function public.amostra_realizado_ctes(
+  p_limit integer default 200,
+  p_inicio date default null,
+  p_fim date default null,
+  p_canal text default null,
+  p_origem text default null,
+  p_uf_destino text default null,
+  p_transportadora text default null,
+  p_uf_origem text default null,
+  p_destino text default null,
+  p_incluir_sem_canal boolean default true,
+  p_somente_sem_canal boolean default false
+)
+returns setof public.realizado_ctes
+language sql
+security definer
+set search_path = public
+as $$
+  select r.*
+  from public.realizado_ctes r
+  where (p_inicio is null or r.emissao >= p_inicio::timestamptz)
+    and (p_fim is null or r.emissao <= (p_fim::timestamp + interval '1 day' - interval '1 second')::timestamptz)
+    and (nullif(btrim(coalesce(p_canal, '')), '') is null or upper(coalesce(r.canal, '')) = upper(btrim(p_canal)))
+    and (nullif(btrim(coalesce(p_origem, '')), '') is null or lower(coalesce(r.cidade_origem, '')) like '%' || lower(btrim(p_origem)) || '%')
+    and (nullif(btrim(coalesce(p_uf_destino, '')), '') is null or upper(coalesce(r.uf_destino, '')) = upper(btrim(p_uf_destino)))
+    and (nullif(btrim(coalesce(p_transportadora, '')), '') is null or lower(coalesce(r.transportadora, '')) like '%' || lower(btrim(p_transportadora)) || '%')
+    and (nullif(btrim(coalesce(p_uf_origem, '')), '') is null or upper(coalesce(r.uf_origem, '')) = upper(btrim(p_uf_origem)))
+    and (nullif(btrim(coalesce(p_destino, '')), '') is null or lower(coalesce(r.cidade_destino, '')) like '%' || lower(btrim(p_destino)) || '%')
+    and (
+      p_incluir_sem_canal
+      or nullif(btrim(coalesce(r.canal, '')), '') is not null
+    )
+    and (
+      not p_somente_sem_canal
+      or nullif(btrim(coalesce(r.canal, '')), '') is null
+    )
+  order by r.criado_em desc, r.emissao desc nulls last
+  limit greatest(1, least(coalesce(p_limit, 200), 50000));
+$$;
+
+grant execute on function public.amostra_realizado_ctes(integer, date, date, text, text, text, text, text, text, boolean, boolean) to anon, authenticated;
 
 create or replace function public.excluir_realizado_ctes_sem_canal()
 returns integer
@@ -183,6 +273,8 @@ begin
       status_erp text,
       uf_origem text,
       uf_destino text,
+      ibge_origem text,
+      ibge_destino text,
       peso_declarado numeric,
       peso_cubado numeric,
       metros_cubicos numeric,
@@ -219,6 +311,8 @@ begin
       status_erp,
       uf_origem,
       uf_destino,
+      ibge_origem,
+      ibge_destino,
       peso_declarado,
       peso_cubado,
       metros_cubicos,
@@ -254,6 +348,8 @@ begin
       status_erp,
       uf_origem,
       uf_destino,
+      ibge_origem,
+      ibge_destino,
       peso_declarado,
       peso_cubado,
       metros_cubicos,
@@ -289,6 +385,8 @@ begin
       status_erp = excluded.status_erp,
       uf_origem = excluded.uf_origem,
       uf_destino = excluded.uf_destino,
+      ibge_origem = excluded.ibge_origem,
+      ibge_destino = excluded.ibge_destino,
       peso_declarado = excluded.peso_declarado,
       peso_cubado = excluded.peso_cubado,
       metros_cubicos = excluded.metros_cubicos,

@@ -4,7 +4,7 @@ import {
   avaliarCteParaBase,
   getOpcoesImportacaoPadrao,
   particionarCtesPorPolitica,
-} from '../services/cteBasePolicy';
+} from '../services/cteBasePolicy.js';
 
 const HEADER_MAP = {
   'transportadora': 'transportadora',

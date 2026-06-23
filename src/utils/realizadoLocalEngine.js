@@ -1,7 +1,7 @@
-import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine';
-import { toNumberRealizado, normalizeTextRealizado } from './realizadoCtes';
-import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete } from './gradeFreteConfig';
-import { CANAL_A_DEFINIR } from './canalTransportadora';
+import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine.js';
+import { toNumberRealizado, normalizeTextRealizado } from './realizadoCtes.js';
+import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete } from './gradeFreteConfig.js';
+import { CANAL_A_DEFINIR } from './canalTransportadora.js';
 
 const CANAIS_B2C = [
   'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
@@ -792,7 +792,7 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
       const canais = canaisIndiceRealizado(origem.canal || '');
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;
       const origemUfPelaRota = getUfByIbge(origem.rotas?.[0]?.ibgeOrigem || '');
-      const ibgeOrigemFallback = resolverIbgeLocal(origemCidade, origemUfPelaRota, mapasIbge);
+      const ibgeOrigemFallback = resolverIbgeLocal(origemCidade, origemUfPelaRota, '', mapasIbge);
 
       (origem.rotas || []).forEach((rota) => {
         stats.rotas += 1;
@@ -860,7 +860,7 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
 
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;
       const origemUfPelaRota = getUfByIbge(origem.rotas?.[0]?.ibgeOrigem || '');
-      const ibgeOrigemFallback = resolverIbgeLocal(origemCidade, origemUfPelaRota, mapasIbge);
+      const ibgeOrigemFallback = resolverIbgeLocal(origemCidade, origemUfPelaRota, '', mapasIbge);
 
       (origem.rotas || []).forEach((rota) => {
         totalRotasCadastradas += 1;
