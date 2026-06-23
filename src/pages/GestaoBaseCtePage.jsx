@@ -81,6 +81,69 @@ export default function GestaoBaseCtePage() {
   const [erro, setErro] = useState('');
   const [diag, setDiag] = useState(null); // resultado da anÃ¡lise
   const [resultado, setResultado] = useState('');
+  // Visao geral (leve) do que falta por competencia.
+  const [visao, setVisao] = useState(null);
+  const [visaoStatus, setVisaoStatus] = useState('idle'); // idle | carregando
+  const [visaoErro, setVisaoErro] = useState('');
+  const [visaoProgresso, setVisaoProgresso] = useState('');
+
+  // Contagem leve via head/count (nao baixa linhas).
+  async function contar(supabase, build) {
+    let q = supabase.from(TABELA).select('chave_cte', { count: 'exact', head: true });
+    q = build(q);
+    const { count, error } = await q;
+    if (error) throw new Error(error.message);
+    return count || 0;
+  }
+
+  // Visao geral: percorre todas as competencias e conta as lacunas por mes.
+  async function carregarVisaoGeral() {
+    setVisaoStatus('carregando'); setVisaoErro(''); setVisao(null);
+    try {
+      if (!isSupabaseConfigured()) throw new Error('Supabase nÃ£o configurado.');
+      const supabase = getSupabaseClient();
+      // Descobre o intervalo de competencias (2 leituras leves).
+      const { data: minRow } = await supabase.from(TABELA).select('competencia').not('competencia', 'is', null).neq('competencia', '').order('competencia', { ascending: true }).limit(1);
+      const { data: maxRow } = await supabase.from(TABELA).select('competencia').not('competencia', 'is', null).neq('competencia', '').order('competencia', { ascending: false }).limit(1);
+      const ini = minRow?.[0]?.competencia;
+      const fim = maxRow?.[0]?.competencia;
+      if (!ini || !fim) throw new Error('Nenhuma competÃªncia encontrada na base.');
+      const meses = [];
+      let [ay, am] = ini.split('-').map(Number);
+      const [by, bm] = fim.split('-').map(Number);
+      while (ay < by || (ay === by && am <= bm)) {
+        meses.push(`${ay}-${String(am).padStart(2, '0')}`);
+        am += 1; if (am > 12) { am = 1; ay += 1; }
+      }
+      const linhas = [];
+      for (const m of meses) {
+        setVisaoProgresso(`Analisando ${m}... (${meses.indexOf(m) + 1}/${meses.length})`);
+        const base = (q) => q.eq('competencia', m);
+        const total = await contar(supabase, base);
+        if (!total) continue;
+        const semOrigem = await contar(supabase, (q) => base(q).or('ibge_origem.is.null,ibge_origem.eq.'));
+        const semDestino = await contar(supabase, (q) => base(q).or('ibge_destino.is.null,ibge_destino.eq.'));
+        const semRota = await contar(supabase, (q) => base(q).or('chave_rota_ibge.is.null,chave_rota_ibge.eq.'));
+        const semCubagem = await contar(supabase, (q) => base(q).or('cubagem.is.null,cubagem.lte.0'));
+        const semVolumes = await contar(supabase, (q) => base(q).or('qtd_volumes.is.null,qtd_volumes.lte.0'));
+        const semCanal = await contar(supabase, (q) => base(q).or('canal.is.null,canal.eq.'));
+        const semTomador = await contar(supabase, (q) => base(q).or('tomador_servico.is.null,tomador_servico.eq.'));
+        const pronto = await contar(supabase, (q) => base(q)
+          .not('ibge_origem', 'is', null).neq('ibge_origem', '')
+          .not('ibge_destino', 'is', null).neq('ibge_destino', '')
+          .not('chave_rota_ibge', 'is', null).neq('chave_rota_ibge', '')
+          .gt('cubagem', 0).gt('qtd_volumes', 0));
+        linhas.push({ mes: m, total, pronto, semOrigem, semDestino, semRota, semCubagem, semVolumes, semCanal, semTomador });
+      }
+      const totalGeral = linhas.reduce((s, l) => s + l.total, 0);
+      const prontoGeral = linhas.reduce((s, l) => s + l.pronto, 0);
+      setVisao({ linhas, totalGeral, prontoGeral });
+      setVisaoStatus('idle'); setVisaoProgresso('');
+    } catch (e) {
+      console.error('[GestaoBaseCte][visao]', e);
+      setVisaoErro(`${e.message || e}`); setVisaoStatus('idle'); setVisaoProgresso('');
+    }
+  }
 
   async function carregarLinhas(onProgress) {
     if (!isSupabaseConfigured()) throw new Error('Supabase nÃ£o configurado.');
@@ -307,6 +370,68 @@ export default function GestaoBaseCtePage() {
           </div>
         )}
         {resultado && <div style={{ marginTop: 12, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', color: '#166534' }}>{resultado}</div>}
+      </section>
+
+      <section className="sim-card" style={{ marginTop: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#1e293b' }}>VisÃ£o geral da base â€” o que falta por mÃªs</div>
+            <div style={{ fontSize: '0.78rem', color: '#94a3b8' }}>Contagem rÃ¡pida (nÃ£o consulta tracking). Use para ver onde a base estÃ¡ incompleta e qual mÃªs analisar/completar.</div>
+          </div>
+          <button className="primary" type="button" onClick={carregarVisaoGeral} disabled={visaoStatus !== 'idle'}>
+            {visaoStatus === 'carregando' ? 'Analisando...' : (visao ? 'Atualizar visÃ£o geral' : 'Carregar visÃ£o geral')}
+          </button>
+        </div>
+        {visaoErro && <div className="sim-alert error" style={{ marginTop: 10 }}>{visaoErro}</div>}
+        {visaoProgresso && (
+          <div style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', color: '#1d4ed8', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid #93c5fd', borderTop: '2px solid #1d4ed8', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            {visaoProgresso}
+          </div>
+        )}
+        {visao && (
+          <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>MÃªs</th><th>CT-es</th><th>Pronto p/ simular</th>
+                  <th>Sem IBGE orig.</th><th>Sem IBGE dest.</th><th>Sem rota</th>
+                  <th>Sem cubagem</th><th>Sem volume</th><th>Sem canal</th><th>Sem tomador</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visao.linhas.map((l) => {
+                  const cel = (v) => ({ color: v > 0 ? '#e67e22' : '#04C7A4', fontWeight: v > 0 ? 600 : 400 });
+                  const pctPronto = l.total > 0 ? (l.pronto / l.total) * 100 : 0;
+                  return (
+                    <tr key={l.mes}>
+                      <td style={{ fontWeight: 600 }}>{l.mes}</td>
+                      <td>{fmtN(l.total)}</td>
+                      <td style={{ color: pctPronto >= 99 ? '#04C7A4' : pctPronto >= 80 ? '#0ea5e9' : '#9b1111', fontWeight: 700 }}>{fmtN(l.pronto)} <small style={{ color: '#94a3b8', fontWeight: 400 }}>({pct(pctPronto)})</small></td>
+                      <td style={cel(l.semOrigem)}>{fmtN(l.semOrigem)}</td>
+                      <td style={cel(l.semDestino)}>{fmtN(l.semDestino)}</td>
+                      <td style={cel(l.semRota)}>{fmtN(l.semRota)}</td>
+                      <td style={cel(l.semCubagem)}>{fmtN(l.semCubagem)}</td>
+                      <td style={cel(l.semVolumes)}>{fmtN(l.semVolumes)}</td>
+                      <td style={cel(l.semCanal)}>{fmtN(l.semCanal)}</td>
+                      <td style={cel(l.semTomador)}>{fmtN(l.semTomador)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: '2px solid #e2e8f0', fontWeight: 700 }}>
+                  <td>Total</td>
+                  <td>{fmtN(visao.totalGeral)}</td>
+                  <td colSpan={8} style={{ color: '#334155' }}>Pronto p/ simular: {fmtN(visao.prontoGeral)} ({pct(visao.totalGeral > 0 ? (visao.prontoGeral / visao.totalGeral) * 100 : 0)})</td>
+                </tr>
+              </tfoot>
+            </table>
+            <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginTop: 6 }}>
+              "Pronto p/ simular" = tem IBGE origem e destino, chave de rota, cubagem &gt; 0 e volume &gt; 0. Para fechar um mÃªs, selecione-o acima e use <strong>Analisar base</strong> + <strong>Completar base</strong>.
+            </div>
+          </div>
+        )}
       </section>
 
       {diag && (
