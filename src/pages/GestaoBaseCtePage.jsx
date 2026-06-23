@@ -195,8 +195,15 @@ export default function GestaoBaseCtePage() {
       const linhas = await carregarLinhas((n) => setProgresso(`Lendo CT-es da base... ${fmtN(n)}`));
       if (!linhas.length) throw new Error('Nenhum CT-e nessa competÃªncia.');
 
-      // Para volumetria, o tracking e a fonte oficial: compara o recorte inteiro.
-      const faltam = linhas;
+      // So consulta o tracking dos CT-es que ainda tem lacuna. Os ja completos
+      // (mesma regra do `continue` la embaixo) sao pulados na gravacao de
+      // qualquer forma, entao busca-los no tracking seria trabalho jogado fora.
+      const linhaCompleta = (row) => Boolean(
+        dig7(row.ibge_origem) && dig7(row.ibge_destino)
+        && String(row.chave_rota_ibge || '').trim() && row.ibge_ok === true
+        && temValor(row.qtd_volumes) && temValor(row.cubagem),
+      );
+      const faltam = linhas.filter((row) => !linhaCompleta(row));
       let mapas = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map() };
       let trackingErro = '';
       if (faltam.length) {
