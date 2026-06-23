@@ -23,7 +23,7 @@ function pct(v) { return `${safeNum(v).toFixed(1).replace('.', ',')}%`; }
 function dig7(v) { return String(v || '').replace(/\D/g, '').slice(0, 7); }
 // Mesma normalizaÃ§Ã£o de cidade do Simulador (planilha de IBGE).
 function normalizeBuscaIbge(t) {
-  return String(t || '').normalize('NFD').replace(/[Ì€-Í¯]/g, '').toLowerCase().trim();
+  return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }
 function montarMunicipioPorCidade(municipios = []) {
   const mapa = new Map();
