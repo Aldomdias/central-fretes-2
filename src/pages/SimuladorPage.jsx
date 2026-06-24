@@ -3162,7 +3162,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [buscandoCtesRealizado, setBuscandoCtesRealizado] = useState(false);
   // Quando true, usa volumes/cubagem da própria base (sem consultar o tracking)
   // e considera só os CT-es completos. Caminho rápido, depende da base enriquecida.
-  const [apenasDadosCompletosRealizado, setApenasDadosCompletosRealizado] = useState(false);
+  const [apenasDadosCompletosRealizado, setApenasDadosCompletosRealizado] = useState(true);
   const [atualizandoNegociacaoRealizado, setAtualizandoNegociacaoRealizado] = useState(false);
   const [recarregarMalhaOficialRealizado, setRecarregarMalhaOficialRealizado] = useState(0);
 
@@ -6496,6 +6496,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </button>
             </div>
 
+            <label className="sim-flag" style={{ fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={apenasDadosCompletosRealizado}
+                onChange={(event) => setApenasDadosCompletosRealizado(event.target.checked)}
+              />
+              Considerar apenas CT-es com dados completos (não consultar Tracking)
+            </label>
+            <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: -2 }}>
+              Padrão (rápido): usa volumes e cubagem já gravados na base e considera só CT-es com IBGE, cubagem e volume preenchidos. Desmarque para cruzar o Tracking ao vivo e completar quem ainda falta.
+            </div>
+
             {opcoesAvancadasRealizadoAberto && (
               <div style={{ display: 'grid', gap: 10, paddingTop: 10, borderTop: '1px solid #cbd5e1' }}>
                 <label className="sim-flag">
@@ -6588,17 +6600,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   Incluir todos os tomadores (ignorar lista padrão)
                 </label>
 
-                <label className="sim-flag">
-                  <input
-                    type="checkbox"
-                    checked={apenasDadosCompletosRealizado}
-                    onChange={(event) => setApenasDadosCompletosRealizado(event.target.checked)}
-                  />
-                  Considerar apenas CT-es com dados completos (não consultar Tracking)
-                </label>
-                <small style={{ color: '#64748b', marginTop: -4 }}>
-                  Caminho rápido: usa volumes e cubagem já gravados na base (enriquecidos antes pela Gestão Base CT-e) e considera só CT-es com IBGE, cubagem e volume preenchidos. Deixe desmarcado para cruzar o Tracking ao vivo e completar quem ainda falta.
-                </small>
 
                 <label className="sim-flag">
                   <input
