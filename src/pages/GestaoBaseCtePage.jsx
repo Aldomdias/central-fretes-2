@@ -3,6 +3,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { buscarTrackingParaRealizado, obterTrackingDaLinha } from '../services/realizadoTrackingEnrichment';
+import { carregarAliasesCidadeIbge } from '../services/cidadeIbgeAliasService';
 
 const TABELA = 'realizado_local_ctes';
 const PAGE = 1000;
@@ -190,6 +191,22 @@ export default function GestaoBaseCtePage() {
       }
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
       if (!municipioPorCidade.size) throw new Error('Base de IBGE indisponÃ­vel (nem IBGE oficial nem ibge_municipios). Verifique a conexÃ£o e tente de novo.');
+
+      // Vinculos manuais cidade->IBGE (geridos em Ferramentas). Sobrepoem a lista
+      // oficial para resolver nomes que nao casam (ex.: "BRASILIA (DF)").
+      try {
+        const aliases = await carregarAliasesCidadeIbge();
+        for (const a of aliases) {
+          const kCidade = normalizeBuscaIbge(a.cidade);
+          if (kCidade) municipioPorCidade.set(kCidade, a.ibge);
+          if (a.uf) {
+            const kCidadeUf = normalizeBuscaIbge(`${a.cidade}/${a.uf}`);
+            if (kCidadeUf) municipioPorCidade.set(kCidadeUf, a.ibge);
+          }
+        }
+      } catch (e) {
+        console.warn('[GestaoBaseCte] aliases cidade->IBGE indisponiveis', e);
+      }
 
       setProgresso('Lendo CT-es da base...');
       const linhas = await carregarLinhas((n) => setProgresso(`Lendo CT-es da base... ${fmtN(n)}`));

@@ -25,6 +25,7 @@ import { exportarTrackingLocal } from '../utils/trackingLocal';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import { relacionarTrackingComCtes } from '../utils/trackingCteLink';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { carregarAliasesCidadeIbge, salvarAliasCidadeIbge, removerAliasCidadeIbge } from '../services/cidadeIbgeAliasService';
 import {
   CANAIS_PARAMETRIZAVEIS,
   definirCanalTransportadora,
@@ -590,6 +591,107 @@ function fmtData(value) {
   return y && m && d ? `${d}/${m}/${y}` : s;
 }
 
+function normalizarCidadeBuscaFerr(t) {
+  return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function VinculosCidadeIbgeCard() {
+  const [aliases, setAliases] = useState([]);
+  const [municipios, setMunicipios] = useState([]);
+  const [cidade, setCidade] = useState('');
+  const [uf, setUf] = useState('');
+  const [ibge, setIbge] = useState('');
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [salvando, setSalvando] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try { setAliases(await carregarAliasesCidadeIbge()); } catch (e) { setErr(e.message || String(e)); }
+      try { setMunicipios(await carregarMunicipiosIbgeDb()); } catch { /* validação fica opcional */ }
+    })();
+  }, []);
+
+  const sugerirIbge = () => {
+    setErr(''); setMsg('');
+    const alvoCidade = normalizarCidadeBuscaFerr(cidade);
+    const alvoUf = String(uf || '').trim().toUpperCase();
+    if (!alvoCidade) { setErr('Informe a cidade.'); return; }
+    const achou = (municipios || []).find((m) => {
+      const c = normalizarCidadeBuscaFerr(m.cidade || m.nome || m.municipio);
+      const u = String(m.uf || m.estado || '').trim().toUpperCase();
+      return c === alvoCidade && (!alvoUf || u === alvoUf);
+    });
+    if (achou) {
+      setIbge(String(achou.ibge || achou.codigo_ibge || achou.codigo || '').replace(/\D/g, '').slice(0, 7));
+      setMsg('IBGE sugerido pela lista oficial. Confira e salve.');
+    } else {
+      setMsg('Não encontrei na lista oficial — informe o código IBGE manualmente (7 dígitos).');
+    }
+  };
+
+  const salvar = async () => {
+    setErr(''); setMsg(''); setSalvando(true);
+    try {
+      const r = await salvarAliasCidadeIbge({ cidade, uf, ibge }, aliases);
+      setAliases(r.aliases);
+      setMsg(`Vínculo salvo (${r.modo === 'supabase' ? 'Supabase' : 'local'}).`);
+      setCidade(''); setUf(''); setIbge('');
+    } catch (e) { setErr(e.message || String(e)); }
+    setSalvando(false);
+  };
+
+  const remover = async (id) => {
+    setErr(''); setMsg('');
+    try { setAliases(await removerAliasCidadeIbge(id, aliases)); }
+    catch (e) { setErr(e.message || String(e)); }
+  };
+
+  return (
+    <div style={{ padding: '16px 20px', display: 'grid', gap: 14 }}>
+      <div className="hint-box compact">
+        Use quando o nome da cidade no CT-e não casar com a lista oficial de IBGE (ex.: "BRASILIA (DF)"). O vínculo é consultado pela <strong>Gestão Base CT-e</strong> ao resolver o IBGE — depois de salvar aqui, rode a Gestão Base no mês para gravar o código na base. Escreva a cidade <strong>exatamente como aparece no CT-e</strong>.
+      </div>
+      {err ? <div className="sim-alert error">{err}</div> : null}
+      {msg ? <div className="sim-alert info">{msg}</div> : null}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 0.6fr 1fr auto auto', gap: 10, alignItems: 'end' }}>
+        <label>Cidade (como no CT-e)
+          <input type="text" value={cidade} onChange={(e) => setCidade(e.target.value)} placeholder="BRASILIA (DF)" />
+        </label>
+        <label>UF
+          <input type="text" value={uf} onChange={(e) => setUf(e.target.value.toUpperCase().slice(0, 2))} placeholder="DF" maxLength={2} />
+        </label>
+        <label>Código IBGE
+          <input type="text" value={ibge} onChange={(e) => setIbge(e.target.value.replace(/\D/g, '').slice(0, 7))} placeholder="5300108" inputMode="numeric" />
+        </label>
+        <button className="btn-secondary" type="button" onClick={sugerirIbge}>Sugerir IBGE</button>
+        <button className="primary" type="button" onClick={salvar} disabled={salvando || !cidade || ibge.length !== 7}>
+          {salvando ? 'Salvando...' : 'Salvar vínculo'}
+        </button>
+      </div>
+
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead><tr><th>Cidade</th><th>UF</th><th>IBGE</th><th>Ação</th></tr></thead>
+          <tbody>
+            {aliases.length === 0 ? (
+              <tr><td colSpan={4} style={{ color: 'var(--muted)' }}>Nenhum vínculo cadastrado ainda.</td></tr>
+            ) : aliases.map((a) => (
+              <tr key={a.id || `${a.cidadeNorm}-${a.uf}`}>
+                <td>{a.cidade}</td>
+                <td>{a.uf || '-'}</td>
+                <td>{a.ibge}</td>
+                <td><button className="btn-secondary" type="button" onClick={() => remover(a.id)}>Remover</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function FerramentasPage({ transportadoras = [] }) {
   const sessao = carregarSessao();
   const [config, setConfig] = useState(DEFAULT_CONFIG);
@@ -1054,6 +1156,18 @@ export default function FerramentasPage({ transportadoras = [] }) {
             <ImportarFluxoCard onImportado={setBaseFluxoLotacao} resumo={resumoLotacao} />
           </div>
         )}
+      </div>
+
+      {/* Vinculos cidade -> IBGE */}
+      <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+        <button type="button" onClick={() => toggleAba('cidade-ibge')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='cidade-ibge'?'1px solid var(--border-soft)':'none'}}>
+          <div>
+            <div className="panel-title" style={{margin:0}}>🗺️ Vínculos cidade → IBGE</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Resolve cidades que não casam na lista oficial (ex.: Brasília)</div>
+          </div>
+          <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='cidade-ibge'?'△':'▽'}</span>
+        </button>
+        {abaAberta === 'cidade-ibge' && <VinculosCidadeIbgeCard />}
       </div>
 
       {/* Pendencias de canal */}
