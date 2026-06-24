@@ -1075,7 +1075,13 @@ function enriquecerRealizadoComBase(rows = []) {
   const linhas = [];
 
   for (const row of rows || []) {
-    const cubagem = numeroRealizado(row.cubagemTotal || row.cubagem_total || row.cubagem);
+    // Atenção ao mapeamento do loader: a coluna `cubagem` da base (que guarda o
+    // TOTAL vindo do tracking, via Gestão Base) é carregada em `cubagemUnitaria`.
+    // `cubagemTotal` não existe como coluna, então fica 0. Por isso lemos as duas.
+    const cubagem = numeroRealizado(row.cubagemTotal)
+      || numeroRealizado(row.cubagemUnitaria)
+      || numeroRealizado(row.cubagem)
+      || numeroRealizado(row.metros_cubicos);
     const volumes = numeroRealizado(row.qtdVolumes || row.qtd_volumes || row.volume || row.volumes);
     const temIbge = String(row.ibgeOrigem || '').replace(/\D/g, '').length >= 7
       && String(row.ibgeDestino || '').replace(/\D/g, '').length >= 7;
