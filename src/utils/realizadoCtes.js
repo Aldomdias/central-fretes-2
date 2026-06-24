@@ -4,7 +4,10 @@ import {
   avaliarCteParaBase,
   getOpcoesImportacaoPadrao,
   particionarCtesPorPolitica,
+  isEbazarCte,
 } from '../services/cteBasePolicy.js';
+import { normalizarCanalOperacional, normalizarTextoCanal } from './canalTransportadora.js';
+import canalDeParaEscritorio from '../data/canalDeParaEscritorio.js';
 
 const HEADER_MAP = {
   'transportadora': 'transportadora',
@@ -92,6 +95,8 @@ const HEADER_MAP = {
   'percentual frete': 'percentualFrete',
   'frete nf': 'percentualFrete',
   'canal de vendas': 'canalVendas',
+  'escritorio de venda': 'escritorioVenda',
+  'escritorio de vendas': 'escritorioVenda',
   'cep destino': 'cepDestino',
   'cep origem': 'cepOrigem',
   'cidade origem': 'cidadeOrigem',
@@ -248,14 +253,25 @@ function pick(row, keys) {
   return '';
 }
 
+const CANAIS_CANONICOS = ['B2C', 'ATACADO', 'INTERCOMPANY', 'REVERSA'];
+
+// Classificação de canal em cascata (mesma regra do backfill):
+// 1) Escritório de venda via DE-PARA  2) Canais/Canal de vendas  3) EBAZAR  4) A DEFINIR.
 function normalizeCanal(row = {}) {
-  const canal = pick(row, ['canalVendas', 'canal', 'canais']);
-  const text = normalizeTextRealizado(canal).toUpperCase();
-  if (text.includes('B2C')) return 'B2C';
-  if (text.includes('B2B')) return 'B2B';
-  if (text.includes('ATACADO')) return 'ATACADO';
-  if (text.includes('INTERCOMPANY')) return 'INTERCOMPANY';
-  return text || '';
+  // 1) Escritório de venda -> DE-PARA (Canal Final)
+  const esc = canalDeParaEscritorio[normalizarTextoCanal(row.escritorioVenda)];
+  if (esc) return esc;
+
+  // 2) Canais / Canal de vendas -> canônico
+  const canais = pick(row, ['canais', 'canalVendas', 'canal']);
+  const canonico = normalizarCanalOperacional(canais, { permitirInferencia: false });
+  if (CANAIS_CANONICOS.includes(canonico)) return canonico;
+
+  // 3) EBAZAR (transportadora/tomador) recebe canal próprio para medição
+  if (isEbazarCte(row)) return 'EBAZAR';
+
+  // 4) Sem sinal -> marcador para revisão
+  return 'A DEFINIR';
 }
 
 function normalizeRowObject(row = {}) {
