@@ -17,6 +17,7 @@ import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurar
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import { normalizarCidadeIbge, compactarCidadeIbge, resolverIbgeComRegras } from '../utils/ibgeCidadeMatch';
 import {
   buscarTabelasNegociacaoParaSimulacao,
   listarCapasNegociacaoParaSimulacao,
@@ -1734,17 +1735,20 @@ function periodoRealizadoMeses(rows = [], inicio = '', fim = '') {
   return Math.max(Number.isFinite(meses) ? meses : 1, 1);
 }
 
-function resolverIbgeRealizadoPorCidade(row = {}, tipo = 'destino', municipioPorCidade) {
+function resolverIbgeRealizadoPorCidade(row = {}, tipo = 'destino', indice) {
   const campoIbge = tipo === 'origem' ? 'ibgeOrigem' : 'ibgeDestino';
   const atual = String(row?.[campoIbge] || '').replace(/\D/g, '').slice(0, 7);
   if (atual) return atual;
 
   const cidade = tipo === 'origem' ? row.cidadeOrigem : row.cidadeDestino;
   const uf = tipo === 'origem' ? row.ufOrigem : row.ufDestino;
-  const cidadeNorm = normalizeBuscaIbge(cidade || '');
-  const cidadeUfNorm = normalizeBuscaIbge(`${cidade || ''}/${uf || ''}`);
-  const municipio = municipioPorCidade?.get(cidadeUfNorm) || municipioPorCidade?.get(cidadeNorm);
-  return municipio?.ibge || '';
+  if (!indice || !cidade) return '';
+  return resolverIbgeComRegras(
+    cidade,
+    uf,
+    (k) => indice.porChave?.get(k) || '',
+    (k) => indice.porCompacto?.get(k) || '',
+  );
 }
 
 function criarRouteKeysRealizado(rows = [], canalPadrao = '') {
@@ -3075,6 +3079,28 @@ export default function SimuladorPage({ transportadoras = [] }) {
       if (cidadeUf && !mapa.has(cidadeUf)) mapa.set(cidadeUf, item);
     });
     return mapa;
+  }, [municipiosDisponiveis]);
+
+  // Índice dedicado ao resolvedor do realizado, com as regras de casamento
+  // (DF, sufixo de UF, parêntese e chave compacta p/ apóstrofo).
+  const indiceIbgeRealizado = useMemo(() => {
+    const porChave = new Map();
+    const porCompacto = new Map();
+    municipiosDisponiveis.forEach((item) => {
+      const ibge = String(item.ibge || item.codigo_ibge || item.codigo || '').replace(/\D/g, '').slice(0, 7);
+      const cidade = item.cidade || item.nome || item.municipio || '';
+      const uf = item.uf || item.estado || '';
+      if (!ibge || !cidade) return;
+      const c = normalizarCidadeIbge(cidade);
+      const comp = compactarCidadeIbge(cidade);
+      const cUf = uf ? normalizarCidadeIbge(`${cidade}/${uf}`) : '';
+      const compUf = uf ? compactarCidadeIbge(`${cidade}/${uf}`) : '';
+      if (c && !porChave.has(c)) porChave.set(c, ibge);
+      if (cUf && !porChave.has(cUf)) porChave.set(cUf, ibge);
+      if (comp && !porCompacto.has(comp)) porCompacto.set(comp, ibge);
+      if (compUf && !porCompacto.has(compUf)) porCompacto.set(compUf, ibge);
+    });
+    return { porChave, porCompacto };
   }, [municipiosDisponiveis]);
 
   const canaisLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.canal)).filter(Boolean))], [transportadoras]);
@@ -4489,8 +4515,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       atualizarProcessamentoUi('Resolvendo IBGE dos CT-es e aplicando vínculos...', 70);
       let rowsComIbgeBaseAntesCps = rowsBrutosFiltrados.map((row) => {
-        const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
-        const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', municipioPorCidade);
+        const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', indiceIbgeRealizado);
+        const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', indiceIbgeRealizado);
         const nomeOriginal = String(row.transportadora || '').trim();
         const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
         return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
@@ -4546,8 +4572,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
           incluirTodosTomadores: incluirTodosTomadoresRealizado,
         });
         rowsComIbgeBaseAntesCps = rowsBrutosFiltrados.map((row) => {
-          const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', municipioPorCidade);
-          const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', municipioPorCidade);
+          const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', indiceIbgeRealizado);
+          const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', indiceIbgeRealizado);
           const nomeOriginal = String(row.transportadora || '').trim();
           const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
           return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };

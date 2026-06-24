@@ -4,6 +4,7 @@ import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { buscarTrackingParaRealizado, obterTrackingDaLinha } from '../services/realizadoTrackingEnrichment';
 import { carregarAliasesCidadeIbge } from '../services/cidadeIbgeAliasService';
+import { normalizarCidadeIbge, compactarCidadeIbge, resolverIbgeComRegras } from '../utils/ibgeCidadeMatch';
 
 const TABELA = 'realizado_local_ctes';
 const PAGE = 1000;
@@ -26,23 +27,39 @@ function dig7(v) { return String(v || '').replace(/\D/g, '').slice(0, 7); }
 function normalizeBuscaIbge(t) {
   return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }
+// Índice em duas chaves: normal ("cidade" e "cidade/uf") e compacta (sem espaços,
+// resolve apóstrofo). O resolvedor usa as regras de ibgeCidadeMatch.
 function montarMunicipioPorCidade(municipios = []) {
-  const mapa = new Map();
+  const porChave = new Map();
+  const porCompacto = new Map();
   for (const item of (municipios || [])) {
     const ibge = dig7(item.ibge || item.codigo_ibge || item.codigo);
     const cidade = item.cidade || item.nome || item.municipio || '';
-    const uf = item.uf || item.estado || '';
+    const uf = String(item.uf || item.estado || '').toLowerCase();
     if (!ibge || !cidade) continue;
-    const kCidade = normalizeBuscaIbge(cidade);
-    const kCidadeUf = normalizeBuscaIbge(`${cidade}/${uf}`);
-    if (kCidade && !mapa.has(kCidade)) mapa.set(kCidade, ibge);
-    if (kCidadeUf && !mapa.has(kCidadeUf)) mapa.set(kCidadeUf, ibge);
+    const c = normalizarCidadeIbge(cidade);
+    const comp = compactarCidadeIbge(cidade);
+    const cUf = uf ? normalizarCidadeIbge(`${cidade}/${uf}`) : '';
+    const compUf = uf ? compactarCidadeIbge(`${cidade}/${uf}`) : '';
+    if (c) {
+      if (!porChave.has(c)) porChave.set(c, ibge);
+      if (cUf && !porChave.has(cUf)) porChave.set(cUf, ibge);
+    }
+    if (comp) {
+      if (!porCompacto.has(comp)) porCompacto.set(comp, ibge);
+      if (compUf && !porCompacto.has(compUf)) porCompacto.set(compUf, ibge);
+    }
   }
-  return mapa;
+  return { porChave, porCompacto };
 }
-function resolverPlanilha(cidade, uf, municipioPorCidade) {
-  if (!cidade) return '';
-  return municipioPorCidade.get(normalizeBuscaIbge(`${cidade}/${uf || ''}`)) || municipioPorCidade.get(normalizeBuscaIbge(cidade)) || '';
+function resolverPlanilha(cidade, uf, indice) {
+  if (!cidade || !indice) return '';
+  return resolverIbgeComRegras(
+    cidade,
+    uf,
+    (k) => indice.porChave.get(k) || '',
+    (k) => indice.porCompacto.get(k) || '',
+  );
 }
 // Chaves da base no formato que o match do tracking espera.
 // A prioridade no serviÃ§o Ã©: chave CT-e -> chave NF-e -> nota -> nÃºmero CT-e.
@@ -190,19 +207,17 @@ export default function GestaoBaseCtePage() {
         if (sb.length > municipios.length) { municipios = sb; ibgeFonte = 'ibge_municipios (Supabase)'; }
       }
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
-      if (!municipioPorCidade.size) throw new Error('Base de IBGE indisponÃ­vel (nem IBGE oficial nem ibge_municipios). Verifique a conexÃ£o e tente de novo.');
+      if (!municipioPorCidade.porChave.size) throw new Error('Base de IBGE indisponÃ­vel (nem IBGE oficial nem ibge_municipios). Verifique a conexÃ£o e tente de novo.');
 
       // Vinculos manuais cidade->IBGE (geridos em Ferramentas). Sobrepoem a lista
       // oficial para resolver nomes que nao casam (ex.: "BRASILIA (DF)").
       try {
         const aliases = await carregarAliasesCidadeIbge();
         for (const a of aliases) {
-          const kCidade = normalizeBuscaIbge(a.cidade);
-          if (kCidade) municipioPorCidade.set(kCidade, a.ibge);
-          if (a.uf) {
-            const kCidadeUf = normalizeBuscaIbge(`${a.cidade}/${a.uf}`);
-            if (kCidadeUf) municipioPorCidade.set(kCidadeUf, a.ibge);
-          }
+          const c = normalizarCidadeIbge(a.cidade);
+          const comp = compactarCidadeIbge(a.cidade);
+          if (c) { municipioPorCidade.porChave.set(c, a.ibge); if (a.uf) municipioPorCidade.porChave.set(normalizarCidadeIbge(`${a.cidade}/${a.uf}`), a.ibge); }
+          if (comp) { municipioPorCidade.porCompacto.set(comp, a.ibge); if (a.uf) municipioPorCidade.porCompacto.set(compactarCidadeIbge(`${a.cidade}/${a.uf}`), a.ibge); }
         }
       } catch (e) {
         console.warn('[GestaoBaseCte] aliases cidade->IBGE indisponiveis', e);
@@ -322,7 +337,7 @@ export default function GestaoBaseCtePage() {
         semVolumes, semCubagem, comVolumetria,
         vouPreencher: updatesDeduplicados.length, vaiPreencherIbge, vaiPreencherRota, vaiPreencherVolumetria, viaTracking, viaPlanilha, semMatchTracking, trackingErro,
         updatesDuplicados: Math.max(0, updates.length - updatesDeduplicados.length),
-        ibgeFonte, ibgeQtd: municipioPorCidade.size,
+        ibgeFonte, ibgeQtd: municipioPorCidade.porChave.size,
         updates: updatesDeduplicados, topNaoResolvidas, arquivos,
       });
       setStatus('idle'); setProgresso('');
