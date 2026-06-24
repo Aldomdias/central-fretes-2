@@ -1062,6 +1062,58 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
   };
 }
 
+// Modo "apenas dados completos": NÃO consulta o tracking. Usa volumes/cubagem
+// já gravados na própria base de CT-es (enriquecidos antes pela Gestão Base, que
+// copiou o tracking para dentro do CT-e). Mantém só os CT-es completos
+// (IBGE origem+destino + cubagem + volume) e descarta o resto, pra não calcular
+// com cubagem zero. É o caminho rápido: dispensa o cruzamento ao vivo.
+function enriquecerRealizadoComBase(rows = []) {
+  let vinculados = 0;
+  let incompletos = 0;
+  let volumesTracking = 0;
+  let cubagemTracking = 0;
+  const linhas = [];
+
+  for (const row of rows || []) {
+    const cubagem = numeroRealizado(row.cubagemTotal || row.cubagem_total || row.cubagem);
+    const volumes = numeroRealizado(row.qtdVolumes || row.qtd_volumes || row.volume || row.volumes);
+    const temIbge = String(row.ibgeOrigem || '').replace(/\D/g, '').length >= 7
+      && String(row.ibgeDestino || '').replace(/\D/g, '').length >= 7;
+
+    if (cubagem > 0 && volumes > 0 && temIbge) {
+      vinculados += 1;
+      volumesTracking += volumes;
+      cubagemTracking += cubagem;
+      linhas.push({
+        ...row,
+        // A cubagem da base veio do tracking (via Gestão Base), então é confiável.
+        trackingMatch: true,
+        trackingPendente: false,
+        baseCompletaSemTracking: true,
+        qtdVolumes: volumes,
+        cubagemTotal: cubagem,
+        cubagemUnitaria: volumes > 0 ? cubagem / volumes : 0,
+        pesoCubado: numeroRealizado(row.pesoCubado || row.peso_cubado),
+      });
+    } else {
+      incompletos += 1;
+    }
+  }
+
+  return {
+    linhas,
+    vinculados,
+    semTracking: incompletos,
+    incompletosDescartados: incompletos,
+    volumesTracking,
+    cubagemTracking,
+    cubagemOutliers: 0,
+    erroTracking: '',
+    avisoTracking: '',
+    apenasBaseCompleta: true,
+  };
+}
+
 
 function normalizarTransportadoraSimulador(nome = '') {
   return String(nome || '')
@@ -3102,6 +3154,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // e o contexto necessário para a simulação rodar só sobre o que está na tela.
   const [baseRealizadoCarregada, setBaseRealizadoCarregada] = useState(null);
   const [buscandoCtesRealizado, setBuscandoCtesRealizado] = useState(false);
+  // Quando true, usa volumes/cubagem da própria base (sem consultar o tracking)
+  // e considera só os CT-es completos. Caminho rápido, depende da base enriquecida.
+  const [apenasDadosCompletosRealizado, setApenasDadosCompletosRealizado] = useState(false);
   const [atualizandoNegociacaoRealizado, setAtualizandoNegociacaoRealizado] = useState(false);
   const [recarregarMalhaOficialRealizado, setRecarregarMalhaOficialRealizado] = useState(0);
 
@@ -4441,9 +4496,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
         incluirCpComercial: incluirCpComercialRealizado,
       });
 
-      atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 82);
-      let mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
-      let trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
+      let mapasTracking;
+      let trackingEnriquecido;
+      if (apenasDadosCompletosRealizado) {
+        atualizarProcessamentoUi('Usando volumes/cubagem da própria base (sem consultar o Tracking)...', 82);
+        mapasTracking = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
+        trackingEnriquecido = enriquecerRealizadoComBase(rowsComIbgeBase);
+      } else {
+        atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 82);
+        mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
+        trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
+      }
 
       // Terceira barreira: garante que CPS LOG não entre mesmo se vier enriquecido/vinculado no Tracking.
       let linhasEnriquecidasFiltradas = filtrarRowsPorOrigensRealizado(
@@ -4487,8 +4550,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
           incluirCpsLog: incluirCpsLogRealizado,
           incluirCpComercial: incluirCpComercialRealizado,
         });
-        mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
-        trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
+        if (apenasDadosCompletosRealizado) {
+          mapasTracking = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
+          trackingEnriquecido = enriquecerRealizadoComBase(rowsComIbgeBase);
+        } else {
+          mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
+          trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
+        }
         linhasEnriquecidasFiltradas = filtrarRowsPorOrigensRealizado(
           filtrarOpcoesRealizadoSim(trackingEnriquecido.linhas || [], {
             incluirCpsLog: incluirCpsLogRealizado,
@@ -6513,6 +6581,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   />
                   Incluir todos os tomadores (ignorar lista padrão)
                 </label>
+
+                <label className="sim-flag">
+                  <input
+                    type="checkbox"
+                    checked={apenasDadosCompletosRealizado}
+                    onChange={(event) => setApenasDadosCompletosRealizado(event.target.checked)}
+                  />
+                  Considerar apenas CT-es com dados completos (não consultar Tracking)
+                </label>
+                <small style={{ color: '#64748b', marginTop: -4 }}>
+                  Caminho rápido: usa volumes e cubagem já gravados na base (enriquecidos antes pela Gestão Base CT-e) e considera só CT-es com IBGE, cubagem e volume preenchidos. Deixe desmarcado para cruzar o Tracking ao vivo e completar quem ainda falta.
+                </small>
 
                 <label className="sim-flag">
                   <input
