@@ -273,15 +273,26 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
     excessoKg > 0 ||
     valorExcedente > 0;
 
-  // Importações percentuais podem preencher 0..999999999 apenas como faixa técnica.
-  // Esse limite não transforma uma tabela percentual em faixa de peso.
-  const tipoCalculoItem = tipoCalculoTabela === 'PERCENTUAL' && percentual > 0
-    ? 'PERCENTUAL'
-    : percentual > 0 && !temEstruturaFaixa
+  // Linhas com taxa/excedente por faixa usam o motor de faixa, mesmo quando
+  // tambem carregam percentual sobre NF.
+  const temFaixaPesoReal =
+    pesoInicial > 0 ||
+    (pesoFinalInformado > 0 && pesoFinalInformado < 999998) ||
+    (excessoKg > 0 && valorExcedente > 0);
+
+  const tipoCalculoItem = temEstruturaFaixa && (temFaixaPesoReal || taxaAplicada > 0 || valorExcedente > 0)
+    ? 'FAIXA_DE_PESO'
+    : percentual > 0
       ? 'PERCENTUAL'
-      : temEstruturaFaixa || pesoInicial > 0 || (pesoFinalInformado > 0 && pesoFinalInformado < 999999999)
-      ? 'FAIXA_DE_PESO'
       : tipoCalculoTabela;
+
+  const rsKgPercentual = numero(
+    dados.rsKg ??
+    dados.valorKgGarantia ??
+    item.rs_kg ??
+    item.rsKg ??
+    (tipoCalculoItem === 'PERCENTUAL' && valorExcedente <= 0 ? item.excesso_kg : 0)
+  );
 
   return {
     id: item.id || `cotacao-neg-${indice}`,
@@ -292,11 +303,7 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
     pesoLimite: pesoFinalInformado > 0 ? pesoFinalInformado : 999999999,
     taxaAplicada,
     valorFixo: taxaAplicada,
-    // Em tabela percentual, a coluna "kg excedente" representa o kg garantia:
-    // peso considerado x valor por kg, comparado com frete % e frete mínimo.
-    rsKg: tipoCalculoItem === 'PERCENTUAL'
-      ? numero(item.excesso_kg || dados.excesso || dados.rsKg)
-      : numero(dados.rsKg),
+    rsKg: tipoCalculoItem === 'PERCENTUAL' ? rsKgPercentual : numero(dados.rsKg),
     percentual,
     fretePercentual: percentual,
     freteMinimo,

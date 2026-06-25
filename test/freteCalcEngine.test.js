@@ -10,6 +10,7 @@ import {
   agregarCubagemLinhasTracking,
   resolverCubagemTracking,
 } from '../src/utils/trackingCubagem.js';
+import { converterTabelaNegociacaoParaSimulador } from '../src/utils/tabelasNegociacaoSimuladorAdapter.js';
 
 test('percentual usa o maior entre kg garantia, frete percentual e minimo', () => {
   const resultado = calcularFretePercentual({
@@ -42,6 +43,58 @@ test('faixa soma valor da faixa, percentual e excedente', () => {
   assert.equal(resultado.componentesBase.valorPercentual, 20);
   assert.equal(resultado.valorExcedente, 30);
   assert.equal(resultado.valorBase, 150);
+});
+
+test('negociacao com faixa e percentual nao usa limite de excedente como R$/kg', () => {
+  const tabela = converterTabelaNegociacaoParaSimulador({
+    id: 'av-test',
+    transportadora: 'Avioes Transportes',
+    origem: 'Itajai',
+    uf_origem: 'SC',
+    canal: 'ATACADO',
+    incluir_simulacao: true,
+    generalidades: { tipoCalculo: 'PERCENTUAL', cubagem: 300 },
+    itens: [
+      {
+        id: 'rota-pb',
+        item_tipo: 'ROTA',
+        ibge_destino: '2501807',
+        cidade_destino: 'Bayeux',
+        uf_destino: 'PB',
+        faixa_peso: 'PB CAPITAL',
+        prazo: 9,
+        dados_originais: { tipo_item: 'ROTA', cotacao: 'PB CAPITAL' },
+      },
+      {
+        id: 'cot-pb-200',
+        item_tipo: 'COTACAO',
+        faixa_peso: 'PB CAPITAL | 200.01 a 999999',
+        peso_inicial: 200.01,
+        peso_final: 999999,
+        taxa_aplicada: 382.4,
+        frete_percentual: 0.5,
+        excesso_kg: 200.01,
+        valor_excedente: 2.36,
+        dados_originais: { tipo_item: 'COTACAO', cotacao: 'PB CAPITAL' },
+      },
+    ],
+  });
+
+  const cotacao = tabela.origens[0].cotacoes[0];
+  assert.equal(cotacao.tipoCalculo, 'FAIXA_DE_PESO');
+  assert.equal(cotacao.rsKg, 0);
+  assert.equal(cotacao.excessoPeso, 200.01);
+  assert.equal(cotacao.excesso, 2.36);
+
+  const resultado = calcularFreteFaixaPeso({
+    cotacao,
+    pesoKg: 2527.2,
+    valorNf: 7931.99,
+  });
+
+  assert.ok(resultado.valorBase < 6000, 'nao deve explodir para centenas de milhares');
+  assert.ok(Math.abs(resultado.componentesBase.excessoPorKg - 2.36) < 0.000001);
+  assert.ok(Math.abs(resultado.componentesBase.valorPercentual - 39.65995) < 0.00001);
 });
 
 test('faixa aplica o minimo da rota como piso quando a faixa vale zero', () => {
