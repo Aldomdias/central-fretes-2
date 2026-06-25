@@ -1,5 +1,9 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { resolverCubagemTracking } from '../utils/trackingCubagem';
+import { carregarMunicipiosIbgeDb } from './freteDatabaseService';
+import { carregarAliasesCidadeIbge } from './cidadeIbgeAliasService';
+import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
+import { compactarCidadeIbge, normalizarCidadeIbge, resolverIbgeComRegras } from '../utils/ibgeCidadeMatch';
 
 const TMP_CHUNK_SIZE = 1000;
 const TMP_INSERT_RETRIES = 3;
@@ -72,6 +76,93 @@ function cleanUf(value) {
 
 function cleanDigits(value) {
   return String(value ?? '').replace(/\D/g, '');
+}
+
+let resolvedorIbgeImportacaoPromise = null;
+
+function montarIndiceIbgeImportacao(municipios = []) {
+  const porChave = new Map();
+  const porCompacto = new Map();
+
+  for (const item of municipios || []) {
+    const ibge = cleanDigits(item.ibge || item.codigo_ibge || item.codigo).slice(0, 7);
+    const cidade = item.cidade || item.nome || item.municipio || '';
+    const uf = cleanUf(item.uf || item.estado || '');
+    if (!ibge || !cidade) continue;
+
+    const c = normalizarCidadeIbge(cidade);
+    const comp = compactarCidadeIbge(cidade);
+    const cUf = uf ? normalizarCidadeIbge(`${cidade}/${uf}`) : '';
+    const compUf = uf ? compactarCidadeIbge(`${cidade}/${uf}`) : '';
+
+    if (c && !porChave.has(c)) porChave.set(c, ibge);
+    if (cUf && !porChave.has(cUf)) porChave.set(cUf, ibge);
+    if (comp && !porCompacto.has(comp)) porCompacto.set(comp, ibge);
+    if (compUf && !porCompacto.has(compUf)) porCompacto.set(compUf, ibge);
+  }
+
+  return { porChave, porCompacto };
+}
+
+async function carregarResolvedorIbgeImportacao() {
+  if (!resolvedorIbgeImportacaoPromise) {
+    resolvedorIbgeImportacaoPromise = (async () => {
+      let municipios = [];
+      try {
+        const oficial = await carregarMunicipiosIbgeOficial({ usarCache: true });
+        municipios = oficial?.municipios || [];
+      } catch {
+        municipios = [];
+      }
+
+      const db = await carregarMunicipiosIbgeDb().catch(() => []);
+      if (db.length > municipios.length) municipios = db;
+
+      const indice = montarIndiceIbgeImportacao(municipios);
+
+      try {
+        const aliases = await carregarAliasesCidadeIbge();
+        for (const alias of aliases || []) {
+          const ibge = cleanDigits(alias.ibge).slice(0, 7);
+          const cidade = alias.cidade || '';
+          const uf = cleanUf(alias.uf);
+          if (!ibge || !cidade) continue;
+
+          const c = normalizarCidadeIbge(cidade);
+          const comp = compactarCidadeIbge(cidade);
+          if (c) indice.porChave.set(c, ibge);
+          if (uf) indice.porChave.set(normalizarCidadeIbge(`${cidade}/${uf}`), ibge);
+          if (comp) indice.porCompacto.set(comp, ibge);
+          if (uf) indice.porCompacto.set(compactarCidadeIbge(`${cidade}/${uf}`), ibge);
+        }
+      } catch {
+        // Aliases sao reforco; a importacao pode seguir com a base oficial/DB.
+      }
+
+      return (cidade, uf) => resolverIbgeComRegras(
+        cidade,
+        uf,
+        (chave) => indice.porChave.get(chave) || '',
+        (chave) => indice.porCompacto.get(chave) || '',
+      );
+    })();
+  }
+
+  return resolvedorIbgeImportacaoPromise;
+}
+
+async function aplicarIbgeImportacao(row = {}, resolverIbge = null) {
+  const resolver = resolverIbge || await carregarResolvedorIbgeImportacao();
+  const ibgeOrigem = cleanDigits(row.ibge_origem).slice(0, 7)
+    || resolver(row.cidade_origem, row.uf_origem);
+  const ibgeDestino = cleanDigits(row.ibge_destino).slice(0, 7)
+    || resolver(row.cidade_destino, row.uf_destino);
+
+  return {
+    ...row,
+    ibge_origem: ibgeOrigem,
+    ibge_destino: ibgeDestino,
+  };
 }
 
 function cidadeSemUf(cidade = '', uf = '') {
@@ -738,24 +829,25 @@ async function enriquecerTemporariaComTracking(rows = []) {
   if (!lista.length) return { rows: lista, vinculados: 0, semTracking: 0, erroTracking: '' };
 
   const { mapaCte, mapaNfe, erros } = await buscarTrackingImportacaoPorChave(lista);
+  const resolverIbge = await carregarResolvedorIbgeImportacao();
   let vinculados = 0;
   let semTracking = 0;
 
-  const enriquecidas = lista.map((row) => {
+  const enriquecidas = await Promise.all(lista.map(async (row) => {
     const chaves = chavesTrackingFromTmp(row);
     const tracking = mapaCte.get(cleanDigits(chaves.chaveCte))
       || mapaNfe.get(cleanDigits(chaves.chaveNfe));
     if (!tracking) {
       semTracking += 1;
-      return {
+      return aplicarIbgeImportacao({
         ...row,
         cubagem: toSafeNumber(row.metros_cubicos),
         qtd_volumes: 0,
-      };
+      }, resolverIbge);
     }
 
     vinculados += 1;
-    return {
+    return aplicarIbgeImportacao({
       ...row,
       cidade_origem: cleanText(row.cidade_origem || tracking.cidade_origem),
       uf_origem: cleanUf(row.uf_origem || tracking.uf_origem),
@@ -770,8 +862,8 @@ async function enriquecerTemporariaComTracking(rows = []) {
       qtd_volumes: toSafeNumber(tracking.qtd_volumes),
       canal: cleanText(row.canal || tracking.canal),
       valor_nf: toSafeNumber(row.valor_nf) || toSafeNumber(tracking.valor_nf),
-    };
-  });
+    }, resolverIbge);
+  }));
 
   return {
     rows: enriquecidas,
