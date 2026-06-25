@@ -466,9 +466,13 @@ export async function parseRealizadoCtesFile(file, opcoesImportacao) {
     .filter((row) => row.chaveCte || row.numeroCte)
     .filter((row) => row.valorCte > 0 || row.valorNF > 0);
 
+  // Politica: a base sobe COMPLETA — CP COMERCIAL, EBAZAR, CPS LOG e tomador vazio
+  // tambem entram, para ficarem disponiveis em busca/filtro. A exclusao desses
+  // passa a ser feita nas simulacoes/analises (com opt-in), nao no import.
+  // `ignorados`/`resumoExclusoes` seguem so como informacao no relatorio.
   const { aceitos, ignorados } = particionarCtesPorPolitica(normalizados, opcoes);
-  const registros = deduplicateRows(aceitos);
-  const duplicados = Math.max(0, aceitos.length - registros.length);
+  const registros = deduplicateRows(normalizados);
+  const duplicados = Math.max(0, normalizados.length - registros.length);
   const resumoExclusoes = montarResumoExclusoes(ignorados);
 
   return {
@@ -485,10 +489,13 @@ export async function parseRealizadoCtesFile(file, opcoesImportacao) {
       linhasOriginais: rows.length,
       registrosLidos: normalizados.length,
       registrosAntesTomador: normalizados.length,
-      registrosIgnoradosTomador: ignorados.length,
-      registrosIgnorados: ignorados.length,
+      // A base sobe completa: nada e ignorado no import. O resumo abaixo e so
+      // informativo (quantos de cada categoria especial entraram).
+      registrosIgnoradosTomador: 0,
+      registrosIgnorados: 0,
       duplicados,
-      resumoExclusoes,
+      categoriasEspeciais: resumoExclusoes,
+      resumoExclusoes: {},
       regraTomador: regraTomadorServicoRealizadoTexto(),
       registrosValidos: registros.length,
       registrosImportados: registros.length,
