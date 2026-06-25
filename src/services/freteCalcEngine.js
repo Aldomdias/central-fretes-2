@@ -1,7 +1,39 @@
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  return Number(String(value).replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '')) || 0;
+
+  let text = String(value)
+    .replace(/R\$/gi, '')
+    .replace(/%/g, '')
+    .replace(/\s/g, '')
+    .trim();
+
+  if (!text) return 0;
+
+  const negative = /^-/.test(text) || /^\(.*\)$/.test(text);
+  text = text.replace(/[()]/g, '').replace(/^-/, '');
+
+  const hasComma = text.includes(',');
+  const hasDot = text.includes('.');
+
+  if (hasComma && hasDot) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  } else if (hasComma) {
+    text = text.replace(',', '.');
+  } else if (hasDot) {
+    const parts = text.split('.');
+    const looksThousands =
+      parts.length > 1 &&
+      parts.slice(1).every((part) => part.length === 3) &&
+      parts[0].length <= 3;
+
+    if (looksThousands) text = text.replace(/\./g, '');
+  }
+
+  const clean = text.replace(/[^0-9.]/g, '');
+  if (!clean) return 0;
+  const parsed = Number(`${negative ? '-' : ''}${clean}`);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function toPercent(value) {

@@ -45,6 +45,32 @@ test('faixa soma valor da faixa, percentual e excedente', () => {
   assert.equal(resultado.valorBase, 150);
 });
 
+test('faixa interpreta valor excedente com ponto ou virgula como decimal', () => {
+  const base = {
+    valorFixo: '382.40',
+    fretePercentual: '0.50',
+    pesoMin: '200.01',
+    pesoMax: '999999',
+    excessoPeso: '200.01',
+  };
+
+  const comPonto = calcularFreteFaixaPeso({
+    cotacao: { ...base, valorExcedente: '2.36' },
+    pesoKg: '2527.20',
+    valorNf: '7931.99',
+  });
+
+  const comVirgula = calcularFreteFaixaPeso({
+    cotacao: { ...base, valorExcedente: '2,36' },
+    pesoKg: '2527,20',
+    valorNf: '7.931,99',
+  });
+
+  assert.ok(Math.abs(comPonto.valorBase - comVirgula.valorBase) < 0.001);
+  assert.ok(comPonto.valorBase < 6000, '2.36 nao pode virar 236');
+  assert.ok(Math.abs(comPonto.componentesBase.excessoPorKg - 2.36) < 0.000001);
+});
+
 test('negociacao com faixa e percentual nao usa limite de excedente como R$/kg', () => {
   const tabela = converterTabelaNegociacaoParaSimulador({
     id: 'av-test',
