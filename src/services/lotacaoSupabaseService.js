@@ -742,7 +742,9 @@ export async function buscarCteLotacaoAuditoriaPorChaveSupabase(chave = '', opco
     valores: [digitos],
     operadores: ['eq'],
     limite: 5,
-    opcoesBaseCte,
+    // Busca por chave exata: retorna o CT-e pedido mesmo que seja CP COMERCIAL
+    // (a exclusao padrao so faz sentido em visoes em lote, nao numa busca pontual).
+    opcoesBaseCte: { ...opcoesBaseCte, incluirCpComercial: true },
   });
 }
 
@@ -777,7 +779,8 @@ export async function buscarCtesLotacaoAuditoriaPorNumeroSupabase(numero = '', o
     valores,
     operadores: ['eq', 'ilike'],
     limite: 30,
-    opcoesBaseCte,
+    // Busca pontual por numero: nao esconder CP COMERCIAL.
+    opcoesBaseCte: { ...opcoesBaseCte, incluirCpComercial: true },
   });
 }
 
