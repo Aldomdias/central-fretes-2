@@ -111,7 +111,7 @@ test('taxas por destino prevalecem para GRIS e Ad Valorem e somam taxas fixas', 
   assert.equal(taxas.outras, 3);
 });
 
-test('cubagem do Tracking nao multiplica novamente pelo total de volumes', () => {
+test('cubagem do Tracking = unitaria x volumes (cubagem por volume)', () => {
   const resultado = resolverCubagemTracking({
     cubagemUnitaria: 0.265,
     cubagemTotal: 2.65,
@@ -120,33 +120,36 @@ test('cubagem do Tracking nao multiplica novamente pelo total de volumes', () =>
     fatorCubagem: 300,
   });
 
-  assert.equal(resultado.totalFoiMultiplicadoPorVolumes, true);
-  assert.equal(resultado.cubagemAplicada, 0.265);
-  assert.equal(resultado.pesoCubado, 79.5);
-  assert.equal(resultado.pesoConsiderado, 95.42);
+  // 0,265/volume x 10 volumes = 2,65 m3 -> peso cubado 795 kg.
+  assert.ok(Math.abs(resultado.cubagemAplicada - 2.65) < 0.000001);
+  assert.ok(Math.abs(resultado.pesoCubado - 795) < 0.0001);
+  assert.ok(Math.abs(resultado.pesoConsiderado - 795) < 0.0001);
 });
 
-test('cubagem de CT-e com varias NFs soma as cubagens originais de cada linha', () => {
+test('cubagem por volume mesmo quando o total nao veio multiplicado', () => {
+  // Caso real (2 notas no mesmo CT-e): unitaria == total == 0,048 e 4 volumes.
+  // O correto por linha e 0,048 x 4 = 0,192 (= NUMERACAO da NF).
+  const resultado = resolverCubagemTracking({
+    cubagemUnitaria: 0.048,
+    cubagemTotal: 0.048,
+    volumes: 4,
+    pesoFisico: 27.76,
+    fatorCubagem: 300,
+  });
+  assert.ok(Math.abs(resultado.cubagemAplicada - 0.192) < 0.000001);
+  assert.ok(Math.abs(resultado.pesoCubado - 57.6) < 0.000001);
+});
+
+test('cubagem de CT-e com varias NFs soma unitaria x volumes de cada linha', () => {
   const linhas = [
-    {
-      cubagem_unitaria: 0.121,
-      cubagem_total: 3.63,
-      qtd_volumes: 30,
-      peso: 224.639,
-    },
-    {
-      cubagem_unitaria: 0.246,
-      cubagem_total: 9.348,
-      qtd_volumes: 38,
-      peso: 284.2,
-    },
+    { cubagem_unitaria: 0.121, cubagem_total: 3.63, qtd_volumes: 30, peso: 224.639 },
+    { cubagem_unitaria: 0.246, cubagem_total: 9.348, qtd_volumes: 38, peso: 284.2 },
   ];
 
   const agregado = agregarCubagemLinhasTracking(linhas);
 
-  assert.equal(agregado.corrigiuMultiplicacao, true);
-  assert.ok(Math.abs(agregado.cubagemTotalArmazenada - 12.978) < 0.000001);
-  assert.ok(Math.abs(agregado.cubagemAplicada - 0.367) < 0.000001);
-  assert.ok(Math.abs(agregado.pesoCubado - 110.1) < 0.000001);
+  // linha1: 0,121 x 30 = 3,63 ; linha2: 0,246 x 38 = 9,348 ; soma = 12,978.
+  assert.ok(Math.abs(agregado.cubagemAplicada - 12.978) < 0.000001);
+  assert.ok(Math.abs(agregado.pesoCubado - 3893.4) < 0.000001);
   assert.ok(Math.abs(agregado.pesoFisico - 508.839) < 0.000001);
 });

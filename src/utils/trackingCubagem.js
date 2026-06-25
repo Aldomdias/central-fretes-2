@@ -16,14 +16,16 @@ export function resolverCubagemTracking({
   const peso = numero(pesoFisico);
   const fator = numero(fatorCubagem) || 300;
 
-  const totalFoiMultiplicadoPorVolumes =
-    qtdVolumes > 1 &&
-    cubagemLinha > 0 &&
-    Math.abs(totalArmazenado - (cubagemLinha * qtdVolumes)) < 0.01;
+  // Regra (validada com notas reais): a cubagem do tracking e POR VOLUME, entao
+  // a cubagem da linha = unitaria x volumes. Ex.: 0,048/volume x 4 = 0,192 (= a
+  // NUMERACAO da NF). Quando o tracking ja traz um total agregado MAIOR que
+  // unitaria x volumes, respeita o maior (piso de seguranca). Volumes<=1 mantem
+  // a unitaria. Valores absurdos sao barrados depois por validarCubagemTracking.
+  const porVolume = qtdVolumes > 0 ? cubagemLinha * qtdVolumes : cubagemLinha;
+  const cubagemCandidata = Math.max(porVolume, totalArmazenado);
 
-  const cubagemCandidata = totalFoiMultiplicadoPorVolumes
-    ? cubagemLinha
-    : totalArmazenado || cubagemLinha;
+  // Informativo: houve multiplicacao pelos volumes nesta linha.
+  const totalFoiMultiplicadoPorVolumes = qtdVolumes > 1 && cubagemLinha > 0 && porVolume >= totalArmazenado;
 
   const pesoCubado = cubagemCandidata * fator;
 
