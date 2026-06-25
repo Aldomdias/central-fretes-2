@@ -288,12 +288,31 @@ function resolverIbgeCte(row = {}, tipo = 'destino', municipioPorCidade = new Ma
   return municipioPorCidade.get(cidadeKey(cidade, uf)) || municipioPorCidade.get(cidadeKey(cidade, '')) || '';
 }
 
+function resolverCubagemOperacionalCte(row = {}) {
+  const cubagem = toNumber(row.metrosCubicos ?? row.metros_cubicos ?? row.cubagem);
+  const qtdVolumes = toNumber(row.volume ?? row.qtdVolumes ?? row.qtd_volumes);
+  const origemCubagem = normalize(row.origemCubagem || row.origem_cubagem || '');
+  const temVinculoTracking = Boolean(row.trackingMatch || row.tracking_match || origemCubagem.includes('TRACKING'));
+
+  // Bases antigas gravaram peso_cubado no campo cubagem. Sem volumes/vinculo
+  // de tracking, esse numero nao pode ser tratado como m3 no simulador.
+  const cubagemVeioDoTracking = cubagem > 0 && (qtdVolumes > 0 || temVinculoTracking);
+
+  return {
+    cubagem: cubagemVeioDoTracking ? cubagem : 0,
+    qtdVolumes,
+    trackingMatch: cubagemVeioDoTracking,
+    origemCubagem: cubagemVeioDoTracking ? 'tracking' : '',
+  };
+}
+
 function normalizarCteSupabaseParaLocal(row = {}, municipioPorCidade = new Map()) {
   const dataEmissao = String(row.dataEmissao || row.data_emissao || row.emissao || '').slice(0, 10);
   const ibgeOrigem = resolverIbgeCte(row, 'origem', municipioPorCidade);
   const ibgeDestino = resolverIbgeCte(row, 'destino', municipioPorCidade);
   const peso = Math.max(toNumber(row.peso), toNumber(row.pesoDeclarado), toNumber(row.peso_declarado), toNumber(row.pesoCubado), toNumber(row.peso_cubado));
   const chaveRotaIbge = ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '';
+  const cubagemInfo = resolverCubagemOperacionalCte(row);
 
   return {
     chaveCte: row.chaveCte || row.chave_cte || row.id || `${row.numeroCte || row.numero_cte || 'cte'}-${dataEmissao}-${row.transportadora || ''}`,
@@ -311,8 +330,10 @@ function normalizarCteSupabaseParaLocal(row = {}, municipioPorCidade = new Map()
     peso,
     pesoDeclarado: toNumber(row.pesoDeclarado ?? row.peso_declarado) || peso,
     pesoCubado: toNumber(row.pesoCubado ?? row.peso_cubado),
-    cubagem: toNumber(row.metrosCubicos ?? row.metros_cubicos ?? row.cubagem),
-    qtdVolumes: toNumber(row.volume ?? row.qtdVolumes ?? row.qtd_volumes),
+    cubagem: cubagemInfo.cubagem,
+    qtdVolumes: cubagemInfo.qtdVolumes,
+    trackingMatch: cubagemInfo.trackingMatch,
+    origemCubagem: cubagemInfo.origemCubagem,
     ibgeOrigem,
     ibgeDestino,
     chaveRotaIbge,

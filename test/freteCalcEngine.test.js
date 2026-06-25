@@ -11,6 +11,7 @@ import {
   resolverCubagemTracking,
 } from '../src/utils/trackingCubagem.js';
 import { converterTabelaNegociacaoParaSimulador } from '../src/utils/tabelasNegociacaoSimuladorAdapter.js';
+import { simularRealizadoLocalRapido } from '../src/utils/realizadoLocalEngine.js';
 
 test('percentual usa o maior entre kg garantia, frete percentual e minimo', () => {
   const resultado = calcularFretePercentual({
@@ -121,6 +122,70 @@ test('negociacao com faixa e percentual nao usa limite de excedente como R$/kg',
   assert.ok(resultado.valorBase < 6000, 'nao deve explodir para centenas de milhares');
   assert.ok(Math.abs(resultado.componentesBase.excessoPorKg - 2.36) < 0.000001);
   assert.ok(Math.abs(resultado.componentesBase.valorPercentual - 39.65995) < 0.00001);
+});
+
+test('simulador realizado ignora cubagem sem sinal de tracking', async () => {
+  const transportadoras = [{
+    nome: 'Tabela Teste',
+    origens: [{
+      cidade: 'Itajai',
+      canal: 'ATACADO',
+      generalidades: { tipoCalculo: 'FAIXA_DE_PESO', cubagem: 300 },
+      taxasEspeciais: [],
+      rotas: [{ nomeRota: 'Itajai -> Aracaju', ibgeOrigem: '4208203', ibgeDestino: '2800308', prazoEntregaDias: 5 }],
+      cotacoes: [{
+        rota: 'Itajai -> Aracaju',
+        pesoMin: 200.01,
+        pesoMax: 999999,
+        pesoLimite: 999999,
+        valorFixo: 382.4,
+        percentual: 0.5,
+        excessoPeso: 200.01,
+        excesso: 2.36,
+        tipoCalculo: 'FAIXA_DE_PESO',
+      }],
+    }],
+  }];
+
+  const baseCte = {
+    chaveCte: 'cte-cubagem-antiga',
+    numeroCte: '1',
+    dataEmissao: '2026-05-01',
+    transportadora: 'Outra',
+    cidadeOrigem: 'ITAJAI',
+    ufOrigem: 'SC',
+    ibgeOrigem: '4208203',
+    cidadeDestino: 'ARACAJU',
+    ufDestino: 'SE',
+    ibgeDestino: '2800308',
+    chaveRotaIbge: '4208203-2800308',
+    canal: 'ATACADO',
+    peso: 352.8,
+    pesoDeclarado: 352.8,
+    pesoCubado: 352,
+    cubagem: 352,
+    qtdVolumes: 0,
+    valorNF: 7874.5,
+    valorCte: 504.71,
+  };
+
+  const semTracking = await simularRealizadoLocalRapido({
+    realizados: [baseCte],
+    transportadoras,
+    nomeTransportadora: 'Tabela Teste',
+  });
+
+  assert.equal(semTracking.detalhes[0].detalhes.frete.origemCubagem, 'sem cubagem');
+  assert.ok(Math.abs(semTracking.detalhes[0].detalhes.frete.pesoConsiderado - 352.8) < 0.001);
+
+  const comTracking = await simularRealizadoLocalRapido({
+    realizados: [{ ...baseCte, chaveCte: 'cte-cubagem-tracking', trackingMatch: true, origemCubagem: 'tracking', qtdVolumes: 10 }],
+    transportadoras,
+    nomeTransportadora: 'Tabela Teste',
+  });
+
+  assert.equal(comTracking.detalhes[0].detalhes.frete.origemCubagem, 'tracking');
+  assert.ok(Math.abs(comTracking.detalhes[0].detalhes.frete.pesoConsiderado - 105600) < 0.001);
 });
 
 test('faixa aplica o minimo da rota como piso quando a faixa vale zero', () => {
