@@ -632,10 +632,11 @@ function montarLinhaLocalFromTmp(row = {}) {
 }
 
 function chavesTrackingFromTmp(row = {}) {
+  const raw = row.raw || {};
   return {
     chaveCte: row.chave_cte,
-    chaveNfe: row.chave_nfe,
-    notaFiscal: row.nota_fiscal,
+    chaveNfe: row.chave_nfe || raw.chaveNfe || raw.chave_nfe,
+    notaFiscal: row.nota_fiscal || raw.notaFiscal || raw.nota_fiscal,
     numeroCte: row.numero_cte,
   };
 }
@@ -646,8 +647,8 @@ function chunksImportacao(lista = [], tamanho = TRACKING_IMPORT_CHUNK) {
   return saida;
 }
 
-function adicionarTrackingImportacao(mapa, item = {}) {
-  const chave = cleanDigits(item.chave_cte);
+function adicionarTrackingImportacao(mapa, chaveValor, item = {}) {
+  const chave = cleanDigits(chaveValor);
   if (!chave) return;
 
   const atual = mapa.get(chave);
@@ -686,48 +687,64 @@ function adicionarTrackingImportacao(mapa, item = {}) {
 
 async function buscarTrackingImportacaoPorChave(rows = []) {
   const supabase = ensureSupabase();
-  const chaves = [...new Set((rows || []).map((row) => cleanDigits(row.chave_cte)).filter((v) => v.length >= 20))];
-  const mapa = new Map();
+  const chavesCte = [...new Set((rows || []).map((row) => cleanDigits(chavesTrackingFromTmp(row).chaveCte)).filter((v) => v.length >= 20))];
+  const chavesNfe = [...new Set((rows || []).map((row) => cleanDigits(chavesTrackingFromTmp(row).chaveNfe)).filter((v) => v.length >= 20))];
+  const mapaCte = new Map();
+  const mapaNfe = new Map();
   let erros = 0;
 
-  for (const parte of chunksImportacao(chaves)) {
-    const { data, error } = await supabase
-      .from('tracking_rows')
-      .select('chave_cte,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
-      .in('chave_cte', parte);
+  async function consultar(coluna, valores, mapa) {
+    for (const parte of chunksImportacao(valores)) {
+      if (!parte.length) continue;
+      const { data, error } = await supabase
+        .from('tracking_rows')
+        .select('chave_cte,chave_nfe,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
+        .in(coluna, parte);
 
-    if (error) {
-      erros += 1;
-      for (const chave of parte) {
-        const individual = await supabase
-          .from('tracking_rows')
-          .select('chave_cte,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
-          .eq('chave_cte', chave);
-        if (individual.error) {
-          erros += 1;
-          continue;
+      if (error) {
+        erros += 1;
+        for (const chave of parte) {
+          const individual = await supabase
+            .from('tracking_rows')
+            .select('chave_cte,chave_nfe,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
+            .eq(coluna, chave);
+          if (individual.error) {
+            erros += 1;
+            continue;
+          }
+          (individual.data || []).forEach((item) => adicionarTrackingImportacao(mapa, item[coluna], item));
         }
-        (individual.data || []).forEach((item) => adicionarTrackingImportacao(mapa, item));
+        continue;
       }
-      continue;
-    }
 
-    (data || []).forEach((item) => adicionarTrackingImportacao(mapa, item));
+      (data || []).forEach((item) => adicionarTrackingImportacao(mapa, item[coluna], item));
+    }
   }
 
-  return { mapa, erros };
+  await consultar('chave_cte', chavesCte, mapaCte);
+
+  const chavesNfeSemCte = chavesNfe.filter((chaveNfe) => {
+    const row = rows.find((item) => cleanDigits(chavesTrackingFromTmp(item).chaveNfe) === chaveNfe);
+    const chaveCte = cleanDigits(chavesTrackingFromTmp(row || {}).chaveCte);
+    return !chaveCte || !mapaCte.has(chaveCte);
+  });
+  await consultar('chave_nfe', chavesNfeSemCte, mapaNfe);
+
+  return { mapaCte, mapaNfe, erros };
 }
 
 async function enriquecerTemporariaComTracking(rows = []) {
   const lista = Array.isArray(rows) ? rows : [];
   if (!lista.length) return { rows: lista, vinculados: 0, semTracking: 0, erroTracking: '' };
 
-  const { mapa, erros } = await buscarTrackingImportacaoPorChave(lista);
+  const { mapaCte, mapaNfe, erros } = await buscarTrackingImportacaoPorChave(lista);
   let vinculados = 0;
   let semTracking = 0;
 
   const enriquecidas = lista.map((row) => {
-    const tracking = mapa.get(cleanDigits(row.chave_cte));
+    const chaves = chavesTrackingFromTmp(row);
+    const tracking = mapaCte.get(cleanDigits(chaves.chaveCte))
+      || mapaNfe.get(cleanDigits(chaves.chaveNfe));
     if (!tracking) {
       semTracking += 1;
       return {
