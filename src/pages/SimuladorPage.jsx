@@ -7695,7 +7695,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 )}
                                                 {item.cubagemCorrigidaTracking ? (
                                                   <div style={{ color: '#b45309', fontWeight: 700 }}>
-                                                    ⚠ Cubagem total calculada pelo Tracking corrigida: {Number(item.cubagemTotalArmazenadaTracking || item.cubagemOriginalTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³ estava multiplicada pelos volumes. Foi usada a cubagem original da linha: {Number(item.cubagem || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³.
+                                                    ⚠ Cubagem recalculada pelo Tracking: unitária/volume {Number(item.cubagemOriginalTracking || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³ × volumes, resultando em {Number(item.cubagem || 0).toLocaleString('pt-BR', { maximumFractionDigits: 4 })} m³ para o CT-e.
                                                   </div>
                                                 ) : item.cubagemOutlierTracking && (
                                                   <div style={{ color: '#b45309', fontWeight: 700 }}>

@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { buscarTrackingParaRealizado, obterTrackingDaLinha } from './realizadoTrackingEnrichment';
 
 const TMP_CHUNK_SIZE = 1000;
 const TMP_INSERT_RETRIES = 3;
@@ -91,8 +92,7 @@ function getPesoFinal(row = {}) {
 function getCubagem(row = {}) {
   const metros = toSafeNumber(row.metrosCubicos ?? row.metros_cubicos);
   const cubagem = toSafeNumber(row.cubagem);
-  const cubado = toSafeNumber(row.pesoCubado ?? row.peso_cubado);
-  return metros > 0 ? metros : (cubagem > 0 ? cubagem : cubado);
+  return metros > 0 ? metros : cubagem;
 }
 
 function getVolumes(row = {}) {
@@ -548,6 +548,7 @@ const COLUNAS_REALIZADO_LOCAL_CTES = [
   'competencia',
   'transportadora',
   'cnpj_transportadora',
+  'tomador_servico',
   'data_emissao',
   'chave_cte',
   'numero_cte',
@@ -558,8 +559,13 @@ const COLUNAS_REALIZADO_LOCAL_CTES = [
   'status',
   'status_conciliacao',
   'status_erp',
+  'percentual_frete',
   'uf_origem',
   'uf_destino',
+  'ibge_origem',
+  'ibge_destino',
+  'chave_rota_ibge',
+  'ibge_ok',
   'peso',
   'peso_declarado',
   'peso_cubado',
@@ -573,11 +579,15 @@ const COLUNAS_REALIZADO_LOCAL_CTES = [
 ];
 
 function montarLinhaLocalFromTmp(row = {}) {
+  const ibgeOrigem = cleanDigits(row.ibge_origem).slice(0, 7);
+  const ibgeDestino = cleanDigits(row.ibge_destino).slice(0, 7);
+  const chaveRotaIbge = ibgeOrigem && ibgeDestino ? `${ibgeOrigem}-${ibgeDestino}` : '';
   const origem = {
     arquivo_origem: row.arquivo_origem,
     competencia: row.competencia,
     transportadora: row.transportadora,
     cnpj_transportadora: row.cnpj_transportadora,
+    tomador_servico: row.tomador_servico,
     data_emissao: row.data_emissao,
     chave_cte: row.chave_cte,
     numero_cte: row.numero_cte,
@@ -588,8 +598,13 @@ function montarLinhaLocalFromTmp(row = {}) {
     status: row.status,
     status_conciliacao: row.status_conciliacao,
     status_erp: row.status_erp,
+    percentual_frete: row.percentual_frete,
     uf_origem: row.uf_origem,
     uf_destino: row.uf_destino,
+    ibge_origem: ibgeOrigem,
+    ibge_destino: ibgeDestino,
+    chave_rota_ibge: chaveRotaIbge,
+    ibge_ok: Boolean(chaveRotaIbge),
     peso: row.peso,
     peso_declarado: row.peso_declarado,
     peso_cubado: row.peso_cubado,
@@ -613,6 +628,61 @@ function montarLinhaLocalFromTmp(row = {}) {
   payload.competencia = row.competencia;
   payload.chave_cte = row.chave_cte;
   return payload;
+}
+
+function chavesTrackingFromTmp(row = {}) {
+  return {
+    chaveCte: row.chave_cte,
+    chaveNfe: row.chave_nfe,
+    notaFiscal: row.nota_fiscal,
+    numeroCte: row.numero_cte,
+  };
+}
+
+async function enriquecerTemporariaComTracking(rows = []) {
+  const lista = Array.isArray(rows) ? rows : [];
+  if (!lista.length) return { rows: lista, vinculados: 0, semTracking: 0, erroTracking: '' };
+
+  const mapas = await buscarTrackingParaRealizado(lista.map(chavesTrackingFromTmp));
+  let vinculados = 0;
+  let semTracking = 0;
+
+  const enriquecidas = lista.map((row) => {
+    const tracking = obterTrackingDaLinha(chavesTrackingFromTmp(row), mapas);
+    if (!tracking) {
+      semTracking += 1;
+      return {
+        ...row,
+        cubagem: toSafeNumber(row.metros_cubicos),
+        qtd_volumes: 0,
+      };
+    }
+
+    vinculados += 1;
+    return {
+      ...row,
+      cidade_origem: cleanText(row.cidade_origem || tracking.cidade_origem),
+      uf_origem: cleanUf(row.uf_origem || tracking.uf_origem),
+      cidade_destino: cleanText(row.cidade_destino || tracking.cidade_destino),
+      uf_destino: cleanUf(row.uf_destino || tracking.uf_destino),
+      ibge_origem: cleanDigits(row.ibge_origem || tracking.ibge_origem).slice(0, 7),
+      ibge_destino: cleanDigits(row.ibge_destino || tracking.ibge_destino).slice(0, 7),
+      peso: toSafeNumber(row.peso) || toSafeNumber(tracking.peso),
+      peso_declarado: toSafeNumber(row.peso_declarado) || toSafeNumber(tracking.peso_declarado),
+      peso_cubado: toSafeNumber(tracking.peso_cubado),
+      cubagem: toSafeNumber(tracking.cubagem_total),
+      qtd_volumes: toSafeNumber(tracking.qtd_volumes),
+      canal: cleanText(row.canal || tracking.canal),
+      valor_nf: toSafeNumber(row.valor_nf) || toSafeNumber(tracking.valor_nf),
+    };
+  });
+
+  return {
+    rows: enriquecidas,
+    vinculados,
+    semTracking,
+    erroTracking: mapas?.erro || '',
+  };
 }
 
 async function contarTemporariaCompetencia(supabase, competencia) {
@@ -671,9 +741,11 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
 
     const novos = lote.filter((row) => row.chave_cte && !existentes.has(row.chave_cte));
     totalPulados += lote.length - novos.length;
+    const enriquecimento = await enriquecerTemporariaComTracking(novos);
+    const novosEnriquecidos = enriquecimento.rows;
 
-    for (let index = 0; index < novos.length; index += TMP_PARA_LOCAL_INSERT) {
-      const parte = novos.slice(index, index + TMP_PARA_LOCAL_INSERT);
+    for (let index = 0; index < novosEnriquecidos.length; index += TMP_PARA_LOCAL_INSERT) {
+      const parte = novosEnriquecidos.slice(index, index + TMP_PARA_LOCAL_INSERT);
       const payload = parte.map(montarLinhaLocalFromTmp);
       if (!payload.length) continue;
 
@@ -701,7 +773,7 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
     const restante = await contarTemporariaCompetencia(supabase, competencia);
     onProgress?.({
       etapa: 'processamento_lote',
-      mensagem: `Base oficial: ${totalInserido.toLocaleString('pt-BR')} inseridos, ${totalPulados.toLocaleString('pt-BR')} já existiam. Restante na temporária: ${restante.toLocaleString('pt-BR')}.`,
+      mensagem: `Base oficial: ${totalInserido.toLocaleString('pt-BR')} inseridos, ${totalPulados.toLocaleString('pt-BR')} já existiam. Tracking: ${enriquecimento.vinculados.toLocaleString('pt-BR')} vinculados, ${enriquecimento.semTracking.toLocaleString('pt-BR')} sem vínculo. Restante na temporária: ${restante.toLocaleString('pt-BR')}.`,
       inseridos: totalInserido,
       restante,
       total: totalInserido + restante,
