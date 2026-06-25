@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { buscarTrackingParaRealizado, obterTrackingDaLinha } from './realizadoTrackingEnrichment';
+import { resolverCubagemTracking } from '../utils/trackingCubagem';
 
 const TMP_CHUNK_SIZE = 1000;
 const TMP_INSERT_RETRIES = 3;
@@ -24,6 +24,7 @@ const CHAVE_LOOKUP_PAGE = 1000;
 const TMP_PARA_LOCAL_PAGE = 800;
 const TMP_PARA_LOCAL_INSERT = 200;
 const TMP_PARA_LOCAL_CHAVE_CHUNK = 200;
+const TRACKING_IMPORT_CHUNK = 50;
 
 function ensureSupabase() {
   const client = getSupabaseClient();
@@ -639,16 +640,94 @@ function chavesTrackingFromTmp(row = {}) {
   };
 }
 
+function chunksImportacao(lista = [], tamanho = TRACKING_IMPORT_CHUNK) {
+  const saida = [];
+  for (let i = 0; i < lista.length; i += tamanho) saida.push(lista.slice(i, i + tamanho));
+  return saida;
+}
+
+function adicionarTrackingImportacao(mapa, item = {}) {
+  const chave = cleanDigits(item.chave_cte);
+  if (!chave) return;
+
+  const atual = mapa.get(chave);
+  const volumes = toSafeNumber(item.qtd_volumes);
+  const cubagemUnitaria = toSafeNumber(item.cubagem_unitaria);
+  const cubagemTotalDireta = toSafeNumber(item.cubagem_total);
+  const resolvida = resolverCubagemTracking({
+    cubagemUnitaria,
+    cubagemTotal: cubagemTotalDireta,
+    volumes,
+    pesoFisico: toSafeNumber(item.peso),
+  });
+
+  if (!atual) {
+    mapa.set(chave, {
+      ...item,
+      qtd_volumes: volumes,
+      cubagem_total: resolvida.cubagemAplicada,
+      peso_cubado: resolvida.pesoCubado,
+      linhas_tracking: 1,
+    });
+    return;
+  }
+
+  mapa.set(chave, {
+    ...atual,
+    qtd_volumes: toSafeNumber(atual.qtd_volumes) + volumes,
+    cubagem_total: toSafeNumber(atual.cubagem_total) + resolvida.cubagemAplicada,
+    peso_cubado: toSafeNumber(atual.peso_cubado) + resolvida.pesoCubado,
+    peso: toSafeNumber(atual.peso) || toSafeNumber(item.peso),
+    peso_declarado: toSafeNumber(atual.peso_declarado) || toSafeNumber(item.peso_declarado),
+    valor_nf: toSafeNumber(atual.valor_nf) || toSafeNumber(item.valor_nf),
+    linhas_tracking: toSafeNumber(atual.linhas_tracking) + 1,
+  });
+}
+
+async function buscarTrackingImportacaoPorChave(rows = []) {
+  const supabase = ensureSupabase();
+  const chaves = [...new Set((rows || []).map((row) => cleanDigits(row.chave_cte)).filter((v) => v.length >= 20))];
+  const mapa = new Map();
+  let erros = 0;
+
+  for (const parte of chunksImportacao(chaves)) {
+    const { data, error } = await supabase
+      .from('tracking_rows')
+      .select('chave_cte,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
+      .in('chave_cte', parte);
+
+    if (error) {
+      erros += 1;
+      for (const chave of parte) {
+        const individual = await supabase
+          .from('tracking_rows')
+          .select('chave_cte,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes')
+          .eq('chave_cte', chave);
+        if (individual.error) {
+          erros += 1;
+          continue;
+        }
+        (individual.data || []).forEach((item) => adicionarTrackingImportacao(mapa, item));
+      }
+      continue;
+    }
+
+    (data || []).forEach((item) => adicionarTrackingImportacao(mapa, item));
+  }
+
+  return { mapa, erros };
+}
+
 async function enriquecerTemporariaComTracking(rows = []) {
   const lista = Array.isArray(rows) ? rows : [];
   if (!lista.length) return { rows: lista, vinculados: 0, semTracking: 0, erroTracking: '' };
 
-  const mapas = await buscarTrackingParaRealizado(lista.map(chavesTrackingFromTmp));
+  const { mapa, erros } = await buscarTrackingImportacaoPorChave(lista);
   let vinculados = 0;
   let semTracking = 0;
 
   const enriquecidas = lista.map((row) => {
-    const tracking = obterTrackingDaLinha(chavesTrackingFromTmp(row), mapas);
+    const tracking = mapa.get(cleanDigits(row.chave_cte));
     if (!tracking) {
       semTracking += 1;
       return {
@@ -681,7 +760,7 @@ async function enriquecerTemporariaComTracking(rows = []) {
     rows: enriquecidas,
     vinculados,
     semTracking,
-    erroTracking: mapas?.erro || '',
+    erroTracking: erros ? `${erros} consulta(s) ao Tracking falharam durante a importacao.` : '',
   };
 }
 
