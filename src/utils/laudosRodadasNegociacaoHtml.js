@@ -895,6 +895,12 @@ const VEICULOS_OPERACIONAIS_LAUDO = [
 ];
 
 function diasPeriodoOperacionalLaudo(resumo = {}) {
+  // Prioriza o número de dias já apurado pelo Simulador (período real dos dados).
+  // Sem isso, o laudo recalcula por conta própria (ou cai no default 22) e a
+  // cubagem/dia e o peso/dia divergem do card "Veículo sugerido" da tela.
+  const diasSimulador = n(resumo.dias);
+  if (diasSimulador > 0) return Math.max(1, Math.round(diasSimulador));
+
   const ini = resumo.filtros?.inicio || resumo.inicio || resumo.dataInicio;
   const fim = resumo.filtros?.fim || resumo.fim || resumo.dataFim;
   const dIni = ini ? new Date(ini) : null;
