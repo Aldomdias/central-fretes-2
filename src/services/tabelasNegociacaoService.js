@@ -294,23 +294,31 @@ const LIMITE_CARREGAMENTO_ITENS_UI = 500;
 async function listarTodosItensTabelaNegociacao(tabelaId) {
   const supabase = supabaseOrThrow();
   const pageSize = 1000;
-  let inicio = 0;
-  let todos = [];
+  let cursor = null;
+  const todos = [];
 
+  // Paginação por keyset (seek) em vez de OFFSET: cada página é uma leitura
+  // indexada por id (`id > cursor`), de custo constante. Com OFFSET (`.range`)
+  // as últimas páginas de negociações grandes (16k+ itens) varriam e descartavam
+  // milhares de linhas e estouravam o statement_timeout do Postgres
+  // ("canceling statement due to statement timeout").
   while (true) {
-    const { data, error } = await supabase
+    let query = supabase
       .from('tabelas_negociacao_itens')
       .select('*')
       .eq('tabela_negociacao_id', tabelaId)
       .order('id', { ascending: true })
-      .range(inicio, inicio + pageSize - 1);
+      .limit(pageSize);
+    if (cursor != null) query = query.gt('id', cursor);
+
+    const { data, error } = await query;
 
     if (error) throw new Error(error.message || 'Erro ao listar itens atuais da negociação.');
 
     const lote = data || [];
-    todos = todos.concat(lote);
+    todos.push(...lote);
     if (lote.length < pageSize) break;
-    inicio += pageSize;
+    cursor = lote[lote.length - 1].id;
   }
 
   return todos;
@@ -1066,22 +1074,28 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
 async function listarTodasTaxasDestinoTabela(tabelaId) {
   const supabase = supabaseOrThrow();
   const pageSize = 1000;
-  let inicio = 0;
-  let todos = [];
+  let cursor = null;
+  const todos = [];
 
+  // Mesmo padrão keyset dos itens: paginação por `id > cursor` (ordenada),
+  // evitando o custo crescente do OFFSET e tornando a paginação determinística.
   while (true) {
-    const { data, error } = await supabase
+    let query = supabase
       .from('tabelas_negociacao_taxas_destino')
       .select('*')
       .eq('tabela_negociacao_id', tabelaId)
-      .range(inicio, inicio + pageSize - 1);
+      .order('id', { ascending: true })
+      .limit(pageSize);
+    if (cursor != null) query = query.gt('id', cursor);
+
+    const { data, error } = await query;
 
     if (error) throw new Error(error.message || 'Erro ao listar taxas da negociação para simulação.');
 
     const lote = data || [];
-    todos = todos.concat(lote);
+    todos.push(...lote);
     if (lote.length < pageSize) break;
-    inicio += pageSize;
+    cursor = lote[lote.length - 1].id;
   }
 
   return todos;
