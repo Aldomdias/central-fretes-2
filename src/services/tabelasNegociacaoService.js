@@ -2,6 +2,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import {
   anexarResumoCapaNoPayload,
   erroColunaResumoCapaAusente,
+  mesclarResumoCapaNaTabela,
   removerResumoCapaDoSelect,
 } from '../utils/tabelasNegociacaoResumoCapa';
 import {
@@ -1104,8 +1105,11 @@ async function listarTodasTaxasDestinoTabela(tabelaId) {
 }
 
 // Colunas da "capa" da negociação. Nunca inclui itens/rotas/taxas.
+// Usa resumo_capa (recorte LEVE) em vez de resumo_simulacao (JSONB pesado, ~478 KB
+// e até 6 MB por linha): puxar o resumo completo de todas as negociações elegíveis
+// estourava o statement_timeout ("canceling statement due to statement timeout").
 const COLUNAS_CAPA_NEGOCIACAO_SIMULACAO =
-  'id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,resumo_simulacao,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto';
+  'id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,resumo_capa,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto';
 
 // Lista LEVE: apenas as capas das negociações elegíveis à simulação.
 // Não carrega itens/rotas/taxas — é uma única query rápida usada para
@@ -1113,20 +1117,30 @@ const COLUNAS_CAPA_NEGOCIACAO_SIMULACAO =
 export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
   const supabase = supabaseOrThrow();
 
-  let query = supabase
-    .from('tabelas_negociacao')
-    .select(COLUNAS_CAPA_NEGOCIACAO_SIMULACAO)
-    .eq('incluir_simulacao', true)
-    .in('status', ['EM NEGOCIAÇÃO', 'EM TESTE', 'APROVADA'])
-    .order('criado_em', { ascending: false });
+  const montarQuery = (cols) => {
+    let query = supabase
+      .from('tabelas_negociacao')
+      .select(cols)
+      .eq('incluir_simulacao', true)
+      .in('status', ['EM NEGOCIAÇÃO', 'EM TESTE', 'APROVADA'])
+      .order('criado_em', { ascending: false });
+    if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
+    if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
+    if (filtros.canal) query = query.eq('canal', filtros.canal);
+    return query;
+  };
 
-  if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
-  if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
-  if (filtros.canal) query = query.eq('canal', filtros.canal);
+  let { data, error } = await montarQuery(COLUNAS_CAPA_NEGOCIACAO_SIMULACAO);
 
-  const { data, error } = await query;
+  // Fallback: ambiente sem a coluna resumo_capa (migration nao rodada).
+  if (error && erroColunaResumoCapaAusente(error)) {
+    ({ data, error } = await montarQuery(removerResumoCapaDoSelect(COLUNAS_CAPA_NEGOCIACAO_SIMULACAO)));
+  }
+
   if (error) throw new Error(error.message || 'Erro ao buscar lista de negociações para simulação.');
-  return data || [];
+  // mesclarResumoCapaNaTabela expoe resumo_simulacao (versao LEVE) para o codigo
+  // a jusante, sem nunca trazer o JSONB completo na listagem.
+  return (data || []).map(mesclarResumoCapaNaTabela);
 }
 
 // Detalhe de UMA negociação: itens (rotas/fretes) + taxas de destino.
