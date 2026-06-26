@@ -308,7 +308,9 @@ test('faixa aplica o minimo da rota como piso quando a faixa vale zero', () => {
   assert.equal(resultado.componentesBase.valorFaixaComExcedente, 0);
   assert.equal(resultado.componentesBase.minimoAplicavel, 246.19);
   assert.equal(resultado.valorBase, 246.19);
-  assert.equal(resultado.componenteBase, 'freteMinimo');
+  // Taxa de faixa = 0 => "Maior valor": o mínimo vence como o maior dos quatro.
+  assert.equal(resultado.componenteBase, 'maiorValor');
+  assert.equal(resultado.regraCalculo, 'MAIOR_VALOR');
 });
 
 test('faixa aberta com R$/kg e sem limiar aplica o excedente desde o peso 0', () => {
@@ -325,7 +327,7 @@ test('faixa aberta com R$/kg e sem limiar aplica o excedente desde o peso 0', ()
   assert.ok(Math.abs(resultado.valorBase - 150.8) < 0.01);
 });
 
-test('faixa maior que o minimo prevalece sobre o minimo', () => {
+test('com taxa de faixa ("sem regra") soma taxa + percentual + excedente + minimo', () => {
   const resultado = calcularFreteFaixaPeso({
     rota: { valorMinimoFrete: 50 },
     cotacao: { valorFixo: 100, fretePercentual: 2, pesoMin: 0, pesoMax: 100 },
@@ -333,8 +335,11 @@ test('faixa maior que o minimo prevalece sobre o minimo', () => {
     valorNf: 1000,
   });
 
-  assert.equal(resultado.valorBase, 120);
-  assert.equal(resultado.componenteBase, 'valorFaixaComExcedente');
+  // Taxa = 100 (> 0) => "Sem regra": soma TODOS os valores, inclusive o minimo.
+  // taxa 100 + percentual 20 (1000 x 2%) + excedente 0 + minimo 50 = 170.
+  assert.equal(resultado.valorBase, 170);
+  assert.equal(resultado.componenteBase, 'semRegra');
+  assert.equal(resultado.regraCalculo, 'SEM_REGRA');
 });
 
 test('taxas por destino prevalecem para GRIS e Ad Valorem e somam taxas fixas', () => {

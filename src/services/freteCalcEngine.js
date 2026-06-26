@@ -282,11 +282,16 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
 
   const { minimoRota, minimoCotacao, minimoGeneralidade, minimoAplicavel } = resolverMinimoFrete({ rota, cotacao, generalidades });
   const valorFaixaComExcedente = valorFaixa + valorExcedente + valorPercentual;
-  // O frete mínimo (rota/cotação/generalidade) é o piso da base, igual ao caminho
-  // PERCENTUAL (via escolherComponenteBase). Sem isso, faixas com valor 0 — tabela
-  // só com ad valorem ou import incompleto — ignoravam o mínimo e geravam frete
-  // irreal (quase zero), fazendo a tabela "vencer" 100% sem sentido.
-  const valorBase = Math.max(valorFaixaComExcedente, minimoAplicavel);
+  // Regra de cálculo orientada pela TAXA de faixa (valor fixo), conforme a
+  // métrica de negócio (igual à Verum):
+  // - COM taxa de faixa (valorFaixa > 0) => "Sem regra": SOMA todos os valores,
+  //   inclusive o frete mínimo: taxa + percentual + excedente + mínimo.
+  // - SEM taxa de faixa (valorFaixa = 0) => "Maior valor": usa o MAIOR entre
+  //   taxa, percentual, excedente e o frete mínimo (que age como piso natural).
+  const ehSemRegra = valorFaixa > 0;
+  const valorBase = ehSemRegra
+    ? valorFaixaComExcedente + minimoAplicavel
+    : Math.max(valorFaixa, valorPercentual, valorExcedente, minimoAplicavel);
 
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
   const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras;
@@ -301,7 +306,8 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     valorExcedente,
     pesoLimiteExcedente,
     excedenteKg,
-    componenteBase: valorBase > valorFaixaComExcedente ? 'freteMinimo' : 'valorFaixaComExcedente',
+    regraCalculo: ehSemRegra ? 'SEM_REGRA' : 'MAIOR_VALOR',
+    componenteBase: ehSemRegra ? 'semRegra' : 'maiorValor',
     componentesBase: {
       valorFaixa,
       valorExcedente,
