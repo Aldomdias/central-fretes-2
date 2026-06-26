@@ -52,6 +52,31 @@ function isFetchNetworkError(error) {
   return msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('fetch failed') || msg.includes('timeout') || msg.includes('aborted');
 }
 
+const COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR = [
+  'id',
+  'chave_cte',
+  'competencia',
+  'data_emissao',
+  'numero_cte',
+  'transportadora',
+  'tomador_servico',
+  'cidade_origem',
+  'uf_origem',
+  'ibge_origem',
+  'cidade_destino',
+  'uf_destino',
+  'ibge_destino',
+  'peso',
+  'peso_declarado',
+  'peso_cubado',
+  'cubagem',
+  'valor_nf',
+  'valor_cte',
+  'qtd_volumes',
+  'canal',
+  'canal_original',
+].join(',');
+
 async function executarQueryRealizadoComRetry(montarQuery, contexto = 'consulta realizado_local_ctes', tentativas = 3) {
   let ultimoErro = null;
 
@@ -89,14 +114,36 @@ function canalFiltroRealizadoSim(canal = '') {
   return normalizarCanalOperacional(canal, { permitirInferencia: false }) || '';
 }
 
+function limparCidadeConsultaRealizadoDb(value = '') {
+  return String(value || '')
+    .split('/')
+    .shift()
+    .replace(/[(),%*_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function removerAcentosConsultaRealizadoDb(value = '') {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function prefixoCidadePrincipalConsultaRealizadoDb(value = '') {
+  const cidade = limparCidadeConsultaRealizadoDb(value);
+  if (!cidade) return '';
+  const base = removerAcentosConsultaRealizadoDb(cidade) || cidade;
+  return (base.length > 5 ? base.slice(0, 5) : base).trim();
+}
+
 function aplicarFiltrosRealizadoQuery(query, filtros) {
   if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
-  // Origem e destino NAO sao filtrados no banco. ilike(cidade) e case-insensitive
-  // (nao usa indice) e, somado ao order by data_emissao, estoura o statement_timeout
-  // do Supabase (a busca volta vazia). Na pratica o recorte por uf_origem + canal +
-  // periodo ja entrega quase so a cidade desejada (ex.: SC/B2C ~= 99,5% Itajai), e o
-  // filtro fino de cidade roda no cliente com normalizacao (acento/caixa/espacos) em
-  // aplicarFiltroCidadeRealizadoSim / montarOrigensNormRealizadoSim.
+  const origensDb = normalizarOrigensFiltroRealizadoSim(
+    filtros.origem ? [filtros.origem] : filtros.origens
+  );
+  const origemPrefixo = prefixoCidadePrincipalConsultaRealizadoDb(origensDb[0] || '');
+  if (origemPrefixo) query = query.ilike('cidade_origem', `${origemPrefixo}%`);
+  const destinoPrefixo = prefixoCidadePrincipalConsultaRealizadoDb(filtros.destino || '');
+  if (destinoPrefixo) query = query.ilike('cidade_destino', `${destinoPrefixo}%`);
+  // O banco faz o recorte grosso; o cliente mantém a validação final normalizada.
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.canal) {
     const canalNorm = canalFiltroRealizadoSim(filtros.canal) || String(filtros.canal || '').toUpperCase();
@@ -104,8 +151,11 @@ function aplicarFiltrosRealizadoQuery(query, filtros) {
     else if (canalNorm === 'B2C') query = query.or('canal.ilike.%B2C%,canal.ilike.%ECOM%,canal.ilike.%E-COM%');
     else query = query.eq('canal', filtros.canal);
   }
-  if (Array.isArray(filtros.ufDestino) && filtros.ufDestino.length) query = query.in('uf_destino', filtros.ufDestino);
-  else if (filtros.ufDestino) query = query.eq('uf_destino', filtros.ufDestino);
+  if (Array.isArray(filtros.ufDestino)) {
+    if (filtros.ufDestino.length) query = query.in('uf_destino', filtros.ufDestino);
+  } else if (filtros.ufDestino) {
+    query = query.eq('uf_destino', filtros.ufDestino);
+  }
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
   if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
   return query;
@@ -120,15 +170,16 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   let from = 0;
 
   while (allRows.length < totalMax) {
-    const to = from + PAGE_SIZE - 1;
+    const to = Math.min(from + PAGE_SIZE - 1, totalMax - 1);
     let query = supabase
       .from('realizado_local_ctes')
-      .select('*')
-      .order('data_emissao', { ascending: false })
+      .select(COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR)
       .range(from, to);
     query = aplicarFiltrosRealizadoQuery(query, filtros);
 
-    const resposta = await executarQueryRealizadoComRetry(async () => query, `Erro ao buscar realizado_local_ctes (${from + 1}-${to + 1})`);
+    const paginaInicio = from + 1;
+    const paginaFim = to + 1;
+    const resposta = await executarQueryRealizadoComRetry(async () => query, `Erro ao buscar realizado_local_ctes (${paginaInicio}-${paginaFim})`);
     const { data, error } = resposta || {};
     if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
     if (!data || data.length === 0) break;
@@ -4467,9 +4518,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       let origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
       let ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
-      if (ehNegociacaoSelecionada && !baseSelecionada.length && negociacaoRealizadoAtual) {
-        origensTabelaSelecionada = extrairOrigensCapaNegociacao(negociacaoRealizadoAtual);
-        ufsDestinoTabelaSelecionada = [];
+      if (ehNegociacaoSelecionada && negociacaoRealizadoAtual) {
+        if (!origensTabelaSelecionada.length) {
+          origensTabelaSelecionada = extrairOrigensCapaNegociacao(negociacaoRealizadoAtual);
+        }
+        if (!ufsDestinoTabelaSelecionada.length) {
+          ufsDestinoTabelaSelecionada = [];
+        }
       }
       const origensMarcadasFiltro = origemRealizado ? [] : origensRealizadoMarcadasValidas;
       const origensFiltroEfetivo = origemRealizado
@@ -4666,13 +4721,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
           trackingSemVinculo: trackingEnriquecido.semTracking,
         },
       };
-      console.info(
-        ehNegociacaoSelecionada
-          ? '[Simulador Realizado 4.25] Diagnostico busca CT-es negociacao'
-          : '[Simulador Realizado 4.25] Diagnostico busca CT-es oficiais',
-        diagnosticoBuscaRealizado
-      );
-
       if (!linhasEnriquecidasFiltradas.length) {
         setBaseRealizadoCarregada(null);
         const detalheEtapas = ` Etapas: brutos=${rowsBrutos.length}, aposFiltrosPadrao=${rowsBrutosFiltrados.length}, aposVinculoIbge=${rowsComIbgeBase.length}, tracking=${trackingEnriquecido.linhas?.length || 0}, final=${linhasEnriquecidasFiltradas.length}.`;

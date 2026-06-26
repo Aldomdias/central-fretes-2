@@ -408,7 +408,7 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}) {
   }
 
   const supabase = supabaseOrThrow();
-  const pageSize = 1000;
+  const pageSize = 250;
   const todos = [];
   const vistos = new Set();
 
@@ -440,11 +440,11 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}) {
   };
 
   if (ibgesDestino.length) {
-    for (const loteIbges of dividirEmLotes(ibgesDestino, 250)) {
+    for (const loteIbges of dividirEmLotes(ibgesDestino, 5)) {
       await buscarPorFiltro((query) => query.in('ibge_destino', loteIbges));
     }
   } else {
-    for (const loteUfs of dividirEmLotes(ufsDestino, 10)) {
+    for (const loteUfs of dividirEmLotes(ufsDestino, 1)) {
       await buscarPorFiltro((query) => query.in('uf_destino', loteUfs));
     }
   }
@@ -1241,49 +1241,16 @@ async function listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte = {}) {
     return listarTodasTaxasDestinoTabela(tabelaId);
   }
 
-  const supabase = supabaseOrThrow();
-  const pageSize = 1000;
-  const todos = [];
-  const vistos = new Set();
+  const todas = await listarTodasTaxasDestinoTabela(tabelaId);
+  const ibgesSet = new Set(ibgesDestino);
+  const ufsSet = new Set(ufsDestino);
 
-  const buscarPorFiltro = async (aplicarFiltro) => {
-    let cursor = null;
-    while (true) {
-      let query = supabase
-        .from('tabelas_negociacao_taxas_destino')
-        .select(COLUNAS_TAXAS_DESTINO_NEGOCIACAO_SIMULACAO)
-        .eq('tabela_negociacao_id', tabelaId)
-        .order('id', { ascending: true })
-        .limit(pageSize);
-      query = aplicarFiltro(query);
-      if (cursor != null) query = query.gt('id', cursor);
-
-      const { data, error } = await query;
-      if (error) throw new Error(error.message || 'Erro ao listar taxas da negociacao para simulacao.');
-
-      const lote = data || [];
-      lote.forEach((item) => {
-        if (!vistos.has(item.id)) {
-          vistos.add(item.id);
-          todos.push(item);
-        }
-      });
-      if (lote.length < pageSize) break;
-      cursor = lote[lote.length - 1].id;
-    }
-  };
-
-  if (ibgesDestino.length) {
-    for (const loteIbges of dividirEmLotes(ibgesDestino, 250)) {
-      await buscarPorFiltro((query) => query.in('ibge_destino', loteIbges));
-    }
-  } else {
-    for (const loteUfs of dividirEmLotes(ufsDestino, 10)) {
-      await buscarPorFiltro((query) => query.in('uf_destino', loteUfs));
-    }
-  }
-
-  return todos;
+  return todas.filter((taxa) => {
+    const ibge = normalizarIbgesRecorte(taxa.ibge_destino || taxa.ibgeDestino)[0];
+    if (ibgesSet.size && ibge && ibgesSet.has(ibge)) return true;
+    const uf = normalizarUfsRecorte(taxa.uf_destino || taxa.ufDestino)[0];
+    return ufsSet.size && uf && ufsSet.has(uf);
+  });
 }
 
 const COLUNAS_CAPA_NEGOCIACAO_SIMULACAO =
