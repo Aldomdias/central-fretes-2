@@ -293,7 +293,9 @@ const LIMITE_CARREGAMENTO_ITENS_UI = 500;
 
 async function listarTodosItensTabelaNegociacao(tabelaId) {
   const supabase = supabaseOrThrow();
-  const pageSize = 1000;
+  // Páginas menores deixam cada consulta leve (passa longe do statement_timeout),
+  // sem perder linhas: o loop continua até buscar a malha inteira.
+  const pageSize = 500;
   let cursor = null;
   const todos = [];
 
@@ -1073,7 +1075,7 @@ export async function aprovarTabelaNegociacao(id, dados = {}) {
 
 async function listarTodasTaxasDestinoTabela(tabelaId) {
   const supabase = supabaseOrThrow();
-  const pageSize = 1000;
+  const pageSize = 500;
   let cursor = null;
   const todos = [];
 
