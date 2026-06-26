@@ -243,6 +243,7 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
     subtotal,
     icms,
     total: subtotal + icms,
+    regraCalculo: 'MAIOR_VALOR',
     componenteBase: componenteBase.nome,
     componentesBase: {
       valorKg,
