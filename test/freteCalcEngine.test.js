@@ -124,6 +124,62 @@ test('negociacao com faixa e percentual nao usa limite de excedente como R$/kg',
   assert.ok(Math.abs(resultado.componentesBase.valorPercentual - 39.65995) < 0.00001);
 });
 
+test('negociacao replica cotacao por nome para todas as rotas tecnicas', () => {
+  const tabela = converterTabelaNegociacaoParaSimulador({
+    id: 'avioes-pb',
+    transportadora: 'Avioes Transportes',
+    origem: 'Itajai',
+    uf_origem: 'SC',
+    canal: 'ATACADO',
+    incluir_simulacao: true,
+    generalidades: { tipoCalculo: 'PERCENTUAL', cubagem: 300 },
+    itens: [
+      {
+        id: 'rota-bayeux',
+        item_tipo: 'ROTA',
+        ibge_destino: '2501807',
+        uf_destino: 'PB',
+        faixa_peso: 'ROTA',
+        observacao: 'ITAJAI X PB - CAPITAL',
+        dados_originais: { tipo_item: 'ROTA', cotacaoBase: 'ITAJAI X PB - CAPITAL' },
+      },
+      {
+        id: 'rota-cabedelo',
+        item_tipo: 'ROTA',
+        ibge_destino: '2503209',
+        uf_destino: 'PB',
+        faixa_peso: 'ROTA',
+        observacao: 'ITAJAI X PB - CAPITAL',
+        dados_originais: { tipo_item: 'ROTA', cotacaoBase: 'ITAJAI X PB - CAPITAL' },
+      },
+      {
+        id: 'cot-pb-capital',
+        item_tipo: 'COTACAO',
+        ibge_destino: '2501807',
+        uf_destino: 'PB',
+        faixa_peso: 'ITAJAI X PB - CAPITAL',
+        peso_inicial: 200.01,
+        peso_final: 999999,
+        taxa_aplicada: 382.4,
+        frete_percentual: 0.5,
+        excesso_kg: 200.01,
+        valor_excedente: 2.36,
+        observacao: 'ITAJAI X PB - CAPITAL',
+        dados_originais: { tipo_item: 'COTACAO', cotacaoBase: 'ITAJAI X PB - CAPITAL' },
+      },
+    ],
+  });
+
+  const origem = tabela.origens[0];
+  assert.equal(origem.rotas.length, 2);
+  assert.deepEqual(
+    origem.rotas.map((rota) => rota.ibgeDestino).sort(),
+    ['2501807', '2503209'],
+  );
+  assert.equal(origem.cotacoes.length, 2);
+  assert.ok(origem.cotacoes.every((cotacao) => cotacao.valorFixo === 382.4));
+});
+
 test('simulador realizado ignora cubagem sem sinal de tracking', async () => {
   const transportadoras = [{
     nome: 'Tabela Teste',

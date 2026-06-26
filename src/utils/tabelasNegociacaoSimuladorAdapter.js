@@ -205,6 +205,8 @@ function nomeCotacaoItem(item = {}) {
   const dados = parseDadosOriginais(item.dados_originais);
   return (
     texto(dados.cotacaoFinal) ||
+    texto(dados.cotacaoBase) ||
+    texto(dados.cotacao_base) ||
     texto(dados.cotacao) ||
     texto(dados.rota) ||
     texto(dados.nomeRota) ||
@@ -433,25 +435,27 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
   const origensMap = new Map();
 
   cotacoes.forEach(({ item, indice }) => {
+    const matches = rotasTecnicas.filter((rota) => rotaCombinaComCotacao(rota, item));
+    if (matches.length) {
+      matches.forEach((rota, idx) => {
+        adicionarRotaECotacao({
+          origensMap,
+          tabela,
+          item,
+          rota,
+          generalidades,
+          taxas,
+          indice: `${indice}-${idx}`,
+        });
+      });
+      return;
+    }
+
     const rotaDireta = criarRotaDeItem(item, tabela, indice);
 
     if (rotaDireta?.ibgeDestino) {
       adicionarRotaECotacao({ origensMap, tabela, item, rota: rotaDireta, generalidades, taxas, indice });
-      return;
     }
-
-    const matches = rotasTecnicas.filter((rota) => rotaCombinaComCotacao(rota, item));
-    matches.forEach((rota, idx) => {
-      adicionarRotaECotacao({
-        origensMap,
-        tabela,
-        item,
-        rota,
-        generalidades,
-        taxas,
-        indice: `${indice}-${idx}`,
-      });
-    });
   });
 
   const origens = Array.from(origensMap.values()).map((origem) => ({
