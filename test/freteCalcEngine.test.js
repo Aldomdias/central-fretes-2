@@ -124,6 +124,57 @@ test('negociacao com faixa e percentual nao usa limite de excedente como R$/kg',
   assert.ok(Math.abs(resultado.componentesBase.valorPercentual - 39.65995) < 0.00001);
 });
 
+test('negociacao "maior valor" (faixa aberta + percentual + R$/kg) vai pro motor percentual e compara o maior', () => {
+  const tabela = converterTabelaNegociacaoParaSimulador({
+    id: 'bomfim-test',
+    transportadora: 'Bomfim',
+    origem: 'Jaboatao dos Guararapes',
+    uf_origem: 'PE',
+    canal: 'ATACADO',
+    incluir_simulacao: true,
+    generalidades: { tipoCalculo: 'PERCENTUAL', cubagem: 300 },
+    itens: [
+      {
+        id: 'rota-pe',
+        item_tipo: 'ROTA',
+        ibge_destino: '2607901',
+        cidade_destino: 'Recife',
+        uf_destino: 'PE',
+        faixa_peso: 'PE - INT III',
+        dados_originais: { tipo_item: 'ROTA', cotacao: 'PE - INT III' },
+      },
+      {
+        id: 'cot-pe',
+        item_tipo: 'COTACAO',
+        faixa_peso: 'PE - INT III',
+        peso_inicial: 0,
+        peso_final: 999999,
+        taxa_aplicada: 0,
+        frete_percentual: 3,
+        frete_minimo: 30,
+        excesso_kg: 0,
+        valor_excedente: 0.73,
+        dados_originais: { tipo_item: 'COTACAO', cotacao: 'PE - INT III' },
+      },
+    ],
+  });
+
+  const cotacao = tabela.origens[0].cotacoes[0];
+  assert.equal(cotacao.tipoCalculo, 'PERCENTUAL');
+  assert.ok(Math.abs(cotacao.rsKg - 0.73) < 1e-9, 'R$/kg vem do valor_excedente');
+  assert.equal(cotacao.excesso, 0, 'em percentual o excedente nao alimenta o motor de faixa');
+
+  const resultado = calcularFretePercentual({ cotacao, pesoKg: 54, valorNf: 1109.57 });
+
+  // Maior entre R$/kg x peso (54 x 0,73 = 39,42), percentual (33,29) e minimo (30).
+  // Nao deve SOMAR (a soma daria ~72,71).
+  assert.equal(resultado.componenteBase, 'kgGarantia');
+  assert.ok(
+    Math.abs(resultado.valorBase - 39.42) < 0.01,
+    `valorBase ${resultado.valorBase} deveria ser ~39,42 (o maior), nao a soma`,
+  );
+});
+
 test('negociacao replica cotacao por nome para todas as rotas tecnicas', () => {
   const tabela = converterTabelaNegociacaoParaSimulador({
     id: 'avioes-pb',

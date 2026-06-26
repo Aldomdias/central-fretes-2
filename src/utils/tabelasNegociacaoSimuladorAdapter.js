@@ -270,31 +270,33 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   const valorExcedente = numero(item.valor_excedente);
   const tipoCalculoTabela = normalizarTipoCalculo(generalidades.tipoCalculo);
 
-  const temEstruturaFaixa =
-    taxaAplicada > 0 ||
-    excessoKg > 0 ||
-    valorExcedente > 0;
-
-  // Linhas com taxa/excedente por faixa usam o motor de faixa, mesmo quando
-  // tambem carregam percentual sobre NF.
-  const temFaixaPesoReal =
+  // Faixa de peso "real" = tem valor fixo de faixa (taxa aplicada) OU uma banda
+  // de peso de verdade (peso inicial > 0, ou peso final que nao seja a faixa
+  // aberta ~999999). So ter R$/kg de excedente numa faixa 0 -> aberta NAO e
+  // faixa real: e o modelo "Maior valor" (compara percentual x R$/kg x minimo e
+  // usa o maior), que roda no motor PERCENTUAL. A automacao de importacao ja
+  // segue essa logica (percentual ganha do excedente isolado).
+  const temBandaPesoReal =
     pesoInicial > 0 ||
-    (pesoFinalInformado > 0 && pesoFinalInformado < 999998) ||
-    (excessoKg > 0 && valorExcedente > 0);
+    (pesoFinalInformado > 0 && pesoFinalInformado < 999998);
+  const temFaixaReal = taxaAplicada > 0 || temBandaPesoReal;
 
-  const tipoCalculoItem = temEstruturaFaixa && (temFaixaPesoReal || taxaAplicada > 0 || valorExcedente > 0)
+  const tipoCalculoItem = temFaixaReal
     ? 'FAIXA_DE_PESO'
-    : percentual > 0
+    : (percentual > 0 || valorExcedente > 0 || excessoKg > 0 || freteMinimo > 0)
       ? 'PERCENTUAL'
       : tipoCalculoTabela;
 
+  // Em PERCENTUAL ("Maior valor"), o R$/kg incide sobre o peso total e entra na
+  // comparacao do maior. O valor pode vir em dados.rsKg, no valor_excedente ou
+  // no excesso_kg, conforme a tabela foi importada.
   const rsKgPercentual = numero(
     dados.rsKg ??
     dados.valorKgGarantia ??
     item.rs_kg ??
     item.rsKg ??
-    (tipoCalculoItem === 'PERCENTUAL' && valorExcedente <= 0 ? item.excesso_kg : 0)
-  );
+    0
+  ) || valorExcedente || excessoKg;
 
   return {
     id: item.id || `cotacao-neg-${indice}`,
