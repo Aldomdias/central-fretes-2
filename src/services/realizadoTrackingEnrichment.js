@@ -67,6 +67,7 @@ function criarTrackingAgregado(item = {}, origem = '') {
   const cubagemResolvida = resolverCubagemTracking({
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
+    pesoCubadoOriginal: numero(item.peso_cubado ?? item.pesoCubado ?? 0),
     volumes: qtdVolumes,
     pesoFisico: numero(item.peso ?? item.peso_tracking ?? 0),
   });

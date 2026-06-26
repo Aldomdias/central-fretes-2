@@ -749,6 +749,7 @@ function adicionarTrackingImportacao(mapa, chaveValor, item = {}) {
   const resolvida = resolverCubagemTracking({
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
+    pesoCubadoOriginal: toSafeNumber(item.peso_cubado),
     volumes,
     pesoFisico: toSafeNumber(item.peso),
   });

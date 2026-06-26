@@ -6,34 +6,43 @@ function numero(value) {
 export function resolverCubagemTracking({
   cubagemUnitaria = 0,
   cubagemTotal = 0,
+  pesoCubadoOriginal = 0,
   volumes = 0,
   pesoFisico = 0,
   fatorCubagem = 300,
 }) {
   const cubagemLinha = numero(cubagemUnitaria);
   const totalArmazenado = numero(cubagemTotal);
+  const pesoCubadoFonte = numero(pesoCubadoOriginal);
   const qtdVolumes = numero(volumes);
   const peso = numero(pesoFisico);
   const fator = numero(fatorCubagem) || 300;
 
-  // Regra (validada com notas reais): a cubagem do tracking e POR VOLUME, entao
-  // a cubagem da linha = unitaria x volumes. Ex.: 0,048/volume x 4 = 0,192 (= a
-  // NUMERACAO da NF). Quando o tracking ja traz um total agregado MAIOR que
-  // unitaria x volumes, respeita o maior (piso de seguranca). Volumes<=1 mantem
-  // a unitaria. Valores absurdos sao barrados depois por validarCubagemTracking.
+  // Regra do Tracking: quando cubagem_total vem preenchida, ela ja representa a
+  // cubagem total da NF/linha. So multiplicamos cubagem_unitaria por volumes
+  // quando o total nao veio no arquivo/base.
   const porVolume = qtdVolumes > 0 ? cubagemLinha * qtdVolumes : cubagemLinha;
-  const cubagemCandidata = Math.max(porVolume, totalArmazenado);
+  const cubagemCandidata = totalArmazenado > 0 ? totalArmazenado : porVolume;
 
   // Informativo: houve multiplicacao pelos volumes nesta linha.
-  const totalFoiMultiplicadoPorVolumes = qtdVolumes > 1 && cubagemLinha > 0 && porVolume >= totalArmazenado;
+  const totalPareceUnitarioMultiplicado =
+    qtdVolumes > 1 &&
+    cubagemLinha > 0 &&
+    pesoCubadoFonte > 0 &&
+    Math.abs(pesoCubadoFonte - cubagemLinha) < 0.000001 &&
+    Math.abs(totalArmazenado - porVolume) < 0.000001;
 
-  const pesoCubado = cubagemCandidata * fator;
+  const cubagemCandidataFinal = totalPareceUnitarioMultiplicado ? pesoCubadoFonte : cubagemCandidata;
+  const totalFoiMultiplicadoPorVolumes = !totalPareceUnitarioMultiplicado && qtdVolumes > 1 && cubagemLinha > 0 && porVolume >= totalArmazenado;
+
+  const pesoCubado = cubagemCandidataFinal * fator;
 
   return {
-    cubagemAplicada: cubagemCandidata,
+    cubagemAplicada: cubagemCandidataFinal,
     cubagemOriginal: cubagemLinha,
     cubagemTotalArmazenada: totalArmazenado,
     totalFoiMultiplicadoPorVolumes,
+    totalPareceUnitarioMultiplicado,
     pesoCubado,
     pesoConsiderado: Math.max(peso, pesoCubado),
   };
@@ -44,6 +53,7 @@ export function agregarCubagemLinhasTracking(linhas = [], fatorCubagem = 300) {
     const resolvida = resolverCubagemTracking({
       cubagemUnitaria: linha.cubagem_unitaria ?? linha.cubagemUnitaria,
       cubagemTotal: linha.cubagem_total ?? linha.cubagemTotal,
+      pesoCubadoOriginal: linha.peso_cubado ?? linha.pesoCubado,
       volumes: linha.qtd_volumes ?? linha.volumes,
       pesoFisico: linha.peso ?? linha.pesoFisico,
       fatorCubagem,
@@ -55,6 +65,7 @@ export function agregarCubagemLinhasTracking(linhas = [], fatorCubagem = 300) {
       pesoCubado: agregado.pesoCubado + resolvida.pesoCubado,
       pesoFisico: agregado.pesoFisico + numero(linha.peso ?? linha.pesoFisico),
       corrigiuMultiplicacao: agregado.corrigiuMultiplicacao || resolvida.totalFoiMultiplicadoPorVolumes,
+      corrigiuTotalUnitario: agregado.corrigiuTotalUnitario || resolvida.totalPareceUnitarioMultiplicado,
     };
   }, {
     cubagemAplicada: 0,
@@ -62,5 +73,6 @@ export function agregarCubagemLinhasTracking(linhas = [], fatorCubagem = 300) {
     pesoCubado: 0,
     pesoFisico: 0,
     corrigiuMultiplicacao: false,
+    corrigiuTotalUnitario: false,
   });
 }

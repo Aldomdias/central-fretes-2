@@ -765,6 +765,7 @@ function criarTrackingAgregado(item = {}, origem = 'raw') {
   const cubagemResolvida = resolverCubagemTracking({
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
+    pesoCubadoOriginal: numeroTracking(item.peso_cubado ?? item.pesoCubado ?? 0),
     volumes: qtdVolumes,
     pesoFisico: numeroTracking(item.peso ?? item.peso_tracking ?? 0),
   });
@@ -987,6 +988,7 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
     const cubagemResolvida = resolverCubagemTracking({
       cubagemUnitaria: cubagemUnitariaTracking,
       cubagemTotal: cubagemTotalTracking,
+      pesoCubadoOriginal: numeroRealizado(tracking.peso_cubado),
       volumes: qtdVolumesTracking,
       pesoFisico,
     });
@@ -1003,7 +1005,7 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
       ? cubagemUnitariaTracking
       : 0;
     const cubagemTotalAplicada = cubagemUnitariaComoTotal || cubagemValidada.cubagemTotal;
-    const pesoCubadoTracking = cubagemValidada.outlier ? 0 : numeroRealizado(tracking.peso_cubado);
+    const pesoCubadoTracking = cubagemValidada.outlier ? 0 : cubagemTotalAplicada * 300;
 
     if (cubagemValidada.outlier) cubagemOutliers += 1;
     if (qtdVolumesTracking > 0) volumesTracking += qtdVolumesTracking;

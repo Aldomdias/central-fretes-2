@@ -270,9 +270,7 @@ test('cubagem do Tracking = unitaria x volumes (cubagem por volume)', () => {
   assert.ok(Math.abs(resultado.pesoConsiderado - 795) < 0.0001);
 });
 
-test('cubagem por volume mesmo quando o total nao veio multiplicado', () => {
-  // Caso real (2 notas no mesmo CT-e): unitaria == total == 0,048 e 4 volumes.
-  // O correto por linha e 0,048 x 4 = 0,192 (= NUMERACAO da NF).
+test('cubagem do Tracking prefere total informado', () => {
   const resultado = resolverCubagemTracking({
     cubagemUnitaria: 0.048,
     cubagemTotal: 0.048,
@@ -280,8 +278,39 @@ test('cubagem por volume mesmo quando o total nao veio multiplicado', () => {
     pesoFisico: 27.76,
     fatorCubagem: 300,
   });
+  assert.ok(Math.abs(resultado.cubagemAplicada - 0.048) < 0.000001);
+  assert.ok(Math.abs(resultado.pesoCubado - 14.4) < 0.000001);
+});
+
+test('cubagem do Tracking multiplica por volume quando total nao veio', () => {
+  const resultado = resolverCubagemTracking({
+    cubagemUnitaria: 0.048,
+    cubagemTotal: 0,
+    volumes: 4,
+    pesoFisico: 27.76,
+    fatorCubagem: 300,
+  });
+
   assert.ok(Math.abs(resultado.cubagemAplicada - 0.192) < 0.000001);
   assert.ok(Math.abs(resultado.pesoCubado - 57.6) < 0.000001);
+});
+
+test('cubagem do Tracking nao multiplica quando peso_cubado repete a cubagem da NF', () => {
+  // Caso real NF 2143690: Tracking trouxe cubagem_unitaria=0,351, cubagem_total=8,424
+  // e peso_cubado=0,351. Nesse layout, o 0,351 e a cubagem da NF inteira, nao por volume.
+  const resultado = resolverCubagemTracking({
+    cubagemUnitaria: 0.351,
+    cubagemTotal: 8.424,
+    pesoCubadoOriginal: 0.351,
+    volumes: 24,
+    pesoFisico: 213.96,
+    fatorCubagem: 300,
+  });
+
+  assert.ok(Math.abs(resultado.cubagemAplicada - 0.351) < 0.000001);
+  assert.ok(Math.abs(resultado.pesoCubado - 105.3) < 0.000001);
+  assert.ok(Math.abs(resultado.pesoConsiderado - 213.96) < 0.000001);
+  assert.equal(resultado.totalPareceUnitarioMultiplicado, true);
 });
 
 test('cubagem de CT-e com varias NFs soma unitaria x volumes de cada linha', () => {
