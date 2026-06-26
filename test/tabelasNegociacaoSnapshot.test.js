@@ -56,6 +56,29 @@ test('mesclarResumoCapaNaTabela usa resumo_capa quando resumo_simulacao ausente'
   assert.equal(row.resumo_simulacao.savingSelecionadaVsRealMes, 900);
 });
 
+test('mesclarResumoCapaNaTabela deriva capa dos indicadores da linha quando a coluna resumo_capa nao existe', () => {
+  const row = mesclarResumoCapaNaTabela({
+    id: 'abc',
+    transportadora: 'TESTE',
+    saving_projetado: 1250,
+    aderencia_projetada: 78.5,
+    faturamento_projetado: 9000,
+    percentual_frete_projetado: 6.2,
+    ctes_analisados: 120,
+    ctes_atendidos: 95,
+    rotas_sem_cobertura: 7,
+  });
+
+  assert.equal(row.resumo_simulacao._capa, true);
+  assert.equal(row.resumo_simulacao.savingSelecionadaVsRealMes, 1250);
+  assert.equal(row.resumo_simulacao.aderenciaSelecionada, 78.5);
+  assert.equal(row.resumo_simulacao.faturamentoSelecionadaMes, 9000);
+  assert.equal(row.resumo_simulacao.percentualFreteSelecionada, 6.2);
+  assert.equal(row.resumo_simulacao.ctesAnalisados, 120);
+  assert.equal(row.resumo_simulacao.ctesComTabelaSelecionada, 95);
+  assert.equal(row.resumo_simulacao.rotas_sem_cobertura, 7);
+});
+
 test('montarLaudoTransportadoraConsolidado agrega origens', () => {
   const laudo = montarLaudoTransportadoraConsolidado([
     {

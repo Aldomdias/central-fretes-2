@@ -91,10 +91,12 @@ function canalFiltroRealizadoSim(canal = '') {
 
 function aplicarFiltrosRealizadoQuery(query, filtros) {
   if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
-  // Origem e destino NÃO são filtrados no banco porque o ilike do Postgres é
-  // sensível a acento (ITAJAI != Itajaí). O filtro de cidade é aplicado no
-  // cliente com normalização (acento/maiúsculas/espaços) — ver
-  // aplicarFiltroCidadeRealizadoSim.
+  // Origem e destino NAO sao filtrados no banco. ilike(cidade) e case-insensitive
+  // (nao usa indice) e, somado ao order by data_emissao, estoura o statement_timeout
+  // do Supabase (a busca volta vazia). Na pratica o recorte por uf_origem + canal +
+  // periodo ja entrega quase so a cidade desejada (ex.: SC/B2C ~= 99,5% Itajai), e o
+  // filtro fino de cidade roda no cliente com normalizacao (acento/caixa/espacos) em
+  // aplicarFiltroCidadeRealizadoSim / montarOrigensNormRealizadoSim.
   if (filtros.ufOrigem) query = query.eq('uf_origem', filtros.ufOrigem);
   if (filtros.canal) {
     const canalNorm = canalFiltroRealizadoSim(filtros.canal) || String(filtros.canal || '').toUpperCase();
@@ -243,10 +245,8 @@ function filtrarRowsPorOrigensRealizado(rows = [], origens = []) {
 }
 
 async function buscarRealizadoLocalCtesExpandido(filtros = {}, onProgresso = null) {
-  // A busca no banco não filtra cidade (ver aplicarFiltrosRealizadoQuery): o
-  // filtro de origem/destino é normalizado e aplicado no cliente dentro de
-  // buscarRealizadoLocalCtes. Por isso fazemos uma única busca passando todas
-  // as origens desejadas para o filtro normalizado.
+  // A query faz um recorte inicial no banco e o cliente aplica a checagem
+  // normalizada final. Assim mantemos desempenho sem depender de unaccent no DB.
   const origens = normalizarOrigensFiltroRealizadoSim(filtros.origens);
   const origemUnica = String(filtros.origem || '').trim();
 
@@ -1762,6 +1762,46 @@ function criarRouteKeysRealizado(rows = [], canalPadrao = '') {
     keys.add(`${row.canal || canalPadrao || ''}|${origem}-${destino}`);
   });
   return [...keys];
+}
+
+function montarRecorteNegociacaoRealizado(rows = []) {
+  const ibgesDestino = new Set();
+  const ufsDestino = new Set();
+  const ibgesOrigem = new Set();
+  const ufsOrigem = new Set();
+
+  (rows || []).forEach((row) => {
+    const ibgeDestino = String(row.ibgeDestino || '').replace(/\D/g, '').slice(0, 7);
+    const ibgeOrigem = String(row.ibgeOrigem || '').replace(/\D/g, '').slice(0, 7);
+    const ufDestino = String(row.ufDestino || '').trim().toUpperCase();
+    const ufOrigem = String(row.ufOrigem || '').trim().toUpperCase();
+
+    if (ibgeDestino) ibgesDestino.add(ibgeDestino);
+    if (ibgeOrigem) ibgesOrigem.add(ibgeOrigem);
+    if (/^[A-Z]{2}$/.test(ufDestino)) ufsDestino.add(ufDestino);
+    if (/^[A-Z]{2}$/.test(ufOrigem)) ufsOrigem.add(ufOrigem);
+  });
+
+  return {
+    ibgesDestino: [...ibgesDestino],
+    ufsDestino: [...ufsDestino],
+    ibgesOrigem: [...ibgesOrigem],
+    ufsOrigem: [...ufsOrigem],
+  };
+}
+
+function extrairOrigensCapaNegociacao(tabela = {}) {
+  const origem = String(tabela?.origem || tabela?.cidade_origem || '').trim();
+  const uf = String(tabela?.uf_origem || tabela?.ufOrigem || '').trim().toUpperCase();
+  return valoresUnicosValidos([
+    origem && uf ? `${origem}/${uf}` : '',
+    origem,
+  ]);
+}
+
+function extrairUfOrigemCapaNegociacao(tabela = {}) {
+  const uf = String(tabela?.uf_origem || tabela?.ufOrigem || '').trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(uf) ? uf : '';
 }
 
 function mesclarBasesTransportadorasSimulador(bases = []) {
@@ -3728,20 +3768,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
     [negociacoesSimulador, transportadoraRealizado]
   );
 
-  // Ao selecionar uma negociação, busca os detalhes (itens/rotas/taxas) apenas
-  // dessa negociação. Não carrega itens das demais. Guardado por ref para não
-  // rebuscar nem entrar em loop.
-  useEffect(() => {
-    const capa = negociacaoSelecionadaRealizado;
-    if (!capa?.id) return;
-    if (negociacoesHidratadasRef.current.has(capa.id)) return;
-    if (capa.tabelas_negociacao_itens || capa.tabelas_negociacao_taxas_destino) {
-      negociacoesHidratadasRef.current.add(capa.id);
-      return;
-    }
-    hidratarNegociacaoSimulador(capa);
-  }, [negociacaoSelecionadaRealizado]);
-
   const isReajusteRealizadoSelecionado = useMemo(
     () => isReajusteNegociacaoSimulador(negociacaoSelecionadaRealizado),
     [negociacaoSelecionadaRealizado]
@@ -4401,7 +4427,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         : mapaVinculos.get(normalizarChaveSimulador(transportadoraRealizado))
           || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase())
           || transportadoraRealizado;
-      const negociacaoRealizadoAtual = ehNegociacaoSelecionada ? negociacaoSelecionadaRealizado : null;
+      let negociacaoRealizadoAtual = ehNegociacaoSelecionada ? negociacaoSelecionadaRealizado : null;
       const ehReajusteSelecionado = isReajusteNegociacaoSimulador(negociacaoRealizadoAtual);
       const transportadoraBaseReajuste = ehReajusteSelecionado
         ? transportadoraBaseNegociacaoSimulador(negociacaoRealizadoAtual)
@@ -4411,20 +4437,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       let baseSelecionada = [];
 
       if (ehNegociacaoSelecionada) {
-        // Garante que os detalhes (itens/rotas/taxas) da negociação selecionada
-        // já foram carregados antes de montar a base. Se ainda não estiverem,
-        // busca somente os dessa negociação (carregamento sob demanda).
-        let capaNegociacao = negociacaoRealizadoAtual;
-        if (capaNegociacao?.id && !capaNegociacao.tabelas_negociacao_itens && !capaNegociacao.tabelas_negociacao_taxas_destino) {
-          atualizarProcessamentoUi('Carregando itens e taxas da negociação selecionada...', 22);
-          const detalhada = await carregarDetalhesNegociacaoParaSimulacao(capaNegociacao);
-          negociacoesHidratadasRef.current.add(capaNegociacao.id);
-          setNegociacoesSimulador((anteriores) => (anteriores || []).map((tabela) => (
-            tabela.id === capaNegociacao.id ? { ...tabela, ...detalhada } : tabela
-          )));
-          capaNegociacao = detalhada;
-        }
-
+        const capaNegociacao = negociacaoRealizadoAtual;
         const negociacoesConvertidas = capaNegociacao
           ? converterTabelasNegociacaoParaSimulador([capaNegociacao], { canal: canalRealizado })
           : transportadorasNegociacaoRealizado;
@@ -4452,8 +4465,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
         if (!baseSelecionada.length && baseJaCarregada.length) baseSelecionada = baseJaCarregada;
       }
 
-      const origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
-      const ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
+      let origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
+      let ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
+      if (ehNegociacaoSelecionada && !baseSelecionada.length && negociacaoRealizadoAtual) {
+        origensTabelaSelecionada = extrairOrigensCapaNegociacao(negociacaoRealizadoAtual);
+        ufsDestinoTabelaSelecionada = [];
+      }
       const origensMarcadasFiltro = origemRealizado ? [] : origensRealizadoMarcadasValidas;
       const origensFiltroEfetivo = origemRealizado
         ? []
@@ -4461,6 +4478,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const ufsDestinoEfetivasRealizado = ufsDestinoFiltroRealizado.length
         ? ufsDestinoFiltroRealizado
         : ufsDestinoTabelaSelecionada;
+      const ufOrigemEfetivaRealizado = ufOrigemRealizado
+        || (ehNegociacaoSelecionada ? extrairUfOrigemCapaNegociacao(negociacaoRealizadoAtual) : '');
 
       atualizarProcessamentoUi('Buscando CT-es realizados — página 1...', 28);
       let rowsBrutos = await buscarRealizadoLocalCtesExpandido({
@@ -4468,7 +4487,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         origem: origemRealizado,
         origens: origensFiltroEfetivo,
         destino: destinoRealizado,
-        ufOrigem: ufOrigemRealizado,
+        ufOrigem: ufOrigemEfetivaRealizado,
         ufDestino: ufsDestinoEfetivasRealizado,
         inicio: inicioRealizado,
         fim: fimRealizado,
@@ -4496,7 +4515,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origem: origemRealizado,
           origens: origensMarcadasFiltro,
           destino: destinoRealizado,
-          ufOrigem: ufOrigemRealizado,
+          ufOrigem: ufOrigemEfetivaRealizado,
           ufDestino: ufsDestinoFiltroRealizado,
           inicio: inicioRealizado,
           fim: fimRealizado,
@@ -4558,7 +4577,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origem: origemRealizado,
           origens: origensMarcadasFiltro,
           destino: destinoRealizado,
-          ufOrigem: ufOrigemRealizado,
+          ufOrigem: ufOrigemEfetivaRealizado,
           ufDestino: ufsDestinoFiltroRealizado,
           inicio: inicioRealizado,
           fim: fimRealizado,
@@ -4599,6 +4618,29 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origensMarcadasFiltro
         );
       }
+
+      if (ehNegociacaoSelecionada && negociacaoRealizadoAtual?.id && linhasEnriquecidasFiltradas.length) {
+        const recorteNegociacao = montarRecorteNegociacaoRealizado(linhasEnriquecidasFiltradas);
+        const totalDestinosRecorte = recorteNegociacao.ibgesDestino.length || recorteNegociacao.ufsDestino.length;
+        atualizarProcessamentoUi(
+          totalDestinosRecorte
+            ? `Carregando tabela da negociacao para ${totalDestinosRecorte.toLocaleString('pt-BR')} destino(s) do recorte...`
+            : 'Carregando tabela da negociacao para o recorte...',
+          88,
+        );
+
+        const detalhadaRecorte = await carregarDetalhesNegociacaoParaSimulacao(negociacaoRealizadoAtual, recorteNegociacao);
+        negociacaoRealizadoAtual = detalhadaRecorte;
+
+        const negociacoesConvertidas = converterTabelasNegociacaoParaSimulador([detalhadaRecorte], { canal: canalRealizado });
+        baseSelecionada = negociacoesConvertidas.filter((item) =>
+          normalizarTransportadoraSimulador(item.nome) === normalizarTransportadoraSimulador(nomeTabelaSelecionada)
+          || transportadoraCompativelSimulador(item.nome, nomeTabelaSelecionada)
+        );
+        origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
+        ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
+      }
+
       const diagnosticoBuscaRealizado = {
         transportadora: transportadoraRealizado,
         tabelaUsada: nomeTabelaSelecionada,
@@ -4607,7 +4649,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         origem: origemRealizado,
         origensMarcadas: origensMarcadasFiltro,
         destino: destinoRealizado,
-        ufOrigem: ufOrigemRealizado,
+        ufOrigem: ufOrigemEfetivaRealizado,
         ufDestino: ufsDestinoEfetivasRealizado,
         malha: {
           tabelas: baseSelecionada.length,
@@ -4624,9 +4666,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
           trackingSemVinculo: trackingEnriquecido.semTracking,
         },
       };
-      if (!ehNegociacaoSelecionada) {
-        console.info('[Simulador Realizado 4.24] Diagnóstico busca CT-es oficiais', diagnosticoBuscaRealizado);
-      }
+      console.info(
+        ehNegociacaoSelecionada
+          ? '[Simulador Realizado 4.25] Diagnostico busca CT-es negociacao'
+          : '[Simulador Realizado 4.25] Diagnostico busca CT-es oficiais',
+        diagnosticoBuscaRealizado
+      );
 
       if (!linhasEnriquecidasFiltradas.length) {
         setBaseRealizadoCarregada(null);
@@ -4691,7 +4736,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           origem: origemRealizado,
           origensMarcadas: origensMarcadasFiltro,
           destino: destinoRealizado,
-          ufOrigem: ufOrigemRealizado,
+          ufOrigem: ufOrigemEfetivaRealizado,
           inicio: inicioRealizado,
           fim: fimRealizado,
           limite: limiteRealizado,

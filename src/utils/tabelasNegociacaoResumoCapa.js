@@ -157,10 +157,43 @@ export function extrairResumoCapaNegociacao(resumoCompleto = {}) {
   };
 }
 
+function extrairResumoCapaDaLinha(row = {}) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return {};
+  return {
+    rodada_atual: 1,
+    ultima_simulacao_em: null,
+    ultima_importacao_em: null,
+    totais_itens: {},
+    origens_detectadas: [],
+    ultima_importacao: null,
+    ctesAnalisados: n(row.ctes_analisados),
+    ctesComTabelaSelecionada: n(row.ctes_atendidos),
+    ctesGanhariaSelecionada: 0,
+    ctesPerdidosSelecionada: 0,
+    savingSelecionadaVsRealMes: n(row.saving_projetado),
+    aderenciaSelecionada: n(row.aderencia_projetada),
+    faturamentoSelecionadaMes: n(row.faturamento_projetado),
+    percentualFreteSelecionada: n(row.percentual_frete_projetado || row.percentual_medio_impacto),
+    impactoProjetado: n(row.impacto_projetado),
+    volumetriaDia: n(row.volumetria_dia),
+    rotas_sem_cobertura: n(row.rotas_sem_cobertura),
+    qtdRotas: 0,
+    rotasGanhasDestaque: [],
+    estadosGanhadoresDestaque: [],
+    historico_rodadas: [],
+    ultima_simulacao: null,
+    laudos: undefined,
+    laudos_gerados_em: null,
+    _capa: true,
+  };
+}
+
 export function mesclarResumoCapaNaTabela(row = {}) {
   if (!row || typeof row !== 'object') return row;
   const capaDb = row.resumo_capa && typeof row.resumo_capa === 'object' ? row.resumo_capa : null;
-  const capaDerivada = capaDb || extrairResumoCapaNegociacao(row.resumo_simulacao);
+  const temResumoCompleto = row.resumo_simulacao && typeof row.resumo_simulacao === 'object' && !Array.isArray(row.resumo_simulacao);
+  const capaResumoCompleto = temResumoCompleto ? extrairResumoCapaNegociacao(row.resumo_simulacao) : {};
+  const capaDerivada = capaDb || (Object.keys(capaResumoCompleto).length ? capaResumoCompleto : extrairResumoCapaDaLinha(row));
   const { resumo_simulacao: _full, resumo_capa: _capaCol, ...resto } = row;
   return {
     ...resto,

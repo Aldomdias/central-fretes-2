@@ -291,6 +291,78 @@ function montarLinhaItem(tabela, item = {}, rodadaNumero = null) {
 }
 
 const LIMITE_CARREGAMENTO_ITENS_UI = 500;
+const COLUNAS_ITENS_NEGOCIACAO_SIMULACAO = [
+  'id',
+  'tabela_negociacao_id',
+  'transportadora',
+  'canal',
+  'tipo_tabela',
+  'cidade_origem',
+  'uf_origem',
+  'ibge_origem',
+  'cidade_destino',
+  'uf_destino',
+  'ibge_destino',
+  'faixa_peso',
+  'peso_inicial',
+  'peso_final',
+  'frete_minimo',
+  'taxa_aplicada',
+  'frete_percentual',
+  'excesso_kg',
+  'valor_excedente',
+  'prazo',
+  'tipo_veiculo',
+  'valor_lotacao',
+  'gris',
+  'advalorem',
+  'pedagio',
+  'tas',
+  'tda',
+  'tde',
+  'outras_taxas',
+  'observacao',
+  'dados_originais',
+  'origem_importacao',
+].join(',');
+
+const COLUNAS_TAXAS_DESTINO_NEGOCIACAO_SIMULACAO = [
+  'id',
+  'tabela_negociacao_id',
+  'ibge_destino',
+  'uf_destino',
+  'cidade_destino',
+  'tda',
+  'tdr',
+  'trt',
+  'suframa',
+  'outras_taxas',
+  'gris',
+  'gris_minimo',
+  'advalorem',
+  'advalorem_minimo',
+  'observacao',
+].join(',');
+
+function normalizarIbgesRecorte(valores = []) {
+  const lista = Array.isArray(valores) ? valores : [valores];
+  return [...new Set(lista
+    .map((valor) => String(valor || '').replace(/\D/g, '').slice(0, 7))
+    .filter((valor) => valor.length === 7))];
+}
+
+function normalizarUfsRecorte(valores = []) {
+  const lista = Array.isArray(valores) ? valores : [valores];
+  return [...new Set(lista
+    .map((valor) => texto(valor).toUpperCase())
+    .filter((valor) => /^[A-Z]{2}$/.test(valor)))];
+}
+
+function dividirEmLotes(lista = [], tamanho = 200) {
+  const lotes = [];
+  for (let i = 0; i < lista.length; i += tamanho) lotes.push(lista.slice(i, i + tamanho));
+  return lotes;
+}
 
 async function listarTodosItensTabelaNegociacao(tabelaId) {
   const supabase = supabaseOrThrow();
@@ -308,7 +380,7 @@ async function listarTodosItensTabelaNegociacao(tabelaId) {
   while (true) {
     let query = supabase
       .from('tabelas_negociacao_itens')
-      .select('*')
+      .select(COLUNAS_ITENS_NEGOCIACAO_SIMULACAO)
       .eq('tabela_negociacao_id', tabelaId)
       .order('id', { ascending: true })
       .limit(pageSize);
@@ -322,6 +394,59 @@ async function listarTodosItensTabelaNegociacao(tabelaId) {
     todos.push(...lote);
     if (lote.length < pageSize) break;
     cursor = lote[lote.length - 1].id;
+  }
+
+  return todos;
+}
+
+async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}) {
+  const ibgesDestino = normalizarIbgesRecorte(recorte.ibgesDestino || recorte.ibgeDestino);
+  const ufsDestino = normalizarUfsRecorte(recorte.ufsDestino || recorte.ufDestino);
+
+  if (!ibgesDestino.length && !ufsDestino.length) {
+    return listarTodosItensTabelaNegociacao(tabelaId);
+  }
+
+  const supabase = supabaseOrThrow();
+  const pageSize = 1000;
+  const todos = [];
+  const vistos = new Set();
+
+  const buscarPorFiltro = async (aplicarFiltro) => {
+    let cursor = null;
+    while (true) {
+      let query = supabase
+        .from('tabelas_negociacao_itens')
+        .select(COLUNAS_ITENS_NEGOCIACAO_SIMULACAO)
+        .eq('tabela_negociacao_id', tabelaId)
+        .order('id', { ascending: true })
+        .limit(pageSize);
+      query = aplicarFiltro(query);
+      if (cursor != null) query = query.gt('id', cursor);
+
+      const { data, error } = await query;
+      if (error) throw new Error(error.message || 'Erro ao listar itens atuais da negociaÃ§Ã£o.');
+
+      const lote = data || [];
+      lote.forEach((item) => {
+        if (!vistos.has(item.id)) {
+          vistos.add(item.id);
+          todos.push(item);
+        }
+      });
+      if (lote.length < pageSize) break;
+      cursor = lote[lote.length - 1].id;
+    }
+  };
+
+  if (ibgesDestino.length) {
+    for (const loteIbges of dividirEmLotes(ibgesDestino, 250)) {
+      await buscarPorFiltro((query) => query.in('ibge_destino', loteIbges));
+    }
+  } else {
+    for (const loteUfs of dividirEmLotes(ufsDestino, 10)) {
+      await buscarPorFiltro((query) => query.in('uf_destino', loteUfs));
+    }
   }
 
   return todos;
@@ -1085,7 +1210,7 @@ async function listarTodasTaxasDestinoTabela(tabelaId) {
   while (true) {
     let query = supabase
       .from('tabelas_negociacao_taxas_destino')
-      .select('*')
+      .select(COLUNAS_TAXAS_DESTINO_NEGOCIACAO_SIMULACAO)
       .eq('tabela_negociacao_id', tabelaId)
       .order('id', { ascending: true })
       .limit(pageSize);
@@ -1108,6 +1233,59 @@ async function listarTodasTaxasDestinoTabela(tabelaId) {
 // Usa resumo_capa (recorte LEVE) em vez de resumo_simulacao (JSONB pesado, ~478 KB
 // e até 6 MB por linha): puxar o resumo completo de todas as negociações elegíveis
 // estourava o statement_timeout ("canceling statement due to statement timeout").
+async function listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte = {}) {
+  const ibgesDestino = normalizarIbgesRecorte(recorte.ibgesDestino || recorte.ibgeDestino);
+  const ufsDestino = normalizarUfsRecorte(recorte.ufsDestino || recorte.ufDestino);
+
+  if (!ibgesDestino.length && !ufsDestino.length) {
+    return listarTodasTaxasDestinoTabela(tabelaId);
+  }
+
+  const supabase = supabaseOrThrow();
+  const pageSize = 1000;
+  const todos = [];
+  const vistos = new Set();
+
+  const buscarPorFiltro = async (aplicarFiltro) => {
+    let cursor = null;
+    while (true) {
+      let query = supabase
+        .from('tabelas_negociacao_taxas_destino')
+        .select(COLUNAS_TAXAS_DESTINO_NEGOCIACAO_SIMULACAO)
+        .eq('tabela_negociacao_id', tabelaId)
+        .order('id', { ascending: true })
+        .limit(pageSize);
+      query = aplicarFiltro(query);
+      if (cursor != null) query = query.gt('id', cursor);
+
+      const { data, error } = await query;
+      if (error) throw new Error(error.message || 'Erro ao listar taxas da negociacao para simulacao.');
+
+      const lote = data || [];
+      lote.forEach((item) => {
+        if (!vistos.has(item.id)) {
+          vistos.add(item.id);
+          todos.push(item);
+        }
+      });
+      if (lote.length < pageSize) break;
+      cursor = lote[lote.length - 1].id;
+    }
+  };
+
+  if (ibgesDestino.length) {
+    for (const loteIbges of dividirEmLotes(ibgesDestino, 250)) {
+      await buscarPorFiltro((query) => query.in('ibge_destino', loteIbges));
+    }
+  } else {
+    for (const loteUfs of dividirEmLotes(ufsDestino, 10)) {
+      await buscarPorFiltro((query) => query.in('uf_destino', loteUfs));
+    }
+  }
+
+  return todos;
+}
+
 const COLUNAS_CAPA_NEGOCIACAO_SIMULACAO =
   'id,transportadora,canal,tipo_tabela,tipo_negociacao,status,descricao,regiao,origem,uf_origem,uf_destino,data_recebimento,data_inicio_prevista,data_inicio_vigencia,incluir_simulacao,observacao,origem_importacao,generalidades,resumo_capa,criado_em,atualizado_em,saving_projetado,aderencia_projetada,faturamento_projetado,impacto_projetado,percentual_frete_projetado,volumetria_dia,ctes_analisados,ctes_atendidos,rotas_sem_cobertura,substituir_tabela_anterior,tabela_base_id,transportadora_base_nome,percentual_medio_impacto';
 
@@ -1145,14 +1323,15 @@ export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
 
 // Detalhe de UMA negociação: itens (rotas/fretes) + taxas de destino.
 // Buscamos itens e taxas em paralelo para a tabela selecionada.
-export async function carregarDetalhesNegociacaoParaSimulacao(tabela) {
+export async function carregarDetalhesNegociacaoParaSimulacao(tabela, recorte = null) {
   const capa = tabela && typeof tabela === 'object' ? tabela : null;
   const tabelaId = capa ? capa.id : tabela;
   if (!tabelaId) throw new Error('Negociação inválida para carregar detalhes.');
 
+  const usarRecorte = recorte && typeof recorte === 'object';
   const [itens, taxasDestino] = await Promise.all([
-    listarTodosItensTabelaNegociacao(tabelaId),
-    listarTodasTaxasDestinoTabela(tabelaId),
+    usarRecorte ? listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte) : listarTodosItensTabelaNegociacao(tabelaId),
+    usarRecorte ? listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte) : listarTodasTaxasDestinoTabela(tabelaId),
   ]);
 
   const base = capa || { id: tabelaId };
