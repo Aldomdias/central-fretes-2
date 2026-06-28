@@ -77,6 +77,23 @@ const COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR = [
   'canal_original',
 ].join(',');
 
+const CANAIS_B2C_QUERY_REALIZADO = [
+  'B2C',
+  'b2c',
+  'B2C ',
+  'ECOMMERCE',
+  'E-COMMERCE',
+  'E COMMERCE',
+  'MARKETPLACE',
+  'MARKET PLACE',
+  'MERCADO LIVRE',
+  'SHOPEE',
+  'MAGAZINE LUIZA',
+  'AMAZON',
+  'VIA VAREJO',
+  'B2W',
+];
+
 async function executarQueryRealizadoComRetry(montarQuery, contexto = 'consulta realizado_local_ctes', tentativas = 3) {
   let ultimoErro = null;
 
@@ -148,7 +165,7 @@ function aplicarFiltrosRealizadoQuery(query, filtros) {
   if (filtros.canal) {
     const canalNorm = canalFiltroRealizadoSim(filtros.canal) || String(filtros.canal || '').toUpperCase();
     if (canalNorm === 'ATACADO' || canalNorm === 'B2B') query = query.in('canal', ['ATACADO', 'B2B', 'Atacado', 'b2b']);
-    else if (canalNorm === 'B2C') query = query.or('canal.ilike.%B2C%,canal.ilike.%ECOM%,canal.ilike.%E-COM%');
+    else if (canalNorm === 'B2C') query = query.in('canal', CANAIS_B2C_QUERY_REALIZADO);
     else query = query.eq('canal', filtros.canal);
   }
   if (Array.isArray(filtros.ufDestino)) {
@@ -156,9 +173,44 @@ function aplicarFiltrosRealizadoQuery(query, filtros) {
   } else if (filtros.ufDestino) {
     query = query.eq('uf_destino', filtros.ufDestino);
   }
+  if (filtros.somenteDadosCompletos) {
+    query = query.gt('qtd_volumes', 0).gt('cubagem', 0);
+    query = query.not('ibge_origem', 'is', null).neq('ibge_origem', '');
+    query = query.not('ibge_destino', 'is', null).neq('ibge_destino', '');
+  }
   if (filtros.inicio) query = query.gte('data_emissao', filtros.inicio);
-  if (filtros.fim) query = query.lte('data_emissao', filtros.fim);
+  if (filtros.fim) {
+    const fimIso = dataIsoValidaRealizado(filtros.fim);
+    query = fimIso
+      ? query.lt('data_emissao', adicionarDiasIsoRealizado(fimIso, 1))
+      : query.lte('data_emissao', filtros.fim);
+  }
   return query;
+}
+
+function dataIsoValidaRealizado(value = '') {
+  const texto = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(texto) ? texto : '';
+}
+
+function adicionarDiasIsoRealizado(iso, dias) {
+  const data = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(data.getTime())) return '';
+  data.setDate(data.getDate() + dias);
+  return data.toISOString().slice(0, 10);
+}
+
+function montarJanelasDataRealizado(inicio, fim) {
+  const inicioIso = dataIsoValidaRealizado(inicio);
+  const fimIso = dataIsoValidaRealizado(fim);
+  if (!inicioIso || !fimIso || inicioIso > fimIso) return [];
+
+  const janelas = [];
+  for (let cursor = fimIso; cursor && cursor >= inicioIso; cursor = adicionarDiasIsoRealizado(cursor, -1)) {
+    janelas.push({ inicio: cursor, fim: cursor });
+    if (cursor === inicioIso) break;
+  }
+  return janelas;
 }
 
 async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
@@ -167,27 +219,39 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   const totalMax = Math.min(Number(filtros.limit) || 100000, 200000);
   const PAGE_SIZE = 500; // menor para evitar Failed to fetch em bases grandes
   let allRows = [];
-  let from = 0;
 
-  while (allRows.length < totalMax) {
-    const to = Math.min(from + PAGE_SIZE - 1, totalMax - 1);
-    let query = supabase
-      .from('realizado_local_ctes')
-      .select(COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR)
-      .range(from, to);
-    query = aplicarFiltrosRealizadoQuery(query, filtros);
+  const janelasData = montarJanelasDataRealizado(filtros.inicio, filtros.fim);
+  const janelas = janelasData.length ? janelasData : [{ inicio: filtros.inicio || '', fim: filtros.fim || '' }];
 
-    const paginaInicio = from + 1;
-    const paginaFim = to + 1;
-    const resposta = await executarQueryRealizadoComRetry(async () => query, `Erro ao buscar realizado_local_ctes (${paginaInicio}-${paginaFim})`);
-    const { data, error } = resposta || {};
-    if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
-    if (!data || data.length === 0) break;
+  for (const janela of janelas) {
+    let from = 0;
 
-    allRows = allRows.concat(data);
-    if (onProgresso) onProgresso(allRows.length);
-    if (data.length < PAGE_SIZE) break; // última página
-    from += PAGE_SIZE;
+    while (allRows.length < totalMax) {
+      const to = Math.min(from + PAGE_SIZE - 1, totalMax - 1);
+      const filtrosJanela = { ...filtros, inicio: janela.inicio, fim: janela.fim };
+      let query = supabase
+        .from('realizado_local_ctes')
+        .select(COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR)
+        .range(from, to);
+      query = aplicarFiltrosRealizadoQuery(query, filtrosJanela);
+
+      const paginaInicio = from + 1;
+      const paginaFim = to + 1;
+      const contextoJanela = janela.inicio && janela.fim
+        ? `${janela.inicio}${janela.inicio !== janela.fim ? ` a ${janela.fim}` : ''}`
+        : 'periodo completo';
+      const resposta = await executarQueryRealizadoComRetry(async () => query, `Erro ao buscar realizado_local_ctes (${contextoJanela}, ${paginaInicio}-${paginaFim})`);
+      const { data, error } = resposta || {};
+      if (error) throw new Error('Erro ao buscar realizado_local_ctes: ' + error.message);
+      if (!data || data.length === 0) break;
+
+      allRows = allRows.concat(data);
+      if (onProgresso) onProgresso(allRows.length);
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+
+    if (allRows.length >= totalMax) break;
   }
 
   const rows = allRows.slice(0, totalMax);
@@ -4572,6 +4636,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         inicio: inicioRealizado,
         fim: fimRealizado,
         limit: limiteRealizado,
+        somenteDadosCompletos: apenasDadosCompletosRealizado,
       }, (qtd) => {
         atualizarProcessamentoUi(`Buscando CT-es realizados... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(58, 28 + Math.floor(qtd / 500)));
       });
@@ -4600,6 +4665,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           inicio: inicioRealizado,
           fim: fimRealizado,
           limit: limiteRealizado,
+          somenteDadosCompletos: apenasDadosCompletosRealizado,
         }, (qtd) => {
           atualizarProcessamentoUi(`Buscando CT-es sem o recorte da malha oficial... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(68, 60 + Math.floor(qtd / 500)));
         });
@@ -4662,6 +4728,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           inicio: inicioRealizado,
           fim: fimRealizado,
           limit: limiteRealizado,
+          somenteDadosCompletos: apenasDadosCompletosRealizado,
         }, (qtd) => {
           atualizarProcessamentoUi(`Buscando CT-es sem o recorte da malha oficial... ${qtd.toLocaleString('pt-BR')} carregados`, Math.min(88, 84 + Math.floor(qtd / 500)));
         });
