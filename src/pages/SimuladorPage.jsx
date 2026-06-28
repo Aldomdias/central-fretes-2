@@ -838,23 +838,48 @@ function criarTrackingAgregado(item = {}, origem = 'raw') {
   };
 }
 
+function documentoTrackingKey(item = {}) {
+  const chaveNfe = normalizarChaveLongaTracking(item.chave_nfe || item.chaveNfe);
+  if (chaveNfe) return `nfe:${chaveNfe}`;
+  const nota = apenasDigitosTracking(item.nota_fiscal || item.notaFiscal);
+  return nota ? `nota:${nota}` : '';
+}
+
+function valoresProximosTracking(a, b, tolerancia = 0.000001) {
+  return Math.abs(numeroTracking(a) - numeroTracking(b)) <= tolerancia;
+}
+
+function pareceLinhaProdutoMesmaNf(atual = {}, item = {}) {
+  const keyAtual = documentoTrackingKey(atual);
+  const keyItem = documentoTrackingKey(item);
+  if (!keyAtual || keyAtual !== keyItem) return false;
+
+  const mesmaCubagem = valoresProximosTracking(atual.cubagem_total, item.cubagem_total)
+    || valoresProximosTracking(atual.cubagem_unitaria, item.cubagem_unitaria);
+  const mesmosVolumes = valoresProximosTracking(atual.qtd_volumes, item.qtd_volumes);
+
+  return mesmaCubagem && mesmosVolumes;
+}
+
 function somarTrackingAgregado(atual, proximo) {
   if (!atual) return criarTrackingAgregado(proximo);
   const item = criarTrackingAgregado(proximo);
+  const linhaProdutoMesmaNf = pareceLinhaProdutoMesmaNf(atual, item);
+
   return {
     ...atual,
     ...Object.fromEntries(
       Object.entries(atual).filter(([, value]) => value !== undefined && value !== null && String(value) !== '')
     ),
     linhas_tracking: numeroTracking(atual.linhas_tracking) + numeroTracking(item.linhas_tracking || 1),
-    qtd_volumes: numeroTracking(atual.qtd_volumes) + numeroTracking(item.qtd_volumes),
-    cubagem_unitaria: numeroTracking(atual.cubagem_unitaria) + numeroTracking(item.cubagem_unitaria),
-    cubagem_total: numeroTracking(atual.cubagem_total) + numeroTracking(item.cubagem_total),
-    cubagem_total_armazenada: numeroTracking(atual.cubagem_total_armazenada) + numeroTracking(item.cubagem_total_armazenada),
+    qtd_volumes: linhaProdutoMesmaNf ? Math.max(numeroTracking(atual.qtd_volumes), numeroTracking(item.qtd_volumes)) : numeroTracking(atual.qtd_volumes) + numeroTracking(item.qtd_volumes),
+    cubagem_unitaria: linhaProdutoMesmaNf ? Math.max(numeroTracking(atual.cubagem_unitaria), numeroTracking(item.cubagem_unitaria)) : numeroTracking(atual.cubagem_unitaria) + numeroTracking(item.cubagem_unitaria),
+    cubagem_total: linhaProdutoMesmaNf ? Math.max(numeroTracking(atual.cubagem_total), numeroTracking(item.cubagem_total)) : numeroTracking(atual.cubagem_total) + numeroTracking(item.cubagem_total),
+    cubagem_total_armazenada: linhaProdutoMesmaNf ? Math.max(numeroTracking(atual.cubagem_total_armazenada), numeroTracking(item.cubagem_total_armazenada)) : numeroTracking(atual.cubagem_total_armazenada) + numeroTracking(item.cubagem_total_armazenada),
     cubagem_corrigida: Boolean(atual.cubagem_corrigida || item.cubagem_corrigida),
-    peso: numeroTracking(atual.peso) + numeroTracking(item.peso),
+    peso: linhaProdutoMesmaNf ? Math.max(numeroTracking(atual.peso), numeroTracking(item.peso)) : numeroTracking(atual.peso) + numeroTracking(item.peso),
     peso_declarado: numeroTracking(atual.peso_declarado) || numeroTracking(item.peso_declarado),
-    peso_cubado: numeroTracking(atual.peso_cubado) + numeroTracking(item.peso_cubado),
+    peso_cubado: linhaProdutoMesmaNf ? Math.max(numeroTracking(atual.peso_cubado), numeroTracking(item.peso_cubado)) : numeroTracking(atual.peso_cubado) + numeroTracking(item.peso_cubado),
     valor_nf: numeroTracking(atual.valor_nf) || numeroTracking(item.valor_nf),
     origem_vinculo_tracking: atual.origem_vinculo_tracking || item.origem_vinculo_tracking || 'raw',
   };
