@@ -40,7 +40,7 @@ const UF_POR_CENTRO_EXPEDICAO = {
 
 const CHUNK_SIZE = 5000;
 const DETALHE_SHEET_LIMIT = 100000;
-const SUPABASE_PAGE_SIZE = 300;
+const SUPABASE_PAGE_SIZE = 150;
 const SUPABASE_EXPORT_LIMIT_DEFAULT = 1000000;
 const TABELA_TRACKING_SUPABASE = 'tracking_rows';
 const TABELA_CTES_SUPABASE = 'realizado_local_ctes';
@@ -1012,7 +1012,7 @@ async function buscarPaginasSupabase({ supabase, tabelaDescricao, criarQuery, ma
   const pageSize = Number(options.pageSize || SUPABASE_PAGE_SIZE);
   const rows = [];
   let totalAvaliado = 0;
-  const janelas = criarJanelasPeriodo(filtros.inicio, filtros.fim, Number(options.diasPorJanela || 7));
+  const janelas = criarJanelasPeriodo(filtros.inicio, filtros.fim, Number(options.diasPorJanela || 1));
 
   for (let janelaIndex = 0; janelaIndex < janelas.length && rows.length < limit; janelaIndex += 1) {
     const janela = janelas[janelaIndex];
