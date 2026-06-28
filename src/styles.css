@@ -387,6 +387,12 @@ button { cursor: pointer; }
   pointer-events: none;
 }
 
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .nav-label,
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .menu-section-title,
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .sidebar-user-meta {
+  display: none;
+}
+
 .sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .sidebar-brand {
   justify-content: center;
   padding-left: 10px;
@@ -446,6 +452,60 @@ button { cursor: pointer; }
   color: #fff;
   background: linear-gradient(90deg, rgba(39, 113, 236, 0.28), rgba(204, 32, 32, 0.20));
   box-shadow: inset 3px 0 0 #cc2020;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) {
+  overflow: hidden;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .sidebar-nav {
+  padding: 12px 10px;
+  overflow: hidden;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .sidebar-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .menu-section {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .menu-section + .menu-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .menu-section-items {
+  width: 100%;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .nav-item {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  margin: 0 auto;
+  border-radius: 12px;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .nav-item.active {
+  background: rgba(204, 32, 32, 0.18);
+  box-shadow: inset 3px 0 0 #cc2020;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .sidebar-footer-note {
+  padding: 12px 10px;
+}
+
+.sidebar-app.is-collapsed:not(:hover):not(.is-mobile-open) .sidebar-user-row {
+  justify-content: center;
 }
 
 .nav-icon-svg {
