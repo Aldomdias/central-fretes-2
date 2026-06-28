@@ -197,6 +197,7 @@ function mapCteSupabaseRow(row = {}) {
   return {
     id: row.id || '',
     competencia: row.competencia || (data ? String(data).slice(0, 7) : ''),
+    data,
     dataEmissao: data,
     chaveCte: row.chave_cte || raw.chaveCte || '',
     numeroCte: row.numero_cte || raw.numeroCte || '',
@@ -990,7 +991,12 @@ function criarJanelasPeriodo(inicio, fim, diasPorJanela = 15) {
 
 function aplicarFiltrosSqlBasicos(query, filtros = {}, colunaData = 'data') {
   if (filtros.inicio) query = query.gte(colunaData, filtros.inicio);
-  if (filtros.fim) query = query.lte(colunaData, filtros.fim);
+  if (filtros.fim) {
+    // data_emissao/data podem ter hora (timestamptz). Usar lt(fim+1dia) em vez de
+    // lte(fim) para não perder o dia inteiro quando a janela é diária (inicio==fim).
+    const fimIso = toIsoDateOnly(filtros.fim);
+    query = fimIso ? query.lt(colunaData, addDaysIso(fimIso, 1)) : query.lte(colunaData, filtros.fim);
+  }
   if (filtros.canal) query = query.eq('canal', String(filtros.canal || '').toUpperCase());
   if (filtros.ufOrigem) query = query.eq('uf_origem', cleanUf(filtros.ufOrigem));
   if (filtros.ufDestino) query = query.eq('uf_destino', cleanUf(filtros.ufDestino));
@@ -1000,11 +1006,13 @@ function aplicarFiltrosSqlBasicos(query, filtros = {}, colunaData = 'data') {
 }
 
 function criarQueryTrackingSupabase(supabase, filtros = {}) {
+  // Ordena pela coluna de data (não por id): casa com o índice (data, id) e evita
+  // statement_timeout que acontecia ao ordenar por id sobre filtro de data.
   return aplicarFiltrosSqlBasicos(
     supabase.from(TABELA_TRACKING_SUPABASE).select(TRACKING_SUPABASE_COLUMNS),
     filtros,
     'data'
-  ).order('id', { ascending: true });
+  ).order('data', { ascending: true }).order('id', { ascending: true });
 }
 
 async function buscarPaginasSupabase({ supabase, tabelaDescricao, criarQuery, mapRow, filtros = {}, options = {}, percentualInicio = 5, percentualFim = 20 }) {
@@ -1070,11 +1078,13 @@ async function exportarTrackingSupabase(filtros = {}, options = {}) {
 }
 
 function criarQueryCtesSupabase(supabase, filtros = {}) {
+  // Ordena por data_emissao (não por id): casa com o índice (data_emissao, id) e
+  // evita statement_timeout que acontecia ao ordenar por id sobre filtro de data.
   return aplicarFiltrosSqlBasicos(
     supabase.from(TABELA_CTES_SUPABASE).select(CTE_SUPABASE_COLUMNS),
     filtros,
     'data_emissao'
-  ).order('id', { ascending: true });
+  ).order('data_emissao', { ascending: true }).order('id', { ascending: true });
 }
 
 async function exportarRealizadoSupabaseParaVolumetria(filtros = {}, options = {}) {
@@ -1116,6 +1126,23 @@ async function carregarCtesVolumetria(filtroBase = {}, config = {}) {
   return { ...local, fonte: 'CT-es locais' };
 }
 
+// Modo base CT-es: a realizado_local_ctes já tem volumes/cubagem/IBGE, então lemos
+// dela direto, sem buscar o Tracking nem cruzar chaves. O canal NÃO é filtrado no SQL
+// (variações de canal são normalizadas e filtradas em memória por aplicarFiltrosFinais).
+async function carregarBaseCteVolumetria(filtroBase = {}, config = {}) {
+  const limit = Number(config.limiteLeitura || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  const filtroSemCanal = { ...filtroBase, canal: '' };
+  postProgress({ percentual: 5, mensagem: 'Lendo CT-es da base do Supabase (sem Tracking)...' });
+
+  // A query de CT-es é leve (sem coluna raw); pode usar o teto do Supabase (1000/req).
+  const online = await exportarRealizadoSupabaseParaVolumetria(filtroSemCanal, { limit, pageSize: 1000 });
+  if (online?.rows?.length) return { ...online, fonte: 'Supabase CT-es (base)' };
+
+  postProgress({ percentual: 5, mensagem: 'Base de CT-es do Supabase indisponível/vazia. Tentando base local como contingência...' });
+  const local = await exportarRealizadoLocal(filtroSemCanal, { limit });
+  return { ...local, fonte: 'CT-es locais (base)' };
+}
+
 async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
   config = normalizarConfigVolumetria(config);
 
@@ -1131,20 +1158,25 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
     excluirEbazar: Boolean(config.excluirEbazar),
   };
 
-  const tracking = await carregarTrackingVolumetria(filtroBase, config);
-  const rows = tracking.rows || [];
-  const totalCompativel = tracking.totalCompativel || rows.length;
-  const limit = tracking.limit || Number(config.limiteLeitura || SUPABASE_EXPORT_LIMIT_DEFAULT);
-  const fonteBase = tracking.fonte || 'Supabase Tracking';
+  const usarBaseCte = Boolean(config.usarBaseCte);
+  const base = usarBaseCte
+    ? await carregarBaseCteVolumetria(filtroBase, config)
+    : await carregarTrackingVolumetria(filtroBase, config);
+  const rows = base.rows || [];
+  const totalCompativel = base.totalCompativel || rows.length;
+  const limit = base.limit || Number(config.limiteLeitura || SUPABASE_EXPORT_LIMIT_DEFAULT);
+  const fonteBase = base.fonte || (usarBaseCte ? 'Supabase CT-es (base)' : 'Supabase Tracking');
 
   if (!rows.length) {
-    throw new Error('Não existe base de Tracking no Supabase com os filtros informados. Confira se o Tracking foi enviado ao Supabase e se o período/origem estão corretos.');
+    throw new Error(usarBaseCte
+      ? 'Não existe base de CT-es no Supabase com os filtros informados. Confira se a base de CT-es foi enviada e se o período/origem estão corretos.'
+      : 'Não existe base de Tracking no Supabase com os filtros informados. Confira se o Tracking foi enviado ao Supabase e se o período/origem estão corretos.');
   }
 
   let rowsBase = rows.map(normalizarLinhaVolumetria);
   let resumoVinculo = null;
 
-  if (config.vincularCtes || config.somenteComCteVinculado) {
+  if (!usarBaseCte && (config.vincularCtes || config.somenteComCteVinculado)) {
     postProgress({ percentual: 22, mensagem: 'Buscando CT-es no Supabase para vincular com o Tracking...' });
     const ctes = await carregarCtesVolumetria(filtroBase, config);
     postProgress({ percentual: 28, mensagem: 'Relacionando Tracking com CT-es para usar somente volumetria vinculada...' });
@@ -1158,6 +1190,8 @@ async function gerarArquivoVolumetria({ config = {}, grade = {} }) {
         throw new Error('Nenhuma linha do Tracking encontrou vínculo com CT-e no período filtrado. Revise chaves de NF/CT-e, período e bases carregadas.');
       }
     }
+  } else if (usarBaseCte) {
+    postProgress({ percentual: 28, mensagem: 'Modo base CT-es: usando volumes/cubagem da própria base de CT-es, sem Tracking...' });
   } else {
     postProgress({ percentual: 28, mensagem: 'Vínculo com CT-e desligado. Seguindo somente com Tracking do Supabase...' });
   }

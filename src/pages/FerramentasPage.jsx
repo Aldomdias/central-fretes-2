@@ -55,6 +55,7 @@ const DEFAULT_CONFIG = {
   incluirDetalhe: false,
   vincularCtes: true,
   somenteComCteVinculado: true,
+  usarBaseCte: true,
 };
 
 const CANAIS = ['', 'ATACADO', 'B2C', 'INTERCOMPANY', 'REVERSA', 'A DEFINIR'];
@@ -1349,10 +1350,13 @@ export default function FerramentasPage({ transportadoras = [] }) {
               <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.excluirEbazar)} onChange={(e) => alterar('excluirEbazar', e.target.checked)} />Retirar EBAZAR</label>
               <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.incluirIbge)} onChange={(e) => alterarIncluirIbge(e.target.checked)} />Incluir colunas IBGE (mais lento)</label>
               <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.incluirDetalhe)} onChange={(e) => alterar('incluirDetalhe', e.target.checked)} />Incluir aba sem agrupamento</label>
-              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} disabled={Boolean(config.somenteComCteVinculado)} />Vincular com CT-es do Supabase</label>
-              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.somenteComCteVinculado)} onChange={(e) => alterarSomenteVinculados(e.target.checked)} />Somente CT-es com Tracking vinculado</label>
+              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.usarBaseCte)} onChange={(e) => alterar('usarBaseCte', e.target.checked)} />Gerar direto da base de CT-es (sem Tracking)</label>
+              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.vincularCtes)} onChange={(e) => alterar('vincularCtes', e.target.checked)} disabled={Boolean(config.somenteComCteVinculado) || Boolean(config.usarBaseCte)} />Vincular com CT-es do Supabase</label>
+              <label className="checkbox-line"><input type="checkbox" checked={Boolean(config.somenteComCteVinculado)} onChange={(e) => alterarSomenteVinculados(e.target.checked)} disabled={Boolean(config.usarBaseCte)} />Somente CT-es com Tracking vinculado</label>
             </div>
-            <div className="hint-box compact">A volumetria agora lê o Tracking do Supabase com paginação para suportar até três meses. A cubagem usa a cubagem final do Tracking; quando marcado, exporta somente registros vinculados CT-e × Tracking, igual à base padrão do simulador.</div>
+            <div className="hint-box compact">{config.usarBaseCte
+              ? 'Modo base CT-es (recomendado): lê a volumetria/cubagem direto da base de CT-es (realizado_local_ctes), sem buscar o Tracking nem cruzar chaves. Mais rápido e sem timeout, já que a base de CT-es foi enriquecida com volumes e cubagem.'
+              : 'Modo Tracking: lê o Tracking do Supabase com paginação. A cubagem usa a cubagem final do Tracking; quando marcado "somente vinculado", exporta só registros CT-e × Tracking.'}</div>
             <div className="actions-right">
               <button className="btn-primary" type="button" onClick={exportarVolumetria} disabled={carregando}>
                 {carregando ? 'Gerando...' : 'Gerar Excel de volumetria'}
