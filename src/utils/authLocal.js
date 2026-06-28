@@ -12,6 +12,7 @@ const SESSION_TTL_MS = 5 * 60 * 60 * 1000;
 
 export const MODULOS_SISTEMA = [
   { chave: 'dashboard', label: 'Dashboard', grupo: 'Geral' },
+  { chave: 'conceito-app', label: 'Conceito visual', grupo: 'Geral' },
   { chave: 'simulador', label: 'Simulador', grupo: 'Fretes' },
   { chave: 'tabelas-negociacao', label: 'Tabelas em Negociação', grupo: 'Suprimentos' },
   { chave: 'cte', label: 'CT-e', grupo: 'Auditoria' },
@@ -57,6 +58,7 @@ export const PERFIS_USUARIO = {
     descricao: 'Acesso ao simulador, reajustes, transportadoras e tabelas em negociação.',
     paginas: [
       'dashboard',
+      'conceito-app',
       'simulador',
       'tabelas-negociacao',
       'cte',
@@ -78,33 +80,34 @@ export const PERFIS_USUARIO = {
   OPERACAO_LOTACAO: {
     nome: 'Operação Lotação',
     descricao: 'Consulta lotação, histórico de cargas, custos adicionais e aprovações.',
-    paginas: ['dashboard', 'lotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
+    paginas: ['dashboard', 'conceito-app', 'lotacao', 'lotacao-operacao', 'painel-operacao', 'tratativas', 'avaliacao-prazos'],
   },
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',
     descricao: 'Consulta DIST/CT-e e registro de auditoria.',
-    paginas: ['dashboard', 'cte', 'auditoria-cte', 'lotacao-auditoria', 'painel-auditoria', 'faturas', 'tratativas'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'lotacao-auditoria', 'painel-auditoria', 'faturas', 'tratativas'],
   },
   AUDITORIA_FRETES: {
     nome: 'Auditoria de Fretes',
     descricao: 'Carteira de faturas, reauditoria, vencimentos, DOCCOB e tratativas.',
-    paginas: ['dashboard', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'tratativas'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'tratativas'],
   },
   GESTOR_AUDITORIA_FRETES: {
     nome: 'Gestor de Auditoria de Fretes',
     descricao: 'Gestao de carteiras, produtividade, riscos, vencimentos e SLA.',
-    paginas: ['dashboard', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte'],
   },
   FINANCEIRO: {
     nome: 'Financeiro',
     descricao: 'Protocolos, solicitacoes, boletos, pagamentos e comprovantes.',
-    paginas: ['dashboard', 'financeiro-auditoria', 'faturas', 'tratativas'],
+    paginas: ['dashboard', 'conceito-app', 'financeiro-auditoria', 'faturas', 'tratativas'],
   },
   CONSULTA: {
     nome: 'Consulta',
     descricao: 'Acesso de consulta sem gestão de usuários.',
     paginas: [
       'dashboard',
+      'conceito-app',
       'lotacao',
       'lotacao-operacao',
       'consulta-ibge',

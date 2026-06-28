@@ -30,12 +30,13 @@ import OportunidadeOrigemPage from './pages/OportunidadeOrigemPage';
 import OportunidadeTransportadoraPage from './pages/OportunidadeTransportadoraPage';
 import SimularSaidaTransportadoraPage from './pages/SimularSaidaTransportadoraPage';
 import GestaoBaseCtePage from './pages/GestaoBaseCtePage';
+import VisualConceptPage from './pages/VisualConceptPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
 
 const PAGINAS_PERMITIDAS = [
-  'dashboard', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
+  'dashboard', 'conceito-app', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas',
@@ -50,7 +51,7 @@ export default function App() {
   const store = useFreteStore();
   const [sessao, setSessao] = useState(() => carregarSessao());
   const [paginaAtual, setPaginaAtual] = useState('dashboard');
-  const [sidebarRecolhida, setSidebarRecolhida] = useState(false);
+  const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
   const [transportadoraSelecionadaId, setTransportadoraSelecionadaId] = useState(null);
   const [origemSelecionadaId, setOrigemSelecionadaId] = useState(null);
@@ -131,6 +132,7 @@ export default function App() {
 
   const paginas = {
     dashboard: <DashboardPage transportadoras={transportadorasMemo} onAbrirSimulador={abrirSimulador} onAbrirTransportadoras={abrirTransportadoras} onAbrirImportacao={abrirImportacao} onAbrirFormatacaoTabelas={() => mudarPagina('formatacao')} onAtualizarBase={store.atualizarResumo} onConferirBase={store.conferirBase} syncStatus={store.syncStatus} />,
+    'conceito-app': <VisualConceptPage />,
     simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     'tabelas-negociacao': <TabelasNegociacaoPageWithEditor />,
     cte: <CtePage transportadoras={transportadorasMemo} />,
@@ -189,7 +191,6 @@ export default function App() {
         onLogout={sair}
         recolhida={sidebarRecolhida}
         menuMobileAberto={menuMobileAberto}
-        onAlternarRecolhida={() => setSidebarRecolhida((valor) => !valor)}
         onFecharMobile={() => setMenuMobileAberto(false)}
       />
       <main className="app-content">{content}</main>
