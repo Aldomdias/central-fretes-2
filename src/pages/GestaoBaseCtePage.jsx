@@ -8,7 +8,27 @@ import { normalizarCidadeIbge, compactarCidadeIbge, resolverIbgeComRegras } from
 
 const TABELA = 'realizado_local_ctes';
 const PAGE = 1000;
-const UPSERT_CHUNK = 500;
+const UPSERT_CHUNK = 200;
+
+function ehTimeoutDb(msg = '') {
+  const t = String(msg || '').toLowerCase();
+  return t.includes('statement timeout') || t.includes('canceling statement') || t.includes('timeout');
+}
+
+// Grava um lote por upsert; se o Postgres cortar por statement timeout (base
+// grande), divide o lote pela metade e tenta de novo (recursivo) até passar.
+async function gravarComRetry(supabase, parte) {
+  if (!parte.length) return;
+  const { error } = await supabase.from(TABELA).upsert(parte, { onConflict: 'chave_cte', ignoreDuplicates: false });
+  if (!error) return;
+  if (ehTimeoutDb(error.message) && parte.length > 1) {
+    const meio = Math.ceil(parte.length / 2);
+    await gravarComRetry(supabase, parte.slice(0, meio));
+    await gravarComRetry(supabase, parte.slice(meio));
+    return;
+  }
+  throw new Error(`Erro ao gravar IBGE/chave de rota/volumetria: ${error.message}`);
+}
 const COLUNAS_BASE = 'chave_cte,numero_cte,competencia,arquivo_origem,canal,canal_original,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,chave_rota_ibge,ibge_ok,qtd_volumes,cubagem,peso_cubado';
 const COLUNAS_COM_NFE = `${COLUNAS_BASE},chave_nfe,nota_fiscal`;
 const COLUNAS_COM_CHAVE_NFE = `${COLUNAS_BASE},chave_nfe`;
@@ -356,8 +376,7 @@ export default function GestaoBaseCtePage() {
       let gravados = 0;
       for (let i = 0; i < diag.updates.length; i += UPSERT_CHUNK) {
         const parte = diag.updates.slice(i, i + UPSERT_CHUNK);
-        const { error } = await supabase.from(TABELA).upsert(parte, { onConflict: 'chave_cte', ignoreDuplicates: false });
-        if (error) throw new Error(`Erro ao gravar IBGE/chave de rota/volumetria: ${error.message}`);
+        await gravarComRetry(supabase, parte);
         gravados += parte.length;
         setProgresso(`Gravando IBGE/chave de rota/volumetria... ${fmtN(gravados)}/${fmtN(diag.updates.length)}`);
         await new Promise((r) => setTimeout(r, 0));
