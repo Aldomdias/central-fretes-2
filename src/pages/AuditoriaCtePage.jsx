@@ -47,6 +47,22 @@ function nomeTransportadoraAuditoria(r) {
   return String(r?.transportadora || 'Não informado').trim() || 'Não informado';
 }
 
+// Texto do tomador do CT-e (cobre os apelidos de coluna da base/resultado salvo).
+function nomeTomadorAuditoria(r) {
+  const bruto = r?.tomador_servico ?? r?.tomadorServico ?? r?.tomador ?? r?.nome_tomador ?? '';
+  return String(bruto || 'Não informado').trim() || 'Não informado';
+}
+
+// Normalização para casamento aproximado (sem acento, só A-Z0-9, maiúsculas).
+function normTomador(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+}
+
 function semaforo(atual, meta) {
   if (atual >= meta) return { cor: '#16a34a', bg: '#dcfce7', label: '✓ Meta atingida' };
   if (atual >= meta * 0.9) return { cor: '#d97706', bg: '#fef3c7', label: '⚠ Próximo da meta' };
@@ -371,11 +387,13 @@ export default function AuditoriaCtePage() {
   // recalcular só o subconjunto. Combina transportadora + origem + critério de erro.
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [filtroTransps, setFiltroTransps] = useState([]);
+  const [filtroTomadores, setFiltroTomadores] = useState([]);
   const [filtroUfs, setFiltroUfs] = useState([]);
   const [filtroCidades, setFiltroCidades] = useState([]);
   const [filtroCanais, setFiltroCanais] = useState([]);
   const [filtroCriterios, setFiltroCriterios] = useState([]); // vazio = todos
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
+  const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
   const [buscaCidadeFiltro, setBuscaCidadeFiltro] = useState('');
 
   // Preview de resimulação (apenas em memória — não grava no banco).
@@ -393,6 +411,7 @@ export default function AuditoriaCtePage() {
 
   function limparFiltrosFoco() {
     setFiltroTransps([]);
+    setFiltroTomadores([]);
     setFiltroUfs([]);
     setFiltroCidades([]);
     setFiltroCanais([]);
@@ -400,7 +419,8 @@ export default function AuditoriaCtePage() {
   }
 
   const filtrosAtivos = Boolean(
-    filtroTransps.length || filtroUfs.length || filtroCidades.length || filtroCanais.length || filtroCriterios.length,
+    filtroTransps.length || filtroTomadores.length || filtroUfs.length
+    || filtroCidades.length || filtroCanais.length || filtroCriterios.length,
   );
 
   // Pode carregar/recalcular com competência OU período (datas) preenchido.
@@ -479,6 +499,21 @@ export default function AuditoriaCtePage() {
       .map(([value, qtd]) => ({ value, label: value, sub: `${fmtN(qtd)}` }));
   }, [registrosAnalise]);
 
+  // Tomadores disponíveis (com contagem) para o filtro de foco.
+  const tomadoresDisponiveis = useMemo(() => {
+    const mapa = new Map();
+    for (const r of registrosAnalise) {
+      const nome = nomeTomadorAuditoria(r);
+      mapa.set(nome, (mapa.get(nome) || 0) + 1);
+    }
+    return Array.from(mapa.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([value, qtd]) => ({ value, label: value, sub: `${fmtN(qtd)}` }));
+  }, [registrosAnalise]);
+
+  // Atalhos de tomadores frequentes (casamento por "contém", aproximado).
+  const TOMADORES_ATALHO = ['CPX', 'ITR', 'GP PNEUS', 'SPEEDMAX', 'PNEUSTORE'];
+
   // Transportadoras disponíveis (com contagem) para o filtro de foco.
   const transportadorasOpcoes = useMemo(
     () => porTransportadoraCompleto
@@ -497,8 +532,15 @@ export default function AuditoriaCtePage() {
     const cidSet = new Set(filtroCidades);
     const canalSet = new Set(filtroCanais);
     const critSet = new Set(filtroCriterios);
+    // Tomadores selecionados em forma normalizada para casar por "contém".
+    const tomadoresNorm = filtroTomadores.map(normTomador).filter(Boolean);
     return registrosAnalise.filter((r) => {
       if (transpSet.size && !transpSet.has(nomeTransportadoraAuditoria(r))) return false;
+      if (tomadoresNorm.length) {
+        const tomadorReg = normTomador(nomeTomadorAuditoria(r));
+        const casa = tomadoresNorm.some((sel) => tomadorReg.includes(sel) || sel.includes(tomadorReg));
+        if (!casa) return false;
+      }
       if (ufSet.size && !ufSet.has(String(r.uf_origem || r.ufOrigem || '').trim().toUpperCase())) return false;
       if (cidSet.size && !cidSet.has(String(r.cidade_origem || r.origem || '').trim().toUpperCase())) return false;
       if (canalSet.size) {
@@ -519,7 +561,7 @@ export default function AuditoriaCtePage() {
       }
       return true;
     });
-  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
+  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
 
   // Assertividade de um conjunto: % de CT-es (com algum cálculo) em que o
   // recálculo OU a Verum batem o valor cobrado. Mesmo critério da meta.
@@ -1060,6 +1102,42 @@ export default function AuditoriaCtePage() {
                 onBusca={setBuscaTranspFiltro}
                 placeholder="Buscar transportadora..."
               />
+              <div style={{ flex: '1 1 240px', minWidth: 220 }}>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                  {TOMADORES_ATALHO.map((t) => {
+                    const marcado = filtroTomadores.includes(t);
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => toggleEmLista(setFiltroTomadores)(t)}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          padding: '3px 9px',
+                          borderRadius: 999,
+                          cursor: 'pointer',
+                          background: marcado ? '#eff6ff' : '#f1f5f9',
+                          border: `1px solid ${marcado ? '#93c5fd' : '#e2e8f0'}`,
+                          color: marcado ? '#1d4ed8' : '#475569',
+                        }}
+                      >
+                        {marcado ? '✓ ' : ''}{t}
+                      </button>
+                    );
+                  })}
+                </div>
+                <MultiCheckList
+                  titulo="Tomador (contém)"
+                  opcoes={tomadoresDisponiveis}
+                  selecionados={filtroTomadores}
+                  onToggle={toggleEmLista(setFiltroTomadores)}
+                  onLimpar={() => setFiltroTomadores([])}
+                  busca={buscaTomadorFiltro}
+                  onBusca={setBuscaTomadorFiltro}
+                  placeholder="Buscar tomador..."
+                />
+              </div>
               <MultiCheckList
                 titulo="Cidade origem"
                 opcoes={cidadesDisponiveis}
