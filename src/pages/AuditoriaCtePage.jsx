@@ -992,6 +992,7 @@ export default function AuditoriaCtePage() {
     setResimuladoInfo('');
     setErro('');
     setSucesso('');
+    limparFiltrosFoco();
   }
 
   function toggleUsarTabelas() {
@@ -1034,6 +1035,18 @@ export default function AuditoriaCtePage() {
       {avisos.length > 0 ? (
         <div className="sim-alert info">
           <strong>Avisos da consulta:</strong> {avisos.join(' | ')}
+        </div>
+      ) : null}
+
+      {filtrosAtivos && registros.length > 0 && registrosFiltro.length === 0 ? (
+        <div className="sim-alert error" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <span>
+            <strong>Atenção:</strong> há filtros de foco ativos que estão escondendo todos os{' '}
+            {registros.length.toLocaleString('pt-BR')} CT-e(s) carregados (0 no foco). Por isso a tela aparece vazia.
+          </span>
+          <button className="primary" type="button" onClick={limparFiltrosFoco} style={{ whiteSpace: 'nowrap' }}>
+            Limpar filtros de foco
+          </button>
         </div>
       ) : null}
 
