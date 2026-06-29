@@ -42,6 +42,17 @@ function pct(v) { return `${safeNum(v).toFixed(1).replace('.', ',')}%`; }
 function norm(v) {
   return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
+
+// Mesma transportadora por casamento aproximado: cobre variações de razão social
+// (ex.: "ATUAL CARGAS TRANSPORTES LTDA" x cadastro "ATUAL"). Evita sugerir a
+// própria transportadora como substituta e permite achar o prazo da tabela dela.
+function mesmaTransportadora(a, b) {
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return (x.length >= 5 && y.includes(x)) || (y.length >= 5 && x.includes(y));
+}
 function canalRealDe(cte) {
   return cte.canal_original && norm(cte.canal) === 'ADEFINIR'
     ? cte.canal_original
@@ -210,7 +221,11 @@ function simularTodas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidade
 }
 
 // Calcula o cenário de um grupo (transportadora × origem) já com as candidatas filtradas.
-function calcularGrupo(casos, scenarioMode) {
+function calcularGrupo(casos, scenarioMode, transportadoraReal) {
+  // A própria transportadora (com variação de razão social) não pode ser a
+  // substituta — substituir uma transportadora por ela mesma não é troca.
+  const ehPropria = (nome) => mesmaTransportadora(nome, transportadoraReal);
+
   let pagoTotal = 0, pesoTotal = 0, nfTotal = 0, prazoRealSoma = 0, prazoRealN = 0;
   for (const c of casos) {
     pagoTotal += c.valorPago; pesoTotal += c.peso; nfTotal += c.valorNf;
@@ -218,8 +233,9 @@ function calcularGrupo(casos, scenarioMode) {
   }
 
   // Ranking de candidatas no grupo (mesma origem): total e cobertura.
+  // Exclui a própria transportadora real (não é substituta).
   const carriersUnion = new Set();
-  for (const c of casos) for (const q of c.candidatos) carriersUnion.add(q.transportadora);
+  for (const c of casos) for (const q of c.candidatos) if (!ehPropria(q.transportadora)) carriersUnion.add(q.transportadora);
   const ranking = [];
   for (const nome of carriersUnion) {
     let total = 0, cobertos = 0, prazoSoma = 0, prazoN = 0;
@@ -238,7 +254,7 @@ function calcularGrupo(casos, scenarioMode) {
     melhorTotal = 0;
     const mix = new Map();
     for (const c of casos) {
-      const best = c.candidatos[0]; // ordenado asc
+      const best = c.candidatos.find((q) => !ehPropria(q.transportadora)) || null; // melhor diferente (asc)
       if (best && best.total > 0 && best.total < c.valorPago - 0.001) {
         melhorTotal += best.total;
         mix.set(best.transportadora, (mix.get(best.transportadora) || 0) + 1);
@@ -438,7 +454,7 @@ export default function OportunidadeTransportadoraPage() {
           peso: safeNum(cte.peso_declarado || cte.peso),
           valorNf: safeNum(cte.valor_nf || cte.nf_venda),
           valorPago,
-          prazoReal: safeNum(custos.find((c) => norm(c.transportadora) === norm(transportadoraReal))?.prazo),
+          prazoReal: safeNum(custos.find((c) => mesmaTransportadora(c.transportadora, transportadoraReal))?.prazo),
           custos,
         });
 
@@ -506,7 +522,7 @@ export default function OportunidadeTransportadoraPage() {
 
     // 2) calcula cada grupo
     let linhas = Array.from(grupos.values()).map((g) => {
-      const calc = calcularGrupo(g.casos, scenarioMode);
+      const calc = calcularGrupo(g.casos, scenarioMode, g.transportadoraReal);
       return {
         ...g,
         ...calc,
@@ -683,7 +699,7 @@ export default function OportunidadeTransportadoraPage() {
                               <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>
                               <td style={{ fontSize: '0.8rem' }}>
                                 {l.substituta ? (
-                                  <span>{norm(l.substituta) === norm(l.transportadoraReal) ? `${l.substituta} (própria tabela)` : l.substituta}
+                                  <span>{mesmaTransportadora(l.substituta, l.transportadoraReal) ? `${l.substituta} (própria tabela)` : l.substituta}
                                     {l.ctes > 1 && <span style={{ color: '#94a3b8' }}> · {fmtN(l.cobertura)}/{fmtN(l.ctes)}</span>}
                                   </span>
                                 ) : '—'}

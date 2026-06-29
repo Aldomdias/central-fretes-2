@@ -35,6 +35,17 @@ function normUf(s) { return String(s || '').trim().toUpperCase(); }
 function safeNumber(v) { const n = Number(v || 0); return Number.isFinite(n) ? n : 0; }
 function chunkArray(arr, size) { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; }
 function normText(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase(); }
+// Nome compacto (s\u00f3 A-Z0-9) e casamento aproximado por "cont\u00e9m", para tratar
+// varia\u00e7\u00f5es de raz\u00e3o social (ex.: "ATUAL CARGAS TRANSPORTES LTDA" x "ATUAL")
+// como a mesma transportadora \u2014 evita sugeri-la como substituta de si mesma.
+function compactNome(s) { return normText(s).replace(/[^A-Z0-9]/g, ''); }
+function mesmaTransp(a, b) {
+  const x = compactNome(a);
+  const y = compactNome(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return (x.length >= 5 && y.includes(x)) || (y.length >= 5 && x.includes(y));
+}
 function incluiTexto(valor, filtro) { const f = normText(filtro); return !f || normText(valor).includes(f); }
 function selecionadosLista(value) { return Array.isArray(value) ? value : (value ? [value] : []); }
 function passaLista(valor, selecionados = []) {
@@ -147,9 +158,11 @@ function passaFiltrosBiInativa(d = {}, filtros = {}) {
 // própria tabela). Não é perda por escolha de transportadora — é auditoria de
 // fatura. Comparado por nome de CADASTRO dos dois lados (via vínculo no worker).
 function ehMesmaTransportadora(d = {}) {
-  const a = normText(d.transportadoraGanhadora);
-  const b = normText(d.transportadoraRealizadaCadastro);
-  return Boolean(a && b && a === b);
+  const ganhadora = d.transportadoraGanhadora;
+  // Casa contra o nome de cadastro (vínculo) e contra o nome realizado cru, por
+  // aproximação — pega variações de razão social mesmo sem vínculo.
+  return mesmaTransp(ganhadora, d.transportadoraRealizadaCadastro)
+    || mesmaTransp(ganhadora, d.transportadoraRealizada);
 }
 
 function aplicarCalcVsCalc(detalhes) {
@@ -234,10 +247,18 @@ function aplicarCriterioB2cResultado(resultado = {}, criterioB2c = {}) {
 }
 
 function escolherSubstitutaRetirada(detalhe = {}, transportadorasRetiradas = []) {
-  const retiradas = new Set(selecionadosLista(transportadorasRetiradas).map(normText));
+  const retiradasLista = selecionadosLista(transportadorasRetiradas);
+  const retiradas = new Set(retiradasLista.map(normText));
   if (!retiradas.has(normText(detalhe.transportadoraRealizada))) return null;
   const alternativas = Array.isArray(detalhe.alternativasAtivas) ? detalhe.alternativasAtivas : [];
-  return alternativas.find((item) => item?.transportadora && !retiradas.has(normText(item.transportadora))) || null;
+  return alternativas.find((item) => {
+    if (!item?.transportadora) return false;
+    if (retiradas.has(normText(item.transportadora))) return false;
+    // exclui variações de razão social das retiradas e da própria realizada
+    if (retiradasLista.some((r) => mesmaTransp(r, item.transportadora))) return false;
+    if (mesmaTransp(item.transportadora, detalhe.transportadoraRealizada)) return false;
+    return true;
+  }) || null;
 }
 
 function aplicarCenarioRetirada(resultado = {}, cenario = {}) {
