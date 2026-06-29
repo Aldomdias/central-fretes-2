@@ -26,8 +26,35 @@ const RESET_LIMITE_LOTE = 10000;
 const RESET_MAX_LOOPS = 80;
 const CHAVE_LOOKUP_PAGE = 1000;
 const TMP_PARA_LOCAL_PAGE = 800;
-const TMP_PARA_LOCAL_INSERT = 200;
+const TMP_PARA_LOCAL_INSERT = 100;
 const TMP_PARA_LOCAL_CHAVE_CHUNK = 200;
+
+function ehTimeoutDb(msg = '') {
+  const t = String(msg || '').toLowerCase();
+  return t.includes('statement timeout') || t.includes('canceling statement') || t.includes('timeout');
+}
+
+// Grava um lote na base oficial com upsert; se o Postgres cortar por
+// statement timeout, divide o lote pela metade e tenta de novo (recursivo),
+// até conseguir. Assim a importação não aborta — só fatia mais fino.
+async function gravarLocalComRetry(supabase, payload) {
+  if (!payload.length) return;
+
+  const { error } = await supabase
+    .from('realizado_local_ctes')
+    .upsert(payload, { onConflict: 'chave_cte', ignoreDuplicates: false });
+
+  if (!error) return;
+
+  if (ehTimeoutDb(error.message) && payload.length > 1) {
+    const meio = Math.ceil(payload.length / 2);
+    await gravarLocalComRetry(supabase, payload.slice(0, meio));
+    await gravarLocalComRetry(supabase, payload.slice(meio));
+    return;
+  }
+
+  throw new Error(`Erro ao gravar base oficial. Detalhe: ${error.message}`);
+}
 const TRACKING_IMPORT_CHUNK = 50;
 
 function ensureSupabase() {
@@ -928,7 +955,14 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
       lote.map((row) => row.chave_cte),
     );
 
-    const novos = lote.filter((row) => row.chave_cte && !existentes.has(row.chave_cte));
+    // Dedup por chave dentro do próprio lote: evita o erro "ON CONFLICT cannot
+    // affect row a second time" e reduz o tamanho da gravação.
+    const vistos = new Set();
+    const novos = lote.filter((row) => {
+      if (!row.chave_cte || existentes.has(row.chave_cte) || vistos.has(row.chave_cte)) return false;
+      vistos.add(row.chave_cte);
+      return true;
+    });
     totalPulados += lote.length - novos.length;
     const enriquecimento = await enriquecerTemporariaComTracking(novos);
     const novosEnriquecidos = enriquecimento.rows;
@@ -938,12 +972,7 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
       const payload = parte.map(montarLinhaLocalFromTmp);
       if (!payload.length) continue;
 
-      const { error: erroInsert } = await supabase
-        .from('realizado_local_ctes')
-        .upsert(payload, { onConflict: 'chave_cte', ignoreDuplicates: false });
-      if (erroInsert) {
-        throw new Error(`Erro ao gravar base oficial. Detalhe: ${erroInsert.message}`);
-      }
+      await gravarLocalComRetry(supabase, payload);
       totalInserido += payload.length;
     }
 
