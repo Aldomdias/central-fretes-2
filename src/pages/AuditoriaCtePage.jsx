@@ -423,6 +423,19 @@ export default function AuditoriaCtePage() {
   // Detalhe por CT-e: índice da linha expandida (detalhe do cálculo).
   const [cteExpandido, setCteExpandido] = useState(null);
 
+  // Ao abrir a tela, já carrega a visão mês a mês (resumo mensal) — é leve
+  // (1 linha por competência) e é a visão principal pra acompanhar o histórico.
+  useEffect(() => {
+    let ativo = true;
+    (async () => {
+      try {
+        const resumo = await carregarResumoAuditoriaMensal();
+        if (ativo) setResumoMensal(resumo || []);
+      } catch { /* silencioso no mount — botão manual continua disponível */ }
+    })();
+    return () => { ativo = false; };
+  }, []);
+
   // Persiste os filtros de foco no navegador a cada mudança (igual às exclusões).
   useEffect(() => {
     try {
