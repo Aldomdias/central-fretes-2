@@ -1800,7 +1800,9 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      {mostrarAvancado ? <ResumoMensalAuditoria resumoMensal={resumoMensal} /> : null}
+      {/* Resumo mensal aparece sempre que carregado (o componente já some se vazio),
+          inclusive quando se usa só "Carregar resumo mensal" sem carregar CT-es. */}
+      <ResumoMensalAuditoria resumoMensal={resumoMensal} />
       <DiagnosticoFontes diagnostico={diagnostico} />
 
       {!temDados && !carregando && !processando && !resumoMensal.length ? (
