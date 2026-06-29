@@ -15,6 +15,22 @@ function formatInt(value) {
   return Number(value || 0).toLocaleString('pt-BR');
 }
 
+// Descobre a competência dominante (YYYY-MM) a partir das datas de emissão do
+// arquivo. Usado para alertar quando o mês selecionado não bate com o conteúdo
+// (causa comum de CT-es "sumirem" por terem sido gravados na competência errada).
+function detectarCompetenciaArquivo(registros = []) {
+  const contagem = new Map();
+  for (const r of registros) {
+    const comp = String(r?.competencia || '').slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(comp)) contagem.set(comp, (contagem.get(comp) || 0) + 1);
+  }
+  if (!contagem.size) return { dominante: '', distintas: [], total: 0 };
+
+  const distintas = Array.from(contagem.entries()).sort((a, b) => b[1] - a[1]);
+  const total = distintas.reduce((acc, [, qtd]) => acc + qtd, 0);
+  return { dominante: distintas[0][0], distintas, total };
+}
+
 function StatusCard({ label, value, subtitle }) {
   return (
     <div className="summary-card">
@@ -168,6 +184,27 @@ export default function ImportarRealizadoCtePage() {
 
       const { registros, meta: metaArquivo } = await parseRealizadoCtesFile(arquivo);
       setMeta(metaArquivo);
+
+      // Guarda contra importar na competência errada: compara o mês selecionado
+      // com a competência dominante das datas de emissão do próprio arquivo.
+      const deteccao = detectarCompetenciaArquivo(registros);
+      if (deteccao.dominante && deteccao.dominante !== competencia) {
+        const pctDominante = deteccao.total > 0
+          ? Math.round((deteccao.distintas[0][1] / deteccao.total) * 100)
+          : 0;
+        const confirmouCompetencia = window.confirm(
+          `Atenção: você selecionou a competência ${competencia}, mas as datas de emissão do arquivo `
+          + `indicam ${deteccao.dominante} (${pctDominante}% dos CT-es).\n\n`
+          + `Se continuar, os CT-es serão gravados como ${competencia} e não aparecerão ao filtrar por ${deteccao.dominante}.\n\n`
+          + `Clique em Cancelar para ajustar a competência para ${deteccao.dominante} antes de subir, `
+          + `ou em OK para importar mesmo assim como ${competencia}.`
+        );
+        if (!confirmouCompetencia) {
+          setFeedback(`Importação cancelada. Ajuste a competência para ${deteccao.dominante} (detectada no arquivo) e suba novamente.`);
+          return;
+        }
+      }
+
       setProgresso({ etapa: 'validacao', mensagem: `${formatInt(registros.length)} CT-e(s) lidos. Validando campos...`, percentual: 15 });
 
       const resposta = await importarRealizadoMensalEnxuto({
