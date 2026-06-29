@@ -7027,15 +7027,47 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <div><span>CT-es analisados</span><strong>{resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>Com Tracking</span><strong>{resultadoRealizado.filtros?.ctesComTracking ?? resultadoRealizado.linhasComTracking ?? 0}</strong></div>
                 <div><span>Sem Tracking</span><strong>{resultadoRealizado.filtros?.ctesSemTracking ?? 0}</strong></div>
-                <div><span>Base simulada</span><strong>{resultadoRealizado.filtros?.ctesBaseSimulada ?? resultadoRealizado.ctesAnalisados}</strong></div>
-                <div><span>CT-es simulados</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>{resultadoRealizado.compararConcorrentes ? 'com tabelas concorrentes' : 'tabela selecionada vs realizado'}</small></div>
-                <div><span>Sem tabela geral</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
+                <div><span>Base elegível</span><strong>{resultadoRealizado.filtros?.ctesBaseSimulada ?? resultadoRealizado.ctesAnalisados}</strong></div>
+                <div><span>Com cálculo</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>{resultadoRealizado.compararConcorrentes ? 'tabela + concorrentes' : 'tabela selecionada'}</small></div>
+                <div><span>Sem cobertura/cálculo</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
                 <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
                 <div><span>Sem tabela selecionada</span><strong>{resultadoRealizado.ctesSemTabelaSelecionada}</strong></div>
                 <div><span>Aderência da tabela</span><strong>{formatPercent(resultadoRealizado.aderenciaSelecionada)}</strong></div>
                 <div><span>Ganharia</span><strong style={{color:'#15803d'}}>{resultadoRealizado.ctesGanhariaSelecionada}</strong></div>
                 <div><span>Perderia</span><strong style={{color:'#dc2626'}}>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
               </div>
+
+              {resultadoRealizado.ctesSemTabelaGeral > 0 && (() => {
+                const baseElegivel = Number(resultadoRealizado.filtros?.ctesBaseSimulada ?? resultadoRealizado.ctesAnalisados ?? 0);
+                const comCalculo = Number(resultadoRealizado.ctesSimulados || 0);
+                const semCobertura = Number(resultadoRealizado.ctesSemTabelaGeral || Math.max(0, baseElegivel - comCalculo));
+                const destinosSemCobertura = resultadoRealizado.diagnostico?.destinosSemResultado || [];
+                return (
+                  <div className="sim-alert warning">
+                    <strong>
+                      {semCobertura.toLocaleString('pt-BR')} CT-e(s) da base elegível ficaram sem cobertura/cálculo.
+                    </strong>
+                    {' '}
+                    A tabela foi carregada, mas esses CT-es não encontraram combinação válida por origem, destino, canal ou IBGE.
+                    <div style={{ marginTop: 8, display: 'grid', gap: 4, fontSize: '0.82rem' }}>
+                      <div>
+                        Base elegível: <strong>{baseElegivel.toLocaleString('pt-BR')}</strong>
+                        {' '}| Com cálculo: <strong>{comCalculo.toLocaleString('pt-BR')}</strong>
+                        {' '}| Sem cobertura/cálculo: <strong>{semCobertura.toLocaleString('pt-BR')}</strong>
+                      </div>
+                      <div>
+                        Sem IBGE destino: <strong>{Number(resultadoRealizado.diagnostico?.linhasSemIbgeDestino || 0).toLocaleString('pt-BR')}</strong>
+                        {' '}| Com IBGE, mas sem tabela/cálculo: <strong>{Number(resultadoRealizado.diagnostico?.linhasSemResultado || 0).toLocaleString('pt-BR')}</strong>
+                      </div>
+                      {destinosSemCobertura.length > 0 && (
+                        <div>
+                          Principais destinos sem cobertura: <strong>{destinosSemCobertura.slice(0, 8).map(([destino, qtd]) => `${destino} (${qtd}x)`).join(', ')}</strong>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* 4 estados */}
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
