@@ -11,6 +11,7 @@ import {
   carregarMetaAuditoria,
   salvarMetaAuditoria,
   salvarMesCarregadoAuditoria,
+  salvarRecorteCarregadoAuditoria,
   TOGGLE_TABELAS_KEY,
   DIVERGENCIA_THRESHOLD,
 } from '../services/auditoriaService';
@@ -883,8 +884,21 @@ export default function AuditoriaCtePage() {
       return;
     }
 
+    // Se há CT-es carregados na tela, salva EXATAMENTE o recorte exibido
+    // (filtros/exclusões/resimulação já aplicados). Sem nada carregado, cai no
+    // modo antigo: rebusca o mês inteiro da base.
+    const salvarRecorte = registrosFiltro.length > 0;
+    const qtd = salvarRecorte ? registrosFiltro.length : 0;
+
+    const avisoFiltro = salvarRecorte && (filtrosAtivos || excluidasSet.size)
+      ? `\n\nATENÇÃO: você tem filtros/exclusões ativos. Serão salvos APENAS os ${qtd.toLocaleString('pt-BR')} CT-e(s) do recorte atual como a competência ${competencia} — o restante do mês NÃO será gravado.`
+      : '';
+
     const confirmar = window.confirm(
-      `Salvar a auditoria de ${competencia}? O resultado salvo e o resumo mensal desse mês serão substituídos.`
+      (salvarRecorte
+        ? `Salvar os ${qtd.toLocaleString('pt-BR')} CT-e(s) que estão na tela como a auditoria de ${competencia}? O resultado salvo e o resumo mensal desse mês serão substituídos.`
+        : `Salvar a auditoria de ${competencia}? Nada está carregado na tela, então o mês inteiro será buscado da base. O resultado salvo e o resumo mensal serão substituídos.`)
+      + avisoFiltro
     );
 
     if (!confirmar) return;
@@ -896,10 +910,16 @@ export default function AuditoriaCtePage() {
     setProgressoProcessamento(null);
 
     try {
-      const resposta = await salvarMesCarregadoAuditoria({
-        competencia,
-        onProgress: setProgressoProcessamento,
-      });
+      const resposta = salvarRecorte
+        ? await salvarRecorteCarregadoAuditoria({
+          competencia,
+          registros: registrosFiltro,
+          onProgress: setProgressoProcessamento,
+        })
+        : await salvarMesCarregadoAuditoria({
+          competencia,
+          onProgress: setProgressoProcessamento,
+        });
 
       const dados = resposta?.registros || [];
       setRegistros(dados);
@@ -908,6 +928,8 @@ export default function AuditoriaCtePage() {
         tabela: 'auditoria_cte_resultados',
         label: 'Auditoria salva / auditoria_cte_resultados',
       });
+      // O que foi salvo já é a base inteira agora — zera filtros pra não esconder.
+      limparFiltrosFoco();
 
       const resumo = await carregarResumoAuditoriaMensal();
       setResumoMensal(resumo || []);

@@ -570,6 +570,119 @@ export async function salvarMesCarregadoAuditoria({ competencia = '', onProgress
   };
 }
 
+// Mapeia um registro JÁ exibido na tela (com Verum/AMD/status do que está
+// carregado) para a linha da tabela auditoria_cte_resultados, PRESERVANDO os
+// cálculos atuais — ao contrário de montarLinhaResultadoAuditoria, que assume
+// base crua. Usado para salvar exatamente o recorte que o usuário vê.
+function montarLinhaResultadoDireto(row = {}, competencia = '') {
+  const valorCte = toNumber(row.valor_cte ?? row.valorCte);
+  const valorCalculado = toNumber(row.valor_calculado ?? row.valorCalculado);
+  const verumInformado = pick(row, ['valor_calculado_verum', 'valorCalculadoVerum']);
+  const valorCalculadoVerum = verumInformado !== '' ? toNumber(verumInformado) : valorCalculado;
+  const diferenca = row.diferenca !== undefined && row.diferenca !== null && String(row.diferenca).trim() !== ''
+    ? toNumber(row.diferenca)
+    : (valorCalculado > 0 ? valorCte - valorCalculado : 0);
+  const diferencaVerum = row.diferenca_verum !== undefined && row.diferenca_verum !== null && String(row.diferenca_verum).trim() !== ''
+    ? toNumber(row.diferenca_verum)
+    : (valorCalculadoVerum > 0 ? valorCte - valorCalculadoVerum : 0);
+  const status = row.status_calculo || (valorCalculado > 0 ? 'CALCULADO' : 'SEM_CALCULO');
+  const detalhe = row.detalhes_calculo ?? null;
+
+  return {
+    competencia: String(row.competencia || competencia || '').slice(0, 7),
+    data_emissao: pick(row, ['data_emissao', 'emissao', 'dataEmissao']) || null,
+    chave_cte: pick(row, ['chave_cte', 'chaveCte', 'chave']) || null,
+    numero_cte: pick(row, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || null,
+    transportadora: pick(row, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']) || null,
+    cnpj_transportadora: pick(row, ['cnpj_transportadora', 'cnpjTransportadora']) || null,
+    tomador_servico: pick(row, ['tomador_servico', 'tomadorServico', 'tomador']) || null,
+    cidade_origem: pick(row, ['cidade_origem', 'cidadeOrigem', 'origem']) || null,
+    uf_origem: String(pick(row, ['uf_origem', 'ufOrigem']) || '').toUpperCase() || null,
+    ibge_origem: pick(row, ['ibge_origem', 'ibgeOrigem']) || null,
+    cidade_destino: pick(row, ['cidade_destino', 'cidadeDestino', 'destino']) || null,
+    uf_destino: String(pick(row, ['uf_destino', 'ufDestino']) || '').toUpperCase() || null,
+    ibge_destino: pick(row, ['ibge_destino', 'ibgeDestino']) || null,
+    canal: pick(row, ['canal', 'canal_original', 'canais']) || null,
+    peso: toNumber(pick(row, ['peso', 'peso_final', 'pesoFinal'])),
+    peso_declarado: toNumber(pick(row, ['peso_declarado', 'pesoDeclarado', 'peso'])),
+    peso_cubado: toNumber(pick(row, ['peso_cubado', 'pesoCubado'])),
+    cubagem: toNumber(pick(row, ['cubagem', 'cubagem_total', 'cubagemTotal'])),
+    qtd_volumes: toNumber(pick(row, ['qtd_volumes', 'qtdVolumes', 'volumes'])),
+    valor_nf: toNumber(pick(row, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota'])),
+    valor_cte: valorCte,
+    valor_calculado: valorCalculado,
+    valor_calculado_verum: valorCalculadoVerum,
+    diferenca,
+    diferenca_verum: diferencaVerum,
+    diferenca_abs: Math.abs(diferenca),
+    percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+    status_calculo: status,
+    motivo_sem_calculo: row.motivo_sem_calculo || (valorCalculado > 0 ? '' : 'CT-e sem valor calculado.'),
+    transportadora_tabela: pick(row, ['transportadora_tabela', 'transportadora_contratada', 'transportadora']) || null,
+    tipo_calculo: pick(row, ['tipo_calculo', 'tipoCalculo']) || null,
+    detalhes_calculo: typeof detalhe === 'string' || (detalhe && typeof detalhe === 'object') ? detalhe : null,
+  };
+}
+
+// Salva EXATAMENTE o recorte exibido na tela (filtros/exclusões/resimulação já
+// aplicados pelo componente), substituindo o resultado e o resumo da competência.
+export async function salvarRecorteCarregadoAuditoria({ competencia = '', registros = [], onProgress } = {}) {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
+  }
+  if (!competencia || !/^\d{4}-\d{2}$/.test(competencia)) {
+    throw new Error('Informe a competência no formato YYYY-MM antes de salvar.');
+  }
+  if (!registros.length) {
+    throw new Error('Não há CT-es no recorte atual para salvar.');
+  }
+
+  const supabase = getSupabaseClient();
+  const linhasResultado = registros.map((row) => montarLinhaResultadoDireto(row, competencia));
+  const resumo = montarResumoMensalAuditoria(linhasResultado, competencia);
+
+  onProgress?.({ etapa: 'limpando_resultado_anterior', carregados: 0, total: linhasResultado.length });
+  const { error: deleteError } = await supabase
+    .from('auditoria_cte_resultados')
+    .delete()
+    .eq('competencia', competencia);
+  if (deleteError) {
+    throw new Error(`Erro ao limpar resultado anterior da auditoria: ${deleteError.message}`);
+  }
+
+  for (let index = 0; index < linhasResultado.length; index += INSERT_CHUNK_SIZE) {
+    const chunk = linhasResultado.slice(index, index + INSERT_CHUNK_SIZE);
+    const { error } = await supabase.from('auditoria_cte_resultados').insert(chunk);
+    if (error) {
+      throw new Error(`Erro ao salvar resultado detalhado da auditoria: ${error.message}`);
+    }
+    onProgress?.({
+      etapa: 'salvando_resultado_detalhado',
+      carregados: Math.min(index + INSERT_CHUNK_SIZE, linhasResultado.length),
+      total: linhasResultado.length,
+    });
+  }
+
+  const { error: resumoError } = await supabase
+    .from('auditoria_cte_resumo_mensal')
+    .upsert(resumo, { onConflict: 'competencia' });
+  if (resumoError) {
+    throw new Error(`Erro ao salvar resumo mensal da auditoria: ${resumoError.message}`);
+  }
+
+  onProgress?.({ etapa: 'concluido', carregados: linhasResultado.length, total: linhasResultado.length });
+
+  return {
+    registros: linhasResultado,
+    resumo,
+    fonte: {
+      id: 'auditoria_cte_resultados',
+      tabela: 'auditoria_cte_resultados',
+      label: 'Auditoria salva (recorte da tela) / auditoria_cte_resultados',
+    },
+  };
+}
+
 export function calcularMetricasAuditoria(registros = []) {
   let total = 0;
   let totalCalculados = 0;
