@@ -910,6 +910,20 @@ async function contarTemporariaCompetencia(supabase, competencia) {
   return count || 0;
 }
 
+// Contagem estimada (planner) — rápida e sem full scan. Usada só para a barra
+// de progresso; nunca lança (se falhar, devolve null e a barra fica sem total).
+async function contarTemporariaEstimado(supabase, competencia) {
+  try {
+    const { count } = await supabase
+      .from('realizado_ctes_import_tmp')
+      .select('id', { count: 'planned', head: true })
+      .eq('competencia', competencia);
+    return Number.isFinite(count) ? count : null;
+  } catch {
+    return null;
+  }
+}
+
 async function buscarChavesLocaisExistentes(supabase, competencia, chaves = []) {
   const existentes = new Set();
   const unicas = [...new Set(chaves.filter(Boolean))];
@@ -934,10 +948,12 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
   let totalPulados = 0;
   let totalLido = 0;
 
-  while (true) {
-    const restanteAntes = await contarTemporariaCompetencia(supabase, competencia);
-    if (restanteAntes <= 0) break;
+  // Contagem só estimada (planner) e uma vez — count exato em temporária grande
+  // estoura statement timeout. Serve apenas para o "restante" da barra.
+  const pendenteInicial = await contarTemporariaEstimado(supabase, competencia);
+  let primeiroIdAnterior = null;
 
+  while (true) {
     const { data: lote, error: erroLeitura } = await supabase
       .from('realizado_ctes_import_tmp')
       .select('*')
@@ -947,6 +963,15 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
 
     if (erroLeitura) throw new Error(`Erro ao ler temporária. Detalhe: ${erroLeitura.message}`);
     if (!lote?.length) break;
+
+    // Detecta travamento sem precisar contar: como lemos por id crescente e
+    // apagamos o que lemos, o primeiro id tem que avançar a cada volta. Se
+    // repetir, o delete não está removendo (permissão/erro) — aborta.
+    const primeiroId = lote[0]?.id ?? null;
+    if (primeiroIdAnterior !== null && String(primeiroId) === String(primeiroIdAnterior)) {
+      throw new Error('A temporária não avançou neste lote. Verifique permissões ou duplicidade na base oficial.');
+    }
+    primeiroIdAnterior = primeiroId;
 
     totalLido += lote.length;
     const existentes = await buscarChavesLocaisExistentes(
@@ -988,19 +1013,18 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
       }
     }
 
-    const restante = await contarTemporariaCompetencia(supabase, competencia);
+    // Restante aproximado: estimativa inicial menos o que já lemos (tudo que é
+    // lido é apagado da temporária). Evita um count exato por volta.
+    const restante = pendenteInicial != null ? Math.max(0, pendenteInicial - totalLido) : null;
+    const restanteTxt = restante != null ? `~${restante.toLocaleString('pt-BR')}` : 'processando';
     onProgress?.({
       etapa: 'processamento_lote',
-      mensagem: `Base oficial: ${totalInserido.toLocaleString('pt-BR')} inseridos, ${totalPulados.toLocaleString('pt-BR')} já existiam. Tracking: ${enriquecimento.vinculados.toLocaleString('pt-BR')} vinculados, ${enriquecimento.semTracking.toLocaleString('pt-BR')} sem vínculo. Restante na temporária: ${restante.toLocaleString('pt-BR')}.`,
+      mensagem: `Base oficial: ${totalInserido.toLocaleString('pt-BR')} inseridos, ${totalPulados.toLocaleString('pt-BR')} já existiam. Tracking: ${enriquecimento.vinculados.toLocaleString('pt-BR')} vinculados, ${enriquecimento.semTracking.toLocaleString('pt-BR')} sem vínculo. Restante na temporária: ${restanteTxt}.`,
       inseridos: totalInserido,
-      restante,
-      total: totalInserido + restante,
+      restante: restante ?? 0,
+      total: totalInserido + (restante ?? 0),
       modo: 'cliente',
     });
-
-    if (restante >= restanteAntes) {
-      throw new Error('A temporária não avançou neste lote. Verifique permissões ou duplicidade na base oficial.');
-    }
 
     await sleep(40);
   }
