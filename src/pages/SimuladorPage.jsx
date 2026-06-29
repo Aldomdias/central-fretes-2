@@ -30,6 +30,7 @@ import {
   labelTabelaNegociacaoSimulador,
 } from '../utils/tabelasNegociacaoSimuladorAdapter';
 import { LaudoNegociacaoTemplate } from '../components/laudos';
+import amdLogo from '../assets/amd-log.png';
 import { prepararLaudosNegociacao, salvarLaudosNegociacao } from '../services/laudosNegociacaoService';
 import { CANAL_A_DEFINIR, normalizarCanalOperacional } from '../utils/canalTransportadora';
 import {
@@ -4304,20 +4305,24 @@ export default function SimuladorPage({ transportadoras = [] }) {
   }, [destinoTransportadora, municipioPorIbge, municipioPorCidade, cidadePorIbgeCompleto]);
 
   const onSimularSimples = async () => {
+    iniciarProcessamentoUi('Simulação simples', 'Validando destino e buscando tabela no Supabase...', 12);
     const destinoResolvido = await resolverDestinoInput(destinoCodigo);
     const destinoFinal = destinoResolvido?.ibge || destinoCodigo;
 
     if (destinoCodigo && !destinoResolvido?.ibge) {
       setErroSimulacao('Não foi possível identificar o destino informado na base IBGE/CEP. Use cidade, IBGE ou CEP válido.');
+      finalizarProcessamentoUi('Destino não identificado', 'Revise o destino informado e tente novamente.', 100);
       return;
     }
 
+    atualizarProcessamentoUi('Carregando tabelas disponíveis para a rota...', 42);
     const baseOnline = await carregarBaseOnline({
       origem: origemSimples,
       canal: canalSimples,
       destinoCodigo: destinoFinal,
     });
 
+    atualizarProcessamentoUi('Calculando fretes e comparando transportadoras...', 82);
     const lookupOnline = buildLookupTables(baseOnline);
     const mapaCidades = new Map(cidadePorIbgeCompleto);
     (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
@@ -4335,6 +4340,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       cidadePorIbge: mapaCidades,
       gradeCanal: grade[canalSimples] || grade.ATACADO || [],
     }));
+    finalizarProcessamentoUi('Simulação concluída', 'Resultado da simulação simples carregado.', 100);
   };
   const onSimularTransportadora = async () => {
     const entradas = modoLista
@@ -5965,30 +5971,30 @@ export default function SimuladorPage({ transportadoras = [] }) {
         <div className="sim-alert info">Consultando o Supabase para esta simulação...</div>
       ) : null}
       {processamentoUi.ativo ? (
-        <div className="sim-alert info" style={{ display: 'grid', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ fontSize: 22, lineHeight: 1 }}>⏳</div>
-            <div style={{ flex: 1 }}>
+        <>
+          <div className="sim-processing-strip" aria-live="polite">
+            <div>
               <strong>{processamentoUi.titulo}</strong>
-              <div style={{ fontSize: 13, opacity: 0.9 }}>{processamentoUi.mensagem}</div>
+              <span>{processamentoUi.mensagem}</span>
             </div>
             <strong>{processamentoUi.percentual}%</strong>
           </div>
-          <div style={{ background: '#e7eefb', borderRadius: 999, height: 12, overflow: 'hidden' }}>
-            <div
-              style={{
-                width: `${Math.max(6, Math.min(processamentoUi.percentual, 100))}%`,
-                height: '100%',
-                borderRadius: 999,
-                background: 'linear-gradient(90deg, #04C7A4, #9153F0)',
-                transition: 'width 0.35s ease',
-              }}
-            />
+
+          <div className="brand-processing-overlay" role="status" aria-live="polite">
+            <div className="brand-processing-card">
+              <div className="brand-processing-logo-wrap">
+                <img src={amdLogo} alt="AMD LOG" />
+              </div>
+              <strong>{processamentoUi.titulo}</strong>
+              <span>{processamentoUi.mensagem}</span>
+              <div className="brand-processing-bar" aria-hidden="true">
+                <div style={{ width: `${Math.max(6, Math.min(processamentoUi.percentual, 100))}%` }} />
+              </div>
+              <em>{processamentoUi.percentual}%</em>
+              <small>Essa análise pode levar mais tempo quando houver muitas rotas, destinos e concorrentes.</small>
+            </div>
           </div>
-          <small>
-            Essa análise pode levar mais tempo quando houver muitas rotas, destinos e concorrentes no canal selecionado.
-          </small>
-        </div>
+        </>
       ) : null}
       {erroSimulacao ? (
         <div className="sim-alert error">{erroSimulacao}</div>

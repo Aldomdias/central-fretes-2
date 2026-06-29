@@ -299,6 +299,133 @@ button { cursor: pointer; }
   color: #ff8080;
 }
 
+.sim-processing-strip {
+  position: sticky;
+  top: 8px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border: 1px solid #d8e2f0;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 10px 28px rgba(7, 27, 73, 0.10);
+  backdrop-filter: blur(12px);
+}
+
+.sim-processing-strip div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.sim-processing-strip strong {
+  color: #071b49;
+  font-size: 13px;
+}
+
+.sim-processing-strip span {
+  color: #5c6c8c;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-processing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(7, 18, 40, 0.28);
+  backdrop-filter: blur(5px);
+}
+
+.brand-processing-card {
+  width: min(420px, calc(100vw - 36px));
+  padding: 30px;
+  border-radius: 22px;
+  border: 1px solid rgba(255,255,255,0.78);
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 24px 70px rgba(7, 27, 73, 0.26);
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.brand-processing-logo-wrap {
+  width: 174px;
+  min-height: 86px;
+  display: grid;
+  place-items: center;
+}
+
+.brand-processing-logo-wrap img {
+  width: 170px;
+  height: auto;
+  animation: brandProcessingPulse 1.8s ease-in-out infinite;
+}
+
+.brand-processing-card > strong {
+  margin-top: 2px;
+  color: #071b49;
+  font-size: 18px;
+}
+
+.brand-processing-card > span {
+  max-width: 340px;
+  color: #536381;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.brand-processing-bar {
+  width: 100%;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: #e7edf6;
+  overflow: hidden;
+}
+
+.brand-processing-bar div {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #06c6a3, #2367ed, #cc2020);
+  transition: width 0.35s ease;
+}
+
+.brand-processing-card em {
+  color: #071b49;
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.brand-processing-card small {
+  color: #71809b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+@keyframes brandProcessingPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.9;
+    filter: drop-shadow(0 8px 12px rgba(7, 27, 73, 0.10));
+  }
+  50% {
+    transform: scale(1.045);
+    opacity: 1;
+    filter: drop-shadow(0 14px 18px rgba(7, 27, 73, 0.18));
+  }
+}
+
 /* Layout concept: compact sidebar with hover expansion */
 .sidebar-app {
   width: 244px;
