@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   carregarDadosAuditoria,
   calcularMetricasAuditoria,
@@ -40,6 +40,25 @@ function fmtP(v, d = 1) {
 }
 
 const EXCLUIDAS_AUDITORIA_KEY = 'auditoria_cte_transportadoras_excluidas';
+const FILTROS_FOCO_KEY = 'auditoria_cte_filtros_foco_v1';
+
+// Carrega os filtros de foco salvos no navegador (volta vazio se não houver).
+function carregarFiltrosFocoSalvos() {
+  try {
+    const salvo = JSON.parse(localStorage.getItem(FILTROS_FOCO_KEY) || '{}');
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    return {
+      transps: arr(salvo.transps),
+      tomadores: arr(salvo.tomadores),
+      ufs: arr(salvo.ufs),
+      cidades: arr(salvo.cidades),
+      canais: arr(salvo.canais),
+      criterios: arr(salvo.criterios),
+    };
+  } catch {
+    return { transps: [], tomadores: [], ufs: [], cidades: [], canais: [], criterios: [] };
+  }
+}
 const LIMITE_MATCH_VERUM = 1; // diferença (R$) tolerada para considerar recálculo == Verum
 
 // Mesma normalização usada em agruparPorTransportadora, para casar a exclusão.
@@ -386,12 +405,13 @@ export default function AuditoriaCtePage() {
   // Filtros de foco: para identificar onde agir (ajuste de tabela) e, depois,
   // recalcular só o subconjunto. Combina transportadora + origem + critério de erro.
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
-  const [filtroTransps, setFiltroTransps] = useState([]);
-  const [filtroTomadores, setFiltroTomadores] = useState([]);
-  const [filtroUfs, setFiltroUfs] = useState([]);
-  const [filtroCidades, setFiltroCidades] = useState([]);
-  const [filtroCanais, setFiltroCanais] = useState([]);
-  const [filtroCriterios, setFiltroCriterios] = useState([]); // vazio = todos
+  const filtrosSalvos = useMemo(carregarFiltrosFocoSalvos, []);
+  const [filtroTransps, setFiltroTransps] = useState(filtrosSalvos.transps);
+  const [filtroTomadores, setFiltroTomadores] = useState(filtrosSalvos.tomadores);
+  const [filtroUfs, setFiltroUfs] = useState(filtrosSalvos.ufs);
+  const [filtroCidades, setFiltroCidades] = useState(filtrosSalvos.cidades);
+  const [filtroCanais, setFiltroCanais] = useState(filtrosSalvos.canais);
+  const [filtroCriterios, setFiltroCriterios] = useState(filtrosSalvos.criterios); // vazio = todos
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
   const [buscaCidadeFiltro, setBuscaCidadeFiltro] = useState('');
@@ -402,6 +422,20 @@ export default function AuditoriaCtePage() {
 
   // Detalhe por CT-e: índice da linha expandida (detalhe do cálculo).
   const [cteExpandido, setCteExpandido] = useState(null);
+
+  // Persiste os filtros de foco no navegador a cada mudança (igual às exclusões).
+  useEffect(() => {
+    try {
+      localStorage.setItem(FILTROS_FOCO_KEY, JSON.stringify({
+        transps: filtroTransps,
+        tomadores: filtroTomadores,
+        ufs: filtroUfs,
+        cidades: filtroCidades,
+        canais: filtroCanais,
+        criterios: filtroCriterios,
+      }));
+    } catch { /* ignora falha de storage */ }
+  }, [filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
 
   function toggleEmLista(setter) {
     return (valor) => setter((atuais) => (
