@@ -6111,11 +6111,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-form-grid sim-grid-6">
             <label>Transportadora
-              <input
-                list="transportadoras-canal-lista"
+              <ComboBuscavel
                 value={transportadora}
-                onChange={(e) => {
-                  const nome = e.target.value;
+                opcoes={transportadorasPorCanalTransportadora}
+                placeholder="Digite a transportadora"
+                onChange={(nome) => {
                   setTransportadora(nome);
                   setOrigemTransportadora('');
                   const primeiroCanal = opcoesOnline.canaisPorTransportadora?.[nome]?.[0] || canalTransportadora || canais[0] || '';
@@ -6123,11 +6123,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     setCanalTransportadora(primeiroCanal);
                   }
                 }}
-                placeholder="Digite a transportadora"
               />
-              <datalist id="transportadoras-canal-lista">
-                {transportadorasPorCanalTransportadora.map((item) => <option key={item} value={item} />)}
-              </datalist>
             </label>
             <label>Canal
               <select value={canalTransportadora} onChange={(e) => { setCanalTransportadora(e.target.value); setOrigemTransportadora(''); }}>{canais.map((item) => <option key={item}>{item}</option>)}</select>
@@ -8175,7 +8171,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-4" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
             <label>Canal<select value={canalCobertura} onChange={(e) => setCanalCobertura(e.target.value)}>{canais.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Origem<input list="origens-cobertura-lista" value={origemCobertura} onChange={(e) => setOrigemCobertura(e.target.value)} placeholder="Todas ou digite a origem" /><datalist id="origens-cobertura-lista">{todasOrigens.map((item) => <option key={item} value={item} />)}</datalist></label>
-            <label>Transportadora<input list="transportadoras-cobertura-lista" value={transportadoraCobertura} onChange={(e) => setTransportadoraCobertura(e.target.value)} placeholder="Todas ou digite a transportadora" /><datalist id="transportadoras-cobertura-lista">{transportadorasPorCanalCobertura.map((item) => <option key={item} value={item} />)}</datalist></label>
+            <label>Transportadora<ComboBuscavel value={transportadoraCobertura} opcoes={transportadorasPorCanalCobertura} placeholder="Todas ou digite a transportadora" onChange={(v) => setTransportadoraCobertura(v)} /></label>
             <label>UF destino<select value={ufCobertura} onChange={(e) => setUfCobertura(e.target.value)}>{UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}</select></label>
           </div>
           <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Analisando..." : "Analisar cobertura"}</button></div>
