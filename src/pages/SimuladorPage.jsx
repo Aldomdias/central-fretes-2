@@ -515,12 +515,29 @@ const GRADE_PADRAO = {
   ],
 };
 
+// Expande "AMBOS"/"TODOS" e combos ("ATACADO+B2C", "ATACADO E B2C") nos canais
+// concretos, para a transportadora aparecer tanto em ATACADO quanto em B2C.
+function expandirCanaisCadastro(canais = []) {
+  const out = new Set();
+  for (const c of canais) {
+    const up = String(c || '').toUpperCase().trim();
+    if (!up) continue;
+    if (up.includes('AMBOS') || up.includes('TODOS')) { out.add('ATACADO'); out.add('B2C'); continue; }
+    if (up.includes('+') || /\sE\s/.test(up)) {
+      up.split(/\+|\sE\s/).map((s) => s.trim()).filter(Boolean).forEach((s) => out.add(s));
+      continue;
+    }
+    out.add(up);
+  }
+  return [...out];
+}
+
 function canaisDaTransportadora(nome, opcoesOnline, transportadoras) {
   const online = opcoesOnline.canaisPorTransportadora?.[nome];
-  if (online?.length) return online;
+  if (online?.length) return expandirCanaisCadastro(online);
 
   const local = transportadoras.find((item) => item.nome === nome);
-  return [...new Set((local?.origens || []).map((origem) => origem.canal).filter(Boolean))].sort();
+  return [...new Set(expandirCanaisCadastro((local?.origens || []).map((origem) => origem.canal).filter(Boolean)))].sort();
 }
 
 function filtrarTransportadorasPorCanal(nomes = [], canal, opcoesOnline, transportadoras) {
@@ -4320,15 +4337,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
     if (online?.length) return online;
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
     if (!selecionada) return [];
-    return [...new Set((selecionada.origens || []).filter((item) => !canalTransportadora || item.canal === canalTransportadora).map((item) => item.cidade))].sort();
+    return [...new Set((selecionada.origens || []).filter((item) => canalOrigemAtende(item.canal, canalTransportadora)).map((item) => item.cidade))].sort();
   }, [transportadoras, transportadora, canalTransportadora, opcoesOnline.origensPorTransportadora]);
 
   const canaisTransportadora = useMemo(() => {
     const online = opcoesOnline.canaisPorTransportadora?.[transportadora];
-    if (online?.length) return online;
+    if (online?.length) return expandirCanaisCadastro(online);
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
     if (!selecionada) return canais;
-    return [...new Set((selecionada.origens || []).map((item) => item.canal).filter(Boolean))];
+    return expandirCanaisCadastro((selecionada.origens || []).map((item) => item.canal).filter(Boolean));
   }, [transportadoras, transportadora, canais, opcoesOnline.canaisPorTransportadora]);
 
   const identificarDestinoLocal = (valor) => {
