@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
@@ -34,6 +34,18 @@ const FILTROS_PADRAO = {
   transportadorasRealizadas: [],
   soComReducao: true,
 };
+
+// Transportadoras "sujeira" excluídas da análise. Fica salvo no navegador e
+// persiste entre pesquisas (não é apagado pelo "Limpar filtros").
+const EXCLUIDAS_OPORTUNIDADE_KEY = 'oportunidade_transp_excluidas_v1';
+function carregarExcluidasOportunidade() {
+  try {
+    const salvo = JSON.parse(localStorage.getItem(EXCLUIDAS_OPORTUNIDADE_KEY) || '[]');
+    return Array.isArray(salvo) ? salvo : [];
+  } catch {
+    return [];
+  }
+}
 
 function safeNum(v) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 function fmt(v) { return safeNum(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
@@ -374,7 +386,15 @@ export default function OportunidadeTransportadoraPage() {
   const [scenarioMode, setScenarioMode] = useState('substituta');
   const [metrica, setMetrica] = useState('rs');
   const [filtros, setFiltros] = useState(FILTROS_PADRAO);
+  const [excluidas, setExcluidas] = useState(carregarExcluidasOportunidade);
   const [expandido, setExpandido] = useState(null);
+
+  // Persiste a lista de transportadoras excluídas (sujeira) no navegador.
+  useEffect(() => {
+    try { localStorage.setItem(EXCLUIDAS_OPORTUNIDADE_KEY, JSON.stringify(excluidas)); } catch { /* ignora */ }
+  }, [excluidas]);
+
+  const excluidasSet = useMemo(() => new Set(excluidas.map((n) => norm(n))), [excluidas]);
 
   const setF = (k, v) => setFiltros((p) => ({ ...p, [k]: v }));
 
@@ -499,6 +519,7 @@ export default function OportunidadeTransportadoraPage() {
     // 1) filtra casos e monta candidatas por modo
     const grupos = new Map();
     for (const c of bruto.casos) {
+      if (excluidasSet.has(norm(c.transportadoraReal))) continue;
       if (!passaLista(c.regiao, filtros.regioes)) continue;
       if (!passaLista(c.ufOrigem, filtros.ufsOrigem)) continue;
       if (!passaLista(c.transportadoraReal, filtros.transportadorasRealizadas)) continue;
@@ -552,7 +573,7 @@ export default function OportunidadeTransportadoraPage() {
       reducaoPct: pagoTotal > 0 ? (reducaoTotal / pagoTotal) * 100 : 0,
       diagTotal: bruto.diagTotal,
     };
-  }, [bruto, filtros, candidateMode, scenarioMode, metrica]);
+  }, [bruto, filtros, excluidasSet, candidateMode, scenarioMode, metrica]);
 
   const filtrosAtivos = filtros.regioes.length || filtros.ufsOrigem.length || filtros.transportadorasRealizadas.length;
   const metricaLabel = METRICAS.find((m) => m.id === metrica)?.label || '';
@@ -639,6 +660,17 @@ export default function OportunidadeTransportadoraPage() {
               <MultiFiltro label="Região" opcoes={opcoes.regioes} selecionados={filtros.regioes} onChange={(v) => setF('regioes', v)} />
               <MultiFiltro label="UF origem" opcoes={opcoes.ufsOrigem} selecionados={filtros.ufsOrigem} onChange={(v) => setF('ufsOrigem', v)} />
               <MultiFiltro label="Transportadora realizada" opcoes={opcoes.transpReal} selecionados={filtros.transportadorasRealizadas} onChange={(v) => setF('transportadorasRealizadas', v)} />
+              <MultiFiltro
+                label={`Excluir transportadora (sujeira)${excluidas.length ? ` · ${excluidas.length} salva(s)` : ''}`}
+                opcoes={opcoes.transpReal}
+                selecionados={excluidas}
+                onChange={setExcluidas}
+              />
+              {excluidas.length ? (
+                <button type="button" className="sim-tab" onClick={() => setExcluidas([])} style={{ alignSelf: 'flex-end' }}>
+                  Limpar exclusões ({excluidas.length})
+                </button>
+              ) : null}
             </div>
           </section>
 
