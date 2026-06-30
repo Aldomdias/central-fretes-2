@@ -101,11 +101,23 @@ function canalCategoria(value) {
   return canal;
 }
 
-function canalCompativel(canalTabela, canalCte) {
-  const tabela = canalCategoria(canalTabela);
-  const cte = canalCategoria(canalCte);
+// Origem cadastrada como "AMBOS" (ou "ATACADO+B2C", "ATACADO E B2C") atende
+// qualquer canal — mesma regra do canalCompativelDb do cadastro.
+function canalAtendeTodos(canalTabela) {
+  const c = normalizeText(canalTabela);
+  if (!c) return false;
+  if (c.includes('AMBOS') || c.includes('TODOS')) return true;
+  const temAtacado = c.includes('ATACADO') || c.includes('B2B');
+  const temB2c = c.includes('B2C') || c.includes('MARKETPLACE') || c.includes('ECOMMERCE');
+  return temAtacado && temB2c;
+}
 
+function canalCompativel(canalTabela, canalCte) {
+  const cte = canalCategoria(canalCte);
   if (cte === 'A DEFINIR') return false;
+  if (canalAtendeTodos(canalTabela)) return true;
+
+  const tabela = canalCategoria(canalTabela);
   if (!cte) return true;
   if (!tabela) return true;
 
