@@ -1025,39 +1025,41 @@ async function fetchRotasByIbgePairs(supabase, pares = []) {
   const pairSet = new Set((pares || []).map((par) => par.pairKey).filter(Boolean));
   if (!pairSet.size) return [];
 
-  const origens = Array.from(new Set((pares || []).map((par) => par.ibgeOrigem).filter(Boolean)));
-  const destinos = Array.from(new Set((pares || []).map((par) => par.ibgeDestino).filter(Boolean)));
+  const paresUnicos = Array.from(
+    new Map((pares || [])
+      .filter((par) => par.ibgeOrigem && par.ibgeDestino && par.pairKey)
+      .map((par) => [par.pairKey, par]))
+      .values()
+  );
   const rowsById = new Map();
-  const origemChunkSize = 40;
-  const destinoChunkSize = 80;
+  const pairChunkSize = 40;
 
-  for (let oi = 0; oi < origens.length; oi += origemChunkSize) {
-    const origemChunk = origens.slice(oi, oi + origemChunkSize);
-    for (let di = 0; di < destinos.length; di += destinoChunkSize) {
-      const destinoChunk = destinos.slice(di, di + destinoChunkSize);
-      let from = 0;
+  for (let index = 0; index < paresUnicos.length; index += pairChunkSize) {
+    const chunk = paresUnicos.slice(index, index + pairChunkSize);
+    const filtro = chunk
+      .map((par) => `and(ibge_origem.eq.${par.ibgeOrigem},ibge_destino.eq.${par.ibgeDestino})`)
+      .join(',');
+    let from = 0;
 
-      while (true) {
-        const { data, error } = await supabase
-          .from('rotas')
-          .select('*')
-          .in('ibge_origem', origemChunk)
-          .in('ibge_destino', destinoChunk)
-          .range(from, from + PAGE_SIZE - 1);
+    while (true) {
+      const { data, error } = await supabase
+        .from('rotas')
+        .select('*')
+        .or(filtro)
+        .range(from, from + PAGE_SIZE - 1);
 
-        if (error) throw error;
+      if (error) throw error;
 
-        const page = data || [];
-        page.forEach((rota) => {
-          const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
-          const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
-          if (!pairSet.has(`${ibgeOrigem}-${ibgeDestino}`)) return;
-          rowsById.set(String(rota.id || `${rota.origem_id}-${ibgeOrigem}-${ibgeDestino}-${rota.nome_rota || ''}`), rota);
-        });
+      const page = data || [];
+      page.forEach((rota) => {
+        const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
+        const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
+        if (!pairSet.has(`${ibgeOrigem}-${ibgeDestino}`)) return;
+        rowsById.set(String(rota.id || `${rota.origem_id}-${ibgeOrigem}-${ibgeDestino}-${rota.nome_rota || ''}`), rota);
+      });
 
-        if (page.length < PAGE_SIZE) break;
-        from += PAGE_SIZE;
-      }
+      if (page.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
     }
   }
 

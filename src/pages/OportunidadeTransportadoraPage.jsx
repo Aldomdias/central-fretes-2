@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
-import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
+import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
 import { REGIAO_POR_UF } from '../config/icmsBrasil';
 import amdLogo from '../assets/amd-log.png';
@@ -136,6 +136,20 @@ function ibgeDoCte(cte, tipo, municipioPorCidade, mapasIbge) {
   if (viaPlanilha) return viaPlanilha;
   return resolverIbgeLocal(cidade, uf, mapasIbge) || '';
 }
+function montarRouteKeysCtes(ctes = [], municipioPorCidade, mapasIbge, canalFiltro = '') {
+  const keys = new Set();
+  for (const cte of ctes || []) {
+    const ibgeOrigem = ibgeDoCte(cte, 'origem', municipioPorCidade, mapasIbge);
+    const ibgeDestino = ibgeDoCte(cte, 'destino', municipioPorCidade, mapasIbge);
+    if (!ibgeOrigem || !ibgeDestino) continue;
+    const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
+    const canalCte = categoriaCanalRealizado(canalRealDe(cte));
+    if (canalCte) keys.add(`${canalCte}|${pairKey}`);
+    if (canalFiltro) keys.add(`${categoriaCanalRealizado(canalFiltro) || canalFiltro}|${pairKey}`);
+    if (!canalCte && !canalFiltro) keys.add(pairKey);
+  }
+  return Array.from(keys);
+}
 // normalizeCompare do motor (minúsculo, sem acento, espaços) — p/ casar cidade igual a ele.
 function normCmp(v) {
   return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim().toLowerCase();
@@ -183,6 +197,42 @@ function nomesPorOrigem(idx, ibgeOrigem7, cidadeCteNorm, cache) {
   cache.set(key, set);
   return set;
 }
+function cotacaoDaRota(cotacao = {}, nomesRotas = new Set()) {
+  if (!nomesRotas.size) return true;
+  const rotaCotacao = normCmp(cotacao.rota || cotacao.nomeRota || cotacao.nome_rota);
+  if (!rotaCotacao) return true;
+  for (const rotaNome of nomesRotas) {
+    if (rotaCotacao === rotaNome || rotaCotacao.includes(rotaNome) || rotaNome.includes(rotaCotacao)) return true;
+  }
+  return false;
+}
+function limitarTransportadoraParaCte(transp, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal) {
+  const origemKey = dig7(ibgeOrigemReal);
+  const destinoKey = dig7(ibgeDestino);
+  const origemCmp = normCmp(cidadeOrigemReal);
+  const origens = [];
+
+  for (const origem of transp.origens || []) {
+    const rotas = (origem.rotas || []).filter((rota) => {
+      const rotaOrigem = dig7(rota.ibgeOrigem || rota.ibge_origem);
+      const rotaDestino = dig7(rota.ibgeDestino || rota.ibge_destino);
+      const origemOk = rotaOrigem ? rotaOrigem === origemKey : cidadeBate(normCmp(origem.cidade), origemCmp);
+      const destinoOk = rotaDestino ? rotaDestino === destinoKey : true;
+      return origemOk && destinoOk;
+    });
+    if (!rotas.length) continue;
+
+    const nomesRotas = new Set(rotas.map((rota) => normCmp(rota.nomeRota || rota.nome_rota || rota.rota)).filter(Boolean));
+    origens.push({
+      ...origem,
+      rotas,
+      cotacoes: (origem.cotacoes || []).filter((cotacao) => cotacaoDaRota(cotacao, nomesRotas)),
+      taxasEspeciais: (origem.taxasEspeciais || []).filter((taxa) => !dig7(taxa.ibgeDestino || taxa.ibge_destino) || dig7(taxa.ibgeDestino || taxa.ibge_destino) === destinoKey),
+    });
+  }
+
+  return { ...transp, origens };
+}
 
 // Carrega CT-es do realizado respeitando recorte (igual à Oportunidade de Origem).
 const LIMITE_MAX_CT = 200000; // trava de segurança para evitar simulações longas demais no browser
@@ -227,7 +277,7 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
 // Recalcula o MESMO CT-e (mesma origem real, mesmo destino) com TODAS as
 // transportadoras. Mantém só as cotações em que o motor usou de fato a origem
 // real (descarta fallback p/ outra origem do cadastro).
-function simularTodas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal) {
+function simularTodas(cte, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal) {
   const canalReal = canalRealDe(cte);
   const cteBase = {
     ...cte,
@@ -242,9 +292,10 @@ function simularTodas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidade
   const resultados = [];
   const statusCounts = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, ORIGEM_ERRADA: 0, OUTRO: 0 };
   for (const transp of candidatas) {
-    const teste = { ...cteBase, transportadora: transp.nome, nome_transportadora: transp.nome };
+    const transpRecorte = limitarTransportadoraParaCte(transp, ibgeOrigemReal, ibgeDestino, cidadeOrigemReal);
+    const teste = { ...cteBase, transportadora: transpRecorte.nome, nome_transportadora: transpRecorte.nome };
     let r;
-    try { r = processarCte(teste, base); } catch { statusCounts.OUTRO += 1; continue; }
+    try { r = processarCte(teste, [transpRecorte]); } catch { statusCounts.OUTRO += 1; continue; }
     const st = r.status_calculo || 'OUTRO';
     statusCounts[st in statusCounts ? st : 'OUTRO'] += 1;
     if (st !== 'CALCULADO') continue;
@@ -458,22 +509,14 @@ export default function OportunidadeTransportadoraPage() {
       percentual: 8,
     });
     try {
-      setProgresso('Carregando tabelas de frete...');
-      setProcessamentoUi((p) => ({ ...p, mensagem: 'Carregando tabelas de frete cadastradas...', percentual: 14 }));
-      const base = normalizarTransportadoras(await carregarBaseCompletaDb());
-      if (!base.length) throw new Error('Nenhuma tabela de frete cadastrada.');
-      const idx = indexarBase(base);
-      const mapBaseByNome = new Map(base.map((t) => [t.nome, t]));
-      const origemCache = new Map();
-
       setProgresso('Carregando planilha de IBGE...');
-      setProcessamentoUi((p) => ({ ...p, mensagem: 'Carregando base de municipios e codigos IBGE...', percentual: 24 }));
+      setProcessamentoUi((p) => ({ ...p, mensagem: 'Carregando base de municipios e codigos IBGE...', percentual: 14 }));
       const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
       const mapasIbge = montarMapasIbge(municipios);
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
 
       setProgresso('Carregando CT-es...');
-      setProcessamentoUi((p) => ({ ...p, mensagem: 'Buscando CT-es realizados para o recorte selecionado...', percentual: 34 }));
+      setProcessamentoUi((p) => ({ ...p, mensagem: 'Buscando CT-es realizados para o recorte selecionado...', percentual: 24 }));
       const ctes = await carregarCtes({
         competencia,
         dataInicio: dataInicio || undefined,
@@ -485,11 +528,26 @@ export default function OportunidadeTransportadoraPage() {
           setProcessamentoUi((p) => ({
             ...p,
             mensagem: `Buscando CT-es realizados... ${fmtN(carregados)} carregados`,
-            percentual: Math.min(55, 34 + Math.floor(carregados / 500)),
+            percentual: Math.min(45, 24 + Math.floor(carregados / 500)),
           }));
         },
       });
       if (!ctes.length) throw new Error(MSG_SEM_CTES);
+
+      const routeKeys = montarRouteKeysCtes(ctes, municipioPorCidade, mapasIbge, canal || '');
+      if (!routeKeys.length) throw new Error('CT-es encontrados, mas sem IBGE de origem e destino para buscar as tabelas.');
+
+      setProgresso(`Carregando tabelas de frete para ${fmtN(routeKeys.length)} rota(s)...`);
+      setProcessamentoUi((p) => ({
+        ...p,
+        mensagem: `Carregando tabelas de frete para ${fmtN(routeKeys.length)} rota(s) do recorte...`,
+        percentual: 48,
+      }));
+      const base = normalizarTransportadoras(await buscarBaseSimulacaoPorRotasDb({ routeKeys, canal: canal || '' }));
+      if (!base.length) throw new Error('CT-es encontrados, mas nenhuma tabela de frete foi localizada para as rotas do recorte.');
+      const idx = indexarBase(base);
+      const mapBaseByNome = new Map(base.map((t) => [t.nome, t]));
+      const origemCache = new Map();
 
       const casos = [];
       const carriersByOrigin = new Map();
@@ -533,7 +591,7 @@ export default function OportunidadeTransportadoraPage() {
           const setDestino = idx.porDestinoIbge.get(dig7(ibgeDestino));
           const candidatas = [];
           if (setDestino) for (const nome of setOrigem) if (setDestino.has(nome)) { const t = mapBaseByNome.get(nome); if (t) candidatas.push(t); }
-          const { resultados, statusCounts } = simularTodas(cte, base, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem);
+          const { resultados, statusCounts } = simularTodas(cte, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem);
           for (const [k, v] of Object.entries(statusCounts)) diagTotal[k] = (diagTotal[k] || 0) + v;
           custos = resultados;
         }
