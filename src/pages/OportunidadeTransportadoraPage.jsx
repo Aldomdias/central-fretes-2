@@ -308,9 +308,10 @@ function simularTodas(cte, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem
     }
     const total = safeNum(r.valor_calculado);
     if (total <= 0) continue;
-    // temDestinoEspecifico: true quando o motor achou rota pelo IBGE destino (não só cidade genérica)
     const temDestinoEspecifico = !!(r.detalhes_calculo?.ibge_destino || r.detalhes_calculo?.rota_ibge_destino);
-    resultados.push({ transportadora: transp.nome, total, prazo: safeNum(r.detalhes_calculo?.rota_prazo), temDestinoEspecifico });
+    // semGeneralidades: carrier calculou sem nenhuma taxa adicional (sem "generalidades" na tabela)
+    const temTaxas = (transpRecorte.origens || []).some((o) => (o.taxasEspeciais || []).length > 0);
+    resultados.push({ transportadora: transp.nome, total, prazo: safeNum(r.detalhes_calculo?.rota_prazo), temDestinoEspecifico, temTaxas });
   }
   resultados.sort((a, b) => a.total - b.total);
   return { resultados, statusCounts };
@@ -334,34 +335,42 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
   for (const c of casos) for (const q of c.candidatos) if (!ehPropria(q.transportadora)) carriersUnion.add(q.transportadora);
   const ranking = [];
   for (const nome of carriersUnion) {
-    let total = 0, cobertos = 0, prazoSoma = 0, prazoN = 0, semEspecifico = 0;
+    let total = 0, cobertos = 0, prazoSoma = 0, prazoN = 0, semEspecifico = 0, semTaxas = 0;
     for (const c of casos) {
       const q = c.candMap.get(nome);
       if (q && q.total > 0) {
         total += q.total; cobertos += 1;
         if (q.prazo > 0) { prazoSoma += q.prazo; prazoN += 1; }
         if (!q.temDestinoEspecifico) semEspecifico += 1;
+        if (!q.temTaxas) semTaxas += 1;
       } else { total += c.valorPago; if (c.prazoReal > 0) { prazoSoma += c.prazoReal; prazoN += 1; } }
     }
-    // semGranularidade: todos os CT-es cobertos calculados sem rota específica por destino
-    ranking.push({ transportadora: nome, total, cobertos, prazoMedio: prazoN > 0 ? prazoSoma / prazoN : null, semGranularidade: cobertos > 0 && semEspecifico === cobertos });
+    ranking.push({
+      transportadora: nome, total, cobertos,
+      prazoMedio: prazoN > 0 ? prazoSoma / prazoN : null,
+      semGranularidade: cobertos > 0 && semEspecifico === cobertos,
+      semGeneralidades: cobertos > 0 && semTaxas === cobertos,
+    });
   }
   ranking.sort((a, b) => a.total - b.total);
 
   // Cobertura combinada (greedy CT-e a CT-e): quem cobre o quê quando usamos a mais barata para cada entrega
   const chainMap = new Map(); // transportadora -> { ctes, custo, prazoSoma, prazoN, nfSoma }
   let chainSemAtendimento = 0, chainCustoSemAtend = 0, chainNfSemAtend = 0;
+  let chainPrazoSomaGlobal = 0, chainPrazoNGlobal = 0; // prazo ponderado de toda a cadeia
   for (const c of casos) {
     const best = c.candidatos.find((q) => !ehPropria(q.transportadora));
     if (best && best.total > 0) {
       const e = chainMap.get(best.transportadora) || { ctes: 0, custo: 0, prazoSoma: 0, prazoN: 0, nfSoma: 0 };
       e.ctes += 1; e.custo += best.total; e.nfSoma += c.valorNf;
-      if (best.prazo > 0) { e.prazoSoma += best.prazo; e.prazoN += 1; }
+      if (best.prazo > 0) { e.prazoSoma += best.prazo; e.prazoN += 1; chainPrazoSomaGlobal += best.prazo; chainPrazoNGlobal += 1; }
       chainMap.set(best.transportadora, e);
     } else {
       chainSemAtendimento += 1;
       chainCustoSemAtend += c.valorPago;
       chainNfSemAtend += c.valorNf;
+      // sem candidata: usa o prazo real do CT-e na média global
+      if (c.prazoReal > 0) { chainPrazoSomaGlobal += c.prazoReal; chainPrazoNGlobal += 1; }
     }
   }
   const coverageChain = [...chainMap.entries()]
@@ -369,6 +378,7 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
     .sort((a, b) => b.ctes - a.ctes);
   const chainCustoTotal = coverageChain.reduce((s, e) => s + e.custo, 0) + chainCustoSemAtend;
   const chainNfTotal = coverageChain.reduce((s, e) => s + e.nfSoma, 0) + chainNfSemAtend;
+  const chainPrazoMedio = chainPrazoNGlobal > 0 ? chainPrazoSomaGlobal / chainPrazoNGlobal : null;
 
   let melhorTotal = pagoTotal, substituta = null, cobertura = 0, prazoMelhorSoma = 0, prazoMelhorN = 0;
 
@@ -422,6 +432,7 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
     coverageChain,
     chainSemAtendimento,
     chainCustoTotal,
+    chainPrazoMedio,
     chainNfPct: chainNfTotal > 0 ? (chainCustoTotal / chainNfTotal) * 100 : null,
   };
 }
@@ -758,6 +769,7 @@ export default function OportunidadeTransportadoraPage() {
   const [filtros, setFiltros] = useState(FILTROS_PADRAO);
   const [excluidas, setExcluidas] = useState(carregarExcluidasOportunidade);
   const [expandido, setExpandido] = useState(null);
+  const [buscaVinculo, setBuscaVinculo] = useState('');
 
   // Persiste a lista de transportadoras excluídas (sujeira) no navegador.
   useEffect(() => {
@@ -892,7 +904,8 @@ export default function OportunidadeTransportadoraPage() {
       }
 
       setProcessamentoUi((p) => ({ ...p, mensagem: 'Montando resultado por transportadora e origem...', percentual: 100 }));
-      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal });
+      const baseNomes = base.map((t) => t.nome).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes });
       setStatus('concluido'); setProgresso(''); setProcessamentoUi({ titulo: '', mensagem: '', percentual: 0 });
     } catch (e) {
       console.error('[OportunidadeTransportadora]', e);
@@ -1249,7 +1262,10 @@ export default function OportunidadeTransportadoraPage() {
                                             <td style={{ padding: '3px 8px', color: '#4E008F' }}>TOTAL combinado</td>
                                             <td style={{ padding: '3px 8px', textAlign: 'center', color: '#4E008F' }}>{l.ctes - l.chainSemAtendimento}/{l.ctes} cobertos</td>
                                             <td style={{ padding: '3px 8px', textAlign: 'right', color: '#4E008F' }}>{fmt(l.chainCustoTotal)}</td>
-                                            <td style={{ padding: '3px 8px', textAlign: 'center', color: '#4E008F' }}>{l.chainNfPct != null ? pct(l.chainNfPct) + ' NF' : '—'}</td>
+                                            <td style={{ padding: '3px 8px', textAlign: 'center', color: '#4E008F' }}>
+                                              {l.chainNfPct != null ? pct(l.chainNfPct) + ' NF' : '—'}
+                                              {l.chainPrazoMedio != null && <span style={{ marginLeft: 8, fontWeight: 400, color: '#6d28d9' }}>· {l.chainPrazoMedio.toFixed(1)}d (prazo médio pond.)</span>}
+                                            </td>
                                           </tr>
                                         </tbody>
                                       </table>
@@ -1293,9 +1309,10 @@ export default function OportunidadeTransportadoraPage() {
                                             <td style={{ padding: '2px 8px', textAlign: 'right', color: dif > 0 ? '#04C7A4' : '#9b1111' }}>{dif > 0 ? `−${fmt(dif)}` : `+${fmt(-dif)}`}</td>
                                             <td style={{ padding: '2px 8px', textAlign: 'center', color: coberturaOk ? '#047857' : '#9a3412', fontWeight: coberturaOk ? 400 : 700 }}>{fmtN(r.cobertos)}/{fmtN(l.ctes)}</td>
                                             <td style={{ padding: '2px 8px', textAlign: 'center', color: '#64748b' }}>{r.prazoMedio != null ? `${r.prazoMedio.toFixed(1)}d` : '—'}</td>
-                                            <td style={{ padding: '2px 8px' }}>
-                                              {r.semGranularidade && <span title="Cálculo sem rota específica por destino — pode não refletir o preço real" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 3, padding: '1px 5px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help' }}>⚠ SEM ROTA ESPECÍFICA</span>}
-                                              {!coberturaOk && !r.semGranularidade && <span style={{ color: '#94a3b8', fontSize: '0.68rem' }}>cobre parcial</span>}
+                                            <td style={{ padding: '2px 8px', display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                                              {r.semGranularidade && <span title="Calculado sem rota específica por IBGE de destino — preço pode não ser real" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 3, padding: '1px 5px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help' }}>⚠ SEM ROTA IBGE</span>}
+                                              {r.semGeneralidades && <span title="Tabela sem taxas adicionais (generalidades) — verificar se está completa" style={{ background: '#fce7f3', color: '#9d174d', borderRadius: 3, padding: '1px 5px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help' }}>⚠ SEM GENERALIDADES</span>}
+                                              {!coberturaOk && !r.semGranularidade && !r.semGeneralidades && <span style={{ color: '#94a3b8', fontSize: '0.68rem' }}>cobre parcial</span>}
                                             </td>
                                           </tr>
                                         );
@@ -1304,8 +1321,46 @@ export default function OportunidadeTransportadoraPage() {
                                     </tbody>
                                   </table>
                                   <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: 6 }}>
-                                    ⚠ SEM ROTA ESPECÍFICA = transportadora calculada sem taxa por destino (tarifa geral) — verificar tabela antes de negociar.
+                                    ⚠ SEM ROTA IBGE = calculado sem código IBGE de destino (tarifa geral) · ⚠ SEM GENERALIDADES = tabela sem taxas adicionais, verificar se está completa.
                                   </div>
+
+                                  {/* Painel de vínculo — busca transportadora no cadastro de tabelas */}
+                                  <div style={{ marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 10 }}>
+                                    <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#334155', marginBottom: 6 }}>
+                                      Buscar transportadora no cadastro de tabelas
+                                      <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 8 }}>— útil quando a transportadora do CT-e não aparece nas candidatas</span>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                                      <input
+                                        type="text"
+                                        placeholder={`Buscar (ex: ${l.transportadoraReal.split(' ')[0]})`}
+                                        value={expandido === l.key ? buscaVinculo : ''}
+                                        onChange={(e) => setBuscaVinculo(e.target.value)}
+                                        style={{ padding: '5px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.8rem', width: 260 }}
+                                      />
+                                      {buscaVinculo && (
+                                        <button type="button" onClick={() => setBuscaVinculo('')} style={{ border: 'none', background: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '0.8rem' }}>✕ limpar</button>
+                                      )}
+                                    </div>
+                                    {buscaVinculo.length >= 2 && (() => {
+                                      const bNorm = norm(buscaVinculo);
+                                      const matches = (bruto?.baseNomes || []).filter((n) => norm(n).includes(bNorm) || bNorm.includes(norm(n).slice(0, 4)));
+                                      return matches.length > 0 ? (
+                                        <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                          {matches.slice(0, 20).map((n) => {
+                                            const jaCandidato = l.ranking.some((r) => mesmaTransportadora(r.transportadora, n));
+                                            return (
+                                              <span key={n} title={jaCandidato ? 'Já aparece como candidata' : 'Encontrada no cadastro — verifique o nome da tabela'} style={{ background: jaCandidato ? '#dcfce7' : '#f1f5f9', color: jaCandidato ? '#166534' : '#334155', border: `1px solid ${jaCandidato ? '#86efac' : '#cbd5e1'}`, borderRadius: 4, padding: '2px 8px', fontSize: '0.75rem', cursor: 'default' }}>
+                                                {jaCandidato ? '✓ ' : ''}{n}
+                                              </span>
+                                            );
+                                          })}
+                                          {matches.length > 20 && <span style={{ fontSize: '0.72rem', color: '#94a3b8' }}>+{matches.length - 20} mais — refine a busca</span>}
+                                        </div>
+                                      ) : (
+                                        <div style={{ marginTop: 6, fontSize: '0.78rem', color: '#9a3412' }}>Nenhuma transportadora com "{buscaVinculo}" no cadastro de tabelas. Pode ser necessário importar a tabela.</div>
+                                      );
+                                    })()}</div>
                                 </td>
                               </tr>
                             )}
