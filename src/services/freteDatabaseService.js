@@ -1320,8 +1320,8 @@ export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = ''
     const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
     const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
     const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
-    const canalKey = `${categoriaCanalDb(origemRow.canal)}|${pairKey}`;
-    return keySet.has(canalKey) || keySet.has(pairKey);
+    const canaisOrigem = expandirCanalCadastroDb(origemRow.canal).map(categoriaCanalDb).filter(Boolean);
+    return keySet.has(pairKey) || canaisOrigem.some((canalOrigem) => keySet.has(`${canalOrigem}|${pairKey}`));
   });
 
   const origemIdsComRota = Array.from(new Set(rotas.map((item) => item.origem_id).filter(Boolean)));
@@ -1532,22 +1532,14 @@ function expandirCanalCadastroDb(canalBruto) {
 function canalCompativelDb(canalBase = '', canalFiltro = '') {
   const filtro = normalizarCanalDb(canalFiltro);
   if (!filtro) return true;
-  // Filtrar POR "AMBOS"/"TODOS" aceita qualquer canal cadastrado (simétrico ao
-  // base AMBOS) — evita o caso de ninguém casar quando o filtro é AMBOS.
   if (filtro === 'AMBOS' || filtro === 'TODOS') return true;
+
   const base = normalizarCanalDb(canalBase);
   if (!base) return false;
-  // Canal AMBOS ou múltiplos canais separados por + atendem qualquer canal
-  if (base === 'AMBOS') return true;
-  if (base === filtro) return true;
-  // Verifica se filtro está entre os canais da origem (ex: "ATACADO+B2C")
-  const canaisBase = base.split('+').map(c => c.trim()).filter(Boolean);
-  if (canaisBase.length > 1) {
-    return canaisBase.some(c => {
-      if (c === filtro) return true;
-      return categoriaCanalDb(c) === categoriaCanalDb(filtro);
-    });
-  }
+
+  const canaisBase = expandirCanalCadastroDb(base);
+  if (canaisBase.some((canal) => canal === filtro)) return true;
+
   const categoriaBase = categoriaCanalDb(base);
   const categoriaFiltro = categoriaCanalDb(filtro);
   return Boolean(categoriaBase && categoriaFiltro && categoriaBase === categoriaFiltro);

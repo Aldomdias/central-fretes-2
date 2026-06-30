@@ -874,10 +874,11 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
           return;
         }
         const chaveRota = `${ibgeOrigem}-${ibgeDestino}`;
-        const chaveCompleta = `${canal}|${chaveRota}`;
-        routeKeys.add(chaveCompleta);
+        canaisOrigem.forEach((canal) => {
+          routeKeys.add(`${canal}|${chaveRota}`);
+          canais.add(canal);
+        });
         rotaIbgeKeys.add(chaveRota);
-        canais.add(canal);
         origens.add(`${origem.cidade || ''}`.trim() || ibgeOrigem);
         destinos.add(String(rota.nomeRota || rota.cidadeDestino || ibgeDestino).trim() || ibgeDestino);
       });

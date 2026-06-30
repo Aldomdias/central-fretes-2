@@ -49,3 +49,26 @@ test('escopo da transportadora simulada usa o mesmo fallback de IBGE da origem',
   assert.equal(escopo.rotasSemIbge, 0);
   assert.equal(escopo.routeKeys.has('ATACADO|4208203-3550308'), true);
 });
+
+test('escopo da transportadora simulada expande origem AMBOS para B2C e ATACADO', () => {
+  const escopo = construirEscopoTransportadoraSimulada({
+    transportadoras: [
+      {
+        nome: 'Ambos Transportes',
+        origens: [
+          {
+            cidade: 'Itajai',
+            canal: 'AMBOS',
+            rotas: [{ nomeRota: 'Sao Paulo', ibgeDestino: '3550308' }],
+          },
+        ],
+      },
+    ],
+    nomeTransportadora: 'Ambos Transportes',
+    municipios: MUNICIPIOS,
+  });
+
+  assert.equal(escopo.routeKeys.has('ATACADO|4208203-3550308'), true);
+  assert.equal(escopo.routeKeys.has('B2C|4208203-3550308'), true);
+  assert.deepEqual(escopo.canais, ['ATACADO', 'B2C']);
+});
