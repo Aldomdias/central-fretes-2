@@ -3305,6 +3305,25 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [baseRealizadoTracking, setBaseRealizadoTracking] = useState('com_tracking'); // 'com_tracking' | 'todos'
   const [baseOficialRealizadoSelecionada, setBaseOficialRealizadoSelecionada] = useState([]);
   const [carregandoBaseOficialRealizado, setCarregandoBaseOficialRealizado] = useState(false);
+
+  // Ao abrir o simulador, carrega TODAS as negociações disponíveis pra simular
+  // (sem filtro de canal) para que apareçam como concorrentes "(negociação)" em
+  // todas as abas (simples, por transportadora, análise). Silencioso; o Realizado
+  // continua re-hidratando por canal quando precisa.
+  useEffect(() => {
+    let ativo = true;
+    (async () => {
+      try {
+        const completas = await buscarTabelasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO' });
+        if (!ativo || !completas?.length) return;
+        completas.forEach((tabela) => negociacoesHidratadasRef.current.add(tabela.id));
+        capasNegociacaoCarregadasRef.current = true;
+        setNegociacoesSimulador((prev) => (prev && prev.length ? prev : completas));
+        setNegociacoesAtualizadasEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      } catch { /* silencioso — não bloqueia o simulador */ }
+    })();
+    return () => { ativo = false; };
+  }, []);
   const [opcoesAvancadasRealizadoAberto, setOpcoesAvancadasRealizadoAberto] = useState(false);
   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);
   const [erroOpcoes, setErroOpcoes] = useState('');
@@ -4419,8 +4438,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       mapaCidades.set(destinoResolvido.ibge, destinoResolvido.uf ? `${destinoResolvido.cidade}/${destinoResolvido.uf}` : destinoResolvido.cidade);
     }
 
+    // Inclui as negociações disponíveis pra simular como concorrentes "(negociação)".
+    const baseSimplesComNegoc = [
+      ...baseOnline,
+      ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalSimples }),
+    ];
     setResultadoSimples(simularSimples({
-      transportadoras: baseOnline,
+      transportadoras: baseSimplesComNegoc,
       origem: origemSimples,
       canal: canalSimples,
       peso: Number(pesoSimples || 0),
@@ -4472,8 +4496,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     atualizarProcessamentoUi('Calculando cenário competitivo...', 88);
 
+    // Inclui as negociações disponíveis pra simular como concorrentes "(negociação)".
+    const baseTranspComNegoc = [
+      ...baseOnline,
+      ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalTransportadora }),
+    ];
     setResultadoTransportadora(simularPorTransportadora({
-      transportadoras: baseOnline,
+      transportadoras: baseTranspComNegoc,
       nomeTransportadora: transportadora,
       canal: canalTransportadora,
       origem: origemTransportadora,
@@ -4548,7 +4577,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
       await new Promise((resolve) => setTimeout(resolve, 80));
 
       const resultado = analisarTransportadoraPorGrade({
-        transportadoras: baseOnline,
+        transportadoras: [
+          ...baseOnline,
+          ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalAnalise }),
+        ],
         nomeTransportadora: transportadoraAnalise,
         canal: canalAnalise,
         origem: origemAnalise,
@@ -5915,7 +5947,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       atualizarProcessamentoUi('Calculando ranking, cobertura e rotas críticas...', 62);
       const resultadoTabela = analisarOrigemPorGrade({
-        transportadoras: baseOnline,
+        transportadoras: [
+          ...baseOnline,
+          ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalOrigem }),
+        ],
         canal: canalOrigem,
         origem: origemOrigem,
         ufDestino: ufDestinoOrigem,
