@@ -392,6 +392,144 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
   };
 }
 
+function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal }) {
+  const periodoDesc = dataInicio || dataFim ? `${dataInicio || '?'} a ${dataFim || '?'}` : competencia || 'Todos os períodos';
+  const cenarioDesc = scenarioMode === 'cteacte' ? 'Menor preço CT-e a CT-e' : 'Uma transportadora substituta';
+  const linhasTodas = resultado.regioes.flatMap((r) => r.linhas);
+  const semSubstituta = linhasTodas.filter((l) => !l.substituta);
+  const cobParcial = linhasTodas.filter((l) => l.substituta && l.cobertura < l.ctes);
+
+  const corPurple = '#4E008F';
+  const corVerde = '#047857';
+  const corVermelho = '#9b1111';
+  const corCinza = '#64748b';
+
+  const linhasHtml = resultado.regioes.map((reg) => {
+    const subTotal = `
+      <tr>
+        <td colspan="2" style="background:#ede9fe;padding:6px 10px;font-weight:800;color:${corPurple};letter-spacing:0.04em;font-size:11px">${reg.regiao}</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corCinza};font-size:11px">${fmt(reg.pagoTotal)}</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corVerde};font-size:11px">${fmt(reg.melhorTotal)}</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corVermelho};font-size:11px">${fmt(reg.reducaoRs)}</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:center;font-weight:700;color:${corVermelho};font-size:11px">${pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>
+        <td colspan="3" style="background:#ede9fe;padding:6px 10px;color:${corCinza};font-size:10px">${reg.linhas.length} linhas</td>
+      </tr>`;
+    const detalhes = reg.linhas.map((l) => {
+      const semSub = !l.substituta;
+      const parcial = l.substituta && l.cobertura < l.ctes;
+      const bgRow = semSub ? '#fff7ed' : parcial ? '#fefce8' : '#ffffff';
+      const alertaBadge = semSub
+        ? `<span style="background:#fed7aa;color:#9a3412;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px">SEM SUBSTITUTA</span>`
+        : parcial
+          ? `<span style="background:#fef08a;color:#854d0e;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px">PARCIAL ${l.cobertura}/${l.ctes}</span>`
+          : '';
+      const prazo = `${l.prazoRealMedio != null ? l.prazoRealMedio.toFixed(1) + 'd' : '?'} → ${l.prazoMelhorMedio != null ? l.prazoMelhorMedio.toFixed(1) + 'd' : '?'}`;
+      return `<tr style="background:${bgRow}">
+        <td style="padding:5px 10px;font-size:11px;font-weight:600;border-bottom:1px solid #f1f5f9">${l.transportadoraReal || '—'}</td>
+        <td style="padding:5px 10px;font-size:11px;color:${corCinza};border-bottom:1px solid #f1f5f9">${l.cidadeOrigem || '—'} / ${l.ufOrigem}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:right;border-bottom:1px solid #f1f5f9">${fmt(l.pagoTotal)}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:right;color:${corVerde};font-weight:600;border-bottom:1px solid #f1f5f9">${fmt(l.melhorTotal)}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:right;color:${corVermelho};font-weight:700;border-bottom:1px solid #f1f5f9">${fmt(l.reducaoRs)}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:center;color:${corVermelho};font-weight:600;border-bottom:1px solid #f1f5f9">${pct(l.reducaoPct)}</td>
+        <td style="padding:5px 10px;font-size:11px;border-bottom:1px solid #f1f5f9">${l.substituta || '—'}${alertaBadge}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:center;color:${corCinza};border-bottom:1px solid #f1f5f9">${l.ctes > 1 ? `${l.cobertura}/${l.ctes}` : (l.substituta ? '1/1' : '—')}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:center;color:${corCinza};border-bottom:1px solid #f1f5f9">${prazo}</td>
+      </tr>`;
+    }).join('');
+    return subTotal + detalhes;
+  }).join('');
+
+  const alertasHtml = (semSubstituta.length + cobParcial.length) > 0 ? `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:18px">
+      <tr><td style="background:#fff7ed;border-left:4px solid #f97316;border-radius:4px;padding:10px 16px">
+        <div style="font-weight:700;color:#9a3412;font-size:11px;margin-bottom:6px">⚠ Casos sem cobertura total</div>
+        ${semSubstituta.length ? `<div style="font-size:10px;color:#9a3412;margin-bottom:4px"><b>Sem substituta (${semSubstituta.length}):</b> ${semSubstituta.slice(0, 8).map((l) => `${l.transportadoraReal} / ${l.cidadeOrigem}-${l.ufOrigem}`).join(' · ')}${semSubstituta.length > 8 ? ` + ${semSubstituta.length - 8} outros` : ''}</div>` : ''}
+        ${cobParcial.length ? `<div style="font-size:10px;color:#854d0e"><b>Cobertura parcial (${cobParcial.length}):</b> ${cobParcial.slice(0, 6).map((l) => `${l.transportadoraReal} / ${l.cidadeOrigem}-${l.ufOrigem} (${l.cobertura}/${l.ctes})`).join(' · ')}${cobParcial.length > 6 ? ` + ${cobParcial.length - 6} outros` : ''}</div>` : ''}
+      </td></tr>
+    </table>` : '';
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Oportunidade por Transportadora</title></head>
+<body style="margin:0;padding:20px;font-family:Arial,Helvetica,sans-serif;background:#f8fafc;color:#1e293b">
+<table width="680" cellpadding="0" cellspacing="0" style="margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08)">
+  <tr><td style="background:${corPurple};padding:22px 28px">
+    <div style="font-size:18px;font-weight:800;color:#fff;margin-bottom:4px">Oportunidade por Transportadora</div>
+    <div style="font-size:11px;color:#c4b5fd">Central de Fretes · ${new Date().toLocaleDateString('pt-BR')}</div>
+  </td></tr>
+  <tr><td style="padding:20px 28px">
+
+    <!-- Filtros -->
+    <div style="font-size:10px;color:${corCinza};margin-bottom:16px">
+      Período: <b>${periodoDesc}</b> &nbsp;·&nbsp; Canal: <b>${canal || 'Todos'}</b> &nbsp;·&nbsp; Cenário: <b>${cenarioDesc}</b>
+      ${filtros.regioes.length ? ` &nbsp;·&nbsp; Regiões: <b>${filtros.regioes.join(', ')}</b>` : ''}
+      ${filtros.ufsOrigem.length ? ` &nbsp;·&nbsp; UFs: <b>${filtros.ufsOrigem.join(', ')}</b>` : ''}
+    </div>
+
+    <!-- Cards de resumo -->
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:18px">
+      <tr>
+        <td width="25%" style="padding-right:8px">
+          <div style="border:1px solid #e2e8f0;border-left:4px solid ${corPurple};border-radius:6px;padding:10px 14px">
+            <div style="font-size:9px;color:${corCinza};font-weight:700;text-transform:uppercase;margin-bottom:3px">Frete atual</div>
+            <div style="font-size:16px;font-weight:800;color:#1e293b">${fmt(resultado.pagoTotal)}</div>
+            <div style="font-size:9px;color:#94a3b8">${fmtN(resultado.totalCtes)} CT-es</div>
+          </div>
+        </td>
+        <td width="25%" style="padding-right:8px">
+          <div style="border:1px solid #e2e8f0;border-left:4px solid ${corVerde};border-radius:6px;padding:10px 14px">
+            <div style="font-size:9px;color:${corCinza};font-weight:700;text-transform:uppercase;margin-bottom:3px">Melhor cenário</div>
+            <div style="font-size:16px;font-weight:800;color:${corVerde}">${fmt(resultado.melhorTotal)}</div>
+            <div style="font-size:9px;color:#94a3b8">${cenarioDesc}</div>
+          </div>
+        </td>
+        <td width="25%" style="padding-right:8px">
+          <div style="border:1px solid #e2e8f0;border-left:4px solid ${corVermelho};border-radius:6px;padding:10px 14px">
+            <div style="font-size:9px;color:${corCinza};font-weight:700;text-transform:uppercase;margin-bottom:3px">Redução potencial</div>
+            <div style="font-size:16px;font-weight:800;color:${corVermelho}">${fmt(resultado.reducaoTotal)}</div>
+            <div style="font-size:9px;color:#94a3b8">${pct(resultado.reducaoPct)} do frete atual</div>
+          </div>
+        </td>
+        <td width="25%">
+          <div style="border:1px solid #e2e8f0;border-left:4px solid #94a3b8;border-radius:6px;padding:10px 14px">
+            <div style="font-size:9px;color:${corCinza};font-weight:700;text-transform:uppercase;margin-bottom:3px">Linhas</div>
+            <div style="font-size:16px;font-weight:800;color:#1e293b">${fmtN(resultado.totalLinhas)}</div>
+            <div style="font-size:9px;color:#94a3b8">${semSubstituta.length} sem sub · ${cobParcial.length} parcial</div>
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    ${alertasHtml}
+
+    <!-- Tabela de detalhamento -->
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:11px">
+      <thead>
+        <tr style="background:${corPurple}">
+          <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Transportadora</th>
+          <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Origem</th>
+          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Frete atual</th>
+          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Melhor cenário</th>
+          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Redução R$</th>
+          <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">Red. %</th>
+          <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Substituta</th>
+          <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">Cobertura</th>
+          <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">Prazo</th>
+        </tr>
+      </thead>
+      <tbody>${linhasHtml}</tbody>
+    </table>
+
+    <div style="margin-top:12px;font-size:9px;color:#94a3b8">
+      🟡 Amarelo = cobertura parcial &nbsp;·&nbsp; 🟠 Laranja = sem substituta encontrada
+    </div>
+  </td></tr>
+  <tr><td style="background:#f8fafc;padding:12px 28px;font-size:9px;color:#94a3b8;border-top:1px solid #e2e8f0">
+    Central de Fretes · gerado em ${new Date().toLocaleString('pt-BR')}
+  </td></tr>
+</table>
+</body></html>`;
+  return html;
+}
+
 function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal }) {
   const periodoDesc = dataInicio || dataFim
     ? `${dataInicio || '?'} a ${dataFim || '?'}`
@@ -807,6 +945,14 @@ export default function OportunidadeTransportadoraPage() {
     exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal });
   }
 
+  function abrirHtmlEmail() {
+    if (!resultado) return;
+    const html = gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal });
+    const w = window.open('', '_blank');
+    w.document.write(html);
+    w.document.close();
+  }
+
   return (
     <div className="simulador-shell">
       <div className="simulador-header compact-top">
@@ -940,10 +1086,16 @@ export default function OportunidadeTransportadoraPage() {
                 Transportadora × Origem — métrica: {metricaLabel}
                 <span style={{ fontWeight: 400, fontSize: '0.8rem', color: '#94a3b8' }}> · clique na linha para ver as candidatas</span>
               </span>
-              <button type="button" onClick={abrirRelatorio}
-                style={{ padding: '6px 16px', background: '#4E008F', color: '#fff', border: 'none', borderRadius: 7, fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Exportar Excel
-              </button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button type="button" onClick={abrirRelatorio}
+                  style={{ padding: '6px 14px', background: '#4E008F', color: '#fff', border: 'none', borderRadius: 7, fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  Exportar Excel
+                </button>
+                <button type="button" onClick={abrirHtmlEmail}
+                  style={{ padding: '6px 14px', background: '#fff', color: '#4E008F', border: '1.5px solid #4E008F', borderRadius: 7, fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  HTML p/ e-mail
+                </button>
+              </div>
             </div>
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
