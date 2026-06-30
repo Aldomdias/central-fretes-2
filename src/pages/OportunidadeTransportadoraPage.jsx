@@ -5,6 +5,7 @@ import { normalizarTransportadoras, processarCte } from '../services/auditoriaCt
 import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
 import { REGIAO_POR_UF } from '../config/icmsBrasil';
+import amdLogo from '../assets/amd-log.png';
 
 const PAGE_SIZE = 200;
 const TOLERANCIA = 0.5; // R$ — redução abaixo disto é ruído
@@ -428,6 +429,7 @@ export default function OportunidadeTransportadoraPage() {
 
   const [status, setStatus] = useState('idle');
   const [progresso, setProgresso] = useState('');
+  const [processamentoUi, setProcessamentoUi] = useState({ titulo: '', mensagem: '', percentual: 0 });
   const [erro, setErro] = useState('');
   const [bruto, setBruto] = useState(null); // { casos, carriersByOrigin, carriersByRoute, totalCtes, diagTotal }
 
@@ -450,8 +452,14 @@ export default function OportunidadeTransportadoraPage() {
   async function processar() {
     setStatus('carregando'); setErro(''); setBruto(null); setExpandido(null);
     setFiltros((p) => ({ ...FILTROS_PADRAO, soComReducao: p.soComReducao }));
+    setProcessamentoUi({
+      titulo: 'Oportunidade por Transportadora',
+      mensagem: 'Preparando analise de custo realizado versus melhor cenario...',
+      percentual: 8,
+    });
     try {
       setProgresso('Carregando tabelas de frete...');
+      setProcessamentoUi((p) => ({ ...p, mensagem: 'Carregando tabelas de frete cadastradas...', percentual: 14 }));
       const base = normalizarTransportadoras(await carregarBaseCompletaDb());
       if (!base.length) throw new Error('Nenhuma tabela de frete cadastrada.');
       const idx = indexarBase(base);
@@ -459,18 +467,27 @@ export default function OportunidadeTransportadoraPage() {
       const origemCache = new Map();
 
       setProgresso('Carregando planilha de IBGE...');
+      setProcessamentoUi((p) => ({ ...p, mensagem: 'Carregando base de municipios e codigos IBGE...', percentual: 24 }));
       const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
       const mapasIbge = montarMapasIbge(municipios);
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
 
       setProgresso('Carregando CT-es...');
+      setProcessamentoUi((p) => ({ ...p, mensagem: 'Buscando CT-es realizados para o recorte selecionado...', percentual: 34 }));
       const ctes = await carregarCtes({
         competencia,
         dataInicio: dataInicio || undefined,
         dataFim: dataFim || undefined,
         canal: canal || undefined,
         limite: Number(limiteInput) || 4000,
-        onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${carregados}`),
+        onProgress: ({ carregados }) => {
+          setProgresso(`Carregando CT-es... ${carregados}`);
+          setProcessamentoUi((p) => ({
+            ...p,
+            mensagem: `Buscando CT-es realizados... ${fmtN(carregados)} carregados`,
+            percentual: Math.min(55, 34 + Math.floor(carregados / 500)),
+          }));
+        },
       });
       if (!ctes.length) throw new Error(MSG_SEM_CTES);
 
@@ -480,6 +497,11 @@ export default function OportunidadeTransportadoraPage() {
       const diagTotal = { CALCULADO: 0, SEM_TABELA: 0, SEM_ORIGEM: 0, SEM_ROTA: 0, SEM_FAIXA: 0, ORIGEM_ERRADA: 0, OUTRO: 0, SEM_IBGE: 0 };
 
       setProgresso(`Simulando ${fmtN(ctes.length)} CT-es contra as transportadoras de cada origem...`);
+      setProcessamentoUi((p) => ({
+        ...p,
+        mensagem: `Simulando ${fmtN(ctes.length)} CT-es contra as transportadoras da mesma origem...`,
+        percentual: 58,
+      }));
       const t0 = Date.now();
       for (let i = 0; i < ctes.length; i++) {
         const cte = ctes[i];
@@ -534,16 +556,22 @@ export default function OportunidadeTransportadoraPage() {
           const restante = feitos > 0 ? (decorrido / feitos) * (ctes.length - feitos) : 0;
           const tempo = (s) => (s >= 60 ? `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, '0')}s` : `${Math.round(s)}s`);
           setProgresso(`Simulando... ${fmtN(feitos)}/${fmtN(ctes.length)} (${pctFeito}%) · ${tempo(decorrido)} decorridos${restante > 0 ? ` · ~${tempo(restante)} restantes` : ''}`);
+          setProcessamentoUi((p) => ({
+            ...p,
+            mensagem: `Simulando... ${fmtN(feitos)}/${fmtN(ctes.length)} (${pctFeito}%)`,
+            percentual: Math.min(96, 58 + Math.floor(pctFeito * 0.38)),
+          }));
           await new Promise((r) => setTimeout(r, 0));
         }
       }
 
+      setProcessamentoUi((p) => ({ ...p, mensagem: 'Montando resultado por transportadora e origem...', percentual: 100 }));
       setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal });
-      setStatus('concluido'); setProgresso('');
+      setStatus('concluido'); setProgresso(''); setProcessamentoUi({ titulo: '', mensagem: '', percentual: 0 });
     } catch (e) {
       console.error('[OportunidadeTransportadora]', e);
       setErro(mensagemAmigavelErro(e));
-      setStatus('erro'); setProgresso('');
+      setStatus('erro'); setProgresso(''); setProcessamentoUi({ titulo: '', mensagem: '', percentual: 0 });
     }
   }
 
@@ -664,13 +692,33 @@ export default function OportunidadeTransportadoraPage() {
           </div>
         </div>
 
-        {progresso && (
-          <div style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', color: '#1d4ed8', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid #93c5fd', borderTop: '2px solid #1d4ed8', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-            {progresso}
+        {status === 'carregando' && (
+          <div className="sim-processing-strip" aria-live="polite" style={{ marginTop: 12 }}>
+            <div>
+              <strong>{processamentoUi.titulo || 'Oportunidade por Transportadora'}</strong>
+              <span>{processamentoUi.mensagem || progresso || 'Processando análise...'}</span>
+            </div>
+            <strong>{Math.max(1, Math.min(processamentoUi.percentual || 1, 100))}%</strong>
           </div>
         )}
       </section>
+
+      {status === 'carregando' && (
+        <div className="brand-processing-overlay" role="status" aria-live="polite">
+          <div className="brand-processing-card">
+            <div className="brand-processing-logo-wrap">
+              <img src={amdLogo} alt="AMD LOG" />
+            </div>
+            <strong>{processamentoUi.titulo || 'Oportunidade por Transportadora'}</strong>
+            <span>{processamentoUi.mensagem || progresso || 'Processando análise...'}</span>
+            <div className="brand-processing-bar" aria-hidden="true">
+              <div style={{ width: `${Math.max(6, Math.min(processamentoUi.percentual || 6, 100))}%` }} />
+            </div>
+            <em>{Math.max(1, Math.min(processamentoUi.percentual || 1, 100))}%</em>
+            <small>A análise pode levar mais tempo quando houver muitos CT-es, rotas e transportadoras candidatas.</small>
+          </div>
+        </div>
+      )}
 
       {resultado && (
         <>
