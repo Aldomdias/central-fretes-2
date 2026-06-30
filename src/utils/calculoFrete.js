@@ -1,4 +1,4 @@
-import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine';
+import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine.js';
 
 const UF_POR_CODIGO = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -432,6 +432,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
   const valorNF = toNumber(filtros.valorNF);
   const cubagem = toNumber(filtros.cubagem);
   const destinoNormalizado = normalizeText(filtros.destinoCodigo);
+  const canalSimulacao = canalCategoria(filtros.canal);
 
   return (transportadoras || []).flatMap((transportadora) =>
     (transportadora.origens || [])
@@ -444,7 +445,10 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
             const cidade = normalizeText(getCidadeByIbge(rota.ibgeDestino, cidadePorIbge));
             return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
           })
-          .map((rota) => calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal }))
+          .map((rota) => {
+            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal });
+            return item && canalSimulacao ? { ...item, canal: canalSimulacao } : item;
+          })
           .filter(Boolean),
       ),
   );
