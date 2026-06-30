@@ -3371,7 +3371,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const canaisLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.canal)).filter(Boolean))], [transportadoras]);
   const origensLocal = useMemo(() => [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade)).filter(Boolean))].sort(), [transportadoras]);
-  const canais = useMemo(() => (opcoesOnline.canais?.length ? opcoesOnline.canais : canaisLocal.length ? canaisLocal : ['ATACADO']), [opcoesOnline.canais, canaisLocal]);
+  // "AMBOS" é conceito de cadastro (tabela serve aos dois canais), não um canal
+  // de simulação — expande em ATACADO/B2C para não aparecer no seletor.
+  const canais = useMemo(() => {
+    const base = opcoesOnline.canais?.length ? opcoesOnline.canais : canaisLocal.length ? canaisLocal : ['ATACADO'];
+    const expandidos = expandirCanaisCadastro(base);
+    return expandidos.length ? expandidos : ['ATACADO'];
+  }, [opcoesOnline.canais, canaisLocal]);
   const todasOrigens = useMemo(() => (opcoesOnline.origens?.length ? opcoesOnline.origens : origensLocal), [opcoesOnline.origens, origensLocal]);
 
   const todosDestinosComCidade = useMemo(() => {
