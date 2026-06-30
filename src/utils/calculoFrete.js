@@ -409,7 +409,15 @@ function rankearPorChave(resultados = []) {
   });
 
   return [...grupos.values()].flatMap((grupo) => {
-    const ordenados = [...grupo].sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora));
+    const porTransportadora = new Map();
+    [...grupo]
+      .sort((a, b) => a.total - b.total || a.prazo - b.prazo || a.transportadora.localeCompare(b.transportadora))
+      .forEach((item) => {
+        const chaveTransportadora = normalizeCompare(item.transportadora);
+        if (!chaveTransportadora || porTransportadora.has(chaveTransportadora)) return;
+        porTransportadora.set(chaveTransportadora, item);
+      });
+    const ordenados = [...porTransportadora.values()];
     const lider = ordenados[0]?.total || 0;
     const segundoItem = ordenados[1] || null;
     const segundo = segundoItem?.total || lider;
