@@ -1253,11 +1253,15 @@ export default function OportunidadeTransportadoraPage() {
                             <tr onClick={() => setExpandido(aberto ? null : id)} style={{ cursor: 'pointer' }}>
                               <td style={{ fontWeight: 600 }}>
                                 {aberto ? '▼ ' : '▶ '}{l.transportadoraReal || '—'}
-                                {temReajuste && (
-                                  <span title={tooltipReajuste || 'Transportadora com reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help' }}>
-                                    ⚠ REAJUSTE
-                                  </span>
-                                )}
+                                {temReajuste && (() => {
+                                  const pctReaj = reajustesLinha.map((r) => r.reajusteSolicitado).filter((v) => v > 0);
+                                  const maxPct = pctReaj.length ? Math.max(...pctReaj) : null;
+                                  return (
+                                    <span title={tooltipReajuste || 'Transportadora com reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help', whiteSpace: 'nowrap' }}>
+                                      ⚠ REAJUSTE{maxPct != null ? ` +${maxPct}%` : ''}
+                                    </span>
+                                  );
+                                })()}
                               </td>
                               <td>{l.cidadeOrigem || '—'}</td>
                               <td>{l.ufOrigem}</td>
