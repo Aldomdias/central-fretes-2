@@ -116,9 +116,19 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true) {
   const allRows = [];
   let from = 0;
 
+  // ORDER BY estável é obrigatório: sem ele, o Postgres não garante a ordem
+  // das linhas entre as páginas do .range(), fazendo páginas repetirem e
+  // PULAREM linhas. Em tabelas grandes (rotas ~500k) isso fazia o motor perder
+  // rotas e devolver SEM_ROTA / AMD=0. Quando não há coluna de ordenação
+  // explícita, ordena por id (PK) para paginação determinística e completa.
+  const ordenarPor = orderBy || 'id';
+
   while (true) {
-    let query = supabase.from(table).select('*').range(from, from + PAGE_SIZE - 1);
-    if (orderBy) query = query.order(orderBy, { ascending });
+    const query = supabase
+      .from(table)
+      .select('*')
+      .order(ordenarPor, { ascending })
+      .range(from, from + PAGE_SIZE - 1);
 
     const { data, error } = await query;
     if (error) throw error;
