@@ -84,6 +84,18 @@ function normalizarCanal(value) {
   return canal || 'ATACADO';
 }
 
+// Uma negociação combo ("ATACADO+B2C") ou "AMBOS"/"TODOS" atende os dois canais.
+// filtroNorm já vem normalizado (ATACADO/B2C).
+function canalNegociacaoAtende(canalTabela, filtroNorm) {
+  if (!filtroNorm) return true;
+  const base = normalizarCanal(canalTabela);
+  if (!base) return true;
+  if (base === filtroNorm) return true;
+  if (base.includes('AMBOS') || base.includes('TODOS')) return true;
+  const partes = base.split(/\+|\sE\s/).map((s) => s.trim()).filter(Boolean);
+  return partes.length > 1 && partes.includes(filtroNorm);
+}
+
 function normalizarTipoCalculo(value) {
   const tipo = upper(value);
   if (tipo === 'FAIXA_DE_PESO' || tipo === 'FAIXA DE PESO') return 'FAIXA_DE_PESO';
@@ -484,7 +496,7 @@ export function converterTabelasNegociacaoParaSimulador(tabelas = [], filtros = 
 
   return (tabelas || [])
     .filter((tabela) => tabela && tabela.incluir_simulacao)
-    .filter((tabela) => !canalFiltro || normalizarCanal(tabela.canal) === canalFiltro)
+    .filter((tabela) => canalNegociacaoAtende(tabela.canal, canalFiltro))
     .map(converterTabelaNegociacaoParaSimulador)
     .filter((transportadora) => transportadora.origens.length);
 }
@@ -498,7 +510,7 @@ export function nomesTabelasNegociacaoSimulador(tabelas = [], filtros = {}) {
 
   return (tabelas || [])
     .filter((tabela) => tabela && tabela.incluir_simulacao)
-    .filter((tabela) => !canalFiltro || normalizarCanal(tabela.canal) === canalFiltro)
+    .filter((tabela) => canalNegociacaoAtende(tabela.canal, canalFiltro))
     .map((tabela) => labelTabelaNegociacaoSimulador(tabela))
     .sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
