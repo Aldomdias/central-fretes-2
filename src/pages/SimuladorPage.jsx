@@ -132,6 +132,19 @@ function canalFiltroRealizadoSim(canal = '') {
   return normalizarCanalOperacional(canal, { permitirInferencia: false }) || '';
 }
 
+// Uma origem do CADASTRO atende o canal alvo? "AMBOS" (ou "ATACADO+B2C",
+// "ATACADO E B2C") atende qualquer canal — mesma regra dos motores de cálculo.
+function canalOrigemAtende(origemCanal, canalAlvo) {
+  if (!canalAlvo) return true;
+  const c = String(origemCanal || '').toUpperCase();
+  const alvo = String(canalAlvo).toUpperCase();
+  if (!c) return false;
+  if (c === alvo) return true;
+  if (c.includes('AMBOS') || c.includes('TODOS')) return true;
+  // combinações ("ATACADO+B2C", "ATACADO E B2C") atendem cada um dos canais
+  return c.includes(alvo);
+}
+
 function limparCidadeConsultaRealizadoDb(value = '') {
   return String(value || '')
     .split('/')
@@ -390,7 +403,7 @@ function extrairOrigensBaseSimulador(bases = [], canal = '') {
   const saida = [];
   (bases || []).flat().filter(Boolean).forEach((base) => {
     (base.origens || [])
-      .filter((origem) => !canal || String(origem.canal || '').toUpperCase() === canal)
+      .filter((origem) => canalOrigemAtende(origem.canal, canal))
       .forEach((origem) => {
         const cidade = String(origem.cidade || '').trim();
         const chave = normalizarChaveSimulador(cidade);
@@ -409,7 +422,7 @@ function extrairUfsDestinoBaseSimulador(bases = [], canal = '', origemFiltro = '
 
   (bases || []).flat().filter(Boolean).forEach((base) => {
     (base.origens || [])
-      .filter((origem) => !canal || String(origem.canal || '').toUpperCase() === canal)
+      .filter((origem) => canalOrigemAtende(origem.canal, canal))
       .filter((origem) => {
         if (!origemNorm) return true;
         const ok = normalizarChaveSimulador(origem.cidade) === origemNorm;
@@ -3530,7 +3543,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     const locais = transportadoras.flatMap((item) =>
       (item.origens || [])
-        .filter((origem) => !canalSimples || String(origem.canal || '').toUpperCase() === canalSimples)
+        .filter((origem) => canalOrigemAtende(origem.canal, canalSimples))
         .map((origem) => origem.cidade)
         .filter(Boolean)
     );
@@ -4096,7 +4109,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const selecionada = transportadoras.find((item) => item.nome === transportadoraAnalise);
     if (selecionada) {
       return [...new Set((selecionada.origens || [])
-        .filter((origem) => !canalAnalise || String(origem.canal || '').toUpperCase() === canalAnalise)
+        .filter((origem) => canalOrigemAtende(origem.canal, canalAnalise))
         .map((origem) => origem.cidade)
         .filter(Boolean))]
         .sort((a, b) => a.localeCompare(b, 'pt-BR'));
