@@ -343,8 +343,11 @@ function Segmentado({ opcoes, valor, onChange }) {
 
 function MultiFiltro({ label, opcoes, selecionados, onChange }) {
   const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
   const sel = selecionados.length;
   const toggle = (op) => onChange(selecionados.includes(op) ? selecionados.filter((x) => x !== op) : [...selecionados, op]);
+  const buscaNorm = busca.trim().toLowerCase();
+  const filtradas = buscaNorm ? opcoes.filter((o) => String(o || '').toLowerCase().includes(buscaNorm)) : opcoes;
   return (
     <div style={{ position: 'relative' }}>
       <button type="button" onClick={() => setAberto((v) => !v)}
@@ -352,18 +355,35 @@ function MultiFiltro({ label, opcoes, selecionados, onChange }) {
         {label}: <strong>{sel ? `${sel} de ${opcoes.length}` : 'Todos'}</strong> {aberto ? '▲' : '▼'}
       </button>
       {aberto && (
-        <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, maxHeight: 240, overflowY: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', padding: 6 }}>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 6, borderBottom: '1px solid #eee', paddingBottom: 6 }}>
-            <button type="button" onClick={() => onChange([...opcoes])} style={{ fontSize: '0.72rem', cursor: 'pointer', border: 'none', background: 'none', color: '#9153F0' }}>Todos</button>
-            <button type="button" onClick={() => onChange([])} style={{ fontSize: '0.72rem', cursor: 'pointer', border: 'none', background: 'none', color: '#9153F0' }}>Limpar</button>
+        <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', padding: 6 }}>
+          <input
+            type="text"
+            autoFocus
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar transportadora..."
+            style={{ width: '100%', boxSizing: 'border-box', padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.8rem', marginBottom: 6 }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 6, borderBottom: '1px solid #eee', paddingBottom: 6 }}>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button type="button" onClick={() => onChange([...new Set([...selecionados, ...filtradas])])} style={{ fontSize: '0.72rem', cursor: 'pointer', border: 'none', background: 'none', color: '#9153F0' }}>Marcar listados</button>
+              <button type="button" onClick={() => onChange([])} style={{ fontSize: '0.72rem', cursor: 'pointer', border: 'none', background: 'none', color: '#9153F0' }}>Limpar</button>
+            </div>
+            <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{fmtN(filtradas.length)}{sel ? ` · ${sel} marcadas` : ''}</span>
           </div>
-          {opcoes.map((op) => (
-            <label key={op} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', fontSize: '0.8rem', cursor: 'pointer' }}>
-              <input type="checkbox" checked={selecionados.includes(op)} onChange={() => toggle(op)} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{op || '(vazio)'}</span>
-            </label>
-          ))}
-          {!opcoes.length && <div style={{ fontSize: '0.78rem', color: '#94a3b8', padding: 4 }}>Sem opções</div>}
+          <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+            {filtradas.slice(0, 400).map((op) => {
+              const marcada = selecionados.includes(op);
+              return (
+                <label key={op} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-start', textAlign: 'left', gap: 8, padding: '4px 6px', fontSize: '0.8rem', cursor: 'pointer', borderRadius: 4, background: marcada ? '#f5f3ff' : 'transparent' }}>
+                  <input type="checkbox" checked={marcada} onChange={() => toggle(op)} style={{ margin: 0, flexShrink: 0 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: marcada ? 700 : 500, color: marcada ? '#6d28d9' : '#334155' }}>{op || '(vazio)'}</span>
+                </label>
+              );
+            })}
+            {!filtradas.length && <div style={{ fontSize: '0.78rem', color: '#94a3b8', padding: 4 }}>Nada encontrado.</div>}
+            {filtradas.length > 400 && <div style={{ fontSize: '0.72rem', color: '#94a3b8', padding: 4 }}>Mostrando 400 de {fmtN(filtradas.length)}. Refine a busca.</div>}
+          </div>
         </div>
       )}
     </div>
