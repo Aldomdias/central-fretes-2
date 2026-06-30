@@ -348,10 +348,14 @@ function mapCommon(row, meta, overrides = {}) {
     origemPlanilha ||
     String(meta.origem || '').trim();
 
+  // Quando a importação é feita DENTRO de uma origem específica (overrides.canal
+  // preenchido), o canal da origem manda — o arquivo nem precisa ter coluna de
+  // canal, e se tiver, não desvia a importação para uma origem duplicada.
+  // Na importação em massa (sem override), usa o canal do arquivo/unidade.
   const canalFinal =
+    String(overrides.canal || '').trim().toUpperCase() ||
     canalPlanilha ||
     (canalInferido !== 'ATACADO' ? canalInferido : '') ||
-    String(overrides.canal || '').trim().toUpperCase() ||
     'ATACADO';
 
   return { transportadora, origem, canal: canalFinal, status: 'Ativa', unidade };

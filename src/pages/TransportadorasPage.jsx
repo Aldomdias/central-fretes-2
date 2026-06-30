@@ -329,7 +329,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
     if (!file) return;
     try {
       const parsed = await parseFileToRows(file, tipoImportacao);
-      const payload = buildImportPayload(parsed, tipoImportacao, { transportadora: transportadora.nome, origem: origem.cidade });
+      const payload = buildImportPayload(parsed, tipoImportacao, { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
       store.importarPayload(payload, tipoImportacao);
       setFeedback({ type: payload.erros.length ? 'warn' : 'ok', text: `${payload.inseridos} registro(s) importado(s)${payload.erros.length ? ` · ${payload.erros.length} erro(s)` : ''}` });
     } catch (error) {
@@ -612,8 +612,9 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
                 <select
                   value={(() => { const c = (origem.canal || 'ATACADO').toUpperCase(); return c === 'B2C' ? 'B2C' : (c === 'AMBOS' || c.includes('+')) ? 'AMBOS' : 'ATACADO'; })()}
                   onChange={(e) => store.atualizarCanalOrigem(transportadora.id, origem.id, e.target.value)}
-                  title="Canal desta origem (troca direto, sem abrir)"
-                  style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid #cbd5e1', cursor: 'pointer' }}
+                  disabled={!transportadora.detalheCarregado}
+                  title={transportadora.detalheCarregado ? 'Canal desta origem (troca direto, sem abrir)' : 'Abra a transportadora para carregar as rotas antes de trocar o canal'}
+                  style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid #cbd5e1', cursor: transportadora.detalheCarregado ? 'pointer' : 'not-allowed' }}
                 >
                   <option value="ATACADO">ATACADO</option>
                   <option value="B2C">B2C</option>
