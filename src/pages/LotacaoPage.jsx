@@ -1139,6 +1139,156 @@ function PainelTransportadora({
       .catch(() => alert('Erro ao exportar'));
   };
 
+
+  // 4.34C.3 - Template externo de cotacao: rotas, volumetria e target.
+  const exportarTemplateCotacaoLotacao = () => {
+    import('xlsx')
+      .then((XLSX) => {
+        const melhorPorRota = new Map();
+
+        (transportadoras || []).forEach((transportadora) => {
+          (transportadora?.linhas || []).forEach((linha) => {
+            const origem = String(linha?.origem || '').trim();
+            const destino = String(linha?.destino || '').trim();
+            const tipo = String(linha?.tipo || linha?.tipo_veiculo || '').trim();
+            if (!origem || !destino || !tipo) return;
+
+            const chave = `${normLot(origem)}|${normLot(destino)}|${normLot(tipo)}`;
+            const target = Number(linha?.target || linha?.valorOtimizado || linha?.valor || 0) || 0;
+            const existente = melhorPorRota.get(chave);
+
+            if (!existente || (target > 0 && (existente.target <= 0 || target < existente.target))) {
+              melhorPorRota.set(chave, {
+                chave,
+                origem,
+                destino,
+                tipo,
+                km: Number(linha?.km || linha?.quilometragem || 0) || '',
+                target,
+              });
+            }
+          });
+        });
+
+        const realizadoPorRota = new Map();
+        (resumoRealizado || []).forEach((real) => {
+          const origem = String(real?.origem || '').trim();
+          const destino = String(real?.destino || '').trim();
+          const tipo = String(real?.tipo_veiculo || real?.tipo || '').trim();
+          if (!origem || !destino || !tipo) return;
+
+          const chave = `${normLot(origem)}|${normLot(destino)}|${normLot(tipo)}`;
+          const existente = realizadoPorRota.get(chave);
+          if (!existente || Number(real?.total_cargas || 0) > Number(existente?.total_cargas || 0)) {
+            realizadoPorRota.set(chave, real);
+          }
+
+          if (!melhorPorRota.has(chave)) {
+            melhorPorRota.set(chave, {
+              chave,
+              origem,
+              destino,
+              tipo,
+              km: Number(real?.km || real?.quilometragem || 0) || '',
+              target: 0,
+            });
+          }
+        });
+
+        const rotas = Array.from(melhorPorRota.values())
+          .map((rota) => {
+            const real = realizadoPorRota.get(rota.chave) || {};
+            const viagens = Number(real?.total_cargas || real?.qtd_viagens || real?.viagens || 0) || 0;
+            const freteMedio = Number(real?.frete_medio || 0) || 0;
+            const valorTotal = Number(real?.valor_total || real?.frete_total || 0) || 0;
+
+            return {
+              Origem: rota.origem,
+              Destino: rota.destino,
+              'Tipo de veiculo': rota.tipo,
+              KM: rota.km,
+              'Viagens historicas': viagens || '',
+              'Frete medio realizado (R$)': freteMedio || '',
+              'Valor total realizado (R$)': valorTotal || '',
+              'Target de frete (R$)': rota.target || '',
+              'Proposta da transportadora (R$)': '',
+              'Prazo de entrega (dias)': '',
+              'Validade da proposta': '',
+              'Observacoes da transportadora': '',
+            };
+          })
+          .sort((a, b) =>
+            Number(b['Viagens historicas'] || 0) - Number(a['Viagens historicas'] || 0)
+            || String(a.Origem).localeCompare(String(b.Origem), 'pt-BR')
+            || String(a.Destino).localeCompare(String(b.Destino), 'pt-BR')
+          );
+
+        const resumoPorOrigem = new Map();
+        rotas.forEach((rota) => {
+          const atual = resumoPorOrigem.get(rota.Origem) || {
+            Origem: rota.Origem,
+            'Rotas para cotacao': 0,
+            'Viagens historicas': 0,
+            destinos: new Set(),
+          };
+          atual['Rotas para cotacao'] += 1;
+          atual['Viagens historicas'] += Number(rota['Viagens historicas'] || 0);
+          atual.destinos.add(rota.Destino);
+          resumoPorOrigem.set(rota.Origem, atual);
+        });
+
+        const resumo = Array.from(resumoPorOrigem.values())
+          .map((item) => ({
+            Origem: item.Origem,
+            'Rotas para cotacao': item['Rotas para cotacao'],
+            'Destinos distintos': item.destinos.size,
+            'Viagens historicas': item['Viagens historicas'],
+          }))
+          .sort((a, b) => Number(b['Viagens historicas']) - Number(a['Viagens historicas']));
+
+        const periodoLabel = {
+          '1m': 'Ultimo mes',
+          '3m': 'Ultimos 3 meses',
+          '6m': 'Ultimos 6 meses',
+          '12m': 'Ultimos 12 meses',
+          all: 'Todo periodo',
+        }[periodo] || periodo || 'Periodo selecionado';
+
+        const wb = XLSX.utils.book_new();
+
+        const wsInstrucoes = XLSX.utils.aoa_to_sheet([
+          ['TEMPLATE DE COTACAO DE LOTACAO'],
+          ['Periodo de volumetria', periodoLabel],
+          ['Gerado em', new Date().toLocaleDateString('pt-BR')],
+          [],
+          ['INSTRUCAO', 'Preencha somente proposta, prazo, validade e observacoes.'],
+          ['VOLUMETRIA', 'Historico para referencia de potencial. Nao representa garantia de contratacao.'],
+          ['TARGET', 'Valor de referencia esperado por rota e tipo de veiculo.'],
+        ]);
+        wsInstrucoes['!cols'] = [{ wch: 28 }, { wch: 105 }];
+        XLSX.utils.book_append_sheet(wb, wsInstrucoes, 'Instrucoes');
+
+        const wsRotas = XLSX.utils.json_to_sheet(rotas);
+        wsRotas['!cols'] = [
+          { wch: 24 }, { wch: 30 }, { wch: 22 }, { wch: 9 }, { wch: 18 },
+          { wch: 25 }, { wch: 25 }, { wch: 21 }, { wch: 31 }, { wch: 22 },
+          { wch: 20 }, { wch: 46 },
+        ];
+        wsRotas['!autofilter'] = { ref: `A1:L${Math.max(rotas.length + 1, 2)}` };
+        XLSX.utils.book_append_sheet(wb, wsRotas, 'Rotas para Cotacao');
+
+        const wsResumo = XLSX.utils.json_to_sheet(resumo);
+        wsResumo['!cols'] = [{ wch: 28 }, { wch: 20 }, { wch: 20 }, { wch: 22 }];
+        XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo por Origem');
+
+        XLSX.writeFile(wb, `template-cotacao-lotacao-${String(periodo || 'periodo').replace(/[^a-z0-9]+/gi, '-')}.xlsx`);
+      })
+      .catch((error) => {
+        console.error('Erro ao gerar template de cotacao:', error);
+        alert(`Erro ao gerar template de cotacao: ${error?.message || 'erro desconhecido'}`);
+      });
+  };
+
   const exportarDevolucao = () => {
     import('xlsx')
       .then((XLSX) => {
@@ -1570,6 +1720,13 @@ function PainelTransportadora({
               sub="Visão executiva"
               onClick={exportarDiretoria}
               accent="#6B7280"
+            />
+            <ExportBtn
+              icon="file-export"
+              title="Template cotacao"
+              sub="Rotas + target"
+              onClick={exportarTemplateCotacaoLotacao}
+              accent="#1D9E75"
             />
             <ExportBtn
               icon="send"
