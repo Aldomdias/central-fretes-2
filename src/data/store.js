@@ -637,6 +637,20 @@ export function useFreteStore() {
           'origem'
         );
       },
+      // Atualiza só o canal da origem (merge), preservando rotas/cotações/taxas.
+      // Usado para trocar o canal direto no card, sem abrir o formulário.
+      atualizarCanalOrigem(transportadoraId, origemId, canal) {
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) => (
+              t.id !== transportadoraId
+                ? t
+                : { ...t, origens: t.origens.map((o) => (o.id !== origemId ? o : { ...o, canal })) }
+            )),
+          'origem',
+          'origem'
+        );
+      },
       removerOrigem(transportadoraId, origemId) {
         setTransportadoras((prev) =>
           (prev || []).map((t) =>

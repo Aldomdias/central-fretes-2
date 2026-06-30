@@ -609,6 +609,16 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
               <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: origem.canal==='B2C'?'#dbeafe': (origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#ede9fe':'#dcfce7',color:origem.canal==='B2C'?'#1d4ed8':(origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#6d28d9':'#166534'}}>{(origem.canal||'ATACADO').replace('+',' + ')}</span></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
+                <select
+                  value={(() => { const c = (origem.canal || 'ATACADO').toUpperCase(); return c === 'B2C' ? 'B2C' : (c === 'AMBOS' || c.includes('+')) ? 'AMBOS' : 'ATACADO'; })()}
+                  onChange={(e) => store.atualizarCanalOrigem(transportadora.id, origem.id, e.target.value)}
+                  title="Canal desta origem (troca direto, sem abrir)"
+                  style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid #cbd5e1', cursor: 'pointer' }}
+                >
+                  <option value="ATACADO">ATACADO</option>
+                  <option value="B2C">B2C</option>
+                  <option value="AMBOS">AMBOS</option>
+                </select>
                 <button className="btn-link inline-btn" onClick={() => setInconsistenciasOpen(origem.id)}>Ver inconsistências</button>
                 <button className="btn-link inline-btn" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar Verum</button>
                 <span className="status-pill light">{origem.status}</span>
