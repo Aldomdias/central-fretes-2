@@ -1515,6 +1515,20 @@ function categoriaCanalDb(value) {
   return canal;
 }
 
+// Expande o canal de uma origem do cadastro nos canais concretos de simulação.
+// "AMBOS"/"TODOS" e combos ("ATACADO+B2C", "ATACADO E B2C") viram [ATACADO, B2C],
+// para a origem entrar nos MESMOS índices/baldes das demais (não ficar isolada).
+function expandirCanalCadastroDb(canalBruto) {
+  const c = String(canalBruto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim();
+  if (!c) return ['ATACADO'];
+  if (c.includes('AMBOS') || c.includes('TODOS')) return ['ATACADO', 'B2C'];
+  if (c.includes('+') || /\sE\s/.test(c)) {
+    const partes = c.split(/\+|\sE\s/).map((s) => s.trim()).filter(Boolean);
+    return partes.length ? partes : [c];
+  }
+  return [c];
+}
+
 function canalCompativelDb(canalBase = '', canalFiltro = '') {
   const filtro = normalizarCanalDb(canalFiltro);
   if (!filtro) return true;
@@ -1884,7 +1898,7 @@ export async function carregarOpcoesSimuladorDb() {
 
     const nomes = [...new Set(transportadoras.map((item) => item.nome).filter(Boolean))].sort();
     const origens = [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.cidade).filter(Boolean)))].sort();
-    const canais = [...new Set(transportadoras.flatMap((item) => (item.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean)))].sort();
+    const canais = [...new Set(transportadoras.flatMap((item) => (item.origens || []).flatMap((origem) => expandirCanalCadastroDb(origem.canal))))].sort();
 
     const origensPorTransportadora = {};
     const canaisPorTransportadora = {};
@@ -1893,13 +1907,15 @@ export async function carregarOpcoesSimuladorDb() {
       const nome = transportadora.nome || '';
       if (!nome) return;
       origensPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.cidade).filter(Boolean))].sort();
-      canaisPorTransportadora[nome] = [...new Set((transportadora.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))].sort();
+      canaisPorTransportadora[nome] = [...new Set((transportadora.origens || []).flatMap((origem) => expandirCanalCadastroDb(origem.canal)))].sort();
       (transportadora.origens || []).forEach((origem) => {
-        const canalOrigem = origem.canal || 'ATACADO';
-        if (!origensPorCanal[canalOrigem]) origensPorCanal[canalOrigem] = [];
-        if (origem.cidade && !origensPorCanal[canalOrigem].includes(origem.cidade)) {
-          origensPorCanal[canalOrigem].push(origem.cidade);
-        }
+        // AMBOS entra nos baldes de ATACADO e B2C (não num balde "AMBOS" isolado).
+        expandirCanalCadastroDb(origem.canal).forEach((canalOrigem) => {
+          if (!origensPorCanal[canalOrigem]) origensPorCanal[canalOrigem] = [];
+          if (origem.cidade && !origensPorCanal[canalOrigem].includes(origem.cidade)) {
+            origensPorCanal[canalOrigem].push(origem.cidade);
+          }
+        });
       });
     });
 
@@ -1923,7 +1939,7 @@ export async function carregarOpcoesSimuladorDb() {
   const nomePorId = new Map((transportadorasResponse.data || []).map((item) => [String(item.id), item.nome || '']));
   const transportadoras = [...new Set((transportadorasResponse.data || []).map((item) => item.nome).filter(Boolean))].sort();
   const origens = [...new Set((origensResponse.data || []).map((item) => item.cidade).filter(Boolean))].sort();
-  const canais = [...new Set((origensResponse.data || []).map((item) => item.canal || 'ATACADO').filter(Boolean))].sort();
+  const canais = [...new Set((origensResponse.data || []).flatMap((item) => expandirCanalCadastroDb(item.canal)))].sort();
 
   const origensPorTransportadora = {};
   const canaisPorTransportadora = {};
@@ -1940,15 +1956,14 @@ export async function carregarOpcoesSimuladorDb() {
       origensPorTransportadora[nome].push(origem.cidade);
     }
 
-    const canal = origem.canal || 'ATACADO';
-    if (!canaisPorTransportadora[nome].includes(canal)) {
-      canaisPorTransportadora[nome].push(canal);
-    }
-
-    if (!origensPorCanal[canal]) origensPorCanal[canal] = [];
-    if (origem.cidade && !origensPorCanal[canal].includes(origem.cidade)) {
-      origensPorCanal[canal].push(origem.cidade);
-    }
+    // AMBOS entra nos baldes de ATACADO e B2C (não num balde "AMBOS" isolado).
+    expandirCanalCadastroDb(origem.canal).forEach((canal) => {
+      if (!canaisPorTransportadora[nome].includes(canal)) canaisPorTransportadora[nome].push(canal);
+      if (!origensPorCanal[canal]) origensPorCanal[canal] = [];
+      if (origem.cidade && !origensPorCanal[canal].includes(origem.cidade)) {
+        origensPorCanal[canal].push(origem.cidade);
+      }
+    });
   });
 
   Object.keys(origensPorCanal).forEach((canal) => {
