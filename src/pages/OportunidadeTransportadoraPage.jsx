@@ -5,6 +5,7 @@ import { buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb } from '../serv
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
+import { carregarReajustesSupabase } from '../services/reajustesSupabaseService';
 import { REGIAO_POR_UF } from '../config/icmsBrasil';
 import amdLogo from '../assets/amd-log.png';
 
@@ -914,7 +915,24 @@ export default function OportunidadeTransportadoraPage() {
 
       setProcessamentoUi((p) => ({ ...p, mensagem: 'Montando resultado por transportadora e origem...', percentual: 100 }));
       const baseNomes = base.map((t) => t.nome).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes });
+
+      // Carrega reajustes para cruzar com o realizado
+      const reajustesRaw = await carregarReajustesSupabase().catch(() => []);
+      // Set de nomes normalizados de transportadoras com reajuste solicitado (qualquer status)
+      const reajustesSet = new Set(
+        reajustesRaw.flatMap((r) => [r.transportadoraSistema, r.transportadoraInformada].filter(Boolean).map((n) => norm(n)))
+      );
+      // Mapa nome -> lista de reajustes para mostrar detalhes no hover
+      const reajustesMap = new Map();
+      for (const r of reajustesRaw) {
+        for (const nome of [r.transportadoraSistema, r.transportadoraInformada].filter(Boolean)) {
+          const k = norm(nome);
+          if (!reajustesMap.has(k)) reajustesMap.set(k, []);
+          reajustesMap.get(k).push(r);
+        }
+      }
+
+      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes, reajustesSet, reajustesMap });
       setStatus('concluido'); setProgresso(''); setProcessamentoUi({ titulo: '', mensagem: '', percentual: 0 });
     } catch (e) {
       console.error('[OportunidadeTransportadora]', e);
@@ -997,6 +1015,8 @@ export default function OportunidadeTransportadoraPage() {
       pagoTotal, melhorTotal, reducaoTotal,
       reducaoPct: pagoTotal > 0 ? (reducaoTotal / pagoTotal) * 100 : 0,
       diagTotal: bruto.diagTotal,
+      reajustesSet: bruto.reajustesSet || new Set(),
+      reajustesMap: bruto.reajustesMap || new Map(),
     };
   }, [bruto, filtros, excluidasSet, candidateMode, scenarioMode, metrica]);
 
@@ -1190,8 +1210,22 @@ export default function OportunidadeTransportadoraPage() {
                         const aberto = expandido === id;
                         return (
                           <React.Fragment key={id}>
+                            {(() => {
+                              const temReajuste = resultado.reajustesSet.has(norm(l.transportadoraReal));
+                              const reajustesLinha = temReajuste ? (resultado.reajustesMap.get(norm(l.transportadoraReal)) || []) : [];
+                              const tooltipReajuste = reajustesLinha.length
+                                ? reajustesLinha.map((r) => `${r.status || '?'} · ${r.reajusteSolicitado ? '+' + r.reajusteSolicitado + '%' : ''} · ${r.dataSolicitacao ? new Date(r.dataSolicitacao).toLocaleDateString('pt-BR') : ''}`.trim()).join(' | ')
+                                : '';
+                              return (
                             <tr onClick={() => setExpandido(aberto ? null : id)} style={{ cursor: 'pointer' }}>
-                              <td style={{ fontWeight: 600 }}>{aberto ? '▼ ' : '▶ '}{l.transportadoraReal || '—'}</td>
+                              <td style={{ fontWeight: 600 }}>
+                                {aberto ? '▼ ' : '▶ '}{l.transportadoraReal || '—'}
+                                {temReajuste && (
+                                  <span title={tooltipReajuste || 'Transportadora com reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help' }}>
+                                    ⚠ REAJUSTE
+                                  </span>
+                                )}
+                              </td>
                               <td>{l.cidadeOrigem || '—'}</td>
                               <td>{l.ufOrigem}</td>
                               <td>{fmtN(l.ctes)}</td>
@@ -1210,6 +1244,8 @@ export default function OportunidadeTransportadoraPage() {
                                 {l.prazoRealMedio != null ? `${l.prazoRealMedio.toFixed(1)}d` : '?'} → {l.prazoMelhorMedio != null ? `${l.prazoMelhorMedio.toFixed(1)}d` : '?'}
                               </td>
                             </tr>
+                              );
+                            })()}
                             {aberto && (
                               <tr>
                                 <td colSpan={10} style={{ background: '#faf5ff', padding: '14px 16px' }}>
