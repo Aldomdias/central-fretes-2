@@ -855,9 +855,10 @@ export function construirEscopoTransportadoraSimulada({ transportadoras = [], no
     transportadoraEncontrada = transportadora?.nome || transportadoraEncontrada;
 
     (transportadora.origens || []).forEach((origem) => {
-      const canal = categoriaCanalRealizado(origem.canal || '');
+      // Origem "AMBOS" atende ATACADO e B2C — canaisIndiceRealizado expande.
+      const canaisOrigem = canaisIndiceRealizado(origem.canal || '');
       const canalFiltroNormalizado = categoriaCanalRealizado(canalFiltro || '');
-      if (canalFiltroNormalizado && canal !== canalFiltroNormalizado) return;
+      if (canalFiltroNormalizado && !canaisOrigem.includes(canalFiltroNormalizado)) return;
 
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;
       const origemUfPelaRota = getUfByIbge(origem.rotas?.[0]?.ibgeOrigem || '');
