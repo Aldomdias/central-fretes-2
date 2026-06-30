@@ -391,6 +391,105 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
   };
 }
 
+function gerarRelatorioHtml({ resultado, metrica, metricaLabel, scenarioMode, filtros, dataInicio, dataFim, competencia, canal }) {
+  const dataHoje = new Date().toLocaleDateString('pt-BR');
+  const periodoDesc = dataInicio || dataFim
+    ? `${dataInicio || '?'} a ${dataFim || '?'}`
+    : competencia || 'Todos os períodos';
+  const canalDesc = canal || 'Todos';
+  const cenarioDesc = scenarioMode === 'cteacte' ? 'Menor preço CT-e a CT-e' : 'Uma transportadora substituta';
+
+  const linhasTodas = resultado.regioes.flatMap((r) => r.linhas);
+  const semCoberturaTotal = linhasTodas.filter((l) => l.substituta && l.cobertura < l.ctes);
+  const semSubstituta = linhasTodas.filter((l) => !l.substituta);
+
+  const rows = resultado.regioes.map((reg) => {
+    const subRows = reg.linhas.map((l) => {
+      const coberturaOk = !l.substituta || l.cobertura >= l.ctes;
+      const semSub = !l.substituta;
+      const bg = semSub ? '#fff7ed' : !coberturaOk ? '#fefce8' : '#fff';
+      const badge = semSub
+        ? '<span style="background:#fed7aa;color:#9a3412;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700">SEM SUBSTITUTA</span>'
+        : !coberturaOk
+          ? `<span style="background:#fef08a;color:#854d0e;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700">COBERTURA PARCIAL ${fmtN(l.cobertura)}/${fmtN(l.ctes)}</span>`
+          : '';
+      const prazoStr = `${l.prazoRealMedio != null ? l.prazoRealMedio.toFixed(1) + 'd' : '?'} → ${l.prazoMelhorMedio != null ? l.prazoMelhorMedio.toFixed(1) + 'd' : '?'}`;
+      return `<tr style="background:${bg}">
+        <td>${l.transportadoraReal || '—'}</td>
+        <td>${l.cidadeOrigem || '—'} / ${l.ufOrigem}</td>
+        <td style="text-align:center">${fmtN(l.ctes)}</td>
+        <td style="text-align:right">${fmt(l.pagoTotal)}</td>
+        <td style="text-align:right;color:#047857;font-weight:600">${fmt(l.melhorTotal)}</td>
+        <td style="text-align:right;color:#9b1111;font-weight:700">${fmt(l.reducaoRs)}</td>
+        <td style="text-align:center;color:#9b1111;font-weight:600">${pct(l.reducaoPct)}</td>
+        <td>${l.substituta ? l.substituta : '—'} ${badge}</td>
+        <td style="text-align:center;color:#64748b">${prazoStr}</td>
+      </tr>`;
+    }).join('');
+    return `<tr style="background:#ede9fe">
+        <td colspan="2" style="font-weight:800;color:#4E008F;letter-spacing:0.04em">${reg.regiao}</td>
+        <td></td>
+        <td style="text-align:right;font-weight:700">${fmt(reg.pagoTotal)}</td>
+        <td style="text-align:right;font-weight:700;color:#047857">${fmt(reg.melhorTotal)}</td>
+        <td style="text-align:right;font-weight:700;color:#9b1111">${fmt(reg.reducaoRs)}</td>
+        <td style="text-align:center;font-weight:600;color:#9b1111">${pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>
+        <td colspan="2" style="color:#64748b;font-size:0.75rem">${reg.linhas.length} linhas</td>
+      </tr>${subRows}`;
+  }).join('');
+
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+<title>Relatório — Oportunidade por Transportadora</title>
+<style>
+  body { font-family: Arial, sans-serif; font-size: 11px; color: #1e293b; margin: 0; padding: 16px; }
+  h1 { font-size: 16px; margin: 0 0 4px; color: #4E008F; }
+  .meta { font-size: 10px; color: #64748b; margin-bottom: 12px; }
+  .cards { display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .card { border: 1px solid #e2e8f0; border-left: 4px solid #9153F0; border-radius: 6px; padding: 8px 14px; min-width: 140px; }
+  .card.red { border-left-color: #9b1111; }
+  .card.green { border-left-color: #047857; }
+  .card label { display: block; font-size: 9px; color: #64748b; font-weight: 700; margin-bottom: 2px; text-transform: uppercase; }
+  .card strong { display: block; font-size: 15px; font-weight: 800; }
+  .card span { font-size: 9px; color: #94a3b8; }
+  .alertas { background:#fff7ed; border:1px solid #fed7aa; border-radius:6px; padding:8px 12px; margin-bottom:12px; font-size:10px; color:#9a3412; }
+  .alertas b { display:block; margin-bottom:4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  th { background: #4E008F; color: #fff; padding: 5px 6px; text-align: left; font-size: 9.5px; }
+  td { padding: 4px 6px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+  @media print { body { padding: 0; } @page { size: A4 landscape; margin: 10mm; } }
+</style></head><body>
+<h1>Oportunidade por Transportadora — Relatório</h1>
+<div class="meta">
+  Gerado em: <b>${dataHoje}</b> &nbsp;|&nbsp; Período: <b>${periodoDesc}</b> &nbsp;|&nbsp; Canal: <b>${canalDesc}</b> &nbsp;|&nbsp; Cenário: <b>${cenarioDesc}</b>
+  ${filtros.regioes.length ? ` &nbsp;|&nbsp; Regiões: <b>${filtros.regioes.join(', ')}</b>` : ''}
+  ${filtros.ufsOrigem.length ? ` &nbsp;|&nbsp; UFs: <b>${filtros.ufsOrigem.join(', ')}</b>` : ''}
+  ${filtros.transportadorasRealizadas.length ? ` &nbsp;|&nbsp; Transportadoras: <b>${filtros.transportadorasRealizadas.length} selecionadas</b>` : ''}
+</div>
+<div class="cards">
+  <div class="card"><label>Frete atual (total)</label><strong>${fmt(resultado.pagoTotal)}</strong><span>${fmtN(resultado.totalCtes)} CT-es</span></div>
+  <div class="card green"><label>Melhor cenário (total)</label><strong>${fmt(resultado.melhorTotal)}</strong><span>${cenarioDesc}</span></div>
+  <div class="card red"><label>Redução potencial</label><strong>${fmt(resultado.reducaoTotal)}</strong><span>${pct(resultado.reducaoPct)} do frete atual</span></div>
+  <div class="card"><label>Linhas analisadas</label><strong>${fmtN(resultado.totalLinhas)}</strong><span>${semSubstituta.length} sem substituta · ${semCoberturaTotal.length} cobertura parcial</span></div>
+</div>
+${(semSubstituta.length + semCoberturaTotal.length) > 0 ? `<div class="alertas">
+  <b>⚠ Atenção — casos sem cobertura total</b>
+  ${semSubstituta.length > 0 ? `<span><b>SEM SUBSTITUTA (${semSubstituta.length}):</b> ${semSubstituta.map((l) => `${l.transportadoraReal} / ${l.cidadeOrigem}-${l.ufOrigem}`).slice(0, 10).join(' · ')}${semSubstituta.length > 10 ? ` e mais ${semSubstituta.length - 10}...` : ''}</span>` : ''}
+  ${semCoberturaTotal.length > 0 ? `<span><b>COBERTURA PARCIAL (${semCoberturaTotal.length}):</b> ${semCoberturaTotal.map((l) => `${l.transportadoraReal} / ${l.cidadeOrigem}-${l.ufOrigem} (${fmtN(l.cobertura)}/${fmtN(l.ctes)} CT-es)`).slice(0, 8).join(' · ')}${semCoberturaTotal.length > 8 ? ` e mais ${semCoberturaTotal.length - 8}...` : ''}</span>` : ''}
+</div>` : ''}
+<table>
+  <thead><tr>
+    <th>Transportadora</th><th>Origem / UF</th><th style="text-align:center">CT-es</th>
+    <th style="text-align:right">Frete atual</th><th style="text-align:right">Melhor cenário</th>
+    <th style="text-align:right">Redução R$</th><th style="text-align:center">Red. %</th>
+    <th>Substituta</th><th style="text-align:center">Prazo (real→melhor)</th>
+  </tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<div style="margin-top:10px;font-size:9px;color:#94a3b8">
+  Fundo amarelo = cobertura parcial (substituta não cobre todos os CT-es do grupo) · Fundo laranja = sem nenhuma substituta encontrada.
+</div>
+</body></html>`;
+}
+
 function valorMetrica(metrica, totalRs, pesoTotal, nfTotal, ctes) {
   if (metrica === 'rs') return totalRs;
   if (metrica === 'freteNf') return nfTotal > 0 ? (totalRs / nfTotal) * 100 : null;
@@ -713,6 +812,14 @@ export default function OportunidadeTransportadoraPage() {
   const filtrosAtivos = filtros.regioes.length || filtros.ufsOrigem.length || filtros.transportadorasRealizadas.length;
   const metricaLabel = METRICAS.find((m) => m.id === metrica)?.label || '';
 
+  function abrirRelatorio() {
+    if (!resultado) return;
+    const html = gerarRelatorioHtml({ resultado, metrica, metricaLabel, scenarioMode, filtros, dataInicio, dataFim, competencia, canal });
+    const w = window.open('', '_blank');
+    w.document.write(html);
+    w.document.close();
+  }
+
   return (
     <div className="simulador-shell">
       <div className="simulador-header compact-top">
@@ -841,9 +948,15 @@ export default function OportunidadeTransportadoraPage() {
           </div>
 
           <div className="panel-card">
-            <div className="panel-title" style={{ marginBottom: '0.5rem' }}>
-              Transportadora × Origem — métrica: {metricaLabel}
-              <span style={{ fontWeight: 400, fontSize: '0.8rem', color: '#94a3b8' }}> · clique na linha para ver as candidatas</span>
+            <div className="panel-title" style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <span>
+                Transportadora × Origem — métrica: {metricaLabel}
+                <span style={{ fontWeight: 400, fontSize: '0.8rem', color: '#94a3b8' }}> · clique na linha para ver as candidatas</span>
+              </span>
+              <button type="button" onClick={abrirRelatorio}
+                style={{ padding: '6px 16px', background: '#4E008F', color: '#fff', border: 'none', borderRadius: 7, fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Gerar Relatório
+              </button>
             </div>
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
