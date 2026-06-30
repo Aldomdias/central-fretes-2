@@ -766,6 +766,7 @@ export default function OportunidadeTransportadoraPage() {
   const [dataFim, setDataFim] = useState('');
   const [canal, setCanal] = useState('');
   const [limiteInput, setLimiteInput] = useState('4000');
+  const [refCompetencia, setRefCompetencia] = useState('2025-01'); // período de referência (ex: antes dos reajustes)
 
   const [status, setStatus] = useState('idle');
   const [progresso, setProgresso] = useState('');
@@ -916,6 +917,25 @@ export default function OportunidadeTransportadoraPage() {
       setProcessamentoUi((p) => ({ ...p, mensagem: 'Montando resultado por transportadora e origem...', percentual: 100 }));
       const baseNomes = base.map((t) => t.nome).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
+      // Carrega CT-es de referência para comparar % NF antes dos reajustes
+      let refMap = new Map(); // "normTransp|originKey" -> { pagoTotal, nfTotal, ctes }
+      if (refCompetencia) {
+        setProcessamentoUi((p) => ({ ...p, mensagem: `Carregando período de referência (${refCompetencia})...`, percentual: 97 }));
+        const ctesRef = await carregarCtes({ competencia: refCompetencia, limite: 8000 }).catch(() => []);
+        for (const c of ctesRef) {
+          const transpNorm = norm(c.transportadora || c.nome_transportadora || '');
+          const cidadeOrigem = c.cidade_origem || c.origem || '';
+          const ufOrigem = String(c.uf_origem || '').toUpperCase();
+          const originKey = `${norm(cidadeOrigem)}|${ufOrigem}`;
+          const k = `${transpNorm}|${originKey}`;
+          const e = refMap.get(k) || { pagoTotal: 0, nfTotal: 0, ctes: 0 };
+          e.pagoTotal += safeNum(c.valor_cte || c.frete_pago || c.valor_frete);
+          e.nfTotal += safeNum(c.valor_nf || c.nf_venda);
+          e.ctes += 1;
+          refMap.set(k, e);
+        }
+      }
+
       // Carrega reajustes para cruzar com o realizado
       const reajustesRaw = await carregarReajustesSupabase().catch(() => []);
       // Set de nomes normalizados de transportadoras com reajuste solicitado (qualquer status)
@@ -932,7 +952,7 @@ export default function OportunidadeTransportadoraPage() {
         }
       }
 
-      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes, reajustesSet, reajustesMap });
+      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes, reajustesSet, reajustesMap, refMap, refCompetencia });
       setStatus('concluido'); setProgresso(''); setProcessamentoUi({ titulo: '', mensagem: '', percentual: 0 });
     } catch (e) {
       console.error('[OportunidadeTransportadora]', e);
@@ -985,11 +1005,19 @@ export default function OportunidadeTransportadoraPage() {
     }
 
     // 2) calcula cada grupo
+    const refMap = bruto.refMap || new Map();
     let linhas = Array.from(grupos.values()).map((g) => {
       const calc = calcularGrupo(g.casos, scenarioMode, g.transportadoraReal);
+      // % NF de referência: busca pelo nome normalizado da transportadora × mesma origem
+      const transpNorm = norm(g.transportadoraReal);
+      const refKey = `${transpNorm}|${g.originKey}`;
+      const refEntry = refMap.get(refKey);
+      const freteNfPctRef = refEntry && refEntry.nfTotal > 0 ? (refEntry.pagoTotal / refEntry.nfTotal) * 100 : null;
       return {
         ...g,
         ...calc,
+        freteNfPctRef,
+        refCtes: refEntry?.ctes || 0,
         custoAtual: valorMetrica(metrica, calc.pagoTotal, calc.pesoTotal, calc.nfTotal, calc.ctes),
         custoMelhor: valorMetrica(metrica, calc.melhorTotal, calc.pesoTotal, calc.nfTotal, calc.ctes),
       };
@@ -1017,6 +1045,7 @@ export default function OportunidadeTransportadoraPage() {
       diagTotal: bruto.diagTotal,
       reajustesSet: bruto.reajustesSet || new Set(),
       reajustesMap: bruto.reajustesMap || new Map(),
+      refCompetencia: bruto.refCompetencia || '',
     };
   }, [bruto, filtros, excluidasSet, candidateMode, scenarioMode, metrica]);
 
@@ -1064,6 +1093,9 @@ export default function OportunidadeTransportadoraPage() {
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
           <label>Limite de CT-es <span style={{ fontWeight: 400, color: '#94a3b8', fontSize: '0.72rem' }}>(só sem mês/período)</span>
             <input type="number" value={limiteInput} onChange={(e) => setLimiteInput(e.target.value)} min={100} max={200000} step={1000} />
+          </label>
+          <label>Referência (% NF antes reajuste) <span style={{ fontWeight: 400, color: '#94a3b8', fontSize: '0.72rem' }}>mês base</span>
+            <input type="month" value={refCompetencia} onChange={(e) => setRefCompetencia(e.target.value)} />
           </label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
             <button className="primary" type="button" onClick={processar} disabled={status === 'carregando'}>
@@ -1188,8 +1220,9 @@ export default function OportunidadeTransportadoraPage() {
                     <th>Origem</th>
                     <th>UF</th>
                     <th>CT-es</th>
-                    <th>{metricaLabel} atual</th>
-                    <th>Melhor cenário</th>
+                    {resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="% frete sobre NF no período de referência (antes dos reajustes)">% NF {resultado.refCompetencia}</th>}
+                    <th title="% frete sobre NF no período atual">{metricaLabel} atual{metrica === 'freteNf' ? '' : ' / % NF'}</th>
+                    <th title="Melhor cenário simulado (R$) e % NF combinado">Melhor cenário</th>
                     <th>Redução R$</th>
                     <th>Redução %</th>
                     <th>Substituta</th>
@@ -1229,8 +1262,24 @@ export default function OportunidadeTransportadoraPage() {
                               <td>{l.cidadeOrigem || '—'}</td>
                               <td>{l.ufOrigem}</td>
                               <td>{fmtN(l.ctes)}</td>
-                              <td>{fmtMetrica(metrica, l.custoAtual)}</td>
-                              <td style={{ color: '#04C7A4', fontWeight: 600 }}>{fmtMetrica(metrica, l.custoMelhor)}</td>
+                              {resultado.refCompetencia && (
+                                <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 600, color: l.freteNfPctRef != null ? '#1e3a5f' : '#94a3b8' }} title={l.refCtes ? `${l.refCtes} CT-es em ${resultado.refCompetencia}` : 'Sem dados no período de referência'}>
+                                  {l.freteNfPctRef != null ? pct(l.freteNfPctRef) : '—'}
+                                  {l.freteNfPctRef != null && l.freteNfPctAtual != null && (
+                                    <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: l.freteNfPctAtual > l.freteNfPctRef ? '#9b1111' : '#047857' }}>
+                                      {l.freteNfPctAtual > l.freteNfPctRef ? `▲ +${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp` : `▼ ${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp`}
+                                    </span>
+                                  )}
+                                </td>
+                              )}
+                              <td>
+                                {fmtMetrica(metrica, l.custoAtual)}
+                                {metrica !== 'freteNf' && l.freteNfPctAtual != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>}
+                              </td>
+                              <td style={{ color: '#04C7A4', fontWeight: 600 }}>
+                                {fmtMetrica(metrica, l.custoMelhor)}
+                                {metrica !== 'freteNf' && l.chainNfPct != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(l.chainNfPct)} NF</span>}
+                              </td>
                               <td className={l.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: l.reducaoRs > TOLERANCIA ? 700 : 400 }}>{l.reducaoRs > TOLERANCIA ? fmt(l.reducaoRs) : '—'}</td>
                               <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>
                               <td style={{ fontSize: '0.8rem' }}>
@@ -1253,13 +1302,20 @@ export default function OportunidadeTransportadoraPage() {
                                   {/* % frete/NF atual vs melhor */}
                                   <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
                                     {[
-                                      { label: 'Frete % NF atual', val: l.freteNfPctAtual, cor: '#64748b' },
+                                      resultado.refCompetencia && l.freteNfPctRef != null
+                                        ? { label: `% NF referência (${resultado.refCompetencia})`, val: l.freteNfPctRef, cor: '#1e3a5f', sub: `${l.refCtes} CT-es` }
+                                        : null,
+                                      { label: 'Frete % NF atual', val: l.freteNfPctAtual, cor: '#64748b',
+                                        sub: resultado.refCompetencia && l.freteNfPctRef != null && l.freteNfPctAtual != null
+                                          ? (l.freteNfPctAtual > l.freteNfPctRef ? `▲ +${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp vs ref` : `▼ ${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp vs ref`)
+                                          : null },
                                       { label: 'Frete % NF melhor cenário', val: l.freteNfPctMelhor, cor: '#047857' },
                                       { label: 'Frete % NF combinado (CT-e a CT-e)', val: l.chainNfPct, cor: '#4E008F' },
-                                    ].map(({ label, val, cor }) => val != null && (
+                                    ].filter(Boolean).map(({ label, val, cor, sub }) => val != null && (
                                       <div key={label} style={{ background: '#fff', border: `1px solid #e2e8f0`, borderLeft: `3px solid ${cor}`, borderRadius: 6, padding: '6px 12px', minWidth: 140 }}>
                                         <div style={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 600, marginBottom: 1 }}>{label}</div>
                                         <div style={{ fontSize: '1.1rem', fontWeight: 800, color: cor }}>{pct(val)}</div>
+                                        {sub && <div style={{ fontSize: '0.65rem', color: cor, marginTop: 1 }}>{sub}</div>}
                                       </div>
                                     ))}
                                     {l.chainSemAtendimento > 0 && (
