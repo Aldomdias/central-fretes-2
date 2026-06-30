@@ -450,13 +450,16 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
   const corCinza = '#64748b';
 
   const linhasHtml = resultado.regioes.map((reg) => {
+    const regNfPct = reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0;
     const subTotal = `
       <tr>
         <td colspan="2" style="background:#ede9fe;padding:6px 10px;font-weight:800;color:${corPurple};letter-spacing:0.04em;font-size:11px">${reg.regiao}</td>
         <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corCinza};font-size:11px">${fmt(reg.pagoTotal)}</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:center;color:${corCinza};font-size:10px">—</td>
         <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corVerde};font-size:11px">${fmt(reg.melhorTotal)}</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:center;color:${corVerde};font-size:10px">—</td>
         <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corVermelho};font-size:11px">${fmt(reg.reducaoRs)}</td>
-        <td style="background:#ede9fe;padding:6px 10px;text-align:center;font-weight:700;color:${corVermelho};font-size:11px">${pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:center;font-weight:700;color:${corVermelho};font-size:11px">${pct(regNfPct)}</td>
         <td colspan="3" style="background:#ede9fe;padding:6px 10px;color:${corCinza};font-size:10px">${reg.linhas.length} linhas</td>
       </tr>`;
     const detalhes = reg.linhas.map((l) => {
@@ -468,12 +471,16 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
         : parcial
           ? `<span style="background:#fef08a;color:#854d0e;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px">PARCIAL ${l.cobertura}/${l.ctes}</span>`
           : '';
-      const prazo = `${l.prazoRealMedio != null ? l.prazoRealMedio.toFixed(1) + 'd' : '?'} → ${l.prazoMelhorMedio != null ? l.prazoMelhorMedio.toFixed(1) + 'd' : '?'}`;
+      const prazo = `${l.prazoRealMedio != null ? l.prazoRealMedio.toFixed(1) + 'd' : '?'} → ${l.chainPrazoMedio != null ? l.chainPrazoMedio.toFixed(1) + 'd' : (l.prazoMelhorMedio != null ? l.prazoMelhorMedio.toFixed(1) + 'd' : '?')}`;
+      const nfAtual = l.freteNfPctAtual != null ? `<span style="font-size:9px;color:${corCinza}"> (${pct(l.freteNfPctAtual)} NF)</span>` : '';
+      const nfMelhor = l.chainNfPct != null ? `<span style="font-size:9px;color:${corVerde}"> (${pct(l.chainNfPct)} NF)</span>` : (l.freteNfPctMelhor != null ? `<span style="font-size:9px;color:${corVerde}"> (${pct(l.freteNfPctMelhor)} NF)</span>` : '');
       return `<tr style="background:${bgRow}">
         <td style="padding:5px 10px;font-size:11px;font-weight:600;border-bottom:1px solid #f1f5f9">${l.transportadoraReal || '—'}</td>
         <td style="padding:5px 10px;font-size:11px;color:${corCinza};border-bottom:1px solid #f1f5f9">${l.cidadeOrigem || '—'} / ${l.ufOrigem}</td>
-        <td style="padding:5px 10px;font-size:11px;text-align:right;border-bottom:1px solid #f1f5f9">${fmt(l.pagoTotal)}</td>
-        <td style="padding:5px 10px;font-size:11px;text-align:right;color:${corVerde};font-weight:600;border-bottom:1px solid #f1f5f9">${fmt(l.melhorTotal)}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:right;border-bottom:1px solid #f1f5f9">${fmt(l.pagoTotal)}${nfAtual}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:center;border-bottom:1px solid #f1f5f9">${l.freteNfPctAtual != null ? `<b style="color:${corCinza}">${pct(l.freteNfPctAtual)}</b>` : '—'}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:right;color:${corVerde};font-weight:600;border-bottom:1px solid #f1f5f9">${fmt(l.chainCustoTotal ?? l.melhorTotal)}${nfMelhor}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:center;border-bottom:1px solid #f1f5f9">${l.chainNfPct != null ? `<b style="color:${corVerde}">${pct(l.chainNfPct)}</b>` : (l.freteNfPctMelhor != null ? `<b style="color:${corVerde}">${pct(l.freteNfPctMelhor)}</b>` : '—')}</td>
         <td style="padding:5px 10px;font-size:11px;text-align:right;color:${corVermelho};font-weight:700;border-bottom:1px solid #f1f5f9">${fmt(l.reducaoRs)}</td>
         <td style="padding:5px 10px;font-size:11px;text-align:center;color:${corVermelho};font-weight:600;border-bottom:1px solid #f1f5f9">${pct(l.reducaoPct)}</td>
         <td style="padding:5px 10px;font-size:11px;border-bottom:1px solid #f1f5f9">${l.substituta || '—'}${alertaBadge}</td>
@@ -551,8 +558,10 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
         <tr style="background:${corPurple}">
           <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Transportadora</th>
           <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Origem</th>
-          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Frete atual</th>
-          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Melhor cenário</th>
+          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Frete atual (R$)</th>
+          <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">% NF atual</th>
+          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Melhor cenário (R$)</th>
+          <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">% NF novo</th>
           <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Redução R$</th>
           <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">Red. %</th>
           <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Substituta</th>
