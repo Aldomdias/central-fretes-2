@@ -2217,10 +2217,30 @@ export default function TabelasNegociacaoPage() {
             <input value={form.transportadora} onChange={function(e) { var valor = e.target.value; setForm(function(p) { return Object.assign({}, p, { transportadora: valor, transportadora_base_nome: p.tipo_negociacao === 'REAJUSTE_TABELA_EXISTENTE' && !p.transportadora_base_nome ? valor : p.transportadora_base_nome }); }); }} placeholder="Ex: JADLOG" />
           </label>
           <label>Canal
-            <select value={form.canal} disabled={form.tipo_negociacao === 'TABELA_LOTACAO'} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { canal: e.target.value }); }); }}>
-              {form.tipo_negociacao === 'TABELA_LOTACAO' ? <option value="LOTACAO">LOTACAO</option> : null}
-              {CANAIS.map(function(c) { return <option key={c}>{c}</option>; })}
-            </select>
+            {form.tipo_negociacao === 'TABELA_LOTACAO' ? (
+              <select value="LOTACAO" disabled><option value="LOTACAO">LOTACAO</option></select>
+            ) : (
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '6px 2px' }}>
+                {CANAIS.filter(function(c) { return String(c).toUpperCase() !== 'LOTACAO'; }).map(function(c) {
+                  var atuais = String(form.canal || 'ATACADO').toUpperCase().split('+').map(function(x) { return x.trim(); }).filter(Boolean);
+                  var cu = String(c).toUpperCase();
+                  var marcado = atuais.indexOf(cu) >= 0;
+                  return (
+                    <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+                      <input type="checkbox" checked={marcado} onChange={function() {
+                        setForm(function(p) {
+                          var lista = String(p.canal || '').toUpperCase().split('+').map(function(x) { return x.trim(); }).filter(Boolean);
+                          var next = lista.indexOf(cu) >= 0 ? lista.filter(function(x) { return x !== cu; }) : lista.concat([cu]);
+                          return Object.assign({}, p, { canal: next.join('+') || 'ATACADO' });
+                        });
+                      }} />
+                      {c}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <small style={{ color: '#94a3b8' }}>Marque os dois (ATACADO + B2C) para uma tabela só que vale nos dois canais.</small>
           </label>
           <label>Tipo de negociacao
             <select value={form.tipo_negociacao} onChange={function(e) { setForm(function(p) { return ajustarFormPorTipoNegociacao(p, e.target.value); }); }}>
