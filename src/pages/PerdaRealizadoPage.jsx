@@ -35,16 +35,30 @@ function normUf(s) { return String(s || '').trim().toUpperCase(); }
 function safeNumber(v) { const n = Number(v || 0); return Number.isFinite(n) ? n : 0; }
 function chunkArray(arr, size) { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; }
 function normText(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase(); }
-// Nome compacto (s\u00f3 A-Z0-9) e casamento aproximado por "cont\u00e9m", para tratar
+// Nome compacto (s\u00f3 A-Z0-9) e casamento por tokens significativos, para tratar
 // varia\u00e7\u00f5es de raz\u00e3o social (ex.: "ATUAL CARGAS TRANSPORTES LTDA" x "ATUAL")
-// como a mesma transportadora \u2014 evita sugeri-la como substituta de si mesma.
+// como a mesma transportadora \u2014 sem casar por palavra gen\u00e9rica ("TRANSPORTE"
+// casaria tudo). Evita sugeri-la como substituta de si mesma.
 function compactNome(s) { return normText(s).replace(/[^A-Z0-9]/g, ''); }
+const PALAVRAS_GENERICAS_TRANSP = new Set([
+  'TRANSPORTE', 'TRANSPORTES', 'TRANSP', 'TRANSPORTADORA', 'LOGISTICA', 'LOG',
+  'LTDA', 'ME', 'EIRELI', 'EPP', 'SA', 'CARGAS', 'CARGA', 'ENCOMENDAS', 'EXPRESS',
+  'EXPRESSO', 'COMERCIO', 'SERVICOS', 'SERVICO', 'LIMITADA', 'RODOVIARIO',
+  'RODOVIARIOS', 'DISTRIBUIDORA', 'DISTRIBUICAO',
+]);
+function tokensSignificativos(nome) {
+  return normText(nome).split(/[^A-Z0-9]+/).filter((t) => t.length >= 3 && !PALAVRAS_GENERICAS_TRANSP.has(t));
+}
 function mesmaTransp(a, b) {
   const x = compactNome(a);
   const y = compactNome(b);
   if (!x || !y) return false;
   if (x === y) return true;
-  return (x.length >= 5 && y.includes(x)) || (y.length >= 5 && x.includes(y));
+  const ta = tokensSignificativos(a);
+  const tb = tokensSignificativos(b);
+  if (!ta.length || !tb.length) return false;
+  const [menor, maior] = ta.length <= tb.length ? [ta, new Set(tb)] : [tb, new Set(ta)];
+  return menor.every((t) => maior.has(t));
 }
 function incluiTexto(valor, filtro) { const f = normText(filtro); return !f || normText(valor).includes(f); }
 function selecionadosLista(value) { return Array.isArray(value) ? value : (value ? [value] : []); }

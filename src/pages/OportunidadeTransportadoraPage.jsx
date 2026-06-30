@@ -55,15 +55,33 @@ function norm(v) {
   return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+// Palavras genéricas de razão social que não identificam a transportadora —
+// não podem ser a única base de um casamento (senão "TRANSPORTE" casa tudo).
+const PALAVRAS_GENERICAS_TRANSP = new Set([
+  'TRANSPORTE', 'TRANSPORTES', 'TRANSP', 'TRANSPORTADORA', 'LOGISTICA', 'LOG',
+  'LTDA', 'ME', 'EIRELI', 'EPP', 'SA', 'CARGAS', 'CARGA', 'ENCOMENDAS', 'EXPRESS',
+  'EXPRESSO', 'COMERCIO', 'SERVICOS', 'SERVICO', 'LIMITADA', 'RODOVIARIO',
+  'RODOVIARIOS', 'DISTRIBUIDORA', 'DISTRIBUICAO',
+]);
+function tokensSignificativos(nome) {
+  return String(nome || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter((t) => t.length >= 3 && !PALAVRAS_GENERICAS_TRANSP.has(t));
+}
 // Mesma transportadora por casamento aproximado: cobre variações de razão social
-// (ex.: "ATUAL CARGAS TRANSPORTES LTDA" x cadastro "ATUAL"). Evita sugerir a
-// própria transportadora como substituta e permite achar o prazo da tabela dela.
+// (ex.: "ATUAL CARGAS TRANSPORTES LTDA" x cadastro "ATUAL") sem casar por palavra
+// genérica. Compara tokens significativos: os do nome menor têm de estar no maior.
 function mesmaTransportadora(a, b) {
   const x = norm(a);
   const y = norm(b);
   if (!x || !y) return false;
   if (x === y) return true;
-  return (x.length >= 5 && y.includes(x)) || (y.length >= 5 && x.includes(y));
+  const ta = tokensSignificativos(a);
+  const tb = tokensSignificativos(b);
+  if (!ta.length || !tb.length) return false;
+  const [menor, maior] = ta.length <= tb.length ? [ta, new Set(tb)] : [tb, new Set(ta)];
+  return menor.every((t) => maior.has(t));
 }
 function canalRealDe(cte) {
   return cte.canal_original && norm(cte.canal) === 'ADEFINIR'
