@@ -308,7 +308,9 @@ function simularTodas(cte, candidatas, ibgeOrigemReal, ibgeDestino, cidadeOrigem
     }
     const total = safeNum(r.valor_calculado);
     if (total <= 0) continue;
-    resultados.push({ transportadora: transp.nome, total, prazo: safeNum(r.detalhes_calculo?.rota_prazo) });
+    // temDestinoEspecifico: true quando o motor achou rota pelo IBGE destino (não só cidade genérica)
+    const temDestinoEspecifico = !!(r.detalhes_calculo?.ibge_destino || r.detalhes_calculo?.rota_ibge_destino);
+    resultados.push({ transportadora: transp.nome, total, prazo: safeNum(r.detalhes_calculo?.rota_prazo), temDestinoEspecifico });
   }
   resultados.sort((a, b) => a.total - b.total);
   return { resultados, statusCounts };
@@ -332,15 +334,41 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
   for (const c of casos) for (const q of c.candidatos) if (!ehPropria(q.transportadora)) carriersUnion.add(q.transportadora);
   const ranking = [];
   for (const nome of carriersUnion) {
-    let total = 0, cobertos = 0, prazoSoma = 0, prazoN = 0;
+    let total = 0, cobertos = 0, prazoSoma = 0, prazoN = 0, semEspecifico = 0;
     for (const c of casos) {
       const q = c.candMap.get(nome);
-      if (q && q.total > 0) { total += q.total; cobertos += 1; if (q.prazo > 0) { prazoSoma += q.prazo; prazoN += 1; } }
-      else { total += c.valorPago; if (c.prazoReal > 0) { prazoSoma += c.prazoReal; prazoN += 1; } }
+      if (q && q.total > 0) {
+        total += q.total; cobertos += 1;
+        if (q.prazo > 0) { prazoSoma += q.prazo; prazoN += 1; }
+        if (!q.temDestinoEspecifico) semEspecifico += 1;
+      } else { total += c.valorPago; if (c.prazoReal > 0) { prazoSoma += c.prazoReal; prazoN += 1; } }
     }
-    ranking.push({ transportadora: nome, total, cobertos, prazoMedio: prazoN > 0 ? prazoSoma / prazoN : null });
+    // semGranularidade: todos os CT-es cobertos calculados sem rota específica por destino
+    ranking.push({ transportadora: nome, total, cobertos, prazoMedio: prazoN > 0 ? prazoSoma / prazoN : null, semGranularidade: cobertos > 0 && semEspecifico === cobertos });
   }
   ranking.sort((a, b) => a.total - b.total);
+
+  // Cobertura combinada (greedy CT-e a CT-e): quem cobre o quê quando usamos a mais barata para cada entrega
+  const chainMap = new Map(); // transportadora -> { ctes, custo, prazoSoma, prazoN, nfSoma }
+  let chainSemAtendimento = 0, chainCustoSemAtend = 0, chainNfSemAtend = 0;
+  for (const c of casos) {
+    const best = c.candidatos.find((q) => !ehPropria(q.transportadora));
+    if (best && best.total > 0) {
+      const e = chainMap.get(best.transportadora) || { ctes: 0, custo: 0, prazoSoma: 0, prazoN: 0, nfSoma: 0 };
+      e.ctes += 1; e.custo += best.total; e.nfSoma += c.valorNf;
+      if (best.prazo > 0) { e.prazoSoma += best.prazo; e.prazoN += 1; }
+      chainMap.set(best.transportadora, e);
+    } else {
+      chainSemAtendimento += 1;
+      chainCustoSemAtend += c.valorPago;
+      chainNfSemAtend += c.valorNf;
+    }
+  }
+  const coverageChain = [...chainMap.entries()]
+    .map(([nome, e]) => ({ transportadora: nome, ctes: e.ctes, custo: e.custo, nfSoma: e.nfSoma, prazoMedio: e.prazoN > 0 ? e.prazoSoma / e.prazoN : null }))
+    .sort((a, b) => b.ctes - a.ctes);
+  const chainCustoTotal = coverageChain.reduce((s, e) => s + e.custo, 0) + chainCustoSemAtend;
+  const chainNfTotal = coverageChain.reduce((s, e) => s + e.nfSoma, 0) + chainNfSemAtend;
 
   let melhorTotal = pagoTotal, substituta = null, cobertura = 0, prazoMelhorSoma = 0, prazoMelhorN = 0;
 
@@ -383,12 +411,18 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
   return {
     ctes: casos.length,
     pagoTotal, melhorTotal, pesoTotal, nfTotal,
+    freteNfPctAtual: nfTotal > 0 ? (pagoTotal / nfTotal) * 100 : null,
+    freteNfPctMelhor: nfTotal > 0 ? (melhorTotal / nfTotal) * 100 : null,
     reducaoRs,
     reducaoPct: pagoTotal > 0 ? (reducaoRs / pagoTotal) * 100 : 0,
     substituta, cobertura,
     prazoRealMedio: prazoRealN > 0 ? prazoRealSoma / prazoRealN : null,
     prazoMelhorMedio: prazoMelhorN > 0 ? prazoMelhorSoma / prazoMelhorN : null,
     ranking: ranking.slice(0, 8),
+    coverageChain,
+    chainSemAtendimento,
+    chainCustoTotal,
+    chainNfPct: chainNfTotal > 0 ? (chainCustoTotal / chainNfTotal) * 100 : null,
   };
 }
 
@@ -550,7 +584,12 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
       UF: l.ufOrigem,
       'CT-es': l.ctes,
       'Frete atual (R$)': l.pagoTotal,
+      'Frete % NF atual': l.freteNfPctAtual != null ? l.freteNfPctAtual / 100 : '',
       'Melhor cenário (R$)': l.melhorTotal,
+      'Frete % NF melhor': l.freteNfPctMelhor != null ? l.freteNfPctMelhor / 100 : '',
+      'Combinado (R$)': l.chainCustoTotal != null ? l.chainCustoTotal : '',
+      'Frete % NF combinado': l.chainNfPct != null ? l.chainNfPct / 100 : '',
+      'Sem atendimento (CT-es)': l.chainSemAtendimento || 0,
       'Redução (R$)': l.reducaoRs,
       'Redução (%)': l.reducaoPct / 100,
       Substituta: l.substituta || '',
@@ -564,9 +603,10 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
   const ws = XLSX.utils.json_to_sheet(dados);
 
   // Formata colunas de moeda e percentual
+  // Colunas (0-based): 0=Região,1=Transp,2=Origem,3=UF,4=CTes,5=FreteAtualR$,6=FreteNFAtual%,7=MelhorR$,8=MelhorNF%,9=CombinadoR$,10=CombinadoNF%,11=SemAtend,12=ReducaoR$,13=Reducao%,...
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-  const colMoeda = [5, 6, 7]; // F, G, H (0-based)
-  const colPct = [8];          // I
+  const colMoeda = [5, 7, 9, 12];
+  const colPct   = [6, 8, 10, 13];
   for (let R = range.s.r + 1; R <= range.e.r; R++) {
     for (const C of colMoeda) {
       const addr = XLSX.utils.encode_cell({ r: R, c: C });
@@ -581,7 +621,8 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
   // Largura das colunas
   ws['!cols'] = [
     { wch: 12 }, { wch: 40 }, { wch: 24 }, { wch: 5 }, { wch: 8 },
-    { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 10 },
+    { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 14 },
+    { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 10 },
     { wch: 36 }, { wch: 18 }, { wch: 26 }, { wch: 12 }, { wch: 14 },
   ];
 
@@ -1149,43 +1190,122 @@ export default function OportunidadeTransportadoraPage() {
                             </tr>
                             {aberto && (
                               <tr>
-                                <td colSpan={10} style={{ background: '#faf5ff', padding: '12px 16px' }}>
-                                  <div style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: 8 }}>
-                                    Candidatas para <strong>{l.cidadeOrigem}/{l.ufOrigem}</strong> (custo total nos {fmtN(l.ctes)} CT-es do grupo, cobertura e prazo médio):
+                                <td colSpan={10} style={{ background: '#faf5ff', padding: '14px 16px' }}>
+
+                                  {/* % frete/NF atual vs melhor */}
+                                  <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+                                    {[
+                                      { label: 'Frete % NF atual', val: l.freteNfPctAtual, cor: '#64748b' },
+                                      { label: 'Frete % NF melhor cenário', val: l.freteNfPctMelhor, cor: '#047857' },
+                                      { label: 'Frete % NF combinado (CT-e a CT-e)', val: l.chainNfPct, cor: '#4E008F' },
+                                    ].map(({ label, val, cor }) => val != null && (
+                                      <div key={label} style={{ background: '#fff', border: `1px solid #e2e8f0`, borderLeft: `3px solid ${cor}`, borderRadius: 6, padding: '6px 12px', minWidth: 140 }}>
+                                        <div style={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 600, marginBottom: 1 }}>{label}</div>
+                                        <div style={{ fontSize: '1.1rem', fontWeight: 800, color: cor }}>{pct(val)}</div>
+                                      </div>
+                                    ))}
+                                    {l.chainSemAtendimento > 0 && (
+                                      <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderLeft: '3px solid #f97316', borderRadius: 6, padding: '6px 12px', minWidth: 140 }}>
+                                        <div style={{ fontSize: '0.68rem', color: '#9a3412', fontWeight: 600, marginBottom: 1 }}>Sem atendimento (combinado)</div>
+                                        <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#9a3412' }}>{l.chainSemAtendimento} CT-e{l.chainSemAtendimento > 1 ? 's' : ''}</div>
+                                      </div>
+                                    )}
                                   </div>
-                                  <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
+
+                                  {/* Cobertura combinada (cadeia greedy CT-e a CT-e) */}
+                                  {l.coverageChain && l.coverageChain.length > 0 && (
+                                    <div style={{ marginBottom: 12 }}>
+                                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#4E008F', marginBottom: 6 }}>
+                                        Cobertura combinada (cada CT-e vai para a mais barata disponível)
+                                        {l.chainSemAtendimento > 0 && <span style={{ color: '#9a3412', marginLeft: 8 }}>· {l.chainSemAtendimento} CT-e{l.chainSemAtendimento > 1 ? 's' : ''} sem nenhuma candidata</span>}
+                                      </div>
+                                      <table style={{ fontSize: '0.78rem', borderCollapse: 'collapse', width: '100%', maxWidth: 600 }}>
+                                        <thead>
+                                          <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                                            <th style={{ padding: '2px 8px' }}>Transportadora</th>
+                                            <th style={{ padding: '2px 8px', textAlign: 'center' }}>CT-es</th>
+                                            <th style={{ padding: '2px 8px', textAlign: 'right' }}>Custo</th>
+                                            <th style={{ padding: '2px 8px', textAlign: 'center' }}>Prazo médio</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {l.coverageChain.map((ch) => (
+                                            <tr key={ch.transportadora} style={{ background: '#f5f3ff' }}>
+                                              <td style={{ padding: '3px 8px', fontWeight: 600 }}>{ch.transportadora}</td>
+                                              <td style={{ padding: '3px 8px', textAlign: 'center' }}>{ch.ctes}/{l.ctes}</td>
+                                              <td style={{ padding: '3px 8px', textAlign: 'right', color: '#047857' }}>{fmt(ch.custo)}</td>
+                                              <td style={{ padding: '3px 8px', textAlign: 'center', color: '#64748b' }}>{ch.prazoMedio != null ? `${ch.prazoMedio.toFixed(1)}d` : '—'}</td>
+                                            </tr>
+                                          ))}
+                                          {l.chainSemAtendimento > 0 && (
+                                            <tr style={{ background: '#fff7ed' }}>
+                                              <td style={{ padding: '3px 8px', color: '#9a3412', fontStyle: 'italic' }}>Sem candidata</td>
+                                              <td style={{ padding: '3px 8px', textAlign: 'center', color: '#9a3412', fontWeight: 700 }}>{l.chainSemAtendimento}/{l.ctes}</td>
+                                              <td style={{ padding: '3px 8px', textAlign: 'right', color: '#94a3b8' }}>custo atual mantido</td>
+                                              <td style={{ padding: '3px 8px' }}></td>
+                                            </tr>
+                                          )}
+                                          <tr style={{ background: '#e0e7ff', fontWeight: 700 }}>
+                                            <td style={{ padding: '3px 8px', color: '#4E008F' }}>TOTAL combinado</td>
+                                            <td style={{ padding: '3px 8px', textAlign: 'center', color: '#4E008F' }}>{l.ctes - l.chainSemAtendimento}/{l.ctes} cobertos</td>
+                                            <td style={{ padding: '3px 8px', textAlign: 'right', color: '#4E008F' }}>{fmt(l.chainCustoTotal)}</td>
+                                            <td style={{ padding: '3px 8px', textAlign: 'center', color: '#4E008F' }}>{l.chainNfPct != null ? pct(l.chainNfPct) + ' NF' : '—'}</td>
+                                          </tr>
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+
+                                  {/* Candidatas — ranking por custo total */}
+                                  <div style={{ fontSize: '0.78rem', color: '#64748b', marginBottom: 6 }}>
+                                    Candidatas para <strong>{l.cidadeOrigem}/{l.ufOrigem}</strong> — ranking por custo total (não cobertos ficam no pago atual):
+                                  </div>
+                                  <table style={{ width: '100%', fontSize: '0.78rem', borderCollapse: 'collapse' }}>
                                     <thead>
                                       <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
-                                        <th style={{ padding: '2px 8px' }}>#</th><th style={{ padding: '2px 8px' }}>Transportadora</th>
-                                        <th style={{ padding: '2px 8px' }}>Custo total</th><th style={{ padding: '2px 8px' }}>vs. pago</th>
-                                        <th style={{ padding: '2px 8px' }}>Cobertura</th><th style={{ padding: '2px 8px' }}>Prazo médio</th>
+                                        <th style={{ padding: '2px 8px' }}>#</th>
+                                        <th style={{ padding: '2px 8px' }}>Transportadora</th>
+                                        <th style={{ padding: '2px 8px', textAlign: 'right' }}>Custo total</th>
+                                        <th style={{ padding: '2px 8px', textAlign: 'right' }}>vs. pago</th>
+                                        <th style={{ padding: '2px 8px', textAlign: 'center' }}>Cobertura</th>
+                                        <th style={{ padding: '2px 8px', textAlign: 'center' }}>Prazo médio</th>
+                                        <th style={{ padding: '2px 8px' }}>Obs</th>
                                       </tr>
                                     </thead>
                                     <tbody>
                                       <tr style={{ background: '#fff' }}>
                                         <td style={{ padding: '2px 8px' }}>—</td>
                                         <td style={{ padding: '2px 8px', fontWeight: 700 }}>{l.transportadoraReal} (pago real)</td>
-                                        <td style={{ padding: '2px 8px' }}>{fmt(l.pagoTotal)}</td>
+                                        <td style={{ padding: '2px 8px', textAlign: 'right' }}>{fmt(l.pagoTotal)}</td>
                                         <td style={{ padding: '2px 8px' }}>—</td>
-                                        <td style={{ padding: '2px 8px' }}>{fmtN(l.ctes)}/{fmtN(l.ctes)}</td>
-                                        <td style={{ padding: '2px 8px' }}>{l.prazoRealMedio != null ? `${l.prazoRealMedio.toFixed(1)}d` : '—'}</td>
+                                        <td style={{ padding: '2px 8px', textAlign: 'center' }}>{fmtN(l.ctes)}/{fmtN(l.ctes)}</td>
+                                        <td style={{ padding: '2px 8px', textAlign: 'center' }}>{l.prazoRealMedio != null ? `${l.prazoRealMedio.toFixed(1)}d` : '—'}</td>
+                                        <td style={{ padding: '2px 8px' }}></td>
                                       </tr>
                                       {l.ranking.map((r, i) => {
                                         const dif = l.pagoTotal - r.total;
+                                        const coberturaOk = r.cobertos >= l.ctes;
                                         return (
                                           <tr key={r.transportadora} style={{ background: i === 0 ? '#ecfdf5' : 'transparent' }}>
                                             <td style={{ padding: '2px 8px' }}>{i + 1}</td>
                                             <td style={{ padding: '2px 8px', fontWeight: i === 0 ? 700 : 400 }}>{r.transportadora}</td>
-                                            <td style={{ padding: '2px 8px' }}>{fmt(r.total)}</td>
-                                            <td style={{ padding: '2px 8px', color: dif > 0 ? '#04C7A4' : '#9b1111' }}>{dif > 0 ? `−${fmt(dif)}` : `+${fmt(-dif)}`}</td>
-                                            <td style={{ padding: '2px 8px' }}>{fmtN(r.cobertos)}/{fmtN(l.ctes)}</td>
-                                            <td style={{ padding: '2px 8px' }}>{r.prazoMedio != null ? `${r.prazoMedio.toFixed(1)}d` : '—'}</td>
+                                            <td style={{ padding: '2px 8px', textAlign: 'right' }}>{fmt(r.total)}</td>
+                                            <td style={{ padding: '2px 8px', textAlign: 'right', color: dif > 0 ? '#04C7A4' : '#9b1111' }}>{dif > 0 ? `−${fmt(dif)}` : `+${fmt(-dif)}`}</td>
+                                            <td style={{ padding: '2px 8px', textAlign: 'center', color: coberturaOk ? '#047857' : '#9a3412', fontWeight: coberturaOk ? 400 : 700 }}>{fmtN(r.cobertos)}/{fmtN(l.ctes)}</td>
+                                            <td style={{ padding: '2px 8px', textAlign: 'center', color: '#64748b' }}>{r.prazoMedio != null ? `${r.prazoMedio.toFixed(1)}d` : '—'}</td>
+                                            <td style={{ padding: '2px 8px' }}>
+                                              {r.semGranularidade && <span title="Cálculo sem rota específica por destino — pode não refletir o preço real" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 3, padding: '1px 5px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help' }}>⚠ SEM ROTA ESPECÍFICA</span>}
+                                              {!coberturaOk && !r.semGranularidade && <span style={{ color: '#94a3b8', fontSize: '0.68rem' }}>cobre parcial</span>}
+                                            </td>
                                           </tr>
                                         );
                                       })}
-                                      {!l.ranking.length && <tr><td colSpan={6} style={{ padding: '4px 8px', color: '#94a3b8' }}>Nenhuma candidata com tabela na mesma origem para este modo.</td></tr>}
+                                      {!l.ranking.length && <tr><td colSpan={7} style={{ padding: '4px 8px', color: '#94a3b8' }}>Nenhuma candidata com tabela na mesma origem para este modo.</td></tr>}
                                     </tbody>
                                   </table>
+                                  <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: 6 }}>
+                                    ⚠ SEM ROTA ESPECÍFICA = transportadora calculada sem taxa por destino (tarifa geral) — verificar tabela antes de negociar.
+                                  </div>
                                 </td>
                               </tr>
                             )}
