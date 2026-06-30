@@ -1532,6 +1532,9 @@ function expandirCanalCadastroDb(canalBruto) {
 function canalCompativelDb(canalBase = '', canalFiltro = '') {
   const filtro = normalizarCanalDb(canalFiltro);
   if (!filtro) return true;
+  // Filtrar POR "AMBOS"/"TODOS" aceita qualquer canal cadastrado (simétrico ao
+  // base AMBOS) — evita o caso de ninguém casar quando o filtro é AMBOS.
+  if (filtro === 'AMBOS' || filtro === 'TODOS') return true;
   const base = normalizarCanalDb(canalBase);
   if (!base) return false;
   // Canal AMBOS ou múltiplos canais separados por + atendem qualquer canal
@@ -2070,7 +2073,9 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
 
     const pares = (origensAlvo || [])
       .filter((item) => canalCompativelDb(item.canal, canal))
-      .map((item) => ({ origem: item.cidade, canal: item.canal }));
+      // Usa o canal da SIMULAÇÃO (não o "AMBOS" cru da origem) para buscar os
+      // concorrentes — senão filtraria concorrentes por "AMBOS" e ninguém casa.
+      .map((item) => ({ origem: item.cidade, canal: canal || item.canal }));
 
     const bases = [];
     const paresUnicos = Array.from(
