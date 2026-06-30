@@ -116,6 +116,8 @@ function canalCompativel(canalTabela, canalCte) {
   const cte = canalCategoria(canalCte);
   if (cte === 'A DEFINIR') return false;
   if (canalAtendeTodos(canalTabela)) return true;
+  // Simétrico: se o lado do filtro/CT-e for "AMBOS", aceita qualquer tabela.
+  if (canalAtendeTodos(canalCte)) return true;
 
   const tabela = canalCategoria(canalTabela);
   if (!cte) return true;

@@ -21,6 +21,21 @@ function uniqueCities(items) {
 
 const CANAIS_DISPONIVEIS = ['ATACADO', 'B2C'];
 
+function canaisOrigem(origem = {}) {
+  const raw = Array.isArray(origem.canal) ? origem.canal.join('+') : String(origem.canal || 'ATACADO');
+  if (raw.toUpperCase() === 'AMBOS') return ['ATACADO', 'B2C'];
+  return raw.split('+').map((canal) => canal.trim().toUpperCase()).filter(Boolean);
+}
+
+function canalOrigemLabel(origem = {}) {
+  return canaisOrigem(origem).join(' + ') || 'ATACADO';
+}
+
+function canalOrigemValor(canais = []) {
+  const lista = [...new Set((canais || []).map((canal) => String(canal || '').trim().toUpperCase()).filter(Boolean))];
+  return lista.length ? lista.join('+') : 'ATACADO';
+}
+
 function adicionarCanalDisponivel(canal) {
   if (canal && !CANAIS_DISPONIVEIS.includes(canal)) {
     CANAIS_DISPONIVEIS.push(canal);
@@ -29,7 +44,7 @@ function adicionarCanalDisponivel(canal) {
 
 function uniqueCanals(items) {
   return Array.from(new Set(
-    items.flatMap((item) => (item.origens || []).map((origem) => origem.canal || 'ATACADO').filter(Boolean))
+    items.flatMap((item) => (item.origens || []).flatMap(canaisOrigem))
   )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
@@ -130,15 +145,22 @@ function OrigemModal({ open, initialValue, onSave, onClose }) {
   const baseGeneralidades = { incideIcms: false, aliquotaIcms: 0, adValorem: 0, adValoremMinimo: 0, pedagio: 0, gris: 0, grisMinimo: 0, tas: 0, ctrc: 0, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: '' };
   const [form, setForm] = useState(initialValue || { cidade: '', canal: 'ATACADO', status: 'Ativa', rotas: [], cotacoes: [], taxasEspeciais: [], generalidades: baseGeneralidades });
   React.useEffect(() => setForm(initialValue || { cidade: '', canal: 'ATACADO', status: 'Ativa', rotas: [], cotacoes: [], taxasEspeciais: [], generalidades: baseGeneralidades }), [initialValue, open]);
+  const selecionados = canaisOrigem(form);
+  const toggleCanal = (canal) => {
+    const next = selecionados.includes(canal)
+      ? selecionados.filter((item) => item !== canal)
+      : [...selecionados, canal];
+    setForm((f) => ({ ...f, canal: canalOrigemValor(next) }));
+  };
 
   return (
     <Modal open={open} title={initialValue?.id ? 'Editar Origem' : 'Nova Origem'} onClose={onClose}>
       <div className="form-grid three">
         <div className="field"><label>Cidade</label><input value={form.cidade} onChange={(e) => setForm((f) => ({ ...f, cidade: e.target.value }))} /></div>
-        <div className="field"><label>Canal</label><select value={form.canal} onChange={(e) => setForm((f) => ({ ...f, canal: e.target.value }))}><option>ATACADO</option><option>B2C</option><option value="AMBOS">AMBOS (ATACADO + B2C)</option></select></div>
+        <div className="field"><label>Canais</label><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{CANAIS_DISPONIVEIS.map((canal) => <label key={canal} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}><input type="checkbox" checked={selecionados.includes(canal)} onChange={() => toggleCanal(canal)} />{canal}</label>)}</div></div>
         <div className="field"><label>Status</label><select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}><option>Ativa</option><option>Inativa</option></select></div>
       </div>
-      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave(form)}>Salvar</button></div>
+      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave({ ...form, canal: canalOrigemValor(selecionados) })} disabled={!selecionados.length}>Salvar</button></div>
     </Modal>
   );
 }
@@ -411,7 +433,7 @@ function TransportadorasList({ items, onOpen, store }) {
       const resumo = buildResumoTransportadora(item);
       const nomeMatch = !termoBusca || normalizeText(item.nome).includes(termoBusca);
       const cidadeMatch = !cidadeNormalizada || (item.origens || []).some((origem) => normalizeText(origem.cidade) === cidadeNormalizada);
-      const canalMatch = !canalNormalizado || (item.origens || []).some((origem) => { const c = normalizeText(origem.canal || 'ATACADO'); return c === canalNormalizado || c === 'ambos'; });
+      const canalMatch = !canalNormalizado || (item.origens || []).some((origem) => canaisOrigem(origem).some((canal) => normalizeText(canal) === canalNormalizado));
       const coberturaMatch = !coberturaNormalizada || normalizeFiltroStatus(resumo.cobertura) === coberturaNormalizada;
       return nomeMatch && cidadeMatch && canalMatch && coberturaMatch;
     });
@@ -518,7 +540,7 @@ function TransportadorasList({ items, onOpen, store }) {
               : 'list-card';
           return (
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
-              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).map(o=>o.canal||'ATACADO'))]; const temAtacado = cs.some(c=>c==='ATACADO'||c.includes('ATACADO')||c.toUpperCase()==='AMBOS'); const temB2c = cs.some(c=>c==='B2C'||c.includes('B2C')||c.toUpperCase()==='AMBOS'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
@@ -620,11 +642,11 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
               : 'list-card';
           return (
             <div key={origem.id} className={cardClass} onClick={() => onOpenOrigin(origem.id)}>
-              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: origem.canal==='B2C'?'#dbeafe': (origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#ede9fe':'#dcfce7',color:origem.canal==='B2C'?'#1d4ed8':(origem.canal||'').includes('+') || (origem.canal||'').toUpperCase()==='AMBOS'?'#6d28d9':'#166534'}}>{(origem.canal||'ATACADO').replace('+',' + ')}</span></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
+              <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
                 <select
-                  value={(() => { const c = (origem.canal || 'ATACADO').toUpperCase(); return c === 'B2C' ? 'B2C' : (c === 'AMBOS' || c.includes('+')) ? 'AMBOS' : 'ATACADO'; })()}
+                  value={canalOrigemValor(canaisOrigem(origem))}
                   onChange={(e) => store.atualizarCanalOrigem(transportadora.id, origem.id, e.target.value)}
                   disabled={!transportadora.detalheCarregado}
                   title={transportadora.detalheCarregado ? 'Canal desta origem (troca direto, sem abrir)' : 'Abra a transportadora para carregar as rotas antes de trocar o canal'}
@@ -632,7 +654,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
                 >
                   <option value="ATACADO">ATACADO</option>
                   <option value="B2C">B2C</option>
-                  <option value="AMBOS">AMBOS</option>
+                  <option value="ATACADO+B2C">ATACADO + B2C</option>
                 </select>
                 <button className="btn-link inline-btn" onClick={() => setInconsistenciasOpen(origem.id)}>Ver inconsistências</button>
                 <button className="btn-link inline-btn" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar Verum</button>
@@ -652,10 +674,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
 }
 
 function CanalTab({ transportadoraId, origem, store }) {
-  const canaisAtivos = Array.isArray(origem.canal)
-    ? origem.canal
-    : (origem.canal || 'ATACADO').split('+').map(c => c.trim()).filter(Boolean);
-
+  const canaisAtivos = canaisOrigem(origem);
   const [selecionados, setSelecionados] = useState(canaisAtivos);
   const [novoCanal, setNovoCanal] = useState('');
 
@@ -674,8 +693,7 @@ function CanalTab({ transportadoraId, origem, store }) {
   };
 
   const salvar = () => {
-    const canalFinal = selecionados.length === 1 ? selecionados[0] : selecionados.join('+');
-    store.salvarOrigem(transportadoraId, { ...origem, canal: canalFinal });
+    store.salvarOrigem(transportadoraId, { ...origem, canal: canalOrigemValor(selecionados) });
   };
 
   return (
@@ -711,7 +729,7 @@ function CanalTab({ transportadoraId, origem, store }) {
       </div>
       <div className="actions-right top-space">
         <div style={{ fontSize: 12, color: 'var(--muted)', marginRight: 'auto' }}>
-          Canal atual: <strong>{selecionados.join(' + ') || 'nenhum'}</strong>
+          Canal atual: <strong>{canalOrigemValor(selecionados).replace('+', ' + ')}</strong>
         </div>
         <button className="btn-primary" onClick={salvar} disabled={!selecionados.length}>
           Salvar Canal
@@ -750,7 +768,7 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
   return (
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← {transportadora.nome}</button>
-      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{(origem.canal||'ATACADO').split('+').join(' + ')}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><span className="status-pill dark">{origem.status}</span></div></div>
+      <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><span className="status-pill dark">{origem.status}</span></div></div>
       <div className="tabs-row"><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
       {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}

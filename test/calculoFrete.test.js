@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { simularPorTransportadora } from '../src/utils/calculoFrete.js';
+import { analisarTransportadoraPorGrade, simularPorTransportadora } from '../src/utils/calculoFrete.js';
 
 function tabela(nome, canal, freteMinimo) {
   return {
@@ -64,4 +64,25 @@ test('ranking nao duplica a mesma transportadora na mesma origem destino e faixa
   assert.equal(resultado[0].transportadora, 'TOTAL EXPRESS');
   assert.equal(resultado[0].ranking, 2);
   assert.equal(resultado[0].perdeuPara, 'BRASIL WEB');
+});
+
+test('analise de transportadora rankeia AMBOS junto com concorrentes do canal', () => {
+  const resultado = analisarTransportadoraPorGrade({
+    transportadoras: [
+      tabela('BRASIL WEB', 'B2C', 61.35),
+      tabela('WM', 'AMBOS', 68.18),
+    ],
+    nomeTransportadora: 'WM',
+    canal: 'B2C',
+    origem: 'Itajai',
+    grade: [{ peso: 10, valorNF: 1200 }],
+    cidadePorIbge: new Map([['3518800', 'Guarulhos/SP']]),
+  });
+
+  assert.equal(resultado.rotasAvaliadas, 1);
+  assert.equal(resultado.vitorias, 0);
+  assert.equal(resultado.aderencia, 0);
+  assert.equal(resultado.detalhes[0].ranking, 2);
+  assert.equal(resultado.detalhes[0].perdeuPara, 'BRASIL WEB');
+  assert.equal(resultado.detalhes[0].canal, 'B2C');
 });

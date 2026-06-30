@@ -82,6 +82,9 @@ function canalAtendeTodos(canalTabela) {
 
 function canalCompativel(canalTabela, canalFiltro) {
   if (!canalFiltro) return true;
+  // Simétrico: filtrar POR "AMBOS"/"TODOS" aceita qualquer tabela, e tabela
+  // "AMBOS" atende qualquer filtro. Evita isolar a transportadora AMBOS.
+  if (canalAtendeTodos(canalFiltro)) return true;
   if (canalAtendeTodos(canalTabela)) return true;
   const tabela = canalCategoria(canalTabela);
   const filtro = canalCategoria(canalFiltro);
@@ -400,6 +403,11 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
   };
 }
 
+function itemComCanalSimulado(item, canal) {
+  const canalSimulacao = canalCategoria(canal);
+  return item && canalSimulacao ? { ...item, canal: canalSimulacao } : item;
+}
+
 function rankearPorChave(resultados = []) {
   const grupos = new Map();
   resultados.forEach((item) => {
@@ -440,8 +448,6 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
   const valorNF = toNumber(filtros.valorNF);
   const cubagem = toNumber(filtros.cubagem);
   const destinoNormalizado = normalizeText(filtros.destinoCodigo);
-  const canalSimulacao = canalCategoria(filtros.canal);
-
   return (transportadoras || []).flatMap((transportadora) =>
     (transportadora.origens || [])
       .filter((origem) => canalCompativel(origem.canal, filtros.canal))
@@ -455,7 +461,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
           })
           .map((rota) => {
             const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal });
-            return item && canalSimulacao ? { ...item, canal: canalSimulacao } : item;
+            return itemComCanalSimulado(item, filtros.canal);
           })
           .filter(Boolean),
       ),
@@ -554,7 +560,7 @@ export function analisarTransportadoraPorGrade({ transportadoras, nomeTransporta
               gradeCanal: [linha],
             });
 
-            if (item) resultados.push(item);
+            if (item) resultados.push(itemComCanalSimulado(item, canal));
           });
         });
     });
@@ -644,7 +650,7 @@ export function analisarOrigemPorGrade({ transportadoras, canal, origem = '', uf
               gradeCanal: [linha],
             });
 
-            if (item) resultados.push(item);
+            if (item) resultados.push(itemComCanalSimulado(item, canal));
           });
         });
     });
@@ -1276,7 +1282,7 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
         });
 
         if (item) {
-          cenarios.push(item);
+          cenarios.push(itemComCanalSimulado(item, canalLinha));
         } else {
           encontrouDestinoSemCotacao = true;
         }

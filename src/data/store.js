@@ -42,10 +42,13 @@ function safeRandomId() {
 }
 
 function normalizeOrigem(origem = {}) {
+  const canalNormalizado = String(origem.canal || 'ATACADO').toUpperCase() === 'AMBOS'
+    ? 'ATACADO+B2C'
+    : (origem.canal || 'ATACADO');
   return {
     ...origem,
     id: origem.id ?? safeRandomId(),
-    canal: origem.canal || 'ATACADO',
+    canal: canalNormalizado,
     status: origem.status || 'Ativa',
     generalidades: mergeGeneralidades(origem.generalidades),
     rotas: Array.isArray(origem.rotas)
@@ -640,12 +643,13 @@ export function useFreteStore() {
       // Atualiza só o canal da origem (merge), preservando rotas/cotações/taxas.
       // Usado para trocar o canal direto no card, sem abrir o formulário.
       atualizarCanalOrigem(transportadoraId, origemId, canal) {
+        const canalNormalizado = String(canal || 'ATACADO').toUpperCase() === 'AMBOS' ? 'ATACADO+B2C' : canal;
         aplicarAlteracao(
           (prev) =>
             prev.map((t) => (
               t.id !== transportadoraId
                 ? t
-                : { ...t, origens: t.origens.map((o) => (o.id !== origemId ? o : { ...o, canal })) }
+                : { ...t, origens: t.origens.map((o) => (o.id !== origemId ? o : { ...o, canal: canalNormalizado })) }
             )),
           'origem',
           'origem'
