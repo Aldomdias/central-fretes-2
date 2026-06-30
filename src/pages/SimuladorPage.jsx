@@ -134,6 +134,59 @@ function canalFiltroRealizadoSim(canal = '') {
 
 // Uma origem do CADASTRO atende o canal alvo? "AMBOS" (ou "ATACADO+B2C",
 // "ATACADO E B2C") atende qualquer canal — mesma regra dos motores de cálculo.
+// Combobox de seleção única com busca — substitui o <datalist> nativo (que
+// renderiza uma lista enorme e ruim de filtrar).
+function ComboBuscavel({ value, onChange, opcoes = [], placeholder, onSelecionar }) {
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const fora = (e) => { if (ref.current && !ref.current.contains(e.target)) setAberto(false); };
+    document.addEventListener('mousedown', fora);
+    return () => document.removeEventListener('mousedown', fora);
+  }, []);
+
+  const termo = busca.trim().toLowerCase();
+  const filtradas = termo ? opcoes.filter((o) => String(o).toLowerCase().includes(termo)) : opcoes;
+
+  const escolher = (o) => {
+    onChange(o);
+    onSelecionar?.(o);
+    setAberto(false);
+    setBusca('');
+  };
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <input
+        value={aberto ? busca : value}
+        onChange={(e) => { setBusca(e.target.value); onChange(e.target.value); if (!aberto) setAberto(true); }}
+        onFocus={() => { setBusca(''); setAberto(true); }}
+        placeholder={placeholder}
+        autoComplete="off"
+      />
+      {aberto ? (
+        <div style={{ position: 'absolute', zIndex: 40, top: '100%', left: 0, right: 0, marginTop: 4, maxHeight: 260, overflowY: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+          {filtradas.slice(0, 300).map((o) => (
+            <div
+              key={o}
+              onMouseDown={() => escolher(o)}
+              style={{ padding: '7px 10px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', background: o === value ? '#eff6ff' : '#fff', fontWeight: o === value ? 700 : 500 }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f5f9'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = o === value ? '#eff6ff' : '#fff'; }}
+            >
+              {o}
+            </div>
+          ))}
+          {!filtradas.length ? <div style={{ padding: '8px 10px', fontSize: 12, color: '#94a3b8' }}>Nada encontrado.</div> : null}
+          {filtradas.length > 300 ? <div style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>Mostrando 300. Refine a busca.</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function canalOrigemAtende(origemCanal, canalAlvo) {
   if (!canalAlvo) return true;
   const c = String(origemCanal || '').toUpperCase();
@@ -6129,10 +6182,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
           </div>
           <div className="sim-form-grid sim-grid-5">
             <label>Transportadora
-              <input list="transportadoras-analise-lista" value={transportadoraAnalise} onChange={(e) => { setTransportadoraAnalise(e.target.value); setOrigemAnalise(''); }} placeholder="Digite a transportadora" />
-              <datalist id="transportadoras-analise-lista">
-                {transportadorasPorCanalAnalise.map((item) => <option key={item} value={item} />)}
-              </datalist>
+              <ComboBuscavel
+                value={transportadoraAnalise}
+                opcoes={transportadorasPorCanalAnalise}
+                placeholder="Digite a transportadora"
+                onChange={(v) => { setTransportadoraAnalise(v); setOrigemAnalise(''); }}
+              />
               {!transportadorasPorCanalAnalise.length ? <small>Nenhuma transportadora cadastrada neste canal.</small> : null}
             </label>
             <label>Canal
