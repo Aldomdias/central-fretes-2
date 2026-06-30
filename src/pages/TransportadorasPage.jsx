@@ -279,8 +279,18 @@ function buildResumoTransportadora(transportadora) {
 
 function GeneralidadesTab({ transportadoraId, origem, store }) {
   const [form, setForm] = useState({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) });
+  const [feedback, setFeedback] = useState('');
   React.useEffect(() => setForm({ ...DEFAULT_GENERALIDADES, ...(origem.generalidades || {}) }), [origem]);
-  const update = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
+  const update = (field, value) => { setForm((prev) => ({ ...prev, [field]: value })); setFeedback(''); };
+
+  const salvar = () => {
+    try {
+      store.salvarGeneralidades(transportadoraId, origem.id, form);
+      setFeedback('ok');
+    } catch (e) {
+      setFeedback(`erro:${e?.message || 'Erro ao salvar generalidades.'}`);
+    }
+  };
 
   return (
     <div className="tab-panel">
@@ -300,7 +310,11 @@ function GeneralidadesTab({ transportadoraId, origem, store }) {
         </div>
         <div className="field full-span"><label>Observações</label><input value={form.observacoes} onChange={(e) => update('observacoes', e.target.value)} /></div>
       </div>
-      <div className="actions-right top-space"><button className="btn-primary" onClick={() => store.salvarGeneralidades(transportadoraId, origem.id, form)}>Salvar Generalidades</button></div>
+      <div className="actions-right top-space" style={{ alignItems: 'center', gap: 12 }}>
+        {feedback === 'ok' ? <span style={{ color: '#166534', fontWeight: 600, fontSize: 13 }}>✓ Generalidades salvas. Clique em “Salvar alterações” no topo para gravar no Supabase.</span> : null}
+        {feedback.startsWith('erro:') ? <span style={{ color: '#b91c1c', fontWeight: 600, fontSize: 13 }}>{feedback.slice(5)}</span> : null}
+        <button className="btn-primary" onClick={salvar}>Salvar Generalidades</button>
+      </div>
     </div>
   );
 }
