@@ -185,6 +185,17 @@ function nomesPorOrigem(idx, ibgeOrigem7, cidadeCteNorm, cache) {
 
 // Carrega CT-es do realizado respeitando recorte (igual à Oportunidade de Origem).
 const LIMITE_MAX_CT = 200000; // trava de segurança para evitar simulações longas demais no browser
+const MSG_SEM_CTES = 'Nenhum CT-e encontrado para os filtros selecionados.';
+
+function mensagemAmigavelErro(error) {
+  const message = String(error?.message || error || '');
+  if (/Nenhum CT-e encontrado/i.test(message)) return MSG_SEM_CTES;
+  if (/column .* does not exist|Erro ao carregar CT-es|Supabase|SQL/i.test(message)) {
+    return 'Nao foi possivel carregar os dados da analise. Revise os filtros e tente novamente.';
+  }
+  return message || 'Nao foi possivel concluir a analise.';
+}
+
 async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 4000, onProgress }) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   const supabase = getSupabaseClient();
@@ -461,7 +472,7 @@ export default function OportunidadeTransportadoraPage() {
         limite: Number(limiteInput) || 4000,
         onProgress: ({ carregados }) => setProgresso(`Carregando CT-es... ${carregados}`),
       });
-      if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
+      if (!ctes.length) throw new Error(MSG_SEM_CTES);
 
       const casos = [];
       const carriersByOrigin = new Map();
@@ -531,7 +542,7 @@ export default function OportunidadeTransportadoraPage() {
       setStatus('concluido'); setProgresso('');
     } catch (e) {
       console.error('[OportunidadeTransportadora]', e);
-      setErro(`${e.message || e}`);
+      setErro(mensagemAmigavelErro(e));
       setStatus('erro'); setProgresso('');
     }
   }

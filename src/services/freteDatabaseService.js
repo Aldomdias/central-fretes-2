@@ -537,7 +537,7 @@ export async function carregarBaseCompletaDb() {
     await Promise.all([
       fetchAllRows(supabase, 'transportadoras', 'nome', true),
       fetchAllRows(supabase, 'origens', 'cidade', true),
-      fetchAllRows(supabase, 'generalidades'),
+      fetchAllRows(supabase, 'generalidades', 'origem_id', true),
       fetchAllRows(supabase, 'rotas'),
       fetchAllRows(supabase, 'cotacoes'),
       fetchAllRows(supabase, 'taxas_especiais'),
