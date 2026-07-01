@@ -563,7 +563,7 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
         <tr style="background:${corPurple}">
           <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Transportadora</th>
           <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Origem</th>
-          <th style="padding:7px 10px;text-align:center;color:#93c5fd;font-size:10px;font-weight:700">% NF jan/26</th>
+          <th style="padding:7px 10px;text-align:center;color:#93c5fd;font-size:10px;font-weight:700">% NF ${resultado.refCompetencia || 'ref'}</th>
           <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Frete atual (R$)</th>
           <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">% NF atual</th>
           <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">Δ jan→atual</th>
@@ -610,7 +610,7 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
       Origem: l.cidadeOrigem || '',
       UF: l.ufOrigem,
       'CT-es': l.ctes,
-      '% NF referência (jan)': l.freteNfPctRef != null ? l.freteNfPctRef / 100 : '',
+      [`% NF ref (${resultado.refCompetencia || 'ref'})`]: l.freteNfPctRef != null ? l.freteNfPctRef / 100 : '',
       'Frete atual (R$)': l.pagoTotal,
       'Frete % NF atual': l.freteNfPctAtual != null ? l.freteNfPctAtual / 100 : '',
       'Δ jan→atual (pp)': l.freteNfPctRef != null && l.freteNfPctAtual != null ? (l.freteNfPctAtual - l.freteNfPctRef) / 100 : '',
