@@ -788,6 +788,7 @@ export default function OportunidadeTransportadoraPage() {
   const [filtros, setFiltros] = useState(FILTROS_PADRAO);
   const [excluidas, setExcluidas] = useState(carregarExcluidasOportunidade);
   const [expandido, setExpandido] = useState(null);
+  const [expandidoCarrier, setExpandidoCarrier] = useState(new Set());
   const [buscaVinculo, setBuscaVinculo] = useState('');
 
   // Persiste a lista de transportadoras excluídas (sujeira) no navegador.
@@ -1257,90 +1258,124 @@ export default function OportunidadeTransportadoraPage() {
                         {mostrarSimulado && <td>{pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>}
                         <td colSpan={mostrarSimulado ? 2 : 1} style={{ fontSize: '0.76rem', color: '#64748b' }}>{reg.linhas.length} linhas</td>
                       </tr>
-                      {reg.linhas.map((l) => {
+                      {(() => {
+                        // Agrupa linhas por transportadora dentro da região
+                        const cgMap = new Map();
+                        const cgOrder = [];
+                        for (const l of reg.linhas) {
+                          if (!cgMap.has(l.transportadoraReal)) {
+                            cgMap.set(l.transportadoraReal, { transportadoraReal: l.transportadoraReal, linhas: [], pagoTotal: 0, simTotal: 0, nfTotal: 0, ctes: 0, reducaoRs: 0, refNum: 0, refDen: 0 });
+                            cgOrder.push(l.transportadoraReal);
+                          }
+                          const cg = cgMap.get(l.transportadoraReal);
+                          cg.linhas.push(l);
+                          cg.pagoTotal += l.pagoTotal;
+                          cg.simTotal += l.chainCustoTotal ?? l.melhorTotal;
+                          cg.nfTotal += l.nfTotal;
+                          cg.ctes += l.ctes;
+                          cg.reducaoRs += l.reducaoRs;
+                          if (l.freteNfPctRef != null) { cg.refNum += l.freteNfPctRef * l.nfTotal; cg.refDen += l.nfTotal; }
+                        }
+                        return cgOrder.map((carrierName) => {
+                          const cg = cgMap.get(carrierName);
+                          const cgKey = `${reg.regiao}|${carrierName}`;
+                          const cgAberto = expandidoCarrier.has(cgKey);
+                          const cgFnfAtual = cg.nfTotal > 0 ? (cg.pagoTotal / cg.nfTotal) * 100 : null;
+                          const cgFnfRef = cg.refDen > 0 ? cg.refNum / cg.refDen : null;
+                          const cgFnfSim = cg.nfTotal > 0 ? (cg.simTotal / cg.nfTotal) * 100 : null;
+                          const reajNomeMatch = (resultado.reajustesSet || []).find((n) => mesmaTransportadora(n, carrierName));
+                          const temReajuste = !!reajNomeMatch;
+                          const reajLinha = temReajuste ? (resultado.reajustesMap.get(norm(reajNomeMatch)) || []) : [];
+                          const maxReaj = reajLinha.length ? Math.max(...reajLinha.map((r) => r.reajusteSolicitado).filter((v) => v > 0)) : null;
+                          const tooltipReaj = reajLinha.map((r) => `${r.status || '?'} · ${r.reajusteSolicitado ? '+' + (r.reajusteSolicitado * 100).toFixed(2) + '%' : ''}`).join(' | ');
+                          const cgReducaoPct = cg.pagoTotal > 0 ? (cg.reducaoRs / cg.pagoTotal) * 100 : 0;
+                          return (
+                            <React.Fragment key={cgKey}>
+                              {/* Linha da transportadora (totais agregados) */}
+                              <tr onClick={() => setExpandidoCarrier((prev) => { const next = new Set(prev); cgAberto ? next.delete(cgKey) : next.add(cgKey); return next; })} style={{ cursor: 'pointer', background: '#f8f4ff' }}>
+                                <td style={{ fontWeight: 700 }}>
+                                  {cgAberto ? '▼ ' : '▶ '}{carrierName || '—'}
+                                  {cg.linhas.length > 1 && <span style={{ color: '#94a3b8', fontSize: '0.72rem', marginLeft: 6 }}>({cg.linhas.length} origens)</span>}
+                                  {temReajuste && (
+                                    <span title={tooltipReaj || 'Reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help', whiteSpace: 'nowrap' }}>
+                                      ⚠ REAJUSTE{maxReaj != null ? ` +${(maxReaj * 100).toFixed(1)}%` : ''}
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ color: '#94a3b8', fontSize: '0.72rem' }}>—</td>
+                                <td style={{ color: '#94a3b8', fontSize: '0.72rem' }}>—</td>
+                                <td>{fmtN(cg.ctes)}</td>
+                                {resultado.refCompetencia && <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 600, color: cgFnfRef != null ? '#1e3a5f' : '#94a3b8' }}>{cgFnfRef != null ? pct(cgFnfRef) : '—'}</td>}
+                                <td style={{ fontWeight: 600 }}>
+                                  {fmt(cg.pagoTotal)}
+                                  {cgFnfAtual != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(cgFnfAtual)} NF</span>}
+                                </td>
+                                {resultado.refCompetencia && (() => {
+                                  const d = cgFnfRef != null && cgFnfAtual != null && cgFnfRef > 0 ? ((cgFnfAtual - cgFnfRef) / cgFnfRef) * 100 : null;
+                                  const cor = d == null ? '#94a3b8' : d > 0 ? '#9b1111' : '#047857';
+                                  return <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap' }}>{d == null ? '—' : `${d > 0 ? '▲ +' : '▼ '}${d.toFixed(1)}%`}</td>;
+                                })()}
+                                {mostrarSimulado && <td style={{ color: '#04C7A4', fontWeight: 600 }}>
+                                  {fmt(cg.simTotal)}
+                                  {cgFnfSim != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(cgFnfSim)} NF</span>}
+                                </td>}
+                                {mostrarSimulado && resultado.refCompetencia && (() => {
+                                  const d = cgFnfRef != null && cgFnfSim != null && cgFnfRef > 0 ? ((cgFnfSim - cgFnfRef) / cgFnfRef) * 100 : null;
+                                  const cor = d == null ? '#94a3b8' : d > 0 ? '#9b1111' : '#047857';
+                                  return <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap' }}>{d == null ? '—' : `${d > 0 ? '▲ +' : '▼ '}${d.toFixed(1)}%`}</td>;
+                                })()}
+                                {mostrarSimulado && <td className={cg.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: cg.reducaoRs > TOLERANCIA ? 700 : 400 }}>{cg.reducaoRs > TOLERANCIA ? fmt(cg.reducaoRs) : '—'}</td>}
+                                {mostrarSimulado && <td style={{ fontWeight: 600, color: cgReducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{cgReducaoPct > 0 ? pct(cgReducaoPct) : '—'}</td>}
+                                {mostrarSimulado && <td colSpan={2} style={{ color: '#94a3b8', fontSize: '0.72rem' }}>—</td>}
+                              </tr>
+
+                              {/* Linhas de origem (expandidas) */}
+                              {cgAberto && cg.linhas.map((l) => {
                         const id = l.key;
                         const aberto = expandido === id;
                         return (
                           <React.Fragment key={id}>
-                            {(() => {
-                              const reajNomeMatch = (resultado.reajustesSet || []).find((n) => mesmaTransportadora(n, l.transportadoraReal));
-                              const temReajuste = !!reajNomeMatch;
-                              const reajustesLinha = temReajuste ? (resultado.reajustesMap.get(norm(reajNomeMatch)) || []) : [];
-                              const tooltipReajuste = reajustesLinha.length
-                                ? reajustesLinha.map((r) => `${r.status || '?'} · ${r.reajusteSolicitado ? '+' + (r.reajusteSolicitado * 100).toFixed(2).replace('.', ',') + '%' : ''} · ${r.dataSolicitacao ? new Date(r.dataSolicitacao).toLocaleDateString('pt-BR') : ''}`.trim()).join(' | ')
-                                : '';
-                              return (
-                            <tr onClick={() => setExpandido(aberto ? null : id)} style={{ cursor: 'pointer' }}>
-                              <td style={{ fontWeight: 600 }}>
-                                {aberto ? '▼ ' : '▶ '}{l.transportadoraReal || '—'}
-                                {temReajuste && (() => {
-                                  const pctReaj = reajustesLinha.map((r) => r.reajusteSolicitado).filter((v) => v > 0);
-                                  const maxPct = pctReaj.length ? Math.max(...pctReaj) : null;
-                                  const maxPctDisplay = maxPct != null ? (maxPct * 100).toFixed(1).replace('.', ',') : null;
-                                  return (
-                                    <span title={tooltipReajuste || 'Transportadora com reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help', whiteSpace: 'nowrap' }}>
-                                      ⚠ REAJUSTE{maxPctDisplay != null ? ` +${maxPctDisplay}%` : ''}
-                                    </span>
-                                  );
-                                })()}
+                            <tr onClick={() => setExpandido(aberto ? null : id)} style={{ cursor: 'pointer', background: '#faf5ff' }}>
+                              <td style={{ fontWeight: 500, paddingLeft: 28, color: '#475569' }}>
+                                {aberto ? '▼ ' : '▶ '}<span style={{ fontSize: '0.85rem' }}>{l.cidadeOrigem || '—'}</span>
                               </td>
-                              <td>{l.cidadeOrigem || '—'}</td>
-                              <td>{l.ufOrigem}</td>
-                              <td>{fmtN(l.ctes)}</td>
+                              <td style={{ fontSize: '0.82rem', color: '#64748b' }}>{l.cidadeOrigem || '—'}</td>
+                              <td style={{ fontSize: '0.82rem' }}>{l.ufOrigem}</td>
+                              <td style={{ fontSize: '0.82rem' }}>{fmtN(l.ctes)}</td>
                               {resultado.refCompetencia && (
-                                <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 600, color: l.freteNfPctRef != null ? '#1e3a5f' : '#94a3b8' }} title={l.refCtes ? `${l.refCtes} CT-es em ${resultado.refCompetencia}` : 'Sem dados no período de referência'}>
+                                <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 600, color: l.freteNfPctRef != null ? '#1e3a5f' : '#94a3b8' }} title={l.refCtes ? `${l.refCtes} CT-es em ${resultado.refCompetencia}` : 'Sem dados'}>
                                   {l.freteNfPctRef != null ? pct(l.freteNfPctRef) : '—'}
                                 </td>
                               )}
-                              <td>
+                              <td style={{ fontSize: '0.82rem' }}>
                                 {fmtMetrica(metrica, l.custoAtual)}
-                                {metrica !== 'freteNf' && l.freteNfPctAtual != null && (
-                                  <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>
-                                )}
+                                {metrica !== 'freteNf' && l.freteNfPctAtual != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>}
                               </td>
                               {resultado.refCompetencia && (() => {
                                 const delta = l.freteNfPctRef != null && l.freteNfPctAtual != null ? (l.freteNfPctAtual - l.freteNfPctRef) : null;
                                 const deltaPct = delta != null && l.freteNfPctRef > 0 ? (delta / l.freteNfPctRef) * 100 : null;
                                 const cor = deltaPct == null ? '#94a3b8' : deltaPct > 0 ? '#9b1111' : '#047857';
-                                return (
-                                  <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap' }}>
-                                    {deltaPct == null ? '—' : `${deltaPct > 0 ? '▲ +' : '▼ '}${deltaPct.toFixed(1)}%`}
-                                  </td>
-                                );
+                                return <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap', fontSize: '0.82rem' }}>{deltaPct == null ? '—' : `${deltaPct > 0 ? '▲ +' : '▼ '}${deltaPct.toFixed(1)}%`}</td>;
                               })()}
-                              {mostrarSimulado && <td style={{ color: '#04C7A4', fontWeight: 600 }}>
+                              {mostrarSimulado && <td style={{ color: '#04C7A4', fontWeight: 600, fontSize: '0.82rem' }}>
                                 {fmtMetrica(metrica, l.custoMelhor)}
-                                {metrica !== 'freteNf' && (() => {
-                                  const simPct = l.chainNfPct ?? l.freteNfPctMelhor;
-                                  if (simPct == null) return null;
-                                  return <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(simPct)} NF</span>;
-                                })()}
+                                {metrica !== 'freteNf' && (() => { const s = l.chainNfPct ?? l.freteNfPctMelhor; return s != null ? <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(s)} NF</span> : null; })()}
                               </td>}
                               {mostrarSimulado && resultado.refCompetencia && (() => {
                                 const simPct = l.chainNfPct ?? l.freteNfPctMelhor;
                                 const dSim = simPct != null && l.freteNfPctRef != null && l.freteNfPctRef > 0 ? ((simPct - l.freteNfPctRef) / l.freteNfPctRef) * 100 : null;
                                 const cor = dSim == null ? '#94a3b8' : dSim > 0 ? '#9b1111' : '#047857';
-                                return (
-                                  <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap' }}>
-                                    {dSim == null ? '—' : `${dSim > 0 ? '▲ +' : '▼ '}${dSim.toFixed(1)}%`}
-                                  </td>
-                                );
+                                return <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap', fontSize: '0.82rem' }}>{dSim == null ? '—' : `${dSim > 0 ? '▲ +' : '▼ '}${dSim.toFixed(1)}%`}</td>;
                               })()}
-                              {mostrarSimulado && <td className={l.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: l.reducaoRs > TOLERANCIA ? 700 : 400 }}>{l.reducaoRs > TOLERANCIA ? fmt(l.reducaoRs) : '—'}</td>}
-                              {mostrarSimulado && <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>}
-                              {mostrarSimulado && <td style={{ fontSize: '0.8rem' }}>
-                                {l.substituta ? (
-                                  <span>{mesmaTransportadora(l.substituta, l.transportadoraReal) ? `${l.substituta} (própria tabela)` : l.substituta}
-                                    {l.ctes > 1 && <span style={{ color: '#94a3b8' }}> · {fmtN(l.cobertura)}/{fmtN(l.ctes)}</span>}
-                                  </span>
-                                ) : '—'}
+                              {mostrarSimulado && <td className={l.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: l.reducaoRs > TOLERANCIA ? 700 : 400, fontSize: '0.82rem' }}>{l.reducaoRs > TOLERANCIA ? fmt(l.reducaoRs) : '—'}</td>}
+                              {mostrarSimulado && <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8', fontSize: '0.82rem' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>}
+                              {mostrarSimulado && <td style={{ fontSize: '0.78rem' }}>
+                                {l.substituta ? <span>{mesmaTransportadora(l.substituta, l.transportadoraReal) ? `${l.substituta} (própria)` : l.substituta}{l.ctes > 1 && <span style={{ color: '#94a3b8' }}> · {fmtN(l.cobertura)}/{fmtN(l.ctes)}</span>}</span> : '—'}
                               </td>}
-                              {mostrarSimulado && <td style={{ whiteSpace: 'nowrap', color: '#64748b' }}>
+                              {mostrarSimulado && <td style={{ whiteSpace: 'nowrap', color: '#64748b', fontSize: '0.78rem' }}>
                                 {l.prazoRealMedio != null ? `${l.prazoRealMedio.toFixed(1)}d` : '?'} → {l.prazoMelhorMedio != null ? `${l.prazoMelhorMedio.toFixed(1)}d` : '?'}
                               </td>}
                             </tr>
-                              );
-                            })()}
                             {aberto && (
                               <tr>
                                 <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 13 : 10) : (resultado.refCompetencia ? 7 : 5)} style={{ background: '#faf5ff', padding: '14px 16px' }}>
@@ -1514,6 +1549,10 @@ export default function OportunidadeTransportadoraPage() {
                           </React.Fragment>
                         );
                       })}
+                            </React.Fragment>
+                          );
+                        });
+                      })()}
                     </React.Fragment>
                   ))}
                   {!resultado.regioes.length && <tr><td colSpan={10}>Nenhuma linha com os filtros atuais.</td></tr>}
