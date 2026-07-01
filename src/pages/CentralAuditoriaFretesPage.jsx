@@ -129,6 +129,7 @@ function Dashboard({ state }) {
 
 function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const sessao = carregarSessao();
+  const detalheRef = useRef(null);
   const [tab, setTab] = useState('resumo');
   const [selecionados, setSelecionados] = useState([]);
   const [carregandoDetalhes, setCarregandoDetalhes] = useState(false);
@@ -147,6 +148,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     item.id !== fatura.id
     && item.transportadora === fatura.transportadora
     && !['SUBSTITUIDA', 'CANCELADA'].includes(item.status));
+
+  useEffect(() => {
+    // A lista pode ter centenas de faturas: sem isso o detalhe abre fora da
+    // area visivel e o clique em "Abrir" parece nao ter feito nada.
+    detalheRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [fatura.id]);
 
   useEffect(() => {
     let ativo = true;
@@ -250,7 +257,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   );
 
   return (
-    <div className="panel-card audit-detail">
+    <div className="panel-card audit-detail" ref={detalheRef}>
       <div className="section-row compact-top">
         <div>
           <div className="panel-title">Fatura {fatura.numero_fatura} - {fatura.transportadora}</div>
