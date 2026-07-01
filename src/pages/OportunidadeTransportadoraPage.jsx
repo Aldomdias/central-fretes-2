@@ -1294,7 +1294,20 @@ export default function OportunidadeTransportadoraPage() {
                               </td>
                               {mostrarSimulado && <td style={{ color: '#04C7A4', fontWeight: 600 }}>
                                 {fmtMetrica(metrica, l.custoMelhor)}
-                                {metrica !== 'freteNf' && l.chainNfPct != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(l.chainNfPct)} NF</span>}
+                                {metrica !== 'freteNf' && (() => {
+                                  const simPct = l.chainNfPct ?? l.freteNfPctMelhor;
+                                  if (simPct == null) return null;
+                                  return (
+                                    <>
+                                      <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(simPct)} NF</span>
+                                      {l.freteNfPctRef != null && (
+                                        <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: simPct > l.freteNfPctRef ? '#9b1111' : '#047857' }}>
+                                          {simPct > l.freteNfPctRef ? `▲ +${(simPct - l.freteNfPctRef).toFixed(1)}pp vs jan` : `▼ ${(simPct - l.freteNfPctRef).toFixed(1)}pp vs jan`}
+                                        </span>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </td>}
                               {mostrarSimulado && <td className={l.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: l.reducaoRs > TOLERANCIA ? 700 : 400 }}>{l.reducaoRs > TOLERANCIA ? fmt(l.reducaoRs) : '—'}</td>}
                               {mostrarSimulado && <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>}
