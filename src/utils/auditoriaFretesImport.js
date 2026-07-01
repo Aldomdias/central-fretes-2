@@ -95,24 +95,59 @@ export function parseDetalheFaturaVerum(row, faturaId, fatura) {
   };
 }
 
+// Normaliza numero/serie para casar fatura x detalhe mesmo quando o Excel
+// entrega "0126280" vs "126280" ou serie "001" vs "1".
+function parteChave(valorParte) {
+  return String(valorParte ?? '').trim().toUpperCase().replace(/^0+(?=.)/, '');
+}
+
 export function chaveFatura(numeroFatura, serieFatura) {
-  return `${String(numeroFatura || '').trim()}::${String(serieFatura || '').trim()}`;
+  return `${parteChave(numeroFatura)}::${parteChave(serieFatura)}`;
+}
+
+// Agrupa as linhas da aba Detalhes por fatura, guardando tambem o indice por
+// numero para o fallback quando a serie nao bate entre as duas abas.
+export function agruparDetalhesVerum(rowsDetalhes = []) {
+  const porChave = new Map();
+  const porNumero = new Map();
+  for (const row of rowsDetalhes) {
+    const numero = texto(row, ['Numero Fatura', 'Número Fatura']);
+    const serie = texto(row, ['Serie Fatura', 'Série Fatura']);
+    const chave = chaveFatura(numero, serie);
+    porChave.set(chave, [...(porChave.get(chave) || []), row]);
+    const numeroChave = parteChave(numero);
+    if (!porNumero.has(numeroChave)) porNumero.set(numeroChave, new Set());
+    porNumero.get(numeroChave).add(chave);
+  }
+  return { porChave, porNumero };
+}
+
+export function detalhesDaFatura(grupos, numeroFatura, serieFatura) {
+  const chave = chaveFatura(numeroFatura, serieFatura);
+  if (grupos.porChave.has(chave)) return grupos.porChave.get(chave);
+  // Series divergentes entre as abas: aceita casar so pelo numero quando ele
+  // aponta para uma unica fatura na aba Detalhes.
+  const chaves = grupos.porNumero.get(parteChave(numeroFatura));
+  if (chaves && chaves.size === 1) return grupos.porChave.get([...chaves][0]) || [];
+  return [];
 }
 
 export function analisarLayoutVerum(rowsFaturas = [], rowsDetalhes = []) {
   const faturas = rowsFaturas.map(parseFaturaVerum);
   const validas = faturas.filter((item) => item.numero_fatura && item.transportadora);
-  const chaves = new Set(validas.map((item) => chaveFatura(item.numero_fatura, item.serie_fatura)));
-  const detalhesReconhecidos = rowsDetalhes.filter((row) => chaves.has(chaveFatura(
-    texto(row, ['Numero Fatura', 'Número Fatura']),
-    texto(row, ['Serie Fatura', 'Série Fatura']),
-  )));
+  const grupos = agruparDetalhesVerum(rowsDetalhes);
+  const reconhecidos = new Set();
+  for (const fatura of validas) {
+    for (const row of detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura)) {
+      reconhecidos.add(row);
+    }
+  }
   return {
     totalFaturas: rowsFaturas.length,
     faturasValidas: validas.length,
     faturasIgnoradas: rowsFaturas.length - validas.length,
     totalDetalhes: rowsDetalhes.length,
-    detalhesReconhecidos: detalhesReconhecidos.length,
-    detalhesNaoVinculados: rowsDetalhes.length - detalhesReconhecidos.length,
+    detalhesReconhecidos: reconhecidos.size,
+    detalhesNaoVinculados: rowsDetalhes.length - reconhecidos.size,
   };
 }

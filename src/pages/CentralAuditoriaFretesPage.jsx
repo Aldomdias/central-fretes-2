@@ -2,13 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { carregarSessao } from '../utils/authLocal';
 import {
+  agruparDetalhesVerum,
   analisarLayoutVerum,
   chaveFatura,
+  detalhesDaFatura,
   parseDetalheFaturaVerum,
   parseFaturaVerum,
 } from '../utils/auditoriaFretesImport';
 import {
   carregarDetalhesFaturaSupabase,
+  limparDetalhesFaturaSupabase,
   salvarDetalhesFaturaSupabase,
   salvarFaturaSupabase,
 } from '../services/lotacaoSupabaseService';
@@ -434,29 +437,31 @@ function Faturas({ state, onState }) {
         throw new Error('Nenhuma fatura valida. Verifique Transportadora e Numero Fatura.');
       }
 
-      const detalhesPorFatura = new Map();
-      for (const row of rowsDetalhes) {
-        const numero = row['Numero Fatura'] ?? row['Número Fatura'];
-        const serie = row['Serie Fatura'] ?? row['Série Fatura'];
-        const chave = chaveFatura(numero, serie);
-        detalhesPorFatura.set(chave, [...(detalhesPorFatura.get(chave) || []), row]);
-      }
+      const grupos = agruparDetalhesVerum(rowsDetalhes);
 
       let faturasSalvas = 0;
       let detalhesSalvos = 0;
       for (const row of rowsFaturas) {
         const fatura = parseFaturaVerum(row);
         if (!fatura.numero_fatura || !fatura.transportadora) continue;
+        // Reimportacao atualiza a fatura existente em vez de duplicar:
+        // reaproveita o id quando numero+serie+transportadora ja existem.
+        const existente = state.faturas.find((item) =>
+          chaveFatura(item.numero_fatura, item.serie_fatura) === chaveFatura(fatura.numero_fatura, fatura.serie_fatura)
+          && String(item.transportadora || '').trim().toUpperCase() === String(fatura.transportadora || '').trim().toUpperCase());
         const resultado = await salvarFaturaSupabase({
+          ...(existente?.id ? { id: existente.id } : {}),
           ...fatura,
           importado_por: sessao?.nome || sessao?.email || '',
           importado_em: new Date().toISOString(),
         });
         if (!resultado?.ok || !resultado.id) continue;
         faturasSalvas += 1;
-        const detalhes = (detalhesPorFatura.get(chaveFatura(fatura.numero_fatura, fatura.serie_fatura)) || [])
+        const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura)
           .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
         if (detalhes.length) {
+          // Reimportacao: limpa os CT-es antigos da fatura para nao duplicar.
+          if (existente?.id) await limparDetalhesFaturaSupabase(existente.id);
           await salvarDetalhesFaturaSupabase(detalhes);
           detalhesSalvos += detalhes.length;
         }
@@ -464,9 +469,12 @@ function Faturas({ state, onState }) {
 
       const atualizado = await carregarPlataformaAuditoria();
       onState(atualizado);
+      const alertaVinculo = analise.detalhesNaoVinculados > 0
+        ? ` ATENCAO: ${analise.detalhesNaoVinculados} CT-e(s) da aba Detalhes nao casaram com nenhuma fatura (confira Numero/Serie Fatura nas duas abas).`
+        : '';
       setMensagemImportacao(
-        `Importacao concluida: ${faturasSalvas} fatura(s), ${detalhesSalvos} CT-e(s), `
-        + `${analise.faturasIgnoradas} fatura(s) ignorada(s) e ${analise.detalhesNaoVinculados} CT-e(s) nao vinculado(s).`,
+        `Importacao concluida: ${faturasSalvas} fatura(s), ${detalhesSalvos} CT-e(s) vinculado(s), `
+        + `${analise.faturasIgnoradas} fatura(s) ignorada(s).${alertaVinculo}`,
       );
     } catch (error) {
       setMensagemImportacao(`Erro na importacao: ${error.message}`);

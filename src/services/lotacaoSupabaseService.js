@@ -1330,6 +1330,14 @@ export async function salvarFaturaSupabase(fatura) {
   return { ok: true, id: data?.id };
 }
 
+export async function limparDetalhesFaturaSupabase(faturaId) {
+  if (!isSupabaseConfigured() || !faturaId) return { ok: false };
+  const supabase = ensureClient();
+  const { error } = await supabase.from('fatura_detalhes').delete().eq('fatura_id', faturaId);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return { ok: true };
+}
+
 export async function salvarDetalhesFaturaSupabase(detalhes) {
   if (!isSupabaseConfigured()) return { ok: false };
   const supabase = ensureClient();

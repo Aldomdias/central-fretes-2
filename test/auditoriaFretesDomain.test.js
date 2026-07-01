@@ -11,7 +11,9 @@ import {
   statusSla,
 } from '../src/utils/auditoriaFretesDomain.js';
 import {
+  agruparDetalhesVerum,
   analisarLayoutVerum,
+  detalhesDaFatura,
   excelDateToISO,
   parseDetalheFaturaVerum,
   parseFaturaVerum,
@@ -178,6 +180,31 @@ test('parser Verum vincula detalhes pela fatura e serie', () => {
   const detalhe = parseDetalheFaturaVerum(rowsDetalhes[0], 'fatura-id', parseFaturaVerum(rowsFaturas[0]));
   assert.equal(detalhe.fatura_id, 'fatura-id');
   assert.equal(detalhe.chave_cte, '123');
+});
+
+test('vinculo fatura x detalhe tolera zeros a esquerda e serie divergente', () => {
+  const rowsDetalhes = [
+    { 'Numero Fatura': '0126280', 'Serie Fatura': '001', 'Chave CTe': '111' },
+    { 'Numero Fatura': '0126280', 'Serie Fatura': '001', 'Chave CTe': '222' },
+    { 'Numero Fatura': '99', 'Serie Fatura': 'A', 'Chave CTe': '333' },
+    { 'Numero Fatura': '99', 'Serie Fatura': 'B', 'Chave CTe': '444' },
+  ];
+  const grupos = agruparDetalhesVerum(rowsDetalhes);
+
+  // zeros a esquerda e serie 1 vs 001 casam normalmente
+  assert.equal(detalhesDaFatura(grupos, '126280', '1').length, 2);
+  // serie ausente na aba Faturas: casa pelo numero quando ele e unico
+  assert.equal(detalhesDaFatura(grupos, '126280', '').length, 2);
+  // numero ambiguo (duas series na aba Detalhes) nao casa sem a serie certa
+  assert.equal(detalhesDaFatura(grupos, '99', '').length, 0);
+  assert.equal(detalhesDaFatura(grupos, '99', 'B').length, 1);
+
+  const analise = analisarLayoutVerum(
+    [{ Transportadora: 'Tomasi', 'Numero Fatura': '126280', 'Serie Fatura': '' }],
+    rowsDetalhes,
+  );
+  assert.equal(analise.detalhesReconhecidos, 2);
+  assert.equal(analise.detalhesNaoVinculados, 2);
 });
 
 test('conversao de data Excel preserva formato ISO', () => {
