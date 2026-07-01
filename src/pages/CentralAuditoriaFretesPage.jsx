@@ -436,12 +436,23 @@ function Faturas({ state, onState }) {
       if (!analise.faturasValidas) {
         throw new Error('Nenhuma fatura valida. Verifique Transportadora e Numero Fatura.');
       }
+      setMensagemImportacao(
+        `Arquivo lido: ${analise.faturasValidas} fatura(s) e ${analise.detalhesReconhecidos} CT-e(s) reconhecido(s). Gravando...`,
+      );
 
       const grupos = agruparDetalhesVerum(rowsDetalhes);
 
       let faturasSalvas = 0;
       let detalhesSalvos = 0;
+      let processadas = 0;
       for (const row of rowsFaturas) {
+        processadas += 1;
+        if (processadas % 5 === 0 || processadas === rowsFaturas.length) {
+          setMensagemImportacao(
+            `Processando ${processadas} de ${rowsFaturas.length} fatura(s)... `
+            + `${faturasSalvas} gravada(s), ${detalhesSalvos} CT-e(s) vinculado(s).`,
+          );
+        }
         const fatura = parseFaturaVerum(row);
         if (!fatura.numero_fatura || !fatura.transportadora) continue;
         // Reimportacao atualiza a fatura existente em vez de duplicar:
