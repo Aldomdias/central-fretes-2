@@ -35,7 +35,7 @@ const FILTROS_PADRAO = {
   regioes: [],
   ufsOrigem: [],
   transportadorasRealizadas: [],
-  soComReducao: true,
+  soComReducao: false,
 };
 
 // Transportadoras "sujeira" excluídas da análise. Fica salvo no navegador e
