@@ -94,15 +94,21 @@ export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 
   const gris = Math.max(toNumber(valorNf) * toPercent(grisPercentual), toNumber(grisMinimo));
   const pedagio = calcularPedagioFracao100Kg(pesoKg, generalidades.pedagio);
 
-  const taxaExtraPct = toNumber(taxaDestino.taxaExtraPct);
-  const taxaExtraValor = toNumber(taxaDestino.taxaExtraValor);
-  const taxaExtraMin = toNumber(taxaDestino.taxaExtraMin);
+  const taxasExtras = Array.isArray(taxaDestino.taxasExtras) ? taxaDestino.taxasExtras : [];
   let taxaExtra = 0;
-  if (taxaExtraPct > 0) {
-    taxaExtra = Math.max(toNumber(valorNf) * toPercent(taxaExtraPct), taxaExtraMin);
-  } else if (taxaExtraValor > 0) {
-    taxaExtra = taxaExtraValor;
-  }
+  const taxasExtrasDetalhes = taxasExtras.map((te) => {
+    const pct = toNumber(te.pct);
+    const valor = toNumber(te.valor);
+    const min = toNumber(te.min);
+    let v = 0;
+    if (pct > 0) {
+      v = Math.max(toNumber(valorNf) * toPercent(pct), min);
+    } else if (valor > 0) {
+      v = valor;
+    }
+    taxaExtra += v;
+    return { nome: te.nome || '', valor: v };
+  });
 
   return {
     adValorem,
@@ -116,7 +122,7 @@ export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 
     suframa: toNumber(taxaDestino.suframa),
     outras: toNumber(taxaDestino.outras),
     taxaExtra,
-    taxaExtraNome: taxaDestino.taxaExtraNome || '',
+    taxasExtrasDetalhes,
   };
 }
 

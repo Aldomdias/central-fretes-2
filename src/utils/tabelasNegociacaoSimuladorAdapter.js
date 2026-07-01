@@ -2,6 +2,18 @@ function texto(value) {
   return String(value ?? '').trim();
 }
 
+function normalizarTaxasExtras(raw) {
+  const arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+  return arr
+    .map((te) => ({
+      nome: String(te.nome ?? '').trim(),
+      valor: Number(te.valor) || 0,
+      pct: Number(te.pct) || 0,
+      min: Number(te.min) || 0,
+    }))
+    .filter((te) => te.pct > 0 || te.valor > 0);
+}
+
 function upper(value) {
   return texto(value).toUpperCase();
 }
@@ -176,10 +188,7 @@ function montarTaxaDestino(taxa = {}) {
     adVal: numero(taxa.advalorem || taxa.adVal),
     adValMinimo: numero(taxa.advalorem_minimo || taxa.adValMinimo),
     observacao: texto(taxa.observacao),
-    taxaExtraNome: texto(taxa.taxa_extra_nome || taxa.taxaExtraNome),
-    taxaExtraValor: numero(taxa.taxa_extra_valor ?? taxa.taxaExtraValor),
-    taxaExtraPct: numero(taxa.taxa_extra_pct ?? taxa.taxaExtraPct),
-    taxaExtraMin: numero(taxa.taxa_extra_min ?? taxa.taxaExtraMin),
+    taxasExtras: normalizarTaxasExtras(taxa.taxas_extras ?? taxa.taxasExtras),
   };
 }
 

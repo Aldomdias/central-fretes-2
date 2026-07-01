@@ -67,6 +67,12 @@ function supabaseOrThrow() {
 
 function texto(value) { return String(value || '').trim(); }
 function upper(value) { return texto(value).toUpperCase(); }
+function normalizarTaxasExtras(raw) {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr
+    .map(function(te) { return { nome: String(te.nome ?? '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0 }; })
+    .filter(function(te) { return te.pct > 0 || te.valor > 0; });
+}
 function numero(value) {
   if (value === null || value === undefined || value === '') return 0;
 
@@ -342,10 +348,7 @@ const COLUNAS_TAXAS_DESTINO_NEGOCIACAO_SIMULACAO = [
   'advalorem',
   'advalorem_minimo',
   'observacao',
-  'taxa_extra_nome',
-  'taxa_extra_valor',
-  'taxa_extra_pct',
-  'taxa_extra_min',
+  'taxas_extras',
 ].join(',');
 
 function normalizarIbgesRecorte(valores = []) {
@@ -941,10 +944,7 @@ export async function salvarTaxaDestino(tabelaId, taxa) {
     advalorem:       numero(taxa.advalorem || taxa.adVal),
     advalorem_minimo:numero(taxa.advalorem_minimo || taxa.adValMinimo),
     observacao:      texto(taxa.observacao),
-    taxa_extra_nome: texto(taxa.taxa_extra_nome || taxa.taxaExtraNome) || null,
-    taxa_extra_valor:numero(taxa.taxa_extra_valor ?? taxa.taxaExtraValor) || null,
-    taxa_extra_pct:  numero(taxa.taxa_extra_pct ?? taxa.taxaExtraPct) || null,
-    taxa_extra_min:  numero(taxa.taxa_extra_min ?? taxa.taxaExtraMin) || null,
+    taxas_extras:    normalizarTaxasExtras(taxa.taxas_extras ?? taxa.taxasExtras),
   };
 
   if (taxa.id) {
@@ -994,10 +994,7 @@ export async function substituirTaxasDestino(tabelaId, taxas = []) {
     advalorem:       numero(taxa.advalorem || taxa.adVal),
     advalorem_minimo:numero(taxa.advalorem_minimo || taxa.adValMinimo),
     observacao:      texto(taxa.observacao),
-    taxa_extra_nome: texto(taxa.taxa_extra_nome || taxa.taxaExtraNome) || null,
-    taxa_extra_valor:numero(taxa.taxa_extra_valor ?? taxa.taxaExtraValor) || null,
-    taxa_extra_pct:  numero(taxa.taxa_extra_pct ?? taxa.taxaExtraPct) || null,
-    taxa_extra_min:  numero(taxa.taxa_extra_min ?? taxa.taxaExtraMin) || null,
+    taxas_extras:    normalizarTaxasExtras(taxa.taxas_extras ?? taxa.taxasExtras),
   }));
 
   const { data, error } = await supabase
