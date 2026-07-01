@@ -353,14 +353,17 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
       semGeneralidades: cobertos > 0 && semTaxas === cobertos,
     });
   }
+  // Remove do ranking transportadoras onde 100% dos CT-es foram cobertos sem rota específica — preço irreal
+  const rankingConfiavel = ranking.filter((r) => !r.semGranularidade);
   ranking.sort((a, b) => a.total - b.total);
 
   // Cobertura combinada (greedy CT-e a CT-e): quem cobre o quê quando usamos a mais barata para cada entrega
+  // Exclui candidatas sem rota IBGE específica — preço delas não é confiável
   const chainMap = new Map(); // transportadora -> { ctes, custo, prazoSoma, prazoN, nfSoma }
   let chainSemAtendimento = 0, chainCustoSemAtend = 0, chainNfSemAtend = 0;
   let chainPrazoSomaGlobal = 0, chainPrazoNGlobal = 0; // prazo ponderado de toda a cadeia
   for (const c of casos) {
-    const best = c.candidatos.find((q) => !ehPropria(q.transportadora));
+    const best = c.candidatos.find((q) => !ehPropria(q.transportadora) && q.temDestinoEspecifico);
     if (best && best.total > 0) {
       const e = chainMap.get(best.transportadora) || { ctes: 0, custo: 0, prazoSoma: 0, prazoN: 0, nfSoma: 0 };
       e.ctes += 1; e.custo += best.total; e.nfSoma += c.valorNf;
@@ -387,7 +390,7 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
     melhorTotal = 0;
     const mix = new Map();
     for (const c of casos) {
-      const best = c.candidatos.find((q) => !ehPropria(q.transportadora)) || null; // melhor diferente (asc)
+      const best = c.candidatos.find((q) => !ehPropria(q.transportadora) && q.temDestinoEspecifico) || null; // melhor diferente com rota específica
       if (best && best.total > 0 && best.total < c.valorPago - 0.001) {
         melhorTotal += best.total;
         mix.set(best.transportadora, (mix.get(best.transportadora) || 0) + 1);
@@ -400,8 +403,8 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
     }
     substituta = [...mix.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   } else {
-    // substituta: a melhor única transportadora (não cobertos ficam no pago)
-    const melhor = ranking[0] || null;
+    // substituta: a melhor única transportadora confiável (sem rota específica excluída)
+    const melhor = rankingConfiavel[0] || null;
     if (melhor && melhor.total < pagoTotal - 0.001) {
       melhorTotal = melhor.total;
       substituta = melhor.transportadora;
