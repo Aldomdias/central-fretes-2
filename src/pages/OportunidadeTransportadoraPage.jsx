@@ -766,7 +766,7 @@ export default function OportunidadeTransportadoraPage() {
   const [dataFim, setDataFim] = useState('');
   const [canal, setCanal] = useState('');
   const [limiteInput, setLimiteInput] = useState('4000');
-  const [refCompetencia, setRefCompetencia] = useState('2025-01'); // período de referência (ex: antes dos reajustes)
+  const [refCompetencia, setRefCompetencia] = useState('2026-01'); // período de referência (ex: antes dos reajustes)
 
   const [status, setStatus] = useState('idle');
   const [progresso, setProgresso] = useState('');
