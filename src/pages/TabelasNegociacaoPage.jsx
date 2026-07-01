@@ -698,10 +698,7 @@ function normalizarLinhaTaxaDestinoNegociacao(row) {
     advalorem: numeroPlanilha(pegarCampoTaxaDestino(row, ['Ad Valorem %', 'ADV %', 'AdValorem %', 'Ad Valorem', 'ADV', '% NF', 'Ad Val', 'Ad Val (%)'])),
     advalorem_minimo: numeroPlanilha(pegarCampoTaxaDestino(row, ['Ad Val mín (R$)', 'Ad Val min (R$)', 'Ad Val mínimo', 'Ad Val minimo', 'Ad Valorem mín (R$)', 'Ad Valorem min (R$)', 'ADV mín (R$)', 'ADV min (R$)', 'Ad Val Minimo'])),
     observacao: normalizarTexto(pegarCampoTaxaDestino(row, ['Observação', 'Observacao', 'Obs'])),
-    _extraNome: normalizarTexto(pegarCampoTaxaDestino(row, ['Taxa Coringa', 'Taxa Extra Nome', 'Taxa coringa', 'Coringa Nome'])),
-    _extraValor: numeroPlanilha(pegarCampoTaxaDestino(row, ['Taxa Extra R$', 'Taxa Coringa R$', 'Coringa R$', 'Taxa Extra Valor'])),
-    _extraPct: numeroPlanilha(pegarCampoTaxaDestino(row, ['Taxa Extra %', 'Taxa Coringa %', 'Coringa %', 'Taxa Extra Pct'])),
-    _extraMin: numeroPlanilha(pegarCampoTaxaDestino(row, ['Taxa Extra Mín', 'Taxa Coringa Mín', 'Coringa Mín', 'Taxa Extra Min'])),
+    _colunas: row,
   };
 }
 
@@ -709,25 +706,31 @@ function normalizarLinhaTaxaDestinoValida(taxa) {
   return taxa.ibge_destino || taxa.cidade_destino || taxa.uf_destino;
 }
 
+function extrairCoringasDaLinha(row) {
+  // Detecta colunas dinâmicas: "EMEX R$", "EMEX % NF", "EMEX Mín"
+  // Agrupa por nome de coringa
+  var coringas = {};
+  Object.keys(row).forEach(function(col) {
+    var mR = col.match(/^(.+)\s+R\$$/);
+    var mP = col.match(/^(.+)\s+%\s*NF$/i);
+    var mM = col.match(/^(.+)\s+Mín$/i);
+    if (mR) { var n = mR[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].valor = numeroPlanilha(row[col]); }
+    if (mP) { var n = mP[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].pct = numeroPlanilha(row[col]); }
+    if (mM) { var n = mM[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].min = numeroPlanilha(row[col]); }
+  });
+  return Object.values(coringas).filter(function(te) { return (te.pct || 0) > 0 || (te.valor || 0) > 0; });
+}
+
 function agruparLinhasTaxaDestino(linhas) {
-  // Agrupa múltiplas linhas com mesmo IBGE, acumulando coringas em taxas_extras[]
   var mapa = new Map();
   var ordem = [];
   linhas.forEach(function(linha) {
     var chave = linha.ibge_destino || linha.cidade_destino || linha.uf_destino;
     if (!mapa.has(chave)) {
-      var { _extraNome, _extraValor, _extraPct, _extraMin, ...base } = linha;
-      base.taxas_extras = [];
+      var { _colunas, ...base } = linha;
+      base.taxas_extras = extrairCoringasDaLinha(_colunas || {});
       mapa.set(chave, base);
       ordem.push(chave);
-    }
-    var entry = mapa.get(chave);
-    var nome = linha._extraNome || '';
-    var pct = Number(linha._extraPct) || 0;
-    var valor = Number(linha._extraValor) || 0;
-    var min = Number(linha._extraMin) || 0;
-    if (pct > 0 || valor > 0) {
-      entry.taxas_extras.push({ nome: nome, pct: pct, valor: valor, min: min });
     }
   });
   return ordem.map(function(k) { return mapa.get(k); });
@@ -738,33 +741,51 @@ function montarTaxaDestinoDoModelo(row) {
 }
 
 function exportarTaxasDestinoNegociacao(taxas, nomeTabela) {
-  var linhas = [];
+  // Descobre todos os nomes de coringas presentes (ordem de aparecimento)
+  var nomesCoringas = [];
   (taxas || []).forEach(function(t) {
-    var extras = Array.isArray(t.taxas_extras) && t.taxas_extras.length ? t.taxas_extras : [null];
-    extras.forEach(function(te, idx) {
-      linhas.push({
-        'IBGE Destino': t.ibge_destino || '',
-        'UF Destino': t.uf_destino || '',
-        'Cidade Destino': t.cidade_destino || '',
-        'TDA (R$)': idx === 0 ? (t.tda || '') : '',
-        'TDR (R$)': idx === 0 ? (t.tdr || '') : '',
-        'TRT (R$)': idx === 0 ? (t.trt || '') : '',
-        'TDE (R$)': '',
-        'SUFRAMA (R$)': idx === 0 ? (t.suframa || '') : '',
-        'Outras (R$)': idx === 0 ? (t.outras_taxas || '') : '',
-        'GRIS %': idx === 0 ? (t.gris || '') : '',
-        'GRIS mín (R$)': idx === 0 ? (t.gris_minimo || '') : '',
-        'Ad Valorem %': idx === 0 ? (t.advalorem || '') : '',
-        'Ad Val mín (R$)': idx === 0 ? (t.advalorem_minimo || '') : '',
-        'Taxa Coringa': te ? (te.nome || '') : '',
-        'Taxa Extra %': te ? (te.pct || '') : '',
-        'Taxa Extra Mín': te ? (te.min || '') : '',
-        'Taxa Extra R$': te ? (te.valor || '') : '',
-        'Observação': idx === 0 ? (t.observacao || '') : '',
-      });
+    (t.taxas_extras || []).forEach(function(te) {
+      var n = (te.nome || 'Coringa').trim();
+      if (!nomesCoringas.includes(n)) nomesCoringas.push(n);
     });
   });
-  if (!linhas.length) linhas = [{ 'IBGE Destino': '', 'UF Destino': '', 'Cidade Destino': '', 'TDA (R$)': '', 'TDR (R$)': '', 'TRT (R$)': '', 'TDE (R$)': '', 'SUFRAMA (R$)': '', 'Outras (R$)': '', 'GRIS %': '', 'GRIS mín (R$)': '', 'Ad Valorem %': '', 'Ad Val mín (R$)': '', 'Taxa Coringa': '', 'Taxa Extra %': '', 'Taxa Extra Mín': '', 'Taxa Extra R$': '', 'Observação': 'Nenhuma taxa cadastrada' }];
+
+  var linhas = (taxas || []).map(function(t) {
+    var extrasMap = {};
+    (t.taxas_extras || []).forEach(function(te) {
+      var n = (te.nome || 'Coringa').trim();
+      extrasMap[n] = te;
+    });
+
+    var linha = {
+      'IBGE Destino': t.ibge_destino || '',
+      'UF Destino': t.uf_destino || '',
+      'Cidade Destino': t.cidade_destino || '',
+      'TDA (R$)': t.tda || '',
+      'TDR (R$)': t.tdr || '',
+      'TRT (R$)': t.trt || '',
+      'SUFRAMA (R$)': t.suframa || '',
+      'Outras (R$)': t.outras_taxas || '',
+      'GRIS %': t.gris || '',
+      'GRIS mín (R$)': t.gris_minimo || '',
+      'Ad Valorem %': t.advalorem || '',
+      'Ad Val mín (R$)': t.advalorem_minimo || '',
+      'Observação': t.observacao || '',
+    };
+
+    // Uma coluna por coringa: "EMEX R$", "EMEX % NF", "EMEX Mín"
+    nomesCoringas.forEach(function(n) {
+      var te = extrasMap[n];
+      linha[n + ' R$'] = te ? (te.valor || '') : '';
+      linha[n + ' % NF'] = te ? (te.pct || '') : '';
+      linha[n + ' Mín'] = te ? (te.min || '') : '';
+    });
+
+    return linha;
+  });
+
+  if (!linhas.length) linhas = [{ 'IBGE Destino': '', 'UF Destino': '', 'Cidade Destino': '', 'TDA (R$)': '', 'TDR (R$)': '', 'TRT (R$)': '', 'SUFRAMA (R$)': '', 'Outras (R$)': '', 'GRIS %': '', 'GRIS mín (R$)': '', 'Ad Valorem %': '', 'Ad Val mín (R$)': '', 'Observação': 'Nenhuma taxa cadastrada' }];
+
   var ws = XLSX.utils.json_to_sheet(linhas);
   var wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Taxas por Destino');
