@@ -712,6 +712,37 @@ function montarTaxaDestinoDoModelo(row) {
   return normalizarLinhaTaxaDestinoNegociacao(row);
 }
 
+function exportarTaxasDestinoNegociacao(taxas, nomeTabela) {
+  var linhas = (taxas || []).map(function(t) {
+    return {
+      'IBGE Destino': t.ibge_destino || '',
+      'UF Destino': t.uf_destino || '',
+      'Cidade Destino': t.cidade_destino || '',
+      'TDA (R$)': t.tda || '',
+      'TDR (R$)': t.tdr || '',
+      'TRT (R$)': t.trt || '',
+      'TDE (R$)': '',
+      'SUFRAMA (R$)': t.suframa || '',
+      'Outras (R$)': t.outras_taxas || '',
+      'GRIS %': t.gris || '',
+      'GRIS mín (R$)': t.gris_minimo || '',
+      'Ad Valorem %': t.advalorem || '',
+      'Ad Val mín (R$)': t.advalorem_minimo || '',
+      'Taxa Coringa': t.taxa_extra_nome || '',
+      'Taxa Extra R$': t.taxa_extra_valor || '',
+      'Taxa Extra %': t.taxa_extra_pct || '',
+      'Taxa Extra Mín': t.taxa_extra_min || '',
+      'Observação': t.observacao || '',
+    };
+  });
+  if (!linhas.length) linhas = [{ 'IBGE Destino': '', 'UF Destino': '', 'Cidade Destino': '', 'TDA (R$)': '', 'TDR (R$)': '', 'TRT (R$)': '', 'TDE (R$)': '', 'SUFRAMA (R$)': '', 'Outras (R$)': '', 'GRIS %': '', 'GRIS mín (R$)': '', 'Ad Valorem %': '', 'Ad Val mín (R$)': '', 'Taxa Coringa': '', 'Taxa Extra R$': '', 'Taxa Extra %': '', 'Taxa Extra Mín': '', 'Observação': 'Nenhuma taxa cadastrada' }];
+  var ws = XLSX.utils.json_to_sheet(linhas);
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Taxas por Destino');
+  var nome = (nomeTabela || 'taxas').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  XLSX.writeFile(wb, 'taxas_destino_' + nome + '.xlsx');
+}
+
 function baixarModeloTaxasDestinoNegociacao() {
   var linhas = [
     {
@@ -2901,6 +2932,7 @@ export default function TabelasNegociacaoPage() {
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button className="sim-tab" type="button" onClick={baixarModeloTaxasDestinoNegociacao}>Baixar modelo</button>
+                  <button className="sim-tab" type="button" onClick={function() { exportarTaxasDestinoNegociacao(taxasDestino, selecionada && (selecionada.transportadora || selecionada.id)); }} disabled={!selecionada || !taxasDestino.length}>Exportar taxas</button>
                   <button className="primary" type="button" onClick={function() { if (inputTaxasDestinoRef.current) inputTaxasDestinoRef.current.click(); }} disabled={salvandoTaxa || !selecionada}>
                     {salvandoTaxa ? 'Importando...' : 'Importar modelo'}
                   </button>
