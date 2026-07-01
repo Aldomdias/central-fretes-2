@@ -147,6 +147,8 @@ const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '' };
 function TaxasEspeciaisTab({ origem, transportadora, store }) {
   const [form, setForm] = React.useState(TAXA_ESP_VAZIA);
   const [editando, setEditando] = React.useState(null);
+  const [feedback, setFeedback] = React.useState(null);
+  const inputRef = React.useRef(null);
   const rows = origem.taxasEspeciais || [];
 
   function upd(field, val) { setForm((p) => ({ ...p, [field]: val })); }
@@ -175,11 +177,37 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
     setForm({ ...row, taxasExtras: (row.taxasExtras || []).map((te) => ({ nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '' })) });
   }
 
+  async function importarArquivo(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = await parseFileToRows(file, 'taxas');
+      const payload = buildImportPayload(parsed, 'taxas', { transportadora: transportadora.nome, origem: origem.cidade, canal: origem.canal });
+      store.importarPayload(payload, 'taxas');
+      setFeedback({ type: payload.erros.length ? 'warn' : 'ok', text: `${payload.inseridos} registro(s) importado(s)${payload.erros.length ? ` · ${payload.erros.length} erro(s)` : ''}` });
+    } catch (error) {
+      setFeedback({ type: 'error', text: error.message || 'Erro ao importar.' });
+    }
+    event.target.value = '';
+  }
+
+  const exportRows = rows.map((row) => ({ ...row, transportadora: transportadora.nome, origem: origem.cidade, codigoUnidade: origem.canal === 'B2C' ? '0001 - B2C' : '0001 - B2B' }));
+
   const inp = { type: 'number', step: '0.01', style: { width: '100%' } };
 
   return (
     <div className="tab-panel">
-      <div className="hint-box">Por IBGE destino, o sistema prioriza <strong>GRIS</strong> e <strong>Ad Valorem</strong> específicos; se estiverem em branco, usa as generalidades da origem.</div>
+      <div className="hint-box" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <span>Por IBGE destino, o sistema prioriza <strong>GRIS</strong> e <strong>Ad Valorem</strong> específicos; se estiverem em branco, usa as generalidades da origem.</span>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {feedback && <span style={{ fontSize: 12, color: feedback.type === 'ok' ? '#166534' : '#b91c1c' }}>{feedback.text}</span>}
+          <button className="btn-secondary" onClick={() => exportarSecao('taxas', exportRows, `${origem.cidade}-taxas.xlsx`)} disabled={!rows.length}>Exportar</button>
+          <button className="btn-secondary" onClick={() => baixarModelo('taxas')}>Baixar Modelo</button>
+          <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button>
+          <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, 'taxasEspeciais')}>Excluir Tudo</button>
+          <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
+        </div>
+      </div>
       <div className="table-card" style={{ marginTop: 12 }}>
         <table>
           <thead><tr><th>IBGE</th><th>TDA</th><th>TDR</th><th>TRT</th><th>GRIS%</th><th>AdVal%</th><th>Coringas</th><th></th></tr></thead>
