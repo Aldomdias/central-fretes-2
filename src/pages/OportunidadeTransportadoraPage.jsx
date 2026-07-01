@@ -1250,7 +1250,7 @@ export default function OportunidadeTransportadoraPage() {
                               const temReajuste = !!reajNomeMatch;
                               const reajustesLinha = temReajuste ? (resultado.reajustesMap.get(norm(reajNomeMatch)) || []) : [];
                               const tooltipReajuste = reajustesLinha.length
-                                ? reajustesLinha.map((r) => `${r.status || '?'} · ${r.reajusteSolicitado ? '+' + r.reajusteSolicitado + '%' : ''} · ${r.dataSolicitacao ? new Date(r.dataSolicitacao).toLocaleDateString('pt-BR') : ''}`.trim()).join(' | ')
+                                ? reajustesLinha.map((r) => `${r.status || '?'} · ${r.reajusteSolicitado ? '+' + (r.reajusteSolicitado * 100).toFixed(2).replace('.', ',') + '%' : ''} · ${r.dataSolicitacao ? new Date(r.dataSolicitacao).toLocaleDateString('pt-BR') : ''}`.trim()).join(' | ')
                                 : '';
                               return (
                             <tr onClick={() => setExpandido(aberto ? null : id)} style={{ cursor: 'pointer' }}>
@@ -1259,9 +1259,10 @@ export default function OportunidadeTransportadoraPage() {
                                 {temReajuste && (() => {
                                   const pctReaj = reajustesLinha.map((r) => r.reajusteSolicitado).filter((v) => v > 0);
                                   const maxPct = pctReaj.length ? Math.max(...pctReaj) : null;
+                                  const maxPctDisplay = maxPct != null ? (maxPct * 100).toFixed(1).replace('.', ',') : null;
                                   return (
                                     <span title={tooltipReajuste || 'Transportadora com reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help', whiteSpace: 'nowrap' }}>
-                                      ⚠ REAJUSTE{maxPct != null ? ` +${maxPct}%` : ''}
+                                      ⚠ REAJUSTE{maxPctDisplay != null ? ` +${maxPctDisplay}%` : ''}
                                     </span>
                                   );
                                 })()}
