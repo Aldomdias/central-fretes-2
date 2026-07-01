@@ -474,9 +474,9 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
           : '';
       const prazo = `${l.prazoRealMedio != null ? l.prazoRealMedio.toFixed(1) + 'd' : '?'} → ${l.chainPrazoMedio != null ? l.chainPrazoMedio.toFixed(1) + 'd' : (l.prazoMelhorMedio != null ? l.prazoMelhorMedio.toFixed(1) + 'd' : '?')}`;
       const simPct = l.chainNfPct ?? l.freteNfPctMelhor;
-      const deltaAtual = l.freteNfPctRef != null && l.freteNfPctAtual != null ? (l.freteNfPctAtual - l.freteNfPctRef) : null;
-      const deltaSim = l.freteNfPctRef != null && simPct != null ? (simPct - l.freteNfPctRef) : null;
-      const fmtDelta = (d) => d == null ? '—' : `<b style="color:${d > 0 ? corVermelho : corVerde}">${d > 0 ? '▲' : '▼'} ${d > 0 ? '+' : ''}${d.toFixed(1)}pp</b>`;
+      const deltaAtual = l.freteNfPctRef != null && l.freteNfPctAtual != null && l.freteNfPctRef > 0 ? ((l.freteNfPctAtual - l.freteNfPctRef) / l.freteNfPctRef) * 100 : null;
+      const deltaSim = l.freteNfPctRef != null && simPct != null && l.freteNfPctRef > 0 ? ((simPct - l.freteNfPctRef) / l.freteNfPctRef) * 100 : null;
+      const fmtDelta = (d) => d == null ? '—' : `<b style="color:${d > 0 ? corVermelho : corVerde}">${d > 0 ? '▲ +' : '▼ '}${d.toFixed(1)}%</b>`;
       return `<tr style="background:${bgRow}">
         <td style="padding:5px 10px;font-size:11px;font-weight:600;border-bottom:1px solid #f1f5f9">${l.transportadoraReal || '—'}</td>
         <td style="padding:5px 10px;font-size:11px;color:${corCinza};border-bottom:1px solid #f1f5f9">${l.cidadeOrigem || '—'} / ${l.ufOrigem}</td>
@@ -613,12 +613,12 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
       [`% NF ref (${resultado.refCompetencia || 'ref'})`]: l.freteNfPctRef != null ? l.freteNfPctRef / 100 : '',
       'Frete atual (R$)': l.pagoTotal,
       'Frete % NF atual': l.freteNfPctAtual != null ? l.freteNfPctAtual / 100 : '',
-      'Δ jan→atual (pp)': l.freteNfPctRef != null && l.freteNfPctAtual != null ? (l.freteNfPctAtual - l.freteNfPctRef) / 100 : '',
+      'Δ jan→atual (%)': l.freteNfPctRef != null && l.freteNfPctAtual != null && l.freteNfPctRef > 0 ? ((l.freteNfPctAtual - l.freteNfPctRef) / l.freteNfPctRef) : '',
       'Melhor cenário (R$)': l.melhorTotal,
       'Frete % NF melhor': l.freteNfPctMelhor != null ? l.freteNfPctMelhor / 100 : '',
       'Combinado (R$)': l.chainCustoTotal != null ? l.chainCustoTotal : '',
       'Frete % NF combinado': l.chainNfPct != null ? l.chainNfPct / 100 : '',
-      'Δ jan→simulado (pp)': (() => { const s = l.chainNfPct ?? l.freteNfPctMelhor; return l.freteNfPctRef != null && s != null ? (s - l.freteNfPctRef) / 100 : ''; })(),
+      'Δ jan→simulado (%)': (() => { const s = l.chainNfPct ?? l.freteNfPctMelhor; return l.freteNfPctRef != null && s != null && l.freteNfPctRef > 0 ? (s - l.freteNfPctRef) / l.freteNfPctRef : ''; })(),
       'Sem atendimento (CT-es)': l.chainSemAtendimento || 0,
       'Redução (R$)': l.reducaoRs,
       'Redução (%)': l.reducaoPct / 100,
@@ -1301,10 +1301,11 @@ export default function OportunidadeTransportadoraPage() {
                               </td>
                               {resultado.refCompetencia && (() => {
                                 const delta = l.freteNfPctRef != null && l.freteNfPctAtual != null ? (l.freteNfPctAtual - l.freteNfPctRef) : null;
-                                const cor = delta == null ? '#94a3b8' : delta > 0 ? '#9b1111' : '#047857';
+                                const deltaPct = delta != null && l.freteNfPctRef > 0 ? (delta / l.freteNfPctRef) * 100 : null;
+                                const cor = deltaPct == null ? '#94a3b8' : deltaPct > 0 ? '#9b1111' : '#047857';
                                 return (
                                   <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap' }}>
-                                    {delta == null ? '—' : `${delta > 0 ? '▲ +' : '▼ '}${delta.toFixed(1)}pp`}
+                                    {deltaPct == null ? '—' : `${deltaPct > 0 ? '▲ +' : '▼ '}${deltaPct.toFixed(1)}%`}
                                   </td>
                                 );
                               })()}
@@ -1316,11 +1317,14 @@ export default function OportunidadeTransportadoraPage() {
                                   return (
                                     <>
                                       <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(simPct)} NF</span>
-                                      {l.freteNfPctRef != null && (
-                                        <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: simPct > l.freteNfPctRef ? '#9b1111' : '#047857' }}>
-                                          {simPct > l.freteNfPctRef ? `▲ +${(simPct - l.freteNfPctRef).toFixed(1)}pp vs jan` : `▼ ${(simPct - l.freteNfPctRef).toFixed(1)}pp vs jan`}
-                                        </span>
-                                      )}
+                                      {l.freteNfPctRef != null && l.freteNfPctRef > 0 && (() => {
+                                        const dSim = ((simPct - l.freteNfPctRef) / l.freteNfPctRef) * 100;
+                                        return (
+                                          <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: dSim > 0 ? '#9b1111' : '#047857' }}>
+                                            {dSim > 0 ? `▲ +${dSim.toFixed(1)}%` : `▼ ${dSim.toFixed(1)}%`} vs jan
+                                          </span>
+                                        );
+                                      })()}
                                     </>
                                   );
                                 })()}
