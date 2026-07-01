@@ -94,6 +94,16 @@ export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 
   const gris = Math.max(toNumber(valorNf) * toPercent(grisPercentual), toNumber(grisMinimo));
   const pedagio = calcularPedagioFracao100Kg(pesoKg, generalidades.pedagio);
 
+  const taxaExtraPct = toNumber(taxaDestino.taxaExtraPct);
+  const taxaExtraValor = toNumber(taxaDestino.taxaExtraValor);
+  const taxaExtraMin = toNumber(taxaDestino.taxaExtraMin);
+  let taxaExtra = 0;
+  if (taxaExtraPct > 0) {
+    taxaExtra = Math.max(toNumber(valorNf) * toPercent(taxaExtraPct), taxaExtraMin);
+  } else if (taxaExtraValor > 0) {
+    taxaExtra = taxaExtraValor;
+  }
+
   return {
     adValorem,
     gris,
@@ -105,6 +115,8 @@ export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 
     trt: toNumber(taxaDestino.trt),
     suframa: toNumber(taxaDestino.suframa),
     outras: toNumber(taxaDestino.outras),
+    taxaExtra,
+    taxaExtraNome: taxaDestino.taxaExtraNome || '',
   };
 }
 
@@ -234,7 +246,7 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
   });
   const valorBase = componenteBase.valor;
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
-  const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras;
+  const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
   const icms = deveAplicarIcms(generalidades) ? calcularIcmsPorDentro(subtotal, generalidades.aliquotaIcms) : 0;
 
   return {
@@ -295,7 +307,7 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     : Math.max(valorFaixa, valorPercentual, valorExcedente, minimoAplicavel);
 
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
-  const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras;
+  const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
   const icms = deveAplicarIcms(generalidades) ? calcularIcmsPorDentro(subtotal, generalidades.aliquotaIcms) : 0;
 
   return {

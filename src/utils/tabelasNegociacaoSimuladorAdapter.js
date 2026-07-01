@@ -176,6 +176,10 @@ function montarTaxaDestino(taxa = {}) {
     adVal: numero(taxa.advalorem || taxa.adVal),
     adValMinimo: numero(taxa.advalorem_minimo || taxa.adValMinimo),
     observacao: texto(taxa.observacao),
+    taxaExtraNome: texto(taxa.taxa_extra_nome || taxa.taxaExtraNome),
+    taxaExtraValor: numero(taxa.taxa_extra_valor ?? taxa.taxaExtraValor),
+    taxaExtraPct: numero(taxa.taxa_extra_pct ?? taxa.taxaExtraPct),
+    taxaExtraMin: numero(taxa.taxa_extra_min ?? taxa.taxaExtraMin),
   };
 }
 

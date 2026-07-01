@@ -342,6 +342,10 @@ const COLUNAS_TAXAS_DESTINO_NEGOCIACAO_SIMULACAO = [
   'advalorem',
   'advalorem_minimo',
   'observacao',
+  'taxa_extra_nome',
+  'taxa_extra_valor',
+  'taxa_extra_pct',
+  'taxa_extra_min',
 ].join(',');
 
 function normalizarIbgesRecorte(valores = []) {
@@ -937,6 +941,10 @@ export async function salvarTaxaDestino(tabelaId, taxa) {
     advalorem:       numero(taxa.advalorem || taxa.adVal),
     advalorem_minimo:numero(taxa.advalorem_minimo || taxa.adValMinimo),
     observacao:      texto(taxa.observacao),
+    taxa_extra_nome: texto(taxa.taxa_extra_nome || taxa.taxaExtraNome) || null,
+    taxa_extra_valor:numero(taxa.taxa_extra_valor ?? taxa.taxaExtraValor) || null,
+    taxa_extra_pct:  numero(taxa.taxa_extra_pct ?? taxa.taxaExtraPct) || null,
+    taxa_extra_min:  numero(taxa.taxa_extra_min ?? taxa.taxaExtraMin) || null,
   };
 
   if (taxa.id) {
@@ -986,6 +994,10 @@ export async function substituirTaxasDestino(tabelaId, taxas = []) {
     advalorem:       numero(taxa.advalorem || taxa.adVal),
     advalorem_minimo:numero(taxa.advalorem_minimo || taxa.adValMinimo),
     observacao:      texto(taxa.observacao),
+    taxa_extra_nome: texto(taxa.taxa_extra_nome || taxa.taxaExtraNome) || null,
+    taxa_extra_valor:numero(taxa.taxa_extra_valor ?? taxa.taxaExtraValor) || null,
+    taxa_extra_pct:  numero(taxa.taxa_extra_pct ?? taxa.taxaExtraPct) || null,
+    taxa_extra_min:  numero(taxa.taxa_extra_min ?? taxa.taxaExtraMin) || null,
   }));
 
   const { data, error } = await supabase

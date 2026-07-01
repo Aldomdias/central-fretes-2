@@ -413,6 +413,7 @@ const TAXA_VAZIA = {
   ibge_destino: '', uf_destino: '', cidade_destino: '',
   tda: '', tdr: '', trt: '', suframa: '', outras_taxas: '',
   gris: '', gris_minimo: '', advalorem: '', advalorem_minimo: '', observacao: '',
+  taxa_extra_nome: '', taxa_extra_valor: '', taxa_extra_pct: '', taxa_extra_min: '',
 };
 const FORM_VAZIO = {
   transportadora: '', canal: 'ATACADO', tipo_tabela: 'FRACIONADO',
@@ -696,6 +697,10 @@ function normalizarLinhaTaxaDestinoNegociacao(row) {
     advalorem: numeroPlanilha(pegarCampoTaxaDestino(row, ['Ad Valorem %', 'ADV %', 'AdValorem %', 'Ad Valorem', 'ADV', '% NF', 'Ad Val', 'Ad Val (%)'])),
     advalorem_minimo: numeroPlanilha(pegarCampoTaxaDestino(row, ['Ad Val mín (R$)', 'Ad Val min (R$)', 'Ad Val mínimo', 'Ad Val minimo', 'Ad Valorem mín (R$)', 'Ad Valorem min (R$)', 'ADV mín (R$)', 'ADV min (R$)', 'Ad Val Minimo'])),
     observacao: normalizarTexto(pegarCampoTaxaDestino(row, ['Observação', 'Observacao', 'Obs'])),
+    taxa_extra_nome: normalizarTexto(pegarCampoTaxaDestino(row, ['Taxa Coringa', 'Taxa Extra Nome', 'Taxa coringa', 'Coringa Nome'])) || null,
+    taxa_extra_valor: numeroPlanilha(pegarCampoTaxaDestino(row, ['Taxa Extra R$', 'Taxa Coringa R$', 'Coringa R$', 'Taxa Extra Valor'])),
+    taxa_extra_pct: numeroPlanilha(pegarCampoTaxaDestino(row, ['Taxa Extra %', 'Taxa Coringa %', 'Coringa %', 'Taxa Extra Pct'])),
+    taxa_extra_min: numeroPlanilha(pegarCampoTaxaDestino(row, ['Taxa Extra Mín', 'Taxa Coringa Mín', 'Coringa Mín', 'Taxa Extra Min'])),
   };
 }
 
@@ -1808,6 +1813,8 @@ export default function TabelasNegociacaoPage() {
       outras_taxas: taxa.outras_taxas || '', gris: taxa.gris || '',
       gris_minimo: taxa.gris_minimo || '', advalorem: taxa.advalorem || '',
       advalorem_minimo: taxa.advalorem_minimo || '', observacao: taxa.observacao || '',
+      taxa_extra_nome: taxa.taxa_extra_nome || '', taxa_extra_valor: taxa.taxa_extra_valor || '',
+      taxa_extra_pct: taxa.taxa_extra_pct || '', taxa_extra_min: taxa.taxa_extra_min || '',
     });
     setAbaNegoc('taxas');
   }
@@ -2934,6 +2941,12 @@ export default function TabelasNegociacaoPage() {
                   <label>Ad Valorem % <small style={{ color: '#94a3b8' }}>(vazio=geral)</small><input type="number" step="0.0001" value={novaTaxa.advalorem} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { advalorem: e.target.value }); }); }} /></label>
                   <label>Ad Val mín (R$)<input type="number" step="0.01" value={novaTaxa.advalorem_minimo} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { advalorem_minimo: e.target.value }); }); }} /></label>
                   <label style={{ gridColumn: 'span 2' }}>Observação<input value={novaTaxa.observacao} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { observacao: e.target.value }); }); }} /></label>
+                </div>
+                <div className="sim-form-grid sim-grid-4" style={{ marginTop: 12 }}>
+                  <label style={{ gridColumn: 'span 2' }}>Taxa coringa — nome <small style={{ color: '#94a3b8' }}>(ex: TRT por destino)</small><input value={novaTaxa.taxa_extra_nome} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { taxa_extra_nome: e.target.value }); }); }} /></label>
+                  <label>Valor fixo (R$) <small style={{ color: '#94a3b8' }}>(usa se % = 0)</small><input type="number" step="0.01" value={novaTaxa.taxa_extra_valor} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { taxa_extra_valor: e.target.value }); }); }} /></label>
+                  <label>% NF <small style={{ color: '#94a3b8' }}>(prioritário)</small><input type="number" step="0.0001" value={novaTaxa.taxa_extra_pct} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { taxa_extra_pct: e.target.value }); }); }} /></label>
+                  <label>Mínimo (R$) <small style={{ color: '#94a3b8' }}>(para % NF)</small><input type="number" step="0.01" value={novaTaxa.taxa_extra_min} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { taxa_extra_min: e.target.value }); }); }} /></label>
                 </div>
                 <div className="sim-actions" style={{ marginTop: 14 }}>
                   <button className="primary" type="button" onClick={handleSalvarTaxa} disabled={salvandoTaxa}>{salvandoTaxa ? 'Salvando...' : editandoTaxa ? 'Atualizar taxa' : 'Adicionar taxa'}</button>

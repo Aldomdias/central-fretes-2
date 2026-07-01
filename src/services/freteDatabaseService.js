@@ -206,6 +206,10 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       grisMinimo: item.gris_minimo,
       adVal: item.ad_val,
       adValMinimo: item.ad_val_minimo,
+      taxaExtraNome: item.taxa_extra_nome || '',
+      taxaExtraValor: item.taxa_extra_valor ?? 0,
+      taxaExtraPct: item.taxa_extra_pct ?? 0,
+      taxaExtraMin: item.taxa_extra_min ?? 0,
       ...(item.extra || {}),
     })),
   };
@@ -309,7 +313,7 @@ function mapBaseToTables(transportadoras) {
       });
 
       (origem.taxasEspeciais || []).forEach((item) => {
-        const { id, ibgeDestino, tda, tdr, trt, suframa, outras, gris, grisMinimo, adVal, adValMinimo, ...extra } = item || {};
+        const { id, ibgeDestino, tda, tdr, trt, suframa, outras, gris, grisMinimo, adVal, adValMinimo, taxaExtraNome, taxaExtraValor, taxaExtraPct, taxaExtraMin, ...extra } = item || {};
 
         taxasRows.push({
           id: safeUuid(id, usedTaxas),
@@ -324,6 +328,10 @@ function mapBaseToTables(transportadoras) {
           gris_minimo: toNumberOrNull(grisMinimo),
           ad_val: toNumberOrNull(adVal),
           ad_val_minimo: toNumberOrNull(adValMinimo),
+          taxa_extra_nome: taxaExtraNome || null,
+          taxa_extra_valor: toNumberOrNull(taxaExtraValor),
+          taxa_extra_pct: toNumberOrNull(taxaExtraPct),
+          taxa_extra_min: toNumberOrNull(taxaExtraMin),
           extra,
         });
       });
