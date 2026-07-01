@@ -189,6 +189,27 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
   return writeLocal(next);
 }
 
+// Enriquecimento: puxa da base reauditada (auditoria_cte_resultados) o que ja
+// sabemos de cada CT-e da fatura - rota, peso, canal, competencia e valores.
+// E consulta de referencia: falha aqui nao pode travar a tela da fatura.
+export async function buscarReferenciaCtes(chaves = []) {
+  const referencia = new Map();
+  if (!isSupabaseConfigured() || !chaves.length) return referencia;
+  const normalizadas = [...new Set(chaves.map(normalizarChaveCte).filter(Boolean))];
+  const client = getSupabaseClient();
+  for (let inicio = 0; inicio < normalizadas.length; inicio += 200) {
+    const { data, error } = await client
+      .from('auditoria_cte_resultados')
+      .select('chave_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, status_calculo')
+      .in('chave_cte', normalizadas.slice(inicio, inicio + 200));
+    if (error) break;
+    for (const row of data || []) {
+      referencia.set(normalizarChaveCte(row.chave_cte), row);
+    }
+  }
+  return referencia;
+}
+
 // Reauditoria da fatura: cruza cada CT-e (chave) com a base recalculada pelo
 // motor (auditoria_cte_resultados), grava calculado/diferenca/status nos
 // detalhes e atualiza os agregados e o status da fatura.

@@ -26,11 +26,13 @@ import {
   montarArquivoDoccobEdi,
   montarLinhasDoccob,
   montarNomeDoccob,
+  normalizarChaveCte,
   statusSla,
 } from '../utils/auditoriaFretesDomain';
 import {
   atualizarFaturaAuditoria,
   atenderSolicitacaoFinanceira,
+  buscarReferenciaCtes,
   carregarPlataformaAuditoria,
   criarProtocoloFinanceiro,
   criarSolicitacaoFinanceira,
@@ -141,6 +143,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [erroDetalhes, setErroDetalhes] = useState('');
   const [novaFaturaId, setNovaFaturaId] = useState('');
   const [reauditando, setReauditando] = useState(false);
+  const [referenciaCtes, setReferenciaCtes] = useState(new Map());
   const detalhes = state.detalhes[fatura.id] || [];
   const divergencias = detalhes.filter((item) => Number(item.diferenca || 0) !== 0 || item.status === 'DIVERGENTE');
   const semCalculo = detalhes.filter((item) => !Number(item.calculado_frete || 0));
@@ -165,9 +168,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     setCarregandoDetalhes(true);
     setErroDetalhes('');
     carregarDetalhesFaturaSupabase(fatura.id)
-      .then((lista) => {
+      .then(async (lista) => {
         if (!ativo) return;
         onState((atual) => ({ ...atual, detalhes: { ...atual.detalhes, [fatura.id]: lista || [] } }));
+        // Cruza com a base auditada para exibir rota, peso, canal e valores de referencia.
+        const referencia = await buscarReferenciaCtes((lista || []).map((item) => item.chave_cte));
+        if (ativo) setReferenciaCtes(referencia);
       })
       .catch((error) => {
         if (ativo) setErroDetalhes(error.message || String(error));
@@ -275,24 +281,38 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const selecionar = (id) => setSelecionados((lista) =>
     lista.includes(id) ? lista.filter((item) => item !== id) : [...lista, id]);
 
+  const ctesNaBase = detalhes.filter((item) => referenciaCtes.has(normalizarChaveCte(item.chave_cte))).length;
+
   const tabelaCtes = (lista) => (
     <div className="sim-analise-tabela-wrap">
+      {detalhes.length > 0 && (
+        <p className="compact">
+          {ctesNaBase} de {detalhes.length} CT-e(s) encontrados na base auditada
+          {ctesNaBase < detalhes.length ? ' — os demais ainda nao foram processados na Auditoria CT-e.' : '.'}
+        </p>
+      )}
       <table className="sim-analise-tabela">
-        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Valor</th><th>Calculado</th><th>Diferenca</th><th>Motivo</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor</th><th>Calculado</th><th>Diferenca</th><th>Motivo</th><th>Status</th></tr></thead>
         <tbody>
-          {lista.map((item) => (
-            <tr key={item.id}>
-              <td><input type="checkbox" checked={selecionados.includes(item.id)} onChange={() => selecionar(item.id)} /></td>
-              <td>{item.numero_cte || '-'}</td>
-              <td><small>{item.chave_cte || '-'}</small></td>
-              <td>{dinheiro(item.valor_frete)}</td>
-              <td>{Number(item.calculado_frete || 0) ? dinheiro(item.calculado_frete) : 'Sem calculo'}</td>
-              <td className={Number(item.diferenca || 0) ? 'negativo' : ''}>{dinheiro(item.diferenca)}</td>
-              <td>{nomeStatus(item.motivo_divergencia || '-')}</td>
-              <td><Status value={item.status} /></td>
-            </tr>
-          ))}
-          {!lista.length && <tr><td colSpan="8">Nenhum CT-e nesta visao.</td></tr>}
+          {lista.map((item) => {
+            const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte));
+            return (
+              <tr key={item.id}>
+                <td><input type="checkbox" checked={selecionados.includes(item.id)} onChange={() => selecionar(item.id)} /></td>
+                <td>{item.numero_cte || '-'}</td>
+                <td><small>{item.chave_cte || '-'}</small></td>
+                <td>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} → {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : <small className="error-text">Fora da base</small>}</td>
+                <td>{base?.canal || '-'}</td>
+                <td>{base?.peso ? Number(base.peso).toLocaleString('pt-BR') : '-'}</td>
+                <td>{dinheiro(item.valor_frete)}</td>
+                <td>{Number(item.calculado_frete || 0) ? dinheiro(item.calculado_frete) : 'Sem calculo'}</td>
+                <td className={Number(item.diferenca || 0) ? 'negativo' : ''}>{dinheiro(item.diferenca)}</td>
+                <td>{nomeStatus(item.motivo_divergencia || '-')}</td>
+                <td><Status value={item.status} /></td>
+              </tr>
+            );
+          })}
+          {!lista.length && <tr><td colSpan="11">Nenhum CT-e nesta visao.</td></tr>}
         </tbody>
       </table>
     </div>
