@@ -767,6 +767,7 @@ export default function OportunidadeTransportadoraPage() {
   const [canal, setCanal] = useState('');
   const [limiteInput, setLimiteInput] = useState('4000');
   const [refCompetencia, setRefCompetencia] = useState('2026-01'); // período de referência (ex: antes dos reajustes)
+  const [mostrarSimulado, setMostrarSimulado] = useState(true);
 
   const [status, setStatus] = useState('idle');
   const [progresso, setProgresso] = useState('');
@@ -1099,6 +1100,13 @@ export default function OportunidadeTransportadoraPage() {
           <label>Referência (% NF antes reajuste) <span style={{ fontWeight: 400, color: '#94a3b8', fontSize: '0.72rem' }}>mês base</span>
             <input type="month" value={refCompetencia} onChange={(e) => setRefCompetencia(e.target.value)} />
           </label>
+          <label style={{ cursor: 'pointer', userSelect: 'none' }}>
+            <span style={{ fontWeight: 500, fontSize: '0.82rem' }}>Exibir colunas simulado</span>
+            <div style={{ marginTop: 6 }}>
+              <input type="checkbox" checked={mostrarSimulado} onChange={(e) => setMostrarSimulado(e.target.checked)} style={{ marginRight: 6, cursor: 'pointer' }} />
+              <span style={{ fontSize: '0.8rem', color: mostrarSimulado ? '#4E008F' : '#94a3b8' }}>{mostrarSimulado ? 'Visível' : 'Oculto'}</span>
+            </div>
+          </label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
             <button className="primary" type="button" onClick={processar} disabled={status === 'carregando'}>
               {status === 'carregando' ? 'Processando...' : 'Analisar oportunidade'}
@@ -1224,21 +1232,21 @@ export default function OportunidadeTransportadoraPage() {
                     <th>CT-es</th>
                     {resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="% frete sobre NF no período de referência (antes dos reajustes)">% NF {resultado.refCompetencia}</th>}
                     <th title="Total do frete pago no período e % frete sobre NF (média ponderada pelo volume de NF)">Atual — total / % NF</th>
-                    <th title="Melhor cenário simulado — total do período e % NF combinado (CT-e a CT-e)">Simulado — total / % NF</th>
-                    <th>Redução R$</th>
-                    <th>Redução %</th>
-                    <th>Substituta</th>
-                    <th>Prazo (real→melhor)</th>
+                    {mostrarSimulado && <th title="Melhor cenário simulado — total do período e % NF combinado (CT-e a CT-e)">Simulado — total / % NF</th>}
+                    {mostrarSimulado && <th>Redução R$</th>}
+                    {mostrarSimulado && <th>Redução %</th>}
+                    {mostrarSimulado && <th>Substituta</th>}
+                    {mostrarSimulado && <th>Prazo (real→melhor)</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {resultado.regioes.map((reg) => (
                     <React.Fragment key={reg.regiao}>
                       <tr style={{ background: '#f1f5f9' }}>
-                        <td colSpan={6} style={{ fontWeight: 800, color: '#4E008F', letterSpacing: '0.03em' }}>{reg.regiao}</td>
-                        <td className="negativo" style={{ fontWeight: 700 }}>{fmt(reg.reducaoRs)}</td>
-                        <td>{pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>
-                        <td colSpan={2} style={{ fontSize: '0.76rem', color: '#64748b' }}>{reg.linhas.length} linhas</td>
+                        <td colSpan={mostrarSimulado ? 6 : (resultado.refCompetencia ? 5 : 4)} style={{ fontWeight: 800, color: '#4E008F', letterSpacing: '0.03em' }}>{reg.regiao}</td>
+                        {mostrarSimulado && <td className="negativo" style={{ fontWeight: 700 }}>{fmt(reg.reducaoRs)}</td>}
+                        {mostrarSimulado && <td>{pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>}
+                        <td colSpan={mostrarSimulado ? 2 : 1} style={{ fontSize: '0.76rem', color: '#64748b' }}>{reg.linhas.length} linhas</td>
                       </tr>
                       {reg.linhas.map((l) => {
                         const id = l.key;
@@ -1284,28 +1292,28 @@ export default function OportunidadeTransportadoraPage() {
                                 {fmtMetrica(metrica, l.custoAtual)}
                                 {metrica !== 'freteNf' && l.freteNfPctAtual != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>}
                               </td>
-                              <td style={{ color: '#04C7A4', fontWeight: 600 }}>
+                              {mostrarSimulado && <td style={{ color: '#04C7A4', fontWeight: 600 }}>
                                 {fmtMetrica(metrica, l.custoMelhor)}
                                 {metrica !== 'freteNf' && l.chainNfPct != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(l.chainNfPct)} NF</span>}
-                              </td>
-                              <td className={l.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: l.reducaoRs > TOLERANCIA ? 700 : 400 }}>{l.reducaoRs > TOLERANCIA ? fmt(l.reducaoRs) : '—'}</td>
-                              <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>
-                              <td style={{ fontSize: '0.8rem' }}>
+                              </td>}
+                              {mostrarSimulado && <td className={l.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: l.reducaoRs > TOLERANCIA ? 700 : 400 }}>{l.reducaoRs > TOLERANCIA ? fmt(l.reducaoRs) : '—'}</td>}
+                              {mostrarSimulado && <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>}
+                              {mostrarSimulado && <td style={{ fontSize: '0.8rem' }}>
                                 {l.substituta ? (
                                   <span>{mesmaTransportadora(l.substituta, l.transportadoraReal) ? `${l.substituta} (própria tabela)` : l.substituta}
                                     {l.ctes > 1 && <span style={{ color: '#94a3b8' }}> · {fmtN(l.cobertura)}/{fmtN(l.ctes)}</span>}
                                   </span>
                                 ) : '—'}
-                              </td>
-                              <td style={{ whiteSpace: 'nowrap', color: '#64748b' }}>
+                              </td>}
+                              {mostrarSimulado && <td style={{ whiteSpace: 'nowrap', color: '#64748b' }}>
                                 {l.prazoRealMedio != null ? `${l.prazoRealMedio.toFixed(1)}d` : '?'} → {l.prazoMelhorMedio != null ? `${l.prazoMelhorMedio.toFixed(1)}d` : '?'}
-                              </td>
+                              </td>}
                             </tr>
                               );
                             })()}
                             {aberto && (
                               <tr>
-                                <td colSpan={10} style={{ background: '#faf5ff', padding: '14px 16px' }}>
+                                <td colSpan={mostrarSimulado ? 10 : 5} style={{ background: '#faf5ff', padding: '14px 16px' }}>
 
                                   {/* % frete/NF atual vs melhor */}
                                   <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
