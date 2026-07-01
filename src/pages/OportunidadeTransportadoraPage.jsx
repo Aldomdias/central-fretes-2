@@ -1241,6 +1241,7 @@ export default function OportunidadeTransportadoraPage() {
                     <th>CT-es</th>
                     {resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="% frete sobre NF no período de referência (antes dos reajustes)">% NF {resultado.refCompetencia}</th>}
                     <th title="Total do frete pago no período e % frete sobre NF (média ponderada pelo volume de NF)">Atual — total / % NF</th>
+                    {resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="Variação em pontos percentuais entre o período de referência e o atual">Δ ref→atual</th>}
                     {mostrarSimulado && <th title="Melhor cenário simulado — total do período e % NF combinado (CT-e a CT-e)">Simulado — total / % NF</th>}
                     {mostrarSimulado && <th>Redução R$</th>}
                     {mostrarSimulado && <th>Redução %</th>}
@@ -1252,7 +1253,7 @@ export default function OportunidadeTransportadoraPage() {
                   {resultado.regioes.map((reg) => (
                     <React.Fragment key={reg.regiao}>
                       <tr style={{ background: '#f1f5f9' }}>
-                        <td colSpan={mostrarSimulado ? 6 : (resultado.refCompetencia ? 5 : 4)} style={{ fontWeight: 800, color: '#4E008F', letterSpacing: '0.03em' }}>{reg.regiao}</td>
+                        <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 7 : 6) : (resultado.refCompetencia ? 6 : 4)} style={{ fontWeight: 800, color: '#4E008F', letterSpacing: '0.03em' }}>{reg.regiao}</td>
                         {mostrarSimulado && <td className="negativo" style={{ fontWeight: 700 }}>{fmt(reg.reducaoRs)}</td>}
                         {mostrarSimulado && <td>{pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>}
                         <td colSpan={mostrarSimulado ? 2 : 1} style={{ fontSize: '0.76rem', color: '#64748b' }}>{reg.linhas.length} linhas</td>
@@ -1290,26 +1291,23 @@ export default function OportunidadeTransportadoraPage() {
                               {resultado.refCompetencia && (
                                 <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 600, color: l.freteNfPctRef != null ? '#1e3a5f' : '#94a3b8' }} title={l.refCtes ? `${l.refCtes} CT-es em ${resultado.refCompetencia}` : 'Sem dados no período de referência'}>
                                   {l.freteNfPctRef != null ? pct(l.freteNfPctRef) : '—'}
-                                  {l.freteNfPctRef != null && l.freteNfPctAtual != null && (
-                                    <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: l.freteNfPctAtual > l.freteNfPctRef ? '#9b1111' : '#047857' }}>
-                                      {l.freteNfPctAtual > l.freteNfPctRef ? `▲ +${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp` : `▼ ${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp`}
-                                    </span>
-                                  )}
                                 </td>
                               )}
                               <td>
                                 {fmtMetrica(metrica, l.custoAtual)}
                                 {metrica !== 'freteNf' && l.freteNfPctAtual != null && (
-                                  <>
-                                    <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>
-                                    {l.freteNfPctRef != null && (
-                                      <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: l.freteNfPctAtual > l.freteNfPctRef ? '#9b1111' : '#047857' }}>
-                                        {l.freteNfPctAtual > l.freteNfPctRef ? `▲ +${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp vs jan` : `▼ ${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp vs jan`}
-                                      </span>
-                                    )}
-                                  </>
+                                  <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>
                                 )}
                               </td>
+                              {resultado.refCompetencia && (() => {
+                                const delta = l.freteNfPctRef != null && l.freteNfPctAtual != null ? (l.freteNfPctAtual - l.freteNfPctRef) : null;
+                                const cor = delta == null ? '#94a3b8' : delta > 0 ? '#9b1111' : '#047857';
+                                return (
+                                  <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap' }}>
+                                    {delta == null ? '—' : `${delta > 0 ? '▲ +' : '▼ '}${delta.toFixed(1)}pp`}
+                                  </td>
+                                );
+                              })()}
                               {mostrarSimulado && <td style={{ color: '#04C7A4', fontWeight: 600 }}>
                                 {fmtMetrica(metrica, l.custoMelhor)}
                                 {metrica !== 'freteNf' && (() => {
@@ -1344,7 +1342,7 @@ export default function OportunidadeTransportadoraPage() {
                             })()}
                             {aberto && (
                               <tr>
-                                <td colSpan={mostrarSimulado ? 10 : 5} style={{ background: '#faf5ff', padding: '14px 16px' }}>
+                                <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 12 : 10) : (resultado.refCompetencia ? 7 : 5)} style={{ background: '#faf5ff', padding: '14px 16px' }}>
 
                                   {/* % frete/NF atual vs melhor */}
                                   <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
