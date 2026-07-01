@@ -154,11 +154,31 @@ export function calcularDashboard(faturas = [], referencia = new Date()) {
 }
 
 export function conciliarPagamentos(faturas = [], pagamentos = []) {
-  const porNumero = new Map(faturas.map((fatura) => [String(fatura.numero_fatura || '').trim(), fatura]));
+  const normalizar = (valor) => String(valor || '').trim().toUpperCase();
+  const porNumero = new Map();
+  for (const fatura of faturas) {
+    const numero = normalizar(fatura.numero_fatura);
+    if (!numero) continue;
+    porNumero.set(numero, [...(porNumero.get(numero) || []), fatura]);
+  }
   return pagamentos.map((pagamento) => {
-    const numero = String(pagamento.numero_fatura || pagamento.fatura || '').trim();
-    const fatura = porNumero.get(numero);
-    if (!fatura) return { ...pagamento, resultado: 'NAO_LOCALIZADO' };
+    const numero = normalizar(pagamento.numero_fatura || pagamento.fatura);
+    const candidatas = porNumero.get(numero) || [];
+    // O mesmo numero de fatura pode existir em transportadoras diferentes e em
+    // faturas ja encerradas (substituida/cancelada): prioriza as em aberto e,
+    // persistindo empate, exige a transportadora do relatorio para desambiguar.
+    const abertas = candidatas.filter((fatura) => !ENCERRADOS.has(fatura.status));
+    let alvo = abertas.length ? abertas : candidatas;
+    const transportadoraPagamento = normalizar(pagamento.transportadora || pagamento.cnpj_transportadora);
+    if (alvo.length > 1 && transportadoraPagamento) {
+      const filtradas = alvo.filter((fatura) =>
+        normalizar(fatura.transportadora) === transportadoraPagamento
+        || normalizar(fatura.cnpj_transportadora) === transportadoraPagamento);
+      if (filtradas.length) alvo = filtradas;
+    }
+    if (!alvo.length) return { ...pagamento, resultado: 'NAO_LOCALIZADO' };
+    if (alvo.length > 1) return { ...pagamento, resultado: 'AMBIGUO' };
+    const fatura = alvo[0];
     const pago = Number(pagamento.valor_pago || pagamento.valor || 0);
     const esperado = Number(fatura.valor_fatura || 0);
     return {

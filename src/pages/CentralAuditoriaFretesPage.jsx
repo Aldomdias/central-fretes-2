@@ -35,6 +35,7 @@ import {
   salvarBoletoFinanceiro,
   salvarCarteiraAuditoria,
   salvarPagamentosFinanceiros,
+  vincularNovaFatura,
 } from '../services/auditoriaFretesService';
 
 const TABS = [
@@ -132,11 +133,20 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [selecionados, setSelecionados] = useState([]);
   const [carregandoDetalhes, setCarregandoDetalhes] = useState(false);
   const [erroDetalhes, setErroDetalhes] = useState('');
+  const [novaFaturaId, setNovaFaturaId] = useState('');
   const detalhes = state.detalhes[fatura.id] || [];
   const divergencias = detalhes.filter((item) => Number(item.diferenca || 0) !== 0 || item.status === 'DIVERGENTE');
   const semCalculo = detalhes.filter((item) => !Number(item.calculado_frete || 0));
   const tratativas = state.tratativas.filter((item) => item.fatura_id === fatura.id || item.fatura === fatura.numero_fatura);
   const historico = state.historico.filter((item) => item.fatura_id === fatura.id);
+  const faturaSubstituta = fatura.substituida_por_id
+    ? state.faturas.find((item) => item.id === fatura.substituida_por_id)
+    : null;
+  const faturaOriginal = state.faturas.find((item) => item.substituida_por_id === fatura.id);
+  const candidatasSubstituta = state.faturas.filter((item) =>
+    item.id !== fatura.id
+    && item.transportadora === fatura.transportadora
+    && !['SUBSTITUIDA', 'CANCELADA'].includes(item.status));
 
   useEffect(() => {
     let ativo = true;
@@ -198,6 +208,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       gerado_por_nome: sessao?.nome || sessao?.email || 'Usuario local',
     });
     onState(next);
+  };
+
+  const vincularSubstituta = async () => {
+    const nova = state.faturas.find((item) => item.id === novaFaturaId);
+    if (!nova) return;
+    try {
+      const next = await vincularNovaFatura(state, fatura, nova, sessao?.nome || sessao?.email || 'Usuario local');
+      onState(next);
+      setNovaFaturaId('');
+      setErroDetalhes('');
+    } catch (error) {
+      setErroDetalhes(error.message || String(error));
+    }
   };
 
   const selecionar = (id) => setSelecionados((lista) =>
@@ -266,6 +289,32 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             <label className="field">Vencimento<input value={dataBr(fatura.data_vencimento)} readOnly /></label>
             <label className="field">Boleto<input value={nomeStatus(fatura.boleto_status || 'PENDENTE')} readOnly /></label>
           </div>
+          {faturaSubstituta && (
+            <div className="hint-box compact">
+              Fatura substituida pela nova fatura <strong>{faturaSubstituta.numero_fatura}</strong> ({dinheiro(faturaSubstituta.valor_fatura)}, vencimento {dataBr(faturaSubstituta.data_vencimento)}).
+            </div>
+          )}
+          {faturaOriginal && (
+            <div className="hint-box compact">
+              Esta e a nova fatura que substitui a fatura original <strong>{faturaOriginal.numero_fatura}</strong> ({dinheiro(faturaOriginal.valor_fatura)}).
+            </div>
+          )}
+          {!faturaSubstituta && (
+            <div className="form-grid three">
+              <label className="field">Nova fatura (substituta)
+                <select value={novaFaturaId} onChange={(event) => setNovaFaturaId(event.target.value)}>
+                  <option value="">Selecione a fatura ja importada</option>
+                  {candidatasSubstituta.map((item) => (
+                    <option key={item.id} value={item.id}>{item.numero_fatura} - {dinheiro(item.valor_fatura)} - venc. {dataBr(item.data_vencimento)}</option>
+                  ))}
+                </select>
+              </label>
+              <div className="audit-form-actions">
+                <button className="btn-secondary" disabled={!novaFaturaId} onClick={vincularSubstituta}>Vincular nova fatura</button>
+              </div>
+              <p className="compact">Importe a nova fatura pela aba Faturas e vincule aqui: a original passa a SUBSTITUIDA e as duas guardam o vinculo no historico.</p>
+            </div>
+          )}
         </>
       )}
       {tab === 'ctes' && tabelaCtes(detalhes)}
@@ -500,6 +549,7 @@ function Financeiro({ state, onState }) {
   const [solicitacaoAberta, setSolicitacaoAberta] = useState(null);
   const [respostaFinanceiro, setRespostaFinanceiro] = useState('');
   const [referenciaAnexo, setReferenciaAnexo] = useState('');
+  const [erroFinanceiro, setErroFinanceiro] = useState('');
   const fatura = state.faturas.find((item) => item.id === faturaId);
 
   const enviar = async () => {
@@ -542,19 +592,24 @@ function Financeiro({ state, onState }) {
 
   const atenderSolicitacao = async (status) => {
     if (!solicitacaoAberta || !respostaFinanceiro.trim()) return;
-    const next = await atenderSolicitacaoFinanceira(state, solicitacaoAberta, {
-      status,
-      comentario: respostaFinanceiro.trim(),
-      anexo_nome: referenciaAnexo.trim(),
-      responsavel_id: sessao?.id || '',
-      responsavel_nome: sessao?.nome || sessao?.email || 'Financeiro',
-      usuario_id: sessao?.id || '',
-      usuario_nome: sessao?.nome || sessao?.email || 'Financeiro',
-    });
-    onState(next);
-    setSolicitacaoAberta(next.solicitacoes.find((item) => item.id === solicitacaoAberta.id) || null);
-    setRespostaFinanceiro('');
-    setReferenciaAnexo('');
+    try {
+      const next = await atenderSolicitacaoFinanceira(state, solicitacaoAberta, {
+        status,
+        comentario: respostaFinanceiro.trim(),
+        anexo_nome: referenciaAnexo.trim(),
+        responsavel_id: sessao?.id || '',
+        responsavel_nome: sessao?.nome || sessao?.email || 'Financeiro',
+        usuario_id: sessao?.id || '',
+        usuario_nome: sessao?.nome || sessao?.email || 'Financeiro',
+      });
+      onState(next);
+      setSolicitacaoAberta(next.solicitacoes.find((item) => item.id === solicitacaoAberta.id) || null);
+      setRespostaFinanceiro('');
+      setReferenciaAnexo('');
+      setErroFinanceiro('');
+    } catch (error) {
+      setErroFinanceiro(error.message || String(error));
+    }
   };
 
   const copiarProtocolo = async (protocolo) => {
@@ -574,31 +629,42 @@ function Financeiro({ state, onState }) {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
-    const normalizados = rows.map((row) => ({
-      numero_fatura: String(row['Numero Fatura'] || row['Fatura'] || row['numero_fatura'] || ''),
-      valor_pago: Number(row['Valor Pago'] || row['Valor'] || row['valor_pago'] || 0),
-      data_pagamento: row['Data Pagamento'] || row['data_pagamento'] || new Date().toISOString().slice(0, 10),
-      documento_compensacao: String(row['Documento Compensacao'] || row['Documento'] || ''),
-      arquivo_origem: file.name,
-    }));
-    const conciliados = conciliarPagamentos(state.faturas, normalizados);
-    let next = await salvarPagamentosFinanceiros(state, conciliados);
-    for (const pagamento of conciliados.filter((item) => item.fatura_id)) {
-      const fat = next.faturas.find((item) => item.id === pagamento.fatura_id);
-      next = await atualizarFaturaAuditoria(next, {
-        ...fat,
-        status: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
-        valor_pago: pagamento.valor_pago,
-        data_pagamento: pagamento.data_pagamento,
-      }, {
-        acao: 'PAGAMENTO_CONCILIADO', status_anterior: fat.status,
-        status_novo: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
-        descricao: `Pagamento importado: ${pagamento.resultado}.`, usuario_nome: sessao?.nome || 'Usuario local',
-      });
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
+      const normalizados = rows.map((row) => ({
+        numero_fatura: String(row['Numero Fatura'] || row['Fatura'] || row['numero_fatura'] || ''),
+        transportadora: String(row['Transportadora'] || row['transportadora'] || ''),
+        valor_pago: Number(row['Valor Pago'] || row['Valor'] || row['valor_pago'] || 0),
+        data_pagamento: row['Data Pagamento'] || row['data_pagamento'] || new Date().toISOString().slice(0, 10),
+        documento_compensacao: String(row['Documento Compensacao'] || row['Documento'] || ''),
+        arquivo_origem: file.name,
+      }));
+      const conciliados = conciliarPagamentos(state.faturas, normalizados);
+      // transportadora orienta a conciliacao, mas nao é coluna de financeiro_pagamentos.
+      const registros = conciliados.map(({ transportadora, ...pagamento }) => pagamento);
+      let next = await salvarPagamentosFinanceiros(state, registros);
+      for (const pagamento of registros.filter((item) => item.fatura_id)) {
+        const fat = next.faturas.find((item) => item.id === pagamento.fatura_id);
+        next = await atualizarFaturaAuditoria(next, {
+          ...fat,
+          status: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
+          valor_pago: pagamento.valor_pago,
+          data_pagamento: pagamento.data_pagamento,
+        }, {
+          acao: 'PAGAMENTO_CONCILIADO', status_anterior: fat.status,
+          status_novo: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
+          descricao: `Pagamento importado: ${pagamento.resultado}.`, usuario_nome: sessao?.nome || 'Usuario local',
+        });
+      }
+      const ambiguos = registros.filter((item) => item.resultado === 'AMBIGUO').length;
+      setErroFinanceiro(ambiguos
+        ? `${ambiguos} pagamento(s) com numero de fatura repetido em mais de uma transportadora. Inclua a coluna Transportadora no relatorio para conciliar.`
+        : '');
+      onState(next);
+    } catch (error) {
+      setErroFinanceiro(error.message || String(error));
     }
-    onState(next);
   };
 
   return (
@@ -608,6 +674,7 @@ function Financeiro({ state, onState }) {
           ['protocolos', 'Protocolos'], ['solicitacoes', 'Solicitacoes e SLA'], ['boletos', 'Boletos'], ['pagamentos', 'Pagamentos'],
         ].map(([id, label]) => <button key={id} className={`toggle-btn ${subtab === id ? 'active' : ''}`} onClick={() => setSubtab(id)}>{label}</button>)}
       </div>
+      {erroFinanceiro && <div className="hint-box compact error-text">{erroFinanceiro}</div>}
 
       {subtab === 'protocolos' && (
         <>

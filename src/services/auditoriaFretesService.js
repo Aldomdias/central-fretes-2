@@ -105,15 +105,21 @@ function readLocal() {
 }
 
 function writeLocal(state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  // Com Supabase configurado o estado vive só no banco: gravar no localStorage
+  // misturaria dados de demonstração/antigos com dados reais entre sessões.
+  if (!isSupabaseConfigured()) localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   return state;
 }
 
-async function safeSelect(table, order = 'created_at') {
-  if (!isSupabaseConfigured()) return null;
+const CODIGO_TABELA_INEXISTENTE = '42P01';
+
+async function selecionarTabela(table, order = 'created_at') {
   const client = getSupabaseClient();
   const { data, error } = await client.from(table).select('*').order(order, { ascending: false }).limit(1000);
-  if (error) return null;
+  if (error) {
+    if (error.code === CODIGO_TABELA_INEXISTENTE) return [];
+    throw new Error(`Erro ao carregar ${table}: ${error.message}`);
+  }
   return data || [];
 }
 
@@ -125,49 +131,46 @@ async function safeUpsert(table, payload) {
   return true;
 }
 
+async function inserirHistorico(table, payload) {
+  // Historico é trilha de auditoria: só insert, nunca upsert/update.
+  if (!isSupabaseConfigured()) return false;
+  const client = getSupabaseClient();
+  const { error } = await client.from(table).insert(payload);
+  if (error) throw new Error(`Erro ao registrar historico em ${table}: ${error.message}`);
+  return true;
+}
+
 export async function carregarPlataformaAuditoria() {
-  const local = readLocal();
-  if (!isSupabaseConfigured()) return { ...local, modo: 'DEMONSTRACAO_LOCAL' };
+  if (!isSupabaseConfigured()) return { ...readLocal(), modo: 'DEMONSTRACAO_LOCAL' };
 
   const [faturas, carteiras, tratativas, historico, doccobs, protocolos, solicitacoes, solicitacaoHistorico, boletos, pagamentos] = await Promise.all([
-    safeSelect('faturas'),
-    safeSelect('auditoria_carteiras', 'transportadora'),
-    safeSelect('tratativas'),
-    safeSelect('auditoria_fatura_historico'),
-    safeSelect('auditoria_doccobs'),
-    safeSelect('financeiro_protocolos'),
-    safeSelect('financeiro_solicitacoes'),
-    safeSelect('financeiro_solicitacao_historico'),
-    safeSelect('financeiro_boletos', 'vencimento'),
-    safeSelect('financeiro_pagamentos', 'data_pagamento'),
+    selecionarTabela('faturas'),
+    selecionarTabela('auditoria_carteiras', 'transportadora'),
+    selecionarTabela('tratativas'),
+    selecionarTabela('auditoria_fatura_historico'),
+    selecionarTabela('auditoria_doccobs'),
+    selecionarTabela('financeiro_protocolos'),
+    selecionarTabela('financeiro_solicitacoes'),
+    selecionarTabela('financeiro_solicitacao_historico'),
+    selecionarTabela('financeiro_boletos', 'vencimento'),
+    selecionarTabela('financeiro_pagamentos', 'data_pagamento'),
   ]);
 
-  const state = {
-    ...local,
-    faturas: faturas?.length ? faturas : local.faturas,
-    carteiras: carteiras || local.carteiras,
-    tratativas: tratativas || local.tratativas,
-    historico: historico || local.historico,
-    doccobs: doccobs || local.doccobs,
-    protocolos: protocolos || local.protocolos,
-    solicitacoes: solicitacoes || local.solicitacoes,
-    solicitacaoHistorico: solicitacaoHistorico || local.solicitacaoHistorico || [],
-    boletos: boletos || local.boletos,
-    pagamentos: pagamentos || local.pagamentos,
-    modo: faturas ? 'SUPABASE' : 'DEMONSTRACAO_LOCAL',
+  // Detalhes (CT-es) são carregados sob demanda ao abrir cada fatura.
+  return {
+    faturas,
+    detalhes: {},
+    carteiras,
+    tratativas,
+    historico,
+    doccobs,
+    protocolos,
+    solicitacoes,
+    solicitacaoHistorico,
+    boletos,
+    pagamentos,
+    modo: 'SUPABASE',
   };
-
-  if (faturas?.length) {
-    const detalhes = {};
-    await Promise.all(faturas.slice(0, 100).map(async (fatura) => {
-      const client = getSupabaseClient();
-      const { data } = await client.from('fatura_detalhes').select('*').eq('fatura_id', fatura.id).order('numero_cte');
-      detalhes[fatura.id] = data || [];
-    }));
-    state.detalhes = { ...local.detalhes, ...detalhes };
-  }
-  writeLocal(state);
-  return state;
 }
 
 export async function atualizarFaturaAuditoria(state, fatura, evento) {
@@ -181,9 +184,37 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
       id: uid('hist'), fatura_id: fatura.id, created_at: new Date().toISOString(), ...evento,
     };
     next.historico = [historico, ...(next.historico || [])];
-    await safeUpsert('auditoria_fatura_historico', historico);
+    await inserirHistorico('auditoria_fatura_historico', historico);
   }
   return writeLocal(next);
+}
+
+export async function vincularNovaFatura(state, original, nova, usuarioNome = 'Usuario local') {
+  if (!original?.id || !nova?.id || original.id === nova.id) {
+    throw new Error('Selecione uma nova fatura diferente da original.');
+  }
+  if (original.substituida_por_id) {
+    throw new Error('Esta fatura ja possui uma substituta vinculada.');
+  }
+  let next = await atualizarFaturaAuditoria(state, {
+    ...original,
+    substituida_por_id: nova.id,
+    status: 'SUBSTITUIDA',
+  }, {
+    acao: 'FATURA_SUBSTITUIDA',
+    status_anterior: original.status,
+    status_novo: 'SUBSTITUIDA',
+    descricao: `Substituida pela fatura ${nova.numero_fatura} (${nova.transportadora}).`,
+    metadata: { nova_fatura_id: nova.id, nova_fatura_numero: nova.numero_fatura },
+    usuario_nome: usuarioNome,
+  });
+  next = await atualizarFaturaAuditoria(next, { ...nova }, {
+    acao: 'VINCULADA_COMO_SUBSTITUTA',
+    descricao: `Substitui a fatura ${original.numero_fatura} (${original.transportadora}).`,
+    metadata: { fatura_original_id: original.id, fatura_original_numero: original.numero_fatura },
+    usuario_nome: usuarioNome,
+  });
+  return next;
 }
 
 export async function salvarCarteiraAuditoria(state, carteira) {
@@ -203,29 +234,52 @@ export async function registrarDoccob(state, doccob) {
   return writeLocal(next);
 }
 
+// O numero do protocolo é gerado no cliente a partir do estado carregado: dois
+// usuários simultâneos podem gerar o mesmo. A unique do banco barra a colisão e
+// aqui tentamos de novo com o próximo número em vez de estourar para o usuário.
+async function salvarComProtocoloUnico(table, montarPayload, prefixo, existentes) {
+  const usados = existentes.map((item) => item?.protocolo).filter(Boolean);
+  for (let tentativa = 0; tentativa < 5; tentativa += 1) {
+    const protocolo = gerarProtocolo(prefixo, usados);
+    const payload = montarPayload(protocolo);
+    try {
+      await safeUpsert(table, payload);
+      return payload;
+    } catch (error) {
+      if (!/duplicate key|23505/i.test(error?.message || '')) throw error;
+      usados.push(protocolo);
+    }
+  }
+  throw new Error(`Nao foi possivel gerar um protocolo ${prefixo} unico. Atualize a pagina e tente novamente.`);
+}
+
 export async function criarProtocoloFinanceiro(state, dados) {
-  const payload = {
+  const montar = (protocolo) => ({
     id: uid('fin'),
-    protocolo: gerarProtocolo('FIN', state.protocolos),
+    protocolo,
     status: 'ENVIADO',
     created_at: new Date().toISOString(),
     ...dados,
-  };
+  });
+  const payload = isSupabaseConfigured()
+    ? await salvarComProtocoloUnico('financeiro_protocolos', montar, 'FIN', state.protocolos)
+    : montar(gerarProtocolo('FIN', state.protocolos));
   const next = { ...state, protocolos: [payload, ...state.protocolos] };
-  await safeUpsert('financeiro_protocolos', payload);
   return writeLocal(next);
 }
 
 export async function criarSolicitacaoFinanceira(state, dados) {
-  const payload = {
+  const montar = (protocolo) => ({
     id: uid('fin-sla'),
-    protocolo: gerarProtocolo('FIN-SLA', state.solicitacoes),
+    protocolo,
     status: 'ABERTA',
     created_at: new Date().toISOString(),
     ...dados,
-  };
+  });
+  const payload = isSupabaseConfigured()
+    ? await salvarComProtocoloUnico('financeiro_solicitacoes', montar, 'FIN-SLA', state.solicitacoes)
+    : montar(gerarProtocolo('FIN-SLA', state.solicitacoes));
   const next = { ...state, solicitacoes: [payload, ...state.solicitacoes] };
-  await safeUpsert('financeiro_solicitacoes', payload);
   return writeLocal(next);
 }
 
@@ -255,8 +309,28 @@ export async function atenderSolicitacaoFinanceira(state, solicitacao, atendimen
     solicitacoes: state.solicitacoes.map((item) => item.id === solicitacao.id ? payload : item),
     solicitacaoHistorico: [evento, ...(state.solicitacaoHistorico || [])],
   };
-  await safeUpsert('financeiro_solicitacoes', payload);
-  await safeUpsert('financeiro_solicitacao_historico', evento);
+  if (isSupabaseConfigured()) {
+    // Update condicional: se outro usuario ja concluiu a solicitacao, nao
+    // sobrescreve o atendimento dele — avisa para recarregar a fila.
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from('financeiro_solicitacoes')
+      .update({
+        status: payload.status,
+        responsavel_id: payload.responsavel_id,
+        responsavel_nome: payload.responsavel_nome,
+        concluido_em: payload.concluido_em,
+        updated_at: payload.updated_at,
+      })
+      .eq('id', solicitacao.id)
+      .neq('status', 'CONCLUIDA')
+      .select('id');
+    if (error) throw new Error(`Erro ao atender solicitacao: ${error.message}`);
+    if (!data?.length) {
+      throw new Error('Esta solicitacao ja foi concluida por outro usuario. Recarregue a pagina para atualizar a fila.');
+    }
+    await inserirHistorico('financeiro_solicitacao_historico', evento);
+  }
   return writeLocal(next);
 }
 

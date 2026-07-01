@@ -62,6 +62,30 @@ test('concilia pagamentos por numero e identifica divergencia', () => {
   assert.equal(resultado[1].resultado, 'NAO_LOCALIZADO');
 });
 
+test('conciliacao marca como ambiguo o numero repetido em transportadoras diferentes', () => {
+  const faturas = [
+    { id: 'f1', numero_fatura: '100', transportadora: 'Tomasi', valor_fatura: 80 },
+    { id: 'f2', numero_fatura: '100', transportadora: 'WM', valor_fatura: 90 },
+  ];
+  const semTransportadora = conciliarPagamentos(faturas, [{ numero_fatura: '100', valor_pago: 90 }]);
+  assert.equal(semTransportadora[0].resultado, 'AMBIGUO');
+  assert.equal(semTransportadora[0].fatura_id, undefined);
+
+  const comTransportadora = conciliarPagamentos(faturas, [{ numero_fatura: '100', transportadora: 'WM', valor_pago: 90 }]);
+  assert.equal(comTransportadora[0].resultado, 'PAGO');
+  assert.equal(comTransportadora[0].fatura_id, 'f2');
+});
+
+test('conciliacao ignora fatura substituida quando existe fatura em aberto com o mesmo numero', () => {
+  const faturas = [
+    { id: 'f1', numero_fatura: '200', transportadora: 'Tomasi', valor_fatura: 100, status: 'SUBSTITUIDA' },
+    { id: 'f2', numero_fatura: '200', transportadora: 'Tomasi', valor_fatura: 95, status: 'ENVIADA_AO_FINANCEIRO' },
+  ];
+  const resultado = conciliarPagamentos(faturas, [{ numero_fatura: '200', valor_pago: 95 }]);
+  assert.equal(resultado[0].resultado, 'PAGO');
+  assert.equal(resultado[0].fatura_id, 'f2');
+});
+
 test('SLA distingue vencendo e fora do prazo', () => {
   assert.equal(statusSla({ prazo_sla: '2026-06-14', status: 'ABERTA' }, referencia), 'VENCENDO_SLA');
   assert.equal(statusSla({ prazo_sla: '2026-06-12', status: 'ABERTA' }, referencia), 'FORA_SLA');
