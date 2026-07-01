@@ -728,6 +728,10 @@ function baixarModeloTaxasDestinoNegociacao() {
       'GRIS mín (R$)': 0,
       'Ad Valorem %': 0.15,
       'Ad Val mín (R$)': 0,
+      'Taxa Coringa': '',
+      'Taxa Extra R$': '',
+      'Taxa Extra %': '',
+      'Taxa Extra Mín': '',
       'Observação': 'Exemplo: preencha uma linha por IBGE/cidade',
     },
     {
@@ -744,7 +748,11 @@ function baixarModeloTaxasDestinoNegociacao() {
       'GRIS mín (R$)': '',
       'Ad Valorem %': '',
       'Ad Val mín (R$)': '',
-      'Observação': 'Campos vazios usam a generalidade da tabela',
+      'Taxa Coringa': 'TRT por destino',
+      'Taxa Extra R$': '',
+      'Taxa Extra %': 0.5,
+      'Taxa Extra Mín': 15,
+      'Observação': 'Exemplo coringa: % NF com mínimo R$',
     },
   ];
   var ws = XLSX.utils.json_to_sheet(linhas);
