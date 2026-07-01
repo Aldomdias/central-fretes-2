@@ -921,7 +921,7 @@ export default function OportunidadeTransportadoraPage() {
       let refMap = new Map(); // "normTransp|originKey" -> { pagoTotal, nfTotal, ctes }
       if (refCompetencia) {
         setProcessamentoUi((p) => ({ ...p, mensagem: `Carregando período de referência (${refCompetencia})...`, percentual: 97 }));
-        const ctesRef = await carregarCtes({ competencia: refCompetencia, limite: 8000 }).catch(() => []);
+        const ctesRef = await carregarCtes({ competencia: refCompetencia, canal: canal || undefined, limite: 8000 }).catch(() => []);
         for (const c of ctesRef) {
           const transpNorm = norm(c.transportadora || c.nome_transportadora || '');
           const cidadeOrigem = c.cidade_origem || c.origem || '';
@@ -938,10 +938,10 @@ export default function OportunidadeTransportadoraPage() {
 
       // Carrega reajustes para cruzar com o realizado
       const reajustesRaw = await carregarReajustesSupabase().catch(() => []);
-      // Set de nomes normalizados de transportadoras com reajuste solicitado (qualquer status)
-      const reajustesSet = new Set(
-        reajustesRaw.flatMap((r) => [r.transportadoraSistema, r.transportadoraInformada].filter(Boolean).map((n) => norm(n)))
-      );
+      // Lista de nomes de transportadoras com reajuste (para usar mesmaTransportadora)
+      const reajustesNomes = [...new Set(
+        reajustesRaw.flatMap((r) => [r.transportadoraSistema, r.transportadoraInformada].filter(Boolean))
+      )];
       // Mapa nome -> lista de reajustes para mostrar detalhes no hover
       const reajustesMap = new Map();
       for (const r of reajustesRaw) {
@@ -951,6 +951,8 @@ export default function OportunidadeTransportadoraPage() {
           reajustesMap.get(k).push(r);
         }
       }
+      // Set lazy: checagem real usa mesmaTransportadora no render, aqui guardamos os nomes brutos
+      const reajustesSet = reajustesNomes;
 
       setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes, reajustesSet, reajustesMap, refMap, refCompetencia });
       setStatus('concluido'); setProgresso(''); setProcessamentoUi({ titulo: '', mensagem: '', percentual: 0 });
@@ -1000,7 +1002,7 @@ export default function OportunidadeTransportadoraPage() {
       const caso = { ...c, candidatos, candMap };
 
       const key = `${c.transportadoraReal}|${c.originKey}`;
-      if (!grupos.has(key)) grupos.set(key, { key, transportadoraReal: c.transportadoraReal, cidadeOrigem: c.cidadeOrigem, ufOrigem: c.ufOrigem, regiao: c.regiao, casos: [] });
+      if (!grupos.has(key)) grupos.set(key, { key, transportadoraReal: c.transportadoraReal, cidadeOrigem: c.cidadeOrigem, ufOrigem: c.ufOrigem, regiao: c.regiao, originKey: c.originKey, casos: [] });
       grupos.get(key).casos.push(caso);
     }
 
@@ -1221,8 +1223,8 @@ export default function OportunidadeTransportadoraPage() {
                     <th>UF</th>
                     <th>CT-es</th>
                     {resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="% frete sobre NF no período de referência (antes dos reajustes)">% NF {resultado.refCompetencia}</th>}
-                    <th title="% frete sobre NF no período atual">{metricaLabel} atual{metrica === 'freteNf' ? '' : ' / % NF'}</th>
-                    <th title="Melhor cenário simulado (R$) e % NF combinado">Melhor cenário</th>
+                    <th title="Total do frete pago no período e % frete sobre NF (média ponderada pelo volume de NF)">Atual — total / % NF</th>
+                    <th title="Melhor cenário simulado — total do período e % NF combinado (CT-e a CT-e)">Simulado — total / % NF</th>
                     <th>Redução R$</th>
                     <th>Redução %</th>
                     <th>Substituta</th>
@@ -1244,8 +1246,9 @@ export default function OportunidadeTransportadoraPage() {
                         return (
                           <React.Fragment key={id}>
                             {(() => {
-                              const temReajuste = resultado.reajustesSet.has(norm(l.transportadoraReal));
-                              const reajustesLinha = temReajuste ? (resultado.reajustesMap.get(norm(l.transportadoraReal)) || []) : [];
+                              const reajNomeMatch = (resultado.reajustesSet || []).find((n) => mesmaTransportadora(n, l.transportadoraReal));
+                              const temReajuste = !!reajNomeMatch;
+                              const reajustesLinha = temReajuste ? (resultado.reajustesMap.get(norm(reajNomeMatch)) || []) : [];
                               const tooltipReajuste = reajustesLinha.length
                                 ? reajustesLinha.map((r) => `${r.status || '?'} · ${r.reajusteSolicitado ? '+' + r.reajusteSolicitado + '%' : ''} · ${r.dataSolicitacao ? new Date(r.dataSolicitacao).toLocaleDateString('pt-BR') : ''}`.trim()).join(' | ')
                                 : '';
