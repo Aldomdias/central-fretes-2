@@ -150,9 +150,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     && !['SUBSTITUIDA', 'CANCELADA'].includes(item.status));
 
   useEffect(() => {
-    // A lista pode ter centenas de faturas: sem isso o detalhe abre fora da
-    // area visivel e o clique em "Abrir" parece nao ter feito nada.
-    detalheRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // O detalhe substitui a lista como uma tela propria; garante que abre no topo.
+    detalheRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' });
   }, [fatura.id]);
 
   useEffect(() => {
@@ -365,6 +364,12 @@ function Faturas({ state, onState }) {
   });
   const faturaAtual = aberta ? state.faturas.find((item) => item.id === aberta.id) : null;
 
+  // Detalhe abre como tela propria no lugar da lista; ao fechar, a lista volta
+  // com busca e filtros preservados (o componente continua montado).
+  if (faturaAtual) {
+    return <FaturaDetalhe state={state} fatura={faturaAtual} onClose={() => setAberta(null)} onState={onState} />;
+  }
+
   const importarFaturas = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -468,7 +473,6 @@ function Faturas({ state, onState }) {
           </table>
         </div>
       </div>
-      {faturaAtual && <FaturaDetalhe state={state} fatura={faturaAtual} onClose={() => setAberta(null)} onState={onState} />}
     </>
   );
 }
