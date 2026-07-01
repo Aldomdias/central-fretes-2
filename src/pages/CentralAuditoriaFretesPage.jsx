@@ -31,6 +31,7 @@ import {
   carregarPlataformaAuditoria,
   criarProtocoloFinanceiro,
   criarSolicitacaoFinanceira,
+  reauditarFatura,
   registrarDoccob,
   restaurarDemonstracaoAuditoria,
   salvarBoletoFinanceiro,
@@ -136,6 +137,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [carregandoDetalhes, setCarregandoDetalhes] = useState(false);
   const [erroDetalhes, setErroDetalhes] = useState('');
   const [novaFaturaId, setNovaFaturaId] = useState('');
+  const [reauditando, setReauditando] = useState(false);
   const detalhes = state.detalhes[fatura.id] || [];
   const divergencias = detalhes.filter((item) => Number(item.diferenca || 0) !== 0 || item.status === 'DIVERGENTE');
   const semCalculo = detalhes.filter((item) => !Number(item.calculado_frete || 0));
@@ -239,6 +241,19 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       gerado_por_nome: sessao?.nome || sessao?.email || 'Usuario local',
     });
     onState(next);
+  };
+
+  const reauditar = async () => {
+    setReauditando(true);
+    setErroDetalhes('');
+    try {
+      const next = await reauditarFatura(state, fatura, detalhes, sessao?.nome || sessao?.email || 'Usuario local');
+      onState(next);
+    } catch (error) {
+      setErroDetalhes(error.message || String(error));
+    } finally {
+      setReauditando(false);
+    }
   };
 
   const vincularSubstituta = async () => {
@@ -366,6 +381,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
+        <button className="btn-primary" disabled={reauditando || carregandoDetalhes || !detalhes.length} onClick={reauditar}>
+          {reauditando ? 'Reauditando...' : 'Reauditar CT-es'}
+        </button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>

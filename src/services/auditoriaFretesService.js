@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { gerarProtocolo, isoDate } from '../utils/auditoriaFretesDomain';
+import { aplicarReauditoriaDetalhes, gerarProtocolo, isoDate, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -186,6 +186,56 @@ export async function atualizarFaturaAuditoria(state, fatura, evento) {
     next.historico = [historico, ...(next.historico || [])];
     await inserirHistorico('auditoria_fatura_historico', historico);
   }
+  return writeLocal(next);
+}
+
+// Reauditoria da fatura: cruza cada CT-e (chave) com a base recalculada pelo
+// motor (auditoria_cte_resultados), grava calculado/diferenca/status nos
+// detalhes e atualiza os agregados e o status da fatura.
+export async function reauditarFatura(state, fatura, detalhes, usuarioNome = 'Usuario local') {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Reauditoria disponivel apenas com o Supabase configurado.');
+  }
+  if (!detalhes?.length) {
+    throw new Error('Esta fatura nao possui CT-es vinculados para reauditar.');
+  }
+  const chaves = [...new Set(detalhes.map((item) => normalizarChaveCte(item.chave_cte)).filter(Boolean))];
+  const client = getSupabaseClient();
+  const resultados = new Map();
+  for (let inicio = 0; inicio < chaves.length; inicio += 200) {
+    const lote = chaves.slice(inicio, inicio + 200);
+    const { data, error } = await client
+      .from('auditoria_cte_resultados')
+      .select('chave_cte, valor_calculado, competencia')
+      .in('chave_cte', lote);
+    if (error) throw new Error(`Erro ao consultar a base reauditada: ${error.message}`);
+    for (const row of data || []) {
+      resultados.set(normalizarChaveCte(row.chave_cte), row);
+    }
+  }
+
+  const { detalhes: atualizados, resumo } = aplicarReauditoriaDetalhes(detalhes, resultados);
+  for (let inicio = 0; inicio < atualizados.length; inicio += 200) {
+    await safeUpsert('fatura_detalhes', atualizados.slice(inicio, inicio + 200));
+  }
+
+  const statusNovo = resumo.divergentes > 0 ? 'COM_DIVERGENCIA' : 'REAUDITADA_CENTRAL';
+  const next = await atualizarFaturaAuditoria(state, {
+    ...fatura,
+    valor_calculado: resumo.valorCalculado,
+    diferenca: resumo.valorDivergente,
+    ctes_auditados: resumo.total - resumo.semCalculo,
+    ctes_divergentes: resumo.divergentes,
+    ctes_sem_calculo: resumo.semCalculo,
+    status: statusNovo,
+  }, {
+    acao: 'REAUDITORIA_CONCLUIDA',
+    status_anterior: fatura.status,
+    status_novo: statusNovo,
+    descricao: `${resumo.total} CT-e(s) reauditado(s): ${resumo.divergentes} divergente(s), ${resumo.semCalculo} sem calculo.`,
+    usuario_nome: usuarioNome,
+  });
+  next.detalhes = { ...next.detalhes, [fatura.id]: atualizados };
   return writeLocal(next);
 }
 

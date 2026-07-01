@@ -103,6 +103,41 @@ export function montarLinhasDoccob(fatura, detalhes = [], selecionados = []) {
     }));
 }
 
+export function normalizarChaveCte(chave) {
+  return String(chave || '').replace(/\D/g, '');
+}
+
+// Cruza os CT-es da fatura com a base reauditada pelo motor Central Fretes
+// (auditoria_cte_resultados). Convencoes iguais as da Auditoria CT-e:
+// diferenca = cobrado - calculado; sem calculo => diferenca 0 (a pendencia
+// aparece na aba "Sem calculo", nao no valor divergente).
+export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = new Map()) {
+  const atualizados = detalhes.map((item) => {
+    const resultado = resultadosPorChave.get(normalizarChaveCte(item.chave_cte));
+    const calculado = Number(resultado?.valor_calculado || 0);
+    const valor = Number(item.valor_frete || 0);
+    if (calculado <= 0) {
+      return { ...item, calculado_frete: 0, diferenca: 0, status: 'SEM_CALCULO' };
+    }
+    const diferenca = Number((valor - calculado).toFixed(2));
+    return {
+      ...item,
+      calculado_frete: calculado,
+      diferenca,
+      status: Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE',
+    };
+  });
+  const divergentes = atualizados.filter((item) => item.status === 'DIVERGENTE');
+  const resumo = {
+    total: atualizados.length,
+    divergentes: divergentes.length,
+    semCalculo: atualizados.filter((item) => item.status === 'SEM_CALCULO').length,
+    valorCalculado: Number(atualizados.reduce((total, item) => total + Number(item.calculado_frete || 0), 0).toFixed(2)),
+    valorDivergente: Number(divergentes.reduce((total, item) => total + Number(item.diferenca || 0), 0).toFixed(2)),
+  };
+  return { detalhes: atualizados, resumo };
+}
+
 // --- DOCCOB EDI (padrao PROCEDA 3.0A, registros de largura fixa 170) ---
 // Campos "A" (alfanumericos): maiusculos, alinhados a esquerda, espacos a direita.
 // Campos "N" (numericos): alinhados a direita, zeros a esquerda, valores 13,2

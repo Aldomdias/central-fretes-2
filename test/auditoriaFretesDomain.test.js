@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  aplicarReauditoriaDetalhes,
   calcularDashboard,
   conciliarPagamentos,
   faixaVencimento,
@@ -85,6 +86,31 @@ test('conciliacao ignora fatura substituida quando existe fatura em aberto com o
   const resultado = conciliarPagamentos(faturas, [{ numero_fatura: '200', valor_pago: 95 }]);
   assert.equal(resultado[0].resultado, 'PAGO');
   assert.equal(resultado[0].fatura_id, 'f2');
+});
+
+test('reauditoria cruza CT-es com a base do motor e classifica OK, divergente e sem calculo', () => {
+  const resultados = new Map([
+    ['11111111111111111111111111111111111111111111', { valor_calculado: 100 }],
+    ['22222222222222222222222222222222222222222222', { valor_calculado: 80 }],
+  ]);
+  const { detalhes, resumo } = aplicarReauditoriaDetalhes([
+    { id: 'a', chave_cte: '1111 1111111111111111111111111111111111111111', valor_frete: 100 },
+    { id: 'b', chave_cte: '22222222222222222222222222222222222222222222', valor_frete: 95.5 },
+    { id: 'c', chave_cte: '33333333333333333333333333333333333333333333', valor_frete: 40 },
+  ], resultados);
+
+  assert.equal(detalhes[0].status, 'OK');
+  assert.equal(detalhes[0].calculado_frete, 100);
+  assert.equal(detalhes[1].status, 'DIVERGENTE');
+  assert.equal(detalhes[1].diferenca, 15.5);
+  assert.equal(detalhes[2].status, 'SEM_CALCULO');
+  assert.equal(detalhes[2].diferenca, 0);
+
+  assert.equal(resumo.total, 3);
+  assert.equal(resumo.divergentes, 1);
+  assert.equal(resumo.semCalculo, 1);
+  assert.equal(resumo.valorCalculado, 180);
+  assert.equal(resumo.valorDivergente, 15.5);
 });
 
 test('DOCCOB EDI gera registros PROCEDA de 170 posicoes na hierarquia correta', () => {
