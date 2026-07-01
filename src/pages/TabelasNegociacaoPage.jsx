@@ -2978,7 +2978,8 @@ export default function TabelasNegociacaoPage() {
               </div>
               <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
                 <label>TAS (R$)<input type="number" step="0.01" value={generalidades.tas || 0} onChange={function(e) { handleGenField('tas', e.target.value); }} /></label>
-                <label style={{ gridColumn: 'span 2' }}>Observações<input value={generalidades.observacoes || ''} onChange={function(e) { handleGenField('observacoes', e.target.value); }} /></label>
+                <label>Taxa Emergencial (%)<input type="number" step="0.01" value={generalidades.taxaEmergencial || 0} onChange={function(e) { handleGenField('taxaEmergencial', e.target.value); }} /></label>
+                <label>Observações<input value={generalidades.observacoes || ''} onChange={function(e) { handleGenField('observacoes', e.target.value); }} /></label>
               </div>
               <div className="sim-actions" style={{ marginTop: 16 }}>
                 <button className="primary" type="button" onClick={handleSalvarGeneralidades} disabled={salvandoGen}>{salvandoGen ? 'Salvando...' : 'Salvar generalidades'}</button>

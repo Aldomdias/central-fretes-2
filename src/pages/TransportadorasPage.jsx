@@ -288,7 +288,7 @@ function LinhaModal({ open, title, fields, initialValue, onSave, onClose }) {
   );
 }
 
-const DEFAULT_GENERALIDADES = { incideIcms: false, aliquotaIcms: 0, adValorem: 0, adValoremMinimo: 0, pedagio: 0, gris: 0, grisMinimo: 0, tas: 0, ctrc: 0, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: '' };
+const DEFAULT_GENERALIDADES = { incideIcms: false, aliquotaIcms: 0, adValorem: 0, adValoremMinimo: 0, pedagio: 0, gris: 0, grisMinimo: 0, tas: 0, ctrc: 0, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: '', taxaEmergencial: 0 };
 
 function CoberturaBadge({ cobertura, severidade }) {
   const className = severidade === 'error'
@@ -422,7 +422,7 @@ function GeneralidadesTab({ transportadoraId, origem, store }) {
           <div className="checkbox-line"><input type="checkbox" checked={!!form.incideIcms} onChange={(e) => update('incideIcms', e.target.checked)} /> Incide ICMS</div>
         </div>
         {[
-          ['aliquotaIcms', 'Alíquota ICMS %'], ['adValorem', 'Ad Valorem (%)'], ['adValoremMinimo', 'Ad Valorem Mínimo (R$)'], ['pedagio', 'Pedágio (R$/100kg)'], ['gris', 'GRIS (%)'], ['grisMinimo', 'GRIS Mínimo (R$)'], ['tas', 'TAS (R$)'], ['ctrc', 'CTRC Emitido (R$)'], ['cubagem', 'Cubagem (kg/m³)'],
+          ['aliquotaIcms', 'Alíquota ICMS %'], ['adValorem', 'Ad Valorem (%)'], ['adValoremMinimo', 'Ad Valorem Mínimo (R$)'], ['pedagio', 'Pedágio (R$/100kg)'], ['gris', 'GRIS (%)'], ['grisMinimo', 'GRIS Mínimo (R$)'], ['tas', 'TAS (R$)'], ['ctrc', 'CTRC Emitido (R$)'], ['cubagem', 'Cubagem (kg/m³)'], ['taxaEmergencial', 'Taxa Emergencial (%)'],
         ].map(([key, label]) => <div className="field" key={key}><label>{label}</label><input value={form[key]} onChange={(e) => update(key, e.target.value)} /></div>)}
         <div className="field">
           <label>Tipo de cálculo</label>

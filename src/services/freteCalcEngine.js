@@ -252,7 +252,10 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
   });
   const valorBase = componenteBase.valor;
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
-  const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
+  const subtotalSemEmergencial = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
+  const taxaEmergencialPct = toPercent(generalidades.taxaEmergencial ?? 0);
+  const valorEmergencial = subtotalSemEmergencial * taxaEmergencialPct;
+  const subtotal = subtotalSemEmergencial + valorEmergencial;
   const icms = deveAplicarIcms(generalidades) ? calcularIcmsPorDentro(subtotal, generalidades.aliquotaIcms) : 0;
 
   return {
@@ -313,7 +316,10 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     : Math.max(valorFaixa, valorPercentual, valorExcedente, minimoAplicavel);
 
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
-  const subtotal = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
+  const subtotalSemEmergencial = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
+  const taxaEmergencialPct = toPercent(generalidades.taxaEmergencial ?? 0);
+  const valorEmergencial = subtotalSemEmergencial * taxaEmergencialPct;
+  const subtotal = subtotalSemEmergencial + valorEmergencial;
   const icms = deveAplicarIcms(generalidades) ? calcularIcmsPorDentro(subtotal, generalidades.aliquotaIcms) : 0;
 
   return {

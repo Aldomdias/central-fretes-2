@@ -58,6 +58,7 @@ export const DEFAULT_GENERALIDADES = {
   cubagem: 300,
   tipoCalculo: 'PERCENTUAL',
   observacoes: '',
+  taxaEmergencial: 0,
 };
 
 function supabaseOrThrow() {

@@ -163,6 +163,7 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       observacoes: generalidade?.observacoes || '',
       freteMinimo: generalidade?.frete_minimo ?? 0,
       regraCalculo: generalidade?.regra_calculo || '',
+      taxaEmergencial: generalidade?.taxa_emergencial ?? 0,
     },
     rotas: rotas.map((item) => ({
       id: item.id,
@@ -263,6 +264,7 @@ function mapBaseToTables(transportadoras) {
         observacoes: generalidades.observacoes || '',
         frete_minimo: toNumberOrNull(generalidades.freteMinimo),
         regra_calculo: generalidades.regraCalculo || '',
+        taxa_emergencial: toNumberOrNull(generalidades.taxaEmergencial),
       });
 
       (origem.rotas || []).forEach((item) => {

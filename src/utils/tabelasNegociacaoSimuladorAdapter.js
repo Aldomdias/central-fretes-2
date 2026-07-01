@@ -170,6 +170,7 @@ function montarGeneralidades(generalidades = {}) {
     cubagem: numero(generalidades.cubagem) || 300,
     tipoCalculo: normalizarTipoCalculo(generalidades.tipoCalculo),
     observacoes: texto(generalidades.observacoes),
+    taxaEmergencial: numero(generalidades.taxaEmergencial),
   };
 }
 
