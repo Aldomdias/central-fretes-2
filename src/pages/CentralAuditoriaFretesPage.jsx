@@ -20,6 +20,7 @@ import {
   conciliarPagamentos,
   diasAte,
   faixaVencimento,
+  montarArquivoDoccobEdi,
   montarLinhasDoccob,
   montarNomeDoccob,
   statusSla,
@@ -186,10 +187,34 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     onState(next);
   };
 
+  const baixarArquivo = (blob, nomeArquivo) => {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = nomeArquivo;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
   const exportarDoccob = async (formato) => {
     const linhas = montarLinhasDoccob(fatura, detalhes, selecionados);
     if (!linhas.length) return;
     const nome = montarNomeDoccob(fatura);
+    if (formato === 'EDI') {
+      // Layout PROCEDA 3.0A (registros fixos de 170 posicoes) para importacao no Verum.
+      const conteudo = montarArquivoDoccobEdi(fatura, detalhes, selecionados);
+      baixarArquivo(new Blob([conteudo], { type: 'text/plain;charset=utf-8' }), `${nome}.txt`);
+      const next = await registrarDoccob(state, {
+        fatura_id: fatura.id,
+        nome_arquivo: `${nome}.txt`,
+        formato: 'EDI',
+        cte_ids: selecionados,
+        quantidade_ctes: linhas.length,
+        valor_total: linhas.reduce((total, item) => total + Number(item.Valor || 0), 0),
+        gerado_por_nome: sessao?.nome || sessao?.email || 'Usuario local',
+      });
+      onState(next);
+      return;
+    }
     const ws = XLSX.utils.json_to_sheet(linhas);
     if (formato === 'CSV') {
       const csv = XLSX.utils.sheet_to_csv(ws, { FS: ';' });
@@ -341,6 +366,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
+        <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>
         <button className="btn-secondary" onClick={() => mudarStatus('AGUARDANDO_NOVA_FATURA')}>Solicitar nova fatura</button>

@@ -84,7 +84,7 @@ export function gerarProtocolo(prefixo, existentes = [], referencia = new Date()
 export function montarNomeDoccob(fatura, referencia = new Date()) {
   const numero = String(fatura?.numero_fatura || 'SEM_FATURA').replace(/[^\w-]+/g, '_');
   const transportadora = String(fatura?.transportadora || 'SEM_TRANSPORTADORA')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w-]+/g, '_');
+    .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w-]+/g, '_');
   return `DOCCOB_${numero}_${transportadora}_${isoDate(referencia).replaceAll('-', '')}`;
 }
 
@@ -101,6 +101,97 @@ export function montarLinhasDoccob(fatura, detalhes = [], selecionados = []) {
       Motivo: item.motivo_divergencia || item.tratativa || 'DIVERGENCIA_AUDITORIA',
       Observacao: item.observacao || '',
     }));
+}
+
+// --- DOCCOB EDI (padrao PROCEDA 3.0A, registros de largura fixa 170) ---
+// Campos "A" (alfanumericos): maiusculos, alinhados a esquerda, espacos a direita.
+// Campos "N" (numericos): alinhados a direita, zeros a esquerda, valores 13,2
+// viram 15 digitos sem separador decimal. Datas DDMMAAAA (DDMMAA no registro 000).
+
+const TAMANHO_REGISTRO_EDI = 170;
+
+function campoAlfa(valor, tamanho) {
+  const texto = String(valor ?? '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[\r\n;|]+/g, ' ')
+    .toUpperCase();
+  return texto.slice(0, tamanho).padEnd(tamanho, ' ');
+}
+
+function campoNumerico(valor, tamanho) {
+  const digitos = String(valor ?? '').replace(/\D/g, '').slice(-tamanho);
+  return digitos.padStart(tamanho, '0');
+}
+
+function campoValorEdi(valor, inteiros = 13, decimais = 2) {
+  const centavos = Math.round(Math.abs(Number(valor || 0)) * 10 ** decimais);
+  return String(centavos).slice(-(inteiros + decimais)).padStart(inteiros + decimais, '0');
+}
+
+function dataEdi(iso, tamanho = 8) {
+  const [ano, mes, dia] = String(iso || '').slice(0, 10).split('-');
+  if (!ano || !mes || !dia) return '0'.repeat(tamanho);
+  return tamanho === 6 ? `${dia}${mes}${ano.slice(2)}` : `${dia}${mes}${ano}`;
+}
+
+function fecharRegistroEdi(campos) {
+  const linha = campos.join('');
+  return linha.padEnd(TAMANHO_REGISTRO_EDI, ' ').slice(0, TAMANHO_REGISTRO_EDI);
+}
+
+export function montarArquivoDoccobEdi(fatura, detalhes = [], selecionados = [], opcoes = {}) {
+  const referencia = opcoes.referencia ? new Date(opcoes.referencia) : new Date();
+  const ids = new Set(selecionados);
+  const ctes = detalhes.filter((item) => ids.size === 0 || ids.has(item.id));
+  const valorTotal = ctes.reduce((total, item) => total + Number(item.valor_frete || 0), 0);
+  const dd = String(referencia.getDate()).padStart(2, '0');
+  const mm = String(referencia.getMonth() + 1).padStart(2, '0');
+  const hh = String(referencia.getHours()).padStart(2, '0');
+  const mi = String(referencia.getMinutes()).padStart(2, '0');
+  const dataIso = referencia.toISOString().slice(0, 10);
+  const filial = fatura?.filial || '';
+
+  const linhas = [
+    fecharRegistroEdi([
+      '000',
+      campoAlfa(opcoes.remetente || fatura?.transportadora, 35),
+      campoAlfa(opcoes.destinatario || 'AMD', 35),
+      dataEdi(dataIso, 6),
+      `${hh}${mi}`,
+      campoAlfa(`COB${dd}${mm}${hh}${mi}0`, 12),
+    ]),
+    fecharRegistroEdi(['350', campoAlfa(`COBRA${dd}${mm}${hh}${mi}0`, 14)]),
+    fecharRegistroEdi(['351', campoNumerico(fatura?.cnpj_transportadora, 14), campoAlfa(fatura?.transportadora, 40)]),
+    fecharRegistroEdi([
+      '352',
+      campoAlfa(filial, 10),
+      '0',
+      campoAlfa(fatura?.serie_fatura, 3),
+      campoNumerico(fatura?.numero_fatura, 10),
+      dataEdi(fatura?.data_emissao),
+      dataEdi(fatura?.data_vencimento),
+      campoValorEdi(valorTotal),
+      campoAlfa(opcoes.tipoCobranca, 3),
+      campoValorEdi(fatura?.valor_icms),
+      campoValorEdi(0), // juros por dia de atraso (condicional)
+      '0'.repeat(8), // data limite p/ desconto (condicional)
+      campoValorEdi(0), // valor do desconto (condicional)
+      campoAlfa(opcoes.agenteCobranca, 35),
+      campoNumerico(0, 4),
+      ' ',
+      campoNumerico(0, 10),
+      '  ',
+      'I',
+    ]),
+    ...ctes.map((item) => fecharRegistroEdi([
+      '353',
+      campoAlfa(filial, 10),
+      campoAlfa(item.serie_cte, 5),
+      campoAlfa(item.numero_cte, 12),
+    ])),
+    fecharRegistroEdi(['355', campoNumerico(1, 4), campoValorEdi(valorTotal)]),
+  ];
+  return linhas.join('\r\n');
 }
 
 export function calcularDashboard(faturas = [], referencia = new Date()) {

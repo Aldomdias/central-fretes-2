@@ -5,6 +5,7 @@ import {
   conciliarPagamentos,
   faixaVencimento,
   gerarProtocolo,
+  montarArquivoDoccobEdi,
   montarLinhasDoccob,
   statusSla,
 } from '../src/utils/auditoriaFretesDomain.js';
@@ -84,6 +85,38 @@ test('conciliacao ignora fatura substituida quando existe fatura em aberto com o
   const resultado = conciliarPagamentos(faturas, [{ numero_fatura: '200', valor_pago: 95 }]);
   assert.equal(resultado[0].resultado, 'PAGO');
   assert.equal(resultado[0].fatura_id, 'f2');
+});
+
+test('DOCCOB EDI gera registros PROCEDA de 170 posicoes na hierarquia correta', () => {
+  const arquivo = montarArquivoDoccobEdi(
+    {
+      numero_fatura: 'FAT-8452', transportadora: 'Tomasi Logística',
+      cnpj_transportadora: '12.345.678/0001-90', serie_fatura: '1',
+      data_emissao: '2026-06-20', data_vencimento: '2026-07-05',
+    },
+    [
+      { id: 'a', numero_cte: '1821', valor_frete: 4250.22 },
+      { id: 'b', numero_cte: '1822', valor_frete: 3170 },
+      { id: 'c', numero_cte: '1823', valor_frete: 999 },
+    ],
+    ['a', 'b'],
+    { referencia: '2026-07-01T14:30:00' },
+  );
+  const linhas = arquivo.split('\r\n');
+  assert.deepEqual(linhas.map((linha) => linha.slice(0, 3)), ['000', '350', '351', '352', '353', '353', '355']);
+  assert.ok(linhas.every((linha) => linha.length === 170), 'todos os registros devem ter 170 posicoes');
+
+  const doc = linhas[3];
+  assert.equal(doc.slice(17, 27), '0000008452'); // numero do documento N10
+  assert.equal(doc.slice(27, 35), '20062026'); // emissao DDMMAAAA
+  assert.equal(doc.slice(35, 43), '05072026'); // vencimento DDMMAAAA
+  assert.equal(doc.slice(43, 58), '000000000742022'); // valor 13,2 sem separador (7.420,22)
+  assert.equal(doc[166], 'I'); // acao do documento
+
+  assert.equal(linhas[2].slice(3, 17), '12345678000190'); // CNPJ sem mascara
+  assert.equal(linhas[4].slice(18, 30).trim(), '1821'); // numero do conhecimento
+  assert.equal(linhas.at(-1).slice(3, 7), '0001'); // total de documentos
+  assert.equal(linhas.at(-1).slice(7, 22), '000000000742022'); // valor total
 });
 
 test('SLA distingue vencendo e fora do prazo', () => {
