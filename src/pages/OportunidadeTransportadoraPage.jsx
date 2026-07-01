@@ -1241,6 +1241,7 @@ export default function OportunidadeTransportadoraPage() {
                     <th title="Total do frete pago no período e % frete sobre NF (média ponderada pelo volume de NF)">Atual — total / % NF</th>
                     {resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="Variação em pontos percentuais entre o período de referência e o atual">Δ ref→atual</th>}
                     {mostrarSimulado && <th title="Melhor cenário simulado — total do período e % NF combinado (CT-e a CT-e)">Simulado — total / % NF</th>}
+                    {mostrarSimulado && resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="Variação % entre referência e simulado">Δ ref→simulado</th>}
                     {mostrarSimulado && <th>Redução R$</th>}
                     {mostrarSimulado && <th>Redução %</th>}
                     {mostrarSimulado && <th>Substituta</th>}
@@ -1251,7 +1252,7 @@ export default function OportunidadeTransportadoraPage() {
                   {resultado.regioes.map((reg) => (
                     <React.Fragment key={reg.regiao}>
                       <tr style={{ background: '#f1f5f9' }}>
-                        <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 7 : 6) : (resultado.refCompetencia ? 6 : 4)} style={{ fontWeight: 800, color: '#4E008F', letterSpacing: '0.03em' }}>{reg.regiao}</td>
+                        <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 8 : 6) : (resultado.refCompetencia ? 6 : 4)} style={{ fontWeight: 800, color: '#4E008F', letterSpacing: '0.03em' }}>{reg.regiao}</td>
                         {mostrarSimulado && <td className="negativo" style={{ fontWeight: 700 }}>{fmt(reg.reducaoRs)}</td>}
                         {mostrarSimulado && <td>{pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>}
                         <td colSpan={mostrarSimulado ? 2 : 1} style={{ fontSize: '0.76rem', color: '#64748b' }}>{reg.linhas.length} linhas</td>
@@ -1312,21 +1313,19 @@ export default function OportunidadeTransportadoraPage() {
                                 {metrica !== 'freteNf' && (() => {
                                   const simPct = l.chainNfPct ?? l.freteNfPctMelhor;
                                   if (simPct == null) return null;
-                                  return (
-                                    <>
-                                      <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(simPct)} NF</span>
-                                      {l.freteNfPctRef != null && l.freteNfPctRef > 0 && (() => {
-                                        const dSim = ((simPct - l.freteNfPctRef) / l.freteNfPctRef) * 100;
-                                        return (
-                                          <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: dSim > 0 ? '#9b1111' : '#047857' }}>
-                                            {dSim > 0 ? `▲ +${dSim.toFixed(1)}%` : `▼ ${dSim.toFixed(1)}%`} vs jan
-                                          </span>
-                                        );
-                                      })()}
-                                    </>
-                                  );
+                                  return <span style={{ display: 'block', fontSize: '0.68rem', color: '#047857' }}>{pct(simPct)} NF</span>;
                                 })()}
                               </td>}
+                              {mostrarSimulado && resultado.refCompetencia && (() => {
+                                const simPct = l.chainNfPct ?? l.freteNfPctMelhor;
+                                const dSim = simPct != null && l.freteNfPctRef != null && l.freteNfPctRef > 0 ? ((simPct - l.freteNfPctRef) / l.freteNfPctRef) * 100 : null;
+                                const cor = dSim == null ? '#94a3b8' : dSim > 0 ? '#9b1111' : '#047857';
+                                return (
+                                  <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 700, color: cor, whiteSpace: 'nowrap' }}>
+                                    {dSim == null ? '—' : `${dSim > 0 ? '▲ +' : '▼ '}${dSim.toFixed(1)}%`}
+                                  </td>
+                                );
+                              })()}
                               {mostrarSimulado && <td className={l.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: l.reducaoRs > TOLERANCIA ? 700 : 400 }}>{l.reducaoRs > TOLERANCIA ? fmt(l.reducaoRs) : '—'}</td>}
                               {mostrarSimulado && <td style={{ fontWeight: 600, color: l.reducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{l.reducaoPct > 0 ? pct(l.reducaoPct) : '—'}</td>}
                               {mostrarSimulado && <td style={{ fontSize: '0.8rem' }}>
@@ -1344,7 +1343,7 @@ export default function OportunidadeTransportadoraPage() {
                             })()}
                             {aberto && (
                               <tr>
-                                <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 12 : 10) : (resultado.refCompetencia ? 7 : 5)} style={{ background: '#faf5ff', padding: '14px 16px' }}>
+                                <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 13 : 10) : (resultado.refCompetencia ? 7 : 5)} style={{ background: '#faf5ff', padding: '14px 16px' }}>
 
                                   {/* % frete/NF atual vs melhor */}
                                   <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
