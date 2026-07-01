@@ -141,6 +141,105 @@ function TransportadoraModal({ open, initialValue, onSave, onClose }) {
   );
 }
 
+const TAXA_ESP_VAZIA = { ibgeDestino: '', tda: '', tdr: '', trt: '', suframa: '', outras: '', gris: '', grisMinimo: '', adVal: '', adValMinimo: '', taxasExtras: [] };
+const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '' };
+
+function TaxasEspeciaisTab({ origem, transportadora, store }) {
+  const [form, setForm] = React.useState(TAXA_ESP_VAZIA);
+  const [editando, setEditando] = React.useState(null);
+  const rows = origem.taxasEspeciais || [];
+
+  function upd(field, val) { setForm((p) => ({ ...p, [field]: val })); }
+  function updCoringa(idx, field, val) {
+    setForm((p) => {
+      const arr = (p.taxasExtras || []).slice();
+      arr[idx] = { ...arr[idx], [field]: val };
+      return { ...p, taxasExtras: arr };
+    });
+  }
+  function addCoringa() { setForm((p) => ({ ...p, taxasExtras: (p.taxasExtras || []).concat([{ ...CORINGA_VAZIO }]) })); }
+  function remCoringa(idx) { setForm((p) => ({ ...p, taxasExtras: (p.taxasExtras || []).filter((_, i) => i !== idx) })); }
+
+  function salvar() {
+    if (!form.ibgeDestino) return;
+    const taxasExtras = (form.taxasExtras || [])
+      .map((te) => ({ nome: String(te.nome || '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0 }))
+      .filter((te) => te.pct > 0 || te.valor > 0);
+    const row = { ...form, taxasExtras, id: editando?.id ?? ('te-' + Date.now()) };
+    store.salvarLinha(transportadora.id, origem.id, 'taxasEspeciais', row);
+    setForm(TAXA_ESP_VAZIA); setEditando(null);
+  }
+
+  function editar(row) {
+    setEditando(row);
+    setForm({ ...row, taxasExtras: (row.taxasExtras || []).map((te) => ({ nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '' })) });
+  }
+
+  const inp = { type: 'number', step: '0.01', style: { width: '100%' } };
+
+  return (
+    <div className="tab-panel">
+      <div className="hint-box">Por IBGE destino, o sistema prioriza <strong>GRIS</strong> e <strong>Ad Valorem</strong> específicos; se estiverem em branco, usa as generalidades da origem.</div>
+      <div className="table-card" style={{ marginTop: 12 }}>
+        <table>
+          <thead><tr><th>IBGE</th><th>TDA</th><th>TDR</th><th>TRT</th><th>GRIS%</th><th>AdVal%</th><th>Coringas</th><th></th></tr></thead>
+          <tbody>
+            {rows.length ? rows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.ibgeDestino || '—'}</td><td>{row.tda || '—'}</td><td>{row.tdr || '—'}</td><td>{row.trt || '—'}</td>
+                <td>{row.gris || '—'}</td><td>{row.adVal || '—'}</td>
+                <td>{Array.isArray(row.taxasExtras) && row.taxasExtras.length ? row.taxasExtras.map((te) => te.nome || 'coringa').join(', ') : '—'}</td>
+                <td className="row-actions">
+                  <ActionIcon onClick={() => editar(row)}>✎</ActionIcon>
+                  <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, 'taxasEspeciais', row.id)}>🗑</ActionIcon>
+                </td>
+              </tr>
+            )) : <tr><td colSpan={8} className="empty-cell">Nenhuma taxa cadastrada.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="form-card" style={{ marginTop: 16, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
+        <strong style={{ fontSize: '0.9rem' }}>{editando ? 'Editando taxa' : 'Nova taxa por destino'}</strong>
+        <div className="form-grid three" style={{ marginTop: 10 }}>
+          <div className="field"><label>IBGE Destino</label><input value={form.ibgeDestino} onChange={(e) => upd('ibgeDestino', e.target.value)} placeholder="Ex: 2906907" /></div>
+          <div className="field"><label>TDA (R$)</label><input {...inp} value={form.tda} onChange={(e) => upd('tda', e.target.value)} /></div>
+          <div className="field"><label>TDR (R$)</label><input {...inp} value={form.tdr} onChange={(e) => upd('tdr', e.target.value)} /></div>
+          <div className="field"><label>TRT (R$)</label><input {...inp} value={form.trt} onChange={(e) => upd('trt', e.target.value)} /></div>
+          <div className="field"><label>SUFRAMA (R$)</label><input {...inp} value={form.suframa} onChange={(e) => upd('suframa', e.target.value)} /></div>
+          <div className="field"><label>Outras (R$)</label><input {...inp} value={form.outras} onChange={(e) => upd('outras', e.target.value)} /></div>
+          <div className="field"><label>GRIS %</label><input {...inp} step="0.0001" value={form.gris} onChange={(e) => upd('gris', e.target.value)} /></div>
+          <div className="field"><label>GRIS Mín (R$)</label><input {...inp} value={form.grisMinimo} onChange={(e) => upd('grisMinimo', e.target.value)} /></div>
+          <div className="field"><label>Ad Valorem %</label><input {...inp} step="0.0001" value={form.adVal} onChange={(e) => upd('adVal', e.target.value)} /></div>
+          <div className="field"><label>Ad Val Mín (R$)</label><input {...inp} value={form.adValMinimo} onChange={(e) => upd('adValMinimo', e.target.value)} /></div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+            <strong style={{ fontSize: '0.85rem' }}>Taxas coringa</strong>
+            <small style={{ color: '#94a3b8' }}>% NF com mínimo, ou valor R$ fixo</small>
+            <button type="button" className="btn-secondary" style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '2px 10px' }} onClick={addCoringa}>+ Adicionar coringa</button>
+          </div>
+          {(form.taxasExtras || []).map((te, idx) => (
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
+              <div className="field" style={{ margin: 0 }}><label>Nome</label><input value={te.nome} onChange={(e) => updCoringa(idx, 'nome', e.target.value)} placeholder="Ex: EMEX" /></div>
+              <div className="field" style={{ margin: 0 }}><label>% NF</label><input type="number" step="0.0001" value={te.pct} onChange={(e) => updCoringa(idx, 'pct', e.target.value)} /></div>
+              <div className="field" style={{ margin: 0 }}><label>Mín (R$)</label><input type="number" step="0.01" value={te.min} onChange={(e) => updCoringa(idx, 'min', e.target.value)} /></div>
+              <div className="field" style={{ margin: 0 }}><label>R$ fixo</label><input type="number" step="0.01" value={te.valor} onChange={(e) => updCoringa(idx, 'valor', e.target.value)} /></div>
+              <button type="button" style={{ background: 'none', border: '1px solid #ef4444', color: '#ef4444', borderRadius: 4, padding: '0 8px', cursor: 'pointer', height: 30, alignSelf: 'end' }} onClick={() => remCoringa(idx)}>✕</button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+          <button className="btn-primary" onClick={salvar} disabled={!form.ibgeDestino}>{editando ? 'Atualizar taxa' : 'Adicionar taxa'}</button>
+          {editando && <button className="btn-secondary" onClick={() => { setEditando(null); setForm(TAXA_ESP_VAZIA); }}>Cancelar</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OrigemModal({ open, initialValue, onSave, onClose }) {
   const baseGeneralidades = { incideIcms: false, aliquotaIcms: 0, adValorem: 0, adValoremMinimo: 0, pedagio: 0, gris: 0, grisMinimo: 0, tas: 0, ctrc: 0, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: '' };
   const [form, setForm] = useState(initialValue || { cidade: '', canal: 'ATACADO', status: 'Ativa', rotas: [], cotacoes: [], taxasEspeciais: [], generalidades: baseGeneralidades });
@@ -774,7 +873,7 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
       {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}
       {aba === 'cotacoes' && <CrudTab title="Cotação" secao="cotacoes" tipoImportacao="cotacoes" origem={origem} transportadora={transportadora} store={store} columns={cotacoesColumns} fields={cotacoesFields} hint={<>Fretes/cotações aceitam importação no modelo com <strong>Rota do frete</strong>, pesos, excesso, taxa aplicada e percentual.</>} />}
-      {aba === 'taxas' && <CrudTab title="Taxa Especial" secao="taxasEspeciais" tipoImportacao="taxas" origem={origem} transportadora={transportadora} store={store} columns={taxasColumns} fields={taxasFields} hint={<>Por IBGE destino, o sistema prioriza <strong>GRIS</strong> e <strong>Ad Valorem</strong> específicos; se estiverem em branco, usa as generalidades da origem.</>} />}
+      {aba === 'taxas' && <TaxasEspeciaisTab origem={origem} transportadora={transportadora} store={store} />}
       <InconsistenciasModal open={inconsistenciasOpen} title="Inconsistências da origem" transportadora={transportadora} origem={origem} onClose={() => setInconsistenciasOpen(false)} />
     </div>
   );
