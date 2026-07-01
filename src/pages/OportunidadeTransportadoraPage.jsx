@@ -1290,7 +1290,16 @@ export default function OportunidadeTransportadoraPage() {
                               )}
                               <td>
                                 {fmtMetrica(metrica, l.custoAtual)}
-                                {metrica !== 'freteNf' && l.freteNfPctAtual != null && <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>}
+                                {metrica !== 'freteNf' && l.freteNfPctAtual != null && (
+                                  <>
+                                    <span style={{ display: 'block', fontSize: '0.68rem', color: '#64748b' }}>{pct(l.freteNfPctAtual)} NF</span>
+                                    {l.freteNfPctRef != null && (
+                                      <span style={{ display: 'block', fontSize: '0.65rem', fontWeight: 400, color: l.freteNfPctAtual > l.freteNfPctRef ? '#9b1111' : '#047857' }}>
+                                        {l.freteNfPctAtual > l.freteNfPctRef ? `▲ +${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp vs jan` : `▼ ${(l.freteNfPctAtual - l.freteNfPctRef).toFixed(1)}pp vs jan`}
+                                      </span>
+                                    )}
+                                  </>
+                                )}
                               </td>
                               {mostrarSimulado && <td style={{ color: '#04C7A4', fontWeight: 600 }}>
                                 {fmtMetrica(metrica, l.custoMelhor)}
