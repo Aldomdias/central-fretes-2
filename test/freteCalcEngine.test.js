@@ -9,6 +9,7 @@ import {
 import {
   agregarCubagemLinhasTracking,
   resolverCubagemTracking,
+  somarTrackingAgregado,
   validarCubagemOperacional,
 } from '../src/utils/trackingCubagem.js';
 import { converterTabelaNegociacaoParaSimulador } from '../src/utils/tabelasNegociacaoSimuladorAdapter.js';
@@ -500,4 +501,20 @@ test('validacao operacional mantem cubagem legitima proxima do corte de densidad
 
   assert.equal(resultado.outlier, false);
   assert.equal(resultado.cubagemTotal, 12.978);
+});
+
+test('tracking agregado nao multiplica cubagem repetida em NF com varios itens', () => {
+  const linhas = [
+    { chave_nfe: 'NF123', qtd_volumes: 20, cubagem_total: 5.04, cubagem_unitaria: 5.04, peso: 663.12, valor_nf: 27653.92 },
+    { chave_nfe: 'NF123', qtd_volumes: 8, cubagem_total: 5.04, cubagem_unitaria: 5.04, peso: 663.12, valor_nf: 27653.92 },
+    { chave_nfe: 'NF123', qtd_volumes: 20, cubagem_total: 5.04, cubagem_unitaria: 5.04, peso: 663.12, valor_nf: 27653.92 },
+    { chave_nfe: 'NF123', qtd_volumes: 24, cubagem_total: 5.04, cubagem_unitaria: 5.04, peso: 663.12, valor_nf: 27653.92 },
+  ];
+
+  const agregado = linhas.reduce((acc, linha) => somarTrackingAgregado(acc, linha), null);
+
+  assert.equal(agregado.qtd_volumes, 72);
+  assert.equal(agregado.peso, 663.12);
+  assert.equal(agregado.valor_nf, 27653.92);
+  assert.ok(Math.abs(agregado.cubagem_total - 5.04) < 0.000001);
 });
