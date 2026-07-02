@@ -120,6 +120,37 @@ export function exportarLinhasCsv(nomeArquivo, linhas) {
   return { nomeArquivo, csv };
 }
 
+// Indice auxiliar: agrupa {transportadora, origem, rota} por destino (IBGE ou nome de
+// cidade normalizado). Usado para acelerar simulacoes em massa (ex.: realizado com
+// milhares de CT-es), evitando varrer todas as rotas de todas as origens/transportadoras
+// a cada CT-e. As chaves cobrem exatamente os dois criterios de match que listarCenarios
+// ja usava (ibgeDestino exato e nome de cidade normalizado), entao passar este indice para
+// listarCenarios/simularSimples nao muda nenhum resultado — so evita reprocessar o scan
+// completo em cada chamada.
+export function buildDestinoIndex(transportadoras = [], cidadePorIbge) {
+  const indice = new Map();
+  const adicionar = (chave, entrada) => {
+    if (!chave) return;
+    if (!indice.has(chave)) indice.set(chave, []);
+    indice.get(chave).push(entrada);
+  };
+
+  (transportadoras || []).forEach((transportadora) => {
+    (transportadora.origens || []).forEach((origem) => {
+      (origem.rotas || []).forEach((rota) => {
+        const entrada = { transportadora, origem, rota };
+        adicionar(normalizeText(String(rota.ibgeDestino || '').trim()), entrada);
+        if (cidadePorIbge) {
+          const cidadeKey = normalizeText(getCidadeByIbge(rota.ibgeDestino, cidadePorIbge));
+          adicionar(cidadeKey, entrada);
+        }
+      });
+    });
+  });
+
+  return indice;
+}
+
 export function buildLookupTables(transportadoras = []) {
   const cidadePorIbge = new Map(Object.entries(CIDADES_CONHECIDAS));
   const destinosSet = new Set();
@@ -443,11 +474,29 @@ function rankearPorChave(resultados = []) {
   });
 }
 
-function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
+function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indicePorDestino) {
   const peso = toNumber(filtros.peso);
   const valorNF = toNumber(filtros.valorNF);
   const cubagem = toNumber(filtros.cubagem);
   const destinoNormalizado = normalizeText(filtros.destinoCodigo);
+
+  // Caminho rapido: quando ha um destino definido e um indice pre-construido
+  // (buildDestinoIndex) disponivel, pula o scan completo de transportadoras/origens/rotas
+  // e vai direto nos candidatos daquele destino. O indice foi montado com as MESMAS duas
+  // chaves usadas no filtro abaixo (ibgeDestino e nome de cidade normalizado), entao o
+  // resultado final e identico ao caminho completo — so muda o custo.
+  if (indicePorDestino && destinoNormalizado) {
+    const candidatos = indicePorDestino.get(destinoNormalizado) || [];
+    return candidatos
+      .filter(({ origem }) => canalCompativel(origem.canal, filtros.canal))
+      .filter(({ origem }) => origemCompativel(origem.cidade, filtros.origem))
+      .map(({ transportadora, origem, rota }) => {
+        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal });
+        return itemComCanalSimulado(item, filtros.canal);
+      })
+      .filter(Boolean);
+  }
+
   return (transportadoras || []).flatMap((transportadora) =>
     (transportadora.origens || [])
       .filter((origem) => canalCompativel(origem.canal, filtros.canal))
@@ -468,8 +517,8 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge) {
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [] }) {
-  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge);
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [], indicePorDestino }) {
+  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge, indicePorDestino);
   return rankearPorChave(resultados)
     .filter((item) => origemCompativel(item.origem, origem) && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);

@@ -6,6 +6,7 @@ import {
   analisarCoberturaTabela,
   analisarOrigemPorGrade,
   analisarTransportadoraPorGrade,
+  buildDestinoIndex,
   buildLookupTables,
   exportarLinhasCsv,
   getCidadeByIbge,
@@ -2075,7 +2076,7 @@ function valoresUnicosValidos(lista = []) {
   return saida;
 }
 
-function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '', pesoLinha = 0, nf = 0, destino = '', cidadePorIbge, gradeCanal = [], filtros = {} }) {
+function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '', pesoLinha = 0, nf = 0, destino = '', cidadePorIbge, gradeCanal = [], filtros = {}, indicePorDestino }) {
   const origemLinha = String(row.cidadeOrigem || '').trim();
   const ufOrigem = String(row.ufOrigem || '').trim().toUpperCase();
   const canalLinha = canal || filtros.canal || row.canal || CANAL_A_DEFINIR;
@@ -2097,6 +2098,7 @@ function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '
       destinoCodigo: destino,
       cidadePorIbge,
       gradeCanal,
+      indicePorDestino,
     }) || [];
     if (resultado.length) return { resultado, origemUsada: origemTentativa, fallback: false };
   }
@@ -2113,6 +2115,7 @@ function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '
     destinoCodigo: destino,
     cidadePorIbge,
     gradeCanal,
+    indicePorDestino,
   }) || [];
 
   if (!resultadoDestino.length) return { resultado: [], origemUsada: origemLinha || filtros.origem || '', fallback: true };
@@ -2787,6 +2790,9 @@ function VeiculoOcupacaoCard({ cubagemDia = 0, pesoDia = 0, titulo = 'Veículo s
 
 async function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
+  // Construido uma unica vez para toda a base: evita varrer todas as rotas de todas as
+  // origens/transportadoras a cada CT-e (era o principal gargalo de CPU em bases grandes).
+  const indicePorDestino = buildDestinoIndex(baseOnline, cidadePorIbge);
   const rotasMap = new Map();
   const transportadorasMap = new Map();
   const ctesDetalhes = [];
@@ -2909,6 +2915,7 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
       cidadePorIbge,
       gradeCanal,
       filtros,
+      indicePorDestino,
     });
 
     const vencedor = resultado[0] || null;
