@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
@@ -418,6 +419,7 @@ export default function OportunidadeOrigemPage() {
         <div className="simulador-subtitulo">Central Fretes • Análise</div>
         <h1>Oportunidade de Origem</h1>
         <p>Simula quanto custaria despachar cada CT-e a partir de um CD alternativo — mostra a economia potencial por falta de estoque no local mais próximo do destino.</p>
+        <BaseCtesStatus />
       </div>
 
       {erro && <div className="sim-alert error">{erro}</div>}

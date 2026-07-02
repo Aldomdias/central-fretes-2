@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import { exportarRealizadoLocal } from '../services/realizadoLocalDb';
 import {
   listarRealizadoDiarioReajustes,
@@ -1362,6 +1363,7 @@ export default function ReajustesPage() {
         <div className="amd-mini-brand">AMD Log • Reajustes</div>
         <h1>Controle de reajustes</h1>
         <p>Gestão de solicitações, vínculos com o Realizado Local e cálculo de impacto previsto e realizado.</p>
+        <BaseCtesStatus />
       </div>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}

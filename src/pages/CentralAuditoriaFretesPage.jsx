@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import { carregarSessao } from '../utils/authLocal';
 import {
   agruparDetalhesVerum,
@@ -919,6 +920,7 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard' })
         <span className="amd-mini-brand">Demanda 4.40 | Unidade de trabalho: FATURA</span>
         <h1>Plataforma de Auditoria de Fretes</h1>
         <p>Auditoria, vencimentos, tratativas, DOCCOB, protocolos, SLA, boletos, pagamentos e gestao de carteiras em um unico fluxo.</p>
+        <BaseCtesStatus />
       </div>
       <div className="audit-mode-banner">
         <span>Modo: <strong>{nomeStatus(state.modo)}</strong></span>

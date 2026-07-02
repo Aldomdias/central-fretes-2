@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { buscarTrackingParaRealizado, obterTrackingDaLinha } from '../services/realizadoTrackingEnrichment';
@@ -398,6 +399,7 @@ export default function GestaoBaseCtePage() {
         <div className="simulador-subtitulo">Central Fretes â€¢ Base</div>
         <h1>GestÃ£o da Base CT-e</h1>
         <p>Completa a base de CT-es uma vez (IBGE, volumes e cubagem), pra todas as ferramentas lerem pronto. IBGE sÃ³ entra onde falta; volumes, cubagem e peso cubado seguem o tracking quando houver divergÃªncia.</p>
+        <BaseCtesStatus />
       </div>
 
       {erro && <div className="sim-alert error">{erro}</div>}

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
@@ -576,6 +577,7 @@ export default function SimularSaidaTransportadoraPage() {
         <div className="simulador-subtitulo">Central Fretes • Análise</div>
         <h1>Simular Saída de Transportadora</h1>
         <p>Se esta transportadora saísse hoje, quanto custaria rodar as rotas dela com as melhores substitutas disponíveis — e como isso se compara a aceitar um reajuste.</p>
+        <BaseCtesStatus />
       </div>
 
       {erro && <div className="sim-alert error">{erro}</div>}

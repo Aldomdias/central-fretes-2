@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import {
   carregarDadosAuditoria,
   calcularMetricasAuditoria,
@@ -1063,6 +1064,7 @@ export default function AuditoriaCtePage() {
           Cobertura de cálculo, assertividade e priorização de divergências. Fonte principal: <code>realizado_local_ctes</code>.
           O botão <strong>Salvar mês carregado</strong> grava o resultado em <code>auditoria_cte_resultados</code> e o resumo em <code>auditoria_cte_resumo_mensal</code>.
         </p>
+        <BaseCtesStatus />
       </div>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}

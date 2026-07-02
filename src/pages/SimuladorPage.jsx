@@ -1,6 +1,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import {
   analisarCoberturaTabela,
   analisarOrigemPorGrade,
@@ -6042,6 +6043,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         <div className="simulador-subtitulo">AMD Log • Plataforma de Fretes</div>
         <h1>Simulador de fretes</h1>
         <p>Simulação com base nas tabelas reais importadas por transportadora, origem, rota, cotação e taxas especiais.</p>
+        <BaseCtesStatus />
       </div>
 
       <div className="sim-tabs">

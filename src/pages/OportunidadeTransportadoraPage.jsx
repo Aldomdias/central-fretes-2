@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import { buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
 import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
@@ -1082,6 +1083,7 @@ export default function OportunidadeTransportadoraPage() {
         <div className="simulador-subtitulo">Central Fretes • Análise</div>
         <h1>Oportunidade por Transportadora</h1>
         <p>Custo realizado vs. melhor cenário simulado, por transportadora e origem — mesma origem, trocando quem opera. Alvo de redução para a negociação puxada pela baixa do diesel.</p>
+        <BaseCtesStatus />
       </div>
 
       {erro && <div className="sim-alert error">{erro}</div>}

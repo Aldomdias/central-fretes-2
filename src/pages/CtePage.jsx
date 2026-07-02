@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import BaseCtesStatus, { invalidarStatusBaseCtes } from '../components/BaseCtesStatus';
 import { parseRealizadoCtesFile } from '../utils/realizadoCtes';
 import {
   competenciaPrecisaEnxuta,
@@ -2256,6 +2257,7 @@ export default function CtePage() {
 
       setResultadoUpload(resposta);
       setStatusCompetencia(resposta.statusFinal);
+      invalidarStatusBaseCtes();
 
       if (Number(resposta.statusFinal?.pendencias || 0) > 0) {
         const lista = await listarPendenciasIbgeRealizadoMensal(competenciaUpload, 100);
@@ -2329,6 +2331,7 @@ export default function CtePage() {
 
       setResultadoUpload(resposta);
       setStatusCompetencia(resposta.statusFinal);
+      invalidarStatusBaseCtes();
       setProgressoUpload({
         etapa: 'concluido',
         mensagem: Number(resposta.statusFinal?.temporaria || 0) > 0
@@ -2616,6 +2619,7 @@ export default function CtePage() {
         <div className="page-header">
           <h1>CT-e</h1>
           <p>Base online · Supabase ({TABELA})</p>
+          <BaseCtesStatus />
         </div>
       </div>
 
