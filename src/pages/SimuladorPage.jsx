@@ -1197,17 +1197,17 @@ function obterTrackingDaLinha(row = {}, mapas) {
   const numeroCte = apenasDigitosTracking(row.numeroCte);
 
   const porChaveCte = chaveCte ? mapas.mapaChaveCte?.get(chaveCte) : null;
-  if (porChaveCte) return porChaveCte;
-
   const porChaveNfe = chaveNfe ? mapas.mapaChaveNfe?.get(chaveNfe) : null;
-  if (porChaveNfe) return porChaveNfe;
-
   const porNota = nota ? mapas.mapaNota?.get(nota) : null;
-  if (porNota) return porNota;
-
-  // Número CT-e é fallback de segurança somente quando não há chaves/NF na linha do realizado.
-  // Isso evita falso vínculo quando o número aparece dentro de outra chave CT-e.
   const porNumeroCte = numeroCte ? mapas.mapaNumeroCte?.get(numeroCte) : null;
+
+  const origemCte = String(porChaveCte?.origem_vinculo_tracking || '');
+  const rawPreferencial = [porChaveNfe, porNota, porNumeroCte].find((item) => item && !String(item.origem_vinculo_tracking || '').startsWith('VIEW_'));
+  if (rawPreferencial && (!porChaveCte || origemCte.startsWith('VIEW_'))) return rawPreferencial;
+
+  if (porChaveCte) return porChaveCte;
+  if (porChaveNfe) return porChaveNfe;
+  if (porNota) return porNota;
   if (porNumeroCte) return porNumeroCte;
 
   return null;
