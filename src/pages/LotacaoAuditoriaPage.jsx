@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import BaseCtesStatus from '../components/BaseCtesStatus';
 import {
   buscarCargaPorDistOuCte,
   carregarFluxoCargasLotacao,
@@ -4207,6 +4208,7 @@ export default function LotacaoAuditoriaPage() {
           <span className="amd-mini-brand">Lotação · Auditoria</span>
           <h1>Auditoria Lotação</h1>
           <p>Central única de auditoria operacional: parta do CT-e ou do DIST, case com o realizado, consolide a viagem e controle o saldo.</p>
+          <BaseCtesStatus />
         </div>
         {usuarioAtual && (
           <div style={{ textAlign: 'right', fontSize: '0.85rem', opacity: 0.75 }}>
