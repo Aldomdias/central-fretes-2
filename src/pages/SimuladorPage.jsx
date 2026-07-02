@@ -43,7 +43,7 @@ import {
   salvarConfiguracaoBaseCte,
   TOMADORES_CTE_PADRAO,
 } from '../services/cteBasePolicy';
-import { resolverCubagemTracking } from '../utils/trackingCubagem';
+import { resolverCubagemTracking, validarCubagemOperacional } from '../utils/trackingCubagem';
 
 
 function sleep(ms) {
@@ -79,6 +79,8 @@ const COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR = [
   'canal',
   'canal_original',
 ].join(',');
+
+const MAX_CTES_DETALHES_REALIZADO = 3000;
 
 const CANAIS_B2C_QUERY_REALIZADO = [
   'B2C',
@@ -1220,7 +1222,7 @@ function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
     });
     const cubagemFoiMultiplicadaPorVolumes = cubagemResolvida.totalFoiMultiplicadoPorVolumes;
     const cubagemCandidata = cubagemResolvida.cubagemAplicada;
-    const cubagemValidada = validarCubagemTracking({
+    const cubagemValidada = validarCubagemOperacional({
       cubagemTotal: cubagemCandidata,
       qtdVolumes: qtdVolumesTracking,
       peso: pesoFisico,
@@ -1301,6 +1303,7 @@ function enriquecerRealizadoComBase(rows = []) {
   let incompletos = 0;
   let volumesTracking = 0;
   let cubagemTracking = 0;
+  let cubagemOutliers = 0;
   const linhas = [];
 
   for (const row of rows || []) {
@@ -1316,9 +1319,17 @@ function enriquecerRealizadoComBase(rows = []) {
       && String(row.ibgeDestino || '').replace(/\D/g, '').length >= 7;
 
     if (cubagem > 0 && volumes > 0 && temIbge) {
+      const pesoFisico = pesoRealizado(row);
+      const cubagemValidada = validarCubagemOperacional({
+        cubagemTotal: cubagem,
+        qtdVolumes: volumes,
+        peso: pesoFisico,
+      });
+      const cubagemAplicada = cubagemValidada.cubagemTotal;
+      if (cubagemValidada.outlier) cubagemOutliers += 1;
       vinculados += 1;
       volumesTracking += volumes;
-      cubagemTracking += cubagem;
+      cubagemTracking += cubagemAplicada;
       linhas.push({
         ...row,
         // A cubagem da base veio do tracking (via Gestão Base), então é confiável.
@@ -1326,9 +1337,14 @@ function enriquecerRealizadoComBase(rows = []) {
         trackingPendente: false,
         baseCompletaSemTracking: true,
         qtdVolumes: volumes,
-        cubagemTotal: cubagem,
-        cubagemUnitaria: volumes > 0 ? cubagem / volumes : 0,
-        pesoCubado: numeroRealizado(row.pesoCubado || row.peso_cubado),
+        cubagemTotal: cubagemAplicada,
+        cubagemUnitaria: cubagemAplicada > 0 && volumes > 0 ? cubagemAplicada / volumes : 0,
+        cubagemTotalOriginalTracking: cubagemValidada.cubagemOriginal,
+        cubagemOutlierTracking: cubagemValidada.outlier,
+        cubagemCorrigidaTracking: false,
+        cubagemTotalArmazenadaTracking: cubagem,
+        limiteCubagemTracking: cubagemValidada.limiteCubagem,
+        pesoCubado: cubagemValidada.outlier ? 0 : numeroRealizado(row.pesoCubado || row.peso_cubado),
       });
     } else {
       incompletos += 1;
@@ -1342,7 +1358,7 @@ function enriquecerRealizadoComBase(rows = []) {
     incompletosDescartados: incompletos,
     volumesTracking,
     cubagemTracking,
-    cubagemOutliers: 0,
+    cubagemOutliers,
     erroTracking: '',
     avisoTracking: '',
     apenasBaseCompleta: true,
@@ -3045,7 +3061,7 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
     rota.vencedores.set(vencedorNome, (rota.vencedores.get(vencedorNome) || 0) + 1);
     rotasMap.set(chaveRota, rota);
 
-    ctesDetalhes.push({
+    if (ctesDetalhes.length < MAX_CTES_DETALHES_REALIZADO) ctesDetalhes.push({
       cte: row.numeroCte || row.chaveCte || '',
       data: row.dataEmissao || '',
       origem: origemResumo,
@@ -3080,22 +3096,20 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
       chaveNfe: row.chaveNfe || '',
       statusSelecionada,
       rankingSelecionada: itemSelecionada?.ranking || '',
+      faixaPeso: itemSelecionada?.detalhes?.frete?.faixaPeso || vencedor?.detalhes?.frete?.faixaPeso || '',
       reducaoNecessaria,
       savingSelecionada: economiaSelecionadaVsReal,
       diferencaParaVencedor: diferencaVencedor,
       concorrentes: resultado.length,
       origemUsada,
       fallbackOrigem: fallback,
-      // Detalhes completos do cálculo para auditoria
-      vencedorDetalhes: vencedor?.detalhes || null,
-      selecionadaDetalhes: itemSelecionada?.detalhes || null,
+      // Mantem somente campos leves para nao estourar memoria em bases grandes.
       ganhouRealizado: freteSel > 0 && valorCte > 0 && freteSel < valorCte,
-      todosResultados: resultado.slice(0, 8).map((r) => ({
+      todosResultados: resultado.slice(0, 5).map((r) => ({
         transportadora: r.transportadora,
         total: r.total,
         ranking: r.ranking,
         origem: r.origem,
-        detalhes: r.detalhes || null,
       })),
     });
   }
@@ -3242,6 +3256,9 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
     impactoTransportadoras,
     pareto80Volume,
     ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor),
+    ctesDetalhesTotal: ctesAnalisados,
+    ctesDetalhesLimitados: ctesAnalisados > ctesDetalhes.length,
+    ctesDetalhesLimite: MAX_CTES_DETALHES_REALIZADO,
     diagnostico: {
       linhasSemIbgeDestino: diagnostico.linhasSemIbgeDestino,
       linhasSemResultado: diagnostico.linhasSemResultado,

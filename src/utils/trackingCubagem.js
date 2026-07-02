@@ -48,6 +48,32 @@ export function resolverCubagemTracking({
   };
 }
 
+export function validarCubagemOperacional({
+  cubagemTotal = 0,
+  qtdVolumes = 0,
+  peso = 0,
+}) {
+  const cubagem = numero(cubagemTotal);
+  const volumes = numero(qtdVolumes);
+  const pesoRef = numero(peso);
+
+  if (cubagem <= 0) {
+    return { cubagemTotal: 0, cubagemOriginal: 0, outlier: false, limiteCubagem: 0 };
+  }
+
+  const limitePorPeso = pesoRef > 0 ? Math.max(8, (pesoRef / 250) * 4) : 0;
+  const limitePorVolume = volumes > 0 ? Math.max(5, volumes * 0.35) : 0;
+  const limiteCubagem = Math.max(30, limitePorPeso, limitePorVolume);
+  const outlier = cubagem > 20 && limiteCubagem > 0 && cubagem > limiteCubagem;
+
+  return {
+    cubagemTotal: outlier ? 0 : cubagem,
+    cubagemOriginal: cubagem,
+    outlier,
+    limiteCubagem,
+  };
+}
+
 export function agregarCubagemLinhasTracking(linhas = [], fatorCubagem = 300) {
   return linhas.reduce((agregado, linha = {}) => {
     const resolvida = resolverCubagemTracking({

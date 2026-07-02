@@ -9,6 +9,7 @@ import {
 import {
   agregarCubagemLinhasTracking,
   resolverCubagemTracking,
+  validarCubagemOperacional,
 } from '../src/utils/trackingCubagem.js';
 import { converterTabelaNegociacaoParaSimulador } from '../src/utils/tabelasNegociacaoSimuladorAdapter.js';
 import { simularRealizadoLocalRapido } from '../src/utils/realizadoLocalEngine.js';
@@ -437,4 +438,27 @@ test('cubagem de CT-e com varias NFs soma unitaria x volumes de cada linha', () 
   assert.ok(Math.abs(agregado.cubagemAplicada - 12.978) < 0.000001);
   assert.ok(Math.abs(agregado.pesoCubado - 3893.4) < 0.000001);
   assert.ok(Math.abs(agregado.pesoFisico - 508.839) < 0.000001);
+});
+
+test('validacao operacional aceita cubagem dentro da escala esperada', () => {
+  const resultado = validarCubagemOperacional({
+    cubagemTotal: 12.978,
+    qtdVolumes: 68,
+    peso: 508.839,
+  });
+
+  assert.equal(resultado.outlier, false);
+  assert.equal(resultado.cubagemTotal, 12.978);
+});
+
+test('validacao operacional zera cubagem muito acima da escala', () => {
+  const resultado = validarCubagemOperacional({
+    cubagemTotal: 398,
+    qtdVolumes: 30,
+    peso: 2500,
+  });
+
+  assert.equal(resultado.outlier, true);
+  assert.equal(resultado.cubagemTotal, 0);
+  assert.ok(resultado.limiteCubagem < 398);
 });
