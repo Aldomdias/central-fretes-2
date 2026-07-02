@@ -82,6 +82,39 @@ const COLUNAS_REALIZADO_LOCAL_CTES_SIMULADOR = [
 
 const MAX_CTES_DETALHES_REALIZADO = 3000;
 
+function prioridadeDetalheRealizado(item = {}) {
+  const status = String(item.statusSelecionada || '').toUpperCase();
+  return (
+    (item.cubagemOutlierTracking ? 1000000000 : 0) +
+    (status === 'PERDERIA' ? 100000000 : 0) +
+    Number(item.diferencaParaVencedor || 0) +
+    Number(item.savingSelecionada || 0) +
+    Number(item.savingVencedor || 0)
+  );
+}
+
+function adicionarDetalheRealizadoAmostra(amostra = [], detalhe = {}) {
+  if (amostra.length < MAX_CTES_DETALHES_REALIZADO) {
+    amostra.push(detalhe);
+    return;
+  }
+
+  const novaPrioridade = prioridadeDetalheRealizado(detalhe);
+  let menorIndice = -1;
+  let menorPrioridade = Infinity;
+  for (let i = 0; i < amostra.length; i += 1) {
+    const prioridade = prioridadeDetalheRealizado(amostra[i]);
+    if (prioridade < menorPrioridade) {
+      menorPrioridade = prioridade;
+      menorIndice = i;
+    }
+  }
+
+  if (menorIndice >= 0 && novaPrioridade > menorPrioridade) {
+    amostra[menorIndice] = detalhe;
+  }
+}
+
 const CANAIS_B2C_QUERY_REALIZADO = [
   'B2C',
   'b2c',
@@ -3061,7 +3094,7 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
     rota.vencedores.set(vencedorNome, (rota.vencedores.get(vencedorNome) || 0) + 1);
     rotasMap.set(chaveRota, rota);
 
-    if (ctesDetalhes.length < MAX_CTES_DETALHES_REALIZADO) ctesDetalhes.push({
+    const detalheCteRealizado = {
       cte: row.numeroCte || row.chaveCte || '',
       data: row.dataEmissao || '',
       origem: origemResumo,
@@ -3116,7 +3149,8 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
         origem: r.origem,
         detalhes: r.detalhes || null,
       })),
-    });
+    };
+    adicionarDetalheRealizadoAmostra(ctesDetalhes, detalheCteRealizado);
   }
 
   const rotas = [...rotasMap.values()]
@@ -7898,7 +7932,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <div>
                     <strong>Análise Detalhada</strong>
                     <p>
-                      {(resultadoRealizado.ctesDetalhes || []).length.toLocaleString('pt-BR')} CT-es com detalhes de cálculo disponíveis. A lista não é mais limitada a 1.000; a paginação abaixo controla apenas a visualização.
+                      Simulação calculada sobre {(resultadoRealizado.ctesDetalhesTotal || resultadoRealizado.ctesAnalisados || 0).toLocaleString('pt-BR')} CT-es. Exibindo {(resultadoRealizado.ctesDetalhes || []).length.toLocaleString('pt-BR')} CT-es prioritários com a visão completa do cálculo para auditoria.
                       Clique em qualquer linha para ver o cálculo completo.
                     </p>
                   </div>
