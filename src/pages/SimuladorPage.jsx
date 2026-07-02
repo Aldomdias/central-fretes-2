@@ -3103,13 +3103,18 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
       concorrentes: resultado.length,
       origemUsada,
       fallbackOrigem: fallback,
-      // Mantem somente campos leves para nao estourar memoria em bases grandes.
+      // Mantem o raio-x completo apenas na amostra navegavel. A simulacao usa
+      // todos os CT-es, mas guardar auditoria detalhada de bases gigantes
+      // derruba o navegador.
+      vencedorDetalhes: vencedor?.detalhes || null,
+      selecionadaDetalhes: itemSelecionada?.detalhes || null,
       ganhouRealizado: freteSel > 0 && valorCte > 0 && freteSel < valorCte,
-      todosResultados: resultado.slice(0, 5).map((r) => ({
+      todosResultados: resultado.slice(0, 8).map((r) => ({
         transportadora: r.transportadora,
         total: r.total,
         ranking: r.ranking,
         origem: r.origem,
+        detalhes: r.detalhes || null,
       })),
     });
   }
