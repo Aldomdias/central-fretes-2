@@ -474,3 +474,30 @@ test('validacao operacional barra cubagem de tracking que inflaria peso cubado n
   assert.equal(resultado.cubagemTotal, 0);
   assert.ok(resultado.limiteCubagem < 20.16);
 });
+
+test('validacao operacional barra cubagem inflada em carga com muitos volumes (densidade baixa)', () => {
+  // Caso real (jul/2026): 72 pneus, 663 kg, cubagem de tracking 20,16 m³
+  // (33 kg/m³ — pneu real fica ~140 kg/m³). A regra por volume sozinha
+  // (72 × 0,35 = 25,2 m³) deixava passar e o peso cubado ia a 4.435 kg.
+  const resultado = validarCubagemOperacional({
+    cubagemTotal: 20.16,
+    qtdVolumes: 72,
+    peso: 663.12,
+  });
+
+  assert.equal(resultado.outlier, true);
+  assert.equal(resultado.cubagemTotal, 0);
+  assert.ok(resultado.limiteCubagem < 20.16);
+});
+
+test('validacao operacional mantem cubagem legitima proxima do corte de densidade', () => {
+  // Caso validado: 68 volumes, 508,8 kg, 12,978 m³ (39,2 kg/m³) deve passar.
+  const resultado = validarCubagemOperacional({
+    cubagemTotal: 12.978,
+    qtdVolumes: 68,
+    peso: 508.839,
+  });
+
+  assert.equal(resultado.outlier, false);
+  assert.equal(resultado.cubagemTotal, 12.978);
+});

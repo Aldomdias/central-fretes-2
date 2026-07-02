@@ -63,7 +63,17 @@ export function validarCubagemOperacional({
 
   const limitePorPeso = pesoRef > 0 ? Math.min(18, Math.max(8, (pesoRef / 250) * 4)) : 0;
   const limitePorVolume = volumes > 0 ? Math.max(5, volumes * 0.35) : 0;
-  const limiteCubagem = Math.max(12, limitePorPeso, limitePorVolume);
+  let limiteCubagem = Math.max(12, limitePorPeso, limitePorVolume);
+
+  // Corte por densidade: cargas com muitos volumes ganham limite alto pela regra
+  // por volume (0,35 m³/vol), mas cubagem que implica densidade < 35 kg/m³ é
+  // outlier em fracionado (ex.: 72 pneus/663 kg com 20,16 m³ = 33 kg/m³; pneu
+  // real fica ~140 kg/m³). Calibrado para manter o caso validado de 68 vol/
+  // 508,8 kg/12,978 m³ (39,2 kg/m³). O piso de 12 m³ preserva remessas pequenas.
+  if (pesoRef > 0) {
+    limiteCubagem = Math.min(limiteCubagem, Math.max(12, pesoRef / 35));
+  }
+
   const outlier = cubagem > limiteCubagem;
 
   return {
