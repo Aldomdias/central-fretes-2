@@ -317,6 +317,70 @@ function montarJanelasDataRealizado(inicio, fim) {
   return janelas;
 }
 
+const DIAS_POR_PARCELA_SIMULACAO = 5;
+const CHAVE_STORAGE_PARCELAS_SIMULACAO = 'cf2:simRealizadoParcelas:v1';
+
+// Janelas de N dias (ascendente) para o modo "dividir simulação". Quando o
+// período não vem dos filtros, deriva do min/max de dataEmissao das linhas.
+function montarJanelasParcelasRealizado(rows = [], inicio = '', fim = '', diasPorJanela = DIAS_POR_PARCELA_SIMULACAO) {
+  let inicioIso = dataIsoValidaRealizado(inicio);
+  let fimIso = dataIsoValidaRealizado(fim);
+
+  if (!inicioIso || !fimIso) {
+    for (const row of rows) {
+      const dataIso = dataIsoValidaRealizado(row?.dataEmissao);
+      if (!dataIso) continue;
+      if (!inicioIso || dataIso < inicioIso) inicioIso = dataIso;
+      if (!fimIso || dataIso > fimIso) fimIso = dataIso;
+    }
+  }
+  if (!inicioIso || !fimIso || inicioIso > fimIso) return [];
+
+  const janelas = [];
+  let cursor = inicioIso;
+  while (cursor && cursor <= fimIso) {
+    const fimJanela = adicionarDiasIsoRealizado(cursor, diasPorJanela - 1);
+    janelas.push({ inicio: cursor, fim: fimJanela > fimIso ? fimIso : fimJanela });
+    cursor = adicionarDiasIsoRealizado(cursor, diasPorJanela);
+  }
+  return janelas;
+}
+
+function filtrarRowsPorJanelaRealizado(rows = [], janela = {}) {
+  return (rows || []).filter((row) => {
+    const dataIso = dataIsoValidaRealizado(row?.dataEmissao);
+    // Linhas sem data válida entram na primeira janela para não serem perdidas.
+    if (!dataIso) return Boolean(janela.primeira);
+    return dataIso >= janela.inicio && dataIso <= janela.fim;
+  });
+}
+
+function salvarCheckpointParcelasSimulacao(dados) {
+  try {
+    window.localStorage.setItem(CHAVE_STORAGE_PARCELAS_SIMULACAO, JSON.stringify(dados));
+    return true;
+  } catch (e) {
+    // Cota excedida ou storage indisponível: segue sem checkpoint (só perde a retomada pós-crash).
+    return false;
+  }
+}
+
+function carregarCheckpointParcelasSimulacao(chaveContexto) {
+  try {
+    const bruto = window.localStorage.getItem(CHAVE_STORAGE_PARCELAS_SIMULACAO);
+    if (!bruto) return null;
+    const dados = JSON.parse(bruto);
+    if (!dados || dados.chaveContexto !== chaveContexto) return null;
+    return dados;
+  } catch (e) {
+    return null;
+  }
+}
+
+function limparCheckpointParcelasSimulacao() {
+  try { window.localStorage.removeItem(CHAVE_STORAGE_PARCELAS_SIMULACAO); } catch (e) { /* noop */ }
+}
+
 async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
   if (!isSupabaseConfigured()) return [];
   const supabase = getSupabaseClient();
@@ -2837,55 +2901,105 @@ function VeiculoOcupacaoCard({ cubagemDia = 0, pesoDia = 0, titulo = 'Veículo s
   );
 }
 
-async function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade }) {
-  const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
-  // Construido uma unica vez para toda a base: evita varrer todas as rotas de todas as
-  // origens/transportadoras a cada CT-e (era o principal gargalo de CPU em bases grandes).
-  const indicePorDestino = buildDestinoIndex(baseOnline, cidadePorIbge);
-  const rotasMap = new Map();
-  const transportadorasMap = new Map();
-  const ctesDetalhes = [];
-  const dias = periodoRealizadoDias(rows, filtros.inicio, filtros.fim);
-  const meses = periodoRealizadoMeses(rows, filtros.inicio, filtros.fim);
+// Campos escalares acumulados durante a simulação do realizado. A lista é usada
+// para criar/transportar o estado entre parcelas (modo "dividir simulação").
+const CAMPOS_ESCALARES_SIMULACAO_REALIZADO = [
+  'ctesAnalisados', 'ctesSimulados', 'ctesComTabelaSelecionada', 'ctesGanhariaSelecionada',
+  'ctesPerdidosSelecionada', 'ctesSemTabelaSelecionada', 'ctesSemTabelaGeral', 'freteRealizado',
+  'freteRealizadoComTabelaSelecionada', 'freteSelecionada', 'freteVencedor', 'valorNF',
+  'valorNFComTabelaSelecionada', 'peso', 'volumes', 'cubagemTotal', 'linhasComTracking',
+  'savingSelecionadaVsReal', 'savingTabelaSelecionadaVsRealBruto', 'savingVencedorVsReal',
+  'freteRealizadoGanhariaSelecionada', 'freteSelecionadaGanhadora', 'valorNFGanhariaSelecionada',
+  'diferencaSelecionadaVsVencedor', 'reducaoNecessariaSoma', 'ctesCapturadosDeOutras',
+  'freteCapturadoRealizado', 'freteCapturadoTabela', 'valorNFCapturado', 'pesoCapturado',
+  'volumesCapturados',
+];
 
-  let ctesAnalisados = 0;
-  let ctesSimulados = 0;
-  let ctesComTabelaSelecionada = 0;
-  let ctesGanhariaSelecionada = 0;
-  let ctesPerdidosSelecionada = 0;
-  let ctesSemTabelaSelecionada = 0;
-  let ctesSemTabelaGeral = 0;
-  let freteRealizado = 0;
-  let freteRealizadoComTabelaSelecionada = 0;
-  let freteSelecionada = 0;
-  let freteVencedor = 0;
-  let valorNF = 0;
-  let valorNFComTabelaSelecionada = 0;
-  let peso = 0;
-  let volumes = 0;
-  let cubagemTotal = 0;
-  let linhasComTracking = 0;
-  let savingSelecionadaVsReal = 0;
-  let savingTabelaSelecionadaVsRealBruto = 0;
-  let savingVencedorVsReal = 0;
-  let freteRealizadoGanhariaSelecionada = 0;
-  let freteSelecionadaGanhadora = 0;
-  let valorNFGanhariaSelecionada = 0;
-  let diferencaSelecionadaVsVencedor = 0;
-  let reducaoNecessariaSoma = 0;
-  let ctesCapturadosDeOutras = 0;
-  let freteCapturadoRealizado = 0;
-  let freteCapturadoTabela = 0;
-  let valorNFCapturado = 0;
-  let pesoCapturado = 0;
-  let volumesCapturados = 0;
-  const diagnostico = {
-    linhasSemIbgeDestino: 0,
-    linhasSemResultado: 0,
-    canaisUsados: new Map(),
-    origensUsadas: new Map(),
-    destinosSemResultado: new Map(),
+// Estado acumulador da simulação do realizado. `rows` deve ser o conjunto COMPLETO
+// do período (mesmo no modo parcelas) para dias/meses saírem corretos.
+function criarEstadoSimulacaoRealizado({ rows = [], filtros = {} } = {}) {
+  const estado = {
+    rotasMap: new Map(),
+    transportadorasMap: new Map(),
+    ctesDetalhes: [],
+    dias: periodoRealizadoDias(rows, filtros.inicio, filtros.fim),
+    meses: periodoRealizadoMeses(rows, filtros.inicio, filtros.fim),
+    diagnostico: {
+      linhasSemIbgeDestino: 0,
+      linhasSemResultado: 0,
+      canaisUsados: new Map(),
+      origensUsadas: new Map(),
+      destinosSemResultado: new Map(),
+    },
   };
+  CAMPOS_ESCALARES_SIMULACAO_REALIZADO.forEach((campo) => { estado[campo] = 0; });
+  return estado;
+}
+
+// Serializa o estado para checkpoint em localStorage (modo parcelas). Os detalhes
+// pesados de auditoria (raio-x de cálculo) são removidos do checkpoint para caber
+// na cota — os agregados/KPIs não dependem deles.
+function serializarEstadoSimulacaoRealizado(estado) {
+  const escalares = {};
+  CAMPOS_ESCALARES_SIMULACAO_REALIZADO.forEach((campo) => { escalares[campo] = estado[campo]; });
+  return JSON.stringify({
+    v: 1,
+    escalares,
+    dias: estado.dias,
+    meses: estado.meses,
+    rotas: [...estado.rotasMap.entries()].map(([chave, rota]) => [chave, { ...rota, vencedores: [...(rota.vencedores || new Map()).entries()] }]),
+    transportadoras: [...estado.transportadorasMap.entries()],
+    diagnostico: {
+      linhasSemIbgeDestino: estado.diagnostico.linhasSemIbgeDestino,
+      linhasSemResultado: estado.diagnostico.linhasSemResultado,
+      canaisUsados: [...estado.diagnostico.canaisUsados.entries()],
+      origensUsadas: [...estado.diagnostico.origensUsadas.entries()],
+      destinosSemResultado: [...estado.diagnostico.destinosSemResultado.entries()],
+    },
+    ctesDetalhes: estado.ctesDetalhes.map((item) => ({
+      ...item,
+      vencedorDetalhes: null,
+      selecionadaDetalhes: null,
+      todosResultados: [],
+    })),
+  });
+}
+
+function desserializarEstadoSimulacaoRealizado(texto) {
+  const dados = JSON.parse(texto);
+  const estado = criarEstadoSimulacaoRealizado();
+  Object.assign(estado, dados.escalares || {});
+  estado.dias = Number(dados.dias) || 1;
+  estado.meses = Number(dados.meses) || 1;
+  estado.rotasMap = new Map((dados.rotas || []).map(([chave, rota]) => [chave, { ...rota, vencedores: new Map(rota.vencedores || []) }]));
+  estado.transportadorasMap = new Map(dados.transportadoras || []);
+  estado.diagnostico = {
+    linhasSemIbgeDestino: Number(dados.diagnostico?.linhasSemIbgeDestino) || 0,
+    linhasSemResultado: Number(dados.diagnostico?.linhasSemResultado) || 0,
+    canaisUsados: new Map(dados.diagnostico?.canaisUsados || []),
+    origensUsadas: new Map(dados.diagnostico?.origensUsadas || []),
+    destinosSemResultado: new Map(dados.diagnostico?.destinosSemResultado || []),
+  };
+  estado.ctesDetalhes = Array.isArray(dados.ctesDetalhes) ? dados.ctesDetalhes : [];
+  return estado;
+}
+
+// Processa um lote de linhas acumulando no estado. Pode ser chamada várias vezes
+// (uma por parcela) — o corpo do loop é o mesmo da simulação de passada única.
+async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino }) {
+  const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
+  const { rotasMap, transportadorasMap, ctesDetalhes, diagnostico } = estado;
+  let {
+    ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
+    ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
+    freteRealizadoComTabelaSelecionada, freteSelecionada, freteVencedor, valorNF,
+    valorNFComTabelaSelecionada, peso, volumes, cubagemTotal, linhasComTracking,
+    savingSelecionadaVsReal, savingTabelaSelecionadaVsRealBruto, savingVencedorVsReal,
+    freteRealizadoGanhariaSelecionada, freteSelecionadaGanhadora, valorNFGanhariaSelecionada,
+    diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
+    freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
+    volumesCapturados,
+  } = estado;
 
   const linhasParaSimular = rows || [];
   const CHUNK_SIMULACAO_REALIZADO = 500;
@@ -3153,6 +3267,34 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
     adicionarDetalheRealizadoAmostra(ctesDetalhes, detalheCteRealizado);
   }
 
+  Object.assign(estado, {
+    ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
+    ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
+    freteRealizadoComTabelaSelecionada, freteSelecionada, freteVencedor, valorNF,
+    valorNFComTabelaSelecionada, peso, volumes, cubagemTotal, linhasComTracking,
+    savingSelecionadaVsReal, savingTabelaSelecionadaVsRealBruto, savingVencedorVsReal,
+    freteRealizadoGanhariaSelecionada, freteSelecionadaGanhadora, valorNFGanhariaSelecionada,
+    diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
+    freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
+    volumesCapturados,
+  });
+}
+
+// Gera o resultado final (KPIs, rotas, laudo) a partir do estado acumulado.
+function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } = {}) {
+  const {
+    rotasMap, transportadorasMap, ctesDetalhes, diagnostico, dias, meses,
+    ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
+    ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
+    freteRealizadoComTabelaSelecionada, freteSelecionada, freteVencedor, valorNF,
+    valorNFComTabelaSelecionada, peso, volumes, cubagemTotal, linhasComTracking,
+    savingSelecionadaVsReal, savingTabelaSelecionadaVsRealBruto, savingVencedorVsReal,
+    freteRealizadoGanhariaSelecionada, freteSelecionadaGanhadora, valorNFGanhariaSelecionada,
+    diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
+    freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
+    volumesCapturados,
+  } = estado;
+
   const rotas = [...rotasMap.values()]
     .map(finalizarResumoRotaRealizado)
     .sort((a, b) => b.oportunidade - a.oportunidade || b.ctes - a.ctes || b.freteRealizado - a.freteRealizado);
@@ -3311,6 +3453,17 @@ async function simularRealizadoComTabela({ rows = [], baseOnline = [], transport
     ...resumo,
     laudo: gerarLaudoTextoRealizado(resumo, transportadoraSelecionada),
   };
+}
+
+// Simulação de passada única (comportamento original): cria o estado, processa
+// todas as linhas e finaliza. O modo parcelas usa as três etapas separadamente.
+async function simularRealizadoComTabela(args = {}) {
+  const estado = criarEstadoSimulacaoRealizado(args);
+  // Construido uma unica vez para toda a base: evita varrer todas as rotas de todas as
+  // origens/transportadoras a cada CT-e (era o principal gargalo de CPU em bases grandes).
+  const indicePorDestino = buildDestinoIndex(args.baseOnline || [], args.cidadePorIbge);
+  await processarLinhasSimulacaoRealizado(estado, { ...args, indicePorDestino });
+  return finalizarSimulacaoRealizado(estado, args);
 }
 
 function statusCombinadoCte(item) {
@@ -3622,6 +3775,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   const [carregandoSimulacao, setCarregandoSimulacao] = useState(false);
   const [erroSimulacao, setErroSimulacao] = useState('');
+  // Modo "dividir simulação": processa o realizado em parcelas de 5 dias com
+  // checkpoint local e unificação manual no final.
+  const [dividirSimulacaoRealizado, setDividirSimulacaoRealizado] = useState(false);
+  const [parcelasSimulacaoInfo, setParcelasSimulacaoInfo] = useState(null);
+  const parcelasSimulacaoRef = useRef(null);
   const timerProcessamentoRef = useRef(null);
   const hideProcessamentoRef = useRef(null);
   const [processamentoUi, setProcessamentoUi] = useState({
@@ -5144,6 +5302,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setFiltroDetalhe('');
     setPaginaDetalhe(0);
     setLinhasExpandidas(new Set());
+    parcelasSimulacaoRef.current = null;
+    setParcelasSimulacaoInfo(null);
     setCarregandoSimulacao(true);
     iniciarProcessamentoUi('Simulação do realizado', `Simulando ${rowsBase.length.toLocaleString('pt-BR')} CT-es filtrados...`, 20);
 
@@ -5267,8 +5427,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const mapaCidades = new Map(cidadePorIbgeCompleto);
       (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
 
-      atualizarProcessamentoUi(deveCompararConcorrentes ? 'Simulando CT-e a CT-e contra a tabela selecionada e concorrentes...' : 'Simulando CT-e a CT-e contra a tabela selecionada e o realizado...', 88);
-      const resultado = await simularRealizadoComTabela({
+      const paramsSimulacao = {
         rows: rowsFiltrados,
         baseOnline: baseParaSimulacao,
         transportadoraSelecionada: nomeTabelaSelecionada,
@@ -5288,17 +5447,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
         cidadePorIbge: mapaCidades,
         gradePorCanal: grade,
         municipioPorCidade,
-      });
-      const resultadoComTipo = ehReajusteSelecionado
-        ? enriquecerResultadoReajusteNegociacao(
-            resultado,
-            negociacaoRealizadoAtual,
-            transportadoraBaseReajuste,
-            deveCompararConcorrentes,
-          )
-        : resultado;
+      };
 
-      setResultadoRealizado({
+      // Aplica o resultado final na tela (mesmo bloco para passada única e parcelas).
+      const aplicarResultadoSimulacaoRealizado = (resultado) => {
+        const resultadoComTipo = ehReajusteSelecionado
+          ? enriquecerResultadoReajusteNegociacao(
+              resultado,
+              negociacaoRealizadoAtual,
+              transportadoraBaseReajuste,
+              deveCompararConcorrentes,
+            )
+          : resultado;
+
+        setResultadoRealizado({
         ...resultadoComTipo,
         gradeFrete: grade,
         compararConcorrentes: deveCompararConcorrentes,
@@ -5377,11 +5539,112 @@ export default function SimuladorPage({ transportadoras = [] }) {
           fonteTabela: 'selecionada_rotas_origens',
         },
       });
+      };
+
+      if (dividirSimulacaoRealizado) {
+        // ── Modo parcelas: processa em janelas de 5 dias com checkpoint local ──
+        const janelas = montarJanelasParcelasRealizado(rowsFiltrados, ctx.inicio, ctx.fim);
+        if (janelas.length) janelas[0].primeira = true;
+        if (!janelas.length) {
+          setErroSimulacao('Não foi possível montar as parcelas: informe o período (emissão início/fim) ou verifique as datas dos CT-es.');
+          finalizarProcessamentoUi('Parcelas indisponíveis', 'Período das parcelas não identificado.', 100);
+          return;
+        }
+
+        const chaveContexto = [
+          negociacaoRealizadoAtual?.id || '', nomeTabelaSelecionada, ctx.canal,
+          ctx.inicio, ctx.fim, ctx.modo, rowsFiltrados.length, janelas.length,
+        ].join('|');
+
+        let estadoParcelas = null;
+        let janelaInicial = 0;
+        const checkpoint = carregarCheckpointParcelasSimulacao(chaveContexto);
+        if (checkpoint && checkpoint.totalJanelas === janelas.length && Number(checkpoint.janelasConcluidas) > 0) {
+          try {
+            estadoParcelas = desserializarEstadoSimulacaoRealizado(checkpoint.estadoJson);
+            janelaInicial = Math.min(Number(checkpoint.janelasConcluidas), janelas.length);
+            atualizarProcessamentoUi(`Retomando parcelas salvas: ${janelaInicial}/${janelas.length} já concluídas...`, 88);
+          } catch (e) {
+            estadoParcelas = null;
+            janelaInicial = 0;
+          }
+        }
+        if (!estadoParcelas) {
+          estadoParcelas = criarEstadoSimulacaoRealizado({ rows: rowsFiltrados, filtros: paramsSimulacao.filtros });
+        }
+
+        const indicePorDestinoParcelas = buildDestinoIndex(baseParaSimulacao, mapaCidades);
+        for (let j = janelaInicial; j < janelas.length; j += 1) {
+          const janela = janelas[j];
+          const rowsJanela = filtrarRowsPorJanelaRealizado(rowsFiltrados, janela);
+          atualizarProcessamentoUi(
+            `Parcela ${j + 1}/${janelas.length} (${janela.inicio} a ${janela.fim}) — ${rowsJanela.length.toLocaleString('pt-BR')} CT-es...`,
+            Math.min(97, 88 + Math.floor(((j + 1) / janelas.length) * 9)),
+          );
+          await sleep(0);
+          await processarLinhasSimulacaoRealizado(estadoParcelas, {
+            ...paramsSimulacao,
+            rows: rowsJanela,
+            indicePorDestino: indicePorDestinoParcelas,
+          });
+          salvarCheckpointParcelasSimulacao({
+            chaveContexto,
+            totalJanelas: janelas.length,
+            janelasConcluidas: j + 1,
+            estadoJson: serializarEstadoSimulacaoRealizado(estadoParcelas),
+            atualizadoEm: new Date().toISOString(),
+          });
+          setParcelasSimulacaoInfo({ concluidas: j + 1, total: janelas.length, prontas: j + 1 >= janelas.length });
+        }
+
+        parcelasSimulacaoRef.current = {
+          estado: estadoParcelas,
+          params: paramsSimulacao,
+          aplicar: aplicarResultadoSimulacaoRealizado,
+          chaveContexto,
+        };
+        setParcelasSimulacaoInfo({ concluidas: janelas.length, total: janelas.length, prontas: true });
+        finalizarProcessamentoUi(
+          'Parcelas concluídas',
+          `${janelas.length} parcela(s) processadas. Clique em "Unificar análise" para gerar o dossiê.`,
+          100,
+        );
+        return;
+      }
+
+      atualizarProcessamentoUi(deveCompararConcorrentes ? 'Simulando CT-e a CT-e contra a tabela selecionada e concorrentes...' : 'Simulando CT-e a CT-e contra a tabela selecionada e o realizado...', 88);
+      const resultado = await simularRealizadoComTabela(paramsSimulacao);
+      aplicarResultadoSimulacaoRealizado(resultado);
 
       finalizarProcessamentoUi('Simulação do realizado concluída', 'Dossiê gerado com projeção, saving e rotas prioritárias.', 100);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao simular realizado.');
       finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
+    } finally {
+      setCarregandoSimulacao(false);
+    }
+  };
+
+  // Consolida as parcelas processadas (modo "dividir simulação") no dossiê final.
+  const onUnificarAnaliseParcelas = async () => {
+    const pacote = parcelasSimulacaoRef.current;
+    if (!pacote?.estado || !pacote?.aplicar) {
+      setErroSimulacao('Nenhuma parcela pronta nesta sessão. Rode "2) Simular" com "Dividir simulação" marcado — parcelas já salvas são retomadas automaticamente.');
+      return;
+    }
+    setCarregandoSimulacao(true);
+    iniciarProcessamentoUi('Unificar análise', 'Consolidando as parcelas no dossiê final...', 40);
+    try {
+      await sleep(0);
+      const resultado = finalizarSimulacaoRealizado(pacote.estado, pacote.params);
+      pacote.aplicar(resultado);
+      limparCheckpointParcelasSimulacao();
+      parcelasSimulacaoRef.current = null;
+      setParcelasSimulacaoInfo(null);
+      finalizarProcessamentoUi('Análise unificada', 'Dossiê gerado a partir das parcelas.', 100);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao unificar as parcelas.');
+      finalizarProcessamentoUi('Erro ao unificar', 'Não foi possível consolidar as parcelas.', 100);
     } finally {
       setCarregandoSimulacao(false);
     }
@@ -7064,6 +7327,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
             >
               {carregandoSimulacao ? 'Simulando...' : `2) Simular${baseRealizadoCarregada?.linhas?.length ? ` (${rowsRealizadoVisiveis.length.toLocaleString('pt-BR')} CT-es)` : ''}`}
             </button>
+            <label
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.82rem', color: '#334155', padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 8, background: dividirSimulacaoRealizado ? '#eff6ff' : '#f8fafc', cursor: 'pointer' }}
+              title="Processa a simulação em parcelas de 5 dias, salvando o progresso localmente. Ao final, clique em Unificar análise. Indicado para bases muito grandes."
+            >
+              <input
+                type="checkbox"
+                checked={dividirSimulacaoRealizado}
+                onChange={(event) => setDividirSimulacaoRealizado(event.target.checked)}
+                disabled={carregandoSimulacao}
+              />
+              Dividir simulação (parcelas de 5 dias)
+            </label>
+            {parcelasSimulacaoInfo ? (
+              <button
+                className="primary"
+                type="button"
+                onClick={onUnificarAnaliseParcelas}
+                disabled={carregandoSimulacao || !parcelasSimulacaoInfo.prontas}
+                style={{ background: parcelasSimulacaoInfo.prontas ? '#7c3aed' : '#94a3b8' }}
+                title={parcelasSimulacaoInfo.prontas ? 'Consolida as parcelas processadas no dossiê final' : 'Aguarde as parcelas terminarem'}
+              >
+                {parcelasSimulacaoInfo.prontas
+                  ? 'Unificar análise'
+                  : `Parcelas ${parcelasSimulacaoInfo.concluidas}/${parcelasSimulacaoInfo.total}...`}
+              </button>
+            ) : null}
             <button
               className="sim-tab"
               type="button"
