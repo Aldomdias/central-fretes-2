@@ -1,5 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { buildTrackingId, getChaveNfeLookup, parseTrackingArquivo } from '../utils/trackingLocal';
+import { resolverCubagemTracking } from '../utils/trackingCubagem.js';
 
 const TABELA_TRACKING = 'tracking_rows';
 const CHUNK_SIZE = 500;
@@ -20,7 +21,7 @@ function somaRows(rows = []) {
     acc.notas += 1;
     acc.valorNF += toNumber(row.valor_nf);
     acc.peso += toNumber(row.peso);
-    acc.cubagem += toNumber(row.cubagem_total);
+    acc.cubagem += toNumber(row.cubagem_final || row.cubagem_total);
     acc.volumes += toNumber(row.qtd_volumes);
     if (row.ibge_ok) acc.comIbge += 1;
     else acc.semIbge += 1;
@@ -33,6 +34,9 @@ function somaRows(rows = []) {
 }
 
 function cubagemTotal(row = {}) {
+  const finalCalculada = toNumber(row.cubagemFinal || row.cubagem_final);
+  if (finalCalculada > 0) return finalCalculada;
+
   const totalInformado = toNumber(row.cubagemTotal || row.cubagem_total);
   if (totalInformado > 0) return totalInformado;
 
@@ -56,6 +60,19 @@ function extrairChaveNfeRegistro(row = {}) {
 function toDbRow(row = {}) {
   const data = row.data || row.dataFaturamento || '';
   const chaveNfe = getChaveNfeLookup(row);
+  const cubagemUnitaria = toNumber(row.cubagem);
+  const quantidadeItens = toNumber(row.quantidadeItens || row.quantidade_itens);
+  const totalUnidades = toNumber(row.totalUnidades || row.total_unidades);
+  const qtdVolumes = toNumber(row.qtdVolumes);
+  const cubagemResolvida = resolverCubagemTracking({
+    cubagemUnitaria,
+    cubagemTotal: toNumber(row.cubagemTotal || row.cubagem_total || row.cubagemFinal || row.cubagem_final || row.cubagem),
+    pesoCubadoOriginal: toNumber(row.pesoCubado || row.pesoCubadoOriginal || row.peso_cubado),
+    volumes: totalUnidades || qtdVolumes,
+    quantidadeItens,
+    pesoFisico: toNumber(row.peso),
+  });
+  const cubagemFinal = toNumber(row.cubagemFinal || row.cubagem_final) || cubagemResolvida.cubagemAplicada;
   const id = String(
     row.id
     || buildTrackingId(row, row.arquivoOrigem || '', row.linhaExcel || '')
@@ -86,10 +103,13 @@ function toDbRow(row = {}) {
     peso: toNumber(row.peso),
     peso_declarado: toNumber(row.pesoDeclarado),
     peso_cubado: toNumber(row.pesoCubado || row.pesoCubadoOriginal),
-    cubagem_unitaria: toNumber(row.cubagem),
+    cubagem_unitaria: cubagemUnitaria,
     cubagem_total: cubagemTotal(row),
+    cubagem_final: cubagemFinal,
     valor_nf: toNumber(row.valorNF),
-    qtd_volumes: toNumber(row.qtdVolumes),
+    qtd_volumes: qtdVolumes,
+    quantidade_itens: quantidadeItens,
+    total_unidades: totalUnidades,
     previsao_cliente: row.previsaoCliente || null,
     previsao_transportadora: row.prevTransportadora || null,
     data_transporte: row.dataTransporte || null,
@@ -360,7 +380,7 @@ export async function resumirTrackingSupabase(options = {}) {
     const to = Math.min(from + pageSize - 1, limiteLeitura - 1);
     const { data, error } = await supabase
       .from(TABELA_TRACKING)
-      .select('data,valor_nf,peso,cubagem_total,qtd_volumes,ibge_ok')
+      .select('data,valor_nf,peso,cubagem_total,cubagem_final,qtd_volumes,ibge_ok')
       .range(from, to);
     if (error) throw new Error(`Erro ao resumir Tracking no Supabase: ${error.message}`);
 
@@ -412,8 +432,11 @@ function fromDbRow(row = {}) {
     pesoCubadoOriginal: toNumber(row.peso_cubado),
     cubagem: toNumber(row.cubagem_unitaria),
     cubagemTotal: toNumber(row.cubagem_total),
+    cubagemFinal: toNumber(row.cubagem_final),
     valorNF: toNumber(row.valor_nf),
     qtdVolumes: toNumber(row.qtd_volumes),
+    quantidadeItens: toNumber(row.quantidade_itens),
+    totalUnidades: toNumber(row.total_unidades),
     previsaoCliente: row.previsao_cliente || '',
     prevTransportadora: row.previsao_transportadora || '',
     dataTransporte: row.data_transporte || '',
@@ -435,8 +458,8 @@ export async function listarTrackingSupabase(options = {}) {
     .select(`
       id,data,nota_fiscal,chave_nfe,chave_cte,cte_numero,pedido,pedido_erp,canal,canal_original,
       transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,
-      chave_rota_ibge,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,
-      qtd_volumes,previsao_cliente,previsao_transportadora,data_transporte,data_entrega,
+      chave_rota_ibge,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,cubagem_final,valor_nf,
+      qtd_volumes,quantidade_itens,total_unidades,previsao_cliente,previsao_transportadora,data_transporte,data_entrega,
       arquivo_origem,aba_origem,linha_excel,ibge_ok,updated_at
     `)
     .order('updated_at', { ascending: false })

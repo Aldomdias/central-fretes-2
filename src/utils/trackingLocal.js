@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { CANAL_A_DEFINIR } from './canalTransportadora';
+import { resolverCubagemTracking } from './trackingCubagem.js';
 
 const DB_NAME = 'amd-tracking-local-db';
 const DB_VERSION = 2;
@@ -147,6 +148,9 @@ function text(value) {
 }
 
 function cubagemTotalTracking(row = {}) {
+  const finalCalculada = toNumber(row.cubagemFinal || row.cubagem_final);
+  if (finalCalculada > 0) return finalCalculada;
+
   const totalInformado = toNumber(row.cubagemTotal || row.cubagem_total);
   if (totalInformado > 0) return totalInformado;
 
@@ -526,7 +530,23 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
 
     const pesoDeclarado = toNumber(get(linha, col.pesoDeclarado));
     const cubagemTracking = toNumber(get(linha, col.cubagem)) || toNumber(get(linha, col.pesoCubado));
-    const volumes = toNumber(get(linha, col.totalUnidades)) || toNumber(get(linha, col.quantidadeItens));
+    const quantidadeItens = toNumber(get(linha, col.quantidadeItens));
+    const totalUnidades = toNumber(get(linha, col.totalUnidades));
+    const volumes = totalUnidades || quantidadeItens;
+    const cubagemResolvida = resolverCubagemTracking({
+      cubagemUnitaria: cubagemTracking,
+      cubagemTotal: cubagemTracking,
+      pesoCubadoOriginal: toNumber(get(linha, col.pesoCubado)),
+      volumes,
+      quantidadeItens,
+      pesoFisico: pesoDeclarado,
+    });
+    const raw = {};
+    headers.forEach((header, headerIndex) => {
+      if (header !== undefined && header !== null && String(header).trim() !== '') {
+        raw[String(header).trim()] = linha[headerIndex] ?? '';
+      }
+    });
     const canalOriginal = getTrimmed(linha, col.canal);
     const regiao = getTrimmed(linha, col.regiao);
     const modoEnvio = getTrimmed(linha, col.modoEnvio);
@@ -561,10 +581,11 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
       pesoDeclarado,
       pesoCubadoOriginal: toNumber(get(linha, col.pesoCubado)),
       cubagem: cubagemTracking,
+      cubagemFinal: cubagemResolvida.cubagemAplicada,
       valorNF: toNumber(get(linha, col.valorNF)),
       qtdVolumes: volumes,
-      quantidadeItens: toNumber(get(linha, col.quantidadeItens)),
-      totalUnidades: toNumber(get(linha, col.totalUnidades)),
+      quantidadeItens,
+      totalUnidades,
       cteNumero: getTrimmed(linha, col.cteNumero),
       cteAdicional: getTrimmed(linha, col.cteAdicional),
       dataEmissaoCte: parseDate(get(linha, col.dataEmissaoCte)),
@@ -594,6 +615,7 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
       linhaExcel: headerIndex + index + 2,
       ibgeOk: Boolean(ibgeOrigem && ibgeDestino),
       criadoEm: new Date().toISOString(),
+      raw,
     };
     row.id = buildTrackingId(row, file.name || '', row.linhaExcel);
     rows.push(row);
