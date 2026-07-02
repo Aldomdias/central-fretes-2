@@ -12,6 +12,7 @@
  */
 
 import * as XLSX from 'xlsx';
+import { parseNumeroPlanilha } from './parseNumeroPlanilha';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -28,17 +29,10 @@ function norm(v) {
 }
 
 function num(v) {
-  if (v === null || v === undefined || v === '') return null;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  const s = String(v)
-    .replace(/R\$/gi, '')
-    .replace(/%/g, '')
-    .trim();
-  const temVirgula = s.includes(',');
-  let prep = s.replace(/\s/g, '');
-  if (temVirgula) prep = prep.replace(/\./g, '').replace(',', '.');
-  const n = Number(prep);
-  return Number.isFinite(n) ? n : null;
+  // Delegado ao parser central: trata milhar BR ("1.065"), milhar US do XLSX
+  // ("1,065.00"/"1,065") e decimais dos dois padroes sem transformar 1065 em 1.065.
+  const n = parseNumeroPlanilha(v, null);
+  return typeof n === 'number' ? n : null;
 }
 
 function numOrZero(v) {

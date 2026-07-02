@@ -652,8 +652,13 @@ function parseNumero(value) {
   var temPonto = texto.includes('.');
 
   if (temVirgula && temPonto) {
-    // Formato brasileiro comum: 1.234,56
-    texto = texto.replace(/\./g, '').replace(',', '.');
+    // O separador decimal é o ÚLTIMO dos dois: cobre o formato brasileiro
+    // "1.234,56" e o americano "1,065.00" (como o XLSX formata milhares).
+    if (texto.lastIndexOf(',') > texto.lastIndexOf('.')) {
+      texto = texto.replace(/\./g, '').replace(',', '.');
+    } else {
+      texto = texto.replace(/,/g, '');
+    }
   } else if (temVirgula) {
     // Formato decimal brasileiro: 2,5
     texto = texto.replace(',', '.');
