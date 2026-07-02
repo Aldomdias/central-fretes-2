@@ -462,3 +462,15 @@ test('validacao operacional zera cubagem muito acima da escala', () => {
   assert.equal(resultado.cubagemTotal, 0);
   assert.ok(resultado.limiteCubagem < 398);
 });
+
+test('validacao operacional barra cubagem de tracking que inflaria peso cubado no fracionado', () => {
+  const resultado = validarCubagemOperacional({
+    cubagemTotal: 20.16,
+    qtdVolumes: 1,
+    peso: 300,
+  });
+
+  assert.equal(resultado.outlier, true);
+  assert.equal(resultado.cubagemTotal, 0);
+  assert.ok(resultado.limiteCubagem < 20.16);
+});

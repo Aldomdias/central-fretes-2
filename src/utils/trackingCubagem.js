@@ -61,10 +61,10 @@ export function validarCubagemOperacional({
     return { cubagemTotal: 0, cubagemOriginal: 0, outlier: false, limiteCubagem: 0 };
   }
 
-  const limitePorPeso = pesoRef > 0 ? Math.max(8, (pesoRef / 250) * 4) : 0;
+  const limitePorPeso = pesoRef > 0 ? Math.min(18, Math.max(8, (pesoRef / 250) * 4)) : 0;
   const limitePorVolume = volumes > 0 ? Math.max(5, volumes * 0.35) : 0;
-  const limiteCubagem = Math.max(30, limitePorPeso, limitePorVolume);
-  const outlier = cubagem > 20 && limiteCubagem > 0 && cubagem > limiteCubagem;
+  const limiteCubagem = Math.max(12, limitePorPeso, limitePorVolume);
+  const outlier = cubagem > limiteCubagem;
 
   return {
     cubagemTotal: outlier ? 0 : cubagem,
