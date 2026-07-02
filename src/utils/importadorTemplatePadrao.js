@@ -93,6 +93,15 @@ function numero(valor, padrao = '') {
     texto = texto.replace(/\./g, '').replace(',', '.');
   } else if (temVirgula) {
     texto = texto.replace(',', '.');
+  } else if (temPonto) {
+    // Sem vírgula, o ponto pode ser separador de milhar (ex.: "1.065" = 1065)
+    // em vez de decimal. Só remove o ponto quando o padrão bate com milhar
+    // (grupos de 3 dígitos após o ponto), preservando decimais reais como "2.5".
+    const partes = texto.split('.');
+    const pareceMilhar = partes.length > 1
+      && partes.slice(1).every((parte) => parte.length === 3)
+      && partes[0].length <= 3;
+    if (pareceMilhar) texto = texto.replace(/\./g, '');
   }
 
   const n = Number(texto);
