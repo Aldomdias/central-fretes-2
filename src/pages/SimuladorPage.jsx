@@ -1351,26 +1351,16 @@ function enriquecerRealizadoComBase(rows = []) {
     // Atenção ao mapeamento do loader: a coluna `cubagem` da base (que guarda o
     // TOTAL vindo do tracking, via Gestão Base) é carregada em `cubagemUnitaria`.
     // `cubagemTotal` não existe como coluna, então fica 0. Por isso lemos as duas.
-    const cubagemInformada = numeroRealizado(row.cubagemTotal)
+    const cubagem = numeroRealizado(row.cubagemTotal)
       || numeroRealizado(row.cubagemUnitaria)
       || numeroRealizado(row.cubagem)
       || numeroRealizado(row.metros_cubicos);
     const volumes = numeroRealizado(row.qtdVolumes || row.qtd_volumes || row.totalUnidades || row.total_unidades || row.volume || row.volumes);
-    const quantidadeItens = numeroRealizado(row.quantidadeItens || row.quantidade_itens);
     const temIbge = String(row.ibgeOrigem || '').replace(/\D/g, '').length >= 7
       && String(row.ibgeDestino || '').replace(/\D/g, '').length >= 7;
 
-    if (cubagemInformada > 0 && volumes > 0 && temIbge) {
+    if (cubagem > 0 && volumes > 0 && temIbge) {
       const pesoFisico = pesoRealizado(row);
-      const cubagemResolvida = resolverCubagemTracking({
-        cubagemUnitaria: cubagemInformada,
-        cubagemTotal: numeroRealizado(row.cubagemTotal),
-        pesoCubadoOriginal: numeroRealizado(row.pesoCubado || row.peso_cubado),
-        volumes,
-        quantidadeItens,
-        pesoFisico,
-      });
-      const cubagem = cubagemResolvida.cubagemAplicada;
       const cubagemValidada = validarCubagemOperacional({
         cubagemTotal: cubagem,
         qtdVolumes: volumes,
@@ -1388,17 +1378,14 @@ function enriquecerRealizadoComBase(rows = []) {
         trackingPendente: false,
         baseCompletaSemTracking: true,
         qtdVolumes: volumes,
-        quantidadeItensTracking: quantidadeItens,
         cubagemTotal: cubagemAplicada,
         cubagemUnitaria: cubagemAplicada > 0 && volumes > 0 ? cubagemAplicada / volumes : 0,
-        cubagemUnitariaOriginalTracking: cubagemInformada,
         cubagemTotalOriginalTracking: cubagemValidada.cubagemOriginal,
         cubagemOutlierTracking: cubagemValidada.outlier,
-        cubagemCorrigidaTracking: Boolean(cubagemResolvida.totalFoiMultiplicadoPorVolumes || cubagemResolvida.dividiuCubagemPorItens),
-        cubagemDivididaPorItensTracking: Boolean(cubagemResolvida.dividiuCubagemPorItens),
-        cubagemTotalArmazenadaTracking: cubagemAplicada,
+        cubagemCorrigidaTracking: false,
+        cubagemTotalArmazenadaTracking: cubagem,
         limiteCubagemTracking: cubagemValidada.limiteCubagem,
-        pesoCubado: cubagemValidada.outlier ? 0 : cubagemAplicada * 300,
+        pesoCubado: cubagemValidada.outlier ? 0 : numeroRealizado(row.pesoCubado || row.peso_cubado),
       });
     } else {
       incompletos += 1;
@@ -5037,11 +5024,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
       let mapasTracking;
       let trackingEnriquecido;
       if (apenasDadosCompletosRealizado) {
-        atualizarProcessamentoUi('Validando volumes/cubagem no Tracking e usando a base como fallback...', 82);
-        const enriquecidoBase = enriquecerRealizadoComBase(rowsComIbgeBase);
-        mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
-        const enriquecidoTracking = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
-        trackingEnriquecido = mesclarTrackingComBase(enriquecidoTracking, enriquecidoBase);
+        atualizarProcessamentoUi('Usando volumes/cubagem final da base de CT-e realizado...', 82);
+        mapasTracking = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
+        trackingEnriquecido = enriquecerRealizadoComBase(rowsComIbgeBase);
       } else {
         atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 82);
         mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
@@ -5092,10 +5077,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
           incluirCpComercial: incluirCpComercialRealizado,
         });
         if (apenasDadosCompletosRealizado) {
-          const enriquecidoBase = enriquecerRealizadoComBase(rowsComIbgeBase);
-          mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
-          const enriquecidoTracking = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
-          trackingEnriquecido = mesclarTrackingComBase(enriquecidoTracking, enriquecidoBase);
+          mapasTracking = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
+          trackingEnriquecido = enriquecerRealizadoComBase(rowsComIbgeBase);
         } else {
           mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
           trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
