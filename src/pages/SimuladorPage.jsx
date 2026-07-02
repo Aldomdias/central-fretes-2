@@ -2785,7 +2785,7 @@ function VeiculoOcupacaoCard({ cubagemDia = 0, pesoDia = 0, titulo = 'Veículo s
   );
 }
 
-function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade }) {
+async function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
   const rotasMap = new Map();
   const transportadorasMap = new Map();
@@ -2832,7 +2832,14 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     destinosSemResultado: new Map(),
   };
 
-  (rows || []).forEach((row) => {
+  const linhasParaSimular = rows || [];
+  const CHUNK_SIMULACAO_REALIZADO = 500;
+  for (let indiceLinha = 0; indiceLinha < linhasParaSimular.length; indiceLinha += 1) {
+    const row = linhasParaSimular[indiceLinha];
+    if (indiceLinha > 0 && indiceLinha % CHUNK_SIMULACAO_REALIZADO === 0) {
+      // Cede o main thread periodicamente para a UI (barra de progresso) não travar em bases grandes.
+      await sleep(0);
+    }
     ctesAnalisados += 1;
     const valorCte = numeroRealizado(row.valorCte);
     const nf = numeroRealizado(row.valorNF);
@@ -2888,7 +2895,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
     if (!destino) {
       diagnostico.linhasSemIbgeDestino += 1;
       ctesSemTabelaGeral += 1;
-      return;
+      continue;
     }
 
     const gradeCanal = canal === CANAL_A_DEFINIR ? [] : (gradePorCanal[canal] || gradePorCanal.ATACADO || []);
@@ -2910,7 +2917,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
       const destinoLabelDiag = `${row.cidadeDestino || ''}/${row.ufDestino || ''} ${destino}`.trim();
       diagnostico.destinosSemResultado.set(destinoLabelDiag, (diagnostico.destinosSemResultado.get(destinoLabelDiag) || 0) + 1);
       ctesSemTabelaGeral += 1;
-      return;
+      continue;
     }
 
     ctesSimulados += 1;
@@ -3084,7 +3091,7 @@ function simularRealizadoComTabela({ rows = [], baseOnline = [], transportadoraS
         detalhes: r.detalhes || null,
       })),
     });
-  });
+  }
 
   const rotas = [...rotasMap.values()]
     .map(finalizarResumoRotaRealizado)
@@ -5147,7 +5154,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       if (!baseParaSimulacao.length) {
         setErroSimulacao('Não encontrei nenhuma tabela compatível para simular. Confira se as tabelas estão no Supabase e se a origem/canal existem no cadastro.');
-        const resultadoSemTabela = simularRealizadoComTabela({
+        const resultadoSemTabela = await simularRealizadoComTabela({
           rows: rowsFiltrados,
           baseOnline: [],
           transportadoraSelecionada: nomeTabelaSelecionada,
@@ -5189,7 +5196,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
 
       atualizarProcessamentoUi(deveCompararConcorrentes ? 'Simulando CT-e a CT-e contra a tabela selecionada e concorrentes...' : 'Simulando CT-e a CT-e contra a tabela selecionada e o realizado...', 88);
-      const resultado = simularRealizadoComTabela({
+      const resultado = await simularRealizadoComTabela({
         rows: rowsFiltrados,
         baseOnline: baseParaSimulacao,
         transportadoraSelecionada: nomeTabelaSelecionada,
