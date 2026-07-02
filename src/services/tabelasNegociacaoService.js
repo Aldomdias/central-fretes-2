@@ -407,7 +407,7 @@ async function listarTodosItensTabelaNegociacao(tabelaId) {
   return todos;
 }
 
-async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}) {
+async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}, onProgresso = null) {
   const ibgesDestino = normalizarIbgesRecorte(recorte.ibgesDestino || recorte.ibgeDestino);
   const ufsDestino = normalizarUfsRecorte(recorte.ufsDestino || recorte.ufDestino);
 
@@ -448,12 +448,20 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}) {
   };
 
   if (ibgesDestino.length) {
-    for (const loteIbges of dividirEmLotes(ibgesDestino, 5)) {
+    const lotes = dividirEmLotes(ibgesDestino, 5);
+    let processados = 0;
+    for (const loteIbges of lotes) {
       await buscarPorFiltro((query) => query.in('ibge_destino', loteIbges));
+      processados += loteIbges.length;
+      if (onProgresso) onProgresso(Math.min(processados, ibgesDestino.length), ibgesDestino.length);
     }
   } else {
-    for (const loteUfs of dividirEmLotes(ufsDestino, 1)) {
+    const lotes = dividirEmLotes(ufsDestino, 1);
+    let processados = 0;
+    for (const loteUfs of lotes) {
       await buscarPorFiltro((query) => query.in('uf_destino', loteUfs));
+      processados += loteUfs.length;
+      if (onProgresso) onProgresso(Math.min(processados, ufsDestino.length), ufsDestino.length);
     }
   }
 
@@ -1300,14 +1308,14 @@ export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
 
 // Detalhe de UMA negociação: itens (rotas/fretes) + taxas de destino.
 // Buscamos itens e taxas em paralelo para a tabela selecionada.
-export async function carregarDetalhesNegociacaoParaSimulacao(tabela, recorte = null) {
+export async function carregarDetalhesNegociacaoParaSimulacao(tabela, recorte = null, onProgresso = null) {
   const capa = tabela && typeof tabela === 'object' ? tabela : null;
   const tabelaId = capa ? capa.id : tabela;
   if (!tabelaId) throw new Error('Negociação inválida para carregar detalhes.');
 
   const usarRecorte = recorte && typeof recorte === 'object';
   const [itens, taxasDestino] = await Promise.all([
-    usarRecorte ? listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte) : listarTodosItensTabelaNegociacao(tabelaId),
+    usarRecorte ? listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte, onProgresso) : listarTodosItensTabelaNegociacao(tabelaId),
     usarRecorte ? listarTaxasDestinoTabelaPorRecorte(tabelaId, recorte) : listarTodasTaxasDestinoTabela(tabelaId),
   ]);
 

@@ -4918,7 +4918,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
           88,
         );
 
-        const detalhadaRecorte = await carregarDetalhesNegociacaoParaSimulacao(negociacaoRealizadoAtual, recorteNegociacao);
+        const detalhadaRecorte = await carregarDetalhesNegociacaoParaSimulacao(
+          negociacaoRealizadoAtual,
+          recorteNegociacao,
+          (processados, total) => {
+            atualizarProcessamentoUi(
+              `Carregando tabela da negociacao... ${processados.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')} destino(s) do recorte`,
+              Math.min(91, 88 + Math.floor((processados / total) * 3)),
+            );
+          },
+        );
         negociacaoRealizadoAtual = detalhadaRecorte;
 
         const negociacoesConvertidas = converterTabelasNegociacaoParaSimulador([detalhadaRecorte], { canal: canalRealizado });
