@@ -427,6 +427,24 @@ test('cubagem do Tracking nao multiplica quando peso_cubado repete a cubagem da 
   assert.equal(resultado.totalPareceUnitarioMultiplicado, true);
 });
 
+test('cubagem do Tracking divide por itens antes de multiplicar pelas unidades', () => {
+  const resultado = resolverCubagemTracking({
+    cubagemUnitaria: 0.101,
+    cubagemTotal: 0,
+    pesoCubadoOriginal: 0.101,
+    volumes: 150,
+    quantidadeItens: 2,
+    pesoFisico: 970.5,
+    fatorCubagem: 220,
+  });
+
+  // Caso real: 0,101 / 2 itens x 150 unidades = 7,575 m3.
+  assert.ok(Math.abs(resultado.cubagemAplicada - 7.575) < 0.000001);
+  assert.ok(Math.abs(resultado.pesoCubado - 1666.5) < 0.000001);
+  assert.ok(Math.abs(resultado.pesoConsiderado - 1666.5) < 0.000001);
+  assert.equal(resultado.dividiuCubagemPorItens, true);
+});
+
 test('cubagem de CT-e com varias NFs soma unitaria x volumes de cada linha', () => {
   const linhas = [
     { cubagem_unitaria: 0.121, cubagem_total: 3.63, qtd_volumes: 30, peso: 224.639 },
@@ -517,4 +535,36 @@ test('tracking agregado nao multiplica cubagem repetida em NF com varios itens',
   assert.equal(agregado.peso, 663.12);
   assert.equal(agregado.valor_nf, 27653.92);
   assert.ok(Math.abs(agregado.cubagem_total - 5.04) < 0.000001);
+});
+
+test('tracking agregado normaliza cubagem unitaria por quantidade de itens da NF', () => {
+  const linhas = [
+    {
+      chave_nfe: 'NF456',
+      qtd_volumes: 100,
+      cubagem_unitaria: 0.101,
+      peso_cubado: 0.101,
+      peso: 970.5,
+      valor_nf: 32950,
+      raw: { quantidadeItens: 2 },
+    },
+    {
+      chave_nfe: 'NF456',
+      qtd_volumes: 50,
+      cubagem_unitaria: 0.101,
+      peso_cubado: 0.101,
+      peso: 970.5,
+      valor_nf: 32950,
+      raw: { quantidadeItens: 2 },
+    },
+  ];
+
+  const agregado = linhas.reduce((acc, linha) => somarTrackingAgregado(acc, linha), null);
+
+  assert.equal(agregado.qtd_volumes, 150);
+  assert.equal(agregado.quantidade_itens, 2);
+  assert.equal(agregado.peso, 970.5);
+  assert.equal(agregado.valor_nf, 32950);
+  assert.equal(agregado.cubagem_dividida_por_itens, true);
+  assert.ok(Math.abs(agregado.cubagem_total - 7.575) < 0.000001);
 });

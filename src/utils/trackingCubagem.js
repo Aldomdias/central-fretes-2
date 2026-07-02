@@ -8,6 +8,7 @@ export function resolverCubagemTracking({
   cubagemTotal = 0,
   pesoCubadoOriginal = 0,
   volumes = 0,
+  quantidadeItens = 0,
   pesoFisico = 0,
   fatorCubagem = 300,
 }) {
@@ -15,6 +16,7 @@ export function resolverCubagemTracking({
   const totalArmazenado = numero(cubagemTotal);
   const pesoCubadoFonte = numero(pesoCubadoOriginal);
   const qtdVolumes = numero(volumes);
+  const qtdItens = numero(quantidadeItens);
   const peso = numero(pesoFisico);
   const fator = numero(fatorCubagem) || 300;
 
@@ -22,7 +24,15 @@ export function resolverCubagemTracking({
   // cubagem total da NF/linha. So multiplicamos cubagem_unitaria por volumes
   // quando o total nao veio no arquivo/base.
   const porVolume = qtdVolumes > 0 ? cubagemLinha * qtdVolumes : cubagemLinha;
-  const cubagemCandidata = totalArmazenado > 0 ? totalArmazenado : porVolume;
+  const porItemPorVolume = qtdItens > 1 && qtdVolumes > 0 && cubagemLinha > 0
+    ? (cubagemLinha / qtdItens) * qtdVolumes
+    : 0;
+  const dividiuCubagemPorItens = porItemPorVolume > 0;
+  const cubagemCandidata = dividiuCubagemPorItens
+    ? porItemPorVolume
+    : totalArmazenado > 0
+      ? totalArmazenado
+      : porVolume;
 
   // Informativo: houve multiplicacao pelos volumes nesta linha.
   const totalPareceUnitarioMultiplicado =
@@ -32,7 +42,11 @@ export function resolverCubagemTracking({
     Math.abs(pesoCubadoFonte - cubagemLinha) < 0.000001 &&
     Math.abs(totalArmazenado - porVolume) < 0.000001;
 
-  const cubagemCandidataFinal = totalPareceUnitarioMultiplicado ? pesoCubadoFonte : cubagemCandidata;
+  const cubagemCandidataFinal = dividiuCubagemPorItens
+    ? cubagemCandidata
+    : totalPareceUnitarioMultiplicado
+      ? pesoCubadoFonte
+      : cubagemCandidata;
   const totalFoiMultiplicadoPorVolumes = !totalPareceUnitarioMultiplicado && qtdVolumes > 1 && cubagemLinha > 0 && porVolume >= totalArmazenado;
 
   const pesoCubado = cubagemCandidataFinal * fator;
@@ -43,6 +57,8 @@ export function resolverCubagemTracking({
     cubagemTotalArmazenada: totalArmazenado,
     totalFoiMultiplicadoPorVolumes,
     totalPareceUnitarioMultiplicado,
+    dividiuCubagemPorItens,
+    quantidadeItensCubagem: qtdItens,
     pesoCubado,
     pesoConsiderado: Math.max(peso, pesoCubado),
   };
@@ -99,16 +115,41 @@ function valoresProximosCubagem(a, b, tolerancia = 0.000001) {
   return Math.abs(numero(a) - numero(b)) <= tolerancia;
 }
 
+function valorRawTracking(item = {}, chaves = []) {
+  const raw = item.raw && typeof item.raw === 'object' ? item.raw : {};
+  for (const chave of chaves) {
+    if (item[chave] !== undefined && item[chave] !== null && item[chave] !== '') return item[chave];
+    if (raw[chave] !== undefined && raw[chave] !== null && raw[chave] !== '') return raw[chave];
+  }
+  return 0;
+}
+
+function quantidadeItensTracking(item = {}) {
+  return numero(valorRawTracking(item, [
+    'quantidade_itens',
+    'quantidadeItens',
+    'qtd_itens',
+    'qtdItens',
+    'itens',
+    'total_itens',
+    'Quantidade de itens',
+    'QUANTIDADE DE ITENS',
+    'QTD ITENS',
+  ]));
+}
+
 export function criarTrackingAgregado(item = {}, origem = '') {
   const origemVinculo = origem || item.origem_vinculo_tracking || 'raw';
   const qtdVolumes = numero(item.qtd_volumes ?? item.volumes ?? item.volume ?? 0);
   const cubagemUnitaria = numero(item.cubagem_unitaria ?? 0);
   const cubagemTotalDireta = numero(item.cubagem_total ?? item.cubagem ?? 0);
+  const quantidadeItens = quantidadeItensTracking(item);
   const cubagemResolvida = resolverCubagemTracking({
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
     pesoCubadoOriginal: numero(item.peso_cubado ?? item.pesoCubado ?? 0),
     volumes: qtdVolumes,
+    quantidadeItens,
     pesoFisico: numero(item.peso ?? item.peso_tracking ?? 0),
   });
   const cubagemTotal = cubagemResolvida.cubagemAplicada;
@@ -118,10 +159,12 @@ export function criarTrackingAgregado(item = {}, origem = '') {
     origem_vinculo_tracking: origemVinculo,
     linhas_tracking: Number(item.linhas_tracking || 1),
     qtd_volumes: qtdVolumes,
+    quantidade_itens: quantidadeItens,
     cubagem_unitaria: cubagemTotal,
     cubagem_total: cubagemTotal,
     cubagem_total_armazenada: cubagemTotalDireta,
     cubagem_corrigida: cubagemResolvida.totalFoiMultiplicadoPorVolumes,
+    cubagem_dividida_por_itens: cubagemResolvida.dividiuCubagemPorItens,
     peso: numero(item.peso ?? item.peso_tracking ?? 0),
     peso_declarado: numero(item.peso_declarado ?? 0),
     peso_cubado: cubagemResolvida.pesoCubado,
@@ -161,10 +204,12 @@ export function somarTrackingAgregado(atual, proximo) {
     ),
     linhas_tracking: numero(atual.linhas_tracking) + numero(item.linhas_tracking || 1),
     qtd_volumes: volumesRepetidos ? Math.max(numero(atual.qtd_volumes), numero(item.qtd_volumes)) : numero(atual.qtd_volumes) + numero(item.qtd_volumes),
+    quantidade_itens: Math.max(numero(atual.quantidade_itens), numero(item.quantidade_itens)),
     cubagem_unitaria: cubagemRepetida ? Math.max(numero(atual.cubagem_unitaria), numero(item.cubagem_unitaria)) : numero(atual.cubagem_unitaria) + numero(item.cubagem_unitaria),
     cubagem_total: cubagemRepetida ? Math.max(numero(atual.cubagem_total), numero(item.cubagem_total)) : numero(atual.cubagem_total) + numero(item.cubagem_total),
     cubagem_total_armazenada: cubagemRepetida ? Math.max(numero(atual.cubagem_total_armazenada), numero(item.cubagem_total_armazenada)) : numero(atual.cubagem_total_armazenada) + numero(item.cubagem_total_armazenada),
     cubagem_corrigida: Boolean(atual.cubagem_corrigida || item.cubagem_corrigida),
+    cubagem_dividida_por_itens: Boolean(atual.cubagem_dividida_por_itens || item.cubagem_dividida_por_itens),
     peso: pesoRepetido ? Math.max(numero(atual.peso), numero(item.peso)) : numero(atual.peso) + numero(item.peso),
     peso_declarado: numero(atual.peso_declarado) || numero(item.peso_declarado),
     peso_cubado: cubagemRepetida ? Math.max(numero(atual.peso_cubado), numero(item.peso_cubado)) : numero(atual.peso_cubado) + numero(item.peso_cubado),
@@ -180,6 +225,7 @@ export function agregarCubagemLinhasTracking(linhas = [], fatorCubagem = 300) {
       cubagemTotal: linha.cubagem_total ?? linha.cubagemTotal,
       pesoCubadoOriginal: linha.peso_cubado ?? linha.pesoCubado,
       volumes: linha.qtd_volumes ?? linha.volumes,
+      quantidadeItens: linha.quantidade_itens ?? linha.quantidadeItens,
       pesoFisico: linha.peso ?? linha.pesoFisico,
       fatorCubagem,
     });

@@ -1123,7 +1123,7 @@ async function buscarTrackingParaRealizado(rows = []) {
       if (!parte.length) continue;
       const { data, error } = await supabase
         .from('tracking_rows')
-        .select('chave_nfe,chave_cte,cte_numero,nota_fiscal,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes,data_transporte,data_entrega,previsao_transportadora')
+        .select('chave_nfe,chave_cte,cte_numero,nota_fiscal,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes,data_transporte,data_entrega,previsao_transportadora,raw')
         .in(coluna, parte);
       if (error) throw error;
 
