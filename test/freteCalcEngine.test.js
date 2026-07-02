@@ -568,3 +568,24 @@ test('tracking agregado normaliza cubagem unitaria por quantidade de itens da NF
   assert.equal(agregado.cubagem_dividida_por_itens, true);
   assert.ok(Math.abs(agregado.cubagem_total - 7.575) < 0.000001);
 });
+
+test('tracking agregado le total de unidades e quantidade de itens do raw importado', () => {
+  const agregado = somarTrackingAgregado(null, {
+    chave_nfe: 'NF789',
+    cubagem_unitaria: '0,101',
+    peso_cubado: '0,101',
+    peso: '970,500',
+    valor_nf: '32.950,00',
+    raw: {
+      'Quantidade de itens': '2',
+      'Total de unidades': '150',
+    },
+  });
+
+  assert.equal(agregado.qtd_volumes, 150);
+  assert.equal(agregado.quantidade_itens, 2);
+  assert.equal(agregado.peso, 970.5);
+  assert.equal(agregado.valor_nf, 32950);
+  assert.equal(agregado.cubagem_dividida_por_itens, true);
+  assert.ok(Math.abs(agregado.cubagem_total - 7.575) < 0.000001);
+});

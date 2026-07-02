@@ -1,4 +1,14 @@
 function numero(value) {
+  if (typeof value === 'string') {
+    const texto = value.trim();
+    if (!texto) return 0;
+    const normalizado = texto.includes(',')
+      ? texto.replace(/\./g, '').replace(',', '.')
+      : texto;
+    const parsedString = Number(normalizado);
+    return Number.isFinite(parsedString) ? parsedString : 0;
+  }
+
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
 }
@@ -115,11 +125,38 @@ function valoresProximosCubagem(a, b, tolerancia = 0.000001) {
   return Math.abs(numero(a) - numero(b)) <= tolerancia;
 }
 
+function normalizarChaveRawTracking(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function rawTrackingObjeto(raw) {
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 function valorRawTracking(item = {}, chaves = []) {
-  const raw = item.raw && typeof item.raw === 'object' ? item.raw : {};
+  const raw = rawTrackingObjeto(item.raw);
+  const rawNormalizado = Object.fromEntries(
+    Object.entries(raw).map(([chave, valor]) => [normalizarChaveRawTracking(chave), valor])
+  );
+
   for (const chave of chaves) {
     if (item[chave] !== undefined && item[chave] !== null && item[chave] !== '') return item[chave];
     if (raw[chave] !== undefined && raw[chave] !== null && raw[chave] !== '') return raw[chave];
+    const chaveNormalizada = normalizarChaveRawTracking(chave);
+    if (rawNormalizado[chaveNormalizada] !== undefined && rawNormalizado[chaveNormalizada] !== null && rawNormalizado[chaveNormalizada] !== '') {
+      return rawNormalizado[chaveNormalizada];
+    }
   }
   return 0;
 }
@@ -138,9 +175,25 @@ function quantidadeItensTracking(item = {}) {
   ]));
 }
 
+function volumesTracking(item = {}) {
+  return numero(valorRawTracking(item, [
+    'qtd_volumes',
+    'qtdVolumes',
+    'volumes',
+    'volume',
+    'totalUnidades',
+    'total_unidades',
+    'Total de unidades',
+    'TOTAL DE UNIDADES',
+    'Quantidade volumes',
+    'QUANTIDADE VOLUMES',
+    'QTDE VOLUMES',
+  ]));
+}
+
 export function criarTrackingAgregado(item = {}, origem = '') {
   const origemVinculo = origem || item.origem_vinculo_tracking || 'raw';
-  const qtdVolumes = numero(item.qtd_volumes ?? item.volumes ?? item.volume ?? 0);
+  const qtdVolumes = volumesTracking(item);
   const cubagemUnitaria = numero(item.cubagem_unitaria ?? 0);
   const cubagemTotalDireta = numero(item.cubagem_total ?? item.cubagem ?? 0);
   const quantidadeItens = quantidadeItensTracking(item);
