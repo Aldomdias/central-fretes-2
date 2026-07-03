@@ -15,6 +15,16 @@ const TOLERANCIA = 0.5; // R$ — redução abaixo disto é ruído
 
 const REGIAO_NOME = { N: 'NORTE', NE: 'NORDESTE', CO: 'CENTRO-OESTE', SE: 'SUDESTE', S: 'SUL' };
 const ORDEM_REGIAO = ['NORTE', 'NORDESTE', 'CENTRO-OESTE', 'SUDESTE', 'SUL', 'OUTROS'];
+// Regiões filtráveis já na busca (OUTROS não tem UF definida, não dá pra pré-filtrar).
+const REGIOES_FILTRAVEIS = ORDEM_REGIAO.filter((r) => r !== 'OUTROS');
+// UFs de cada região — usado pra filtrar direto no banco (mais rápido que trazer tudo e filtrar depois).
+const UFS_POR_REGIAO = Object.entries(REGIAO_POR_UF).reduce((acc, [uf, cod]) => {
+  const nome = REGIAO_NOME[cod];
+  if (!nome) return acc;
+  if (!acc[nome]) acc[nome] = [];
+  acc[nome].push(uf);
+  return acc;
+}, {});
 
 const METRICAS = [
   { id: 'rs', label: 'R$ total' },
@@ -257,7 +267,7 @@ function mensagemAmigavelErro(error) {
   return message || 'Nao foi possivel concluir a analise.';
 }
 
-async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 4000, onProgress }) {
+async function carregarCtes({ competencia, dataInicio, dataFim, canal, ufsOrigem, limite = 4000, onProgress }) {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   const supabase = getSupabaseClient();
   const teto = Math.max(100, Math.min(Number(limite) || 4000, LIMITE_MAX_CT));
@@ -273,6 +283,8 @@ async function carregarCtes({ competencia, dataInicio, dataFim, canal, limite = 
       q = q.eq('competencia', competencia);
     }
     if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
+    // Filtra UFs no banco (rápido e seguro — diferente de ilike em cidade, que estoura timeout).
+    if (ufsOrigem && ufsOrigem.length) q = q.in('uf_origem', ufsOrigem);
     const { data, error } = await q;
     if (error) throw new Error(`Erro ao carregar CT-es: ${error.message}`);
     const lote = data || [];
@@ -546,6 +558,7 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
     <!-- Filtros -->
     <div style="font-size:10px;color:${corCinza};margin-bottom:16px">
       Período: <b>${periodoDesc}</b> &nbsp;·&nbsp; Canal: <b>${canal || 'Todos'}</b> &nbsp;·&nbsp; Cenário: <b>${cenarioDesc}</b> &nbsp;·&nbsp; Visão: <b>${visualizacaoLabel(visualizacao)}</b>
+      ${resultado.regiaoOrigemPre?.length ? ` &nbsp;·&nbsp; Região origem (busca): <b>${resultado.regiaoOrigemPre.join(', ')}</b>` : ''}
       ${filtros.regioes.length ? ` &nbsp;·&nbsp; Regiões origem: <b>${filtros.regioes.join(', ')}</b>` : ''}
       ${filtros.regioesDestino.length ? ` &nbsp;·&nbsp; Regiões destino: <b>${filtros.regioesDestino.join(', ')}</b>` : ''}
       ${filtros.ufsOrigem.length ? ` &nbsp;·&nbsp; UFs origem: <b>${filtros.ufsOrigem.join(', ')}</b>` : ''}
@@ -693,6 +706,7 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
     ['Canal', canal || 'Todos'],
     ['Cenário', cenarioDesc],
     ['Visão', visualizacaoLabel(visualizacao)],
+    ['Região origem (busca)', resultado.regiaoOrigemPre?.join(', ') || 'Todas'],
     ['Filtro regiões origem', filtros.regioes.join(', ') || 'Todas'],
     ['Filtro regiões destino', filtros.regioesDestino.join(', ') || 'Todas'],
     ['Filtro UFs origem', filtros.ufsOrigem.join(', ') || 'Todas'],
@@ -710,8 +724,8 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
   const wsResumo = XLSX.utils.aoa_to_sheet(resumo);
   wsResumo['!cols'] = [{ wch: 26 }, { wch: 30 }];
   // formato moeda/pct nas células de valor
-  [[11,1],[12,1],[13,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = 'R$ #,##0.00'; });
-  [[14,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = '0.0%'; });
+  [[12,1],[13,1],[14,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = 'R$ #,##0.00'; });
+  [[15,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = '0.0%'; });
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
@@ -806,6 +820,7 @@ export default function OportunidadeTransportadoraPage() {
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
   const [canal, setCanal] = useState('');
+  const [regiaoOrigemPre, setRegiaoOrigemPre] = useState([]); // pré-filtro aplicado na busca, antes de puxar os CT-es
   const [limiteInput, setLimiteInput] = useState('4000');
   const [refCompetencia, setRefCompetencia] = useState('2026-01'); // período de referência (ex: antes dos reajustes)
   const [mostrarSimulado, setMostrarSimulado] = useState(true);
@@ -850,6 +865,8 @@ export default function OportunidadeTransportadoraPage() {
       const mapasIbge = montarMapasIbge(municipios);
       const municipioPorCidade = montarMunicipioPorCidade(municipios);
 
+      const ufsOrigemPre = regiaoOrigemPre.length ? regiaoOrigemPre.flatMap((r) => UFS_POR_REGIAO[r] || []) : undefined;
+
       setProgresso('Carregando CT-es...');
       setProcessamentoUi((p) => ({ ...p, mensagem: 'Buscando CT-es realizados para o recorte selecionado...', percentual: 24 }));
       const ctes = await carregarCtes({
@@ -857,6 +874,7 @@ export default function OportunidadeTransportadoraPage() {
         dataInicio: dataInicio || undefined,
         dataFim: dataFim || undefined,
         canal: canal || undefined,
+        ufsOrigem: ufsOrigemPre,
         limite: Number(limiteInput) || 4000,
         onProgress: ({ carregados }) => {
           setProgresso(`Carregando CT-es... ${carregados}`);
@@ -966,7 +984,7 @@ export default function OportunidadeTransportadoraPage() {
       let refMap = new Map(); // "normTransp|originKey" -> { pagoTotal, nfTotal, ctes }
       if (refCompetencia) {
         setProcessamentoUi((p) => ({ ...p, mensagem: `Carregando período de referência (${refCompetencia})...`, percentual: 97 }));
-        const ctesRef = await carregarCtes({ competencia: refCompetencia, canal: canal || undefined, limite: 8000 }).catch(() => []);
+        const ctesRef = await carregarCtes({ competencia: refCompetencia, canal: canal || undefined, ufsOrigem: ufsOrigemPre, limite: 8000 }).catch(() => []);
         for (const c of ctesRef) {
           const transpNorm = norm(c.transportadora || c.nome_transportadora || '');
           const cidadeOrigem = c.cidade_origem || c.origem || '';
@@ -999,7 +1017,7 @@ export default function OportunidadeTransportadoraPage() {
       // Set lazy: checagem real usa mesmaTransportadora no render, aqui guardamos os nomes brutos
       const reajustesSet = reajustesNomes;
 
-      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes, reajustesSet, reajustesMap, refMap, refCompetencia });
+      setBruto({ casos, carriersByOrigin, carriersByRoute, totalCtes: ctes.length, diagTotal, baseNomes, reajustesSet, reajustesMap, refMap, refCompetencia, regiaoOrigemPre });
       setStatus('concluido'); setProgresso(''); setProcessamentoUi({ titulo: '', mensagem: '', percentual: 0 });
     } catch (e) {
       console.error('[OportunidadeTransportadora]', e);
@@ -1099,6 +1117,7 @@ export default function OportunidadeTransportadoraPage() {
       reajustesSet: bruto.reajustesSet || new Set(),
       reajustesMap: bruto.reajustesMap || new Map(),
       refCompetencia: bruto.refCompetencia || '',
+      regiaoOrigemPre: bruto.regiaoOrigemPre || [],
     };
   }, [bruto, filtros, excluidasSet, candidateMode, scenarioMode, metrica]);
 
@@ -1143,6 +1162,10 @@ export default function OportunidadeTransportadoraPage() {
               <option value="REVERSA">REVERSA</option>
             </select>
           </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span style={{ fontWeight: 700, color: '#1e293b', fontSize: '0.85rem' }}>Região origem <span style={{ fontWeight: 400, color: '#94a3b8', fontSize: '0.72rem' }}>(filtra na busca, agiliza)</span></span>
+            <MultiFiltro label="Região origem" opcoes={REGIOES_FILTRAVEIS} selecionados={regiaoOrigemPre} onChange={setRegiaoOrigemPre} />
+          </div>
         </div>
         <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
           <label>Limite de CT-es <span style={{ fontWeight: 400, color: '#94a3b8', fontSize: '0.72rem' }}>(só sem mês/período)</span>
@@ -1352,6 +1375,11 @@ export default function OportunidadeTransportadoraPage() {
                                   {temReajuste && (
                                     <span title={tooltipReaj || 'Reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help', whiteSpace: 'nowrap' }}>
                                       ⚠ REAJUSTE{maxReaj != null ? ` +${(maxReaj * 100).toFixed(1)}%` : ''}
+                                    </span>
+                                  )}
+                                  {!porCidade && cg.reducaoRs > TOLERANCIA && (
+                                    <span title="Frete atual que pode migrar para uma transportadora concorrente se a tarifa não cair — use como argumento de negociação" style={{ marginLeft: 6, background: '#fee2e2', color: '#9b1111', border: '1px solid #fca5a5', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help', whiteSpace: 'nowrap' }}>
+                                      💰 {fmt(cg.reducaoRs)} p/ concorrência ({pct(cgReducaoPct)})
                                     </span>
                                   )}
                                 </td>
