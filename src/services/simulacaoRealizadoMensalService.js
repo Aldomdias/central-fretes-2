@@ -138,7 +138,7 @@ export async function salvarParcialSimulacaoRealizadoMensal({ id = '', resultado
   return data;
 }
 
-export async function listarSimulacoesRealizadoMensal({ competencia = '', transportadora = '', limite = 20 } = {}) {
+export async function listarSimulacoesRealizadoMensal({ competencia = '', transportadora = '', canal = '', limite = 20 } = {}) {
   const supabase = ensureSupabase();
   let query = supabase
     .from(TABELA)
@@ -148,6 +148,7 @@ export async function listarSimulacoesRealizadoMensal({ competencia = '', transp
 
   if (competencia) query = query.eq('competencia', competencia);
   if (transportadora) query = query.ilike('transportadora', `%${transportadora}%`);
+  if (canal) query = query.eq('canal', canal);
 
   const { data, error } = await query;
   if (error) throw new Error(`Erro ao listar analises mensais. Detalhe: ${error.message}`);

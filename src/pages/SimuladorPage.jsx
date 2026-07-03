@@ -5814,16 +5814,47 @@ export default function SimuladorPage({ transportadoras = [] }) {
     return /^\d{4}-\d{2}$/.test(inicio) ? inicio : (/^\d{4}-\d{2}$/.test(fim) ? fim : '');
   }, [inicioRealizado, fimRealizado]);
 
+  const analisesMensaisRealizadoVisiveis = useMemo(() => {
+    const competenciaAtual = competenciaAnaliseMensalRealizado;
+    const transportadoraAtual = transportadoraRealizado;
+    const canalAtual = canalRealizado;
+
+    return (analisesMensaisRealizado || []).filter((item) => {
+      if (competenciaAtual && item.competencia && item.competencia !== competenciaAtual) return false;
+      if (canalAtual && item.canal && String(item.canal).toUpperCase() !== String(canalAtual).toUpperCase()) return false;
+      if (transportadoraAtual) {
+        const transportadoraItem = item.transportadora || item.nome || '';
+        const itemNorm = normalizarTransportadoraSimulador(transportadoraItem);
+        const atualNorm = normalizarTransportadoraSimulador(transportadoraAtual);
+        if (itemNorm && atualNorm && itemNorm !== atualNorm && !transportadoraCompativelSimulador(transportadoraItem, transportadoraAtual)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [analisesMensaisRealizado, canalRealizado, competenciaAnaliseMensalRealizado, transportadoraRealizado]);
+
+  useEffect(() => {
+    if (!analiseMensalRealizadoId) return;
+    if (!analisesMensaisRealizadoVisiveis.some((item) => item.id === analiseMensalRealizadoId)) {
+      setAnaliseMensalRealizadoId('');
+    }
+  }, [analiseMensalRealizadoId, analisesMensaisRealizadoVisiveis]);
+
   const atualizarAnalisesMensaisRealizado = async () => {
     setCarregandoAnaliseMensalRealizado(true);
     setFeedbackAnaliseMensalRealizado('');
     try {
       const lista = await listarSimulacoesRealizadoMensal({
+        competencia: competenciaAnaliseMensalRealizado,
+        transportadora: transportadoraRealizado,
+        canal: canalRealizado,
         limite: 50,
       });
       setAnalisesMensaisRealizado(lista);
-      if (lista.length && !analiseMensalRealizadoId) setAnaliseMensalRealizadoId(lista[0].id);
-      setFeedbackAnaliseMensalRealizado(`${lista.length.toLocaleString('pt-BR')} analise(s) salva(s) recente(s) encontrada(s).`);
+      setAnaliseMensalRealizadoId((atual) => (lista.some((item) => item.id === atual) ? atual : (lista[0]?.id || '')));
+      const escopo = transportadoraRealizado ? ` para ${transportadoraRealizado}` : '';
+      setFeedbackAnaliseMensalRealizado(`${lista.length.toLocaleString('pt-BR')} analise(s) salva(s) encontrada(s)${escopo}.`);
     } catch (error) {
       setErroSimulacao(error.message || 'Erro ao listar analises salvas.');
     } finally {
@@ -5898,7 +5929,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
-    const selecionada = analisesMensaisRealizado.find((item) => item.id === analiseMensalRealizadoId);
+    const selecionada = analisesMensaisRealizadoVisiveis.find((item) => item.id === analiseMensalRealizadoId);
     const label = selecionada
       ? `${selecionada.periodo_inicio || 'sem inicio'} a ${selecionada.periodo_fim || 'sem fim'} - ${selecionada.transportadora || 'transportadora'}`
       : analiseMensalRealizadoId;
@@ -5926,13 +5957,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
-    const referencia = analisesMensaisRealizado.find((item) => item.id === analiseMensalRealizadoId);
+    const referencia = analisesMensaisRealizadoVisiveis.find((item) => item.id === analiseMensalRealizadoId);
     if (!referencia) {
       setErroSimulacao('Atualize a lista e selecione uma analise salva para unificar.');
       return;
     }
 
-    const mesmasParcelas = analisesMensaisRealizado.filter((item) => item.competencia === referencia.competencia
+    const mesmasParcelas = analisesMensaisRealizadoVisiveis.filter((item) => item.competencia === referencia.competencia
       && item.transportadora === referencia.transportadora
       && (item.canal || '') === (referencia.canal || '')
       && (item.origem || '') === (referencia.origem || '')
@@ -7737,7 +7768,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 Resultado salvo
                 <select value={analiseMensalRealizadoId} onChange={(event) => setAnaliseMensalRealizadoId(event.target.value)}>
                   <option value="">Selecione...</option>
-                  {analisesMensaisRealizado.map((item) => (
+                  {analisesMensaisRealizadoVisiveis.map((item) => (
                     <option key={item.id} value={item.id}>
                       {(item.competencia || 'sem mes')} - {item.periodo_inicio || 'sem inicio'} a {item.periodo_fim || 'sem fim'} - {item.transportadora || 'transportadora'} - {item.status || 'CONCLUIDA'} {item.total_parcelas > 1 ? `(${item.parcelas_concluidas}/${item.total_parcelas})` : ''} - {(item.ctes_analisados || 0).toLocaleString('pt-BR')} CT-es - {formatMoney(item.saving || 0)}
                     </option>
@@ -7785,6 +7816,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
               </button>
             </div>
             {feedbackAnaliseMensalRealizado ? <small style={{ color: '#475569' }}>{feedbackAnaliseMensalRealizado}</small> : null}
+            {!carregandoAnaliseMensalRealizado && analisesMensaisRealizado.length > 0 && analisesMensaisRealizadoVisiveis.length === 0 ? (
+              <small style={{ color: '#92400e' }}>
+                Nenhuma analise salva encontrada para a negociacao selecionada.
+              </small>
+            ) : null}
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
