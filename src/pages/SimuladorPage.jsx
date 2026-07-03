@@ -19,6 +19,15 @@ import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurar
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import {
+  carregarSimulacaoRealizadoMensal,
+  carregarSimulacoesRealizadoMensalPorIds,
+  excluirSimulacaoRealizadoMensal,
+  excluirSimulacoesRealizadoMensal,
+  listarSimulacoesRealizadoMensal,
+  salvarParcialSimulacaoRealizadoMensal,
+  salvarSimulacaoRealizadoMensal,
+} from '../services/simulacaoRealizadoMensalService';
 import { normalizarCidadeIbge, compactarCidadeIbge, resolverIbgeComRegras } from '../utils/ibgeCidadeMatch';
 import {
   buscarTabelasNegociacaoParaSimulacao,
@@ -338,6 +347,8 @@ function montarJanelasDataRealizado(inicio, fim) {
 
 const DIAS_POR_PARCELA_SIMULACAO = 5;
 const CHAVE_STORAGE_PARCELAS_SIMULACAO = 'cf2:simRealizadoParcelas:v1';
+const LIMITE_AUTO_BLOCOS_SIMULACAO = 5000;
+const LINHAS_POR_BLOCO_SIMULACAO = 1200;
 
 // Janelas de N dias (ascendente) para o modo "dividir simulação". Quando o
 // período não vem dos filtros, deriva do min/max de dataEmissao das linhas.
@@ -372,6 +383,20 @@ function filtrarRowsPorJanelaRealizado(rows = [], janela = {}) {
     if (!dataIso) return Boolean(janela.primeira);
     return dataIso >= janela.inicio && dataIso <= janela.fim;
   });
+}
+
+function montarBlocosQuantidadeRealizado(rows = [], tamanho = LINHAS_POR_BLOCO_SIMULACAO) {
+  const blocos = [];
+  const lista = rows || [];
+  for (let inicio = 0; inicio < lista.length; inicio += tamanho) {
+    blocos.push({
+      indice: blocos.length,
+      inicio,
+      fim: Math.min(inicio + tamanho, lista.length),
+      rows: lista.slice(inicio, inicio + tamanho),
+    });
+  }
+  return blocos;
 }
 
 function salvarCheckpointParcelasSimulacao(dados) {
@@ -2885,6 +2910,89 @@ function VeiculoOcupacaoCard({ cubagemDia = 0, pesoDia = 0, titulo = 'Veículo s
   );
 }
 
+const CAMPOS_SOMA_RESULTADO_SALVO = [
+  'ctesAnalisados', 'ctesSimulados', 'ctesComTabelaSelecionada', 'ctesGanhariaSelecionada',
+  'ctesPerdidosSelecionada', 'ctesSemTabelaSelecionada', 'ctesSemTabelaGeral', 'freteRealizado',
+  'freteRealizadoComTabelaSelecionada', 'freteSelecionada', 'freteVencedor', 'valorNF',
+  'valorNFComTabelaSelecionada', 'peso', 'volumes', 'cubagemTotal', 'linhasComTracking',
+  'savingSelecionadaVsReal', 'savingTabelaSelecionadaVsRealBruto', 'savingVencedorVsReal',
+  'freteRealizadoGanhariaSelecionada', 'freteSelecionadaGanhadora', 'valorNFGanhariaSelecionada',
+  'diferencaSelecionadaVsVencedor', 'ctesCapturadosDeOutras', 'freteCapturadoRealizado',
+  'freteCapturadoTabela', 'valorNFCapturado', 'pesoCapturado', 'volumesCapturados',
+];
+
+function numeroConsolidacaoRealizado(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function mergePorChaveConsolidacao(lista = [], chaveFn = () => '', limite = 300) {
+  const map = new Map();
+  (lista || []).forEach((item = {}) => {
+    const chave = chaveFn(item) || JSON.stringify(item).slice(0, 120);
+    const atual = map.get(chave) || { ...item };
+    Object.entries(item).forEach(([campo, valor]) => {
+      if (typeof valor === 'number') atual[campo] = numeroConsolidacaoRealizado(atual[campo]) + valor;
+      else if (atual[campo] === undefined || atual[campo] === null || atual[campo] === '') atual[campo] = valor;
+    });
+    map.set(chave, atual);
+  });
+  return [...map.values()].slice(0, limite);
+}
+
+function consolidarResultadosRealizadoSalvos(analises = []) {
+  const ordenadas = [...(analises || [])].sort((a, b) => String(a.periodo_inicio || '').localeCompare(String(b.periodo_inicio || '')));
+  const resultados = ordenadas.map((item) => item.resultado || {}).filter(Boolean);
+  if (!resultados.length) throw new Error('Nenhum resultado salvo para unificar.');
+
+  const base = { ...resultados[0] };
+  CAMPOS_SOMA_RESULTADO_SALVO.forEach((campo) => {
+    base[campo] = resultados.reduce((acc, item) => acc + numeroConsolidacaoRealizado(item[campo]), 0);
+  });
+
+  const inicio = ordenadas.map((item) => item.periodo_inicio).filter(Boolean).sort()[0] || base.filtros?.inicio || '';
+  const fim = ordenadas.map((item) => item.periodo_fim).filter(Boolean).sort().slice(-1)[0] || base.filtros?.fim || '';
+  base.dias = periodoRealizadoDias([], inicio, fim);
+  base.meses = periodoRealizadoMeses([], inicio, fim);
+  base.filtros = {
+    ...(base.filtros || {}),
+    inicio,
+    fim,
+    competencia: ordenadas[0]?.competencia || base.filtros?.competencia || '',
+    consolidadoDeParcelas: ordenadas.length,
+    parcelasIds: ordenadas.map((item) => item.id),
+  };
+
+  base.aderenciaSelecionada = base.ctesComTabelaSelecionada ? (base.ctesGanhariaSelecionada / base.ctesComTabelaSelecionada) * 100 : 0;
+  base.faturamentoSelecionadaMes = base.meses ? base.freteSelecionada / base.meses : base.freteSelecionada;
+  base.faturamentoSelecionadaAno = base.faturamentoSelecionadaMes * 12;
+  base.faturamentoSelecionadaGanhadoraMes = base.meses ? base.freteSelecionadaGanhadora / base.meses : base.freteSelecionadaGanhadora;
+  base.faturamentoSelecionadaGanhadoraAno = base.faturamentoSelecionadaGanhadoraMes * 12;
+  base.savingSelecionadaVsRealMes = base.meses ? base.savingSelecionadaVsReal / base.meses : base.savingSelecionadaVsReal;
+  base.savingSelecionadaVsRealAno = base.savingSelecionadaVsRealMes * 12;
+  base.percentualFreteRealizado = base.valorNF ? (base.freteRealizado / base.valorNF) * 100 : 0;
+  base.percentualFreteRealizadoComTabela = base.valorNFComTabelaSelecionada ? (base.freteRealizadoComTabelaSelecionada / base.valorNFComTabelaSelecionada) * 100 : 0;
+  base.percentualFreteSelecionadaComTabela = base.valorNFComTabelaSelecionada ? (base.freteSelecionada / base.valorNFComTabelaSelecionada) * 100 : 0;
+  base.cargasDia = base.dias ? base.ctesAnalisados / base.dias : 0;
+  base.volumesDia = base.dias ? base.volumes / base.dias : 0;
+  base.freteRealizadoMes = base.meses ? base.freteRealizado / base.meses : base.freteRealizado;
+  base.freteRealizadoAno = base.freteRealizadoMes * 12;
+
+  base.rotas = mergePorChaveConsolidacao(resultados.flatMap((item) => item.rotas || []), (item) => [item.origem, item.ufOrigem, item.destino, item.ufDestino, item.tipoVeiculo].join('|'), 500)
+    .sort((a, b) => numeroConsolidacaoRealizado(b.savingSelecionada) - numeroConsolidacaoRealizado(a.savingSelecionada) || numeroConsolidacaoRealizado(b.ctes) - numeroConsolidacaoRealizado(a.ctes));
+  base.porTransportadoraReal = mergePorChaveConsolidacao(resultados.flatMap((item) => item.porTransportadoraReal || []), (item) => item.transportadora, 300)
+    .sort((a, b) => numeroConsolidacaoRealizado(b.frete) - numeroConsolidacaoRealizado(a.frete));
+  base.impactoTransportadoras = mergePorChaveConsolidacao(resultados.flatMap((item) => item.impactoTransportadoras || []), (item) => item.transportadora, 300)
+    .sort((a, b) => numeroConsolidacaoRealizado(b.freteCedidoSelecionada) - numeroConsolidacaoRealizado(a.freteCedidoSelecionada));
+  base.ctesDetalhes = resultados.flatMap((item) => item.ctesDetalhes || []).slice(0, MAX_CTES_DETALHES_REALIZADO);
+  base.ctesDetalhesTotal = base.ctesAnalisados;
+  base.ctesDetalhesLimitados = base.ctesAnalisados > base.ctesDetalhes.length;
+  base.ctesDetalhesLimite = MAX_CTES_DETALHES_REALIZADO;
+  base.laudo = gerarLaudoTextoRealizado(base, base.filtros?.transportadora || '');
+
+  return base;
+}
+
 // Campos escalares acumulados durante a simulação do realizado. A lista é usada
 // para criar/transportar o estado entre parcelas (modo "dividir simulação").
 const CAMPOS_ESCALARES_SIMULACAO_REALIZADO = [
@@ -2970,7 +3078,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
 
 // Processa um lote de linhas acumulando no estado. Pode ser chamada várias vezes
 // (uma por parcela) — o corpo do loop é o mesmo da simulação de passada única.
-async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino }) {
+async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino, onProgress }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
   const { rotasMap, transportadorasMap, ctesDetalhes, diagnostico } = estado;
   let {
@@ -2991,6 +3099,12 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     const row = linhasParaSimular[indiceLinha];
     if (indiceLinha > 0 && indiceLinha % CHUNK_SIMULACAO_REALIZADO === 0) {
       // Cede o main thread periodicamente para a UI (barra de progresso) não travar em bases grandes.
+      onProgress?.({
+        processados: indiceLinha,
+        total: linhasParaSimular.length,
+        ctesSimulados,
+        ctesSemTabelaGeral,
+      });
       await sleep(0);
     }
     ctesAnalisados += 1;
@@ -3250,6 +3364,13 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     };
     adicionarDetalheRealizadoAmostra(ctesDetalhes, detalheCteRealizado);
   }
+
+  onProgress?.({
+    processados: linhasParaSimular.length,
+    total: linhasParaSimular.length,
+    ctesSimulados,
+    ctesSemTabelaGeral,
+  });
 
   Object.assign(estado, {
     ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
@@ -3679,6 +3800,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [fimRealizado, setFimRealizado] = useState('');
   const [limiteRealizado, setLimiteRealizado] = useState(200000);
   const [resultadoRealizado, setResultadoRealizado] = useState(null);
+  const [analisesMensaisRealizado, setAnalisesMensaisRealizado] = useState([]);
+  const [analiseMensalRealizadoId, setAnaliseMensalRealizadoId] = useState('');
+  const [carregandoAnaliseMensalRealizado, setCarregandoAnaliseMensalRealizado] = useState(false);
+  const [salvandoAnaliseMensalRealizado, setSalvandoAnaliseMensalRealizado] = useState(false);
+  const [feedbackAnaliseMensalRealizado, setFeedbackAnaliseMensalRealizado] = useState('');
 
   // --- Fluxo em duas etapas: Buscar CT-es -> Simular ---
   // baseRealizadoCarregada guarda a base navegável (tipo BI) já buscada/enriquecida
@@ -5557,6 +5683,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
           estadoParcelas = criarEstadoSimulacaoRealizado({ rows: rowsFiltrados, filtros: paramsSimulacao.filtros });
         }
 
+        let analiseParceladaId = '';
+        const filtrosAnaliseParcelada = {
+          competencia: competenciaAnaliseMensalRealizado,
+          transportadora: ctx.transportadora || nomeTabelaSelecionada,
+          canal: ctx.canal,
+          origem: ctx.origem,
+          inicio: ctx.inicio,
+          fim: ctx.fim,
+        };
         const indicePorDestinoParcelas = buildDestinoIndex(baseParaSimulacao, mapaCidades);
         for (let j = janelaInicial; j < janelas.length; j += 1) {
           const janela = janelas[j];
@@ -5570,7 +5705,34 @@ export default function SimuladorPage({ transportadoras = [] }) {
             ...paramsSimulacao,
             rows: rowsJanela,
             indicePorDestino: indicePorDestinoParcelas,
+            onProgress: ({ processados, total }) => {
+              const totalJanela = Math.max(Number(total || rowsJanela.length), 1);
+              atualizarProcessamentoUi(
+                `Parcela ${j + 1}/${janelas.length}: ${Number(processados || 0).toLocaleString('pt-BR')}/${totalJanela.toLocaleString('pt-BR')} CT-es...`,
+                Math.min(97, 88 + Math.floor(((j + (Number(processados || 0) / totalJanela)) / janelas.length) * 9)),
+              );
+            },
           });
+          const resultadoParcial = finalizarSimulacaoRealizado(estadoParcelas, paramsSimulacao);
+          const salvaParcial = await salvarParcialSimulacaoRealizadoMensal({
+            id: analiseParceladaId,
+            resultado: {
+              ...resultadoParcial,
+              filtros: {
+                ...(resultadoParcial.filtros || {}),
+                ...filtrosAnaliseParcelada,
+                parcial: j + 1 < janelas.length,
+              },
+            },
+            filtros: filtrosAnaliseParcelada,
+            nome: `${competenciaAnaliseMensalRealizado || 'periodo'} - ${ctx.transportadora || nomeTabelaSelecionada} - parcelada`,
+            totalParcelas: janelas.length,
+            parcelasConcluidas: j + 1,
+            concluida: j + 1 >= janelas.length,
+          });
+          analiseParceladaId = salvaParcial.id;
+          setAnaliseMensalRealizadoId(salvaParcial.id);
+          setFeedbackAnaliseMensalRealizado(`Analise mensal salva: parcela ${j + 1}/${janelas.length} (${salvaParcial.status}).`);
           try {
             // Serializar pode falhar (cota do localStorage) em bases muito grandes.
             // Isso não deve derrubar a simulação — só perde a retomada pós-crash.
@@ -5646,6 +5808,188 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // Recarrega a negociação selecionada (e a malha oficial), sem precisar
   // fechar e reabrir o simulador. Mantém a base de CT-es já carregada e
   // atualiza o contexto usado pelo botão "Simular" para refletir a tabela revisada.
+  const competenciaAnaliseMensalRealizado = useMemo(() => {
+    const inicio = String(inicioRealizado || '').slice(0, 7);
+    const fim = String(fimRealizado || '').slice(0, 7);
+    return /^\d{4}-\d{2}$/.test(inicio) ? inicio : (/^\d{4}-\d{2}$/.test(fim) ? fim : '');
+  }, [inicioRealizado, fimRealizado]);
+
+  const atualizarAnalisesMensaisRealizado = async () => {
+    setCarregandoAnaliseMensalRealizado(true);
+    setFeedbackAnaliseMensalRealizado('');
+    try {
+      const lista = await listarSimulacoesRealizadoMensal({
+        limite: 50,
+      });
+      setAnalisesMensaisRealizado(lista);
+      if (lista.length && !analiseMensalRealizadoId) setAnaliseMensalRealizadoId(lista[0].id);
+      setFeedbackAnaliseMensalRealizado(`${lista.length.toLocaleString('pt-BR')} analise(s) salva(s) recente(s) encontrada(s).`);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao listar analises salvas.');
+    } finally {
+      setCarregandoAnaliseMensalRealizado(false);
+    }
+  };
+
+  const salvarAnaliseMensalRealizadoAtual = async () => {
+    if (!resultadoRealizado?.ctesAnalisados) {
+      setErroSimulacao('Gere uma simulacao antes de salvar a analise mensal.');
+      return;
+    }
+
+    setSalvandoAnaliseMensalRealizado(true);
+    setFeedbackAnaliseMensalRealizado('Salvando analise mensal...');
+    try {
+      const filtrosPersistencia = {
+        competencia: competenciaAnaliseMensalRealizado,
+        transportadora: resultadoRealizado.filtros?.transportadora || transportadoraRealizado,
+        canal: resultadoRealizado.filtros?.canal || canalRealizado,
+        origem: resultadoRealizado.filtros?.origem || origemRealizado,
+        inicio: resultadoRealizado.filtros?.inicio || inicioRealizado,
+        fim: resultadoRealizado.filtros?.fim || fimRealizado,
+      };
+      const salva = await salvarSimulacaoRealizadoMensal({
+        resultado: resultadoRealizado,
+        filtros: filtrosPersistencia,
+      });
+      setAnaliseMensalRealizadoId(salva.id);
+      setFeedbackAnaliseMensalRealizado(`Analise salva: ${salva.nome || salva.id}.`);
+      await atualizarAnalisesMensaisRealizado();
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao salvar analise mensal.');
+      setFeedbackAnaliseMensalRealizado('');
+    } finally {
+      setSalvandoAnaliseMensalRealizado(false);
+    }
+  };
+
+  const carregarAnaliseMensalRealizadoSelecionada = async () => {
+    if (!analiseMensalRealizadoId) {
+      setErroSimulacao('Selecione uma analise mensal salva.');
+      return;
+    }
+
+    setCarregandoAnaliseMensalRealizado(true);
+    setFeedbackAnaliseMensalRealizado('Carregando analise mensal salva...');
+    try {
+      const pacote = await carregarSimulacaoRealizadoMensal(analiseMensalRealizadoId);
+      setResultadoRealizado({
+        ...(pacote.resultado || {}),
+        origemResultado: 'analise_mensal_salva',
+        analiseMensalId: pacote.id,
+        analiseMensalNome: pacote.nome,
+        analiseMensalAtualizadaEm: pacote.updated_at,
+      });
+      setFiltroDetalhe('');
+      setPaginaDetalhe(0);
+      setLinhasExpandidas(new Set());
+      setFeedbackAnaliseMensalRealizado(`Analise carregada: ${pacote.nome || pacote.id}.`);
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao carregar analise mensal.');
+      setFeedbackAnaliseMensalRealizado('');
+    } finally {
+      setCarregandoAnaliseMensalRealizado(false);
+    }
+  };
+
+  const excluirAnaliseMensalRealizadoSelecionada = async () => {
+    if (!analiseMensalRealizadoId) {
+      setErroSimulacao('Selecione uma analise mensal salva para excluir.');
+      return;
+    }
+
+    const selecionada = analisesMensaisRealizado.find((item) => item.id === analiseMensalRealizadoId);
+    const label = selecionada
+      ? `${selecionada.periodo_inicio || 'sem inicio'} a ${selecionada.periodo_fim || 'sem fim'} - ${selecionada.transportadora || 'transportadora'}`
+      : analiseMensalRealizadoId;
+    const confirmou = window.confirm(`Excluir esta analise salva do Supabase?\n\n${label}`);
+    if (!confirmou) return;
+
+    setCarregandoAnaliseMensalRealizado(true);
+    setFeedbackAnaliseMensalRealizado('Excluindo analise salva...');
+    try {
+      await excluirSimulacaoRealizadoMensal(analiseMensalRealizadoId);
+      setAnaliseMensalRealizadoId('');
+      setFeedbackAnaliseMensalRealizado('Analise salva excluida.');
+      await atualizarAnalisesMensaisRealizado();
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao excluir analise mensal.');
+      setFeedbackAnaliseMensalRealizado('');
+    } finally {
+      setCarregandoAnaliseMensalRealizado(false);
+    }
+  };
+
+  const unificarAnalisesMensaisRealizado = async () => {
+    if (!analiseMensalRealizadoId) {
+      setErroSimulacao('Selecione uma das parcelas salvas para unificar.');
+      return;
+    }
+
+    const referencia = analisesMensaisRealizado.find((item) => item.id === analiseMensalRealizadoId);
+    if (!referencia) {
+      setErroSimulacao('Atualize a lista e selecione uma analise salva para unificar.');
+      return;
+    }
+
+    const mesmasParcelas = analisesMensaisRealizado.filter((item) => item.competencia === referencia.competencia
+      && item.transportadora === referencia.transportadora
+      && (item.canal || '') === (referencia.canal || '')
+      && (item.origem || '') === (referencia.origem || '')
+      && item.status === 'CONCLUIDA');
+
+    if (mesmasParcelas.length < 2) {
+      setErroSimulacao('Encontrei apenas uma analise concluida com o mesmo mes/transportadora/canal/origem. Salve as demais parcelas antes de unificar.');
+      return;
+    }
+
+    const confirmou = window.confirm(`Unificar ${mesmasParcelas.length} analise(s) salvas de ${referencia.competencia} / ${referencia.transportadora}?\n\nDepois de criar a consolidada, posso apagar as parcelas usadas.`);
+    if (!confirmou) return;
+
+    setCarregandoAnaliseMensalRealizado(true);
+    setFeedbackAnaliseMensalRealizado('Carregando parcelas salvas para unificar...');
+    try {
+      const completas = await carregarSimulacoesRealizadoMensalPorIds(mesmasParcelas.map((item) => item.id));
+      const consolidado = consolidarResultadosRealizadoSalvos(completas);
+      const inicio = completas.map((item) => item.periodo_inicio).filter(Boolean).sort()[0] || referencia.periodo_inicio;
+      const fim = completas.map((item) => item.periodo_fim).filter(Boolean).sort().slice(-1)[0] || referencia.periodo_fim;
+      const salva = await salvarSimulacaoRealizadoMensal({
+        resultado: consolidado,
+        filtros: {
+          competencia: referencia.competencia,
+          transportadora: referencia.transportadora,
+          canal: referencia.canal,
+          origem: referencia.origem,
+          inicio,
+          fim,
+        },
+        nome: `${inicio} a ${fim} - ${referencia.transportadora} - CONSOLIDADA`,
+      });
+
+      setResultadoRealizado({
+        ...consolidado,
+        origemResultado: 'analise_mensal_consolidada',
+        analiseMensalId: salva.id,
+        analiseMensalNome: salva.nome,
+      });
+      setAnaliseMensalRealizadoId(salva.id);
+      setFeedbackAnaliseMensalRealizado(`Analise consolidada salva com ${consolidado.ctesAnalisados.toLocaleString('pt-BR')} CT-es.`);
+
+      const apagar = window.confirm('Consolidada criada. Deseja apagar as parcelas usadas e deixar somente a consolidada?');
+      if (apagar) {
+        await excluirSimulacoesRealizadoMensal(mesmasParcelas.map((item) => item.id));
+        setFeedbackAnaliseMensalRealizado('Analise consolidada salva e parcelas usadas excluidas.');
+      }
+
+      await atualizarAnalisesMensaisRealizado();
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao unificar analises salvas.');
+      setFeedbackAnaliseMensalRealizado('');
+    } finally {
+      setCarregandoAnaliseMensalRealizado(false);
+    }
+  };
+
   const onAtualizarNegociacaoRealizado = async () => {
     if (!transportadoraRealizado) {
       setErroSimulacao('Selecione a transportadora/tabela antes de atualizar a negociação.');
@@ -7368,6 +7712,79 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <button className="sim-tab" type="button" onClick={() => setResultadoRealizado(null)}>
               Limpar resultado
             </button>
+          </div>
+
+          <div className="sim-alert" style={{ marginTop: 14, display: 'grid', gap: 10, background: '#f8fafc', border: '1px solid #cbd5e1' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div>
+                <strong>AnÃ¡lise mensal salva</strong>
+                <div style={{ color: '#64748b', fontSize: '0.82rem' }}>
+                  Use para abrir rÃ¡pido uma simulaÃ§Ã£o jÃ¡ processada. Para bases grandes, salve cada parcela com o perÃ­odo correto para consolidar depois sem se perder.
+                </div>
+              </div>
+              <button
+                className="sim-tab"
+                type="button"
+                onClick={atualizarAnalisesMensaisRealizado}
+                disabled={carregandoAnaliseMensalRealizado}
+              >
+                {carregandoAnaliseMensalRealizado ? 'Buscando...' : 'Atualizar lista'}
+              </button>
+            </div>
+
+            <div className="sim-form-grid" style={{ gridTemplateColumns: 'minmax(260px, 1fr) auto auto auto auto', alignItems: 'end' }}>
+              <label>
+                Resultado salvo
+                <select value={analiseMensalRealizadoId} onChange={(event) => setAnaliseMensalRealizadoId(event.target.value)}>
+                  <option value="">Selecione...</option>
+                  {analisesMensaisRealizado.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {(item.competencia || 'sem mes')} - {item.periodo_inicio || 'sem inicio'} a {item.periodo_fim || 'sem fim'} - {item.transportadora || 'transportadora'} - {item.status || 'CONCLUIDA'} {item.total_parcelas > 1 ? `(${item.parcelas_concluidas}/${item.total_parcelas})` : ''} - {(item.ctes_analisados || 0).toLocaleString('pt-BR')} CT-es - {formatMoney(item.saving || 0)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="primary"
+                type="button"
+                onClick={carregarAnaliseMensalRealizadoSelecionada}
+                disabled={carregandoAnaliseMensalRealizado || !analiseMensalRealizadoId}
+                style={{ background: '#0f766e' }}
+              >
+                {carregandoAnaliseMensalRealizado ? 'Carregando...' : 'Carregar salva'}
+              </button>
+              <button
+                className="sim-tab"
+                type="button"
+                onClick={excluirAnaliseMensalRealizadoSelecionada}
+                disabled={carregandoAnaliseMensalRealizado || !analiseMensalRealizadoId}
+                style={{ color: '#b91c1c', borderColor: '#fecaca', background: '#fff1f2' }}
+                title="Exclui do Supabase a analise salva selecionada"
+              >
+                Excluir salva
+              </button>
+              <button
+                className="primary"
+                type="button"
+                onClick={unificarAnalisesMensaisRealizado}
+                disabled={carregandoAnaliseMensalRealizado || !analiseMensalRealizadoId}
+                style={{ background: '#4338ca' }}
+                title="Unifica as analises salvas do mesmo mes, transportadora, canal e origem"
+              >
+                Unificar salvas
+              </button>
+              <button
+                className="primary"
+                type="button"
+                onClick={salvarAnaliseMensalRealizadoAtual}
+                disabled={salvandoAnaliseMensalRealizado || !resultadoRealizado?.ctesAnalisados}
+                style={{ background: '#7c3aed' }}
+                title={!resultadoRealizado?.ctesAnalisados ? 'Simule antes de salvar' : 'Salva o resultado atual para reabrir depois sem recalcular'}
+              >
+                {salvandoAnaliseMensalRealizado ? 'Salvando...' : 'Salvar resultado mensal'}
+              </button>
+            </div>
+            {feedbackAnaliseMensalRealizado ? <small style={{ color: '#475569' }}>{feedbackAnaliseMensalRealizado}</small> : null}
           </div>
 
           <div className="sim-alert info" style={{ marginTop: 14 }}>
