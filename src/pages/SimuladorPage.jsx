@@ -5557,26 +5557,35 @@ export default function SimuladorPage({ transportadoras = [] }) {
             rows: rowsJanela,
             indicePorDestino: indicePorDestinoParcelas,
           });
-          salvarCheckpointParcelasSimulacao({
-            chaveContexto,
-            totalJanelas: janelas.length,
-            janelasConcluidas: j + 1,
-            estadoJson: serializarEstadoSimulacaoRealizado(estadoParcelas),
-            atualizadoEm: new Date().toISOString(),
-          });
-          setParcelasSimulacaoInfo({ concluidas: j + 1, total: janelas.length, prontas: j + 1 >= janelas.length });
+          try {
+            // Serializar pode falhar (cota do localStorage) em bases muito grandes.
+            // Isso não deve derrubar a simulação — só perde a retomada pós-crash.
+            salvarCheckpointParcelasSimulacao({
+              chaveContexto,
+              totalJanelas: janelas.length,
+              janelasConcluidas: j + 1,
+              estadoJson: serializarEstadoSimulacaoRealizado(estadoParcelas),
+              atualizadoEm: new Date().toISOString(),
+            });
+          } catch (e) {
+            limparCheckpointParcelasSimulacao();
+          }
+          setParcelasSimulacaoInfo({ concluidas: j + 1, total: janelas.length, prontas: false });
         }
 
-        parcelasSimulacaoRef.current = {
-          estado: estadoParcelas,
-          params: paramsSimulacao,
-          aplicar: aplicarResultadoSimulacaoRealizado,
-          chaveContexto,
-        };
-        setParcelasSimulacaoInfo({ concluidas: janelas.length, total: janelas.length, prontas: true });
+        // Todas as parcelas processadas nesta mesma sessão: aplica o resultado
+        // direto, sem exigir um clique extra em "Unificar análise" (que existe
+        // só para retomar depois de fechar/recarregar a aba no meio do processo).
+        atualizarProcessamentoUi('Parcelas concluídas. Consolidando dossiê final...', 98);
+        await sleep(0);
+        const resultadoParcelas = finalizarSimulacaoRealizado(estadoParcelas, paramsSimulacao);
+        aplicarResultadoSimulacaoRealizado(resultadoParcelas);
+        limparCheckpointParcelasSimulacao();
+        parcelasSimulacaoRef.current = null;
+        setParcelasSimulacaoInfo(null);
         finalizarProcessamentoUi(
-          'Parcelas concluídas',
-          `${janelas.length} parcela(s) processadas. Clique em "Unificar análise" para gerar o dossiê.`,
+          'Simulação do realizado concluída',
+          `Dossiê gerado a partir de ${janelas.length} parcela(s).`,
           100,
         );
         return;
