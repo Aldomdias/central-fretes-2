@@ -299,7 +299,21 @@ function aplicarFiltrosRealizadoQuery(query, filtros) {
 
 function dataIsoValidaRealizado(value = '') {
   const texto = String(value || '').slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(texto) ? texto : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(texto)) return '';
+
+  // Datas de calendário inválidas (ex.: 2026-06-31, junho só tem 30 dias) passam
+  // no formato mas quebram a query no Postgres ("date/time field value out of
+  // range"), derrubando aquela janela de busca silenciosamente. Em vez de deixar
+  // o erro acontecer, ajusta pro último dia real do mês (a intenção do usuário
+  // ao digitar "31" é claramente "fim do mês").
+  const [anoTxt, mesTxt, diaTxt] = texto.split('-');
+  const ano = Number(anoTxt);
+  const mes = Number(mesTxt);
+  const dia = Number(diaTxt);
+  if (mes < 1 || mes > 12) return '';
+  const ultimoDiaDoMes = new Date(ano, mes, 0).getDate();
+  const diaAjustado = Math.min(Math.max(dia, 1), ultimoDiaDoMes);
+  return diaAjustado === dia ? texto : `${anoTxt}-${mesTxt}-${String(diaAjustado).padStart(2, '0')}`;
 }
 
 function adicionarDiasIsoRealizado(iso, dias) {
