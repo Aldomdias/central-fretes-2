@@ -34,10 +34,17 @@ const MODOS_CENARIO = [
 
 const FILTROS_PADRAO = {
   regioes: [],
+  regioesDestino: [],
   ufsOrigem: [],
+  cidadesOrigem: [],
   transportadorasRealizadas: [],
   soComReducao: false,
 };
+
+const VISUALIZACOES = [
+  { id: 'transportadora', label: 'Por transportadora', dica: 'Agrupa por transportadora; dentro, as origens atendidas.' },
+  { id: 'cidade', label: 'Por cidade', dica: 'Agrupa por cidade de origem; dentro, as transportadoras que atenderam aquela cidade.' },
+];
 
 // Transportadoras "sujeira" excluídas da análise. Fica salvo no navegador e
 // persiste entre pesquisas (não é apagado pelo "Limpar filtros").
@@ -439,7 +446,28 @@ function calcularGrupo(casos, scenarioMode, transportadoraReal) {
   };
 }
 
-function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal }) {
+// Ordena as linhas do relatório seguindo a mesma visão escolhida na tela
+// (por transportadora ou por cidade de origem) — grupo primário primeiro.
+function ordenarLinhasPorVisualizacao(linhas, visualizacao) {
+  const copia = [...linhas];
+  if (visualizacao === 'cidade') {
+    copia.sort((a, b) =>
+      (a.cidadeOrigem || '').localeCompare(b.cidadeOrigem || '', 'pt-BR')
+      || (a.ufOrigem || '').localeCompare(b.ufOrigem || '', 'pt-BR')
+      || b.reducaoRs - a.reducaoRs);
+  } else {
+    copia.sort((a, b) =>
+      (a.transportadoraReal || '').localeCompare(b.transportadoraReal || '', 'pt-BR')
+      || (a.cidadeOrigem || '').localeCompare(b.cidadeOrigem || '', 'pt-BR')
+      || b.reducaoRs - a.reducaoRs);
+  }
+  return copia;
+}
+function visualizacaoLabel(visualizacao) {
+  return visualizacao === 'cidade' ? 'Por cidade de origem' : 'Por transportadora';
+}
+
+function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal, visualizacao }) {
   const periodoDesc = dataInicio || dataFim ? `${dataInicio || '?'} a ${dataFim || '?'}` : competencia || 'Todos os períodos';
   const cenarioDesc = scenarioMode === 'cteacte' ? 'Menor preço CT-e a CT-e' : 'Uma transportadora substituta';
   const linhasTodas = resultado.regioes.flatMap((r) => r.linhas);
@@ -464,7 +492,7 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
         <td style="background:#ede9fe;padding:6px 10px;text-align:center;font-weight:700;color:${corVermelho};font-size:11px">${pct(regNfPct)}</td>
         <td colspan="3" style="background:#ede9fe;padding:6px 10px;color:${corCinza};font-size:10px">${reg.linhas.length} linhas</td>
       </tr>`;
-    const detalhes = reg.linhas.map((l) => {
+    const detalhes = ordenarLinhasPorVisualizacao(reg.linhas, visualizacao).map((l) => {
       const semSub = !l.substituta;
       const parcial = l.substituta && l.cobertura < l.ctes;
       const bgRow = semSub ? '#fff7ed' : parcial ? '#fefce8' : '#ffffff';
@@ -517,9 +545,11 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
 
     <!-- Filtros -->
     <div style="font-size:10px;color:${corCinza};margin-bottom:16px">
-      Período: <b>${periodoDesc}</b> &nbsp;·&nbsp; Canal: <b>${canal || 'Todos'}</b> &nbsp;·&nbsp; Cenário: <b>${cenarioDesc}</b>
-      ${filtros.regioes.length ? ` &nbsp;·&nbsp; Regiões: <b>${filtros.regioes.join(', ')}</b>` : ''}
-      ${filtros.ufsOrigem.length ? ` &nbsp;·&nbsp; UFs: <b>${filtros.ufsOrigem.join(', ')}</b>` : ''}
+      Período: <b>${periodoDesc}</b> &nbsp;·&nbsp; Canal: <b>${canal || 'Todos'}</b> &nbsp;·&nbsp; Cenário: <b>${cenarioDesc}</b> &nbsp;·&nbsp; Visão: <b>${visualizacaoLabel(visualizacao)}</b>
+      ${filtros.regioes.length ? ` &nbsp;·&nbsp; Regiões origem: <b>${filtros.regioes.join(', ')}</b>` : ''}
+      ${filtros.regioesDestino.length ? ` &nbsp;·&nbsp; Regiões destino: <b>${filtros.regioesDestino.join(', ')}</b>` : ''}
+      ${filtros.ufsOrigem.length ? ` &nbsp;·&nbsp; UFs origem: <b>${filtros.ufsOrigem.join(', ')}</b>` : ''}
+      ${filtros.cidadesOrigem.length ? ` &nbsp;·&nbsp; Cidades origem: <b>${filtros.cidadesOrigem.join(', ')}</b>` : ''}
     </div>
 
     <!-- Cards de resumo -->
@@ -592,13 +622,13 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
   return html;
 }
 
-function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal }) {
+function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal, visualizacao }) {
   const periodoDesc = dataInicio || dataFim
     ? `${dataInicio || '?'} a ${dataFim || '?'}`
     : competencia || 'Todos';
   const cenarioDesc = scenarioMode === 'cteacte' ? 'CT-e a CT-e' : 'Substituta';
 
-  const linhasTodas = resultado.regioes.flatMap((r) => r.linhas);
+  const linhasTodas = ordenarLinhasPorVisualizacao(resultado.regioes.flatMap((r) => r.linhas), visualizacao);
 
   // Aba principal — uma linha por transportadora × origem
   const dados = linhasTodas.map((l) => {
@@ -662,8 +692,11 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
     ['Período', periodoDesc],
     ['Canal', canal || 'Todos'],
     ['Cenário', cenarioDesc],
-    ['Filtro regiões', filtros.regioes.join(', ') || 'Todos'],
-    ['Filtro UFs', filtros.ufsOrigem.join(', ') || 'Todas'],
+    ['Visão', visualizacaoLabel(visualizacao)],
+    ['Filtro regiões origem', filtros.regioes.join(', ') || 'Todas'],
+    ['Filtro regiões destino', filtros.regioesDestino.join(', ') || 'Todas'],
+    ['Filtro UFs origem', filtros.ufsOrigem.join(', ') || 'Todas'],
+    ['Filtro cidades origem', filtros.cidadesOrigem.join(', ') || 'Todas'],
     [],
     ['Frete atual (R$)', resultado.pagoTotal],
     ['Melhor cenário (R$)', resultado.melhorTotal],
@@ -677,8 +710,8 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
   const wsResumo = XLSX.utils.aoa_to_sheet(resumo);
   wsResumo['!cols'] = [{ wch: 26 }, { wch: 30 }];
   // formato moeda/pct nas células de valor
-  [[8,1],[9,1],[10,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = 'R$ #,##0.00'; });
-  [[11,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = '0.0%'; });
+  [[11,1],[12,1],[13,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = 'R$ #,##0.00'; });
+  [[14,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = '0.0%'; });
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
@@ -786,6 +819,7 @@ export default function OportunidadeTransportadoraPage() {
   const [candidateMode, setCandidateMode] = useState('qualquer');
   const [scenarioMode, setScenarioMode] = useState('substituta');
   const [metrica, setMetrica] = useState('rs');
+  const [visualizacao, setVisualizacao] = useState('transportadora'); // 'transportadora' | 'cidade'
   const [filtros, setFiltros] = useState(FILTROS_PADRAO);
   const [excluidas, setExcluidas] = useState(carregarExcluidasOportunidade);
   const [expandido, setExpandido] = useState(null);
@@ -900,6 +934,7 @@ export default function OportunidadeTransportadoraPage() {
         casos.push({
           transportadoraReal, cidadeOrigem, ufOrigem, cidadeDestino, ufDestino,
           regiao: regiaoDeUf(ufOrigem),
+          regiaoDestino: regiaoDeUf(ufDestino),
           originKey, routeKey,
           peso: safeNum(cte.peso_declarado || cte.peso),
           valorNf: safeNum(cte.valor_nf || cte.nf_venda),
@@ -974,16 +1009,20 @@ export default function OportunidadeTransportadoraPage() {
   }
 
   const opcoes = useMemo(() => {
-    if (!bruto) return { regioes: [], ufsOrigem: [], transpReal: [] };
-    const reg = new Set(), uf = new Set(), tr = new Set();
+    if (!bruto) return { regioes: [], regioesDestino: [], ufsOrigem: [], cidadesOrigem: [], transpReal: [] };
+    const reg = new Set(), regDest = new Set(), uf = new Set(), cidadeOrig = new Set(), tr = new Set();
     for (const c of bruto.casos) {
       if (c.regiao) reg.add(c.regiao);
+      if (c.regiaoDestino) regDest.add(c.regiaoDestino);
       if (c.ufOrigem) uf.add(c.ufOrigem);
+      if (c.cidadeOrigem) cidadeOrig.add(c.cidadeOrigem);
       if (c.transportadoraReal) tr.add(c.transportadoraReal);
     }
     return {
       regioes: ORDEM_REGIAO.filter((r) => reg.has(r)),
+      regioesDestino: ORDEM_REGIAO.filter((r) => regDest.has(r)),
       ufsOrigem: Array.from(uf).sort(),
+      cidadesOrigem: Array.from(cidadeOrig).sort((a, b) => a.localeCompare(b, 'pt-BR')),
       transpReal: Array.from(tr).sort((a, b) => a.localeCompare(b, 'pt-BR')),
     };
   }, [bruto]);
@@ -996,7 +1035,9 @@ export default function OportunidadeTransportadoraPage() {
     for (const c of bruto.casos) {
       if (excluidasSet.has(norm(c.transportadoraReal))) continue;
       if (!passaLista(c.regiao, filtros.regioes)) continue;
+      if (!passaLista(c.regiaoDestino, filtros.regioesDestino)) continue;
       if (!passaLista(c.ufOrigem, filtros.ufsOrigem)) continue;
+      if (!passaLista(c.cidadeOrigem, filtros.cidadesOrigem)) continue;
       if (!passaLista(c.transportadoraReal, filtros.transportadorasRealizadas)) continue;
 
       let candidatos = c.custos;
@@ -1061,17 +1102,17 @@ export default function OportunidadeTransportadoraPage() {
     };
   }, [bruto, filtros, excluidasSet, candidateMode, scenarioMode, metrica]);
 
-  const filtrosAtivos = filtros.regioes.length || filtros.ufsOrigem.length || filtros.transportadorasRealizadas.length;
+  const filtrosAtivos = filtros.regioes.length || filtros.regioesDestino.length || filtros.ufsOrigem.length || filtros.cidadesOrigem.length || filtros.transportadorasRealizadas.length;
   const metricaLabel = METRICAS.find((m) => m.id === metrica)?.label || '';
 
   function abrirRelatorio() {
     if (!resultado) return;
-    exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal });
+    exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal, visualizacao });
   }
 
   function abrirHtmlEmail() {
     if (!resultado) return;
-    const html = gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal });
+    const html = gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim, competencia, canal, visualizacao });
     const w = window.open('', '_blank');
     w.document.write(html);
     w.document.close();
@@ -1171,6 +1212,10 @@ export default function OportunidadeTransportadoraPage() {
                 <span style={{ fontSize: '0.78rem', color: '#64748b', width: 120 }}>Métrica exibida</span>
                 <Segmentado opcoes={METRICAS} valor={metrica} onChange={setMetrica} />
               </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.78rem', color: '#64748b', width: 120 }}>Visualizar tabela</span>
+                <Segmentado opcoes={VISUALIZACOES} valor={visualizacao} onChange={setVisualizacao} />
+              </div>
             </div>
           </section>
 
@@ -1187,8 +1232,10 @@ export default function OportunidadeTransportadoraPage() {
               </div>
             </div>
             <div className="sim-form-grid sim-grid-4" style={{ gap: 10 }}>
-              <MultiFiltro label="Região" opcoes={opcoes.regioes} selecionados={filtros.regioes} onChange={(v) => setF('regioes', v)} />
+              <MultiFiltro label="Região origem" opcoes={opcoes.regioes} selecionados={filtros.regioes} onChange={(v) => setF('regioes', v)} />
+              <MultiFiltro label="Região destino" opcoes={opcoes.regioesDestino} selecionados={filtros.regioesDestino} onChange={(v) => setF('regioesDestino', v)} />
               <MultiFiltro label="UF origem" opcoes={opcoes.ufsOrigem} selecionados={filtros.ufsOrigem} onChange={(v) => setF('ufsOrigem', v)} />
+              <MultiFiltro label="Cidade origem" opcoes={opcoes.cidadesOrigem} selecionados={filtros.cidadesOrigem} onChange={(v) => setF('cidadesOrigem', v)} />
               <MultiFiltro label="Transportadora realizada" opcoes={opcoes.transpReal} selecionados={filtros.transportadorasRealizadas} onChange={(v) => setF('transportadorasRealizadas', v)} />
               <MultiFiltro
                 label={`Excluir transportadora (sujeira)${excluidas.length ? ` · ${excluidas.length} salva(s)` : ''}`}
@@ -1218,7 +1265,7 @@ export default function OportunidadeTransportadoraPage() {
           <div className="panel-card">
             <div className="panel-title" style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
               <span>
-                Transportadora × Origem — métrica: {metricaLabel}
+                {visualizacao === 'cidade' ? 'Cidade × Transportadora' : 'Transportadora × Origem'} — métrica: {metricaLabel}
                 <span style={{ fontWeight: 400, fontSize: '0.8rem', color: '#94a3b8' }}> · clique na linha para ver as candidatas</span>
               </span>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -1236,8 +1283,8 @@ export default function OportunidadeTransportadoraPage() {
               <table className="sim-analise-tabela">
                 <thead>
                   <tr>
-                    <th>Transportadora</th>
-                    <th>Origem</th>
+                    <th>{visualizacao === 'cidade' ? 'Cidade origem' : 'Transportadora'}</th>
+                    <th>{visualizacao === 'cidade' ? 'Transportadora' : 'Origem'}</th>
                     <th>UF</th>
                     <th>CT-es</th>
                     {resultado.refCompetencia && <th style={{ background: '#1e3a5f', color: '#93c5fd' }} title="% frete sobre NF no período de referência (antes dos reajustes)">% NF {resultado.refCompetencia}</th>}
@@ -1261,15 +1308,19 @@ export default function OportunidadeTransportadoraPage() {
                         <td colSpan={mostrarSimulado ? 2 : 1} style={{ fontSize: '0.76rem', color: '#64748b' }}>{reg.linhas.length} linhas</td>
                       </tr>
                       {(() => {
-                        // Agrupa linhas por transportadora dentro da região
+                        // Agrupa linhas por transportadora OU por cidade de origem, conforme a visualização escolhida.
+                        const porCidade = visualizacao === 'cidade';
+                        const groupKeyOf = (l) => porCidade ? `${l.cidadeOrigem}|${l.ufOrigem}` : l.transportadoraReal;
+                        const groupLabelOf = (l) => porCidade ? `${l.cidadeOrigem || '—'} / ${l.ufOrigem || '—'}` : l.transportadoraReal;
                         const cgMap = new Map();
                         const cgOrder = [];
                         for (const l of reg.linhas) {
-                          if (!cgMap.has(l.transportadoraReal)) {
-                            cgMap.set(l.transportadoraReal, { transportadoraReal: l.transportadoraReal, linhas: [], pagoTotal: 0, simTotal: 0, nfTotal: 0, ctes: 0, reducaoRs: 0, refNum: 0, refDen: 0 });
-                            cgOrder.push(l.transportadoraReal);
+                          const gk = groupKeyOf(l);
+                          if (!cgMap.has(gk)) {
+                            cgMap.set(gk, { groupLabel: groupLabelOf(l), ufOrigem: l.ufOrigem, linhas: [], pagoTotal: 0, simTotal: 0, nfTotal: 0, ctes: 0, reducaoRs: 0, refNum: 0, refDen: 0 });
+                            cgOrder.push(gk);
                           }
-                          const cg = cgMap.get(l.transportadoraReal);
+                          const cg = cgMap.get(gk);
                           cg.linhas.push(l);
                           cg.pagoTotal += l.pagoTotal;
                           cg.simTotal += l.chainCustoTotal ?? l.melhorTotal;
@@ -1278,14 +1329,14 @@ export default function OportunidadeTransportadoraPage() {
                           cg.reducaoRs += l.reducaoRs;
                           if (l.freteNfPctRef != null) { cg.refNum += l.freteNfPctRef * l.nfTotal; cg.refDen += l.nfTotal; }
                         }
-                        return cgOrder.map((carrierName) => {
-                          const cg = cgMap.get(carrierName);
-                          const cgKey = `${reg.regiao}|${carrierName}`;
+                        return cgOrder.map((gk) => {
+                          const cg = cgMap.get(gk);
+                          const cgKey = `${reg.regiao}|${visualizacao}|${gk}`;
                           const cgAberto = expandidoCarrier.has(cgKey);
                           const cgFnfAtual = cg.nfTotal > 0 ? (cg.pagoTotal / cg.nfTotal) * 100 : null;
                           const cgFnfRef = cg.refDen > 0 ? cg.refNum / cg.refDen : null;
                           const cgFnfSim = cg.nfTotal > 0 ? (cg.simTotal / cg.nfTotal) * 100 : null;
-                          const reajNomeMatch = (resultado.reajustesSet || []).find((n) => mesmaTransportadora(n, carrierName));
+                          const reajNomeMatch = !porCidade ? (resultado.reajustesSet || []).find((n) => mesmaTransportadora(n, cg.groupLabel)) : null;
                           const temReajuste = !!reajNomeMatch;
                           const reajLinha = temReajuste ? (resultado.reajustesMap.get(norm(reajNomeMatch)) || []) : [];
                           const maxReaj = reajLinha.length ? Math.max(...reajLinha.map((r) => r.reajusteSolicitado).filter((v) => v > 0)) : null;
@@ -1293,11 +1344,11 @@ export default function OportunidadeTransportadoraPage() {
                           const cgReducaoPct = cg.pagoTotal > 0 ? (cg.reducaoRs / cg.pagoTotal) * 100 : 0;
                           return (
                             <React.Fragment key={cgKey}>
-                              {/* Linha da transportadora (totais agregados) */}
+                              {/* Linha do grupo (totais agregados: por transportadora ou por cidade) */}
                               <tr onClick={() => setExpandidoCarrier((prev) => { const next = new Set(prev); cgAberto ? next.delete(cgKey) : next.add(cgKey); return next; })} style={{ cursor: 'pointer', background: '#f8f4ff' }}>
                                 <td style={{ fontWeight: 700 }}>
-                                  {cgAberto ? '▼ ' : '▶ '}{carrierName || '—'}
-                                  {cg.linhas.length > 1 && <span style={{ color: '#94a3b8', fontSize: '0.72rem', marginLeft: 6 }}>({cg.linhas.length} origens)</span>}
+                                  {cgAberto ? '▼ ' : '▶ '}{cg.groupLabel || '—'}
+                                  {cg.linhas.length > 1 && <span style={{ color: '#94a3b8', fontSize: '0.72rem', marginLeft: 6 }}>({cg.linhas.length} {porCidade ? 'transportadoras' : 'origens'})</span>}
                                   {temReajuste && (
                                     <span title={tooltipReaj || 'Reajuste registrado'} style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700, cursor: 'help', whiteSpace: 'nowrap' }}>
                                       ⚠ REAJUSTE{maxReaj != null ? ` +${(maxReaj * 100).toFixed(1)}%` : ''}
@@ -1305,7 +1356,7 @@ export default function OportunidadeTransportadoraPage() {
                                   )}
                                 </td>
                                 <td style={{ color: '#94a3b8', fontSize: '0.72rem' }}>—</td>
-                                <td style={{ color: '#94a3b8', fontSize: '0.72rem' }}>—</td>
+                                <td style={{ color: '#94a3b8', fontSize: '0.72rem' }}>{porCidade ? (cg.ufOrigem || '—') : '—'}</td>
                                 <td>{fmtN(cg.ctes)}</td>
                                 {resultado.refCompetencia && <td style={{ background: '#eff6ff', textAlign: 'center', fontWeight: 600, color: cgFnfRef != null ? '#1e3a5f' : '#94a3b8' }}>{cgFnfRef != null ? pct(cgFnfRef) : '—'}</td>}
                                 <td style={{ fontWeight: 600 }}>
@@ -1339,9 +1390,9 @@ export default function OportunidadeTransportadoraPage() {
                           <React.Fragment key={id}>
                             <tr onClick={() => setExpandido(aberto ? null : id)} style={{ cursor: 'pointer', background: '#faf5ff' }}>
                               <td style={{ fontWeight: 500, paddingLeft: 28, color: '#475569' }}>
-                                {aberto ? '▼ ' : '▶ '}<span style={{ fontSize: '0.85rem' }}>{l.cidadeOrigem || '—'}</span>
+                                {aberto ? '▼ ' : '▶ '}<span style={{ fontSize: '0.85rem' }}>{visualizacao === 'cidade' ? (l.transportadoraReal || '—') : (l.cidadeOrigem || '—')}</span>
                               </td>
-                              <td style={{ fontSize: '0.82rem', color: '#64748b' }}>{l.cidadeOrigem || '—'}</td>
+                              <td style={{ fontSize: '0.82rem', color: '#64748b' }}>{visualizacao === 'cidade' ? (l.transportadoraReal || '—') : (l.cidadeOrigem || '—')}</td>
                               <td style={{ fontSize: '0.82rem' }}>{l.ufOrigem}</td>
                               <td style={{ fontSize: '0.82rem' }}>{fmtN(l.ctes)}</td>
                               {resultado.refCompetencia && (
