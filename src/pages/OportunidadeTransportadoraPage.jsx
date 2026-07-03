@@ -68,6 +68,32 @@ function carregarExcluidasOportunidade() {
   }
 }
 
+// % de redução sugerida (índice diesel/pneu) por transportadora — sobrescreve o
+// % geral quando ajustado individualmente. Persiste no navegador.
+const REDUCAO_SUGERIDA_GLOBAL_KEY = 'oportunidade_transp_reducao_sugerida_global_v1';
+const REDUCAO_SUGERIDA_OVERRIDES_KEY = 'oportunidade_transp_reducao_sugerida_overrides_v1';
+function carregarReducaoSugeridaGlobal() {
+  try {
+    const salvo = Number(localStorage.getItem(REDUCAO_SUGERIDA_GLOBAL_KEY));
+    return Number.isFinite(salvo) ? salvo : 5;
+  } catch {
+    return 5;
+  }
+}
+function carregarReducaoSugeridaOverrides() {
+  try {
+    const salvo = JSON.parse(localStorage.getItem(REDUCAO_SUGERIDA_OVERRIDES_KEY) || '{}');
+    return salvo && typeof salvo === 'object' && !Array.isArray(salvo) ? salvo : {};
+  } catch {
+    return {};
+  }
+}
+// % aplicado a uma transportadora: usa o ajuste individual se existir, senão o geral.
+function pctReducaoSugerida(transportadoraReal, overrides, global) {
+  const override = overrides[norm(transportadoraReal)];
+  return Number.isFinite(override) ? override : safeNum(global);
+}
+
 function safeNum(v) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 function fmt(v) { return safeNum(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 function fmtN(v) { return safeNum(v).toLocaleString('pt-BR', { maximumFractionDigits: 0 }); }
@@ -503,6 +529,7 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
         <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corVermelho};font-size:11px">${fmt(reg.reducaoRs)}</td>
         <td style="background:#ede9fe;padding:6px 10px;text-align:center;font-weight:700;color:${corVermelho};font-size:11px">${pct(regNfPct)}</td>
         <td colspan="3" style="background:#ede9fe;padding:6px 10px;color:${corCinza};font-size:10px">${reg.linhas.length} linhas</td>
+        <td style="background:#ede9fe;padding:6px 10px;text-align:right;font-weight:700;color:${corVermelho};font-size:11px">${fmt(reg.linhas.reduce((s, l) => s + l.reducaoSugeridaRs, 0))}</td>
       </tr>`;
     const detalhes = ordenarLinhasPorVisualizacao(reg.linhas, visualizacao).map((l) => {
       const semSub = !l.substituta;
@@ -532,6 +559,7 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
         <td style="padding:5px 10px;font-size:11px;border-bottom:1px solid #f1f5f9">${l.substituta || '—'}${alertaBadge}</td>
         <td style="padding:5px 10px;font-size:11px;text-align:center;color:${corCinza};border-bottom:1px solid #f1f5f9">${l.ctes > 1 ? `${l.cobertura}/${l.ctes}` : (l.substituta ? '1/1' : '—')}</td>
         <td style="padding:5px 10px;font-size:11px;text-align:center;color:${corCinza};border-bottom:1px solid #f1f5f9">${prazo}</td>
+        <td style="padding:5px 10px;font-size:11px;text-align:right;color:${corVermelho};font-weight:700;border-bottom:1px solid #f1f5f9">${fmt(l.reducaoSugeridaRs)}<span style="display:block;font-size:9px;font-weight:400;color:${corCinza}">${pct(l.pctSugerido)}</span></td>
       </tr>`;
     }).join('');
     return subTotal + detalhes;
@@ -597,6 +625,12 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
           </div>
         </td>
       </tr>
+      <tr><td colspan="4" style="padding-top:8px">
+        <div style="border:1px solid #e2e8f0;border-left:4px solid ${corVermelho};border-radius:6px;padding:10px 14px">
+          <div style="font-size:9px;color:${corCinza};font-weight:700;text-transform:uppercase;margin-bottom:3px">Redução sugerida — índice diesel/pneu</div>
+          <div style="font-size:16px;font-weight:800;color:${corVermelho}">${fmt(resultado.reducaoSugeridaTotal)} <span style="font-size:11px;font-weight:600;color:${corCinza}">(${pct(resultado.reducaoSugeridaPct)} do frete atual)</span></div>
+        </div>
+      </td></tr>
     </table>
 
     ${alertasHtml}
@@ -618,6 +652,7 @@ function gerarHtmlEmail({ resultado, scenarioMode, filtros, dataInicio, dataFim,
           <th style="padding:7px 10px;text-align:left;color:#fff;font-size:10px;font-weight:700">Substituta</th>
           <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">Cobertura</th>
           <th style="padding:7px 10px;text-align:center;color:#fff;font-size:10px;font-weight:700">Prazo</th>
+          <th style="padding:7px 10px;text-align:right;color:#fff;font-size:10px;font-weight:700">Redução sugerida</th>
         </tr>
       </thead>
       <tbody>${linhasHtml}</tbody>
@@ -669,16 +704,18 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
       Alerta: alerta,
       'Prazo real (d)': l.prazoRealMedio != null ? l.prazoRealMedio : '',
       'Prazo melhor (d)': l.prazoMelhorMedio != null ? l.prazoMelhorMedio : '',
+      'Redução sugerida (%)': l.pctSugerido / 100,
+      'Redução sugerida (R$)': l.reducaoSugeridaRs,
     };
   });
 
   const ws = XLSX.utils.json_to_sheet(dados);
 
   // Formata colunas de moeda e percentual
-  // Colunas (0-based): 0=Região,1=Transp,2=Origem,3=UF,4=CTes,5=FreteAtualR$,6=FreteNFAtual%,7=MelhorR$,8=MelhorNF%,9=CombinadoR$,10=CombinadoNF%,11=SemAtend,12=ReducaoR$,13=Reducao%,...
+  // Colunas (0-based): 0=Região,1=Transp,2=Origem,3=UF,4=CTes,5=FreteAtualR$,6=FreteNFAtual%,7=MelhorR$,8=MelhorNF%,9=CombinadoR$,10=CombinadoNF%,11=SemAtend,12=ReducaoR$,13=Reducao%,...,20=ReducaoSugerida%,21=ReducaoSugeridaR$
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-  const colMoeda = [5, 7, 9, 12];
-  const colPct   = [6, 8, 10, 13];
+  const colMoeda = [5, 7, 9, 12, 21];
+  const colPct   = [6, 8, 10, 13, 20];
   for (let R = range.s.r + 1; R <= range.e.r; R++) {
     for (const C of colMoeda) {
       const addr = XLSX.utils.encode_cell({ r: R, c: C });
@@ -696,6 +733,7 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
     { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 14 },
     { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 10 },
     { wch: 36 }, { wch: 18 }, { wch: 26 }, { wch: 12 }, { wch: 14 },
+    { wch: 18 }, { wch: 20 },
   ];
 
   // Aba de resumo
@@ -716,6 +754,8 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
     ['Melhor cenário (R$)', resultado.melhorTotal],
     ['Redução potencial (R$)', resultado.reducaoTotal],
     ['Redução potencial (%)', resultado.reducaoPct / 100],
+    ['Redução sugerida — diesel/pneu (R$)', resultado.reducaoSugeridaTotal],
+    ['Redução sugerida — diesel/pneu (%)', resultado.reducaoSugeridaPct / 100],
     [],
     ['Linhas analisadas', resultado.totalLinhas],
     ['Sem substituta', linhasTodas.filter((l) => !l.substituta).length],
@@ -724,8 +764,8 @@ function exportarExcel({ resultado, scenarioMode, filtros, dataInicio, dataFim, 
   const wsResumo = XLSX.utils.aoa_to_sheet(resumo);
   wsResumo['!cols'] = [{ wch: 26 }, { wch: 30 }];
   // formato moeda/pct nas células de valor
-  [[12,1],[13,1],[14,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = 'R$ #,##0.00'; });
-  [[15,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = '0.0%'; });
+  [[12,1],[13,1],[14,1],[16,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = 'R$ #,##0.00'; });
+  [[15,1],[17,1]].forEach(([r,c]) => { const a = XLSX.utils.encode_cell({r,c}); if (wsResumo[a]) wsResumo[a].z = '0.0%'; });
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
@@ -840,11 +880,31 @@ export default function OportunidadeTransportadoraPage() {
   const [expandido, setExpandido] = useState(null);
   const [expandidoCarrier, setExpandidoCarrier] = useState(new Set());
   const [buscaVinculo, setBuscaVinculo] = useState('');
+  const [reducaoSugeridaGlobal, setReducaoSugeridaGlobal] = useState(carregarReducaoSugeridaGlobal); // % geral (índice diesel/pneu)
+  const [reducaoSugeridaOverrides, setReducaoSugeridaOverrides] = useState(carregarReducaoSugeridaOverrides); // { [nomeNorm]: pct } — ajuste individual
 
   // Persiste a lista de transportadoras excluídas (sujeira) no navegador.
   useEffect(() => {
     try { localStorage.setItem(EXCLUIDAS_OPORTUNIDADE_KEY, JSON.stringify(excluidas)); } catch { /* ignora */ }
   }, [excluidas]);
+
+  // Persiste o % geral e os ajustes individuais de redução sugerida.
+  useEffect(() => {
+    try { localStorage.setItem(REDUCAO_SUGERIDA_GLOBAL_KEY, String(reducaoSugeridaGlobal)); } catch { /* ignora */ }
+  }, [reducaoSugeridaGlobal]);
+  useEffect(() => {
+    try { localStorage.setItem(REDUCAO_SUGERIDA_OVERRIDES_KEY, JSON.stringify(reducaoSugeridaOverrides)); } catch { /* ignora */ }
+  }, [reducaoSugeridaOverrides]);
+
+  function setOverrideReducaoSugerida(transportadoraReal, valor) {
+    const key = norm(transportadoraReal);
+    setReducaoSugeridaOverrides((prev) => {
+      const next = { ...prev };
+      if (valor === '' || valor === null || !Number.isFinite(Number(valor))) delete next[key];
+      else next[key] = Number(valor);
+      return next;
+    });
+  }
 
   const excluidasSet = useMemo(() => new Set(excluidas.map((n) => norm(n))), [excluidas]);
 
@@ -1084,6 +1144,8 @@ export default function OportunidadeTransportadoraPage() {
       const refKey = `${transpNorm}|${g.originKey}`;
       const refEntry = refMap.get(refKey);
       const freteNfPctRef = refEntry && refEntry.nfTotal > 0 ? (refEntry.pagoTotal / refEntry.nfTotal) * 100 : null;
+      const pctSugerido = pctReducaoSugerida(g.transportadoraReal, reducaoSugeridaOverrides, reducaoSugeridaGlobal);
+      const reducaoSugeridaRs = Math.round(calc.pagoTotal * (pctSugerido / 100) * 100) / 100;
       return {
         ...g,
         ...calc,
@@ -1091,6 +1153,8 @@ export default function OportunidadeTransportadoraPage() {
         refCtes: refEntry?.ctes || 0,
         custoAtual: valorMetrica(metrica, calc.pagoTotal, calc.pesoTotal, calc.nfTotal, calc.ctes),
         custoMelhor: valorMetrica(metrica, calc.melhorTotal, calc.pesoTotal, calc.nfTotal, calc.ctes),
+        pctSugerido,
+        reducaoSugeridaRs,
       };
     });
     if (filtros.soComReducao) linhas = linhas.filter((l) => l.reducaoRs > TOLERANCIA);
@@ -1109,17 +1173,20 @@ export default function OportunidadeTransportadoraPage() {
     const melhorTotal = linhas.reduce((s, l) => s + l.melhorTotal, 0);
     const reducaoTotal = Math.round((pagoTotal - melhorTotal) * 100) / 100;
 
+    const reducaoSugeridaTotal = Math.round(linhas.reduce((s, l) => s + l.reducaoSugeridaRs, 0) * 100) / 100;
+
     return {
       regioes, totalLinhas: linhas.length, totalCtes: bruto.totalCtes,
-      pagoTotal, melhorTotal, reducaoTotal,
+      pagoTotal, melhorTotal, reducaoTotal, reducaoSugeridaTotal,
       reducaoPct: pagoTotal > 0 ? (reducaoTotal / pagoTotal) * 100 : 0,
+      reducaoSugeridaPct: pagoTotal > 0 ? (reducaoSugeridaTotal / pagoTotal) * 100 : 0,
       diagTotal: bruto.diagTotal,
       reajustesSet: bruto.reajustesSet || new Set(),
       reajustesMap: bruto.reajustesMap || new Map(),
       refCompetencia: bruto.refCompetencia || '',
       regiaoOrigemPre: bruto.regiaoOrigemPre || [],
     };
-  }, [bruto, filtros, excluidasSet, candidateMode, scenarioMode, metrica]);
+  }, [bruto, filtros, excluidasSet, candidateMode, scenarioMode, metrica, reducaoSugeridaGlobal, reducaoSugeridaOverrides]);
 
   const filtrosAtivos = filtros.regioes.length || filtros.regioesDestino.length || filtros.ufsOrigem.length || filtros.cidadesOrigem.length || filtros.transportadorasRealizadas.length;
   const metricaLabel = METRICAS.find((m) => m.id === metrica)?.label || '';
@@ -1239,6 +1306,23 @@ export default function OportunidadeTransportadoraPage() {
                 <span style={{ fontSize: '0.78rem', color: '#64748b', width: 120 }}>Visualizar tabela</span>
                 <Segmentado opcoes={VISUALIZACOES} valor={visualizacao} onChange={setVisualizacao} />
               </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.78rem', color: '#64748b', width: 120 }}>Redução sugerida</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="number" step="0.1" min="0" max="100"
+                    value={reducaoSugeridaGlobal}
+                    onChange={(e) => setReducaoSugeridaGlobal(Number(e.target.value) || 0)}
+                    style={{ width: 70, padding: '5px 8px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: '0.82rem' }}
+                  />
+                  <span style={{ fontSize: '0.78rem', color: '#64748b' }}>% geral (índice diesel/pneu) — aplicado a todas; ajuste individual disponível na tabela por transportadora</span>
+                  {Object.keys(reducaoSugeridaOverrides).length > 0 && (
+                    <button type="button" className="sim-tab" onClick={() => setReducaoSugeridaOverrides({})}>
+                      Limpar {Object.keys(reducaoSugeridaOverrides).length} ajuste(s) individual(is)
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </section>
 
@@ -1279,6 +1363,7 @@ export default function OportunidadeTransportadoraPage() {
             <Card label="Custo atual (total)" valor={fmt(resultado.pagoTotal)} sub="frete pago no recorte" cor="#1e293b" />
             <Card label="Melhor cenário (total)" valor={fmt(resultado.melhorTotal)} sub={MODOS_CENARIO.find((m) => m.id === scenarioMode)?.label} cor="#04C7A4" />
             <Card label="Redução potencial" valor={fmt(resultado.reducaoTotal)} sub={pct(resultado.reducaoPct)} cor="#9b1111" destaque={resultado.reducaoTotal > 0} />
+            <Card label="Redução sugerida (diesel/pneu)" valor={fmt(resultado.reducaoSugeridaTotal)} sub={`${pct(resultado.reducaoSugeridaPct)} · ${reducaoSugeridaGlobal}% geral`} cor="#9b1111" />
           </div>
 
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 16px', marginBottom: '1rem', fontSize: '0.84rem', color: '#166534' }}>
@@ -1319,6 +1404,7 @@ export default function OportunidadeTransportadoraPage() {
                     {mostrarSimulado && <th>Redução %</th>}
                     {mostrarSimulado && <th>Substituta</th>}
                     {mostrarSimulado && <th>Prazo (real→melhor)</th>}
+                    <th title="Índice diesel/pneu — % geral ajustável, com opção de ajuste individual por transportadora">Redução sugerida</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1329,6 +1415,7 @@ export default function OportunidadeTransportadoraPage() {
                         {mostrarSimulado && <td className="negativo" style={{ fontWeight: 700 }}>{fmt(reg.reducaoRs)}</td>}
                         {mostrarSimulado && <td>{pct(reg.pagoTotal > 0 ? (reg.reducaoRs / reg.pagoTotal) * 100 : 0)}</td>}
                         <td colSpan={mostrarSimulado ? 2 : 1} style={{ fontSize: '0.76rem', color: '#64748b' }}>{reg.linhas.length} linhas</td>
+                        <td style={{ fontWeight: 700, color: '#9b1111' }}>{fmt(reg.linhas.reduce((s, l) => s + l.reducaoSugeridaRs, 0))}</td>
                       </tr>
                       {(() => {
                         // Agrupa linhas por transportadora OU por cidade de origem, conforme a visualização escolhida.
@@ -1340,7 +1427,7 @@ export default function OportunidadeTransportadoraPage() {
                         for (const l of reg.linhas) {
                           const gk = groupKeyOf(l);
                           if (!cgMap.has(gk)) {
-                            cgMap.set(gk, { groupLabel: groupLabelOf(l), ufOrigem: l.ufOrigem, linhas: [], pagoTotal: 0, simTotal: 0, nfTotal: 0, ctes: 0, reducaoRs: 0, refNum: 0, refDen: 0 });
+                            cgMap.set(gk, { groupLabel: groupLabelOf(l), ufOrigem: l.ufOrigem, linhas: [], pagoTotal: 0, simTotal: 0, nfTotal: 0, ctes: 0, reducaoRs: 0, reducaoSugeridaRs: 0, refNum: 0, refDen: 0 });
                             cgOrder.push(gk);
                           }
                           const cg = cgMap.get(gk);
@@ -1350,6 +1437,7 @@ export default function OportunidadeTransportadoraPage() {
                           cg.nfTotal += l.nfTotal;
                           cg.ctes += l.ctes;
                           cg.reducaoRs += l.reducaoRs;
+                          cg.reducaoSugeridaRs += l.reducaoSugeridaRs;
                           if (l.freteNfPctRef != null) { cg.refNum += l.freteNfPctRef * l.nfTotal; cg.refDen += l.nfTotal; }
                         }
                         return cgOrder.map((gk) => {
@@ -1408,6 +1496,21 @@ export default function OportunidadeTransportadoraPage() {
                                 {mostrarSimulado && <td className={cg.reducaoRs > TOLERANCIA ? 'negativo' : ''} style={{ fontWeight: cg.reducaoRs > TOLERANCIA ? 700 : 400 }}>{cg.reducaoRs > TOLERANCIA ? fmt(cg.reducaoRs) : '—'}</td>}
                                 {mostrarSimulado && <td style={{ fontWeight: 600, color: cgReducaoPct > 0 ? '#9b1111' : '#94a3b8' }}>{cgReducaoPct > 0 ? pct(cgReducaoPct) : '—'}</td>}
                                 {mostrarSimulado && <td colSpan={2} style={{ color: '#94a3b8', fontSize: '0.72rem' }}>—</td>}
+                                <td onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: '#9b1111' }}>
+                                  {porCidade ? fmt(cg.reducaoSugeridaRs) : (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                                      <input
+                                        type="number" step="0.1" min="0" max="100"
+                                        value={reducaoSugeridaOverrides[norm(cg.groupLabel)] ?? ''}
+                                        placeholder={String(reducaoSugeridaGlobal)}
+                                        onChange={(e) => setOverrideReducaoSugerida(cg.groupLabel, e.target.value)}
+                                        title="Ajuste individual (%) para esta transportadora — vazio usa o % geral"
+                                        style={{ width: 50, padding: '2px 4px', border: '1px solid #cbd5e1', borderRadius: 4, fontSize: '0.72rem' }}
+                                      />
+                                      <span style={{ fontSize: '0.78rem' }}>% · {fmt(cg.reducaoSugeridaRs)}</span>
+                                    </div>
+                                  )}
+                                </td>
                               </tr>
 
                               {/* Linhas de origem (expandidas) */}
@@ -1456,10 +1559,11 @@ export default function OportunidadeTransportadoraPage() {
                               {mostrarSimulado && <td style={{ whiteSpace: 'nowrap', color: '#64748b', fontSize: '0.78rem' }}>
                                 {l.prazoRealMedio != null ? `${l.prazoRealMedio.toFixed(1)}d` : '?'} → {l.prazoMelhorMedio != null ? `${l.prazoMelhorMedio.toFixed(1)}d` : '?'}
                               </td>}
+                              <td style={{ fontSize: '0.82rem', color: '#9b1111' }}>{fmt(l.reducaoSugeridaRs)} <span style={{ color: '#94a3b8', fontSize: '0.72rem' }}>({pct(l.pctSugerido)})</span></td>
                             </tr>
                             {aberto && (
                               <tr>
-                                <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 13 : 10) : (resultado.refCompetencia ? 7 : 5)} style={{ background: '#faf5ff', padding: '14px 16px' }}>
+                                <td colSpan={mostrarSimulado ? (resultado.refCompetencia ? 14 : 11) : (resultado.refCompetencia ? 8 : 6)} style={{ background: '#faf5ff', padding: '14px 16px' }}>
 
                                   {/* % frete/NF atual vs melhor */}
                                   <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -1636,7 +1740,7 @@ export default function OportunidadeTransportadoraPage() {
                       })()}
                     </React.Fragment>
                   ))}
-                  {!resultado.regioes.length && <tr><td colSpan={10}>Nenhuma linha com os filtros atuais.</td></tr>}
+                  {!resultado.regioes.length && <tr><td colSpan={11}>Nenhuma linha com os filtros atuais.</td></tr>}
                 </tbody>
               </table>
             </div>
