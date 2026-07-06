@@ -1,15 +1,15 @@
-import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient.js';
+import {
+  normalizarChave,
+  normalizarVinculo,
+  criarMapaVinculosTransportadoras,
+  aplicarVinculoTransportadora,
+  normalizarNomeVinculo,
+} from './vinculosTransportadorasPuro.js';
+
+export { criarMapaVinculosTransportadoras, aplicarVinculoTransportadora, normalizarNomeVinculo };
 
 const LOCAL_KEY = 'vinculos-transportadoras';
-
-function normalizarChave(nome = '') {
-  return String(nome || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, ' ')
-    .trim();
-}
 
 function getLocalVinculos() {
   try {
@@ -26,21 +26,6 @@ function setLocalVinculos(lista = []) {
   } catch {
     // localStorage pode falhar em modo privado; mantém operação online.
   }
-}
-
-function normalizarVinculo(item = {}) {
-  const nomeCte = String(item.nomeCte || item.nome_cte || item.transportadora_cte || '').trim();
-  const nomeTabela = String(item.nomeTabela || item.nome_tabela || item.transportadora_tabela || '').trim();
-  return {
-    id: item.id || `${normalizarChave(nomeCte)}__${normalizarChave(nomeTabela)}`,
-    nomeCte,
-    nomeTabela,
-    nomeCteNormalizado: normalizarChave(nomeCte),
-    nomeTabelaNormalizado: normalizarChave(nomeTabela),
-    origem: item.origem || item.fonte || 'manual',
-    createdAt: item.created_at || item.createdAt || null,
-    updatedAt: item.updated_at || item.updatedAt || null,
-  };
 }
 
 export function carregarVinculosTransportadorasLocal() {
@@ -129,25 +114,4 @@ export async function removerVinculoTransportadora(idOuNomeCte, listaAtual = [])
   }
 
   return novaLista;
-}
-
-export function criarMapaVinculosTransportadoras(vinculos = []) {
-  const mapa = new Map();
-  (vinculos || []).forEach((item) => {
-    const vinculo = normalizarVinculo(item);
-    if (!vinculo.nomeCte || !vinculo.nomeTabela) return;
-    mapa.set(vinculo.nomeCteNormalizado, vinculo.nomeTabela);
-    mapa.set(String(vinculo.nomeCte || '').trim().toUpperCase(), vinculo.nomeTabela);
-  });
-  return mapa;
-}
-
-export function aplicarVinculoTransportadora(nome, mapaVinculos) {
-  const raw = String(nome || '').trim();
-  if (!raw || !mapaVinculos) return raw;
-  return mapaVinculos.get(normalizarChave(raw)) || mapaVinculos.get(raw.toUpperCase()) || raw;
-}
-
-export function normalizarNomeVinculo(nome = '') {
-  return normalizarChave(nome);
 }

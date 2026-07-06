@@ -17,7 +17,7 @@ import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig'
 import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, salvarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, salvarVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import {
   carregarSimulacaoRealizadoMensal,
   carregarSimulacoesRealizadoMensalPorIds,
@@ -5470,9 +5470,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const ehNegociacaoSelecionada = nomesNegociacaoRealizado.includes(transportadoraRealizado);
       const nomeTabelaSelecionada = ehNegociacaoSelecionada
         ? transportadoraRealizado
-        : mapaVinculos.get(normalizarChaveSimulador(transportadoraRealizado))
-          || mapaVinculos.get(String(transportadoraRealizado || '').toUpperCase())
-          || transportadoraRealizado;
+        : aplicarVinculoTransportadora(transportadoraRealizado, mapaVinculos);
       let negociacaoRealizadoAtual = ehNegociacaoSelecionada ? negociacaoSelecionadaRealizado : null;
       const ehReajusteSelecionado = isReajusteNegociacaoSimulador(negociacaoRealizadoAtual);
       const transportadoraBaseReajuste = ehReajusteSelecionado
@@ -5591,7 +5589,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', indiceIbgeRealizado);
         const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', indiceIbgeRealizado);
         const nomeOriginal = String(row.transportadora || '').trim();
-        const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
+        const nomeVinculado = aplicarVinculoTransportadora(nomeOriginal, mapaVinculos);
         return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
       });
 
@@ -5649,7 +5647,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           const ibgeDestino = resolverIbgeRealizadoPorCidade(row, 'destino', indiceIbgeRealizado);
           const ibgeOrigem = resolverIbgeRealizadoPorCidade(row, 'origem', indiceIbgeRealizado);
           const nomeOriginal = String(row.transportadora || '').trim();
-          const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
+          const nomeVinculado = aplicarVinculoTransportadora(nomeOriginal, mapaVinculos);
           return { ...row, ibgeOrigem, ibgeDestino, transportadora: nomeVinculado };
         });
         rowsComIbgeBase = filtrarOpcoesRealizadoSim(rowsComIbgeBaseAntesCps, {
@@ -7152,7 +7150,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           }
           // Aplica vínculo de transportadora
           const nomeOriginal = String(row.transportadora || '').trim();
-          const nomeVinculado = mapaVinculos.get(normalizarChaveSimulador(nomeOriginal)) || mapaVinculos.get(nomeOriginal.toUpperCase()) || nomeOriginal;
+          const nomeVinculado = aplicarVinculoTransportadora(nomeOriginal, mapaVinculos);
           return { ...row, ibgeDestino, transportadora: nomeVinculado };
         });
 
