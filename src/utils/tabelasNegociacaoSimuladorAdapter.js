@@ -350,7 +350,11 @@ function criarRotaDeItem(item = {}, tabela = {}, indice = 0) {
 
   if (!destino.ibgeDestino) return null;
 
-  const nomeRota = montarNomeRota({
+  // O nome do grupo de cotação vem do próprio item importado (ex.: "BA - FRETE 3% - MIN 60")
+  // e é compartilhado por várias rotas/destinos. Só cai no nome "Origem → Cidade/UF"
+  // (um por destino) quando o item não trouxe nome de grupo nenhum — senão a tabela
+  // vira uma cotação isolada por destino em vez de reaproveitar o grupo, e fica pesada.
+  const nomeGrupo = texto(nomeCotacaoItem(item)) || montarNomeRota({
     origem: origem.cidadeOrigem,
     cidadeDestino: destino.cidadeDestino,
     ufDestino: destino.ufDestino,
@@ -359,7 +363,7 @@ function criarRotaDeItem(item = {}, tabela = {}, indice = 0) {
 
   return {
     id: item.id ? `neg-rota-${item.id}` : `neg-rota-${indice + 1}`,
-    nomeRota,
+    nomeRota: nomeGrupo,
     ibgeOrigem: origem.ibgeOrigem,
     cidadeOrigem: origem.cidadeOrigem,
     ufOrigem: origem.ufOrigem,
@@ -431,12 +435,22 @@ function adicionarRotaECotacao({ origensMap, tabela, item, rota, generalidades, 
     });
   }
 
-  origem.cotacoes.push(montarCotacao({
+  // Chave por grupo (nomeRota) + faixa de peso, não por destino/item: várias rotas do
+  // mesmo grupo de tarifa (ex.: todas as cidades da BA a 3%) devem reaproveitar UMA
+  // cotação só, como nas tabelas cadastradas manualmente — senão duplica uma linha
+  // idêntica por destino e a tabela fica pesada pra simular.
+  const cotacaoKey = [rota.nomeRota, numero(item.peso_inicial), numero(item.peso_final)].join('|');
+  if (origem.cotacoes.some((cotacao) => cotacao.__cotacaoKey === cotacaoKey)) return;
+
+  origem.cotacoes.push({
+    ...montarCotacao({
     item,
     nomeRota: rota.nomeRota,
     generalidades,
     indice,
-  }));
+    }),
+    __cotacaoKey: cotacaoKey,
+  });
 }
 
 export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
@@ -489,6 +503,7 @@ export function converterTabelaNegociacaoParaSimulador(tabela = {}) {
   const origens = Array.from(origensMap.values()).map((origem) => ({
     ...origem,
     rotas: origem.rotas.map(({ __rotaKey, __nomeCotacao, __ufDestino, ...rota }) => rota),
+    cotacoes: origem.cotacoes.map(({ __cotacaoKey, ...cotacao }) => cotacao),
   })).filter((origem) => origem.rotas.length && origem.cotacoes.length);
 
   return {

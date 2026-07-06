@@ -17,7 +17,7 @@ import { carregarGradeFrete, salvarGradeFrete } from '../utils/gradeFreteConfig'
 import { carregarGradeFreteCentralizada, salvarGradeFreteCentralizada, restaurarGradeFreteCentralizadaPadrao } from '../services/gradeFreteSupabaseService';
 import { buscarBaseSimulacaoDb, buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb, carregarOpcoesSimuladorDb, resolverDestinoIbgeDb } from '../services/freteDatabaseService';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, salvarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import {
   carregarSimulacaoRealizadoMensal,
   carregarSimulacoesRealizadoMensalPorIds,
@@ -642,6 +642,33 @@ function extrairUfsDestinoBaseSimulador(bases = [], canal = '', origemFiltro = '
 
   if (origemNorm && !encontrouOrigem) return [];
   return [...ufs].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function extrairIbgesDestinoBaseSimulador(bases = [], canal = '', origemFiltro = '', limite = 800) {
+  const ibges = new Set();
+  const origemNorm = normalizarChaveSimulador(origemFiltro);
+  let encontrouOrigem = false;
+
+  (bases || []).flat().filter(Boolean).forEach((base) => {
+    (base.origens || [])
+      .filter((origem) => canalOrigemAtende(origem.canal, canal))
+      .filter((origem) => {
+        if (!origemNorm) return true;
+        const ok = normalizarChaveSimulador(origem.cidade) === origemNorm;
+        if (ok) encontrouOrigem = true;
+        return ok;
+      })
+      .forEach((origem) => {
+        if (!origemNorm) encontrouOrigem = true;
+        (origem.rotas || []).forEach((rota) => {
+          const ibge = String(rota.ibgeDestino || '').replace(/\D/g, '').slice(0, 7);
+          if (ibge) ibges.add(ibge);
+        });
+      });
+  });
+
+  if (origemNorm && !encontrouOrigem) return [];
+  return [...ibges].slice(0, limite);
 }
 
 const GRADE_STORAGE_KEY = 'amd-grade-peso-v2';
@@ -1524,6 +1551,34 @@ function isReajusteNegociacaoSimulador(tabela = {}) {
 
 function transportadoraBaseNegociacaoSimulador(tabela = {}) {
   return String(tabela?.transportadora_base_nome || tabela?.transportadoraBaseNome || tabela?.transportadora || '').trim();
+}
+
+function extrairOrigensCapasNegociacaoSimulador(tabelas = [], canal = '', transportadoraLabel = '') {
+  const canalFiltro = normalizarCanalOperacional(canal || '');
+  const transportadoraNorm = normalizarTransportadoraSimulador(transportadoraLabel);
+  const vistos = new Set();
+  const saida = [];
+
+  (tabelas || []).forEach((tabela) => {
+    if (!tabela?.incluir_simulacao) return;
+    const canalTabela = normalizarCanalOperacional(tabela.canal || '');
+    if (canalFiltro && canalTabela && canalTabela !== canalFiltro) return;
+    if (transportadoraNorm) {
+      const labelNorm = normalizarTransportadoraSimulador(labelTabelaNegociacaoSimulador(tabela));
+      const nomeNorm = normalizarTransportadoraSimulador(tabela.transportadora || '');
+      if (labelNorm !== transportadoraNorm && nomeNorm !== transportadoraNorm && !transportadoraCompativelSimulador(labelNorm, transportadoraLabel)) return;
+    }
+
+    const origem = String(tabela.origem || tabela.cidade_origem || '').trim();
+    const uf = String(tabela.uf_origem || tabela.ufOrigem || '').trim().toUpperCase();
+    const texto = origem && uf ? `${origem}/${uf}` : origem;
+    const chave = normalizarChaveSimulador(texto);
+    if (!texto || !chave || vistos.has(chave)) return;
+    vistos.add(chave);
+    saida.push(texto);
+  });
+
+  return saida.sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
 function registroDaTransportadoraBaseSimulador(row = {}, transportadoraBase = '') {
@@ -3946,6 +4001,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [pesoSimples, setPesoSimples] = useState('');
   const [nfSimples, setNfSimples] = useState('');
   const [resultadoSimples, setResultadoSimples] = useState([]);
+  const [incluirNegociacoesSimples, setIncluirNegociacoesSimples] = useState(false);
 
   const [transportadora, setTransportadora] = useState('');
   const [canalTransportadora, setCanalTransportadora] = useState(canais[0] || 'ATACADO');
@@ -3956,18 +4012,21 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [modoLista, setModoLista] = useState(false);
   const [listaCodigos, setListaCodigos] = useState('');
   const [resultadoTransportadora, setResultadoTransportadora] = useState([]);
+  const [incluirNegociacoesTransportadora, setIncluirNegociacoesTransportadora] = useState(false);
 
   const [transportadoraAnalise, setTransportadoraAnalise] = useState('');
   const [canalAnalise, setCanalAnalise] = useState(canais[0] || 'ATACADO');
   const [origemAnalise, setOrigemAnalise] = useState('');
   const [ufAnalise, setUfAnalise] = useState('');
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
+  const [incluirNegociacoesAnalise, setIncluirNegociacoesAnalise] = useState(false);
 
   const [canalCobertura, setCanalCobertura] = useState(canais[0] || 'ATACADO');
   const [origemCobertura, setOrigemCobertura] = useState('');
   const [transportadoraCobertura, setTransportadoraCobertura] = useState('');
   const [ufCobertura, setUfCobertura] = useState('');
   const [resultadoCobertura, setResultadoCobertura] = useState(null);
+  const [incluirNegociacoesCobertura, setIncluirNegociacoesCobertura] = useState(false);
 
   const [canalOrigem, setCanalOrigem] = useState(canais[0] || 'ATACADO');
   const [origemOrigem, setOrigemOrigem] = useState('');
@@ -3977,6 +4036,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [fimOrigem, setFimOrigem] = useState('');
   const [usarRealizadoOrigem, setUsarRealizadoOrigem] = useState(true);
   const [resultadoOrigem, setResultadoOrigem] = useState(null);
+  const [incluirNegociacoesOrigem, setIncluirNegociacoesOrigem] = useState(false);
   const [detalheOrigemAberto, setDetalheOrigemAberto] = useState('');
 
   const [transportadoraRealizado, setTransportadoraRealizado] = useState('');
@@ -3999,6 +4059,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [carregandoAnaliseMensalRealizado, setCarregandoAnaliseMensalRealizado] = useState(false);
   const [salvandoAnaliseMensalRealizado, setSalvandoAnaliseMensalRealizado] = useState(false);
   const [feedbackAnaliseMensalRealizado, setFeedbackAnaliseMensalRealizado] = useState('');
+  const [nomeRealizadoParaVincular, setNomeRealizadoParaVincular] = useState('');
+  const [salvandoVinculoReajusteRealizado, setSalvandoVinculoReajusteRealizado] = useState(false);
+  const [feedbackVinculoReajusteRealizado, setFeedbackVinculoReajusteRealizado] = useState('');
 
   // --- Fluxo em duas etapas: Buscar CT-es -> Simular ---
   // baseRealizadoCarregada guarda a base navegável (tipo BI) já buscada/enriquecida
@@ -4166,8 +4229,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   };
 
   const origensPorCanalSimples = useMemo(() => {
+    const origensNegociacao = extrairOrigensCapasNegociacaoSimulador(negociacoesSimulador, canalSimples);
     const online = opcoesOnline.origensPorCanal?.[canalSimples];
-    if (online?.length) return online;
+    if (online?.length) return valoresUnicosValidos([...online, ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
     const locais = transportadoras.flatMap((item) =>
       (item.origens || [])
@@ -4176,8 +4240,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
         .filter(Boolean)
     );
 
-    return [...new Set(locais.length ? locais : todasOrigens)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  }, [opcoesOnline.origensPorCanal, canalSimples, transportadoras, todasOrigens]);
+    return valoresUnicosValidos([...(locais.length ? locais : todasOrigens), ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [opcoesOnline.origensPorCanal, canalSimples, transportadoras, todasOrigens, negociacoesSimulador]);
   const atualizarOpcoesSimulador = async () => {
     setCarregandoOpcoes(true);
     setErroOpcoes('');
@@ -4316,6 +4380,106 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
   };
 
+  const carregarNegociacoesCompletasCanalSimulador = async (canal = '') => {
+    const canalFiltro = canal || canalRealizado || canalSimples || canalTransportadora || canalAnalise || canalOrigem || canalCobertura || '';
+    setCarregandoNegociacoesSimulador(true);
+    setErroNegociacoesSimulador('');
+    setEtapaNegociacoesSimulador('detalhe');
+
+    try {
+      const completas = await executarComTimeout(buscarTabelasNegociacaoParaSimulacao({
+        tipoTabela: 'FRACIONADO',
+        canal: canalFiltro,
+      }), 10000);
+      const detalhePorId = new Map((completas || []).map((tabela) => [tabela.id, tabela]));
+      (completas || []).forEach((tabela) => negociacoesHidratadasRef.current.add(tabela.id));
+
+      setNegociacoesSimulador((anteriores) => {
+        const ids = new Set((anteriores || []).map((tabela) => tabela.id));
+        const mescladas = (anteriores || []).map((tabela) => {
+          const detalhe = detalhePorId.get(tabela.id);
+          return detalhe ? { ...tabela, ...detalhe } : tabela;
+        });
+        (completas || []).forEach((tabela) => {
+          if (!ids.has(tabela.id)) mescladas.push(tabela);
+        });
+        return mescladas;
+      });
+
+      setNegociacoesAtualizadasEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      setEtapaNegociacoesSimulador('concluido');
+      return completas || [];
+    } catch (error) {
+      setErroNegociacoesSimulador(error.message || 'Erro ao carregar as negociações para simulação.');
+      setEtapaNegociacoesSimulador('erro');
+      return [];
+    } finally {
+      setCarregandoNegociacoesSimulador(false);
+    }
+  };
+
+  const carregarNegociacoesComparacaoSimulador = async ({
+    canal = '',
+    origem = '',
+    transportadoraSelecionada = '',
+    ibgesDestino = [],
+    ufsDestino = [],
+  } = {}) => {
+    let capasBase = negociacoesSimulador || [];
+    if (!capasNegociacaoCarregadasRef.current) {
+      capasBase = await carregarNegociacoesSimulador();
+    }
+
+    const canalFiltro = normalizarCanalOperacional(canal || '');
+    const origemFiltro = normalizarChaveSimulador(origem || '');
+    const transportadoraNorm = normalizarTransportadoraSimulador(transportadoraSelecionada || '');
+
+    const candidatas = capasBase.filter((tabela) => {
+      if (!tabela?.incluir_simulacao) return false;
+      const canalTabela = normalizarCanalOperacional(tabela.canal || '');
+      if (canalFiltro && canalTabela && canalTabela !== canalFiltro) return false;
+      if (origemFiltro) {
+        const origemTabela = normalizarChaveSimulador(`${tabela.origem || tabela.cidade_origem || ''}/${tabela.uf_origem || tabela.ufOrigem || ''}`);
+        const origemTabelaSemUf = normalizarChaveSimulador(tabela.origem || tabela.cidade_origem || '');
+        if (origemTabela !== origemFiltro && origemTabelaSemUf !== origemFiltro) return false;
+      }
+      if (transportadoraNorm) {
+        const labelNorm = normalizarTransportadoraSimulador(labelTabelaNegociacaoSimulador(tabela));
+        const nomeNorm = normalizarTransportadoraSimulador(tabela.transportadora || '');
+        const baseNorm = normalizarTransportadoraSimulador(transportadoraBaseNegociacaoSimulador(tabela));
+        if (
+          labelNorm === transportadoraNorm
+          || nomeNorm === transportadoraNorm
+          || baseNorm === transportadoraNorm
+          || transportadoraCompativelSimulador(labelNorm, transportadoraSelecionada)
+          || transportadoraCompativelSimulador(nomeNorm, transportadoraSelecionada)
+          || transportadoraCompativelSimulador(baseNorm, transportadoraSelecionada)
+        ) return true;
+        return false;
+      }
+      return true;
+    });
+
+    if (!candidatas.length) return [];
+
+    const ibgesRecorte = (Array.isArray(ibgesDestino) ? ibgesDestino : [ibgesDestino]).map((item) => String(item || '').trim()).filter(Boolean);
+    const ufsRecorte = (Array.isArray(ufsDestino) ? ufsDestino : [ufsDestino]).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean);
+    const recorte = ibgesRecorte.length || ufsRecorte.length
+      ? { ibgesDestino: ibgesRecorte, ufsDestino: ufsRecorte }
+      : null;
+
+    try {
+      const timeoutMs = recorte ? 20000 : 90000;
+      const completas = await executarComTimeout(Promise.all(
+        candidatas.map((tabela) => carregarDetalhesNegociacaoParaSimulacao(tabela, recorte))
+      ), timeoutMs);
+      return converterTabelasNegociacaoParaSimulador(completas, { canal });
+    } catch (error) {
+      setErroNegociacoesSimulador(error.message || 'Erro ao carregar tabelas em negociação para comparação.');
+      return [];
+    }
+  };
+
   useEffect(() => {
     atualizarOpcoesSimulador();
   }, []);
@@ -4323,7 +4487,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // Ao abrir o Simulador do Realizado, carrega apenas a LISTA LEVE uma única vez.
   // Guardado por ref para não entrar em loop quando não houver negociações.
   useEffect(() => {
-    if (aba === 'realizado' && !capasNegociacaoCarregadasRef.current && !carregandoNegociacoesSimulador) {
+    if (!capasNegociacaoCarregadasRef.current && !carregandoNegociacoesSimulador) {
       carregarNegociacoesSimulador();
     }
   }, [aba]);
@@ -4405,6 +4569,31 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
   };
 
+  // Confirma manualmente qual nome (como aparece no realizado/CT-e) corresponde à
+  // transportadora base do reajuste, e grava como vínculo permanente — assim as
+  // próximas simulações dessa negociação já casam certo sem precisar escolher de novo.
+  const confirmarVinculoReajusteRealizado = async () => {
+    const nomeCte = String(nomeRealizadoParaVincular || '').trim();
+    const nomeTabela = String(transportadoraBaseReajusteRealizado || '').trim();
+    if (!nomeCte || !nomeTabela) return;
+
+    setSalvandoVinculoReajusteRealizado(true);
+    setFeedbackVinculoReajusteRealizado('');
+    try {
+      const vinculosAtuais = await carregarVinculosTransportadoras();
+      const semEsteCte = (vinculosAtuais || []).filter(
+        (item) => normalizarChaveSimulador(item.nomeCte) !== normalizarChaveSimulador(nomeCte)
+      );
+      await salvarVinculosTransportadoras([...semEsteCte, { nomeCte, nomeTabela, origem: 'simulador-reajuste' }]);
+      setFeedbackVinculoReajusteRealizado(`Vínculo salvo: "${nomeCte}" (realizado) → "${nomeTabela}" (tabela).`);
+      if (transportadoraRealizado) await onBuscarCtesRealizado();
+    } catch (error) {
+      setFeedbackVinculoReajusteRealizado(error.message || 'Erro ao salvar o vínculo.');
+    } finally {
+      setSalvandoVinculoReajusteRealizado(false);
+    }
+  };
+
   useEffect(() => () => {
     limparTimersProcessamento();
   }, []);
@@ -4425,18 +4614,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const transportadorasDisponiveis = todasTransportadorasDisponiveis;
 
   const transportadorasPorCanalTransportadora = useMemo(
-    () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalTransportadora, opcoesOnline, transportadoras),
-    [todasTransportadorasDisponiveis, canalTransportadora, opcoesOnline, transportadoras]
+    () => valoresUnicosValidos([
+      ...filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalTransportadora, opcoesOnline, transportadoras),
+      ...nomesTabelasNegociacaoSimulador(negociacoesSimulador, { canal: canalTransportadora }),
+    ]).sort((a, b) => a.localeCompare(b, 'pt-BR')),
+    [todasTransportadorasDisponiveis, canalTransportadora, opcoesOnline, transportadoras, negociacoesSimulador]
   );
 
   const transportadorasPorCanalAnalise = useMemo(
-    () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalAnalise, opcoesOnline, transportadoras),
-    [todasTransportadorasDisponiveis, canalAnalise, opcoesOnline, transportadoras]
+    () => valoresUnicosValidos([
+      ...filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalAnalise, opcoesOnline, transportadoras),
+      ...nomesTabelasNegociacaoSimulador(negociacoesSimulador, { canal: canalAnalise }),
+    ]).sort((a, b) => a.localeCompare(b, 'pt-BR')),
+    [todasTransportadorasDisponiveis, canalAnalise, opcoesOnline, transportadoras, negociacoesSimulador]
   );
 
   const transportadorasPorCanalCobertura = useMemo(
-    () => filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras),
-    [todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras]
+    () => valoresUnicosValidos([
+      ...filtrarTransportadorasPorCanal(todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras),
+      ...nomesTabelasNegociacaoSimulador(negociacoesSimulador, { canal: canalCobertura }),
+    ]).sort((a, b) => a.localeCompare(b, 'pt-BR')),
+    [todasTransportadorasDisponiveis, canalCobertura, opcoesOnline, transportadoras, negociacoesSimulador]
   );
 
   const transportadorasNegociacaoRealizado = useMemo(
@@ -4728,30 +4926,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
   };
 
   const origensAnaliseDisponiveis = useMemo(() => {
+    const origensNegociacao = extrairOrigensCapasNegociacaoSimulador(negociacoesSimulador, canalAnalise, transportadoraAnalise);
     const porTransportadora = opcoesOnline.origensPorTransportadora?.[transportadoraAnalise];
-    if (porTransportadora?.length) return porTransportadora;
+    if (porTransportadora?.length) return valoresUnicosValidos([...porTransportadora, ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
     const porCanal = opcoesOnline.origensPorCanal?.[canalAnalise];
-    if (porCanal?.length) return porCanal;
+    if (porCanal?.length) return valoresUnicosValidos([...porCanal, ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
     const selecionada = transportadoras.find((item) => item.nome === transportadoraAnalise);
     if (selecionada) {
-      return [...new Set((selecionada.origens || [])
+      return valoresUnicosValidos([...(selecionada.origens || [])
         .filter((origem) => canalOrigemAtende(origem.canal, canalAnalise))
         .map((origem) => origem.cidade)
-        .filter(Boolean))]
+        .filter(Boolean), ...origensNegociacao])
         .sort((a, b) => a.localeCompare(b, 'pt-BR'));
     }
 
-    return todasOrigens;
-  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraAnalise, canalAnalise, transportadoras, todasOrigens]);
+    return valoresUnicosValidos([...todasOrigens, ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [opcoesOnline.origensPorTransportadora, opcoesOnline.origensPorCanal, transportadoraAnalise, canalAnalise, transportadoras, todasOrigens, negociacoesSimulador]);
 
 
   const origensOrigemDisponiveis = useMemo(() => {
+    const origensNegociacao = extrairOrigensCapasNegociacaoSimulador(negociacoesSimulador, canalOrigem);
     const online = opcoesOnline.origensPorCanal?.[canalOrigem];
-    if (online?.length) return online;
-    return todasOrigens;
-  }, [opcoesOnline.origensPorCanal, canalOrigem, todasOrigens]);
+    if (online?.length) return valoresUnicosValidos([...online, ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return valoresUnicosValidos([...todasOrigens, ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [opcoesOnline.origensPorCanal, canalOrigem, todasOrigens, negociacoesSimulador]);
 
   const origensRealizadoDisponiveis = useMemo(() => {
     if (transportadoraRealizado && origensMalhaRealizadoDisponiveis.length) return origensMalhaRealizadoDisponiveis;
@@ -4891,12 +5091,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
 
   const origensTransportadora = useMemo(() => {
+    const origensNegociacao = extrairOrigensCapasNegociacaoSimulador(negociacoesSimulador, canalTransportadora, transportadora);
     const online = opcoesOnline.origensPorTransportadora?.[transportadora];
-    if (online?.length) return online;
+    if (online?.length) return valoresUnicosValidos([...online, ...origensNegociacao]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
     const selecionada = transportadoras.find((item) => item.nome === transportadora);
-    if (!selecionada) return [];
-    return [...new Set((selecionada.origens || []).filter((item) => canalOrigemAtende(item.canal, canalTransportadora)).map((item) => item.cidade))].sort();
-  }, [transportadoras, transportadora, canalTransportadora, opcoesOnline.origensPorTransportadora]);
+    if (!selecionada) return origensNegociacao;
+    return valoresUnicosValidos([
+      ...(selecionada.origens || []).filter((item) => canalOrigemAtende(item.canal, canalTransportadora)).map((item) => item.cidade),
+      ...origensNegociacao,
+    ]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [transportadoras, transportadora, canalTransportadora, opcoesOnline.origensPorTransportadora, negociacoesSimulador]);
 
   const canaisTransportadora = useMemo(() => {
     const online = opcoesOnline.canaisPorTransportadora?.[transportadora];
@@ -4972,9 +5176,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
 
     // Inclui as negociações disponíveis pra simular como concorrentes "(negociação)".
+    const baseNegociacoes = incluirNegociacoesSimples
+      ? await carregarNegociacoesComparacaoSimulador({
+        canal: canalSimples,
+        origem: origemSimples,
+        ibgesDestino: destinoFinal ? [destinoFinal] : [],
+      })
+      : [];
     const baseSimplesComNegoc = [
       ...baseOnline,
-      ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalSimples }),
+      ...baseNegociacoes,
     ];
     setResultadoSimples(simularSimples({
       transportadoras: baseSimplesComNegoc,
@@ -5030,9 +5241,20 @@ export default function SimuladorPage({ transportadoras = [] }) {
     atualizarProcessamentoUi('Calculando cenário competitivo...', 88);
 
     // Inclui as negociações disponíveis pra simular como concorrentes "(negociação)".
+    const ibgesRecorteTransportadora = codigos.length
+      ? codigos
+      : extrairIbgesDestinoBaseSimulador(baseOnline, canalTransportadora, origemTransportadora);
+    const baseNegociacoes = incluirNegociacoesTransportadora && transportadora
+      ? await carregarNegociacoesComparacaoSimulador({
+        canal: canalTransportadora,
+        origem: origemTransportadora,
+        transportadoraSelecionada: transportadora,
+        ibgesDestino: ibgesRecorteTransportadora,
+      })
+      : [];
     const baseTranspComNegoc = [
       ...baseOnline,
-      ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalTransportadora }),
+      ...baseNegociacoes,
     ];
     setResultadoTransportadora(simularPorTransportadora({
       transportadoras: baseTranspComNegoc,
@@ -5093,8 +5315,22 @@ export default function SimuladorPage({ transportadoras = [] }) {
         nomeTransportadora: transportadoraAnalise,
         ufDestino: ufAnalise,
       });
+      const ibgesRecorteAnalise = extrairIbgesDestinoBaseSimulador(baseOnline, canalAnalise, origemAnalise);
+      const baseNegociacoes = incluirNegociacoesAnalise && (ufAnalise || ibgesRecorteAnalise.length)
+        ? await carregarNegociacoesComparacaoSimulador({
+          canal: canalAnalise,
+          origem: origemAnalise,
+          transportadoraSelecionada: transportadoraAnalise,
+          ibgesDestino: ufAnalise ? [] : ibgesRecorteAnalise,
+          ufsDestino: ufAnalise ? [ufAnalise] : [],
+        })
+        : [];
+      const baseAnaliseComNegoc = [
+        ...baseOnline,
+        ...baseNegociacoes,
+      ];
 
-      if (!baseOnline.length) {
+      if (!baseAnaliseComNegoc.length) {
         setResultadoAnalise(null);
         finalizarProcessamentoUi('Sem dados para analisar', 'Não foram encontradas rotas/cotações para essa transportadora, origem e canal.', 100);
         return;
@@ -5102,7 +5338,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       atualizarProcessamentoUi('Organizando rotas, destinos e faixas...', 62);
 
-      const lookupOnline = buildLookupTables(baseOnline);
+      const lookupOnline = buildLookupTables(baseAnaliseComNegoc);
       const mapaCidades = new Map(cidadePorIbgeCompleto);
       (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
 
@@ -5110,10 +5346,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       await new Promise((resolve) => setTimeout(resolve, 80));
 
       const resultado = analisarTransportadoraPorGrade({
-        transportadoras: [
-          ...baseOnline,
-          ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalAnalise }),
-        ],
+        transportadoras: baseAnaliseComNegoc,
         nomeTransportadora: transportadoraAnalise,
         canal: canalAnalise,
         origem: origemAnalise,
@@ -5175,7 +5408,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
         canal: canalCobertura,
         origem: origemCobertura,
       });
-      const base = baseOnline.length ? baseOnline : transportadoras;
+      const ibgesRecorteCobertura = extrairIbgesDestinoBaseSimulador(baseOnline, canalCobertura, origemCobertura);
+      const baseNegociacoes = incluirNegociacoesCobertura && (ufCobertura || ibgesRecorteCobertura.length)
+        ? await carregarNegociacoesComparacaoSimulador({
+          canal: canalCobertura,
+          origem: origemCobertura,
+          transportadoraSelecionada: transportadoraCobertura,
+          ibgesDestino: ufCobertura ? [] : ibgesRecorteCobertura,
+          ufsDestino: ufCobertura ? [ufCobertura] : [],
+        })
+        : [];
+      const base = [...(baseOnline.length ? baseOnline : transportadoras), ...baseNegociacoes];
       setResultadoCobertura(analisarCoberturaTabela({
         transportadoras: base,
         canal: canalCobertura,
@@ -6852,16 +7095,27 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ufDestino: ufDestinoOrigem,
       });
 
-      const lookupOnline = buildLookupTables(baseOnline);
+      const ibgesRecorteOrigem = extrairIbgesDestinoBaseSimulador(baseOnline, canalOrigem, origemOrigem);
+      const baseNegociacoes = incluirNegociacoesOrigem && (ufDestinoOrigem || ibgesRecorteOrigem.length)
+        ? await carregarNegociacoesComparacaoSimulador({
+          canal: canalOrigem,
+          origem: origemOrigem,
+          ibgesDestino: ufDestinoOrigem ? [] : ibgesRecorteOrigem,
+          ufsDestino: ufDestinoOrigem ? [ufDestinoOrigem] : [],
+        })
+        : [];
+      const baseOrigemComNegoc = [
+        ...baseOnline,
+        ...baseNegociacoes,
+      ];
+
+      const lookupOnline = buildLookupTables(baseOrigemComNegoc);
       const mapaCidades = new Map(cidadePorIbgeCompleto);
       (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
 
       atualizarProcessamentoUi('Calculando ranking, cobertura e rotas críticas...', 62);
       const resultadoTabela = analisarOrigemPorGrade({
-        transportadoras: [
-          ...baseOnline,
-          ...converterTabelasNegociacaoParaSimulador(negociacoesSimulador, { canal: canalOrigem }),
-        ],
+        transportadoras: baseOrigemComNegoc,
         canal: canalOrigem,
         origem: origemOrigem,
         ufDestino: ufDestinoOrigem,
@@ -6902,7 +7156,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         realizado = {
           totalCompativel: rowsComIbge.length,
           limit: 5000,
-          ...resumirRealizadoPorOrigem(rowsComIbge, baseOnline, { canal: canalOrigem, origem: origemOrigem }, mapaCidades, grade[canalOrigem] || grade.ATACADO || []),
+          ...resumirRealizadoPorOrigem(rowsComIbge, baseOrigemComNegoc, { canal: canalOrigem, origem: origemOrigem }, mapaCidades, grade[canalOrigem] || grade.ATACADO || []),
         };
       }
 
@@ -7068,7 +7322,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <small style={{ color: '#64748b' }}>Se não informar, o simulador usa o Valor NF da grade.</small>
             </label>
           </div>
-          <div className="sim-actions"><button className="primary" onClick={onSimularSimples} disabled={carregandoSimulacao}>{carregandoSimulacao ? "Simulando..." : "Simular"}</button></div>
+          <div className="sim-actions">
+            <label className="sim-flag">
+              <input type="checkbox" checked={incluirNegociacoesSimples} onChange={(e) => setIncluirNegociacoesSimples(e.target.checked)} />
+              Incluir tabelas em negociação liberadas
+            </label>
+            <button className="primary" onClick={onSimularSimples} disabled={carregandoSimulacao}>{carregandoSimulacao ? "Simulando..." : "Simular"}</button>
+          </div>
           <div className="sim-resultados">{resultadoSimples.map((item, idx) => <ResultadoCard key={`${item.transportadora}-${idx}`} item={item} />)}</div>
         </section>
       )}
@@ -7127,6 +7387,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <input type="checkbox" checked={modoLista} onChange={(e) => setModoLista(e.target.checked)} />
               Simulação em massa por lista de CEP/IBGE
             </label>
+            <label className="sim-flag">
+              <input type="checkbox" checked={incluirNegociacoesTransportadora} onChange={(e) => setIncluirNegociacoesTransportadora(e.target.checked)} />
+              Incluir tabelas em negociação liberadas
+            </label>
             {modoLista && (
               <div className="sim-lista-box" style={{ marginTop: 12 }}>
                 <label>Lista de cidades, CEPs ou IBGEs
@@ -7170,6 +7434,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <select value={ufAnalise} onChange={(e) => setUfAnalise(e.target.value)}>
                 {UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}
               </select>
+            </label>
+            <label className="sim-flag" style={{ justifyContent: 'end' }}>
+              <input type="checkbox" checked={incluirNegociacoesAnalise} onChange={(e) => setIncluirNegociacoesAnalise(e.target.checked)} />
+              Incluir negociações
             </label>
             <div className="sim-actions" style={{ alignItems: 'flex-end' }}><button className="primary" onClick={onSimularGrade} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Processando..." : "Gerar relatório"}</button></div>
           </div>
@@ -7236,6 +7504,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label className="sim-flag" style={{ justifyContent: 'end' }}>
               <input type="checkbox" checked={usarRealizadoOrigem} onChange={(e) => setUsarRealizadoOrigem(e.target.checked)} />
               Usar CT-e Online (Supabase)
+            </label>
+            <label className="sim-flag" style={{ justifyContent: 'end' }}>
+              <input type="checkbox" checked={incluirNegociacoesOrigem} onChange={(e) => setIncluirNegociacoesOrigem(e.target.checked)} />
+              Incluir negociações
             </label>
           </div>
 
@@ -7522,6 +7794,31 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <small style={{ color: '#b45309', fontWeight: 700 }}>Reajuste: filtra o realizado por {transportadoraBaseReajusteRealizado || 'transportadora base'}.</small>
               )}
             </label>
+            {isReajusteRealizadoSelecionado && (
+              <label>
+                Nome desta transportadora no realizado
+                <select value={nomeRealizadoParaVincular} onChange={(event) => setNomeRealizadoParaVincular(event.target.value)}>
+                  <option value="">
+                    {opcoesBiRealizado.transportadoras.length ? 'Selecione o nome encontrado no realizado' : 'Busque os CT-es primeiro para listar os nomes'}
+                  </option>
+                  {opcoesBiRealizado.transportadoras.map(({ nome, qtd }) => (
+                    <option key={nome} value={nome}>{`${nome} (${qtd.toLocaleString('pt-BR')} CT-es)`}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="sim-tab"
+                  style={{ marginTop: 6 }}
+                  disabled={!nomeRealizadoParaVincular || salvandoVinculoReajusteRealizado}
+                  onClick={confirmarVinculoReajusteRealizado}
+                >
+                  {salvandoVinculoReajusteRealizado ? 'Salvando vínculo...' : 'Confirmar vínculo com esse nome'}
+                </button>
+                {feedbackVinculoReajusteRealizado && (
+                  <small style={{ color: '#166534' }}>{feedbackVinculoReajusteRealizado}</small>
+                )}
+              </label>
+            )}
             <label>
               Canal
               <select value={canalRealizado} onChange={(event) => { setCanalRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); }}>
@@ -9249,7 +9546,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
             <label>Transportadora<ComboBuscavel value={transportadoraCobertura} opcoes={transportadorasPorCanalCobertura} placeholder="Todas ou digite a transportadora" onChange={(v) => setTransportadoraCobertura(v)} /></label>
             <label>UF destino<select value={ufCobertura} onChange={(e) => setUfCobertura(e.target.value)}>{UF_OPTIONS.map((item) => <option key={item} value={item}>{item || 'Todas'}</option>)}</select></label>
           </div>
-          <div className="sim-actions"><button className="primary" onClick={onAnalisarCobertura} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Analisando..." : "Analisar cobertura"}</button></div>
+          <div className="sim-actions">
+            <label className="sim-flag">
+              <input type="checkbox" checked={incluirNegociacoesCobertura} onChange={(e) => setIncluirNegociacoesCobertura(e.target.checked)} />
+              Incluir tabelas em negociação liberadas
+            </label>
+            <button className="primary" onClick={onAnalisarCobertura} disabled={carregandoSimulacao || processamentoUi.ativo}>{carregandoSimulacao || processamentoUi.ativo ? "Analisando..." : "Analisar cobertura"}</button>
+          </div>
           {resultadoCobertura && (
             <div className="sim-cobertura-box">
               <p>{resultadoCobertura.explicacao}</p>

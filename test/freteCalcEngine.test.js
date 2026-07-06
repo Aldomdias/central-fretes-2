@@ -177,7 +177,7 @@ test('negociacao "maior valor" (faixa aberta + percentual + R$/kg) vai pro motor
   );
 });
 
-test('negociacao replica cotacao por nome para todas as rotas tecnicas', () => {
+test('negociacao reaproveita uma unica cotacao por nome para todas as rotas tecnicas', () => {
   const tabela = converterTabelaNegociacaoParaSimulador({
     id: 'avioes-pb',
     transportadora: 'Avioes Transportes',
@@ -229,8 +229,15 @@ test('negociacao replica cotacao por nome para todas as rotas tecnicas', () => {
     origem.rotas.map((rota) => rota.ibgeDestino).sort(),
     ['2501807', '2503209'],
   );
-  assert.equal(origem.cotacoes.length, 2);
+  assert.equal(
+    origem.cotacoes.length, 1,
+    'as duas rotas compartilham o mesmo nome de grupo (ITAJAI X PB - CAPITAL), entao devem reaproveitar uma unica cotacao em vez de duplicar - tabela pesada e incompativel com o Verum era o bug corrigido aqui'
+  );
   assert.ok(origem.cotacoes.every((cotacao) => cotacao.valorFixo === 382.4));
+  assert.ok(
+    origem.rotas.every((rota) => rota.nomeRota === origem.cotacoes[0].rota),
+    'rota e cotacao devem casar pelo nome do grupo para o motor de calculo encontrar o preco'
+  );
 });
 
 test('simulador realizado ignora cubagem sem sinal de tracking', async () => {
