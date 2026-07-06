@@ -22,6 +22,7 @@ import {
   statusLegadoPorGestao,
   podePublicarOficial,
 } from '../utils/tabelasNegociacaoGestao';
+import { atualizarSolicitacaoCentralNegociacao, concluirSolicitacaoCentral } from './centralSolicitacoesService';
 
 export const STATUS_TABELA_NEGOCIACAO = [
   'EM NEGOCIAÇÃO',
@@ -573,10 +574,21 @@ const COLUNAS_GESTAO_TABELAS_NEGOCIACAO = [
   'historico_gestao',
 ];
 
+const COLUNAS_OPCIONAIS_TABELAS_NEGOCIACAO = [
+  'numero_amd',
+  'solicitacao_amd_id',
+];
+
 function erroColunaGestaoAusente(error) {
   const msg = String(error?.message || error || '').toLowerCase();
   return msg.includes('schema cache')
     && COLUNAS_GESTAO_TABELAS_NEGOCIACAO.some((col) => msg.includes(col));
+}
+
+function erroColunaOpcionalAusente(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return msg.includes('schema cache')
+    && COLUNAS_OPCIONAIS_TABELAS_NEGOCIACAO.some((col) => msg.includes(col));
 }
 
 function prepararPayloadPersistencia(payload = {}) {
@@ -601,8 +613,17 @@ function semColunasGestao(payload = {}) {
   return next;
 }
 
+function semColunasOpcionais(payload = {}) {
+  const next = Object.assign({}, payload);
+  COLUNAS_OPCIONAIS_TABELAS_NEGOCIACAO.forEach(function(col) { delete next[col]; });
+  return next;
+}
+
 async function inserirTabelaNegociacaoComFallback(supabase, payload) {
   let result = await supabase.from('tabelas_negociacao').insert(payload).select().single();
+  if (result.error && erroColunaOpcionalAusente(result.error)) {
+    result = await supabase.from('tabelas_negociacao').insert(semColunasOpcionais(payload)).select().single();
+  }
   if (result.error && erroColunaGestaoAusente(result.error)) {
     result = await supabase.from('tabelas_negociacao').insert(semColunasGestao(payload)).select().single();
   }
@@ -612,11 +633,41 @@ async function inserirTabelaNegociacaoComFallback(supabase, payload) {
 
 async function atualizarTabelaNegociacaoComFallback(supabase, id, payload) {
   let result = await supabase.from('tabelas_negociacao').update(payload).eq('id', id).select().single();
+  if (result.error && erroColunaOpcionalAusente(result.error)) {
+    result = await supabase.from('tabelas_negociacao').update(semColunasOpcionais(payload)).eq('id', id).select().single();
+  }
   if (result.error && erroColunaGestaoAusente(result.error)) {
     result = await supabase.from('tabelas_negociacao').update(semColunasGestao(payload)).eq('id', id).select().single();
   }
   if (result.error) throw new Error(result.error.message || 'Erro ao atualizar tabela em negociação.');
   return result.data;
+}
+
+function montarPayloadSyncCentralNegociacao(tabela = {}, payload = {}) {
+  const tipo = normalizarTipoNegociacao(tabela);
+  return {
+    transportadora: texto(tabela.transportadora),
+    origem: texto(tabela.origem || tabela.uf_origem),
+    canal: texto(tabela.canal),
+    status: texto(tabela.status),
+    statusGestao: texto(tabela.status_gestao),
+    tipoNegociacao: tipo,
+    ehReajuste: tipo === 'REAJUSTE_TABELA_EXISTENTE',
+    transportadoraBase: texto(tabela.transportadora_base_nome),
+    negociacaoId: texto(tabela.id),
+    observacao: texto(payload.observacao || payload.justificativa || payload.observacao_aprovacao || payload.justificativa_aprovacao),
+    usuario: texto(payload.usuario?.nome || payload.usuario_nome || payload.negociador_nome || payload.aprovador_nome),
+  };
+}
+
+async function sincronizarCentralNegociacaoSeVinculada(tabela = {}, payload = {}) {
+  const protocolo = texto(tabela.numero_amd);
+  if (!protocolo) return null;
+  try {
+    return await atualizarSolicitacaoCentralNegociacao(protocolo, montarPayloadSyncCentralNegociacao(tabela, payload));
+  } catch (error) {
+    return { ok: false, erro: error.message || 'Não foi possível atualizar a Central de Solicitações.' };
+  }
 }
 
 export async function listarTabelasNegociacao(filtros = {}) {
@@ -665,6 +716,8 @@ export async function criarTabelaNegociacao(payload = {}) {
     periodo_realizado_inicio: dataOuNull(payload.periodo_realizado_inicio || payload.periodoRealizadoInicio),
     periodo_realizado_fim: dataOuNull(payload.periodo_realizado_fim || payload.periodoRealizadoFim),
     tipo_veiculo: texto(payload.tipo_veiculo || payload.tipoVeiculo),
+    numero_amd: texto(payload.numero_amd || payload.numeroAmd),
+    solicitacao_amd_id: texto(payload.solicitacao_amd_id || payload.solicitacaoAmdId),
     status: payload.status || 'EM NEGOCIAÇÃO',
     descricao: texto(payload.descricao),
     regiao: texto(payload.regiao),
@@ -728,6 +781,8 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     periodo_realizado_inicio:  payload.periodo_realizado_inicio !== undefined || payload.periodoRealizadoInicio !== undefined ? dataOuNull(payload.periodo_realizado_inicio || payload.periodoRealizadoInicio) : undefined,
     periodo_realizado_fim:     payload.periodo_realizado_fim !== undefined || payload.periodoRealizadoFim !== undefined ? dataOuNull(payload.periodo_realizado_fim || payload.periodoRealizadoFim) : undefined,
     tipo_veiculo:              payload.tipo_veiculo !== undefined || payload.tipoVeiculo !== undefined ? texto(payload.tipo_veiculo || payload.tipoVeiculo) : undefined,
+    numero_amd:                payload.numero_amd !== undefined || payload.numeroAmd !== undefined ? texto(payload.numero_amd || payload.numeroAmd) : undefined,
+    solicitacao_amd_id:        payload.solicitacao_amd_id !== undefined || payload.solicitacaoAmdId !== undefined ? texto(payload.solicitacao_amd_id || payload.solicitacaoAmdId) : undefined,
     status:                    payload.status !== undefined ? payload.status : undefined,
     descricao:                 payload.descricao !== undefined ? texto(payload.descricao) : undefined,
     regiao:                    payload.regiao !== undefined ? texto(payload.regiao) : undefined,
@@ -778,7 +833,9 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
     if (atualizacao[key] === undefined) delete atualizacao[key];
   });
 
-  return atualizarTabelaNegociacaoComFallback(supabase, id, atualizacao);
+  const atualizada = await atualizarTabelaNegociacaoComFallback(supabase, id, atualizacao);
+  const syncCentral = await sincronizarCentralNegociacaoSeVinculada(atualizada, payload);
+  return syncCentral ? { ...atualizada, sync_central_solicitacoes: syncCentral } : atualizada;
 }
 
 export async function excluirTabelaNegociacao(id) {
@@ -1130,6 +1187,38 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
   };
 }
 
+async function limparDadosOperacionaisNegociacaoPublicada(id, resumoAnterior = {}, promocaoOficial = {}) {
+  const supabase = supabaseOrThrow();
+  const agora = dataISO();
+
+  const [itensCount, taxasCount] = await Promise.all([
+    supabase.from('tabelas_negociacao_itens').select('id', { count: 'exact', head: true }).eq('tabela_negociacao_id', id),
+    supabase.from('tabelas_negociacao_taxas_destino').select('id', { count: 'exact', head: true }).eq('tabela_negociacao_id', id),
+  ]);
+
+  if (itensCount.error) throw new Error(itensCount.error.message || 'Erro ao contar itens da negociação publicada.');
+  if (taxasCount.error) throw new Error(taxasCount.error.message || 'Erro ao contar taxas da negociação publicada.');
+
+  const [taxasDelete, itensDelete] = await Promise.all([
+    supabase.from('tabelas_negociacao_taxas_destino').delete().eq('tabela_negociacao_id', id),
+    supabase.from('tabelas_negociacao_itens').delete().eq('tabela_negociacao_id', id),
+  ]);
+
+  if (taxasDelete.error) throw new Error(taxasDelete.error.message || 'Erro ao limpar taxas da negociação publicada.');
+  if (itensDelete.error) throw new Error(itensDelete.error.message || 'Erro ao limpar itens da negociação publicada.');
+
+  return {
+    ...resumoAnterior,
+    dados_operacionais_arquivados: {
+      arquivado_em: agora,
+      motivo: 'PUBLICADA_OFICIAL',
+      itens_removidos: itensCount.count || 0,
+      taxas_removidas: taxasCount.count || 0,
+      promocao_oficial: promocaoOficial,
+    },
+  };
+}
+
 export async function aprovarTabelaNegociacao(id, dados = {}) {
   const supabase = supabaseOrThrow();
   let promocaoOficial = null;
@@ -1285,7 +1374,6 @@ export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
       .from('tabelas_negociacao')
       .select(cols)
       .eq('incluir_simulacao', true)
-      .in('status', ['EM NEGOCIAÇÃO', 'EM TESTE', 'APROVADA'])
       .order('criado_em', { ascending: false });
     if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
     if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
@@ -2424,17 +2512,47 @@ export async function publicarNegociacaoNaBaseOficial(id, dados = {}) {
     promocao_oficial: promocaoOficial,
   };
 
-  return atualizarTabelaNegociacao(id, {
+  const resumoComPublicacao = {
+    ...resumoAnterior,
+    promocao_oficial: promocaoOficial,
+    ultima_aprovacao: entradaAprovacao,
+    historico_rodadas: historicoAnterior.concat([entradaAprovacao]).slice(-30),
+  };
+  const resumoFinal = dados.manter_itens_negociacao
+    ? resumoComPublicacao
+    : await limparDadosOperacionaisNegociacaoPublicada(id, resumoComPublicacao, promocaoOficial);
+
+  const publicada = await atualizarTabelaNegociacao(id, {
     status: 'PROMOVIDA PARA OFICIAL',
     incluir_simulacao: false,
     nova_tabela_aprovada_snapshot: promocaoOficial,
-    resumo_simulacao: {
-      ...resumoAnterior,
-      promocao_oficial: promocaoOficial,
-      ultima_aprovacao: entradaAprovacao,
-      historico_rodadas: historicoAnterior.concat([entradaAprovacao]).slice(-30),
-    },
+    resumo_simulacao: resumoFinal,
   });
+
+  if (texto(tabela.numero_amd || publicada.numero_amd)) {
+    try {
+      const syncCentral = await concluirSolicitacaoCentral(tabela.numero_amd || publicada.numero_amd, {
+        transportadora: publicada.transportadora || tabela.transportadora,
+        saving: publicada.saving_projetado || tabela.saving_projetado,
+        negociacaoId: publicada.id || id,
+        usuario: texto(dados.usuario?.nome || dados.usuario_aprovacao) || 'Central Fretes',
+      });
+      return {
+        ...publicada,
+        sync_central_solicitacoes: syncCentral,
+      };
+    } catch (error) {
+      return {
+        ...publicada,
+        sync_central_solicitacoes: {
+          ok: false,
+          erro: error.message || 'Não foi possível atualizar a Central de Solicitações.',
+        },
+      };
+    }
+  }
+
+  return publicada;
 }
 
 export async function garantirNegociadorAoAbrir(id, usuario = {}) {

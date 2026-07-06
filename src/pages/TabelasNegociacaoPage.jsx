@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
+import { atualizarSolicitacaoCentralNegociacao, buscarSolicitacaoCentralPorProtocolo, garantirSubsolicitacoesCentralNegociacao, obterOuCriarSolicitacaoCentralNegociacao } from '../services/centralSolicitacoesService';
 import { importarTemplatePadraoSeparado } from '../utils/importadorTemplatePadrao';
 import { baixarModeloTemplateFretes, baixarModeloTemplateRotas } from '../utils/modelosTemplateFormatacao';
 import {
@@ -424,6 +425,7 @@ const FORM_VAZIO = {
   status: 'EM NEGOCIAÇÃO', descricao: '', regiao: '', origem: '',
   uf_origem: '', uf_destino: '', data_recebimento: hojeISO(),
   data_inicio_prevista: '', incluir_simulacao: false, observacao: '',
+  numero_amd: '', solicitacao_amd_id: '',
   saving_projetado: '', aderencia_projetada: '',
 };
 const NOVA_ORIGEM_VAZIA = {
@@ -902,6 +904,7 @@ export default function TabelasNegociacaoPage() {
   const [sucesso, setSucesso] = useState('');
   const [filtros, setFiltros] = useState({ status: '', tipoTabela: '', tipoNegociacao: '', canal: '', transportadora: '' });
   const [form, setForm] = useState(Object.assign({}, FORM_VAZIO));
+  const [criandoSolicitacaoAmd, setCriandoSolicitacaoAmd] = useState(false);
   const inputTaxasDestinoRef = useRef(null);
 
   const [tipoImportacao, setTipoImportacao] = useState('VERUM_ROTAS_FRETES');
@@ -1545,10 +1548,241 @@ export default function TabelasNegociacaoPage() {
     finally { setSalvando(false); }
   }
 
+  async function vincularOuCriarSolicitacaoAmdParaForm() {
+    if (!normalizarTexto(form.transportadora)) return setErro('Informe a transportadora antes de criar a solicitação AMD.');
+
+    setCriandoSolicitacaoAmd(true); setErro(''); setSucesso('');
+    try {
+      if (normalizarTexto(form.numero_amd)) {
+        var busca = await buscarSolicitacaoCentralPorProtocolo(form.numero_amd);
+        if (!busca?.solicitacao?.protocolo) {
+          throw new Error('Não encontrei esse número AMD na Central de Solicitações.');
+        }
+        setForm(function(p) {
+          return Object.assign({}, p, {
+            numero_amd: busca.solicitacao.protocolo,
+            solicitacao_amd_id: busca.solicitacao.id || '',
+          });
+        });
+        setSucesso('Vínculo encontrado na Central: ' + busca.solicitacao.protocolo + '.');
+        return;
+      }
+
+      var tipoLabel = TIPOS_NEGOCIACAO.find(function(t) { return t.value === form.tipo_negociacao; })?.label || form.tipo_negociacao;
+      var resultado = await obterOuCriarSolicitacaoCentralNegociacao({
+        usuario: sessao,
+        nome: sessao?.nome,
+        email: sessao?.email,
+        transportadora: form.transportadora,
+        origem: form.origem || form.uf_origem,
+        canal: form.canal,
+        tipoNegociacao: tipoLabel,
+        tipoAjuste: form.tipo_negociacao === 'REAJUSTE_TABELA_EXISTENTE' ? 'Reajuste de tabela' : 'Inclusão de tabela',
+        descricao: form.descricao,
+        observacao: form.observacao,
+      });
+      if (!resultado?.ok || !resultado?.solicitacao?.protocolo) {
+        throw new Error('A Central de Solicitações não retornou um protocolo AMD.');
+      }
+      setForm(function(p) {
+        return Object.assign({}, p, {
+          numero_amd: resultado.solicitacao.protocolo,
+          solicitacao_amd_id: resultado.solicitacao.id || '',
+        });
+      });
+      var mensagemAmd = resultado.encontrada ? 'Solicitação aberta encontrada na Central: ' : 'Solicitação criada na Central: ';
+      setSucesso(mensagemAmd + resultado.solicitacao.protocolo + '.');
+    } catch (e) {
+      setErro(e.message || 'Erro ao criar solicitação AMD.');
+    } finally {
+      setCriandoSolicitacaoAmd(false);
+    }
+  }
+
   function atualizarTabelaNaLista(atualizada) {
     if (!atualizada?.id) return;
     setTabelas(function(p) { return p.map(function(i) { return i.id === atualizada.id ? Object.assign({}, i, atualizada) : i; }); });
     if (selecionada && selecionada.id === atualizada.id) setSelecionada(function(s) { return Object.assign({}, s, atualizada); });
+  }
+
+  async function buscarVinculoAmdSelecionada() {
+    if (!selecionada?.id) return;
+    if (!normalizarTexto(selecionada.numero_amd)) return setErro('Informe o número AMD antes de buscar o vínculo.');
+
+    setCriandoSolicitacaoAmd(true); setErro(''); setSucesso('');
+    try {
+      var busca = await buscarSolicitacaoCentralPorProtocolo(selecionada.numero_amd);
+      if (!busca?.solicitacao?.protocolo) throw new Error('Não encontrei esse número AMD na Central de Solicitações.');
+      var atualizada = await atualizarTabelaNegociacao(selecionada.id, {
+        numero_amd: busca.solicitacao.protocolo,
+        solicitacao_amd_id: busca.solicitacao.id || '',
+      });
+      atualizarTabelaNaLista(atualizada);
+      setSucesso('Vínculo AMD salvo: ' + busca.solicitacao.protocolo + '.');
+    } catch (e) {
+      setErro(e.message || 'Erro ao buscar vínculo AMD.');
+    } finally {
+      setCriandoSolicitacaoAmd(false);
+    }
+  }
+
+  async function salvarVinculoAmdSelecionada() {
+    if (!selecionada?.id) return;
+
+    setCriandoSolicitacaoAmd(true); setErro(''); setSucesso('');
+    try {
+      var negociacoesFluxo = negociacoesMesmoFluxoAmd(selecionada);
+      var ehReajuste = isReajusteNegociacao(selecionada);
+      var tipoLabel = TIPOS_NEGOCIACAO.find(function(t) { return t.value === getTipoNegociacaoTabela(selecionada); })?.label || getTipoNegociacaoTabela(selecionada);
+      var atualizadas = await Promise.all(negociacoesFluxo.map(function(t) {
+        return atualizarTabelaNegociacao(t.id, {
+          numero_amd: selecionada.numero_amd || '',
+          solicitacao_amd_id: selecionada.solicitacao_amd_id || '',
+          observacao: t.observacao,
+        });
+      }));
+      atualizadas.forEach(atualizarTabelaNaLista);
+      var atualizadaSelecionada = atualizadas.find(function(t) { return String(t.id) === String(selecionada.id); }) || atualizadas[0];
+      if (atualizadaSelecionada) setSelecionada(atualizadaSelecionada);
+      var subsolicitacoes = await garantirSubsolicitacoesCentralNegociacao(
+        selecionada.numero_amd,
+        detalhesOrigensFluxoAmd(negociacoesFluxo),
+        {
+          usuario: sessao,
+          nome: sessao?.nome,
+          email: sessao?.email,
+          transportadora: selecionada.transportadora,
+          canal: selecionada.canal,
+          tipoNegociacao: tipoLabel,
+          tipoAjuste: ehReajuste ? 'Reajuste de tabela' : 'Inclusão de tabela',
+          ehReajuste,
+          transportadoraBase: selecionada.transportadora_base_nome || '',
+        }
+      );
+      setSucesso('Vínculo AMD salvo em ' + atualizadas.length + ' origem(ns)' + (subsolicitacoes.total ? ' e ' + subsolicitacoes.total + ' subsolicitação(ões).' : '.'));
+    } catch (e) {
+      setErro(e.message || 'Erro ao salvar vínculo AMD.');
+    } finally {
+      setCriandoSolicitacaoAmd(false);
+    }
+  }
+
+  function negociacoesMesmoFluxoAmd(tabelaBase) {
+    if (!tabelaBase?.id) return [];
+    var nomeBase = normalizarTexto(tabelaBase.transportadora).toUpperCase();
+    var tipoBase = getTipoNegociacaoTabela(tabelaBase);
+    var amdBase = normalizarTexto(tabelaBase.numero_amd).toUpperCase();
+    var fonte = (tabelas || []).length ? tabelas : negociacoesMesmaTransportadora;
+    var lista = (fonte || [])
+      .filter(function(t) {
+        var mesmoAmd = amdBase && normalizarTexto(t.numero_amd).toUpperCase() === amdBase;
+        var mesmoFluxo = normalizarTexto(t.transportadora).toUpperCase() === nomeBase
+          && getTipoNegociacaoTabela(t) === tipoBase;
+        return (mesmoAmd || mesmoFluxo)
+          && !['CANCELADA', 'REPROVADA', 'PROMOVIDA PARA OFICIAL'].includes(String(t.status || '').toUpperCase());
+      });
+    if (!lista.some(function(t) { return String(t.id) === String(tabelaBase.id); })) lista = [tabelaBase].concat(lista);
+    return lista;
+  }
+
+  function resumoOrigensFluxoAmd(lista = []) {
+    var origens = [...new Set((lista || []).map(origemTabelaChipLabel).filter(Boolean))];
+    if (!origens.length) return '';
+    return origens.length === 1 ? origens[0] : origens.length + ' origens: ' + origens.join(', ');
+  }
+
+  function detalhesOrigensFluxoAmd(lista = []) {
+    var vistos = new Set();
+    return (lista || []).map(function(t) {
+      var origem = origemTabelaChipLabel(t);
+      if (!origem || vistos.has(origem)) return null;
+      vistos.add(origem);
+      return { origem, label: origem, negociacaoId: t.id };
+    }).filter(Boolean);
+  }
+
+  async function criarOuVincularAmdSelecionada() {
+    if (!selecionada?.id) return;
+    if (!normalizarTexto(selecionada.transportadora)) return setErro('Negociação sem transportadora para criar solicitação AMD.');
+
+    setCriandoSolicitacaoAmd(true); setErro(''); setSucesso('');
+    try {
+      var ehReajuste = isReajusteNegociacao(selecionada);
+      var tipoLabel = TIPOS_NEGOCIACAO.find(function(t) { return t.value === getTipoNegociacaoTabela(selecionada); })?.label || getTipoNegociacaoTabela(selecionada);
+      var negociacoesFluxo = negociacoesMesmoFluxoAmd(selecionada);
+      var resumoOrigens = resumoOrigensFluxoAmd(negociacoesFluxo);
+      var assuntoCentral = [
+        ehReajuste ? 'Reajuste de tabela' : 'Inclusão de tabela',
+        selecionada.transportadora,
+        resumoOrigens || selecionada.origem || selecionada.uf_origem,
+      ].filter(Boolean).join(' - ');
+      var resultado = await obterOuCriarSolicitacaoCentralNegociacao({
+        usuario: sessao,
+        nome: sessao?.nome,
+        email: sessao?.email,
+        transportadora: selecionada.transportadora,
+        origem: resumoOrigens || selecionada.origem || selecionada.uf_origem,
+        canal: selecionada.canal,
+        tipoNegociacao: tipoLabel,
+        tipoAjuste: ehReajuste ? 'Reajuste de tabela' : 'Inclusão de tabela',
+        assunto: assuntoCentral,
+        ehReajuste,
+        transportadoraBase: selecionada.transportadora_base_nome || '',
+        tabelaBase: selecionada.tabela_base_id || '',
+        negociacaoId: selecionada.id,
+        descricao: (selecionada.descricao || '') + (resumoOrigens ? '\nOrigens vinculadas: ' + resumoOrigens : ''),
+        observacao: selecionada.observacao,
+      });
+      if (!resultado?.ok || !resultado?.solicitacao?.protocolo) {
+        throw new Error('A Central de Solicitações não retornou um protocolo AMD.');
+      }
+      var atualizadas = await Promise.all(negociacoesFluxo.map(function(t) {
+        return atualizarTabelaNegociacao(t.id, {
+          numero_amd: resultado.solicitacao.protocolo,
+          solicitacao_amd_id: resultado.solicitacao.id || '',
+          observacao: t.observacao,
+        });
+      }));
+      atualizadas.forEach(atualizarTabelaNaLista);
+      var atualizadaSelecionada = atualizadas.find(function(t) { return String(t.id) === String(selecionada.id); }) || atualizadas[0];
+      if (atualizadaSelecionada) setSelecionada(atualizadaSelecionada);
+      await atualizarSolicitacaoCentralNegociacao(resultado.solicitacao.protocolo, {
+        usuario: sessao?.nome || 'Central Fretes',
+        transportadora: selecionada.transportadora,
+        origem: resumoOrigens || selecionada.origem || selecionada.uf_origem,
+        canal: selecionada.canal,
+        status: selecionada.status,
+        statusGestao: selecionada.status_gestao,
+        tipoNegociacao: tipoLabel,
+        tipoAjuste: ehReajuste ? 'Reajuste de tabela' : 'Inclusão de tabela',
+        ehReajuste,
+        transportadoraBase: selecionada.transportadora_base_nome || '',
+        negociacaoId: selecionada.id,
+        assunto: assuntoCentral,
+        descricao: (selecionada.descricao || '') + (resumoOrigens ? '\nOrigens vinculadas: ' + resumoOrigens : ''),
+        observacao: selecionada.observacao,
+      });
+      var subsolicitacoes = await garantirSubsolicitacoesCentralNegociacao(
+        resultado.solicitacao.protocolo,
+        detalhesOrigensFluxoAmd(negociacoesFluxo),
+        {
+          usuario: sessao,
+          nome: sessao?.nome,
+          email: sessao?.email,
+          transportadora: selecionada.transportadora,
+          canal: selecionada.canal,
+          tipoNegociacao: tipoLabel,
+          tipoAjuste: ehReajuste ? 'Reajuste de tabela' : 'Inclusão de tabela',
+          ehReajuste,
+          transportadoraBase: selecionada.transportadora_base_nome || '',
+        }
+      );
+      setSucesso((resultado.encontrada ? 'Solicitação aberta vinculada: ' : 'Solicitação criada e vinculada: ') + resultado.solicitacao.protocolo + ' em ' + atualizadas.length + ' origem(ns)' + (subsolicitacoes.total ? ' e ' + subsolicitacoes.total + ' subsolicitação(ões).' : '.'));
+    } catch (e) {
+      setErro(e.message || 'Erro ao criar/vincular solicitação AMD.');
+    } finally {
+      setCriandoSolicitacaoAmd(false);
+    }
   }
 
   async function alternarSimulacao(tabela) {
@@ -2181,6 +2415,31 @@ export default function TabelasNegociacaoPage() {
     finally { setSalvandoGestao(false); }
   }
 
+  async function handleAprovarPublicarOficial(tabela, obs) {
+    var ok = window.confirm('Aprovar e publicar ' + tabela.transportadora + ' na base oficial agora? A tabela operacional será movida para a base oficial e os itens pesados serão limpos da negociação.');
+    if (!ok) return;
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var aprovada = await aprovarGestorNegociacao(tabela.id, {
+        usuario: sessao,
+        aprovador_id: sessao?.id,
+        aprovador_nome: sessao?.nome,
+        observacao_aprovacao: obs,
+        justificativa_aprovacao: obs || 'Aprovada pelo gestor',
+      });
+      var publicada = await publicarNegociacaoNaBaseOficial(aprovada.id, {
+        usuario: sessao,
+        data_inicio_vigencia: hojeISO(),
+        substituir_tabela_anterior: isReajusteNegociacao(aprovada),
+        observacao: obs || 'Aprovada pelo gestor e publicada na base oficial',
+      });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === publicada.id ? publicada : i; }); });
+      if (selecionada && selecionada.id === publicada.id) setSelecionada(publicada);
+      setSucesso('Aprovada, publicada na base oficial e dados operacionais da negociação arquivados.');
+    } catch (e) { setErro(e.message || 'Erro ao aprovar e publicar.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
   async function handleRecusarGestor(tabela, obs) {
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
@@ -2324,6 +2583,7 @@ export default function TabelasNegociacaoPage() {
         onDevolverGestor={handleDevolverGestor}
         onComplementoGestor={handleComplementoGestor}
         onPublicarOficial={handlePublicarOficial}
+        onAprovarPublicarOficial={handleAprovarPublicarOficial}
         salvandoGestao={salvandoGestao}
         selecionadaId={selecionada?.id}
         abaInicial={abaGestao}
@@ -2376,6 +2636,28 @@ export default function TabelasNegociacaoPage() {
           <label>Data recebimento
             <input type="date" value={form.data_recebimento} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { data_recebimento: e.target.value }); }); }} />
           </label>
+        </div>
+        <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
+          <label>Número AMD / Solicitação
+            <input value={form.numero_amd || ''} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { numero_amd: e.target.value }); }); }} placeholder="Ex: AMD-2026-000123" />
+          </label>
+          <label>ID da solicitação
+            <input value={form.solicitacao_amd_id || ''} onChange={function(e) { setForm(function(p) { return Object.assign({}, p, { solicitacao_amd_id: e.target.value }); }); }} placeholder="Opcional, para integração" />
+          </label>
+          <div style={{ display: 'flex', alignItems: 'end', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="sim-tab"
+              type="button"
+              onClick={vincularOuCriarSolicitacaoAmdParaForm}
+              disabled={criandoSolicitacaoAmd}
+              title={form.numero_amd ? 'Buscar esse número AMD na Central e preencher o ID' : 'Criar uma solicitação na Central e vincular ao formulário'}
+            >
+              {criandoSolicitacaoAmd ? 'Buscando AMD...' : (form.numero_amd ? 'Buscar vínculo' : 'Buscar/criar na Central')}
+            </button>
+            <small style={{ color: '#64748b', fontSize: 12 }}>
+              {form.numero_amd ? 'Vinculado à Central de Solicitações.' : 'Ou informe manualmente um código já existente.'}
+            </small>
+          </div>
         </div>
         <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
           <label>Origem
@@ -2517,6 +2799,52 @@ export default function TabelasNegociacaoPage() {
               <button className="sim-tab" type="button" onClick={function() { abrirModalAprovacao(selecionada); }}>
                 {podePublicarOficial(selecionada) && usuarioEhGestor(sessao) ? 'Publicar' : 'Enviar p/ gestor'}
               </button>
+            </div>
+          </div>
+
+          <div className="sim-parametros-box" style={{ marginTop: 14, marginBottom: 18 }}>
+            <div className="sim-parametros-header">
+              <div>
+                <strong>Vínculo com Central de Solicitações</strong>
+                <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 12 }}>
+                  Informe um AMD existente, busque o ID na Central ou salve o vínculo manualmente nesta negociação.
+                </p>
+              </div>
+            </div>
+            <div className="sim-form-grid sim-grid-3" style={{ marginTop: 12 }}>
+              <label>Número AMD / Solicitação
+                <input
+                  value={selecionada.numero_amd || ''}
+                  onChange={function(e) {
+                    var valor = e.target.value;
+                    setSelecionada(function(s) { return Object.assign({}, s, { numero_amd: valor }); });
+                  }}
+                  placeholder="Ex: AMD-2026-000123"
+                />
+              </label>
+              <label>ID da solicitação
+                <input
+                  value={selecionada.solicitacao_amd_id || ''}
+                  onChange={function(e) {
+                    var valor = e.target.value;
+                    setSelecionada(function(s) { return Object.assign({}, s, { solicitacao_amd_id: valor }); });
+                  }}
+                  placeholder="UUID da Central, opcional"
+                />
+              </label>
+              <div style={{ display: 'flex', alignItems: 'end', gap: 8, flexWrap: 'wrap' }}>
+                {!selecionada.numero_amd ? (
+                  <button className="primary" type="button" onClick={criarOuVincularAmdSelecionada} disabled={criandoSolicitacaoAmd}>
+                    {criandoSolicitacaoAmd ? 'Criando...' : 'Criar na Central'}
+                  </button>
+                ) : null}
+                <button className="sim-tab" type="button" onClick={buscarVinculoAmdSelecionada} disabled={criandoSolicitacaoAmd || !selecionada.numero_amd}>
+                  {criandoSolicitacaoAmd ? 'Buscando...' : 'Buscar vínculo'}
+                </button>
+                <button className="primary" type="button" onClick={salvarVinculoAmdSelecionada} disabled={criandoSolicitacaoAmd}>
+                  Salvar vínculo
+                </button>
+              </div>
             </div>
           </div>
 
