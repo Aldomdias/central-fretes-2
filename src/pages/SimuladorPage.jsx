@@ -4060,6 +4060,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [salvandoAnaliseMensalRealizado, setSalvandoAnaliseMensalRealizado] = useState(false);
   const [feedbackAnaliseMensalRealizado, setFeedbackAnaliseMensalRealizado] = useState('');
   const [nomesRealizadoParaVincular, setNomesRealizadoParaVincular] = useState([]);
+  const [buscaVinculoRealizado, setBuscaVinculoRealizado] = useState('');
   const [salvandoVinculoReajusteRealizado, setSalvandoVinculoReajusteRealizado] = useState(false);
   const [feedbackVinculoReajusteRealizado, setFeedbackVinculoReajusteRealizado] = useState('');
 
@@ -7785,7 +7786,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-5">
             <label>
               Transportadora / tabela
-              <select value={transportadoraRealizado} onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); setNomesRealizadoParaVincular([]); setFeedbackVinculoReajusteRealizado(''); }}>
+              <select value={transportadoraRealizado} onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); setNomesRealizadoParaVincular([]); setBuscaVinculoRealizado(''); setFeedbackVinculoReajusteRealizado(''); }}>
                 <option value="">Selecione</option>
                 {transportadorasPorCanalRealizado.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
               </select>
@@ -7800,22 +7801,59 @@ export default function SimuladorPage({ transportadoras = [] }) {
               <label>
                 Nome(s) desta transportadora no realizado
                 {opcoesBiRealizado.transportadoras.length ? (
-                  <div style={{ maxHeight: 160, overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, background: '#fff', display: 'grid', gap: 4 }}>
-                    {opcoesBiRealizado.transportadoras.map(({ nome, qtd }) => (
-                      <label key={nome} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
-                        <input
-                          type="checkbox"
-                          checked={nomesRealizadoParaVincular.includes(nome)}
-                          onChange={(event) => {
-                            setNomesRealizadoParaVincular((prev) => (
-                              event.target.checked ? [...prev, nome] : prev.filter((item) => item !== nome)
-                            ));
-                          }}
-                        />
-                        {`${nome} (${qtd.toLocaleString('pt-BR')} CT-es)`}
-                      </label>
-                    ))}
-                  </div>
+                  <>
+                    {nomesRealizadoParaVincular.length ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+                        {nomesRealizadoParaVincular.map((nome) => (
+                          <span
+                            key={nome}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1d4ed8', borderRadius: 999, padding: '2px 8px', fontSize: 12, fontWeight: 600 }}
+                          >
+                            {nome}
+                            <button
+                              type="button"
+                              onClick={() => setNomesRealizadoParaVincular((prev) => prev.filter((item) => item !== nome))}
+                              style={{ border: 'none', background: 'none', color: '#1d4ed8', cursor: 'pointer', fontWeight: 700, padding: 0, lineHeight: 1 }}
+                              aria-label={`Remover ${nome}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <input
+                      value={buscaVinculoRealizado}
+                      onChange={(event) => setBuscaVinculoRealizado(event.target.value)}
+                      placeholder="Digite pra localizar o nome no realizado..."
+                      autoComplete="off"
+                      style={{ marginBottom: 6 }}
+                    />
+                    <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+                      {opcoesBiRealizado.transportadoras
+                        .filter(({ nome }) => !buscaVinculoRealizado.trim() || nome.toLowerCase().includes(buscaVinculoRealizado.trim().toLowerCase()))
+                        .slice(0, 200)
+                        .map(({ nome, qtd }) => {
+                          const marcado = nomesRealizadoParaVincular.includes(nome);
+                          return (
+                            <div
+                              key={nome}
+                              onClick={() => setNomesRealizadoParaVincular((prev) => (
+                                marcado ? prev.filter((item) => item !== nome) : [...prev, nome]
+                              ))}
+                              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #f1f5f9', background: marcado ? '#eff6ff' : '#fff' }}
+                            >
+                              <input type="checkbox" checked={marcado} readOnly style={{ pointerEvents: 'none' }} />
+                              <span style={{ flex: 1, fontWeight: marcado ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nome}</span>
+                              <small style={{ color: '#94a3b8' }}>{qtd.toLocaleString('pt-BR')} CT-es</small>
+                            </div>
+                          );
+                        })}
+                      {!opcoesBiRealizado.transportadoras.some(({ nome }) => !buscaVinculoRealizado.trim() || nome.toLowerCase().includes(buscaVinculoRealizado.trim().toLowerCase())) ? (
+                        <div style={{ padding: '8px 10px', fontSize: 12, color: '#94a3b8' }}>Nada encontrado.</div>
+                      ) : null}
+                    </div>
+                  </>
                 ) : (
                   <small style={{ color: '#64748b' }}>Busque os CT-es primeiro para listar os nomes encontrados.</small>
                 )}
