@@ -4059,7 +4059,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [carregandoAnaliseMensalRealizado, setCarregandoAnaliseMensalRealizado] = useState(false);
   const [salvandoAnaliseMensalRealizado, setSalvandoAnaliseMensalRealizado] = useState(false);
   const [feedbackAnaliseMensalRealizado, setFeedbackAnaliseMensalRealizado] = useState('');
-  const [nomeRealizadoParaVincular, setNomeRealizadoParaVincular] = useState('');
+  const [nomesRealizadoParaVincular, setNomesRealizadoParaVincular] = useState([]);
   const [salvandoVinculoReajusteRealizado, setSalvandoVinculoReajusteRealizado] = useState(false);
   const [feedbackVinculoReajusteRealizado, setFeedbackVinculoReajusteRealizado] = useState('');
 
@@ -4573,19 +4573,21 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // transportadora base do reajuste, e grava como vínculo permanente — assim as
   // próximas simulações dessa negociação já casam certo sem precisar escolher de novo.
   const confirmarVinculoReajusteRealizado = async () => {
-    const nomeCte = String(nomeRealizadoParaVincular || '').trim();
+    const nomesCte = [...new Set((nomesRealizadoParaVincular || []).map((nome) => String(nome || '').trim()).filter(Boolean))];
     const nomeTabela = String(transportadoraBaseReajusteRealizado || '').trim();
-    if (!nomeCte || !nomeTabela) return;
+    if (!nomesCte.length || !nomeTabela) return;
 
     setSalvandoVinculoReajusteRealizado(true);
     setFeedbackVinculoReajusteRealizado('');
     try {
       const vinculosAtuais = await carregarVinculosTransportadoras();
-      const semEsteCte = (vinculosAtuais || []).filter(
-        (item) => normalizarChaveSimulador(item.nomeCte) !== normalizarChaveSimulador(nomeCte)
+      const chavesNovas = new Set(nomesCte.map((nome) => normalizarChaveSimulador(nome)));
+      const semEstesCtes = (vinculosAtuais || []).filter(
+        (item) => !chavesNovas.has(normalizarChaveSimulador(item.nomeCte))
       );
-      await salvarVinculosTransportadoras([...semEsteCte, { nomeCte, nomeTabela, origem: 'simulador-reajuste' }]);
-      setFeedbackVinculoReajusteRealizado(`Vínculo salvo: "${nomeCte}" (realizado) → "${nomeTabela}" (tabela).`);
+      const novosVinculos = nomesCte.map((nomeCte) => ({ nomeCte, nomeTabela, origem: 'simulador-reajuste' }));
+      await salvarVinculosTransportadoras([...semEstesCtes, ...novosVinculos]);
+      setFeedbackVinculoReajusteRealizado(`Vínculo salvo: "${nomesCte.join('", "')}" (realizado) → "${nomeTabela}" (tabela).`);
       if (transportadoraRealizado) await onBuscarCtesRealizado();
     } catch (error) {
       setFeedbackVinculoReajusteRealizado(error.message || 'Erro ao salvar o vínculo.');
@@ -7783,7 +7785,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-5">
             <label>
               Transportadora / tabela
-              <select value={transportadoraRealizado} onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); }}>
+              <select value={transportadoraRealizado} onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); setNomesRealizadoParaVincular([]); setFeedbackVinculoReajusteRealizado(''); }}>
                 <option value="">Selecione</option>
                 {transportadorasPorCanalRealizado.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
               </select>
@@ -7796,23 +7798,37 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </label>
             {isReajusteRealizadoSelecionado && (
               <label>
-                Nome desta transportadora no realizado
-                <select value={nomeRealizadoParaVincular} onChange={(event) => setNomeRealizadoParaVincular(event.target.value)}>
-                  <option value="">
-                    {opcoesBiRealizado.transportadoras.length ? 'Selecione o nome encontrado no realizado' : 'Busque os CT-es primeiro para listar os nomes'}
-                  </option>
-                  {opcoesBiRealizado.transportadoras.map(({ nome, qtd }) => (
-                    <option key={nome} value={nome}>{`${nome} (${qtd.toLocaleString('pt-BR')} CT-es)`}</option>
-                  ))}
-                </select>
+                Nome(s) desta transportadora no realizado
+                {opcoesBiRealizado.transportadoras.length ? (
+                  <div style={{ maxHeight: 160, overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, background: '#fff', display: 'grid', gap: 4 }}>
+                    {opcoesBiRealizado.transportadoras.map(({ nome, qtd }) => (
+                      <label key={nome} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+                        <input
+                          type="checkbox"
+                          checked={nomesRealizadoParaVincular.includes(nome)}
+                          onChange={(event) => {
+                            setNomesRealizadoParaVincular((prev) => (
+                              event.target.checked ? [...prev, nome] : prev.filter((item) => item !== nome)
+                            ));
+                          }}
+                        />
+                        {`${nome} (${qtd.toLocaleString('pt-BR')} CT-es)`}
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <small style={{ color: '#64748b' }}>Busque os CT-es primeiro para listar os nomes encontrados.</small>
+                )}
                 <button
                   type="button"
                   className="sim-tab"
                   style={{ marginTop: 6 }}
-                  disabled={!nomeRealizadoParaVincular || salvandoVinculoReajusteRealizado}
+                  disabled={!nomesRealizadoParaVincular.length || salvandoVinculoReajusteRealizado}
                   onClick={confirmarVinculoReajusteRealizado}
                 >
-                  {salvandoVinculoReajusteRealizado ? 'Salvando vínculo...' : 'Confirmar vínculo com esse nome'}
+                  {salvandoVinculoReajusteRealizado
+                    ? 'Salvando vínculo...'
+                    : `Confirmar vínculo${nomesRealizadoParaVincular.length > 1 ? ` (${nomesRealizadoParaVincular.length} nomes)` : ''}`}
                 </button>
                 {feedbackVinculoReajusteRealizado && (
                   <small style={{ color: '#166534' }}>{feedbackVinculoReajusteRealizado}</small>
