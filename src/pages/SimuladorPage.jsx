@@ -7796,8 +7796,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
               )}
             </label>
             {isReajusteRealizadoSelecionado && (
-              <label>
-                Nome(s) desta transportadora no realizado
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <strong style={{ color: 'var(--text)' }}>Nome(s) desta transportadora no realizado</strong>
                 {opcoesBiRealizado.transportadoras.length ? (
                   <>
                     {nomesRealizadoParaVincular.length ? (
@@ -7869,7 +7869,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 {feedbackVinculoReajusteRealizado && (
                   <small style={{ color: '#166534' }}>{feedbackVinculoReajusteRealizado}</small>
                 )}
-              </label>
+              </div>
             )}
             <label>
               Canal
