@@ -1,7 +1,16 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarBaseCompletaDb } from './freteDatabaseService';
+import { carregarBaseCompletaDb, carregarBaseTransportadorasDb } from './freteDatabaseService';
 import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
 import { filtrarCpComercialCte } from './cteBasePolicy';
+import {
+  aplicarVinculoTransportadora,
+  carregarVinculosTransportadoras,
+  criarMapaVinculosTransportadoras,
+} from './vinculosTransportadorasService';
+import {
+  buildLookupTables,
+  simularRealizadoPorTransportadora,
+} from '../utils/calculoFrete';
 
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK = 500;
@@ -9,6 +18,13 @@ const TABELA_CTES = 'realizado_local_ctes';
 const TABELA_RESULTADOS = 'auditoria_cte_resultados';
 const TABELA_RESUMO = 'auditoria_cte_resumo_mensal';
 const LIMITE_DIVERGENCIA_ASSERTIVO = 0.05;
+const UF_POR_CODIGO_IBGE = {
+  11: 'RO', 12: 'AC', 13: 'AM', 14: 'RR', 15: 'PA', 16: 'AP', 17: 'TO',
+  21: 'MA', 22: 'PI', 23: 'CE', 24: 'RN', 25: 'PB', 26: 'PE', 27: 'AL', 28: 'SE', 29: 'BA',
+  31: 'MG', 32: 'ES', 33: 'RJ', 35: 'SP',
+  41: 'PR', 42: 'SC', 43: 'RS',
+  50: 'MS', 51: 'MT', 52: 'GO', 53: 'DF',
+};
 
 function normalizarCanalResultado(valor) {
   const v = String(valor || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -23,6 +39,8 @@ function normalizarCanalResultado(valor) {
 
 // Alias local para o cache centralizado em freteDatabaseService (carregarBaseCompletaDb já cacheia).
 let _cacheBaseFrete = null;
+const _cacheBaseFretePorTransportadora = new Map();
+let _cacheMapaVinculosTransportadoras = null;
 
 function ensureSupabase() {
   if (!isSupabaseConfigured()) {
@@ -56,6 +74,21 @@ function onlyDigits(value) {
   return String(value || '').replace(/\D/g, '');
 }
 
+function getUfByIbge(ibge) {
+  return UF_POR_CODIGO_IBGE[onlyDigits(ibge).slice(0, 2)] || '';
+}
+
+function toBooleanFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = normalizeCompare(value);
+    if (['true', '1', 'sim', 's', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'nao', 'n', 'no'].includes(normalized)) return false;
+  }
+  return Boolean(value);
+}
+
 function normalizeText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -77,6 +110,36 @@ function pick(row = {}, keys = []) {
     }
   }
   return '';
+}
+
+function pickDigits(row = {}, keys = [], maxLength = 7) {
+  for (const key of keys) {
+    const digits = onlyDigits(row?.[key]);
+    if (digits) return maxLength ? digits.slice(0, maxLength) : digits;
+  }
+  return '';
+}
+
+async function carregarMapaVinculosAuditoria() {
+  if (_cacheMapaVinculosTransportadoras) return _cacheMapaVinculosTransportadoras;
+  try {
+    _cacheMapaVinculosTransportadoras = criarMapaVinculosTransportadoras(await carregarVinculosTransportadoras());
+  } catch (error) {
+    console.warn('[Auditoria CT-e] vínculos de transportadora indisponíveis; usando nome bruto.', error?.message || error);
+    _cacheMapaVinculosTransportadoras = new Map();
+  }
+  return _cacheMapaVinculosTransportadoras;
+}
+
+export function invalidarCacheVinculosAuditoriaCte() {
+  _cacheMapaVinculosTransportadoras = null;
+  _cacheBaseFretePorTransportadora.clear();
+}
+
+function nomeTransportadoraCte(cte = {}, mapaVinculos = null) {
+  const original = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
+  if (!mapaVinculos) return original;
+  return aplicarVinculoTransportadora(original, mapaVinculos) || original;
 }
 
 function competenciaParaDatas(competencia = '') {
@@ -157,8 +220,11 @@ function getTaxaDestino(origem, ibgeDestino) {
   )) || {};
 }
 
-function getCotacaoPorRota(origem, nomeRota, peso) {
-  const rotaNorm = normalizeCompare(nomeRota);
+function getCotacaoPorRota(origem, rota, peso, cte = {}) {
+  const rotaNorm = normalizeCompare(rota?.nomeRota || rota?.rota || rota);
+  const ufDestinoNorm = normalizeCompare(pick(cte, ['uf_destino', 'ufDestino']));
+  const ibgeDestino = pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']) || onlyDigits(rota?.ibgeDestino).slice(0, 7);
+  const ibgePrefixo = ibgeDestino.slice(0, 2);
   const pesoFinal = toNumber(peso);
 
   const cotacoes = (origem?.cotacoes || []).filter((item) => {
@@ -166,7 +232,9 @@ function getCotacaoPorRota(origem, nomeRota, peso) {
     const rotaOk = !rotaCotacao
       || rotaCotacao === rotaNorm
       || rotaCotacao.includes(rotaNorm)
-      || rotaNorm.includes(rotaCotacao);
+      || rotaNorm.includes(rotaCotacao)
+      || (ufDestinoNorm && rotaCotacao === ufDestinoNorm)
+      || (ibgePrefixo && rotaCotacao === ibgePrefixo);
 
     if (!rotaOk) return false;
 
@@ -198,6 +266,41 @@ function getTipoCalculo(origem = {}, cotacao = {}) {
   return 'PERCENTUAL';
 }
 
+function inferirAliquotaIcmsAuditoria(origem = {}, rota = {}, cte = {}) {
+  const generalidades = origem.generalidades || {};
+  const manual = toNumber(
+    generalidades.aliquotaIcms ??
+    generalidades.aliquota_icms ??
+    generalidades.icmsPercentual ??
+    generalidades.icms_percentual
+  );
+
+  const ufOrigem = String(
+    pick(cte, ['uf_origem', 'ufOrigem']) ||
+    rota.ufOrigem ||
+    getUfByIbge(rota.ibgeOrigem || pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']) || origem.rotas?.[0]?.ibgeOrigem)
+  ).trim().toUpperCase();
+
+  const ufDestino = String(
+    pick(cte, ['uf_destino', 'ufDestino']) ||
+    rota.ufDestino ||
+    getUfByIbge(rota.ibgeDestino || pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']))
+  ).trim().toUpperCase();
+
+  if (manual > 0) return { aliquota: manual, origem: 'manual', ufOrigem, ufDestino };
+  if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao_sem_uf_completa', ufOrigem, ufDestino };
+  if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao_interna', ufOrigem, ufDestino };
+
+  const sulSudesteSemES = new Set(['PR', 'SC', 'RS', 'SP', 'RJ', 'MG']);
+  const norteNordesteCentroOesteMaisES = new Set(['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'PA', 'PB', 'PE', 'PI', 'RN', 'RO', 'RR', 'SE', 'TO']);
+
+  if (sulSudesteSemES.has(ufOrigem) && norteNordesteCentroOesteMaisES.has(ufDestino)) {
+    return { aliquota: 7, origem: 'legislacao_interestadual_7', ufOrigem, ufDestino };
+  }
+
+  return { aliquota: 12, origem: 'legislacao_interestadual_12', ufOrigem, ufDestino };
+}
+
 export function normalizarTransportadoras(transportadoras = []) {
   return (transportadoras || []).map((transportadora) => ({
     ...transportadora,
@@ -212,43 +315,102 @@ export function normalizarTransportadoras(transportadoras = []) {
   }));
 }
 
-function localizarTransportadora(transportadoras = [], nomeCte = '') {
-  const nomeNorm = normalizeCompare(nomeCte);
-  if (!nomeNorm) return null;
-
-  return transportadoras.find((item) => item.__nomeNorm === nomeNorm)
-    || transportadoras.find((item) => nomeCompativel(item.nome, nomeCte))
-    || null;
+function nomesTransportadorasRegistros(registros = [], mapaVinculos = null) {
+  return Array.from(new Set(
+    (registros || [])
+      .map((row) => nomeTransportadoraCte(row, mapaVinculos))
+      .map((nome) => String(nome || '').trim())
+      .filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b));
 }
 
-function localizarOrigem(transportadora, cte = {}) {
-  const ibgeOrigem = onlyDigits(pick(cte, ['ibge_corrigido_origem', 'ibge_origem'])).slice(0, 7);
+async function carregarBaseFreteParaRegistros(registros = [], onProgress, transportadorasAlvo = [], mapaVinculos = null) {
+  const nomes = (transportadorasAlvo || []).length
+    ? Array.from(new Set((transportadorasAlvo || []).map((nome) => aplicarVinculoTransportadora(nome, mapaVinculos) || nome).map((nome) => String(nome || '').trim()).filter(Boolean)))
+    : nomesTransportadorasRegistros(registros, mapaVinculos);
+
+  if (nomes.length > 0 && nomes.length <= 5) {
+    const cacheKey = nomes.map((nome) => normalizeCompare(nome)).sort().join('|');
+    if (!_cacheBaseFretePorTransportadora.has(cacheKey)) {
+      onProgress?.({ etapa: 'carregando_tabelas_transportadora', carregados: 0, total: nomes.length });
+      const base = normalizarTransportadoras(await carregarBaseTransportadorasDb(nomes));
+      if (base.length) {
+        _cacheBaseFretePorTransportadora.set(cacheKey, base);
+      } else {
+        onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
+        if (!_cacheBaseFrete) {
+          _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
+        }
+        return _cacheBaseFrete;
+      }
+    }
+    return _cacheBaseFretePorTransportadora.get(cacheKey);
+  }
+
+  onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
+  if (!_cacheBaseFrete) {
+    _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
+  }
+  return _cacheBaseFrete;
+}
+
+function localizarTransportadoras(transportadoras = [], nomeCte = '') {
+  const nomeNorm = normalizeCompare(nomeCte);
+  if (!nomeNorm) return [];
+
+  const exatas = transportadoras.filter((item) => item.__nomeNorm === nomeNorm);
+  const compativeis = transportadoras.filter((item) => nomeCompativel(item.nome, nomeCte));
+  if (exatas.length) {
+    const idsExatos = new Set(exatas.map((item) => item.id || item.__nomeNorm || item.nome));
+    return [
+      ...exatas,
+      ...compativeis.filter((item) => !idsExatos.has(item.id || item.__nomeNorm || item.nome)),
+    ];
+  }
+
+  return compativeis;
+}
+
+function listarOrigensCompativeis(transportadora, cte = {}) {
+  const ibgeOrigem = pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']);
   const cidadeOrigem = pick(cte, ['cidade_origem', 'origem']);
   const canal = pick(cte, ['canal', 'canal_original']);
 
   const candidatas = (transportadora?.origens || []).filter((origem) => canalCompativel(origem.canal, canal));
+  if (!candidatas.length) return [];
 
   if (ibgeOrigem) {
-    const porIbge = candidatas.find((origem) => (
+    const porIbge = candidatas.filter((origem) => (
       (origem.rotas || []).some((rota) => onlyDigits(rota.ibgeOrigem).slice(0, 7) === ibgeOrigem)
     ));
-    if (porIbge) return porIbge;
+    if (porIbge.length) return porIbge;
   }
 
-  return candidatas.find((origem) => cidadeCompativel(origem.cidade, cidadeOrigem))
-    || candidatas[0]
-    || null;
+  const porCidade = candidatas.filter((origem) => cidadeCompativel(origem.cidade, cidadeOrigem));
+  if (porCidade.length) return porCidade;
+
+  return cidadeOrigem || ibgeOrigem ? [] : candidatas;
 }
 
-function localizarRota(origem, cte = {}) {
-  const ibgeDestino = onlyDigits(pick(cte, ['ibge_corrigido_destino', 'ibge_destino'])).slice(0, 7);
-  const ibgeOrigem = onlyDigits(pick(cte, ['ibge_corrigido_origem', 'ibge_origem'])).slice(0, 7);
+export function localizarRotaAuditoria(origem, cte = {}) {
+  const ibgeDestino = pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']);
+  const ibgeOrigem = pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']);
+  const cidadeDestino = pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']);
+  const cidadeDestinoNorm = normalizeCompare(cidadeDestino);
+  const rotas = origem?.rotas || [];
 
-  if (!ibgeDestino) return null;
+  let rotasDestino = ibgeDestino
+    ? rotas.filter((rota) => onlyDigits(rota.ibgeDestino).slice(0, 7) === ibgeDestino)
+    : [];
 
-  const rotasDestino = (origem?.rotas || []).filter((rota) => (
-    onlyDigits(rota.ibgeDestino).slice(0, 7) === ibgeDestino
-  ));
+  if (!rotasDestino.length && cidadeDestinoNorm) {
+    rotasDestino = rotas.filter((rota) => {
+      const rotaNorm = normalizeCompare(rota.nomeRota || rota.rota || rota.destino || '');
+      return rotaNorm === cidadeDestinoNorm
+        || rotaNorm.includes(cidadeDestinoNorm)
+        || cidadeDestinoNorm.includes(rotaNorm);
+    });
+  }
 
   if (!rotasDestino.length) return null;
 
@@ -259,6 +421,39 @@ function localizarRota(origem, cte = {}) {
   }
 
   return rotasDestino[0];
+}
+
+function pesoCte(cte = {}) {
+  const pesoDeclarado = toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso']));
+  const pesoCubado = toNumber(pick(cte, ['peso_cubado', 'pesoCubado']));
+  return Math.max(pesoDeclarado, pesoCubado, toNumber(pick(cte, ['peso'])));
+}
+
+function localizarTabelaAuditoria(transportadoras = [], cte = {}, mapaVinculos = null, transportadoraAlvo = '') {
+  const transportadoraNome = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
+  const candidatasTransportadora = localizarTransportadoras(transportadoras, transportadoraNome);
+  if (!candidatasTransportadora.length) return { status: 'SEM_TABELA' };
+
+  const tentativas = [];
+  const peso = pesoCte(cte);
+
+  for (const transportadora of candidatasTransportadora) {
+    const origens = listarOrigensCompativeis(transportadora, cte);
+    for (const origem of origens) {
+      const rota = localizarRotaAuditoria(origem, cte);
+      const cotacao = rota ? getCotacaoPorRota(origem, rota, peso, cte) : null;
+      const tentativa = { transportadora, origem, rota, cotacao };
+      tentativas.push(tentativa);
+      if (rota && cotacao) return { status: 'OK', ...tentativa };
+    }
+  }
+
+  if (!tentativas.length) return { status: 'SEM_ORIGEM', transportadora: candidatasTransportadora[0] };
+
+  const comRota = tentativas.find((item) => item.rota);
+  if (!comRota) return { status: 'SEM_ROTA', transportadora: tentativas[0].transportadora };
+
+  return { status: 'SEM_FAIXA', ...comRota };
 }
 
 function montarResultadoBase(cte, status, motivo, extras = {}) {
@@ -284,10 +479,10 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
     tomador_servico: pick(cte, ['tomador_servico', 'tomadorServico', 'tomador']) || null,
     cidade_origem: pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']) || null,
     uf_origem: String(pick(cte, ['uf_origem', 'ufOrigem']) || '').toUpperCase() || null,
-    ibge_origem: onlyDigits(pick(cte, ['ibge_corrigido_origem', 'ibge_origem'])).slice(0, 7) || null,
+    ibge_origem: pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']) || null,
     cidade_destino: pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']) || null,
     uf_destino: String(pick(cte, ['uf_destino', 'ufDestino']) || '').toUpperCase() || null,
-    ibge_destino: onlyDigits(pick(cte, ['ibge_corrigido_destino', 'ibge_destino'])).slice(0, 7) || null,
+    ibge_destino: pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']) || null,
     canal: pick(cte, ['canal', 'canal_original']) || null,
     peso: toNumber(pick(cte, ['peso', 'peso_final', 'pesoFinal'])),
     peso_declarado: toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
@@ -310,35 +505,118 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
   };
 }
 
-export function processarCte(cte, transportadoras = []) {
-  const transportadoraNome = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
-  const transportadora = localizarTransportadora(transportadoras, transportadoraNome);
+function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverride = '') {
+  return {
+    id: pick(cte, ['id']) || pick(cte, ['chave_cte', 'chaveCte', 'chave']) || pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']),
+    chaveCte: pick(cte, ['chave_cte', 'chaveCte', 'chave']) || '',
+    numeroCte: pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || '',
+    emissao: pick(cte, ['data_emissao', 'emissao', 'dataEmissao']) || '',
+    transportadora: transportadoraSimulada || nomeTransportadoraCte(cte),
+    cidadeOrigem: pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']) || '',
+    ufOrigem: String(pick(cte, ['uf_origem', 'ufOrigem']) || '').toUpperCase(),
+    cidadeDestino: pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']) || '',
+    ufDestino: String(pick(cte, ['uf_destino', 'ufDestino']) || '').toUpperCase(),
+    ibgeDestino: pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']),
+    peso: toNumber(pick(cte, ['peso', 'peso_final', 'pesoFinal'])),
+    pesoDeclarado: toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
+    pesoCubado: toNumber(pick(cte, ['peso_cubado', 'pesoCubado'])),
+    cubagem: toNumber(pick(cte, ['cubagem', 'cubagem_total', 'cubagemTotal'])),
+    valorNF: toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota'])),
+    valorCte: toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete'])),
+    canal: canalOverride || pick(cte, ['canal', 'canal_original']) || '',
+  };
+}
 
-  if (!transportadora) {
+function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '') {
+  const transportadoraTabela = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
+  if (!transportadoraTabela) return null;
+
+  const { cidadePorIbge } = buildLookupTables(transportadoras);
+  const canalOriginal = normalizarCanalResultado(pick(cte, ['canal', 'canal_original']));
+  const canaisTentativa = canalOriginal === 'A DEFINIR'
+    ? ['ATACADO', 'B2C', '']
+    : [pick(cte, ['canal', 'canal_original']) || '', ''];
+
+  let detalhe = null;
+  for (const canal of canaisTentativa) {
+    const linha = cteParaLinhaSimulador(cte, transportadoraTabela, canal);
+    const resultado = simularRealizadoPorTransportadora({
+      transportadoras,
+      realizados: [linha],
+      nomeTransportadora: transportadoraTabela,
+      filtros: { canal: linha.canal },
+      cidadePorIbge,
+    });
+    detalhe = resultado?.detalhes?.[0] || null;
+    if (detalhe) break;
+  }
+
+  if (!detalhe) return null;
+
+  const base = montarResultadoBase(cte, 'CALCULADO', '', {
+    transportadora_tabela: detalhe.transportadoraSimulada || transportadoraTabela,
+    tipo_calculo: detalhe.detalhes?.frete?.tipoCalculo || null,
+    detalhes_calculo: {
+      origem_cidade: detalhe.origem || null,
+      rota_nome: detalhe.detalhes?.frete?.rotaNome || detalhe.detalhes?.rotaNome || null,
+      rota_prazo: detalhe.detalhes?.prazo ?? null,
+      peso_considerado: detalhe.detalhes?.frete?.pesoConsiderado ?? detalhe.peso,
+      valor_base: detalhe.detalhes?.frete?.valorBase,
+      subtotal: detalhe.detalhes?.frete?.subtotal,
+      icms: detalhe.detalhes?.frete?.icms,
+      aliquota_icms: detalhe.detalhes?.frete?.aliquotaIcms,
+      origem_aliquota_icms: detalhe.detalhes?.frete?.origemAliquotaIcms,
+      uf_origem_icms: detalhe.detalhes?.frete?.ufOrigem,
+      uf_destino_icms: detalhe.detalhes?.frete?.ufDestino,
+      taxas: detalhe.detalhes?.taxas,
+      componentes_base: detalhe.detalhes?.frete,
+      componente_base: detalhe.detalhes?.frete?.componenteBase,
+      motor: 'simulador_realizado',
+    },
+  });
+
+  const valorCalculado = toNumber(detalhe.valorSimulado);
+  const diferenca = base.valor_cte - valorCalculado;
+  const diferencaAbs = Math.abs(diferenca);
+  const percentualDiferenca = valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0;
+
+  return {
+    ...base,
+    valor_calculado: valorCalculado,
+    diferenca,
+    diferenca_abs: diferencaAbs,
+    percentual_diferenca: percentualDiferenca,
+    motivo_sem_calculo: '',
+  };
+}
+
+export function processarCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '') {
+  const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo);
+  if (resultadoSimulador) return resultadoSimulador;
+
+  const tabela = localizarTabelaAuditoria(transportadoras, cte, mapaVinculos, transportadoraAlvo);
+  const { transportadora, origem, rota, cotacao } = tabela;
+
+  if (tabela.status === 'SEM_TABELA') {
     return montarResultadoBase(cte, 'SEM_TABELA', 'Transportadora não encontrada no cadastro de tabelas.');
   }
 
-  const origem = localizarOrigem(transportadora, cte);
-  if (!origem) {
+  if (tabela.status === 'SEM_ORIGEM') {
     return montarResultadoBase(cte, 'SEM_ORIGEM', 'Origem/canal não encontrados para a transportadora.', {
       transportadora_tabela: transportadora.nome,
     });
   }
 
-  const rota = localizarRota(origem, cte);
-  if (!rota) {
+  if (tabela.status === 'SEM_ROTA') {
     return montarResultadoBase(cte, 'SEM_ROTA', 'Rota de destino não encontrada para a origem da transportadora.', {
       transportadora_tabela: transportadora.nome,
     });
   }
 
-  const pesoDeclarado = toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso']));
-  const pesoCubado = toNumber(pick(cte, ['peso_cubado', 'pesoCubado']));
-  const peso = Math.max(pesoDeclarado, pesoCubado, toNumber(pick(cte, ['peso'])));
+  const peso = pesoCte(cte);
   const valorNf = toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota']));
-  const cotacao = getCotacaoPorRota(origem, rota.nomeRota, peso);
 
-  if (!cotacao) {
+  if (tabela.status === 'SEM_FAIXA' || !cotacao) {
     return montarResultadoBase(cte, 'SEM_FAIXA', 'Faixa/cotação não encontrada para a rota e peso do CT-e.', {
       transportadora_tabela: transportadora.nome,
     });
@@ -346,7 +624,11 @@ export function processarCte(cte, transportadoras = []) {
 
   const tipoCalculo = getTipoCalculo(origem, cotacao);
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
-  const generalidades = origem.generalidades || {};
+  const icmsInfo = inferirAliquotaIcmsAuditoria(origem, rota, cte);
+  const generalidades = {
+    ...(origem.generalidades || {}),
+    aliquotaIcms: icmsInfo.aliquota,
+  };
 
   try {
     const calculo = tipoCalculo === 'FAIXA_DE_PESO'
@@ -367,6 +649,10 @@ export function processarCte(cte, transportadoras = []) {
         valor_base: calculo.valorBase,
         subtotal: calculo.subtotal,
         icms: calculo.icms,
+        aliquota_icms: icmsInfo.aliquota,
+        origem_aliquota_icms: icmsInfo.origem,
+        uf_origem_icms: icmsInfo.ufOrigem,
+        uf_destino_icms: icmsInfo.ufDestino,
         taxas: calculo.taxas,
         componentes_base: calculo.componentesBase,
         componente_base: calculo.componenteBase,
@@ -510,20 +796,18 @@ async function salvarResultadosMes({ supabase, competencia, registros, resumo, o
 // nada no banco. Reaproveita o motor processarCte com as tabelas cadastradas e
 // preserva o cálculo Verum original de cada registro (processarCte o recomputaria
 // a partir de valor_calculado, que num resultado salvo é o recálculo anterior).
-export async function resimularRegistros({ registros, onProgress } = {}) {
+export async function resimularRegistros({ registros, transportadorasAlvo, onProgress } = {}) {
   if (!Array.isArray(registros) || !registros.length) return [];
 
-  onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
-  if (!_cacheBaseFrete) {
-    let _tick = 0;
-    const _hb = setInterval(() => { _tick += 1; onProgress?.({ etapa: 'carregando_tabelas', carregados: _tick, total: null }); }, 600);
-    try {
-      _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
-    } finally {
-      clearInterval(_hb);
-    }
-  }
-  const transportadoras = _cacheBaseFrete;
+  const mapaVinculos = await carregarMapaVinculosAuditoria();
+  const transportadoras = await carregarBaseFreteParaRegistros(registros, onProgress, transportadorasAlvo, mapaVinculos);
+  const alvosNormalizados = Array.from(new Set(
+    (transportadorasAlvo || [])
+      .map((nome) => aplicarVinculoTransportadora(nome, mapaVinculos) || nome)
+      .map((nome) => String(nome || '').trim())
+      .filter(Boolean)
+  ));
+  const transportadoraAlvo = alvosNormalizados.length === 1 ? alvosNormalizados[0] : '';
 
   if (!transportadoras.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para resimular.');
@@ -532,7 +816,7 @@ export async function resimularRegistros({ registros, onProgress } = {}) {
   const out = [];
   for (let index = 0; index < registros.length; index += 1) {
     const original = registros[index] || {};
-    const novo = processarCte(original, transportadoras);
+    const novo = processarCte(original, transportadoras, mapaVinculos, transportadoraAlvo);
 
     const temVerum = original.valor_calculado_verum !== undefined && original.valor_calculado_verum !== null;
     const verum = temVerum ? toNumber(original.valor_calculado_verum) : novo.valor_calculado_verum;
@@ -624,6 +908,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   }
 
   const supabase = ensureSupabase();
+  const mapaVinculos = await carregarMapaVinculosAuditoria();
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
   if (!_cacheBaseFrete) {
@@ -656,7 +941,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   const registros = [];
 
   for (let index = 0; index < ctes.length; index += 1) {
-    registros.push(processarCte(ctes[index], transportadoras));
+    registros.push(processarCte(ctes[index], transportadoras, mapaVinculos));
 
     if (index % 500 === 0 || index === ctes.length - 1) {
       onProgress?.({ etapa: 'processando_ctes', carregados: index + 1, total: ctes.length });

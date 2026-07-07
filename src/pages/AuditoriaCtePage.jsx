@@ -24,13 +24,25 @@ import {
 } from '../services/auditoriaCteProcessamentoService';
 
 const CRITERIOS_FILTRO = [
-  { key: 'sem_calculo', label: 'Sem cálculo (nenhum dos dois)' },
-  { key: 'div_cobrado', label: 'Calculado, mas com erro (diverge do cobrado)' },
-  { key: 'div_verum', label: 'Recálculo diverge da Verum' },
+  { key: 'sem_calculo', label: 'Sem cálculo nos dois' },
+  { key: 'sem_verum', label: 'Sem cálculo Verum' },
+  { key: 'sem_amd', label: 'Sem cálculo AMD/local' },
+  { key: 'verum_ok', label: 'Verum bate o cobrado' },
+  { key: 'amd_ok', label: 'AMD/local bate o cobrado' },
+  { key: 'so_verum', label: 'Só Verum bateu' },
+  { key: 'so_amd', label: 'Só AMD/local bateu' },
+  { key: 'nenhum_bate', label: 'Nenhum bateu o cobrado' },
+  { key: 'div_cobrado', label: 'AMD/local diverge do cobrado' },
+  { key: 'div_verum', label: 'AMD/local diverge da Verum' },
 ];
 
 function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function fmtMaybe(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? fmt(n) : '—';
 }
 
 function fmtN(v, d = 0) {
@@ -39,6 +51,28 @@ function fmtN(v, d = 0) {
 
 function fmtP(v, d = 1) {
   return `${Number(v || 0).toFixed(d).replace('.', ',')}%`;
+}
+
+function fmtPctDetalhe(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(2).replace('.', ',')}%` : '—';
+}
+
+function somaValoresObjeto(obj = {}) {
+  return Object.entries(obj || {}).reduce((acc, [, valor]) => {
+    if (Array.isArray(valor)) return acc;
+    const n = Number(valor || 0);
+    return Number.isFinite(n) ? acc + n : acc;
+  }, 0);
+}
+
+function linhaDetalhe(label, value, destaque = false) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '4px 0', borderBottom: '1px solid #e2e8f0' }}>
+      <span style={{ color: '#64748b' }}>{label}</span>
+      <strong style={{ color: destaque ? '#0f172a' : '#334155', textAlign: 'right' }}>{value}</strong>
+    </div>
+  );
 }
 
 const EXCLUIDAS_AUDITORIA_KEY = 'auditoria_cte_transportadoras_excluidas';
@@ -172,6 +206,8 @@ function BarraProgresso({ progresso }) {
 
   const etapaLabel = {
     carregando_tabelas: 'Carregando tabelas cadastradas',
+    carregando_tabelas_transportadora: 'Carregando tabela da transportadora',
+    carregando_tabelas_completas_fallback: 'Carregando base completa de tabelas',
     processando_ctes: 'Recalculando CT-es',
     resimulando: 'Resimulando recorte',
     salvando_resultados: 'Salvando resultados',
@@ -192,7 +228,7 @@ function BarraProgresso({ progresso }) {
         <span style={{ fontSize: 12, color: '#475569' }}>
           {determinada
             ? `${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} · ${pct}%`
-            : `${carregados.toLocaleString('pt-BR')} carregados`}
+            : 'aguardando resposta do banco'}
         </span>
       </div>
       <div style={{ position: 'relative', height: 10, borderRadius: 999, background: '#dbeafe', overflow: 'hidden' }}>
@@ -421,6 +457,7 @@ export default function AuditoriaCtePage() {
   // Preview de resimulação (apenas em memória — não grava no banco).
   const [resimulando, setResimulando] = useState(false);
   const [resimuladoInfo, setResimuladoInfo] = useState('');
+  const [resimuladoDiagnostico, setResimuladoDiagnostico] = useState([]);
 
   // Detalhe por CT-e: índice da linha expandida (detalhe do cálculo).
   const [cteExpandido, setCteExpandido] = useState(null);
@@ -465,6 +502,20 @@ export default function AuditoriaCtePage() {
     setFiltroCidades([]);
     setFiltroCanais([]);
     setFiltroCriterios([]);
+  }
+
+  function selecionarTransportadoraTratamento(nome) {
+    const valor = String(nome || '').trim();
+    setFiltroTransps(valor ? [valor] : []);
+    setFiltroTomadores([]);
+    setFiltroUfs([]);
+    setFiltroCidades([]);
+    setFiltroCanais([]);
+    setFiltroCriterios([]);
+    setMostrarFiltros(false);
+    setCteExpandido(null);
+    setResimuladoInfo('');
+    setResimuladoDiagnostico([]);
   }
 
   const filtrosAtivos = Boolean(
@@ -600,10 +651,21 @@ export default function AuditoriaCtePage() {
         const vc = Number(r.valor_cte || 0);
         const rec = Number(r.valor_calculado || 0);
         const ver = Number(r.valor_calculado_verum || 0);
+        const okRec = rec > 0 && Math.abs(vc - rec) <= TOL;
+        const okVer = ver > 0 && Math.abs(vc - ver) <= TOL;
         const semCalc = rec <= 0 && ver <= 0;
+        const semVerum = ver <= 0;
+        const semAmd = rec <= 0;
         const divCobrado = rec > 0 && Math.abs(vc - rec) > TOL;
         const divVerum = rec > 0 && ver > 0 && Math.abs(rec - ver) > TOL;
         const passa = (critSet.has('sem_calculo') && semCalc)
+          || (critSet.has('sem_verum') && semVerum)
+          || (critSet.has('sem_amd') && semAmd)
+          || (critSet.has('verum_ok') && okVer)
+          || (critSet.has('amd_ok') && okRec)
+          || (critSet.has('so_verum') && okVer && !okRec)
+          || (critSet.has('so_amd') && okRec && !okVer)
+          || (critSet.has('nenhum_bate') && !okRec && !okVer && (rec > 0 || ver > 0))
           || (critSet.has('div_cobrado') && divCobrado)
           || (critSet.has('div_verum') && divVerum);
         if (!passa) return false;
@@ -611,6 +673,15 @@ export default function AuditoriaCtePage() {
       return true;
     });
   }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
+
+  const transportadoraEmTratamento = filtroTransps.length === 1
+    && !filtroTomadores.length
+    && !filtroUfs.length
+    && !filtroCidades.length
+    && !filtroCanais.length
+    && !filtroCriterios.length
+    ? filtroTransps[0]
+    : '';
 
   // Assertividade de um conjunto: % de CT-es (com algum cálculo) em que o
   // recálculo OU a Verum batem o valor cobrado. Mesmo critério da meta.
@@ -641,20 +712,34 @@ export default function AuditoriaCtePage() {
     setResimulando(true);
     setErro('');
     setResimuladoInfo('');
+    setResimuladoDiagnostico([]);
     setProgressoProcessamento(null);
 
     const antes = assertividadeDe(alvo);
 
     try {
-      const novos = await resimularRegistros({ registros: alvo, onProgress: setProgressoProcessamento });
+      const novos = await resimularRegistros({
+        registros: alvo,
+        transportadorasAlvo: transportadoraEmTratamento ? [transportadoraEmTratamento] : filtroTransps,
+        onProgress: setProgressoProcessamento,
+      });
       const mapa = new Map();
       alvo.forEach((orig, i) => mapa.set(orig, novos[i]));
       setRegistros((prev) => prev.map((r) => mapa.get(r) || r));
 
       const depois = assertividadeDe(novos);
+      const diagnosticoNovos = Array.from(novos.reduce((mapa, row) => {
+        const status = row.status_calculo || (Number(row.valor_calculado || 0) > 0 ? 'CALCULADO' : 'SEM_STATUS');
+        const atual = mapa.get(status) || { status, total: 0, exemplo: '' };
+        atual.total += 1;
+        if (!atual.exemplo && row.motivo_sem_calculo) atual.exemplo = row.motivo_sem_calculo;
+        mapa.set(status, atual);
+        return mapa;
+      }, new Map()).values()).sort((a, b) => b.total - a.total);
       const ganho = depois.taxa - antes.taxa;
       const resolvidos = depois.ok - antes.ok;
       const seta = ganho > 0.05 ? '▲' : ganho < -0.05 ? '▼' : '→';
+      setResimuladoDiagnostico(diagnosticoNovos);
       setResimuladoInfo(
         `${fmtN(novos.length)} CT-e(s) resimulados (preview, não gravado). `
         + `Assertividade do recorte: ${fmtP(antes.taxa)} ${seta} ${fmtP(depois.taxa)} `
@@ -708,6 +793,8 @@ export default function AuditoriaCtePage() {
     let comAlgumCalculo = 0;
     let comRecalculo = 0;
     let comVerum = 0;
+    let semRecalculo = 0;
+    let semVerum = 0;
     let recBate = 0;
     let verBate = 0;
     let combinado = 0;
@@ -722,7 +809,9 @@ export default function AuditoriaCtePage() {
       const okRec = rec > 0 && Math.abs(vc - rec) <= TOL;
       const okVer = ver > 0 && Math.abs(vc - ver) <= TOL;
       if (rec > 0) comRecalculo += 1;
+      else semRecalculo += 1;
       if (ver > 0) comVerum += 1;
+      else semVerum += 1;
       if (rec > 0 || ver > 0) comAlgumCalculo += 1;
       if (okRec) recBate += 1;
       if (okVer) verBate += 1;
@@ -736,6 +825,8 @@ export default function AuditoriaCtePage() {
       comAlgumCalculo,
       comRecalculo,
       comVerum,
+      semRecalculo,
+      semVerum,
       taxaCombinada: comAlgumCalculo > 0 ? (combinado / comAlgumCalculo) * 100 : 0,
       taxaRecalculo: comRecalculo > 0 ? (recBate / comRecalculo) * 100 : 0,
       taxaVerum: comVerum > 0 ? (verBate / comVerum) * 100 : 0,
@@ -1026,6 +1117,7 @@ export default function AuditoriaCtePage() {
     setResumoMensal([]);
     setProgressoProcessamento(null);
     setResimuladoInfo('');
+    setResimuladoDiagnostico([]);
     setErro('');
     setSucesso('');
     limparFiltrosFoco();
@@ -1164,6 +1256,86 @@ export default function AuditoriaCtePage() {
           </div>
         </div>
 
+        {registros.length > 0 ? (
+          <div style={{ marginTop: 14, padding: '14px 16px', borderRadius: 8, background: '#fff', border: '1px solid #dbe3ef' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: '#334155' }}>Tratamento por transportadora</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                  Escolha uma transportadora, ajuste as tabelas quando necessário e recalcule só esse recorte até estabilizar o resultado.
+                </div>
+              </div>
+              {transportadoraEmTratamento ? (
+                <button className="sim-tab" type="button" onClick={limparFiltrosFoco}>
+                  Ver todas
+                </button>
+              ) : null}
+            </div>
+            <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
+              <label>
+                Transportadora em tratamento
+                <select
+                  value={transportadoraEmTratamento}
+                  onChange={(event) => selecionarTransportadoraTratamento(event.target.value)}
+                  disabled={carregando || processando || resimulando}
+                >
+                  <option value="">Todas as transportadoras</option>
+                  {transportadorasOpcoes.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label} ({item.sub} CT-es)
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>CT-es no recorte</div>
+                <div style={{ fontSize: 22, color: '#0f172a', fontWeight: 800 }}>{fmtN(registrosFiltro.length)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Sem cálculo</div>
+                <div style={{ fontSize: 22, color: metricas.totalSemCalculo ? '#dc2626' : '#16a34a', fontWeight: 800 }}>
+                  {fmtN(metricas.totalSemCalculo)}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Assertividade AMD/local</div>
+                <div style={{ fontSize: 22, color: assertividadeSistema.taxaRecalculo >= 98 ? '#16a34a' : assertividadeSistema.taxaRecalculo >= 90 ? '#d97706' : '#dc2626', fontWeight: 800 }}>
+                  {fmtP(assertividadeSistema.taxaRecalculo)}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={resimularFiltrados}
+                  disabled={resimulando || carregando || processando || !registrosFiltro.length || !transportadoraEmTratamento}
+                  title="Recalcula apenas os CT-es da transportadora selecionada e atualiza o preview da tela"
+                >
+                  {resimulando ? 'Recalculando...' : 'Recalcular transportadora'}
+                </button>
+                <button
+                  className="sim-tab"
+                  type="button"
+                  onClick={() => setMostrarFiltros((v) => !v)}
+                  disabled={carregando || processando || resimulando}
+                >
+                  Refinar recorte
+                </button>
+              </div>
+            </div>
+            {resimuladoInfo ? (
+              <div className="sim-alert success" style={{ marginTop: 10 }}>
+                <div>{resimuladoInfo}</div>
+                {resimuladoDiagnostico.length ? (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#475569' }}>
+                    Resultado local: {resimuladoDiagnostico.map((item) => `${item.status}: ${fmtN(item.total)}`).join(' · ')}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {mostrarFiltros ? (
           <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
@@ -1281,8 +1453,15 @@ export default function AuditoriaCtePage() {
                   : 'Sem filtro — mostrando a base completa. Marque opções para focar e resimular só elas.'}
               </span>
             </div>
-            {resimuladoInfo ? (
-              <div className="sim-alert success" style={{ marginTop: 10 }}>{resimuladoInfo}</div>
+            {resimuladoInfo && !transportadoraEmTratamento ? (
+              <div className="sim-alert success" style={{ marginTop: 10 }}>
+                <div>{resimuladoInfo}</div>
+                {resimuladoDiagnostico.length ? (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#475569' }}>
+                    Resultado local: {resimuladoDiagnostico.map((item) => `${item.status}: ${fmtN(item.total)}`).join(' · ')}
+                  </div>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -1357,7 +1536,9 @@ export default function AuditoriaCtePage() {
                 Só recálculo acertou: <strong>{fmtN(assertividadeSistema.soRecalculo)}</strong> ·{' '}
                 Só Verum acertou: <strong>{fmtN(assertividadeSistema.soVerum)}</strong> ·{' '}
                 Ambos: <strong>{fmtN(assertividadeSistema.ambosBatem)}</strong> ·{' '}
-                Nenhum bateu: <strong style={{ color: assertividadeSistema.nenhumBate > 0 ? '#dc2626' : '#64748b' }}>{fmtN(assertividadeSistema.nenhumBate)}</strong>
+                Nenhum bateu: <strong style={{ color: assertividadeSistema.nenhumBate > 0 ? '#dc2626' : '#64748b' }}>{fmtN(assertividadeSistema.nenhumBate)}</strong> ·{' '}
+                Sem Verum: <strong style={{ color: assertividadeSistema.semVerum > 0 ? '#b45309' : '#64748b' }}>{fmtN(assertividadeSistema.semVerum)}</strong> ·{' '}
+                Sem AMD/local: <strong style={{ color: assertividadeSistema.semRecalculo > 0 ? '#b45309' : '#64748b' }}>{fmtN(assertividadeSistema.semRecalculo)}</strong>
               </div>
             </div>
           </div>
@@ -1591,6 +1772,7 @@ export default function AuditoriaCtePage() {
                   <th>Valor divergência</th>
                   <th>Cobrança excessiva</th>
                   <th>Ação sugerida</th>
+                  <th>Tratamento</th>
                   {usarTabelas ? <th>Elegíveis resimular</th> : null}
                 </tr>
               </thead>
@@ -1624,6 +1806,16 @@ export default function AuditoriaCtePage() {
                       }}>
                         {it.acaoSugerida}
                       </span>
+                    </td>
+                    <td>
+                      <button
+                        className="sim-tab"
+                        type="button"
+                        onClick={() => selecionarTransportadoraTratamento(it.transportadora)}
+                        style={{ fontSize: 11, padding: '3px 9px', whiteSpace: 'nowrap' }}
+                      >
+                        Tratar agora
+                      </button>
                     </td>
                     {usarTabelas ? (
                       <td><span style={{ padding: '2px 7px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: '#eff6ff', color: '#1d4ed8' }}>{fmtN(it.semCalculo)} CTes</span></td>
@@ -1801,7 +1993,10 @@ export default function AuditoriaCtePage() {
                         <td style={{ color: amd > 0 ? '#334155' : '#94a3b8' }}>{amd > 0 ? fmt(amd) : '—'}</td>
                         <td style={{ color: corDif(difAmd, amd), fontWeight: 600 }}>{amd > 0 ? fmt(difAmd) : '—'}</td>
                         <td style={{ fontSize: 11 }}>
-                          <span style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: amd > 0 ? '#dcfce7' : '#fee2e2', color: amd > 0 ? '#166534' : '#991b1b' }}>
+                          <span
+                            title={r.motivo_sem_calculo || (amd > 0 ? 'Calculado pela tabela local.' : 'Sem cálculo pela tabela local.')}
+                            style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: amd > 0 ? '#dcfce7' : '#fee2e2', color: amd > 0 ? '#166534' : '#991b1b' }}
+                          >
                             {r.status_calculo || (amd > 0 ? 'CALCULADO' : 'SEM_STATUS')}
                           </span>
                         </td>
@@ -1818,9 +2013,71 @@ export default function AuditoriaCtePage() {
                                 <span><strong>Valor base:</strong> {fmt(det.valor_base)}</span>
                                 <span><strong>Subtotal:</strong> {fmt(det.subtotal)}</span>
                                 <span><strong>ICMS:</strong> {fmt(det.icms)}</span>
-                                <span><strong>Taxas:</strong> {fmt(det.taxas)}</span>
+                                <span><strong>Taxas:</strong> {fmtMaybe(somaValoresObjeto(det.taxas || {}))}</span>
                               </div>
                             ) : <span>Sem detalhe de cálculo para este CT-e.</span>}
+                            {det ? (() => {
+                              const frete = det.componentes_base || {};
+                              const taxas = det.taxas || {};
+                              const totalTaxas = Number.isFinite(Number(frete.totalTaxas)) ? Number(frete.totalTaxas) : somaValoresObjeto(taxas);
+                              const taxaExtraDetalhes = Array.isArray(taxas.taxasExtrasDetalhes) ? taxas.taxasExtrasDetalhes : [];
+                              return (
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
+                                  <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+                                    <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Resumo do calculo</div>
+                                    {linhaDetalhe('Motor', det.motor === 'simulador_realizado' ? 'Simulador realizado' : 'Auditoria')}
+                                    {linhaDetalhe('Tipo', r.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
+                                    {linhaDetalhe('Tabela usada', r.transportadora_tabela || det.transportadora_tabela || '-')}
+                                    {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
+                                    {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
+                                    {linhaDetalhe('Peso considerado', `${fmtN(det.peso_considerado ?? frete.pesoConsiderado ?? r.peso, 3)} kg`)}
+                                    {linhaDetalhe('Valor NF', fmtMaybe(r.valor_nf), true)}
+                                    {linhaDetalhe('Frete pago', fmtMaybe(r.valor_cte), true)}
+                                    {linhaDetalhe('Calculo AMD/local', fmtMaybe(r.valor_calculado), true)}
+                                  </div>
+                                  <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+                                    <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Base do frete</div>
+                                    {linhaDetalhe('Percentual aplicado', fmtPctDetalhe(frete.percentualAplicado))}
+                                    {linhaDetalhe('Valor percentual', fmtMaybe(frete.valorPercentualCalculado ?? frete.valorPercentual))}
+                                    {linhaDetalhe('R$/kg aplicado', fmtMaybe(frete.rsKgAplicado))}
+                                    {linhaDetalhe('Valor kg garantia', fmtMaybe(frete.valorKgGarantia ?? frete.valorKg))}
+                                    {linhaDetalhe('Frete minimo rota', fmtMaybe(frete.minimoRota))}
+                                    {linhaDetalhe('Frete minimo cotacao', fmtMaybe(frete.freteMinimoCotacao ?? frete.minimoCotacao))}
+                                    {linhaDetalhe('Frete minimo geral', fmtMaybe(frete.freteMinimoGeneralidade ?? frete.minimoGeneralidade))}
+                                    {linhaDetalhe('Minimo aplicavel', fmtMaybe(frete.minimoAplicavel))}
+                                    {linhaDetalhe('Componente vencedor', frete.componenteBase || det.componente_base || '-', true)}
+                                    {linhaDetalhe('Valor base', fmtMaybe(det.valor_base ?? frete.valorBase), true)}
+                                  </div>
+                                  <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+                                    <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>ICMS e totalizacao</div>
+                                    {linhaDetalhe('Subtotal sem ICMS', fmtMaybe(det.subtotal ?? frete.subtotal), true)}
+                                    {linhaDetalhe('Aliquota ICMS', fmtPctDetalhe(det.aliquota_icms ?? frete.aliquotaIcms))}
+                                    {linhaDetalhe('Origem aliquota', det.origem_aliquota_icms || frete.origemAliquotaIcms || '-')}
+                                    {linhaDetalhe('UF origem/destino', `${det.uf_origem_icms || frete.ufOrigem || '-'} -> ${det.uf_destino_icms || frete.ufDestino || '-'}`)}
+                                    {linhaDetalhe('ICMS', fmtMaybe(det.icms ?? frete.icms), true)}
+                                    {linhaDetalhe('Total calculado', fmtMaybe(r.valor_calculado), true)}
+                                    {linhaDetalhe('Diferenca vs pago', fmtMaybe(r.diferenca), true)}
+                                  </div>
+                                  <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+                                    <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Taxas</div>
+                                    {linhaDetalhe('Ad Valorem', fmtMaybe(taxas.adValorem))}
+                                    {linhaDetalhe('GRIS', fmtMaybe(taxas.gris))}
+                                    {linhaDetalhe('Pedagio', fmtMaybe(taxas.pedagio))}
+                                    {linhaDetalhe('TAS', fmtMaybe(taxas.tas))}
+                                    {linhaDetalhe('CTRC', fmtMaybe(taxas.ctrc))}
+                                    {linhaDetalhe('TDA', fmtMaybe(taxas.tda))}
+                                    {linhaDetalhe('TDE', fmtMaybe(taxas.tde))}
+                                    {linhaDetalhe('TDR', fmtMaybe(taxas.tdr))}
+                                    {linhaDetalhe('TRT', fmtMaybe(taxas.trt))}
+                                    {linhaDetalhe('Suframa', fmtMaybe(taxas.suframa))}
+                                    {linhaDetalhe('Outras', fmtMaybe(taxas.outras))}
+                                    {linhaDetalhe('Taxa extra', fmtMaybe(taxas.taxaExtra))}
+                                    {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(taxa.nome || `Extra ${i + 1}`, fmtMaybe(taxa.valor)))}
+                                    {linhaDetalhe('Total taxas', fmtMaybe(totalTaxas), true)}
+                                  </div>
+                                </div>
+                              );
+                            })() : null}
                           </td>
                         </tr>
                       ) : null}

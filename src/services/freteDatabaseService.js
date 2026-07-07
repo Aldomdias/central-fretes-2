@@ -601,6 +601,63 @@ export async function carregarBaseCompletaDb() {
   return _cacheBaseCompleta;
 }
 
+export async function carregarBaseTransportadorasDb(nomes = []) {
+  const nomesLimpos = Array.from(new Set(
+    (nomes || []).map((nome) => String(nome || '').trim()).filter(Boolean)
+  ));
+
+  if (!nomesLimpos.length) return carregarBaseCompletaDb();
+
+  if (!isSupabaseConfigured()) {
+    const base = await carregarBaseCompletaDb();
+    const alvoNorm = nomesLimpos.map((nome) => normalizeBuscaDb(nome));
+    return (base || []).filter((transportadora) => {
+      const nomeNorm = normalizeBuscaDb(transportadora.nome || '');
+      return alvoNorm.some((alvo) => nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm));
+    });
+  }
+
+  const supabase = ensureClient();
+  const todasTransportadoras = await fetchAllRows(supabase, 'transportadoras', 'nome', true);
+  const alvoNorm = nomesLimpos.map((nome) => normalizeBuscaDb(nome));
+  const transportadoras = (todasTransportadoras || []).filter((transportadora) => {
+    const nomeNorm = normalizeBuscaDb(transportadora.nome || '');
+    return alvoNorm.some((alvo) => nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm));
+  });
+
+  const transportadoraIds = transportadoras.map((item) => item.id).filter(Boolean);
+  if (!transportadoraIds.length) return [];
+
+  const origens = await buscarOrigensFiltradasDb({ supabase, transportadoraIds });
+  const origemIds = (origens || []).map((item) => item.id).filter(Boolean);
+  if (!origemIds.length) {
+    return transportadoras.map((transportadora) => ({
+      id: transportadora.id,
+      nome: transportadora.nome || '',
+      status: transportadora.status || 'Ativa',
+      detalheCarregado: true,
+      origens: [],
+    }));
+  }
+
+  const [generalidades, rotasRaw, cotacoes, taxas] = await Promise.all([
+    fetchRowsByOrigemIds(supabase, 'generalidades', origemIds),
+    fetchRowsByOrigemIds(supabase, 'rotas', origemIds),
+    fetchRowsByOrigemIds(supabase, 'cotacoes', origemIds),
+    fetchRowsByOrigemIds(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  const rotas = await enriquecerRotasComIbgeDestinoPorCepDb(rotasRaw);
+  return transportadorasFromDbRows({
+    transportadoras,
+    origens,
+    generalidades,
+    rotas,
+    cotacoes,
+    taxas,
+  });
+}
+
 export async function carregarResumoBaseDb() {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
@@ -783,6 +840,7 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
   }
 
   if (options.atualizarSnapshot !== true) {
+    invalidarCacheBaseCompletaDb();
     return { modo: 'supabase', secao, updated_at: new Date().toISOString(), snapshot: 'ignorado' };
   }
 
@@ -794,6 +852,7 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
     .single();
 
   if (error) throw error;
+  invalidarCacheBaseCompletaDb();
   return { modo: 'supabase', secao, updated_at: data?.updated_at };
 }
 
@@ -813,6 +872,7 @@ export async function salvarBaseCompletaDb(transportadoras, chave = SNAPSHOT_CHA
     .single();
 
   if (error) throw error;
+  invalidarCacheBaseCompletaDb();
   return { modo: 'supabase', updated_at: data?.updated_at };
 }
 
