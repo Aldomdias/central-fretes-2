@@ -13,12 +13,17 @@ const COLUNAS_GESTAO = [
   'aprovado_em', 'publicado_em', 'enviado_aprovacao_em',
 ].join(',');
 
+const COLUNAS_VINCULO_AMD = [
+  'numero_amd', 'solicitacao_amd_id',
+].join(',');
+
 const COLUNAS_EDITOR_TIPO = [
   'id', 'transportadora', 'tipo_negociacao', 'tipo_tabela', 'canal', 'status',
   'descricao', 'regiao', 'origem', 'uf_origem', 'uf_destino',
   'transportadora_base_nome', 'tabela_base_id', 'comparar_com_proprio_realizado',
   'periodo_realizado_inicio', 'periodo_realizado_fim', 'tipo_veiculo', 'modalidade',
   'observacao', 'data_inicio_prevista', 'incluir_simulacao',
+  COLUNAS_VINCULO_AMD,
 ].join(',');
 
 const COLUNAS_LISTAGEM_NEGOCIACAO = [
@@ -34,6 +39,7 @@ const COLUNAS_LISTAGEM_NEGOCIACAO = [
   'percentual_medio_impacto', 'impacto_valor', 'valor_atual_realizado',
   'valor_simulado_nova_tabela', 'impacto_mensal', 'impacto_anual',
   'resumo_capa',
+  COLUNAS_VINCULO_AMD,
   COLUNAS_GESTAO,
 ].join(',');
 
@@ -47,6 +53,19 @@ const COLUNAS_CAPA_DETALHE = [
 function supabaseOrThrow() {
   if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
   return getSupabaseClient();
+}
+
+function erroColunaAmdAusente(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return msg.includes('schema cache') && (msg.includes('numero_amd') || msg.includes('solicitacao_amd_id'));
+}
+
+function removerColunasAmdDoSelect(selectCols = '') {
+  return String(selectCols || '')
+    .split(',')
+    .map((col) => col.trim())
+    .filter((col) => col && col !== 'numero_amd' && col !== 'solicitacao_amd_id')
+    .join(',');
 }
 
 async function executarComConcorrencia(itens, limite, executor) {
@@ -92,6 +111,18 @@ export async function listarNegociacoesResumo(filtros = {}) {
     ({ data, error } = await query);
   }
 
+  if (error && erroColunaAmdAusente(error)) {
+    const fallbackCols = removerColunasAmdDoSelect(COLUNAS_LISTAGEM_NEGOCIACAO);
+    query = supabase.from('tabelas_negociacao').select(fallbackCols).order('criado_em', { ascending: false });
+    if (filtros.status) query = query.eq('status', filtros.status);
+    if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
+    if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);
+    if (filtros.canal) query = query.eq('canal', filtros.canal);
+    if (filtros.transportadora) query = query.ilike('transportadora', `%${filtros.transportadora}%`);
+    if (filtros.somenteSimulacao) query = query.eq('incluir_simulacao', true);
+    ({ data, error } = await query);
+  }
+
   if (error) throw new Error(error.message || 'Erro ao listar negociações (resumo).');
   return (data || []).map(mesclarResumoCapaNaTabela);
 }
@@ -99,10 +130,17 @@ export async function listarNegociacoesResumo(filtros = {}) {
 /** Lista mínima para o editor de tipo (sem resumo_capa / gestão / histórico). */
 export async function listarNegociacoesCapaEditor() {
   const supabase = supabaseOrThrow();
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('tabelas_negociacao')
     .select(COLUNAS_EDITOR_TIPO)
     .order('criado_em', { ascending: false });
+
+  if (error && erroColunaAmdAusente(error)) {
+    ({ data, error } = await supabase
+      .from('tabelas_negociacao')
+      .select(removerColunasAmdDoSelect(COLUNAS_EDITOR_TIPO))
+      .order('criado_em', { ascending: false }));
+  }
 
   if (error) throw new Error(error.message || 'Erro ao listar negociações (editor).');
   return data || [];
@@ -132,6 +170,14 @@ export async function obterNegociacaoCapa(id) {
   if (error && erroColunaResumoCapaAusente(error)) {
     const fallbackCols = removerResumoCapaDoSelect(COLUNAS_CAPA_DETALHE);
     ({ data, error } = await supabase.from('tabelas_negociacao').select(fallbackCols).eq('id', id).single());
+  }
+
+  if (error && erroColunaAmdAusente(error)) {
+    ({ data, error } = await supabase
+      .from('tabelas_negociacao')
+      .select(removerColunasAmdDoSelect(COLUNAS_CAPA_DETALHE))
+      .eq('id', id)
+      .single());
   }
 
   if (error) throw new Error(error.message || 'Erro ao buscar capa da negociação.');

@@ -1,9 +1,45 @@
 import React, { useMemo, useState } from 'react';
-import { agruparPorTransportadora, formatarMoeda } from '../../utils/tabelasNegociacaoGestao';
+import { agruparPorTransportadora, enriquecerTabelaGestao, formatarMoeda, STATUS_GESTAO } from '../../utils/tabelasNegociacaoGestao';
 import { gestaoStyles } from './GestaoStyles';
 
 function normalizarFiltro(v) {
   return String(v ?? '').trim().toUpperCase();
+}
+
+const STATUS_ANDAMENTO = new Set([
+  'RASCUNHO',
+  'EM_NEGOCIACAO',
+  'EM_ANALISE',
+  'AGUARDANDO_TRANSPORTADORA',
+  'AGUARDANDO_APROVACAO_GESTOR',
+  'APROVADA_NEGOCIADOR',
+  'DEVOLVIDA_AJUSTE',
+]);
+
+const STATUS_CONCLUIDAS = new Set([
+  'APROVADA_GESTOR',
+  'PUBLICADA_OFICIAL',
+  'RECUSADA',
+  'CANCELADA',
+  'SUBSTITUIDA',
+]);
+
+const FILTROS_STATUS = [
+  { value: '', label: 'Todas' },
+  { value: 'ANDAMENTO', label: 'Em andamento' },
+  { value: 'CONCLUIDAS', label: 'Concluidas' },
+  { value: 'EM_NEGOCIACAO', label: 'Em negociacao' },
+  { value: 'PUBLICADA_OFICIAL', label: 'Publicadas' },
+  { value: 'APROVADA_GESTOR', label: 'Aprovadas pelo gestor' },
+  { value: 'RECUSADA', label: 'Recusadas' },
+  { value: 'CANCELADA', label: 'Canceladas' },
+];
+
+function tabelaPassaStatus(tabela, filtroStatus) {
+  if (!filtroStatus) return true;
+  if (filtroStatus === 'ANDAMENTO') return STATUS_ANDAMENTO.has(tabela.status_gestao);
+  if (filtroStatus === 'CONCLUIDAS') return STATUS_CONCLUIDAS.has(tabela.status_gestao);
+  return tabela.status_gestao === filtroStatus;
 }
 
 export default function GestaoPorTransportadora({
@@ -16,8 +52,16 @@ export default function GestaoPorTransportadora({
   filtroTransportadora = '',
   onFiltroTransportadoraChange,
 }) {
-  const grupos = agruparPorTransportadora(tabelas, sessao);
   const [abertos, setAbertos] = useState({});
+  const [filtroStatus, setFiltroStatus] = useState('');
+
+  const tabelasFiltradasPorStatus = useMemo(() => (
+    tabelas
+      .map((t) => enriquecerTabelaGestao(t, sessao))
+      .filter((t) => tabelaPassaStatus(t, filtroStatus))
+  ), [tabelas, sessao, filtroStatus]);
+
+  const grupos = useMemo(() => agruparPorTransportadora(tabelasFiltradasPorStatus, sessao), [tabelasFiltradasPorStatus, sessao]);
 
   const nomesTransportadoras = useMemo(() => {
     return [...new Set(grupos.map((g) => g.transportadora).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
@@ -58,11 +102,25 @@ export default function GestaoPorTransportadora({
             ))}
           </select>
         </label>
+        <label>Status
+          <select value={filtroStatus} onChange={(e) => setFiltroStatus(e.target.value)}>
+            {FILTROS_STATUS.map((item) => (
+              <option key={item.value || 'todos'} value={item.value}>{item.label}</option>
+            ))}
+            {STATUS_GESTAO
+              .filter((status) => !FILTROS_STATUS.some((item) => item.value === status.value))
+              .map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
+          </select>
+        </label>
         <label style={{ display: 'flex', alignItems: 'flex-end' }}>
-          <button className="sim-tab" type="button" onClick={() => alterarFiltro('')} disabled={!filtroTransportadora}>
+          <button className="sim-tab" type="button" onClick={() => { alterarFiltro(''); setFiltroStatus(''); }} disabled={!filtroTransportadora && !filtroStatus}>
             Limpar filtro
           </button>
         </label>
+      </div>
+
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
+        Mostrando {gruposFiltrados.length} transportadora(s) e {tabelasFiltradasPorStatus.length} negociacao(oes) no filtro selecionado.
       </div>
 
       {gruposFiltrados.map((grupo) => (
@@ -145,7 +203,7 @@ export default function GestaoPorTransportadora({
 
       {!gruposFiltrados.length ? (
         <div className="sim-alert info">
-          {filtroTransportadora ? 'Nenhuma transportadora encontrada para este filtro.' : 'Nenhuma transportadora encontrada.'}
+          {filtroTransportadora || filtroStatus ? 'Nenhuma transportadora encontrada para este filtro.' : 'Nenhuma transportadora encontrada.'}
         </div>
       ) : null}
     </section>

@@ -50,6 +50,7 @@ export default function GestaoShell({
   onDevolverGestor,
   onComplementoGestor,
   onPublicarOficial,
+  onAprovarPublicarOficial,
   salvandoGestao = false,
   selecionadaId = null,
   abaInicial = 'visao-geral',
@@ -148,6 +149,7 @@ export default function GestaoShell({
           onDevolver={onDevolverGestor}
           onComplemento={onComplementoGestor}
           onPublicar={onPublicarOficial}
+          onAprovarPublicar={onAprovarPublicarOficial}
           salvando={salvandoGestao}
         />
       ) : null}

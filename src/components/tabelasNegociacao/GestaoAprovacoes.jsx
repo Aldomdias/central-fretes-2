@@ -16,6 +16,7 @@ export default function GestaoAprovacoes({
   onDevolver,
   onComplemento,
   onPublicar,
+  onAprovarPublicar,
   salvando = false,
 }) {
   const [observacao, setObservacao] = useState({});
@@ -65,6 +66,9 @@ export default function GestaoAprovacoes({
             {ehGestor ? (
               <div className="sim-actions" style={{ marginTop: 10 }}>
                 <button className="primary" type="button" disabled={salvando} onClick={() => onAprovar(t, obs(t.id))}>Aprovar</button>
+                {typeof onAprovarPublicar === 'function' ? (
+                  <button className="primary" type="button" disabled={salvando} onClick={() => onAprovarPublicar(t, obs(t.id))}>Aprovar e publicar</button>
+                ) : null}
                 <button className="sim-tab" type="button" disabled={salvando} onClick={() => onRecusar(t, obs(t.id))}>Recusar</button>
                 <button className="sim-tab" type="button" disabled={salvando} onClick={() => onDevolver(t, obs(t.id))}>Devolver para ajuste</button>
                 <button className="sim-tab" type="button" disabled={salvando} onClick={() => onComplemento(t, obs(t.id))}>Solicitar complemento</button>

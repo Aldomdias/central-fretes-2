@@ -103,7 +103,13 @@ function transportadoraCompativel(nomeTabela, nomeFiltro) {
   const tabela = normalizeCompare(nomeTabela);
   const filtro = normalizeCompare(nomeFiltro);
   if (!tabela || !filtro) return false;
-  return tabela === filtro || (tabela.length >= 5 && filtro.includes(tabela)) || (filtro.length >= 5 && tabela.includes(filtro));
+  if (tabela === filtro || (tabela.length >= 5 && filtro.includes(tabela)) || (filtro.length >= 5 && tabela.includes(filtro))) {
+    return true;
+  }
+
+  const tokensTabela = tabela.split(/\s+/).filter((token) => token.length >= 3);
+  const tokensFiltro = filtro.split(/\s+/).filter((token) => token.length >= 3);
+  return tokensTabela.some((token) => tokensFiltro.includes(token));
 }
 
 function rotaKeyComparavel(origem, ibge) {

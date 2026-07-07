@@ -223,11 +223,15 @@ export function enriquecerTabelaGestao(tabela = {}, sessao = null) {
     ? tabela.resumo_simulacao
     : {};
   const ultimaSim = resumo.ultima_simulacao?.indicadores || {};
+  const promocaoOficial = resumo.promocao_oficial
+    || resumo.dados_operacionais_arquivados?.promocao_oficial
+    || tabela.nova_tabela_aprovada_snapshot
+    || {};
   const tipoNegociacao = upper(tabela.tipo_negociacao) || (upper(tabela.tipo_tabela) === 'LOTACAO' ? 'TABELA_LOTACAO' : 'NOVA_TABELA');
   const isReajuste = tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE';
   const saving = numero(tabela.saving_projetado || ultimaSim.saving_mes || resumo.savingSelecionadaVsRealMes || 0);
   const impacto = numero(tabela.impacto_valor || ultimaSim.impacto_valor || resumo.impacto_valor || 0);
-  const rotas = numero(resumo.qtdRotas || resumo.rotas_total || tabela.qtd_rotas || 0);
+  const rotas = numero(promocaoOficial.rotas || resumo.qtdRotas || resumo.rotas_total || tabela.qtd_rotas || 0);
   const origensDetectadas = Array.isArray(resumo.origens_detectadas) ? resumo.origens_detectadas : [];
   const origemLabel = texto(tabela.origem)
     ? `${texto(tabela.origem)}${tabela.uf_origem ? `/${tabela.uf_origem}` : ''}`

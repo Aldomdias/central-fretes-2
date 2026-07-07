@@ -89,10 +89,29 @@ export async function salvarVinculosTransportadoras(lista = []) {
 
   const { error } = await supabase
     .from('transportadora_vinculos')
-    .upsert(payload, { onConflict: 'nome_cte_normalizado' });
+    .upsert(payload, { onConflict: 'nome_cte_normalizado' })
+    .select('nome_cte_normalizado');
 
   if (error) {
     throw new Error(`Não consegui salvar vínculos no Supabase. Rode o SQL transportadora_vinculos_schema.sql. Detalhe: ${error.message}`);
+  }
+
+  const chavesEnviadas = [...new Set(dedup.map((item) => item.nomeCteNormalizado).filter(Boolean))];
+  if (chavesEnviadas.length) {
+    const { data: confirmados, error: confirmError } = await supabase
+      .from('transportadora_vinculos')
+      .select('nome_cte_normalizado')
+      .in('nome_cte_normalizado', chavesEnviadas);
+
+    if (confirmError) {
+      throw new Error(`Vinculos enviados, mas nao consegui confirmar a gravacao no Supabase. Detalhe: ${confirmError.message}`);
+    }
+
+    const chavesConfirmadas = new Set((confirmados || []).map((item) => normalizarChave(item.nome_cte_normalizado)));
+    const faltantes = chavesEnviadas.filter((chave) => !chavesConfirmadas.has(normalizarChave(chave)));
+    if (faltantes.length) {
+      throw new Error(`Supabase nao confirmou ${faltantes.length} vinculo(s): ${faltantes.slice(0, 5).join(', ')}.`);
+    }
   }
 
   return { ok: true, modo: 'supabase', total: dedup.length, vinculos: dedup };

@@ -546,6 +546,8 @@ function TransportadorasList({ items, onOpen, store }) {
   const [editing, setEditing] = useState(null);
   const [pagina, setPagina] = useState(1);
   const [autoAtualizando, setAutoAtualizando] = useState(false);
+  const [atualizandoResumo, setAtualizandoResumo] = useState(false);
+  const refreshInicialRef = useRef(false);
   const PAGE_SIZE = 20;
   const cidades = useMemo(() => uniqueCities(items), [items]);
   const canais = useMemo(() => uniqueCanals(items), [items]);
@@ -574,6 +576,21 @@ function TransportadorasList({ items, onOpen, store }) {
   useEffect(() => {
     setPagina(1);
   }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
+
+  const atualizarBaseOficial = async () => {
+    if (!store?.atualizarResumo || atualizandoResumo) return false;
+    setAtualizandoResumo(true);
+    const ok = await store.atualizarResumo();
+    setAtualizandoResumo(false);
+    return ok;
+  };
+
+  useEffect(() => {
+    if (refreshInicialRef.current) return;
+    if (!store?.atualizarResumo || store?.syncStatus?.rascunhoLocal) return;
+    refreshInicialRef.current = true;
+    atualizarBaseOficial();
+  }, [store]);
 
   useEffect(() => {
     // Não carrega automaticamente para evitar sobrescrever campos enquanto o usuário edita.
@@ -605,6 +622,10 @@ function TransportadorasList({ items, onOpen, store }) {
         <div className="page-header slim"><h1>Transportadoras</h1><p>Gerencie as transportadoras e suas configurações de origem</p></div>
         <div className="toolbar-wrap">
           {autoAtualizando ? <span className="status-pill">Atualizando visíveis...</span> : null}
+          {atualizandoResumo || store?.syncStatus?.carregando ? <span className="status-pill">Atualizando base oficial...</span> : null}
+          <button className="btn-secondary" onClick={atualizarBaseOficial} disabled={atualizandoResumo || store?.syncStatus?.carregando}>
+            {atualizandoResumo || store?.syncStatus?.carregando ? 'Atualizando...' : 'Atualizar base oficial'}
+          </button>
           <button className="btn-secondary" onClick={() => {
             visiveis.forEach((item) => store?.carregarTransportadoraCompleta?.(item.id));
           }}>Atualizar visíveis</button>

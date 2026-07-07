@@ -1,0 +1,81 @@
+﻿diff --git a/src/pages/SimuladorPage.jsx b/src/pages/SimuladorPage.jsx
+index 48a43ca..63f025f 100644
+--- a/src/pages/SimuladorPage.jsx
++++ b/src/pages/SimuladorPage.jsx
+@@ -1,4 +1,4 @@
+-
++´╗┐
+ import React, { useEffect, useMemo, useRef, useState } from 'react';
+ import * as XLSX from 'xlsx';
+ import {
+@@ -3310,19 +3310,61 @@ export default function SimuladorPage({ transportadoras = [] }) {
+   // (sem filtro de canal) para que apare├ºam como concorrentes "(negocia├º├úo)" em
+   // todas as abas (simples, por transportadora, an├ílise). Silencioso; o Realizado
+   // continua re-hidratando por canal quando precisa.
++  // Carrega negociacoes completas para que possam concorrer em todas as abas.
++  // Nao mantem capa/lista parcial sem itens, rotas e taxas.
+   useEffect(() => {
+     let ativo = true;
+-    (async () => {
++
++    const carregarNegociacoesCompletas = async () => {
++      setCarregandoNegociacoesSimulador(true);
++      setErroNegociacoesSimulador('');
++      setEtapaNegociacoesSimulador('detalhe');
++
+       try {
+-        const completas = await buscarTabelasNegociacaoParaSimulacao({ tipoTabela: 'FRACIONADO' });
+-        if (!ativo || !completas?.length) return;
+-        completas.forEach((tabela) => negociacoesHidratadasRef.current.add(tabela.id));
++        const completas = await buscarTabelasNegociacaoParaSimulacao({
++          tipoTabela: 'FRACIONADO',
++        });
++
++        if (!ativo) return;
++
++        const tabelasCompletas = completas || [];
++
++        tabelasCompletas.forEach((tabela) => {
++          negociacoesHidratadasRef.current.add(tabela.id);
++        });
++
+         capasNegociacaoCarregadasRef.current = true;
+-        setNegociacoesSimulador((prev) => (prev && prev.length ? prev : completas));
+-        setNegociacoesAtualizadasEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+-      } catch { /* silencioso ÔÇö n├úo bloqueia o simulador */ }
+-    })();
+-    return () => { ativo = false; };
++
++        // Substitui dados parciais pelos registros completos usados pelo adapter.
++        setNegociacoesSimulador(tabelasCompletas);
++
++        setNegociacoesAtualizadasEm(
++          new Date().toLocaleTimeString('pt-BR', {
++            hour: '2-digit',
++            minute: '2-digit',
++          }),
++        );
++
++        setEtapaNegociacoesSimulador('concluido');
++      } catch (error) {
++        if (!ativo) return;
++
++        setErroNegociacoesSimulador(
++          error?.message || 'Erro ao carregar negociacoes disponiveis para a simulacao.',
++        );
++        setEtapaNegociacoesSimulador('erro');
++      } finally {
++        if (ativo) {
++          setCarregandoNegociacoesSimulador(false);
++        }
++      }
++    };
++
++    carregarNegociacoesCompletas();
++
++    return () => {
++      ativo = false;
++    };
+   }, []);
+   const [opcoesAvancadasRealizadoAberto, setOpcoesAvancadasRealizadoAberto] = useState(false);
+   const [salvandoResultadoNegociacao, setSalvandoResultadoNegociacao] = useState(false);

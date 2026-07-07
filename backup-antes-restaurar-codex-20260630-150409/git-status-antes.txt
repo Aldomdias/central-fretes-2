@@ -1,0 +1,14 @@
+﻿ D dist/assets/index-BhbGbIuP.css
+ D dist/assets/index-Ctm38Z6G.js
+ M dist/assets/perdaRealizadoWorker-DlKYIQj3.js
+ D dist/assets/volumetriaExportWorker-CImicWGY.js
+ M dist/index.html
+ M src/pages/SimuladorPage.jsx
+?? aplicar_correcao_simulador_negociacoes.js
+?? backup-antes-restaurar-codex-20260630-150409/
+?? dist/assets/index-3_KDXTGR.js
+?? dist/assets/index-xutwPadQ.css
+?? dist/assets/volumetriaExportWorker-BEqW65-i.js
+?? src/pages/SimuladorPage.jsx.backup-negociacoes-v3-20260630-145319
+?? vite-layout.err.log
+?? vite-layout.out.log
