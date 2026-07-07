@@ -4,6 +4,7 @@ import {
   formatarMoeda,
   formatarData,
   getEstadoSimulacaoNegociacao,
+  usuarioEhGestor,
 } from '../../utils/tabelasNegociacaoGestao';
 import { gestaoStyles } from './GestaoStyles';
 
@@ -14,8 +15,10 @@ export default function GestaoListaNegociacoes({
   onAbrir,
   onEnviarAprovacao,
   onAlternarSimulacao,
+  onExcluir,
   selecionadaId = null,
 }) {
+  const podeExcluir = usuarioEhGestor(sessao);
   const lista = filtrarTabelasGestao(tabelas, filtros, sessao);
 
   return (
@@ -78,6 +81,14 @@ export default function GestaoListaNegociacoes({
                     ) : null}
                     {['EM_NEGOCIACAO', 'EM_ANALISE', 'DEVOLVIDA_AJUSTE', 'APROVADA_NEGOCIADOR'].includes(t.status_gestao) ? (
                       <button className="sim-tab" type="button" onClick={() => onEnviarAprovacao(t)}>Enviar p/ aprovação</button>
+                    ) : null}
+                    {podeExcluir && typeof onExcluir === 'function' ? (
+                      <button
+                        type="button"
+                        title="Excluir negociação inteira (gestor)"
+                        onClick={() => onExcluir(t)}
+                        style={{ background: 'none', border: '1px solid #fecaca', color: '#dc2626', borderRadius: 6, padding: '2px 8px', cursor: 'pointer' }}
+                      >Excluir</button>
                     ) : null}
                     <span style={{ fontSize: 11, color: estSim.statusCor, width: '100%' }}>{estSim.rotuloStatus}</span>
                   </div>

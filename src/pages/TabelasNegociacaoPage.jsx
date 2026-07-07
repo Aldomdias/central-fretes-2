@@ -1905,7 +1905,8 @@ export default function TabelasNegociacaoPage() {
   }
 
   async function excluirTabela(tabela) {
-    if (!window.confirm('Excluir tabela de ' + tabela.transportadora + '?')) return;
+    if (!usuarioEhGestor(sessao)) { setErro('Apenas o gestor pode excluir uma negociação inteira.'); return; }
+    if (!window.confirm('Excluir a negociação de ' + tabela.transportadora + ' inteira? Isso remove a negociação e todos os itens/taxas dela do banco. Não pode ser desfeito.')) return;
     setErro(''); setSucesso('');
     try {
       await excluirTabelaNegociacao(tabela.id);
@@ -2578,6 +2579,7 @@ export default function TabelasNegociacaoPage() {
         carregandoLaudoTransportadora={carregandoLaudoTransportadora}
         onEnviarAprovacao={handleEnviarAprovacaoGestao}
         onAlternarSimulacao={gerenciarSimulacaoLista}
+        onExcluir={excluirTabela}
         onAprovarGestor={handleAprovarGestor}
         onRecusarGestor={handleRecusarGestor}
         onDevolverGestor={handleDevolverGestor}
@@ -2956,7 +2958,7 @@ export default function TabelasNegociacaoPage() {
                           >
                             {chipLabel} · R{getRodadaAtualTabela(t)}
                           </button>
-                          {!ativo && (
+                          {!ativo && usuarioEhGestor(sessao) && (
                             <button
                               type="button"
                               title={'Excluir origem ' + chipLabel}

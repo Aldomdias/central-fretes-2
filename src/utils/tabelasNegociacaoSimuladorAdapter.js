@@ -383,8 +383,13 @@ function rotaCombinaComCotacao(rota = {}, cotacao = {}) {
   const ufCotacao = upper(cotacao.uf_destino || parseDadosOriginais(cotacao.dados_originais).ufDestino || parseDadosOriginais(cotacao.dados_originais).uf_destino);
   const nomeRota = normalizarChave(rota.__nomeCotacao || rota.nomeRota);
 
-  const nomeBate = !nomeCotacao || !nomeRota || nomeRota === nomeCotacao || nomeRota.includes(nomeCotacao) || nomeCotacao.includes(nomeRota);
-  const ufBate = !ufCotacao || !rota.__ufDestino || ufCotacao === rota.__ufDestino;
+  const nomeExato = Boolean(nomeCotacao) && Boolean(nomeRota) && nomeRota === nomeCotacao;
+  const nomeBate = nomeExato || !nomeCotacao || !nomeRota || nomeRota.includes(nomeCotacao) || nomeCotacao.includes(nomeRota);
+  // Import (Verum) às vezes grava na cotação o UF de UM destino de exemplo da faixa,
+  // que pode nem ser o UF real da faixa (ex.: faixa "MG" salva com um destino em GO).
+  // Nome idêntico já é sinal forte o suficiente; a checagem de UF só serve pra
+  // desambiguar quando o nome bate só por substring.
+  const ufBate = nomeExato || !ufCotacao || !rota.__ufDestino || ufCotacao === rota.__ufDestino;
 
   return nomeBate && ufBate;
 }

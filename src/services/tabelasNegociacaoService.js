@@ -840,6 +840,25 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
 
 export async function excluirTabelaNegociacao(id) {
   const supabase = supabaseOrThrow();
+
+  const { error: erroItens } = await supabase
+    .from('tabelas_negociacao_itens')
+    .delete()
+    .eq('tabela_negociacao_id', id);
+  if (erroItens) throw new Error(erroItens.message || 'Erro ao excluir itens da negociação.');
+
+  const { error: erroTaxas } = await supabase
+    .from('tabelas_negociacao_taxas_destino')
+    .delete()
+    .eq('tabela_negociacao_id', id);
+  if (erroTaxas) throw new Error(erroTaxas.message || 'Erro ao excluir taxas de destino da negociação.');
+
+  const { error: erroLotacao } = await supabase
+    .from('lotacao_tabelas')
+    .update({ tabela_negociacao_id: null })
+    .eq('tabela_negociacao_id', id);
+  if (erroLotacao) throw new Error(erroLotacao.message || 'Erro ao desvincular tabelas de lotação da negociação.');
+
   const { error } = await supabase.from('tabelas_negociacao').delete().eq('id', id);
   if (error) throw new Error(error.message || 'Erro ao excluir tabela em negociação.');
   return true;
