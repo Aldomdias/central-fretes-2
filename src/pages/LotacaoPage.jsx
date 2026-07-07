@@ -31,6 +31,7 @@ import {
   salvarTabelaLotacaoSupabase,
   resumoRotasLotacaoSupabase,
 } from '../services/lotacaoSupabaseService';
+import { carregarNegociacoesLotacaoParaComparacao } from '../services/tabelasNegociacaoService';
 
 function formatarData(valor) {
   if (!valor) return '-';
@@ -2003,6 +2004,27 @@ export default function LotacaoPage() {
   const [resumoRealizado, setResumoRealizado] = useState([]);
   const [periodoAnalise, setPeriodoAnalise] = useState('3m');
 
+  const [negociacoesLotacaoComparacao, setNegociacoesLotacaoComparacao] = useState([]);
+  const [carregandoNegociacoesLotacao, setCarregandoNegociacoesLotacao] = useState(false);
+  const [erroNegociacaoLotacao, setErroNegociacaoLotacao] = useState('');
+
+  const carregarNegociacoesLotacaoAbertas = useCallback(async () => {
+    setCarregandoNegociacoesLotacao(true);
+    setErroNegociacaoLotacao('');
+    try {
+      const lista = await carregarNegociacoesLotacaoParaComparacao();
+      setNegociacoesLotacaoComparacao(lista || []);
+    } catch (error) {
+      setErroNegociacaoLotacao(error.message || 'Erro ao carregar negociações de lotação.');
+    } finally {
+      setCarregandoNegociacoesLotacao(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    carregarNegociacoesLotacaoAbertas();
+  }, [carregarNegociacoesLotacaoAbertas]);
+
   const recarregarDados = useCallback(async ({ silencioso = false } = {}) => {
     if (!silencioso) setCarregando(true);
     try {
@@ -2044,7 +2066,10 @@ export default function LotacaoPage() {
   }, [fonteDados, tabelas, usarSupabase]);
 
   const resumo = useMemo(() => resumoLotacao(tabelas), [tabelas]);
-  const transportadoras = useMemo(() => obterTabelasPorTipo(tabelas, 'TRANSPORTADORA'), [tabelas]);
+  const transportadoras = useMemo(
+    () => [...obterTabelasPorTipo(tabelas, 'TRANSPORTADORA'), ...negociacoesLotacaoComparacao],
+    [tabelas, negociacoesLotacaoComparacao]
+  );
   const antt = useMemo(() => obterAntt(tabelas), [tabelas]);
   const referenciaMenorPreco = useMemo(() => criarReferenciaMenorPreco(transportadoras), [transportadoras]);
   const ranking = useMemo(() => rankingMelhoresPorRota(transportadoras), [transportadoras]);
@@ -2233,6 +2258,17 @@ export default function LotacaoPage() {
       </div>
 
       {feedback && <div className="formatacao-alerta">{feedback}</div>}
+
+      <div className="sim-alert info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span>
+          <strong>Negociações de lotação em aberto:</strong> {negociacoesLotacaoComparacao.length} entrando na comparação/ranking abaixo, marcadas "(negociação)".
+          Cadastro e simulação continuam feitos em Negociações — aqui elas só aparecem lado a lado com as tabelas oficiais.
+        </span>
+        <button type="button" className="sim-tab" onClick={carregarNegociacoesLotacaoAbertas} disabled={carregandoNegociacoesLotacao}>
+          {carregandoNegociacoesLotacao ? 'Atualizando...' : 'Atualizar negociações'}
+        </button>
+      </div>
+      {erroNegociacaoLotacao ? <div className="sim-alert error">{erroNegociacaoLotacao}</div> : null}
 
       <ModelosAceitos />
 

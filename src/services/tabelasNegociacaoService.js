@@ -2205,6 +2205,30 @@ function indexarLotacaoNegociacao(linhas = []) {
   return { mapa, mapaSemTipo };
 }
 
+// Carrega as negociações de lotação em aberto (incluir_simulacao=true) já no
+// formato de "tabela de transportadora" (id/tipo/nome/linhas) que a tela
+// Tabelas Lotação usa pra comparar/rankear. Assim elas entram na mesma
+// comparação já existente lá, como mais uma opção "(negociação)" — sem criar
+// uma simulação separada nem duplicar a lógica que já existe na tela.
+export async function carregarNegociacoesLotacaoParaComparacao() {
+  const capas = await listarNegociacoesResumo({ tipoTabela: 'LOTACAO', somenteSimulacao: true });
+  if (!capas.length) return [];
+
+  return executarComConcorrencia(capas, 4, async (capa) => {
+    const itens = await listarTodosItensTabelaNegociacao(capa.id);
+    const linhas = montarTabelaLotacaoNegociacao(capa, itens);
+    return {
+      id: `neg-lot-${capa.id}`,
+      tipo: 'TRANSPORTADORA',
+      nome: `${texto(capa.transportadora) || 'Negociação'} (negociação)`,
+      linhas,
+      negociacaoId: capa.id,
+      negociacaoOrigem: true,
+      status: capa.status_gestao || capa.status || '',
+    };
+  });
+}
+
 export async function simularLotacaoNegociacao(id, filtros = {}) {
   if (!id) throw new Error('Negociacao de lotacao invalida.');
 
