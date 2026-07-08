@@ -115,6 +115,11 @@ function Card({ label, valor, sub, cor, destaque }) {
 export default function GestaoBaseCtePage() {
   const [competencia, setCompetencia] = useState('');
   const [canal, setCanal] = useState('');
+  // Cubagem ja gravada (mesmo errada, de antes do fix de itens/unidades) e
+  // tratada como "completa" e pulada por padrao. Esse toggle forca reconferir
+  // a cubagem de TODAS as linhas contra o tracking (ja corrigido), sem
+  // precisar reimportar a planilha do Tracking.
+  const [forcarCubagem, setForcarCubagem] = useState(false);
   const [status, setStatus] = useState('idle'); // idle | analisando | completando
   const [progresso, setProgresso] = useState('');
   const [erro, setErro] = useState('');
@@ -254,7 +259,8 @@ export default function GestaoBaseCtePage() {
       const linhaCompleta = (row) => Boolean(
         dig7(row.ibge_origem) && dig7(row.ibge_destino)
         && String(row.chave_rota_ibge || '').trim() && row.ibge_ok === true
-        && temValor(row.qtd_volumes) && temValor(row.cubagem),
+        && temValor(row.qtd_volumes) && temValor(row.cubagem)
+        && !forcarCubagem,
       );
       const faltam = linhas.filter((row) => !linhaCompleta(row));
       let mapas = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map() };
@@ -293,7 +299,7 @@ export default function GestaoBaseCtePage() {
         const arq = row.arquivo_origem || '(sem arquivo)';
         const a = porArquivo.get(arq) || { arquivo: arq, total: 0, sem: 0 };
         a.total += 1;
-        if (origAtual && destAtual && chaveRotaAtual && ibgeOkAtual && temValor(volAtual) && temValor(cubAtual)) { porArquivo.set(arq, a); continue; }
+        if (origAtual && destAtual && chaveRotaAtual && ibgeOkAtual && temValor(volAtual) && temValor(cubAtual) && !forcarCubagem) { porArquivo.set(arq, a); continue; }
         a.sem += 1;
 
         const tracking = obterTrackingDaLinha(chavesTrackingDaLinha(row), mapas);
@@ -422,6 +428,11 @@ export default function GestaoBaseCtePage() {
             </button>
           </div>
         </div>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: '0.85rem', color: '#475569' }}>
+          <input type="checkbox" checked={forcarCubagem} onChange={(e) => setForcarCubagem(e.target.checked)} />
+          Reconferir cubagem mesmo nas linhas que ja tem valor gravado (corrige cubagem antiga sem reimportar o Tracking)
+        </label>
 
         {progresso && (
           <div style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', color: '#1d4ed8', display: 'flex', alignItems: 'center', gap: 8 }}>
