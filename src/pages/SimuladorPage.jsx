@@ -3069,6 +3069,7 @@ const CAMPOS_SOMA_RESULTADO_SALVO = [
   'valorNFRetidoSelecionada', 'pesoRetidoSelecionada', 'volumesRetidosSelecionada', 'cubagemRetidaSelecionada',
   'diferencaSelecionadaVsVencedor', 'ctesCapturadosDeOutras', 'freteCapturadoRealizado',
   'freteCapturadoTabela', 'valorNFCapturado', 'pesoCapturado', 'volumesCapturados', 'cubagemCapturada',
+  'ctesVencedorVsRealizado', 'ctesPerdedorVsRealizado',
 ];
 
 function numeroConsolidacaoRealizado(value) {
@@ -3195,7 +3196,7 @@ const CAMPOS_ESCALARES_SIMULACAO_REALIZADO = [
   'valorNFRetidoSelecionada', 'pesoRetidoSelecionada', 'volumesRetidosSelecionada', 'cubagemRetidaSelecionada',
   'diferencaSelecionadaVsVencedor', 'reducaoNecessariaSoma', 'ctesCapturadosDeOutras',
   'freteCapturadoRealizado', 'freteCapturadoTabela', 'valorNFCapturado', 'pesoCapturado',
-  'volumesCapturados', 'cubagemCapturada',
+  'volumesCapturados', 'cubagemCapturada', 'ctesVencedorVsRealizado', 'ctesPerdedorVsRealizado',
 ];
 
 // Estado acumulador da simulação do realizado. `rows` deve ser o conjunto COMPLETO
@@ -3284,7 +3285,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     valorNFRetidoSelecionada, pesoRetidoSelecionada, volumesRetidosSelecionada, cubagemRetidaSelecionada,
     diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
     freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
-    volumesCapturados, cubagemCapturada,
+    volumesCapturados, cubagemCapturada, ctesVencedorVsRealizado, ctesPerdedorVsRealizado,
   } = estado;
 
   const linhasParaSimular = rows || [];
@@ -3407,6 +3408,14 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       const temConcorrenteTabela = resultado.length > 1;
       const ganhaVsRealizado = freteSel > 0 && valorCte > 0 && freteSel < valorCte;
       const ganhaVsConcorrencia = Number(itemSelecionada.ranking) === 1;
+
+      // Contagem completa (nao limitada aos 3000 CT-es do ctesDetalhes, que e
+      // uma amostra enviesada pra auditoria) — usada no painel "Vencedor vs
+      // realizado" pra nao mostrar 0 vencedores quando a base e grande.
+      if (freteSel > 0) {
+        if (ganhaVsRealizado) ctesVencedorVsRealizado += 1;
+        else ctesPerdedorVsRealizado += 1;
+      }
 
       // Regra corrigida de vencedor:
       // a tabela só "ganha" se for mais barata que o realizado.
@@ -3603,7 +3612,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     valorNFRetidoSelecionada, pesoRetidoSelecionada, volumesRetidosSelecionada, cubagemRetidaSelecionada,
     diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
     freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
-    volumesCapturados, cubagemCapturada,
+    volumesCapturados, cubagemCapturada, ctesVencedorVsRealizado, ctesPerdedorVsRealizado,
   });
 }
 
@@ -3622,7 +3631,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     valorNFRetidoSelecionada, pesoRetidoSelecionada, volumesRetidosSelecionada, cubagemRetidaSelecionada,
     diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
     freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
-    volumesCapturados, cubagemCapturada,
+    volumesCapturados, cubagemCapturada, ctesVencedorVsRealizado, ctesPerdedorVsRealizado,
   } = estado;
 
   const rotas = [...rotasMap.values()]
@@ -3706,6 +3715,8 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     ctesComTabelaSelecionada,
     ctesGanhariaSelecionada,
     ctesPerdidosSelecionada,
+    ctesVencedorVsRealizado,
+    ctesPerdedorVsRealizado,
     ctesSemTabelaSelecionada,
     ctesSemTabelaGeral,
     freteRealizado,
@@ -8560,8 +8571,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
               {(resultadoRealizado.ctesDetalhes || []).length > 0 && (() => {
                 const detalhesStatus = resultadoRealizado.ctesDetalhes || [];
                 if (!resultadoRealizado.compararConcorrentes) {
-                  const vencedor = detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && i.ganhouRealizado).length;
-                  const perdedor = detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && !i.ganhouRealizado).length;
+                  // Conta sobre TODOS os CT-es analisados, nao so os que sobraram na
+                  // amostra de ctesDetalhes (limitada a 3000 e enviesada pra perdas/
+                  // outliers de auditoria) — senao a aderencia sai zerada em bases grandes.
+                  const temContagemCompleta = Number.isFinite(resultadoRealizado.ctesVencedorVsRealizado)
+                    || Number.isFinite(resultadoRealizado.ctesPerdedorVsRealizado);
+                  const vencedor = temContagemCompleta
+                    ? Number(resultadoRealizado.ctesVencedorVsRealizado || 0)
+                    : detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && i.ganhouRealizado).length;
+                  const perdedor = temContagemCompleta
+                    ? Number(resultadoRealizado.ctesPerdedorVsRealizado || 0)
+                    : detalhesStatus.filter((i) => Number(i.freteSelecionada || 0) > 0 && !i.ganhouRealizado).length;
                   const total = vencedor + perdedor;
                   const aderencia = total ? (vencedor / total) * 100 : 0;
                   return (
