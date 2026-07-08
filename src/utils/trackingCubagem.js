@@ -196,7 +196,11 @@ export function criarTrackingAgregado(item = {}, origem = '') {
   const qtdVolumes = volumesTracking(item);
   const cubagemUnitaria = numero(item.cubagem_unitaria ?? 0);
   const cubagemTotalDireta = numero(item.cubagem_total ?? item.cubagem ?? 0);
-  const quantidadeItens = quantidadeItensTracking(item);
+  const quantidadeItens = numero(item.quantidade_itens) || quantidadeItensTracking(item);
+  // cubagem_final ja vem calculada (cubagem/itens*unidades) desde a importacao
+  // do Tracking (ver trackingSupabaseService.toDbRow); preferir ela evita
+  // recalcular sem os itens quando a consulta nao traz o raw da NF.
+  const cubagemFinalArmazenada = numero(item.cubagem_final ?? item.cubagemFinal ?? 0);
   const cubagemResolvida = resolverCubagemTracking({
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
@@ -205,7 +209,7 @@ export function criarTrackingAgregado(item = {}, origem = '') {
     quantidadeItens,
     pesoFisico: numero(item.peso ?? item.peso_tracking ?? 0),
   });
-  const cubagemTotal = cubagemResolvida.cubagemAplicada;
+  const cubagemTotal = cubagemFinalArmazenada > 0 ? cubagemFinalArmazenada : cubagemResolvida.cubagemAplicada;
 
   return {
     ...item,

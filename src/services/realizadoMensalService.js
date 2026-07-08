@@ -773,19 +773,22 @@ function adicionarTrackingImportacao(mapa, chaveValor, item = {}) {
   const volumes = toSafeNumber(item.qtd_volumes);
   const cubagemUnitaria = toSafeNumber(item.cubagem_unitaria);
   const cubagemTotalDireta = toSafeNumber(item.cubagem_total);
+  const cubagemFinalArmazenada = toSafeNumber(item.cubagem_final);
   const resolvida = resolverCubagemTracking({
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
     pesoCubadoOriginal: toSafeNumber(item.peso_cubado),
     volumes,
+    quantidadeItens: toSafeNumber(item.quantidade_itens),
     pesoFisico: toSafeNumber(item.peso),
   });
+  const cubagemAplicada = cubagemFinalArmazenada > 0 ? cubagemFinalArmazenada : resolvida.cubagemAplicada;
 
   if (!atual) {
     mapa.set(chave, {
       ...item,
       qtd_volumes: volumes,
-      cubagem_total: resolvida.cubagemAplicada,
+      cubagem_total: cubagemAplicada,
       peso_cubado: resolvida.pesoCubado,
       linhas_tracking: 1,
     });
@@ -795,7 +798,7 @@ function adicionarTrackingImportacao(mapa, chaveValor, item = {}) {
   mapa.set(chave, {
     ...atual,
     qtd_volumes: toSafeNumber(atual.qtd_volumes) + volumes,
-    cubagem_total: toSafeNumber(atual.cubagem_total) + resolvida.cubagemAplicada,
+    cubagem_total: toSafeNumber(atual.cubagem_total) + cubagemAplicada,
     peso_cubado: toSafeNumber(atual.peso_cubado) + resolvida.pesoCubado,
     peso: toSafeNumber(atual.peso) || toSafeNumber(item.peso),
     peso_declarado: toSafeNumber(atual.peso_declarado) || toSafeNumber(item.peso_declarado),

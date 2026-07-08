@@ -139,7 +139,7 @@ function fallbackRaw(row = {}, key = '') {
 
 function mapTrackingSupabaseRow(row = {}) {
   const raw = row.raw || {};
-  const cubagemTotalFinal = toNumber(row.cubagem_total ?? raw.cubagemTotal ?? raw.Cubagem_Total_m3);
+  const cubagemTotalFinal = toNumber(row.cubagem_final ?? row.cubagem_total ?? raw.cubagemTotal ?? raw.Cubagem_Total_m3);
   const cubagemUnitaria = toNumber(row.cubagem_unitaria ?? raw.cubagem ?? raw.Cubagem_Unitaria_m3);
   const volumes = toNumber(row.qtd_volumes ?? raw.qtdVolumes ?? raw.Volumes);
   const data = row.data || raw.data || raw.Data || '';
