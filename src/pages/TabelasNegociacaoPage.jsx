@@ -23,6 +23,7 @@ import {
   excluirRodadaNegociacao,
   contarItensTabelaNegociacao,
   carregarItensTabelaNegociacaoParaUI,
+  buscarItensTabelaNegociacaoPorTermo,
   extrairQtdItensResumoTabela,
   listarTabelasNegociacao,
   carregarHistoricoGestaoNegociacoes,
@@ -926,6 +927,9 @@ export default function TabelasNegociacaoPage() {
   const [filtroItens, setFiltroItens] = useState('COTACAO');
   const [buscaItens, setBuscaItens] = useState('');
   const [somenteItensSemDestino, setSomenteItensSemDestino] = useState(false);
+  const [resultadoBuscaDb, setResultadoBuscaDb] = useState(null);
+  const [buscandoDb, setBuscandoDb] = useState(false);
+  const [erroBuscaDb, setErroBuscaDb] = useState('');
 
   const [inicioVigencia, setInicioVigencia] = useState(hojeISO());
   const [fimVigencia, setFimVigencia] = useState(fimTresAnosISO());
@@ -1050,32 +1054,69 @@ export default function TabelasNegociacaoPage() {
     });
   }, [itensSelecionada]);
 
+  // Enquanto a busca no banco (resultadoBuscaDb) nao responde, usa a amostra
+  // local carregada; quando responde, ela vira a fonte (ja veio filtrada pelo
+  // termo direto no Supabase, sem limite de amostra).
+  var itensBase = resultadoBuscaDb !== null ? resultadoBuscaDb : itensVisualizacao;
+
   const itensPorTipo = useMemo(function() {
-    if (filtroItens === 'TODOS') return itensVisualizacao;
-    if (filtroItens === 'ROTA') return itensVisualizacao.filter(function(i) { return getTipoItem(i) === 'ROTA'; });
-    return itensVisualizacao.filter(function(i) { return getTipoItem(i) !== 'ROTA'; });
-  }, [itensVisualizacao, filtroItens]);
+    if (filtroItens === 'TODOS') return itensBase;
+    if (filtroItens === 'ROTA') return itensBase.filter(function(i) { return getTipoItem(i) === 'ROTA'; });
+    return itensBase.filter(function(i) { return getTipoItem(i) !== 'ROTA'; });
+  }, [itensBase, filtroItens]);
 
   function itemSemDestino(item) {
     return !String(item.uf_destino || '').trim() && !String(item.ibge_destino || '').trim();
   }
 
   const itensFiltrados = useMemo(function() {
+    var buscaJaFeitaNoBanco = resultadoBuscaDb !== null;
     var termo = normalizarTexto(buscaItens).toLowerCase();
     return itensPorTipo.filter(function(item) {
       if (somenteItensSemDestino && !itemSemDestino(item)) return false;
-      if (!termo) return true;
+      if (buscaJaFeitaNoBanco || !termo) return true;
       var alvo = normalizarTexto([
         item.faixa_peso, item.cidade_origem, item.uf_origem,
         item.cidade_destino, item.uf_destino, item.ibge_destino,
       ].join(' ')).toLowerCase();
       return alvo.includes(termo);
     });
-  }, [itensPorTipo, buscaItens, somenteItensSemDestino, itemSemDestino]);
+  }, [itensPorTipo, buscaItens, somenteItensSemDestino, resultadoBuscaDb]);
 
   const qtdItensSemDestino = useMemo(function() {
     return itensPorTipo.filter(itemSemDestino).length;
-  }, [itensPorTipo, itemSemDestino]);
+  }, [itensPorTipo]);
+
+  // Busca no banco com debounce: so dispara depois que o usuario para de
+  // digitar, e sempre que muda a negociacao aberta ou o termo eh apagado.
+  useEffect(function() {
+    var termo = String(buscaItens || '').trim();
+    if (!selecionada?.id || termo.length < 2) {
+      setResultadoBuscaDb(null);
+      setErroBuscaDb('');
+      setBuscandoDb(false);
+      return undefined;
+    }
+
+    setBuscandoDb(true);
+    setErroBuscaDb('');
+    var cancelado = false;
+    var timer = setTimeout(async function() {
+      try {
+        var data = await buscarItensTabelaNegociacaoPorTermo(selecionada.id, termo);
+        if (!cancelado) setResultadoBuscaDb(data);
+      } catch (e) {
+        if (!cancelado) setErroBuscaDb(e.message || String(e));
+      } finally {
+        if (!cancelado) setBuscandoDb(false);
+      }
+    }, 400);
+
+    return function() {
+      cancelado = true;
+      clearTimeout(timer);
+    };
+  }, [buscaItens, selecionada?.id]);
 
   function labelTipoItem(item) {
     return getTipoItem(item) === 'ROTA' ? 'ROTA' : 'COTAÇÃO/FAIXA';
@@ -3515,13 +3556,13 @@ export default function TabelasNegociacaoPage() {
 
               {qtdItensSemDestino > 0 ? (
                 <div className="sim-alert warning" style={{ marginBottom: 12 }}>
-                  ⚠ {qtdItensSemDestino} item(ns) da amostra carregada estão <strong>sem UF/destino</strong> (não vão puxar nada em simulação).
+                  ⚠ {qtdItensSemDestino} item(ns) {resultadoBuscaDb !== null ? 'do resultado da busca' : 'da amostra carregada'} estão <strong>sem UF/destino</strong> (não vão puxar nada em simulação).
                 </div>
               ) : null}
 
               <div className="formatacao-grid two" style={{ marginBottom: 12 }}>
                 <label className="field-block">
-                  <span>Buscar rota/origem/destino/UF (testa um caso específico na amostra carregada)</span>
+                  <span>Buscar rota/origem/destino/UF (a partir de 2 letras, busca direto no banco — todas as faixas, sem limite de amostra)</span>
                   <input
                     value={buscaItens}
                     onChange={function(e) { setBuscaItens(e.target.value); }}
@@ -3533,9 +3574,20 @@ export default function TabelasNegociacaoPage() {
                   <span>Mostrar só as sem destino ({qtdItensSemDestino})</span>
                 </label>
               </div>
-              {itensCarregamentoParcial ? (
+              {buscandoDb ? (
+                <div className="sim-alert info" style={{ marginBottom: 12 }}>Buscando "{buscaItens}" direto no banco...</div>
+              ) : null}
+              {erroBuscaDb ? (
+                <div className="sim-alert error" style={{ marginBottom: 12 }}>Erro na busca: {erroBuscaDb}</div>
+              ) : null}
+              {resultadoBuscaDb !== null && !buscandoDb ? (
                 <div className="empty-note" style={{ marginBottom: 12 }}>
-                  A busca/filtro acima olha só a amostra de {itensSelecionada.length.toLocaleString('pt-BR')} itens carregada na tela, não os {qtdItensExibicao.toLocaleString('pt-BR')} do banco.
+                  ✓ Resultado vindo direto do banco ({resultadoBuscaDb.length.toLocaleString('pt-BR')} item(ns) encontrados para "{buscaItens}") — não é limitado à amostra da tela.
+                </div>
+              ) : null}
+              {resultadoBuscaDb === null && itensCarregamentoParcial ? (
+                <div className="empty-note" style={{ marginBottom: 12 }}>
+                  Sem busca ativa: a lista abaixo mostra a amostra de {itensSelecionada.length.toLocaleString('pt-BR')} itens carregada na tela, não os {qtdItensExibicao.toLocaleString('pt-BR')} do banco. Digite acima pra buscar no banco inteiro.
                 </div>
               ) : null}
 

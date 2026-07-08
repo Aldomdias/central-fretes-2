@@ -491,6 +491,29 @@ export async function listarItensTabelaNegociacaoPreview(tabelaId, limite = LIMI
   return data || [];
 }
 
+/**
+ * Busca itens direto no banco por termo (rota/faixa, cidade origem/destino, UF),
+ * sem o limite de amostra da preview — usada quando o usuário filtra a tela de
+ * Itens e precisa ter certeza de que está vendo TODAS as faixas daquela rota,
+ * não só o que caiu na amostra de 500.
+ */
+export async function buscarItensTabelaNegociacaoPorTermo(tabelaId, termo, limite = 2000) {
+  const supabase = supabaseOrThrow();
+  const termoLimpo = String(termo || '').trim();
+  if (!termoLimpo) return [];
+
+  const padrao = `*${termoLimpo}*`;
+  const { data, error } = await supabase
+    .from('tabelas_negociacao_itens')
+    .select('*')
+    .eq('tabela_negociacao_id', tabelaId)
+    .or(`faixa_peso.ilike.${padrao},cidade_origem.ilike.${padrao},cidade_destino.ilike.${padrao},uf_destino.ilike.${padrao}`)
+    .order('id', { ascending: true })
+    .limit(limite);
+  if (error) throw new Error(error.message || 'Erro ao buscar itens da negociação no banco.');
+  return data || [];
+}
+
 /** Quantidade de itens gravada no resumo da negociação (fallback quando a contagem ao vivo falha). */
 export function extrairQtdItensResumoTabela(tabela = {}) {
   const capa = tabela && typeof tabela === 'object' ? tabela : {};
