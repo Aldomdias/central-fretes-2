@@ -924,6 +924,8 @@ export default function TabelasNegociacaoPage() {
   const [arquivoLotacao, setArquivoLotacao] = useState(null);
   const [resultadoLotacao, setResultadoLotacao] = useState(null);
   const [filtroItens, setFiltroItens] = useState('COTACAO');
+  const [buscaItens, setBuscaItens] = useState('');
+  const [somenteItensSemDestino, setSomenteItensSemDestino] = useState(false);
 
   const [inicioVigencia, setInicioVigencia] = useState(hojeISO());
   const [fimVigencia, setFimVigencia] = useState(fimTresAnosISO());
@@ -1048,11 +1050,32 @@ export default function TabelasNegociacaoPage() {
     });
   }, [itensSelecionada]);
 
-  const itensFiltrados = useMemo(function() {
+  const itensPorTipo = useMemo(function() {
     if (filtroItens === 'TODOS') return itensVisualizacao;
     if (filtroItens === 'ROTA') return itensVisualizacao.filter(function(i) { return getTipoItem(i) === 'ROTA'; });
     return itensVisualizacao.filter(function(i) { return getTipoItem(i) !== 'ROTA'; });
   }, [itensVisualizacao, filtroItens]);
+
+  function itemSemDestino(item) {
+    return !String(item.uf_destino || '').trim() && !String(item.ibge_destino || '').trim();
+  }
+
+  const itensFiltrados = useMemo(function() {
+    var termo = normalizarTexto(buscaItens).toLowerCase();
+    return itensPorTipo.filter(function(item) {
+      if (somenteItensSemDestino && !itemSemDestino(item)) return false;
+      if (!termo) return true;
+      var alvo = normalizarTexto([
+        item.faixa_peso, item.cidade_origem, item.uf_origem,
+        item.cidade_destino, item.uf_destino, item.ibge_destino,
+      ].join(' ')).toLowerCase();
+      return alvo.includes(termo);
+    });
+  }, [itensPorTipo, buscaItens, somenteItensSemDestino, itemSemDestino]);
+
+  const qtdItensSemDestino = useMemo(function() {
+    return itensPorTipo.filter(itemSemDestino).length;
+  }, [itensPorTipo, itemSemDestino]);
 
   function labelTipoItem(item) {
     return getTipoItem(item) === 'ROTA' ? 'ROTA' : 'COTAÇÃO/FAIXA';
@@ -3490,6 +3513,32 @@ export default function TabelasNegociacaoPage() {
                 <div className="summary-card"><span>UF destino</span><strong>{resumoItens.ufs}</strong></div>
               </div>
 
+              {qtdItensSemDestino > 0 ? (
+                <div className="sim-alert warning" style={{ marginBottom: 12 }}>
+                  ⚠ {qtdItensSemDestino} item(ns) da amostra carregada estão <strong>sem UF/destino</strong> (não vão puxar nada em simulação).
+                </div>
+              ) : null}
+
+              <div className="formatacao-grid two" style={{ marginBottom: 12 }}>
+                <label className="field-block">
+                  <span>Buscar rota/origem/destino/UF (testa um caso específico na amostra carregada)</span>
+                  <input
+                    value={buscaItens}
+                    onChange={function(e) { setBuscaItens(e.target.value); }}
+                    placeholder="Ex.: AC-INT1, Itajai, SP..."
+                  />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+                  <input type="checkbox" checked={somenteItensSemDestino} onChange={function(e) { setSomenteItensSemDestino(e.target.checked); }} />
+                  <span>Mostrar só as sem destino ({qtdItensSemDestino})</span>
+                </label>
+              </div>
+              {itensCarregamentoParcial ? (
+                <div className="empty-note" style={{ marginBottom: 12 }}>
+                  A busca/filtro acima olha só a amostra de {itensSelecionada.length.toLocaleString('pt-BR')} itens carregada na tela, não os {qtdItensExibicao.toLocaleString('pt-BR')} do banco.
+                </div>
+              ) : null}
+
               <div className="sim-actions" style={{ marginBottom: 12 }}>
                 <button
                   className="sim-tab"
@@ -3548,7 +3597,7 @@ export default function TabelasNegociacaoPage() {
                   <tbody>
                     {itensFiltrados.slice(0, 120).map(function(item) {
                       return (
-                        <tr key={item.id}>
+                        <tr key={item.id} style={itemSemDestino(item) ? { background: '#fff3cd' } : undefined}>
                           <td>
                             <strong>{labelTipoItem(item)}</strong>
                             {getTipoItem(item) === 'ROTA' ? (
