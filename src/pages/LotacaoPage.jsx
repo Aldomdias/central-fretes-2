@@ -5,6 +5,7 @@ import {
   baixarModeloAntt,
   baixarModeloTransportadora,
   carregarTabelasLotacao,
+  chaveRota,
   compararComReferencia,
   compararTabelaReajuste,
   exportarComparativoReajusteXlsx,
@@ -120,11 +121,13 @@ function UploadCard({ tipo, titulo, descricao, nomeObrigatorio, onImportar, carr
 }
 
 
-function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaId, onTabelaAntigaChange, onImportar, tabelaReajuste, onLimpar, comparativo }) {
+function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaId, onTabelaAntigaChange, onImportar, tabelaReajuste, onLimpar, comparativo, negociacoes = [], onCarregarNegociacao }) {
   const [nomeReajuste, setNomeReajuste] = useState('');
   const [arquivo, setArquivo] = useState(null);
+  const [negociacaoEscolhidaId, setNegociacaoEscolhidaId] = useState('');
   const detalhes = Array.isArray(comparativo?.detalhes) ? comparativo.detalhes : [];
   const temComparativo = Boolean(comparativo && !comparativo.erro);
+  const resumoNegociacao = tabelaReajuste?.negociacaoOrigem ? tabelaReajuste.resumoSimulacaoReal : null;
 
   const enviar = async () => {
     if (!arquivo || !tabelaAntigaId) return;
@@ -138,8 +141,9 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
         <div>
           <div className="panel-title">Comparar tabela de reajuste</div>
           <p>
-            Suba uma tabela reajustada para comparar contra a tabela antiga cadastrada, sem substituir a oficial.
-            A visão mostra o aumento rota a rota e também compara valor antigo e reajustado contra a NTT.
+            Suba uma tabela reajustada (ou carregue uma negociação em aberto) para comparar contra a tabela antiga
+            cadastrada, sem substituir a oficial. A visão mostra o aumento rota a rota e também compara valor antigo
+            e reajustado contra a NTT.
           </p>
         </div>
         {tabelaReajuste && (
@@ -148,6 +152,30 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
           </button>
         )}
       </div>
+
+      {negociacoes.length ? (
+        <div className="filter-grid three lotacao-reajuste-form">
+          <label className="field">
+            Carregar de negociação (Negociações)
+            <select value={negociacaoEscolhidaId} onChange={(event) => setNegociacaoEscolhidaId(event.target.value)}>
+              <option value="">Selecione...</option>
+              {negociacoes.map((neg) => (
+                <option key={neg.negociacaoId} value={neg.negociacaoId}>{neg.nome} ({neg.linhas.length} rota(s))</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={carregando || !negociacaoEscolhidaId}
+              onClick={() => onCarregarNegociacao(negociacaoEscolhidaId)}
+            >
+              Carregar negociação
+            </button>
+          </label>
+        </div>
+      ) : null}
 
       <div className="filter-grid three lotacao-reajuste-form">
         <label className="field">
@@ -176,6 +204,31 @@ function ComparativoReajusteLotacao({ transportadoras, carregando, tabelaAntigaI
           />
         </label>
       </div>
+
+      {resumoNegociacao ? (
+        <div className="summary-strip lotacao-summary-mini top-space-sm">
+          <div className="summary-card">
+            <span>Viagens reais analisadas</span>
+            <strong>{resumoNegociacao.ctesAnalisados || 0}</strong>
+            <small>{resumoNegociacao.ctesComTabelaSelecionada || 0} com cobertura ({percentualSeguro(resumoNegociacao.aderenciaSelecionada)})</small>
+          </div>
+          <div className="summary-card">
+            <span>Valor atual (viagens reais)</span>
+            <strong>{formatarMoeda(resumoNegociacao.valor_atual_realizado)}</strong>
+          </div>
+          <div className="summary-card">
+            <span>Valor com a negociação</span>
+            <strong>{formatarMoeda(resumoNegociacao.valor_simulado_nova_tabela)}</strong>
+          </div>
+          <div className="summary-card">
+            <span>Impacto real</span>
+            <strong className={resumoNegociacao.impacto_valor > 0 ? 'negativo' : 'positivo'}>
+              {formatarMoeda(resumoNegociacao.impacto_valor)} ({percentualSeguro(resumoNegociacao.impacto_percentual)})
+            </strong>
+            <small>Mensal: {formatarMoeda(resumoNegociacao.impacto_mensal)} · Anual: {formatarMoeda(resumoNegociacao.impacto_anual)}</small>
+          </div>
+        </div>
+      ) : null}
 
       <div className="actions-right gap-row lotacao-reajuste-actions">
         {temComparativo && (
@@ -2013,7 +2066,16 @@ export default function LotacaoPage() {
     setErroNegociacaoLotacao('');
     try {
       const lista = await carregarNegociacoesLotacaoParaComparacao();
-      setNegociacoesLotacaoComparacao(lista || []);
+      // A negociação vem com chave de rota no formato do motor de simulação
+      // (usado contra viagens reais). Aqui ela precisa da MESMA chave que as
+      // tabelas oficiais usam (origem+UF+destino+UF+tipo) pra entrar de
+      // verdade na comparação/ranking — senão nunca "encontra" a tabela
+      // oficial equivalente e acaba só competindo com ela mesma.
+      const listaComChaveOficial = (lista || []).map((negociacao) => ({
+        ...negociacao,
+        linhas: negociacao.linhas.map((linha) => ({ ...linha, chave: chaveRota(linha) })),
+      }));
+      setNegociacoesLotacaoComparacao(listaComChaveOficial);
     } catch (error) {
       setErroNegociacaoLotacao(error.message || 'Erro ao carregar negociações de lotação.');
     } finally {
@@ -2066,9 +2128,17 @@ export default function LotacaoPage() {
   }, [fonteDados, tabelas, usarSupabase]);
 
   const resumo = useMemo(() => resumoLotacao(tabelas), [tabelas]);
+  // Negociações de lotação em aberto entram como mais uma opção "(negociação)"
+  // na mesma comparação/ranking das tabelas oficiais — tanto tabela nova
+  // (compete com ANTT, outras transportadoras e realizado) quanto reajuste
+  // (que além do comparativo direto x tabela antiga, abaixo, também disputa
+  // rota com as demais transportadoras aqui).
+  // Só as tabelas oficiais — usada como "tabela antiga" no comparativo de
+  // reajuste, que não pode comparar uma negociação contra ela mesma.
+  const transportadorasOficiais = useMemo(() => obterTabelasPorTipo(tabelas, 'TRANSPORTADORA'), [tabelas]);
   const transportadoras = useMemo(
-    () => [...obterTabelasPorTipo(tabelas, 'TRANSPORTADORA'), ...negociacoesLotacaoComparacao],
-    [tabelas, negociacoesLotacaoComparacao]
+    () => [...transportadorasOficiais, ...negociacoesLotacaoComparacao],
+    [transportadorasOficiais, negociacoesLotacaoComparacao]
   );
   const antt = useMemo(() => obterAntt(tabelas), [tabelas]);
   const referenciaMenorPreco = useMemo(() => criarReferenciaMenorPreco(transportadoras), [transportadoras]);
@@ -2089,11 +2159,11 @@ export default function LotacaoPage() {
 
 
   useEffect(() => {
-    if (!tabelaAntigaReajusteId && transportadoras[0]) setTabelaAntigaReajusteId(transportadoras[0].id);
-    if (tabelaAntigaReajusteId && !transportadoras.some((item) => item.id === tabelaAntigaReajusteId)) {
-      setTabelaAntigaReajusteId(transportadoras[0]?.id || '');
+    if (!tabelaAntigaReajusteId && transportadorasOficiais[0]) setTabelaAntigaReajusteId(transportadorasOficiais[0].id);
+    if (tabelaAntigaReajusteId && !transportadorasOficiais.some((item) => item.id === tabelaAntigaReajusteId)) {
+      setTabelaAntigaReajusteId(transportadorasOficiais[0]?.id || '');
     }
-  }, [transportadoras, tabelaAntigaReajusteId]);
+  }, [transportadorasOficiais, tabelaAntigaReajusteId]);
 
   const comparativoMelhorPreco = useMemo(
     () => compararComReferencia(tabelaSelecionada, referenciaMenorPreco),
@@ -2106,8 +2176,8 @@ export default function LotacaoPage() {
 
 
   const tabelaAntigaReajuste = useMemo(
-    () => transportadoras.find((item) => item.id === tabelaAntigaReajusteId) || transportadoras[0] || null,
-    [transportadoras, tabelaAntigaReajusteId]
+    () => transportadorasOficiais.find((item) => item.id === tabelaAntigaReajusteId) || transportadorasOficiais[0] || null,
+    [transportadorasOficiais, tabelaAntigaReajusteId]
   );
 
   const comparativoReajuste = useMemo(() => {
@@ -2175,6 +2245,36 @@ export default function LotacaoPage() {
     } finally {
       setCarregando(false);
     }
+  };
+
+  const carregarNegociacaoComoReajuste = (negociacaoId) => {
+    const negociacao = negociacoesLotacaoComparacao.find((item) => item.negociacaoId === negociacaoId);
+    if (!negociacao) return;
+    if (!negociacao.linhas.length) {
+      setFeedback(`A negociação ${negociacao.nome} não tem rotas com preço salvas ainda.`);
+      return;
+    }
+
+    const nomeTransportadora = negociacao.nome.replace(/\s*\(negociação\)\s*$/i, '').trim();
+    const antigaCorrespondente = transportadorasOficiais.find((item) =>
+      item.nome.trim().toUpperCase() === nomeTransportadora.toUpperCase()
+    );
+
+    setTabelaReajuste({
+      ...negociacao,
+      nome: negociacao.nome,
+      tipo: 'TRANSPORTADORA',
+      modelo: 'NEGOCIAÇÃO / LOTAÇÃO',
+      negociacaoOrigem: true,
+      resumoSimulacaoReal: negociacao.resumoSimulacaoReal,
+    });
+    if (antigaCorrespondente) setTabelaAntigaReajusteId(antigaCorrespondente.id);
+
+    setFeedback(
+      antigaCorrespondente
+        ? `Negociação ${negociacao.nome} carregada para comparar com a tabela oficial ${antigaCorrespondente.nome}.`
+        : `Negociação ${negociacao.nome} carregada, mas não achei tabela oficial "${nomeTransportadora}" para comparar automaticamente. Selecione a tabela antiga manualmente.`
+    );
   };
 
   const remover = async (id) => {
@@ -2261,8 +2361,8 @@ export default function LotacaoPage() {
 
       <div className="sim-alert info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <span>
-          <strong>Negociações de lotação em aberto:</strong> {negociacoesLotacaoComparacao.length} entrando na comparação/ranking abaixo, marcadas "(negociação)".
-          Cadastro e simulação continuam feitos em Negociações — aqui elas só aparecem lado a lado com as tabelas oficiais.
+          <strong>Negociações de lotação em aberto:</strong> {negociacoesLotacaoComparacao.length} disponíveis pra carregar no comparativo de reajuste (abaixo), contra a tabela oficial correspondente.
+          Cadastro e simulação continuam feitos em Negociações.
         </span>
         <button type="button" className="sim-tab" onClick={carregarNegociacoesLotacaoAbertas} disabled={carregandoNegociacoesLotacao}>
           {carregandoNegociacoesLotacao ? 'Atualizando...' : 'Atualizar negociações'}
@@ -2313,7 +2413,7 @@ export default function LotacaoPage() {
 
 
       <ComparativoReajusteLotacao
-        transportadoras={transportadoras}
+        transportadoras={transportadorasOficiais}
         carregando={carregando}
         tabelaAntigaId={tabelaAntigaReajusteId}
         onTabelaAntigaChange={setTabelaAntigaReajusteId}
@@ -2324,6 +2424,8 @@ export default function LotacaoPage() {
           setFeedback('Comparativo de reajuste limpo. Nenhuma tabela oficial foi alterada.');
         }}
         comparativo={comparativoReajuste}
+        negociacoes={negociacoesLotacaoComparacao}
+        onCarregarNegociacao={carregarNegociacaoComoReajuste}
       />
 
       <PainelTransportadora

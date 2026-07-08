@@ -2225,6 +2225,20 @@ export async function carregarNegociacoesLotacaoParaComparacao() {
       negociacaoId: capa.id,
       negociacaoOrigem: true,
       status: capa.status_gestao || capa.status || '',
+      // Impacto já calculado com viagens reais na última vez que a negociação
+      // foi simulada em Negociações (simularLotacaoNegociacao). Evita recalcular
+      // aqui e mantém os dois lugares mostrando o mesmo número.
+      resumoSimulacaoReal: numero(capa.ctes_analisados) ? {
+        ctesAnalisados: capa.ctes_analisados,
+        ctesComTabelaSelecionada: capa.ctes_atendidos,
+        aderenciaSelecionada: capa.aderencia_projetada,
+        valor_atual_realizado: capa.valor_atual_realizado,
+        valor_simulado_nova_tabela: capa.valor_simulado_nova_tabela,
+        impacto_valor: capa.impacto_valor,
+        impacto_percentual: capa.percentual_medio_impacto,
+        impacto_mensal: capa.impacto_mensal,
+        impacto_anual: capa.impacto_anual,
+      } : null,
     };
   });
 }

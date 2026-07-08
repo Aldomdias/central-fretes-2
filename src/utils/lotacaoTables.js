@@ -255,7 +255,7 @@ function encontrarLinhaCabecalho(rows, tipoTabela) {
   return melhor && melhor.score >= 8 ? melhor : null;
 }
 
-function chaveRota(row) {
+export function chaveRota(row) {
   return [row.origem, row.ufOrigem, row.destino, row.ufDestino, row.tipo]
     .map((value) => normalizarTexto(value))
     .join('|');
