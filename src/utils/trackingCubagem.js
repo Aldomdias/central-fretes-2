@@ -38,10 +38,21 @@ export function resolverCubagemTracking({
     ? (cubagemLinha / qtdItens) * qtdVolumes
     : 0;
   const dividiuCubagemPorItens = porItemPorVolume > 0;
+
+  // cubagem_total gravado tambem pode carregar o bug antigo de importacao
+  // (valor igual a unitaria, nao multiplicado pelas unidades). So confiamos
+  // nele quando nao tem essa assinatura; senao usamos a multiplicacao pura.
+  const totalArmazenadoPareceNaoMultiplicado = totalArmazenado > 0
+    && cubagemLinha > 0
+    && qtdVolumes > 1
+    && qtdItens <= 1
+    && Math.abs(totalArmazenado - cubagemLinha) < 0.000001;
+  const totalArmazenadoConfiavel = totalArmazenadoPareceNaoMultiplicado ? 0 : totalArmazenado;
+
   const cubagemCandidata = dividiuCubagemPorItens
     ? porItemPorVolume
-    : totalArmazenado > 0
-      ? totalArmazenado
+    : totalArmazenadoConfiavel > 0
+      ? totalArmazenadoConfiavel
       : porVolume;
 
   // Informativo: houve multiplicacao pelos volumes nesta linha.
@@ -71,6 +82,51 @@ export function resolverCubagemTracking({
     quantidadeItensCubagem: qtdItens,
     pesoCubado,
     pesoConsiderado: Math.max(peso, pesoCubado),
+  };
+}
+
+// Ponto unico de decisao "confio no cubagem_final gravado ou recalculo?".
+// Existe porque um bug de importacao antigo (corrigido em trackingLocal.js/
+// trackingSupabaseService.js) gravou cubagem_final IGUAL a cubagem_unitaria
+// em NFs de 1 item so com mais de 1 unidade, sem multiplicar pelas unidades.
+// Enquanto essas linhas nao forem reimportadas, essa assinatura identifica o
+// valor salvo como nao confiavel e recalcula na hora em vez de usa-lo.
+export function resolverCubagemFinal({
+  cubagemFinalInformada = 0,
+  cubagemUnitaria = 0,
+  cubagemTotal = 0,
+  pesoCubadoOriginal = 0,
+  volumes = 0,
+  quantidadeItens = 0,
+  pesoFisico = 0,
+  fatorCubagem = 300,
+}) {
+  const resolvida = resolverCubagemTracking({
+    cubagemUnitaria,
+    cubagemTotal,
+    pesoCubadoOriginal,
+    volumes,
+    quantidadeItens,
+    pesoFisico,
+    fatorCubagem,
+  });
+
+  const final = numero(cubagemFinalInformada);
+  const unitaria = numero(cubagemUnitaria);
+  const qtdVolumes = numero(volumes);
+  const qtdItens = numero(quantidadeItens);
+  const pareceNaoMultiplicado = final > 0
+    && unitaria > 0
+    && qtdVolumes > 1
+    && qtdItens <= 1
+    && Math.abs(final - unitaria) < 0.000001;
+
+  const cubagemAplicada = final > 0 && !pareceNaoMultiplicado ? final : resolvida.cubagemAplicada;
+
+  return {
+    ...resolvida,
+    cubagemAplicada,
+    cubagemFinalIgnorada: pareceNaoMultiplicado,
   };
 }
 
@@ -199,9 +255,11 @@ export function criarTrackingAgregado(item = {}, origem = '') {
   const quantidadeItens = numero(item.quantidade_itens) || quantidadeItensTracking(item);
   // cubagem_final ja vem calculada (cubagem/itens*unidades) desde a importacao
   // do Tracking (ver trackingSupabaseService.toDbRow); preferir ela evita
-  // recalcular sem os itens quando a consulta nao traz o raw da NF.
-  const cubagemFinalArmazenada = numero(item.cubagem_final ?? item.cubagemFinal ?? 0);
-  const cubagemResolvida = resolverCubagemTracking({
+  // recalcular sem os itens quando a consulta nao traz o raw da NF. Mas
+  // resolverCubagemFinal ignora esse valor gravado se ele tiver a assinatura
+  // do bug antigo (nao multiplicado pelas unidades) e recalcula na hora.
+  const cubagemResolvida = resolverCubagemFinal({
+    cubagemFinalInformada: numero(item.cubagem_final ?? item.cubagemFinal ?? 0),
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
     pesoCubadoOriginal: numero(item.peso_cubado ?? item.pesoCubado ?? 0),
@@ -209,7 +267,7 @@ export function criarTrackingAgregado(item = {}, origem = '') {
     quantidadeItens,
     pesoFisico: numero(item.peso ?? item.peso_tracking ?? 0),
   });
-  const cubagemTotal = cubagemFinalArmazenada > 0 ? cubagemFinalArmazenada : cubagemResolvida.cubagemAplicada;
+  const cubagemTotal = cubagemResolvida.cubagemAplicada;
 
   return {
     ...item,

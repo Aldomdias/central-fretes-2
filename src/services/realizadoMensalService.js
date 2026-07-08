@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { resolverCubagemTracking } from '../utils/trackingCubagem';
+import { resolverCubagemFinal } from '../utils/trackingCubagem';
 import { carregarMunicipiosIbgeDb } from './freteDatabaseService';
 import { carregarAliasesCidadeIbge } from './cidadeIbgeAliasService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
@@ -773,8 +773,8 @@ function adicionarTrackingImportacao(mapa, chaveValor, item = {}) {
   const volumes = toSafeNumber(item.qtd_volumes);
   const cubagemUnitaria = toSafeNumber(item.cubagem_unitaria);
   const cubagemTotalDireta = toSafeNumber(item.cubagem_total);
-  const cubagemFinalArmazenada = toSafeNumber(item.cubagem_final);
-  const resolvida = resolverCubagemTracking({
+  const resolvida = resolverCubagemFinal({
+    cubagemFinalInformada: toSafeNumber(item.cubagem_final),
     cubagemUnitaria,
     cubagemTotal: cubagemTotalDireta,
     pesoCubadoOriginal: toSafeNumber(item.peso_cubado),
@@ -782,7 +782,7 @@ function adicionarTrackingImportacao(mapa, chaveValor, item = {}) {
     quantidadeItens: toSafeNumber(item.quantidade_itens),
     pesoFisico: toSafeNumber(item.peso),
   });
-  const cubagemAplicada = cubagemFinalArmazenada > 0 ? cubagemFinalArmazenada : resolvida.cubagemAplicada;
+  const cubagemAplicada = resolvida.cubagemAplicada;
 
   if (!atual) {
     mapa.set(chave, {

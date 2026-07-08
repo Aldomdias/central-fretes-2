@@ -535,7 +535,11 @@ function buildRowsFromMatrix(matriz = [], file, options = {}) {
     const volumes = totalUnidades || quantidadeItens;
     const cubagemResolvida = resolverCubagemTracking({
       cubagemUnitaria: cubagemTracking,
-      cubagemTotal: cubagemTracking,
+      // A planilha do Tracking so tem UMA coluna de cubagem (por item/unidade),
+      // nao uma coluna separada de "total". Passar o mesmo valor como total
+      // engana o motor (ele acha que ja veio somado) e pula a multiplicacao
+      // pelas unidades quando a NF tem 1 item so - por isso cubagemTotal fica 0.
+      cubagemTotal: 0,
       pesoCubadoOriginal: toNumber(get(linha, col.pesoCubado)),
       volumes,
       quantidadeItens,

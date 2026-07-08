@@ -1,6 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { buildTrackingId, getChaveNfeLookup, parseTrackingArquivo } from '../utils/trackingLocal';
-import { resolverCubagemTracking } from '../utils/trackingCubagem.js';
+import { resolverCubagemFinal } from '../utils/trackingCubagem.js';
 
 const TABELA_TRACKING = 'tracking_rows';
 const CHUNK_SIZE = 500;
@@ -64,15 +64,19 @@ function toDbRow(row = {}) {
   const quantidadeItens = toNumber(row.quantidadeItens || row.quantidade_itens);
   const totalUnidades = toNumber(row.totalUnidades || row.total_unidades);
   const qtdVolumes = toNumber(row.qtdVolumes);
-  const cubagemResolvida = resolverCubagemTracking({
+  const cubagemResolvida = resolverCubagemFinal({
+    cubagemFinalInformada: toNumber(row.cubagemFinal || row.cubagem_final),
     cubagemUnitaria,
-    cubagemTotal: toNumber(row.cubagemTotal || row.cubagem_total || row.cubagemFinal || row.cubagem_final || row.cubagem),
+    // Sem fallback para row.cubagem aqui: esse campo eh a cubagem por
+    // item/unidade, nao um total ja somado. Usa-lo como "total" engana o
+    // motor e pula a multiplicacao pelas unidades (ver trackingLocal.js).
+    cubagemTotal: toNumber(row.cubagemTotal || row.cubagem_total),
     pesoCubadoOriginal: toNumber(row.pesoCubado || row.pesoCubadoOriginal || row.peso_cubado),
     volumes: totalUnidades || qtdVolumes,
     quantidadeItens,
     pesoFisico: toNumber(row.peso),
   });
-  const cubagemFinal = toNumber(row.cubagemFinal || row.cubagem_final) || cubagemResolvida.cubagemAplicada;
+  const cubagemFinal = cubagemResolvida.cubagemAplicada;
   const id = String(
     row.id
     || buildTrackingId(row, row.arquivoOrigem || '', row.linhaExcel || '')

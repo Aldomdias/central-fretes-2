@@ -6,6 +6,7 @@ import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { carregarMunicipiosIbgeOficial } from '../utils/ibgeMunicipiosOficial';
 import { encontrarLinhaGradePorPeso } from '../utils/gradeFreteConfig';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+import { resolverCubagemFinal } from '../utils/trackingCubagem';
 
 const UF_POR_CODIGO_IBGE = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -139,9 +140,17 @@ function fallbackRaw(row = {}, key = '') {
 
 function mapTrackingSupabaseRow(row = {}) {
   const raw = row.raw || {};
-  const cubagemTotalFinal = toNumber(row.cubagem_final ?? row.cubagem_total ?? raw.cubagemTotal ?? raw.Cubagem_Total_m3);
   const cubagemUnitaria = toNumber(row.cubagem_unitaria ?? raw.cubagem ?? raw.Cubagem_Unitaria_m3);
   const volumes = toNumber(row.qtd_volumes ?? raw.qtdVolumes ?? raw.Volumes);
+  const cubagemResolvida = resolverCubagemFinal({
+    cubagemFinalInformada: toNumber(row.cubagem_final ?? raw.cubagemTotal ?? raw.Cubagem_Total_m3),
+    cubagemUnitaria,
+    cubagemTotal: toNumber(row.cubagem_total),
+    volumes,
+    quantidadeItens: toNumber(row.quantidade_itens),
+    pesoFisico: toNumber(row.peso ?? raw.peso),
+  });
+  const cubagemTotalFinal = cubagemResolvida.cubagemAplicada;
   const data = row.data || raw.data || raw.Data || '';
 
   return {
