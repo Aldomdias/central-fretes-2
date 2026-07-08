@@ -33,6 +33,24 @@ function normalizarComparacao(valor) {
     .trim();
 }
 
+const UFS_VALIDAS = new Set([
+  'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
+  'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
+]);
+
+// Quando o frete/rota nao tem coluna de UF propria (so o codigo da rota, ex.:
+// "AC-INT1"), a UF fica "escondida" no prefixo do codigo. Sem extrair ela daqui,
+// o fallback de comparacao abaixo (removerUfDaCotacao) tira o prefixo de QUALQUER
+// codigo XX-SUFIXO e compara so o miolo (ex.: "INT1"), fazendo "AC-INT1" (orfao,
+// sem match direto no arquivo de Rotas) colidir com "SP-INT1" de outro estado —
+// bug real encontrado num caso de producao (JADLOG R2: AC-INT1 pegou o IBGE/valor
+// de SP-INT1). Extrair a UF do proprio codigo fecha essa brecha.
+function ufEmbutidaNoCodigo(valor) {
+  const texto = String(valor || '').trim().toUpperCase();
+  const match = texto.match(/^([A-Z]{2})\s*[-–]/);
+  return match && UFS_VALIDAS.has(match[1]) ? match[1] : '';
+}
+
 function removerUfDaCotacao(valor, ufDestino) {
   let texto = String(valor || '').trim();
   const uf = String(ufDestino || '').trim().toUpperCase();
@@ -47,8 +65,10 @@ function removerUfDaCotacao(valor, ufDestino) {
 }
 
 function cotacaoCompativel(frete, rota) {
-  const ufFrete = String(frete.ufDestino || '').trim().toUpperCase();
-  const ufRota = String(rota.ufDestino || '').trim().toUpperCase();
+  const ufFrete = String(frete.ufDestino || '').trim().toUpperCase()
+    || ufEmbutidaNoCodigo(frete.cotacao || frete.cotacaoFinal);
+  const ufRota = String(rota.ufDestino || '').trim().toUpperCase()
+    || ufEmbutidaNoCodigo(rota.cotacaoBase || rota.cotacao || rota.cotacaoFinal);
 
   if (ufFrete && ufRota && ufFrete !== ufRota) return false;
 
