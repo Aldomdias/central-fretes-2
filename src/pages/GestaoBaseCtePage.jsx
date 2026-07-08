@@ -189,21 +189,21 @@ export default function GestaoBaseCtePage() {
     }
   }
 
-  async function carregarLinhas(onProgress) {
+  async function carregarLinhas(onProgress, mesAlvo = competencia, canalAlvo = canal) {
     if (!isSupabaseConfigured()) throw new Error('Supabase nÃ£o configurado.');
-    if (!competencia) throw new Error('Selecione a competÃªncia (mÃªs).');
+    if (!mesAlvo) throw new Error('Selecione a competÃªncia (mÃªs).');
     const supabase = getSupabaseClient();
     const linhas = [];
     let from = 0;
     let selectIndex = 0;
     while (true) {
-      let q = supabase.from(TABELA).select(SELECTS_CTES[selectIndex]).eq('competencia', competencia).order('chave_cte', { ascending: true }).range(from, from + PAGE - 1);
-      if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
+      let q = supabase.from(TABELA).select(SELECTS_CTES[selectIndex]).eq('competencia', mesAlvo).order('chave_cte', { ascending: true }).range(from, from + PAGE - 1);
+      if (canalAlvo) q = q.or(`canal_original.ilike.%${canalAlvo}%,canal.ilike.%${canalAlvo}%`);
       let { data, error } = await q;
       while (error && selectIndex < SELECTS_CTES.length - 1 && /chave_nfe|nota_fiscal|column|schema cache/i.test(error.message || '')) {
         selectIndex += 1;
-        q = supabase.from(TABELA).select(SELECTS_CTES[selectIndex]).eq('competencia', competencia).order('chave_cte', { ascending: true }).range(from, from + PAGE - 1);
-        if (canal) q = q.or(`canal_original.ilike.%${canal}%,canal.ilike.%${canal}%`);
+        q = supabase.from(TABELA).select(SELECTS_CTES[selectIndex]).eq('competencia', mesAlvo).order('chave_cte', { ascending: true }).range(from, from + PAGE - 1);
+        if (canalAlvo) q = q.or(`canal_original.ilike.%${canalAlvo}%,canal.ilike.%${canalAlvo}%`);
         ({ data, error } = await q);
       }
       if (error) throw new Error(`Erro ao ler base: ${error.message}`);
@@ -216,41 +216,43 @@ export default function GestaoBaseCtePage() {
     return linhas;
   }
 
-  // Analisa o status de IBGE e monta a lista do que dÃ¡ pra preencher.
-  // Fonte: tracking primeiro (origem do CT-e vem do tracking), planilha como reforÃ§o.
-  async function analisar() {
-    setStatus('analisando'); setErro(''); setDiag(null); setResultado('');
+  // Carrega a base de IBGE (oficial + Supabase + alias manuais). Independe da
+  // competencia, entao o modo "corrigir tudo de uma vez" carrega uma vez so.
+  async function carregarBaseIbge() {
+    let municipios = [];
+    let ibgeFonte = '';
     try {
-      setProgresso('Carregando base de IBGE (oficial)...');
-      let municipios = [];
-      let ibgeFonte = '';
-      try {
-        const r = await carregarMunicipiosIbgeOficial();
-        municipios = r.municipios || []; ibgeFonte = r.fonte || 'IBGE oficial';
-      } catch { /* tenta o Supabase abaixo */ }
-      if (municipios.length < 5000) {
-        const sb = await carregarMunicipiosIbgeDb().catch(() => []);
-        if (sb.length > municipios.length) { municipios = sb; ibgeFonte = 'ibge_municipios (Supabase)'; }
-      }
-      const municipioPorCidade = montarMunicipioPorCidade(municipios);
-      if (!municipioPorCidade.porChave.size) throw new Error('Base de IBGE indisponÃ­vel (nem IBGE oficial nem ibge_municipios). Verifique a conexÃ£o e tente de novo.');
+      const r = await carregarMunicipiosIbgeOficial();
+      municipios = r.municipios || []; ibgeFonte = r.fonte || 'IBGE oficial';
+    } catch { /* tenta o Supabase abaixo */ }
+    if (municipios.length < 5000) {
+      const sb = await carregarMunicipiosIbgeDb().catch(() => []);
+      if (sb.length > municipios.length) { municipios = sb; ibgeFonte = 'ibge_municipios (Supabase)'; }
+    }
+    const municipioPorCidade = montarMunicipioPorCidade(municipios);
+    if (!municipioPorCidade.porChave.size) throw new Error('Base de IBGE indisponÃ­vel (nem IBGE oficial nem ibge_municipios). Verifique a conexÃ£o e tente de novo.');
 
-      // Vinculos manuais cidade->IBGE (geridos em Ferramentas). Sobrepoem a lista
-      // oficial para resolver nomes que nao casam (ex.: "BRASILIA (DF)").
-      try {
-        const aliases = await carregarAliasesCidadeIbge();
-        for (const a of aliases) {
-          const c = normalizarCidadeIbge(a.cidade);
-          const comp = compactarCidadeIbge(a.cidade);
-          if (c) { municipioPorCidade.porChave.set(c, a.ibge); if (a.uf) municipioPorCidade.porChave.set(normalizarCidadeIbge(`${a.cidade}/${a.uf}`), a.ibge); }
-          if (comp) { municipioPorCidade.porCompacto.set(comp, a.ibge); if (a.uf) municipioPorCidade.porCompacto.set(compactarCidadeIbge(`${a.cidade}/${a.uf}`), a.ibge); }
-        }
-      } catch (e) {
-        console.warn('[GestaoBaseCte] aliases cidade->IBGE indisponiveis', e);
+    // Vinculos manuais cidade->IBGE (geridos em Ferramentas). Sobrepoem a lista
+    // oficial para resolver nomes que nao casam (ex.: "BRASILIA (DF)").
+    try {
+      const aliases = await carregarAliasesCidadeIbge();
+      for (const a of aliases) {
+        const c = normalizarCidadeIbge(a.cidade);
+        const comp = compactarCidadeIbge(a.cidade);
+        if (c) { municipioPorCidade.porChave.set(c, a.ibge); if (a.uf) municipioPorCidade.porChave.set(normalizarCidadeIbge(`${a.cidade}/${a.uf}`), a.ibge); }
+        if (comp) { municipioPorCidade.porCompacto.set(comp, a.ibge); if (a.uf) municipioPorCidade.porCompacto.set(compactarCidadeIbge(`${a.cidade}/${a.uf}`), a.ibge); }
       }
+    } catch (e) {
+      console.warn('[GestaoBaseCte] aliases cidade->IBGE indisponiveis', e);
+    }
+    return { municipioPorCidade, ibgeFonte };
+  }
 
-      setProgresso('Lendo CT-es da base...');
-      const linhas = await carregarLinhas((n) => setProgresso(`Lendo CT-es da base... ${fmtN(n)}`));
+  // Analisa uma competencia isolada e devolve o diagnostico (sem tocar em estado
+  // de UI), pra poder ser reusada tanto no botao unico quanto no modo em lote.
+  async function analisarCompetencia(mesAlvo, canalAlvo, forcarCubagemAlvo, municipioPorCidade, ibgeFonte, onProgress) {
+      onProgress?.('Lendo CT-es da base...');
+      const linhas = await carregarLinhas((n) => onProgress?.(`Lendo CT-es da base... ${fmtN(n)}`), mesAlvo, canalAlvo);
       if (!linhas.length) throw new Error('Nenhum CT-e nessa competÃªncia.');
 
       // So consulta o tracking dos CT-es que ainda tem lacuna. Os ja completos
@@ -260,13 +262,13 @@ export default function GestaoBaseCtePage() {
         dig7(row.ibge_origem) && dig7(row.ibge_destino)
         && String(row.chave_rota_ibge || '').trim() && row.ibge_ok === true
         && temValor(row.qtd_volumes) && temValor(row.cubagem)
-        && !forcarCubagem,
+        && !forcarCubagemAlvo,
       );
       const faltam = linhas.filter((row) => !linhaCompleta(row));
       let mapas = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map() };
       let trackingErro = '';
       if (faltam.length) {
-        setProgresso(`Buscando ${fmtN(faltam.length)} CT-es no tracking... (pode levar 1â€“2 min)`);
+        onProgress?.(`Buscando ${fmtN(faltam.length)} CT-es no tracking... (pode levar 1â€“2 min)`);
         const resp = await buscarTrackingParaRealizado(faltam.map(chavesTrackingDaLinha));
         mapas = resp; trackingErro = resp.erro || '';
       }
@@ -299,7 +301,7 @@ export default function GestaoBaseCtePage() {
         const arq = row.arquivo_origem || '(sem arquivo)';
         const a = porArquivo.get(arq) || { arquivo: arq, total: 0, sem: 0 };
         a.total += 1;
-        if (origAtual && destAtual && chaveRotaAtual && ibgeOkAtual && temValor(volAtual) && temValor(cubAtual) && !forcarCubagem) { porArquivo.set(arq, a); continue; }
+        if (origAtual && destAtual && chaveRotaAtual && ibgeOkAtual && temValor(volAtual) && temValor(cubAtual) && !forcarCubagemAlvo) { porArquivo.set(arq, a); continue; }
         a.sem += 1;
 
         const tracking = obterTrackingDaLinha(chavesTrackingDaLinha(row), mapas);
@@ -359,14 +361,24 @@ export default function GestaoBaseCtePage() {
         .map(([cidade, qtd]) => ({ cidade, qtd })).sort((x, y) => y.qtd - x.qtd).slice(0, 25);
       const arquivos = Array.from(porArquivo.values()).sort((x, y) => y.sem - x.sem);
 
-      setDiag({
+      return {
         total: linhas.length, comCompleto, semOrigem, semDestino, semChaveRota, ibgeOkFalse,
         semVolumes, semCubagem, comVolumetria,
         vouPreencher: updatesDeduplicados.length, vaiPreencherIbge, vaiPreencherRota, vaiPreencherVolumetria, viaTracking, viaPlanilha, semMatchTracking, trackingErro,
         updatesDuplicados: Math.max(0, updates.length - updatesDeduplicados.length),
         ibgeFonte, ibgeQtd: municipioPorCidade.porChave.size,
         updates: updatesDeduplicados, topNaoResolvidas, arquivos,
-      });
+      };
+  }
+
+  // Analisa o status de IBGE e monta a lista do que dÃ¡ pra preencher (botao
+  // unico, so a competencia selecionada no formulario).
+  async function analisar() {
+    setStatus('analisando'); setErro(''); setDiag(null); setResultado('');
+    try {
+      const { municipioPorCidade, ibgeFonte } = await carregarBaseIbge();
+      const resultado = await analisarCompetencia(competencia, canal, forcarCubagem, municipioPorCidade, ibgeFonte, setProgresso);
+      setDiag(resultado);
       setStatus('idle'); setProgresso('');
     } catch (e) {
       console.error('[GestaoBaseCte]', e);
@@ -374,25 +386,99 @@ export default function GestaoBaseCtePage() {
     }
   }
 
+  // Grava um lote de updates (upsert por chave_cte), em pedacos.
+  async function gravarUpdates(updates, onProgress) {
+    const supabase = getSupabaseClient();
+    let gravados = 0;
+    for (let i = 0; i < updates.length; i += UPSERT_CHUNK) {
+      const parte = updates.slice(i, i + UPSERT_CHUNK);
+      await gravarComRetry(supabase, parte);
+      gravados += parte.length;
+      onProgress?.(gravados, updates.length);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    return gravados;
+  }
+
   // Grava sÃ³ as colunas de IBGE, sÃ³ onde faltava (upsert por chave_cte).
   async function completar() {
     if (!diag?.updates?.length) return;
     setStatus('completando'); setErro(''); setResultado('');
     try {
-      const supabase = getSupabaseClient();
-      let gravados = 0;
-      for (let i = 0; i < diag.updates.length; i += UPSERT_CHUNK) {
-        const parte = diag.updates.slice(i, i + UPSERT_CHUNK);
-        await gravarComRetry(supabase, parte);
-        gravados += parte.length;
-        setProgresso(`Gravando IBGE/chave de rota/volumetria... ${fmtN(gravados)}/${fmtN(diag.updates.length)}`);
-        await new Promise((r) => setTimeout(r, 0));
-      }
+      const gravados = await gravarUpdates(diag.updates, (gravados, total) => {
+        setProgresso(`Gravando IBGE/chave de rota/volumetria... ${fmtN(gravados)}/${fmtN(total)}`);
+      });
       setResultado(`Base atualizada em ${fmtN(gravados)} CT-e(s). Reanalisando...`);
       setProgresso('');
       await analisar();
     } catch (e) {
       console.error('[GestaoBaseCte]', e);
+      setErro(`${e.message || e}`); setStatus('idle'); setProgresso('');
+    }
+  }
+
+  // Descobre todas as competencias existentes na base (mesma logica da visao geral).
+  async function listarTodasCompetencias() {
+    const supabase = getSupabaseClient();
+    const { data: minRow } = await supabase.from(TABELA).select('competencia').not('competencia', 'is', null).neq('competencia', '').order('competencia', { ascending: true }).limit(1);
+    const { data: maxRow } = await supabase.from(TABELA).select('competencia').not('competencia', 'is', null).neq('competencia', '').order('competencia', { ascending: false }).limit(1);
+    const ini = minRow?.[0]?.competencia;
+    const fim = maxRow?.[0]?.competencia;
+    if (!ini || !fim) return [];
+    const meses = [];
+    let [ay, am] = ini.split('-').map(Number);
+    const [by, bm] = fim.split('-').map(Number);
+    while (ay < by || (ay === by && am <= bm)) {
+      meses.push(`${ay}-${String(am).padStart(2, '0')}`);
+      am += 1; if (am > 12) { am = 1; ay += 1; }
+    }
+    return meses;
+  }
+
+  // Corrige a base inteira de uma vez: percorre TODAS as competencias, sempre
+  // reconferindo cubagem (forcarCubagem fixo em true aqui, independente do
+  // checkbox), e grava so o que mudar. Nao precisa reimportar nada — so usa o
+  // que ja esta no Tracking/Supabase.
+  async function completarTudo() {
+    setStatus('completando'); setErro(''); setResultado(''); setDiag(null);
+    try {
+      setProgresso('Carregando base de IBGE (oficial)...');
+      const { municipioPorCidade, ibgeFonte } = await carregarBaseIbge();
+      setProgresso('Descobrindo competencias existentes na base...');
+      const meses = await listarTodasCompetencias();
+      if (!meses.length) throw new Error('Nenhuma competencia encontrada na base.');
+
+      let totalGravados = 0;
+      let totalAnalisados = 0;
+      const porMes = [];
+      for (let i = 0; i < meses.length; i += 1) {
+        const mes = meses[i];
+        const prefixo = `[${i + 1}/${meses.length}] ${mes}`;
+        try {
+          const resultado = await analisarCompetencia(mes, canal, true, municipioPorCidade, ibgeFonte, (msg) => setProgresso(`${prefixo}: ${msg}`));
+          totalAnalisados += resultado.total;
+          let gravados = 0;
+          if (resultado.updates.length) {
+            gravados = await gravarUpdates(resultado.updates, (g, total) => {
+              setProgresso(`${prefixo}: gravando ${fmtN(g)}/${fmtN(total)}...`);
+            });
+          }
+          totalGravados += gravados;
+          porMes.push({ mes, total: resultado.total, gravados });
+        } catch (eMes) {
+          // Uma competencia sem CT-e ou com erro pontual nao deve travar as demais.
+          porMes.push({ mes, total: 0, gravados: 0, erro: eMes.message || String(eMes) });
+        }
+      }
+
+      setResultado(
+        `Base inteira reconferida: ${fmtN(totalAnalisados)} CT-e(s) em ${meses.length} competencia(s), ${fmtN(totalGravados)} atualizado(s). `
+        + porMes.filter((m) => m.erro).map((m) => `${m.mes}: ${m.erro}`).join(' | ')
+      );
+      setProgresso('');
+      setStatus('idle');
+    } catch (e) {
+      console.error('[GestaoBaseCte][completarTudo]', e);
       setErro(`${e.message || e}`); setStatus('idle'); setProgresso('');
     }
   }
@@ -433,6 +519,15 @@ export default function GestaoBaseCtePage() {
           <input type="checkbox" checked={forcarCubagem} onChange={(e) => setForcarCubagem(e.target.checked)} />
           Reconferir cubagem mesmo nas linhas que ja tem valor gravado (corrige cubagem antiga sem reimportar o Tracking)
         </label>
+
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed #cbd5e1' }}>
+          <button className="secondary" type="button" onClick={completarTudo} disabled={ocupado}>
+            {status === 'completando' && !diag ? 'Corrigindo base inteira...' : 'Corrigir cubagem de TODA a base (todas as competencias)'}
+          </button>
+          <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: 4 }}>
+            Percorre todas as competencias da base, reconfere cubagem/volumes/IBGE contra o Tracking (ja corrigido) e grava so o que mudar. Nao reimporta nada, so recalcula com o que ja esta no Supabase. Pode demorar em bases grandes.
+          </div>
+        </div>
 
         {progresso && (
           <div style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', color: '#1d4ed8', display: 'flex', alignItems: 'center', gap: 8 }}>
