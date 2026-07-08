@@ -208,6 +208,24 @@ export default function ImportarTemplatePage({ store, transportadoras = [] }) {
   const [canal, setCanal] = useState('B2C');
   const [inicioVigencia, setInicioVigencia] = useState(hojeISO());
   const [fimVigencia, setFimVigencia] = useState(fimTresAnosISO());
+  const [filtroPreview, setFiltroPreview] = useState('');
+  const [somenteSemDestino, setSomenteSemDestino] = useState(false);
+
+  const cotacoesFiltradas = useMemo(() => {
+    const lista = formatado?.cotacoes || [];
+    const termo = normalizarTexto(filtroPreview).toLowerCase();
+    return lista.filter((item) => {
+      if (somenteSemDestino && item.ufDestino) return false;
+      if (!termo) return true;
+      const alvo = normalizarTexto(`${item.rota} ${item.cotacaoBase} ${item.origem} ${item.ufOrigem} ${item.ufDestino}`).toLowerCase();
+      return alvo.includes(termo);
+    });
+  }, [formatado, filtroPreview, somenteSemDestino]);
+
+  const semDestinoCount = useMemo(
+    () => (formatado?.cotacoes || []).filter((item) => !item.ufDestino).length,
+    [formatado]
+  );
 
   const transportadoraFinal = useMemo(() => {
     if (modoTransportadora === 'existente') {
@@ -384,14 +402,52 @@ export default function ImportarTemplatePage({ store, transportadoras = [] }) {
 
       {formatado && mostrarPreview ? (
         <section className="panel-card formatacao-section">
-          <div className="section-header-inline"><h3>Revisão da tabela formatada</h3><span>{formatado.cotacoes.length} cotação(ões)</span></div>
+          <div className="section-header-inline">
+            <h3>Revisão da tabela formatada</h3>
+            <span>{formatado.cotacoes.length} cotação(ões){cotacoesFiltradas.length !== formatado.cotacoes.length ? ` · ${cotacoesFiltradas.length} exibida(s) com o filtro` : ''}</span>
+          </div>
+          {semDestinoCount > 0 ? (
+            <div className="sim-alert warning" style={{ marginBottom: 10 }}>
+              ⚠ {semDestinoCount} cotação(ões) ficaram <strong>sem UF/destino</strong> (o código da rota não achou correspondência no arquivo de Rotas). Essas linhas não vão puxar nada em simulação até o arquivo de Rotas ser completado.
+            </div>
+          ) : null}
+          <div className="formatacao-grid two" style={{ marginBottom: 10 }}>
+            <label className="field-block">
+              <span>Buscar rota/origem/UF (pra testar um caso específico)</span>
+              <input
+                value={filtroPreview}
+                onChange={(e) => setFiltroPreview(e.target.value)}
+                placeholder="Ex.: AC-INT1, Itajai, SP..."
+              />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+              <input type="checkbox" checked={somenteSemDestino} onChange={(e) => setSomenteSemDestino(e.target.checked)} />
+              <span>Mostrar só as sem destino ({semDestinoCount})</span>
+            </label>
+          </div>
           <div className="table-scroll">
             <table className="basic-table compact-table fretes-table">
-              <thead><tr><th>Rota do frete</th><th>Faixa</th><th>Peso mínimo</th><th>Peso limite</th><th>Taxa aplicada</th><th>Frete percentual</th><th>Vigência</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Rota do frete</th>
+                  <th>Origem</th>
+                  <th>UF Origem</th>
+                  <th>UF Destino</th>
+                  <th>Faixa</th>
+                  <th>Peso mínimo</th>
+                  <th>Peso limite</th>
+                  <th>Taxa aplicada</th>
+                  <th>Frete percentual</th>
+                  <th>Vigência</th>
+                </tr>
+              </thead>
               <tbody>
-                {formatado.cotacoes.slice(0, 100).map((item) => (
-                  <tr key={item.id}>
+                {cotacoesFiltradas.slice(0, 200).map((item) => (
+                  <tr key={item.id} style={!item.ufDestino ? { background: '#fff3cd' } : undefined}>
                     <td>{item.rota}</td>
+                    <td>{item.origem || '—'}</td>
+                    <td>{item.ufOrigem || '—'}</td>
+                    <td>{item.ufDestino || <strong style={{ color: '#b45309' }}>sem destino</strong>}</td>
                     <td>{item.faixaPeso}</td>
                     <td>{numeroOuVazio(item.pesoMin)}</td>
                     <td>{numeroOuVazio(item.pesoMax)}</td>
@@ -403,7 +459,7 @@ export default function ImportarTemplatePage({ store, transportadoras = [] }) {
               </tbody>
             </table>
           </div>
-          {formatado.cotacoes.length > 100 ? <div className="empty-note">Mostrando as primeiras 100 linhas para não deixar a tela pesada.</div> : null}
+          {cotacoesFiltradas.length > 200 ? <div className="empty-note">Mostrando as primeiras 200 linhas (de {cotacoesFiltradas.length}) para não deixar a tela pesada. Use a busca pra estreitar.</div> : null}
         </section>
       ) : null}
     </div>
