@@ -9113,12 +9113,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 </div>
                 {secaoAberta('pareto') && (<>
                 <div className="sim-analise-resumo" style={{ marginTop: 12 }}>
-                  <div><span>Rotas no 80%</span><strong>{resultadoRealizado.pareto80Volume?.qtdRotas || 0}</strong></div>
+                  <div><span>Rotas no Pareto 80%</span><strong>{resultadoRealizado.pareto80Volume?.qtdRotas || 0}</strong></div>
                   <div><span>Volume coberto</span><strong>{formatPercent(resultadoRealizado.pareto80Volume?.pctCoberto || 0)}</strong></div>
-                  <div><span>Faturamento tabela (80%)</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.freteSelecionada || 0)}</strong></div>
-                  <div><span>Faturamento perdido (80%)</span><strong style={{color:'#dc2626'}}>{formatMoney(resultadoRealizado.pareto80Volume?.diferencaParaVencedor || 0)}</strong></div>
-                  <div><span>Redução média (80%)</span><strong style={{color:'#c2410c'}}>{formatPercent(resultadoRealizado.pareto80Volume?.reducaoMediaNecessaria || 0)}</strong></div>
+                  <div><span>Frete tabela no Pareto 80%</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.freteSelecionada || 0)}</strong></div>
+                  <div><span>Frete realizado no Pareto 80%</span><strong>{formatMoney(resultadoRealizado.pareto80Volume?.freteRealizado || 0)}</strong></div>
+                  <div><span>Fora da captura no Pareto 80%</span><strong style={{color:'#dc2626'}}>{formatMoney(resultadoRealizado.pareto80Volume?.diferencaParaVencedor || 0)}</strong></div>
+                  <div><span>Redução média necessária no Pareto 80%</span><strong style={{color:'#c2410c'}}>{formatPercent(resultadoRealizado.pareto80Volume?.reducaoMediaNecessaria || 0)}</strong></div>
                 </div>
+                <p style={{ fontSize: '0.78rem', color: '#64748b', marginTop: 6 }}>
+                  Os valores acima consideram apenas as {resultadoRealizado.pareto80Volume?.qtdRotas || 0} rota(s) que concentram ~80% do volume analisado — por isso podem (e devem) ser diferentes do resumo geral da simulação, que cobre todas as rotas.
+                  "Fora da captura" soma só as rotas perdedoras dentro deste recorte; "Redução média" também considera só as perdedoras do recorte.
+                </p>
                 <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                   <table className="sim-analise-tabela" style={{ fontSize: '0.8rem' }}>
                     <thead>
@@ -9131,12 +9136,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
                         <th>% acum.</th>
                         <th>Frete realizado</th>
                         <th>Faturamento tabela</th>
-                        <th>Frete melhor tabela</th>
+                        {resultadoRealizado.compararConcorrentes && <th>Frete melhor tabela</th>}
                         <th>% NF tabela</th>
-                        <th>% NF melhor</th>
+                        {resultadoRealizado.compararConcorrentes && <th>% NF melhor</th>}
                         <th>Status predominante</th>
                         <th style={{color:'#dc2626'}}>⬇ Redução necessária</th>
-                        <th>Principal melhor tabela</th>
+                        {resultadoRealizado.compararConcorrentes && <th>Principal melhor tabela</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -9153,9 +9158,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             <td>{formatPercent(item.pctAcumulado)}</td>
                             <td>{formatMoney(item.freteRealizado)}</td>
                             <td>{formatMoney(item.freteSelecionada)}</td>
-                            <td>{formatMoney(item.freteVencedor)}</td>
+                            {resultadoRealizado.compararConcorrentes && <td>{formatMoney(item.freteVencedor)}</td>}
                             <td>{formatPercent(item.percentualFreteSelecionada)}</td>
-                            <td>{formatPercent(item.percentualFreteVencedor)}</td>
+                            {resultadoRealizado.compararConcorrentes && <td>{formatPercent(item.percentualFreteVencedor)}</td>}
                             <td>
                               <span style={{
                                 padding: '2px 7px', borderRadius: 10, fontSize: '0.75rem', fontWeight: 600,
@@ -9166,7 +9171,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             <td style={{ textAlign: 'right', fontWeight: 700, color: item.reducaoMediaNecessaria > 0 ? '#dc2626' : '#15803d' }}>
                               {item.reducaoMediaNecessaria > 0 ? `↓ ${formatPercent(item.reducaoMediaNecessaria)}` : '✓ Ganhador'}
                             </td>
-                            <td style={{ color: '#64748b' }}>{item.principalVencedor || '-'}</td>
+                            {resultadoRealizado.compararConcorrentes && <td style={{ color: '#64748b' }}>{item.principalVencedor || '-'}</td>}
                           </tr>
                         );
                       })}
