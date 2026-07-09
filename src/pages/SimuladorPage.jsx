@@ -4082,7 +4082,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [buscandoCtesRealizado, setBuscandoCtesRealizado] = useState(false);
   // Quando true, usa volumes/cubagem da própria base (sem consultar o tracking)
   // e considera só os CT-es completos. Caminho rápido, depende da base enriquecida.
-  const [apenasDadosCompletosRealizado, setApenasDadosCompletosRealizado] = useState(true);
+  // Padrão desligado por enquanto: a base pré-gravada (realizado_local_ctes)
+  // ainda tem cubagem antiga incorreta em algumas competências (ver "Corrigir
+  // cubagem de TODA a base" em Gestão Base CT-e). Até isso ser resincronizado,
+  // o padrão cruza o Tracking ao vivo em vez de confiar no valor já gravado.
+  const [apenasDadosCompletosRealizado, setApenasDadosCompletosRealizado] = useState(false);
   const [atualizandoNegociacaoRealizado, setAtualizandoNegociacaoRealizado] = useState(false);
   const [recarregarMalhaOficialRealizado, setRecarregarMalhaOficialRealizado] = useState(0);
 
@@ -4146,7 +4150,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [feedbackCopiaLaudo, setFeedbackCopiaLaudo] = useState('');
   const [laudoVisualAberto, setLaudoVisualAberto] = useState(null);
   const [salvandoLaudosVisuais, setSalvandoLaudosVisuais] = useState(false);
-  const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box']));
+  const [secoesFechadas, setSecoesFechadas] = useState(new Set(['laudo', 'transp-realizado', 'rotas-perda-box', 'diagnostico-resumo']));
   const toggleSecao = (id) => setSecoesFechadas((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const secaoAberta = (id) => !secoesFechadas.has(id);
   const laudosEmailRealizado = useMemo(() => gerarLaudosEmailRealizado(resultadoRealizado), [resultadoRealizado]);
@@ -8520,19 +8524,33 @@ export default function SimuladorPage({ transportadoras = [] }) {
           {resultadoRealizado && (
             <div style={{ marginTop: 18, display: 'grid', gap: 16 }}>
               <div className="sim-analise-resumo">
-                <div><span>Buscados do banco</span><strong>{resultadoRealizado.filtros?.ctesBrutos ?? resultadoRealizado.ctesAnalisados}</strong></div>
+                <div><span>CT-es buscados</span><strong>{resultadoRealizado.filtros?.ctesBrutos ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>{resultadoRealizado.filtros?.modo === 'malha' ? 'Na malha (filtro)' : 'Após filtros'}</span><strong>{resultadoRealizado.filtros?.ctesNaMalha ?? resultadoRealizado.ctesAnalisados}</strong></div>
-                <div><span>CT-es analisados</span><strong>{resultadoRealizado.ctesAnalisados}</strong></div>
-                <div><span>Com Tracking</span><strong>{resultadoRealizado.filtros?.ctesComTracking ?? resultadoRealizado.linhasComTracking ?? 0}</strong></div>
-                <div><span>Sem Tracking</span><strong>{resultadoRealizado.filtros?.ctesSemTracking ?? 0}</strong></div>
-                <div><span>Base elegível</span><strong>{resultadoRealizado.filtros?.ctesBaseSimulada ?? resultadoRealizado.ctesAnalisados}</strong></div>
                 <div><span>Com cálculo</span><strong>{resultadoRealizado.ctesSimulados}</strong><small style={{fontSize:'0.7em',color:'#64748b'}}>{resultadoRealizado.compararConcorrentes ? 'tabela + concorrentes' : 'tabela selecionada'}</small></div>
-                <div><span>Sem cobertura/cálculo</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
-                <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
-                <div><span>Sem tabela selecionada</span><strong>{resultadoRealizado.ctesSemTabelaSelecionada}</strong></div>
-                <div><span>Aderência da tabela</span><strong>{formatPercent(resultadoRealizado.aderenciaSelecionada)}</strong></div>
+                <div><span>Sem cálculo/cobertura</span><strong style={{color: resultadoRealizado.ctesSemTabelaGeral > 0 ? '#b45309' : undefined}}>{resultadoRealizado.ctesSemTabelaGeral}</strong></div>
                 <div><span>Ganharia</span><strong style={{color:'#15803d'}}>{resultadoRealizado.ctesGanhariaSelecionada}</strong></div>
                 <div><span>Perderia</span><strong style={{color:'#dc2626'}}>{resultadoRealizado.ctesPerdidosSelecionada}</strong></div>
+                <div>
+                  <span>Aderência da tabela</span>
+                  <strong>{resultadoRealizado.ctesComTabelaSelecionada ? formatPercent(resultadoRealizado.aderenciaSelecionada) : 'Sem base calculável'}</strong>
+                </div>
+                <div><span>Saving mensal</span><strong>{formatMoney(resultadoRealizado.savingSelecionadaVsRealMes || 0)}</strong></div>
+              </div>
+
+              <div>
+                <button className="sim-tab" type="button" onClick={() => toggleSecao('diagnostico-resumo')} style={{ fontSize: '0.8rem' }}>
+                  {secaoAberta('diagnostico-resumo') ? '▲ Recolher diagnóstico' : '▼ Ver detalhes do diagnóstico'}
+                </button>
+                {secaoAberta('diagnostico-resumo') && (
+                  <div className="sim-analise-resumo" style={{ marginTop: 10 }}>
+                    <div><span>CT-es analisados</span><strong>{resultadoRealizado.ctesAnalisados}</strong></div>
+                    <div><span>Com Tracking</span><strong>{resultadoRealizado.filtros?.ctesComTracking ?? resultadoRealizado.linhasComTracking ?? 0}</strong></div>
+                    <div><span>Sem Tracking</span><strong>{resultadoRealizado.filtros?.ctesSemTracking ?? 0}</strong></div>
+                    <div><span>Base elegível</span><strong>{resultadoRealizado.filtros?.ctesBaseSimulada ?? resultadoRealizado.ctesAnalisados}</strong></div>
+                    <div><span>Com tabela selecionada</span><strong>{resultadoRealizado.ctesComTabelaSelecionada}</strong></div>
+                    <div><span>Sem tabela selecionada</span><strong>{resultadoRealizado.ctesSemTabelaSelecionada}</strong></div>
+                  </div>
+                )}
               </div>
 
               {resultadoRealizado.ctesSemTabelaGeral > 0 && (() => {
