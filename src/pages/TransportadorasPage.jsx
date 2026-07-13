@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
+import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
 function nextId(list) {
   return (Math.max(0, ...list.map((item) => Number(item.id) || 0)) + 1);
@@ -995,7 +996,18 @@ export default function TransportadorasPage({ transportadoras, transportadoraSel
     // Isso evita que a tela recarregue do Supabase e reverta uma edição em andamento.
   }, [transportadoraSelecionadaId, transportadora, store]);
 
-  if (!transportadora) return <TransportadorasList items={transportadoras} onOpen={onOpenTransportadora} store={store} />;
-  if (!origem) return <OrigensList transportadora={transportadora} onBack={onVoltar} onOpenOrigin={onOpenOrigem} store={store} />;
-  return <OrigemDetail transportadora={transportadora} origem={origem} onBack={onVoltar} store={store} />;
+  return (
+    <>
+      <AmdProcessingOverlay
+        ativo={Boolean(store?.syncStatus?.sincronizando)}
+        progresso={null}
+        mensagemRodape="Pode levar mais tempo em transportadoras com muitas rotas/cotações."
+      />
+      {!transportadora
+        ? <TransportadorasList items={transportadoras} onOpen={onOpenTransportadora} store={store} />
+        : !origem
+          ? <OrigensList transportadora={transportadora} onBack={onVoltar} onOpenOrigin={onOpenOrigem} store={store} />
+          : <OrigemDetail transportadora={transportadora} origem={origem} onBack={onVoltar} store={store} />}
+    </>
+  );
 }
