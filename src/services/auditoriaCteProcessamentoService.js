@@ -11,6 +11,7 @@ import {
   buildLookupTables,
   simularRealizadoPorTransportadora,
 } from '../utils/calculoFrete';
+import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './realizadoTrackingEnrichment';
 
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK = 500;
@@ -134,6 +135,32 @@ async function carregarMapaVinculosAuditoria() {
 export function invalidarCacheVinculosAuditoriaCte() {
   _cacheMapaVinculosTransportadoras = null;
   _cacheBaseFretePorTransportadora.clear();
+}
+
+// Força recarregar as tabelas de frete do zero (ex.: usuário ajustou uma tabela
+// em outra aba e quer resimular sem perder a busca/filtro atual na Auditoria).
+// NÃO limpa o cache da base completa (_cacheBaseFrete) — recarregar TODAS as
+// transportadoras do sistema é lento (usado só como fallback quando a busca
+// direcionada por nome não acha a transportadora). Só o cache direcionado por
+// transportadora é limpo, que é rápido e cobre o caso comum (1-5 transportadoras).
+export function invalidarCacheBaseFreteAuditoriaCte() {
+  _cacheBaseFretePorTransportadora.clear();
+}
+
+// Busca o resultado ja calculado/salvo de um CT-e (com o detalhamento do
+// calculo) pela chave, pra telas fora da Auditoria CT-e (ex.: Faturas)
+// poderem mostrar o mesmo painel de detalhes ao clicar num CT-e.
+export async function buscarResultadoAuditoriaPorChave(chaveCte) {
+  const chave = onlyDigits(chaveCte);
+  if (!chave) return null;
+  const supabase = ensureSupabase();
+  const { data, error } = await supabase
+    .from(TABELA_RESULTADOS)
+    .select('*')
+    .eq('chave_cte', chave)
+    .maybeSingle();
+  if (error) throw new Error(`Erro ao buscar resultado da auditoria: ${error.message}`);
+  return data || null;
 }
 
 function nomeTransportadoraCte(cte = {}, mapaVinculos = null) {
@@ -339,7 +366,7 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
       } else {
         onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
         if (!_cacheBaseFrete) {
-          _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
+          _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb(onProgress));
         }
         return _cacheBaseFrete;
       }
@@ -349,7 +376,7 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
 
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: registros.length });
   if (!_cacheBaseFrete) {
-    _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
+    _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb(onProgress));
   }
   return _cacheBaseFrete;
 }
@@ -423,8 +450,14 @@ export function localizarRotaAuditoria(origem, cte = {}) {
   return rotasDestino[0];
 }
 
-function pesoCte(cte = {}) {
+function pesoCte(cte = {}, opcoes = {}) {
   const pesoDeclarado = toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso']));
+  // Modo "usar peso do CT-e": ignora peso cubado e aplica só o percentual de
+  // contingência sobre o peso declarado, quando houver.
+  if (opcoes.ignorarCubagem) {
+    const percentual = toNumber(opcoes.percentualContingenciaPeso);
+    return pesoDeclarado * (1 + percentual / 100);
+  }
   const pesoCubado = toNumber(pick(cte, ['peso_cubado', 'pesoCubado']));
   return Math.max(pesoDeclarado, pesoCubado, toNumber(pick(cte, ['peso'])));
 }
@@ -527,7 +560,7 @@ function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverr
   };
 }
 
-function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '') {
+function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const transportadoraTabela = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
   if (!transportadoraTabela) return null;
 
@@ -544,7 +577,11 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       transportadoras,
       realizados: [linha],
       nomeTransportadora: transportadoraTabela,
-      filtros: { canal: linha.canal },
+      filtros: {
+        canal: linha.canal,
+        ignorarCubagem: opcoes.ignorarCubagem,
+        percentualContingenciaPeso: opcoes.percentualContingenciaPeso,
+      },
       cidadePorIbge,
     });
     detalhe = resultado?.detalhes?.[0] || null;
@@ -590,8 +627,8 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   };
 }
 
-export function processarCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '') {
-  const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo);
+export function processarCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
+  const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
   if (resultadoSimulador) return resultadoSimulador;
 
   const tabela = localizarTabelaAuditoria(transportadoras, cte, mapaVinculos, transportadoraAlvo);
@@ -613,7 +650,7 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
     });
   }
 
-  const peso = pesoCte(cte);
+  const peso = pesoCte(cte, opcoes);
   const valorNf = toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota']));
 
   if (tabela.status === 'SEM_FAIXA' || !cotacao) {
@@ -796,11 +833,15 @@ async function salvarResultadosMes({ supabase, competencia, registros, resumo, o
 // nada no banco. Reaproveita o motor processarCte com as tabelas cadastradas e
 // preserva o cálculo Verum original de cada registro (processarCte o recomputaria
 // a partir de valor_calculado, que num resultado salvo é o recálculo anterior).
-export async function resimularRegistros({ registros, transportadorasAlvo, onProgress } = {}) {
+export async function resimularRegistros({ registros, transportadorasAlvo, onProgress, ignorarCubagem = true, percentualContingenciaPeso = 0, apenasDadosCompletos = true } = {}) {
   if (!Array.isArray(registros) || !registros.length) return [];
 
+  const registrosParaCalcular = apenasDadosCompletos
+    ? registros
+    : await enriquecerCtesComTrackingAoVivo(registros, onProgress);
+
   const mapaVinculos = await carregarMapaVinculosAuditoria();
-  const transportadoras = await carregarBaseFreteParaRegistros(registros, onProgress, transportadorasAlvo, mapaVinculos);
+  const transportadoras = await carregarBaseFreteParaRegistros(registrosParaCalcular, onProgress, transportadorasAlvo, mapaVinculos);
   const alvosNormalizados = Array.from(new Set(
     (transportadorasAlvo || [])
       .map((nome) => aplicarVinculoTransportadora(nome, mapaVinculos) || nome)
@@ -816,7 +857,8 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
   const out = [];
   for (let index = 0; index < registros.length; index += 1) {
     const original = registros[index] || {};
-    const novo = processarCte(original, transportadoras, mapaVinculos, transportadoraAlvo);
+    const paraCalculo = registrosParaCalcular[index] || original;
+    const novo = processarCte(paraCalculo, transportadoras, mapaVinculos, transportadoraAlvo, { ignorarCubagem, percentualContingenciaPeso });
 
     const temVerum = original.valor_calculado_verum !== undefined && original.valor_calculado_verum !== null;
     const verum = temVerum ? toNumber(original.valor_calculado_verum) : novo.valor_calculado_verum;
@@ -902,7 +944,33 @@ export async function carregarResumoAuditoriaMensal() {
   return data || [];
 }
 
-export async function processarESalvarAuditoriaMes({ competencia, dataInicio, dataFim, canais, onProgress } = {}) {
+// Mesmo cruzamento com o Tracking que o Simulador Realizado faz (motor
+// compartilhado em realizadoTrackingEnrichment.js). A base de CT-es não tem
+// chave_nfe/nota_fiscal, então o casamento aqui é só por chave_cte/numero_cte.
+async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
+  const linhas = ctes.map((cte) => ({
+    chaveCte: pick(cte, ['chave_cte', 'chaveCte', 'chave']) || '',
+    numeroCte: pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || '',
+    peso: toNumber(pick(cte, ['peso'])),
+    pesoDeclarado: toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
+  }));
+
+  onProgress?.({ etapa: 'cruzando_tracking', carregados: 0, total: linhas.length });
+  const mapasTracking = await buscarTrackingParaRealizado(linhas);
+  const { linhas: linhasEnriquecidas } = enriquecerRealizadoComTracking(linhas, mapasTracking);
+
+  return ctes.map((cte, index) => {
+    const enriquecida = linhasEnriquecidas[index] || {};
+    return {
+      ...cte,
+      peso_declarado: enriquecida.pesoDeclarado || cte.peso_declarado,
+      peso_cubado: enriquecida.pesoCubado || cte.peso_cubado,
+      cubagem: enriquecida.cubagemTotal || cte.cubagem,
+    };
+  });
+}
+
+export async function processarESalvarAuditoriaMes({ competencia, dataInicio, dataFim, canais, onProgress, ignorarCubagem = true, percentualContingenciaPeso = 0, apenasDadosCompletos = true } = {}) {
   if (!competencia && !(dataInicio || dataFim)) {
     throw new Error('Informe a competência ou um período para processar a auditoria.');
   }
@@ -916,7 +984,7 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
     let _tick = 0;
     const _hb = setInterval(() => { _tick += 1; onProgress?.({ etapa: 'carregando_tabelas', carregados: _tick, total: null }); }, 600);
     try {
-      _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
+      _cacheBaseFrete = normalizarTransportadoras(await carregarBaseCompletaDb(onProgress));
     } finally {
       clearInterval(_hb);
     }
@@ -938,10 +1006,14 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
     throw new Error(`Nenhum CT-e encontrado para ${alvo}${canais?.length ? ` (canais: ${canais.join(', ')})` : ''}.`);
   }
 
+  if (!apenasDadosCompletos) {
+    ctes = await enriquecerCtesComTrackingAoVivo(ctes, onProgress);
+  }
+
   const registros = [];
 
   for (let index = 0; index < ctes.length; index += 1) {
-    registros.push(processarCte(ctes[index], transportadoras, mapaVinculos));
+    registros.push(processarCte(ctes[index], transportadoras, mapaVinculos, '', { ignorarCubagem, percentualContingenciaPeso }));
 
     if (index % 500 === 0 || index === ctes.length - 1) {
       onProgress?.({ etapa: 'processando_ctes', carregados: index + 1, total: ctes.length });
@@ -973,4 +1045,44 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
         : 'Auditoria processada / auditoria_cte_resultados',
     },
   };
+}
+
+// Recalcula um conjunto específico de CT-es (por chave_cte), independente de
+// competência — usado pela tela de Faturas, pra recalcular só os CT-es de uma
+// fatura sem precisar processar o mês inteiro. Não salva sozinho: devolve os
+// registros calculados pra quem chamou decidir onde/como persistir.
+export async function processarCtesPorChave(chaves = [], onProgress) {
+  const normalizadas = [...new Set((chaves || []).map((c) => onlyDigits(c)).filter(Boolean))];
+  if (!normalizadas.length) return { registros: [], encontrados: 0, naoEncontrados: 0 };
+
+  const supabase = ensureSupabase();
+  const mapaVinculos = await carregarMapaVinculosAuditoria();
+
+  const ctes = [];
+  for (let inicio = 0; inicio < normalizadas.length; inicio += 200) {
+    const lote = normalizadas.slice(inicio, inicio + 200);
+    const { data, error } = await supabase.from(TABELA_CTES).select('*').in('chave_cte', lote);
+    if (error) throw new Error(`Erro ao buscar CT-es por chave: ${error.message}`);
+    ctes.push(...(data || []));
+    onProgress?.({ etapa: 'buscando_ctes', carregados: ctes.length, total: normalizadas.length });
+  }
+
+  // Carrega só as tabelas das transportadoras envolvidas (rápido) quando são
+  // poucas; com muitas (import de mês inteiro, várias transportadoras), cai
+  // no fallback de base completa dentro de carregarBaseFreteParaRegistros.
+  onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
+  const transportadoras = await carregarBaseFreteParaRegistros(ctes, onProgress, [], mapaVinculos);
+  if (!transportadoras.length) {
+    throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
+  }
+
+  const registros = [];
+  for (let index = 0; index < ctes.length; index += 1) {
+    registros.push(processarCte(ctes[index], transportadoras, mapaVinculos));
+    if (index % 500 === 0 || index === ctes.length - 1) {
+      onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctes.length });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  return { registros, encontrados: ctes.length, naoEncontrados: normalizadas.length - ctes.length };
 }

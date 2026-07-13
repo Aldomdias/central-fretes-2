@@ -723,6 +723,42 @@ export function useFreteStore() {
           secao
         );
       },
+      // Reajusta várias linhas de uma só vez (um único aplicarAlteracao) — evita
+      // o problema de chamar salvarLinha em loop, onde cada chamada lê o estado
+      // anterior a qualquer uma das outras e só a última sobrevive.
+      reajustarSecaoOrigem(transportadoraId, origemId, secao, ajustesPercentuais = {}) {
+        const ajustes = Object.entries(ajustesPercentuais).filter(([, pct]) => Number(pct));
+        if (!ajustes.length) return;
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) =>
+              t.id !== transportadoraId
+                ? t
+                : {
+                    ...t,
+                    origens: t.origens.map((o) => {
+                      if (o.id !== origemId) return o;
+                      const lista = o[secao] ?? [];
+                      return {
+                        ...o,
+                        [secao]: lista.map((item) => {
+                          const novo = { ...item };
+                          ajustes.forEach(([campo, pct]) => {
+                            const atual = Number(novo[campo]);
+                            if (Number.isFinite(atual)) {
+                              novo[campo] = Math.round(atual * (1 + Number(pct) / 100) * 100) / 100;
+                            }
+                          });
+                          return novo;
+                        }),
+                      };
+                    }),
+                  }
+            ),
+          `reajuste em massa (${secao})`,
+          secao
+        );
+      },
       removerLinha(transportadoraId, origemId, secao, linhaId) {
         setTransportadoras((prev) =>
           (prev || []).map((t) =>

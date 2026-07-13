@@ -112,7 +112,7 @@ function buildSnapshotPayload(transportadoras, chave = SNAPSHOT_CHAVE) {
   };
 }
 
-async function fetchAllRows(supabase, table, orderBy = null, ascending = true) {
+async function fetchAllRows(supabase, table, orderBy = null, ascending = true, onPage = null) {
   const allRows = [];
   let from = 0;
 
@@ -135,6 +135,7 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true) {
 
     const rows = data || [];
     allRows.push(...rows);
+    onPage?.(allRows.length, table);
     if (rows.length < PAGE_SIZE) break;
     from += PAGE_SIZE;
   }
@@ -525,7 +526,7 @@ export async function carregarSnapshotFretesDb(chave = SNAPSHOT_CHAVE) {
   return data || null;
 }
 
-export async function carregarBaseCompletaDb() {
+export async function carregarBaseCompletaDb(onProgress = null) {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
     if (!raw) return [];
@@ -537,14 +538,24 @@ export async function carregarBaseCompletaDb() {
 
   const supabase = ensureClient();
 
+  // Sem total conhecido de antemão (6 tabelas em paralelo), reporta a soma de
+  // linhas já carregadas em todas elas pra dar uma noção visível de progresso
+  // em vez de ficar travado num percentual fixo.
+  const linhasPorTabela = {};
+  const reportarProgresso = (total, table) => {
+    linhasPorTabela[table] = total;
+    const carregados = Object.values(linhasPorTabela).reduce((soma, n) => soma + n, 0);
+    onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados, total: null });
+  };
+
   const [transportadoras, origens, generalidades, rotas, cotacoes, taxas] =
     await Promise.all([
-      fetchAllRows(supabase, 'transportadoras', 'nome', true),
-      fetchAllRows(supabase, 'origens', 'cidade', true),
-      fetchAllRows(supabase, 'generalidades', 'origem_id', true),
-      fetchAllRows(supabase, 'rotas'),
-      fetchAllRows(supabase, 'cotacoes'),
-      fetchAllRows(supabase, 'taxas_especiais'),
+      fetchAllRows(supabase, 'transportadoras', 'nome', true, reportarProgresso),
+      fetchAllRows(supabase, 'origens', 'cidade', true, reportarProgresso),
+      fetchAllRows(supabase, 'generalidades', 'origem_id', true, reportarProgresso),
+      fetchAllRows(supabase, 'rotas', null, true, reportarProgresso),
+      fetchAllRows(supabase, 'cotacoes', null, true, reportarProgresso),
+      fetchAllRows(supabase, 'taxas_especiais', null, true, reportarProgresso),
     ]);
 
   const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);

@@ -84,16 +84,12 @@ export async function buscarSolicitacaoCentralPorProtocolo(protocolo) {
 
 export async function carregarResumoCentralSolicitacoes(protocolos = []) {
   const supabase = getClient();
-  if (!supabase) return { configurado: false, total: 0, porStatus: [], porTipo: [], protocolos: [] };
+  if (!supabase) return { configurado: false, total: 0, porStatus: [], porTipo: [], porMes: [], protocolos: [] };
 
-  const [statusResp, tipoResp, protocolosResp] = await Promise.all([
+  const [listaResp, protocolosResp] = await Promise.all([
     supabase
       .from('solicitacoes')
-      .select('status, tipo_solicitacao')
-      .in('tipo_solicitacao', ['NEGOCIAÇÃO', 'GESTÃO E CADASTRO DE TABELA']),
-    supabase
-      .from('solicitacoes')
-      .select('tipo_solicitacao, status')
+      .select('status, tipo_solicitacao, data_abertura')
       .in('tipo_solicitacao', ['NEGOCIAÇÃO', 'GESTÃO E CADASTRO DE TABELA']),
     protocolos.length
       ? supabase
@@ -103,11 +99,10 @@ export async function carregarResumoCentralSolicitacoes(protocolos = []) {
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  if (statusResp.error) throw new Error(statusResp.error.message || 'Erro ao carregar status da Central de Solicitações.');
-  if (tipoResp.error) throw new Error(tipoResp.error.message || 'Erro ao carregar tipos da Central de Solicitações.');
+  if (listaResp.error) throw new Error(listaResp.error.message || 'Erro ao carregar a Central de Solicitações.');
   if (protocolosResp.error) throw new Error(protocolosResp.error.message || 'Erro ao cruzar protocolos AMD.');
 
-  const linhas = statusResp.data || [];
+  const linhas = listaResp.data || [];
   const agrupar = (campo) => {
     const mapa = new Map();
     linhas.forEach((row) => {
@@ -119,13 +114,37 @@ export async function carregarResumoCentralSolicitacoes(protocolos = []) {
       .sort((a, b) => b.qtd - a.qtd);
   };
 
+  const mapaMes = new Map();
+  linhas.forEach((row) => {
+    const mes = String(row.data_abertura || '').slice(0, 7);
+    if (!mes) return;
+    mapaMes.set(mes, (mapaMes.get(mes) || 0) + 1);
+  });
+  const porMes = [...mapaMes.entries()]
+    .map(([mes, qtd]) => ({ mes, qtd }))
+    .sort((a, b) => a.mes.localeCompare(b.mes));
+
   return {
     configurado: true,
     total: linhas.length,
     porStatus: agrupar('status'),
     porTipo: agrupar('tipo_solicitacao'),
+    porMes,
     protocolos: protocolosResp.data || [],
   };
+}
+
+export async function carregarSolicitacoesDetalhado() {
+  const supabase = getClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('solicitacoes')
+    .select('protocolo, tipo_registro, protocolo_pai, tipo_solicitacao, tipo_ajuste, status, prioridade, area, nome, email, responsavel, assunto, descricao, mensagem_status, transportadora_cadastro, cidade_centro, centro_origem, canal, data_abertura, data_ultima_atualizacao')
+    .order('data_abertura', { ascending: true });
+
+  if (error) throw new Error(error.message || 'Erro ao carregar solicitações detalhadas da Central.');
+  return data || [];
 }
 
 export async function concluirSolicitacaoCentral(protocolo, dados = {}) {

@@ -475,8 +475,40 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
   const [salvando, setSalvando] = useState(false);
   const [feedbackSalvar, setFeedbackSalvar] = useState('');
   const [feedback, setFeedback] = useState(null);
+  const [reajustePanelOpen, setReajustePanelOpen] = useState(false);
+  const [reajustePercentuais, setReajustePercentuais] = useState({});
+  const [aplicandoReajuste, setAplicandoReajuste] = useState(false);
   const rows = origem[secao] || [];
   const inputRef = useRef(null);
+
+  const colunasReajustaveis = columns.filter((c) => c.key !== 'rota');
+
+  const aplicarReajusteEmMassa = () => {
+    const ajustes = Object.entries(reajustePercentuais).filter(([, v]) => Number(v));
+    if (!ajustes.length) {
+      setFeedback({ type: 'warn', text: 'Informe ao menos um percentual para reajustar.' });
+      return;
+    }
+    if (!rows.length) return;
+
+    const resumoAjustes = ajustes.map(([campo, pct]) => {
+      const label = colunasReajustaveis.find((c) => c.key === campo)?.label || campo;
+      const sinal = Number(pct) > 0 ? '+' : '';
+      return `${label}: ${sinal}${pct}%`;
+    }).join(', ');
+    const ok = window.confirm(`Aplicar reajuste em ${rows.length} registro(s) de ${title.toLowerCase()}?\n\n${resumoAjustes}\n\nEssa ação sobrescreve os valores atuais.`);
+    if (!ok) return;
+
+    setAplicandoReajuste(true);
+    try {
+      store.reajustarSecaoOrigem(transportadora.id, origem.id, secao, Object.fromEntries(ajustes));
+      setFeedback({ type: 'ok', text: `Reajuste aplicado em ${rows.length} registro(s).` });
+      setReajustePercentuais({});
+      setReajustePanelOpen(false);
+    } finally {
+      setAplicandoReajuste(false);
+    }
+  };
 
   const save = (form) => {
     const row = { ...editing, ...form, id: editing?.id ?? nextId(rows) };
@@ -509,6 +541,9 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
           <button className="btn-secondary" onClick={() => exportarSecao(tipoImportacao, exportRows, `${origem.cidade}-${tipoImportacao}.xlsx`)}>Exportar</button>
           <button className="btn-secondary" onClick={() => baixarModelo(tipoImportacao)}>Baixar Modelo</button>
           <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar</button>
+          <button className="btn-secondary" onClick={() => setReajustePanelOpen((v) => !v)} disabled={!rows.length}>
+            {reajustePanelOpen ? 'Fechar reajuste' : 'Reajustar em massa'}
+          </button>
           <button className="btn-danger" onClick={() => store.limparSecaoOrigem(transportadora.id, origem.id, secao)}>Excluir Tudo</button>
           <button className="btn-primary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Novo</button>
           <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarArquivo} />
@@ -516,6 +551,29 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
       </div>
       {hint ? <div className="hint-box">{hint}</div> : null}
       {feedback ? <div className={`mini-feedback ${feedback.type}`}>{feedback.text}</div> : null}
+      {reajustePanelOpen ? (
+        <div className="hint-box" style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-end' }}>
+          {colunasReajustaveis.map((c) => (
+            <label key={c.key} style={{ display: 'flex', flexDirection: 'column', fontSize: 12, fontWeight: 600, gap: 4 }}>
+              {c.label} (%)
+              <input
+                type="number"
+                step="0.1"
+                placeholder="0"
+                value={reajustePercentuais[c.key] ?? ''}
+                onChange={(e) => setReajustePercentuais((prev) => ({ ...prev, [c.key]: e.target.value }))}
+                style={{ width: 90 }}
+              />
+            </label>
+          ))}
+          <button className="btn-primary" onClick={aplicarReajusteEmMassa} disabled={aplicandoReajuste}>
+            {aplicandoReajuste ? 'Aplicando...' : `Aplicar em ${rows.length} registro(s)`}
+          </button>
+          <span style={{ fontSize: 12, color: '#64748b', width: '100%' }}>
+            Positivo aumenta, negativo reduz (ex.: 5 = +5%, -3 = -3%). Deixe em branco a coluna que não quer mexer.
+          </span>
+        </div>
+      ) : null}
       <div className="table-card">
         <table>
           <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}<th></th></tr></thead>

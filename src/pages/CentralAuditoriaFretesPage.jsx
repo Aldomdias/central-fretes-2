@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import BaseCtesStatus from '../components/BaseCtesStatus';
+import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 import { carregarSessao } from '../utils/authLocal';
 import {
   agruparDetalhesVerum,
@@ -37,6 +38,8 @@ import {
   carregarPlataformaAuditoria,
   criarProtocoloFinanceiro,
   criarSolicitacaoFinanceira,
+  buscarFaturasExistentesPorNumero,
+  detectarCanaisFaturas,
   reauditarFatura,
   registrarDoccob,
   restaurarDemonstracaoAuditoria,
@@ -45,6 +48,8 @@ import {
   salvarPagamentosFinanceiros,
   vincularNovaFatura,
 } from '../services/auditoriaFretesService';
+import { processarCtesPorChave, invalidarCacheBaseFreteAuditoriaCte, buscarResultadoAuditoriaPorChave } from '../services/auditoriaCteProcessamentoService';
+import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 
 const TABS = [
   ['dashboard', 'Dashboard'],
@@ -57,6 +62,117 @@ function dinheiro(valor) {
   return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+function dinheiroMaybe(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? dinheiro(n) : '—';
+}
+
+function numeroFmt(v, d = 0) {
+  return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function pctFmt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(2).replace('.', ',')}%` : '—';
+}
+
+function somaValoresObjeto(obj = {}) {
+  return Object.entries(obj || {}).reduce((acc, [, valor]) => {
+    if (Array.isArray(valor)) return acc;
+    const n = Number(valor || 0);
+    return Number.isFinite(n) ? acc + n : acc;
+  }, 0);
+}
+
+function linhaDetalhe(label, value, destaque = false) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '4px 0', borderBottom: '1px solid #e2e8f0' }}>
+      <span style={{ color: '#64748b' }}>{label}</span>
+      <strong style={{ color: destaque ? '#0f172a' : '#334155', textAlign: 'right' }}>{value}</strong>
+    </div>
+  );
+}
+
+// Painel de detalhe do calculo (mesmo layout da Auditoria CT-e), reaproveitado
+// aqui pra permitir ver o detalhamento de um CT-e direto na tela de Faturas.
+function PainelDetalheCalculo({ resultado }) {
+  if (!resultado) return <span>Sem detalhe de calculo para este CT-e.</span>;
+  const det = (() => {
+    const d = resultado.detalhes_calculo;
+    if (!d) return null;
+    if (typeof d === 'object') return d;
+    try { return JSON.parse(d); } catch { return null; }
+  })();
+  if (!det) return <span>Sem detalhe de calculo para este CT-e.</span>;
+
+  const frete = det.componentes_base || {};
+  const taxas = det.taxas || {};
+  const totalTaxas = Number.isFinite(Number(frete.totalTaxas)) ? Number(frete.totalTaxas) : somaValoresObjeto(taxas);
+  const taxaExtraDetalhes = Array.isArray(taxas.taxasExtrasDetalhes) ? taxas.taxasExtrasDetalhes : [];
+
+  return (
+    <>
+      {resultado.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {resultado.motivo_sem_calculo}</div> : null}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
+        <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+          <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Resumo do calculo</div>
+          {linhaDetalhe('Motor', det.motor === 'simulador_realizado' ? 'Simulador realizado' : 'Auditoria')}
+          {linhaDetalhe('Tipo', resultado.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
+          {linhaDetalhe('Tabela usada', resultado.transportadora_tabela || det.transportadora_tabela || '-')}
+          {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
+          {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
+          {linhaDetalhe('Peso considerado', `${numeroFmt(det.peso_considerado ?? frete.pesoConsiderado ?? resultado.peso, 3)} kg`)}
+          {linhaDetalhe('Valor NF', dinheiroMaybe(resultado.valor_nf), true)}
+          {linhaDetalhe('Frete pago', dinheiroMaybe(resultado.valor_cte), true)}
+          {linhaDetalhe('Calculo AMD/local', dinheiroMaybe(resultado.valor_calculado), true)}
+        </div>
+        <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+          <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Base do frete</div>
+          {linhaDetalhe('Percentual aplicado', pctFmt(frete.percentualAplicado))}
+          {linhaDetalhe('Valor percentual', dinheiroMaybe(frete.valorPercentualCalculado ?? frete.valorPercentual))}
+          {linhaDetalhe('R$/kg aplicado', dinheiroMaybe(frete.rsKgAplicado))}
+          {linhaDetalhe('Valor kg garantia', dinheiroMaybe(frete.valorKgGarantia ?? frete.valorKg))}
+          {linhaDetalhe('Frete minimo rota', dinheiroMaybe(frete.minimoRota))}
+          {linhaDetalhe('Frete minimo cotacao', dinheiroMaybe(frete.freteMinimoCotacao ?? frete.minimoCotacao))}
+          {linhaDetalhe('Frete minimo geral', dinheiroMaybe(frete.freteMinimoGeneralidade ?? frete.minimoGeneralidade))}
+          {linhaDetalhe('Minimo aplicavel', dinheiroMaybe(frete.minimoAplicavel))}
+          {linhaDetalhe('Componente vencedor', frete.componenteBase || det.componente_base || '-', true)}
+          {linhaDetalhe('Valor base', dinheiroMaybe(det.valor_base ?? frete.valorBase), true)}
+        </div>
+        <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+          <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>ICMS e totalizacao</div>
+          {linhaDetalhe('Subtotal antes da emergencial', dinheiroMaybe(frete.subtotalSemEmergencial))}
+          {Number(frete.taxaEmergencialPct) > 0 ? linhaDetalhe('Taxa emergencial', `${pctFmt(frete.taxaEmergencialPct)} = ${dinheiroMaybe(frete.valorEmergencial)}`, true) : null}
+          {linhaDetalhe('Subtotal sem ICMS', dinheiroMaybe(det.subtotal ?? frete.subtotal), true)}
+          {linhaDetalhe('Aliquota ICMS', pctFmt(det.aliquota_icms ?? frete.aliquotaIcms))}
+          {linhaDetalhe('Origem aliquota', det.origem_aliquota_icms || frete.origemAliquotaIcms || '-')}
+          {linhaDetalhe('UF origem/destino', `${det.uf_origem_icms || frete.ufOrigem || '-'} -> ${det.uf_destino_icms || frete.ufDestino || '-'}`)}
+          {linhaDetalhe('ICMS', dinheiroMaybe(det.icms ?? frete.icms), true)}
+          {linhaDetalhe('Total calculado', dinheiroMaybe(resultado.valor_calculado), true)}
+          {linhaDetalhe('Diferenca vs pago', dinheiroMaybe(resultado.diferenca), true)}
+        </div>
+        <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+          <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Taxas</div>
+          {linhaDetalhe('Ad Valorem', dinheiroMaybe(taxas.adValorem))}
+          {linhaDetalhe('GRIS', dinheiroMaybe(taxas.gris))}
+          {linhaDetalhe('Pedagio', dinheiroMaybe(taxas.pedagio))}
+          {linhaDetalhe('TAS', dinheiroMaybe(taxas.tas))}
+          {linhaDetalhe('CTRC', dinheiroMaybe(taxas.ctrc))}
+          {linhaDetalhe('TDA', dinheiroMaybe(taxas.tda))}
+          {linhaDetalhe('TDE', dinheiroMaybe(taxas.tde))}
+          {linhaDetalhe('TDR', dinheiroMaybe(taxas.tdr))}
+          {linhaDetalhe('TRT', dinheiroMaybe(taxas.trt))}
+          {linhaDetalhe('Suframa', dinheiroMaybe(taxas.suframa))}
+          {linhaDetalhe('Outras', dinheiroMaybe(taxas.outras))}
+          {linhaDetalhe('Taxa extra', dinheiroMaybe(taxas.taxaExtra))}
+          {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(taxa.nome || `Extra ${i + 1}`, dinheiroMaybe(taxa.valor)))}
+          {linhaDetalhe('Total taxas', dinheiroMaybe(totalTaxas), true)}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function dataBr(valor) {
   if (!valor) return '-';
   const [ano, mes, dia] = String(valor).slice(0, 10).split('-');
@@ -65,6 +181,15 @@ function dataBr(valor) {
 
 function nomeStatus(status = '') {
   return String(status).replaceAll('_', ' ');
+}
+
+// Fatura 100% auditada: todos os CT-es vinculados já passaram pelo cálculo
+// (auditados >= totais, com pelo menos 1 CT-e). Não exige "sem divergência" —
+// só que o resultado já é definitivo, não tem mais nada pendente de cálculo.
+function faturaTotalmenteAuditada(fatura) {
+  const totais = Number(fatura.ctes_totais || 0);
+  const auditados = Number(fatura.ctes_auditados || 0);
+  return totais > 0 && auditados >= totais;
 }
 
 function corAlerta(fatura) {
@@ -144,7 +269,13 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [erroDetalhes, setErroDetalhes] = useState('');
   const [novaFaturaId, setNovaFaturaId] = useState('');
   const [reauditando, setReauditando] = useState(false);
+  const [recalculando, setRecalculando] = useState(false);
+  const [infoRecalculo, setInfoRecalculo] = useState('');
+  const [progressoRecalculo, setProgressoRecalculo] = useState(null);
   const [referenciaCtes, setReferenciaCtes] = useState(new Map());
+  const [cteExpandido, setCteExpandido] = useState(null);
+  const [resultadosDetalhe, setResultadosDetalhe] = useState(new Map());
+  const [carregandoDetalheCte, setCarregandoDetalheCte] = useState(null);
   const detalhes = state.detalhes[fatura.id] || [];
   const divergencias = detalhes.filter((item) => Number(item.diferenca || 0) !== 0 || item.status === 'DIVERGENTE');
   const semCalculo = detalhes.filter((item) => !Number(item.calculado_frete || 0));
@@ -266,6 +397,48 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
+  // Recalcula de verdade os CT-es que ainda não foram processados (motor de
+  // auditoria + tabelas cadastradas), salva o resultado em
+  // auditoria_cte_resultados e, na sequência, reauditar a fatura pra puxar os
+  // valores recém-calculados pros detalhes e agregados da fatura.
+  const recalcular = async () => {
+    setRecalculando(true);
+    setErroDetalhes('');
+    setInfoRecalculo('');
+    try {
+      // Se tiver CT-e marcado no checkbox, recalcula só esses; sem marcação,
+      // recalcula a fatura inteira.
+      const alvo = selecionados.length
+        ? detalhes.filter((item) => selecionados.includes(item.id))
+        : detalhes;
+      const chaves = alvo.map((item) => item.chave_cte).filter(Boolean);
+      if (!chaves.length) throw new Error('Esta fatura não possui CT-es com chave para recalcular.');
+
+      // Garante que tabelas de frete editadas/importadas ha pouco (na mesma
+      // sessao do navegador) entrem no recalculo, em vez de usar cache antigo.
+      invalidarCacheBaseFreteAuditoriaCte();
+      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo);
+      if (registros.length) {
+        const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+        await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros });
+      }
+
+      const next = await reauditarFatura(state, fatura, detalhes, sessao?.nome || sessao?.email || 'Usuario local');
+      onState(next);
+      // Refaz a referência com TODOS os CT-es da fatura (não só os recalculados
+      // agora), senão perde a referência de quem ficou fora da seleção.
+      const referencia = await buscarReferenciaCtes(detalhes.map((item) => item.chave_cte));
+      setReferenciaCtes(referencia);
+      const escopo = selecionados.length ? `${selecionados.length} CT-e(s) selecionado(s)` : 'todos os CT-es da fatura';
+      setInfoRecalculo(`Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}`);
+    } catch (error) {
+      setErroDetalhes(error.message || String(error));
+    } finally {
+      setRecalculando(false);
+      setProgressoRecalculo(null);
+    }
+  };
+
   const vincularSubstituta = async () => {
     const nova = state.faturas.find((item) => item.id === novaFaturaId);
     if (!nova) return;
@@ -282,6 +455,26 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const selecionar = (id) => setSelecionados((lista) =>
     lista.includes(id) ? lista.filter((item) => item !== id) : [...lista, id]);
 
+  // Busca (uma vez, com cache local) e alterna o painel de detalhe do calculo
+  // de um CT-e — mesmo painel usado na Auditoria CT-e.
+  const alternarDetalheCte = async (item) => {
+    if (cteExpandido === item.id) {
+      setCteExpandido(null);
+      return;
+    }
+    setCteExpandido(item.id);
+    if (!item.chave_cte || resultadosDetalhe.has(item.chave_cte)) return;
+    setCarregandoDetalheCte(item.chave_cte);
+    try {
+      const resultado = await buscarResultadoAuditoriaPorChave(item.chave_cte);
+      setResultadosDetalhe((atual) => new Map(atual).set(item.chave_cte, resultado));
+    } catch (error) {
+      setResultadosDetalhe((atual) => new Map(atual).set(item.chave_cte, null));
+    } finally {
+      setCarregandoDetalheCte(null);
+    }
+  };
+
   const ctesNaBase = detalhes.filter((item) => referenciaCtes.has(normalizarChaveCte(item.chave_cte))).length;
 
   const tabelaCtes = (lista) => (
@@ -293,27 +486,41 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </p>
       )}
       <table className="sim-analise-tabela">
-        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor</th><th>Calculado</th><th>Diferenca</th><th>Motivo</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Motivo</th><th>Status</th></tr></thead>
         <tbody>
           {lista.map((item) => {
             const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte));
+            const expandido = cteExpandido === item.id;
             return (
-              <tr key={item.id}>
-                <td><input type="checkbox" checked={selecionados.includes(item.id)} onChange={() => selecionar(item.id)} /></td>
-                <td>{item.numero_cte || '-'}</td>
-                <td><small>{item.chave_cte || '-'}</small></td>
-                <td>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} → {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : <small className="error-text">Fora da base</small>}</td>
-                <td>{base?.canal || '-'}</td>
-                <td>{base?.peso ? Number(base.peso).toLocaleString('pt-BR') : '-'}</td>
-                <td>{dinheiro(item.valor_frete)}</td>
-                <td>{Number(item.calculado_frete || 0) ? dinheiro(item.calculado_frete) : 'Sem calculo'}</td>
-                <td className={Number(item.diferenca || 0) ? 'negativo' : ''}>{dinheiro(item.diferenca)}</td>
-                <td>{nomeStatus(item.motivo_divergencia || '-')}</td>
-                <td><Status value={item.status} /></td>
-              </tr>
+              <Fragment key={item.id}>
+                <tr style={expandido ? { background: '#eff6ff' } : undefined}>
+                  <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selecionados.includes(item.id)} onChange={() => selecionar(item.id)} /></td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{item.numero_cte || '-'}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><small>{item.chave_cte || '-'}</small></td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} → {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : <small className="error-text">Fora da base</small>}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.canal || '-'}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.peso ? Number(base.peso).toLocaleString('pt-BR') : '-'}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.valor_frete)}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.calculado_frete_verum) : 'Sem calculo'}</td>
+                  <td style={{ cursor: 'pointer' }} className={Number(item.diferenca_verum || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete_verum || 0) ? dinheiro(item.diferenca_verum) : '-'}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{Number(item.calculado_frete || 0) ? dinheiro(item.calculado_frete) : 'Sem calculo'}</td>
+                  <td style={{ cursor: 'pointer' }} className={Number(item.diferenca || 0) ? 'negativo' : ''} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.diferenca)}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{nomeStatus(item.motivo_divergencia || '-')}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><Status value={item.status} /></td>
+                </tr>
+                {expandido && (
+                  <tr>
+                    <td colSpan="13" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                      {carregandoDetalheCte === item.chave_cte
+                        ? <span>Carregando detalhe do calculo...</span>
+                        : <PainelDetalheCalculo resultado={resultadosDetalhe.get(item.chave_cte)} />}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             );
           })}
-          {!lista.length && <tr><td colSpan="11">Nenhum CT-e nesta visao.</td></tr>}
+          {!lista.length && <tr><td colSpan="13">Nenhum CT-e nesta visao.</td></tr>}
         </tbody>
       </table>
     </div>
@@ -403,10 +610,22 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </div>
       )}
 
+      <AmdProcessingOverlay ativo={recalculando} progresso={progressoRecalculo} mensagemRodape="Pode levar mais tempo em faturas com muitos CT-es." />
+      {infoRecalculo && <div className="hint-box compact">{infoRecalculo}</div>}
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
-        <button className="btn-primary" disabled={reauditando || carregandoDetalhes || !detalhes.length} onClick={reauditar}>
+        <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : 'Recalcula todos os CT-es da fatura'}>
+          {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : 'Recalcular CT-es'}
+        </button>
+        <button className="btn-secondary" disabled={reauditando || recalculando || carregandoDetalhes || !detalhes.length} onClick={reauditar} title="Só cruza com o que já está calculado em auditoria_cte_resultados, sem recalcular">
           {reauditando ? 'Reauditando...' : 'Reauditar CT-es'}
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={() => { invalidarCacheBaseFreteAuditoriaCte(); setInfoRecalculo('Tabelas de frete atualizadas — o próximo recálculo já usa a versão mais recente.'); }}
+          title="Se você ajustou uma tabela de frete agora, clique aqui antes de recalcular para garantir que a mudança seja usada"
+        >
+          ↻ Atualizar tabela
         </button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
@@ -423,13 +642,134 @@ function Faturas({ state, onState }) {
   const arquivoRef = useRef(null);
   const [filtro, setFiltro] = useState('');
   const [status, setStatus] = useState('');
+  const [canalFiltro, setCanalFiltro] = useState('');
+  const [somenteAuditadas, setSomenteAuditadas] = useState(false);
+  const [detectandoCanais, setDetectandoCanais] = useState(false);
+  const [progressoCanais, setProgressoCanais] = useState(null);
+  const [progressoImportacao, setProgressoImportacao] = useState(null);
   const [aberta, setAberta] = useState(null);
   const [importando, setImportando] = useState(false);
   const [mensagemImportacao, setMensagemImportacao] = useState('');
-  const lista = state.faturas.filter((fatura) => {
-    const texto = `${fatura.numero_fatura} ${fatura.transportadora} ${fatura.auditor_nome}`.toLowerCase();
-    return (!filtro || texto.includes(filtro.toLowerCase())) && (!status || fatura.status === status);
-  });
+  const [selecionadasIds, setSelecionadasIds] = useState([]);
+  const [recalculandoLote, setRecalculandoLote] = useState(false);
+  const [progressoLote, setProgressoLote] = useState(null);
+  const [competenciaFiltro, setCompetenciaFiltro] = useState('');
+  const [periodoInicio, setPeriodoInicio] = useState('');
+  const [periodoFim, setPeriodoFim] = useState('');
+  const [vencimentoInicio, setVencimentoInicio] = useState('');
+  const [vencimentoFim, setVencimentoFim] = useState('');
+  const canaisDisponiveis = [...new Set(state.faturas.map((item) => item.canal).filter(Boolean))].sort();
+  // Competencia = mes/ano da emissao (nao existe campo proprio na fatura).
+  const competenciasDisponiveis = [...new Set(
+    state.faturas.map((item) => (item.data_emissao || '').slice(0, 7)).filter(Boolean)
+  )].sort().reverse();
+  const resumoDatas = useMemo(() => {
+    const maisRecente = (campo) => state.faturas.reduce((max, item) => {
+      const valor = item[campo];
+      if (!valor) return max;
+      const data = new Date(valor);
+      if (Number.isNaN(data.getTime())) return max;
+      return !max || data > max ? data : max;
+    }, null);
+    return {
+      ultimaAtualizacao: maisRecente('updated_at'),
+      ultimaImportacao: maisRecente('importado_em'),
+      ultimaEmissao: maisRecente('data_emissao'),
+      ultimoVencimento: maisRecente('data_vencimento'),
+    };
+  }, [state.faturas]);
+  const dataHora = (data) => data ? data.toLocaleString('pt-BR') : '—';
+  const lista = state.faturas
+    .filter((fatura) => {
+      const texto = `${fatura.numero_fatura} ${fatura.transportadora} ${fatura.auditor_nome}`.toLowerCase();
+      const emissao = fatura.data_emissao || '';
+      const vencimento = fatura.data_vencimento || '';
+      return (!filtro || texto.includes(filtro.toLowerCase()))
+        && (!status || fatura.status === status)
+        && (!canalFiltro || fatura.canal === canalFiltro)
+        && (!somenteAuditadas || faturaTotalmenteAuditada(fatura))
+        && (!competenciaFiltro || emissao.slice(0, 7) === competenciaFiltro)
+        && (!periodoInicio || (emissao && emissao.slice(0, 10) >= periodoInicio))
+        && (!periodoFim || (emissao && emissao.slice(0, 10) <= periodoFim))
+        && (!vencimentoInicio || (vencimento && vencimento.slice(0, 10) >= vencimentoInicio))
+        && (!vencimentoFim || (vencimento && vencimento.slice(0, 10) <= vencimentoFim));
+    })
+    // Faturas 100% auditadas ficam em evidência, no topo da lista.
+    .sort((a, b) => Number(faturaTotalmenteAuditada(b)) - Number(faturaTotalmenteAuditada(a)));
+
+  const detectarCanais = async () => {
+    setDetectandoCanais(true);
+    setProgressoCanais(null);
+    try {
+      const { state: next, atualizadas } = await detectarCanaisFaturas(state, setProgressoCanais);
+      onState(next);
+      setMensagemImportacao(`Canal detectado para ${atualizadas.toLocaleString('pt-BR')} fatura(s).`);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao detectar canais: ${error.message}`);
+    } finally {
+      setDetectandoCanais(false);
+      setProgressoCanais(null);
+    }
+  };
+  // Recalcula o status AMD de varias faturas selecionadas de uma vez (uso
+  // tipico: selecionar todas as faturas de uma mesma transportadora que
+  // acabaram de ser importadas, em vez de abrir uma por uma).
+  const recalcularLote = async () => {
+    const faturasSelecionadas = state.faturas.filter((item) => selecionadasIds.includes(item.id));
+    if (!faturasSelecionadas.length) return;
+    setRecalculandoLote(true);
+    setProgressoLote(null);
+    setMensagemImportacao('');
+    try {
+      const detalhesPorFatura = new Map();
+      for (let i = 0; i < faturasSelecionadas.length; i += 1) {
+        const fatura = faturasSelecionadas[i];
+        setProgressoLote({ etapa: 'buscando_ctes', carregados: i + 1, total: faturasSelecionadas.length });
+        const detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
+        if (detalhes.length) detalhesPorFatura.set(fatura.id, detalhes);
+      }
+
+      const todasChaves = [...detalhesPorFatura.values()].flat().map((item) => item.chave_cte).filter(Boolean);
+      if (!todasChaves.length) {
+        setMensagemImportacao('Nenhum CT-e encontrado nas faturas selecionadas.');
+        return;
+      }
+
+      // Garante que tabelas de frete editadas/importadas ha pouco (na mesma
+      // sessao do navegador) entrem no recalculo, em vez de usar cache antigo.
+      invalidarCacheBaseFreteAuditoriaCte();
+      const { registros } = await processarCtesPorChave(todasChaves, setProgressoLote);
+      let amdCalculados = 0;
+      if (registros.length) {
+        const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+        await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros });
+        amdCalculados = registros.length;
+      }
+
+      let atualizado = state;
+      let faturasAtualizadas = 0;
+      for (const [faturaId, detalhesFat] of detalhesPorFatura.entries()) {
+        faturasAtualizadas += 1;
+        setProgressoLote({ etapa: 'atualizando_faturas', carregados: faturasAtualizadas, total: detalhesPorFatura.size });
+        const faturaObj = atualizado.faturas.find((item) => item.id === faturaId);
+        if (!faturaObj) continue;
+        atualizado = await reauditarFatura(atualizado, faturaObj, detalhesFat, sessao?.nome || sessao?.email || 'Usuario local');
+      }
+      onState(atualizado);
+      setMensagemImportacao(`Recalculo concluido: ${amdCalculados} CT-e(s) com status AMD calculado em ${faturasAtualizadas} fatura(s).`);
+      setSelecionadasIds([]);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao recalcular em lote: ${error.message}`);
+    } finally {
+      setRecalculandoLote(false);
+      setProgressoLote(null);
+    }
+  };
+
+  const alternarSelecao = (id) => {
+    setSelecionadasIds((atual) => (atual.includes(id) ? atual.filter((item) => item !== id) : [...atual, id]));
+  };
+
   const faturaAtual = aberta ? state.faturas.find((item) => item.id === aberta.id) : null;
 
   // Detalhe abre como tela propria no lugar da lista; ao fechar, a lista volta
@@ -463,55 +803,96 @@ function Faturas({ state, onState }) {
 
       const grupos = agruparDetalhesVerum(rowsDetalhes);
 
+      // Busca direto no banco (não no state.faturas, que só carrega as 1000
+      // mais recentes) quem já existe entre os números deste arquivo, pra
+      // reimportação atualizar em vez de duplicar.
+      setMensagemImportacao('Verificando faturas já existentes no banco...');
+      setProgressoImportacao({ etapa: 'verificando_existentes', carregados: 0, total: null });
+      const existentesPorChave = await buscarFaturasExistentesPorNumero(
+        rowsFaturas.map((row) => parseFaturaVerum(row).numero_fatura),
+      );
+
       let faturasSalvas = 0;
       let detalhesSalvos = 0;
       let processadas = 0;
-      for (const row of rowsFaturas) {
+      const detalhesPorFaturaImportada = new Map();
+
+      // Grava varias faturas em paralelo (pool com limite) em vez de uma por
+      // vez: cada fatura eh uma ida ao banco (gravar + limpar + gravar CT-es),
+      // sequencial era muito lento em arquivos grandes. Duplicatas da MESMA
+      // fatura dentro do arquivo sao serializadas por chave pra nao criar
+      // duas linhas em paralelo pra ela.
+      const emAndamentoPorChave = new Map();
+      async function processarFaturaRow(row) {
+        const fatura = parseFaturaVerum(row);
+        if (!fatura.numero_fatura || !fatura.transportadora) return;
+        // Reimportacao atualiza a fatura existente em vez de duplicar:
+        // reaproveita o id quando numero+serie+transportadora ja existem.
+        const chaveExistente = `${chaveFatura(fatura.numero_fatura, fatura.serie_fatura)}::${String(fatura.transportadora || '').trim().toUpperCase()}`;
+        const anterior = emAndamentoPorChave.get(chaveExistente);
+        const execucao = (async () => {
+          if (anterior) await anterior.catch(() => {});
+          const existenteId = existentesPorChave.get(chaveExistente);
+          const resultado = await salvarFaturaSupabase({
+            ...(existenteId ? { id: existenteId } : {}),
+            ...fatura,
+            importado_por: sessao?.nome || sessao?.email || '',
+            importado_em: new Date().toISOString(),
+          });
+          if (!resultado?.ok || !resultado.id) return;
+          faturasSalvas += 1;
+          existentesPorChave.set(chaveExistente, resultado.id);
+          const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura)
+            .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
+          if (detalhes.length) {
+            // Reimportacao: limpa os CT-es antigos da fatura para nao duplicar.
+            if (existenteId) await limparDetalhesFaturaSupabase(existenteId);
+            await salvarDetalhesFaturaSupabase(detalhes);
+            detalhesSalvos += detalhes.length;
+            detalhesPorFaturaImportada.set(resultado.id, detalhes);
+          }
+        })();
+        emAndamentoPorChave.set(chaveExistente, execucao);
+        await execucao;
         processadas += 1;
+        setProgressoImportacao({ etapa: 'salvando_faturas', carregados: processadas, total: rowsFaturas.length });
         if (processadas % 5 === 0 || processadas === rowsFaturas.length) {
           setMensagemImportacao(
             `Processando ${processadas} de ${rowsFaturas.length} fatura(s)... `
             + `${faturasSalvas} gravada(s), ${detalhesSalvos} CT-e(s) vinculado(s).`,
           );
         }
-        const fatura = parseFaturaVerum(row);
-        if (!fatura.numero_fatura || !fatura.transportadora) continue;
-        // Reimportacao atualiza a fatura existente em vez de duplicar:
-        // reaproveita o id quando numero+serie+transportadora ja existem.
-        const existente = state.faturas.find((item) =>
-          chaveFatura(item.numero_fatura, item.serie_fatura) === chaveFatura(fatura.numero_fatura, fatura.serie_fatura)
-          && String(item.transportadora || '').trim().toUpperCase() === String(fatura.transportadora || '').trim().toUpperCase());
-        const resultado = await salvarFaturaSupabase({
-          ...(existente?.id ? { id: existente.id } : {}),
-          ...fatura,
-          importado_por: sessao?.nome || sessao?.email || '',
-          importado_em: new Date().toISOString(),
-        });
-        if (!resultado?.ok || !resultado.id) continue;
-        faturasSalvas += 1;
-        const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura)
-          .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
-        if (detalhes.length) {
-          // Reimportacao: limpa os CT-es antigos da fatura para nao duplicar.
-          if (existente?.id) await limparDetalhesFaturaSupabase(existente.id);
-          await salvarDetalhesFaturaSupabase(detalhes);
-          detalhesSalvos += detalhes.length;
+      }
+
+      const CONCORRENCIA_IMPORTACAO = 8;
+      const fila = [...rowsFaturas];
+      async function worker() {
+        while (fila.length) {
+          const row = fila.shift();
+          await processarFaturaRow(row);
         }
       }
+      await Promise.all(Array.from({ length: CONCORRENCIA_IMPORTACAO }, worker));
 
       const atualizado = await carregarPlataformaAuditoria();
       onState(atualizado);
+
+      // O calculo de status AMD NAO roda mais aqui: em arquivos grandes deixava
+      // a importacao muito longa. Fica pra ser feito depois, fatura por fatura
+      // (ou selecao de CT-es) usando o botao "Recalcular CT-es" dentro da fatura.
       const alertaVinculo = analise.detalhesNaoVinculados > 0
         ? ` ATENCAO: ${analise.detalhesNaoVinculados} CT-e(s) da aba Detalhes nao casaram com nenhuma fatura (confira Numero/Serie Fatura nas duas abas).`
         : '';
       setMensagemImportacao(
         `Importacao concluida: ${faturasSalvas} fatura(s), ${detalhesSalvos} CT-e(s) vinculado(s), `
-        + `${analise.faturasIgnoradas} fatura(s) ignorada(s).${alertaVinculo}`,
+        + `${analise.faturasIgnoradas} fatura(s) ignorada(s). `
+        + `Use "Recalcular CT-es" em cada fatura para calcular o status AMD.${alertaVinculo}`,
       );
     } catch (error) {
       setMensagemImportacao(`Erro na importacao: ${error.message}`);
     } finally {
       setImportando(false);
+      setProgressoImportacao(null);
     }
   };
 
@@ -519,8 +900,18 @@ function Faturas({ state, onState }) {
     <>
       <div className="panel-card">
         <div className="section-row compact-top">
-          <div><div className="panel-title">Carteira operacional de faturas</div><span>{lista.length} fatura(s)</span></div>
+          <div>
+            <div className="panel-title">Carteira operacional de faturas</div>
+            <span>{lista.length} fatura(s)</span>
+            <span style={{ marginLeft: 12, color: '#64748b', fontSize: 12 }}>
+              Última atualização: {dataHora(resumoDatas.ultimaAtualizacao)} · Última fatura importada: {dataHora(resumoDatas.ultimaImportacao)}
+              {' · '}Emissão mais recente: {dataBr(resumoDatas.ultimaEmissao?.toISOString())} · Vencimento mais recente: {dataBr(resumoDatas.ultimoVencimento?.toISOString())}
+            </span>
+          </div>
           <div className="actions-right">
+            <button className="btn-secondary" disabled={detectandoCanais} onClick={detectarCanais} title="Varre os CT-es já auditados e grava o canal predominante de cada fatura">
+              {detectandoCanais ? `Detectando canais... ${progressoCanais?.carregados ?? ''}` : 'Detectar canais'}
+            </button>
             <button className="btn-primary" disabled={importando} onClick={() => arquivoRef.current?.click()}>
               {importando ? 'Importando...' : 'Importar fatura Verum'}
             </button>
@@ -530,29 +921,70 @@ function Faturas({ state, onState }) {
         <div className="form-grid three">
           <label className="field">Busca<input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Fatura, transportadora ou auditor" /></label>
           <label className="field">Status<select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Todos</option>{FATURA_STATUS.map((item) => <option key={item}>{item}</option>)}</select></label>
+          <label className="field">Canal<select value={canalFiltro} onChange={(e) => setCanalFiltro(e.target.value)}><option value="">Todos</option>{canaisDisponiveis.map((item) => <option key={item}>{item}</option>)}</select></label>
+        </div>
+        <div className="form-grid three">
+          <label className="field">
+            Competência (emissão)
+            <select value={competenciaFiltro} onChange={(e) => setCompetenciaFiltro(e.target.value)}>
+              <option value="">Todas</option>
+              {competenciasDisponiveis.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label className="field">Emissão de<input type="date" value={periodoInicio} onChange={(e) => setPeriodoInicio(e.target.value)} /></label>
+          <label className="field">Emissão até<input type="date" value={periodoFim} onChange={(e) => setPeriodoFim(e.target.value)} /></label>
+        </div>
+        <div className="form-grid three">
+          <label className="field">Vencimento de<input type="date" value={vencimentoInicio} onChange={(e) => setVencimentoInicio(e.target.value)} /></label>
+          <label className="field">Vencimento até<input type="date" value={vencimentoFim} onChange={(e) => setVencimentoFim(e.target.value)} /></label>
+        </div>
+        <div className="form-grid three">
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={somenteAuditadas} onChange={(e) => setSomenteAuditadas(e.target.checked)} />
+            Só faturas com todos os CT-es na base (100% auditadas)
+          </label>
           <label className="field">Visao<select><option>Minhas faturas</option><option>Todas as faturas</option><option>Sem auditor definido</option></select></label>
         </div>
+        {!canaisDisponiveis.length && <p className="compact">Nenhuma fatura tem canal detectado ainda — clique em "Detectar canais" pra habilitar o filtro de canal.</p>}
+        <AmdProcessingOverlay ativo={importando} progresso={progressoImportacao} mensagemRodape="Pode levar mais tempo em arquivos com muitas faturas/CT-es e várias transportadoras." />
+        <AmdProcessingOverlay ativo={recalculandoLote} progresso={progressoLote} mensagemRodape="Pode levar mais tempo com muitas faturas/CT-es selecionados." />
         {mensagemImportacao && <div className="hint-box compact">{mensagemImportacao}</div>}
         <p className="compact">Layout esperado: abas Faturas e Detalhes, com Transportadora, Numero Fatura, Data Vencimento, Valor Fatura e Chave CTe.</p>
       </div>
+      {selecionadasIds.length > 0 && (
+        <div className="audit-action-bar">
+          <span>{selecionadasIds.length} fatura(s) selecionada(s)</span>
+          <button className="btn-primary" disabled={recalculandoLote} onClick={recalcularLote}>
+            {recalculandoLote ? 'Recalculando...' : `Recalcular CT-es (${selecionadasIds.length} fatura(s))`}
+          </button>
+          <button className="btn-secondary" disabled={recalculandoLote} onClick={() => setSelecionadasIds([])}>Limpar selecao</button>
+        </div>
+      )}
       <div className="table-card">
         <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th>Fatura</th><th>Transportadora</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th>Auditor</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th></th><th>Fatura</th><th>Transportadora</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th>Auditor</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {lista.map((fatura) => (
-                <tr key={fatura.id}>
-                  <td><strong>{fatura.numero_fatura}</strong></td>
-                  <td>{fatura.transportadora}</td>
-                  <td style={{ color: corAlerta(fatura), fontWeight: 700 }}>{dataBr(fatura.data_vencimento)}<small className="audit-days">{diasAte(fatura.data_vencimento)} dia(s)</small></td>
-                  <td>{dinheiro(fatura.valor_fatura)}</td>
-                  <td>{fatura.ctes_auditados || fatura.ctes_vinculados || 0}/{fatura.ctes_totais || 0}</td>
-                  <td className={Number(fatura.diferenca) ? 'negativo' : ''}>{dinheiro(fatura.diferenca)}</td>
-                  <td>{fatura.auditor_nome || <strong className="error-text">SEM AUDITOR DEFINIDO</strong>}</td>
-                  <td><Status value={fatura.status} /></td>
-                  <td><button className="btn-secondary audit-small-button" onClick={() => setAberta(fatura)}>Abrir</button></td>
-                </tr>
-              ))}
+              {lista.map((fatura) => {
+                const auditadaCompleta = faturaTotalmenteAuditada(fatura);
+                return (
+                  <tr key={fatura.id} style={auditadaCompleta ? { background: '#f0fdf4', borderLeft: '3px solid #16a34a' } : undefined}>
+                    <td><input type="checkbox" checked={selecionadasIds.includes(fatura.id)} onChange={() => alternarSelecao(fatura.id)} /></td>
+                    <td><strong>{fatura.numero_fatura}</strong></td>
+                    <td>{fatura.transportadora}</td>
+                    <td style={{ color: corAlerta(fatura), fontWeight: 700 }}>{dataBr(fatura.data_vencimento)}<small className="audit-days">{diasAte(fatura.data_vencimento)} dia(s)</small></td>
+                    <td>{dinheiro(fatura.valor_fatura)}</td>
+                    <td>
+                      {fatura.ctes_auditados || fatura.ctes_vinculados || 0}/{fatura.ctes_totais || 0}
+                      {auditadaCompleta && <small style={{ display: 'block', color: '#16a34a', fontWeight: 700 }}>100% auditada</small>}
+                    </td>
+                    <td className={Number(fatura.diferenca) ? 'negativo' : ''}>{dinheiro(fatura.diferenca)}</td>
+                    <td>{fatura.auditor_nome || <strong className="error-text">SEM AUDITOR DEFINIDO</strong>}</td>
+                    <td><Status value={fatura.status} /></td>
+                    <td><button className="btn-secondary audit-small-button" onClick={() => setAberta(fatura)}>Abrir</button></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

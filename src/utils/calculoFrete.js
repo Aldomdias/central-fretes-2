@@ -271,11 +271,27 @@ function getLinhaGradeMaisProxima(gradeCanal = [], pesoInformado = 0) {
   return lista[lista.length - 1];
 }
 
-function calcularPesosComCubagem({ pesoInformado, cubagemInformada = 0, gradeLinha, fatorCubagem }) {
+function calcularPesosComCubagem({ pesoInformado, cubagemInformada = 0, gradeLinha, fatorCubagem, ignorarCubagem = false }) {
   const pesoReal = toNumber(pesoInformado);
   const cubagemReal = toNumber(cubagemInformada);
   const cubagemGrade = toNumber(gradeLinha?.cubagem);
   const fator = toNumber(fatorCubagem);
+
+  // Modo "usar peso do CT-e": ignora cubagem por completo (inclusive o fallback
+  // da cubagem da grade) e usa só o peso informado (já com eventual % de
+  // contingência aplicado antes de chegar aqui).
+  if (ignorarCubagem) {
+    return {
+      pesoGrade: toNumber(gradeLinha?.peso || gradeLinha?.pesoMax) || pesoReal,
+      cubagemReal: 0,
+      cubagemRealizadaInformada: cubagemReal,
+      cubagemGrade,
+      cubagemAplicada: 0,
+      origemCubagem: 'ignorada (peso do CT-e)',
+      pesoCubado: 0,
+      pesoConsiderado: pesoReal,
+    };
+  }
 
   // Regra operacional do Simulador Realizado:
   // quando houver cubagem vinda do Tracking, ela deve ser a base para cálculo do peso cubado.
@@ -312,6 +328,7 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
     prazo: toNumber(rota?.prazoEntregaDias),
     frete: {
       tipoCalculo: calculo.tipoCalculo,
+      rotaNome: rota?.nomeRota || rota?.rota || null,
       faixaPeso: cotacao ? `${toNumber(cotacao.pesoMin)} até ${cotacao.pesoMax ?? cotacao.pesoLimite ?? 'sem limite'}` : 'Sem cotação',
       percentualAplicado: percentual,
       rsKgAplicado: rsKg,
@@ -344,6 +361,9 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       valorPercentualCalculado: toNumber(calculo.componentesBase?.valorPercentual),
       componenteBase: calculo.componenteBase || '',
       valorBase: calculo.valorBase,
+      subtotalSemEmergencial: toNumber(calculo.subtotalSemEmergencial),
+      taxaEmergencialPct: toNumber(calculo.taxaEmergencialPct),
+      valorEmergencial: toNumber(calculo.valorEmergencial),
       subtotal: calculo.subtotal,
       icms: calculo.icms,
       total: calculo.total,
@@ -384,7 +404,7 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
   };
 }
 
-function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal }) {
+function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatoresCubagem = [
     origem?.generalidades?.cubagem,
@@ -392,7 +412,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
     origem?.generalidades?.fator_cubagem,
   ].map(toNumber);
   const fatorCubagem = fatoresCubagem.find((valor) => valor > 0) || 0;
-  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem });
+  const pesosAplicados = calcularPesosComCubagem({ pesoInformado: peso, cubagemInformada: cubagem, gradeLinha, fatorCubagem, ignorarCubagem });
   const cotacao = getCotacaoPorRota(origem, rota.nomeRota, pesosAplicados.pesoConsiderado);
   if (!cotacao) return null;
 
@@ -497,7 +517,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
       .filter(({ origem }) => canalCompativel(origem.canal, filtros.canal))
       .filter(({ origem }) => origemCompativel(origem.cidade, filtros.origem))
       .map(({ transportadora, origem, rota }) => {
-        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal });
+        const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem });
         return itemComCanalSimulado(item, filtros.canal);
       })
       .filter(Boolean);
@@ -515,7 +535,7 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
             return String(rota.ibgeDestino) === filtros.destinoCodigo || cidade === destinoNormalizado;
           })
           .map((rota) => {
-            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal });
+            const item = calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem, cidadePorIbge, gradeCanal: filtros.gradeCanal, ignorarCubagem: filtros.ignorarCubagem });
             return itemComCanalSimulado(item, filtros.canal);
           })
           .filter(Boolean),
@@ -523,14 +543,14 @@ function listarCenarios(transportadoras = [], filtros = {}, cidadePorIbge, indic
   );
 }
 
-export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [], indicePorDestino }) {
-  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal }, cidadePorIbge, indicePorDestino);
+export function simularSimples({ transportadoras, origem, canal, peso, valorNF, cubagem = 0, destinoCodigo, cidadePorIbge, gradeCanal = [], indicePorDestino, ignorarCubagem = false }) {
+  const resultados = listarCenarios(transportadoras, { origem, canal, peso, valorNF, cubagem, destinoCodigo, gradeCanal, ignorarCubagem }, cidadePorIbge, indicePorDestino);
   return rankearPorChave(resultados)
     .filter((item) => origemCompativel(item.origem, origem) && String(item.ibgeDestino) === String(destinoCodigo))
     .sort((a, b) => a.total - b.total || a.prazo - b.prazo);
 }
 
-export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal = [] }) {
+export function simularPorTransportadora({ transportadoras, nomeTransportadora, canal, origem, destinoCodigos, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal = [], ignorarCubagem = false }) {
   const resultados = listarCenarios(transportadoras, {
     origem,
     canal,
@@ -539,6 +559,7 @@ export function simularPorTransportadora({ transportadoras, nomeTransportadora, 
     cubagem,
     destinoCodigo: '',
     gradeCanal,
+    ignorarCubagem,
   }, cidadePorIbge).filter((item) => !destinoCodigos?.length || destinoCodigos.includes(String(item.ibgeDestino)) || destinoCodigos.includes(normalizeText(item.cidadeDestino)));
 
   return rankearPorChave(resultados)
@@ -1080,8 +1101,14 @@ function valorRealizadoNumero(row = {}) {
   return toNumber(row.valorCte ?? row.valorFrete ?? row.valorRealizado ?? row.valorCalculado ?? 0);
 }
 
-function pesoRealizadoNumero(row = {}) {
+function pesoRealizadoNumero(row = {}, filtros = {}) {
   const pesoDeclarado = toNumber(row.pesoDeclarado ?? row.peso ?? 0);
+  // Modo "usar peso do CT-e": ignora peso cubado (o que já vier gravado no CT-e)
+  // e aplica só o percentual de contingência sobre o peso real, se houver.
+  if (filtros.ignorarCubagem) {
+    const percentual = toNumber(filtros.percentualContingenciaPeso);
+    return pesoDeclarado * (1 + percentual / 100);
+  }
   const pesoCubado = toNumber(row.pesoCubado ?? row.peso_cubado ?? 0);
   const pesoFinal = Math.max(pesoDeclarado, pesoCubado);
   return pesoFinal > 0 ? pesoFinal : pesoDeclarado;
@@ -1302,7 +1329,7 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
   const destinoInfo = destinoRealizadoInfo(row);
   const canalLinha = canalRealizado(row, filtros.canal);
   const canalRaw = canalRealizadoRaw(row, filtros.canal);
-  const peso = pesoRealizadoNumero(row);
+  const peso = pesoRealizadoNumero(row, filtros);
   const valorNF = toNumber(row.valorNF);
   const valorRealizado = valorRealizadoNumero(row);
 
@@ -1334,6 +1361,7 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
           valorNF,
           cidadePorIbge,
           gradeCanal: [],
+          ignorarCubagem: filtros.ignorarCubagem,
         });
 
         if (item) {

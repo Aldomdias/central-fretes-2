@@ -294,7 +294,7 @@ export function calcularDashboardGestao(tabelas = []) {
 
   const impactoReajustes = lista
     .filter((t) => t.is_reajuste)
-    .reduce((acc, t) => acc + t.impacto_reajuste, 0);
+    .reduce((acc, t) => acc + Math.max(0, t.impacto_reajuste), 0);
 
   const reajustesAguardando = lista.filter((t) => t.is_reajuste && t.status_gestao === 'AGUARDANDO_APROVACAO_GESTOR').length;
   const reajustesAprovados = lista.filter((t) => t.is_reajuste && t.status_gestao === 'APROVADA_GESTOR').length;

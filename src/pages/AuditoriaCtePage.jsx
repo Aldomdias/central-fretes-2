@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import BaseCtesStatus from '../components/BaseCtesStatus';
+import AmdProcessingOverlay, { ETAPA_LABEL_AUDITORIA, rotuloEtapaAuditoria } from '../components/AmdProcessingOverlay';
 import {
   carregarDadosAuditoria,
   calcularMetricasAuditoria,
@@ -15,12 +16,14 @@ import {
   salvarRecorteCarregadoAuditoria,
   TOGGLE_TABELAS_KEY,
   DIVERGENCIA_THRESHOLD,
+  ehDivergenteComMargem,
 } from '../services/auditoriaService';
 import {
   carregarResultadosAuditoriaMes,
   carregarResumoAuditoriaMensal,
   processarESalvarAuditoriaMes,
   resimularRegistros,
+  invalidarCacheBaseFreteAuditoriaCte,
 } from '../services/auditoriaCteProcessamentoService';
 
 const CRITERIOS_FILTRO = [
@@ -96,6 +99,8 @@ function carregarFiltrosFocoSalvos() {
   }
 }
 const LIMITE_MATCH_VERUM = 1; // diferença (R$) tolerada para considerar recálculo == Verum
+const MARGEM_ERRO_CIMA_KEY = 'central-fretes:auditoria-margem-erro-cima-valor';
+const MARGEM_ERRO_BAIXO_KEY = 'central-fretes:auditoria-margem-erro-baixo-valor';
 
 // Mesma normalização usada em agruparPorTransportadora, para casar a exclusão.
 function nomeTransportadoraAuditoria(r) {
@@ -199,21 +204,29 @@ function ToggleSwitch({ ativo, onChange, label, sublabel }) {
   );
 }
 
+// Sobrepõe, em cima da base crua, os campos já calculados/salvos em
+// auditoria_cte_resultados (por chave_cte, com numero_cte como fallback).
+// CT-es sem correspondência salva ficam com o que vier da base crua mesmo.
+function mesclarComResultadosSalvos(brutos = [], salvos = []) {
+  const porChave = new Map();
+  const porNumero = new Map();
+  salvos.forEach((s) => {
+    if (s.chave_cte) porChave.set(s.chave_cte, s);
+    else if (s.numero_cte) porNumero.set(s.numero_cte, s);
+  });
+  return brutos.map((row) => {
+    const salvo = (row.chave_cte && porChave.get(row.chave_cte))
+      || (!row.chave_cte && row.numero_cte ? porNumero.get(row.numero_cte) : null);
+    return salvo ? { ...row, ...salvo, id: row.id } : row;
+  });
+}
+
 // Barra de progresso das operações (carregar/recalcular/resimular/salvar).
 // Determinada quando há total conhecido; indeterminada (animada) quando não há.
 function BarraProgresso({ progresso }) {
   if (!progresso) return null;
 
-  const etapaLabel = {
-    carregando_tabelas: 'Carregando tabelas cadastradas',
-    carregando_tabelas_transportadora: 'Carregando tabela da transportadora',
-    carregando_tabelas_completas_fallback: 'Carregando base completa de tabelas',
-    processando_ctes: 'Recalculando CT-es',
-    resimulando: 'Resimulando recorte',
-    salvando_resultados: 'Salvando resultados',
-    carregando_resultado_salvo: 'Carregando resultado salvo',
-    concluido: 'Concluído',
-  };
+  const etapaLabel = ETAPA_LABEL_AUDITORIA;
   const carregados = Number(progresso.carregados || 0);
   const total = Number(progresso.total || 0);
   const determinada = total > 0;
@@ -406,6 +419,36 @@ export default function AuditoriaCtePage() {
   const [carregando, setCarregando] = useState(false);
   const [processando, setProcessando] = useState(false);
   const [progressoProcessamento, setProgressoProcessamento] = useState(null);
+  // Enquanto a cubagem do Tracking não está validada, o recálculo usa só o peso
+  // do CT-e (ignora peso cubado). Mesmo flag/lógica do Simulador Realizado.
+  const [usarPesoCteAuditoria, setUsarPesoCteAuditoria] = useState(true);
+  const [percentualContingenciaPesoAuditoria, setPercentualContingenciaPesoAuditoria] = useState(0);
+  // Padrão: usa só o que já está gravado na base (comportamento de sempre).
+  // Desmarcando, cruza o Tracking ao vivo antes de calcular — igual ao Simulador.
+  const [apenasDadosCompletosAuditoria, setApenasDadosCompletosAuditoria] = useState(true);
+  // Margem de erro tolerada antes de marcar um CT-e como divergente, em R$
+  // absoluto (não percentual — percentual escala com o valor do CT-e e esconde
+  // divergência grande em fretes caros). 0 em ambos = usa o limite fixo padrão
+  // (R$ 0,05). Cima = cobrança acima do calculado; baixo = cobrança abaixo.
+  // Fica salva no navegador e vale pra todos os cálculos seguintes.
+  const [margemErroCimaValor, setMargemErroCimaValor] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(MARGEM_ERRO_CIMA_KEY) || '0'); } catch { return 0; }
+  });
+  const [margemErroBaixoValor, setMargemErroBaixoValor] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(MARGEM_ERRO_BAIXO_KEY) || '0'); } catch { return 0; }
+  });
+  const atualizarMargemErroCima = (valor) => {
+    setMargemErroCimaValor(valor);
+    try { localStorage.setItem(MARGEM_ERRO_CIMA_KEY, JSON.stringify(valor)); } catch { /* localStorage indisponível */ }
+  };
+  const atualizarMargemErroBaixo = (valor) => {
+    setMargemErroBaixoValor(valor);
+    try { localStorage.setItem(MARGEM_ERRO_BAIXO_KEY, JSON.stringify(valor)); } catch { /* localStorage indisponível */ }
+  };
+  const margensDivergencia = useMemo(
+    () => ({ cimaValor: margemErroCimaValor, baixoValor: margemErroBaixoValor }),
+    [margemErroCimaValor, margemErroBaixoValor],
+  );
   const [resumoMensal, setResumoMensal] = useState([]);
   const [erro, setErro] = useState('');
   const [sucesso, setSucesso] = useState('');
@@ -555,7 +598,7 @@ export default function AuditoriaCtePage() {
   );
 
   // Agrupamento completo (base inteira) para a lista de seleção do filtro.
-  const porTransportadoraCompleto = useMemo(() => agruparPorTransportadora(registros), [registros]);
+  const porTransportadoraCompleto = useMemo(() => agruparPorTransportadora(registros, margensDivergencia), [registros, margensDivergencia]);
   const transportadorasExcluidas = useMemo(
     () => porTransportadoraCompleto.filter((it) => excluidasSet.has(it.transportadora)),
     [porTransportadoraCompleto, excluidasSet],
@@ -626,7 +669,6 @@ export default function AuditoriaCtePage() {
   // todos multi-seleção. Dentro de cada dimensão é OR; entre dimensões é AND.
   const registrosFiltro = useMemo(() => {
     if (!filtrosAtivos) return registrosAnalise;
-    const TOL = DIVERGENCIA_THRESHOLD;
     const transpSet = new Set(filtroTransps);
     const ufSet = new Set(filtroUfs);
     const cidSet = new Set(filtroCidades);
@@ -651,13 +693,13 @@ export default function AuditoriaCtePage() {
         const vc = Number(r.valor_cte || 0);
         const rec = Number(r.valor_calculado || 0);
         const ver = Number(r.valor_calculado_verum || 0);
-        const okRec = rec > 0 && Math.abs(vc - rec) <= TOL;
-        const okVer = ver > 0 && Math.abs(vc - ver) <= TOL;
+        const okRec = rec > 0 && !ehDivergenteComMargem(vc - rec, rec, margensDivergencia);
+        const okVer = ver > 0 && !ehDivergenteComMargem(vc - ver, ver, margensDivergencia);
         const semCalc = rec <= 0 && ver <= 0;
         const semVerum = ver <= 0;
         const semAmd = rec <= 0;
-        const divCobrado = rec > 0 && Math.abs(vc - rec) > TOL;
-        const divVerum = rec > 0 && ver > 0 && Math.abs(rec - ver) > TOL;
+        const divCobrado = rec > 0 && ehDivergenteComMargem(vc - rec, rec, margensDivergencia);
+        const divVerum = rec > 0 && ver > 0 && ehDivergenteComMargem(rec - ver, ver, margensDivergencia);
         const passa = (critSet.has('sem_calculo') && semCalc)
           || (critSet.has('sem_verum') && semVerum)
           || (critSet.has('sem_amd') && semAmd)
@@ -672,7 +714,7 @@ export default function AuditoriaCtePage() {
       }
       return true;
     });
-  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
+  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, margensDivergencia]);
 
   const transportadoraEmTratamento = filtroTransps.length === 1
     && !filtroTomadores.length
@@ -686,7 +728,6 @@ export default function AuditoriaCtePage() {
   // Assertividade de um conjunto: % de CT-es (com algum cálculo) em que o
   // recálculo OU a Verum batem o valor cobrado. Mesmo critério da meta.
   function assertividadeDe(lista = []) {
-    const TOL = DIVERGENCIA_THRESHOLD;
     let base = 0;
     let ok = 0;
     for (const r of lista) {
@@ -695,19 +736,21 @@ export default function AuditoriaCtePage() {
       const ver = Number(r.valor_calculado_verum || 0);
       if (rec <= 0 && ver <= 0) continue;
       base += 1;
-      if ((rec > 0 && Math.abs(vc - rec) <= TOL) || (ver > 0 && Math.abs(vc - ver) <= TOL)) ok += 1;
+      if ((rec > 0 && !ehDivergenteComMargem(vc - rec, rec, margensDivergencia)) || (ver > 0 && !ehDivergenteComMargem(vc - ver, ver, margensDivergencia))) ok += 1;
     }
     return { base, ok, taxa: base > 0 ? (ok / base) * 100 : 0 };
   }
 
   // Resimula apenas o recorte filtrado (preview em memória, sem gravar). Atualiza
   // os mesmos registros dentro da base carregada para as métricas refletirem.
-  async function resimularFiltrados() {
+  async function resimularFiltrados(forcarTabelasFrescas = false) {
     const alvo = registrosFiltro;
     if (!alvo.length) {
       setErro('Nenhum CT-e no foco atual para resimular. Ajuste os filtros.');
       return;
     }
+
+    if (forcarTabelasFrescas) invalidarCacheBaseFreteAuditoriaCte();
 
     setResimulando(true);
     setErro('');
@@ -722,10 +765,27 @@ export default function AuditoriaCtePage() {
         registros: alvo,
         transportadorasAlvo: transportadoraEmTratamento ? [transportadoraEmTratamento] : filtroTransps,
         onProgress: setProgressoProcessamento,
+        ignorarCubagem: usarPesoCteAuditoria,
+        percentualContingenciaPeso: percentualContingenciaPesoAuditoria,
+        apenasDadosCompletos: apenasDadosCompletosAuditoria,
       });
       const mapa = new Map();
       alvo.forEach((orig, i) => mapa.set(orig, novos[i]));
       setRegistros((prev) => prev.map((r) => mapa.get(r) || r));
+
+      // Resimular já grava direto no banco (merge — só esses CT-es, sem apagar
+      // o resto do mês), pra não perder o recálculo se a página recarregar.
+      let gravado = false;
+      if (competencia && /^\d{4}-\d{2}$/.test(competencia)) {
+        await salvarRecorteCarregadoAuditoria({
+          competencia,
+          registros: novos,
+          onProgress: setProgressoProcessamento,
+        });
+        gravado = true;
+        const resumo = await carregarResumoAuditoriaMensal();
+        setResumoMensal(resumo || []);
+      }
 
       const depois = assertividadeDe(novos);
       const diagnosticoNovos = Array.from(novos.reduce((mapa, row) => {
@@ -741,11 +801,10 @@ export default function AuditoriaCtePage() {
       const seta = ganho > 0.05 ? '▲' : ganho < -0.05 ? '▼' : '→';
       setResimuladoDiagnostico(diagnosticoNovos);
       setResimuladoInfo(
-        `${fmtN(novos.length)} CT-e(s) resimulados (preview, não gravado). `
+        `${fmtN(novos.length)} CT-e(s) resimulados e ${gravado ? 'já gravados em auditoria_cte_resultados' : 'NÃO gravados (informe a competência para gravar automaticamente)'}. `
         + `Assertividade do recorte: ${fmtP(antes.taxa)} ${seta} ${fmtP(depois.taxa)} `
         + `(${resolvidos >= 0 ? '+' : ''}${fmtN(resolvidos)} corrigidos). `
-        + 'Ajuste as tabelas e resimule de novo — os que passarem saem do foco. '
-        + 'Para persistir, use “Recalcular com a ferramenta” ou “Salvar mês carregado”.',
+        + 'Ajuste as tabelas e clique em Atualizar/Resimular de novo quando quiser.',
       );
     } catch (e) {
       setErro(e.message || 'Erro ao resimular o recorte filtrado.');
@@ -789,7 +848,6 @@ export default function AuditoriaCtePage() {
   // batem com o valor cobrado (realizado). Conta como assertivo se QUALQUER um
   // dos dois bate — é o critério para a meta e para decidir a substituição.
   const assertividadeSistema = useMemo(() => {
-    const TOL = DIVERGENCIA_THRESHOLD;
     let comAlgumCalculo = 0;
     let comRecalculo = 0;
     let comVerum = 0;
@@ -806,8 +864,8 @@ export default function AuditoriaCtePage() {
       const vc = Number(r.valor_cte || 0);
       const rec = Number(r.valor_calculado || 0);
       const ver = Number(r.valor_calculado_verum || 0);
-      const okRec = rec > 0 && Math.abs(vc - rec) <= TOL;
-      const okVer = ver > 0 && Math.abs(vc - ver) <= TOL;
+      const okRec = rec > 0 && !ehDivergenteComMargem(vc - rec, rec, margensDivergencia);
+      const okVer = ver > 0 && !ehDivergenteComMargem(vc - ver, ver, margensDivergencia);
       if (rec > 0) comRecalculo += 1;
       else semRecalculo += 1;
       if (ver > 0) comVerum += 1;
@@ -836,7 +894,7 @@ export default function AuditoriaCtePage() {
       ambosBatem,
       nenhumBate,
     };
-  }, [registrosFiltro]);
+  }, [registrosFiltro, margensDivergencia]);
 
   // Diagnóstico do recálculo: onde o motor está parando (transportadora → origem →
   // rota → faixa). Usa o status_calculo/motivo já gravado em cada registro.
@@ -869,8 +927,8 @@ export default function AuditoriaCtePage() {
     return linhas;
   }, [registrosFiltro]);
 
-  const metricas = useMemo(() => calcularMetricasAuditoria(registrosBase), [registrosBase]);
-  const porTransportadora = useMemo(() => agruparPorTransportadora(registrosBase), [registrosBase]);
+  const metricas = useMemo(() => calcularMetricasAuditoria(registrosBase, margensDivergencia), [registrosBase, margensDivergencia]);
+  const porTransportadora = useMemo(() => agruparPorTransportadora(registrosBase, margensDivergencia), [registrosBase, margensDivergencia]);
   const ondeAtacar = useMemo(() => calcularOndeAtacar(porTransportadora, meta), [porTransportadora, meta]);
   const sugestaoMeta = useMemo(() => sugerirNovaMeta(metricas), [metricas]);
   const avaliacaoMeta = useMemo(() => avaliarMetaAuditoria(metricas, meta), [metricas, meta]);
@@ -895,6 +953,10 @@ export default function AuditoriaCtePage() {
     setProgressoProcessamento(null);
 
     try {
+      // Carrega a base crua inteira (pega CT-e novo que ainda não foi calculado)
+      // e por cima aplica o que já está salvo em auditoria_cte_resultados — o
+      // Verum não muda, então sobrepor o AMD já corrigido não tem risco. CT-es
+      // que nunca foram salvos ficam com o cálculo cru mesmo (ou sem cálculo).
       const resposta = await carregarDadosAuditoria({
         competencia,
         dataInicio: dataInicioTeste || undefined,
@@ -902,14 +964,33 @@ export default function AuditoriaCtePage() {
         canais: canaisPreCarga.length ? canaisPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       });
-      const dados = resposta?.registros || [];
+      const dadosBrutos = resposta?.registros || [];
+
+      const salvos = await carregarResultadosAuditoriaMes({
+        competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+      }).catch(() => []);
+
+      const dados = salvos && salvos.length ? mesclarComResultadosSalvos(dadosBrutos, salvos) : dadosBrutos;
+      const qtdMesclados = salvos?.length || 0;
+
       setRegistros(dados);
-      setFonteAuditoria(resposta?.fonte || null);
+      setFonteAuditoria(qtdMesclados
+        ? {
+          id: 'auditoria_cte_resultados_mesclado',
+          tabela: 'auditoria_cte_resultados',
+          label: `${resposta?.fonte?.label || 'CT-e'} + auditoria_cte_resultados (salvos sobrepostos)`,
+        }
+        : resposta?.fonte || null);
       setDiagnostico(resposta?.diagnostico || []);
       setAvisos(resposta?.avisos || []);
 
       if (!dados.length) {
         setSucesso('Nenhum CTe encontrado para este recorte nas bases verificadas.');
+      } else if (qtdMesclados) {
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} CTe(s) carregados (${qtdMesclados.toLocaleString('pt-BR')} com resultado salvo aplicado).`);
       } else {
         const fonte = resposta?.fonte?.label || resposta?.fonte?.tabela || 'Supabase';
         setSucesso(`${dados.length.toLocaleString('pt-BR')} CTe(s) carregados da fonte ${fonte}.`);
@@ -976,19 +1057,19 @@ export default function AuditoriaCtePage() {
       return;
     }
 
-    // Se há CT-es carregados na tela, salva EXATAMENTE o recorte exibido
-    // (filtros/exclusões/resimulação já aplicados). Sem nada carregado, cai no
-    // modo antigo: rebusca o mês inteiro da base.
+    // Se há CT-es carregados na tela, faz merge: atualiza só esses CT-es (por
+    // chave/número) e preserva o resto do mês já salvo. Sem nada carregado, cai
+    // no modo antigo: rebusca e substitui o mês inteiro da base.
     const salvarRecorte = registrosFiltro.length > 0;
     const qtd = salvarRecorte ? registrosFiltro.length : 0;
 
     const avisoFiltro = salvarRecorte && (filtrosAtivos || excluidasSet.size)
-      ? `\n\nATENÇÃO: você tem filtros/exclusões ativos. Serão salvos APENAS os ${qtd.toLocaleString('pt-BR')} CT-e(s) do recorte atual como a competência ${competencia} — o restante do mês NÃO será gravado.`
+      ? `\n\nVocê tem filtros/exclusões ativos. Serão atualizados apenas os ${qtd.toLocaleString('pt-BR')} CT-e(s) do recorte atual — o restante do mês salvo permanece como está.`
       : '';
 
     const confirmar = window.confirm(
       (salvarRecorte
-        ? `Salvar os ${qtd.toLocaleString('pt-BR')} CT-e(s) que estão na tela como a auditoria de ${competencia}? O resultado salvo e o resumo mensal desse mês serão substituídos.`
+        ? `Salvar os ${qtd.toLocaleString('pt-BR')} CT-e(s) que estão na tela como a auditoria de ${competencia}? Eles serão atualizados/inseridos em auditoria_cte_resultados; o resto do mês já salvo NÃO é afetado. O resumo mensal é recalculado com o mês inteiro.`
         : `Salvar a auditoria de ${competencia}? Nada está carregado na tela, então o mês inteiro será buscado da base. O resultado salvo e o resumo mensal serão substituídos.`)
       + avisoFiltro
     );
@@ -1065,6 +1146,9 @@ export default function AuditoriaCtePage() {
         dataFim: dataFimTeste || undefined,
         canais: canaisPreCarga.length ? canaisPreCarga : undefined,
         onProgress: setProgressoProcessamento,
+        ignorarCubagem: usarPesoCteAuditoria,
+        percentualContingenciaPeso: percentualContingenciaPesoAuditoria,
+        apenasDadosCompletos: apenasDadosCompletosAuditoria,
       });
 
       const dados = resposta?.registros || [];
@@ -1231,6 +1315,67 @@ export default function AuditoriaCtePage() {
             </div>
           </div>
 
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={apenasDadosCompletosAuditoria}
+                onChange={(event) => setApenasDadosCompletosAuditoria(event.target.checked)}
+              />
+              Considerar apenas CT-es com dados completos (não consultar Tracking)
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={usarPesoCteAuditoria}
+                onChange={(event) => setUsarPesoCteAuditoria(event.target.checked)}
+              />
+              Usar peso do CT-e (ignora cubagem)
+            </label>
+            {usarPesoCteAuditoria && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                % de contingência sobre o peso:
+                <input
+                  type="number"
+                  min="0"
+                  max="200"
+                  step="1"
+                  value={percentualContingenciaPesoAuditoria}
+                  onChange={(event) => setPercentualContingenciaPesoAuditoria(Number(event.target.value) || 0)}
+                  style={{ width: 70 }}
+                />
+              </label>
+            )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              Margem de erro p/ cima (R$):
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={margemErroCimaValor}
+                onChange={(event) => atualizarMargemErroCima(Number(event.target.value) || 0)}
+                style={{ width: 70 }}
+                title="Tolera cobrança até R$X acima do calculado antes de marcar como divergente"
+              />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              Margem de erro p/ baixo (R$):
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={margemErroBaixoValor}
+                onChange={(event) => atualizarMargemErroBaixo(Number(event.target.value) || 0)}
+                style={{ width: 70 }}
+                title="Tolera cobrança até R$X abaixo do calculado antes de marcar como divergente"
+              />
+            </label>
+            <span style={{ fontSize: 12, color: '#64748b' }}>
+              {margemErroCimaValor > 0 || margemErroBaixoValor > 0
+                ? 'Salvo neste navegador — vale para todos os cálculos daqui pra frente.'
+                : 'Ambas em 0 = usa o limite fixo padrão (R$ 0,05).'}
+            </span>
+          </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !podeCarregar}>
               {carregando ? 'Carregando...' : 'Carregar CT-es do mês'}
@@ -1307,11 +1452,20 @@ export default function AuditoriaCtePage() {
                 <button
                   className="primary"
                   type="button"
-                  onClick={resimularFiltrados}
+                  onClick={() => resimularFiltrados(false)}
                   disabled={resimulando || carregando || processando || !registrosFiltro.length || !transportadoraEmTratamento}
                   title="Recalcula apenas os CT-es da transportadora selecionada e atualiza o preview da tela"
                 >
                   {resimulando ? 'Recalculando...' : 'Recalcular transportadora'}
+                </button>
+                <button
+                  className="sim-tab"
+                  type="button"
+                  onClick={() => resimularFiltrados(true)}
+                  disabled={resimulando || carregando || processando || !registrosFiltro.length || !transportadoraEmTratamento}
+                  title="Recarrega as tabelas de frete do zero (pega ajustes feitos em outra aba) e resimula o recorte atual, sem sair da busca"
+                >
+                  {resimulando ? 'Atualizando...' : '↻ Atualizar'}
                 </button>
                 <button
                   className="sim-tab"
@@ -1441,11 +1595,19 @@ export default function AuditoriaCtePage() {
               <button
                 className="primary"
                 type="button"
-                onClick={resimularFiltrados}
+                onClick={() => resimularFiltrados(false)}
                 disabled={resimulando || carregando || processando || !registrosFiltro.length}
                 title="Roda o motor de cálculo só nos CT-es do foco atual e atualiza as métricas na tela (não grava no banco)"
               >
                 {resimulando ? 'Resimulando...' : `Resimular filtrados (${fmtN(registrosFiltro.length)})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => resimularFiltrados(true)}
+                disabled={resimulando || carregando || processando || !registrosFiltro.length}
+                title="Recarrega as tabelas de frete do zero (pega ajustes feitos em outra aba) e resimula o recorte atual, sem sair da busca"
+              >
+                {resimulando ? 'Atualizando...' : '↻ Atualizar (tabelas)'}
               </button>
               <span style={{ fontSize: 13, color: filtrosAtivos ? '#2563eb' : '#94a3b8', fontWeight: 600 }}>
                 {filtrosAtivos
@@ -1466,6 +1628,7 @@ export default function AuditoriaCtePage() {
           </div>
         ) : null}
 
+        <AmdProcessingOverlay ativo={carregando || processando || resimulando} progresso={progressoProcessamento} />
         <BarraProgresso progresso={progressoProcessamento} />
 
         {fonteAuditoria ? (
@@ -1979,10 +2142,18 @@ export default function AuditoriaCtePage() {
                     try { return JSON.parse(d); } catch { return null; }
                   })();
                   const expandida = cteExpandido === idx;
-                  const corDif = (v, base) => (base <= 0 ? '#94a3b8' : Math.abs(v) <= DIVERGENCIA_THRESHOLD ? '#16a34a' : '#dc2626');
+                  const corDif = (v, base) => (base <= 0 ? '#94a3b8' : !ehDivergenteComMargem(v, base, margensDivergencia) ? '#16a34a' : '#dc2626');
+                  const dentroDaMargem = amd > 0 && !ehDivergenteComMargem(difAmd, amd, margensDivergencia);
                   return (
                     <React.Fragment key={r.chave_cte || r.numero_cte || idx}>
-                      <tr onClick={() => setCteExpandido(expandida ? null : idx)} style={{ cursor: 'pointer', background: expandida ? '#eff6ff' : undefined }}>
+                      <tr
+                        onClick={() => setCteExpandido(expandida ? null : idx)}
+                        style={{
+                          cursor: 'pointer',
+                          background: expandida ? '#eff6ff' : dentroDaMargem ? '#f0fdf4' : undefined,
+                          borderLeft: dentroDaMargem ? '3px solid #16a34a' : '3px solid transparent',
+                        }}
+                      >
                         <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
                         <td><strong>{r.transportadora || '—'}</strong></td>
                         <td style={{ fontSize: 12 }}>{(r.cidade_origem || '—')}/{r.uf_origem || '—'} → {(r.cidade_destino || '—')}/{r.uf_destino || '—'}</td>
@@ -2050,6 +2221,8 @@ export default function AuditoriaCtePage() {
                                   </div>
                                   <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
                                     <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>ICMS e totalizacao</div>
+                                    {linhaDetalhe('Subtotal antes da emergencial', fmtMaybe(frete.subtotalSemEmergencial))}
+                                    {Number(frete.taxaEmergencialPct) > 0 ? linhaDetalhe('Taxa emergencial', `${fmtPctDetalhe(frete.taxaEmergencialPct)} = ${fmtMaybe(frete.valorEmergencial)}`, true) : null}
                                     {linhaDetalhe('Subtotal sem ICMS', fmtMaybe(det.subtotal ?? frete.subtotal), true)}
                                     {linhaDetalhe('Aliquota ICMS', fmtPctDetalhe(det.aliquota_icms ?? frete.aliquotaIcms))}
                                     {linhaDetalhe('Origem aliquota', det.origem_aliquota_icms || frete.origemAliquotaIcms || '-')}

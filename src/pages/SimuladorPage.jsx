@@ -1099,12 +1099,18 @@ function numeroRealizado(value) {
   return Number.isFinite(numero) ? numero : 0;
 }
 
-function pesoRealizado(row = {}) {
+function pesoRealizado(row = {}, filtros = {}) {
   const declarado = numeroRealizado(row.pesoDeclarado);
-  return declarado > 0 ? declarado : numeroRealizado(row.peso);
+  const base = declarado > 0 ? declarado : numeroRealizado(row.peso);
+  // Modo "usar peso do CT-e": ignora cubagem e opcionalmente aplica um percentual
+  // de contingência sobre o peso real, como plano B enquanto a cubagem não está validada.
+  if (!filtros.ignorarCubagem) return base;
+  const percentual = Number(filtros.percentualContingenciaPeso) || 0;
+  return base * (1 + percentual / 100);
 }
 
-function cubagemRealizado(row = {}) {
+function cubagemRealizado(row = {}, filtros = {}) {
+  if (filtros.ignorarCubagem) return 0;
   // Regra do realizado:
   // cubagem só é confiável quando veio do Tracking.
   // O CT-e pode trazer cubagem divergente, então não usamos cubagem do CT-e como fallback.
@@ -1919,8 +1925,8 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
     const transportadoraKey = normalizarTransportadoraSimulador(transportadora);
     const valorCte = numeroRealizado(row.valorCte);
     const nf = numeroRealizado(row.valorNF);
-    const pesoLinha = pesoRealizado(row);
-    const cubagemLinha = cubagemRealizado(row);
+    const pesoLinha = pesoRealizado(row, filtros);
+    const cubagemLinha = cubagemRealizado(row, filtros);
     const vol = numeroRealizado(row.qtdVolumes);
     const destino = String(row.ibgeDestino || '').trim();
     freteRealizado += valorCte;
@@ -1970,6 +1976,7 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
       peso: pesoLinha,
       valorNF: nf,
       cubagem: cubagemLinha,
+      ignorarCubagem: filtros.ignorarCubagem,
       destinoCodigo: destino,
       cidadePorIbge,
       gradeCanal,
@@ -2356,7 +2363,8 @@ function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '
       canal: canalLinha,
       peso: pesoLinha,
       valorNF: nf,
-      cubagem: cubagemRealizado(row),
+      cubagem: cubagemRealizado(row, filtros),
+      ignorarCubagem: filtros.ignorarCubagem,
       destinoCodigo: destino,
       cidadePorIbge,
       gradeCanal,
@@ -2373,7 +2381,8 @@ function simularLinhaRealizadoComFallback({ baseOnline = [], row = {}, canal = '
     canal: canalLinha,
     peso: pesoLinha,
     valorNF: nf,
-    cubagem: cubagemRealizado(row),
+    cubagem: cubagemRealizado(row, filtros),
+    ignorarCubagem: filtros.ignorarCubagem,
     destinoCodigo: destino,
     cidadePorIbge,
     gradeCanal,
@@ -3305,9 +3314,9 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     ctesAnalisados += 1;
     const valorCte = numeroRealizado(row.valorCte);
     const nf = numeroRealizado(row.valorNF);
-    const pesoLinha = pesoRealizado(row);
+    const pesoLinha = pesoRealizado(row, filtros);
     const vol = numeroRealizado(row.qtdVolumes);
-    const cubagemLinha = cubagemRealizado(row);
+    const cubagemLinha = cubagemRealizado(row, filtros);
     if (row.trackingMatch) linhasComTracking += 1;
     cubagemTotal += cubagemLinha;
     const origem = row.cidadeOrigem || filtros.origem || '';
@@ -4087,6 +4096,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // cubagem de TODA a base" em Gestão Base CT-e). Até isso ser resincronizado,
   // o padrão cruza o Tracking ao vivo em vez de confiar no valor já gravado.
   const [apenasDadosCompletosRealizado, setApenasDadosCompletosRealizado] = useState(false);
+  // Enquanto a cubagem do Tracking não está 100% validada, o padrão é usar o peso
+  // real do CT-e (ignora cubagem por completo) em vez do maior entre peso e peso
+  // cubado. O percentual de contingência serve pra simular, de forma controlada,
+  // o efeito que a cubagem teria no peso — plano B até a fórmula ser validada.
+  const [usarPesoCteRealizado, setUsarPesoCteRealizado] = useState(true);
+  const [percentualContingenciaPesoRealizado, setPercentualContingenciaPesoRealizado] = useState(0);
   const [atualizandoNegociacaoRealizado, setAtualizandoNegociacaoRealizado] = useState(false);
   const [recarregarMalhaOficialRealizado, setRecarregarMalhaOficialRealizado] = useState(0);
 
@@ -6012,6 +6027,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
           compararComProprioRealizado: ehReajusteSelecionado,
           transportadoraBaseRealizado: transportadoraBaseReajuste,
+          ignorarCubagem: usarPesoCteRealizado,
+          percentualContingenciaPeso: percentualContingenciaPesoRealizado,
         },
         cidadePorIbge: mapaCidades,
         gradePorCanal: grade,
@@ -7172,7 +7189,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         realizado = {
           totalCompativel: rowsComIbge.length,
           limit: 5000,
-          ...resumirRealizadoPorOrigem(rowsComIbge, baseOrigemComNegoc, { canal: canalOrigem, origem: origemOrigem }, mapaCidades, grade[canalOrigem] || grade.ATACADO || []),
+          ...resumirRealizadoPorOrigem(rowsComIbge, baseOrigemComNegoc, { canal: canalOrigem, origem: origemOrigem, ignorarCubagem: usarPesoCteRealizado, percentualContingenciaPeso: percentualContingenciaPesoRealizado }, mapaCidades, grade[canalOrigem] || grade.ATACADO || []),
         };
       }
 
@@ -8122,8 +8139,38 @@ export default function SimuladorPage({ transportadoras = [] }) {
               Considerar apenas CT-es com dados completos (não consultar Tracking)
             </label>
             <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: -2 }}>
-              Padrão (rápido): usa volumes e cubagem já gravados na base e considera só CT-es com IBGE, cubagem e volume preenchidos. Desmarque para cruzar o Tracking ao vivo e completar quem ainda falta.
+              Padrão: cruza o Tracking ao vivo pra completar quem falta. Marque para usar só o que já está gravado na base (mais rápido, mas depende dela estar em dia).
             </div>
+
+            <label className="sim-flag" style={{ fontWeight: 600, marginTop: 8 }}>
+              <input
+                type="checkbox"
+                checked={usarPesoCteRealizado}
+                onChange={(event) => setUsarPesoCteRealizado(event.target.checked)}
+              />
+              Usar peso do CT-e (ignora cubagem)
+            </label>
+            <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: -2 }}>
+              Padrão: enquanto a cubagem do Tracking não está validada, o cálculo usa só o peso real do CT-e. Desmarque para voltar a calcular pelo maior entre peso e peso cubado.
+            </div>
+
+            {usarPesoCteRealizado && (
+              <label className="sim-flag" style={{ marginTop: 4 }}>
+                % de contingência sobre o peso:
+                <input
+                  type="number"
+                  min="0"
+                  max="200"
+                  step="1"
+                  value={percentualContingenciaPesoRealizado}
+                  onChange={(event) => setPercentualContingenciaPesoRealizado(Number(event.target.value) || 0)}
+                  style={{ width: 70, marginLeft: 8 }}
+                />
+                <span style={{ color: '#64748b', fontSize: '0.78rem', marginLeft: 8 }}>
+                  Plano de contingência: aumenta o peso usado no cálculo em X%, pra simular o efeito que a cubagem teria enquanto ela não é validada.
+                </span>
+              </label>
+            )}
 
             {opcoesAvancadasRealizadoAberto && (
               <div style={{ display: 'grid', gap: 10, paddingTop: 10, borderTop: '1px solid #cbd5e1' }}>

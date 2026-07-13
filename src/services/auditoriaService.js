@@ -624,8 +624,21 @@ function montarLinhaResultadoDireto(row = {}, competencia = '') {
   };
 }
 
+async function executarComConcorrenciaAuditoria(itens, concorrencia, tarefa) {
+  const fila = [...itens];
+  const trabalhadores = Array.from({ length: Math.min(concorrencia, fila.length) }, async () => {
+    while (fila.length) {
+      const item = fila.shift();
+      await tarefa(item);
+    }
+  });
+  await Promise.all(trabalhadores);
+}
+
 // Salva EXATAMENTE o recorte exibido na tela (filtros/exclusões/resimulação já
-// aplicados pelo componente), substituindo o resultado e o resumo da competência.
+// aplicados pelo componente), mas SEM apagar o resto do mês: faz merge —
+// atualiza (por chave_cte/numero_cte) quem já existia e insere quem é novo.
+// O resto da competência que não está no recorte permanece intocado.
 export async function salvarRecorteCarregadoAuditoria({ competencia = '', registros = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
@@ -639,30 +652,72 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
 
   const supabase = getSupabaseClient();
   const linhasResultado = registros.map((row) => montarLinhaResultadoDireto(row, competencia));
-  const resumo = montarResumoMensalAuditoria(linhasResultado, competencia);
 
-  onProgress?.({ etapa: 'limpando_resultado_anterior', carregados: 0, total: linhasResultado.length });
-  const { error: deleteError } = await supabase
-    .from('auditoria_cte_resultados')
-    .delete()
-    .eq('competencia', competencia);
-  if (deleteError) {
-    throw new Error(`Erro ao limpar resultado anterior da auditoria: ${deleteError.message}`);
+  onProgress?.({ etapa: 'localizando_existentes', carregados: 0, total: linhasResultado.length });
+
+  const chaves = [...new Set(linhasResultado.map((l) => l.chave_cte).filter(Boolean))];
+  const numerosSemChave = [...new Set(linhasResultado.filter((l) => !l.chave_cte).map((l) => l.numero_cte).filter(Boolean))];
+  const existentesPorChave = new Map();
+  const existentesPorNumero = new Map();
+
+  for (let i = 0; i < chaves.length; i += 300) {
+    const lote = chaves.slice(i, i + 300);
+    const { data, error } = await supabase
+      .from('auditoria_cte_resultados')
+      .select('id, chave_cte')
+      .eq('competencia', competencia)
+      .in('chave_cte', lote);
+    if (error) throw new Error(`Erro ao localizar registros existentes: ${error.message}`);
+    (data || []).forEach((r) => existentesPorChave.set(r.chave_cte, r.id));
+  }
+  for (let i = 0; i < numerosSemChave.length; i += 300) {
+    const lote = numerosSemChave.slice(i, i + 300);
+    const { data, error } = await supabase
+      .from('auditoria_cte_resultados')
+      .select('id, numero_cte')
+      .eq('competencia', competencia)
+      .in('numero_cte', lote);
+    if (error) throw new Error(`Erro ao localizar registros existentes: ${error.message}`);
+    (data || []).forEach((r) => existentesPorNumero.set(r.numero_cte, r.id));
   }
 
-  for (let index = 0; index < linhasResultado.length; index += INSERT_CHUNK_SIZE) {
-    const chunk = linhasResultado.slice(index, index + INSERT_CHUNK_SIZE);
+  const paraInserir = [];
+  let atualizados = 0;
+  let processados = 0;
+
+  await executarComConcorrenciaAuditoria(linhasResultado, 10, async (linha) => {
+    const idExistente = (linha.chave_cte && existentesPorChave.get(linha.chave_cte))
+      || (!linha.chave_cte && linha.numero_cte ? existentesPorNumero.get(linha.numero_cte) : null);
+    if (idExistente) {
+      const { error } = await supabase.from('auditoria_cte_resultados').update(linha).eq('id', idExistente);
+      if (error) throw new Error(`Erro ao atualizar CT-e ${linha.numero_cte || linha.chave_cte}: ${error.message}`);
+      atualizados += 1;
+    } else {
+      paraInserir.push(linha);
+    }
+    processados += 1;
+    if (processados % 50 === 0 || processados === linhasResultado.length) {
+      onProgress?.({ etapa: 'salvando_resultado_detalhado', carregados: processados, total: linhasResultado.length });
+    }
+  });
+
+  for (let index = 0; index < paraInserir.length; index += INSERT_CHUNK_SIZE) {
+    const chunk = paraInserir.slice(index, index + INSERT_CHUNK_SIZE);
     const { error } = await supabase.from('auditoria_cte_resultados').insert(chunk);
     if (error) {
-      throw new Error(`Erro ao salvar resultado detalhado da auditoria: ${error.message}`);
+      throw new Error(`Erro ao inserir novos registros da auditoria: ${error.message}`);
     }
-    onProgress?.({
-      etapa: 'salvando_resultado_detalhado',
-      carregados: Math.min(index + INSERT_CHUNK_SIZE, linhasResultado.length),
-      total: linhasResultado.length,
-    });
   }
 
+  // Resumo mensal recalculado sobre o mês inteiro salvo (não só o recorte),
+  // pra não deixar o resumo desatualizado/incompleto em relação ao restante do mês.
+  const { data: mesCompleto, error: erroMes } = await supabase
+    .from('auditoria_cte_resultados')
+    .select('*')
+    .eq('competencia', competencia);
+  if (erroMes) throw new Error(`Erro ao recarregar o mês completo para atualizar o resumo: ${erroMes.message}`);
+
+  const resumo = montarResumoMensalAuditoria(mesCompleto || [], competencia);
   const { error: resumoError } = await supabase
     .from('auditoria_cte_resumo_mensal')
     .upsert(resumo, { onConflict: 'competencia' });
@@ -673,17 +728,35 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
   onProgress?.({ etapa: 'concluido', carregados: linhasResultado.length, total: linhasResultado.length });
 
   return {
-    registros: linhasResultado,
+    registros: mesCompleto || [],
     resumo,
+    atualizados,
+    inseridos: paraInserir.length,
     fonte: {
       id: 'auditoria_cte_resultados',
       tabela: 'auditoria_cte_resultados',
-      label: 'Auditoria salva (recorte da tela) / auditoria_cte_resultados',
+      label: 'Auditoria salva (merge do recorte) / auditoria_cte_resultados',
     },
   };
 }
 
-export function calcularMetricasAuditoria(registros = []) {
+// diferenca = valor_cte - valor_calculado. Positivo = cobrança excessiva (acima
+// do calculado); negativo = cobrança insuficiente (abaixo do calculado).
+// margens permite tolerar até R$X pra cima e R$Y pra baixo antes de marcar como
+// divergente, em vez do limite fixo padrão (DIVERGENCIA_THRESHOLD). Valor
+// absoluto (R$), não percentual — percentual escala com o valor do CT-e e
+// esconde divergência grande em fretes caros.
+export function ehDivergenteComMargem(diferenca, valorCalculado, margens = {}) {
+  const cimaValor = Number(margens.cimaValor) || 0;
+  const baixoValor = Number(margens.baixoValor) || 0;
+  if (cimaValor <= 0 && baixoValor <= 0) {
+    return Math.abs(diferenca) > DIVERGENCIA_THRESHOLD;
+  }
+  if (diferenca > 0) return diferenca > cimaValor;
+  return Math.abs(diferenca) > baixoValor;
+}
+
+export function calcularMetricasAuditoria(registros = [], margens = {}) {
   let total = 0;
   let totalCalculados = 0;
   let totalSemCalculo = 0;
@@ -700,7 +773,7 @@ export function calcularMetricasAuditoria(registros = []) {
     const dif = toNumber(r.diferenca);
     const valCte = toNumber(r.valor_cte ?? r.valorCte);
     const temCalculo = valCalc > 0;
-    const temDiv = temCalculo && Math.abs(dif) > DIVERGENCIA_THRESHOLD;
+    const temDiv = temCalculo && ehDivergenteComMargem(dif, valCalc, margens);
 
     valorTotalCte += valCte;
 
@@ -735,7 +808,7 @@ export function calcularMetricasAuditoria(registros = []) {
   };
 }
 
-export function agruparPorTransportadora(registros = []) {
+export function agruparPorTransportadora(registros = [], margens = {}) {
   const mapa = new Map();
 
   for (const r of registros) {
@@ -759,7 +832,7 @@ export function agruparPorTransportadora(registros = []) {
     const valCalc = toNumber(r.valor_calculado ?? r.valorCalculado);
     const dif = toNumber(r.diferenca);
     const temCalculo = valCalc > 0;
-    const temDiv = temCalculo && Math.abs(dif) > DIVERGENCIA_THRESHOLD;
+    const temDiv = temCalculo && ehDivergenteComMargem(dif, valCalc, margens);
 
     it.total += 1;
     it.valorCte += toNumber(r.valor_cte ?? r.valorCte);

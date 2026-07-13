@@ -81,8 +81,14 @@ export function parseDetalheFaturaVerum(row, faturaId, fatura) {
     valor_frete: numero(row, ['Valor Frete']),
     custo_frete: numero(row, ['Custo Frete']),
     preco_frete: numero(row, ['Preco Frete', 'Preço Frete']),
+    // calculado_frete/diferenca começam iguais ao Verum (valor que já vem no
+    // arquivo), mas são sobrescritos pelo AMD quando a fatura é recalculada/
+    // reauditada. calculado_frete_verum/diferenca_verum preservam o valor
+    // original do Verum pra sempre, pra comparar os dois lado a lado.
     calculado_frete: numero(row, ['Calculado Frete']),
     diferenca: numero(row, ['Diferenca', 'Diferença']),
+    calculado_frete_verum: numero(row, ['Calculado Frete']),
+    diferenca_verum: numero(row, ['Diferenca', 'Diferença']),
     status_conciliacao: texto(row, ['Status Conciliacao', 'Status Conciliação']),
     status_processamento: texto(row, ['Status Processamento']),
     cte_integrado_erp: texto(row, ['CTe Integrado ERP']).toUpperCase() === 'SIM',
@@ -105,14 +111,35 @@ export function chaveFatura(numeroFatura, serieFatura) {
   return `${parteChave(numeroFatura)}::${parteChave(serieFatura)}`;
 }
 
+// A aba Detalhes do Verum normalmente nao traz Numero Fatura/Serie Fatura
+// separados: vem uma coluna combinada "Numero Fatura - Serie" (ex: "131833-1").
+// Sem isso, numero/serie ficam vazios pra toda linha e o casamento com a
+// aba Faturas nunca acontece (fatura_detalhes fica sempre vazia).
+function numeroSerieDetalhe(row) {
+  let numero = texto(row, ['Numero Fatura', 'Número Fatura']);
+  let serie = texto(row, ['Serie Fatura', 'Série Fatura']);
+  if (!numero) {
+    const combinado = texto(row, ['Numero Fatura - Serie', 'Número Fatura - Série', 'Numero Fatura-Serie', 'Numero da Fatura']);
+    if (combinado) {
+      const partes = combinado.split('-');
+      if (partes.length >= 2) {
+        serie = serie || partes[partes.length - 1].trim();
+        numero = partes.slice(0, -1).join('-').trim();
+      } else {
+        numero = combinado;
+      }
+    }
+  }
+  return { numero, serie };
+}
+
 // Agrupa as linhas da aba Detalhes por fatura, guardando tambem o indice por
 // numero para o fallback quando a serie nao bate entre as duas abas.
 export function agruparDetalhesVerum(rowsDetalhes = []) {
   const porChave = new Map();
   const porNumero = new Map();
   for (const row of rowsDetalhes) {
-    const numero = texto(row, ['Numero Fatura', 'Número Fatura']);
-    const serie = texto(row, ['Serie Fatura', 'Série Fatura']);
+    const { numero, serie } = numeroSerieDetalhe(row);
     const chave = chaveFatura(numero, serie);
     porChave.set(chave, [...(porChave.get(chave) || []), row]);
     const numeroChave = parteChave(numero);

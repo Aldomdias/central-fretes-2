@@ -1,5 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { aplicarReauditoriaDetalhes, gerarProtocolo, isoDate, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
+import { chaveFatura } from '../utils/auditoriaFretesImport';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -143,8 +144,12 @@ async function inserirHistorico(table, payload) {
 export async function carregarPlataformaAuditoria() {
   if (!isSupabaseConfigured()) return { ...readLocal(), modo: 'DEMONSTRACAO_LOCAL' };
 
+  // Faturas não pode ficar preso no limite de 1000 do selecionarTabela: com
+  // mais que isso no banco, faturas mais antigas somem da tela (mas continuam
+  // no banco e no dedup, que já consulta direto).
+  const client = getSupabaseClient();
   const [faturas, carteiras, tratativas, historico, doccobs, protocolos, solicitacoes, solicitacaoHistorico, boletos, pagamentos] = await Promise.all([
-    selecionarTabela('faturas'),
+    paginarTudo(client, 'faturas', '*'),
     selecionarTabela('auditoria_carteiras', 'transportadora'),
     selecionarTabela('tratativas'),
     selecionarTabela('auditoria_fatura_historico'),
@@ -171,6 +176,30 @@ export async function carregarPlataformaAuditoria() {
     pagamentos,
     modo: 'SUPABASE',
   };
+}
+
+// Busca faturas existentes por numero_fatura direto no banco, sem depender do
+// state.faturas em memória (que só carrega as 1000 mais recentes — com mais
+// faturas que isso no banco, faturas antigas "somem" da checagem de dedup e
+// reimportar duplica em vez de atualizar).
+export async function buscarFaturasExistentesPorNumero(numeros = []) {
+  const mapa = new Map();
+  const unicos = [...new Set((numeros || []).map((n) => String(n || '').trim()).filter(Boolean))];
+  if (!isSupabaseConfigured() || !unicos.length) return mapa;
+  const client = getSupabaseClient();
+  for (let inicio = 0; inicio < unicos.length; inicio += 200) {
+    const lote = unicos.slice(inicio, inicio + 200);
+    const { data, error } = await client
+      .from('faturas')
+      .select('id, numero_fatura, serie_fatura, transportadora')
+      .in('numero_fatura', lote);
+    if (error) throw new Error(`Erro ao verificar faturas existentes: ${error.message}`);
+    for (const row of data || []) {
+      const chave = `${chaveFatura(row.numero_fatura, row.serie_fatura)}::${String(row.transportadora || '').trim().toUpperCase()}`;
+      mapa.set(chave, row.id);
+    }
+  }
+  return mapa;
 }
 
 export async function atualizarFaturaAuditoria(state, fatura, evento) {
@@ -423,6 +452,75 @@ export async function salvarPagamentosFinanceiros(state, pagamentos) {
     await client.from('financeiro_pagamentos').upsert(novos, { onConflict: 'id' });
   }
   return writeLocal(next);
+}
+
+async function paginarTudo(client, table, select, onProgress) {
+  const linhas = [];
+  const PAGE = 1000;
+  for (let inicio = 0; ; inicio += PAGE) {
+    const { data, error } = await client.from(table).select(select).range(inicio, inicio + PAGE - 1);
+    if (error) throw new Error(`Erro ao ler ${table}: ${error.message}`);
+    linhas.push(...(data || []));
+    onProgress?.({ tabela: table, carregados: linhas.length });
+    if (!data || data.length < PAGE) break;
+  }
+  return linhas;
+}
+
+// Canal não vem no arquivo Verum (nem em Faturas nem em Detalhes) — só existe
+// por CT-e, em auditoria_cte_resultados. Essa função varre fatura_detalhes +
+// auditoria_cte_resultados uma vez, calcula o canal predominante de cada
+// fatura e grava em faturas.canal, pra dar pra filtrar a lista sem reabrir
+// cada fatura. É uma ação sob demanda (não roda automático), porque varre as
+// duas tabelas inteiras.
+export async function detectarCanaisFaturas(state, onProgress) {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Detecção de canal disponível apenas com o Supabase configurado.');
+  }
+  const client = getSupabaseClient();
+
+  const detalhes = await paginarTudo(client, 'fatura_detalhes', 'fatura_id, chave_cte', onProgress);
+  const chavesPorFatura = new Map();
+  for (const item of detalhes) {
+    const chave = normalizarChaveCte(item.chave_cte);
+    if (!chave) continue;
+    if (!chavesPorFatura.has(item.fatura_id)) chavesPorFatura.set(item.fatura_id, []);
+    chavesPorFatura.get(item.fatura_id).push(chave);
+  }
+
+  const resultados = await paginarTudo(client, 'auditoria_cte_resultados', 'chave_cte, canal', onProgress);
+  const canalPorChave = new Map();
+  for (const item of resultados) {
+    const chave = normalizarChaveCte(item.chave_cte);
+    if (chave && item.canal) canalPorChave.set(chave, item.canal);
+  }
+
+  const atualizacoes = [];
+  for (const [faturaId, chaves] of chavesPorFatura.entries()) {
+    const contagem = new Map();
+    for (const chave of chaves) {
+      const canal = canalPorChave.get(chave);
+      if (!canal) continue;
+      contagem.set(canal, (contagem.get(canal) || 0) + 1);
+    }
+    if (!contagem.size) continue;
+    const predominante = [...contagem.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    atualizacoes.push({ id: faturaId, canal: predominante });
+  }
+
+  for (let inicio = 0; inicio < atualizacoes.length; inicio += 200) {
+    const lote = atualizacoes.slice(inicio, inicio + 200);
+    const { error } = await client.from('faturas').upsert(lote, { onConflict: 'id' });
+    if (error) throw new Error(`Erro ao gravar canal das faturas: ${error.message}`);
+    onProgress?.({ tabela: 'faturas.canal', carregados: Math.min(inicio + 200, atualizacoes.length), total: atualizacoes.length });
+  }
+
+  const canalPorFatura = new Map(atualizacoes.map((item) => [item.id, item.canal]));
+  const next = {
+    ...state,
+    faturas: state.faturas.map((fatura) => canalPorFatura.has(fatura.id) ? { ...fatura, canal: canalPorFatura.get(fatura.id) } : fatura),
+  };
+  return { state: writeLocal(next), atualizadas: atualizacoes.length };
 }
 
 export function restaurarDemonstracaoAuditoria() {
