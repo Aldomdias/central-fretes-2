@@ -316,8 +316,9 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   // segue essa logica (percentual ganha do excedente isolado).
   const temBandaPesoReal =
     pesoInicial > 0 ||
-    (pesoFinalInformado > 0 && pesoFinalInformado < 999998);
-  const temFaixaReal = taxaAplicada > 0 || temBandaPesoReal;
+    (pesoFinalInformado > 0 && pesoFinalInformado < 99998);
+  const temComponentePercentual = percentual > 0 || freteMinimo > 0;
+  const temFaixaReal = taxaAplicada > 0 || (temBandaPesoReal && !temComponentePercentual);
 
   const tipoCalculoItem = tipoCalculoExplicito || (temFaixaReal
     ? 'FAIXA_DE_PESO'

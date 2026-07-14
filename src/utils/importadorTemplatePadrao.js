@@ -97,7 +97,7 @@ const numero = parseNumeroPlanilha;
 function ehFaixaExcedente(faixaTexto, pesoFinal, pesoInicial = 0) {
   const t = normalizarTexto(String(faixaTexto || ''));
   if (t.includes('EXCEDENTE') || t.includes('ACIMA')) return true;
-  if (Number(pesoFinal || 0) >= 999998 && Number(pesoInicial || 0) > 0) return true;
+  if (Number(pesoFinal || 0) >= 99998 && Number(pesoInicial || 0) > 0) return true;
   return false;
 }
 
