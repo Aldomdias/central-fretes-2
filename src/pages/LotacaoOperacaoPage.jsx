@@ -275,6 +275,18 @@ function normalizarDistKey(valor = '') {
   return normalizarTexto(valor || 'SEM_DIST');
 }
 
+function distExibicaoLotacao(valor = '') {
+  const bruto = String(valor || '').trim();
+  if (!bruto) return '';
+  const base = bruto.replace(/[\s\-_/]+\d{1,2}\s*$/, '').trim();
+  return base || bruto;
+}
+
+function consolidarDistKeyLotacao(valor = '') {
+  const base = distExibicaoLotacao(valor);
+  return normalizarDistKey(base || valor);
+}
+
 function separarCtesTexto(valor = '') {
   return String(valor || '')
     .split(/[;,/|\s]+/)
@@ -286,12 +298,12 @@ function consolidarViagensLotacao(cargas = []) {
   const mapa = new Map();
 
   (cargas || []).forEach((carga) => {
-    const distKey = carga.distKey || normalizarDistKey(carga.dist);
+    const distKey = consolidarDistKeyLotacao(carga.dist || carga.distKey);
     if (!distKey) return;
 
     const atual = mapa.get(distKey) || {
       distKey,
-      dist: carga.dist || '',
+      dist: distExibicaoLotacao(carga.dist) || carga.dist || '',
       registros: [],
       transportadoras: new Map(),
       origens: new Map(),
@@ -327,7 +339,8 @@ function consolidarViagensLotacao(cargas = []) {
 
   return [...mapa.values()].map((item) => {
     const valoresUnicos = [...new Set(item.valores.map((valor) => Number(valor.toFixed(2))))].sort((a, b) => b - a);
-    const valorBase = valoresUnicos.length ? valoresUnicos[0] : Number(item.cargaPrincipal?.valorComparacao || 0);
+    const valorBase = Number(item.valores.reduce((acc, valor) => acc + valor, 0).toFixed(2))
+      || Number(item.cargaPrincipal?.valorComparacao || 0);
     const valorAlternativo = valoresUnicos.find((valor) => valor !== valorBase) || null;
     const cargaPrincipal = {
       ...(item.cargaPrincipal || {}),
@@ -2043,4 +2056,3 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
     </div>
   );
 }
-

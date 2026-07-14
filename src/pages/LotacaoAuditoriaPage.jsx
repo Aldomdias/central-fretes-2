@@ -415,12 +415,18 @@ function dadosResumoCteQuestionamento(cte = {}) {
   };
 }
 
-function diagnosticarQuestionamentoOperacao({ cte, viagem, tabelasCompativeis = [], tabelaSelecionada = null, sugestoesViagens = [], sugestoesVinculoTransportadora = [], sugestoesConsultadas = false, vinculos = [] }) {
+function diagnosticarQuestionamentoOperacao({ cte, viagem, tabelasCompativeis = [], tabelasTransportadora = [], tabelaSelecionada = null, sugestoesViagens = [], sugestoesVinculoTransportadora = [], sugestoesConsultadas = false, vinculos = [] }) {
   if (!cte) return [];
   const motivos = [];
 
   if (!tabelasCompativeis?.length) {
-    motivos.push('Tabela de lotação não encontrada com a mesma transportadora, origem e destino do CT-e.');
+    if (tabelasTransportadora?.length) {
+      motivos.push('Tabela de lotação da transportadora localizada, mas sem rota com a mesma origem e destino do CT-e.');
+    } else {
+      motivos.push('Tabela de lotação não encontrada para a transportadora do CT-e.');
+    }
+  } else if (!tabelaSelecionada) {
+    motivos.push('Tabela de lotação localizada para o CT-e, mas ainda não foi selecionada para validar contra a DIST/viagem.');
   } else if (tabelaSelecionada?.statusComparacao === 'DIVERGENTE') {
     motivos.push('Tabela de lotação encontrada, porém o valor diverge da DIST/base da auditoria.');
   }
@@ -442,6 +448,11 @@ function diagnosticarQuestionamentoOperacao({ cte, viagem, tabelasCompativeis = 
     if (!cteContidoNaViagemAuditoria(viagem, cte)) {
       motivos.push('A viagem/DIST selecionada não possui este CT-e na relação de CT-es do realizado.');
     }
+    if (tabelaSelecionada && !tabelaConfereComViagemAuditoria(tabelaSelecionada, viagem, vinculos)) {
+      motivos.push('A tabela localizada e a DIST/viagem selecionada não possuem a mesma transportadora, origem e destino.');
+    }
+  } else if (tabelaSelecionada || tabelasCompativeis?.length) {
+    motivos.push('Tabela de lotação localizada, mas nenhuma DIST/viagem correspondente foi selecionada no realizado.');
   }
 
   motivos.push('Necessidade de validação manual pela Operação.');
@@ -877,18 +888,15 @@ function consolidarViagens(cargas = []) {
     const base = registros[0] || {};
     const distLabel = distExibicao(base.dist) || base.dist || chave;
 
-    // Valor total da viagem: as linhas duplicadas trazem o MESMO total.
-    // Usamos o maior valor informado como total da viagem (= valor único
-    // quando todas as linhas coincidem). Nunca somamos as duplicatas.
-    const valoresInformados = [
-      ...new Set(
-        registros
-          .map((r) => Number(r.valorComparacao) || 0)
-          .filter((v) => v > 0)
-          .map((v) => Number(v.toFixed(2))),
-      ),
-    ].sort((a, b) => b - a);
-    const valorTotalViagem = valoresInformados[0] || 0;
+    // Valor total da viagem: quando a mesma DIST vem em 2 ou 3 linhas, cada
+    // linha representa uma parte da viagem. O saldo precisa considerar a soma.
+    const valoresInformados = registros
+      .map((r) => Number(r.valorComparacao) || 0)
+      .filter((v) => v > 0)
+      .map((v) => Number(v.toFixed(2)));
+    const valorTotalViagem = Number(
+      valoresInformados.reduce((acc, valor) => acc + valor, 0).toFixed(2),
+    );
 
     const ctesConsolidados = [
       ...new Set(
@@ -1220,12 +1228,12 @@ function tipoVeiculoCompativelAuditoria(alvo = '', candidato = '') {
 
 function montarFiltrosTabelaLotacaoAuditoria(viagem = {}, cte = {}) {
   return {
-    origem: viagem?.origem || cte?.cidade_origem || '',
-    ufOrigem: viagem?.ufOrigem || cte?.uf_origem || '',
-    destino: viagem?.destino || cte?.cidade_destino || '',
-    ufDestino: viagem?.ufDestino || cte?.uf_destino || '',
+    origem: cte?.cidade_origem || viagem?.origem || '',
+    ufOrigem: cte?.uf_origem || viagem?.ufOrigem || '',
+    destino: cte?.cidade_destino || viagem?.destino || '',
+    ufDestino: cte?.uf_destino || viagem?.ufDestino || '',
     tipo: viagem?.tipoVeiculo || '',
-    transportadora: viagem?.transportadora || cte?.transportadora || cte?.transportadora_contratada || '',
+    transportadora: cte?.transportadora || cte?.transportadora_contratada || viagem?.transportadora || '',
     transportadoraCte: cte?.transportadora || cte?.transportadora_contratada || '',
   };
 }
@@ -1301,6 +1309,55 @@ function scoreTabelaLotacaoAuditoria(item = {}, filtros = {}, vinculos = []) {
   if (item.valor) score += 5;
 
   return { ok: true, score, motivos };
+}
+
+function buscarTabelasTransportadoraAuditoria(tabelas = [], cte = {}, vinculos = []) {
+  const nomeCte = cte?.transportadora || cte?.transportadora_contratada || '';
+  if (!nomeCte) return [];
+
+  return (tabelas || [])
+    .filter((tabela) => {
+      const nomesTabela = [
+        tabela.nome,
+        tabela.transportadora,
+        ...(Array.isArray(tabela.linhas) ? tabela.linhas.slice(0, 20).map((linha) => linha.transportadora) : []),
+      ].filter(Boolean);
+
+      return nomesTabela.some((nomeTabela) => (
+        transportadorasEquivalentesAuditoria(nomeCte, nomeTabela, vinculos)
+      ));
+    })
+    .map((tabela) => ({
+      id: tabela.id,
+      nome: tabela.nome || tabela.transportadora || 'Tabela sem nome',
+      tipo: tabela.tipo || '',
+      totalLinhas: Number(tabela.totalLinhas || tabela.linhas?.length || 0),
+    }));
+}
+
+function tabelaConfereComViagemAuditoria(tabela = {}, viagem = {}, vinculos = []) {
+  if (!tabela || !viagem) return false;
+  const transportadoraOk = transportadorasEquivalentesAuditoria(
+    viagem.transportadora || '',
+    tabela.transportadora || tabela.tabelaNome || '',
+    vinculos,
+  );
+  const origemOk = rotaCompativelAuditoria(viagem.origem || '', tabela.origem || '')
+    && ufCompativelAuditoria(viagem.ufOrigem || '', tabela.ufOrigem || '');
+  const destinoOk = rotaCompativelAuditoria(viagem.destino || '', tabela.destino || '')
+    && ufCompativelAuditoria(viagem.ufDestino || '', tabela.ufDestino || '');
+  return transportadoraOk && origemOk && destinoOk;
+}
+
+function motivosBloqueioAuditoriaLotacao({ cte, viagem, tabelaSelecionada, vinculos = [] }) {
+  const motivos = [];
+  if (!cte) motivos.push('Busque e selecione um CT-e antes de auditar.');
+  if (!tabelaSelecionada) motivos.push('Selecione uma tabela de lotação localizada para o CT-e.');
+  if (!viagem) motivos.push('Selecione a DIST/viagem correspondente no realizado.');
+  if (tabelaSelecionada && viagem && !tabelaConfereComViagemAuditoria(tabelaSelecionada, viagem, vinculos)) {
+    motivos.push('Tabela de lotação e DIST/viagem não batem em transportadora, origem e destino.');
+  }
+  return motivos;
 }
 
 function compararTabelaComViagem(item = {}, viagem = {}, cte = {}) {
@@ -1459,8 +1516,16 @@ function CardCteEncontrado({ cte, onUsar }) {
   );
 }
 
-function ValidacaoTabelaLotacao({ resultados, viagem, tabelaSelecionada, onSelecionar }) {
+function ValidacaoTabelaLotacao({ resultados, viagem, tabelaSelecionada, tabelasTransportadora = [], onSelecionar }) {
   if (!resultados?.length) {
+    if (tabelasTransportadora.length) {
+      return (
+        <div className="hint-box compact">
+          Tabela de lotação localizada em Tabelas Lotação ({tabelasTransportadora.map((item) => `${item.nome}${item.totalLinhas ? `, ${item.totalLinhas} rota(s)` : ''}`).join(' / ')}), mas não há rota cadastrada com a mesma origem e destino do CT-e.
+        </div>
+      );
+    }
+
     return (
       <div className="hint-box compact">
         Tabela de lotação não encontrada com a mesma transportadora, origem e destino do CT-e.
@@ -3345,18 +3410,31 @@ export default function LotacaoAuditoriaPage() {
     [tabelasCompativeis, tabelaSelecionadaChave],
   );
 
+  const tabelasTransportadoraCte = useMemo(
+    () => buscarTabelasTransportadoraAuditoria(tabelasLotacao, cteSelecionado, vinculos),
+    [tabelasLotacao, cteSelecionado, vinculos],
+  );
+
   const tabelaAplicavel = tabelaSelecionada ? [tabelaSelecionada] : [];
 
   const motivosQuestionamentoOperacao = useMemo(() => diagnosticarQuestionamentoOperacao({
     cte: cteSelecionado,
     viagem: viagemParaAuditoria || viagemSelecionada,
     tabelasCompativeis,
+    tabelasTransportadora: tabelasTransportadoraCte,
     tabelaSelecionada,
     sugestoesViagens,
     sugestoesVinculoTransportadora,
     sugestoesConsultadas,
     vinculos,
-  }), [cteSelecionado, viagemParaAuditoria, viagemSelecionada, tabelasCompativeis, tabelaSelecionada, sugestoesViagens, sugestoesVinculoTransportadora, sugestoesConsultadas, vinculos]);
+  }), [cteSelecionado, viagemParaAuditoria, viagemSelecionada, tabelasCompativeis, tabelasTransportadoraCte, tabelaSelecionada, sugestoesViagens, sugestoesVinculoTransportadora, sugestoesConsultadas, vinculos]);
+
+  const bloqueiosAuditoria = useMemo(() => motivosBloqueioAuditoriaLotacao({
+    cte: cteSelecionado,
+    viagem: viagemParaAuditoria || viagemSelecionada,
+    tabelaSelecionada,
+    vinculos,
+  }), [cteSelecionado, viagemParaAuditoria, viagemSelecionada, tabelaSelecionada, vinculos]);
 
   const analiseLoteChaves = useMemo(
     () => analisarChavesCteLote(loteChavesTexto),
@@ -4381,6 +4459,7 @@ export default function LotacaoAuditoriaPage() {
               resultados={tabelasCompativeis}
               viagem={viagemParaAuditoria || viagemSelecionada}
               tabelaSelecionada={tabelaSelecionada}
+              tabelasTransportadora={tabelasTransportadoraCte}
               onSelecionar={(tabela) => {
                 setTabelaSelecionadaChave(chaveTabelaAuditoria(tabela));
                 setMensagem('Tabela de lotação selecionada para a auditoria.');
@@ -4393,6 +4472,7 @@ export default function LotacaoAuditoriaPage() {
               cte={cteSelecionado}
               viagem={viagemParaAuditoria || viagemSelecionada}
               tabelasCompativeis={tabelasCompativeis}
+              tabelasTransportadora={tabelasTransportadoraCte}
               tabelaSelecionada={tabelaSelecionada}
               motivos={motivosQuestionamentoOperacao}
               sugestoesConsultadas={sugestoesConsultadas}
@@ -4402,17 +4482,24 @@ export default function LotacaoAuditoriaPage() {
           )}
 
           <ResumoViagemCard viagem={viagemParaAuditoria} lancamentos={lancamentos} cte={cteSelecionado} tabelaAuditoria={tabelaAplicavel} />
-          <FormLancamento
-            key={`${viagemParaAuditoria?.id || 'sem-viagem'}-${viagemParaAuditoria?.valorComparacao || 0}`}
-            viagem={viagemParaAuditoria}
-            lancamentos={lancamentos}
-            solicitacoes={solicitacoes}
-            onRegistrar={registrarLancamento}
-            salvando={salvando}
-            usuarioAtual={usuarioAtual}
-            valorSugerido={cteSelecionado?.valor_cte}
-            cteSugerido={cteSelecionado?.numero_cte}
-          />
+          {viagemParaAuditoria && bloqueiosAuditoria.length ? (
+            <div className="hint-box compact error-text">
+              <strong>Auditoria bloqueada.</strong><br />
+              {bloqueiosAuditoria.join(' ')} Envie o questionamento para a Operação validar a informação correta.
+            </div>
+          ) : (
+            <FormLancamento
+              key={`${viagemParaAuditoria?.id || 'sem-viagem'}-${viagemParaAuditoria?.valorComparacao || 0}`}
+              viagem={viagemParaAuditoria}
+              lancamentos={lancamentos}
+              solicitacoes={solicitacoes}
+              onRegistrar={registrarLancamento}
+              salvando={salvando}
+              usuarioAtual={usuarioAtual}
+              valorSugerido={cteSelecionado?.valor_cte}
+              cteSugerido={cteSelecionado?.numero_cte}
+            />
+          )}
           <HistoricoLancamentos viagem={viagemParaAuditoria} lancamentos={lancamentos} />
           <MovimentosAutorizacao viagem={viagemParaAuditoria} solicitacoes={solicitacoes} />
         </>

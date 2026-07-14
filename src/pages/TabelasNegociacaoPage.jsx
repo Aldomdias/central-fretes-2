@@ -73,6 +73,9 @@ import {
   limparNegociacaoDaUrl,
   escreverEstadoUrlNegociacao,
 } from '../utils/negociacaoUrlState';
+import {
+  montarItensParaNegociacao,
+} from '../utils/negociacaoImportacaoMetric';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -3169,7 +3172,7 @@ export default function TabelasNegociacaoPage() {
                     <button className="sim-tab" type="button" onClick={function() { setMostrarPreview(function(p) { return !p; }); }} disabled={!formatado || lendoVerum || salvando}>{mostrarPreview ? 'Recolher' : 'Visualizar tabela'}</button>
                     <button className="sim-tab" type="button" onClick={function() { exportarXlsx(formatado ? formatado.cotacoes : [], 'fretes-negoc-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Fretes'); }} disabled={!formatado || lendoVerum || salvando}>Baixar fretes</button>
                     <button className="primary" type="button" onClick={function() {
-                      var itens = montarItensVerum(formatado);
+                      var itens = montarItensParaNegociacao(resultadoTemplate, 'ambos', selecionada);
                       salvarItens(itens, 'VERUM_ROTAS_FRETES', null, {
                         onProgress: reportarStatusImportacao,
                       });
