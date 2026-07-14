@@ -3449,9 +3449,28 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
         freteTabelaAtualPropria = numeroRealizado(itemTabelaAtualPropria.total);
       }
     }
+    const nomeBaseComparativaNorm = normalizarTransportadoraSimulador(filtros.transportadoraBaseRealizado || transportadoraSelecionada || '');
+    const transportadoraLinhaEhBaseComparativa = Boolean(
+      nomeBaseComparativaNorm
+      && (
+        transportadoraCompativelSimulador(row.transportadora || '', filtros.transportadoraBaseRealizado || transportadoraSelecionada)
+        || normalizarTransportadoraSimulador(row.transportadora || '') === nomeBaseComparativaNorm
+      )
+    );
+    const usarTabelaAtualComoBase = Boolean(
+      filtros.usarTabelaAtualComoBaseRealizado
+      && tabelaAtualTentada
+      && itemTabelaAtualPropria
+      && freteTabelaAtualPropria > 0
+      && transportadoraLinhaEhBaseComparativa
+    );
+    const freteBaseComparativa = usarTabelaAtualComoBase ? freteTabelaAtualPropria : valorCte;
+    const fonteBaseComparativa = usarTabelaAtualComoBase ? 'TABELA_ATUAL' : 'REALIZADO';
+    const rotuloBaseComparativa = usarTabelaAtualComoBase ? 'tabela atual' : 'realizado';
+
     const freteVenc = numeroRealizado(vencedor.total);
     freteVencedor += freteVenc;
-    savingVencedorVsReal += Math.max(valorCte - freteVenc, 0);
+    savingVencedorVsReal += Math.max(freteBaseComparativa - freteVenc, 0);
 
     let freteSel = 0;
     let economiaSelecionadaVsReal = 0;
@@ -3464,13 +3483,13 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       ctesComTabelaSelecionada += 1;
       freteSel = numeroRealizado(itemSelecionada.total);
       freteSelecionada += freteSel;
-      freteRealizadoComTabelaSelecionada += valorCte;
+      freteRealizadoComTabelaSelecionada += freteBaseComparativa;
       valorNFComTabelaSelecionada += nf;
-      economiaTabelaSelecionadaVsRealBruto = Math.max(valorCte - freteSel, 0);
+      economiaTabelaSelecionadaVsRealBruto = Math.max(freteBaseComparativa - freteSel, 0);
       savingTabelaSelecionadaVsRealBruto += economiaTabelaSelecionadaVsRealBruto;
 
       const temConcorrenteTabela = resultado.length > 1;
-      const ganhaVsRealizado = freteSel > 0 && valorCte > 0 && freteSel < valorCte;
+      const ganhaVsRealizado = freteSel > 0 && freteBaseComparativa > 0 && freteSel < freteBaseComparativa;
       const ganhaVsConcorrencia = Number(itemSelecionada.ranking) === 1;
 
       // Contagem completa (nao limitada aos 3000 CT-es do ctesDetalhes, que e
@@ -3492,7 +3511,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
         statusSelecionada = 'Ganharia';
         economiaSelecionadaVsReal = economiaTabelaSelecionadaVsRealBruto;
         savingSelecionadaVsReal += economiaSelecionadaVsReal;
-        freteRealizadoGanhariaSelecionada += valorCte;
+        freteRealizadoGanhariaSelecionada += freteBaseComparativa;
         freteSelecionadaGanhadora += freteSel;
         valorNFGanhariaSelecionada += nf;
         pesoGanhariaSelecionada += pesoLinha;
@@ -3503,7 +3522,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
         statusSelecionada = 'Perderia';
 
         const referenciasPerda = [
-          valorCte > 0 ? valorCte : null,
+          freteBaseComparativa > 0 ? freteBaseComparativa : null,
           temConcorrenteTabela && freteVenc > 0 ? freteVenc : null,
         ].filter((valor) => Number(valor) > 0);
         const referenciaPerda = referenciasPerda.length ? Math.min(...referenciasPerda) : freteVenc;
@@ -3532,7 +3551,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 
     if (deveMedirRetencaoSelecionada && itemSelecionada && selecionadaJaCarregava) {
       ctesRetidosSelecionada += 1;
-      freteRealizadoRetidoSelecionada += valorCte;
+      freteRealizadoRetidoSelecionada += freteBaseComparativa;
       freteTabelaAtualPropriaRetida += freteTabelaAtualPropria;
       freteSelecionadaRetida += freteSel;
       valorNFRetidoSelecionada += nf;
@@ -3548,13 +3567,13 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 
     if (capturouDaTransportadoraAtual) {
       metricaReal.ctesCedidosSelecionada += 1;
-      metricaReal.freteCedidoSelecionada += valorCte;
+      metricaReal.freteCedidoSelecionada += freteBaseComparativa;
       metricaReal.freteTabelaCapturadoSelecionada += freteSel;
       metricaReal.valorNFCedidoSelecionada += nf;
       metricaReal.pesoCedidoSelecionada += pesoLinha;
       metricaReal.volumesCedidosSelecionada += vol;
       ctesCapturadosDeOutras += 1;
-      freteCapturadoRealizado += valorCte;
+      freteCapturadoRealizado += freteBaseComparativa;
       freteCapturadoTabela += freteSel;
       valorNFCapturado += nf;
       pesoCapturado += pesoLinha;
@@ -3569,12 +3588,12 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     rota.volumes += vol;
     rota.peso += pesoLinha;
     rota.valorNF += nf;
-    rota.freteRealizado += valorCte;
+    rota.freteRealizado += freteBaseComparativa;
     rota.freteSelecionada += freteSel;
     rota.freteVencedor += freteVenc;
     rota.savingSelecionada += economiaSelecionadaVsReal;
     rota.savingTabelaSelecionadaBruto += economiaTabelaSelecionadaVsRealBruto;
-    rota.savingVencedor += Math.max(valorCte - freteVenc, 0);
+    rota.savingVencedor += Math.max(freteBaseComparativa - freteVenc, 0);
     rota.diferencaParaVencedor += diferencaVencedor;
     rota.concorrentesSoma += resultado.length;
 
@@ -3583,7 +3602,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       if (statusSelecionada === 'Ganharia') {
         rota.qtdGanhasSelecionada += 1;
         rota.freteSelecionadaGanhadora += freteSel;
-        rota.freteRealizadoGanharia += valorCte;
+        rota.freteRealizadoGanharia += freteBaseComparativa;
         rota.valorNFGanharia += nf;
         rota.savingGanhasSelecionada += economiaSelecionadaVsReal;
       } else {
@@ -3609,6 +3628,9 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       canal,
       transportadoraReal: row.transportadora || '',
       freteRealizado: valorCte,
+      freteBaseComparativa,
+      fonteBaseComparativa,
+      rotuloBaseComparativa,
       freteTabelaAtualPropria,
       tabelaAtualDetalhes: itemTabelaAtualPropria?.detalhes || null,
       tabelaAtualNome: itemTabelaAtualPropria?.transportadora || '',
@@ -3626,11 +3648,12 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       limiteCubagemTracking: numeroRealizado(row.limiteCubagemTracking),
       valorNF: nf,
       percentualFreteRealizado: nf ? (valorCte / nf) * 100 : 0,
+      percentualFreteBaseComparativa: nf ? (freteBaseComparativa / nf) * 100 : 0,
       percentualFreteSelecionada: nf && freteSel ? (freteSel / nf) * 100 : 0,
       percentualFreteVencedor: nf && freteVenc ? (freteVenc / nf) * 100 : 0,
-      variacaoPctFreteSelecionada: nf && valorCte && freteSel ? (((freteSel / nf) / (valorCte / nf)) - 1) * 100 : 0,
+      variacaoPctFreteSelecionada: nf && freteBaseComparativa && freteSel ? (((freteSel / nf) / (freteBaseComparativa / nf)) - 1) * 100 : 0,
       savingTabelaSelecionadaBruto: economiaTabelaSelecionadaVsRealBruto,
-      savingVencedor: Math.max(valorCte - freteVenc, 0),
+      savingVencedor: Math.max(freteBaseComparativa - freteVenc, 0),
       trackingMatch: Boolean(row.trackingMatch),
       trackingOrigemVinculo: row.trackingOrigemVinculo || '',
       trackingLinhas: Number(row.trackingLinhas || 0),
@@ -3650,7 +3673,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       // derruba o navegador.
       vencedorDetalhes: vencedor?.detalhes || null,
       selecionadaDetalhes: itemSelecionada?.detalhes || null,
-      ganhouRealizado: freteSel > 0 && valorCte > 0 && freteSel < valorCte,
+      ganhouRealizado: freteSel > 0 && freteBaseComparativa > 0 && freteSel < freteBaseComparativa,
       todosResultados: resultado.slice(0, 8).map((r) => ({
         transportadora: r.transportadora,
         total: r.total,
@@ -4169,6 +4192,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [compararTabelaAtualReajuste, setCompararTabelaAtualReajuste] = useState(
     () => localStorage.getItem('sim-comparar-tabela-atual-reajuste') === '1'
   );
+  const [usarTabelaAtualComoBaseRealizado, setUsarTabelaAtualComoBaseRealizado] = useState(
+    () => localStorage.getItem('sim-usar-tabela-atual-como-base-realizado') === '1'
+  );
   const [tabelaAtualReajusteOverride, setTabelaAtualReajusteOverride] = useState(
     () => localStorage.getItem('sim-tabela-atual-reajuste-nome') || ''
   );
@@ -4179,6 +4205,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
   useEffect(() => {
     localStorage.setItem('sim-comparar-tabela-atual-reajuste', compararTabelaAtualReajuste ? '1' : '0');
   }, [compararTabelaAtualReajuste]);
+  useEffect(() => {
+    localStorage.setItem('sim-usar-tabela-atual-como-base-realizado', usarTabelaAtualComoBaseRealizado ? '1' : '0');
+  }, [usarTabelaAtualComoBaseRealizado]);
   useEffect(() => {
     localStorage.setItem('sim-tabela-atual-reajuste-nome', tabelaAtualReajusteOverride);
   }, [tabelaAtualReajusteOverride]);
@@ -6129,6 +6158,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             compararComProprioRealizado: ehReajusteSelecionado,
             transportadoraBaseRealizado: transportadoraBaseReajuste,
             compararTabelaAtualReajuste,
+            usarTabelaAtualComoBaseRealizado,
           },
           cidadePorIbge: cidadePorIbgeCompleto,
           gradePorCanal: grade,
@@ -6217,6 +6247,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           compararComProprioRealizado: ehReajusteSelecionado,
           transportadoraBaseRealizado: transportadoraBaseReajuste,
           compararTabelaAtualReajuste,
+          usarTabelaAtualComoBaseRealizado,
           origemTabelaAtualReajuste: origemAtualReajusteOverride,
           ignorarCubagem: usarPesoCteRealizado,
           percentualContingenciaPeso: percentualContingenciaPesoRealizado,
@@ -6260,6 +6291,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           transportadoraBaseRealizado: transportadoraBaseReajuste,
           compararComProprioRealizado: ehReajusteSelecionado,
           compararTabelaAtualReajuste,
+          usarTabelaAtualComoBaseRealizado,
           compararConcorrentes: deveCompararConcorrentes,
           canal: ctx.canal,
           modo: ctx.modo,
@@ -8411,15 +8443,29 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   <input
                     type="checkbox"
                     checked={compararTabelaAtualReajuste}
-                    onChange={(event) => setCompararTabelaAtualReajuste(event.target.checked)}
+	                    onChange={(event) => {
+	                      setCompararTabelaAtualReajuste(event.target.checked);
+	                      if (!event.target.checked) setUsarTabelaAtualComoBaseRealizado(false);
+	                    }}
                   />
-                  Comparar com a tabela atual calculada (em vez do valor pago)
+	                  Calcular tabela atual/vigente para comparar
                 </label>
                 <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: -2 }}>
                   Padrão: compara a tabela nova contra o valor que foi realmente cobrado no passado (pode incluir erro de cobrança). Marque para comparar tabela x tabela — recalcula o valor pela tabela atual/vigente usando os mesmos dados reais (peso, NF, rota), sem usar o valor pago como base.
                 </div>
                 {compararTabelaAtualReajuste && (
                   <div style={{ marginTop: 4, display: 'grid', gap: 4 }}>
+                    <label className="sim-flag" style={{ fontWeight: 600 }}>
+                      <input
+                        type="checkbox"
+                        checked={usarTabelaAtualComoBaseRealizado}
+                        onChange={(event) => setUsarTabelaAtualComoBaseRealizado(event.target.checked)}
+                      />
+                      Usar tabela atual como base (simulado x simulado atual)
+                    </label>
+                    <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: -2 }}>
+                      Vale apenas para CT-es da transportadora analisada. Para as demais transportadoras, o simulador continua usando o frete realizado.
+                    </div>
                     <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Tabela atual/vigente (cadastrada) a usar na comparação:</span>
                     <div style={{ maxWidth: 340 }}>
                       <ComboBuscavel
@@ -9722,7 +9768,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                           <tr>
                             <th></th><th>#</th><th>CT-e</th><th>Data</th><th>Origem</th><th>Destino/UF</th>
                             <th>Transp. real</th><th>Peso</th><th>Cubagem</th><th>Valor NF</th><th>Vol.</th>
-                            <th>Frete realizado</th><th>% NF real</th>
+	                            <th>Frete base</th><th>% NF base</th>
                             <th>Tabela selecionada</th><th>% NF tabela</th>
                             <th>Melhor tabela</th><th>Frete melhor tabela</th><th>% NF melhor</th>
                             <th>Status</th><th>Rank</th><th>Redução</th><th>Conc.</th>
@@ -9736,11 +9782,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             const totalPaginas = Math.ceil(filtrados.length / DETALHE_POR_PAGINA);
                             const pagina = Math.min(paginaDetalhe, Math.max(0, totalPaginas - 1));
                             const slice = filtrados.slice(pagina * DETALHE_POR_PAGINA, (pagina + 1) * DETALHE_POR_PAGINA);
-                            return slice.map((item, index) => {
-                              const key = `${item.cte}-${pagina * DETALHE_POR_PAGINA + index}`;
-                              const expandido = linhasExpandidas.has(key);
-                              const statusC = statusCombinadoCte(item);
-                              const bgRow = statusC.label === 'Ganha tudo' ? '#f0fdf4' : statusC.label === 'Ganha realizado' ? '#fffbeb' : statusC.label === 'Acima do realizado' ? '#fff7f0' : statusC.label === 'Perde tudo' ? '#fff7f0' : undefined;
+	                            return slice.map((item, index) => {
+	                              const key = `${item.cte}-${pagina * DETALHE_POR_PAGINA + index}`;
+	                              const expandido = linhasExpandidas.has(key);
+	                              const statusC = statusCombinadoCte(item);
+	                              const freteBaseLinha = Number(item.freteBaseComparativa || item.freteRealizado || 0);
+	                              const percentualBaseLinha = Number(item.percentualFreteBaseComparativa || item.percentualFreteRealizado || 0);
+	                              const bgRow = statusC.label === 'Ganha tudo' ? '#f0fdf4' : statusC.label === 'Ganha realizado' ? '#fffbeb' : statusC.label === 'Acima do realizado' ? '#fff7f0' : statusC.label === 'Perde tudo' ? '#fff7f0' : undefined;
                               return (
                                 <>
                                   <tr key={key}
@@ -9758,8 +9806,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                     <td style={{ textAlign: 'right' }}>{Number(item.cubagem || 0).toFixed(4)}</td>
                                     <td style={{ textAlign: 'right' }}>{formatMoney(item.valorNF)}</td>
                                     <td style={{ textAlign: 'right' }}>{Number(item.volumes || 0).toLocaleString('pt-BR')}{item.trackingMatch ? ' ✓' : ''}</td>
-                                    <td style={{ textAlign: 'right' }}><strong>{formatMoney(item.freteRealizado)}</strong></td>
-                                    <td style={{ textAlign: 'right', color: item.percentualFreteRealizado < 1 ? '#dc2626' : undefined }}>{formatPercent(item.percentualFreteRealizado)}</td>
+	                                    <td style={{ textAlign: 'right' }}><strong>{formatMoney(freteBaseLinha)}</strong></td>
+	                                    <td style={{ textAlign: 'right', color: percentualBaseLinha < 1 ? '#dc2626' : undefined }}>{formatPercent(percentualBaseLinha)}</td>
                                     <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatMoney(item.freteSelecionada) : <span style={{ color: '#94a3b8' }}>—</span>}</td>
                                     <td style={{ textAlign: 'right' }}>{item.freteSelecionada ? formatPercent(item.percentualFreteSelecionada) : '—'}</td>
                                     <td style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.vencedor || '-'}</td>
