@@ -9133,6 +9133,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 const impactoPercentualReajuste = Number(impactoReajuste.impactoPercentual || (valorAtualReajuste ? (impactoValorReajuste / valorAtualReajuste) * 100 : 0));
                 const impactoMensalReajuste = Number(impactoReajuste.impactoMensal || (resultadoRealizado.meses ? impactoValorReajuste / resultadoRealizado.meses : impactoValorReajuste));
                 const impactoAnualReajuste = Number(impactoReajuste.impactoAnual || impactoMensalReajuste * 12);
+                const mesesAnalise = Math.max(1, Number(resultadoRealizado.meses || 1));
+                const perdaNaoAderenciaMensal = Number(aderenciaAtual.perdaNaoAderencia || 0) / mesesAnalise;
                 const faturamentoTotalRotas = Number(resultadoRealizado.freteSelecionada || 0);
                 const faturamentoProjetado = Number(
                   ehReajusteResultado
@@ -9188,7 +9190,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       <>
                         <div style={{ margin: '12px 0 6px', fontSize: '0.82rem', fontWeight: 800, color: '#0f172a' }}>1. Aderencia a tabela atual</div>
                         <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
-                          <div className="summary-card"><span>Perda por nao aderencia</span><strong>{formatMoney(aderenciaAtual.perdaNaoAderencia || 0)}</strong><small>{formatMoney(aderenciaAtual.fretePotencialRealizado || 0)} - {formatMoney(aderenciaAtual.fretePotencialAtual || 0)}</small></div>
+                          <div className="summary-card"><span>Perda por nao aderencia</span><strong>{formatMoney(aderenciaAtual.perdaNaoAderencia || 0)}</strong><small>{formatMoney(perdaNaoAderenciaMensal)} / mes no periodo analisado</small></div>
                           <div className="summary-card"><span>Deveria ter carregado</span><strong>{Number(aderenciaAtual.ctesPotenciais || 0).toLocaleString('pt-BR')} CT-es</strong><small>{Number(aderenciaAtual.ctesAderentes || 0).toLocaleString('pt-BR')} carregou; {Number(aderenciaAtual.ctesNaoAderentes || 0).toLocaleString('pt-BR')} deveriam ter carregado para evitar a perda</small></div>
                           <div className="summary-card"><span>Se usasse a tabela atual</span><strong>{formatMoney(aderenciaAtual.fretePotencialAtual || 0)}</strong><small>transportadora analisada nas cargas potenciais</small></div>
                           <div className="summary-card"><span>Valor pago/base comparativa</span><strong>{formatMoney(aderenciaAtual.fretePotencialRealizado || 0)}</strong><small>na propria transportadora usa tabela atual; nas demais usa realizado</small></div>
