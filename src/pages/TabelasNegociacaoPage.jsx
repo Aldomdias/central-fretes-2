@@ -1023,6 +1023,26 @@ export default function TabelasNegociacaoPage() {
     return { rotas: rotas.length, cotacoes: cotacoes.length, ufs: ufs.size, parcial: false };
   }, [itensSelecionada, itensCarregamentoParcial, selecionada]);
 
+  // ROTA (linha técnica) não carrega taxa/percentual/etc próprios — quem tem o
+  // preço é a COTAÇÃO/FAIXA com o mesmo nome (ex.: "RJ", "ES", "MG"). Sem isso,
+  // a tela mostrava zero em tudo pras 229 rotas e parecia que "não achou nada",
+  // quando na verdade a cotação está vinculada por nome, só não aparecia na tabela.
+  const cotacaoPorTag = useMemo(function() {
+    var mapa = new Map();
+    (itensSelecionada || []).forEach(function(item) {
+      if (getTipoItem(item) === 'ROTA') return;
+      var tag = normalizarTexto(item.observacao || (item.faixa_peso || '').split('|')[0]).trim();
+      if (tag && !mapa.has(tag)) mapa.set(tag, item);
+    });
+    return mapa;
+  }, [itensSelecionada]);
+
+  function cotacaoResolvidaDaRota(item) {
+    if (getTipoItem(item) !== 'ROTA') return null;
+    var tag = normalizarTexto(item.observacao || '').trim();
+    return tag ? cotacaoPorTag.get(tag) || null : null;
+  }
+
   const itensOrigemDivergente = useMemo(function() {
     if (!selecionada || !itensSelecionada.length) return null;
     var divergentes = itensSelecionada.filter(function(item) {
@@ -3648,24 +3668,30 @@ export default function TabelasNegociacaoPage() {
                   </thead>
                   <tbody>
                     {itensFiltrados.slice(0, 120).map(function(item) {
+                      var cotacaoResolvida = cotacaoResolvidaDaRota(item);
+                      // Rota usa a taxa/percentual/etc da COTAÇÃO/FAIXA vinculada pelo
+                      // mesmo nome (ex.: "RJ"), já que a linha técnica não tem preço próprio.
+                      var itemExibicao = cotacaoResolvida || item;
                       return (
                         <tr key={item.id} style={itemSemDestino(item) ? { background: '#fff3cd' } : undefined}>
                           <td>
                             <strong>{labelTipoItem(item)}</strong>
                             {getTipoItem(item) === 'ROTA' ? (
-                              <div style={{ fontSize: 11, color: '#64748b' }}>linha técnica</div>
+                              <div style={{ fontSize: 11, color: '#64748b' }}>
+                                {cotacaoResolvida ? 'usa cotação: ' + (item.observacao || '-') : 'linha técnica — sem cotação vinculada'}
+                              </div>
                             ) : null}
                           </td>
                           <td>{origemItem(item)}</td>
                           <td>{destinoItem(item)}</td>
-                          <td>{item.faixa_peso || '-'}</td>
-                          <td>{Number(item.peso_inicial || 0).toLocaleString('pt-BR')}</td>
-                          <td>{Number(item.peso_final || 0).toLocaleString('pt-BR')}</td>
-                          <td>{formatMoney(item.taxa_aplicada)}</td>
-                          <td>{Number(item.frete_percentual || 0).toFixed(4)}</td>
-                          <td>{Number(item.advalorem || 0).toFixed(4)}</td>
-                          <td>{Number(item.excesso_kg || 0) > 0 || Number(item.valor_excedente || 0) > 0 ? (
-                            <span>{Number(item.excesso_kg || 0).toLocaleString('pt-BR')} kg · {formatMoney(item.valor_excedente)}</span>
+                          <td>{getTipoItem(item) === 'ROTA' ? (item.observacao || item.faixa_peso || '-') : (item.faixa_peso || '-')}</td>
+                          <td>{Number(itemExibicao.peso_inicial || 0).toLocaleString('pt-BR')}</td>
+                          <td>{Number(itemExibicao.peso_final || 0).toLocaleString('pt-BR')}</td>
+                          <td>{formatMoney(itemExibicao.taxa_aplicada)}</td>
+                          <td>{Number(itemExibicao.frete_percentual || 0).toFixed(4)}</td>
+                          <td>{Number(itemExibicao.advalorem || 0).toFixed(4)}</td>
+                          <td>{Number(itemExibicao.excesso_kg || 0) > 0 || Number(itemExibicao.valor_excedente || 0) > 0 ? (
+                            <span>{Number(itemExibicao.excesso_kg || 0).toLocaleString('pt-BR')} kg · {formatMoney(itemExibicao.valor_excedente)}</span>
                           ) : '-'}</td>
                           <td>{item.prazo || '-'}</td>
                         </tr>

@@ -481,6 +481,13 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
   const [aplicandoReajuste, setAplicandoReajuste] = useState(false);
   const rows = origem[secao] || [];
   const inputRef = useRef(null);
+  const [filtroTexto, setFiltroTexto] = useState('');
+
+  const rowsFiltradas = useMemo(() => {
+    const termo = normalizeText(filtroTexto);
+    if (!termo) return rows;
+    return rows.filter((row) => columns.some((c) => normalizeText(row[c.key]).includes(termo)));
+  }, [rows, filtroTexto, columns]);
 
   const colunasReajustaveis = columns.filter((c) => c.key !== 'rota');
 
@@ -552,6 +559,14 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
       </div>
       {hint ? <div className="hint-box">{hint}</div> : null}
       {feedback ? <div className={`mini-feedback ${feedback.type}`}>{feedback.text}</div> : null}
+      <input
+        type="text"
+        value={filtroTexto}
+        onChange={(e) => setFiltroTexto(e.target.value)}
+        placeholder={`Filtrar ${title.toLowerCase()} (rota, cidade, IBGE, UF...)`}
+        style={{ width: '100%', maxWidth: 420, marginBottom: 10 }}
+      />
+      {filtroTexto ? <p className="compact">{rowsFiltradas.length} de {rows.length} {title.toLowerCase()} encontrada(s)</p> : null}
       {reajustePanelOpen ? (
         <div className="hint-box" style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-end' }}>
           {colunasReajustaveis.map((c) => (
@@ -579,7 +594,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
         <table>
           <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}<th></th></tr></thead>
           <tbody>
-            {rows.length ? rows.map((row) => (
+            {rowsFiltradas.length ? rowsFiltradas.map((row) => (
               <tr key={row.id}>
                 {columns.map((c) => <td key={c.key}>{row[c.key] ?? '—'}</td>)}
                 <td className="row-actions">
@@ -587,7 +602,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
                   <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, secao, row.id)}>🗑</ActionIcon>
                 </td>
               </tr>
-            )) : <tr><td colSpan={columns.length + 1} className="empty-cell">Nenhum registro cadastrado.</td></tr>}
+            )) : <tr><td colSpan={columns.length + 1} className="empty-cell">{filtroTexto ? 'Nenhum registro encontrado para o filtro.' : 'Nenhum registro cadastrado.'}</td></tr>}
           </tbody>
         </table>
       </div>

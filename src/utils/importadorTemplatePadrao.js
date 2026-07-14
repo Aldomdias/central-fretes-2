@@ -566,12 +566,28 @@ function indexarRotasPorCotacao(rotas = []) {
   return mapa;
 }
 
+// Quando uma cotação (ex.: "MG") cobre várias rotas/destinos, escolhe a rota
+// do UF mais frequente entre as compatíveis para representar a cotação na
+// tela — em vez da primeira encontrada, que pode ser uma exceção isolada
+// (ex.: 1 rota "MG" com IBGE de destino em GO, cadastrada errada na origem)
+// e dava a impressão de que a cotação regional "achou o destino errado".
+function rotaRepresentativa(candidatas) {
+  if (!candidatas.length) return null;
+  const contagemPorUf = new Map();
+  candidatas.forEach((r) => {
+    const uf = r.ufDestino || '';
+    contagemPorUf.set(uf, (contagemPorUf.get(uf) || 0) + 1);
+  });
+  const ufMaisComum = [...contagemPorUf.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+  return candidatas.find((r) => r.ufDestino === ufMaisComum) || candidatas[0];
+}
+
 function expandirFretesPorRotas(fretes, rotas) {
   const rotasPorCotacao = indexarRotasPorCotacao(rotas);
 
   return (fretes || []).map((frete) => {
-    const candidatas = rotasPorCotacao.get(chaveBuscaFrete(frete)) || [];
-    const rota = candidatas.find((r) => cotacaoCompativel(frete, r)) || null;
+    const candidatas = (rotasPorCotacao.get(chaveBuscaFrete(frete)) || []).filter((r) => cotacaoCompativel(frete, r));
+    const rota = rotaRepresentativa(candidatas);
 
     if (!rota) return frete;
 
@@ -645,7 +661,12 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
     .map((linha, indice) => normalizarRota(linha, indice))
     .filter(Boolean);
 
-  const rotasPorChave = new Map();
+  // Uma cotação (ex.: "Rota MG") pode casar com dezenas de rotas de destinos
+  // diferentes. Guardar TODAS por chave (não só a última lida) e escolher a
+  // representativa pela UF mais frequente evita que 1 rota cadastrada errada
+  // no meio do arquivo (ex.: "Rota MG" com IBGE de destino em GO) vire o
+  // destino "adivinhado" pra cotação inteira.
+  const rotasPorChaveMulti = new Map();
 
   rotas.forEach((rota) => {
     [
@@ -654,8 +675,15 @@ export async function importarTemplatePadraoSeparado({ arquivoRotas, arquivoFret
       rota.cotacaoBase,
       montarNomeRota(rota),
     ].filter(Boolean).forEach((chave) => {
-      rotasPorChave.set(montarChaveRota(chave), rota);
+      const chaveNorm = montarChaveRota(chave);
+      if (!rotasPorChaveMulti.has(chaveNorm)) rotasPorChaveMulti.set(chaveNorm, []);
+      rotasPorChaveMulti.get(chaveNorm).push(rota);
     });
+  });
+
+  const rotasPorChave = new Map();
+  rotasPorChaveMulti.forEach((lista, chave) => {
+    rotasPorChave.set(chave, rotaRepresentativa(lista));
   });
 
   await reportarProgresso(onProgress, `Normalizando fretes (${rotas.length} rotas lidas)...`);

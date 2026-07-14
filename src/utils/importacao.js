@@ -451,14 +451,20 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
       if (tipo === 'cotacoes') {
         const rota = String(firstFilled(row, ['rota do frete', 'rota', 'nome rota', 'cotacao'])).trim();
         if (!rota) throw new Error('Rota do frete não informada.');
+        const tipoCalculoCotacao = inferTipoCalculoCotacao(row);
+        const excessoValor = toNumber(firstFilled(row, ['excesso de peso', 'excesso']));
         container.origem.cotacoes.push({
           rota,
           regraCalculo: String(firstFilled(row, ['regra de calculo'])).trim(),
-          tipoCalculo: inferTipoCalculoCotacao(row),
+          tipoCalculo: tipoCalculoCotacao,
           pesoMin: toNumber(firstFilled(row, ['peso minimo', 'peso min'])),
           pesoMax: toNumber(firstFilled(row, ['peso limite', 'peso maximo', 'peso max'])),
-          excesso: toNumber(firstFilled(row, ['excesso de peso', 'excesso'])),
-          rsKg: 0,
+          excesso: excessoValor,
+          // Em tabelas "Maior valor" (PERCENTUAL), a coluna "Excesso de peso" do
+          // Verum é a taxa R$/kg garantia (o motor de cálculo lê rsKg pra esse
+          // comparador) — não o R$/kg de excedente de FAIXA_DE_PESO. Sem isso,
+          // o componente "kg garantia" nunca competia (sempre ficava R$0,00).
+          rsKg: tipoCalculoCotacao === 'PERCENTUAL' ? excessoValor : 0,
           valorFixo: toNumber(firstFilled(row, ['taxa aplicada', 'valor faixa', 'valor fixo'])),
           percentual: toNumber(firstFilled(row, ['frete percentual', 'percentual'])),
           freteMinimo: toNumber(firstFilled(row, ['frete minimo', 'minimo'])),

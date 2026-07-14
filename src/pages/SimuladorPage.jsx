@@ -1009,6 +1009,7 @@ function ResultadoCard({ item }) {
             <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
               <div>Tipo de cálculo: <strong>{item.detalhes?.frete?.tipoCalculo}</strong></div>
               <div>Prazo: <strong>{item.detalhes?.prazo} dia(s)</strong></div>
+              <div>Rota/cotação: <strong>{item.detalhes?.frete?.rotaNome || '—'}</strong></div>
               <div>Faixa aplicada: <strong>{item.detalhes?.frete?.faixaPeso}</strong></div>
               <div>Peso informado: <strong>{item.detalhes?.frete?.pesoInformado} kg</strong></div>
               <div>Peso da grade: <strong>{item.detalhes?.frete?.pesoGrade} kg</strong></div>
@@ -1606,8 +1607,13 @@ function registroDaTransportadoraBaseSimulador(row = {}, transportadoraBase = ''
   });
 }
 
-function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, transportadoraBase = '', compararConcorrentes = false) {
-  const valorAtual = numeroRealizado(resultado.freteRealizadoRetidoSelecionada || 0);
+function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, transportadoraBase = '', compararConcorrentes = false, compararTabelaAtual = false) {
+  // Modo "comparar por tabela": em vez de usar o valor efetivamente pago (que
+  // pode carregar erro de cobrança do passado e distorcer a análise), usa o
+  // valor que a TABELA ATUAL/vigente calcularia pros mesmos dados reais
+  // (peso, NF, rota) — tabela x tabela, tirando o viés de cobrança errada.
+  const usarTabelaAtual = Boolean(compararTabelaAtual);
+  const valorAtual = numeroRealizado((usarTabelaAtual ? resultado.freteTabelaAtualPropriaRetida : resultado.freteRealizadoRetidoSelecionada) || 0);
   const valorNovo = numeroRealizado(resultado.freteSelecionadaRetida || 0);
   const impactoValor = valorNovo - valorAtual;
   const impactoPercentual = valorAtual ? (impactoValor / valorAtual) * 100 : 0;
@@ -1617,6 +1623,12 @@ function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, 
   const qtdComTabela = Number(resultado.ctesComTabelaSelecionada || 0);
   const qtdAnalisados = Number(resultado.ctesAnalisados || 0);
   const detalhes = Array.isArray(resultado.ctesDetalhes) ? resultado.ctesDetalhes : [];
+  // Cobertura da comparação por tabela: quantos CT-es (na amostra de detalhes)
+  // realmente acharam uma cotação na tabela atual vs quantos caíram no
+  // fallback (usam o valor pago por falta de cadastro) — pra não passar a
+  // falsa impressão de que TODOS os CT-es foram recalculados de verdade.
+  const tabelaAtualTentativas = usarTabelaAtual ? detalhes.filter((d) => d.tabelaAtualTentada).length : 0;
+  const tabelaAtualEncontradas = usarTabelaAtual ? detalhes.filter((d) => d.tabelaAtualDetalhes).length : 0;
   const porRota = new Map();
 
   detalhes.forEach((item) => {
@@ -1643,7 +1655,7 @@ function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, 
     atual.ctes += 1;
     atual.volumes += numeroRealizado(item.volumes);
     atual.valorNF += numeroRealizado(item.valorNF);
-    atual.freteAtual += numeroRealizado(item.freteRealizado);
+    atual.freteAtual += numeroRealizado(usarTabelaAtual ? item.freteTabelaAtualPropria : item.freteRealizado);
     atual.freteNovo += numeroRealizado(item.freteSelecionada);
     if (registroDaTransportadoraBaseSimulador(item, transportadoraBase) || item.ganhouRealizado) atual.ganhosAtuais += 1;
     if (item.statusSelecionada === 'Ganharia') atual.ganhosProjetados += 1;
@@ -1685,6 +1697,9 @@ function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, 
       impactoPercentual,
       impactoMensal,
       impactoAnual,
+      usarTabelaAtual,
+      tabelaAtualTentativas,
+      tabelaAtualEncontradas,
       fretePctAtual: numeroRealizado(resultado.percentualFreteRealizadoComTabela || resultado.percentualFreteRealizado || 0),
       fretePctNovo: numeroRealizado(resultado.percentualFreteSelecionadaComTabela || resultado.percentualFreteSelecionada || 0),
       ctesAtual: numeroRealizado(resultado.ctesRetidosSelecionada),
@@ -3074,7 +3089,7 @@ const CAMPOS_SOMA_RESULTADO_SALVO = [
   'savingSelecionadaVsReal', 'savingTabelaSelecionadaVsRealBruto', 'savingVencedorVsReal',
   'freteRealizadoGanhariaSelecionada', 'freteSelecionadaGanhadora', 'valorNFGanhariaSelecionada',
   'pesoGanhariaSelecionada', 'volumesGanhariaSelecionada', 'cubagemGanhariaSelecionada',
-  'ctesRetidosSelecionada', 'freteRealizadoRetidoSelecionada', 'freteSelecionadaRetida',
+  'ctesRetidosSelecionada', 'freteRealizadoRetidoSelecionada', 'freteTabelaAtualPropriaRetida', 'freteSelecionadaRetida',
   'valorNFRetidoSelecionada', 'pesoRetidoSelecionada', 'volumesRetidosSelecionada', 'cubagemRetidaSelecionada',
   'diferencaSelecionadaVsVencedor', 'ctesCapturadosDeOutras', 'freteCapturadoRealizado',
   'freteCapturadoTabela', 'valorNFCapturado', 'pesoCapturado', 'volumesCapturados', 'cubagemCapturada',
@@ -3201,7 +3216,7 @@ const CAMPOS_ESCALARES_SIMULACAO_REALIZADO = [
   'savingSelecionadaVsReal', 'savingTabelaSelecionadaVsRealBruto', 'savingVencedorVsReal',
   'freteRealizadoGanhariaSelecionada', 'freteSelecionadaGanhadora', 'valorNFGanhariaSelecionada',
   'pesoGanhariaSelecionada', 'volumesGanhariaSelecionada', 'cubagemGanhariaSelecionada',
-  'ctesRetidosSelecionada', 'freteRealizadoRetidoSelecionada', 'freteSelecionadaRetida',
+  'ctesRetidosSelecionada', 'freteRealizadoRetidoSelecionada', 'freteTabelaAtualPropriaRetida', 'freteSelecionadaRetida',
   'valorNFRetidoSelecionada', 'pesoRetidoSelecionada', 'volumesRetidosSelecionada', 'cubagemRetidaSelecionada',
   'diferencaSelecionadaVsVencedor', 'reducaoNecessariaSoma', 'ctesCapturadosDeOutras',
   'freteCapturadoRealizado', 'freteCapturadoTabela', 'valorNFCapturado', 'pesoCapturado',
@@ -3279,7 +3294,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
 
 // Processa um lote de linhas acumulando no estado. Pode ser chamada várias vezes
 // (uma por parcela) — o corpo do loop é o mesmo da simulação de passada única.
-async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino, onProgress }) {
+async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], baseOnlineAtual = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino, onProgress }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
   const { rotasMap, transportadorasMap, ctesDetalhes, diagnostico } = estado;
   let {
@@ -3290,7 +3305,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     savingSelecionadaVsReal, savingTabelaSelecionadaVsRealBruto, savingVencedorVsReal,
     freteRealizadoGanhariaSelecionada, freteSelecionadaGanhadora, valorNFGanhariaSelecionada,
     pesoGanhariaSelecionada, volumesGanhariaSelecionada, cubagemGanhariaSelecionada,
-    ctesRetidosSelecionada, freteRealizadoRetidoSelecionada, freteSelecionadaRetida,
+    ctesRetidosSelecionada, freteRealizadoRetidoSelecionada, freteTabelaAtualPropriaRetida, freteSelecionadaRetida,
     valorNFRetidoSelecionada, pesoRetidoSelecionada, volumesRetidosSelecionada, cubagemRetidaSelecionada,
     diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
     freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
@@ -3394,6 +3409,45 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 
     ctesSimulados += 1;
     const itemSelecionada = resultado.find((item) => transportadoraCompativelSimulador(item.transportadora, transportadoraSelecionada) || normalizarTransportadoraSimulador(item.transportadora) === nomeSelecionadoNorm) || null;
+    // Valor da TABELA ATUAL (calculada separadamente, pela tabela oficial
+    // vigente carregada à parte — não pela "resultado" acima, que só tem a
+    // tabela NOVA da negociação), usando os mesmos dados reais de peso/NF/rota.
+    // Base alternativa do reajuste, no lugar do valor efetivamente pago, que
+    // pode carregar erro de cobrança do passado e distorcer a comparação.
+    let freteTabelaAtualPropria = valorCte;
+    let itemTabelaAtualPropria = null;
+    const tabelaAtualTentada = Boolean(filtros.compararTabelaAtualReajuste && baseOnlineAtual.length);
+    if (tabelaAtualTentada) {
+      // A tabela oficial pode ter VÁRIAS origens com a mesma tag de rota (ex.:
+      // "PIC" repetida em Crato, Jaboatão e São Luís, cada uma com % e mínimo
+      // diferentes) — restringe à origem exata do CT-e antes de calcular, pra
+      // não correr risco de pegar a cotação de outra cidade por engano.
+      const origemLinhaNorm = normalizarChaveSimulador(row.cidadeOrigem || '');
+      const baseOnlineAtualOrigem = origemLinhaNorm
+        ? baseOnlineAtual.map((transp) => {
+            const origensMesmaCidade = (transp.origens || []).filter((o) => normalizarChaveSimulador(o.cidade) === origemLinhaNorm);
+            return origensMesmaCidade.length ? { ...transp, origens: origensMesmaCidade } : transp;
+          })
+        : baseOnlineAtual;
+      // Sem indicePorDestino aqui de propósito: aquele índice foi construído
+      // em cima de baseOnline (tabela nova), não de baseOnlineAtual — reusá-lo
+      // faria a busca devolver candidatos da base errada.
+      const { resultado: resultadoAtual } = simularLinhaRealizadoComFallback({
+        baseOnline: baseOnlineAtualOrigem,
+        row,
+        canal,
+        pesoLinha,
+        nf,
+        destino,
+        cidadePorIbge,
+        gradeCanal,
+        filtros,
+      });
+      if (resultadoAtual[0]) {
+        itemTabelaAtualPropria = resultadoAtual[0];
+        freteTabelaAtualPropria = numeroRealizado(itemTabelaAtualPropria.total);
+      }
+    }
     const freteVenc = numeroRealizado(vencedor.total);
     freteVencedor += freteVenc;
     savingVencedorVsReal += Math.max(valorCte - freteVenc, 0);
@@ -3478,6 +3532,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     if (deveMedirRetencaoSelecionada && itemSelecionada && selecionadaJaCarregava) {
       ctesRetidosSelecionada += 1;
       freteRealizadoRetidoSelecionada += valorCte;
+      freteTabelaAtualPropriaRetida += freteTabelaAtualPropria;
       freteSelecionadaRetida += freteSel;
       valorNFRetidoSelecionada += nf;
       pesoRetidoSelecionada += pesoLinha;
@@ -3553,6 +3608,10 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       canal,
       transportadoraReal: row.transportadora || '',
       freteRealizado: valorCte,
+      freteTabelaAtualPropria,
+      tabelaAtualDetalhes: itemTabelaAtualPropria?.detalhes || null,
+      tabelaAtualNome: itemTabelaAtualPropria?.transportadora || '',
+      tabelaAtualTentada,
       freteSelecionada: freteSel,
       vencedor: vencedor?.transportadora || '',
       freteVencedor: freteVenc,
@@ -3617,7 +3676,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     savingSelecionadaVsReal, savingTabelaSelecionadaVsRealBruto, savingVencedorVsReal,
     freteRealizadoGanhariaSelecionada, freteSelecionadaGanhadora, valorNFGanhariaSelecionada,
     pesoGanhariaSelecionada, volumesGanhariaSelecionada, cubagemGanhariaSelecionada,
-    ctesRetidosSelecionada, freteRealizadoRetidoSelecionada, freteSelecionadaRetida,
+    ctesRetidosSelecionada, freteRealizadoRetidoSelecionada, freteTabelaAtualPropriaRetida, freteSelecionadaRetida,
     valorNFRetidoSelecionada, pesoRetidoSelecionada, volumesRetidosSelecionada, cubagemRetidaSelecionada,
     diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
     freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
@@ -3636,7 +3695,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     savingSelecionadaVsReal, savingTabelaSelecionadaVsRealBruto, savingVencedorVsReal,
     freteRealizadoGanhariaSelecionada, freteSelecionadaGanhadora, valorNFGanhariaSelecionada,
     pesoGanhariaSelecionada, volumesGanhariaSelecionada, cubagemGanhariaSelecionada,
-    ctesRetidosSelecionada, freteRealizadoRetidoSelecionada, freteSelecionadaRetida,
+    ctesRetidosSelecionada, freteRealizadoRetidoSelecionada, freteTabelaAtualPropriaRetida, freteSelecionadaRetida,
     valorNFRetidoSelecionada, pesoRetidoSelecionada, volumesRetidosSelecionada, cubagemRetidaSelecionada,
     diferencaSelecionadaVsVencedor, reducaoNecessariaSoma, ctesCapturadosDeOutras,
     freteCapturadoRealizado, freteCapturadoTabela, valorNFCapturado, pesoCapturado,
@@ -3771,6 +3830,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     cubagemGanhariaSelecionada,
     ctesRetidosSelecionada,
     freteRealizadoRetidoSelecionada,
+    freteTabelaAtualPropriaRetida,
     freteSelecionadaRetida,
     valorNFRetidoSelecionada,
     pesoRetidoSelecionada,
@@ -4101,6 +4161,29 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // cubado. O percentual de contingência serve pra simular, de forma controlada,
   // o efeito que a cubagem teria no peso — plano B até a fórmula ser validada.
   const [usarPesoCteRealizado, setUsarPesoCteRealizado] = useState(true);
+  // Persistidos em localStorage: sem isso, um F5 zerava esses campos e o
+  // usuário precisava redigitar transportadora/origem toda vez, caindo de
+  // volta no nome ruim da negociação ("Gbex Reajuste" em vez de "GUANABARA
+  // EXPRESS") e fazendo a comparação falhar silenciosamente de novo.
+  const [compararTabelaAtualReajuste, setCompararTabelaAtualReajuste] = useState(
+    () => localStorage.getItem('sim-comparar-tabela-atual-reajuste') === '1'
+  );
+  const [tabelaAtualReajusteOverride, setTabelaAtualReajusteOverride] = useState(
+    () => localStorage.getItem('sim-tabela-atual-reajuste-nome') || ''
+  );
+  const [origemAtualReajusteOverride, setOrigemAtualReajusteOverride] = useState(
+    () => localStorage.getItem('sim-tabela-atual-reajuste-origem') || ''
+  );
+
+  useEffect(() => {
+    localStorage.setItem('sim-comparar-tabela-atual-reajuste', compararTabelaAtualReajuste ? '1' : '0');
+  }, [compararTabelaAtualReajuste]);
+  useEffect(() => {
+    localStorage.setItem('sim-tabela-atual-reajuste-nome', tabelaAtualReajusteOverride);
+  }, [tabelaAtualReajusteOverride]);
+  useEffect(() => {
+    localStorage.setItem('sim-tabela-atual-reajuste-origem', origemAtualReajusteOverride);
+  }, [origemAtualReajusteOverride]);
   const [percentualContingenciaPesoRealizado, setPercentualContingenciaPesoRealizado] = useState(0);
   const [atualizandoNegociacaoRealizado, setAtualizandoNegociacaoRealizado] = useState(false);
   const [recarregarMalhaOficialRealizado, setRecarregarMalhaOficialRealizado] = useState(0);
@@ -4155,6 +4238,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ? excluidasAtuais.filter((item) => item !== nome)
         : [...excluidasAtuais, nome]
     ));
+  };
+
+  // "Desmarcar todas" parte do mesmo mecanismo de exclusao (nao do modo de
+  // selecao manual), pra que clicar numa transportadora depois simplesmente a
+  // reinclua — assim da pra escolher so 1 ou 2 sem precisar desmarcar o resto.
+  const desmarcarTodasBiTransportadorasRealizado = () => {
+    setBiTransportadorasRealizado([]);
+    setBiTransportadorasExcluidasRealizado(opcoesBiRealizado.transportadoras.map((item) => item.nome));
   };
   const [filtroDetalhe, setFiltroDetalhe] = useState('');
   const [paginaDetalhe, setPaginaDetalhe] = useState(0);
@@ -4790,6 +4881,62 @@ export default function SimuladorPage({ transportadoras = [] }) {
     () => transportadoraBaseNegociacaoSimulador(negociacaoSelecionadaRealizado),
     [negociacaoSelecionadaRealizado]
   );
+
+  // Origens cadastradas da transportadora escolhida como "tabela atual" — pra
+  // deixar o usuário escolher a origem explicitamente também, sem depender de
+  // o sistema adivinhar sozinho (uma mesma tag de rota, ex.: "PIC", pode
+  // existir em várias origens da transportadora com % e mínimo diferentes).
+  // Busca direto no Supabase (não no prop `transportadoras`, que pode não ter
+  // as origens completas carregadas ainda pra essa transportadora).
+  const [origensTabelaAtualReajuste, setOrigensTabelaAtualReajuste] = useState([]);
+  const [carregandoOrigensTabelaAtual, setCarregandoOrigensTabelaAtual] = useState(false);
+
+  useEffect(() => {
+    let ativo = true;
+    const nomeBusca = (tabelaAtualReajusteOverride || transportadoraBaseReajusteRealizado || '').trim();
+    if (!compararTabelaAtualReajuste || !nomeBusca) {
+      setOrigensTabelaAtualReajuste([]);
+      return undefined;
+    }
+    setCarregandoOrigensTabelaAtual(true);
+    // Busca direto na tabela origens (não via buscarBaseSimulacaoDb, que não
+    // garante devolver TODAS as origens da transportadora — só as que casaram
+    // com alguma lógica interna de simulação).
+    (async () => {
+      try {
+        const supabase = getSupabaseClient();
+        const { data: transps, error: errT } = await supabase
+          .from('transportadoras')
+          .select('id, nome')
+          .ilike('nome', nomeBusca);
+        if (errT) throw errT;
+        let lista = transps || [];
+        if (!lista.length) {
+          const { data: transpsFuzzy, error: errFuzzy } = await supabase
+            .from('transportadoras')
+            .select('id, nome')
+            .ilike('nome', `%${nomeBusca}%`);
+          if (errFuzzy) throw errFuzzy;
+          lista = transpsFuzzy || [];
+        }
+        if (!lista.length) { if (ativo) setOrigensTabelaAtualReajuste([]); return; }
+        const ids = lista.map((t) => t.id);
+        const { data: origensData, error: errO } = await supabase
+          .from('origens')
+          .select('cidade')
+          .in('transportadora_id', ids);
+        if (errO) throw errO;
+        const cidades = [...new Set((origensData || []).map((o) => o.cidade).filter(Boolean))]
+          .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+        if (ativo) setOrigensTabelaAtualReajuste(cidades);
+      } catch {
+        if (ativo) setOrigensTabelaAtualReajuste([]);
+      } finally {
+        if (ativo) setCarregandoOrigensTabelaAtual(false);
+      }
+    })();
+    return () => { ativo = false; };
+  }, [compararTabelaAtualReajuste, tabelaAtualReajusteOverride, transportadoraBaseReajusteRealizado, canalRealizado]);
 
   // Opções dos filtros BI extraídas da base carregada (após "Buscar CT-es").
   const opcoesBiRealizado = useMemo(() => {
@@ -5980,6 +6127,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
             compararComProprioRealizado: ehReajusteSelecionado,
             transportadoraBaseRealizado: transportadoraBaseReajuste,
+            compararTabelaAtualReajuste,
           },
           cidadePorIbge: cidadePorIbgeCompleto,
           gradePorCanal: grade,
@@ -6008,9 +6156,49 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const mapaCidades = new Map(cidadePorIbgeCompleto);
       (lookupOnline.cidadePorIbge || new Map()).forEach((cidade, ibge) => mapaCidades.set(ibge, cidade));
 
+      // Modo "comparar por tabela": busca separadamente a tabela ATUAL/vigente
+      // (oficial, cadastrada — não a nova negociada) pra calcular o valor que
+      // ela cobraria nos mesmos CT-es reais. Precisa ser buscada à parte porque
+      // a base montada acima (baseParaSimulacao) só tem a tabela NOVA da
+      // negociação — a oficial nunca entra nela nesse fluxo.
+      let baseTabelaAtualReajuste = [];
+      if (ehReajusteSelecionado && compararTabelaAtualReajuste) {
+        const nomeTabelaAtualBusca = (tabelaAtualReajusteOverride || transportadoraBaseReajuste || '').trim();
+        if (nomeTabelaAtualBusca) {
+          atualizarProcessamentoUi(`Buscando tabela atual de ${nomeTabelaAtualBusca}...`, 78);
+          try {
+            const baseOficialAtual = await carregarBaseOnlinePorUfDestino({
+              nomeTransportadora: nomeTabelaAtualBusca,
+              canal: ctx.canal,
+              origem: ctx.origem || origemAtualReajusteOverride || '',
+              ufDestino: ufsDestinoEfetivasRealizado,
+            });
+            baseTabelaAtualReajuste = filtrarBasePorTransportadoraSimulador(baseOficialAtual, nomeTabelaAtualBusca);
+            // Se a origem foi escolhida explicitamente, restringe AQUI, pra base
+            // inteira já sair só com aquela cidade — mais previsível do que
+            // depender do texto de origem de cada CT-e bater exatamente.
+            const origemEscolhidaNorm = normalizarChaveSimulador(origemAtualReajusteOverride || '');
+            if (origemEscolhidaNorm) {
+              baseTabelaAtualReajuste = baseTabelaAtualReajuste.map((transp) => ({
+                ...transp,
+                origens: (transp.origens || []).filter((o) => normalizarChaveSimulador(o.cidade) === origemEscolhidaNorm),
+              }));
+            }
+            if (!baseTabelaAtualReajuste.length || !baseTabelaAtualReajuste.some((t) => (t.origens || []).length)) {
+              setErroSimulacao(`Tabela atual "${nomeTabelaAtualBusca}" não encontrada no cadastro — a comparação por tabela não vai aparecer nos detalhes. Confira o nome no campo "Tabela atual/vigente" nas opções avançadas.`);
+            }
+          } catch (error) {
+            setErroSimulacao(`Não encontrei a tabela atual "${nomeTabelaAtualBusca}" para comparar o reajuste: ${error.message}`);
+          }
+        } else {
+          setErroSimulacao('Marque "Comparar com a tabela atual calculada" mas preencha o nome da transportadora no campo "Tabela atual/vigente" — não consegui identificar automaticamente qual tabela usar.');
+        }
+      }
+
       const paramsSimulacao = {
         rows: rowsFiltrados,
         baseOnline: baseParaSimulacao,
+        baseOnlineAtual: baseTabelaAtualReajuste,
         transportadoraSelecionada: nomeTabelaSelecionada,
         filtros: {
           canal: ctx.canal,
@@ -6027,6 +6215,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
           compararComProprioRealizado: ehReajusteSelecionado,
           transportadoraBaseRealizado: transportadoraBaseReajuste,
+          compararTabelaAtualReajuste,
           ignorarCubagem: usarPesoCteRealizado,
           percentualContingenciaPeso: percentualContingenciaPesoRealizado,
         },
@@ -6043,6 +6232,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
               negociacaoRealizadoAtual,
               transportadoraBaseReajuste,
               deveCompararConcorrentes,
+              compararTabelaAtualReajuste,
             )
           : resultado;
 
@@ -6067,6 +6257,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           tipoNegociacao: ehReajusteSelecionado ? 'REAJUSTE_TABELA_EXISTENTE' : tipoNegociacaoSimulador(negociacaoRealizadoAtual),
           transportadoraBaseRealizado: transportadoraBaseReajuste,
           compararComProprioRealizado: ehReajusteSelecionado,
+          compararTabelaAtualReajuste,
           compararConcorrentes: deveCompararConcorrentes,
           canal: ctx.canal,
           modo: ctx.modo,
@@ -8154,6 +8345,54 @@ export default function SimuladorPage({ transportadoras = [] }) {
               Padrão: enquanto a cubagem do Tracking não está validada, o cálculo usa só o peso real do CT-e. Desmarque para voltar a calcular pelo maior entre peso e peso cubado.
             </div>
 
+            {isReajusteRealizadoSelecionado && (
+              <>
+                <label className="sim-flag" style={{ fontWeight: 600, marginTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={compararTabelaAtualReajuste}
+                    onChange={(event) => setCompararTabelaAtualReajuste(event.target.checked)}
+                  />
+                  Comparar com a tabela atual calculada (em vez do valor pago)
+                </label>
+                <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: -2 }}>
+                  Padrão: compara a tabela nova contra o valor que foi realmente cobrado no passado (pode incluir erro de cobrança). Marque para comparar tabela x tabela — recalcula o valor pela tabela atual/vigente usando os mesmos dados reais (peso, NF, rota), sem usar o valor pago como base.
+                </div>
+                {compararTabelaAtualReajuste && (
+                  <div style={{ marginTop: 4, display: 'grid', gap: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Tabela atual/vigente (cadastrada) a usar na comparação:</span>
+                    <div style={{ maxWidth: 340 }}>
+                      <ComboBuscavel
+                        value={tabelaAtualReajusteOverride}
+                        onChange={setTabelaAtualReajusteOverride}
+                        opcoes={transportadorasPorCanalRealizado}
+                        placeholder={transportadoraBaseReajusteRealizado || 'Buscar transportadora (tabela oficial)'}
+                      />
+                    </div>
+                    <div style={{ color: '#64748b', fontSize: '0.78rem' }}>
+                      Deixe em branco para usar automaticamente "{transportadoraBaseReajusteRealizado || 'a transportadora do reajuste'}". Preencha só se o nome cadastrado for diferente — assim não tem risco do sistema comparar com a tabela errada.
+                    </div>
+                    <span style={{ fontWeight: 600, fontSize: '0.85rem', marginTop: 6 }}>Origem/cidade da tabela atual:</span>
+                    <div style={{ maxWidth: 340 }}>
+                      <ComboBuscavel
+                        value={origemAtualReajusteOverride}
+                        onChange={setOrigemAtualReajusteOverride}
+                        opcoes={origensTabelaAtualReajuste}
+                        placeholder="Buscar origem cadastrada"
+                      />
+                    </div>
+                    <div style={{ color: '#64748b', fontSize: '0.78rem' }}>
+                      {carregandoOrigensTabelaAtual
+                        ? 'Buscando origens cadastradas...'
+                        : origensTabelaAtualReajuste.length
+                          ? `Escolha se a transportadora tiver mais de uma origem (${origensTabelaAtualReajuste.length} cadastrada(s)) — evita pegar a rota de outra cidade por engano. Deixe em branco pra usar a origem do próprio CT-e.`
+                          : 'Nenhuma origem encontrada — confira se o nome da tabela atual acima está correto.'}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
             {usarPesoCteRealizado && (
               <label className="sim-flag" style={{ marginTop: 4 }}>
                 % de contingência sobre o peso:
@@ -8466,7 +8705,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       onClick={() => setBiTranspRealizadoAberto((aberto) => !aberto)}
                       style={{ width: '100%', minHeight: 36, display: 'flex', alignItems: 'center', justifyContent: 'space-between', textAlign: 'left', padding: '0.55rem 0.75rem', background: '#fff' }}
                     >
-                      <span>{biTransportadorasRealizado.length ? `${biTransportadorasRealizado.length} selecionada(s)` : (biTransportadorasExcluidasRealizado.length ? `Todas exceto ${biTransportadorasExcluidasRealizado.length}` : 'Todas')}</span>
+                      <span>{biTransportadorasRealizado.length
+                        ? `${biTransportadorasRealizado.length} selecionada(s)`
+                        : (biTransportadorasExcluidasRealizado.length
+                          ? (biTransportadorasExcluidasRealizado.length >= opcoesBiRealizado.transportadoras.length
+                            ? 'Nenhuma selecionada'
+                            : `Todas exceto ${biTransportadorasExcluidasRealizado.length}`)
+                          : 'Todas')}</span>
                       <span>{biTranspRealizadoAberto ? '▲' : '▼'}</span>
                     </button>
                   </label>
@@ -8501,7 +8746,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
                         })}
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 10, borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>
-                        <button type="button" className="sim-tab" onClick={() => toggleBiTransportadoraRealizado('')}>Marcar todas</button>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button type="button" className="sim-tab" onClick={() => toggleBiTransportadoraRealizado('')}>Marcar todas</button>
+                          <button type="button" className="sim-tab" onClick={desmarcarTodasBiTransportadorasRealizado}>Desmarcar todas</button>
+                        </div>
                         <button type="button" className="primary" onClick={() => setBiTranspRealizadoAberto(false)} style={{ padding: '0.45rem 0.9rem' }}>Aplicar</button>
                       </div>
                     </div>
@@ -8788,6 +9036,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
                           <div className="summary-card"><span>Impacto mensal</span><strong>{formatMoney(impactoMensalReajuste)}</strong><small>{formatMoney(impactoAnualReajuste)} em 12 meses</small></div>
                           <div className="summary-card"><span>Volumes atuais</span><strong>{Number(resultadoRealizado.volumesRetidosSelecionada || 0).toLocaleString('pt-BR')}</strong><small>{Number(resultadoRealizado.cubagemRetidaSelecionada || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} m³ na carteira</small></div>
                         </div>
+                        {impactoReajuste.usarTabelaAtual && (
+                          <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', fontSize: '0.8rem' }}>
+                            ⚠ "Faturamento atual" está usando a tabela vigente calculada (não o valor pago). Cobertura na amostra de detalhes: <strong>{impactoReajuste.tabelaAtualEncontradas || 0} de {impactoReajuste.tabelaAtualTentativas || 0}</strong> CT-es acharam rota/cotação cadastrada na tabela atual — os demais caíram no valor pago por falta de cadastro (não distorce pra cima, mas pode subestimar o impacto real do reajuste). Confira os CT-es sinalizados em "não encontrei" no detalhe.
+                          </div>
+                        )}
                         <div style={{ margin: '14px 0 6px', fontSize: '0.82rem', fontWeight: 800, color: '#0f172a' }}>2. Tabela nova no mercado</div>
                       </>
                     )}
@@ -9480,6 +9733,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                               <div style={{ display: 'grid', gap: 3, fontSize: '0.78rem', color: '#334155' }}>
                                                 <div>Tipo de cálculo: <strong>{item.vencedorDetalhes?.frete?.tipoCalculo || '—'}</strong></div>
                                                 <div>Prazo: <strong>{item.vencedorDetalhes?.prazo} dia(s)</strong></div>
+                                                <div>Rota/cotação: <strong>{item.vencedorDetalhes?.frete?.rotaNome || '—'}</strong></div>
                                                 <div>Faixa aplicada: <strong>{item.vencedorDetalhes?.frete?.faixaPeso || '—'}</strong></div>
                                                 <div>Peso considerado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
                                                 <div>Peso cubado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong> (fator {item.vencedorDetalhes?.frete?.fatorCubagem})</div>
@@ -9548,10 +9802,101 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>Ad Valorem: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.adValorem)}</strong> ({formatPercent(item.vencedorDetalhes?.taxas?.adValPct)})</div>
                                                 <div>GRIS: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.gris)}</strong> ({formatPercent(item.vencedorDetalhes?.taxas?.grisPct)})</div>
                                                 <div>Pedágio: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.pedagio)}</strong></div>
+                                                {Number(item.vencedorDetalhes?.taxas?.tas) > 0 && <div>TAS: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.tas)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.taxas?.ctrc) > 0 && <div>CTRC: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.ctrc)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.taxas?.tda) > 0 && <div>TDA: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.tda)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.taxas?.tdr) > 0 && <div>TDR: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.tdr)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.taxas?.trt) > 0 && <div>TRT: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.trt)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.suframa)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.outras)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {Number(item.vencedorDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.vencedorDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.vencedorDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.vencedorDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.vencedorDetalhes?.frete?.icms)}</strong> <span style={{ color: '#64748b' }}>({item.vencedorDetalhes?.frete?.origemAliquotaIcms})</span></div>
                                                 <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 4, marginTop: 4 }}>Total: <strong style={{ fontSize: '1.05em', color: '#15803d' }}>{formatMoney(item.freteVencedor)}</strong></div>
                                               </div>
+                                            </div>
+                                          )}
+
+                                          {/* Bloco: Tabela Atual (reajuste) — só quando "comparar por tabela" está ligado.
+                                              Mesmo nível de detalhe do bloco "Melhor tabela simulada" acima. */}
+                                          {item.tabelaAtualDetalhes && (
+                                            <div style={{ background: '#fff', border: '1px solid #fcd34d', borderRadius: 8, padding: 12 }}>
+                                              <div style={{ fontWeight: 700, color: '#92400e', marginBottom: 8, fontSize: '0.85rem' }}>
+                                                📋 Tabela atual (vigente) — {item.tabelaAtualNome || 'tabela oficial'} — {formatMoney(item.freteTabelaAtualPropria)}
+                                              </div>
+                                              <div style={{ marginBottom: 8, padding: '4px 8px', borderRadius: 6, background: '#fef3c7', color: '#92400e', fontSize: '0.78rem', fontWeight: 700 }}>
+                                                {item.freteRealizado - item.freteTabelaAtualPropria >= 0 ? '↓' : '↑'} Diferença vs valor pago: {formatMoney(item.freteRealizado - item.freteTabelaAtualPropria)}
+                                              </div>
+                                              <div style={{ display: 'grid', gap: 3, fontSize: '0.78rem', color: '#334155' }}>
+                                                <div>Tipo de cálculo: <strong>{item.tabelaAtualDetalhes?.frete?.tipoCalculo || '—'}</strong></div>
+                                                <div>Prazo: <strong>{item.tabelaAtualDetalhes?.prazo} dia(s)</strong></div>
+                                                <div>Rota/cotação: <strong>{item.tabelaAtualDetalhes?.frete?.rotaNome || '—'}</strong></div>
+                                                <div>Faixa aplicada: <strong>{item.tabelaAtualDetalhes?.frete?.faixaPeso || '—'}</strong></div>
+                                                <div>Peso considerado: <strong>{Number(item.tabelaAtualDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
+                                                <div>Peso cubado: <strong>{Number(item.tabelaAtualDetalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong> (fator {item.tabelaAtualDetalhes?.frete?.fatorCubagem})</div>
+                                                <div>Cubagem usada: <strong>{Number(item.tabelaAtualDetalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
+                                                <div>R$/kg: <strong>{Number(item.tabelaAtualDetalhes?.frete?.rsKgAplicado || 0).toFixed(4)}</strong></div>
+                                                <div>% aplicado: <strong>{formatPercent(item.tabelaAtualDetalhes?.frete?.percentualAplicado)}</strong></div>
+                                                <div>Valor NF usado: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorNFInformado)}</strong></div>
+                                                <div>Valor fixo/faixa: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorFixoAplicado)}</strong></div>
+                                                {item.tabelaAtualDetalhes?.frete?.tipoCalculo === 'PERCENTUAL' && (
+                                                  <div style={{ padding: '6px 8px', background: '#fffbeb', borderRadius: 6 }}>
+                                                    <strong>Maior valor:</strong>{' '}
+                                                    kg garantia {formatMoney(item.tabelaAtualDetalhes?.frete?.valorKgGarantia)}
+                                                    {' × '}frete % {formatMoney(item.tabelaAtualDetalhes?.frete?.valorPercentualCalculado)}
+                                                    {' × '}frete mínimo {formatMoney(item.tabelaAtualDetalhes?.frete?.minimoAplicavel)}
+                                                    {' → '}<strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorBase)}</strong>
+                                                  </div>
+                                                )}
+                                                {(() => {
+                                                  const frete = item.tabelaAtualDetalhes?.frete || {};
+                                                  const limiteExcedente = Number(frete.pesoLimiteExcedente || 0);
+                                                  const pesoExcedente = Number(frete.pesoExcedente || 0);
+                                                  const valorExcedente = Number(frete.valorExcedente || 0);
+                                                  const valorExcedenteUnitario = Number(frete.valorExcedenteUnitario || (pesoExcedente > 0 ? valorExcedente / pesoExcedente : 0));
+                                                  const valorFaixaSemExcedente = Number(frete.valorFaixaSemExcedente ?? frete.valorFixoAplicado ?? 0);
+                                                  const valorFaixaComExcedente = Number(frete.valorFaixaComExcedente ?? (valorFaixaSemExcedente + valorExcedente));
+                                                  return (
+                                                    <>
+                                                      <div>Limite para excedente: <strong>{limiteExcedente > 0 ? `${limiteExcedente.toFixed(0)} kg` : '—'}</strong></div>
+                                                      <div>Peso excedente: <strong>{pesoExcedente.toFixed(2)} kg</strong></div>
+                                                      <div>R$/kg excedente: <strong>{valorExcedenteUnitario > 0 ? formatMoney(valorExcedenteUnitario) : '—'}</strong></div>
+                                                      <div>Valor excedente: <strong>{formatMoney(valorExcedente)}</strong></div>
+                                                      {frete.tipoCalculo === 'FAIXA_DE_PESO' && (
+                                                        <div>
+                                                          Base da faixa: <strong>{formatMoney(valorFaixaSemExcedente)}</strong>
+                                                          {' + percentual '}{formatMoney(frete.valorPercentualCalculado)}
+                                                          {' + excedente '}{formatMoney(valorExcedente)}
+                                                          {' = '}<strong>{formatMoney(valorFaixaComExcedente)}</strong>
+                                                        </div>
+                                                      )}
+                                                    </>
+                                                  );
+                                                })()}
+                                                <div>Mínimo rota: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.minimoRota)}</strong></div>
+                                                <div>Valor base: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorBase)}</strong></div>
+                                                <div>Ad Valorem: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.adValorem)}</strong> ({formatPercent(item.tabelaAtualDetalhes?.taxas?.adValPct)})</div>
+                                                <div>GRIS: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.gris)}</strong> ({formatPercent(item.tabelaAtualDetalhes?.taxas?.grisPct)})</div>
+                                                <div>Pedágio: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.pedagio)}</strong></div>
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.tas) > 0 && <div>TAS: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.tas)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.ctrc) > 0 && <div>CTRC: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.ctrc)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.tda) > 0 && <div>TDA: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.tda)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.tdr) > 0 && <div>TDR: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.tdr)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.trt) > 0 && <div>TRT: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.trt)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.suframa)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.outras)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {Number(item.tabelaAtualDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.tabelaAtualDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorEmergencial)}</strong></div>}
+                                                <div>Subtotal: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.subtotal)}</strong></div>
+                                                <div>ICMS ({formatPercent(item.tabelaAtualDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.icms)}</strong> <span style={{ color: '#64748b' }}>({item.tabelaAtualDetalhes?.frete?.origemAliquotaIcms})</span></div>
+                                                <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 4, marginTop: 4 }}>Total: <strong style={{ fontSize: '1.05em', color: '#b45309' }}>{formatMoney(item.freteTabelaAtualPropria)}</strong></div>
+                                              </div>
+                                            </div>
+                                          )}
+                                          {!item.tabelaAtualDetalhes && item.tabelaAtualTentada && (
+                                            <div style={{ background: '#fff', border: '1px solid #fcd34d', borderRadius: 8, padding: 12, fontSize: '0.78rem', color: '#92400e' }}>
+                                              📋 <strong>Tabela atual (vigente):</strong> não encontrei uma rota/cotação cadastrada pra esse destino ({item.destino}/{item.uf}) na origem/tabela atual configurada. O valor usado como "atual" caiu no valor pago (sem comparação real). Confira se essa rota já foi cadastrada na tabela vigente.
                                             </div>
                                           )}
 
@@ -9564,6 +9909,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                               <div style={{ display: 'grid', gap: 3, fontSize: '0.78rem', color: '#334155' }}>
                                                 <div>Tipo de cálculo: <strong>{item.selecionadaDetalhes?.frete?.tipoCalculo || '—'}</strong></div>
                                                 <div>Prazo: <strong>{item.selecionadaDetalhes?.prazo} dia(s)</strong></div>
+                                                <div>Rota/cotação: <strong>{item.selecionadaDetalhes?.frete?.rotaNome || '—'}</strong></div>
                                                 <div>Faixa: <strong>{item.selecionadaDetalhes?.frete?.faixaPeso || '—'}</strong></div>
                                                 <div>Peso considerado: <strong>{Number(item.selecionadaDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
                                                 <div>% aplicado: <strong style={{ color: Number(item.selecionadaDetalhes?.frete?.percentualAplicado || 0) < 1 ? '#dc2626' : undefined }}>{formatPercent(item.selecionadaDetalhes?.frete?.percentualAplicado)}</strong></div>
@@ -9590,6 +9936,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>Valor base: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorBase)}</strong></div>
                                                 <div>Ad Valorem: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.adValorem)}</strong></div>
                                                 <div>GRIS: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.gris)}</strong></div>
+                                                <div>Pedágio: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.pedagio)}</strong></div>
+                                                {Number(item.selecionadaDetalhes?.taxas?.tas) > 0 && <div>TAS: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.tas)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.taxas?.ctrc) > 0 && <div>CTRC: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.ctrc)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.taxas?.tda) > 0 && <div>TDA: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.tda)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.taxas?.tdr) > 0 && <div>TDR: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.tdr)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.taxas?.trt) > 0 && <div>TRT: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.trt)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.suframa)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.outras)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {Number(item.selecionadaDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.selecionadaDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.selecionadaDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.icms)}</strong></div>
                                                 <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 4, marginTop: 4 }}>Total: <strong style={{ fontSize: '1.05em', color: '#1d4ed8' }}>{formatMoney(item.freteSelecionada)}</strong></div>
