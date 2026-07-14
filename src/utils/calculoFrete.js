@@ -217,14 +217,32 @@ function getTaxaDestino(origem, ibgeDestino) {
   return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino) === String(ibgeDestino)) || {};
 }
 
+function rotaCapitalPorCodigoCurto(rotaNome = '') {
+  const codigo = String(rotaNome || '').trim().toUpperCase();
+  const match = codigo.match(/^([A-Z]{2})C$/);
+  return match ? `${match[1]} CAPITAL` : '';
+}
+
 function getCotacaoPorRota(origem, rotaNome, peso) {
-  return (origem.cotacoes || []).find((item) => {
-    const mesmaRota = normalizeText(item.rota) === normalizeText(rotaNome);
+  const cotacoes = origem.cotacoes || [];
+  const rotaNorm = normalizeText(rotaNome);
+  const dentroDoPeso = (item) => {
     const pesoMin = toNumber(item.pesoMin);
     const pesoMaxRaw = item.pesoMax ?? item.pesoLimite;
     const pesoMax = pesoMaxRaw === '' || pesoMaxRaw === null || pesoMaxRaw === undefined ? Number.POSITIVE_INFINITY : toNumber(pesoMaxRaw);
-    return mesmaRota && peso >= pesoMin && peso <= pesoMax;
-  });
+    return peso >= pesoMin && peso <= pesoMax;
+  };
+
+  const exata = cotacoes.find((item) => normalizeText(item.rota) === rotaNorm && dentroDoPeso(item));
+  if (exata) return exata;
+
+  // Algumas tabelas legadas usam codigo curto na aba Rotas (ex.: CEC) e nome
+  // longo na Cotacao (ex.: CE-CAPITAL). Este fallback cobre apenas capitais,
+  // onde a conversao e deterministica; interiores continuam exigindo cadastro
+  // consistente para nao escolher INT1/INT2/etc. errado.
+  const capitalNorm = normalizeCompare(rotaCapitalPorCodigoCurto(rotaNome));
+  if (!capitalNorm) return undefined;
+  return cotacoes.find((item) => normalizeCompare(item.rota) === capitalNorm && dentroDoPeso(item));
 }
 
 

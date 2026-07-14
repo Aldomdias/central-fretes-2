@@ -3422,7 +3422,8 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       // "PIC" repetida em Crato, Jaboatão e São Luís, cada uma com % e mínimo
       // diferentes) — restringe à origem exata do CT-e antes de calcular, pra
       // não correr risco de pegar a cotação de outra cidade por engano.
-      const origemLinhaNorm = normalizarChaveSimulador(row.cidadeOrigem || '');
+      const origemTabelaAtualNorm = normalizarChaveSimulador(filtros.origemTabelaAtualReajuste || '');
+      const origemLinhaNorm = origemTabelaAtualNorm || normalizarChaveSimulador(row.cidadeOrigem || '');
       const baseOnlineAtualOrigem = origemLinhaNorm
         ? baseOnlineAtual.map((transp) => {
             const origensMesmaCidade = (transp.origens || []).filter((o) => normalizarChaveSimulador(o.cidade) === origemLinhaNorm);
@@ -6170,7 +6171,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
             const baseOficialAtual = await carregarBaseOnlinePorUfDestino({
               nomeTransportadora: nomeTabelaAtualBusca,
               canal: ctx.canal,
-              origem: ctx.origem || origemAtualReajusteOverride || '',
+              origem: origemAtualReajusteOverride || ctx.origem || '',
               ufDestino: ufsDestinoEfetivasRealizado,
             });
             baseTabelaAtualReajuste = filtrarBasePorTransportadoraSimulador(baseOficialAtual, nomeTabelaAtualBusca);
@@ -6216,6 +6217,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
           compararComProprioRealizado: ehReajusteSelecionado,
           transportadoraBaseRealizado: transportadoraBaseReajuste,
           compararTabelaAtualReajuste,
+          origemTabelaAtualReajuste: origemAtualReajusteOverride,
           ignorarCubagem: usarPesoCteRealizado,
           percentualContingenciaPeso: percentualContingenciaPesoRealizado,
         },
@@ -6807,26 +6809,55 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const r = resultadoRealizado;
     const transp = r.filtros?.transportadora || 'Transportadora';
     const periodo = `${r.filtros?.inicio || ''} a ${r.filtros?.fim || ''}`;
+    const comparaTabelaAtual = Boolean(r.filtros?.compararTabelaAtualReajuste);
+    const valorAtualComparacao = (item) => (
+      comparaTabelaAtual && item.tabelaAtualDetalhes
+        ? Number(item.freteTabelaAtualPropria || 0)
+        : Number(item.freteRealizado || 0)
+    );
+    const pctAtualComparacao = (item) => {
+      const atual = valorAtualComparacao(item);
+      return Number(item.valorNF || 0) > 0 ? (atual / Number(item.valorNF || 0)) * 100 : 0;
+    };
+    const detalhesCalculoExport = (detalhes) => {
+      const frete = detalhes?.frete || {};
+      const taxas = detalhes?.taxas || {};
+      return {
+        tipo: frete.tipoCalculo || '',
+        rota: frete.rotaNome || '',
+        faixa: frete.faixaPeso || '',
+        pesoConsiderado: Number(frete.pesoConsiderado || 0),
+        rsKg: Number(frete.rsKgAplicado || 0),
+        percentual: Number(frete.percentualAplicado || 0),
+        valorBase: Number(frete.valorBase || 0),
+        subtotal: Number(frete.subtotal || 0),
+        icms: Number(frete.icms || 0),
+        adValorem: Number(taxas.adValorem || 0),
+        gris: Number(taxas.gris || 0),
+        pedagio: Number(taxas.pedagio || 0),
+      };
+    };
 
-    // Métricas globais tabela vs realizado
+    // Métricas globais tabela nova vs base atual (valor pago ou tabela vigente calculada).
     const cteComTabela = (r.ctesDetalhes || []).filter((i) => i.freteSelecionada > 0);
-    const totalRealizado = cteComTabela.reduce((acc, i) => acc + (i.freteRealizado || 0), 0);
+    const totalRealizado = cteComTabela.reduce((acc, i) => acc + valorAtualComparacao(i), 0);
     const totalTabela = cteComTabela.reduce((acc, i) => acc + (i.freteSelecionada || 0), 0);
     const totalDiferenca = totalRealizado - totalTabela;
-    const qtdMaisBarata = cteComTabela.filter((i) => i.ganhouRealizado).length;
-    const qtdMaisCara = cteComTabela.filter((i) => !i.ganhouRealizado).length;
+    const qtdMaisBarata = cteComTabela.filter((i) => (i.freteSelecionada || 0) < valorAtualComparacao(i)).length;
+    const qtdMaisCara = cteComTabela.filter((i) => (i.freteSelecionada || 0) >= valorAtualComparacao(i)).length;
 
     // Rotas: agrupa por rota usando ctesDetalhes
     const rotaMap = new Map();
     cteComTabela.forEach((item) => {
       const chave = `${item.origem}/${item.ufOrigem} → ${item.destino}/${item.ufDestino}`;
       const d = rotaMap.get(chave) || { rota: chave, ctes: 0, realizado: 0, tabela: 0, maisBarata: 0, maisCara: 0, volumesTotais: 0, pesoTotal: 0 };
+      const atual = valorAtualComparacao(item);
       d.ctes += 1;
-      d.realizado += item.freteRealizado || 0;
+      d.realizado += atual;
       d.tabela += item.freteSelecionada || 0;
       d.volumesTotais += item.volumes || 0;
       d.pesoTotal += item.peso || 0;
-      if (item.ganhouRealizado) d.maisBarata += 1; else d.maisCara += 1;
+      if ((item.freteSelecionada || 0) < atual) d.maisBarata += 1; else d.maisCara += 1;
       rotaMap.set(chave, d);
     });
     const rotasFornecedor = [...rotaMap.values()]
@@ -6838,6 +6869,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ['Empresa:', 'Central Fretes'],
       ['Transportadora:', transp],
       ['Tabela usada:', r.filtros?.transportadoraTabelaUsada || transp],
+      ['Base de comparação:', comparaTabelaAtual ? 'Tabela atual/vigente calculada quando encontrada; fallback para valor pago quando sem rota/cotação' : 'Valor pago/realizado'],
       ['Canal:', r.filtros?.canal || ''],
       ['Período:', periodo],
       ['Data do relatório:', new Date().toLocaleDateString('pt-BR')],
@@ -6847,12 +6879,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ['CT-es em que a tabela é mais competitiva que o praticado', qtdMaisBarata],
       ['CT-es em que a tabela é menos competitiva que o praticado', qtdMaisCara],
       ['Percentual de rotas competitivas (%)', cteComTabela.length ? ((qtdMaisBarata / cteComTabela.length) * 100).toFixed(2) : 0],
+      ['CT-es com detalhe da tabela atual calculada', cteComTabela.filter((item) => item.tabelaAtualDetalhes).length],
       [],
       ['VALORES TOTAIS'],
-      ['Frete total praticado no período (realizado)', totalRealizado.toFixed(2)],
+      [comparaTabelaAtual ? 'Frete total base atual (tabela vigente/fallback)' : 'Frete total praticado no período (realizado)', totalRealizado.toFixed(2)],
       ['Frete total pela tabela simulada', totalTabela.toFixed(2)],
-      ['Diferença total (positivo = tabela mais barata)', totalDiferenca.toFixed(2)],
-      ['Diferença % sobre realizado', totalRealizado > 0 ? ((totalDiferenca / totalRealizado) * 100).toFixed(2) + '%' : ''],
+      ['Diferença total (positivo = tabela nova mais barata)', totalDiferenca.toFixed(2)],
+      ['Diferença % sobre base atual', totalRealizado > 0 ? ((totalDiferenca / totalRealizado) * 100).toFixed(2) + '%' : ''],
       ['Faturamento mensal projetado (tabela)', r.meses ? (totalTabela / r.meses).toFixed(2) : totalTabela.toFixed(2)],
       ['Faturamento 12 meses projetado (tabela)', r.meses ? ((totalTabela / r.meses) * 12).toFixed(2) : ''],
       [],
@@ -6871,10 +6904,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ]),
       [],
       ['DETALHE CT-E A CT-E'],
-      ['CT-e', 'Data', 'Origem', 'Destino', 'Transp. atual', 'Peso (kg)', 'Cubagem (m³)', 'Valor NF', 'Volumes', 'Frete realizado', '% NF realizado', 'Frete tabela', '% NF tabela', 'Diferença', 'Diferença %', 'Resultado'],
+      ['CT-e', 'Data', 'Origem', 'Destino', 'Transp. atual', 'Peso (kg)', 'Cubagem (m³)', 'Valor NF', 'Volumes', 'Frete pago', 'Frete tabela atual', 'Tabela atual encontrada', 'Rota atual', 'Faixa atual', 'Tipo atual', 'R$/kg atual', '% atual', 'Base atual', 'Subtotal atual', 'ICMS atual', 'Ad Valorem atual', 'GRIS atual', 'Pedágio atual', '% NF base atual', 'Frete tabela nova', '% NF tabela nova', 'Rota nova', 'Faixa nova', 'Tipo novo', 'R$/kg novo', '% novo', 'Base nova', 'Subtotal novo', 'ICMS novo', 'Ad Valorem novo', 'GRIS novo', 'Pedágio novo', 'Diferença atual - nova', 'Diferença %', 'Resultado'],
       ...cteComTabela.map((item) => {
-        const diferenca = (item.freteRealizado || 0) - (item.freteSelecionada || 0);
-        const pctDif = item.freteRealizado > 0 ? (diferenca / item.freteRealizado) * 100 : 0;
+        const atualValor = valorAtualComparacao(item);
+        const atual = detalhesCalculoExport(item.tabelaAtualDetalhes);
+        const nova = detalhesCalculoExport(item.selecionadaDetalhes || item.vencedorDetalhes);
+        const diferenca = atualValor - (item.freteSelecionada || 0);
+        const pctDif = atualValor > 0 ? (diferenca / atualValor) * 100 : 0;
         return [
           item.cte || '',
           item.data ? String(item.data).slice(0, 10) : '',
@@ -6886,12 +6922,36 @@ export default function SimuladorPage({ transportadoras = [] }) {
           (item.valorNF || 0).toFixed(2),
           Number(item.volumes || 0).toLocaleString('pt-BR'),
           (item.freteRealizado || 0).toFixed(2),
-          item.percentualFreteRealizado ? item.percentualFreteRealizado.toFixed(2) + '%' : '',
+          item.tabelaAtualDetalhes ? (item.freteTabelaAtualPropria || 0).toFixed(2) : '',
+          item.tabelaAtualDetalhes ? 'Sim' : (item.tabelaAtualTentada ? 'Não' : ''),
+          atual.rota,
+          atual.faixa,
+          atual.tipo,
+          atual.rsKg ? atual.rsKg.toFixed(4) : '',
+          atual.percentual ? atual.percentual.toFixed(2) + '%' : '',
+          atual.valorBase ? atual.valorBase.toFixed(2) : '',
+          atual.subtotal ? atual.subtotal.toFixed(2) : '',
+          atual.icms ? atual.icms.toFixed(2) : '',
+          atual.adValorem ? atual.adValorem.toFixed(2) : '',
+          atual.gris ? atual.gris.toFixed(2) : '',
+          atual.pedagio ? atual.pedagio.toFixed(2) : '',
+          pctAtualComparacao(item) ? pctAtualComparacao(item).toFixed(2) + '%' : '',
           (item.freteSelecionada || 0).toFixed(2),
           item.percentualFreteSelecionada ? item.percentualFreteSelecionada.toFixed(2) + '%' : '',
+          nova.rota,
+          nova.faixa,
+          nova.tipo,
+          nova.rsKg ? nova.rsKg.toFixed(4) : '',
+          nova.percentual ? nova.percentual.toFixed(2) + '%' : '',
+          nova.valorBase ? nova.valorBase.toFixed(2) : '',
+          nova.subtotal ? nova.subtotal.toFixed(2) : '',
+          nova.icms ? nova.icms.toFixed(2) : '',
+          nova.adValorem ? nova.adValorem.toFixed(2) : '',
+          nova.gris ? nova.gris.toFixed(2) : '',
+          nova.pedagio ? nova.pedagio.toFixed(2) : '',
           diferenca.toFixed(2),
           pctDif.toFixed(2) + '%',
-          item.ganhouRealizado ? 'Tabela mais competitiva' : 'Tabela menos competitiva',
+          (item.freteSelecionada || 0) < atualValor ? 'Tabela nova mais competitiva' : 'Tabela nova mais cara/igual',
         ];
       }),
     ];
@@ -9715,6 +9775,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                       <td colSpan={22} style={{ padding: '12px 16px', borderTop: '2px solid #3b82f6' }}>
                                         {/* Painel de cálculo detalhado */}
                                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+                                          {item.tabelaAtualDetalhes && item.freteSelecionada > 0 && (
+                                            <div style={{ background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 12 }}>
+                                              {(() => {
+                                                const diferenca = Number(item.freteSelecionada || 0) - Number(item.freteTabelaAtualPropria || 0);
+                                                const pct = Number(item.freteTabelaAtualPropria || 0) > 0 ? (diferenca / Number(item.freteTabelaAtualPropria || 0)) * 100 : 0;
+                                                const cor = diferenca > 0 ? '#b91c1c' : diferenca < 0 ? '#15803d' : '#334155';
+                                                return (
+                                                  <>
+                                                    <div style={{ fontWeight: 700, color: '#334155', marginBottom: 8, fontSize: '0.85rem' }}>
+                                                      Comparativo tabela base x tabela nova
+                                                    </div>
+                                                    <div style={{ display: 'grid', gap: 5, fontSize: '0.78rem', color: '#334155' }}>
+                                                      <div>Base comparativa: <strong>{item.tabelaAtualNome || 'tabela escolhida'}</strong></div>
+                                                      <div>Rota/faixa base: <strong>{item.tabelaAtualDetalhes?.frete?.rotaNome || '—'} / {item.tabelaAtualDetalhes?.frete?.faixaPeso || '—'}</strong></div>
+                                                      <div>Rota/faixa nova: <strong>{item.selecionadaDetalhes?.frete?.rotaNome || item.vencedorDetalhes?.frete?.rotaNome || '—'} / {item.selecionadaDetalhes?.frete?.faixaPeso || item.vencedorDetalhes?.frete?.faixaPeso || '—'}</strong></div>
+                                                      <div>Valor base comparativa: <strong>{formatMoney(item.freteTabelaAtualPropria)}</strong></div>
+                                                      <div>Valor tabela nova: <strong>{formatMoney(item.freteSelecionada)}</strong></div>
+                                                      <div style={{ padding: '6px 8px', borderRadius: 6, background: diferenca > 0 ? '#fee2e2' : diferenca < 0 ? '#dcfce7' : '#f1f5f9', color: cor, fontWeight: 700 }}>
+                                                        {diferenca > 0 ? 'Aumento' : diferenca < 0 ? 'Redução' : 'Sem variação'}: {formatMoney(Math.abs(diferenca))} ({formatPercent(Math.abs(pct))})
+                                                      </div>
+                                                    </div>
+                                                  </>
+                                                );
+                                              })()}
+                                            </div>
+                                          )}
 
                                           {/* Bloco: Vencedor da simulação */}
                                           {item.vencedorDetalhes && (
