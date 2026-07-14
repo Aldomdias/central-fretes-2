@@ -1629,6 +1629,56 @@ function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, 
   // falsa impressão de que TODOS os CT-es foram recalculados de verdade.
   const tabelaAtualTentativas = usarTabelaAtual ? detalhes.filter((d) => d.tabelaAtualTentada).length : 0;
   const tabelaAtualEncontradas = usarTabelaAtual ? detalhes.filter((d) => d.tabelaAtualDetalhes).length : 0;
+  const aderenciaTabelaAtual = detalhes.reduce((acc, item) => {
+    const tabelaAtual = numeroRealizado(item.freteTabelaAtualPropria);
+    const realizado = numeroRealizado(item.freteRealizado);
+    const baseValida = Boolean(item.tabelaAtualDetalhes && tabelaAtual > 0);
+    const ehTransportadoraBase = registroDaTransportadoraBaseSimulador(item, transportadoraBase);
+    const seriaMaisBarata = baseValida && !ehTransportadoraBase && realizado > 0 && tabelaAtual < realizado;
+    const entraPotencial = baseValida && (ehTransportadoraBase || seriaMaisBarata);
+    if (baseValida) acc.ctesComTabelaAtual += 1;
+    if (ehTransportadoraBase) {
+      acc.ctesAderentes += 1;
+      acc.freteAderenteAtual += tabelaAtual;
+      acc.freteAderenteRealizado += realizado;
+      acc.volumesAderentes += numeroRealizado(item.volumes);
+    }
+    if (entraPotencial) {
+      acc.ctesPotenciais += 1;
+      acc.fretePotencialAtual += tabelaAtual;
+      acc.fretePotencialRealizado += ehTransportadoraBase ? tabelaAtual : realizado;
+      acc.volumesPotenciais += numeroRealizado(item.volumes);
+    }
+    if (seriaMaisBarata) {
+      acc.ctesNaoAderentes += 1;
+      acc.perdaNaoAderencia += realizado - tabelaAtual;
+      acc.freteNaoAderenteRealizado += realizado;
+      acc.freteNaoAderenteAtual += tabelaAtual;
+      acc.volumesNaoAderentes += numeroRealizado(item.volumes);
+    }
+    return acc;
+  }, {
+    ctesComTabelaAtual: 0,
+    ctesPotenciais: 0,
+    ctesAderentes: 0,
+    ctesNaoAderentes: 0,
+    perdaNaoAderencia: 0,
+    fretePotencialAtual: 0,
+    fretePotencialRealizado: 0,
+    freteAderenteAtual: 0,
+    freteAderenteRealizado: 0,
+    freteNaoAderenteRealizado: 0,
+    freteNaoAderenteAtual: 0,
+    volumesPotenciais: 0,
+    volumesAderentes: 0,
+    volumesNaoAderentes: 0,
+  });
+  aderenciaTabelaAtual.aderenciaOperacional = aderenciaTabelaAtual.ctesPotenciais
+    ? (aderenciaTabelaAtual.ctesAderentes / aderenciaTabelaAtual.ctesPotenciais) * 100
+    : 0;
+  aderenciaTabelaAtual.perdaMediaNaoAderencia = aderenciaTabelaAtual.ctesNaoAderentes
+    ? aderenciaTabelaAtual.perdaNaoAderencia / aderenciaTabelaAtual.ctesNaoAderentes
+    : 0;
   const porRota = new Map();
 
   detalhes.forEach((item) => {
@@ -1690,6 +1740,7 @@ function enriquecerResultadoReajusteNegociacao(resultado = {}, negociacao = {}, 
 
   const analiseReajuste = {
     compararConcorrentes: Boolean(compararConcorrentes),
+    aderenciaTabelaAtual,
     impactoProprio: {
       valorAtual,
       valorNovo,
@@ -9075,6 +9126,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                   || resultadoRealizado.modoNegociacao === 'REAJUSTE'
                   || resultadoRealizado.filtros?.tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE';
                 const impactoReajuste = resultadoRealizado.analiseReajuste?.impactoProprio || {};
+                const aderenciaAtual = resultadoRealizado.analiseReajuste?.aderenciaTabelaAtual || {};
                 const valorAtualReajuste = Number(impactoReajuste.valorAtual || resultadoRealizado.freteRealizadoRetidoSelecionada || 0);
                 const valorNovoReajuste = Number(impactoReajuste.valorNovo || resultadoRealizado.freteSelecionadaRetida || 0);
                 const impactoValorReajuste = Number(impactoReajuste.impactoValor || (valorNovoReajuste - valorAtualReajuste));
@@ -9134,7 +9186,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     </div>
                     {ehReajusteResultado && (
                       <>
-                        <div style={{ margin: '12px 0 6px', fontSize: '0.82rem', fontWeight: 800, color: '#0f172a' }}>1. Reajuste da carteira atual</div>
+                        <div style={{ margin: '12px 0 6px', fontSize: '0.82rem', fontWeight: 800, color: '#0f172a' }}>1. Aderencia a tabela atual</div>
+                        <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+                          <div className="summary-card"><span>Perda por nao aderencia</span><strong>{formatMoney(aderenciaAtual.perdaNaoAderencia || 0)}</strong><small>{Number(aderenciaAtual.ctesNaoAderentes || 0).toLocaleString('pt-BR')} CT-es em outras transportadoras mais caras</small></div>
+                          <div className="summary-card"><span>Aderencia operacional</span><strong>{formatPercent(aderenciaAtual.aderenciaOperacional || 0)}</strong><small>{Number(aderenciaAtual.ctesAderentes || 0).toLocaleString('pt-BR')} de {Number(aderenciaAtual.ctesPotenciais || 0).toLocaleString('pt-BR')} CT-es potenciais</small></div>
+                          <div className="summary-card"><span>Base potencial atual</span><strong>{formatMoney(aderenciaAtual.fretePotencialAtual || 0)}</strong><small>tabela atual da transportadora analisada</small></div>
+                          <div className="summary-card"><span>Realizado nessas cargas</span><strong>{formatMoney(aderenciaAtual.fretePotencialRealizado || 0)}</strong><small>na propria transportadora usa tabela atual; nas demais usa realizado</small></div>
+                          <div className="summary-card"><span>Volumes fora da aderencia</span><strong>{Number(aderenciaAtual.volumesNaoAderentes || 0).toLocaleString('pt-BR')}</strong><small>{formatMoney(aderenciaAtual.perdaMediaNaoAderencia || 0)} perda media por CT-e</small></div>
+                        </div>
+                        <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e3a8a', fontSize: '0.8rem' }}>
+                          Nesta leitura, CT-es da transportadora analisada usam a tabela atual como base. CT-es das demais transportadoras continuam no realizado; se a tabela atual da analisada era menor, entra como perda por nao aderencia.
+                        </div>
+                        <div style={{ margin: '14px 0 6px', fontSize: '0.82rem', fontWeight: 800, color: '#0f172a' }}>2. Reajuste da carteira atual</div>
                         <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
                           <div className="summary-card"><span>Faturamento atual</span><strong>{formatMoney(valorAtualReajuste)}</strong><small>{Number(resultadoRealizado.ctesRetidosSelecionada || 0).toLocaleString('pt-BR')} CT-es atuais da transportadora</small></div>
                           <div className="summary-card"><span>Nova tabela no mesmo volume</span><strong>{formatMoney(valorNovoReajuste)}</strong><small>mesma carteira, preço reajustado</small></div>
@@ -9147,7 +9210,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             ⚠ "Faturamento atual" está usando a tabela vigente calculada (não o valor pago). Cobertura na amostra de detalhes: <strong>{impactoReajuste.tabelaAtualEncontradas || 0} de {impactoReajuste.tabelaAtualTentativas || 0}</strong> CT-es acharam rota/cotação cadastrada na tabela atual — os demais caíram no valor pago por falta de cadastro (não distorce pra cima, mas pode subestimar o impacto real do reajuste). Confira os CT-es sinalizados em "não encontrei" no detalhe.
                           </div>
                         )}
-                        <div style={{ margin: '14px 0 6px', fontSize: '0.82rem', fontWeight: 800, color: '#0f172a' }}>2. Tabela nova no mercado</div>
+                        <div style={{ margin: '14px 0 6px', fontSize: '0.82rem', fontWeight: 800, color: '#0f172a' }}>3. Tabela nova no mercado</div>
                       </>
                     )}
                     <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', marginTop: 12 }}>
