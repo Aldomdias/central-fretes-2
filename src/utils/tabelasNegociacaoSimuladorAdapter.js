@@ -115,6 +115,15 @@ function normalizarTipoCalculo(value) {
   return 'PERCENTUAL';
 }
 
+function tipoCalculoInformado(value) {
+  const tipo = upper(value);
+  if (!tipo) return '';
+  if (tipo.includes('PERCENT')) return 'PERCENTUAL';
+  if (tipo.includes('FAIXA')) return 'FAIXA_DE_PESO';
+  if (tipo === 'PESO_CUBADO') return 'PESO_CUBADO';
+  return '';
+}
+
 function parseDadosOriginais(value) {
   if (!value) return {};
   if (typeof value === 'object') return value;
@@ -295,6 +304,9 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   const excessoKg = numero(item.excesso_kg);
   const valorExcedente = numero(item.valor_excedente);
   const tipoCalculoTabela = normalizarTipoCalculo(generalidades.tipoCalculo);
+  const tipoCalculoExplicito = tipoCalculoInformado(
+    item.tipo_calculo || item.tipoCalculo || dados.tipoCalculo || dados.tipo_calculo
+  );
 
   // Faixa de peso "real" = tem valor fixo de faixa (taxa aplicada) OU uma banda
   // de peso de verdade (peso inicial > 0, ou peso final que nao seja a faixa
@@ -307,11 +319,11 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
     (pesoFinalInformado > 0 && pesoFinalInformado < 999998);
   const temFaixaReal = taxaAplicada > 0 || temBandaPesoReal;
 
-  const tipoCalculoItem = temFaixaReal
+  const tipoCalculoItem = tipoCalculoExplicito || (temFaixaReal
     ? 'FAIXA_DE_PESO'
     : (percentual > 0 || valorExcedente > 0 || excessoKg > 0 || freteMinimo > 0)
       ? 'PERCENTUAL'
-      : tipoCalculoTabela;
+      : tipoCalculoTabela);
 
   // Em PERCENTUAL ("Maior valor"), o R$/kg incide sobre o peso total e entra na
   // comparacao do maior. O valor pode vir em dados.rsKg, no valor_excedente ou
@@ -321,6 +333,7 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
     dados.valorKgGarantia ??
     item.rs_kg ??
     item.rsKg ??
+    dados.excedente ??
     0
   ) || valorExcedente || excessoKg;
 

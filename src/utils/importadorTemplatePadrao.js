@@ -94,10 +94,10 @@ const numero = parseNumeroPlanilha;
 
 // Detecta se uma faixa de peso é do tipo "excedente" (acima de X kg).
 // Usada para separar corretamente excesso_kg (limiar) de valor_excedente (R$/kg).
-function ehFaixaExcedente(faixaTexto, pesoFinal) {
+function ehFaixaExcedente(faixaTexto, pesoFinal, pesoInicial = 0) {
   const t = normalizarTexto(String(faixaTexto || ''));
   if (t.includes('EXCEDENTE') || t.includes('ACIMA')) return true;
-  if (Number(pesoFinal || 0) >= 999998) return true;
+  if (Number(pesoFinal || 0) >= 999998 && Number(pesoInicial || 0) > 0) return true;
   return false;
 }
 
@@ -495,7 +495,7 @@ function normalizarFrete(linha, indice, rotasPorChave) {
   // excessoKg   = o peso inicial (limiar) onde começa a cobrar por excedente.
   // valorExcedente = o R$/kg cobrado acima do limiar.
   // pesoFinalNorm  = sempre 999999 para faixas excedentes (para o simulador).
-  const isExcedente = ehFaixaExcedente(faixaPeso, pesoFinal);
+  const isExcedente = ehFaixaExcedente(faixaPeso, pesoFinal, pesoInicial);
   const excessoKg       = isExcedente ? Number(pesoInicial || 0) : 0;
   const valorExcedente  = isExcedente ? Number(excedente  || 0) : 0;
   const pesoFinalNorm   = isExcedente ? 999999 : pesoFinal;

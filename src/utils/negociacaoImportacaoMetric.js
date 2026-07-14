@@ -138,6 +138,23 @@ function montarFaixaFretePronto(frete = {}) {
   return cotNome || '';
 }
 
+function inferirTipoCalculoFrete(frete = {}) {
+  const explicito = upperLimpo(frete.tipoCalculo || frete.tipo_calculo);
+  if (explicito.includes('PERCENT')) return 'PERCENTUAL';
+  if (explicito.includes('FAIXA')) return 'FAIXA_DE_PESO';
+
+  const regra = upperLimpo(frete.regraCalculo || frete.regra_calculo);
+  const taxaAplicada = numeroOuNulo(frete.taxaAplicada ?? frete.freteValor ?? frete.taxa_aplicada) || 0;
+  const percentual = numeroOuNulo(frete.fretePercentual ?? frete.frete_percentual) || 0;
+  const freteMinimo = numeroOuNulo(frete.freteMinimo ?? frete.frete_minimo) || 0;
+
+  if (regra.includes('MAIOR VALOR')) return 'PERCENTUAL';
+  if (regra.includes('SEM REGRA') && taxaAplicada > 0) return 'FAIXA_DE_PESO';
+  if (percentual > 0 || freteMinimo > 0) return 'PERCENTUAL';
+  if (taxaAplicada > 0) return 'FAIXA_DE_PESO';
+  return 'PERCENTUAL';
+}
+
 export function montarItemRotaDeImportador(rota = {}) {
   return {
     cidade_origem: rota.origem || rota.cidadeOrigem || '',
@@ -154,6 +171,11 @@ export function montarItemRotaDeImportador(rota = {}) {
 }
 
 export function montarItemFreteDeImportador(frete = {}) {
+  const tipoCalculo = inferirTipoCalculoFrete(frete);
+  const excessoBruto = frete.excedente != null ? frete.excedente : frete.excesso;
+  const valorExcedente = frete.valorExcedente != null ? frete.valorExcedente : frete.valor_excedente ?? null;
+  const rsKgPercentual = frete.rsKg ?? frete.valorKgGarantia ?? (tipoCalculo === 'PERCENTUAL' ? excessoBruto : null);
+
   return {
     cidade_origem: frete.origem || frete.cidadeOrigem || '',
     uf_origem: frete.ufOrigem || frete.uf_origem || '',
@@ -172,17 +194,23 @@ export function montarItemFreteDeImportador(frete = {}) {
           ? frete.freteValor
           : frete.taxa_aplicada ?? null,
     frete_percentual: frete.fretePercentual != null ? frete.fretePercentual : frete.frete_percentual ?? null,
-    excesso_kg:
-      frete.excessoKg != null
+    excesso_kg: tipoCalculo === 'FAIXA_DE_PESO'
+      ? (frete.excessoKg != null
         ? frete.excessoKg
-        : frete.excedente != null
-          ? frete.excedente
-          : frete.excesso_kg ?? null,
-    valor_excedente: frete.valorExcedente != null ? frete.valorExcedente : frete.valor_excedente ?? null,
+        : frete.excesso_kg ?? null)
+      : null,
+    valor_excedente: tipoCalculo === 'FAIXA_DE_PESO' ? valorExcedente : null,
     advalorem: frete.advalorem != null ? frete.advalorem : frete.adValorem ?? null,
     prazo: frete.prazo || null,
     origem_importacao: 'IMPORTACAO_FRETES',
-    dados_originais: { tipo_item: 'COTACAO', ...frete },
+    tipo_calculo: tipoCalculo,
+    dados_originais: {
+      tipo_item: 'COTACAO',
+      ...frete,
+      tipoCalculo,
+      rsKg: rsKgPercentual,
+      valorKgGarantia: rsKgPercentual,
+    },
   };
 }
 
@@ -311,4 +339,3 @@ export function prepararItensNegociacaoParaSalvar({ tipoNegociacao, novosItens, 
   const cotacoesComRotas = expandirCotacoesComRotas(novasCotacoes, rotasBase);
   return removerDuplicadosNegociacao([...outrosExistentes, ...rotasBase, ...cotacoesComRotas]);
 }
-
