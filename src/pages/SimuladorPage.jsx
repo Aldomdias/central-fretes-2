@@ -2753,6 +2753,40 @@ function calcularResumoPorEstadoRealizado(detalhes = []) {
     .sort((a, b) => b.freteSelecionadaGanhas - a.freteSelecionadaGanhas || b.ctesGanhas - a.ctesGanhas || a.uf.localeCompare(b.uf, 'pt-BR'));
 }
 
+function criarResumoUfRealizado(uf) {
+  return {
+    uf,
+    ctes: 0,
+    ctesComTabela: 0,
+    ctesGanhas: 0,
+    ctesPerdidas: 0,
+    ctesSemTabela: 0,
+    freteRealizado: 0,
+    freteSelecionada: 0,
+    freteSelecionadaGanhas: 0,
+    freteRealizadoGanhas: 0,
+    freteVencedor: 0,
+    savingGanhas: 0,
+    diferencaParaVencedor: 0,
+    valorNF: 0,
+    volumes: 0,
+    peso: 0,
+    cubagem: 0,
+    reducaoSoma: 0,
+    reducaoQtd: 0,
+  };
+}
+
+function finalizarResumoUfRealizado(item = {}) {
+  return {
+    ...item,
+    aderencia: item.ctesComTabela ? (item.ctesGanhas / item.ctesComTabela) * 100 : 0,
+    percentualFreteRealizado: item.valorNF ? (item.freteRealizado / item.valorNF) * 100 : 0,
+    percentualFreteTabela: item.valorNF ? (item.freteSelecionada / item.valorNF) * 100 : 0,
+    reducaoMediaNecessaria: item.reducaoQtd ? item.reducaoSoma / item.reducaoQtd : 0,
+  };
+}
+
 const MARGEM_OPERACIONAL_VEICULO_SIM = 0.9;
 
 const VEICULOS_OPERACIONAIS_SIM = [
@@ -3280,6 +3314,7 @@ function criarEstadoSimulacaoRealizado({ rows = [], filtros = {} } = {}) {
   const estado = {
     rotasMap: new Map(),
     transportadorasMap: new Map(),
+    ufsMap: new Map(),
     ctesDetalhes: [],
     dias: periodoRealizadoDias(rows, filtros.inicio, filtros.fim),
     meses: periodoRealizadoMeses(rows, filtros.inicio, filtros.fim),
@@ -3308,6 +3343,7 @@ function serializarEstadoSimulacaoRealizado(estado) {
     meses: estado.meses,
     rotas: [...estado.rotasMap.entries()].map(([chave, rota]) => [chave, { ...rota, vencedores: [...(rota.vencedores || new Map()).entries()] }]),
     transportadoras: [...estado.transportadorasMap.entries()],
+    ufs: [...estado.ufsMap.entries()],
     diagnostico: {
       linhasSemIbgeDestino: estado.diagnostico.linhasSemIbgeDestino,
       linhasSemResultado: estado.diagnostico.linhasSemResultado,
@@ -3332,6 +3368,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
   estado.meses = Number(dados.meses) || 1;
   estado.rotasMap = new Map((dados.rotas || []).map(([chave, rota]) => [chave, { ...rota, vencedores: new Map(rota.vencedores || []) }]));
   estado.transportadorasMap = new Map(dados.transportadoras || []);
+  estado.ufsMap = new Map(dados.ufs || []);
   estado.diagnostico = {
     linhasSemIbgeDestino: Number(dados.diagnostico?.linhasSemIbgeDestino) || 0,
     linhasSemResultado: Number(dados.diagnostico?.linhasSemResultado) || 0,
@@ -3347,7 +3384,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
 // (uma por parcela) — o corpo do loop é o mesmo da simulação de passada única.
 async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], baseOnlineAtual = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino, onProgress }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
-  const { rotasMap, transportadorasMap, ctesDetalhes, diagnostico } = estado;
+  const { rotasMap, transportadorasMap, ufsMap, ctesDetalhes, diagnostico } = estado;
   let {
     ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
     ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
@@ -3669,6 +3706,36 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     rota.vencedores.set(vencedorNome, (rota.vencedores.get(vencedorNome) || 0) + 1);
     rotasMap.set(chaveRota, rota);
 
+    const ufResumo = String(row.ufDestino || vencedor?.ufDestino || 'N/A').trim().toUpperCase() || 'N/A';
+    const resumoUf = ufsMap.get(ufResumo) || criarResumoUfRealizado(ufResumo);
+    resumoUf.ctes += 1;
+    resumoUf.freteRealizado += freteBaseComparativa;
+    resumoUf.freteSelecionada += freteSel;
+    resumoUf.freteVencedor += freteVenc;
+    resumoUf.valorNF += nf;
+    resumoUf.volumes += vol;
+    resumoUf.peso += pesoLinha;
+    resumoUf.cubagem += cubagemLinha;
+    resumoUf.diferencaParaVencedor += diferencaVencedor;
+    if (itemSelecionada) {
+      resumoUf.ctesComTabela += 1;
+      if (statusSelecionada === 'Ganharia') {
+        resumoUf.ctesGanhas += 1;
+        resumoUf.freteSelecionadaGanhas += freteSel;
+        resumoUf.freteRealizadoGanhas += freteBaseComparativa;
+        resumoUf.savingGanhas += Math.max(freteBaseComparativa - freteSel, 0);
+      } else if (statusSelecionada === 'Perderia') {
+        resumoUf.ctesPerdidas += 1;
+        if (reducaoNecessaria > 0) {
+          resumoUf.reducaoSoma += reducaoNecessaria;
+          resumoUf.reducaoQtd += 1;
+        }
+      }
+    } else {
+      resumoUf.ctesSemTabela += 1;
+    }
+    ufsMap.set(ufResumo, resumoUf);
+
     const detalheCteRealizado = {
       cte: row.numeroCte || row.chaveCte || '',
       data: row.dataEmissao || '',
@@ -3762,7 +3829,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 // Gera o resultado final (KPIs, rotas, laudo) a partir do estado acumulado.
 function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } = {}) {
   const {
-    rotasMap, transportadorasMap, ctesDetalhes, diagnostico, dias, meses,
+    rotasMap, transportadorasMap, ufsMap, ctesDetalhes, diagnostico, dias, meses,
     ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
     ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
     freteRealizadoComTabelaSelecionada, freteSelecionada, freteVencedor, valorNF,
@@ -3838,7 +3905,12 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     .filter((rota) => Number(rota.diferencaParaVencedor || 0) > 0)
     .sort((a, b) => Number(b.diferencaParaVencedor || 0) - Number(a.diferencaParaVencedor || 0) || Number(b.qtdPerdidasSelecionada || 0) - Number(a.qtdPerdidasSelecionada || 0))
     .slice(0, 8);
-  const resumoPorEstado = calcularResumoPorEstadoRealizado(ctesDetalhes);
+  const resumoPorEstadoCompleto = [...(ufsMap || new Map()).values()]
+    .map(finalizarResumoUfRealizado)
+    .sort((a, b) => b.freteSelecionadaGanhas - a.freteSelecionadaGanhas || b.ctesGanhas - a.ctesGanhas || a.uf.localeCompare(b.uf, 'pt-BR'));
+  const resumoPorEstado = resumoPorEstadoCompleto.length
+    ? resumoPorEstadoCompleto
+    : calcularResumoPorEstadoRealizado(ctesDetalhes);
   const estadosGanhadoresDestaque = resumoPorEstado
     .filter((item) => Number(item.ctesGanhas || 0) > 0)
     .slice(0, 6);
@@ -9753,21 +9825,23 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
                 {/* ── ABA: POR UF ── */}
                 {abaDetalheRealizado === 'uf' && (() => {
-                  const porUf = new Map();
-                  (resultadoRealizado.ctesDetalhes || []).forEach((item) => {
-                    const uf = item.ufDestino || 'N/A';
-                    const d = porUf.get(uf) || { uf, ctes: 0, ganhou: 0, perdeu: 0, semTabela: 0, freteRealizado: 0, freteSelecionada: 0, freteVencedor: 0, valorNF: 0, diferencaTotal: 0, reducaoSoma: 0, reducaoQtd: 0 };
-                    d.ctes += 1;
-                    d.freteRealizado += item.freteRealizado || 0;
-                    d.freteSelecionada += item.freteSelecionada || 0;
-                    d.freteVencedor += item.freteVencedor || 0;
-                    d.valorNF += item.valorNF || 0;
-                    if (item.statusSelecionada === 'Ganharia') d.ganhou += 1;
-                    else if (item.statusSelecionada === 'Perderia') { d.perdeu += 1; d.diferencaTotal += item.diferencaParaVencedor || 0; if (item.reducaoNecessaria > 0) { d.reducaoSoma += item.reducaoNecessaria; d.reducaoQtd += 1; } }
-                    else d.semTabela += 1;
-                    porUf.set(uf, d);
-                  });
-                  const lista = [...porUf.values()].sort((a, b) => b.ctes - a.ctes);
+                  const lista = (resultadoRealizado.resumoPorEstado || calcularResumoPorEstadoRealizado(resultadoRealizado.ctesDetalhes || []))
+                    .map((item) => ({
+                      uf: item.uf,
+                      ctes: Number(item.ctes || 0),
+                      ganhou: Number(item.ctesGanhas || item.ganhou || 0),
+                      perdeu: Number(item.ctesPerdidas || item.perdeu || 0),
+                      semTabela: Number(item.ctesSemTabela || item.semTabela || 0),
+                      freteRealizado: Number(item.freteRealizado || 0),
+                      freteSelecionada: Number(item.freteSelecionada || 0),
+                      freteVencedor: Number(item.freteVencedor || 0),
+                      valorNF: Number(item.valorNF || 0),
+                      diferencaTotal: Number(item.diferencaParaVencedor || item.diferencaTotal || 0),
+                      reducaoMedia: Number(item.reducaoMediaNecessaria || 0),
+                      reducaoSoma: Number(item.reducaoSoma || 0),
+                      reducaoQtd: Number(item.reducaoQtd || 0),
+                    }))
+                    .sort((a, b) => b.ctes - a.ctes);
                   return (
                     <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
                       <table className="sim-analise-tabela" style={{ fontSize: '0.8rem' }}>
@@ -9785,7 +9859,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                             const aderencia = (d.ganhou + d.perdeu) > 0 ? (d.ganhou / (d.ganhou + d.perdeu)) * 100 : 0;
                             const pctNFTabela = d.valorNF > 0 ? (d.freteSelecionada / d.valorNF) * 100 : 0;
                             const pctNFVencedor = d.valorNF > 0 ? (d.freteVencedor / d.valorNF) * 100 : 0;
-                            const reducaoMedia = d.reducaoQtd > 0 ? d.reducaoSoma / d.reducaoQtd : 0;
+                            const reducaoMedia = d.reducaoMedia || (d.reducaoQtd > 0 ? d.reducaoSoma / d.reducaoQtd : 0);
                             return (
                               <tr key={d.uf} style={{ background: aderencia > 60 ? '#f0fdf4' : aderencia > 0 ? '#fff7f0' : undefined }}>
                                 <td><strong>{d.uf}</strong></td>
