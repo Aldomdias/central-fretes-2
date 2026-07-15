@@ -520,6 +520,16 @@ function criarChaveUnicaRealizadoSim(row = {}) {
   return `row:${data}|${origem}|${destino}|${Number(row.valorCte || row.valor_cte || 0)}|${Number(row.valorNF || row.valor_nf || 0)}`;
 }
 
+function criarChavePedidoRealizadoSim(row = {}) {
+  const pedido = normalizarChaveLongaTracking(row.pedido || row.pedidoErp || row.pedido_erp || '');
+  if (pedido) return `pedido:${pedido}`;
+  const chaveNfe = normalizarChaveLongaTracking(row.chaveNfe || row.chave_nfe || row.chave_nf || '');
+  if (chaveNfe) return `nfe:${chaveNfe}`;
+  const notaFiscal = apenasDigitosTracking(row.notaFiscal || row.nota_fiscal || row.nf || '');
+  if (notaFiscal) return `nf:${notaFiscal}`;
+  return criarChaveUnicaRealizadoSim(row);
+}
+
 function normalizarOrigensFiltroRealizadoSim(origens = []) {
   const lista = Array.isArray(origens)
     ? origens
@@ -3179,6 +3189,7 @@ const CAMPOS_SOMA_RESULTADO_SALVO = [
   'diferencaSelecionadaVsVencedor', 'ctesCapturadosDeOutras', 'freteCapturadoRealizado',
   'freteCapturadoTabela', 'valorNFCapturado', 'pesoCapturado', 'volumesCapturados', 'cubagemCapturada',
   'ctesVencedorVsRealizado', 'ctesPerdedorVsRealizado',
+  'pedidosGanhariaSelecionada', 'pedidosRetidosSelecionada', 'pedidosCapturadosDeOutras',
 ];
 
 function numeroConsolidacaoRealizado(value) {
@@ -3315,6 +3326,9 @@ function criarEstadoSimulacaoRealizado({ rows = [], filtros = {} } = {}) {
     rotasMap: new Map(),
     transportadorasMap: new Map(),
     ufsMap: new Map(),
+    pedidosGanhariaSet: new Set(),
+    pedidosRetidosSet: new Set(),
+    pedidosCapturadosSet: new Set(),
     ctesDetalhes: [],
     dias: periodoRealizadoDias(rows, filtros.inicio, filtros.fim),
     meses: periodoRealizadoMeses(rows, filtros.inicio, filtros.fim),
@@ -3344,6 +3358,9 @@ function serializarEstadoSimulacaoRealizado(estado) {
     rotas: [...estado.rotasMap.entries()].map(([chave, rota]) => [chave, { ...rota, vencedores: [...(rota.vencedores || new Map()).entries()] }]),
     transportadoras: [...estado.transportadorasMap.entries()],
     ufs: [...estado.ufsMap.entries()],
+    pedidosGanharia: [...(estado.pedidosGanhariaSet || new Set()).values()],
+    pedidosRetidos: [...(estado.pedidosRetidosSet || new Set()).values()],
+    pedidosCapturados: [...(estado.pedidosCapturadosSet || new Set()).values()],
     diagnostico: {
       linhasSemIbgeDestino: estado.diagnostico.linhasSemIbgeDestino,
       linhasSemResultado: estado.diagnostico.linhasSemResultado,
@@ -3369,6 +3386,9 @@ function desserializarEstadoSimulacaoRealizado(texto) {
   estado.rotasMap = new Map((dados.rotas || []).map(([chave, rota]) => [chave, { ...rota, vencedores: new Map(rota.vencedores || []) }]));
   estado.transportadorasMap = new Map(dados.transportadoras || []);
   estado.ufsMap = new Map(dados.ufs || []);
+  estado.pedidosGanhariaSet = new Set(dados.pedidosGanharia || []);
+  estado.pedidosRetidosSet = new Set(dados.pedidosRetidos || []);
+  estado.pedidosCapturadosSet = new Set(dados.pedidosCapturados || []);
   estado.diagnostico = {
     linhasSemIbgeDestino: Number(dados.diagnostico?.linhasSemIbgeDestino) || 0,
     linhasSemResultado: Number(dados.diagnostico?.linhasSemResultado) || 0,
@@ -3384,7 +3404,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
 // (uma por parcela) — o corpo do loop é o mesmo da simulação de passada única.
 async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], baseOnlineAtual = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino, onProgress }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
-  const { rotasMap, transportadorasMap, ufsMap, ctesDetalhes, diagnostico } = estado;
+  const { rotasMap, transportadorasMap, ufsMap, pedidosGanhariaSet, pedidosRetidosSet, pedidosCapturadosSet, ctesDetalhes, diagnostico } = estado;
   let {
     ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
     ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
@@ -3420,6 +3440,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     const pesoLinha = pesoRealizado(row, filtros);
     const vol = numeroRealizado(row.qtdVolumes);
     const cubagemLinha = cubagemRealizado(row, filtros);
+    const chavePedido = criarChavePedidoRealizadoSim(row);
     if (row.trackingMatch) linhasComTracking += 1;
     cubagemTotal += cubagemLinha;
     const origem = row.cidadeOrigem || filtros.origem || '';
@@ -3605,6 +3626,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
         pesoGanhariaSelecionada += pesoLinha;
         volumesGanhariaSelecionada += vol;
         cubagemGanhariaSelecionada += cubagemLinha;
+        pedidosGanhariaSet.add(chavePedido);
       } else {
         ctesPerdidosSelecionada += 1;
         statusSelecionada = 'Perderia';
@@ -3646,6 +3668,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       pesoRetidoSelecionada += pesoLinha;
       volumesRetidosSelecionada += vol;
       cubagemRetidaSelecionada += cubagemLinha;
+      pedidosRetidosSet.add(chavePedido);
     }
 
     const capturouDaTransportadoraAtual = statusSelecionada === 'Ganharia'
@@ -3667,6 +3690,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       pesoCapturado += pesoLinha;
       volumesCapturados += vol;
       cubagemCapturada += cubagemLinha;
+      pedidosCapturadosSet.add(chavePedido);
     }
 
     const origemResumo = origemUsada || origem;
@@ -3829,7 +3853,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 // Gera o resultado final (KPIs, rotas, laudo) a partir do estado acumulado.
 function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } = {}) {
   const {
-    rotasMap, transportadorasMap, ufsMap, ctesDetalhes, diagnostico, dias, meses,
+    rotasMap, transportadorasMap, ufsMap, pedidosGanhariaSet, pedidosRetidosSet, pedidosCapturadosSet, ctesDetalhes, diagnostico, dias, meses,
     ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
     ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
     freteRealizadoComTabelaSelecionada, freteSelecionada, freteVencedor, valorNF,
@@ -3952,6 +3976,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     freteRealizadoAno,
     freteProjetadoCenario,
     ctesCapturadosDeOutras,
+    pedidosCapturadosDeOutras: pedidosCapturadosSet?.size || 0,
     freteCapturadoRealizado,
     freteCapturadoTabela,
     valorNFCapturado,
@@ -3975,6 +4000,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     pesoGanhariaSelecionada,
     volumesGanhariaSelecionada,
     cubagemGanhariaSelecionada,
+    pedidosGanhariaSelecionada: pedidosGanhariaSet?.size || 0,
     ctesRetidosSelecionada,
     freteRealizadoRetidoSelecionada,
     freteTabelaAtualPropriaRetida,
@@ -3983,6 +4009,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     pesoRetidoSelecionada,
     volumesRetidosSelecionada,
     cubagemRetidaSelecionada,
+    pedidosRetidosSelecionada: pedidosRetidosSet?.size || 0,
     faturamentoProjetadoNegociacao,
     faturamentoProjetadoNegociacaoMes,
     faturamentoProjetadoNegociacaoAno,
@@ -9225,11 +9252,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     ? (resultadoRealizado.savingProjetadoNegociacaoAno || resultadoRealizado.savingSelecionadaVsRealAno || 0)
                     : (resultadoRealizado.savingSelecionadaVsRealAno || resultadoRealizado.savingProjetadoNegociacaoAno || 0)
                 );
-                const pedidosProjetados = Number(
+                const pedidosProjetadosUnicos = Number(
+                  ehReajusteResultado
+                    ? ((resultadoRealizado.pedidosRetidosSelecionada || 0) + (resultadoRealizado.pedidosCapturadosDeOutras || 0))
+                    : (resultadoRealizado.pedidosGanhariaSelecionada || 0)
+                );
+                const ctesProjetados = Number(
                   ehReajusteResultado
                     ? ((resultadoRealizado.ctesRetidosSelecionada || 0) + (resultadoRealizado.ctesCapturadosDeOutras || 0))
                     : (resultadoRealizado.ctesGanhariaSelecionada || 0)
                 );
+                const pedidosProjetados = pedidosProjetadosUnicos || ctesProjetados;
+                const usandoCteComoPedido = !pedidosProjetadosUnicos && ctesProjetados > 0;
                 const volumesProjetados = Number(
                   ehReajusteResultado
                     ? ((resultadoRealizado.volumesRetidosSelecionada || 0) + (resultadoRealizado.volumesCapturados || 0))
