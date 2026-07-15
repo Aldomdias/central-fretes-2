@@ -73,9 +73,6 @@ import {
   limparNegociacaoDaUrl,
   escreverEstadoUrlNegociacao,
 } from '../utils/negociacaoUrlState';
-import {
-  montarItensParaNegociacao,
-} from '../utils/negociacaoImportacaoMetric';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -478,6 +475,52 @@ function aguardarTela() {
 // Monta as linhas intermediárias de rotas e cotações a partir do resultado
 // bruto do importador. A saída é usada apenas para preview e para alimentar
 // montarItensVerum — não é salva diretamente no banco.
+function normalizarChaveImportacaoNegociacao(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function freteCombinaComRotaNegociacao(frete, rota) {
+  var origemFrete = normalizarChaveImportacaoNegociacao(frete.origem);
+  var origemRota = normalizarChaveImportacaoNegociacao(rota.origem || rota.cidadeOrigem);
+  var ufFrete = normalizarChaveImportacaoNegociacao(frete.ufDestino);
+  var ufRota = normalizarChaveImportacaoNegociacao(rota.ufDestino);
+  var baseFrete = normalizarChaveImportacaoNegociacao(frete.cotacaoBase || frete.cotacao || frete.cotacaoFinal);
+  var baseRota = normalizarChaveImportacaoNegociacao(rota.cotacaoBase || rota.cotacao || rota.cotacaoFinal);
+
+  if (origemFrete && origemRota && origemFrete !== origemRota) return false;
+  if (ufFrete && ufRota && ufFrete !== ufRota) return false;
+  if (!baseFrete || !baseRota) return false;
+  return baseFrete === baseRota || baseRota.includes(baseFrete) || baseFrete.includes(baseRota);
+}
+
+function expandirFretesPorRotasNegociacao(fretes, rotas) {
+  return (fretes || []).flatMap(function(frete) {
+    var matches = (rotas || []).filter(function(rota) {
+      return freteCombinaComRotaNegociacao(frete, rota);
+    });
+    if (!matches.length) return [frete];
+
+    return matches.map(function(rota) {
+      return Object.assign({}, frete, {
+        cotacao: rota.cotacaoFinal || rota.cotacao || frete.cotacao,
+        cotacaoFinal: rota.cotacaoFinal || rota.cotacao || frete.cotacaoFinal,
+        cotacaoBase: rota.cotacaoBase || frete.cotacaoBase,
+        origem: frete.origem || rota.origem || rota.cidadeOrigem || '',
+        ufOrigem: frete.ufOrigem || rota.ufOrigem || '',
+        cidadeDestino: rota.cidadeDestino || frete.cidadeDestino || '',
+        ufDestino: rota.ufDestino || frete.ufDestino || '',
+        ibgeDestino: rota.ibgeDestino || frete.ibgeDestino || '',
+        prazo: rota.prazo || frete.prazo || '',
+      });
+    });
+  });
+}
+
 function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigencia, fimVigencia, origemFallback, ufOrigemFallback }) {
   const nomeT = normalizarTexto(transportadora);
   const c = normalizarTexto(canal || 'ATACADO').toUpperCase();
@@ -493,7 +536,8 @@ function montarLinhasFormatadas({ resultado, transportadora, canal, inicioVigenc
       cotacaoFinal: item.cotacaoFinal || item.cotacao || '', inicioVigencia: inicioVigencia, fimVigencia: fimVigencia,
     };
   });
-  const cotacoes = (resultado.fretes || []).map(function(item) {
+  const fretesExpandidos = expandirFretesPorRotasNegociacao(resultado.fretes || [], resultado.rotas || []);
+  const cotacoes = fretesExpandidos.map(function(item) {
     return {
       id: gerarId('cotacao'),
       // rota = nome limpo da cotação (após expansão, já sem prefixo UF)
@@ -968,6 +1012,18 @@ export default function TabelasNegociacaoPage() {
   const modalNovaOrigemAbertoEm = useRef(0);
   const [urlReopenTick, setUrlReopenTick] = useState(0);
   const sessao = useMemo(function() { return carregarSessao(); }, []);
+  const itensVerumParaSalvar = useMemo(function() {
+    if (!formatado) return [];
+    return montarItensVerum(formatado);
+  }, [formatado]);
+  const resumoVerumParaSalvar = useMemo(function() {
+    return itensVerumParaSalvar.reduce(function(acc, item) {
+      if (getTipoItem(item) === 'ROTA') acc.rotas += 1;
+      else acc.cotacoes += 1;
+      acc.total += 1;
+      return acc;
+    }, { total: 0, rotas: 0, cotacoes: 0 });
+  }, [itensVerumParaSalvar]);
 
   const negociacoesMesmaTransportadora = useMemo(function() {
     if (!selecionada) return [];
@@ -3172,8 +3228,7 @@ export default function TabelasNegociacaoPage() {
                     <button className="sim-tab" type="button" onClick={function() { setMostrarPreview(function(p) { return !p; }); }} disabled={!formatado || lendoVerum || salvando}>{mostrarPreview ? 'Recolher' : 'Visualizar tabela'}</button>
                     <button className="sim-tab" type="button" onClick={function() { exportarXlsx(formatado ? formatado.cotacoes : [], 'fretes-negoc-' + normalizarTexto(selecionada.transportadora) + '.xlsx', 'Fretes'); }} disabled={!formatado || lendoVerum || salvando}>Baixar fretes</button>
                     <button className="primary" type="button" onClick={function() {
-                      var itens = montarItensParaNegociacao(resultadoTemplate, 'ambos', selecionada);
-                      salvarItens(itens, 'VERUM_ROTAS_FRETES', null, {
+                      salvarItens(itensVerumParaSalvar, 'VERUM_ROTAS_FRETES', null, {
                         onProgress: reportarStatusImportacao,
                       });
                     }} disabled={!formatado || salvando || lendoVerum}>{salvando ? 'Salvando...' : 'Salvar na negociação'}</button>
@@ -3184,8 +3239,15 @@ export default function TabelasNegociacaoPage() {
                         <div className="summary-card"><span>Rotas lidas</span><strong>{resultadoTemplate.rotas.length}</strong></div>
                         <div className="summary-card"><span>Quebras</span><strong>{resultadoTemplate.quebrasFaixa.length}</strong></div>
                         <div className="summary-card"><span>Fretes lidos</span><strong>{resultadoTemplate.fretes.length}</strong></div>
-                        <div className="summary-card"><span>Total para salvar</span><strong>{formatado ? ((formatado.rotas || []).length + (formatado.cotacoes || []).length) : '-'}</strong></div>
+                        <div className="summary-card"><span>Rotas para salvar</span><strong>{formatado ? resumoVerumParaSalvar.rotas.toLocaleString('pt-BR') : '-'}</strong></div>
+                        <div className="summary-card"><span>CotaÃ§Ãµes para salvar</span><strong>{formatado ? resumoVerumParaSalvar.cotacoes.toLocaleString('pt-BR') : '-'}</strong></div>
+                        <div className="summary-card"><span>Total real para salvar</span><strong>{formatado ? resumoVerumParaSalvar.total.toLocaleString('pt-BR') : '-'}</strong></div>
                       </div>
+                      {formatado && ((formatado.rotas || []).length + (formatado.cotacoes || []).length) !== resumoVerumParaSalvar.total ? (
+                        <div className="sim-alert warn" style={{ marginTop: 10, fontSize: 13 }}>
+                          O total real para salvar ficou diferente da prÃ©via porque o sistema removeu duplicidades exatas antes de gravar.
+                        </div>
+                      ) : null}
                       {resultadoTemplate.rotasNaoEncontradas && resultadoTemplate.rotasNaoEncontradas.length > 0 ? (
                         <div className="sim-alert warn" style={{ marginTop: 10, fontSize: 13 }}>
                           <strong>⚠ {resultadoTemplate.rotasNaoEncontradas.length} cotação(ões) do arquivo de Fretes sem rota correspondente no arquivo de Prazos</strong> — IBGE e Destino ficarão em branco para essas rotas. A tabela será salva normalmente.
