@@ -7677,7 +7677,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         <BaseCtesStatus />
       </div>
 
-      <div className="sim-tabs">
+      <div className="sim-tabs sim-tabs-polished">
         {[
           ['simples', 'Simulação simples'],
           ['transportadora', 'Simulação por transportadora'],
@@ -7692,7 +7692,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ))}
       </div>
 
-      <div className="sim-alert info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+      <div className="sim-overview-grid">
         <span>
           Base do simulador: <strong>{carregandoOpcoes ? 'carregando opções' : (opcoesOnline.fonte === 'supabase' ? 'Supabase online' : 'sem conexão/fallback local')}</strong>
           {opcoesOnline.transportadoras?.length ? ` · ${opcoesOnline.transportadoras.length} transportadoras` : ''}
@@ -7713,7 +7713,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       {erroOpcoes ? <div className="sim-alert error">{erroOpcoes}</div> : null}
 
 
-      <div className="sim-alert info" style={{ display: 'grid', gap: 8 }}>
+      <div className="sim-grade-strip" style={{ display: 'grid', gap: 8 }}>
         <strong>Grade em uso no simulador <small style={{ fontWeight: 600, color: '#64748b' }}>({gradeFonte === 'supabase' ? 'Supabase' : 'local'})</small></strong>
         <small style={{ color: gradeFonte === 'supabase' ? '#047857' : '#92400e' }}>{gradeStatus}</small>
         <span>

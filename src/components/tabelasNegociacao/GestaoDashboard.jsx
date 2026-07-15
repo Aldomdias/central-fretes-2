@@ -577,24 +577,31 @@ export default function GestaoDashboard({ tabelas = [] }) {
 
   return (
     <div>
-      <div className="actions-row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-        <div className="actions-row" style={{ gap: 8 }}>
-          <button type="button" onClick={() => setPainelTransportadorasAberto((v) => !v)}>
-            {painelTransportadorasAberto ? 'Fechar' : 'Transportadoras no laudo'} ({transportadorasDisponiveis.length - transportadorasExcluidas.size}/{transportadorasDisponiveis.length})
+      <div className="neg-dashboard-toolbar">
+        <div className="neg-toolbar-group">
+          <span className="neg-toolbar-label">Recorte dos laudos</span>
+          <button className={`neg-toolbar-button ${painelTransportadorasAberto ? 'active' : ''}`} type="button" onClick={() => setPainelTransportadorasAberto((v) => !v)}>
+            <span>Transportadoras</span>
+            <strong>{transportadorasDisponiveis.length - transportadorasExcluidas.size}/{transportadorasDisponiveis.length}</strong>
           </button>
-          <button type="button" onClick={() => setPainelInterativoAberto((v) => !v)}>
-            {painelInterativoAberto ? 'Fechar' : 'Laudo interativo'} ({tabelas.length - negociacoesExcluidas.size}/{tabelas.length})
+          <button className={`neg-toolbar-button ${painelInterativoAberto ? 'active' : ''}`} type="button" onClick={() => setPainelInterativoAberto((v) => !v)}>
+            <span>Laudo interativo</span>
+            <strong>{tabelas.length - negociacoesExcluidas.size}/{tabelas.length}</strong>
           </button>
         </div>
-        <div className="actions-row" style={{ gap: 8 }}>
-          <button type="button" onClick={gerarExcelDetalhado} disabled={gerandoExcel}>
-            {gerandoExcel ? 'Gerando...' : 'Excel detalhado'}
+        <div className="neg-toolbar-group right">
+          <span className="neg-toolbar-label">Exportar</span>
+          <button className="neg-toolbar-button" type="button" onClick={gerarExcelDetalhado} disabled={gerandoExcel}>
+            <span>Excel</span>
+            <strong>{gerandoExcel ? 'Gerando...' : 'Detalhado'}</strong>
           </button>
-          <button type="button" onClick={gerarRelatorioResumido} disabled={gerandoRelatorioResumido}>
-            {gerandoRelatorioResumido ? 'Gerando...' : 'Laudo resumido'}
+          <button className="neg-toolbar-button" type="button" onClick={gerarRelatorioResumido} disabled={gerandoRelatorioResumido}>
+            <span>Laudo</span>
+            <strong>{gerandoRelatorioResumido ? 'Gerando...' : 'Resumido'}</strong>
           </button>
-          <button className="primary" type="button" onClick={gerarRelatorio} disabled={gerandoRelatorio}>
-            {gerandoRelatorio ? 'Gerando...' : 'Laudo diretoria'}
+          <button className="neg-toolbar-button primary" type="button" onClick={gerarRelatorio} disabled={gerandoRelatorio}>
+            <span>Laudo</span>
+            <strong>{gerandoRelatorio ? 'Gerando...' : 'Diretoria'}</strong>
           </button>
         </div>
       </div>

@@ -619,6 +619,11 @@ export function resumirFluxoCargas(base) {
   const destinos = new Set(cargas.map((item) => item.destinoKey).filter(Boolean));
   const valorTotal = cargas.reduce((acc, item) => acc + (Number(item.valorComparacao) || 0), 0);
   const comMultiplosCtes = cargas.filter((item) => (item.ctes || []).length > 1).length;
+  const datasCargas = cargas
+    .map((item) => item.importadoEm || item.updated_at || item.updatedAt || item.created_at || item.criadoEm || item.coletaRealizada || item.coletaPlanejada || item.liberado || '')
+    .map((valor) => new Date(valor).getTime())
+    .filter((valor) => Number.isFinite(valor) && valor > 0);
+  const ultimaCargaEm = datasCargas.length ? new Date(Math.max(...datasCargas)).toISOString() : '';
   return {
     totalCargas: cargas.length,
     transportadoras: transportadoras.size,
@@ -628,6 +633,7 @@ export function resumirFluxoCargas(base) {
     valorTotal,
     comMultiplosCtes,
     atualizadoEm: base?.atualizadoEm || '',
+    ultimaCargaEm,
   };
 }
 

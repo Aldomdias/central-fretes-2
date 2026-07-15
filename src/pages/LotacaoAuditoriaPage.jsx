@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BaseCtesStatus from '../components/BaseCtesStatus';
+import BaseLotacaoStatus from '../components/BaseLotacaoStatus';
 import {
   buscarCargaPorDistOuCte,
   carregarFluxoCargasLotacao,
@@ -12,6 +13,7 @@ import {
   formatarDataCurta,
   formatarMoeda,
   normalizarTexto,
+  resumirFluxoCargas,
   salvarLancamentosAuditoria,
   salvarSolicitacoesPagamento,
   separarCtes,
@@ -1349,13 +1351,17 @@ function tabelaConfereComViagemAuditoria(tabela = {}, viagem = {}, vinculos = []
   return transportadoraOk && origemOk && destinoOk;
 }
 
-function motivosBloqueioAuditoriaLotacao({ cte, viagem, tabelaSelecionada, vinculos = [] }) {
+function motivosBloqueioAuditoriaLotacao({ cte, viagem, tabelasCompativeis = [], tabelaSelecionada, vinculos = [] }) {
   const motivos = [];
+  const temTabelaAplicavel = Boolean(tabelasCompativeis?.length);
   if (!cte) motivos.push('Busque e selecione um CT-e antes de auditar.');
-  if (!tabelaSelecionada) motivos.push('Selecione uma tabela de lotação localizada para o CT-e.');
   if (!viagem) motivos.push('Selecione a DIST/viagem correspondente no realizado.');
+  if (temTabelaAplicavel && !tabelaSelecionada) motivos.push('Selecione a tabela de lotacao localizada para validar contra a DIST/viagem.');
   if (tabelaSelecionada && viagem && !tabelaConfereComViagemAuditoria(tabelaSelecionada, viagem, vinculos)) {
     motivos.push('Tabela de lotação e DIST/viagem não batem em transportadora, origem e destino.');
+  }
+  if (tabelaSelecionada && tabelaSelecionada.statusComparacao === 'DIVERGENTE') {
+    motivos.push('Valor da DIST/viagem nao bate com a tabela de lotacao localizada.');
   }
   return motivos;
 }
@@ -2495,10 +2501,11 @@ function MovimentosAutorizacao({ viagem, solicitacoes }) {
 }
 
 // ─── Painel-resumo (topo) ─────────────────────────────────────────────────────
-function PainelAuditoriaGeral({ lancamentos, solicitacoes, totalCargas, fonteCargas }) {
+function PainelAuditoriaGeral({ lancamentos, solicitacoes, resumoFluxo, fonteCargas }) {
   const questionamentos = (solicitacoes || []).filter((item) => item.tipo === 'QUESTIONAMENTO_OPERACAO' || item.categoria === 'QUESTIONAMENTO_OPERACAO');
   const pendentes = (solicitacoes || []).filter((item) => statusAbertoGestaoAuditoria(item.status));
   const aprovados = (solicitacoes || []).filter((item) => ['APROVADO', 'TRATADO'].includes(statusGestaoAuditoria(item.status)));
+  const totalCargas = resumoFluxo?.totalCargas || 0;
 
   return (
     <div className="panel-card">
@@ -2512,6 +2519,11 @@ function PainelAuditoriaGeral({ lancamentos, solicitacoes, totalCargas, fonteCar
         </span>
       </div>
       <div className="summary-strip lotacao-summary-mini">
+        <div className="summary-card">
+          <span>Ultima carga do fluxo</span>
+          <strong>{resumoFluxo?.ultimaCargaEm ? formatarDataCurta(resumoFluxo.ultimaCargaEm) : '-'}</strong>
+          <small>{resumoFluxo?.atualizadoEm ? `base atualizada em ${formatarDataCurta(resumoFluxo.atualizadoEm)}` : 'sem data registrada'}</small>
+        </div>
         <div className="summary-card"><span>CT-es vinculados</span><strong>{(lancamentos || []).length.toLocaleString('pt-BR')}</strong><small>lançamentos auditados</small></div>
         <div className="summary-card"><span>Pendências abertas</span><strong>{pendentes.length.toLocaleString('pt-BR')}</strong><small>excedentes + questionamentos</small></div>
         <div className="summary-card"><span>Aprovados</span><strong>{aprovados.length.toLocaleString('pt-BR')}</strong><small>liberam saldo</small></div>
@@ -3432,9 +3444,10 @@ export default function LotacaoAuditoriaPage() {
   const bloqueiosAuditoria = useMemo(() => motivosBloqueioAuditoriaLotacao({
     cte: cteSelecionado,
     viagem: viagemParaAuditoria || viagemSelecionada,
+    tabelasCompativeis,
     tabelaSelecionada,
     vinculos,
-  }), [cteSelecionado, viagemParaAuditoria, viagemSelecionada, tabelaSelecionada, vinculos]);
+  }), [cteSelecionado, viagemParaAuditoria, viagemSelecionada, tabelasCompativeis, tabelaSelecionada, vinculos]);
 
   const analiseLoteChaves = useMemo(
     () => analisarChavesCteLote(loteChavesTexto),
@@ -4271,7 +4284,7 @@ export default function LotacaoAuditoriaPage() {
     }
   }, [solicitacoes, usuarioAtual]);
 
-  const totalCargas = baseFluxo.cargas?.length || 0;
+  const resumoFluxo = useMemo(() => resumirFluxoCargas(baseFluxo), [baseFluxo]);
   const movimentosGestaoAuditoria = montarMovimentosGestaoAuditoria(lancamentos, solicitacoes);
   const pendenciasAbertas = movimentosGestaoAuditoria.filter((item) => (
     !movimentoProntoPagamento(item) && !movimentoTratado(item)
@@ -4286,7 +4299,10 @@ export default function LotacaoAuditoriaPage() {
           <span className="amd-mini-brand">Lotação · Auditoria</span>
           <h1>Auditoria Lotação</h1>
           <p>Central única de auditoria operacional: parta do CT-e ou do DIST, case com o realizado, consolide a viagem e controle o saldo.</p>
-          <BaseCtesStatus />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <BaseCtesStatus />
+            <BaseLotacaoStatus />
+          </div>
         </div>
         {usuarioAtual && (
           <div style={{ textAlign: 'right', fontSize: '0.85rem', opacity: 0.75 }}>
@@ -4302,7 +4318,7 @@ export default function LotacaoAuditoriaPage() {
         </div>
       )}
 
-      <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} totalCargas={totalCargas} fonteCargas={fonteCargas} />
+      <PainelAuditoriaGeral lancamentos={lancamentos} solicitacoes={solicitacoes} resumoFluxo={resumoFluxo} fonteCargas={fonteCargas} />
 
       <AbasAuditoria
         ativa={abaAtiva}

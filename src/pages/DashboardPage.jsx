@@ -1,12 +1,25 @@
 import { buildDashboardStats } from '../data/mockData';
 
 function formatarDataHora(valor) {
-  if (!valor) return 'Ainda não sincronizado';
+  if (!valor) return 'Ainda nao sincronizado';
   try {
     return new Date(valor).toLocaleString('pt-BR');
   } catch {
     return String(valor);
   }
+}
+
+function formatarNumero(valor) {
+  return Number(valor || 0).toLocaleString('pt-BR');
+}
+
+function percentual(parte, total) {
+  if (!total) return 0;
+  return (Number(parte || 0) / Number(total || 0)) * 100;
+}
+
+function formatarPercentual(valor) {
+  return `${Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
 }
 
 function getStatus(syncStatus, hasData) {
@@ -20,22 +33,22 @@ function getStatus(syncStatus, hasData) {
     };
   }
   if (syncStatus?.sincronizando) {
-    return { titulo: 'Salvando automaticamente', detalhe: 'Gravando alterações no Supabase.', classe: 'dark' };
+    return { titulo: 'Salvando automaticamente', detalhe: 'Gravando alteracoes no Supabase.', classe: 'dark' };
   }
   if (syncStatus?.erro) {
-    return { titulo: 'Erro na sincronização', detalhe: syncStatus.erro, classe: 'warn' };
+    return { titulo: 'Erro na sincronizacao', detalhe: syncStatus.erro, classe: 'warn' };
   }
   if (syncStatus?.fonte === 'supabase-resumo') {
     return {
-      titulo: 'Conectado ao Supabase',
-      detalhe: 'Resumo da base carregado. A importação e a simulação usam as tabelas do banco.',
+      titulo: 'Base online ativa',
+      detalhe: 'Resumo carregado. Simulador e importacao consultam as tabelas do Supabase.',
       classe: 'ok',
     };
   }
   if (syncStatus?.modo === 'local') {
     return { titulo: 'Modo local', detalhe: 'Base local do navegador em uso.', classe: 'warn' };
   }
-  return { titulo: 'Base atualizada', detalhe: 'As alterações são salvas automaticamente após cada ação.', classe: 'ok' };
+  return { titulo: 'Base pronta', detalhe: 'Alteracoes salvas automaticamente apos cada acao.', classe: 'ok' };
 }
 
 export default function DashboardPage({
@@ -44,160 +57,198 @@ export default function DashboardPage({
   onAbrirTransportadoras,
   onAbrirImportacao,
   onAbrirFormatacaoTabelas,
+  onMudarPagina,
   onAtualizarBase,
   onConferirBase,
   syncStatus,
 }) {
   const statsBase = buildDashboardStats(transportadoras);
-  const resumo = syncStatus?.resumoBase;
-  const stats = resumo ? statsBase.map((item) => {
-    if (item.id === 1) return { ...item, valor: resumo.transportadoras ?? item.valor };
-    if (item.id === 2) return { ...item, valor: resumo.origens ?? item.valor };
-    if (item.id === 3) return { ...item, valor: resumo.rotas ?? item.valor };
-    if (item.id === 4) return { ...item, valor: resumo.cotacoes ?? item.valor };
-    return item;
-  }) : statsBase;
-  const hasData = transportadoras.length > 0 || Boolean(resumo);
+  const resumo = syncStatus?.resumoBase || {};
+  const conferencia = syncStatus?.conferenciaBase || null;
+  const totais = {
+    transportadoras: resumo.transportadoras ?? statsBase.find((item) => item.id === 1)?.valor ?? 0,
+    origens: resumo.origens ?? statsBase.find((item) => item.id === 2)?.valor ?? 0,
+    rotas: resumo.rotas ?? statsBase.find((item) => item.id === 3)?.valor ?? 0,
+    cotacoes: resumo.cotacoes ?? statsBase.find((item) => item.id === 4)?.valor ?? 0,
+  };
+  const hasData = transportadoras.length > 0 || Boolean(syncStatus?.resumoBase);
   const status = getStatus(syncStatus, hasData);
   const carregandoInicial = syncStatus?.carregando && !hasData;
+  const transportadorasValidadas = conferencia?.semValidacao ? 0 : Number(conferencia?.validadas || 0);
+  const coberturaValidada = conferencia && !conferencia.semValidacao
+    ? percentual(transportadorasValidadas, conferencia.transportadoras || totais.transportadoras)
+    : 0;
+  const rotasPorOrigem = totais.origens ? totais.rotas / totais.origens : 0;
+  const cotacoesPorRota = totais.rotas ? totais.cotacoes / totais.rotas : 0;
+  const modoOnline = syncStatus?.modo !== 'local';
+  const abrirPagina = (pagina) => {
+    if (typeof onMudarPagina === 'function') onMudarPagina(pagina);
+  };
 
   return (
-    <div className="page-shell amd-dashboard-shell">
-      <div className="page-top between start-mobile">
-        <div className="page-header amd-dashboard-header">
-          <div className="amd-mini-brand">AMD Log • Plataforma de Fretes</div>
-          <h1>Simulador de fretes</h1>
+    <div className="page-shell amd-dashboard-shell dashboard-pro">
+      <section className="dashboard-hero">
+        <div>
+          <div className="amd-mini-brand">AMD Log - Plataforma de Fretes</div>
+          <h1>Dashboard operacional</h1>
           <p>
-            Plataforma para importação, cadastro, simulação e geração do arquivo Verum,
-            com foco operacional e visual mais limpo para o dia a dia.
+            Visao rapida da saude da base, cobertura de tabelas e acessos principais para simulacao,
+            importacao e manutencao das transportadoras.
           </p>
-          <div className="amd-quick-actions">
-            <button className="btn-primary" onClick={onAbrirSimulador}>Abrir simulador</button>
-            <button className="btn-secondary" onClick={onAbrirImportacao}>Abrir importação</button>
-            <button className="btn-secondary" onClick={onAbrirTransportadoras}>Abrir transportadoras</button>
-            <button className="btn-secondary" onClick={onAbrirFormatacaoTabelas}>Formatação de tabelas</button>
-          </div>
         </div>
-      </div>
+        <div className="amd-quick-actions dashboard-actions">
+          <button className="btn-primary" onClick={onAbrirSimulador}>Abrir simulador</button>
+          <button className="btn-secondary" onClick={onAbrirImportacao}>Importar arquivos</button>
+          <button className="btn-secondary" onClick={onAbrirTransportadoras}>Transportadoras</button>
+          <button className="btn-secondary" onClick={onAbrirFormatacaoTabelas}>Formatar tabelas</button>
+        </div>
+      </section>
 
-      <div className="info-card amd-next-phase-card">
-        <div className="info-badge">🔄</div>
-        <div style={{ flex: 1 }}>
-          <div className="info-title">Status da base</div>
-          <div className="info-text" style={{ marginBottom: 8 }}>
-            <strong>{status.titulo}</strong> — {status.detalhe}
-          </div>
-          <div className="info-text">
-            <strong>Modo:</strong> {syncStatus?.modo === 'local' ? 'Local' : 'Supabase'} ·{' '}
-            <strong>Fonte:</strong> {syncStatus?.fonte || '—'} ·{' '}
-            <strong>Última atualização:</strong> {formatarDataHora(syncStatus?.ultimaSincronizacao)}
-          </div>
+      <section className="dashboard-kpi-grid">
+        <div className="dashboard-kpi primary-kpi">
+          <span>Base de transportadoras</span>
+          <strong>{formatarNumero(totais.transportadoras)}</strong>
+          <small>{formatarNumero(totais.origens)} origens cadastradas</small>
         </div>
-        <div className="actions-right gap-row">
-          <button
-            className="btn-secondary"
-            onClick={onAtualizarBase}
-            disabled={syncStatus?.carregando || syncStatus?.sincronizando}
-            title="Atualizar resumo da base pelo Supabase"
-          >
-            {syncStatus?.carregando ? 'Atualizando...' : 'Atualizar base'}
-          </button>
-          <span className="status-pill dark">Salvamento automático</span>
+        <div className="dashboard-kpi">
+          <span>Rotas ativas</span>
+          <strong>{formatarNumero(totais.rotas)}</strong>
+          <small>{rotasPorOrigem.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} rotas por origem</small>
         </div>
-      </div>
+        <div className="dashboard-kpi">
+          <span>Cotacoes/faixas</span>
+          <strong>{formatarNumero(totais.cotacoes)}</strong>
+          <small>{cotacoesPorRota.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} cotacoes por rota</small>
+        </div>
+        <div className="dashboard-kpi">
+          <span>Cobertura validada</span>
+          <strong>{conferencia?.semValidacao ? 'Sem validacao' : formatarPercentual(coberturaValidada)}</strong>
+          <small>{conferencia ? `${formatarNumero(transportadorasValidadas)} de ${formatarNumero(conferencia.transportadoras || totais.transportadoras)} transportadoras` : 'Clique em Conferir base'}</small>
+        </div>
+      </section>
 
-      <div className="info-card amd-next-phase-card">
-        <div className="info-badge">✅</div>
-        <div style={{ flex: 1 }}>
-          <div className="info-title">Conferência da base</div>
-          <div className="info-text">
-            {syncStatus?.conferenciaBase ? (
-              <>
-                <strong>{syncStatus.conferenciaBase.transportadoras}</strong> transportadoras ·{' '}
-                <strong>{syncStatus.conferenciaBase.origens}</strong> origens ·{' '}
-                <strong>{syncStatus.conferenciaBase.rotas}</strong> rotas ·{' '}
-                <strong>{syncStatus.conferenciaBase.cotacoes}</strong> cotações
-                {syncStatus.conferenciaBase.semValidacao ? (
-                  <> · <strong>cobertura sem validação</strong></>
-                ) : (
-                  <> · <strong>{syncStatus.conferenciaBase.validadas}</strong> transportadoras validadas</>
-                )}
-              </>
-            ) : (
-              <>Clique em <strong>Conferir base</strong> para validar os totais direto no Supabase.</>
-            )}
-          </div>
-          <div className="info-text">
-            O simulador consulta o Supabase na hora da simulação. A tela de Transportadoras usa a view de cobertura para não depender de abrir transportadora por transportadora.
-          </div>
-        </div>
-        <div className="actions-right gap-row">
-          <button className="btn-secondary" onClick={onConferirBase} disabled={syncStatus?.carregando || syncStatus?.sincronizando}>
-            Conferir base
-          </button>
-        </div>
-      </div>
-
-      {carregandoInicial ? (
-        <div className="loading-state-card">
-          <div className="loading-spinner" />
-          <div>
-            <div className="loading-title">Carregando base...</div>
-            <div className="loading-text">
-              Aguarde um instante enquanto os dados são buscados no banco.
+      <section className="dashboard-main-grid">
+        <div className="dashboard-status-card">
+          <div className="dashboard-card-head">
+            <div>
+              <span className={`status-dot ${status.classe}`} />
+              <strong>{status.titulo}</strong>
             </div>
+            <span className={`status-pill ${status.classe}`}>{modoOnline ? 'Supabase' : 'Local'}</span>
+          </div>
+          <p>{status.detalhe}</p>
+          <div className="dashboard-status-meta">
+            <div><span>Fonte</span><strong>{syncStatus?.fonte || '-'}</strong></div>
+            <div><span>Ultima atualizacao</span><strong>{formatarDataHora(syncStatus?.ultimaSincronizacao)}</strong></div>
+            <div><span>Salvamento</span><strong>{syncStatus?.sincronizando ? 'Em andamento' : 'Automatico'}</strong></div>
+          </div>
+          <div className="dashboard-status-actions">
+            <button
+              className="btn-secondary"
+              onClick={onAtualizarBase}
+              disabled={syncStatus?.carregando || syncStatus?.sincronizando}
+            >
+              {syncStatus?.carregando ? 'Atualizando...' : 'Atualizar resumo'}
+            </button>
+            <button className="btn-secondary" onClick={onConferirBase} disabled={syncStatus?.carregando || syncStatus?.sincronizando}>
+              Conferir base
+            </button>
           </div>
         </div>
-      ) : (
-        <div className="stats-grid">
-          {stats.map((item) => (
-            <div className="stat-card" key={item.id}>
-              <div className="stat-icon">{item.icon}</div>
-              <div className="stat-title">{item.titulo}</div>
-              <div className="stat-value">{item.valor}</div>
-              <div className="stat-desc">{item.descricao}</div>
+
+        <div className="dashboard-quality-card">
+          <div className="dashboard-card-head">
+            <div>
+              <span className="status-dot ok" />
+              <strong>Qualidade da base</strong>
             </div>
-          ))}
+            <span>{conferencia ? 'Conferida' : 'Pendente'}</span>
+          </div>
+          {carregandoInicial ? (
+            <div className="dashboard-loading-line">
+              <div className="loading-spinner" />
+              <span>Carregando resumo da base...</span>
+            </div>
+          ) : (
+            <>
+              <div className="quality-meter">
+                <div style={{ width: `${Math.min(100, coberturaValidada || (hasData ? 72 : 0))}%` }} />
+              </div>
+              <div className="quality-list">
+                <div><span>Transportadoras</span><strong>{formatarNumero(conferencia?.transportadoras ?? totais.transportadoras)}</strong></div>
+                <div><span>Origens</span><strong>{formatarNumero(conferencia?.origens ?? totais.origens)}</strong></div>
+                <div><span>Rotas</span><strong>{formatarNumero(conferencia?.rotas ?? totais.rotas)}</strong></div>
+                <div><span>Cotacoes</span><strong>{formatarNumero(conferencia?.cotacoes ?? totais.cotacoes)}</strong></div>
+              </div>
+              <p>
+                {conferencia
+                  ? (conferencia.semValidacao
+                    ? 'A conferencia retornou cobertura, mas sem validacao individual por transportadora.'
+                    : `${formatarNumero(transportadorasValidadas)} transportadoras validadas na conferencia.`)
+                  : 'Conferir a base ajuda a identificar lacunas antes de simular ou importar novas tabelas.'}
+              </p>
+            </>
+          )}
         </div>
-      )}
+      </section>
 
-      <div className="feature-grid three-cols four-cols-dashboard">
-        <div className="panel-card">
-          <div className="panel-title">📄 Simulação operacional</div>
-          <p>
-            Compare tabelas, avalie competitividade e visualize o cálculo completo do frete
-            apenas quando abrir os detalhes.
-          </p>
-          <button className="btn-primary full" onClick={onAbrirSimulador}>Ir para simulação</button>
+      <section className="dashboard-workbench">
+        <div className="dashboard-section-title">
+          <strong>Frentes críticas</strong>
+          <span>Rotinas que precisam aparecer no painel do dia a dia</span>
         </div>
+        <div className="dashboard-module-grid dashboard-critical-grid">
+          <button className="dashboard-module-card accent" onClick={() => abrirPagina('tabelas-negociacao')}>
+            <span>Negociacoes</span>
+            <strong>Pipeline comercial, aprovacoes e publicacao</strong>
+            <small>Use para acompanhar novas tabelas, reajustes e laudos de negociacao</small>
+          </button>
+          <button className="dashboard-module-card" onClick={() => abrirPagina('lotacao-auditoria')}>
+            <span>Auditoria lotacao</span>
+            <strong>Conferir viagens, distancias e frete fechado</strong>
+            <small>Tratativa dos casos devolvidos pela auditoria de lotacao</small>
+          </button>
+          <button className="dashboard-module-card" onClick={() => abrirPagina('faturas')}>
+            <span>Auditoria fretes</span>
+            <strong>Faturas, divergencias e validacao financeira</strong>
+            <small>Central de auditoria para fretes cobrados e pendencias</small>
+          </button>
+          <button className="dashboard-module-card" onClick={() => abrirPagina('reajustes')}>
+            <span>Reajustes</span>
+            <strong>Impacto de tabela atual, carteira e mercado</strong>
+            <small>Visao executiva para defender ou contestar reajustes</small>
+          </button>
+        </div>
+      </section>
 
-        <div className="panel-card">
-          <div className="panel-title">🏢 Cadastro e base</div>
-          <p>
-            Gerencie transportadoras, origens, generalidades, rotas e cotações.
-            A base agora salva automaticamente após cada alteração.
-          </p>
-          <button className="btn-secondary full" onClick={onAbrirTransportadoras}>Abrir cadastros</button>
+      <section className="dashboard-workbench">
+        <div className="dashboard-section-title">
+          <strong>Operacao e base</strong>
+          <span>Atalhos com contexto para preparar a simulacao</span>
         </div>
-
-        <div className="panel-card">
-          <div className="panel-title">📦 Importação e Verum</div>
-          <p>
-            Importe arquivos, acompanhe inconsistências e gere os arquivos no layout
-            correto da Verum.
-          </p>
-          <button className="btn-secondary full" onClick={onAbrirImportacao}>Abrir importação</button>
+        <div className="dashboard-module-grid">
+          <button className="dashboard-module-card accent" onClick={onAbrirSimulador}>
+            <span>Simulacao operacional</span>
+            <strong>Comparar tabelas e medir impacto</strong>
+            <small>{formatarNumero(totais.cotacoes)} cotacoes disponiveis para calculo</small>
+          </button>
+          <button className="dashboard-module-card" onClick={onAbrirTransportadoras}>
+            <span>Cadastro e base</span>
+            <strong>Manter rotas, origens e taxas</strong>
+            <small>{formatarNumero(totais.transportadoras)} transportadoras na base</small>
+          </button>
+          <button className="dashboard-module-card" onClick={onAbrirImportacao}>
+            <span>Importacao e Verum</span>
+            <strong>Subir arquivos e tratar inconsistencias</strong>
+            <small>Use a base online como referencia de validacao</small>
+          </button>
+          <button className="dashboard-module-card" onClick={onAbrirFormatacaoTabelas}>
+            <span>Formatacao de tabelas</span>
+            <strong>Preparar rotas antes de publicar</strong>
+            <small>Ambiente separado para montar e revisar</small>
+          </button>
         </div>
-
-        <div className="panel-card">
-          <div className="panel-title">🧩 Formatação de tabelas</div>
-          <p>
-            Monte rotas e cotações em um ambiente isolado, gere os arquivos padrão e
-            só decida no final se quer incluir no sistema principal.
-          </p>
-          <button className="btn-secondary full" onClick={onAbrirFormatacaoTabelas}>Abrir módulo</button>
-        </div>
-      </div>
+      </section>
     </div>
   );
 }

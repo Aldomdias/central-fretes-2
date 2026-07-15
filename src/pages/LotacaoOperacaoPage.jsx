@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react';
+import BaseLotacaoStatus, { invalidarStatusBaseLotacao } from '../components/BaseLotacaoStatus';
 import {
   carregarFluxoCargasLotacao,
   carregarFluxoCargasLotacaoCompleto,
@@ -455,6 +456,7 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
       const nomeArquivo = lista.map((f) => f.name).join(', ');
       try {
         await salvarCargasLotacaoSupabase(todasCargas, nomeArquivo);
+        invalidarStatusBaseLotacao();
       } catch (erroSupabase) {
         console.warn('[Lotação] Erro Supabase:', erroSupabase.message, erroSupabase);
       }
@@ -550,7 +552,12 @@ function KpisFluxo({ resumo, indicadores, lancamentos }) {
       <div className="summary-card">
         <span>Cargas no realizado</span>
         <strong>{resumo.totalCargas}</strong>
-        <small>{resumo.rotas} rotas únicas</small>
+        <small>{resumo.rotas} rotas unicas</small>
+      </div>
+      <div className="summary-card">
+        <span>Ultima carga do fluxo</span>
+        <strong>{resumo.ultimaCargaEm ? formatarDataCurta(resumo.ultimaCargaEm) : '-'}</strong>
+        <small>{resumo.atualizadoEm ? `base atualizada em ${formatarDataCurta(resumo.atualizadoEm)}` : 'sem data registrada'}</small>
       </div>
       <div className="summary-card">
         <span>Aprovações pendentes</span>
@@ -561,11 +568,6 @@ function KpisFluxo({ resumo, indicadores, lancamentos }) {
         <span>Custos aprovados</span>
         <strong>{formatarMoeda(indicadores.valorAprovado)}</strong>
         <small>{indicadores.aprovadas} aprovação(ões)</small>
-      </div>
-      <div className="summary-card">
-        <span>CT-es auditados</span>
-        <strong>{lancamentos.length}</strong>
-        <small>vindos da Auditoria Lotação</small>
       </div>
     </div>
   );
@@ -1955,6 +1957,7 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
           <p>
             Consulta do realizado, tabelas, saldo da Auditoria Lotação, custos extras e aprovações pendentes em uma tela única.
           </p>
+          <BaseLotacaoStatus />
           <AbasOperacao abaAtiva={abaAtiva} onChange={setAbaAtiva} pendencias={indicadoresAprovacoes.pendentes} />
         </div>
       </header>
