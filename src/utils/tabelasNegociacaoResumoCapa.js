@@ -42,8 +42,16 @@ function podarIndicadores(ind = {}) {
     impacto_mensal: n(ind.impacto_mensal || ind.impacto_valor),
     percentual_frete_realizado: n(ind.percentual_frete_realizado),
     percentual_frete_simulado: n(ind.percentual_frete_simulado),
-    pedidos_dia: n(ind.pedidos_dia || ind.pedidos_ganhos_dia),
-    volumes_dia: n(ind.volumes_dia || ind.volumes_ganhos_dia),
+    pedidos_dia: n(ind.pedidos_ganhos_dia || ind.pedidos_dia),
+    pedidos_ganhos_dia: n(ind.pedidos_ganhos_dia || ind.pedidos_dia),
+    pedidos_ganhos_mes: n(ind.pedidos_ganhos_mes),
+    volumes_dia: n(ind.volumes_ganhos_dia || ind.volumes_dia),
+    volumes_ganhos_dia: n(ind.volumes_ganhos_dia || ind.volumes_dia),
+    volumes_ganhos_mes: n(ind.volumes_ganhos_mes),
+    cubagem_dia: n(ind.cubagem_dia),
+    cubagem_total: n(ind.cubagem_total),
+    peso_dia: n(ind.peso_dia),
+    peso_total: n(ind.peso_total),
   };
 }
 
@@ -62,6 +70,29 @@ function podarResumoRodada(resumo = {}) {
     percentualFreteSelecionada: n(resumo.percentualFreteSelecionada || resumo.percentualFreteTabelaGanharia),
     cargasDia: n(resumo.cargasDia),
     volumesDia: n(resumo.volumesDia),
+    dias: n(resumo.dias),
+    diasBase: n(resumo.diasBase),
+    tipoNegociacao: resumo.tipoNegociacao || resumo.tipo_negociacao || '',
+    pedidosGanhariaSelecionada: n(resumo.pedidosGanhariaSelecionada),
+    pedidosRetidosSelecionada: n(resumo.pedidosRetidosSelecionada),
+    pedidosCapturadosDeOutras: n(resumo.pedidosCapturadosDeOutras),
+    pedidosProjetadosNegociacao: n(resumo.pedidosProjetadosNegociacao),
+    pedidosProjetadosDia: n(resumo.pedidosProjetadosDia),
+    volumesGanhariaSelecionada: n(resumo.volumesGanhariaSelecionada),
+    volumesRetidosSelecionada: n(resumo.volumesRetidosSelecionada),
+    volumesCapturados: n(resumo.volumesCapturados),
+    volumesProjetadosNegociacao: n(resumo.volumesProjetadosNegociacao),
+    volumesProjetadosDia: n(resumo.volumesProjetadosDia),
+    cubagemGanhariaSelecionada: n(resumo.cubagemGanhariaSelecionada),
+    cubagemRetidaSelecionada: n(resumo.cubagemRetidaSelecionada),
+    cubagemCapturada: n(resumo.cubagemCapturada),
+    cubagemProjetadaNegociacao: n(resumo.cubagemProjetadaNegociacao),
+    cubagemProjetadaDia: n(resumo.cubagemProjetadaDia),
+    pesoGanhariaSelecionada: n(resumo.pesoGanhariaSelecionada),
+    pesoRetidoSelecionada: n(resumo.pesoRetidoSelecionada),
+    pesoCapturado: n(resumo.pesoCapturado),
+    pesoProjetadoNegociacao: n(resumo.pesoProjetadoNegociacao),
+    pesoProjetadoDia: n(resumo.pesoProjetadoDia),
     qtdRotasComGanhoSelecionada: n(resumo.qtdRotasComGanhoSelecionada),
     rotasGanhasDestaque: Array.isArray(resumo.rotasGanhasDestaque) ? resumo.rotasGanhasDestaque.slice(0, 6) : [],
   };
@@ -142,6 +173,31 @@ export function extrairResumoCapaNegociacao(resumoCompleto = {}) {
     aderenciaSelecionada: n(resumoCompleto.aderenciaSelecionada),
     faturamentoSelecionadaMes: n(resumoCompleto.faturamentoSelecionadaMes || resumoCompleto.freteSelecionada),
     percentualFreteSelecionada: n(resumoCompleto.percentualFreteSelecionada || resumoCompleto.percentualFreteTabelaGanharia),
+    cargasDia: n(resumoCompleto.cargasDia),
+    volumesDia: n(resumoCompleto.volumesDia),
+    dias: n(resumoCompleto.dias),
+    diasBase: n(resumoCompleto.diasBase),
+    tipoNegociacao: resumoCompleto.tipoNegociacao || resumoCompleto.tipo_negociacao || '',
+    pedidosGanhariaSelecionada: n(resumoCompleto.pedidosGanhariaSelecionada),
+    pedidosRetidosSelecionada: n(resumoCompleto.pedidosRetidosSelecionada),
+    pedidosCapturadosDeOutras: n(resumoCompleto.pedidosCapturadosDeOutras),
+    pedidosProjetadosNegociacao: n(resumoCompleto.pedidosProjetadosNegociacao),
+    pedidosProjetadosDia: n(resumoCompleto.pedidosProjetadosDia),
+    volumesGanhariaSelecionada: n(resumoCompleto.volumesGanhariaSelecionada),
+    volumesRetidosSelecionada: n(resumoCompleto.volumesRetidosSelecionada),
+    volumesCapturados: n(resumoCompleto.volumesCapturados),
+    volumesProjetadosNegociacao: n(resumoCompleto.volumesProjetadosNegociacao),
+    volumesProjetadosDia: n(resumoCompleto.volumesProjetadosDia),
+    cubagemGanhariaSelecionada: n(resumoCompleto.cubagemGanhariaSelecionada),
+    cubagemRetidaSelecionada: n(resumoCompleto.cubagemRetidaSelecionada),
+    cubagemCapturada: n(resumoCompleto.cubagemCapturada),
+    cubagemProjetadaNegociacao: n(resumoCompleto.cubagemProjetadaNegociacao),
+    cubagemProjetadaDia: n(resumoCompleto.cubagemProjetadaDia),
+    pesoGanhariaSelecionada: n(resumoCompleto.pesoGanhariaSelecionada),
+    pesoRetidoSelecionada: n(resumoCompleto.pesoRetidoSelecionada),
+    pesoCapturado: n(resumoCompleto.pesoCapturado),
+    pesoProjetadoNegociacao: n(resumoCompleto.pesoProjetadoNegociacao),
+    pesoProjetadoDia: n(resumoCompleto.pesoProjetadoDia),
     qtdRotas: n(resumoCompleto.qtdRotas || resumoCompleto.rotas_total),
     rotasGanhasDestaque: Array.isArray(resumoCompleto.rotasGanhasDestaque)
       ? resumoCompleto.rotasGanhasDestaque.slice(0, 8)
@@ -193,7 +249,14 @@ export function mesclarResumoCapaNaTabela(row = {}) {
   const capaDb = row.resumo_capa && typeof row.resumo_capa === 'object' ? row.resumo_capa : null;
   const temResumoCompleto = row.resumo_simulacao && typeof row.resumo_simulacao === 'object' && !Array.isArray(row.resumo_simulacao);
   const capaResumoCompleto = temResumoCompleto ? extrairResumoCapaNegociacao(row.resumo_simulacao) : {};
-  const capaDerivada = capaDb || (Object.keys(capaResumoCompleto).length ? capaResumoCompleto : extrairResumoCapaDaLinha(row));
+  const capaDbTemOperacional =
+    n(capaDb?.volumesProjetadosDia) > 0 ||
+    n(capaDb?.volumesProjetadosNegociacao) > 0 ||
+    n(capaDb?.volumesGanhariaSelecionada) > 0 ||
+    n(capaDb?.volumesCapturados) > 0;
+  const capaDerivada = (capaDb && (capaDbTemOperacional || !Object.keys(capaResumoCompleto).length))
+    ? capaDb
+    : (Object.keys(capaResumoCompleto).length ? capaResumoCompleto : extrairResumoCapaDaLinha(row));
   const { resumo_simulacao: _full, resumo_capa: _capaCol, ...resto } = row;
   return {
     ...resto,

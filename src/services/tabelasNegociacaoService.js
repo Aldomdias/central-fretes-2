@@ -2117,9 +2117,7 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
     ),
 
     volumetria_dia: numero(
-      resultado.volumetria_dia ??
-      resultado.cargasDia ??
-      0
+      pedidosProjetadosNegociacao / diasOperacionais
     ),
 
     ctes_analisados: inteiro(
