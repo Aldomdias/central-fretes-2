@@ -538,6 +538,27 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
   };
 }
 
+function inverterOrigemDestinoCte(cte = {}) {
+  return {
+    ...cte,
+    cidade_origem: pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']) || '',
+    cidadeOrigem: pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']) || '',
+    origem: pick(cte, ['cidade_destino', 'cidadeDestino', 'destino']) || '',
+    uf_origem: String(pick(cte, ['uf_destino', 'ufDestino']) || '').toUpperCase(),
+    ufOrigem: String(pick(cte, ['uf_destino', 'ufDestino']) || '').toUpperCase(),
+    ibge_origem: pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']),
+    ibgeOrigem: pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']),
+    cidade_destino: pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']) || '',
+    cidadeDestino: pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']) || '',
+    destino: pick(cte, ['cidade_origem', 'cidadeOrigem', 'origem']) || '',
+    uf_destino: String(pick(cte, ['uf_origem', 'ufOrigem']) || '').toUpperCase(),
+    ufDestino: String(pick(cte, ['uf_origem', 'ufOrigem']) || '').toUpperCase(),
+    ibge_destino: pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']),
+    ibgeDestino: pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']),
+    __auditoriaDevolucaoInvertida: true,
+  };
+}
+
 function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverride = '') {
   return {
     id: pick(cte, ['id']) || pick(cte, ['chave_cte', 'chaveCte', 'chave']) || pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']),
@@ -571,21 +592,29 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
     : [pick(cte, ['canal', 'canal_original']) || '', ''];
 
   let detalhe = null;
-  for (const canal of canaisTentativa) {
-    const linha = cteParaLinhaSimulador(cte, transportadoraTabela, canal);
-    const resultado = simularRealizadoPorTransportadora({
-      transportadoras,
-      realizados: [linha],
-      nomeTransportadora: transportadoraTabela,
-      filtros: {
-        canal: linha.canal,
-        ignorarCubagem: opcoes.ignorarCubagem,
-        percentualContingenciaPeso: opcoes.percentualContingenciaPeso,
-      },
-      cidadePorIbge,
-    });
-    detalhe = resultado?.detalhes?.[0] || null;
-    if (detalhe) break;
+  let calculoInvertido = false;
+  const tentativasCte = [cte, inverterOrigemDestinoCte(cte)];
+  for (let tentativaIndex = 0; tentativaIndex < tentativasCte.length && !detalhe; tentativaIndex += 1) {
+    const cteTentativa = tentativasCte[tentativaIndex];
+    for (const canal of canaisTentativa) {
+      const linha = cteParaLinhaSimulador(cteTentativa, transportadoraTabela, canal);
+      const resultado = simularRealizadoPorTransportadora({
+        transportadoras,
+        realizados: [linha],
+        nomeTransportadora: transportadoraTabela,
+        filtros: {
+          canal: linha.canal,
+          ignorarCubagem: opcoes.ignorarCubagem,
+          percentualContingenciaPeso: opcoes.percentualContingenciaPeso,
+        },
+        cidadePorIbge,
+      });
+      detalhe = resultado?.detalhes?.[0] || null;
+      if (detalhe) {
+        calculoInvertido = tentativaIndex === 1;
+        break;
+      }
+    }
   }
 
   if (!detalhe) return null;
@@ -609,6 +638,8 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
       componentes_base: detalhe.detalhes?.frete,
       componente_base: detalhe.detalhes?.frete?.componenteBase,
       motor: 'simulador_realizado',
+      calculo_devolucao_invertida: calculoInvertido,
+      observacao_devolucao: calculoInvertido ? 'CT-e de devolucao calculado pela rota de ida equivalente.' : '',
     },
   });
 

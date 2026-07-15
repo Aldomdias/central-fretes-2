@@ -124,6 +124,7 @@ function PainelDetalheCalculo({ resultado }) {
           {linhaDetalhe('Tipo', resultado.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
           {linhaDetalhe('Tabela usada', resultado.transportadora_tabela || det.transportadora_tabela || '-')}
           {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
+          {det.calculo_devolucao_invertida ? linhaDetalhe('Regra devolucao', det.observacao_devolucao || 'Calculado pela rota de ida equivalente.', true) : null}
           {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
           {linhaDetalhe('Peso considerado', `${numeroFmt(det.peso_considerado ?? frete.pesoConsiderado ?? resultado.peso, 3)} kg`)}
           {linhaDetalhe('Valor NF', dinheiroMaybe(resultado.valor_nf), true)}
@@ -954,7 +955,7 @@ function Faturas({ state, onState }) {
         <div className="compact">{extrairIdentificadoresCte(buscaCtesAvulsa).length} identificador(es) reconhecido(s).</div>
         <AmdProcessingOverlay ativo={auditandoCtesAvulsos} progresso={progressoCtesAvulsos} mensagemRodape="Calculando CT-es avulsos com a tabela AMD atual." />
         {resultadoCtesAvulsos.length > 0 && (
-          <div className="table-wrap" style={{ marginTop: 12 }}>
+          <div className="table-wrap" style={{ marginTop: 12, maxHeight: 420, overflow: 'auto' }}>
             <table className="data-table compact-table">
               <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Frete pago</th><th>AMD</th><th>Diferenca</th><th>Status</th></tr></thead>
               <tbody>
@@ -972,7 +973,7 @@ function Faturas({ state, onState }) {
                         <td>{dinheiroMaybe(row.valor_cte)}</td>
                         <td>{dinheiroMaybe(row.valor_calculado)}</td>
                         <td>{dinheiroMaybe(row.diferenca)}</td>
-                        <td>{row.status_auditoria || row.motivo_sem_calculo || '-'}</td>
+                        <td>{row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-')}</td>
                       </tr>
                       {aberto && (
                         <tr><td colSpan="9"><PainelDetalheCalculo resultado={row} /></td></tr>
