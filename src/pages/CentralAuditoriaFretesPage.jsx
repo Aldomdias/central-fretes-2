@@ -936,53 +936,68 @@ function Faturas({ state, onState }) {
 
   return (
     <>
-      <div className="panel-card">
-        <div className="section-row compact-top">
+      <div className="panel-card audit-quick-card">
+        <div className="section-row compact-top audit-quick-header">
           <div>
             <div className="panel-title">Auditoria rapida de CT-e</div>
-            <span>Cole uma chave de CT-e ou uma lista para calcular e salvar na auditoria.</span>
+            <p>Cole uma chave ou lista de CT-es para calcular com a tabela AMD atual e salvar na auditoria.</p>
           </div>
           <div className="actions-right">
-            <button className="btn-secondary" type="button" onClick={() => { setBuscaCtesAvulsa(''); setResultadoCtesAvulsos([]); setCteAvulsoExpandido(null); }} disabled={auditandoCtesAvulsos}>Limpar</button>
-            <button className="btn-primary" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
-              {auditandoCtesAvulsos ? 'Auditando...' : 'Auditar CT-e(s)'}
+            <button className="btn-secondary audit-small-button" type="button" onClick={() => { setBuscaCtesAvulsa(''); setResultadoCtesAvulsos([]); setCteAvulsoExpandido(null); }} disabled={auditandoCtesAvulsos}>Limpar</button>
+            <button className="btn-primary audit-small-button" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
+              {auditandoCtesAvulsos ? 'Auditando...' : 'Auditar CT-es'}
             </button>
           </div>
         </div>
-        <label className="field">Chave ou lista de CT-es
-          <textarea value={buscaCtesAvulsa} onChange={(e) => setBuscaCtesAvulsa(e.target.value)} rows={3} placeholder="Cole uma chave de 44 digitos ou varios CT-es, um por linha" />
-        </label>
-        <div className="compact">{extrairIdentificadoresCte(buscaCtesAvulsa).length} identificador(es) reconhecido(s).</div>
+
+        <div className="audit-quick-input-row">
+          <label className="field audit-quick-field">Chave ou lista de CT-es
+            <textarea value={buscaCtesAvulsa} onChange={(e) => setBuscaCtesAvulsa(e.target.value)} rows={4} placeholder="Cole uma chave de 44 digitos ou varios CT-es, um por linha" />
+          </label>
+          <div className="audit-quick-counter">
+            <strong>{extrairIdentificadoresCte(buscaCtesAvulsa).length}</strong>
+            <span>identificador(es) reconhecido(s)</span>
+          </div>
+        </div>
+
         <AmdProcessingOverlay ativo={auditandoCtesAvulsos} progresso={progressoCtesAvulsos} mensagemRodape="Calculando CT-es avulsos com a tabela AMD atual." />
+
         {resultadoCtesAvulsos.length > 0 && (
-          <div className="table-wrap" style={{ marginTop: 12, maxHeight: 420, overflow: 'auto' }}>
-            <table className="data-table compact-table">
-              <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Frete pago</th><th>AMD</th><th>Diferenca</th><th>Status</th></tr></thead>
-              <tbody>
-                {resultadoCtesAvulsos.map((row, index) => {
-                  const key = row.chave_cte || row.numero_cte || index;
-                  const aberto = cteAvulsoExpandido === key;
-                  return (
-                    <Fragment key={key}>
-                      <tr>
-                        <td><button className="btn-icon" type="button" onClick={() => setCteAvulsoExpandido(aberto ? null : key)}>{aberto ? 'v' : '>'}</button></td>
-                        <td>{row.numero_cte || '-'}</td>
-                        <td><small>{row.chave_cte || '-'}</small></td>
-                        <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
-                        <td>{row.origem || row.cidade_origem || '-'} -&gt; {row.destino || row.cidade_destino || '-'}</td>
-                        <td>{dinheiroMaybe(row.valor_cte)}</td>
-                        <td>{dinheiroMaybe(row.valor_calculado)}</td>
-                        <td>{dinheiroMaybe(row.diferenca)}</td>
-                        <td>{row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-')}</td>
-                      </tr>
-                      {aberto && (
-                        <tr><td colSpan="9"><PainelDetalheCalculo resultado={row} /></td></tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="audit-quick-results">
+            <div className="audit-quick-results-head">
+              <strong>{resultadoCtesAvulsos.length} CT-e(s) processado(s)</strong>
+              <span>Clique em uma linha para abrir o detalhe do calculo.</span>
+            </div>
+            <div className="audit-quick-table-wrap">
+              <table className="sim-analise-tabela audit-quick-table">
+                <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
+                <tbody>
+                  {resultadoCtesAvulsos.map((row, index) => {
+                    const key = row.chave_cte || row.numero_cte || index;
+                    const aberto = cteAvulsoExpandido === key;
+                    const statusClass = `audit-status audit-status-${String(row.status_calculo || row.status_auditoria || '').toLowerCase()}`;
+                    return (
+                      <Fragment key={key}>
+                        <tr className={aberto ? 'selected' : ''}>
+                          <td><button className="btn-icon audit-expand-button" type="button" onClick={() => setCteAvulsoExpandido(aberto ? null : key)}>{aberto ? 'v' : '>'}</button></td>
+                          <td><strong>{row.numero_cte || '-'}</strong></td>
+                          <td><span className="audit-key-cell">{row.chave_cte || '-'}</span></td>
+                          <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
+                          <td>{row.origem || row.cidade_origem || '-'} -&gt; {row.destino || row.cidade_destino || '-'}</td>
+                          <td>{dinheiroMaybe(row.valor_cte)}</td>
+                          <td>{dinheiroMaybe(row.valor_calculado)}</td>
+                          <td>{dinheiroMaybe(row.diferenca)}</td>
+                          <td><span className={statusClass}>{row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-')}</span></td>
+                        </tr>
+                        {aberto && (
+                          <tr className="audit-quick-detail-row"><td colSpan="9"><PainelDetalheCalculo resultado={row} /></td></tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </div>
