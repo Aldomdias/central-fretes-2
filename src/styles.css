@@ -3250,6 +3250,12 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
 .audit-quick-table td {
   vertical-align: middle;
 }
+.audit-quick-table tbody tr:not(.audit-quick-detail-row) {
+  cursor: pointer;
+}
+.audit-quick-table tbody tr:not(.audit-quick-detail-row):hover td {
+  background: #f6f9ff;
+}
 .audit-quick-table tr.selected td {
   background: #f1f6ff;
 }
@@ -3268,14 +3274,9 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.audit-expand-button {
-  width: 24px;
-  height: 24px;
-  min-height: 24px;
-  padding: 0;
-}
 .audit-quick-detail-row > td {
-  padding: 12px !important;
+  padding: 14px !important;
+  border-top: 0;
   background: #f8fbff;
 }
 .audit-finance-request {

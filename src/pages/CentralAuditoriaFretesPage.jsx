@@ -1026,7 +1026,7 @@ function Faturas({ state, onState }) {
             </div>
             <div className="audit-quick-table-wrap">
               <table className="sim-analise-tabela audit-quick-table">
-                <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
+                <thead><tr><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
                 <tbody>
                   {resultadoCtesAvulsos.map((row, index) => {
                     const key = row.chave_cte || row.numero_cte || index;
@@ -1035,8 +1035,7 @@ function Faturas({ state, onState }) {
                     const statusClass = `audit-status audit-status-${linhaOk ? 'ok' : String(row.status_calculo || row.status_auditoria || '').toLowerCase()}`;
                     return (
                       <Fragment key={key}>
-                        <tr className={`${aberto ? 'selected' : ''} ${linhaOk ? 'audit-row-ok' : ''}`.trim()}>
-                          <td><button className="btn-icon audit-expand-button" type="button" onClick={() => setCteAvulsoExpandido(aberto ? null : key)}>{aberto ? 'v' : '>'}</button></td>
+                        <tr className={`${aberto ? 'selected' : ''} ${linhaOk ? 'audit-row-ok' : ''}`.trim()} role="button" tabIndex={0} onClick={() => setCteAvulsoExpandido(aberto ? null : key)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setCteAvulsoExpandido(aberto ? null : key); }}>
                           <td><strong>{row.numero_cte || '-'}</strong></td>
                           <td><span className="audit-key-cell">{row.chave_cte || '-'}</span></td>
                           <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
@@ -1048,7 +1047,7 @@ function Faturas({ state, onState }) {
                           <td><span className={statusClass}>{row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-')}</span></td>
                         </tr>
                         {aberto && (
-                          <tr className="audit-quick-detail-row"><td colSpan="10"><PainelDetalheCalculo resultado={row} /></td></tr>
+                          <tr className="audit-quick-detail-row"><td colSpan="9"><PainelDetalheCalculo resultado={row} /></td></tr>
                         )}
                       </Fragment>
                     );
