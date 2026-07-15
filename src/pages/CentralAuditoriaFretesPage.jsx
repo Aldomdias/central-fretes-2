@@ -668,6 +668,7 @@ function Faturas({ state, onState }) {
   const [progressoCtesAvulsos, setProgressoCtesAvulsos] = useState(null);
   const [resultadoCtesAvulsos, setResultadoCtesAvulsos] = useState([]);
   const [cteAvulsoExpandido, setCteAvulsoExpandido] = useState(null);
+  const [resultadoCtesAvulsosSalvos, setResultadoCtesAvulsosSalvos] = useState(false);
   const canaisDisponiveis = [...new Set(state.faturas.map((item) => item.canal).filter(Boolean))].sort();
   // Competencia = mes/ano da emissao (nao existe campo proprio na fatura).
   const competenciasDisponiveis = [...new Set(
@@ -707,6 +708,61 @@ function Faturas({ state, onState }) {
     // Faturas 100% auditadas ficam em evidência, no topo da lista.
     .sort((a, b) => Number(faturaTotalmenteAuditada(b)) - Number(faturaTotalmenteAuditada(a)));
 
+  const localizarFaturasPorChaves = async (chaves = [], numeros = []) => {
+    const alvo = new Set(chaves.map(normalizarChaveCte).filter(Boolean));
+    const numerosAlvo = new Set(numeros.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean));
+    if (!alvo.size && !numerosAlvo.size) return [];
+    const faturasAfetadas = [];
+    for (const fatura of state.faturas || []) {
+      let detalhes = state.detalhes?.[fatura.id] || [];
+      if (!detalhes.length) {
+        try {
+          detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
+        } catch {
+          detalhes = [];
+        }
+      }
+      if (detalhes.some((item) => (
+        alvo.has(normalizarChaveCte(item.chave_cte))
+        || numerosAlvo.has(String(item.numero_cte || '').replace(/\D/g, ''))
+      ))) {
+        faturasAfetadas.push({ fatura, detalhes });
+      }
+    }
+    return faturasAfetadas;
+  };
+
+  const salvarAuditoriaAvulsa = async (registrosParam = resultadoCtesAvulsos) => {
+    const registros = (registrosParam || []).filter((row) => row?.chave_cte || row?.numero_cte);
+    if (!registros.length) {
+      setMensagemImportacao('Nenhum CT-e calculado para salvar.');
+      return;
+    }
+    setAuditandoCtesAvulsos(true);
+    setProgressoCtesAvulsos(null);
+    try {
+      const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+      await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros, onProgress: setProgressoCtesAvulsos });
+
+      const faturasAfetadas = await localizarFaturasPorChaves(registros.map((row) => row.chave_cte), registros.map((row) => row.numero_cte));
+      let atualizado = state;
+      for (let i = 0; i < faturasAfetadas.length; i += 1) {
+        const { fatura, detalhes } = faturasAfetadas[i];
+        setProgressoCtesAvulsos({ etapa: 'atualizando_faturas', carregados: i + 1, total: faturasAfetadas.length });
+        const faturaAtual = atualizado.faturas.find((item) => item.id === fatura.id) || fatura;
+        atualizado = await reauditarFatura(atualizado, faturaAtual, detalhes, sessao?.nome || sessao?.email || 'Usuario local');
+      }
+      if (faturasAfetadas.length) onState(atualizado);
+      setResultadoCtesAvulsosSalvos(true);
+      setMensagemImportacao(`Auditoria salva: ${registros.length} CT-e(s) gravado(s)${faturasAfetadas.length ? ` e ${faturasAfetadas.length} fatura(s) atualizada(s).` : '.'}`);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao salvar auditoria avulsa: ${error.message}`);
+    } finally {
+      setAuditandoCtesAvulsos(false);
+      setProgressoCtesAvulsos(null);
+    }
+  };
+
   const detectarCanais = async () => {
     setDetectandoCanais(true);
     setProgressoCanais(null);
@@ -730,15 +786,12 @@ function Faturas({ state, onState }) {
     setAuditandoCtesAvulsos(true);
     setProgressoCtesAvulsos(null);
     setResultadoCtesAvulsos([]);
+    setResultadoCtesAvulsosSalvos(false);
     setCteAvulsoExpandido(null);
     setMensagemImportacao('');
     try {
       invalidarCacheBaseFreteAuditoriaCte();
       const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos);
-      if (registros.length) {
-        const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
-        await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros, onProgress: setProgressoCtesAvulsos });
-      }
       setResultadoCtesAvulsos(registros);
       setMensagemImportacao(`Auditoria avulsa concluida: ${encontrados} CT-e(s) encontrado(s)${naoEncontrados ? `, ${naoEncontrados} nao encontrado(s)` : ''}.`);
     } catch (error) {
@@ -943,9 +996,12 @@ function Faturas({ state, onState }) {
             <p>Cole uma chave ou lista de CT-es para calcular com a tabela AMD atual e salvar na auditoria.</p>
           </div>
           <div className="actions-right">
-            <button className="btn-secondary audit-small-button" type="button" onClick={() => { setBuscaCtesAvulsa(''); setResultadoCtesAvulsos([]); setCteAvulsoExpandido(null); }} disabled={auditandoCtesAvulsos}>Limpar</button>
+            <button className="btn-secondary audit-small-button" type="button" onClick={() => { setBuscaCtesAvulsa(''); setResultadoCtesAvulsos([]); setResultadoCtesAvulsosSalvos(false); setCteAvulsoExpandido(null); }} disabled={auditandoCtesAvulsos}>Limpar</button>
             <button className="btn-primary audit-small-button" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
               {auditandoCtesAvulsos ? 'Auditando...' : 'Auditar CT-es'}
+            </button>
+            <button className="btn-secondary audit-small-button" type="button" onClick={() => salvarAuditoriaAvulsa()} disabled={auditandoCtesAvulsos || !resultadoCtesAvulsos.length || resultadoCtesAvulsosSalvos}>
+              {resultadoCtesAvulsosSalvos ? 'Auditoria salva' : 'Salvar auditoria'}
             </button>
           </div>
         </div>
@@ -966,31 +1022,33 @@ function Faturas({ state, onState }) {
           <div className="audit-quick-results">
             <div className="audit-quick-results-head">
               <strong>{resultadoCtesAvulsos.length} CT-e(s) processado(s)</strong>
-              <span>Clique em uma linha para abrir o detalhe do calculo.</span>
+              <span>{resultadoCtesAvulsosSalvos ? 'Auditoria salva e faturas relacionadas atualizadas.' : 'Revise e clique em Salvar auditoria para gravar/atualizar faturas.'}</span>
             </div>
             <div className="audit-quick-table-wrap">
               <table className="sim-analise-tabela audit-quick-table">
-                <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
+                <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
                 <tbody>
                   {resultadoCtesAvulsos.map((row, index) => {
                     const key = row.chave_cte || row.numero_cte || index;
                     const aberto = cteAvulsoExpandido === key;
-                    const statusClass = `audit-status audit-status-${String(row.status_calculo || row.status_auditoria || '').toLowerCase()}`;
+                    const linhaOk = Number(row.valor_calculado || 0) > 0 && Math.abs(Number(row.diferenca || 0)) <= 0.01;
+                    const statusClass = `audit-status audit-status-${linhaOk ? 'ok' : String(row.status_calculo || row.status_auditoria || '').toLowerCase()}`;
                     return (
                       <Fragment key={key}>
-                        <tr className={aberto ? 'selected' : ''}>
+                        <tr className={`${aberto ? 'selected' : ''} ${linhaOk ? 'audit-row-ok' : ''}`.trim()}>
                           <td><button className="btn-icon audit-expand-button" type="button" onClick={() => setCteAvulsoExpandido(aberto ? null : key)}>{aberto ? 'v' : '>'}</button></td>
                           <td><strong>{row.numero_cte || '-'}</strong></td>
                           <td><span className="audit-key-cell">{row.chave_cte || '-'}</span></td>
                           <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
                           <td>{row.origem || row.cidade_origem || '-'} -&gt; {row.destino || row.cidade_destino || '-'}</td>
+                          <td>{numeroFmt(row.peso ?? row.peso_declarado ?? row.detalhes_calculo?.peso_considerado, 3)} kg</td>
                           <td>{dinheiroMaybe(row.valor_cte)}</td>
                           <td>{dinheiroMaybe(row.valor_calculado)}</td>
                           <td>{dinheiroMaybe(row.diferenca)}</td>
                           <td><span className={statusClass}>{row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-')}</span></td>
                         </tr>
                         {aberto && (
-                          <tr className="audit-quick-detail-row"><td colSpan="9"><PainelDetalheCalculo resultado={row} /></td></tr>
+                          <tr className="audit-quick-detail-row"><td colSpan="10"><PainelDetalheCalculo resultado={row} /></td></tr>
                         )}
                       </Fragment>
                     );

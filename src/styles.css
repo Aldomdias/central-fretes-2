@@ -3253,6 +3253,12 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
 .audit-quick-table tr.selected td {
   background: #f1f6ff;
 }
+.audit-quick-table tr.audit-row-ok td {
+  background: #ecfdf5;
+}
+.audit-quick-table tr.audit-row-ok.selected td {
+  background: #dcfce7;
+}
 .audit-key-cell {
   display: inline-block;
   max-width: 300px;
