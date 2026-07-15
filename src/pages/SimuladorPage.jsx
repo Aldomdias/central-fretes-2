@@ -3438,6 +3438,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     const valorCte = numeroRealizado(row.valorCte);
     const nf = numeroRealizado(row.valorNF);
     const pesoLinha = pesoRealizado(row, filtros);
+    const pesoOriginalLinha = pesoRealizado(row, { ...filtros, ignorarCubagem: true, percentualContingenciaPeso: 0 });
     const vol = numeroRealizado(row.qtdVolumes);
     const cubagemLinha = cubagemRealizado(row, filtros);
     const chavePedido = criarChavePedidoRealizadoSim(row);
@@ -3782,6 +3783,8 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       freteVencedor: freteVenc,
       volumes: vol,
       peso: pesoLinha,
+      pesoOriginalCte: pesoOriginalLinha,
+      contingenciaPesoPercentual: Number(filtros.percentualContingenciaPeso || 0),
       cubagem: cubagemLinha,
       cubagemOriginalTracking: numeroRealizado(row.cubagemTotalOriginalTracking),
       cubagemTotalArmazenadaTracking: numeroRealizado(row.cubagemTotalArmazenadaTracking),
@@ -10046,7 +10049,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>Tipo de cálculo: <strong>{item.vencedorDetalhes?.frete?.tipoCalculo || '—'}</strong></div>
                                                 <div>Prazo: <strong>{item.vencedorDetalhes?.prazo} dia(s)</strong></div>
                                                 <div>Rota/cotação: <strong>{item.vencedorDetalhes?.frete?.rotaNome || '—'}</strong></div>
-                                                <div>Faixa aplicada: <strong>{item.vencedorDetalhes?.frete?.faixaPeso || '—'}</strong></div>
+                                                <div>Faixa aplicada: <strong>{item.vencedorDetalhes?.frete?.faixaPeso || '?'}</strong></div>
+                                                <div>Peso CT-e original: <strong>{Number(item.pesoOriginalCte || item.peso || 0).toFixed(2)} kg</strong></div>
+                                                {Number(item.contingenciaPesoPercentual || 0) > 0 && (
+                                                  <div>Contingencia aplicada: <strong>{Number(item.contingenciaPesoPercentual || 0).toFixed(0)}%</strong> - peso usado <strong>{Number(item.peso || 0).toFixed(2)} kg</strong></div>
+                                                )}
+
                                                 <div>Peso considerado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
                                                 <div>Peso cubado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoCubado || 0).toFixed(2)} kg</strong> (fator {item.vencedorDetalhes?.frete?.fatorCubagem})</div>
                                                 <div>Cubagem usada: <strong>{Number(item.vencedorDetalhes?.frete?.cubagemAplicada || 0).toFixed(6)} m³</strong></div>
