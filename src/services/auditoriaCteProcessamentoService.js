@@ -283,11 +283,14 @@ function getCotacaoPorRota(origem, rota, peso, cte = {}) {
 }
 
 function getTipoCalculo(origem = {}, cotacao = {}) {
+  const tipoOrigem = normalizeText(origem.generalidades?.tipoCalculo || origem.generalidades?.tipo_calculo || '');
   const tipoCotacao = normalizeText(cotacao.tipoCalculo || cotacao.tipo_calculo);
+  const temFaixaValorada = toNumber(cotacao.valorFixo || cotacao.taxaAplicada || cotacao.valor_fixo || cotacao.taxa_aplicada) > 0
+    || toNumber(cotacao.pesoMax || cotacao.pesoLimite || cotacao.peso_max || cotacao.peso_limite) > 0;
+
+  if (tipoOrigem.includes('FAIXA') && temFaixaValorada) return 'FAIXA_DE_PESO';
   if (tipoCotacao.includes('FAIXA')) return 'FAIXA_DE_PESO';
   if (tipoCotacao.includes('PERCENT')) return 'PERCENTUAL';
-
-  const tipoOrigem = normalizeText(origem.generalidades?.tipoCalculo || origem.generalidades?.tipo_calculo || 'PERCENTUAL');
   if (tipoOrigem.includes('FAIXA')) return 'FAIXA_DE_PESO';
 
   return 'PERCENTUAL';

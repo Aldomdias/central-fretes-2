@@ -217,6 +217,19 @@ function getTaxaDestino(origem, ibgeDestino) {
   return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino) === String(ibgeDestino)) || {};
 }
 
+function resolverTipoCalculo(origem = {}, cotacao = {}) {
+  const tipoOrigem = String(origem.generalidades?.tipoCalculo || origem.generalidades?.tipo_calculo || '').toUpperCase();
+  const tipoCotacao = String(cotacao?.tipoCalculo || cotacao?.tipo_calculo || '').toUpperCase();
+  const temFaixaValorada = toNumber(cotacao?.valorFixo || cotacao?.taxaAplicada) > 0
+    || toNumber(cotacao?.pesoMax || cotacao?.pesoLimite) > 0;
+
+  if (tipoOrigem.includes('FAIXA') && temFaixaValorada) return 'FAIXA_DE_PESO';
+  if (tipoCotacao.includes('FAIXA')) return 'FAIXA_DE_PESO';
+  if (tipoCotacao.includes('PERCENT')) return 'PERCENTUAL';
+  if (tipoOrigem.includes('FAIXA')) return 'FAIXA_DE_PESO';
+  return 'PERCENTUAL';
+}
+
 function rotaCapitalPorCodigoCurto(rotaNome = '') {
   const codigo = String(rotaNome || '').trim().toUpperCase();
   const match = codigo.match(/^([A-Z]{2})C$/);
@@ -439,12 +452,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
   const valorNFOrigem = valorNFManualInformado > 0 ? 'manual' : 'grade';
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
-  // Prioriza o tipoCalculo da cotação individual — permite transportadoras com origens mistas
-  const tipoCalculoCotacao = String(cotacao?.tipoCalculo || '').toUpperCase();
-  const tipoCalculoGeneralidades = String(origem.generalidades?.tipoCalculo || 'PERCENTUAL').toUpperCase();
-  const tipoCalculo = tipoCalculoCotacao === 'FAIXA_DE_PESO' || tipoCalculoCotacao === 'PERCENTUAL'
-    ? tipoCalculoCotacao
-    : tipoCalculoGeneralidades;
+  const tipoCalculo = resolverTipoCalculo(origem, cotacao);
   const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge);
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),
