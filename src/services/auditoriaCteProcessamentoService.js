@@ -978,6 +978,10 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
   const supabase = ensureSupabase();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
 
+  if (!ctesUnicos.length) {
+    return { registros: [], encontrados: 0, naoEncontrados: normalizadas.length };
+  }
+
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
   if (!_cacheBaseFrete) {
     // heartbeat enquanto carrega (lookup de CEP→IBGE pode demorar)
@@ -1054,35 +1058,50 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
 export async function processarCtesPorChave(chaves = [], onProgress) {
   const normalizadas = [...new Set((chaves || []).map((c) => onlyDigits(c)).filter(Boolean))];
   if (!normalizadas.length) return { registros: [], encontrados: 0, naoEncontrados: 0 };
+  const chavesCte = normalizadas.filter((valor) => valor.length >= 20);
+  const numerosCte = normalizadas.filter((valor) => valor.length < 20);
 
   const supabase = ensureSupabase();
   const mapaVinculos = await carregarMapaVinculosAuditoria();
 
   const ctes = [];
-  for (let inicio = 0; inicio < normalizadas.length; inicio += 200) {
-    const lote = normalizadas.slice(inicio, inicio + 200);
+  for (let inicio = 0; inicio < chavesCte.length; inicio += 200) {
+    const lote = chavesCte.slice(inicio, inicio + 200);
     const { data, error } = await supabase.from(TABELA_CTES).select('*').in('chave_cte', lote);
     if (error) throw new Error(`Erro ao buscar CT-es por chave: ${error.message}`);
     ctes.push(...(data || []));
     onProgress?.({ etapa: 'buscando_ctes', carregados: ctes.length, total: normalizadas.length });
   }
 
-  // Carrega só as tabelas das transportadoras envolvidas (rápido) quando são
-  // poucas; com muitas (import de mês inteiro, várias transportadoras), cai
-  // no fallback de base completa dentro de carregarBaseFreteParaRegistros.
+  for (let inicio = 0; inicio < numerosCte.length; inicio += 200) {
+    const lote = numerosCte.slice(inicio, inicio + 200);
+    const { data, error } = await supabase.from(TABELA_CTES).select('*').in('numero_cte', lote);
+    if (error) throw new Error(`Erro ao buscar CT-es por numero: ${error.message}`);
+    ctes.push(...(data || []));
+    onProgress?.({ etapa: 'buscando_ctes', carregados: ctes.length, total: normalizadas.length });
+  }
+
+  const vistos = new Set();
+  const ctesUnicos = ctes.filter((cte) => {
+    const chave = pick(cte, ['chave_cte', 'chaveCte', 'chave']) || pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || pick(cte, ['id']);
+    if (!chave || vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+
   onProgress?.({ etapa: 'carregando_tabelas', carregados: 0, total: null });
-  const transportadoras = await carregarBaseFreteParaRegistros(ctes, onProgress, [], mapaVinculos);
+  const transportadoras = await carregarBaseFreteParaRegistros(ctesUnicos, onProgress, [], mapaVinculos);
   if (!transportadoras.length) {
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
   }
 
   const registros = [];
-  for (let index = 0; index < ctes.length; index += 1) {
-    registros.push(processarCte(ctes[index], transportadoras, mapaVinculos));
-    if (index % 500 === 0 || index === ctes.length - 1) {
-      onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctes.length });
+  for (let index = 0; index < ctesUnicos.length; index += 1) {
+    registros.push(processarCte(ctesUnicos[index], transportadoras, mapaVinculos));
+    if (index % 500 === 0 || index === ctesUnicos.length - 1) {
+      onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctesUnicos.length });
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
-  return { registros, encontrados: ctes.length, naoEncontrados: normalizadas.length - ctes.length };
+  return { registros, encontrados: ctesUnicos.length, naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length) };
 }

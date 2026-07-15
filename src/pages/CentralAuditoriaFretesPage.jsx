@@ -76,6 +76,10 @@ function pctFmt(v) {
   return Number.isFinite(n) ? `${n.toFixed(2).replace('.', ',')}%` : '—';
 }
 
+function extrairIdentificadoresCte(texto = '') {
+  return [...new Set(String(texto || '').match(/\d{5,}/g) || [])];
+}
+
 function somaValoresObjeto(obj = {}) {
   return Object.entries(obj || {}).reduce((acc, [, valor]) => {
     if (Array.isArray(valor)) return acc;
@@ -658,6 +662,11 @@ function Faturas({ state, onState }) {
   const [periodoFim, setPeriodoFim] = useState('');
   const [vencimentoInicio, setVencimentoInicio] = useState('');
   const [vencimentoFim, setVencimentoFim] = useState('');
+  const [buscaCtesAvulsa, setBuscaCtesAvulsa] = useState('');
+  const [auditandoCtesAvulsos, setAuditandoCtesAvulsos] = useState(false);
+  const [progressoCtesAvulsos, setProgressoCtesAvulsos] = useState(null);
+  const [resultadoCtesAvulsos, setResultadoCtesAvulsos] = useState([]);
+  const [cteAvulsoExpandido, setCteAvulsoExpandido] = useState(null);
   const canaisDisponiveis = [...new Set(state.faturas.map((item) => item.canal).filter(Boolean))].sort();
   // Competencia = mes/ano da emissao (nao existe campo proprio na fatura).
   const competenciasDisponiveis = [...new Set(
@@ -711,6 +720,34 @@ function Faturas({ state, onState }) {
       setProgressoCanais(null);
     }
   };
+  const auditarCtesAvulsos = async () => {
+    const ids = extrairIdentificadoresCte(buscaCtesAvulsa);
+    if (!ids.length) {
+      setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para auditar.');
+      return;
+    }
+    setAuditandoCtesAvulsos(true);
+    setProgressoCtesAvulsos(null);
+    setResultadoCtesAvulsos([]);
+    setCteAvulsoExpandido(null);
+    setMensagemImportacao('');
+    try {
+      invalidarCacheBaseFreteAuditoriaCte();
+      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos);
+      if (registros.length) {
+        const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
+        await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros, onProgress: setProgressoCtesAvulsos });
+      }
+      setResultadoCtesAvulsos(registros);
+      setMensagemImportacao(`Auditoria avulsa concluida: ${encontrados} CT-e(s) encontrado(s)${naoEncontrados ? `, ${naoEncontrados} nao encontrado(s)` : ''}.`);
+    } catch (error) {
+      setMensagemImportacao(`Erro na auditoria avulsa: ${error.message}`);
+    } finally {
+      setAuditandoCtesAvulsos(false);
+      setProgressoCtesAvulsos(null);
+    }
+  };
+
   // Recalcula o status AMD de varias faturas selecionadas de uma vez (uso
   // tipico: selecionar todas as faturas de uma mesma transportadora que
   // acabaram de ser importadas, em vez de abrir uma por uma).
@@ -898,6 +935,58 @@ function Faturas({ state, onState }) {
 
   return (
     <>
+      <div className="panel-card">
+        <div className="section-row compact-top">
+          <div>
+            <div className="panel-title">Auditoria rapida de CT-e</div>
+            <span>Cole uma chave de CT-e ou uma lista para calcular e salvar na auditoria.</span>
+          </div>
+          <div className="actions-right">
+            <button className="btn-secondary" type="button" onClick={() => { setBuscaCtesAvulsa(''); setResultadoCtesAvulsos([]); setCteAvulsoExpandido(null); }} disabled={auditandoCtesAvulsos}>Limpar</button>
+            <button className="btn-primary" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
+              {auditandoCtesAvulsos ? 'Auditando...' : 'Auditar CT-e(s)'}
+            </button>
+          </div>
+        </div>
+        <label className="field">Chave ou lista de CT-es
+          <textarea value={buscaCtesAvulsa} onChange={(e) => setBuscaCtesAvulsa(e.target.value)} rows={3} placeholder="Cole uma chave de 44 digitos ou varios CT-es, um por linha" />
+        </label>
+        <div className="compact">{extrairIdentificadoresCte(buscaCtesAvulsa).length} identificador(es) reconhecido(s).</div>
+        <AmdProcessingOverlay ativo={auditandoCtesAvulsos} progresso={progressoCtesAvulsos} mensagemRodape="Calculando CT-es avulsos com a tabela AMD atual." />
+        {resultadoCtesAvulsos.length > 0 && (
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table className="data-table compact-table">
+              <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Frete pago</th><th>AMD</th><th>Diferenca</th><th>Status</th></tr></thead>
+              <tbody>
+                {resultadoCtesAvulsos.map((row, index) => {
+                  const key = row.chave_cte || row.numero_cte || index;
+                  const aberto = cteAvulsoExpandido === key;
+                  return (
+                    <Fragment key={key}>
+                      <tr>
+                        <td><button className="btn-icon" type="button" onClick={() => setCteAvulsoExpandido(aberto ? null : key)}>{aberto ? 'v' : '>'}</button></td>
+                        <td>{row.numero_cte || '-'}</td>
+                        <td><small>{row.chave_cte || '-'}</small></td>
+                        <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
+                        <td>{row.origem || row.cidade_origem || '-'} -&gt; {row.destino || row.cidade_destino || '-'}</td>
+                        <td>{dinheiroMaybe(row.valor_cte)}</td>
+                        <td>{dinheiroMaybe(row.valor_calculado)}</td>
+                        <td>{dinheiroMaybe(row.diferenca)}</td>
+                        <td>{row.status_auditoria || row.motivo_sem_calculo || '-'}</td>
+                      </tr>
+                      {aberto && (
+                        <tr><td colSpan="9"><PainelDetalheCalculo resultado={row} /></td></tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+
       <div className="panel-card">
         <div className="section-row compact-top">
           <div>
