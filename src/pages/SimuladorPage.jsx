@@ -9242,6 +9242,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
                     : (resultadoRealizado.freteSelecionadaGanhadora || resultadoRealizado.faturamentoProjetadoNegociacao || 0)
                 );
                 const faturamentoPerdido = Math.max(faturamentoTotalRotas - faturamentoProjetado, 0);
+                const faturamentoTotalRotasMensal = faturamentoTotalRotas / mesesAnalise;
+                const faturamentoProjetadoMensal = faturamentoProjetado / mesesAnalise;
+                const faturamentoPerdidoMensal = faturamentoPerdido / mesesAnalise;
                 const savingMensal = Number(
                   ehReajusteResultado
                     ? (resultadoRealizado.savingProjetadoNegociacaoMes || resultadoRealizado.savingSelecionadaVsRealMes || 0)
@@ -9282,6 +9285,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 const pedidosDia = pedidosProjetados / Math.max(1, Number(resultadoRealizado.dias || 1));
                 const pedidosMes = pedidosProjetados / Math.max(1, Number(resultadoRealizado.meses || 1));
                 const volumesDia = volumesProjetados / Math.max(1, Number(resultadoRealizado.dias || 1));
+                const volumesMes = volumesProjetados / mesesAnalise;
                 const cubagemDia = cubagemProjetada / Math.max(1, Number(resultadoRealizado.dias || 1));
                 const pesoDia = pesoProjetado / Math.max(1, Number(resultadoRealizado.dias || 1));
 
@@ -9323,14 +9327,14 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       </>
                     )}
                     <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', marginTop: 12 }}>
-                      <div className="summary-card"><span>Faturamento total das rotas</span><strong>{formatMoney(faturamentoTotalRotas)}</strong><small>{Number(resultadoRealizado.ctesComTabelaSelecionada || 0).toLocaleString('pt-BR')} CT-es com tabela</small></div>
-                      <div className="summary-card"><span>Faturamento projetado</span><strong>{formatMoney(faturamentoProjetado)}</strong><small>{ehReajusteResultado ? 'retido + capturado' : 'somente CT-es ganhos'}</small></div>
-                      <div className="summary-card"><span>Faturamento que perde</span><strong>{formatMoney(faturamentoPerdido)}</strong><small>{Number(resultadoRealizado.ctesPerdidosSelecionada || 0).toLocaleString('pt-BR')} CT-es fora da captura</small></div>
+                      <div className="summary-card"><span>Faturamento total das rotas</span><strong>{formatMoney(faturamentoTotalRotas)}</strong><small>{formatMoney(faturamentoTotalRotasMensal)} / mes no periodo</small></div>
+                      <div className="summary-card"><span>Faturamento projetado</span><strong>{formatMoney(faturamentoProjetado)}</strong><small>{formatMoney(faturamentoProjetadoMensal)} / mes - {ehReajusteResultado ? 'retido + capturado' : 'CT-es ganhos'}</small></div>
+                      <div className="summary-card"><span>Faturamento que perde</span><strong>{formatMoney(faturamentoPerdido)}</strong><small>{formatMoney(faturamentoPerdidoMensal)} / mes - {Number(resultadoRealizado.ctesPerdidosSelecionada || 0).toLocaleString('pt-BR')} CT-es</small></div>
                       <div className="summary-card"><span>Saving mensal</span><strong>{formatMoney(savingMensal)}</strong><small>retido + capturado</small></div>
                       <div className="summary-card"><span>Saving anual</span><strong>{formatMoney(savingAnual)}</strong><small>projeção 12 meses</small></div>
                       <div className="summary-card"><span>% redução média</span><strong>{formatPercent(resultadoRealizado.reducaoMediaNecessaria || 0)}</strong><small>necessária nas perdidas</small></div>
-                      <div className="summary-card"><span>Volumes/dia</span><strong>{Number(volumesDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong><small>{Number(volumesProjetados || 0).toLocaleString('pt-BR')} volumes projetados</small></div>
-                      <div className="summary-card"><span>Pedidos/dia</span><strong>{Number(pedidosDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong><small>{Number(pedidosMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} pedidos/mês projetados</small></div>
+                      <div className="summary-card"><span>Volumes capturados/dia</span><strong>{Number(volumesDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong><small>{Number(volumesProjetados || 0).toLocaleString('pt-BR')} no periodo; {Number(volumesMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} / mes</small></div>
+                      <div className="summary-card"><span>{usandoCteComoPedido ? 'CT-es/dia' : 'Pedidos/dia'}</span><strong>{Number(pedidosDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong><small>{Number(pedidosMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} {usandoCteComoPedido ? 'CT-es' : 'pedidos'} / m�s projetados</small></div>
                       <VeiculoOcupacaoCard
                         titulo="Veículo operacional"
                         cubagemDia={cubagemDia}
