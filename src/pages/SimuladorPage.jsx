@@ -3782,8 +3782,9 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
       vencedor: vencedor?.transportadora || '',
       freteVencedor: freteVenc,
       volumes: vol,
-      peso: pesoLinha,
+      peso: pesoOriginalLinha,
       pesoOriginalCte: pesoOriginalLinha,
+      pesoCalculo: pesoLinha,
       contingenciaPesoPercentual: Number(filtros.percentualContingenciaPeso || 0),
       cubagem: cubagemLinha,
       cubagemOriginalTracking: numeroRealizado(row.cubagemTotalOriginalTracking),
@@ -10052,7 +10053,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 <div>Faixa aplicada: <strong>{item.vencedorDetalhes?.frete?.faixaPeso || '?'}</strong></div>
                                                 <div>Peso CT-e original: <strong>{Number(item.pesoOriginalCte || item.peso || 0).toFixed(2)} kg</strong></div>
                                                 {Number(item.contingenciaPesoPercentual || 0) > 0 && (
-                                                  <div>Contingencia aplicada: <strong>{Number(item.contingenciaPesoPercentual || 0).toFixed(0)}%</strong> - peso usado <strong>{Number(item.peso || 0).toFixed(2)} kg</strong></div>
+                                                  <div>Contingencia aplicada: <strong>{Number(item.contingenciaPesoPercentual || 0).toFixed(0)}%</strong> - peso usado <strong>{Number(item.pesoCalculo || item.peso || 0).toFixed(2)} kg</strong></div>
                                                 )}
 
                                                 <div>Peso considerado: <strong>{Number(item.vencedorDetalhes?.frete?.pesoConsiderado || 0).toFixed(2)} kg</strong></div>
