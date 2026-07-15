@@ -124,6 +124,22 @@ function tipoCalculoInformado(value) {
   return '';
 }
 
+function normalizarPesoFaixaNegociacao(pesoInicialRaw, pesoFinalRaw) {
+  let pesoInicial = numero(pesoInicialRaw);
+  const pesoFinal = numero(pesoFinalRaw);
+
+  // Alguns imports de negociação salvam limites decimais sem separador:
+  // 50,001 kg vira 50001, enquanto o fim vem como 70 kg. Se mantiver assim,
+  // a faixa fica invertida (50001 -> 70) e só pesos baixos encontram preço.
+  const faixaAberta = pesoFinal >= 99998;
+  if (pesoInicial >= 1000 && ((pesoInicial > pesoFinal && pesoFinal > 0 && pesoFinal < 1000) || faixaAberta)) {
+    const reduzido = pesoInicial / 1000;
+    if (faixaAberta || reduzido < pesoFinal) pesoInicial = reduzido;
+  }
+
+  return { pesoInicial, pesoFinal };
+}
+
 function parseDadosOriginais(value) {
   if (!value) return {};
   if (typeof value === 'object') return value;
@@ -299,8 +315,7 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   const percentual = numero(item.frete_percentual);
   const taxaAplicada = numero(item.taxa_aplicada);
   const freteMinimo = numero(item.frete_minimo);
-  const pesoInicial = numero(item.peso_inicial);
-  const pesoFinalInformado = numero(item.peso_final);
+  const { pesoInicial, pesoFinal: pesoFinalInformado } = normalizarPesoFaixaNegociacao(item.peso_inicial, item.peso_final);
   const excessoKg = numero(item.excesso_kg);
   const valorExcedente = numero(item.valor_excedente);
   const tipoCalculoTabela = normalizarTipoCalculo(generalidades.tipoCalculo);
