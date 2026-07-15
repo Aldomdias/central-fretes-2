@@ -6787,18 +6787,19 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return;
     }
 
-    const mesmasParcelas = analisesMensaisRealizadoVisiveis.filter((item) => item.competencia === referencia.competencia
-      && item.transportadora === referencia.transportadora
+    const mesmasParcelas = analisesMensaisRealizadoVisiveis.filter((item) => item.transportadora === referencia.transportadora
       && (item.canal || '') === (referencia.canal || '')
       && (item.origem || '') === (referencia.origem || '')
       && item.status === 'CONCLUIDA');
 
     if (mesmasParcelas.length < 2) {
-      setErroSimulacao('Encontrei apenas uma analise concluida com o mesmo mes/transportadora/canal/origem. Salve as demais parcelas antes de unificar.');
+      setErroSimulacao('Encontrei apenas uma analise concluida com a mesma transportadora/canal/origem. Salve as demais competencias ou parcelas antes de unificar.');
       return;
     }
 
-    const confirmou = window.confirm(`Unificar ${mesmasParcelas.length} analise(s) salvas de ${referencia.competencia} / ${referencia.transportadora}?\n\nDepois de criar a consolidada, posso apagar as parcelas usadas.`);
+    const competencias = [...new Set(mesmasParcelas.map((item) => item.competencia).filter(Boolean))].sort();
+    const competenciaLabel = competencias.length > 1 ? `${competencias[0]} a ${competencias[competencias.length - 1]}` : (competencias[0] || referencia.competencia || 'sem competencia');
+    const confirmou = window.confirm(`Unificar ${mesmasParcelas.length} analise(s) salvas de ${competenciaLabel} / ${referencia.transportadora}?\n\nDepois de criar a consolidada, posso apagar as parcelas usadas.`);
     if (!confirmou) return;
 
     setCarregandoAnaliseMensalRealizado(true);
@@ -6811,7 +6812,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const salva = await salvarSimulacaoRealizadoMensal({
         resultado: consolidado,
         filtros: {
-          competencia: referencia.competencia,
+          competencia: competenciaLabel,
           transportadora: referencia.transportadora,
           canal: referencia.canal,
           origem: referencia.origem,
@@ -8879,7 +8880,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 onClick={unificarAnalisesMensaisRealizado}
                 disabled={carregandoAnaliseMensalRealizado || !analiseMensalRealizadoId}
                 style={{ background: '#4338ca' }}
-                title="Unifica as analises salvas do mesmo mes, transportadora, canal e origem"
+                title="Unifica as analises salvas da mesma transportadora, canal e origem"
               >
                 Unificar salvas
               </button>
