@@ -203,15 +203,22 @@ function getIndicadoresTabela(tabela) {
   var savingAno = Number(ultimaSim.saving_ano || resumo.savingSelecionadaVsRealAno || (savingMes * 12) || 0);
   var faturamentoMes = Number(tabela.faturamento_projetado || ultimaSim.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada || 0);
   var faturamentoAno = Number(ultimaSim.faturamento_ano || resumo.faturamentoSelecionadaGanhadoraAno || resumo.faturamentoSelecionadaAno || (faturamentoMes * 12) || 0);
-  var pedidosDia = Number(tabela.volumetria_dia || ultimaSim.pedidos_dia || resumo.cargasDia || 0);
+  var tipoNegociacao = getTipoNegociacaoTabela(tabela);
+  var diasResumo = Math.max(1, Number(resumo.dias || resumo.diasBase || 0) || 1);
+  var pedidosProjetadosResumo = tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE'
+    ? Number(resumo.pedidosRetidosSelecionada || 0) + Number(resumo.pedidosCapturadosDeOutras || 0)
+    : Number(resumo.pedidosGanhariaSelecionada || resumo.pedidosCapturadosDeOutras || resumo.ctesGanhariaSelecionada || 0);
+  var volumesProjetadosResumo = tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE'
+    ? Number(resumo.volumesRetidosSelecionada || 0) + Number(resumo.volumesCapturados || 0)
+    : Number(resumo.volumesGanhariaSelecionada || resumo.volumesCapturados || 0);
+  var pedidosDia = Number(resumo.pedidosProjetadosDia || (pedidosProjetadosResumo ? pedidosProjetadosResumo / diasResumo : 0) || ultimaSim.pedidos_ganhos_dia || ultimaSim.pedidos_dia || tabela.volumetria_dia || resumo.cargasDia || 0);
   var pedidosMes = pedidosDia * 22;
   var pedidosAno = pedidosMes * 12;
-  var volumesDia = Number(ultimaSim.volumes_dia || resumo.volumesDia || 0);
+  var volumesDia = Number(resumo.volumesProjetadosDia || (volumesProjetadosResumo ? volumesProjetadosResumo / diasResumo : 0) || ultimaSim.volumes_ganhos_dia || ultimaSim.volumes_dia || resumo.volumesDia || 0);
   var volumesMes = volumesDia * 22;
   var volumesAno = volumesMes * 12;
   var percentualReal = Number(ultimaSim.percentual_frete_realizado || resumo.percentualFreteRealizado || 0);
   var percentualTabela = Number(tabela.percentual_frete_projetado || ultimaSim.percentual_frete_simulado || resumo.percentualFreteTabelaGanharia || resumo.percentualFreteSelecionada || 0);
-  var tipoNegociacao = getTipoNegociacaoTabela(tabela);
   var valorAtualRealizado = Number(tabela.valor_atual_realizado || ultimaSim.valor_atual_realizado || resumo.valor_atual_realizado || resumo.freteRealizadoComTabelaSelecionada || resumo.freteRealizado || 0);
   var valorSimuladoNovaTabela = Number(tabela.valor_simulado_nova_tabela || ultimaSim.valor_simulado_nova_tabela || resumo.valor_simulado_nova_tabela || resumo.freteSelecionada || 0);
   var impactoValor = Number(tabela.impacto_valor || ultimaSim.impacto_valor || resumo.impacto_valor || (valorSimuladoNovaTabela - valorAtualRealizado) || 0);

@@ -85,6 +85,14 @@ function getIndicadoresRodada(rodada = {}) {
   const ind = rodada.indicadores && typeof rodada.indicadores === 'object' && !Array.isArray(rodada.indicadores)
     ? rodada.indicadores
     : {};
+  const dias = Math.max(1, n(resumo.dias || resumo.diasBase || 0) || 1);
+  const ehReajuste = String(resumo.tipoNegociacao || resumo.tipo_negociacao || '').toUpperCase() === 'REAJUSTE_TABELA_EXISTENTE';
+  const pedidosProjetados = ehReajuste
+    ? n(resumo.pedidosRetidosSelecionada) + n(resumo.pedidosCapturadosDeOutras)
+    : n(resumo.pedidosGanhariaSelecionada || resumo.pedidosCapturadosDeOutras || resumo.ctesGanhariaSelecionada);
+  const volumesProjetados = ehReajuste
+    ? n(resumo.volumesRetidosSelecionada) + n(resumo.volumesCapturados)
+    : n(resumo.volumesGanhariaSelecionada || resumo.volumesCapturados);
 
   return {
     rodada: n(rodada.rodada || ind.rodada || resumo.rodada_atual || 1) || 1,
@@ -94,11 +102,11 @@ function getIndicadoresRodada(rodada = {}) {
     ctesComTabela: n(ind.ctes_com_tabela || resumo.ctesComTabelaSelecionada || resumo.ctes_com_tabela),
     ctesGanhos: n(ind.ctes_capturados || ind.ctes_ganhos || resumo.ctesGanhariaSelecionada || resumo.ctesCapturadosDeOutras),
     ctesPerdidos: n(ind.ctes_perdidos || resumo.ctesPerdidosSelecionada),
-    volumesGanhos: n(ind.volumes_capturados || resumo.volumesCapturados || ind.volumes_ganhos_mes || resumo.volumesDia),
-    pedidosDia: n(ind.pedidos_ganhos_dia || ind.pedidos_dia || resumo.cargasDia),
-    pedidosMes: n(ind.pedidos_ganhos_mes || ind.pedidos_mes || (ind.pedidos_dia ? ind.pedidos_dia * 22 : 0) || (resumo.cargasDia ? resumo.cargasDia * 22 : 0)),
-    volumesDia: n(ind.volumes_ganhos_dia || ind.volumes_dia || resumo.volumesDia),
-    volumesMes: n(ind.volumes_ganhos_mes || ind.volumes_mes || (ind.volumes_dia ? ind.volumes_dia * 22 : 0) || (resumo.volumesDia ? resumo.volumesDia * 22 : 0)),
+    volumesGanhos: n(resumo.volumesProjetadosNegociacao || volumesProjetados || ind.volumes_ganhos_mes || ind.volumes_capturados || resumo.volumesDia),
+    pedidosDia: n(resumo.pedidosProjetadosDia || (pedidosProjetados ? pedidosProjetados / dias : 0) || ind.pedidos_ganhos_dia || ind.pedidos_dia || resumo.cargasDia),
+    pedidosMes: n(resumo.pedidosProjetadosNegociacao || pedidosProjetados || ind.pedidos_ganhos_mes || ind.pedidos_mes || (ind.pedidos_ganhos_dia ? ind.pedidos_ganhos_dia * 22 : 0) || (ind.pedidos_dia ? ind.pedidos_dia * 22 : 0) || (resumo.cargasDia ? resumo.cargasDia * 22 : 0)),
+    volumesDia: n(resumo.volumesProjetadosDia || (volumesProjetados ? volumesProjetados / dias : 0) || ind.volumes_ganhos_dia || ind.volumes_dia || resumo.volumesDia),
+    volumesMes: n(resumo.volumesProjetadosNegociacao || volumesProjetados || ind.volumes_ganhos_mes || ind.volumes_mes || (ind.volumes_ganhos_dia ? ind.volumes_ganhos_dia * 22 : 0) || (ind.volumes_dia ? ind.volumes_dia * 22 : 0) || (resumo.volumesDia ? resumo.volumesDia * 22 : 0)),
     aderencia: n(ind.aderencia || resumo.aderenciaSelecionada),
     faturamentoMes: n(ind.faturamento_mes || resumo.faturamentoSelecionadaGanhadoraMes || resumo.faturamentoSelecionadaMes || resumo.freteSelecionada),
     faturamentoAno: n(ind.faturamento_ano || resumo.faturamentoSelecionadaGanhadoraAno || resumo.faturamentoSelecionadaAno),
@@ -965,15 +973,37 @@ function calcularVeiculoOperacionalLaudo(simulacao = {}) {
   const detalhes = extrairDetalhesResumo(resumo);
   const ganhas = detalhes.filter(isGanha);
   const dias = diasPeriodoOperacionalLaudo(resumo);
+  const ind = simulacao.indicadores && typeof simulacao.indicadores === 'object' && !Array.isArray(simulacao.indicadores)
+    ? simulacao.indicadores
+    : {};
+  const ehReajuste = String(resumo.tipoNegociacao || resumo.tipo_negociacao || '').toUpperCase() === 'REAJUSTE_TABELA_EXISTENTE';
+  const cubagemProjetada = n(
+    resumo.cubagemProjetadaNegociacao ||
+    resumo.cubagemProjetada ||
+    ind.cubagem_total ||
+    (ehReajuste
+      ? n(resumo.cubagemRetidaSelecionada) + n(resumo.cubagemCapturada)
+      : n(resumo.cubagemGanhariaSelecionada || resumo.cubagemCapturada))
+  );
+  const pesoProjetado = n(
+    resumo.pesoProjetadoNegociacao ||
+    resumo.pesoProjetado ||
+    ind.peso_total ||
+    (ehReajuste
+      ? n(resumo.pesoRetidoSelecionada) + n(resumo.pesoCapturado)
+      : n(resumo.pesoGanhariaSelecionada || resumo.pesoCapturado))
+  );
 
   const cubagemTotal = ganhas.reduce((acc, item) => acc + cubagemOperacionalItemLaudo(item), 0);
   const pesoTotal = ganhas.reduce((acc, item) => acc + pesoOperacionalItemLaudo(item), 0);
 
   // Fallback de peso pelo campo agregado do resumo quando detalhes não têm peso
-  const pesoFallback = pesoTotal > 0 ? pesoTotal : n(resumo.peso || resumo.pesoTotal || resumo.peso_total || 0);
+  const pesoFallback = pesoProjetado > 0 ? pesoProjetado : (pesoTotal > 0 ? pesoTotal : n(resumo.peso || resumo.pesoTotal || resumo.peso_total || 0));
 
   // Cubagem: se vier zero dos detalhes, tenta campo agregado do resumo
-  const cubagemFallback = cubagemTotal > 0
+  const cubagemFallback = cubagemProjetada > 0
+    ? cubagemProjetada
+    : cubagemTotal > 0
     ? cubagemTotal
     : n(resumo.cubagemTotal || resumo.cubagem_total || resumo.cubagemGanho || resumo.cubagem_ganha || 0);
 

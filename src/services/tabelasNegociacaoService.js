@@ -1828,6 +1828,20 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
   const rodadaAtual = inteiro(resumoAnterior.rodada_atual || 1) || 1;
   const agora = dataISO();
   const impacto = calcularImpactoResultado(resultado, tabelaAtual);
+  const diasOperacionais = Math.max(1, numero(resultado.dias || 0) || 1);
+  const ehReajusteResultado = impacto.tipoNegociacao === 'REAJUSTE_TABELA_EXISTENTE';
+  const volumesProjetadosNegociacao = ehReajusteResultado
+    ? numero(resultado.volumesRetidosSelecionada || 0) + numero(resultado.volumesCapturados || 0)
+    : numero(resultado.volumesGanhariaSelecionada || resultado.volumesCapturados || 0);
+  const pedidosProjetadosNegociacao = ehReajusteResultado
+    ? numero(resultado.pedidosRetidosSelecionada || 0) + numero(resultado.pedidosCapturadosDeOutras || 0)
+    : numero(resultado.pedidosGanhariaSelecionada || resultado.pedidosCapturadosDeOutras || resultado.ctesGanhariaSelecionada || 0);
+  const cubagemProjetadaNegociacao = ehReajusteResultado
+    ? numero(resultado.cubagemRetidaSelecionada || 0) + numero(resultado.cubagemCapturada || 0)
+    : numero(resultado.cubagemGanhariaSelecionada || resultado.cubagemCapturada || 0);
+  const pesoProjetadoNegociacao = ehReajusteResultado
+    ? numero(resultado.pesoRetidoSelecionada || 0) + numero(resultado.pesoCapturado || 0)
+    : numero(resultado.pesoGanhariaSelecionada || resultado.pesoCapturado || 0);
 
   const resumoResultado = {
     salvo_em: agora,
@@ -1878,6 +1892,24 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
 
     cargasDia: resultado.cargasDia || 0,
     volumesDia: resultado.volumesDia || 0,
+    pedidosGanhariaSelecionada: resultado.pedidosGanhariaSelecionada || 0,
+    pedidosRetidosSelecionada: resultado.pedidosRetidosSelecionada || 0,
+    pedidosCapturadosDeOutras: resultado.pedidosCapturadosDeOutras || 0,
+    pedidosProjetadosNegociacao,
+    pedidosProjetadosDia: pedidosProjetadosNegociacao / diasOperacionais,
+    volumesGanhariaSelecionada: resultado.volumesGanhariaSelecionada || 0,
+    volumesRetidosSelecionada: resultado.volumesRetidosSelecionada || 0,
+    volumesProjetadosNegociacao,
+    volumesProjetadosDia: volumesProjetadosNegociacao / diasOperacionais,
+    cubagemGanhariaSelecionada: resultado.cubagemGanhariaSelecionada || 0,
+    cubagemRetidaSelecionada: resultado.cubagemRetidaSelecionada || 0,
+    cubagemCapturada: resultado.cubagemCapturada || 0,
+    cubagemProjetadaNegociacao,
+    cubagemProjetadaDia: cubagemProjetadaNegociacao / diasOperacionais,
+    pesoGanhariaSelecionada: resultado.pesoGanhariaSelecionada || 0,
+    pesoRetidoSelecionada: resultado.pesoRetidoSelecionada || 0,
+    pesoProjetadoNegociacao,
+    pesoProjetadoDia: pesoProjetadoNegociacao / diasOperacionais,
     dias: resultado.dias || 0,
     meses: resultado.meses || 1,
     freteRealizadoMes: resultado.freteRealizadoMes || 0,
@@ -1984,8 +2016,16 @@ export async function salvarResultadoSimulacaoNegociacao(id, resultado = {}) {
       saving_ano: numero(resultado.savingSelecionadaVsRealAno ?? 0),
       faturamento_mes: numero(resultado.faturamento_projetado ?? resultado.faturamentoSelecionadaGanhadoraMes ?? resultado.faturamentoSelecionadaMes ?? resultado.freteSelecionada ?? 0),
       faturamento_ano: numero(resultado.faturamentoSelecionadaGanhadoraAno ?? resultado.faturamentoSelecionadaAno ?? 0),
-      pedidos_dia: numero(resultado.volumetria_dia ?? resultado.cargasDia ?? 0),
-      volumes_dia: numero(resultado.volumesDia ?? 0),
+      pedidos_dia: numero(pedidosProjetadosNegociacao / diasOperacionais),
+      pedidos_ganhos_dia: numero(pedidosProjetadosNegociacao / diasOperacionais),
+      pedidos_ganhos_mes: numero(pedidosProjetadosNegociacao),
+      volumes_dia: numero(volumesProjetadosNegociacao / diasOperacionais),
+      volumes_ganhos_dia: numero(volumesProjetadosNegociacao / diasOperacionais),
+      volumes_ganhos_mes: numero(volumesProjetadosNegociacao),
+      cubagem_dia: numero(cubagemProjetadaNegociacao / diasOperacionais),
+      cubagem_total: numero(cubagemProjetadaNegociacao),
+      peso_dia: numero(pesoProjetadoNegociacao / diasOperacionais),
+      peso_total: numero(pesoProjetadoNegociacao),
       percentual_frete_realizado: numero(resultado.percentualFreteRealizado ?? 0),
       percentual_frete_simulado: numero(resultado.percentual_frete_projetado ?? resultado.percentualFreteTabelaGanharia ?? resultado.percentualFreteSelecionada ?? 0),
       valor_atual_realizado: impacto.valorAtual,
