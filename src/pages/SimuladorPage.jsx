@@ -8656,7 +8656,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                 <input
                   type="number"
                   min="0"
-                  max="200"
+                  max="500"
                   step="1"
                   value={percentualContingenciaPesoRealizado}
                   onChange={(event) => setPercentualContingenciaPesoRealizado(Number(event.target.value) || 0)}
