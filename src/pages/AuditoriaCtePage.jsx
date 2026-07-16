@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay, { ETAPA_LABEL_AUDITORIA, rotuloEtapaAuditoria } from '../components/AmdProcessingOverlay';
+import CentralAuditoriaFretesPage from './CentralAuditoriaFretesPage';
 import {
   carregarDadosAuditoria,
   calcularMetricasAuditoria,
@@ -20,6 +21,7 @@ import {
 } from '../services/auditoriaService';
 import {
   carregarResultadosAuditoriaMes,
+  carregarPreListaAuditoriaMes,
   carregarResumoAuditoriaMensal,
   processarESalvarAuditoriaMes,
   resimularRegistros,
@@ -27,6 +29,8 @@ import {
 } from '../services/auditoriaCteProcessamentoService';
 
 const CRITERIOS_FILTRO = [
+  { key: 'ok_qualquer', label: 'Dentro da tolerancia (AMD ou Verum)' },
+  { key: 'ok_ambos', label: 'AMD e Verum dentro da tolerancia' },
   { key: 'sem_calculo', label: 'Sem cálculo nos dois' },
   { key: 'sem_verum', label: 'Sem cálculo Verum' },
   { key: 'sem_amd', label: 'Sem cálculo AMD/local' },
@@ -80,10 +84,16 @@ function linhaDetalhe(label, value, destaque = false) {
 }
 
 function pesoCubadoSugeridoAuditoria(alt = {}, det = {}) {
-  const cubagem = Number(alt.cubagem_aplicada || det?.cubagem_tracking || 0);
+  const cubagem = Number(alt.cubagem_aplicada || 0);
   const fator = Number(alt.fator_cubagem || 0);
   if (cubagem > 0 && fator > 0) return cubagem * fator;
   return Number(alt.peso_cubado_calculado || alt.peso_considerado || 0);
+}
+
+function pesoAlternativaAuditoria(alt = {}) {
+  const peso = Number(alt.peso_considerado || 0);
+  if (peso > 0) return peso;
+  return pesoCubadoSugeridoAuditoria(alt);
 }
 
 const EXCLUIDAS_AUDITORIA_KEY = 'auditoria_cte_transportadoras_excluidas';
@@ -423,13 +433,15 @@ function ResumoMensalAuditoria({ resumoMensal = [] }) {
   );
 }
 
-export default function AuditoriaCtePage() {
+export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras } = {}) {
+  const [abaAuditoria, setAbaAuditoria] = useState('mensal');
   const [competencia, setCompetencia] = useState('');
   // Período de teste opcional: limita a carga do "Carregar resultado salvo" a
   // alguns dias, para iterar rápido sem puxar o mês inteiro.
   const [dataInicioTeste, setDataInicioTeste] = useState('');
   const [dataFimTeste, setDataFimTeste] = useState('');
   const [registros, setRegistros] = useState([]);
+  const [modoPreLista, setModoPreLista] = useState(false);
   const [fonteAuditoria, setFonteAuditoria] = useState(null);
   const [diagnostico, setDiagnostico] = useState([]);
   const [avisos, setAvisos] = useState([]);
@@ -517,6 +529,7 @@ export default function AuditoriaCtePage() {
   const [filtroCidades, setFiltroCidades] = useState(filtrosSalvos.cidades);
   const [filtroCanais, setFiltroCanais] = useState(filtrosSalvos.canais);
   const [filtroCriterios, setFiltroCriterios] = useState(filtrosSalvos.criterios); // vazio = todos
+  const [buscaTratamento, setBuscaTratamento] = useState('');
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
   const [buscaCidadeFiltro, setBuscaCidadeFiltro] = useState('');
@@ -528,6 +541,8 @@ export default function AuditoriaCtePage() {
 
   // Detalhe por CT-e: índice da linha expandida (detalhe do cálculo).
   const [cteExpandido, setCteExpandido] = useState(null);
+  const [ordenacaoDetalhe, setOrdenacaoDetalhe] = useState('original');
+  const [limiteDetalhe, setLimiteDetalhe] = useState(200);
 
   // Ao abrir a tela, já carrega a visão mês a mês (resumo mensal) — é leve
   // (1 linha por competência) e é a visão principal pra acompanhar o histórico.
@@ -574,6 +589,7 @@ export default function AuditoriaCtePage() {
   function selecionarTransportadoraTratamento(nome) {
     const valor = String(nome || '').trim();
     setFiltroTransps(valor ? [valor] : []);
+    setBuscaTratamento('');
     setFiltroTomadores([]);
     setFiltroUfs([]);
     setFiltroCidades([]);
@@ -689,6 +705,14 @@ export default function AuditoriaCtePage() {
     [porTransportadoraCompleto, excluidasSet],
   );
 
+  const transportadorasTratamentoFiltradas = useMemo(() => {
+    const termo = buscaTratamento.trim().toLowerCase();
+    const lista = termo
+      ? transportadorasOpcoes.filter((item) => item.label.toLowerCase().includes(termo))
+      : transportadorasOpcoes;
+    return lista.slice(0, 12);
+  }, [buscaTratamento, transportadorasOpcoes]);
+
   // Aplica os filtros de foco (transportadoras + UFs + cidades + critérios de erro),
   // todos multi-seleção. Dentro de cada dimensão é OR; entre dimensões é AND.
   const registrosFiltro = useMemo(() => {
@@ -725,6 +749,8 @@ export default function AuditoriaCtePage() {
         const divCobrado = rec > 0 && ehDivergenteComMargem(vc - rec, rec, margensDivergencia);
         const divVerum = rec > 0 && ver > 0 && ehDivergenteComMargem(rec - ver, ver, margensDivergencia);
         const passa = (critSet.has('sem_calculo') && semCalc)
+          || (critSet.has('ok_qualquer') && (okRec || okVer))
+          || (critSet.has('ok_ambos') && okRec && okVer)
           || (critSet.has('sem_verum') && semVerum)
           || (critSet.has('sem_amd') && semAmd)
           || (critSet.has('verum_ok') && okVer)
@@ -739,6 +765,34 @@ export default function AuditoriaCtePage() {
       return true;
     });
   }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, margensDivergencia]);
+
+  const registrosDetalheOrdenados = useMemo(() => {
+    const valorDifAmd = (r) => Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0) || 0) - (Number(r.valor_calculado || 0) || 0))));
+    const valorDifVerum = (r) => Math.abs(Number(r.diferenca_verum ?? ((Number(r.valor_cte || 0) || 0) - (Number(r.valor_calculado_verum || 0) || 0))));
+    const lista = [...registrosFiltro];
+    const comparadores = {
+      original: null,
+      dif_amd_desc: (a, b) => valorDifAmd(b) - valorDifAmd(a),
+      dif_amd_asc: (a, b) => valorDifAmd(a) - valorDifAmd(b),
+      dif_verum_desc: (a, b) => valorDifVerum(b) - valorDifVerum(a),
+      dif_verum_asc: (a, b) => valorDifVerum(a) - valorDifVerum(b),
+      frete_pago_desc: (a, b) => Number(b.valor_cte || 0) - Number(a.valor_cte || 0),
+      peso_desc: (a, b) => Number(b.peso || 0) - Number(a.peso || 0),
+      cte_asc: (a, b) => String(a.numero_cte || a.chave_cte || '').localeCompare(String(b.numero_cte || b.chave_cte || ''), 'pt-BR', { numeric: true }),
+    };
+    const comparador = comparadores[ordenacaoDetalhe];
+    return comparador ? lista.sort(comparador) : lista;
+  }, [ordenacaoDetalhe, registrosFiltro]);
+
+  const registrosDetalheVisiveis = useMemo(
+    () => registrosDetalheOrdenados.slice(0, limiteDetalhe),
+    [registrosDetalheOrdenados, limiteDetalhe],
+  );
+
+  useEffect(() => {
+    setLimiteDetalhe(200);
+    setCteExpandido(null);
+  }, [ordenacaoDetalhe, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
 
   const transportadoraEmTratamento = filtroTransps.length === 1
     && !filtroTomadores.length
@@ -856,12 +910,11 @@ export default function AuditoriaCtePage() {
   }
 
   // AMD (nosso motor) é sempre a base das métricas; a Verum fica como referência.
-  async function aplicarAlternativaPeso(row, alternativa) {
-    if (!row || !alternativa) return;
+  function montarRegistroComAlternativaPeso(row, alternativa) {
     const valorCalculado = Number(alternativa.valor_calculado || 0);
     const valorPago = Number(row.valor_cte || 0);
     const diferenca = valorPago - valorCalculado;
-    const atualizado = {
+    return {
       ...row,
       peso: alternativa.peso_considerado || row.peso,
       valor_calculado: valorCalculado,
@@ -874,10 +927,21 @@ export default function AuditoriaCtePage() {
         valor_base: alternativa.valor_base,
         subtotal: alternativa.subtotal,
         icms: alternativa.icms,
+        aliquota_icms: alternativa.aliquota_icms ?? row.detalhes_calculo?.aliquota_icms,
+        origem_aliquota_icms: alternativa.origem_aliquota_icms || row.detalhes_calculo?.origem_aliquota_icms,
+        uf_origem_icms: alternativa.uf_origem_icms || row.detalhes_calculo?.uf_origem_icms,
+        uf_destino_icms: alternativa.uf_destino_icms || row.detalhes_calculo?.uf_destino_icms,
+        taxas: alternativa.taxas || row.detalhes_calculo?.taxas,
+        componentes_base: alternativa.componentes_base || row.detalhes_calculo?.componentes_base,
         componente_base: alternativa.componente_base || row.detalhes_calculo?.componente_base,
         ajuste_peso_aplicado: alternativa.nome,
       },
     };
+  }
+
+  async function aplicarAlternativaPeso(row, alternativa) {
+    if (!row || !alternativa) return;
+    const atualizado = montarRegistroComAlternativaPeso(row, alternativa);
     setRegistros((prev) => prev.map((item) => (item === row ? atualizado : item)));
     setResimuladoInfo(`Peso alternativo aplicado no CT-e ${row.numero_cte || row.chave_cte || ''}: ${alternativa.nome}. Salvando auditoria...`);
     try {
@@ -894,6 +958,63 @@ export default function AuditoriaCtePage() {
       }
     } catch (error) {
       setErro(error.message || 'Erro ao salvar a auditoria com peso corrigido.');
+    } finally {
+      setProgressoProcessamento(null);
+    }
+  }
+
+  async function aplicarPesosDentroToleranciaFiltro() {
+    const alvo = registrosFiltro;
+    if (!alvo.length) {
+      setErro('Nenhum CT-e no filtro atual para aplicar peso alternativo.');
+      return;
+    }
+
+    const atualizados = [];
+    const mapa = new Map();
+
+    for (const row of alvo) {
+      const det = (() => {
+        const d = row.detalhes_calculo;
+        if (!d) return null;
+        if (typeof d === 'object') return d;
+        try { return JSON.parse(d); } catch { return null; }
+      })();
+
+      const alternativas = (Array.isArray(det?.comparativo_pesos) ? det.comparativo_pesos : [])
+        .map((alt) => ({ ...alt, peso_considerado: pesoAlternativaAuditoria(alt) }))
+        .filter((alt) => {
+          const valorCalculado = Number(alt.valor_calculado || 0);
+          const pesoAlt = Number(alt.peso_considerado || 0);
+          if (valorCalculado <= 0 || pesoAlt <= 0) return false;
+          if (Math.abs(pesoAlt - Number(row.peso || 0)) <= 0.1) return false;
+          return !ehDivergenteComMargem(Number(row.valor_cte || 0) - valorCalculado, valorCalculado, margensDivergencia);
+        })
+        .sort((a, b) => Math.abs(Number(a.diferenca || 0)) - Math.abs(Number(b.diferenca || 0)));
+
+      const escolhida = alternativas[0];
+      if (!escolhida) continue;
+      const atualizado = montarRegistroComAlternativaPeso(row, escolhida);
+      atualizados.push(atualizado);
+      mapa.set(row, atualizado);
+    }
+
+    if (!atualizados.length) {
+      setResimuladoInfo('Nenhum CT-e do filtro tinha peso alternativo fechando dentro da tolerância atual.');
+      return;
+    }
+
+    if (!window.confirm(`Aplicar peso alternativo em ${atualizados.length.toLocaleString('pt-BR')} CT-e(s) do filtro atual que fecham dentro da tolerância?`)) return;
+
+    setErro('');
+    setResimuladoInfo(`Aplicando peso alternativo em ${fmtN(atualizados.length)} CT-e(s) e salvando...`);
+    setRegistros((prev) => prev.map((row) => mapa.get(row) || row));
+    try {
+      const salvamento = await salvarRegistrosRecalculados(atualizados);
+      setSucesso(`${atualizados.length.toLocaleString('pt-BR')} CT-e(s) atualizados por peso alternativo dentro da tolerância${salvamento.gravados ? ` e salvos em ${salvamento.competencias.join(', ')}` : ''}.`);
+      setResimuladoInfo('');
+    } catch (error) {
+      setErro(error.message || 'Erro ao salvar aplicação em lote de pesos alternativos.');
     } finally {
       setProgressoProcessamento(null);
     }
@@ -1035,6 +1156,7 @@ export default function AuditoriaCtePage() {
     setDiagnostico([]);
     setFonteAuditoria(null);
     setProgressoProcessamento(null);
+    setModoPreLista(false);
 
     try {
       const salvosRapidos = await carregarResultadosAuditoriaMes({
@@ -1044,19 +1166,6 @@ export default function AuditoriaCtePage() {
         canais: canaisPreCarga.length ? canaisPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       }).catch(() => []);
-
-      if (salvosRapidos?.length) {
-        setRegistros(salvosRapidos);
-        setFonteAuditoria({
-          id: 'auditoria_cte_resultados',
-          tabela: 'auditoria_cte_resultados',
-          label: 'Auditoria salva / auditoria_cte_resultados',
-        });
-        setDiagnostico([]);
-        setAvisos([]);
-        setSucesso(`${salvosRapidos.length.toLocaleString('pt-BR')} CTe(s) carregados do resultado salvo. Para atualizar com a base bruta, use Recalcular.`);
-        return;
-      }
 
       // Carrega a base crua inteira (pega CT-e novo que ainda não foi calculado)
       // e por cima aplica o que já está salvo em auditoria_cte_resultados — o
@@ -1071,12 +1180,7 @@ export default function AuditoriaCtePage() {
       });
       const dadosBrutos = resposta?.registros || [];
 
-      const salvos = await carregarResultadosAuditoriaMes({
-        competencia,
-        dataInicio: dataInicioTeste || undefined,
-        dataFim: dataFimTeste || undefined,
-        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
-      }).catch(() => []);
+      const salvos = salvosRapidos || [];
 
       const dados = salvos && salvos.length ? mesclarComResultadosSalvos(dadosBrutos, salvos) : dadosBrutos;
       const qtdMesclados = salvos?.length || 0;
@@ -1103,6 +1207,86 @@ export default function AuditoriaCtePage() {
     } catch (e) {
       setRegistros([]);
       setErro(e.message || 'Erro ao carregar dados do Supabase.');
+    } finally {
+      setCarregando(false);
+      setProgressoProcessamento(null);
+    }
+  }
+
+  async function carregarPreLista() {
+    if (!podeCarregar) {
+      setErro('Informe a competÃªncia (mÃªs) ou um perÃ­odo antes de carregar a prÃ©-lista.');
+      return;
+    }
+
+    setCarregando(true);
+    setErro('');
+    setSucesso('');
+    setAvisos([]);
+    setDiagnostico([]);
+    setFonteAuditoria(null);
+    setProgressoProcessamento(null);
+
+    try {
+      const dados = await carregarPreListaAuditoriaMes({
+        competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        onProgress: setProgressoProcessamento,
+      });
+      setRegistros(dados || []);
+      setModoPreLista(true);
+      setFonteAuditoria({
+        id: 'prelista_auditoria_cte_resultados',
+        tabela: 'auditoria_cte_resultados',
+        label: 'PrÃ©-lista leve / auditoria_cte_resultados',
+      });
+      setSucesso(`${(dados || []).length.toLocaleString('pt-BR')} CT-e(s) carregados em prÃ©-lista leve. Use "Tratar agora" e depois "Carregar CT-es da transportadora" para abrir o detalhe completo.`);
+    } catch (error) {
+      setRegistros([]);
+      setModoPreLista(false);
+      setErro(error.message || 'Erro ao carregar prÃ©-lista da auditoria.');
+    } finally {
+      setCarregando(false);
+      setProgressoProcessamento(null);
+    }
+  }
+
+  async function carregarTransportadoraCompleta() {
+    if (!transportadoraEmTratamento) {
+      setErro('Selecione uma transportadora em tratamento antes de carregar os CT-es completos.');
+      return;
+    }
+    if (!podeCarregar) {
+      setErro('Informe a competÃªncia ou perÃ­odo antes de carregar a transportadora.');
+      return;
+    }
+
+    setCarregando(true);
+    setErro('');
+    setSucesso('');
+    setProgressoProcessamento(null);
+
+    try {
+      const dados = await carregarResultadosAuditoriaMes({
+        competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        transportadoras: [transportadoraEmTratamento],
+        onProgress: setProgressoProcessamento,
+      });
+      setRegistros(dados || []);
+      setModoPreLista(false);
+      setFonteAuditoria({
+        id: 'auditoria_cte_resultados_transportadora',
+        tabela: 'auditoria_cte_resultados',
+        label: `Auditoria salva / ${transportadoraEmTratamento}`,
+      });
+      setSucesso(`${(dados || []).length.toLocaleString('pt-BR')} CT-e(s) completos carregados para ${transportadoraEmTratamento}.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao carregar CT-es completos da transportadora.');
     } finally {
       setCarregando(false);
       setProgressoProcessamento(null);
@@ -1301,6 +1485,7 @@ export default function AuditoriaCtePage() {
     setDataInicioTeste('');
     setDataFimTeste('');
     setRegistros([]);
+    setModoPreLista(false);
     setFonteAuditoria(null);
     setDiagnostico([]);
     setAvisos([]);
@@ -1348,6 +1533,28 @@ export default function AuditoriaCtePage() {
         </p>
         <BaseCtesStatus />
       </div>
+
+      <div className="tabs-row audit-main-tabs" style={{ marginBottom: 12 }}>
+        <button
+          type="button"
+          className={`toggle-btn ${abaAuditoria === 'mensal' ? 'active' : ''}`}
+          onClick={() => setAbaAuditoria('mensal')}
+        >
+          Auditoria competencia/periodo
+        </button>
+        <button
+          type="button"
+          className={`toggle-btn ${abaAuditoria === 'avulsa' ? 'active' : ''}`}
+          onClick={() => setAbaAuditoria('avulsa')}
+        >
+          Auditoria por chave/lista
+        </button>
+      </div>
+
+      {abaAuditoria === 'avulsa' ? (
+        <CentralAuditoriaFretesPage initialTab="auditoria-cte" embedded onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />
+      ) : (
+      <>
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {sucesso ? <div className="sim-alert success">{sucesso}</div> : null}
@@ -1497,6 +1704,9 @@ export default function AuditoriaCtePage() {
             <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !podeCarregar}>
               {carregando ? 'Carregando...' : 'Carregar CT-es do mês'}
             </button>
+            <button className="sim-tab" type="button" onClick={carregarPreLista} disabled={carregando || processando || !podeCarregar} title="Carrega so colunas leves do resultado salvo para montar resumo/Onde Atacar sem abrir o detalhe completo">
+              Pre-lista salva
+            </button>
             <button className="primary" type="button" onClick={salvarMesCarregado} disabled={carregando || processando || !competencia}>
               {processando ? 'Salvando...' : 'Salvar mês carregado'}
             </button>
@@ -1509,6 +1719,11 @@ export default function AuditoriaCtePage() {
             <button className="sim-tab" type="button" onClick={carregarResumoMensal} disabled={carregando || processando}>
               Carregar resumo mensal
             </button>
+            {modoPreLista && transportadoraEmTratamento ? (
+              <button className="primary" type="button" onClick={carregarTransportadoraCompleta} disabled={carregando || processando}>
+                Carregar CT-es da transportadora
+              </button>
+            ) : null}
             <button className="sim-tab" type="button" onClick={() => setMostrarFiltros((v) => !v)} style={filtrosAtivos ? { borderColor: '#2563eb', color: '#2563eb', fontWeight: 700 } : undefined}>
               Filtros{filtrosAtivos ? ' (ativos)' : ''}
             </button>
@@ -1534,20 +1749,74 @@ export default function AuditoriaCtePage() {
               ) : null}
             </div>
             <div className="sim-form-grid sim-grid-4" style={{ alignItems: 'flex-end' }}>
-              <label>
+              <label style={{ position: 'relative' }}>
                 Transportadora em tratamento
-                <select
-                  value={transportadoraEmTratamento}
-                  onChange={(event) => selecionarTransportadoraTratamento(event.target.value)}
+                <input
+                  type="text"
+                  value={buscaTratamento}
+                  onChange={(event) => setBuscaTratamento(event.target.value)}
+                  placeholder={transportadoraEmTratamento || 'Buscar transportadora para tratar...'}
                   disabled={carregando || processando || resimulando}
+                  style={{ paddingRight: 100 }}
+                />
+                <button
+                  className="sim-tab"
+                  type="button"
+                  onClick={() => selecionarTransportadoraTratamento('')}
+                  disabled={carregando || processando || resimulando || !transportadoraEmTratamento}
+                  style={{ position: 'absolute', right: 6, top: 24, padding: '4px 9px', fontSize: 11 }}
                 >
-                  <option value="">Todas as transportadoras</option>
-                  {transportadorasOpcoes.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label} ({item.sub} CT-es)
-                    </option>
-                  ))}
-                </select>
+                  Todas
+                </button>
+                {buscaTratamento.trim() || !transportadoraEmTratamento ? (
+                  <div style={{
+                    marginTop: 6,
+                    border: '1px solid #dbe3ef',
+                    borderRadius: 8,
+                    background: '#fff',
+                    maxHeight: 220,
+                    overflowY: 'auto',
+                    boxShadow: '0 10px 24px rgba(15, 23, 42, 0.08)',
+                  }}>
+                    {transportadorasTratamentoFiltradas.map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => selecionarTransportadoraTratamento(item.value)}
+                        disabled={carregando || processando || resimulando}
+                        style={{
+                          width: '100%',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                          padding: '8px 10px',
+                          border: 0,
+                          borderBottom: '1px solid #edf2f7',
+                          background: item.value === transportadoraEmTratamento ? '#eff6ff' : '#fff',
+                          color: '#0f2147',
+                          fontWeight: item.value === transportadoraEmTratamento ? 800 : 600,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <span>{item.label}</span>
+                        <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>{item.sub} CT-es</span>
+                      </button>
+                    ))}
+                    {!transportadorasTratamentoFiltradas.length ? (
+                      <div style={{ padding: '10px', color: '#94a3b8', fontSize: 12 }}>Nenhuma transportadora encontrada.</div>
+                    ) : null}
+                    {transportadorasOpcoes.length > transportadorasTratamentoFiltradas.length ? (
+                      <div style={{ padding: '7px 10px', color: '#64748b', fontSize: 11, background: '#f8fafc' }}>
+                        Mostrando {fmtN(transportadorasTratamentoFiltradas.length)} de {fmtN(transportadorasOpcoes.length)}. Digite para refinar.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#475569', fontWeight: 700 }}>
+                    Selecionada: {transportadoraEmTratamento}
+                  </div>
+                )}
               </label>
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>CT-es no recorte</div>
@@ -1692,7 +1961,7 @@ export default function AuditoriaCtePage() {
                 maxAltura={170}
               />
               <div style={{ flex: '1 1 240px', minWidth: 220 }}>
-                <div style={{ fontSize: 12, color: '#475569', fontWeight: 700, marginBottom: 6 }}>Critério de erro</div>
+                <div style={{ fontSize: 12, color: '#475569', fontWeight: 700, marginBottom: 6 }}>Critério de cálculo/status</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {CRITERIOS_FILTRO.map((c) => {
                     const marcado = filtroCriterios.includes(c.key);
@@ -1864,7 +2133,7 @@ export default function AuditoriaCtePage() {
         </div>
       ) : null}
 
-      {temDados ? (
+      {temDados && !modoPreLista ? (
         <section className="sim-card">
           <h2 style={{ marginTop: 0 }}>🔎 Diagnóstico do recálculo — onde o motor para</h2>
           <p style={{ color: '#64748b', marginTop: -4 }}>
@@ -2215,13 +2484,51 @@ export default function AuditoriaCtePage() {
         </section>
       ) : null}
 
-      {temDados ? (
+      {temDados && !modoPreLista ? (
         <section className="sim-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>📄 Detalhe por CT-e</h2>
-            <button className="sim-tab" type="button" onClick={exportarCtesDetalhe}>
-              Exportar Excel ({fmtN(registrosFiltro.length)})
-            </button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <select
+                value={ordenacaoDetalhe}
+                onChange={(event) => {
+                  setOrdenacaoDetalhe(event.target.value);
+                  setCteExpandido(null);
+                }}
+                title="Ordenar CT-es do detalhe"
+                style={{ minWidth: 210 }}
+              >
+                <option value="original">Ordem carregada (sem classificar)</option>
+                <option value="dif_amd_desc">Maior Dif. AMD</option>
+                <option value="dif_amd_asc">Menor Dif. AMD</option>
+                <option value="dif_verum_desc">Maior Dif. Verum</option>
+                <option value="dif_verum_asc">Menor Dif. Verum</option>
+                <option value="frete_pago_desc">Maior frete pago</option>
+                <option value="peso_desc">Maior peso</option>
+                <option value="cte_asc">Nº CT-e crescente</option>
+              </select>
+              <button className="sim-tab" type="button" onClick={aplicarPesosDentroToleranciaFiltro}>
+                Aplicar pesos OK no filtro
+              </button>
+              <button className="sim-tab" type="button" onClick={exportarCtesDetalhe}>
+                Exportar Excel ({fmtN(registrosFiltro.length)})
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+            <span style={{ color: '#64748b', fontSize: 12, fontWeight: 700 }}>
+              Exibindo {fmtN(Math.min(limiteDetalhe, registrosDetalheOrdenados.length))} de {fmtN(registrosDetalheOrdenados.length)} CT-e(s) do recorte.
+            </span>
+            {registrosDetalheOrdenados.length > limiteDetalhe ? (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="sim-tab" type="button" onClick={() => setLimiteDetalhe((v) => v + 200)}>
+                  Mostrar mais 200
+                </button>
+                <button className="sim-tab" type="button" onClick={() => setLimiteDetalhe(registrosDetalheOrdenados.length)}>
+                  Mostrar todos do recorte
+                </button>
+              </div>
+            ) : null}
           </div>
           <p style={{ marginTop: 0, color: '#64748b', fontSize: 13 }}>
             Uma linha por CT-e do recorte. <strong>Frete Pago</strong> = cobrado · <strong>Verum</strong> = simulação original (referência) · <strong>AMD</strong> = nosso motor.
@@ -2244,7 +2551,7 @@ export default function AuditoriaCtePage() {
                 </tr>
               </thead>
               <tbody>
-                {registrosFiltro.slice(0, 200).map((r, idx) => {
+                {registrosDetalheVisiveis.map((r, idx) => {
                   const verum = Number(r.valor_calculado_verum || 0);
                   const amd = Number(r.valor_calculado || 0);
                   const pago = Number(r.valor_cte || 0);
@@ -2261,12 +2568,11 @@ export default function AuditoriaCtePage() {
                   const expandida = cteExpandido === idx;
                   const corDif = (v, base) => (base <= 0 ? '#94a3b8' : !ehDivergenteComMargem(v, base, margensDivergencia) ? '#16a34a' : '#dc2626');
                   const dentroDaMargem = amd > 0 && !ehDivergenteComMargem(difAmd, amd, margensDivergencia);
-                  const alternativaCubada = (Array.isArray(det?.comparativo_pesos) ? det.comparativo_pesos : [])
-                    .find((alt) => {
-                      const pesoAlternativoCalc = pesoCubadoSugeridoAuditoria(alt, det);
-                      return pesoAlternativoCalc > 0 && Math.abs(pesoAlternativoCalc - Number(r.peso || 0)) > 0.1;
-                    });
-                  const pesoAlternativo = alternativaCubada ? pesoCubadoSugeridoAuditoria(alternativaCubada, det) : 0;
+                  const alternativasPeso = (Array.isArray(det?.comparativo_pesos) ? det.comparativo_pesos : [])
+                    .map((alt) => ({ ...alt, pesoAlternativo: pesoAlternativaAuditoria(alt) }))
+                    .filter((alt) => alt.pesoAlternativo > 0 && Math.abs(alt.pesoAlternativo - Number(r.peso || 0)) > 0.1)
+                    .sort((a, b) => Number(a.diferenca_abs || 999999) - Number(b.diferenca_abs || 999999))
+                    .slice(0, 2);
                   return (
                     <React.Fragment key={r.chave_cte || r.numero_cte || idx}>
                       <tr
@@ -2283,20 +2589,21 @@ export default function AuditoriaCtePage() {
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <strong>{fmtN(Number(r.peso || 0), 0)}</strong>
-                            {pesoAlternativo > 0 ? (
+                            {alternativasPeso.map((alternativa) => (
                               <button
+                                key={`${alternativa.nome}-${alternativa.pesoAlternativo}`}
                                 className="sim-tab"
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  aplicarAlternativaPeso(r, { ...alternativaCubada, peso_considerado: pesoAlternativo });
+                                  aplicarAlternativaPeso(r, { ...alternativa, peso_considerado: alternativa.pesoAlternativo });
                                 }}
-                                title="Aplicar peso cubado calculado nesta linha"
+                                title={`Aplicar ${alternativa.nome || 'alternativa de peso'} nesta linha`}
                                 style={{ padding: '1px 6px', fontSize: 11 }}
                               >
-                                usar {fmtN(pesoAlternativo, 1)} kg
+                                usar {fmtN(alternativa.pesoAlternativo, 1)} kg
                               </button>
-                            ) : null}
+                            ))}
                           </div>
                         </td>
                         <td>{fmt(pago)}</td>
@@ -2317,6 +2624,33 @@ export default function AuditoriaCtePage() {
                         <tr>
                           <td colSpan="10" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                             {r.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {r.motivo_sem_calculo}</div> : null}
+                            {amd <= 0 ? (
+                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                                <button
+                                  className="sim-tab"
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    onMudarPagina?.('consulta-ibge');
+                                  }}
+                                  title="Abrir Consulta IBGE para conferir/vincular codigo de cidade usado na rota"
+                                >
+                                  Encontrar rota/IBGE
+                                </button>
+                                <button
+                                  className="sim-tab"
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (onAbrirTransportadoras) onAbrirTransportadoras();
+                                    else onMudarPagina?.('transportadoras');
+                                  }}
+                                  title="Abrir cadastro para vincular o nome da transportadora do CT-e com a tabela cadastrada"
+                                >
+                                  Vincular transportadora
+                                </button>
+                              </div>
+                            ) : null}
                             {det ? (
                               <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
                                 <span><strong>Tipo:</strong> {r.tipo_calculo || det.tipo_calculo || '—'}</span>
@@ -2370,7 +2704,7 @@ export default function AuditoriaCtePage() {
                                       {Number(det.cubagem_tracking) > 0 ? linhaDetalhe('Cubagem Tracking', `${fmtN(det.cubagem_tracking, 6)} m³`) : null}
                                       {comparativoPesos.map((alt) => {
                                         const pesoCubadoSugerido = pesoCubadoSugeridoAuditoria(alt, det);
-                                        const cubagemAlt = Number(alt.cubagem_aplicada || det.cubagem_tracking || 0);
+                                        const cubagemAlt = Number(alt.cubagem_aplicada || 0);
                                         const fatorAlt = Number(alt.fator_cubagem || 0);
                                         const isCubagem = cubagemAlt > 0 && fatorAlt > 0;
                                         return (
@@ -2429,8 +2763,8 @@ export default function AuditoriaCtePage() {
               </tbody>
             </table>
           </div>
-          {registrosFiltro.length > 200 ? (
-            <div className="empty-note">Mostrando 200 de {fmtN(registrosFiltro.length)} CT-es. Exporte o Excel para ver todos.</div>
+          {registrosDetalheOrdenados.length > limiteDetalhe ? (
+            <div className="empty-note">Mostrando {fmtN(limiteDetalhe)} de {fmtN(registrosDetalheOrdenados.length)} CT-es. Use "Mostrar mais" ou exporte o Excel para ver todos.</div>
           ) : null}
         </section>
       ) : null}
@@ -2449,6 +2783,8 @@ export default function AuditoriaCtePage() {
           </p>
         </section>
       ) : null}
+      </>
+      )}
     </div>
   );
 }

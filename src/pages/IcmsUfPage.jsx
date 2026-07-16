@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { carregarMatrizIcmsUf, modeloMatrizIcmsUf, normalizarLinhaIcms, salvarMatrizIcmsUf, UFS_BR } from '../utils/icmsUfMatrix';
+import {
+  carregarMatrizIcmsUf,
+  carregarMatrizIcmsUfCentralizada,
+  modeloMatrizIcmsUf,
+  normalizarLinhaIcms,
+  salvarMatrizIcmsUfCentralizada,
+  UFS_BR,
+} from '../utils/icmsUfMatrix';
 import { carregarOpcoesSimuladorDb } from '../services/freteDatabaseService';
 
 function fmtN(v) {
@@ -79,6 +86,16 @@ export default function IcmsUfPage() {
 
   useEffect(() => {
     let ativo = true;
+    carregarMatrizIcmsUfCentralizada()
+      .then((resposta) => {
+        if (!ativo) return;
+        setLinhas(resposta.linhas || []);
+        if (resposta.mensagem) setMensagem(resposta.mensagem);
+      })
+      .catch((error) => {
+        if (ativo) setMensagem(`Não foi possível sincronizar matriz ICMS: ${error.message || error}`);
+      });
+
     carregarOpcoesSimuladorDb()
       .then((opcoes) => {
         if (ativo) setOpcoesCadastro(opcoes || { transportadoras: [], origensPorTransportadora: {}, canaisPorTransportadora: {} });
@@ -118,15 +135,15 @@ export default function IcmsUfPage() {
     try {
       const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       const validas = wb.SheetNames.flatMap((name) => linhasDaPlanilhaIcms(wb.Sheets[name]));
-      const salvas = salvarMatrizIcmsUf(validas);
-      setLinhas(salvas);
-      setMensagem(`Matriz importada: ${validas.length.toLocaleString('pt-BR')} linha(s) valida(s), ${salvas.length.toLocaleString('pt-BR')} combinação(ões) salva(s).`);
+      const resposta = await salvarMatrizIcmsUfCentralizada(validas);
+      setLinhas(resposta.linhas);
+      setMensagem(`Matriz importada: ${validas.length.toLocaleString('pt-BR')} linha(s) valida(s), ${resposta.linhas.length.toLocaleString('pt-BR')} combinação(ões) salva(s). ${resposta.mensagem || ''}`);
     } catch (error) {
       setMensagem(`Erro ao importar matriz: ${error.message}`);
     }
   }
 
-  function atualizarLinha(index, campo, valor) {
+  async function atualizarLinha(index, campo, valor) {
     const alvo = filtradas[index];
     const origemIndex = linhas.findIndex((row) => (
       row.ufOrigem === alvo.ufOrigem
@@ -137,17 +154,20 @@ export default function IcmsUfPage() {
     ));
     if (origemIndex < 0) return;
     const prox = linhas.map((row, idx) => (idx === origemIndex ? { ...row, [campo]: campo === 'aliquota' ? Number(valor || 0) : valor } : row));
-    setLinhas(salvarMatrizIcmsUf(prox));
+    const resposta = await salvarMatrizIcmsUfCentralizada(prox);
+    setLinhas(resposta.linhas);
+    setMensagem(resposta.mensagem || 'Matriz ICMS atualizada.');
   }
 
-  function removerLinha(index) {
+  async function removerLinha(index) {
     const alvo = filtradas[index];
     if (!alvo) return;
     const descricao = `${alvo.transportadora || 'Base geral'} ${alvo.cidadeOrigem ? `/ ${alvo.cidadeOrigem}` : ''} ${alvo.canal ? `/ ${alvo.canal}` : ''} ${alvo.ufOrigem} -> ${alvo.ufDestino}`;
     if (!window.confirm(`Apagar esta linha?\n${descricao}`)) return;
     const prox = linhas.filter((row) => row !== alvo);
-    setLinhas(salvarMatrizIcmsUf(prox));
-    setMensagem(`Linha apagada: ${descricao}.`);
+    const resposta = await salvarMatrizIcmsUfCentralizada(prox);
+    setLinhas(resposta.linhas);
+    setMensagem(`Linha apagada: ${descricao}. ${resposta.mensagem || ''}`);
   }
 
   function alterarExcecao(campo, valor) {
@@ -164,7 +184,7 @@ export default function IcmsUfPage() {
     setMostrarSugestoesTransp(false);
   }
 
-  function adicionarExcecao() {
+  async function adicionarExcecao() {
     const normalizada = normalizarLinhaIcms({
       TRANSPORTADORA: excecao.transportadora,
       CIDADE_ORIGEM: excecao.cidadeOrigem,
@@ -178,17 +198,18 @@ export default function IcmsUfPage() {
       setMensagem('Informe transportadora, UF origem, UF destino e alíquota para adicionar a exceção.');
       return;
     }
-    const salvas = salvarMatrizIcmsUf([...linhas, normalizada]);
-    setLinhas(salvas);
-    setMensagem(`Exceção salva: ${normalizada.transportadora} ${normalizada.cidadeOrigem ? `/ ${normalizada.cidadeOrigem}` : ''} ${normalizada.ufOrigem} -> ${normalizada.ufDestino} = ${fmtN(normalizada.aliquota)}%.`);
+    const resposta = await salvarMatrizIcmsUfCentralizada([...linhas, normalizada]);
+    setLinhas(resposta.linhas);
+    setMensagem(`Exceção salva: ${normalizada.transportadora} ${normalizada.cidadeOrigem ? `/ ${normalizada.cidadeOrigem}` : ''} ${normalizada.ufOrigem} -> ${normalizada.ufDestino} = ${fmtN(normalizada.aliquota)}%. ${resposta.mensagem || ''}`);
     setExcecao((prev) => ({ ...prev, transportadora: '', cidadeOrigem: '', canal: '', observacao: '' }));
   }
 
-  function limpar() {
+  async function limpar() {
     if (!window.confirm('Apagar toda a matriz ICMS UF salva neste navegador?')) return;
     localStorage.removeItem('central-fretes:icms-uf-matrix-v1');
+    const resposta = await salvarMatrizIcmsUfCentralizada([]);
     setLinhas([]);
-    setMensagem('Matriz apagada.');
+    setMensagem(`Matriz apagada. ${resposta.mensagem || ''}`);
   }
 
   return (

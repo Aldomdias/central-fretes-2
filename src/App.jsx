@@ -6,6 +6,7 @@ import TransportadorasPage from './pages/TransportadorasPage';
 import ImportacaoPage from './pages/ImportacaoPage';
 import FormatacaoPage from './pages/FormatacaoPage';
 import ImportarTemplatePage from './pages/ImportarTemplatePage';
+import ImportacaoIaTabelasPage from './pages/ImportacaoIaTabelasPage';
 import LotacaoPage from './pages/LotacaoPage';
 import LotacaoOperacaoPage from './pages/LotacaoOperacaoPage';
 import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
@@ -39,6 +40,7 @@ import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negoc
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
+  'importacao-ia-tabelas',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
@@ -138,10 +140,11 @@ export default function App() {
     simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     'tabelas-negociacao': <TabelasNegociacaoPageWithEditor />,
     cte: <CtePage transportadoras={transportadorasMemo} />,
-    'auditoria-cte': <AuditoriaCtePage />,
+    'auditoria-cte': <AuditoriaCtePage onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
     importacao: <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     formatacao: <FormatacaoPage store={store} transportadoras={transportadorasMemo} />,
     'importar-template': <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />,
+    'importacao-ia-tabelas': <ImportacaoIaTabelasPage />,
     tracking: <TrackingPage />,
     'torre-controle': <TorreControlePage />,
     reajustes: <ReajustesPage transportadoras={transportadorasMemo} />,
@@ -151,9 +154,9 @@ export default function App() {
     'lotacao-auditoria': <LotacaoAuditoriaPage />,
     'painel-auditoria': <PainelAuditoriaPage />,
     'painel-operacao': <PainelOperacaoPage />,
-    faturas: <CentralAuditoriaFretesPage initialTab="faturas" />,
-    'gestao-auditoria-fretes': <CentralAuditoriaFretesPage initialTab="gestao" />,
-    'financeiro-auditoria': <CentralAuditoriaFretesPage initialTab="financeiro" />,
+    faturas: <CentralAuditoriaFretesPage initialTab="faturas" onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
+    'gestao-auditoria-fretes': <CentralAuditoriaFretesPage initialTab="gestao" onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
+    'financeiro-auditoria': <CentralAuditoriaFretesPage initialTab="financeiro" onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
     tratativas: <TratativasPage />,
     'perda-realizado': <PerdaRealizadoPage />,
     'oportunidade-origem': <OportunidadeOrigemPage />,

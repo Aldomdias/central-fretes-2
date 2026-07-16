@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
@@ -55,7 +55,6 @@ import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 const TABS = [
   ['dashboard', 'Dashboard'],
   ['faturas', 'Faturas'],
-  ['auditoria-cte', 'Auditoria CT-e'],
   ['gestao', 'Centro de Gestores'],
   ['financeiro', 'Central Financeira'],
 ];
@@ -66,7 +65,7 @@ function dinheiro(valor) {
 
 function dinheiroMaybe(v) {
   const n = Number(v);
-  return Number.isFinite(n) ? dinheiro(n) : '—';
+  return Number.isFinite(n) ? dinheiro(n) : 'â€”';
 }
 
 function numeroFmt(v, d = 0) {
@@ -75,7 +74,7 @@ function numeroFmt(v, d = 0) {
 
 function pctFmt(v) {
   const n = Number(v);
-  return Number.isFinite(n) ? `${n.toFixed(2).replace('.', ',')}%` : '—';
+  return Number.isFinite(n) ? `${n.toFixed(2).replace('.', ',')}%` : 'â€”';
 }
 
 function extrairIdentificadoresCte(texto = '') {
@@ -106,6 +105,27 @@ function dentroDaToleranciaAuditoria(diferenca, tolerancia = TOLERANCIA_PADRAO) 
   return valor <= acima && valor >= -abaixo;
 }
 
+function baixarArquivoAuditoria(conteudo, nome, tipo) {
+  const blob = new Blob([conteudo], { type: tipo });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nome;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function pesoAlternativoAuditoriaAvulsa(alt = {}) {
+  const peso = Number(alt.peso_considerado || 0);
+  if (peso > 0) return peso;
+  const cubagem = Number(alt.cubagem_aplicada || 0);
+  const fator = Number(alt.fator_cubagem || 0);
+  if (cubagem > 0 && fator > 0) return cubagem * fator;
+  return Number(alt.peso_cubado_calculado || 0);
+}
+
 const CAMPOS_TAXAS_CALCULO = ['adValorem', 'gris', 'pedagio', 'tas', 'ctrc', 'tda', 'tde', 'tdr', 'trt', 'suframa', 'outras', 'taxaExtra'];
 
 function somaTaxasCalculo(taxas = {}) {
@@ -126,7 +146,7 @@ function linhaDetalhe(label, value, destaque = false) {
 
 // Painel de detalhe do calculo (mesmo layout da Auditoria CT-e), reaproveitado
 // aqui pra permitir ver o detalhamento de um CT-e direto na tela de Faturas.
-function PainelDetalheCalculo({ resultado }) {
+function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras }) {
   if (!resultado) return <span>Sem detalhe de calculo para este CT-e.</span>;
   const det = (() => {
     const d = resultado.detalhes_calculo;
@@ -145,6 +165,33 @@ function PainelDetalheCalculo({ resultado }) {
   return (
     <>
       {resultado.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {resultado.motivo_sem_calculo}</div> : null}
+      {Number(resultado.valor_calculado || 0) <= 0 ? (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <button
+            className="btn-secondary audit-small-button"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onMudarPagina?.('consulta-ibge');
+            }}
+            title="Abrir Consulta IBGE para conferir/vincular codigo de cidade usado na rota"
+          >
+            Encontrar rota/IBGE
+          </button>
+          <button
+            className="btn-secondary audit-small-button"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (onAbrirTransportadoras) onAbrirTransportadoras();
+              else onMudarPagina?.('transportadoras');
+            }}
+            title="Abrir cadastro para vincular o nome da transportadora do CT-e com a tabela cadastrada"
+          >
+            Vincular transportadora
+          </button>
+        </div>
+      ) : null}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
         <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
           <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Resumo do calculo</div>
@@ -181,15 +228,15 @@ function PainelDetalheCalculo({ resultado }) {
             {linhaDetalhe('Peso declarado CT-e', `${numeroFmt(det.peso_declarado_cte, 3)} kg`)}
             {linhaDetalhe('Peso cubado calculado', `${numeroFmt(det.peso_cubado_tracking, 3)} kg`)}
             {Number(det.peso_cubado_original_tracking) > 0 ? linhaDetalhe('Peso/cubagem original Tracking', numeroFmt(det.peso_cubado_original_tracking, 6)) : null}
-            {Number(det.cubagem_tracking) > 0 ? linhaDetalhe('Cubagem Tracking', `${numeroFmt(det.cubagem_tracking, 6)} m³`) : null}
+            {Number(det.cubagem_tracking) > 0 ? linhaDetalhe('Cubagem Tracking', `${numeroFmt(det.cubagem_tracking, 6)} mÂ³`) : null}
             {comparativoPesos.map((alt) => (
               <div key={alt.nome} style={{ borderTop: '1px solid #e2e8f0', marginTop: 8, paddingTop: 8 }}>
                 {linhaDetalhe(alt.nome, dinheiroMaybe(alt.valor_calculado), alt.nome === det.melhor_comparativo_peso)}
                 {linhaDetalhe('Peso usado', `${numeroFmt(alt.peso_considerado, 3)} kg`)}
-                {Number(alt.cubagem_aplicada) > 0 ? linhaDetalhe('Cubagem usada', `${numeroFmt(alt.cubagem_aplicada, 6)} m³`) : null}
-                {Number(alt.fator_cubagem) > 0 ? linhaDetalhe('Fator cubagem', `${numeroFmt(alt.fator_cubagem, 0)} kg/m³`) : null}
+                {Number(alt.cubagem_aplicada) > 0 ? linhaDetalhe('Cubagem usada', `${numeroFmt(alt.cubagem_aplicada, 6)} mÂ³`) : null}
+                {Number(alt.fator_cubagem) > 0 ? linhaDetalhe('Fator cubagem', `${numeroFmt(alt.fator_cubagem, 0)} kg/mÂ³`) : null}
                 {Number(alt.peso_cubado_calculado) > 0 ? linhaDetalhe('Peso cubado calc.', `${numeroFmt(alt.peso_cubado_calculado, 3)} kg`) : null}
-                {linhaDetalhe('Diferença vs pago', dinheiroMaybe(alt.diferenca), alt.nome === det.melhor_comparativo_peso)}
+                {linhaDetalhe('DiferenÃ§a vs pago', dinheiroMaybe(alt.diferenca), alt.nome === det.melhor_comparativo_peso)}
               </div>
             ))}
           </div>
@@ -238,9 +285,9 @@ function nomeStatus(status = '') {
   return String(status).replaceAll('_', ' ');
 }
 
-// Fatura 100% auditada: todos os CT-es vinculados já passaram pelo cálculo
-// (auditados >= totais, com pelo menos 1 CT-e). Não exige "sem divergência" —
-// só que o resultado já é definitivo, não tem mais nada pendente de cálculo.
+// Fatura 100% auditada: todos os CT-es vinculados jÃ¡ passaram pelo cÃ¡lculo
+// (auditados >= totais, com pelo menos 1 CT-e). NÃ£o exige "sem divergÃªncia" â€”
+// sÃ³ que o resultado jÃ¡ Ã© definitivo, nÃ£o tem mais nada pendente de cÃ¡lculo.
 function faturaTotalmenteAuditada(fatura) {
   const totais = Number(fatura.ctes_totais || 0);
   const auditados = Number(fatura.ctes_auditados || 0);
@@ -452,22 +499,22 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
-  // Recalcula de verdade os CT-es que ainda não foram processados (motor de
+  // Recalcula de verdade os CT-es que ainda nÃ£o foram processados (motor de
   // auditoria + tabelas cadastradas), salva o resultado em
-  // auditoria_cte_resultados e, na sequência, reauditar a fatura pra puxar os
-  // valores recém-calculados pros detalhes e agregados da fatura.
+  // auditoria_cte_resultados e, na sequÃªncia, reauditar a fatura pra puxar os
+  // valores recÃ©m-calculados pros detalhes e agregados da fatura.
   const recalcular = async () => {
     setRecalculando(true);
     setErroDetalhes('');
     setInfoRecalculo('');
     try {
-      // Se tiver CT-e marcado no checkbox, recalcula só esses; sem marcação,
+      // Se tiver CT-e marcado no checkbox, recalcula sÃ³ esses; sem marcaÃ§Ã£o,
       // recalcula a fatura inteira.
       const alvo = selecionados.length
         ? detalhes.filter((item) => selecionados.includes(item.id))
         : detalhes;
       const chaves = alvo.map((item) => item.chave_cte).filter(Boolean);
-      if (!chaves.length) throw new Error('Esta fatura não possui CT-es com chave para recalcular.');
+      if (!chaves.length) throw new Error('Esta fatura nÃ£o possui CT-es com chave para recalcular.');
 
       // Garante que tabelas de frete editadas/importadas ha pouco (na mesma
       // sessao do navegador) entrem no recalculo, em vez de usar cache antigo.
@@ -480,12 +527,12 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
 
       const next = await reauditarFatura(state, fatura, detalhes, sessao?.nome || sessao?.email || 'Usuario local');
       onState(next);
-      // Refaz a referência com TODOS os CT-es da fatura (não só os recalculados
-      // agora), senão perde a referência de quem ficou fora da seleção.
+      // Refaz a referÃªncia com TODOS os CT-es da fatura (nÃ£o sÃ³ os recalculados
+      // agora), senÃ£o perde a referÃªncia de quem ficou fora da seleÃ§Ã£o.
       const referencia = await buscarReferenciaCtes(detalhes.map((item) => item.chave_cte));
       setReferenciaCtes(referencia);
       const escopo = selecionados.length ? `${selecionados.length} CT-e(s) selecionado(s)` : 'todos os CT-es da fatura';
-      setInfoRecalculo(`Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} não encontrado(s) na base de CT-es.` : '.'}`);
+      setInfoRecalculo(`Recalculado ${escopo}: ${encontrados} encontrado(s) e salvo(s)${naoEncontrados ? `, ${naoEncontrados} nÃ£o encontrado(s) na base de CT-es.` : '.'}`);
     } catch (error) {
       setErroDetalhes(error.message || String(error));
     } finally {
@@ -511,7 +558,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     lista.includes(id) ? lista.filter((item) => item !== id) : [...lista, id]);
 
   // Busca (uma vez, com cache local) e alterna o painel de detalhe do calculo
-  // de um CT-e — mesmo painel usado na Auditoria CT-e.
+  // de um CT-e â€” mesmo painel usado na Auditoria CT-e.
   const alternarDetalheCte = async (item) => {
     if (cteExpandido === item.id) {
       setCteExpandido(null);
@@ -537,7 +584,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       {detalhes.length > 0 && (
         <p className="compact">
           {ctesNaBase} de {detalhes.length} CT-e(s) encontrados na base auditada
-          {ctesNaBase < detalhes.length ? ' — os demais ainda nao foram processados na Auditoria CT-e.' : '.'}
+          {ctesNaBase < detalhes.length ? ' â€” os demais ainda nao foram processados na Auditoria CT-e.' : '.'}
         </p>
       )}
       <table className="sim-analise-tabela">
@@ -552,7 +599,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selecionados.includes(item.id)} onChange={() => selecionar(item.id)} /></td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{item.numero_cte || '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><small>{item.chave_cte || '-'}</small></td>
-                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} → {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : <small className="error-text">Fora da base</small>}</td>
+                  <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base ? <small>{base.cidade_origem || '?'}/{base.uf_origem || '?'} â†’ {base.cidade_destino || '?'}/{base.uf_destino || '?'}</small> : <small className="error-text">Fora da base</small>}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.canal || '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{base?.peso ? Number(base.peso).toLocaleString('pt-BR') : '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{dinheiro(item.valor_frete)}</td>
@@ -669,18 +716,18 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       {infoRecalculo && <div className="hint-box compact">{infoRecalculo}</div>}
       <div className="audit-action-bar">
         <span>{selecionados.length} CT-e(s) selecionado(s)</span>
-        <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula só os CT-es selecionados' : 'Recalcula todos os CT-es da fatura'}>
+        <button className="btn-primary" disabled={recalculando || reauditando || carregandoDetalhes || !detalhes.length} onClick={recalcular} title={selecionados.length ? 'Recalcula sÃ³ os CT-es selecionados' : 'Recalcula todos os CT-es da fatura'}>
           {recalculando ? 'Recalculando...' : selecionados.length ? `Recalcular selecionados (${selecionados.length})` : 'Recalcular CT-es'}
         </button>
-        <button className="btn-secondary" disabled={reauditando || recalculando || carregandoDetalhes || !detalhes.length} onClick={reauditar} title="Só cruza com o que já está calculado em auditoria_cte_resultados, sem recalcular">
+        <button className="btn-secondary" disabled={reauditando || recalculando || carregandoDetalhes || !detalhes.length} onClick={reauditar} title="SÃ³ cruza com o que jÃ¡ estÃ¡ calculado em auditoria_cte_resultados, sem recalcular">
           {reauditando ? 'Reauditando...' : 'Reauditar CT-es'}
         </button>
         <button
           className="btn-secondary"
-          onClick={() => { invalidarCacheBaseFreteAuditoriaCte(); setInfoRecalculo('Tabelas de frete atualizadas — o próximo recálculo já usa a versão mais recente.'); }}
-          title="Se você ajustou uma tabela de frete agora, clique aqui antes de recalcular para garantir que a mudança seja usada"
+          onClick={() => { invalidarCacheBaseFreteAuditoriaCte(); setInfoRecalculo('Tabelas de frete atualizadas â€” o prÃ³ximo recÃ¡lculo jÃ¡ usa a versÃ£o mais recente.'); }}
+          title="Se vocÃª ajustou uma tabela de frete agora, clique aqui antes de recalcular para garantir que a mudanÃ§a seja usada"
         >
-          ↻ Atualizar tabela
+          â†» Atualizar tabela
         </button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('EDI')}>Gerar DOCCOB EDI (Verum)</button>
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('CSV')}>Gerar DOCCOB CSV</button>
@@ -692,7 +739,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   );
 }
 
-function Faturas({ state, onState, modo = 'faturas' }) {
+function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTransportadoras }) {
   const mostrarAuditoriaAvulsa = modo === 'auditoria-cte';
   const mostrarFaturas = modo === 'faturas';
   const sessao = carregarSessao();
@@ -723,6 +770,11 @@ function Faturas({ state, onState, modo = 'faturas' }) {
   const [resultadoCtesAvulsosSalvos, setResultadoCtesAvulsosSalvos] = useState(false);
   const [toleranciaAuditoria, setToleranciaAuditoria] = useState(carregarToleranciaAuditoria);
   const [toleranciaAberta, setToleranciaAberta] = useState(false);
+  const [usarPesoCteAvulso, setUsarPesoCteAvulso] = useState(true);
+  const [percentualContingenciaAvulso, setPercentualContingenciaAvulso] = useState(0);
+  const [apenasDadosCompletosAvulso, setApenasDadosCompletosAvulso] = useState(true);
+  const [filtroAuditoriaAvulsa, setFiltroAuditoriaAvulsa] = useState('todos');
+  const [mostrarDiferencaNegativaLaudoTransportador, setMostrarDiferencaNegativaLaudoTransportador] = useState(false);
   const canaisDisponiveis = [...new Set(state.faturas.map((item) => item.canal).filter(Boolean))].sort();
   // Competencia = mes/ano da emissao (nao existe campo proprio na fatura).
   const competenciasDisponiveis = [...new Set(
@@ -743,7 +795,7 @@ function Faturas({ state, onState, modo = 'faturas' }) {
       ultimoVencimento: maisRecente('data_vencimento'),
     };
   }, [state.faturas]);
-  const dataHora = (data) => data ? data.toLocaleString('pt-BR') : '—';
+  const dataHora = (data) => data ? data.toLocaleString('pt-BR') : 'â€”';
   const alterarToleranciaAuditoria = (campo, valor) => {
     const proxima = {
       ...toleranciaAuditoria,
@@ -767,8 +819,23 @@ function Faturas({ state, onState, modo = 'faturas' }) {
         && (!vencimentoInicio || (vencimento && vencimento.slice(0, 10) >= vencimentoInicio))
         && (!vencimentoFim || (vencimento && vencimento.slice(0, 10) <= vencimentoFim));
     })
-    // Faturas 100% auditadas ficam em evidência, no topo da lista.
+    // Faturas 100% auditadas ficam em evidÃªncia, no topo da lista.
     .sort((a, b) => Number(faturaTotalmenteAuditada(b)) - Number(faturaTotalmenteAuditada(a)));
+
+  const resultadoCtesAvulsosFiltrado = useMemo(() => resultadoCtesAvulsos.filter((row) => {
+    const calculado = Number(row.valor_calculado || 0) > 0;
+    const ok = calculado && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria);
+    const divergente = calculado && !ok;
+    if (filtroAuditoriaAvulsa === 'divergentes') return divergente;
+    if (filtroAuditoriaAvulsa === 'ok') return ok;
+    if (filtroAuditoriaAvulsa === 'sem_calculo') return !calculado;
+    if (filtroAuditoriaAvulsa === 'devolucao') return Boolean(row.detalhes_calculo?.calculo_devolucao_invertida);
+    if (filtroAuditoriaAvulsa === 'peso_alt') {
+      return Array.isArray(row.detalhes_calculo?.comparativo_pesos)
+        && row.detalhes_calculo.comparativo_pesos.some((alt) => pesoAlternativoAuditoriaAvulsa(alt) > 0);
+    }
+    return true;
+  }), [resultadoCtesAvulsos, filtroAuditoriaAvulsa, toleranciaAuditoria]);
 
   const localizarFaturasPorChaves = async (chaves = [], numeros = []) => {
     const alvo = new Set(chaves.map(normalizarChaveCte).filter(Boolean));
@@ -858,7 +925,11 @@ function Faturas({ state, onState, modo = 'faturas' }) {
     setMensagemImportacao('');
     try {
       invalidarCacheBaseFreteAuditoriaCte();
-      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos, { ignorarCubagem: true });
+      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos, {
+        ignorarCubagem: usarPesoCteAvulso,
+        percentualContingenciaPeso: percentualContingenciaAvulso,
+        apenasDadosCompletos: apenasDadosCompletosAvulso,
+      });
       setResultadoCtesAvulsos(registros);
       if (registros.length) {
         await salvarAuditoriaAvulsa(registros);
@@ -928,6 +999,391 @@ function Faturas({ state, onState, modo = 'faturas' }) {
     }
   };
 
+  const aplicarPesoAlternativoAvulso = (row, alternativa) => {
+    const peso = pesoAlternativoAuditoriaAvulsa(alternativa);
+    const valorCalculado = Number(alternativa.valor_calculado || 0);
+    if (!peso || !valorCalculado) return;
+    const valorPago = Number(row.valor_cte || 0);
+    const atualizado = {
+      ...row,
+      peso,
+      valor_calculado: valorCalculado,
+      diferenca: valorPago - valorCalculado,
+      diferenca_abs: Math.abs(valorPago - valorCalculado),
+      percentual_diferenca: valorCalculado > 0 ? ((valorPago - valorCalculado) / valorCalculado) * 100 : 0,
+      detalhes_calculo: {
+        ...(row.detalhes_calculo || {}),
+        peso_considerado: peso,
+        valor_base: alternativa.valor_base ?? row.detalhes_calculo?.valor_base,
+        subtotal: alternativa.subtotal ?? row.detalhes_calculo?.subtotal,
+        icms: alternativa.icms ?? row.detalhes_calculo?.icms,
+        aliquota_icms: alternativa.aliquota_icms ?? row.detalhes_calculo?.aliquota_icms,
+        origem_aliquota_icms: alternativa.origem_aliquota_icms || row.detalhes_calculo?.origem_aliquota_icms,
+        taxas: alternativa.taxas || row.detalhes_calculo?.taxas,
+        componentes_base: alternativa.componentes_base || row.detalhes_calculo?.componentes_base,
+        ajuste_peso_aplicado: alternativa.nome || 'Peso alternativo',
+      },
+    };
+    setResultadoCtesAvulsos((prev) => prev.map((item) => (item === row ? atualizado : item)));
+    setResultadoCtesAvulsosSalvos(false);
+    setMensagemImportacao(`Peso alternativo aplicado no CT-e ${row.numero_cte || row.chave_cte || ''}. Clique em Salvar auditoria para gravar.`);
+  };
+
+  const aplicarPesosOkAuditoriaAvulsa = () => {
+    let aplicados = 0;
+    const atualizados = resultadoCtesAvulsos.map((row) => {
+      const alternativas = (Array.isArray(row.detalhes_calculo?.comparativo_pesos) ? row.detalhes_calculo.comparativo_pesos : [])
+        .map((alt) => ({ ...alt, pesoAlternativo: pesoAlternativoAuditoriaAvulsa(alt) }))
+        .filter((alt) => {
+          const valorCalculado = Number(alt.valor_calculado || 0);
+          const pesoAlt = Number(alt.pesoAlternativo || 0);
+          if (valorCalculado <= 0 || pesoAlt <= 0) return false;
+          if (Math.abs(pesoAlt - Number(row.peso || 0)) <= 0.1) return false;
+          const diferenca = Number(row.valor_cte || 0) - valorCalculado;
+          return dentroDaToleranciaAuditoria(diferenca, toleranciaAuditoria);
+        })
+        .sort((a, b) => Math.abs(Number(a.diferenca || 0)) - Math.abs(Number(b.diferenca || 0)));
+      const escolhida = alternativas[0];
+      if (!escolhida) return row;
+      aplicados += 1;
+      const valorCalculado = Number(escolhida.valor_calculado || 0);
+      const diferenca = Number(row.valor_cte || 0) - valorCalculado;
+      return {
+        ...row,
+        peso: escolhida.pesoAlternativo,
+        valor_calculado: valorCalculado,
+        diferenca,
+        diferenca_abs: Math.abs(diferenca),
+        percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+        detalhes_calculo: {
+          ...(row.detalhes_calculo || {}),
+          peso_considerado: escolhida.pesoAlternativo,
+          valor_base: escolhida.valor_base ?? row.detalhes_calculo?.valor_base,
+          subtotal: escolhida.subtotal ?? row.detalhes_calculo?.subtotal,
+          icms: escolhida.icms ?? row.detalhes_calculo?.icms,
+          aliquota_icms: escolhida.aliquota_icms ?? row.detalhes_calculo?.aliquota_icms,
+          origem_aliquota_icms: escolhida.origem_aliquota_icms || row.detalhes_calculo?.origem_aliquota_icms,
+          taxas: escolhida.taxas || row.detalhes_calculo?.taxas,
+          componentes_base: escolhida.componentes_base || row.detalhes_calculo?.componentes_base,
+          ajuste_peso_aplicado: escolhida.nome || 'Peso alternativo dentro da tolerancia',
+        },
+      };
+    });
+    setResultadoCtesAvulsos(atualizados);
+    setResultadoCtesAvulsosSalvos(false);
+    setMensagemImportacao(aplicados
+      ? `${aplicados} CT-e(s) tiveram peso alternativo aplicado porque entraram na tolerancia. Clique em Salvar auditoria para gravar.`
+      : 'Nenhum CT-e tinha peso alternativo que entrasse na tolerancia atual.');
+  };
+
+  const exportarAuditoriaAvulsaExcel = () => {
+    if (!resultadoCtesAvulsos.length) return;
+    const linhas = resultadoCtesAvulsos.map((row) => ({
+      'CT-e': row.numero_cte || '',
+      Chave: row.chave_cte || '',
+      Transportadora: row.transportadora || row.transportadora_realizada || '',
+      Canal: row.canal || row.canal_original || '',
+      Origem: row.cidade_origem || row.origem || '',
+      'UF Origem': row.uf_origem || '',
+      Destino: row.cidade_destino || row.destino || '',
+      'UF Destino': row.uf_destino || '',
+      'Peso usado': Number(row.peso || 0),
+      'Valor NF': Number(row.valor_nf || 0),
+      'Frete pago': Number(row.valor_cte || 0),
+      'Calculo AMD': Number(row.valor_calculado || 0),
+      Diferenca: Number(row.diferenca || 0),
+      Status: row.status_auditoria || row.status_calculo || row.motivo_sem_calculo || '',
+      'Dentro tolerancia': Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria) ? 'SIM' : 'NAO',
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas), 'CT-es auditados');
+    XLSX.writeFile(wb, `auditoria-cte-avulsa-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const baixarLaudoAuditoriaAvulsa = (tipoLaudo = 'interno') => {
+    if (!resultadoCtesAvulsos.length) return;
+    const laudoTransportador = tipoLaudo === 'transportador';
+    const esc = (valor) => String(valor ?? '').replace(/[&<>"']/g, (m) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[m]));
+    const total = resultadoCtesAvulsos.length;
+    const calculados = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) > 0).length;
+    const ok = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria)).length;
+    const divergentes = calculados - ok;
+    const semCalculo = total - calculados;
+    const excesso = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.max(Number(row.diferenca || 0), 0), 0);
+    const insuf = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.abs(Math.min(Number(row.diferenca || 0), 0)), 0);
+    const totalPago = resultadoCtesAvulsos.reduce((acc, row) => acc + Number(row.valor_cte || 0), 0);
+    const totalAmd = resultadoCtesAvulsos.reduce((acc, row) => acc + Number(row.valor_calculado || 0), 0);
+    const taxaOk = calculados > 0 ? (ok / calculados) * 100 : 0;
+    const porTransp = Array.from(resultadoCtesAvulsos.reduce((mapa, row) => {
+      const nome = row.transportadora || row.transportadora_realizada || 'Nao informado';
+      const atual = mapa.get(nome) || { nome, total: 0, calculados: 0, ok: 0, divergencia: 0 };
+      atual.total += 1;
+      if (Number(row.valor_calculado || 0) > 0) atual.calculados += 1;
+      if (Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria)) atual.ok += 1;
+      atual.divergencia += Math.abs(Number(row.diferenca || 0));
+      mapa.set(nome, atual);
+      return mapa;
+    }, new Map()).values()).sort((a, b) => b.divergencia - a.divergencia);
+    const topDivergencias = [...resultadoCtesAvulsos]
+      .filter((row) => Number(row.valor_calculado || 0) > 0)
+      .sort((a, b) => Math.abs(Number(b.diferenca || 0)) - Math.abs(Number(a.diferenca || 0)))
+      .slice(0, 25);
+    const devolucoes = resultadoCtesAvulsos.filter((row) => row.detalhes_calculo?.calculo_devolucao_invertida);
+    const ajustesPeso = resultadoCtesAvulsos.filter((row) => row.detalhes_calculo?.ajuste_peso_aplicado);
+    const semCalculoRows = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) <= 0).slice(0, 25);
+    const dinheiroLaudo = (valor) => (Number.isFinite(Number(valor)) ? dinheiro(valor) : '-');
+    const numeroLaudo = (valor, casas = 2) => (Number.isFinite(Number(valor)) ? numeroFmt(valor, casas) : '-');
+    const pesoUsado = (row) => Number(row.detalhes_calculo?.peso_considerado ?? row.peso ?? 0);
+    const deveOcultarDiferencaNegativa = (row) => laudoTransportador
+      && !mostrarDiferencaNegativaLaudoTransportador
+      && Number(row.diferenca || 0) < 0;
+    const diferencaExibida = (row) => (deveOcultarDiferencaNegativa(row) ? 0 : Number(row.diferenca || 0));
+    const statusExibido = (row) => {
+      if (deveOcultarDiferencaNegativa(row)) return 'OK';
+      return Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria) ? 'OK' : 'Divergente';
+    };
+    const detailId = (prefixo, row, index) => `${prefixo}-${String(row.numero_cte || row.chave_cte || index).replace(/[^a-zA-Z0-9_-]/g, '')}`;
+    const detalheLinha = (label, value, classe = '') => `
+      <div class="kv ${classe}">
+        <span>${esc(label)}</span>
+        <strong>${value}</strong>
+      </div>
+    `;
+    const detalheBox = (titulo, linhas) => `
+      <div class="detail-box">
+        <h3>${esc(titulo)}</h3>
+        ${linhas.join('')}
+      </div>
+    `;
+    const detalhesCalculoHtml = (row, modo = 'interno') => {
+      const publico = modo === 'transportador';
+      const det = row.detalhes_calculo || {};
+      const base = det.componentes_base || {};
+      const taxas = det.taxas || {};
+      const rota = det.rota_cotacao || det.rota || row.rota || `${row.cidade_origem || row.origem || ''} -> ${row.cidade_destino || row.destino || ''}`;
+      const taxaLinhas = [
+        ['Ad Valorem', taxas.adValorem ?? taxas.ad_valorem ?? taxas.advalorem],
+        ['GRIS', taxas.gris],
+        ['Pedagio', taxas.pedagio],
+        ['TAS', taxas.tas],
+        ['CTRC', taxas.ctrc],
+        ['TDA', taxas.tda],
+        ['TDE', taxas.tde],
+        ['TDR', taxas.tdr],
+        ['TRT', taxas.trt],
+        ['Suframa', taxas.suframa],
+        ['Outras', taxas.outras],
+        ['Taxa extra', taxas.taxaExtra ?? taxas.taxa_extra],
+        ['Total taxas', det.total_taxas ?? taxas.total],
+      ].map(([label, value]) => detalheLinha(label, dinheiroLaudo(value)));
+      const comparativo = Array.isArray(det.comparativo_pesos) ? det.comparativo_pesos : [];
+      const comparativoHtml = comparativo.map((alt) => `
+        <tr>
+          <td>${esc(alt.nome || alt.tipo || 'Alternativo')}</td>
+          <td>${numeroLaudo(alt.peso_usado ?? alt.peso ?? alt.pesoAlternativo, 3)} kg</td>
+          <td>${dinheiroLaudo(alt.valor_calculado)}</td>
+          <td class="${Number(alt.diferenca || 0) > 0 ? 'bad' : 'warn'}">${dinheiroLaudo(alt.diferenca)}</td>
+        </tr>
+      `).join('');
+      return `
+        <div class="detail-panel">
+          <div class="detail-head">
+            <strong>Detalhe do cÃ¡lculo do CT-e ${esc(row.numero_cte || '')}</strong>
+            <span>${esc(row.chave_cte || '')}</span>
+          </div>
+          <div class="detail-grid">
+            ${detalheBox('Resumo do cÃ¡lculo', [
+              detalheLinha('Motor', esc(det.motor || 'Simulador realizado')),
+              detalheLinha('Tipo', esc(det.tipo_calculo || det.tipo || '-')),
+              detalheLinha('Tabela usada', esc(det.tabela_usada || row.transportadora || row.transportadora_realizada || '-')),
+              detalheLinha('Canal', esc(det.canal || row.canal || row.canal_original || '-')),
+              detalheLinha('Origem tabela', esc(det.origem_tabela || '-')),
+              detalheLinha('Rota/cotaÃ§Ã£o', esc(rota || '-')),
+              detalheLinha('Peso usado', `${numeroLaudo(pesoUsado(row), 3)} kg`),
+              detalheLinha('Valor NF', dinheiroLaudo(det.valor_nf ?? row.valor_nf)),
+              detalheLinha('Frete pago', dinheiroLaudo(row.valor_cte)),
+              detalheLinha('CÃ¡lculo AMD/local', dinheiroLaudo(row.valor_calculado)),
+              detalheLinha('DiferenÃ§a', dinheiroLaudo(diferencaExibida(row)), diferencaExibida(row) > 0 ? 'bad' : 'warn'),
+            ])}
+            ${detalheBox('Base do frete', [
+              detalheLinha('Percentual aplicado', Number.isFinite(Number(base.percentual_aplicado ?? det.percentual_aplicado)) ? pctFmt(base.percentual_aplicado ?? det.percentual_aplicado) : '-'),
+              detalheLinha('Valor percentual', dinheiroLaudo(base.valor_percentual ?? det.valor_percentual)),
+              detalheLinha('R$/kg aplicado', dinheiroLaudo(base.valor_kg ?? base.valor_kg_aplicado ?? det.valor_kg_aplicado)),
+              detalheLinha('Valor kg garantia', dinheiroLaudo(base.valor_kg_garantia ?? det.valor_kg_garantia)),
+              detalheLinha('Frete mÃ­nimo rota', dinheiroLaudo(base.frete_minimo_rota ?? det.frete_minimo_rota)),
+              detalheLinha('Frete mÃ­nimo cotaÃ§Ã£o', dinheiroLaudo(base.frete_minimo_cotacao ?? det.frete_minimo_cotacao)),
+              detalheLinha('Frete mÃ­nimo geral', dinheiroLaudo(base.frete_minimo_geral ?? det.frete_minimo_geral)),
+              detalheLinha('MÃ­nimo aplicÃ¡vel', dinheiroLaudo(base.minimo_aplicavel ?? det.minimo_aplicavel)),
+              detalheLinha('Componente vencedor', esc(base.componente_vencedor || det.componente_vencedor || '-')),
+              detalheLinha('Valor base', dinheiroLaudo(det.valor_base ?? base.valor_base)),
+            ])}
+            ${detalheBox('ICMS e totalizaÃ§Ã£o', [
+              detalheLinha('Subtotal antes emergencial', dinheiroLaudo(det.subtotal_antes_emergencial ?? det.subtotal)),
+              detalheLinha('Taxa emergencial', dinheiroLaudo(det.taxa_emergencial)),
+              detalheLinha('Subtotal sem ICMS', dinheiroLaudo(det.subtotal_sem_icms ?? det.subtotal)),
+              detalheLinha('AlÃ­quota ICMS', Number.isFinite(Number(det.aliquota_icms)) ? pctFmt(det.aliquota_icms) : '-'),
+              detalheLinha('Origem alÃ­quota', esc(det.origem_aliquota_icms || '-')),
+              detalheLinha('UF origem/destino', esc(`${row.uf_origem || '-'} -> ${row.uf_destino || '-'}`)),
+              detalheLinha('ICMS', dinheiroLaudo(det.icms)),
+              detalheLinha('Total calculado', dinheiroLaudo(row.valor_calculado)),
+            ])}
+            ${publico ? '' : detalheBox('Pesos disponÃ­veis', [
+              detalheLinha('Peso usado no cÃ¡lculo', `${numeroLaudo(pesoUsado(row), 3)} kg`),
+              detalheLinha('Peso declarado CT-e', `${numeroLaudo(det.peso_declarado_cte ?? det.peso_declarado, 3)} kg`),
+              detalheLinha('Peso cubado calculado', `${numeroLaudo(det.peso_cubado_calculado ?? det.peso_cubado, 3)} kg`),
+              detalheLinha('Cubagem Tracking', `${numeroLaudo(det.cubagem_tracking ?? det.cubagem, 6)} m3`),
+              detalheLinha('Fator cubagem', `${numeroLaudo(det.fator_cubagem, 0)} kg/m3`),
+              detalheLinha('Ajuste aplicado', esc(det.ajuste_peso_aplicado || '-')),
+            ])}
+            ${detalheBox('Taxas', taxaLinhas)}
+          </div>
+          ${!publico && comparativoHtml ? `<h3 class="subhead">Comparativo de pesos</h3><table class="inner"><thead><tr><th>OpÃ§Ã£o</th><th>Peso</th><th>CÃ¡lculo</th><th>DiferenÃ§a</th></tr></thead><tbody>${comparativoHtml}</tbody></table>` : ''}
+        </div>
+      `;
+    };
+
+    const linhasTransportadora = porTransp.map((item) => `
+      <tr>
+        <td>${esc(item.nome)}</td>
+        <td>${numeroFmt(item.total)}</td>
+        <td>${numeroFmt(item.calculados)}</td>
+        <td>${numeroFmt(item.ok)}</td>
+        <td>${item.calculados ? pctFmt((item.ok / item.calculados) * 100) : 'â€”'}</td>
+        <td>${dinheiro(item.divergencia)}</td>
+      </tr>
+    `).join('');
+
+    const linhasDivergencias = topDivergencias.map((row, index) => {
+      const id = detailId('div', row, index);
+      return `
+      <tr class="clickable" onclick="toggleDetail('${id}')">
+        <td>${esc(row.numero_cte || '')}</td>
+        <td>${esc(row.transportadora || row.transportadora_realizada || '')}</td>
+        <td>${esc(row.cidade_origem || row.origem || '')}/${esc(row.uf_origem || '')} -> ${esc(row.cidade_destino || row.destino || '')}/${esc(row.uf_destino || '')}</td>
+        <td>${numeroFmt(pesoUsado(row), 3)} kg</td>
+        <td>${dinheiro(row.valor_cte)}</td>
+        <td>${dinheiro(row.valor_calculado)}</td>
+        <td class="${diferencaExibida(row) > 0 ? 'bad' : 'warn'}">${dinheiro(diferencaExibida(row))}</td>
+        <td>${statusExibido(row)}</td>
+      </tr>
+      <tr id="${id}" class="detail-row"><td colspan="8">${detalhesCalculoHtml(row, laudoTransportador ? 'transportador' : 'interno')}</td></tr>
+    `;
+    }).join('');
+
+    const linhasSemCalculo = semCalculoRows.map((row, index) => {
+      const id = detailId('sem', row, index);
+      return `
+      <tr class="clickable" onclick="toggleDetail('${id}')">
+        <td>${esc(row.numero_cte || '')}</td>
+        <td>${esc(row.transportadora || row.transportadora_realizada || '')}</td>
+        <td>${esc(row.cidade_origem || row.origem || '')} -> ${esc(row.cidade_destino || row.destino || '')}</td>
+        <td>${esc(row.canal || row.canal_original || '')}</td>
+        <td>${esc(row.motivo_sem_calculo || row.status_auditoria || row.status_calculo || '')}</td>
+      </tr>
+      <tr id="${id}" class="detail-row"><td colspan="5">${detalhesCalculoHtml(row, laudoTransportador ? 'transportador' : 'interno')}</td></tr>
+    `;
+    }).join('');
+    const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Laudo de Auditoria CT-e</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; color: #06183d; background: #eef3f9; }
+    .page { max-width: 1180px; margin: 28px auto; background: #fff; border: 1px solid #d8e2ef; border-radius: 12px; overflow: hidden; }
+    header { padding: 28px 32px; background: #06183d; color: #fff; }
+    header h1 { margin: 0 0 8px; font-size: 28px; }
+    header p { margin: 0; color: #cbd5e1; }
+    section { padding: 22px 32px; border-top: 1px solid #e2e8f0; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #dbe3ef; border-radius: 10px; padding: 14px; background: #f8fafc; }
+    .label { color: #64748b; font-size: 12px; font-weight: 700; }
+    .value { margin-top: 6px; font-size: 22px; font-weight: 800; }
+    .good { color: #15803d; } .bad { color: #dc2626; } .warn { color: #d97706; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; background: #f1f5f9; color: #334155; padding: 8px; border-bottom: 1px solid #cbd5e1; }
+    td { padding: 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover { background: #eff6ff; }
+    .detail-row { display: none; }
+    .detail-row.open { display: table-row; }
+    .detail-row > td { padding: 0 8px 12px; background: #f8fafc; }
+    .detail-panel { border: 1px solid #dbe3ef; border-radius: 10px; padding: 14px; margin-top: 6px; background: #fff; }
+    .detail-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: #334155; }
+    .detail-head span { color: #64748b; font-size: 11px; overflow-wrap: anywhere; }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+    .detail-box { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; background: #fbfdff; }
+    .detail-box h3, .subhead { margin: 0 0 8px; font-size: 13px; color: #06183d; }
+    .kv { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid #edf2f7; }
+    .kv span { color: #64748b; }
+    .kv strong { text-align: right; overflow-wrap: anywhere; }
+    table.inner { margin-top: 6px; }
+    .note { padding: 12px 14px; border-radius: 8px; background: #eff6ff; color: #1e3a8a; margin-top: 10px; }
+    footer { padding: 18px 32px; color: #64748b; font-size: 12px; }
+    @media print { body { background: #fff; } .page { margin: 0; border: 0; border-radius: 0; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>${laudoTransportador ? 'Laudo de Divergencias CT-e' : 'Laudo Interno de Auditoria CT-e'}</h1>
+      <p>Gerado em ${esc(new Date().toLocaleString('pt-BR'))}${laudoTransportador ? '' : ` Â· TolerÃ¢ncia aplicada: +R$ ${numeroFmt(toleranciaAuditoria.acima, 2)} / -R$ ${numeroFmt(toleranciaAuditoria.abaixo, 2)}`}</p>
+    </header>
+
+    <section>
+      <h2>Resumo executivo</h2>
+      <div class="cards">
+        <div class="card"><div class="label">CT-es auditados</div><div class="value">${numeroFmt(total)}</div></div>
+        <div class="card"><div class="label">Calculados AMD</div><div class="value">${numeroFmt(calculados)}</div></div>
+        <div class="card"><div class="label">Dentro da tolerÃ¢ncia</div><div class="value good">${numeroFmt(ok)} (${pctFmt(taxaOk)})</div></div>
+        <div class="card"><div class="label">Divergentes</div><div class="value bad">${numeroFmt(divergentes)}</div></div>
+        <div class="card"><div class="label">Sem cÃ¡lculo</div><div class="value warn">${numeroFmt(semCalculo)}</div></div>
+        <div class="card"><div class="label">Frete pago</div><div class="value">${dinheiro(totalPago)}</div></div>
+        <div class="card"><div class="label">CÃ¡lculo AMD</div><div class="value">${dinheiro(totalAmd)}</div></div>
+        <div class="card"><div class="label">CobranÃ§a acima</div><div class="value bad">${dinheiro(excesso)}</div></div>
+        <div class="card"><div class="label">CobranÃ§a abaixo</div><div class="value warn">${dinheiro(insuf)}</div></div>
+      </div>
+      <div class="note">Valores positivos em diferenÃ§a indicam cobranÃ§a acima do cÃ¡lculo AMD/local. Valores negativos indicam cobranÃ§a abaixo do cÃ¡lculo.</div>
+    </section>
+
+    <section>
+      <h2>Resumo por transportadora</h2>
+      <table><thead><tr><th>Transportadora</th><th>CT-es</th><th>Calculados</th><th>OK</th><th>Assertividade</th><th>DivergÃªncia absoluta</th></tr></thead><tbody>${linhasTransportadora}</tbody></table>
+    </section>
+
+    <section>
+      <h2>Principais divergÃªncias</h2>
+      <div class="note">Clique em qualquer CT-e para abrir ou fechar os detalhes do cálculo.</div>
+      <table><thead><tr><th>CT-e</th><th>Transportadora</th><th>Rota</th><th>Peso</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead><tbody>${linhasDivergencias || '<tr><td colspan="8">Sem divergÃªncias calculadas.</td></tr>'}</tbody></table>
+    </section>
+
+    <section>
+      <h2>Pontos de atenÃ§Ã£o</h2>
+      <div class="cards">
+        <div class="card"><div class="label">DevoluÃ§Ãµes invertidas</div><div class="value">${numeroFmt(devolucoes.length)}</div></div>
+        <div class="card"><div class="label">Pesos ajustados manualmente</div><div class="value">${numeroFmt(ajustesPeso.length)}</div></div>
+        <div class="card"><div class="label">Sem cÃ¡lculo listados</div><div class="value">${numeroFmt(semCalculoRows.length)}</div></div>
+      </div>
+      ${semCalculoRows.length ? `<h2 style="margin-top:20px">CT-es sem cÃ¡lculo</h2><div class="note">Clique na linha para ver os dados disponíveis do CT-e e o motivo do não cálculo.</div><table><thead><tr><th>CT-e</th><th>Transportadora</th><th>Rota</th><th>Canal</th><th>Motivo</th></tr></thead><tbody>${linhasSemCalculo}</tbody></table>` : ''}
+    </section>
+
+    <footer>Laudo gerado pela Central Fretes. Use a exportaÃ§Ã£o Excel para auditoria linha a linha.</footer>
+  </main>
+  <script>
+    function toggleDetail(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.classList.toggle('open');
+    }
+  </script>
+</body>
+</html>`;
+    baixarArquivoAuditoria(html, `${laudoTransportador ? 'laudo-transportador-cte' : 'laudo-interno-auditoria-cte'}-${new Date().toISOString().slice(0, 10)}.html`, 'text/html;charset=utf-8');
+  };
+
   const alternarSelecao = (id) => {
     setSelecionadasIds((atual) => (atual.includes(id) ? atual.filter((item) => item !== id) : [...atual, id]));
   };
@@ -965,10 +1421,10 @@ function Faturas({ state, onState, modo = 'faturas' }) {
 
       const grupos = agruparDetalhesVerum(rowsDetalhes);
 
-      // Busca direto no banco (não no state.faturas, que só carrega as 1000
-      // mais recentes) quem já existe entre os números deste arquivo, pra
-      // reimportação atualizar em vez de duplicar.
-      setMensagemImportacao('Verificando faturas já existentes no banco...');
+      // Busca direto no banco (nÃ£o no state.faturas, que sÃ³ carrega as 1000
+      // mais recentes) quem jÃ¡ existe entre os nÃºmeros deste arquivo, pra
+      // reimportaÃ§Ã£o atualizar em vez de duplicar.
+      setMensagemImportacao('Verificando faturas jÃ¡ existentes no banco...');
       setProgressoImportacao({ etapa: 'verificando_existentes', carregados: 0, total: null });
       const existentesPorChave = await buscarFaturasExistentesPorNumero(
         rowsFaturas.map((row) => parseFaturaVerum(row).numero_fatura),
@@ -1083,10 +1539,41 @@ function Faturas({ state, onState, modo = 'faturas' }) {
             <button className="btn-primary audit-small-button" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
               {auditandoCtesAvulsos ? 'Auditando...' : 'Auditar CT-es'}
             </button>
+            <button className="btn-secondary audit-small-button" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length} title="Limpa cache das tabelas e recalcula a lista atual">
+              Atualizar tabelas e recalcular
+            </button>
             <button className="btn-secondary audit-small-button" type="button" onClick={() => salvarAuditoriaAvulsa()} disabled={auditandoCtesAvulsos || !resultadoCtesAvulsos.length}>
               {resultadoCtesAvulsosSalvos ? 'Salvar novamente' : 'Salvar auditoria'}
             </button>
+            <button className="btn-secondary audit-small-button" type="button" onClick={exportarAuditoriaAvulsaExcel} disabled={!resultadoCtesAvulsos.length}>Exportar Excel</button>
+            <button className="btn-secondary audit-small-button" type="button" onClick={() => baixarLaudoAuditoriaAvulsa('interno')} disabled={!resultadoCtesAvulsos.length}>Laudo interno</button>
+            <label className="audit-inline-check" title="Quando desmarcado, diferencas negativas saem como OK e R$ 0,00 no laudo do transportador">
+              <input
+                type="checkbox"
+                checked={mostrarDiferencaNegativaLaudoTransportador}
+                onChange={(e) => setMostrarDiferencaNegativaLaudoTransportador(e.target.checked)}
+              />
+              Mostrar dif. para baixo
+            </label>
+            <button className="btn-secondary audit-small-button" type="button" onClick={() => baixarLaudoAuditoriaAvulsa('transportador')} disabled={!resultadoCtesAvulsos.length}>Laudo transportador</button>
           </div>
+        </div>
+
+        <div className="audit-quick-options" style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', margin: '10px 0 12px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700 }}>
+            <input type="checkbox" checked={apenasDadosCompletosAvulso} onChange={(e) => setApenasDadosCompletosAvulso(e.target.checked)} />
+            Considerar apenas CT-es com dados completos
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700 }}>
+            <input type="checkbox" checked={usarPesoCteAvulso} onChange={(e) => setUsarPesoCteAvulso(e.target.checked)} />
+            Usar peso do CT-e (ignora cubagem)
+          </label>
+          {usarPesoCteAvulso ? (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700 }}>
+              % contingencia peso
+              <input type="number" min="0" max="200" step="1" value={percentualContingenciaAvulso} onChange={(e) => setPercentualContingenciaAvulso(Number(e.target.value) || 0)} style={{ width: 72 }} />
+            </label>
+          ) : null}
         </div>
 
         <div className="audit-quick-input-row">
@@ -1107,15 +1594,47 @@ function Faturas({ state, onState, modo = 'faturas' }) {
               <strong>{resultadoCtesAvulsos.length} CT-e(s) processado(s)</strong>
               <span>{resultadoCtesAvulsosSalvos ? 'Auditoria salva e faturas relacionadas atualizadas.' : 'A auditoria sera salva automaticamente apos o calculo.'}</span>
             </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '10px 0' }}>
+              <label className="field" style={{ minWidth: 260 }}>
+                Filtrar resultado
+                <select value={filtroAuditoriaAvulsa} onChange={(e) => setFiltroAuditoriaAvulsa(e.target.value)}>
+                  <option value="todos">Todos</option>
+                  <option value="divergentes">Somente divergentes</option>
+                  <option value="ok">Dentro da tolerancia</option>
+                  <option value="sem_calculo">Sem calculo</option>
+                  <option value="devolucao">Devolucao invertida</option>
+                  <option value="peso_alt">Com opcao de peso</option>
+                </select>
+              </label>
+              <button className="btn-secondary audit-small-button" type="button" onClick={aplicarPesosOkAuditoriaAvulsa}>
+                Aplicar pesos que entram na tolerancia
+              </button>
+              <span style={{ color: '#64748b', fontSize: 12, fontWeight: 700 }}>
+                Exibindo {resultadoCtesAvulsosFiltrado.length} de {resultadoCtesAvulsos.length}
+              </span>
+            </div>
             <div className="audit-quick-table-wrap">
               <table className="sim-analise-tabela audit-quick-table">
-                <thead><tr><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
+                <thead><tr><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>Cálculo Verum</th><th>Dif. Verum</th><th>Cálculo AMD</th><th>Dif. AMD</th><th>Status</th></tr></thead>
                 <tbody>
-                  {resultadoCtesAvulsos.map((row, index) => {
+                  {resultadoCtesAvulsosFiltrado.map((row, index) => {
                     const key = row.chave_cte || row.numero_cte || index;
                     const aberto = cteAvulsoExpandido === key;
                     const linhaOk = Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria);
+                    const pago = Number(row.valor_cte || 0);
+                    const verum = Number(row.valor_calculado_verum || 0);
+                    const difVerum = row.diferenca_verum !== undefined && row.diferenca_verum !== null
+                      ? Number(row.diferenca_verum)
+                      : (verum > 0 ? pago - verum : 0);
                     const statusClass = `audit-status audit-status-${linhaOk ? 'ok' : String(row.status_calculo || row.status_auditoria || '').toLowerCase()}`;
+                    const comparativoPesos = Array.isArray(row.detalhes_calculo?.comparativo_pesos)
+                      ? row.detalhes_calculo.comparativo_pesos
+                      : [];
+                    const alternativasPeso = comparativoPesos
+                      .map((alt) => ({ ...alt, pesoAlternativo: pesoAlternativoAuditoriaAvulsa(alt) }))
+                      .filter((alt) => alt.pesoAlternativo > 0 && Math.abs(alt.pesoAlternativo - Number(row.peso || 0)) > 0.1)
+                      .sort((a, b) => Math.abs(Number(a.diferenca || 999999)) - Math.abs(Number(b.diferenca || 999999)))
+                      .slice(0, 2);
                     return (
                       <Fragment key={key}>
                         <tr className={`${aberto ? 'selected' : ''} ${linhaOk ? 'audit-row-ok' : ''}`.trim()} role="button" tabIndex={0} onClick={() => setCteAvulsoExpandido(aberto ? null : key)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setCteAvulsoExpandido(aberto ? null : key); }}>
@@ -1124,14 +1643,35 @@ function Faturas({ state, onState, modo = 'faturas' }) {
                           <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
                           <td>{row.canal || row.canal_original || '-'}</td>
                           <td>{row.origem || row.cidade_origem || '-'} -&gt; {row.destino || row.cidade_destino || '-'}</td>
-                          <td>{numeroFmt(row.peso ?? row.peso_declarado ?? row.detalhes_calculo?.peso_considerado, 3)} kg</td>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <span>{numeroFmt(row.peso ?? row.peso_declarado ?? row.detalhes_calculo?.peso_considerado, 3)} kg</span>
+                              {alternativasPeso.map((alt) => (
+                                <button
+                                  key={`${alt.nome}-${alt.pesoAlternativo}`}
+                                  className="btn-secondary audit-small-button"
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    aplicarPesoAlternativoAvulso(row, alt);
+                                  }}
+                                  style={{ padding: '1px 6px', fontSize: 11 }}
+                                  title={`Aplicar ${alt.nome || 'peso alternativo'} nesta linha`}
+                                >
+                                  usar {numeroFmt(alt.pesoAlternativo, 1)} kg
+                                </button>
+                              ))}
+                            </div>
+                          </td>
                           <td>{dinheiroMaybe(row.valor_cte)}</td>
+                          <td>{verum > 0 ? dinheiroMaybe(verum) : '-'}</td>
+                          <td>{verum > 0 ? dinheiroMaybe(difVerum) : '-'}</td>
                           <td>{dinheiroMaybe(row.valor_calculado)}</td>
                           <td>{dinheiroMaybe(row.diferenca)}</td>
                           <td><span className={statusClass}>{linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span></td>
                         </tr>
                         {aberto && (
-                          <tr className="audit-quick-detail-row"><td colSpan="10"><PainelDetalheCalculo resultado={row} /></td></tr>
+                          <tr className="audit-quick-detail-row"><td colSpan="12"><PainelDetalheCalculo resultado={row} onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} /></td></tr>
                         )}
                       </Fragment>
                     );
@@ -1153,12 +1693,12 @@ function Faturas({ state, onState, modo = 'faturas' }) {
             <div className="panel-title">Carteira operacional de faturas</div>
             <span>{lista.length} fatura(s)</span>
             <span style={{ marginLeft: 12, color: '#64748b', fontSize: 12 }}>
-              Última atualização: {dataHora(resumoDatas.ultimaAtualizacao)} · Última fatura importada: {dataHora(resumoDatas.ultimaImportacao)}
-              {' · '}Emissão mais recente: {dataBr(resumoDatas.ultimaEmissao?.toISOString())} · Vencimento mais recente: {dataBr(resumoDatas.ultimoVencimento?.toISOString())}
+              Ãšltima atualizaÃ§Ã£o: {dataHora(resumoDatas.ultimaAtualizacao)} Â· Ãšltima fatura importada: {dataHora(resumoDatas.ultimaImportacao)}
+              {' Â· '}EmissÃ£o mais recente: {dataBr(resumoDatas.ultimaEmissao?.toISOString())} Â· Vencimento mais recente: {dataBr(resumoDatas.ultimoVencimento?.toISOString())}
             </span>
           </div>
           <div className="actions-right">
-            <button className="btn-secondary" disabled={detectandoCanais} onClick={detectarCanais} title="Varre os CT-es já auditados e grava o canal predominante de cada fatura">
+            <button className="btn-secondary" disabled={detectandoCanais} onClick={detectarCanais} title="Varre os CT-es jÃ¡ auditados e grava o canal predominante de cada fatura">
               {detectandoCanais ? `Detectando canais... ${progressoCanais?.carregados ?? ''}` : 'Detectar canais'}
             </button>
             <button className="btn-primary" disabled={importando} onClick={() => arquivoRef.current?.click()}>
@@ -1174,28 +1714,28 @@ function Faturas({ state, onState, modo = 'faturas' }) {
         </div>
         <div className="form-grid three">
           <label className="field">
-            Competência (emissão)
+            CompetÃªncia (emissÃ£o)
             <select value={competenciaFiltro} onChange={(e) => setCompetenciaFiltro(e.target.value)}>
               <option value="">Todas</option>
               {competenciasDisponiveis.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
           </label>
-          <label className="field">Emissão de<input type="date" value={periodoInicio} onChange={(e) => setPeriodoInicio(e.target.value)} /></label>
-          <label className="field">Emissão até<input type="date" value={periodoFim} onChange={(e) => setPeriodoFim(e.target.value)} /></label>
+          <label className="field">EmissÃ£o de<input type="date" value={periodoInicio} onChange={(e) => setPeriodoInicio(e.target.value)} /></label>
+          <label className="field">EmissÃ£o atÃ©<input type="date" value={periodoFim} onChange={(e) => setPeriodoFim(e.target.value)} /></label>
         </div>
         <div className="form-grid three">
           <label className="field">Vencimento de<input type="date" value={vencimentoInicio} onChange={(e) => setVencimentoInicio(e.target.value)} /></label>
-          <label className="field">Vencimento até<input type="date" value={vencimentoFim} onChange={(e) => setVencimentoFim(e.target.value)} /></label>
+          <label className="field">Vencimento atÃ©<input type="date" value={vencimentoFim} onChange={(e) => setVencimentoFim(e.target.value)} /></label>
         </div>
         <div className="form-grid three">
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <input type="checkbox" checked={somenteAuditadas} onChange={(e) => setSomenteAuditadas(e.target.checked)} />
-            Só faturas com todos os CT-es na base (100% auditadas)
+            SÃ³ faturas com todos os CT-es na base (100% auditadas)
           </label>
           <label className="field">Visao<select><option>Minhas faturas</option><option>Todas as faturas</option><option>Sem auditor definido</option></select></label>
         </div>
-        {!canaisDisponiveis.length && <p className="compact">Nenhuma fatura tem canal detectado ainda — clique em "Detectar canais" pra habilitar o filtro de canal.</p>}
-        <AmdProcessingOverlay ativo={importando} progresso={progressoImportacao} mensagemRodape="Pode levar mais tempo em arquivos com muitas faturas/CT-es e várias transportadoras." />
+        {!canaisDisponiveis.length && <p className="compact">Nenhuma fatura tem canal detectado ainda â€” clique em "Detectar canais" pra habilitar o filtro de canal.</p>}
+        <AmdProcessingOverlay ativo={importando} progresso={progressoImportacao} mensagemRodape="Pode levar mais tempo em arquivos com muitas faturas/CT-es e vÃ¡rias transportadoras." />
         <AmdProcessingOverlay ativo={recalculandoLote} progresso={progressoLote} mensagemRodape="Pode levar mais tempo com muitas faturas/CT-es selecionados." />
         {mensagemImportacao && <div className="hint-box compact">{mensagemImportacao}</div>}
         <p className="compact">Layout esperado: abas Faturas e Detalhes, com Transportadora, Numero Fatura, Data Vencimento, Valor Fatura e Chave CTe.</p>
@@ -1419,7 +1959,7 @@ function Financeiro({ state, onState }) {
         arquivo_origem: file.name,
       }));
       const conciliados = conciliarPagamentos(state.faturas, normalizados);
-      // transportadora orienta a conciliacao, mas nao é coluna de financeiro_pagamentos.
+      // transportadora orienta a conciliacao, mas nao Ã© coluna de financeiro_pagamentos.
       const registros = conciliados.map(({ transportadora, ...pagamento }) => pagamento);
       let next = await salvarPagamentosFinanceiros(state, registros);
       for (const pagamento of registros.filter((item) => item.fatura_id)) {
@@ -1582,7 +2122,7 @@ function SimpleTable({ headers, rows, empty = 'Nenhum registro encontrado.' }) {
   );
 }
 
-export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard' }) {
+export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', embedded = false, onMudarPagina, onAbrirTransportadoras }) {
   const [tab, setTab] = useState(initialTab);
   const [state, setState] = useState(null);
   const [erro, setErro] = useState('');
@@ -1596,6 +2136,10 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard' })
   const restaurar = () => setState({ ...restaurarDemonstracaoAuditoria(), modo: 'DEMONSTRACAO_LOCAL' });
 
   if (!state) return <div className="panel-card">{erro ? `Erro: ${erro}` : 'Carregando Plataforma de Auditoria de Fretes...'}</div>;
+
+  if (embedded) {
+    return <Faturas state={state} onState={setState} modo={initialTab === 'auditoria-cte' ? 'auditoria-cte' : 'faturas'} onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />;
+  }
 
   return (
     <div className="page-shell audit-platform-page">
@@ -1613,10 +2157,11 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard' })
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       {tab === 'dashboard' && <Dashboard state={state} />}
-      {tab === 'faturas' && <Faturas state={state} onState={setState} modo="faturas" />}
-      {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" />}
+      {tab === 'faturas' && <Faturas state={state} onState={setState} modo="faturas" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
+      {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" onMudarPagina={onMudarPagina} onAbrirTransportadoras={onAbrirTransportadoras} />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
       {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
     </div>
   );
 }
+

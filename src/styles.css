@@ -3216,6 +3216,21 @@ button:disabled { opacity: 0.58; cursor: not-allowed; }
 }
 .audit-days { display: block; margin-top: 2px; color: inherit; font-weight: 500; }
 .audit-small-button { min-height: 32px; padding: 4px 10px; border-radius: 8px; font-size: 11px; }
+.audit-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid #d6e0ee;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #102652;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.audit-inline-check input { width: 14px; height: 14px; }
 .audit-table-title { padding: 14px 16px 0; }
 .audit-form-actions { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; }
 .audit-finance-search { min-width: 280px; }

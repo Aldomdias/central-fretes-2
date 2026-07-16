@@ -1,4 +1,8 @@
+import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+
 export const ICMS_UF_MATRIX_KEY = 'central-fretes:icms-uf-matrix-v1';
+const TABELA_CONFIG = 'simulador_configuracoes';
+const CHAVE_ICMS_UF = 'matriz_icms_uf';
 
 export const UFS_BR = [
   'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT',
@@ -91,6 +95,63 @@ export function salvarMatrizIcmsUf(linhas = []) {
   const lista = Array.from(mapa.values()).sort((a, b) => a.ufOrigem.localeCompare(b.ufOrigem) || a.ufDestino.localeCompare(b.ufDestino));
   localStorage.setItem(ICMS_UF_MATRIX_KEY, JSON.stringify(lista));
   return lista;
+}
+
+function erroTabelaInexistente(error) {
+  const msg = String(error?.message || error?.details || '').toLowerCase();
+  const code = String(error?.code || '');
+  return code === '42P01' || msg.includes('does not exist') || msg.includes('schema cache');
+}
+
+export async function carregarMatrizIcmsUfCentralizada() {
+  const local = carregarMatrizIcmsUf();
+  if (!isSupabaseConfigured()) return { linhas: local, fonte: 'local', mensagem: 'Supabase não configurado; usando matriz local deste navegador.' };
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABELA_CONFIG)
+      .select('valor, updated_at')
+      .eq('chave', CHAVE_ICMS_UF)
+      .maybeSingle();
+    if (error) throw error;
+    if (Array.isArray(data?.valor)) {
+      const linhas = salvarMatrizIcmsUf(data.valor);
+      return { linhas, fonte: 'supabase', mensagem: `Matriz ICMS carregada do Supabase${data.updated_at ? ` (${new Date(data.updated_at).toLocaleString('pt-BR')})` : ''}.` };
+    }
+    return { linhas: local, fonte: 'local', mensagem: 'Nenhuma matriz ICMS publicada no Supabase; usando matriz local.' };
+  } catch (error) {
+    return {
+      linhas: local,
+      fonte: 'local',
+      mensagem: erroTabelaInexistente(error)
+        ? 'Tabela simulador_configuracoes ainda não existe; matriz ICMS ficou local.'
+        : `Erro ao carregar matriz ICMS do Supabase; usando local. ${error.message || ''}`,
+    };
+  }
+}
+
+export async function salvarMatrizIcmsUfCentralizada(linhas = []) {
+  const normalizada = salvarMatrizIcmsUf(linhas);
+  if (!isSupabaseConfigured()) return { linhas: normalizada, fonte: 'local', mensagem: 'Matriz salva apenas neste navegador. Supabase não configurado.' };
+
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from(TABELA_CONFIG)
+    .upsert({
+      chave: CHAVE_ICMS_UF,
+      valor: normalizada,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'chave' });
+
+  if (error) {
+    if (erroTabelaInexistente(error)) {
+      return { linhas: normalizada, fonte: 'local', mensagem: 'Matriz salva localmente, mas falta a tabela simulador_configuracoes no Supabase.' };
+    }
+    throw error;
+  }
+
+  return { linhas: normalizada, fonte: 'supabase', mensagem: 'Matriz ICMS salva no Supabase e sincronizada para todos os ambientes.' };
 }
 
 export function resolverAliquotaIcmsUf(ufOrigem, ufDestino) {

@@ -621,18 +621,18 @@ export async function carregarBaseTransportadorasDb(nomes = []) {
 
   if (!isSupabaseConfigured()) {
     const base = await carregarBaseCompletaDb();
-    const alvoNorm = nomesLimpos.map((nome) => normalizeBuscaDb(nome));
+    const alvoNorm = nomesLimpos.map((nome) => normalizeTransportadoraBuscaDb(nome));
     return (base || []).filter((transportadora) => {
-      const nomeNorm = normalizeBuscaDb(transportadora.nome || '');
+      const nomeNorm = normalizeTransportadoraBuscaDb(transportadora.nome || '');
       return alvoNorm.some((alvo) => nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm));
     });
   }
 
   const supabase = ensureClient();
   const todasTransportadoras = await fetchAllRows(supabase, 'transportadoras', 'nome', true);
-  const alvoNorm = nomesLimpos.map((nome) => normalizeBuscaDb(nome));
+  const alvoNorm = nomesLimpos.map((nome) => normalizeTransportadoraBuscaDb(nome));
   const transportadoras = (todasTransportadoras || []).filter((transportadora) => {
-    const nomeNorm = normalizeBuscaDb(transportadora.nome || '');
+    const nomeNorm = normalizeTransportadoraBuscaDb(transportadora.nome || '');
     return alvoNorm.some((alvo) => nomeNorm === alvo || nomeNorm.includes(alvo) || alvo.includes(nomeNorm));
   });
 
@@ -1532,6 +1532,15 @@ function normalizeBuscaDb(texto) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
+    .trim();
+}
+
+function normalizeTransportadoraBuscaDb(texto) {
+  return normalizeBuscaDb(texto)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(s\s*a|sa|s\/a|ltda|eireli|me|epp|eirelli)\b/g, ' ')
+    .replace(/\b(logistica|transportes|transporte|cargas|carga)\b/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
