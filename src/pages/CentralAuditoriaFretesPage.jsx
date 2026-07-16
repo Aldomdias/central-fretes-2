@@ -12,6 +12,7 @@ import {
   parseFaturaVerum,
 } from '../utils/auditoriaFretesImport';
 import {
+  buscarDetalhesFaturasPorCtesSupabase,
   carregarDetalhesFaturaSupabase,
   limparDetalhesFaturaSupabase,
   salvarDetalhesFaturaSupabase,
@@ -54,6 +55,7 @@ import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 const TABS = [
   ['dashboard', 'Dashboard'],
   ['faturas', 'Faturas'],
+  ['auditoria-cte', 'Auditoria CT-e'],
   ['gestao', 'Centro de Gestores'],
   ['financeiro', 'Central Financeira'],
 ];
@@ -80,10 +82,35 @@ function extrairIdentificadoresCte(texto = '') {
   return [...new Set(String(texto || '').match(/\d{5,}/g) || [])];
 }
 
-function somaValoresObjeto(obj = {}) {
-  return Object.entries(obj || {}).reduce((acc, [, valor]) => {
-    if (Array.isArray(valor)) return acc;
-    const n = Number(valor || 0);
+const AUDITORIA_TOLERANCIA_KEY = 'amd_auditoria_cte_tolerancia_v1';
+const TOLERANCIA_PADRAO = { acima: 1, abaixo: 5 };
+
+function carregarToleranciaAuditoria() {
+  try {
+    const raw = localStorage.getItem(AUDITORIA_TOLERANCIA_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      acima: Number.isFinite(Number(parsed.acima)) ? Number(parsed.acima) : TOLERANCIA_PADRAO.acima,
+      abaixo: Number.isFinite(Number(parsed.abaixo)) ? Number(parsed.abaixo) : TOLERANCIA_PADRAO.abaixo,
+    };
+  } catch {
+    return TOLERANCIA_PADRAO;
+  }
+}
+
+function dentroDaToleranciaAuditoria(diferenca, tolerancia = TOLERANCIA_PADRAO) {
+  const valor = Number(diferenca);
+  if (!Number.isFinite(valor)) return false;
+  const acima = Math.max(0, Number(tolerancia.acima || 0));
+  const abaixo = Math.max(0, Number(tolerancia.abaixo || 0));
+  return valor <= acima && valor >= -abaixo;
+}
+
+const CAMPOS_TAXAS_CALCULO = ['adValorem', 'gris', 'pedagio', 'tas', 'ctrc', 'tda', 'tde', 'tdr', 'trt', 'suframa', 'outras', 'taxaExtra'];
+
+function somaTaxasCalculo(taxas = {}) {
+  return CAMPOS_TAXAS_CALCULO.reduce((acc, campo) => {
+    const n = Number(taxas?.[campo] || 0);
     return Number.isFinite(n) ? acc + n : acc;
   }, 0);
 }
@@ -111,8 +138,9 @@ function PainelDetalheCalculo({ resultado }) {
 
   const frete = det.componentes_base || {};
   const taxas = det.taxas || {};
-  const totalTaxas = Number.isFinite(Number(frete.totalTaxas)) ? Number(frete.totalTaxas) : somaValoresObjeto(taxas);
+  const totalTaxas = somaTaxasCalculo(taxas);
   const taxaExtraDetalhes = Array.isArray(taxas.taxasExtrasDetalhes) ? taxas.taxasExtrasDetalhes : [];
+  const comparativoPesos = Array.isArray(det.comparativo_pesos) ? det.comparativo_pesos : [];
 
   return (
     <>
@@ -123,13 +151,16 @@ function PainelDetalheCalculo({ resultado }) {
           {linhaDetalhe('Motor', det.motor === 'simulador_realizado' ? 'Simulador realizado' : 'Auditoria')}
           {linhaDetalhe('Tipo', resultado.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
           {linhaDetalhe('Tabela usada', resultado.transportadora_tabela || det.transportadora_tabela || '-')}
+          {linhaDetalhe('Canal', resultado.canal || det.canal || '-')}
           {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
           {det.calculo_devolucao_invertida ? linhaDetalhe('Regra devolucao', det.observacao_devolucao || 'Calculado pela rota de ida equivalente.', true) : null}
           {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
           {linhaDetalhe('Peso considerado', `${numeroFmt(det.peso_considerado ?? frete.pesoConsiderado ?? resultado.peso, 3)} kg`)}
           {linhaDetalhe('Valor NF', dinheiroMaybe(resultado.valor_nf), true)}
           {linhaDetalhe('Frete pago', dinheiroMaybe(resultado.valor_cte), true)}
+          {linhaDetalhe('Calculado Verum', dinheiroMaybe(resultado.valor_calculado_verum), true)}
           {linhaDetalhe('Calculo AMD/local', dinheiroMaybe(resultado.valor_calculado), true)}
+          {linhaDetalhe('Dif. AMD x Verum', dinheiroMaybe(Number(resultado.valor_calculado || 0) - Number(resultado.valor_calculado_verum || 0)), true)}
         </div>
         <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
           <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Base do frete</div>
@@ -144,6 +175,25 @@ function PainelDetalheCalculo({ resultado }) {
           {linhaDetalhe('Componente vencedor', frete.componenteBase || det.componente_base || '-', true)}
           {linhaDetalhe('Valor base', dinheiroMaybe(det.valor_base ?? frete.valorBase), true)}
         </div>
+        {comparativoPesos.length ? (
+          <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+            <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Comparativo de peso</div>
+            {linhaDetalhe('Peso declarado CT-e', `${numeroFmt(det.peso_declarado_cte, 3)} kg`)}
+            {linhaDetalhe('Peso cubado calculado', `${numeroFmt(det.peso_cubado_tracking, 3)} kg`)}
+            {Number(det.peso_cubado_original_tracking) > 0 ? linhaDetalhe('Peso/cubagem original Tracking', numeroFmt(det.peso_cubado_original_tracking, 6)) : null}
+            {Number(det.cubagem_tracking) > 0 ? linhaDetalhe('Cubagem Tracking', `${numeroFmt(det.cubagem_tracking, 6)} m³`) : null}
+            {comparativoPesos.map((alt) => (
+              <div key={alt.nome} style={{ borderTop: '1px solid #e2e8f0', marginTop: 8, paddingTop: 8 }}>
+                {linhaDetalhe(alt.nome, dinheiroMaybe(alt.valor_calculado), alt.nome === det.melhor_comparativo_peso)}
+                {linhaDetalhe('Peso usado', `${numeroFmt(alt.peso_considerado, 3)} kg`)}
+                {Number(alt.cubagem_aplicada) > 0 ? linhaDetalhe('Cubagem usada', `${numeroFmt(alt.cubagem_aplicada, 6)} m³`) : null}
+                {Number(alt.fator_cubagem) > 0 ? linhaDetalhe('Fator cubagem', `${numeroFmt(alt.fator_cubagem, 0)} kg/m³`) : null}
+                {Number(alt.peso_cubado_calculado) > 0 ? linhaDetalhe('Peso cubado calc.', `${numeroFmt(alt.peso_cubado_calculado, 3)} kg`) : null}
+                {linhaDetalhe('Diferença vs pago', dinheiroMaybe(alt.diferenca), alt.nome === det.melhor_comparativo_peso)}
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
           <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>ICMS e totalizacao</div>
           {linhaDetalhe('Subtotal antes da emergencial', dinheiroMaybe(frete.subtotalSemEmergencial))}
@@ -422,7 +472,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       // Garante que tabelas de frete editadas/importadas ha pouco (na mesma
       // sessao do navegador) entrem no recalculo, em vez de usar cache antigo.
       invalidarCacheBaseFreteAuditoriaCte();
-      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo);
+      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(chaves, setProgressoRecalculo, { ignorarCubagem: true });
       if (registros.length) {
         const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
         await salvarRecorteCarregadoAuditoria({ competencia: competenciaRef, registros });
@@ -642,7 +692,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   );
 }
 
-function Faturas({ state, onState }) {
+function Faturas({ state, onState, modo = 'faturas' }) {
+  const mostrarAuditoriaAvulsa = modo === 'auditoria-cte';
+  const mostrarFaturas = modo === 'faturas';
   const sessao = carregarSessao();
   const arquivoRef = useRef(null);
   const [filtro, setFiltro] = useState('');
@@ -669,6 +721,8 @@ function Faturas({ state, onState }) {
   const [resultadoCtesAvulsos, setResultadoCtesAvulsos] = useState([]);
   const [cteAvulsoExpandido, setCteAvulsoExpandido] = useState(null);
   const [resultadoCtesAvulsosSalvos, setResultadoCtesAvulsosSalvos] = useState(false);
+  const [toleranciaAuditoria, setToleranciaAuditoria] = useState(carregarToleranciaAuditoria);
+  const [toleranciaAberta, setToleranciaAberta] = useState(false);
   const canaisDisponiveis = [...new Set(state.faturas.map((item) => item.canal).filter(Boolean))].sort();
   // Competencia = mes/ano da emissao (nao existe campo proprio na fatura).
   const competenciasDisponiveis = [...new Set(
@@ -690,6 +744,14 @@ function Faturas({ state, onState }) {
     };
   }, [state.faturas]);
   const dataHora = (data) => data ? data.toLocaleString('pt-BR') : '—';
+  const alterarToleranciaAuditoria = (campo, valor) => {
+    const proxima = {
+      ...toleranciaAuditoria,
+      [campo]: Math.max(0, Number(valor || 0)),
+    };
+    setToleranciaAuditoria(proxima);
+    localStorage.setItem(AUDITORIA_TOLERANCIA_KEY, JSON.stringify(proxima));
+  };
   const lista = state.faturas
     .filter((fatura) => {
       const texto = `${fatura.numero_fatura} ${fatura.transportadora} ${fatura.auditor_nome}`.toLowerCase();
@@ -712,22 +774,27 @@ function Faturas({ state, onState }) {
     const alvo = new Set(chaves.map(normalizarChaveCte).filter(Boolean));
     const numerosAlvo = new Set(numeros.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean));
     if (!alvo.size && !numerosAlvo.size) return [];
+
+    const detalhesAlvo = await buscarDetalhesFaturasPorCtesSupabase({
+      chaves: Array.from(alvo),
+      numeros: Array.from(numerosAlvo),
+    }).catch(() => []);
+    const faturaIds = [...new Set((detalhesAlvo || []).map((item) => item.fatura_id).filter(Boolean))];
+    if (!faturaIds.length) return [];
+
     const faturasAfetadas = [];
-    for (const fatura of state.faturas || []) {
-      let detalhes = state.detalhes?.[fatura.id] || [];
+    for (const faturaId of faturaIds) {
+      const fatura = state.faturas.find((item) => item.id === faturaId);
+      if (!fatura) continue;
+      let detalhes = state.detalhes?.[faturaId] || [];
       if (!detalhes.length) {
         try {
-          detalhes = await carregarDetalhesFaturaSupabase(fatura.id);
+          detalhes = await carregarDetalhesFaturaSupabase(faturaId);
         } catch {
-          detalhes = [];
+          detalhes = detalhesAlvo.filter((item) => item.fatura_id === faturaId);
         }
       }
-      if (detalhes.some((item) => (
-        alvo.has(normalizarChaveCte(item.chave_cte))
-        || numerosAlvo.has(String(item.numero_cte || '').replace(/\D/g, ''))
-      ))) {
-        faturasAfetadas.push({ fatura, detalhes });
-      }
+      faturasAfetadas.push({ fatura, detalhes });
     }
     return faturasAfetadas;
   };
@@ -791,9 +858,13 @@ function Faturas({ state, onState }) {
     setMensagemImportacao('');
     try {
       invalidarCacheBaseFreteAuditoriaCte();
-      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos);
+      const { registros, encontrados, naoEncontrados } = await processarCtesPorChave(ids, setProgressoCtesAvulsos, { ignorarCubagem: true });
       setResultadoCtesAvulsos(registros);
-      setMensagemImportacao(`Auditoria avulsa concluida: ${encontrados} CT-e(s) encontrado(s)${naoEncontrados ? `, ${naoEncontrados} nao encontrado(s)` : ''}.`);
+      if (registros.length) {
+        await salvarAuditoriaAvulsa(registros);
+      } else {
+        setMensagemImportacao(`Auditoria avulsa concluida: ${encontrados} CT-e(s) encontrado(s)${naoEncontrados ? `, ${naoEncontrados} nao encontrado(s)` : ''}. Nenhum registro foi gravado.`);
+      }
     } catch (error) {
       setMensagemImportacao(`Erro na auditoria avulsa: ${error.message}`);
     } finally {
@@ -829,7 +900,7 @@ function Faturas({ state, onState }) {
       // Garante que tabelas de frete editadas/importadas ha pouco (na mesma
       // sessao do navegador) entrem no recalculo, em vez de usar cache antigo.
       invalidarCacheBaseFreteAuditoriaCte();
-      const { registros } = await processarCtesPorChave(todasChaves, setProgressoLote);
+      const { registros } = await processarCtesPorChave(todasChaves, setProgressoLote, { ignorarCubagem: true });
       let amdCalculados = 0;
       if (registros.length) {
         const competenciaRef = registros.find((r) => r.competencia)?.competencia || new Date().toISOString().slice(0, 7);
@@ -989,6 +1060,7 @@ function Faturas({ state, onState }) {
 
   return (
     <>
+      {mostrarAuditoriaAvulsa && (
       <div className="panel-card audit-quick-card">
         <div className="section-row compact-top audit-quick-header">
           <div>
@@ -996,12 +1068,23 @@ function Faturas({ state, onState }) {
             <p>Cole uma chave ou lista de CT-es para calcular com a tabela AMD atual e salvar na auditoria.</p>
           </div>
           <div className="actions-right">
+            <div className={`audit-tolerance-control ${toleranciaAberta ? 'open' : ''}`} title="Tolerancia padrao da auditoria avulsa">
+              <button className="audit-tolerance-toggle" type="button" onClick={() => setToleranciaAberta((atual) => !atual)}>
+                Tolerancia +R$ {numeroFmt(toleranciaAuditoria.acima, 2)} / -R$ {numeroFmt(toleranciaAuditoria.abaixo, 2)}
+              </button>
+              {toleranciaAberta && (
+                <>
+                  <label>Acima R$<input type="number" min="0" step="0.01" value={toleranciaAuditoria.acima} onChange={(e) => alterarToleranciaAuditoria('acima', e.target.value)} /></label>
+                  <label>Abaixo R$<input type="number" min="0" step="0.01" value={toleranciaAuditoria.abaixo} onChange={(e) => alterarToleranciaAuditoria('abaixo', e.target.value)} /></label>
+                </>
+              )}
+            </div>
             <button className="btn-secondary audit-small-button" type="button" onClick={() => { setBuscaCtesAvulsa(''); setResultadoCtesAvulsos([]); setResultadoCtesAvulsosSalvos(false); setCteAvulsoExpandido(null); }} disabled={auditandoCtesAvulsos}>Limpar</button>
             <button className="btn-primary audit-small-button" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
               {auditandoCtesAvulsos ? 'Auditando...' : 'Auditar CT-es'}
             </button>
-            <button className="btn-secondary audit-small-button" type="button" onClick={() => salvarAuditoriaAvulsa()} disabled={auditandoCtesAvulsos || !resultadoCtesAvulsos.length || resultadoCtesAvulsosSalvos}>
-              {resultadoCtesAvulsosSalvos ? 'Auditoria salva' : 'Salvar auditoria'}
+            <button className="btn-secondary audit-small-button" type="button" onClick={() => salvarAuditoriaAvulsa()} disabled={auditandoCtesAvulsos || !resultadoCtesAvulsos.length}>
+              {resultadoCtesAvulsosSalvos ? 'Salvar novamente' : 'Salvar auditoria'}
             </button>
           </div>
         </div>
@@ -1022,16 +1105,16 @@ function Faturas({ state, onState }) {
           <div className="audit-quick-results">
             <div className="audit-quick-results-head">
               <strong>{resultadoCtesAvulsos.length} CT-e(s) processado(s)</strong>
-              <span>{resultadoCtesAvulsosSalvos ? 'Auditoria salva e faturas relacionadas atualizadas.' : 'Revise e clique em Salvar auditoria para gravar/atualizar faturas.'}</span>
+              <span>{resultadoCtesAvulsosSalvos ? 'Auditoria salva e faturas relacionadas atualizadas.' : 'A auditoria sera salva automaticamente apos o calculo.'}</span>
             </div>
             <div className="audit-quick-table-wrap">
               <table className="sim-analise-tabela audit-quick-table">
-                <thead><tr><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
+                <thead><tr><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>AMD</th><th>Dif.</th><th>Status</th></tr></thead>
                 <tbody>
                   {resultadoCtesAvulsos.map((row, index) => {
                     const key = row.chave_cte || row.numero_cte || index;
                     const aberto = cteAvulsoExpandido === key;
-                    const linhaOk = Number(row.valor_calculado || 0) > 0 && Math.abs(Number(row.diferenca || 0)) <= 0.01;
+                    const linhaOk = Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria);
                     const statusClass = `audit-status audit-status-${linhaOk ? 'ok' : String(row.status_calculo || row.status_auditoria || '').toLowerCase()}`;
                     return (
                       <Fragment key={key}>
@@ -1039,15 +1122,16 @@ function Faturas({ state, onState }) {
                           <td><strong>{row.numero_cte || '-'}</strong></td>
                           <td><span className="audit-key-cell">{row.chave_cte || '-'}</span></td>
                           <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
+                          <td>{row.canal || row.canal_original || '-'}</td>
                           <td>{row.origem || row.cidade_origem || '-'} -&gt; {row.destino || row.cidade_destino || '-'}</td>
                           <td>{numeroFmt(row.peso ?? row.peso_declarado ?? row.detalhes_calculo?.peso_considerado, 3)} kg</td>
                           <td>{dinheiroMaybe(row.valor_cte)}</td>
                           <td>{dinheiroMaybe(row.valor_calculado)}</td>
                           <td>{dinheiroMaybe(row.diferenca)}</td>
-                          <td><span className={statusClass}>{row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-')}</span></td>
+                          <td><span className={statusClass}>{linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span></td>
                         </tr>
                         {aberto && (
-                          <tr className="audit-quick-detail-row"><td colSpan="9"><PainelDetalheCalculo resultado={row} /></td></tr>
+                          <tr className="audit-quick-detail-row"><td colSpan="10"><PainelDetalheCalculo resultado={row} /></td></tr>
                         )}
                       </Fragment>
                     );
@@ -1058,8 +1142,11 @@ function Faturas({ state, onState }) {
           </div>
         )}
       </div>
+      )}
 
 
+      {mostrarFaturas && (
+      <>
       <div className="panel-card">
         <div className="section-row compact-top">
           <div>
@@ -1151,6 +1238,8 @@ function Faturas({ state, onState }) {
           </table>
         </div>
       </div>
+      </>
+      )}
     </>
   );
 }
@@ -1524,7 +1613,8 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard' })
         {TABS.map(([id, label]) => <button key={id} className={`toggle-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       {tab === 'dashboard' && <Dashboard state={state} />}
-      {tab === 'faturas' && <Faturas state={state} onState={setState} />}
+      {tab === 'faturas' && <Faturas state={state} onState={setState} modo="faturas" />}
+      {tab === 'auditoria-cte' && <Faturas state={state} onState={setState} modo="auditoria-cte" />}
       {tab === 'gestao' && <Gestao state={state} onState={setState} />}
       {tab === 'financeiro' && <Financeiro state={state} onState={setState} />}
     </div>

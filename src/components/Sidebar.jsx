@@ -53,6 +53,7 @@ const MENU_GRUPOS = [
       { chave: 'formatacao', label: 'Formatacao de tabelas' },
       { chave: 'importar-template', label: 'Importar template' },
       { chave: 'consulta-ibge', label: 'Consulta IBGE' },
+      { chave: 'icms-uf', label: 'Matriz ICMS UF' },
       { chave: 'transportadoras', label: 'Transportadoras' },
       { chave: 'usuarios', label: 'Usuarios' },
       { chave: 'ferramentas', label: 'Ferramentas' },
@@ -78,6 +79,7 @@ const ICONS = {
   importacao: 'M12 3v12m0 0l-4-4m4 4l4-4M5 19h14',
   formatacao: 'M4 6h16M4 11h16M4 16h10',
   ferramentas: 'M12 8a4 4 0 100 8 4 4 0 000-8zm0-5v3m0 12v3M4.2 4.2l2.1 2.1m11.4 11.4l2.1 2.1M3 12h3m12 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1',
+  'icms-uf': 'M4 4h16v16H4V4zm4 4h8M8 12h8M8 16h5',
   usuarios: 'M16 11a4 4 0 10-8 0 4 4 0 008 0zm-12 9a8 8 0 0116 0',
   'minha-senha': 'M7 11V8a5 5 0 0110 0v3m-11 0h12v10H6V11zm6 4v3',
 };

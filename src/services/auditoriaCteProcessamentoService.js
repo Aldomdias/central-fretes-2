@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { carregarBaseCompletaDb, carregarBaseTransportadorasDb } from './freteDatabaseService';
+import { buscarBaseSimulacaoPorRotasDb, carregarBaseCompletaDb, carregarBaseTransportadorasDb } from './freteDatabaseService';
 import { calcularFreteFaixaPeso, calcularFretePercentual } from './freteCalcEngine';
 import { filtrarCpComercialCte } from './cteBasePolicy';
 import {
@@ -11,6 +11,7 @@ import {
   buildLookupTables,
   simularRealizadoPorTransportadora,
 } from '../utils/calculoFrete';
+import { resolverAliquotaIcmsUfContexto } from '../utils/icmsUfMatrix';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './realizadoTrackingEnrichment';
 
 const PAGE_SIZE = 1000;
@@ -318,6 +319,14 @@ function inferirAliquotaIcmsAuditoria(origem = {}, rota = {}, cte = {}) {
   ).trim().toUpperCase();
 
   if (manual > 0) return { aliquota: manual, origem: 'manual', ufOrigem, ufDestino };
+  const matriz = resolverAliquotaIcmsUfContexto({
+    ufOrigem,
+    ufDestino,
+    transportadora: nomeTransportadoraCte(cte),
+    cidadeOrigem: pick(cte, ['cidade_origem', 'origem']),
+    canal: pick(cte, ['canal', 'canal_original']),
+  });
+  if (matriz) return matriz;
   if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao_sem_uf_completa', ufOrigem, ufDestino };
   if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao_interna', ufOrigem, ufDestino };
 
@@ -354,7 +363,31 @@ function nomesTransportadorasRegistros(registros = [], mapaVinculos = null) {
   )).sort((a, b) => a.localeCompare(b));
 }
 
+function routeKeysRegistros(registros = []) {
+  const keys = new Set();
+  (registros || []).forEach((cte) => {
+    const origem = pickDigits(cte, ['ibge_origem', 'ibgeOrigem', 'ibge_corrigido_origem']);
+    const destino = pickDigits(cte, ['ibge_destino', 'ibgeDestino', 'codigo_ibge_destino', 'ibge_corrigido_destino']);
+    const canal = canalCategoria(pick(cte, ['canal', 'canal_original']));
+    if (!origem || !destino) return;
+    keys.add(`${origem}-${destino}`);
+    keys.add(`${destino}-${origem}`);
+    if (canal) {
+      keys.add(`${canal}|${origem}-${destino}`);
+      keys.add(`${canal}|${destino}-${origem}`);
+    }
+  });
+  return Array.from(keys);
+}
+
 async function carregarBaseFreteParaRegistros(registros = [], onProgress, transportadorasAlvo = [], mapaVinculos = null) {
+  const routeKeys = routeKeysRegistros(registros);
+  if (routeKeys.length > 0 && routeKeys.length <= 200 && !(transportadorasAlvo || []).length) {
+    onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados: 0, total: routeKeys.length });
+    const baseRotas = normalizarTransportadoras(await buscarBaseSimulacaoPorRotasDb({ routeKeys }));
+    if (baseRotas.length) return baseRotas;
+  }
+
   const nomes = (transportadorasAlvo || []).length
     ? Array.from(new Set((transportadorasAlvo || []).map((nome) => aplicarVinculoTransportadora(nome, mapaVinculos) || nome).map((nome) => String(nome || '').trim()).filter(Boolean)))
     : nomesTransportadorasRegistros(registros, mapaVinculos);
@@ -563,6 +596,7 @@ function inverterOrigemDestinoCte(cte = {}) {
 }
 
 function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverride = '') {
+  const cubagemTotal = toNumber(pick(cte, ['cubagem', 'cubagem_total', 'cubagemTotal']));
   return {
     id: pick(cte, ['id']) || pick(cte, ['chave_cte', 'chaveCte', 'chave']) || pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']),
     chaveCte: pick(cte, ['chave_cte', 'chaveCte', 'chave']) || '',
@@ -577,7 +611,9 @@ function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverr
     peso: toNumber(pick(cte, ['peso', 'peso_final', 'pesoFinal'])),
     pesoDeclarado: toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
     pesoCubado: toNumber(pick(cte, ['peso_cubado', 'pesoCubado'])),
-    cubagem: toNumber(pick(cte, ['cubagem', 'cubagem_total', 'cubagemTotal'])),
+    cubagem: cubagemTotal,
+    cubagemTotal,
+    trackingMatch: cubagemTotal > 0 || Boolean(cte.trackingMatch),
     valorNF: toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota'])),
     valorCte: toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete'])),
     canal: canalOverride || pick(cte, ['canal', 'canal_original']) || '',
@@ -661,9 +697,112 @@ function processarCteComMotorSimulador(cte, transportadoras = [], mapaVinculos =
   };
 }
 
+function resumirAlternativaPeso(nome, resultado, valorPago, fallbackCubagem = 0) {
+  if (!resultado || resultado.status_calculo !== 'CALCULADO') return null;
+  const det = resultado.detalhes_calculo || {};
+  const frete = det.componentes_base || {};
+  const valor = toNumber(resultado.valor_calculado);
+  const diferenca = toNumber(valorPago) - valor;
+  const cubagemAplicada = toNumber(frete.cubagemAplicada) || toNumber(fallbackCubagem);
+  const fatorCubagem = toNumber(frete.fatorCubagem);
+  const pesoCubadoPeloFator = cubagemAplicada > 0 && fatorCubagem > 0 ? cubagemAplicada * fatorCubagem : 0;
+  const pesoCubadoMotor = toNumber(frete.pesoCubado);
+  const pesoCubadoCalculado = pesoCubadoPeloFator > 0 ? pesoCubadoPeloFator : pesoCubadoMotor;
+  return {
+    nome,
+    valor_calculado: valor,
+    diferenca,
+    diferenca_abs: Math.abs(diferenca),
+    peso_considerado: toNumber(det.peso_considerado),
+    valor_base: toNumber(det.valor_base),
+    subtotal: toNumber(det.subtotal),
+    icms: toNumber(det.icms),
+    componente_base: det.componente_base || det.componentes_base?.componenteBase || '',
+    cubagem_aplicada: cubagemAplicada,
+    fator_cubagem: fatorCubagem,
+    peso_cubado_calculado: pesoCubadoCalculado,
+    origem_cidade: det.origem_cidade || '',
+    rota_nome: det.rota_nome || '',
+  };
+}
+
+function anexarComparativoPesos(resultado, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes) {
+  if (!resultado || resultado.status_calculo !== 'CALCULADO') return resultado;
+
+  const pesoDeclarado = toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso']));
+  const pesoCubadoOriginal = toNumber(pick(cte, ['peso_cubado', 'pesoCubado']));
+  const cubagem = toNumber(pick(cte, ['cubagem', 'cubagem_total', 'cubagemTotal']));
+  if (pesoDeclarado <= 0 && pesoCubadoOriginal <= 0 && cubagem <= 0) return resultado;
+
+  const valorPago = toNumber(resultado.valor_cte);
+  const alternativas = [];
+  const declarado = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, {
+    ...opcoes,
+    ignorarCubagem: true,
+    percentualContingenciaPeso: 0,
+  });
+  const altDeclarado = resumirAlternativaPeso('Peso declarado CT-e', declarado, valorPago);
+  if (altDeclarado) alternativas.push(altDeclarado);
+
+  let altCubado = null;
+  if (cubagem > 0 || (pesoCubadoOriginal > 0 && Math.abs(pesoCubadoOriginal - pesoDeclarado) > 0.001)) {
+    const cubado = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, {
+      ...opcoes,
+      ignorarCubagem: false,
+      percentualContingenciaPeso: 0,
+    });
+    altCubado = resumirAlternativaPeso('Cubagem Tracking x fator tabela', cubado, valorPago, cubagem);
+    if (altCubado?.peso_cubado_calculado > 0) {
+      const pesoCubadoCalculado = altCubado.peso_cubado_calculado;
+      const cteComPesoCubado = {
+        ...cte,
+        peso: pesoCubadoCalculado,
+        peso_declarado: pesoCubadoCalculado,
+        pesoDeclarado: pesoCubadoCalculado,
+        peso_cubado: 0,
+        pesoCubado: 0,
+        cubagem: 0,
+        cubagemTotal: 0,
+        trackingMatch: false,
+      };
+      const recalculoPesoCubado = processarCteComMotorSimulador(cteComPesoCubado, transportadoras, mapaVinculos, transportadoraAlvo, {
+        ...opcoes,
+        ignorarCubagem: true,
+        percentualContingenciaPeso: 0,
+      });
+      const altSubstituida = resumirAlternativaPeso('Aplicar peso cubado calculado', recalculoPesoCubado, valorPago);
+      if (altSubstituida) {
+        altCubado = {
+          ...altSubstituida,
+          cubagem_aplicada: altCubado.cubagem_aplicada,
+          fator_cubagem: altCubado.fator_cubagem,
+          peso_cubado_calculado: pesoCubadoCalculado,
+        };
+      }
+    }
+    if (altCubado) alternativas.push(altCubado);
+  }
+
+  if (alternativas.length < 2) return resultado;
+  const melhor = alternativas.slice().sort((a, b) => a.diferenca_abs - b.diferenca_abs)[0];
+
+  return {
+    ...resultado,
+    detalhes_calculo: {
+      ...(resultado.detalhes_calculo || {}),
+      comparativo_pesos: alternativas,
+      melhor_comparativo_peso: melhor?.nome || '',
+      peso_declarado_cte: pesoDeclarado,
+      peso_cubado_tracking: altCubado?.peso_cubado_calculado || pesoCubadoOriginal,
+      peso_cubado_original_tracking: pesoCubadoOriginal,
+      cubagem_tracking: cubagem,
+    },
+  };
+}
+
 export function processarCte(cte, transportadoras = [], mapaVinculos = null, transportadoraAlvo = '', opcoes = {}) {
   const resultadoSimulador = processarCteComMotorSimulador(cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
-  if (resultadoSimulador) return resultadoSimulador;
+  if (resultadoSimulador) return anexarComparativoPesos(resultadoSimulador, cte, transportadoras, mapaVinculos, transportadoraAlvo, opcoes);
 
   const tabela = localizarTabelaAuditoria(transportadoras, cte, mapaVinculos, transportadoraAlvo);
   const { transportadora, origem, rota, cotacao } = tabela;
@@ -997,9 +1136,11 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
     const enriquecida = linhasEnriquecidas[index] || {};
     return {
       ...cte,
+      trackingMatch: enriquecida.trackingMatch || cte.trackingMatch,
       peso_declarado: enriquecida.pesoDeclarado || cte.peso_declarado,
       peso_cubado: enriquecida.pesoCubado || cte.peso_cubado,
       cubagem: enriquecida.cubagemTotal || cte.cubagem,
+      cubagemTotal: enriquecida.cubagemTotal || cte.cubagemTotal,
     };
   });
 }
@@ -1089,7 +1230,8 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
 // competência — usado pela tela de Faturas, pra recalcular só os CT-es de uma
 // fatura sem precisar processar o mês inteiro. Não salva sozinho: devolve os
 // registros calculados pra quem chamou decidir onde/como persistir.
-export async function processarCtesPorChave(chaves = [], onProgress) {
+export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
+  const opcoesCalculo = { ignorarCubagem: true, ...opcoes };
   const normalizadas = [...new Set((chaves || []).map((c) => onlyDigits(c)).filter(Boolean))];
   if (!normalizadas.length) return { registros: [], encontrados: 0, naoEncontrados: 0 };
   const chavesCte = normalizadas.filter((valor) => valor.length >= 20);
@@ -1131,7 +1273,7 @@ export async function processarCtesPorChave(chaves = [], onProgress) {
 
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
-    registros.push(processarCte(ctesUnicos[index], transportadoras, mapaVinculos));
+    registros.push(processarCte(ctesUnicos[index], transportadoras, mapaVinculos, '', opcoesCalculo));
     if (index % 500 === 0 || index === ctesUnicos.length - 1) {
       onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctesUnicos.length });
       await new Promise((resolve) => setTimeout(resolve, 0));

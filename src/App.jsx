@@ -31,6 +31,7 @@ import OportunidadeTransportadoraPage from './pages/OportunidadeTransportadoraPa
 import SimularSaidaTransportadoraPage from './pages/SimularSaidaTransportadoraPage';
 import GestaoBaseCtePage from './pages/GestaoBaseCtePage';
 import VisualConceptPage from './pages/VisualConceptPage';
+import IcmsUfPage from './pages/IcmsUfPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
@@ -41,6 +42,7 @@ const PAGINAS_PERMITIDAS = [
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
+  'icms-uf',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -159,6 +161,7 @@ export default function App() {
     'simular-saida-transportadora': <SimularSaidaTransportadoraPage />,
     'gestao-base-cte': <GestaoBaseCtePage />,
     'consulta-ibge': <ConsultaIbgePage />,
+    'icms-uf': <IcmsUfPage />,
     ferramentas: <FerramentasPage transportadoras={transportadorasMemo} />,
     usuarios: <UserManagementPage usuarioAtual={sessao} />,
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,

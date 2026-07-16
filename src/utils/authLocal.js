@@ -34,6 +34,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'financeiro-auditoria', label: 'Central Financeira', grupo: 'Financeiro' },
   { chave: 'tratativas', label: 'Tratativas', grupo: 'Auditoria' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
+  { chave: 'icms-uf', label: 'Matriz ICMS UF', grupo: 'Cadastros' },
   { chave: 'ferramentas', label: 'Ferramentas', grupo: 'Geral' },
   { chave: 'transportadoras', label: 'Transportadoras', grupo: 'Cadastros' },
   { chave: 'perda-realizado',      label: 'Perda por Transp. Mais Cara', grupo: 'Transportadoras' },
@@ -73,6 +74,7 @@ export const PERFIS_USUARIO = {
       'formatacao',
       'importar-template',
       'consulta-ibge',
+      'icms-uf',
       'ferramentas',
       'transportadoras',
     ],
@@ -85,17 +87,17 @@ export const PERFIS_USUARIO = {
   AUDITORIA_LOTACAO: {
     nome: 'Auditoria Lotação',
     descricao: 'Consulta DIST/CT-e e registro de auditoria.',
-    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'lotacao-auditoria', 'painel-auditoria', 'faturas', 'tratativas'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'lotacao-auditoria', 'painel-auditoria', 'faturas', 'tratativas', 'icms-uf'],
   },
   AUDITORIA_FRETES: {
     nome: 'Auditoria de Fretes',
     descricao: 'Carteira de faturas, reauditoria, vencimentos, DOCCOB e tratativas.',
-    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'tratativas'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'tratativas', 'icms-uf'],
   },
   GESTOR_AUDITORIA_FRETES: {
     nome: 'Gestor de Auditoria de Fretes',
     descricao: 'Gestao de carteiras, produtividade, riscos, vencimentos e SLA.',
-    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte', 'icms-uf'],
   },
   FINANCEIRO: {
     nome: 'Financeiro',

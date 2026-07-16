@@ -61,10 +61,11 @@ function fmtPctDetalhe(v) {
   return Number.isFinite(n) ? `${n.toFixed(2).replace('.', ',')}%` : '—';
 }
 
-function somaValoresObjeto(obj = {}) {
-  return Object.entries(obj || {}).reduce((acc, [, valor]) => {
-    if (Array.isArray(valor)) return acc;
-    const n = Number(valor || 0);
+const CAMPOS_TAXAS_CALCULO = ['adValorem', 'gris', 'pedagio', 'tas', 'ctrc', 'tda', 'tde', 'tdr', 'trt', 'suframa', 'outras', 'taxaExtra'];
+
+function somaTaxasCalculo(taxas = {}) {
+  return CAMPOS_TAXAS_CALCULO.reduce((acc, campo) => {
+    const n = Number(taxas?.[campo] || 0);
     return Number.isFinite(n) ? acc + n : acc;
   }, 0);
 }
@@ -76,6 +77,13 @@ function linhaDetalhe(label, value, destaque = false) {
       <strong style={{ color: destaque ? '#0f172a' : '#334155', textAlign: 'right' }}>{value}</strong>
     </div>
   );
+}
+
+function pesoCubadoSugeridoAuditoria(alt = {}, det = {}) {
+  const cubagem = Number(alt.cubagem_aplicada || det?.cubagem_tracking || 0);
+  const fator = Number(alt.fator_cubagem || 0);
+  if (cubagem > 0 && fator > 0) return cubagem * fator;
+  return Number(alt.peso_cubado_calculado || alt.peso_considerado || 0);
 }
 
 const EXCLUIDAS_AUDITORIA_KEY = 'auditoria_cte_transportadoras_excluidas';
@@ -101,6 +109,15 @@ function carregarFiltrosFocoSalvos() {
 const LIMITE_MATCH_VERUM = 1; // diferença (R$) tolerada para considerar recálculo == Verum
 const MARGEM_ERRO_CIMA_KEY = 'central-fretes:auditoria-margem-erro-cima-valor';
 const MARGEM_ERRO_BAIXO_KEY = 'central-fretes:auditoria-margem-erro-baixo-valor';
+const MARGEM_ERRO_CIMA_PADRAO = 1;
+const MARGEM_ERRO_BAIXO_PADRAO = 5;
+
+function competenciaRegistroAuditoria(row = {}, fallback = '') {
+  const direta = String(row.competencia || row.mes_competencia || fallback || '').slice(0, 7);
+  if (/^\d{4}-\d{2}$/.test(direta)) return direta;
+  const data = String(row.data_emissao || row.emissao || row.dataEmissao || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(data) ? data.slice(0, 7) : '';
+}
 
 // Mesma normalização usada em agruparPorTransportadora, para casar a exclusão.
 function nomeTransportadoraAuditoria(r) {
@@ -432,11 +449,18 @@ export default function AuditoriaCtePage() {
   // (R$ 0,05). Cima = cobrança acima do calculado; baixo = cobrança abaixo.
   // Fica salva no navegador e vale pra todos os cálculos seguintes.
   const [margemErroCimaValor, setMargemErroCimaValor] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(MARGEM_ERRO_CIMA_KEY) || '0'); } catch { return 0; }
+    try {
+      const salvo = localStorage.getItem(MARGEM_ERRO_CIMA_KEY);
+      return salvo == null ? MARGEM_ERRO_CIMA_PADRAO : JSON.parse(salvo);
+    } catch { return MARGEM_ERRO_CIMA_PADRAO; }
   });
   const [margemErroBaixoValor, setMargemErroBaixoValor] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(MARGEM_ERRO_BAIXO_KEY) || '0'); } catch { return 0; }
+    try {
+      const salvo = localStorage.getItem(MARGEM_ERRO_BAIXO_KEY);
+      return salvo == null ? MARGEM_ERRO_BAIXO_PADRAO : JSON.parse(salvo);
+    } catch { return MARGEM_ERRO_BAIXO_PADRAO; }
   });
+  const [mostrarTolerancia, setMostrarTolerancia] = useState(false);
   const atualizarMargemErroCima = (valor) => {
     setMargemErroCimaValor(valor);
     try { localStorage.setItem(MARGEM_ERRO_CIMA_KEY, JSON.stringify(valor)); } catch { /* localStorage indisponível */ }
@@ -741,6 +765,32 @@ export default function AuditoriaCtePage() {
     return { base, ok, taxa: base > 0 ? (ok / base) * 100 : 0 };
   }
 
+  async function salvarRegistrosRecalculados(registrosParaSalvar = []) {
+    const grupos = new Map();
+    for (const row of registrosParaSalvar || []) {
+      const comp = competenciaRegistroAuditoria(row, competencia);
+      if (!comp) continue;
+      if (!grupos.has(comp)) grupos.set(comp, []);
+      grupos.get(comp).push(row);
+    }
+    if (!grupos.size) return { gravados: 0, competencias: [] };
+
+    let gravados = 0;
+    const competencias = [];
+    for (const [comp, linhas] of grupos.entries()) {
+      await salvarRecorteCarregadoAuditoria({
+        competencia: comp,
+        registros: linhas,
+        onProgress: setProgressoProcessamento,
+      });
+      gravados += linhas.length;
+      competencias.push(comp);
+    }
+    const resumo = await carregarResumoAuditoriaMensal();
+    setResumoMensal(resumo || []);
+    return { gravados, competencias };
+  }
+
   // Resimula apenas o recorte filtrado (preview em memória, sem gravar). Atualiza
   // os mesmos registros dentro da base carregada para as métricas refletirem.
   async function resimularFiltrados(forcarTabelasFrescas = false) {
@@ -774,18 +824,9 @@ export default function AuditoriaCtePage() {
       setRegistros((prev) => prev.map((r) => mapa.get(r) || r));
 
       // Resimular já grava direto no banco (merge — só esses CT-es, sem apagar
-      // o resto do mês), pra não perder o recálculo se a página recarregar.
-      let gravado = false;
-      if (competencia && /^\d{4}-\d{2}$/.test(competencia)) {
-        await salvarRecorteCarregadoAuditoria({
-          competencia,
-          registros: novos,
-          onProgress: setProgressoProcessamento,
-        });
-        gravado = true;
-        const resumo = await carregarResumoAuditoriaMensal();
-        setResumoMensal(resumo || []);
-      }
+      // o resto do mês), inclusive quando o recorte veio por período/data.
+      const salvamento = await salvarRegistrosRecalculados(novos);
+      const gravado = salvamento.gravados > 0;
 
       const depois = assertividadeDe(novos);
       const diagnosticoNovos = Array.from(novos.reduce((mapa, row) => {
@@ -801,7 +842,7 @@ export default function AuditoriaCtePage() {
       const seta = ganho > 0.05 ? '▲' : ganho < -0.05 ? '▼' : '→';
       setResimuladoDiagnostico(diagnosticoNovos);
       setResimuladoInfo(
-        `${fmtN(novos.length)} CT-e(s) resimulados e ${gravado ? 'já gravados em auditoria_cte_resultados' : 'NÃO gravados (informe a competência para gravar automaticamente)'}. `
+        `${fmtN(novos.length)} CT-e(s) resimulados e ${gravado ? `já gravados em auditoria_cte_resultados (${salvamento.competencias.join(', ')})` : 'NÃO gravados (sem competência/data para salvar)'}. `
         + `Assertividade do recorte: ${fmtP(antes.taxa)} ${seta} ${fmtP(depois.taxa)} `
         + `(${resolvidos >= 0 ? '+' : ''}${fmtN(resolvidos)} corrigidos). `
         + 'Ajuste as tabelas e clique em Atualizar/Resimular de novo quando quiser.',
@@ -815,6 +856,49 @@ export default function AuditoriaCtePage() {
   }
 
   // AMD (nosso motor) é sempre a base das métricas; a Verum fica como referência.
+  async function aplicarAlternativaPeso(row, alternativa) {
+    if (!row || !alternativa) return;
+    const valorCalculado = Number(alternativa.valor_calculado || 0);
+    const valorPago = Number(row.valor_cte || 0);
+    const diferenca = valorPago - valorCalculado;
+    const atualizado = {
+      ...row,
+      peso: alternativa.peso_considerado || row.peso,
+      valor_calculado: valorCalculado,
+      diferenca,
+      diferenca_abs: Math.abs(diferenca),
+      percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
+      detalhes_calculo: {
+        ...(row.detalhes_calculo || {}),
+        peso_considerado: alternativa.peso_considerado,
+        valor_base: alternativa.valor_base,
+        subtotal: alternativa.subtotal,
+        icms: alternativa.icms,
+        componente_base: alternativa.componente_base || row.detalhes_calculo?.componente_base,
+        ajuste_peso_aplicado: alternativa.nome,
+      },
+    };
+    setRegistros((prev) => prev.map((item) => (item === row ? atualizado : item)));
+    setResimuladoInfo(`Peso alternativo aplicado no CT-e ${row.numero_cte || row.chave_cte || ''}: ${alternativa.nome}. Salvando auditoria...`);
+    try {
+      if (atualizado.competencia) {
+        await salvarRecorteCarregadoAuditoria({
+          competencia: atualizado.competencia,
+          registros: [atualizado],
+          onProgress: setProgressoProcessamento,
+        });
+        setSucesso(`CT-e ${row.numero_cte || row.chave_cte || ''} atualizado e salvo na auditoria com peso ${fmtN(atualizado.peso, 3)} kg.`);
+        setResimuladoInfo('');
+      } else {
+        setResimuladoInfo(`Peso alternativo aplicado no CT-e ${row.numero_cte || row.chave_cte || ''}, mas não salvei porque a linha não tem competência.`);
+      }
+    } catch (error) {
+      setErro(error.message || 'Erro ao salvar a auditoria com peso corrigido.');
+    } finally {
+      setProgressoProcessamento(null);
+    }
+  }
+
   const registrosBase = registrosFiltro;
 
   // Comparação Recálculo x Verum (sempre sobre o conjunto analisado), para validar
@@ -953,6 +1037,27 @@ export default function AuditoriaCtePage() {
     setProgressoProcessamento(null);
 
     try {
+      const salvosRapidos = await carregarResultadosAuditoriaMes({
+        competencia,
+        dataInicio: dataInicioTeste || undefined,
+        dataFim: dataFimTeste || undefined,
+        canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        onProgress: setProgressoProcessamento,
+      }).catch(() => []);
+
+      if (salvosRapidos?.length) {
+        setRegistros(salvosRapidos);
+        setFonteAuditoria({
+          id: 'auditoria_cte_resultados',
+          tabela: 'auditoria_cte_resultados',
+          label: 'Auditoria salva / auditoria_cte_resultados',
+        });
+        setDiagnostico([]);
+        setAvisos([]);
+        setSucesso(`${salvosRapidos.length.toLocaleString('pt-BR')} CTe(s) carregados do resultado salvo. Para atualizar com a base bruta, use Recalcular.`);
+        return;
+      }
+
       // Carrega a base crua inteira (pega CT-e novo que ainda não foi calculado)
       // e por cima aplica o que já está salvo em auditoria_cte_resultados — o
       // Verum não muda, então sobrepor o AMD já corrigido não tem risco. CT-es
@@ -1127,7 +1232,7 @@ export default function AuditoriaCtePage() {
       : competencia;
     const confirmar = window.confirm(
       temPeriodoTeste
-        ? `Recalcular ${alvo} com as tabelas cadastradas? Como é um período, o resultado fica só na tela (preview, NÃO grava) para não apagar o mês salvo.`
+        ? `Recalcular ${alvo} com as tabelas cadastradas? O resultado será gravado por competência em auditoria_cte_resultados, preservando o restante do mês.`
         : `Recalcular ${alvo} com as tabelas cadastradas? O recálculo será gravado em auditoria_cte_resultados (o cálculo da Verum é preservado). O resultado salvo desse mês será substituído.`
     );
 
@@ -1164,7 +1269,8 @@ export default function AuditoriaCtePage() {
         setResumoMensal(resumo || []);
         setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) recalculados e gravados para ${competencia}. Verum preservada para comparação.`);
       } else {
-        setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) recalculados em ${alvo} (preview, não gravado). Verum preservada para comparação.`);
+        const salvamento = await salvarRegistrosRecalculados(dados);
+        setSucesso(`${dados.length.toLocaleString('pt-BR')} CT-e(s) recalculados em ${alvo}${salvamento.gravados ? ` e ${salvamento.gravados.toLocaleString('pt-BR')} gravado(s) em ${salvamento.competencias.join(', ')}` : ' (não gravado: sem competência/data nos CT-es)'}. Verum preservada para comparação.`);
       }
     } catch (error) {
       setErro(error.message || 'Erro ao recalcular com a ferramenta.');
@@ -1346,35 +1452,46 @@ export default function AuditoriaCtePage() {
                 />
               </label>
             )}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-              Margem de erro p/ cima (R$):
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={margemErroCimaValor}
-                onChange={(event) => atualizarMargemErroCima(Number(event.target.value) || 0)}
-                style={{ width: 70 }}
-                title="Tolera cobrança até R$X acima do calculado antes de marcar como divergente"
-              />
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-              Margem de erro p/ baixo (R$):
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={margemErroBaixoValor}
-                onChange={(event) => atualizarMargemErroBaixo(Number(event.target.value) || 0)}
-                style={{ width: 70 }}
-                title="Tolera cobrança até R$X abaixo do calculado antes de marcar como divergente"
-              />
-            </label>
-            <span style={{ fontSize: 12, color: '#64748b' }}>
-              {margemErroCimaValor > 0 || margemErroBaixoValor > 0
-                ? 'Salvo neste navegador — vale para todos os cálculos daqui pra frente.'
-                : 'Ambas em 0 = usa o limite fixo padrão (R$ 0,05).'}
-            </span>
+            <button
+              className="sim-tab"
+              type="button"
+              onClick={() => setMostrarTolerancia((v) => !v)}
+              style={{ fontSize: 12, fontWeight: 800 }}
+              title="Tolerância salva neste navegador e usada como padrão na auditoria CT-e"
+            >
+              Tolerância +R$ {fmtN(margemErroCimaValor, 2)} / -R$ {fmtN(margemErroBaixoValor, 2)}
+            </button>
+            {mostrarTolerancia && (
+              <>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                  Acima (R$):
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={margemErroCimaValor}
+                    onChange={(event) => atualizarMargemErroCima(Number(event.target.value) || 0)}
+                    style={{ width: 70 }}
+                    title="Tolera cobrança até R$X acima do calculado antes de marcar como divergente"
+                  />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                  Abaixo (R$):
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={margemErroBaixoValor}
+                    onChange={(event) => atualizarMargemErroBaixo(Number(event.target.value) || 0)}
+                    style={{ width: 70 }}
+                    title="Tolera cobrança até R$X abaixo do calculado antes de marcar como divergente"
+                  />
+                </label>
+                <span style={{ fontSize: 12, color: '#64748b' }}>
+                  Salvo neste navegador — vale para todos os cálculos daqui pra frente.
+                </span>
+              </>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="primary" type="button" onClick={carregar} disabled={carregando || processando || !podeCarregar}>
@@ -2144,6 +2261,12 @@ export default function AuditoriaCtePage() {
                   const expandida = cteExpandido === idx;
                   const corDif = (v, base) => (base <= 0 ? '#94a3b8' : !ehDivergenteComMargem(v, base, margensDivergencia) ? '#16a34a' : '#dc2626');
                   const dentroDaMargem = amd > 0 && !ehDivergenteComMargem(difAmd, amd, margensDivergencia);
+                  const alternativaCubada = (Array.isArray(det?.comparativo_pesos) ? det.comparativo_pesos : [])
+                    .find((alt) => {
+                      const pesoAlternativoCalc = pesoCubadoSugeridoAuditoria(alt, det);
+                      return pesoAlternativoCalc > 0 && Math.abs(pesoAlternativoCalc - Number(r.peso || 0)) > 0.1;
+                    });
+                  const pesoAlternativo = alternativaCubada ? pesoCubadoSugeridoAuditoria(alternativaCubada, det) : 0;
                   return (
                     <React.Fragment key={r.chave_cte || r.numero_cte || idx}>
                       <tr
@@ -2157,7 +2280,25 @@ export default function AuditoriaCtePage() {
                         <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
                         <td><strong>{r.transportadora || '—'}</strong></td>
                         <td style={{ fontSize: 12 }}>{(r.cidade_origem || '—')}/{r.uf_origem || '—'} → {(r.cidade_destino || '—')}/{r.uf_destino || '—'}</td>
-                        <td>{fmtN(Number(r.peso || 0), 0)}</td>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <strong>{fmtN(Number(r.peso || 0), 0)}</strong>
+                            {pesoAlternativo > 0 ? (
+                              <button
+                                className="sim-tab"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  aplicarAlternativaPeso(r, { ...alternativaCubada, peso_considerado: pesoAlternativo });
+                                }}
+                                title="Aplicar peso cubado calculado nesta linha"
+                                style={{ padding: '1px 6px', fontSize: 11 }}
+                              >
+                                usar {fmtN(pesoAlternativo, 1)} kg
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
                         <td>{fmt(pago)}</td>
                         <td style={{ color: verum > 0 ? '#334155' : '#94a3b8' }}>{verum > 0 ? fmt(verum) : '—'}</td>
                         <td style={{ color: corDif(difVerum, verum), fontWeight: 600 }}>{verum > 0 ? fmt(difVerum) : '—'}</td>
@@ -2184,14 +2325,15 @@ export default function AuditoriaCtePage() {
                                 <span><strong>Valor base:</strong> {fmt(det.valor_base)}</span>
                                 <span><strong>Subtotal:</strong> {fmt(det.subtotal)}</span>
                                 <span><strong>ICMS:</strong> {fmt(det.icms)}</span>
-                                <span><strong>Taxas:</strong> {fmtMaybe(somaValoresObjeto(det.taxas || {}))}</span>
+                                <span><strong>Taxas:</strong> {fmtMaybe(somaTaxasCalculo(det.taxas || {}))}</span>
                               </div>
                             ) : <span>Sem detalhe de cálculo para este CT-e.</span>}
                             {det ? (() => {
                               const frete = det.componentes_base || {};
                               const taxas = det.taxas || {};
-                              const totalTaxas = Number.isFinite(Number(frete.totalTaxas)) ? Number(frete.totalTaxas) : somaValoresObjeto(taxas);
+                              const totalTaxas = somaTaxasCalculo(taxas);
                               const taxaExtraDetalhes = Array.isArray(taxas.taxasExtrasDetalhes) ? taxas.taxasExtrasDetalhes : [];
+                              const comparativoPesos = Array.isArray(det.comparativo_pesos) ? det.comparativo_pesos : [];
                               return (
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
                                   <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
@@ -2219,6 +2361,32 @@ export default function AuditoriaCtePage() {
                                     {linhaDetalhe('Componente vencedor', frete.componenteBase || det.componente_base || '-', true)}
                                     {linhaDetalhe('Valor base', fmtMaybe(det.valor_base ?? frete.valorBase), true)}
                                   </div>
+                                  {comparativoPesos.length ? (
+                                    <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
+                                      <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Comparativo de peso</div>
+                                      {linhaDetalhe('Peso declarado CT-e', `${fmtN(det.peso_declarado_cte, 3)} kg`)}
+                                      {linhaDetalhe('Peso cubado calculado', `${fmtN(det.peso_cubado_tracking, 3)} kg`)}
+                                      {Number(det.peso_cubado_original_tracking) > 0 ? linhaDetalhe('Peso/cubagem original Tracking', fmtN(det.peso_cubado_original_tracking, 6)) : null}
+                                      {Number(det.cubagem_tracking) > 0 ? linhaDetalhe('Cubagem Tracking', `${fmtN(det.cubagem_tracking, 6)} m³`) : null}
+                                      {comparativoPesos.map((alt) => {
+                                        const pesoCubadoSugerido = pesoCubadoSugeridoAuditoria(alt, det);
+                                        const cubagemAlt = Number(alt.cubagem_aplicada || det.cubagem_tracking || 0);
+                                        const fatorAlt = Number(alt.fator_cubagem || 0);
+                                        const isCubagem = cubagemAlt > 0 && fatorAlt > 0;
+                                        return (
+                                        <div key={alt.nome} style={{ borderTop: '1px solid #e2e8f0', marginTop: 8, paddingTop: 8 }}>
+                                          {linhaDetalhe(isCubagem ? 'Peso cubado sugerido' : alt.nome, isCubagem ? `${fmtN(pesoCubadoSugerido, 3)} kg` : fmtMaybe(alt.valor_calculado), alt.nome === det.melhor_comparativo_peso)}
+                                          {linhaDetalhe('Peso usado no recalculo', `${fmtN(alt.peso_considerado, 3)} kg`)}
+                                          {Number(alt.cubagem_aplicada) > 0 ? linhaDetalhe('Cubagem usada', `${fmtN(alt.cubagem_aplicada, 6)} m³`) : null}
+                                          {Number(alt.fator_cubagem) > 0 ? linhaDetalhe('Fator cubagem', `${fmtN(alt.fator_cubagem, 0)} kg/m³`) : null}
+                                          {isCubagem ? linhaDetalhe('Conta', `${fmtN(cubagemAlt, 6)} x ${fmtN(fatorAlt, 0)}`) : null}
+                                          {linhaDetalhe('Frete recalculado', fmtMaybe(alt.valor_calculado))}
+                                          {linhaDetalhe('Diferença vs pago', fmtMaybe(alt.diferenca), alt.nome === det.melhor_comparativo_peso)}
+                                        </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : null}
                                   <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
                                     <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>ICMS e totalizacao</div>
                                     {linhaDetalhe('Subtotal antes da emergencial', fmtMaybe(frete.subtotalSemEmergencial))}

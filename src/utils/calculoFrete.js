@@ -1,4 +1,5 @@
 import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/freteCalcEngine.js';
+import { resolverAliquotaIcmsUfContexto } from './icmsUfMatrix.js';
 
 const UF_POR_CODIGO = {
   '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
@@ -196,12 +197,20 @@ function getUfOrigem(origem, cidadePorIbge) {
   return entry ? getUfByIbge(entry[0]) : '';
 }
 
-function inferirAliquotaIcms(origem, rota, cidadePorIbge) {
+function inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadoraNome = '') {
   const manual = toNumber(origem?.generalidades?.aliquotaIcms);
   if (manual > 0) return { aliquota: manual, origem: 'manual' };
 
   const ufOrigem = getUfOrigem(origem, cidadePorIbge);
   const ufDestino = getUfByIbge(rota?.ibgeDestino);
+  const matriz = resolverAliquotaIcmsUfContexto({
+    ufOrigem,
+    ufDestino,
+    transportadora: transportadoraNome,
+    cidadeOrigem: origem?.cidade,
+    canal: origem?.canal || rota?.canal,
+  });
+  if (matriz) return matriz;
   if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao' };
   if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao' };
 
@@ -453,7 +462,7 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
 
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const tipoCalculo = resolverTipoCalculo(origem, cotacao);
-  const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge);
+  const icmsInfo = inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadora?.nome || transportadora?.transportadora || '');
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),
     aliquotaIcms: icmsInfo.aliquota,

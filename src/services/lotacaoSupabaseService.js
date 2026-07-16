@@ -1318,6 +1318,26 @@ export async function carregarDetalhesFaturaSupabase(faturaId) {
   return data || [];
 }
 
+export async function buscarDetalhesFaturasPorCtesSupabase({ chaves = [], numeros = [] } = {}) {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const chavesLimpas = [...new Set((chaves || []).map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean))].slice(0, 200);
+  const numerosLimpos = [...new Set((numeros || []).map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean))].slice(0, 200);
+  if (!chavesLimpas.length && !numerosLimpos.length) return [];
+
+  const partes = [];
+  if (chavesLimpas.length) partes.push(`chave_cte.in.(${chavesLimpas.join(',')})`);
+  if (numerosLimpos.length) partes.push(`numero_cte.in.(${numerosLimpos.join(',')})`);
+
+  const { data, error } = await supabase
+    .from('fatura_detalhes')
+    .select('*')
+    .or(partes.join(','))
+    .limit(1000);
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || [];
+}
+
 export async function salvarFaturaSupabase(fatura) {
   if (!isSupabaseConfigured()) return { ok: false };
   const supabase = ensureClient();
@@ -1410,4 +1430,3 @@ export async function carregarLaudosSimulacaoSupabase({ simulationId, carrierId,
   if (error) throw new Error(detalheErroSupabase(error));
   return data || [];
 }
-

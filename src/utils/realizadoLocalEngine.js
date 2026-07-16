@@ -2,6 +2,7 @@ import { calcularFreteFaixaPeso, calcularFretePercentual } from '../services/fre
 import { toNumberRealizado, normalizeTextRealizado } from './realizadoCtes.js';
 import { encontrarLinhaGradePorPeso, normalizarCanalGrade, normalizarGradeFrete } from './gradeFreteConfig.js';
 import { CANAL_A_DEFINIR } from './canalTransportadora.js';
+import { resolverAliquotaIcmsUfContexto } from './icmsUfMatrix.js';
 
 const CANAIS_B2C = [
   'B2C', 'VIA VAREJO', 'MERCADO LIVRE', 'MERCADOR LIVRE', 'B2W', 'MAGAZINE LUIZA',
@@ -508,6 +509,14 @@ function inferirAliquotaIcmsRealizado(origem = {}, rota = {}, cte = {}) {
   ).trim().toUpperCase();
 
   if (manual > 0) return { aliquota: manual, origem: 'manual', ufOrigem, ufDestino };
+  const matriz = resolverAliquotaIcmsUfContexto({
+    ufOrigem,
+    ufDestino,
+    transportadora: cte.transportadora || cte.transportadoraRealizada || cte.nomeTransportadora || '',
+    cidadeOrigem: cte.cidadeOrigem || cte.origem || '',
+    canal: cte.canal || cte.canalOriginal || '',
+  });
+  if (matriz) return matriz;
   if (!ufOrigem || !ufDestino) return { aliquota: 12, origem: 'legislacao sem UF completa', ufOrigem, ufDestino };
   if (ufOrigem === ufDestino) return { aliquota: 17, origem: 'legislacao interna', ufOrigem, ufDestino };
 
