@@ -113,18 +113,29 @@ export function normalizarChaveCte(chave) {
 // aparece na aba "Sem calculo", nao no valor divergente).
 export function aplicarReauditoriaDetalhes(detalhes = [], resultadosPorChave = new Map()) {
   const atualizados = detalhes.map((item) => {
-    const resultado = resultadosPorChave.get(normalizarChaveCte(item.chave_cte));
+    const resultado = resultadosPorChave.get(normalizarChaveCte(item.chave_cte))
+      || resultadosPorChave.get(normalizarChaveCte(item.numero_cte));
     const calculado = Number(resultado?.valor_calculado || 0);
+    const calculadoVerum = Number(resultado?.valor_calculado_verum ?? resultado?.valor_calculado ?? item.calculado_frete_verum ?? 0);
     const valor = Number(item.valor_frete || 0);
     if (calculado <= 0) {
-      return { ...item, calculado_frete: 0, diferenca: 0, status: 'SEM_CALCULO' };
+      return {
+        ...item,
+        calculado_frete_verum: calculadoVerum || Number(item.calculado_frete_verum || 0),
+        calculado_frete: 0,
+        diferenca: 0,
+        status: 'SEM_CALCULO',
+        motivo_divergencia: resultado?.motivo_sem_calculo || item.motivo_divergencia || 'CT-e sem calculo AMD.',
+      };
     }
     const diferenca = Number((valor - calculado).toFixed(2));
     return {
       ...item,
+      calculado_frete_verum: calculadoVerum,
       calculado_frete: calculado,
       diferenca,
       status: Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE',
+      motivo_divergencia: resultado?.motivo_sem_calculo || item.motivo_divergencia || '',
     };
   });
   const divergentes = atualizados.filter((item) => item.status === 'DIVERGENTE');

@@ -1,4 +1,4 @@
-import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
+﻿import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { buildTrackingId, getChaveNfeLookup, parseTrackingArquivo } from '../utils/trackingLocal';
 import { resolverCubagemFinal } from '../utils/trackingCubagem.js';
 
@@ -471,4 +471,47 @@ export async function listarTrackingSupabase(options = {}) {
 
   if (error) throw new Error(`Erro ao listar Tracking no Supabase: ${error.message}`);
   return { rows: (data || []).map(fromDbRow), fonte: 'supabase' };
+}
+
+export async function buscarTrackingPorChaveNfeManual(chaveNfe) {
+  if (!isSupabaseConfigured()) return null;
+  const chave = onlyDigits(chaveNfe);
+  if (!chave) return null;
+  const supabase = getSupabaseClient();
+  const selectCols = `
+    id,data,nota_fiscal,chave_nfe,chave_cte,cte_numero,pedido,pedido_erp,canal,canal_original,
+    transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,
+    chave_rota_ibge,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,cubagem_final,valor_nf,
+    qtd_volumes,quantidade_itens,total_unidades,previsao_cliente,previsao_transportadora,data_transporte,data_entrega,
+    arquivo_origem,aba_origem,linha_excel,ibge_ok,updated_at
+  `;
+  let { data, error } = await supabase
+    .from(TABELA_TRACKING)
+    .select(selectCols)
+    .eq('chave_nfe', chave)
+    .limit(5);
+  if (error) throw new Error(`Erro ao buscar NF no Tracking: ${error.message}`);
+  if (!data?.length && chave.length < 44) {
+    ({ data, error } = await supabase
+      .from(TABELA_TRACKING)
+      .select(selectCols)
+      .eq('nota_fiscal', chave)
+      .limit(5));
+    if (error) throw new Error(`Erro ao buscar nota no Tracking: ${error.message}`);
+  }
+  const rows = (data || []).map(fromDbRow);
+  if (!rows.length) return null;
+  const base = rows[0];
+  return rows.slice(1).reduce((acc, row) => ({
+    ...acc,
+    valorNF: toNumber(acc.valorNF) + toNumber(row.valorNF),
+    peso: toNumber(acc.peso) + toNumber(row.peso),
+    pesoDeclarado: toNumber(acc.pesoDeclarado) + toNumber(row.pesoDeclarado),
+    pesoCubadoOriginal: toNumber(acc.pesoCubadoOriginal) + toNumber(row.pesoCubadoOriginal),
+    cubagemTotal: toNumber(acc.cubagemTotal) + toNumber(row.cubagemTotal),
+    cubagemFinal: toNumber(acc.cubagemFinal) + toNumber(row.cubagemFinal),
+    qtdVolumes: toNumber(acc.qtdVolumes) + toNumber(row.qtdVolumes),
+    quantidadeItens: toNumber(acc.quantidadeItens) + toNumber(row.quantidadeItens),
+    totalUnidades: toNumber(acc.totalUnidades) + toNumber(row.totalUnidades),
+  }), base);
 }

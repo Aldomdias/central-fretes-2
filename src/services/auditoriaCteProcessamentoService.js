@@ -20,6 +20,7 @@ const TABELA_CTES = 'realizado_local_ctes';
 const TABELA_RESULTADOS = 'auditoria_cte_resultados';
 const TABELA_RESUMO = 'auditoria_cte_resumo_mensal';
 const LIMITE_DIVERGENCIA_ASSERTIVO = 0.05;
+const CAMPOS_RESULTADO_OPCIONAIS = ['valor_excessivo', 'valor_insuficiente'];
 const UF_POR_CODIGO_IBGE = {
   11: 'RO', 12: 'AC', 13: 'AM', 14: 'RR', 15: 'PA', 16: 'AP', 17: 'TO',
   21: 'MA', 22: 'PI', 23: 'CE', 24: 'RN', 25: 'PB', 26: 'PE', 27: 'AL', 28: 'SE', 29: 'BA',
@@ -37,6 +38,18 @@ function normalizarCanalResultado(valor) {
   if (v.includes('ATACADO') || v === 'B2B' || v.endsWith(' B2B') || v.startsWith('B2B ')) return 'ATACADO';
   if (v.includes('B2C') || v.includes('MARKETPLACE') || v.includes('ECOMMERCE')) return 'B2C';
   return v;
+}
+
+function erroColunaOpcionalResultado(error) {
+  const mensagem = String(error?.message || error || '').toLowerCase();
+  return CAMPOS_RESULTADO_OPCIONAIS.some((campo) => mensagem.includes(campo))
+    || (mensagem.includes('schema cache') && mensagem.includes('column'));
+}
+
+function semCamposResultadoOpcionais(row) {
+  const limpo = { ...(row || {}) };
+  CAMPOS_RESULTADO_OPCIONAIS.forEach((campo) => delete limpo[campo]);
+  return limpo;
 }
 
 // Alias local para o cache centralizado em freteDatabaseService (carregarBaseCompletaDb já cacheia).
@@ -1068,7 +1081,10 @@ async function salvarResultadosMes({ supabase, competencia, registros, resumo, o
 
   for (let index = 0; index < registros.length; index += INSERT_CHUNK) {
     const chunk = registros.slice(index, index + INSERT_CHUNK);
-    const { error } = await supabase.from(TABELA_RESULTADOS).insert(chunk);
+    let { error } = await supabase.from(TABELA_RESULTADOS).insert(chunk);
+    if (error && erroColunaOpcionalResultado(error)) {
+      ({ error } = await supabase.from(TABELA_RESULTADOS).insert(chunk.map(semCamposResultadoOpcionais)));
+    }
 
     if (error) {
       throw new Error(`Erro ao salvar resultados da auditoria: ${error.message}`);
@@ -1471,7 +1487,97 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
 
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
-    registros.push(processarCte(ctesParaCalculo[index] || ctesUnicos[index], transportadoras, mapaVinculos, '', opcoesCalculo));
+    const cteBase = ctesParaCalculo[index] || ctesUnicos[index];
+    const chaveCte = onlyDigits(pick(cteBase, ['chave_cte', 'chaveCte', 'chave']));
+    const numeroCte = onlyDigits(pick(cteBase, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']));
+    const pesoOverride = Number(
+      opcoesCalculo.pesosOverridePorChave?.[chaveCte]
+      ?? opcoesCalculo.pesosOverridePorChave?.[numeroCte]
+      ?? 0
+    );
+    const nfOverride = Number(
+      opcoesCalculo.valorNfOverridePorChave?.[chaveCte]
+      ?? opcoesCalculo.valorNfOverridePorChave?.[numeroCte]
+      ?? 0
+    );
+    const trackingOverride = (
+      opcoesCalculo.trackingOverridePorChave?.[chaveCte]
+      ?? opcoesCalculo.trackingOverridePorChave?.[numeroCte]
+      ?? null
+    );
+    const reentrega = Boolean(
+      opcoesCalculo.reentregaPorChave?.[chaveCte]
+      ?? opcoesCalculo.reentregaPorChave?.[numeroCte]
+    );
+    const cteComTrackingManual = trackingOverride
+      ? {
+        ...cteBase,
+        chave_nfe: trackingOverride.chaveNfe || trackingOverride.chave_nfe || cteBase.chave_nfe,
+        chaveNfe: trackingOverride.chaveNfe || trackingOverride.chave_nfe || cteBase.chaveNfe,
+        nota_fiscal: trackingOverride.notaFiscal || trackingOverride.nota_fiscal || cteBase.nota_fiscal,
+        notaFiscal: trackingOverride.notaFiscal || trackingOverride.nota_fiscal || cteBase.notaFiscal,
+        valor_nf: Number(trackingOverride.valorNF || trackingOverride.valor_nf || cteBase.valor_nf || 0),
+        valorNF: Number(trackingOverride.valorNF || trackingOverride.valor_nf || cteBase.valorNF || 0),
+        peso: Number(trackingOverride.peso || trackingOverride.peso_declarado || cteBase.peso || 0),
+        peso_declarado: Number(trackingOverride.pesoDeclarado || trackingOverride.peso_declarado || trackingOverride.peso || cteBase.peso_declarado || 0),
+        pesoDeclarado: Number(trackingOverride.pesoDeclarado || trackingOverride.peso_declarado || trackingOverride.peso || cteBase.pesoDeclarado || 0),
+        peso_cubado: Number(trackingOverride.pesoCubadoOriginal || trackingOverride.peso_cubado || cteBase.peso_cubado || 0),
+        pesoCubado: Number(trackingOverride.pesoCubadoOriginal || trackingOverride.peso_cubado || cteBase.pesoCubado || 0),
+        cubagem: Number(trackingOverride.cubagemFinal || trackingOverride.cubagem_total || trackingOverride.cubagemTotal || trackingOverride.cubagem || cteBase.cubagem || 0),
+        cubagem_total: Number(trackingOverride.cubagemFinal || trackingOverride.cubagem_total || trackingOverride.cubagemTotal || cteBase.cubagem_total || 0),
+        cubagemTotal: Number(trackingOverride.cubagemFinal || trackingOverride.cubagem_total || trackingOverride.cubagemTotal || cteBase.cubagemTotal || 0),
+        qtd_volumes: Number(trackingOverride.qtdVolumes || trackingOverride.qtd_volumes || cteBase.qtd_volumes || 0),
+        qtdVolumes: Number(trackingOverride.qtdVolumes || trackingOverride.qtd_volumes || cteBase.qtdVolumes || 0),
+        trackingMatch: true,
+        tracking_manual_nf: true,
+      }
+      : cteBase;
+    const cteComNfManual = nfOverride > 0
+      ? {
+        ...cteComTrackingManual,
+        valor_nf: nfOverride,
+        valorNF: nfOverride,
+      }
+      : cteComTrackingManual;
+    const cteParaMotor = pesoOverride > 0
+      ? {
+        ...cteComNfManual,
+        peso: pesoOverride,
+        peso_declarado: pesoOverride,
+        pesoDeclarado: pesoOverride,
+        peso_cubado: 0,
+        pesoCubado: 0,
+        cubagem: 0,
+        cubagem_total: 0,
+        cubagemTotal: 0,
+      }
+      : cteComNfManual;
+    const registro = processarCte(cteParaMotor, transportadoras, mapaVinculos, '', {
+      ...opcoesCalculo,
+      ignorarCubagem: pesoOverride > 0 ? true : opcoesCalculo.ignorarCubagem,
+      percentualContingenciaPeso: pesoOverride > 0 ? 0 : opcoesCalculo.percentualContingenciaPeso,
+    });
+    if (reentrega && Number(registro.valor_calculado || 0) > 0) {
+      const valorOriginal = Number(registro.valor_calculado || 0);
+      const valorReentrega = Number((valorOriginal * 0.5).toFixed(2));
+      registros.push({
+        ...registro,
+        valor_calculado: valorReentrega,
+        diferenca: Number((Number(registro.valor_cte || 0) - valorReentrega).toFixed(2)),
+        diferenca_abs: Math.abs(Number(registro.valor_cte || 0) - valorReentrega),
+        percentual_diferenca: valorReentrega > 0 ? ((Number(registro.valor_cte || 0) - valorReentrega) / valorReentrega) * 100 : 0,
+        motivo_sem_calculo: '',
+        detalhes_calculo: {
+          ...(registro.detalhes_calculo || {}),
+          reentrega_manual: true,
+          fator_reentrega: 0.5,
+          valor_calculado_ida: valorOriginal,
+          observacao_reentrega: 'CT-e marcado manualmente como reentrega: calculo AMD considerado em 50% do valor da ida.',
+        },
+      });
+    } else {
+      registros.push(registro);
+    }
     if (index % 25 === 0 || index === ctesUnicos.length - 1) {
       onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctesUnicos.length });
       await new Promise((resolve) => setTimeout(resolve, 0));

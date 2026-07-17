@@ -21,6 +21,7 @@ export const TOGGLE_TABELAS_KEY = 'central_fretes_auditoria_tabelas_v1';
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK_SIZE = 500;
 const MAX_REGISTROS_POR_COMPETENCIA = 400000;
+const CAMPOS_RESULTADO_OPCIONAIS = ['valor_excessivo', 'valor_insuficiente'];
 
 const FONTES_AUDITORIA = [
   {
@@ -45,6 +46,39 @@ const FONTES_AUDITORIA = [
     prioridade: 3,
   },
 ];
+
+function erroColunaOpcionalResultado(error) {
+  const mensagem = String(error?.message || error || '').toLowerCase();
+  return CAMPOS_RESULTADO_OPCIONAIS.some((campo) => mensagem.includes(campo))
+    || (mensagem.includes('schema cache') && mensagem.includes('column'));
+}
+
+function semCamposResultadoOpcionais(row) {
+  const limpo = { ...(row || {}) };
+  CAMPOS_RESULTADO_OPCIONAIS.forEach((campo) => delete limpo[campo]);
+  return limpo;
+}
+
+async function atualizarResultadoAuditoriaCompat(supabase, linha, id) {
+  let { error } = await supabase.from('auditoria_cte_resultados').update(linha).eq('id', id);
+  if (error && erroColunaOpcionalResultado(error)) {
+    ({ error } = await supabase
+      .from('auditoria_cte_resultados')
+      .update(semCamposResultadoOpcionais(linha))
+      .eq('id', id));
+  }
+  return error;
+}
+
+async function inserirResultadosAuditoriaCompat(supabase, linhas) {
+  let { error } = await supabase.from('auditoria_cte_resultados').insert(linhas);
+  if (error && erroColunaOpcionalResultado(error)) {
+    ({ error } = await supabase
+      .from('auditoria_cte_resultados')
+      .insert((linhas || []).map(semCamposResultadoOpcionais)));
+  }
+  return error;
+}
 
 export function carregarMetaAuditoria() {
   try {
@@ -697,7 +731,7 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
     const idExistente = (linha.chave_cte && existentesPorChave.get(linha.chave_cte))
       || (!linha.chave_cte && linha.numero_cte ? existentesPorNumero.get(linha.numero_cte) : null);
     if (idExistente) {
-      const { error } = await supabase.from('auditoria_cte_resultados').update(linha).eq('id', idExistente);
+      const error = await atualizarResultadoAuditoriaCompat(supabase, linha, idExistente);
       if (error) throw new Error(`Erro ao atualizar CT-e ${linha.numero_cte || linha.chave_cte}: ${error.message}`);
       atualizados += 1;
     } else {
@@ -711,7 +745,7 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
 
   for (let index = 0; index < paraInserir.length; index += INSERT_CHUNK_SIZE) {
     const chunk = paraInserir.slice(index, index + INSERT_CHUNK_SIZE);
-    const { error } = await supabase.from('auditoria_cte_resultados').insert(chunk);
+    const error = await inserirResultadosAuditoriaCompat(supabase, chunk);
     if (error) {
       throw new Error(`Erro ao inserir novos registros da auditoria: ${error.message}`);
     }

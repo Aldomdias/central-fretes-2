@@ -113,6 +113,13 @@ function writeLocal(state) {
 }
 
 const CODIGO_TABELA_INEXISTENTE = '42P01';
+const CAMPOS_OPCIONAIS_FATURA = [
+  'auditoria_cobranca_acima',
+  'auditoria_cobranca_abaixo',
+  'auditoria_total_descontar',
+  'auditoria_tolerancia_acima',
+  'auditoria_tolerancia_abaixo',
+];
 
 async function selecionarTabela(table, order = 'created_at') {
   const client = getSupabaseClient();
@@ -127,7 +134,30 @@ async function selecionarTabela(table, order = 'created_at') {
 async function safeUpsert(table, payload) {
   if (!isSupabaseConfigured()) return false;
   const client = getSupabaseClient();
-  const { error } = await client.from(table).upsert(payload, { onConflict: 'id' });
+  let { error } = await client.from(table).upsert(payload, { onConflict: 'id' });
+  for (let tentativa = 0; error && tentativa < 8; tentativa += 1) {
+    const mensagemOriginal = String(error.message || '');
+    const mensagem = mensagemOriginal.toLowerCase();
+    const matchColuna = mensagemOriginal.match(/'([^']+)'\s+column/i);
+    const campoInexistente = matchColuna?.[1];
+    const campoOpcionalFatura = table === 'faturas'
+      ? CAMPOS_OPCIONAIS_FATURA.find((campo) => mensagem.includes(campo))
+      : '';
+    const campoParaRemover = campoInexistente || campoOpcionalFatura;
+    if (campoParaRemover && (mensagem.includes('schema cache') || mensagem.includes('column'))) {
+      const limpar = (row) => {
+        const next = { ...(row || {}) };
+        delete next[campoParaRemover];
+        if (table === 'faturas') CAMPOS_OPCIONAIS_FATURA.forEach((campo) => delete next[campo]);
+        return next;
+      };
+      const payloadCompat = Array.isArray(payload) ? payload.map(limpar) : limpar(payload);
+      ({ error } = await client.from(table).upsert(payloadCompat, { onConflict: 'id' }));
+      payload = payloadCompat;
+    } else {
+      break;
+    }
+  }
   if (error) throw new Error(`Erro ao salvar em ${table}: ${error.message}`);
   return true;
 }
@@ -227,16 +257,81 @@ export async function buscarReferenciaCtes(chaves = []) {
   const normalizadas = [...new Set(chaves.map(normalizarChaveCte).filter(Boolean))];
   const client = getSupabaseClient();
   for (let inicio = 0; inicio < normalizadas.length; inicio += 200) {
-    const { data, error } = await client
+    const lote = normalizadas.slice(inicio, inicio + 200);
+    let { data, error } = await client
       .from('auditoria_cte_resultados')
-      .select('chave_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, status_calculo')
-      .in('chave_cte', normalizadas.slice(inicio, inicio + 200));
+      .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo, detalhes_calculo')
+      .in('chave_cte', lote);
+    if (error && String(error.message || '').includes('detalhes_calculo')) {
+      ({ data, error } = await client
+        .from('auditoria_cte_resultados')
+        .select('chave_cte, numero_cte, competencia, cidade_origem, uf_origem, cidade_destino, uf_destino, canal, peso, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, status_calculo, motivo_sem_calculo')
+        .in('chave_cte', lote));
+    }
     if (error) break;
     for (const row of data || []) {
       referencia.set(normalizarChaveCte(row.chave_cte), row);
+      const numero = normalizarChaveCte(row.numero_cte);
+      if (numero) referencia.set(numero, row);
     }
   }
   return referencia;
+}
+
+export async function buscarResumoOrigensFaturas(faturaIds = []) {
+  const resumo = new Map();
+  if (!isSupabaseConfigured() || !faturaIds.length) return resumo;
+  const client = getSupabaseClient();
+  const ids = [...new Set(faturaIds.filter(Boolean))];
+  const detalhes = [];
+  for (let inicio = 0; inicio < ids.length; inicio += 100) {
+    const { data, error } = await client
+      .from('fatura_detalhes')
+      .select('fatura_id, chave_cte, numero_cte')
+      .in('fatura_id', ids.slice(inicio, inicio + 100));
+    if (error) return resumo;
+    detalhes.push(...(data || []));
+  }
+
+  const porChave = new Map();
+  const chaves = [];
+  for (const item of detalhes) {
+    const chave = normalizarChaveCte(item.chave_cte);
+    if (!chave) continue;
+    chaves.push(chave);
+    if (!porChave.has(chave)) porChave.set(chave, []);
+    porChave.get(chave).push(item.fatura_id);
+  }
+
+  for (let inicio = 0; inicio < chaves.length; inicio += 200) {
+    const lote = [...new Set(chaves.slice(inicio, inicio + 200))];
+    const { data, error } = await client
+      .from('auditoria_cte_resultados')
+      .select('chave_cte, cidade_origem, uf_origem')
+      .in('chave_cte', lote);
+    if (error) continue;
+    for (const row of data || []) {
+      const origem = [row.cidade_origem, row.uf_origem].filter(Boolean).join('/');
+      if (!origem) continue;
+      for (const faturaId of porChave.get(normalizarChaveCte(row.chave_cte)) || []) {
+        if (!resumo.has(faturaId)) resumo.set(faturaId, new Map());
+        const mapa = resumo.get(faturaId);
+        mapa.set(origem, (mapa.get(origem) || 0) + 1);
+      }
+    }
+  }
+
+  return new Map([...resumo.entries()].map(([faturaId, mapa]) => {
+    const origens = [...mapa.entries()]
+      .map(([origem, qtd]) => ({ origem, qtd }))
+      .sort((a, b) => b.qtd - a.qtd || a.origem.localeCompare(b.origem));
+    return [faturaId, {
+      principal: origens[0]?.origem || '',
+      totalOrigens: origens.length,
+      origens,
+      tooltip: origens.map((item) => `${item.origem}: ${item.qtd} CT-e(s)`).join('\n'),
+    }];
+  }));
 }
 
 // Reauditoria da fatura: cruza cada CT-e (chave) com a base recalculada pelo
@@ -254,13 +349,21 @@ export async function reauditarFatura(state, fatura, detalhes, usuarioNome = 'Us
   const resultados = new Map();
   for (let inicio = 0; inicio < chaves.length; inicio += 200) {
     const lote = chaves.slice(inicio, inicio + 200);
-    const { data, error } = await client
+    let { data, error } = await client
       .from('auditoria_cte_resultados')
-      .select('chave_cte, valor_calculado, competencia')
+      .select('chave_cte, numero_cte, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, competencia, status_calculo, motivo_sem_calculo, detalhes_calculo')
       .in('chave_cte', lote);
+    if (error && String(error.message || '').includes('detalhes_calculo')) {
+      ({ data, error } = await client
+        .from('auditoria_cte_resultados')
+        .select('chave_cte, numero_cte, valor_cte, valor_calculado, valor_calculado_verum, diferenca, diferenca_verum, competencia, status_calculo, motivo_sem_calculo')
+        .in('chave_cte', lote));
+    }
     if (error) throw new Error(`Erro ao consultar a base reauditada: ${error.message}`);
     for (const row of data || []) {
       resultados.set(normalizarChaveCte(row.chave_cte), row);
+      const numero = normalizarChaveCte(row.numero_cte);
+      if (numero) resultados.set(numero, row);
     }
   }
 

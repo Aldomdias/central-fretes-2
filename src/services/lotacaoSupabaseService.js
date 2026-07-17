@@ -1364,9 +1364,20 @@ export async function salvarDetalhesFaturaSupabase(detalhes) {
   // Insert em lotes
   const CHUNK = 200;
   for (let i = 0; i < detalhes.length; i += CHUNK) {
-    const chunk = detalhes.slice(i, i + CHUNK);
-    const { error } = await supabase.from('fatura_detalhes').upsert(chunk, { onConflict: 'id' });
-    if (error) throw new Error(detalheErroSupabase(error));
+    let chunk = detalhes.slice(i, i + CHUNK);
+    for (let tentativa = 0; tentativa < 8; tentativa += 1) {
+      const { error } = await supabase.from('fatura_detalhes').upsert(chunk, { onConflict: 'id' });
+      if (!error) break;
+      const msg = String(error.message || '');
+      const coluna = msg.match(/'([^']+)' column/)?.[1];
+      if (!coluna) throw new Error(detalheErroSupabase(error));
+      chunk = chunk.map((row) => {
+        const copy = { ...row };
+        delete copy[coluna];
+        return copy;
+      });
+      if (tentativa === 7) throw new Error(detalheErroSupabase(error));
+    }
   }
   return { ok: true };
 }

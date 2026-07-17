@@ -2568,6 +2568,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                   const expandida = cteExpandido === idx;
                   const corDif = (v, base) => (base <= 0 ? '#94a3b8' : !ehDivergenteComMargem(v, base, margensDivergencia) ? '#16a34a' : '#dc2626');
                   const dentroDaMargem = amd > 0 && !ehDivergenteComMargem(difAmd, amd, margensDivergencia);
+                  const semValorNf = Number(r.valor_nf || 0) <= 0;
                   const alternativasPeso = (Array.isArray(det?.comparativo_pesos) ? det.comparativo_pesos : [])
                     .map((alt) => ({ ...alt, pesoAlternativo: pesoAlternativaAuditoria(alt) }))
                     .filter((alt) => alt.pesoAlternativo > 0 && Math.abs(alt.pesoAlternativo - Number(r.peso || 0)) > 0.1)
@@ -2579,8 +2580,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                         onClick={() => setCteExpandido(expandida ? null : idx)}
                         style={{
                           cursor: 'pointer',
-                          background: expandida ? '#eff6ff' : dentroDaMargem ? '#f0fdf4' : undefined,
-                          borderLeft: dentroDaMargem ? '3px solid #16a34a' : '3px solid transparent',
+                          background: semValorNf ? '#fff7ed' : expandida ? '#eff6ff' : dentroDaMargem ? '#f0fdf4' : undefined,
+                          borderLeft: semValorNf ? '3px solid #f97316' : dentroDaMargem ? '3px solid #16a34a' : '3px solid transparent',
                         }}
                       >
                         <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
@@ -2614,9 +2615,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                         <td style={{ fontSize: 11 }}>
                           <span
                             title={r.motivo_sem_calculo || (amd > 0 ? 'Calculado pela tabela local.' : 'Sem cálculo pela tabela local.')}
-                            style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: amd > 0 ? '#dcfce7' : '#fee2e2', color: amd > 0 ? '#166534' : '#991b1b' }}
+                            style={{ padding: '2px 6px', borderRadius: 6, fontWeight: 700, background: semValorNf ? '#fed7aa' : amd > 0 ? '#dcfce7' : '#fee2e2', color: semValorNf ? '#9a3412' : amd > 0 ? '#166534' : '#991b1b' }}
                           >
-                            {r.status_calculo || (amd > 0 ? 'CALCULADO' : 'SEM_STATUS')}
+                            {semValorNf ? 'SEM VALOR NF' : (r.status_calculo || (amd > 0 ? 'CALCULADO' : 'SEM_STATUS'))}
                           </span>
                         </td>
                       </tr>
@@ -2624,6 +2625,11 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                         <tr>
                           <td colSpan="10" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                             {r.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {r.motivo_sem_calculo}</div> : null}
+                            {semValorNf ? (
+                              <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 8, padding: 10, marginBottom: 10, color: '#9a3412' }}>
+                                <strong>CT-e sem valor de NF.</strong> Trate pela auditoria por chave/lista ou pela fatura: informe a chave NF, busque no Tracking e marque reentrega quando for 50% da ida.
+                              </div>
+                            ) : null}
                             {amd <= 0 ? (
                               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
                                 <button

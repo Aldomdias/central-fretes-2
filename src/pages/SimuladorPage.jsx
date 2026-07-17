@@ -7147,6 +7147,143 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const { nomeArquivo, csv } = exportarLinhasCsv(`fornecedor-vs-realizado-${nomeBase}.csv`, linhas);
     downloadCsv(nomeArquivo, csv);
   };
+  const exportarLaudoAjusteRotaFaixaTransportador = () => {
+    if (!resultadoRealizado?.ctesDetalhes?.length) return;
+    const r = resultadoRealizado;
+    const detalhes = (r.ctesDetalhes || []).filter((item) => Number(item.freteSelecionada || 0) > 0 && Number(item.valorNF || 0) > 0);
+    if (!detalhes.length) {
+      setErroSimulacao('Nao ha CT-es com tabela simulada e valor NF para montar o laudo por rota/faixa.');
+      return;
+    }
+
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[ch]));
+    const baixarHtml = (nomeArquivo, html) => {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', nomeArquivo);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+    const formatFaixa = (faixa, fallbackInicio, fallbackFim) => {
+      const texto = String(faixa || '').trim();
+      if (texto) return texto.replace(/\s+/g, ' ');
+      const ini = Number.isFinite(Number(fallbackInicio)) ? formatNumberBR(fallbackInicio, 0) : '0';
+      const fim = Number.isFinite(Number(fallbackFim)) ? formatNumberBR(fallbackFim, 0) : '999999999';
+      return `${ini} a ${fim}`;
+    };
+    const getFreteDetalhe = (item) => item.selecionadaDetalhes?.frete || item.vencedorDetalhes?.frete || {};
+
+    const grupos = new Map();
+    detalhes.forEach((item) => {
+      const frete = getFreteDetalhe(item);
+      const rota = frete.rotaNome || item.rotaSelecionada || item.faixaPeso || item.cotacao || `${item.ufDestino || ''}` || 'Sem rota';
+      const faixa = formatFaixa(frete.faixaPeso || item.faixaPeso, frete.pesoInicial, frete.pesoFinal);
+      const chave = `${rota}__${faixa}`;
+      const atual = grupos.get(chave) || {
+        rota,
+        faixa,
+        ctes: 0,
+        valorNF: 0,
+        freteRealizado: 0,
+        freteTabela: 0,
+        peso: 0,
+        volumes: 0,
+      };
+      atual.ctes += 1;
+      atual.valorNF += Number(item.valorNF || 0);
+      atual.freteRealizado += Number(item.freteRealizado || 0);
+      atual.freteTabela += Number(item.freteSelecionada || 0);
+      atual.peso += Number(item.peso || 0);
+      atual.volumes += Number(item.volumes || 0);
+      grupos.set(chave, atual);
+    });
+
+    const linhas = [...grupos.values()].map((grupo) => {
+      const pctRealizado = grupo.valorNF > 0 ? (grupo.freteRealizado / grupo.valorNF) * 100 : 0;
+      const pctTabela = grupo.valorNF > 0 ? (grupo.freteTabela / grupo.valorNF) * 100 : 0;
+      const reduzirPct = pctTabela > 0 && pctTabela > pctRealizado
+        ? ((pctTabela - pctRealizado) / pctTabela) * 100
+        : 0;
+      return { ...grupo, pctRealizado, pctTabela, reduzirPct, diferenca: grupo.freteTabela - grupo.freteRealizado };
+    }).sort((a, b) => (b.reduzirPct - a.reduzirPct) || (b.diferenca - a.diferenca) || (b.valorNF - a.valorNF));
+
+    const totais = linhas.reduce((acc, item) => {
+      acc.ctes += item.ctes;
+      acc.valorNF += item.valorNF;
+      acc.freteRealizado += item.freteRealizado;
+      acc.freteTabela += item.freteTabela;
+      return acc;
+    }, { ctes: 0, valorNF: 0, freteRealizado: 0, freteTabela: 0 });
+    const pctRealizadoTotal = totais.valorNF > 0 ? (totais.freteRealizado / totais.valorNF) * 100 : 0;
+    const pctTabelaTotal = totais.valorNF > 0 ? (totais.freteTabela / totais.valorNF) * 100 : 0;
+    const reduzirTotal = pctTabelaTotal > pctRealizadoTotal && pctTabelaTotal > 0
+      ? ((pctTabelaTotal - pctRealizadoTotal) / pctTabelaTotal) * 100
+      : 0;
+
+    const transportadora = r.filtros?.transportadoraTabelaUsada || r.filtros?.transportadora || 'Transportadora';
+    const periodo = periodoLaudoRealizado(r) || `${r.filtros?.inicio || ''} a ${r.filtros?.fim || ''}`;
+    const nomeBase = nomeArquivoSeguro(`ajuste-rota-faixa-${transportadora}`);
+    const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Laudo de ajuste por rota/faixa</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; color: #071a44; background: #f4f7fb; }
+    header { background: #071a44; color: #fff; padding: 28px 34px; }
+    main { padding: 28px 34px; }
+    h1 { margin: 0 0 8px; font-size: 25px; }
+    h2 { margin-top: 28px; font-size: 18px; }
+    .muted { color: #5d6b89; font-size: 13px; }
+    .cards { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 12px; margin: 18px 0 24px; }
+    .card { background: #fff; border: 1px solid #d8e1ef; border-radius: 12px; padding: 14px; }
+    .card span { display: block; color: #5d6b89; font-size: 12px; font-weight: 700; }
+    .card strong { display: block; margin-top: 7px; font-size: 22px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d8e1ef; }
+    th, td { border-bottom: 1px solid #d8e1ef; padding: 10px 9px; text-align: left; font-size: 12px; vertical-align: top; }
+    th { background: #eef3fb; font-size: 11px; text-transform: uppercase; letter-spacing: .02em; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    .reduce { color: #c1121f; font-weight: 800; }
+    .ok { color: #087f3f; font-weight: 800; }
+    .note { background: #fff; border-left: 4px solid #1d4ed8; padding: 12px 14px; margin: 18px 0; }
+    @media print { body { background: #fff; } header, main { padding: 18px; } .cards { grid-template-columns: repeat(3, 1fr); } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Laudo de ajuste por rota/faixa</h1>
+    <div>${esc(transportadora)} - ${esc(periodo)} - Canal ${esc(r.filtros?.canal || 'Todos')}</div>
+    <div class="muted">Comparativo entre o frete realizado e a tabela simulada, agrupado por rota/cotacao e faixa de peso.</div>
+  </header>
+  <main>
+    <section class="cards">
+      <div class="card"><span>CT-es analisados</span><strong>${formatNumberBR(totais.ctes, 0)}</strong></div>
+      <div class="card"><span>Rotas/faixas</span><strong>${formatNumberBR(linhas.length, 0)}</strong></div>
+      <div class="card"><span>% realizado medio</span><strong>${formatPercent(pctRealizadoTotal)}</strong></div>
+      <div class="card"><span>% tabela media</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
+      <div class="card"><span>Reducao media sugerida</span><strong>${formatPercent(reduzirTotal)}</strong></div>
+    </section>
+    <div class="note">A reducao sugerida indica quanto o percentual da tabela precisa ser ajustado para se aproximar do realizado no recorte. Exemplo: tabela 3,50% e realizado 3,00% resulta em reducao de 14,28%.</div>
+    <h2>Resumo por rota/faixa</h2>
+    <table>
+      <thead><tr><th>Rota/cotacao</th><th>Faixa</th><th class="num">CT-es</th><th class="num">Valor NF</th><th class="num">Frete realizado</th><th class="num">Frete tabela</th><th class="num">% realizado</th><th class="num">% tabela</th><th class="num">Reduzir</th><th>Leitura</th></tr></thead>
+      <tbody>${linhas.map((item) => `<tr><td><strong>${esc(item.rota)}</strong></td><td>${esc(item.faixa)}</td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatMoney(item.valorNF)}</td><td class="num">${formatMoney(item.freteRealizado)}</td><td class="num">${formatMoney(item.freteTabela)}</td><td class="num">${formatPercent(item.pctRealizado)}</td><td class="num">${formatPercent(item.pctTabela)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td><td>${item.reduzirPct > 0 ? `Tabela acima do realizado nesta faixa. Reduzir ${formatPercent(item.reduzirPct)}.` : 'Tabela igual ou abaixo do realizado neste recorte.'}</td></tr>`).join('')}</tbody>
+    </table>
+  </main>
+</body>
+</html>`;
+    baixarHtml(`${nomeBase}.html`, html);
+  };
 
   const copiarTextoLaudo = async (texto, label) => {
     if (!texto) return;
@@ -8216,6 +8353,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
               title="Comparativo tabela × realizado — sem concorrentes, foco no que foi pago vs tabela"
               style={{ background: '#f3e8ff', color: '#7c3aed', border: '1px solid #c4b5fd' }}>
               📋 Fornecedor × Realizado
+            </button>
+            <button className="sim-tab" type="button"
+              onClick={exportarLaudoAjusteRotaFaixaTransportador}
+              disabled={!resultadoRealizado?.ctesDetalhes?.length}
+              title="Laudo para negociar reducao por rota/faixa com a transportadora"
+              style={{ background: '#eef2ff', color: '#3730a3', border: '1px solid #c7d2fe' }}>
+              Ajuste rota/faixa
             </button>
             <button className="sim-tab" type="button"
               onClick={exportarRelatorioDiretoria}
