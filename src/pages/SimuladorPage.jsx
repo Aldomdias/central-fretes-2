@@ -7182,6 +7182,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
       return `${ini} a ${fim}`;
     };
     const getFreteDetalhe = (item) => item.selecionadaDetalhes?.frete || item.vencedorDetalhes?.frete || {};
+    const getPercentualTabelaBase = (frete) => {
+      const candidatos = [
+        frete.percentualAplicado,
+        frete.percentual,
+        frete.percentualNF,
+        frete.percentualNf,
+        frete.percentual_nf,
+      ];
+      const valor = candidatos.map((v) => Number(v)).find((v) => Number.isFinite(v) && v > 0);
+      return valor || 0;
+    };
 
     const grupos = new Map();
     detalhes.forEach((item) => {
@@ -7189,20 +7200,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
       const rota = frete.rotaNome || item.rotaSelecionada || item.faixaPeso || item.cotacao || `${item.ufDestino || ''}` || 'Sem rota';
       const faixa = formatFaixa(frete.faixaPeso || item.faixaPeso, frete.pesoInicial, frete.pesoFinal);
       const chave = `${rota}__${faixa}`;
+      const valorNF = Number(item.valorNF || 0);
+      const freteRealizado = Number(item.freteRealizado || 0);
+      const freteTabela = Number(item.freteSelecionada || 0);
+      const percentualTabelaBase = getPercentualTabelaBase(frete);
       const atual = grupos.get(chave) || {
         rota,
         faixa,
         ctes: 0,
+        ctesGanharia: 0,
         valorNF: 0,
         freteRealizado: 0,
         freteTabela: 0,
+        percentualTabelaBaseSoma: 0,
+        percentualTabelaBasePeso: 0,
         peso: 0,
         volumes: 0,
       };
       atual.ctes += 1;
-      atual.valorNF += Number(item.valorNF || 0);
-      atual.freteRealizado += Number(item.freteRealizado || 0);
-      atual.freteTabela += Number(item.freteSelecionada || 0);
+      if (freteTabela > 0 && freteTabela < freteRealizado) atual.ctesGanharia += 1;
+      atual.valorNF += valorNF;
+      atual.freteRealizado += freteRealizado;
+      atual.freteTabela += freteTabela;
+      if (percentualTabelaBase > 0 && valorNF > 0) {
+        atual.percentualTabelaBaseSoma += percentualTabelaBase * valorNF;
+        atual.percentualTabelaBasePeso += valorNF;
+      }
       atual.peso += Number(item.peso || 0);
       atual.volumes += Number(item.volumes || 0);
       grupos.set(chave, atual);
@@ -7210,22 +7233,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
     const linhas = [...grupos.values()].map((grupo) => {
       const pctRealizado = grupo.valorNF > 0 ? (grupo.freteRealizado / grupo.valorNF) * 100 : 0;
-      const pctTabela = grupo.valorNF > 0 ? (grupo.freteTabela / grupo.valorNF) * 100 : 0;
-      const reduzirPct = pctTabela > 0 && pctTabela > pctRealizado
-        ? ((pctTabela - pctRealizado) / pctTabela) * 100
+      const pctTabelaFinal = grupo.valorNF > 0 ? (grupo.freteTabela / grupo.valorNF) * 100 : 0;
+      const pctTabelaBase = grupo.percentualTabelaBasePeso > 0
+        ? grupo.percentualTabelaBaseSoma / grupo.percentualTabelaBasePeso
+        : pctTabelaFinal;
+      const aderenciaRota = grupo.ctes > 0 ? (grupo.ctesGanharia / grupo.ctes) * 100 : 0;
+      const reduzirPct = pctTabelaBase > 0 && pctTabelaBase > pctRealizado
+        ? ((pctTabelaBase - pctRealizado) / pctTabelaBase) * 100
         : 0;
-      return { ...grupo, pctRealizado, pctTabela, reduzirPct, diferenca: grupo.freteTabela - grupo.freteRealizado };
+      return { ...grupo, pctRealizado, pctTabelaBase, pctTabelaFinal, aderenciaRota, reduzirPct, diferenca: grupo.freteTabela - grupo.freteRealizado };
     }).sort((a, b) => (b.reduzirPct - a.reduzirPct) || (b.diferenca - a.diferenca) || (b.valorNF - a.valorNF));
 
     const totais = linhas.reduce((acc, item) => {
       acc.ctes += item.ctes;
+      acc.ctesGanharia += item.ctesGanharia;
       acc.valorNF += item.valorNF;
       acc.freteRealizado += item.freteRealizado;
       acc.freteTabela += item.freteTabela;
+      acc.percentualTabelaBaseSoma += item.percentualTabelaBaseSoma;
+      acc.percentualTabelaBasePeso += item.percentualTabelaBasePeso;
       return acc;
-    }, { ctes: 0, valorNF: 0, freteRealizado: 0, freteTabela: 0 });
+    }, { ctes: 0, ctesGanharia: 0, valorNF: 0, freteRealizado: 0, freteTabela: 0, percentualTabelaBaseSoma: 0, percentualTabelaBasePeso: 0 });
     const pctRealizadoTotal = totais.valorNF > 0 ? (totais.freteRealizado / totais.valorNF) * 100 : 0;
-    const pctTabelaTotal = totais.valorNF > 0 ? (totais.freteTabela / totais.valorNF) * 100 : 0;
+    const pctTabelaTotal = totais.percentualTabelaBasePeso > 0
+      ? totais.percentualTabelaBaseSoma / totais.percentualTabelaBasePeso
+      : (totais.valorNF > 0 ? (totais.freteTabela / totais.valorNF) * 100 : 0);
+    const aderenciaTotal = totais.ctes > 0 ? (totais.ctesGanharia / totais.ctes) * 100 : 0;
     const reduzirTotal = pctTabelaTotal > pctRealizadoTotal && pctTabelaTotal > 0
       ? ((pctTabelaTotal - pctRealizadoTotal) / pctTabelaTotal) * 100
       : 0;
@@ -7245,7 +7278,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     h1 { margin: 0 0 8px; font-size: 25px; }
     h2 { margin-top: 28px; font-size: 18px; }
     .muted { color: #5d6b89; font-size: 13px; }
-    .cards { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 12px; margin: 18px 0 24px; }
+    .cards { display: grid; grid-template-columns: repeat(6, minmax(135px, 1fr)); gap: 12px; margin: 18px 0 24px; }
     .card { background: #fff; border: 1px solid #d8e1ef; border-radius: 12px; padding: 14px; }
     .card span { display: block; color: #5d6b89; font-size: 12px; font-weight: 700; }
     .card strong { display: block; margin-top: 7px; font-size: 22px; }
@@ -7269,15 +7302,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
     <section class="cards">
       <div class="card"><span>CT-es analisados</span><strong>${formatNumberBR(totais.ctes, 0)}</strong></div>
       <div class="card"><span>Rotas/faixas</span><strong>${formatNumberBR(linhas.length, 0)}</strong></div>
+      <div class="card"><span>Ganharia</span><strong>${formatNumberBR(totais.ctesGanharia, 0)}</strong></div>
+      <div class="card"><span>Aderencia media</span><strong>${formatPercent(aderenciaTotal)}</strong></div>
       <div class="card"><span>% realizado medio</span><strong>${formatPercent(pctRealizadoTotal)}</strong></div>
-      <div class="card"><span>% tabela media</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
+      <div class="card"><span>% tabela base</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
       <div class="card"><span>Reducao media sugerida</span><strong>${formatPercent(reduzirTotal)}</strong></div>
     </section>
-    <div class="note">A reducao sugerida indica quanto o percentual da tabela precisa ser ajustado para se aproximar do realizado no recorte. Exemplo: tabela 3,50% e realizado 3,00% resulta em reducao de 14,28%.</div>
+    <div class="note">A reducao sugerida compara o percentual base da faixa (% NF cadastrado na tabela) com o percentual realizado. O frete tabela final continua exibido com taxas, minimos e generalidades para conferencia.</div>
     <h2>Resumo por rota/faixa</h2>
     <table>
-      <thead><tr><th>Rota/cotacao</th><th>Faixa</th><th class="num">CT-es</th><th class="num">Valor NF</th><th class="num">Frete realizado</th><th class="num">Frete tabela</th><th class="num">% realizado</th><th class="num">% tabela</th><th class="num">Reduzir</th><th>Leitura</th></tr></thead>
-      <tbody>${linhas.map((item) => `<tr><td><strong>${esc(item.rota)}</strong></td><td>${esc(item.faixa)}</td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatMoney(item.valorNF)}</td><td class="num">${formatMoney(item.freteRealizado)}</td><td class="num">${formatMoney(item.freteTabela)}</td><td class="num">${formatPercent(item.pctRealizado)}</td><td class="num">${formatPercent(item.pctTabela)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td><td>${item.reduzirPct > 0 ? `Tabela acima do realizado nesta faixa. Reduzir ${formatPercent(item.reduzirPct)}.` : 'Tabela igual ou abaixo do realizado neste recorte.'}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>Rota/cotacao</th><th>Faixa</th><th class="num">CT-es</th><th class="num">Ganharia</th><th class="num">Aderencia rota</th><th class="num">Valor NF</th><th class="num">Frete realizado</th><th class="num">Frete tabela final</th><th class="num">% realizado</th><th class="num">% tabela base</th><th class="num">Reduzir</th><th>Leitura</th></tr></thead>
+      <tbody>${linhas.map((item) => `<tr><td><strong>${esc(item.rota)}</strong></td><td>${esc(item.faixa)}</td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatNumberBR(item.ctesGanharia, 0)}</td><td class="num">${formatPercent(item.aderenciaRota)}</td><td class="num">${formatMoney(item.valorNF)}</td><td class="num">${formatMoney(item.freteRealizado)}</td><td class="num">${formatMoney(item.freteTabela)}</td><td class="num">${formatPercent(item.pctRealizado)}</td><td class="num">${formatPercent(item.pctTabelaBase)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td><td>${item.reduzirPct > 0 ? `Tabela acima do realizado nesta faixa. Reduzir ${formatPercent(item.reduzirPct)}.` : 'Tabela igual ou abaixo do realizado neste recorte.'}</td></tr>`).join('')}</tbody>
     </table>
   </main>
 </body>
