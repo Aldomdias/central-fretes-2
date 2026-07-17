@@ -425,6 +425,8 @@ function montarLinhaResultadoAuditoria(row = {}, competencia = '') {
   const diferenca = row.diferenca !== undefined && row.diferenca !== null && String(row.diferenca).trim() !== ''
     ? toNumber(row.diferenca)
     : (valorCalculado > 0 ? valorCte - valorCalculado : 0);
+  const valorExcessivo = Math.max(diferenca, 0);
+  const valorInsuficiente = Math.abs(Math.min(diferenca, 0));
 
   return {
     competencia: String(row.competencia || competencia || '').slice(0, 7),
@@ -451,6 +453,8 @@ function montarLinhaResultadoAuditoria(row = {}, competencia = '') {
     valor_calculado: valorCalculado,
     diferenca,
     diferenca_abs: Math.abs(diferenca),
+    valor_excessivo: valorExcessivo,
+    valor_insuficiente: valorInsuficiente,
     percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
     status_calculo: valorCalculado > 0 ? 'CALCULADO' : 'SEM_CALCULO',
     motivo_sem_calculo: valorCalculado > 0 ? '' : 'CT-e sem valor calculado na base CTS.',
@@ -585,6 +589,8 @@ function montarLinhaResultadoDireto(row = {}, competencia = '') {
   const diferencaVerum = row.diferenca_verum !== undefined && row.diferenca_verum !== null && String(row.diferenca_verum).trim() !== ''
     ? toNumber(row.diferenca_verum)
     : (valorCalculadoVerum > 0 ? valorCte - valorCalculadoVerum : 0);
+  const valorExcessivo = Math.max(diferenca, 0);
+  const valorInsuficiente = Math.abs(Math.min(diferenca, 0));
   const status = row.status_calculo || (valorCalculado > 0 ? 'CALCULADO' : 'SEM_CALCULO');
   const detalhe = row.detalhes_calculo ?? null;
 
@@ -615,6 +621,8 @@ function montarLinhaResultadoDireto(row = {}, competencia = '') {
     diferenca,
     diferenca_verum: diferencaVerum,
     diferenca_abs: Math.abs(diferenca),
+    valor_excessivo: valorExcessivo,
+    valor_insuficiente: valorInsuficiente,
     percentual_diferenca: valorCalculado > 0 ? (diferenca / valorCalculado) * 100 : 0,
     status_calculo: status,
     motivo_sem_calculo: row.motivo_sem_calculo || (valorCalculado > 0 ? '' : 'CT-e sem valor calculado.'),

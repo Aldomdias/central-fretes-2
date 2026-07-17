@@ -1096,7 +1096,7 @@ function parseRouteKeysDb(routeKeys = []) {
   return { pares, keySet };
 }
 
-async function fetchRotasByIbgePairs(supabase, pares = []) {
+async function fetchRotasByIbgePairs(supabase, pares = [], onProgress = null) {
   const pairSet = new Set((pares || []).map((par) => par.pairKey).filter(Boolean));
   if (!pairSet.size) return [];
 
@@ -1107,7 +1107,8 @@ async function fetchRotasByIbgePairs(supabase, pares = []) {
       .values()
   );
   const rowsById = new Map();
-  const pairChunkSize = 40;
+  const pairChunkSize = 6;
+  let paresConsultados = 0;
 
   for (let index = 0; index < paresUnicos.length; index += pairChunkSize) {
     const chunk = paresUnicos.slice(index, index + pairChunkSize);
@@ -1136,6 +1137,8 @@ async function fetchRotasByIbgePairs(supabase, pares = []) {
       if (page.length < PAGE_SIZE) break;
       from += PAGE_SIZE;
     }
+    paresConsultados += chunk.length;
+    onProgress?.(Math.min(paresConsultados, paresUnicos.length), paresUnicos.length);
   }
 
   return [...rowsById.values()];
@@ -1371,7 +1374,7 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   });
 }
 
-export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = '' } = {}) {
+export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = '', onProgress = null } = {}) {
   if (!isSupabaseConfigured()) {
     const raw = localStorage.getItem(FALLBACK_KEY);
     if (!raw) return [];
@@ -1383,7 +1386,7 @@ export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = ''
   if (!pares.length) return [];
 
   const supabase = ensureClient();
-  const rotasBase = await fetchRotasByIbgePairs(supabase, pares);
+  const rotasBase = await fetchRotasByIbgePairs(supabase, pares, onProgress);
   if (!rotasBase.length) return [];
 
   const origemRows = await fetchOrigensByIds(supabase, Array.from(new Set(rotasBase.map((item) => item.origem_id).filter(Boolean))));

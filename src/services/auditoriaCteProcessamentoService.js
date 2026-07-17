@@ -172,6 +172,39 @@ export async function buscarResultadoAuditoriaPorChave(chaveCte) {
   return data || null;
 }
 
+export async function buscarResultadosAuditoriaPorIdentificadores(identificadores = [], onProgress) {
+  const normalizadas = [...new Set((identificadores || []).map((c) => onlyDigits(c)).filter(Boolean))];
+  if (!normalizadas.length) return [];
+  const chavesCte = normalizadas.filter((valor) => valor.length >= 20);
+  const numerosCte = normalizadas.filter((valor) => valor.length < 20);
+  const supabase = ensureSupabase();
+  const resultados = [];
+
+  for (let inicio = 0; inicio < chavesCte.length; inicio += 200) {
+    const lote = chavesCte.slice(inicio, inicio + 200);
+    const { data, error } = await supabase.from(TABELA_RESULTADOS).select('*').in('chave_cte', lote);
+    if (error) throw new Error(`Erro ao buscar auditorias salvas por chave: ${error.message}`);
+    resultados.push(...(data || []));
+    onProgress?.({ etapa: 'carregando_resultado_salvo', carregados: resultados.length, total: normalizadas.length });
+  }
+
+  for (let inicio = 0; inicio < numerosCte.length; inicio += 200) {
+    const lote = numerosCte.slice(inicio, inicio + 200);
+    const { data, error } = await supabase.from(TABELA_RESULTADOS).select('*').in('numero_cte', lote);
+    if (error) throw new Error(`Erro ao buscar auditorias salvas por numero: ${error.message}`);
+    resultados.push(...(data || []));
+    onProgress?.({ etapa: 'carregando_resultado_salvo', carregados: resultados.length, total: normalizadas.length });
+  }
+
+  const vistos = new Set();
+  return resultados.filter((row) => {
+    const chave = pick(row, ['chave_cte', 'chaveCte', 'chave']) || pick(row, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || pick(row, ['id']);
+    if (!chave || vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+}
+
 function nomeTransportadoraCte(cte = {}, mapaVinculos = null) {
   const original = pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']);
   if (!mapaVinculos) return original;
@@ -390,9 +423,12 @@ function routeKeysRegistros(registros = []) {
 
 async function carregarBaseFreteParaRegistros(registros = [], onProgress, transportadorasAlvo = [], mapaVinculos = null) {
   const routeKeys = routeKeysRegistros(registros);
-  if (routeKeys.length > 0 && routeKeys.length <= 200 && !(transportadorasAlvo || []).length) {
+  if (routeKeys.length > 0 && routeKeys.length <= 2500 && !(transportadorasAlvo || []).length) {
     onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados: 0, total: routeKeys.length });
-    const baseRotas = normalizarTransportadoras(await buscarBaseSimulacaoPorRotasDb({ routeKeys }));
+    const baseRotas = normalizarTransportadoras(await buscarBaseSimulacaoPorRotasDb({
+      routeKeys,
+      onProgress: (carregados, total) => onProgress?.({ etapa: 'carregando_tabelas_rotas', carregados, total }),
+    }));
     if (baseRotas.length) return baseRotas;
   }
 
@@ -576,6 +612,8 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
     percentual_diferenca: 0,
     status_calculo: status,
     motivo_sem_calculo: motivo,
+    tracking_match: Boolean(cte.trackingMatch),
+    tracking_status: cte.trackingNaoConsultado ? 'NAO_CONSULTADO' : (cte.trackingMatch ? 'VINCULADO' : 'SEM_VINCULO'),
     transportadora_tabela: extras.transportadora_tabela || null,
     tipo_calculo: extras.tipo_calculo || null,
     detalhes_calculo: extras.detalhes_calculo || null,
@@ -1202,28 +1240,61 @@ export async function carregarResumoAuditoriaMensal() {
 // compartilhado em realizadoTrackingEnrichment.js). A base de CT-es não tem
 // chave_nfe/nota_fiscal, então o casamento aqui é só por chave_cte/numero_cte.
 async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
-  const linhas = ctes.map((cte) => ({
+  const withTimeout = (promise, ms, label) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} excedeu ${Math.round(ms / 1000)}s`)), ms)),
+  ]);
+  const montarLinha = (cte) => ({
     chaveCte: pick(cte, ['chave_cte', 'chaveCte', 'chave']) || '',
     numeroCte: pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || '',
     peso: toNumber(pick(cte, ['peso'])),
     pesoDeclarado: toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
-  }));
-
-  onProgress?.({ etapa: 'cruzando_tracking', carregados: 0, total: linhas.length });
-  const mapasTracking = await buscarTrackingParaRealizado(linhas);
-  const { linhas: linhasEnriquecidas } = enriquecerRealizadoComTracking(linhas, mapasTracking);
-
-  return ctes.map((cte, index) => {
-    const enriquecida = linhasEnriquecidas[index] || {};
-    return {
-      ...cte,
-      trackingMatch: enriquecida.trackingMatch || cte.trackingMatch,
-      peso_declarado: enriquecida.pesoDeclarado || cte.peso_declarado,
-      peso_cubado: enriquecida.pesoCubado || cte.peso_cubado,
-      cubagem: enriquecida.cubagemTotal || cte.cubagem,
-      cubagemTotal: enriquecida.cubagemTotal || cte.cubagemTotal,
-    };
   });
+
+  const total = ctes.length;
+  const resultado = [];
+  const tamanhoLote = 20;
+  onProgress?.({ etapa: 'cruzando_tracking', carregados: 0, total });
+
+  for (let inicio = 0; inicio < ctes.length; inicio += tamanhoLote) {
+    const loteCtes = ctes.slice(inicio, inicio + tamanhoLote);
+    const linhas = loteCtes.map(montarLinha);
+    let linhasEnriquecidas = linhas;
+    try {
+      const mapasTracking = await withTimeout(
+        buscarTrackingParaRealizado(linhas),
+        8000,
+        `Tracking lote ${Math.floor(inicio / tamanhoLote) + 1}`,
+      );
+      linhasEnriquecidas = enriquecerRealizadoComTracking(linhas, mapasTracking).linhas || linhas;
+    } catch (error) {
+      console.warn('[Auditoria CT-e] Tracking ignorado para lote lento:', error?.message || error);
+      linhasEnriquecidas = linhas.map((linha) => ({
+        ...linha,
+        trackingMatch: false,
+        trackingPendente: true,
+        pesoCubado: 0,
+        cubagemTotal: 0,
+      }));
+    }
+
+    loteCtes.forEach((cte, index) => {
+      const enriquecida = linhasEnriquecidas[index] || {};
+      resultado.push({
+        ...cte,
+        trackingMatch: enriquecida.trackingMatch || cte.trackingMatch,
+        peso_declarado: enriquecida.pesoDeclarado || cte.peso_declarado,
+        peso_cubado: enriquecida.pesoCubado || cte.peso_cubado,
+        cubagem: enriquecida.cubagemTotal || cte.cubagem,
+        cubagemTotal: enriquecida.cubagemTotal || cte.cubagemTotal,
+      });
+    });
+
+    onProgress?.({ etapa: 'cruzando_tracking', carregados: Math.min(inicio + tamanhoLote, total), total });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return resultado;
 }
 
 export async function processarESalvarAuditoriaMes({ competencia, dataInicio, dataFim, canais, onProgress, ignorarCubagem = true, percentualContingenciaPeso = 0, apenasDadosCompletos = true } = {}) {
@@ -1311,6 +1382,45 @@ export async function processarESalvarAuditoriaMes({ competencia, dataInicio, da
 // competência — usado pela tela de Faturas, pra recalcular só os CT-es de uma
 // fatura sem precisar processar o mês inteiro. Não salva sozinho: devolve os
 // registros calculados pra quem chamou decidir onde/como persistir.
+export async function buscarCtesPorIdentificadores(chaves = [], onProgress) {
+  const normalizadas = [...new Set((chaves || []).map((c) => onlyDigits(c)).filter(Boolean))];
+  if (!normalizadas.length) return { ctes: [], encontrados: 0, naoEncontrados: 0 };
+  const chavesCte = normalizadas.filter((valor) => valor.length >= 20);
+  const numerosCte = normalizadas.filter((valor) => valor.length < 20);
+
+  const supabase = ensureSupabase();
+  const ctes = [];
+  for (let inicio = 0; inicio < chavesCte.length; inicio += 200) {
+    const lote = chavesCte.slice(inicio, inicio + 200);
+    const { data, error } = await supabase.from(TABELA_CTES).select('*').in('chave_cte', lote);
+    if (error) throw new Error(`Erro ao buscar CT-es por chave: ${error.message}`);
+    ctes.push(...(data || []));
+    onProgress?.({ etapa: 'buscando_ctes', carregados: ctes.length, total: normalizadas.length });
+  }
+
+  for (let inicio = 0; inicio < numerosCte.length; inicio += 200) {
+    const lote = numerosCte.slice(inicio, inicio + 200);
+    const { data, error } = await supabase.from(TABELA_CTES).select('*').in('numero_cte', lote);
+    if (error) throw new Error(`Erro ao buscar CT-es por numero: ${error.message}`);
+    ctes.push(...(data || []));
+    onProgress?.({ etapa: 'buscando_ctes', carregados: ctes.length, total: normalizadas.length });
+  }
+
+  const vistos = new Set();
+  const ctesUnicos = ctes.filter((cte) => {
+    const chave = pick(cte, ['chave_cte', 'chaveCte', 'chave']) || pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || pick(cte, ['id']);
+    if (!chave || vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+
+  return {
+    ctes: ctesUnicos,
+    encontrados: ctesUnicos.length,
+    naoEncontrados: Math.max(0, normalizadas.length - ctesUnicos.length),
+  };
+}
+
 export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}) {
   const opcoesCalculo = { ignorarCubagem: true, ...opcoes };
   const normalizadas = [...new Set((chaves || []).map((c) => onlyDigits(c)).filter(Boolean))];
@@ -1352,14 +1462,17 @@ export async function processarCtesPorChave(chaves = [], onProgress, opcoes = {}
     throw new Error('Nenhuma tabela de frete cadastrada foi encontrada para recalcular.');
   }
 
-  const ctesParaCalculo = opcoesCalculo.apenasDadosCompletos === false
+  const deveConsultarTracking = opcoesCalculo.apenasDadosCompletos === false && opcoesCalculo.consultarTrackingAoVivo !== false;
+  const ctesParaCalculo = deveConsultarTracking
     ? await enriquecerCtesComTrackingAoVivo(ctesUnicos, onProgress)
-    : ctesUnicos;
+    : ctesUnicos.map((cte) => ({ ...cte, trackingNaoConsultado: opcoesCalculo.apenasDadosCompletos === false }));
+  onProgress?.({ etapa: 'calculando_amd', carregados: 0, total: ctesUnicos.length });
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const registros = [];
   for (let index = 0; index < ctesUnicos.length; index += 1) {
     registros.push(processarCte(ctesParaCalculo[index] || ctesUnicos[index], transportadoras, mapaVinculos, '', opcoesCalculo));
-    if (index % 500 === 0 || index === ctesUnicos.length - 1) {
+    if (index % 25 === 0 || index === ctesUnicos.length - 1) {
       onProgress?.({ etapa: 'calculando_amd', carregados: index + 1, total: ctesUnicos.length });
       await new Promise((resolve) => setTimeout(resolve, 0));
     }

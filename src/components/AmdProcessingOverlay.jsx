@@ -2,6 +2,7 @@ import amdLogo from '../assets/amd-log.png';
 
 export const ETAPA_LABEL_AUDITORIA = {
   carregando_tabelas: 'Carregando tabelas cadastradas',
+  carregando_tabelas_rotas: 'Carregando tabelas pelas rotas dos CT-es',
   carregando_tabelas_transportadora: 'Carregando tabela da transportadora',
   carregando_tabelas_completas_fallback: 'Carregando base completa de tabelas',
   processando_ctes: 'Recalculando CT-es',

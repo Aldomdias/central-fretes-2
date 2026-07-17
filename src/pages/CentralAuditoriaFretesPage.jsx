@@ -49,7 +49,13 @@ import {
   salvarPagamentosFinanceiros,
   vincularNovaFatura,
 } from '../services/auditoriaFretesService';
-import { processarCtesPorChave, invalidarCacheBaseFreteAuditoriaCte, buscarResultadoAuditoriaPorChave } from '../services/auditoriaCteProcessamentoService';
+import {
+  buscarCtesPorIdentificadores,
+  buscarResultadosAuditoriaPorIdentificadores,
+  processarCtesPorChave,
+  invalidarCacheBaseFreteAuditoriaCte,
+  buscarResultadoAuditoriaPorChave,
+} from '../services/auditoriaCteProcessamentoService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
 
 const TABS = [
@@ -837,6 +843,39 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     return true;
   }), [resultadoCtesAvulsos, filtroAuditoriaAvulsa, toleranciaAuditoria]);
 
+  const resumoAuditoriaAvulsa = useMemo(() => {
+    const resumo = resultadoCtesAvulsos.reduce((acc, row) => {
+    const calculado = Number(row.valor_calculado || 0) > 0;
+    const diferenca = Number(row.diferenca || 0);
+    const ok = calculado && dentroDaToleranciaAuditoria(diferenca, toleranciaAuditoria);
+    acc.total += 1;
+    acc.pago += Number(row.valor_cte || 0);
+    acc.amd += Number(row.valor_calculado || 0);
+    if (calculado) acc.calculados += 1;
+    if (ok) acc.ok += 1;
+    if (calculado && !ok) acc.divergentes += 1;
+    if (!calculado) acc.semCalculo += 1;
+    if (calculado && !ok && diferenca > 0) acc.cobrancaAcima += diferenca;
+    if (calculado && !ok && diferenca < 0) acc.cobrancaAbaixo += Math.abs(diferenca);
+    return acc;
+    }, {
+    total: 0,
+    calculados: 0,
+    ok: 0,
+    divergentes: 0,
+    semCalculo: 0,
+    pago: 0,
+    amd: 0,
+    cobrancaAcima: 0,
+    cobrancaAbaixo: 0,
+    totalDescontar: 0,
+    });
+    return {
+      ...resumo,
+      totalDescontar: Math.max(resumo.cobrancaAcima - resumo.cobrancaAbaixo, 0),
+    };
+  }, [resultadoCtesAvulsos, toleranciaAuditoria]);
+
   const localizarFaturasPorChaves = async (chaves = [], numeros = []) => {
     const alvo = new Set(chaves.map(normalizarChaveCte).filter(Boolean));
     const numerosAlvo = new Set(numeros.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean));
@@ -911,6 +950,121 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       setProgressoCanais(null);
     }
   };
+
+  const numeroSeguro = (valor) => {
+    const n = Number(valor);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const primeiroValor = (obj, campos) => {
+    for (const campo of campos) {
+      if (obj?.[campo] !== undefined && obj?.[campo] !== null && obj?.[campo] !== '') return obj[campo];
+    }
+    return null;
+  };
+
+  const chaveResultadoAuditoria = (row = {}) => (
+    String(row.chave_cte || row.chaveCte || row.chave || '').replace(/\D/g, '')
+    || String(row.numero_cte || row.numeroCte || row.cte || row.nro_cte || '').replace(/\D/g, '')
+  );
+
+  const linhaConsultaCteAvulso = (cte = {}, resultadoSalvo = null) => {
+    const valorCte = numeroSeguro(primeiroValor(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete']));
+    const valorVerum = numeroSeguro(primeiroValor(cte, [
+      'valor_calculado',
+      'valorCalculado',
+      'frete_calculado',
+      'freteCalculado',
+      'valor_tabela',
+      'valorTabela',
+      'valor_simulado',
+      'valorSimulado',
+    ]));
+    const peso = numeroSeguro(primeiroValor(cte, ['peso', 'peso_final', 'pesoFinal', 'peso_declarado', 'pesoDeclarado']));
+    const base = {
+      competencia: String(primeiroValor(cte, ['competencia', 'mes_competencia']) || '').slice(0, 7),
+      data_emissao: primeiroValor(cte, ['data_emissao', 'emissao', 'dataEmissao']),
+      chave_cte: primeiroValor(cte, ['chave_cte', 'chaveCte', 'chave']),
+      numero_cte: primeiroValor(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']),
+      transportadora: primeiroValor(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']),
+      cidade_origem: primeiroValor(cte, ['cidade_origem', 'cidadeOrigem', 'origem']),
+      uf_origem: String(primeiroValor(cte, ['uf_origem', 'ufOrigem']) || '').toUpperCase(),
+      cidade_destino: primeiroValor(cte, ['cidade_destino', 'cidadeDestino', 'destino']),
+      uf_destino: String(primeiroValor(cte, ['uf_destino', 'ufDestino']) || '').toUpperCase(),
+      canal: primeiroValor(cte, ['canal', 'canal_original']),
+      peso,
+      peso_declarado: numeroSeguro(primeiroValor(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
+      peso_cubado: numeroSeguro(primeiroValor(cte, ['peso_cubado', 'pesoCubado'])),
+      cubagem: numeroSeguro(primeiroValor(cte, ['cubagem', 'cubagem_total', 'cubagemTotal'])),
+      qtd_volumes: numeroSeguro(primeiroValor(cte, ['qtd_volumes', 'qtdVolumes', 'volumes'])),
+      valor_nf: numeroSeguro(primeiroValor(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota'])),
+      valor_cte: valorCte,
+      valor_calculado_verum: valorVerum,
+      diferenca_verum: valorVerum > 0 ? valorCte - valorVerum : 0,
+      valor_calculado: valorVerum,
+      diferenca: valorVerum > 0 ? valorCte - valorVerum : 0,
+      status_calculo: 'CONSULTADO',
+      status_auditoria: valorVerum > 0 ? 'VERUM' : 'PENDENTE',
+      motivo_sem_calculo: valorVerum > 0
+        ? 'CT-e carregado com cálculo Verum. Clique em Auditar CT-es para calcular AMD.'
+        : 'CT-e carregado. Clique em Auditar CT-es para calcular AMD.',
+      tracking_status: 'NAO_CONSULTADO',
+      detalhes_calculo: null,
+    };
+    if (!resultadoSalvo) return base;
+    const amdSalvo = numeroSeguro(resultadoSalvo.valor_calculado);
+    const verumSalvo = numeroSeguro(resultadoSalvo.valor_calculado_verum);
+    const verumFinal = verumSalvo > 0 ? verumSalvo : valorVerum;
+    return {
+      ...base,
+      ...resultadoSalvo,
+      valor_cte: numeroSeguro(resultadoSalvo.valor_cte) || valorCte,
+      valor_calculado_verum: verumFinal,
+      diferenca_verum: verumFinal > 0 ? (numeroSeguro(resultadoSalvo.valor_cte) || valorCte) - verumFinal : 0,
+      valor_calculado: amdSalvo > 0 ? amdSalvo : verumFinal,
+      diferenca: amdSalvo > 0
+        ? numeroSeguro(resultadoSalvo.diferenca)
+        : (verumFinal > 0 ? (numeroSeguro(resultadoSalvo.valor_cte) || valorCte) - verumFinal : 0),
+      status_auditoria: amdSalvo > 0 ? resultadoSalvo.status_auditoria : (verumFinal > 0 ? 'VERUM' : 'PENDENTE'),
+      motivo_sem_calculo: amdSalvo > 0
+        ? resultadoSalvo.motivo_sem_calculo
+        : 'CT-e carregado com cálculo Verum. Clique em Auditar CT-es para calcular AMD.',
+    };
+  };
+
+  const consultarCtesAvulsos = async () => {
+    const ids = extrairIdentificadoresCte(buscaCtesAvulsa);
+    if (!ids.length) {
+      setMensagemImportacao('Cole uma chave de CT-e ou uma lista de CT-es para consultar.');
+      return;
+    }
+    setAuditandoCtesAvulsos(true);
+    setProgressoCtesAvulsos(null);
+    setResultadoCtesAvulsos([]);
+    setResultadoCtesAvulsosSalvos(false);
+    setCteAvulsoExpandido(null);
+    try {
+      setMensagemImportacao('Consultando CT-es e auditorias salvas...');
+      const [base, salvos] = await Promise.all([
+        buscarCtesPorIdentificadores(ids, setProgressoCtesAvulsos),
+        buscarResultadosAuditoriaPorIdentificadores(ids, setProgressoCtesAvulsos).catch(() => []),
+      ]);
+      const salvosPorChave = new Map((salvos || []).map((row) => [chaveResultadoAuditoria(row), row]));
+      const linhas = (base.ctes || []).map((cte) => linhaConsultaCteAvulso(cte, salvosPorChave.get(chaveResultadoAuditoria(cte))));
+      setResultadoCtesAvulsos(linhas);
+      setResultadoCtesAvulsosSalvos(linhas.some((row) => Number(row.valor_calculado || 0) > 0 && row.detalhes_calculo));
+      setMensagemImportacao(
+        `Consulta concluida: ${base.encontrados} CT-e(s) encontrado(s)${base.naoEncontrados ? `, ${base.naoEncontrados} nao encontrado(s)` : ''}. `
+        + 'Clique em Auditar CT-es para recalcular AMD quando necessario.',
+      );
+    } catch (error) {
+      setMensagemImportacao(`Erro ao consultar CT-es: ${error.message}`);
+    } finally {
+      setAuditandoCtesAvulsos(false);
+      setProgressoCtesAvulsos(null);
+    }
+  };
+
   const auditarCtesAvulsos = async () => {
     const ids = extrairIdentificadoresCte(buscaCtesAvulsa);
     if (!ids.length) {
@@ -1111,8 +1265,15 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const ok = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria)).length;
     const divergentes = calculados - ok;
     const semCalculo = total - calculados;
-    const excesso = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.max(Number(row.diferenca || 0), 0), 0);
-    const insuf = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.abs(Math.min(Number(row.diferenca || 0), 0)), 0);
+    const diferencaCobravel = (row) => {
+      if (Number(row.valor_calculado || 0) <= 0) return 0;
+      if (dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria)) return 0;
+      if (laudoTransportador && !mostrarDiferencaNegativaLaudoTransportador && Number(row.diferenca || 0) < 0) return 0;
+      return Number(row.diferenca || 0);
+    };
+    const excesso = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.max(diferencaCobravel(row), 0), 0);
+    const insuf = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.abs(Math.min(diferencaCobravel(row), 0)), 0);
+    const totalDescontar = Math.max(excesso - insuf, 0);
     const totalPago = resultadoCtesAvulsos.reduce((acc, row) => acc + Number(row.valor_cte || 0), 0);
     const totalAmd = resultadoCtesAvulsos.reduce((acc, row) => acc + Number(row.valor_calculado || 0), 0);
     const taxaOk = calculados > 0 ? (ok / calculados) * 100 : 0;
@@ -1128,11 +1289,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     }, new Map()).values()).sort((a, b) => b.divergencia - a.divergencia);
     const topDivergencias = [...resultadoCtesAvulsos]
       .filter((row) => Number(row.valor_calculado || 0) > 0)
-      .sort((a, b) => Math.abs(Number(b.diferenca || 0)) - Math.abs(Number(a.diferenca || 0)))
-      .slice(0, 25);
+      .sort((a, b) => Math.abs(Number(b.diferenca || 0)) - Math.abs(Number(a.diferenca || 0)));
     const devolucoes = resultadoCtesAvulsos.filter((row) => row.detalhes_calculo?.calculo_devolucao_invertida);
     const ajustesPeso = resultadoCtesAvulsos.filter((row) => row.detalhes_calculo?.ajuste_peso_aplicado);
-    const semCalculoRows = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) <= 0).slice(0, 25);
+    const semCalculoRows = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) <= 0);
     const dinheiroLaudo = (valor) => (Number.isFinite(Number(valor)) ? dinheiro(valor) : '-');
     const numeroLaudo = (valor, casas = 2) => (Number.isFinite(Number(valor)) ? numeroFmt(valor, casas) : '-');
     const pesoUsado = (row) => Number(row.detalhes_calculo?.peso_considerado ?? row.peso ?? 0);
@@ -1163,21 +1323,28 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       const base = det.componentes_base || {};
       const taxas = det.taxas || {};
       const rota = det.rota_cotacao || det.rota || row.rota || `${row.cidade_origem || row.origem || ''} -> ${row.cidade_destino || row.destino || ''}`;
+      const linhaOkTransportador = publico && statusExibido(row) === 'OK';
+      const valorPagoPublico = Number(row.valor_cte || 0);
+      const valorCalculadoPublico = linhaOkTransportador ? valorPagoPublico : Number(row.valor_calculado || 0);
+      const valorBasePublico = linhaOkTransportador ? valorPagoPublico : (det.valor_base ?? base.valor_base);
+      const valorTaxaPublica = (value) => (linhaOkTransportador ? null : value);
+      const dinheiroPublico = (value) => (linhaOkTransportador ? '-' : dinheiroLaudo(value));
+      const percentualPublico = (value) => (linhaOkTransportador ? '-' : (Number.isFinite(Number(value)) ? pctFmt(value) : '-'));
       const taxaLinhas = [
-        ['Ad Valorem', taxas.adValorem ?? taxas.ad_valorem ?? taxas.advalorem],
-        ['GRIS', taxas.gris],
-        ['Pedagio', taxas.pedagio],
-        ['TAS', taxas.tas],
-        ['CTRC', taxas.ctrc],
-        ['TDA', taxas.tda],
-        ['TDE', taxas.tde],
-        ['TDR', taxas.tdr],
-        ['TRT', taxas.trt],
-        ['Suframa', taxas.suframa],
-        ['Outras', taxas.outras],
-        ['Taxa extra', taxas.taxaExtra ?? taxas.taxa_extra],
-        ['Total taxas', det.total_taxas ?? taxas.total],
-      ].map(([label, value]) => detalheLinha(label, dinheiroLaudo(value)));
+        ['Ad Valorem', valorTaxaPublica(taxas.adValorem ?? taxas.ad_valorem ?? taxas.advalorem)],
+        ['GRIS', valorTaxaPublica(taxas.gris)],
+        ['Pedagio', valorTaxaPublica(taxas.pedagio)],
+        ['TAS', valorTaxaPublica(taxas.tas)],
+        ['CTRC', valorTaxaPublica(taxas.ctrc)],
+        ['TDA', valorTaxaPublica(taxas.tda)],
+        ['TDE', valorTaxaPublica(taxas.tde)],
+        ['TDR', valorTaxaPublica(taxas.tdr)],
+        ['TRT', valorTaxaPublica(taxas.trt)],
+        ['Suframa', valorTaxaPublica(taxas.suframa)],
+        ['Outras', valorTaxaPublica(taxas.outras)],
+        ['Taxa extra', valorTaxaPublica(taxas.taxaExtra ?? taxas.taxa_extra)],
+        ['Total taxas', valorTaxaPublica(det.total_taxas ?? taxas.total)],
+      ].map(([label, value]) => detalheLinha(label, linhaOkTransportador ? '-' : dinheiroLaudo(value)));
       const comparativo = Array.isArray(det.comparativo_pesos) ? det.comparativo_pesos : [];
       const comparativoHtml = comparativo.map((alt) => `
         <tr>
@@ -1204,30 +1371,30 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
               detalheLinha('Peso usado', `${numeroLaudo(pesoUsado(row), 3)} kg`),
               detalheLinha('Valor NF', dinheiroLaudo(det.valor_nf ?? row.valor_nf)),
               detalheLinha('Frete pago', dinheiroLaudo(row.valor_cte)),
-              detalheLinha('CÃ¡lculo AMD/local', dinheiroLaudo(row.valor_calculado)),
-              detalheLinha('DiferenÃ§a', dinheiroLaudo(diferencaExibida(row)), diferencaExibida(row) > 0 ? 'bad' : 'warn'),
+              detalheLinha('CÃ¡lculo AMD/local', dinheiroLaudo(valorCalculadoPublico)),
+              linhaOkTransportador ? '' : detalheLinha('DiferenÃ§a', dinheiroLaudo(diferencaExibida(row)), diferencaExibida(row) > 0 ? 'bad' : 'warn'),
             ])}
             ${detalheBox('Base do frete', [
-              detalheLinha('Percentual aplicado', Number.isFinite(Number(base.percentual_aplicado ?? det.percentual_aplicado)) ? pctFmt(base.percentual_aplicado ?? det.percentual_aplicado) : '-'),
-              detalheLinha('Valor percentual', dinheiroLaudo(base.valor_percentual ?? det.valor_percentual)),
-              detalheLinha('R$/kg aplicado', dinheiroLaudo(base.valor_kg ?? base.valor_kg_aplicado ?? det.valor_kg_aplicado)),
-              detalheLinha('Valor kg garantia', dinheiroLaudo(base.valor_kg_garantia ?? det.valor_kg_garantia)),
-              detalheLinha('Frete mÃ­nimo rota', dinheiroLaudo(base.frete_minimo_rota ?? det.frete_minimo_rota)),
-              detalheLinha('Frete mÃ­nimo cotaÃ§Ã£o', dinheiroLaudo(base.frete_minimo_cotacao ?? det.frete_minimo_cotacao)),
-              detalheLinha('Frete mÃ­nimo geral', dinheiroLaudo(base.frete_minimo_geral ?? det.frete_minimo_geral)),
-              detalheLinha('MÃ­nimo aplicÃ¡vel', dinheiroLaudo(base.minimo_aplicavel ?? det.minimo_aplicavel)),
-              detalheLinha('Componente vencedor', esc(base.componente_vencedor || det.componente_vencedor || '-')),
-              detalheLinha('Valor base', dinheiroLaudo(det.valor_base ?? base.valor_base)),
+              detalheLinha('Percentual aplicado', percentualPublico(base.percentual_aplicado ?? det.percentual_aplicado)),
+              detalheLinha('Valor percentual', dinheiroPublico(base.valor_percentual ?? det.valor_percentual)),
+              detalheLinha('R$/kg aplicado', dinheiroPublico(base.valor_kg ?? base.valor_kg_aplicado ?? det.valor_kg_aplicado)),
+              detalheLinha('Valor kg garantia', dinheiroPublico(base.valor_kg_garantia ?? det.valor_kg_garantia)),
+              detalheLinha('Frete mÃ­nimo rota', dinheiroPublico(base.frete_minimo_rota ?? det.frete_minimo_rota)),
+              detalheLinha('Frete mÃ­nimo cotaÃ§Ã£o', dinheiroPublico(base.frete_minimo_cotacao ?? det.frete_minimo_cotacao)),
+              detalheLinha('Frete mÃ­nimo geral', dinheiroPublico(base.frete_minimo_geral ?? det.frete_minimo_geral)),
+              detalheLinha('MÃ­nimo aplicÃ¡vel', dinheiroPublico(base.minimo_aplicavel ?? det.minimo_aplicavel)),
+              detalheLinha('Componente vencedor', esc(linhaOkTransportador ? '-' : (base.componente_vencedor || det.componente_vencedor || '-'))),
+              detalheLinha('Valor base', dinheiroLaudo(valorBasePublico)),
             ])}
             ${detalheBox('ICMS e totalizaÃ§Ã£o', [
-              detalheLinha('Subtotal antes emergencial', dinheiroLaudo(det.subtotal_antes_emergencial ?? det.subtotal)),
-              detalheLinha('Taxa emergencial', dinheiroLaudo(det.taxa_emergencial)),
-              detalheLinha('Subtotal sem ICMS', dinheiroLaudo(det.subtotal_sem_icms ?? det.subtotal)),
-              detalheLinha('AlÃ­quota ICMS', Number.isFinite(Number(det.aliquota_icms)) ? pctFmt(det.aliquota_icms) : '-'),
-              detalheLinha('Origem alÃ­quota', esc(det.origem_aliquota_icms || '-')),
+              detalheLinha('Subtotal antes emergencial', dinheiroPublico(det.subtotal_antes_emergencial ?? det.subtotal)),
+              detalheLinha('Taxa emergencial', dinheiroPublico(det.taxa_emergencial)),
+              detalheLinha('Subtotal sem ICMS', dinheiroPublico(det.subtotal_sem_icms ?? det.subtotal)),
+              detalheLinha('AlÃ­quota ICMS', percentualPublico(det.aliquota_icms)),
+              detalheLinha('Origem alÃ­quota', esc(linhaOkTransportador ? '-' : (det.origem_aliquota_icms || '-'))),
               detalheLinha('UF origem/destino', esc(`${row.uf_origem || '-'} -> ${row.uf_destino || '-'}`)),
-              detalheLinha('ICMS', dinheiroLaudo(det.icms)),
-              detalheLinha('Total calculado', dinheiroLaudo(row.valor_calculado)),
+              detalheLinha('ICMS', dinheiroPublico(det.icms)),
+              detalheLinha('Total calculado', dinheiroLaudo(valorCalculadoPublico)),
             ])}
             ${publico ? '' : detalheBox('Pesos disponÃ­veis', [
               detalheLinha('Peso usado no cÃ¡lculo', `${numeroLaudo(pesoUsado(row), 3)} kg`),
@@ -1345,6 +1512,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         <div class="card"><div class="label">CÃ¡lculo AMD</div><div class="value">${dinheiro(totalAmd)}</div></div>
         <div class="card"><div class="label">CobranÃ§a acima</div><div class="value bad">${dinheiro(excesso)}</div></div>
         <div class="card"><div class="label">CobranÃ§a abaixo</div><div class="value warn">${dinheiro(insuf)}</div></div>
+        ${laudoTransportador && mostrarDiferencaNegativaLaudoTransportador
+          ? `<div class="card"><div class="label">Total a descontar</div><div class="value bad">${dinheiro(totalDescontar)}</div></div>`
+          : ''}
       </div>
       <div class="note">Valores positivos em diferenÃ§a indicam cobranÃ§a acima do cÃ¡lculo AMD/local. Valores negativos indicam cobranÃ§a abaixo do cÃ¡lculo.</div>
     </section>
@@ -1536,6 +1706,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
               )}
             </div>
             <button className="btn-secondary audit-small-button" type="button" onClick={() => { setBuscaCtesAvulsa(''); setResultadoCtesAvulsos([]); setResultadoCtesAvulsosSalvos(false); setCteAvulsoExpandido(null); }} disabled={auditandoCtesAvulsos}>Limpar</button>
+            <button className="btn-secondary audit-small-button" type="button" onClick={consultarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
+              Consultar CT-es
+            </button>
             <button className="btn-primary audit-small-button" type="button" onClick={auditarCtesAvulsos} disabled={auditandoCtesAvulsos || !extrairIdentificadoresCte(buscaCtesAvulsa).length}>
               {auditandoCtesAvulsos ? 'Auditando...' : 'Auditar CT-es'}
             </button>
@@ -1593,6 +1766,50 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
             <div className="audit-quick-results-head">
               <strong>{resultadoCtesAvulsos.length} CT-e(s) processado(s)</strong>
               <span>{resultadoCtesAvulsosSalvos ? 'Auditoria salva e faturas relacionadas atualizadas.' : 'A auditoria sera salva automaticamente apos o calculo.'}</span>
+            </div>
+            <div className="audit-quick-summary-strip">
+              <div className="audit-quick-summary-card">
+                <span>CT-es</span>
+                <strong>{numeroFmt(resumoAuditoriaAvulsa.total)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Calculados AMD</span>
+                <strong>{numeroFmt(resumoAuditoriaAvulsa.calculados)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Dentro da tolerancia</span>
+                <strong className="success">{numeroFmt(resumoAuditoriaAvulsa.ok)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Divergentes</span>
+                <strong className="danger">{numeroFmt(resumoAuditoriaAvulsa.divergentes)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Sem calculo</span>
+                <strong className="warning">{numeroFmt(resumoAuditoriaAvulsa.semCalculo)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Frete pago</span>
+                <strong>{dinheiro(resumoAuditoriaAvulsa.pago)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Calculo AMD</span>
+                <strong>{dinheiro(resumoAuditoriaAvulsa.amd)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Cobranca acima</span>
+                <strong className="danger">{dinheiro(resumoAuditoriaAvulsa.cobrancaAcima)}</strong>
+              </div>
+              <div className="audit-quick-summary-card">
+                <span>Cobranca abaixo</span>
+                <strong className="warning">{dinheiro(resumoAuditoriaAvulsa.cobrancaAbaixo)}</strong>
+              </div>
+              {mostrarDiferencaNegativaLaudoTransportador && (
+                <div className="audit-quick-summary-card">
+                  <span>Total a descontar</span>
+                  <strong className="warning">{dinheiro(resumoAuditoriaAvulsa.totalDescontar)}</strong>
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '10px 0' }}>
               <label className="field" style={{ minWidth: 260 }}>
