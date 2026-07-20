@@ -7759,7 +7759,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
     const { nomeArquivo, csv } = exportarLinhasCsv(`fornecedor-vs-realizado-${nomeBase}.csv`, linhas);
     downloadCsv(nomeArquivo, csv);
   };
-  const exportarLaudoAjusteRotaFaixaTransportador = () => {
+  const exportarLaudoAjusteRotaFaixaTransportador = ({ incluirSavingGerencial = false } = {}) => {
     if (!resultadoRealizado?.rotasCotacao?.length) return;
     const r = resultadoRealizado;
     const {
@@ -7788,7 +7788,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     };
-    const nomeBase = nomeArquivoSeguro(`ajuste-rota-faixa-${transportadora}`);
+    const nomeBase = nomeArquivoSeguro(incluirSavingGerencial
+      ? `ajuste-rota-faixa-gerencia-${transportadora}`
+      : `ajuste-rota-faixa-transportador-${transportadora}`);
     const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -7841,9 +7843,10 @@ export default function SimuladorPage({ transportadoras = [] }) {
       <div class="card"><span>Faturamento atual</span><strong>${formatMoney(totais.freteRealizado)}</strong></div>
       <div class="card rpa-cell"><span>Faturamento ${esc(rotuloTabelaLaudo)}</span><strong>${formatMoney(totais.freteTabela)}</strong></div>
       <div class="card"><span>Faturamento ${esc(rotuloTabelaLaudo)} nas ganhas</span><strong>${formatMoney(totais.freteTabelaGanharia)}</strong></div>
+      ${incluirSavingGerencial ? `
       <div class="card"><span>Saving no periodo</span><strong>${formatMoney(savingPeriodo)}</strong></div>
       <div class="card"><span>Saving mensal</span><strong>${formatMoney(savingMensal)}</strong></div>
-      <div class="card"><span>Saving anual</span><strong>${formatMoney(savingAnual)}</strong></div>
+      <div class="card"><span>Saving anual</span><strong>${formatMoney(savingAnual)}</strong></div>` : ''}
       <div class="card"><span>% realizado medio</span><strong>${formatPercent(pctRealizadoTotal)}</strong></div>
       <div class="card"><span>% ${esc(rotuloTabelaLaudo)}</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
       <div class="card"><span>Reducao media sugerida</span><strong>${formatPercent(reduzirTotal)}</strong></div>
@@ -7858,7 +7861,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       Aderencia da tabela = dos CT-es com calculo, % em que a ${esc(rotuloTabelaLaudo)} ganharia do frete realizado (mesma logica da Aderencia de cada rota).
       Faturamento atual = soma do frete cobrado apenas nos CT-es onde a ${esc(rotuloTabelaLaudo)} encontrou cobertura. Faturamento ${esc(rotuloTabelaLaudo)} = soma da tabela simulada nessa mesma base calculavel.
       Faturamento ${esc(rotuloTabelaLaudo)} nas ganhas = apenas o recorte em que a tabela ficaria competitiva contra o frete atual.
-      Saving = economia nas rotas ganhas, projetada pelo periodo, por mes e em 12 meses.
+      ${incluirSavingGerencial ? 'Saving = economia nas rotas ganhas, projetada pelo periodo, por mes e em 12 meses.' : ''}
       % realizado medio e % ${esc(rotuloTabelaLaudo)} = frete cobrado / tabela simulada sobre o valor NF total, na mesma base.
       Reducao media sugerida = quanto a ${esc(rotuloTabelaLaudo)} precisaria cair, em media, nas rotas onde ela ficou mais cara que o realizado.
       Perdendo = frete realizado nas rotas em que ela perderia para outra transportadora.
@@ -7890,7 +7893,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
   // Mesmo laudo de ajuste rota, em Excel: aba de resumo (cards), aba com o
   // resumo por rota e aba com a amostra de ajustes do motor de calculo.
-  const exportarExcelAjusteRotaFaixaTransportador = () => {
+  const exportarExcelAjusteRotaFaixaTransportador = ({ incluirSavingGerencial = false } = {}) => {
     if (!resultadoRealizado?.rotasCotacao?.length) return;
     const {
       linhasAtendidas, totais, transportadora, periodo,
@@ -7913,9 +7916,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
       ['Faturamento atual', Number(totais.freteRealizado.toFixed(2))],
       [`Faturamento ${rotuloTabelaLaudo}`, Number(totais.freteTabela.toFixed(2))],
       [`Faturamento ${rotuloTabelaLaudo} nas ganhas`, Number(totais.freteTabelaGanharia.toFixed(2))],
-      ['Saving no periodo', Number(savingPeriodo.toFixed(2))],
-      ['Saving mensal', Number(savingMensal.toFixed(2))],
-      ['Saving anual', Number(savingAnual.toFixed(2))],
+      ...(incluirSavingGerencial ? [
+        ['Saving no periodo', Number(savingPeriodo.toFixed(2))],
+        ['Saving mensal', Number(savingMensal.toFixed(2))],
+        ['Saving anual', Number(savingAnual.toFixed(2))],
+      ] : []),
       ['Aderencia da tabela (%)', Number(aderenciaTotal.toFixed(2))],
       ['% realizado medio', Number(pctRealizadoTotal.toFixed(2))],
       [`% ${rotuloTabelaLaudo}`, Number(pctTabelaTotal.toFixed(2))],
@@ -8016,7 +8021,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
     XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
     XLSX.utils.book_append_sheet(wb, wsRota, 'Rota');
     XLSX.utils.book_append_sheet(wb, wsCtes, 'CT-es completos');
-    const nomeBase = nomeArquivoSeguro(`ajuste-rota-${transportadora}`);
+    const nomeBase = nomeArquivoSeguro(incluirSavingGerencial
+      ? `ajuste-rota-gerencia-${transportadora}`
+      : `ajuste-rota-transportador-${transportadora}`);
     XLSX.writeFile(wb, `${nomeBase}.xlsx`);
   };
 
@@ -9090,18 +9097,32 @@ export default function SimuladorPage({ transportadoras = [] }) {
               📋 Fornecedor × Realizado
             </button>
             <button className="sim-tab" type="button"
-              onClick={exportarLaudoAjusteRotaFaixaTransportador}
+              onClick={() => exportarLaudoAjusteRotaFaixaTransportador({ incluirSavingGerencial: false })}
               disabled={!resultadoRealizado?.rotasCotacao?.length}
               title="Laudo para negociar reducao por rota/cotacao com a transportadora — cobre 100% dos CT-es do periodo"
               style={{ background: '#eef2ff', color: '#3730a3', border: '1px solid #c7d2fe' }}>
-              Ajuste por rota
+              Ajuste por rota transportador
             </button>
             <button className="sim-tab" type="button"
-              onClick={exportarExcelAjusteRotaFaixaTransportador}
+              onClick={() => exportarLaudoAjusteRotaFaixaTransportador({ incluirSavingGerencial: true })}
+              disabled={!resultadoRealizado?.rotasCotacao?.length}
+              title="Laudo interno com saving mensal e anual para gerencia/diretoria"
+              style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }}>
+              Ajuste por rota gerencia
+            </button>
+            <button className="sim-tab" type="button"
+              onClick={() => exportarExcelAjusteRotaFaixaTransportador({ incluirSavingGerencial: false })}
               disabled={!resultadoRealizado?.rotasCotacao?.length}
               title="Mesmo laudo de ajuste por rota, em Excel (resumo, rota e amostra de ajustes do motor)"
               style={{ background: '#eef2ff', color: '#3730a3', border: '1px solid #c7d2fe' }}>
               📥 Ajuste por rota (Excel)
+            </button>
+            <button className="sim-tab" type="button"
+              onClick={() => exportarExcelAjusteRotaFaixaTransportador({ incluirSavingGerencial: true })}
+              disabled={!resultadoRealizado?.rotasCotacao?.length}
+              title="Excel interno com saving mensal e anual para gerencia/diretoria"
+              style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }}>
+              Ajuste por rota Excel gerencia
             </button>
             <button className="sim-tab" type="button"
               onClick={exportarRelatorioDiretoria}
