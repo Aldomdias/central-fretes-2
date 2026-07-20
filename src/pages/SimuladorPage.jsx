@@ -214,7 +214,9 @@ function ComboBuscavel({ value, onChange, opcoes = [], placeholder, onSelecionar
         onChange={(e) => { setBusca(e.target.value); onChange(e.target.value); if (!aberto) setAberto(true); }}
         onFocus={() => { setBusca(''); setAberto(true); }}
         placeholder={placeholder}
+        title={!aberto ? value : ''}
         autoComplete="off"
+        style={{ width: '100%', boxSizing: 'border-box', textOverflow: 'ellipsis' }}
       />
       {aberto ? (
         <div style={{ position: 'absolute', zIndex: 40, top: '100%', left: 0, right: 0, marginTop: 4, maxHeight: 260, overflowY: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
@@ -481,7 +483,7 @@ async function buscarRealizadoLocalCtes(filtros = {}, onProgresso = null) {
     chaveNfe: pickRealizadoField(r, ['chave_nfe', 'chaveNfe', 'chave_nf', 'chaveNf', 'chave_nota', 'chaveNota']) || '',
     notaFiscal: pickRealizadoField(r, ['nota_fiscal', 'notaFiscal', 'nf', 'numero_nf', 'numeroNf', 'nfe_numero']) || '',
     pesoDeclarado: numeroRealizado(pickRealizadoField(r, ['peso_declarado', 'pesoDeclarado', 'peso', 'peso_real', 'pesoReal'])) || 0,
-    qtdVolumes: numeroRealizado(pickRealizadoField(r, ['qtd_volumes', 'qtdVolumes', 'volume', 'volumes', 'quantidade_volumes'])) || 0,
+    qtdVolumes: numeroRealizado(pickRealizadoField(r, ['qtd_volumes', 'qtdVolumes', 'volume', 'volumes', 'quantidade_volumes', 'total_unidades', 'totalUnidades'])) || 0,
     totalUnidades: numeroRealizado(pickRealizadoField(r, ['total_unidades', 'totalUnidades', 'Total de unidades', 'TOTAL DE UNIDADES'])) || 0,
     quantidadeItens: numeroRealizado(pickRealizadoField(r, ['quantidade_itens', 'quantidadeItens', 'qtd_itens', 'qtdItens', 'Quantidade de itens', 'QUANTIDADE DE ITENS'])) || 0,
     cubagemUnitaria: numeroRealizado(pickRealizadoField(r, ['cubagem_unitaria', 'cubagemUnitaria', 'cubagem'])) || 0,
@@ -783,6 +785,246 @@ function periodoLaudoRealizado(resultado = {}) {
 }
 function simOuNaoTexto(value) {
   return Number(value || 0) > 0;
+}
+
+// Monta o resumo por rota/cotacao do laudo de ajuste (cards + tabela), a
+// partir do agregado COMPLETO da simulacao (resultado.rotasCotacao) — "rota"
+// aqui e a cotacao cadastrada na tabela (rotaNome), nao a rota geografica.
+// Cobre todos os CT-es do periodo, nao so a amostra de auditoria usada em
+// ctesDetalhes. Usado tanto pela exportacao HTML quanto pela Excel, pra nao
+// duplicar a logica de agrupamento/aderencia em dois lugares.
+const MAX_ITENS_AMOSTRA_POR_ROTA = 50;
+
+// Detalhe de calculo de UM CT-e pra mostrar no laudo do transportador: so os
+// dados de entrada/saida (peso, %base, taxas, ICMS, Tabela RPA), NUNCA o
+// "valor bruto do motor" ou qualquer correcao/discrepancia — isso e auditoria
+// interna e nao pode ir pro transportador.
+// Valor final da Tabela RPA pra mostrar ao transportador: normaliza quando a
+// NF usada no calculo esta fora de proporcao com a NF real do CT-e, e
+// recompoe por percentual+taxas+ICMS quando o % calculado fica muito acima
+// do % base da tabela (sinal de ICMS/taxas nao embutidos). So o resultado
+// final aparece — nunca o valor bruto do motor nem o motivo da correcao,
+// que sao auditoria interna e nao podem ir pro transportador.
+function detalheCalculoCteTransportador(item = {}) {
+  if (!item.selecionadaDetalhes) {
+    const valorNF = Number(item.valorNF || 0);
+    const freteCobrado = Number(item.freteBaseComparativa || 0);
+    return {
+      percentualBase: 0,
+      percentualCobrado: valorNF > 0 ? (freteCobrado / valorNF) * 100 : 0,
+      percentualCalc: 0,
+      gris: 0,
+      tas: 0,
+      ctrc: 0,
+      pedagio: 0,
+      icms: 0,
+      tabelaRpa: 0,
+    };
+  }
+  const frete = item.selecionadaDetalhes?.frete || item.vencedorDetalhes?.frete || {};
+  const taxas = item.selecionadaDetalhes?.taxas || item.vencedorDetalhes?.taxas || {};
+  const valorNF = Number(item.valorNF || 0);
+  const freteCobrado = Number(item.freteBaseComparativa || 0);
+  const totalOriginal = Number(item.freteSelecionada || frete.total || 0);
+  const percentualBase = [frete.percentualAplicado, frete.percentual, frete.percentualNF, frete.percentualNf, frete.percentual_nf]
+    .map(Number).find((v) => Number.isFinite(v) && v > 0) || 0;
+
+  let tabelaRpa = totalOriginal;
+  let icms = Number(frete.icms || 0);
+  if (totalOriginal > 0 && valorNF > 0) {
+    const nfCalculo = Number(frete.valorNFInformado || 0);
+    let totalNormalizado = totalOriginal;
+    if (nfCalculo > 0) {
+      const ratioNf = nfCalculo / valorNF;
+      if (ratioNf >= 1.5 || ratioNf <= 0.67) totalNormalizado = totalOriginal / ratioNf;
+    }
+    const somaTaxas =
+      Number(taxas.adValorem || 0) + Number(taxas.gris || 0) + Number(taxas.pedagio || 0) + Number(taxas.tas || 0) +
+      Number(taxas.ctrc || 0) + Number(taxas.tda || 0) + Number(taxas.tde || 0) + Number(taxas.tdr || 0) +
+      Number(taxas.trt || 0) + Number(taxas.suframa || 0) + Number(taxas.outras || 0) + Number(taxas.taxaExtra || 0);
+    const valorPercentual = percentualBase > 0 ? valorNF * (percentualBase / 100) : 0;
+    const subtotalRecomposto = valorPercentual + somaTaxas;
+    const aliquota = Number(frete.aliquotaIcms || 0) / 100;
+    const icmsRecomposto = aliquota > 0 && aliquota < 1 ? (subtotalRecomposto / (1 - aliquota)) - subtotalRecomposto : 0;
+    const totalRecomposto = subtotalRecomposto + icmsRecomposto;
+    const percentualCalculado = (totalNormalizado / valorNF) * 100;
+    const deveRecompor = percentualBase > 0 && percentualCalculado > percentualBase * 3 && totalRecomposto > 0;
+    tabelaRpa = deveRecompor ? totalRecomposto : totalNormalizado;
+    if (deveRecompor) icms = icmsRecomposto;
+  }
+
+  return {
+    percentualBase,
+    percentualCobrado: valorNF > 0 ? (freteCobrado / valorNF) * 100 : 0,
+    percentualCalc: valorNF > 0 ? (tabelaRpa / valorNF) * 100 : 0,
+    gris: Number(taxas.gris || 0),
+    tas: Number(taxas.tas || 0),
+    ctrc: Number(taxas.ctrc || 0),
+    pedagio: Number(taxas.pedagio || 0),
+    icms,
+    tabelaRpa,
+  };
+}
+
+function montarDadosAjusteRotaFaixa(resultado = {}) {
+  const r = resultado;
+  const nomeCotacaoAmostra = (item) => item.selecionadaDetalhes?.frete?.rotaNome || item.vencedorDetalhes?.frete?.rotaNome || item.rotaSelecionada || 'Sem rota/cotacao';
+  // Agrupa a amostra de auditoria (ctesDetalhes) pela mesma cotacao usada no
+  // agregado completo, pra poder abrir "quais CT-es sao esses" ao clicar na
+  // rota — sem depender da amostra pra fechar os totais da linha.
+  const amostraPorRota = new Map();
+  (r.ctesDetalhes || []).forEach((item) => {
+    const chave = nomeCotacaoAmostra(item);
+    if (!amostraPorRota.has(chave)) amostraPorRota.set(chave, []);
+    amostraPorRota.get(chave).push(item);
+  });
+  const linhas = (r.rotasCotacao || []).map((rota) => {
+    const ctes = Number(rota.ctes || 0);
+    const ctesGanharia = Number(rota.ctesGanharia || 0);
+    const ctesSemCalculo = Number(rota.ctesSemCalculo || 0);
+    const ctesComCalculo = Math.max(0, ctes - ctesSemCalculo);
+    const ctesPerderia = Number(rota.ctesPerderia || 0);
+    const valorNF = Number(rota.valorNF || 0);
+    const freteRealizado = Number(rota.freteRealizado || 0);
+    const itensRotaAmostra = Array.isArray(rota.itensAmostra) && rota.itensAmostra.length
+      ? rota.itensAmostra
+      : (amostraPorRota.get(rota.nome) || []);
+    const itensRotaDetalhados = itensRotaAmostra.map((item) => ({
+      cte: item.cte,
+      canal: item.canal,
+      peso: Number(item.peso || 0),
+      valorNF: Number(item.valorNF || 0),
+      freteBaseComparativa: Number(item.freteBaseComparativa || 0),
+      statusSelecionada: item.statusSelecionada,
+      ...detalheCalculoCteTransportador(item),
+    }));
+    const detalheCompletoDaRota = itensRotaDetalhados.length === ctes && ctes > 0;
+    const freteTabelaDetalhado = itensRotaDetalhados.reduce((acc, item) => acc + Number(item.tabelaRpa || 0), 0);
+    const freteTabelaGanhariaDetalhado = itensRotaDetalhados
+      .filter((item) => item.statusSelecionada === 'Ganharia')
+      .reduce((acc, item) => acc + Number(item.tabelaRpa || 0), 0);
+    const freteTabela = Number(rota.freteTabelaLaudo || (detalheCompletoDaRota ? freteTabelaDetalhado : 0) || rota.freteTabela || 0);
+    const freteTabelaGanharia = Number(rota.freteTabelaGanhariaLaudo || (detalheCompletoDaRota ? freteTabelaGanhariaDetalhado : 0) || rota.freteTabelaGanharia || 0);
+    const itensAmostra = itensRotaDetalhados.slice(0, MAX_ITENS_AMOSTRA_POR_ROTA);
+    return {
+      rota: rota.nome,
+      ctes,
+      ctesSemCalculo,
+      ctesGanharia,
+      ctesPerderia,
+      valorNF,
+      freteRealizado,
+      freteTabela,
+      freteTabelaGanharia,
+      freteRealizadoPerderia: Number(rota.freteRealizadoPerderia || 0),
+      pctRealizado: Number(rota.percentualFreteRealizado || 0),
+      pctTabelaFinal: valorNF > 0 ? (freteTabela / valorNF) * 100 : Number(rota.percentualFreteSelecionada || 0),
+      aderenciaRota: ctesComCalculo > 0 ? (ctesGanharia / ctesComCalculo) * 100 : 0,
+      reduzirPct: Number(rota.reducaoMediaNecessariaLaudo || rota.reducaoMediaNecessaria || 0),
+      diferenca: freteTabela - freteRealizado,
+      peso: Number(rota.peso || 0),
+      volumes: Number(rota.volumes || 0),
+      volumesGanharia: Number(rota.volumesGanharia || 0),
+      pesoGanharia: Number(rota.pesoGanharia || 0),
+      itensAmostra,
+      itensAmostraIncompleta: itensAmostra.length < ctes,
+    };
+  }).sort((a, b) => b.ctes - a.ctes);
+
+  const totais = linhas.reduce((acc, item) => {
+    acc.ctes += item.ctes;
+    acc.ctesSemCalculo += item.ctesSemCalculo;
+    acc.ctesGanharia += item.ctesGanharia;
+    acc.ctesPerderia += item.ctesPerderia;
+    acc.valorNF += item.valorNF;
+    acc.freteRealizado += item.freteRealizado;
+    acc.freteTabela += item.freteTabela;
+    acc.freteTabelaGanharia += item.freteTabelaGanharia;
+    acc.freteRealizadoPerderia += item.freteRealizadoPerderia;
+    acc.peso += item.peso;
+    acc.volumes += item.volumes;
+    acc.volumesGanharia += item.volumesGanharia;
+    acc.pesoGanharia += item.pesoGanharia;
+    return acc;
+  }, { ctes: 0, ctesSemCalculo: 0, ctesGanharia: 0, ctesPerderia: 0, valorNF: 0, freteRealizado: 0, freteTabela: 0, freteTabelaGanharia: 0, freteRealizadoPerderia: 0, peso: 0, volumes: 0, volumesGanharia: 0, pesoGanharia: 0 });
+
+  const ctesResultado = Number(r.ctesAnalisados || 0);
+  const ctesForaAgrupamento = Math.max(0, ctesResultado - totais.ctes);
+  if (ctesForaAgrupamento > 0) {
+    const linhaSemRota = {
+      rota: 'Sem rota/cotacao no resultado salvo',
+      ctes: ctesForaAgrupamento,
+      ctesSemCalculo: Math.max(0, Number(r.ctesSemTabelaSelecionada || 0) - totais.ctesSemCalculo),
+      ctesGanharia: Math.max(0, Number(r.ctesGanhariaSelecionada || 0) - totais.ctesGanharia),
+      ctesPerderia: Math.max(0, Number(r.ctesPerdidosSelecionada || 0) - totais.ctesPerderia),
+      valorNF: Math.max(0, Number(r.valorNF || 0) - totais.valorNF),
+      freteRealizado: Math.max(0, Number(r.freteRealizado || 0) - totais.freteRealizado),
+      freteTabela: Math.max(0, Number(r.freteSelecionada || 0) - totais.freteTabela),
+      freteTabelaGanharia: Math.max(0, Number(r.freteSelecionadaGanhadora || 0) - totais.freteTabelaGanharia),
+      freteRealizadoPerderia: 0,
+      pctRealizado: 0,
+      pctTabelaFinal: 0,
+      aderenciaRota: 0,
+      reduzirPct: 0,
+      diferenca: 0,
+      peso: Math.max(0, Number(r.peso || 0) - totais.peso),
+      volumes: Math.max(0, Number(r.volumes || 0) - totais.volumes),
+      volumesGanharia: Math.max(0, Number(r.volumesGanhariaSelecionada || 0) - totais.volumesGanharia),
+      pesoGanharia: Math.max(0, Number(r.pesoGanhariaSelecionada || 0) - totais.pesoGanharia),
+      itensAmostra: [],
+      itensAmostraIncompleta: true,
+      avisoIncompleto: true,
+    };
+    linhaSemRota.pctRealizado = linhaSemRota.valorNF > 0 ? (linhaSemRota.freteRealizado / linhaSemRota.valorNF) * 100 : 0;
+    linhaSemRota.pctTabelaFinal = linhaSemRota.valorNF > 0 ? (linhaSemRota.freteTabela / linhaSemRota.valorNF) * 100 : 0;
+    const ctesComCalculoSemRota = Math.max(0, linhaSemRota.ctes - linhaSemRota.ctesSemCalculo);
+    linhaSemRota.aderenciaRota = ctesComCalculoSemRota > 0 ? (linhaSemRota.ctesGanharia / ctesComCalculoSemRota) * 100 : 0;
+    linhaSemRota.reduzirPct = linhaSemRota.pctTabelaFinal > linhaSemRota.pctRealizado && linhaSemRota.pctTabelaFinal > 0
+      ? ((linhaSemRota.pctTabelaFinal - linhaSemRota.pctRealizado) / linhaSemRota.pctTabelaFinal) * 100
+      : 0;
+    linhaSemRota.diferenca = linhaSemRota.freteTabela - linhaSemRota.freteRealizado;
+    linhas.push(linhaSemRota);
+    totais.ctes += linhaSemRota.ctes;
+    totais.ctesSemCalculo += linhaSemRota.ctesSemCalculo;
+    totais.ctesGanharia += linhaSemRota.ctesGanharia;
+    totais.ctesPerderia += linhaSemRota.ctesPerderia;
+    totais.valorNF += linhaSemRota.valorNF;
+    totais.freteRealizado += linhaSemRota.freteRealizado;
+    totais.freteTabela += linhaSemRota.freteTabela;
+    totais.freteTabelaGanharia += linhaSemRota.freteTabelaGanharia;
+    totais.freteRealizadoPerderia += linhaSemRota.freteRealizadoPerderia;
+    totais.peso += linhaSemRota.peso;
+    totais.volumes += linhaSemRota.volumes;
+    totais.volumesGanharia += linhaSemRota.volumesGanharia;
+    totais.pesoGanharia += linhaSemRota.pesoGanharia;
+  }
+  const pctRealizadoTotal = totais.valorNF > 0 ? (totais.freteRealizado / totais.valorNF) * 100 : 0;
+  const pctTabelaTotal = totais.valorNF > 0 ? (totais.freteTabela / totais.valorNF) * 100 : 0;
+  const ctesComCalculoTotal = Math.max(0, totais.ctes - totais.ctesSemCalculo);
+  // "Aderencia da tabela" = taxa de vitoria: dos CT-es que tinham calculo,
+  // quantos a Tabela RPA ganharia do realizado. Mesma formula da "Aderencia
+  // rota" de cada linha — "Sem calculo" ja aparece em card separado pra
+  // mostrar a cobertura.
+  const aderenciaTotal = ctesComCalculoTotal > 0 ? (totais.ctesGanharia / ctesComCalculoTotal) * 100 : 0;
+  const reduzirTotal = pctTabelaTotal > pctRealizadoTotal && pctTabelaTotal > 0
+    ? ((pctTabelaTotal - pctRealizadoTotal) / pctTabelaTotal) * 100
+    : 0;
+  const dias = Math.max(1, Number(r.dias || 0));
+  const meses = Math.max(1, Number(r.meses || 0));
+  const volumesPorDia = totais.volumes / dias;
+  // Volumes/dia só das rotas que a Tabela RPA ganharia — projecao de quanto
+  // ela de fato carregaria por dia, nao o volume total do periodo analisado.
+  const volumesGanhariaPorDia = totais.volumesGanharia / dias;
+  const pedidosTotal = Number(r.pedidosTotais || 0);
+
+  const transportadora = r.filtros?.transportadoraTabelaUsada || r.filtros?.transportadora || 'Transportadora';
+  const periodo = periodoLaudoRealizado(r) || `${r.filtros?.inicio || ''} a ${r.filtros?.fim || ''}`;
+
+  return {
+    linhas, totais, transportadora, periodo,
+    pctRealizadoTotal, pctTabelaTotal, aderenciaTotal, reduzirTotal,
+    dias, meses, volumesPorDia, volumesGanhariaPorDia, pedidosTotal,
+  };
 }
 function gerarLaudosEmailRealizado(resultado = {}) {
   if (!resultado?.ctesAnalisados) return null;
@@ -1110,6 +1352,22 @@ function numeroRealizado(value) {
   return Number.isFinite(numero) ? numero : 0;
 }
 
+function volumeRealizado(row = {}) {
+  const candidatos = [
+    row.qtdVolumes,
+    row.qtd_volumes,
+    row.volume,
+    row.volumes,
+    row.quantidade_volumes,
+    row.totalUnidades,
+    row.total_unidades,
+    row.quantidadeItens,
+    row.quantidade_itens,
+  ];
+  const valor = candidatos.map(numeroRealizado).find((numero) => numero > 0);
+  return valor || 0;
+}
+
 function pesoRealizado(row = {}, filtros = {}) {
   const declarado = numeroRealizado(row.pesoDeclarado);
   const base = declarado > 0 ? declarado : numeroRealizado(row.peso);
@@ -1131,7 +1389,7 @@ function cubagemRealizado(row = {}, filtros = {}) {
   if (total > 0) return total;
 
   const unitaria = numeroRealizado(row.cubagemUnitaria || row.cubagem_unitaria);
-  const volumes = numeroRealizado(row.qtdVolumes || row.volumes || row.volume);
+  const volumes = volumeRealizado(row);
 
   if (unitaria > 0 && volumes > 0) return unitaria * volumes;
   return 0;
@@ -1197,7 +1455,7 @@ function adicionarTrackingNoMapa(mapa, chave, item) {
   mapa.set(chave, somarTrackingAgregado(atual, item));
 }
 
-async function buscarTrackingParaRealizado(rows = []) {
+async function buscarTrackingParaRealizado(rows = [], onProgresso = null) {
   const vazio = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
   if (!isSupabaseConfigured() || !rows?.length) return vazio;
 
@@ -1217,16 +1475,31 @@ async function buscarTrackingParaRealizado(rows = []) {
   const mapaNumeroCte = new Map();
   let totalEncontrado = 0;
   let erroView = '';
+  let progressoAtual = 0;
+  let progressoTotal = Math.max(
+    1,
+    chunksTracking(chavesCte, 300).length
+      + chunksTracking(chavesNfe, 300).length
+      + chunksTracking(notas, 300).length
+      + chunksTracking(numerosCte, 300).length
+  );
+  const reportarProgresso = (tipo = 'tracking') => {
+    progressoAtual += 1;
+    onProgresso?.(Math.min(progressoAtual, progressoTotal), progressoTotal, tipo);
+  };
 
   async function consultarViewAgregadaPorChaveCte(chavesConsulta = chavesCte) {
     if (!chavesConsulta.length) return false;
     let consultou = false;
-    for (const parte of chunksTracking(chavesConsulta, 300)) {
+    const partes = chunksTracking(chavesConsulta, 300);
+    progressoTotal += partes.length;
+    for (const parte of partes) {
       if (!parte.length) continue;
       const { data, error } = await supabase
         .from('vw_tracking_cte_agregado')
         .select('chave_cte_limpa,chave_cte,chave_nfe,cte_numero,nota_fiscal,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,valor_nf,qtd_volumes,linhas_tracking,data_transporte,data_entrega,previsao_transportadora')
         .in('chave_cte_limpa', parte);
+      reportarProgresso('view tracking');
 
       if (error) {
         erroView = error.message || String(error);
@@ -1250,6 +1523,7 @@ async function buscarTrackingParaRealizado(rows = []) {
         .from('tracking_rows')
         .select('chave_nfe,chave_cte,cte_numero,nota_fiscal,canal,transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,cubagem_final,quantidade_itens,valor_nf,qtd_volumes,data_transporte,data_entrega,previsao_transportadora,raw')
         .in(coluna, parte);
+      reportarProgresso(tipo);
       if (error) throw error;
 
       (data || []).forEach((item) => {
@@ -1537,7 +1811,7 @@ function mesclarTrackingComBase(enriquecidoTracking = {}, enriquecidoBase = {}) 
     linhas,
     vinculados: linhas.filter((row) => row.trackingMatch).length,
     semTracking: linhas.filter((row) => !row.trackingMatch).length,
-    volumesTracking: linhas.reduce((acc, row) => acc + numeroRealizado(row.qtdVolumes), 0),
+    volumesTracking: linhas.reduce((acc, row) => acc + volumeRealizado(row), 0),
     cubagemTracking: linhas.reduce((acc, row) => acc + numeroRealizado(row.cubagemTotal || row.cubagem), 0),
     cubagemOutliers: linhas.filter((row) => row.cubagemOutlierTracking).length,
     avisoTracking: enriquecidoTracking.avisoTracking || enriquecidoBase.avisoTracking || '',
@@ -2003,7 +2277,7 @@ function resumirRealizadoPorOrigem(rows = [], baseOnline = [], filtros = {}, cid
     const nf = numeroRealizado(row.valorNF);
     const pesoLinha = pesoRealizado(row, filtros);
     const cubagemLinha = cubagemRealizado(row, filtros);
-    const vol = numeroRealizado(row.qtdVolumes);
+    const vol = volumeRealizado(row);
     const destino = String(row.ibgeDestino || '').trim();
     freteRealizado += valorCte;
     valorNF += nf;
@@ -3211,6 +3485,47 @@ function mergePorChaveConsolidacao(lista = [], chaveFn = () => '', limite = 300)
   return [...map.values()].slice(0, limite);
 }
 
+function consolidarRotasCotacaoRealizado(resultados = []) {
+  const camposSoma = [
+    'ctes', 'ctesSemCalculo', 'ctesComCalculo', 'ctesGanharia', 'ctesPerderia',
+    'valorNF', 'peso', 'volumes', 'freteRealizado', 'freteTabela', 'freteTabelaLaudo',
+    'freteTabelaGanharia', 'freteTabelaGanhariaLaudo', 'freteRealizadoPerderia',
+    'reducaoNecessariaSoma', 'reducaoNecessariaLaudoSoma', 'volumesGanharia', 'pesoGanharia',
+  ];
+  const map = new Map();
+
+  (resultados || []).flatMap((item) => item.rotasCotacao || []).forEach((rota = {}) => {
+    const chave = String(rota.nome || rota.rota || 'Sem rota/cotacao').trim() || 'Sem rota/cotacao';
+    const atual = map.get(chave) || {
+      nome: chave,
+      itensAmostra: [],
+    };
+
+    camposSoma.forEach((campo) => {
+      atual[campo] = numeroConsolidacaoRealizado(atual[campo]) + numeroConsolidacaoRealizado(rota[campo]);
+    });
+
+    if (Array.isArray(rota.itensAmostra) && atual.itensAmostra.length < MAX_ITENS_AMOSTRA_POR_ROTA) {
+      atual.itensAmostra.push(...rota.itensAmostra.slice(0, MAX_ITENS_AMOSTRA_POR_ROTA - atual.itensAmostra.length));
+    }
+
+    map.set(chave, atual);
+  });
+
+  return [...map.values()].map((item) => {
+    const ctesComCalculo = Math.max(0, numeroConsolidacaoRealizado(item.ctes) - numeroConsolidacaoRealizado(item.ctesSemCalculo));
+    return {
+      ...item,
+      ctesComCalculo,
+      percentualFreteRealizado: item.valorNF ? (item.freteRealizado / item.valorNF) * 100 : 0,
+      percentualFreteSelecionada: item.valorNF ? (item.freteTabela / item.valorNF) * 100 : 0,
+      percentualFreteSelecionadaLaudo: item.valorNF ? (numeroConsolidacaoRealizado(item.freteTabelaLaudo || item.freteTabela) / item.valorNF) * 100 : 0,
+      reducaoMediaNecessaria: item.ctesPerderia ? item.reducaoNecessariaSoma / item.ctesPerderia : 0,
+      reducaoMediaNecessariaLaudo: item.ctesPerderia ? numeroConsolidacaoRealizado(item.reducaoNecessariaLaudoSoma || item.reducaoNecessariaSoma) / item.ctesPerderia : 0,
+    };
+  }).sort((a, b) => numeroConsolidacaoRealizado(b.ctes) - numeroConsolidacaoRealizado(a.ctes));
+}
+
 function consolidarResultadosRealizadoSalvos(analises = []) {
   const ordenadas = [...(analises || [])].sort((a, b) => String(a.periodo_inicio || '').localeCompare(String(b.periodo_inicio || '')));
   const resultados = ordenadas.map((item) => item.resultado || {}).filter(Boolean);
@@ -3293,7 +3608,9 @@ function consolidarResultadosRealizadoSalvos(analises = []) {
     .sort((a, b) => numeroConsolidacaoRealizado(b.frete) - numeroConsolidacaoRealizado(a.frete));
   base.impactoTransportadoras = mergePorChaveConsolidacao(resultados.flatMap((item) => item.impactoTransportadoras || []), (item) => item.transportadora, 300)
     .sort((a, b) => numeroConsolidacaoRealizado(b.freteCedidoSelecionada) - numeroConsolidacaoRealizado(a.freteCedidoSelecionada));
+  base.rotasCotacao = consolidarRotasCotacaoRealizado(resultados);
   base.ctesDetalhes = resultados.flatMap((item) => item.ctesDetalhes || []).slice(0, MAX_CTES_DETALHES_REALIZADO);
+  base.ctesAjusteRotaExcel = resultados.flatMap((item) => item.ctesAjusteRotaExcel || []);
   base.ctesDetalhesTotal = base.ctesAnalisados;
   base.ctesDetalhesLimitados = base.ctesAnalisados > base.ctesDetalhes.length;
   base.ctesDetalhesLimite = MAX_CTES_DETALHES_REALIZADO;
@@ -3324,12 +3641,15 @@ const CAMPOS_ESCALARES_SIMULACAO_REALIZADO = [
 function criarEstadoSimulacaoRealizado({ rows = [], filtros = {} } = {}) {
   const estado = {
     rotasMap: new Map(),
+    cotacaoMap: new Map(),
     transportadorasMap: new Map(),
     ufsMap: new Map(),
     pedidosGanhariaSet: new Set(),
     pedidosRetidosSet: new Set(),
     pedidosCapturadosSet: new Set(),
+    pedidosTotaisSet: new Set(),
     ctesDetalhes: [],
+    ctesAjusteRotaExcel: [],
     dias: periodoRealizadoDias(rows, filtros.inicio, filtros.fim),
     meses: periodoRealizadoMeses(rows, filtros.inicio, filtros.fim),
     diagnostico: {
@@ -3356,11 +3676,13 @@ function serializarEstadoSimulacaoRealizado(estado) {
     dias: estado.dias,
     meses: estado.meses,
     rotas: [...estado.rotasMap.entries()].map(([chave, rota]) => [chave, { ...rota, vencedores: [...(rota.vencedores || new Map()).entries()] }]),
+    cotacoes: [...estado.cotacaoMap.entries()],
     transportadoras: [...estado.transportadorasMap.entries()],
     ufs: [...estado.ufsMap.entries()],
     pedidosGanharia: [...(estado.pedidosGanhariaSet || new Set()).values()],
     pedidosRetidos: [...(estado.pedidosRetidosSet || new Set()).values()],
     pedidosCapturados: [...(estado.pedidosCapturadosSet || new Set()).values()],
+    pedidosTotais: [...(estado.pedidosTotaisSet || new Set()).values()],
     diagnostico: {
       linhasSemIbgeDestino: estado.diagnostico.linhasSemIbgeDestino,
       linhasSemResultado: estado.diagnostico.linhasSemResultado,
@@ -3384,11 +3706,13 @@ function desserializarEstadoSimulacaoRealizado(texto) {
   estado.dias = Number(dados.dias) || 1;
   estado.meses = Number(dados.meses) || 1;
   estado.rotasMap = new Map((dados.rotas || []).map(([chave, rota]) => [chave, { ...rota, vencedores: new Map(rota.vencedores || []) }]));
+  estado.cotacaoMap = new Map(dados.cotacoes || []);
   estado.transportadorasMap = new Map(dados.transportadoras || []);
   estado.ufsMap = new Map(dados.ufs || []);
   estado.pedidosGanhariaSet = new Set(dados.pedidosGanharia || []);
   estado.pedidosRetidosSet = new Set(dados.pedidosRetidos || []);
   estado.pedidosCapturadosSet = new Set(dados.pedidosCapturados || []);
+  estado.pedidosTotaisSet = new Set(dados.pedidosTotais || []);
   estado.diagnostico = {
     linhasSemIbgeDestino: Number(dados.diagnostico?.linhasSemIbgeDestino) || 0,
     linhasSemResultado: Number(dados.diagnostico?.linhasSemResultado) || 0,
@@ -3404,7 +3728,7 @@ function desserializarEstadoSimulacaoRealizado(texto) {
 // (uma por parcela) — o corpo do loop é o mesmo da simulação de passada única.
 async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline = [], baseOnlineAtual = [], transportadoraSelecionada = '', filtros = {}, cidadePorIbge, gradePorCanal = {}, municipioPorCidade, indicePorDestino, onProgress }) {
   const nomeSelecionadoNorm = normalizarTransportadoraSimulador(transportadoraSelecionada);
-  const { rotasMap, transportadorasMap, ufsMap, pedidosGanhariaSet, pedidosRetidosSet, pedidosCapturadosSet, ctesDetalhes, diagnostico } = estado;
+  const { rotasMap, cotacaoMap, transportadorasMap, ufsMap, pedidosGanhariaSet, pedidosRetidosSet, pedidosCapturadosSet, pedidosTotaisSet, ctesDetalhes, ctesAjusteRotaExcel, diagnostico } = estado;
   let {
     ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
     ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
@@ -3439,9 +3763,10 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     const nf = numeroRealizado(row.valorNF);
     const pesoLinha = pesoRealizado(row, filtros);
     const pesoOriginalLinha = pesoRealizado(row, { ...filtros, ignorarCubagem: true, percentualContingenciaPeso: 0 });
-    const vol = numeroRealizado(row.qtdVolumes);
+    const vol = volumeRealizado(row);
     const cubagemLinha = cubagemRealizado(row, filtros);
     const chavePedido = criarChavePedidoRealizadoSim(row);
+    pedidosTotaisSet.add(chavePedido);
     if (row.trackingMatch) linhasComTracking += 1;
     cubagemTotal += cubagemLinha;
     const origem = row.cidadeOrigem || filtros.origem || '';
@@ -3731,6 +4056,69 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
     rota.vencedores.set(vencedorNome, (rota.vencedores.get(vencedorNome) || 0) + 1);
     rotasMap.set(chaveRota, rota);
 
+    // Agregado COMPLETO por rota/cotacao da tabela (o "rota" que o laudo de
+    // ajuste usa — nome da cotacao cadastrada, nao a rota geografica). Cobre
+    // 100% dos CT-es do periodo, ao contrario de ctesDetalhes (amostra).
+    const chaveCotacao = itemSelecionada?.detalhes?.frete?.rotaNome || itemSelecionada?.rotaNome || 'Sem rota/cotacao';
+    const cotacaoAtual = cotacaoMap.get(chaveCotacao) || {
+      nome: chaveCotacao,
+      ctes: 0,
+      ctesSemCalculo: 0,
+      ctesGanharia: 0,
+      ctesPerderia: 0,
+      valorNF: 0,
+      peso: 0,
+      volumes: 0,
+      freteRealizado: 0,
+      freteTabela: 0,
+      freteTabelaLaudo: 0,
+      freteTabelaGanharia: 0,
+      freteTabelaGanhariaLaudo: 0,
+      freteRealizadoPerderia: 0,
+      reducaoNecessariaSoma: 0,
+      reducaoNecessariaLaudoSoma: 0,
+      volumesGanharia: 0,
+      pesoGanharia: 0,
+      itensAmostra: [],
+    };
+    cotacaoAtual.ctes += 1;
+    cotacaoAtual.peso += pesoLinha;
+    cotacaoAtual.volumes += vol;
+    cotacaoAtual.valorNF += nf;
+    cotacaoAtual.freteRealizado += freteBaseComparativa;
+    if (itemSelecionada) {
+      const detalheLaudoSelecionada = detalheCalculoCteTransportador({
+        valorNF: nf,
+        freteBaseComparativa,
+        freteSelecionada: freteSel,
+        selecionadaDetalhes: itemSelecionada?.detalhes || null,
+      });
+      const freteSelLaudo = Number(detalheLaudoSelecionada.tabelaRpa || freteSel || 0);
+      cotacaoAtual.freteTabela += freteSel;
+      cotacaoAtual.freteTabelaLaudo += freteSelLaudo;
+      if (statusSelecionada === 'Ganharia') {
+        cotacaoAtual.ctesGanharia += 1;
+        cotacaoAtual.freteTabelaGanharia += freteSel;
+        cotacaoAtual.freteTabelaGanhariaLaudo += freteSelLaudo;
+        cotacaoAtual.volumesGanharia += vol;
+        cotacaoAtual.pesoGanharia += pesoLinha;
+      } else {
+        cotacaoAtual.ctesPerderia += 1;
+        cotacaoAtual.freteRealizadoPerderia += freteBaseComparativa;
+        if (reducaoNecessaria) cotacaoAtual.reducaoNecessariaSoma += reducaoNecessaria;
+        const referenciasPerdaLaudo = [
+          freteBaseComparativa > 0 ? freteBaseComparativa : null,
+          freteVenc > 0 ? freteVenc : null,
+        ].filter((valor) => Number(valor) > 0);
+        const referenciaPerdaLaudo = referenciasPerdaLaudo.length ? Math.min(...referenciasPerdaLaudo) : freteVenc;
+        const reducaoNecessariaLaudo = freteSelLaudo > 0 ? (Math.max(freteSelLaudo - referenciaPerdaLaudo, 0) / freteSelLaudo) * 100 : 0;
+        if (reducaoNecessariaLaudo) cotacaoAtual.reducaoNecessariaLaudoSoma += reducaoNecessariaLaudo;
+      }
+    } else {
+      cotacaoAtual.ctesSemCalculo += 1;
+    }
+    cotacaoMap.set(chaveCotacao, cotacaoAtual);
+
     const ufResumo = String(row.ufDestino || vencedor?.ufDestino || 'N/A').trim().toUpperCase() || 'N/A';
     const resumoUf = ufsMap.get(ufResumo) || criarResumoUfRealizado(ufResumo);
     resumoUf.ctes += 1;
@@ -3828,6 +4216,68 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
         detalhes: r.detalhes || null,
       })),
     };
+    const cotacaoComAmostra = cotacaoMap.get(chaveCotacao);
+    if (cotacaoComAmostra && Array.isArray(cotacaoComAmostra.itensAmostra) && cotacaoComAmostra.itensAmostra.length < MAX_ITENS_AMOSTRA_POR_ROTA) {
+      cotacaoComAmostra.itensAmostra.push(detalheCteRealizado);
+      cotacaoMap.set(chaveCotacao, cotacaoComAmostra);
+    }
+    const detalheTransportadorExcel = detalheCalculoCteTransportador(detalheCteRealizado);
+    const freteExcel = detalheCteRealizado.selecionadaDetalhes?.frete || {};
+    const taxasExcel = detalheCteRealizado.selecionadaDetalhes?.taxas || {};
+    ctesAjusteRotaExcel.push({
+      rota: chaveCotacao,
+      cte: detalheCteRealizado.cte,
+      chaveCte: detalheCteRealizado.chaveCte,
+      data: detalheCteRealizado.data,
+      origem: detalheCteRealizado.origem,
+      ufOrigem: detalheCteRealizado.ufOrigem,
+      destino: detalheCteRealizado.destino,
+      ufDestino: detalheCteRealizado.ufDestino,
+      canal: detalheCteRealizado.canal,
+      peso: Number(detalheCteRealizado.peso || 0),
+      volumes: Number(detalheCteRealizado.volumes || 0),
+      valorNF: Number(detalheCteRealizado.valorNF || 0),
+      freteCobrado: Number(detalheCteRealizado.freteBaseComparativa || 0),
+      tabelaRpa: Number(detalheTransportadorExcel.tabelaRpa || 0),
+      percentualCobrado: Number(detalheTransportadorExcel.percentualCobrado || 0),
+      percentualCalc: Number(detalheTransportadorExcel.percentualCalc || 0),
+      percentualBase: Number(detalheTransportadorExcel.percentualBase || 0),
+      tipoCalculo: freteExcel.tipoCalculo || '',
+      faixaPeso: freteExcel.faixaPeso || detalheCteRealizado.faixaPeso || '',
+      prazo: Number(detalheCteRealizado.selecionadaDetalhes?.prazo || 0),
+      pesoConsiderado: Number(freteExcel.pesoConsiderado || detalheCteRealizado.pesoCalculo || detalheCteRealizado.peso || 0),
+      percentualAplicado: Number(freteExcel.percentualAplicado || detalheTransportadorExcel.percentualBase || 0),
+      valorPercentual: Number(freteExcel.valorPercentual || 0),
+      valorKgAplicado: Number(freteExcel.valorKgAplicado || 0),
+      valorKgGarantia: Number(freteExcel.valorKgGarantia || 0),
+      valorExcedente: Number(freteExcel.valorExcedente || 0),
+      minimoRota: Number(freteExcel.minimoRota || 0),
+      freteMinimoCotacao: Number(freteExcel.freteMinimoCotacao || 0),
+      freteMinimoGeneralidade: Number(freteExcel.freteMinimoGeneralidade || 0),
+      minimoAplicavel: Number(freteExcel.minimoAplicavel || 0),
+      componenteVencedor: freteExcel.componenteVencedor || '',
+      valorBase: Number(freteExcel.valorBase || 0),
+      subtotal: Number(freteExcel.subtotal || 0),
+      taxaEmergencialPct: Number(freteExcel.taxaEmergencialPct || 0),
+      valorEmergencial: Number(freteExcel.valorEmergencial || 0),
+      aliquotaIcms: Number(freteExcel.aliquotaIcms || 0),
+      gris: Number(detalheTransportadorExcel.gris || 0),
+      grisPct: Number(taxasExcel.grisPct || 0),
+      adValorem: Number(taxasExcel.adValorem || 0),
+      adValPct: Number(taxasExcel.adValPct || 0),
+      tas: Number(detalheTransportadorExcel.tas || 0),
+      ctrc: Number(detalheTransportadorExcel.ctrc || 0),
+      pedagio: Number(detalheTransportadorExcel.pedagio || 0),
+      tda: Number(taxasExcel.tda || 0),
+      tde: Number(taxasExcel.tde || 0),
+      tdr: Number(taxasExcel.tdr || 0),
+      trt: Number(taxasExcel.trt || 0),
+      suframa: Number(taxasExcel.suframa || 0),
+      outras: Number(taxasExcel.outras || 0),
+      taxaExtra: Number(taxasExcel.taxaExtra || 0),
+      icms: Number(detalheTransportadorExcel.icms || 0),
+      statusSelecionada: detalheCteRealizado.statusSelecionada,
+    });
     adicionarDetalheRealizadoAmostra(ctesDetalhes, detalheCteRealizado);
   }
 
@@ -3857,7 +4307,7 @@ async function processarLinhasSimulacaoRealizado(estado, { rows = [], baseOnline
 // Gera o resultado final (KPIs, rotas, laudo) a partir do estado acumulado.
 function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } = {}) {
   const {
-    rotasMap, transportadorasMap, ufsMap, pedidosGanhariaSet, pedidosRetidosSet, pedidosCapturadosSet, ctesDetalhes, diagnostico, dias, meses,
+    rotasMap, cotacaoMap, transportadorasMap, ufsMap, pedidosGanhariaSet, pedidosRetidosSet, pedidosCapturadosSet, pedidosTotaisSet, ctesDetalhes, ctesAjusteRotaExcel, diagnostico, dias, meses,
     ctesAnalisados, ctesSimulados, ctesComTabelaSelecionada, ctesGanhariaSelecionada,
     ctesPerdidosSelecionada, ctesSemTabelaSelecionada, ctesSemTabelaGeral, freteRealizado,
     freteRealizadoComTabelaSelecionada, freteSelecionada, freteVencedor, valorNF,
@@ -3875,6 +4325,21 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
   const rotas = [...rotasMap.values()]
     .map(finalizarResumoRotaRealizado)
     .sort((a, b) => b.oportunidade - a.oportunidade || b.ctes - a.ctes || b.freteRealizado - a.freteRealizado);
+
+  // Rota/cotacao = nome da cotacao cadastrada na tabela (o que o laudo de
+  // ajuste chama de "rota"), agregado sobre 100% dos CT-es do periodo.
+  const rotasCotacao = [...cotacaoMap.values()].map((item) => {
+    const ctesComCalculo = Math.max(0, item.ctes - item.ctesSemCalculo);
+    return {
+      ...item,
+      ctesComCalculo,
+      percentualFreteRealizado: item.valorNF ? (item.freteRealizado / item.valorNF) * 100 : 0,
+      percentualFreteSelecionada: item.valorNF ? (item.freteTabela / item.valorNF) * 100 : 0,
+      percentualFreteSelecionadaLaudo: item.valorNF ? ((Number(item.freteTabelaLaudo || item.freteTabela || 0)) / item.valorNF) * 100 : 0,
+      reducaoMediaNecessaria: item.ctesPerderia ? item.reducaoNecessariaSoma / item.ctesPerderia : 0,
+      reducaoMediaNecessariaLaudo: item.ctesPerderia ? (Number(item.reducaoNecessariaLaudoSoma || item.reducaoNecessariaSoma || 0) / item.ctesPerderia) : 0,
+    };
+  }).sort((a, b) => b.ctes - a.ctes);
 
   const freteProjetadoCenario = Math.max(freteRealizado - freteCapturadoRealizado + freteCapturadoTabela, 0);
   const porTransportadoraReal = [...transportadorasMap.values()]
@@ -4005,6 +4470,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     volumesGanhariaSelecionada,
     cubagemGanhariaSelecionada,
     pedidosGanhariaSelecionada: pedidosGanhariaSet?.size || 0,
+    pedidosTotais: pedidosTotaisSet?.size || 0,
     ctesRetidosSelecionada,
     freteRealizadoRetidoSelecionada,
     freteTabelaAtualPropriaRetida,
@@ -4034,6 +4500,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     percentualSavingSelecionadaBruto: freteRealizadoComTabelaSelecionada ? (savingTabelaSelecionadaVsRealBruto / freteRealizadoComTabelaSelecionada) * 100 : 0,
     percentualSavingVencedor: freteRealizado ? (savingVencedorVsReal / freteRealizado) * 100 : 0,
     rotas,
+    rotasCotacao,
     qtdRotasComTabelaSelecionada: rotasComTabelaSelecionada.length,
     qtdRotasGanhasSelecionada: rotasGanhasSelecionada.length,
     qtdRotasComGanhoSelecionada: rotasComGanhoSelecionada.length,
@@ -4049,6 +4516,7 @@ function finalizarSimulacaoRealizado(estado, { transportadoraSelecionada = '' } 
     impactoTransportadoras,
     pareto80Volume,
     ctesDetalhes: ctesDetalhes.sort((a, b) => b.savingSelecionada - a.savingSelecionada || b.diferencaParaVencedor - a.diferencaParaVencedor),
+    ctesAjusteRotaExcel,
     ctesDetalhesTotal: ctesAnalisados,
     ctesDetalhesLimitados: ctesAnalisados > ctesDetalhes.length,
     ctesDetalhesLimite: MAX_CTES_DETALHES_REALIZADO,
@@ -5968,7 +6436,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
         trackingEnriquecido = enriquecerRealizadoComBase(rowsComIbgeBase);
       } else {
         atualizarProcessamentoUi('Cruzando CT-es com Tracking no Supabase para volumes e cubagem...', 82);
-        mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
+        mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase, (processados, total, tipo) => {
+          atualizarProcessamentoUi(
+            `Cruzando CT-es com Tracking... ${processados.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')} lote(s) (${tipo})`,
+            Math.min(87, 82 + Math.floor((processados / Math.max(total, 1)) * 5)),
+          );
+        });
         trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
       }
 
@@ -6019,7 +6492,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
           mapasTracking = { mapaChaveCte: new Map(), mapaChaveNfe: new Map(), mapaNota: new Map(), mapaNumeroCte: new Map(), total: 0, erro: '' };
           trackingEnriquecido = enriquecerRealizadoComBase(rowsComIbgeBase);
         } else {
-          mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase);
+          mapasTracking = await buscarTrackingParaRealizado(rowsComIbgeBase, (processados, total, tipo) => {
+            atualizarProcessamentoUi(
+              `Cruzando CT-es com Tracking... ${processados.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')} lote(s) (${tipo})`,
+              Math.min(88, 84 + Math.floor((processados / Math.max(total, 1)) * 4)),
+            );
+          });
           trackingEnriquecido = enriquecerRealizadoComTracking(rowsComIbgeBase, mapasTracking);
         }
         linhasEnriquecidasFiltradas = filtrarRowsPorOrigensRealizado(
@@ -7148,13 +7626,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
     downloadCsv(nomeArquivo, csv);
   };
   const exportarLaudoAjusteRotaFaixaTransportador = () => {
-    if (!resultadoRealizado?.ctesDetalhes?.length) return;
+    if (!resultadoRealizado?.rotasCotacao?.length) return;
     const r = resultadoRealizado;
-    const detalhes = (r.ctesDetalhes || []).filter((item) => Number(item.freteSelecionada || 0) > 0 && Number(item.valorNF || 0) > 0);
-    if (!detalhes.length) {
-      setErroSimulacao('Nao ha CT-es com tabela simulada e valor NF para montar o laudo por rota/faixa.');
-      return;
-    }
+    const {
+      linhas, totais, transportadora, periodo,
+      pctRealizadoTotal, pctTabelaTotal, aderenciaTotal, reduzirTotal,
+      meses, volumesPorDia, volumesGanhariaPorDia, pedidosTotal,
+    } = montarDadosAjusteRotaFaixa(r);
 
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
       '&': '&amp;',
@@ -7174,103 +7652,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     };
-    const formatFaixa = (faixa, fallbackInicio, fallbackFim) => {
-      const texto = String(faixa || '').trim();
-      if (texto) return texto.replace(/\s+/g, ' ');
-      const ini = Number.isFinite(Number(fallbackInicio)) ? formatNumberBR(fallbackInicio, 0) : '0';
-      const fim = Number.isFinite(Number(fallbackFim)) ? formatNumberBR(fallbackFim, 0) : '999999999';
-      return `${ini} a ${fim}`;
-    };
-    const getFreteDetalhe = (item) => item.selecionadaDetalhes?.frete || item.vencedorDetalhes?.frete || {};
-    const getPercentualTabelaBase = (frete) => {
-      const candidatos = [
-        frete.percentualAplicado,
-        frete.percentual,
-        frete.percentualNF,
-        frete.percentualNf,
-        frete.percentual_nf,
-      ];
-      const valor = candidatos.map((v) => Number(v)).find((v) => Number.isFinite(v) && v > 0);
-      return valor || 0;
-    };
-
-    const grupos = new Map();
-    detalhes.forEach((item) => {
-      const frete = getFreteDetalhe(item);
-      const rota = frete.rotaNome || item.rotaSelecionada || item.faixaPeso || item.cotacao || `${item.ufDestino || ''}` || 'Sem rota';
-      const faixa = formatFaixa(frete.faixaPeso || item.faixaPeso, frete.pesoInicial, frete.pesoFinal);
-      const chave = `${rota}__${faixa}`;
-      const valorNF = Number(item.valorNF || 0);
-      const freteRealizado = Number(item.freteRealizado || 0);
-      const freteTabela = Number(item.freteSelecionada || 0);
-      const percentualTabelaBase = getPercentualTabelaBase(frete);
-      const atual = grupos.get(chave) || {
-        rota,
-        faixa,
-        ctes: 0,
-        ctesGanharia: 0,
-        valorNF: 0,
-        freteRealizado: 0,
-        freteTabela: 0,
-        percentualTabelaBaseSoma: 0,
-        percentualTabelaBasePeso: 0,
-        peso: 0,
-        volumes: 0,
-      };
-      atual.ctes += 1;
-      if (freteTabela > 0 && freteTabela < freteRealizado) atual.ctesGanharia += 1;
-      atual.valorNF += valorNF;
-      atual.freteRealizado += freteRealizado;
-      atual.freteTabela += freteTabela;
-      if (percentualTabelaBase > 0 && valorNF > 0) {
-        atual.percentualTabelaBaseSoma += percentualTabelaBase * valorNF;
-        atual.percentualTabelaBasePeso += valorNF;
-      }
-      atual.peso += Number(item.peso || 0);
-      atual.volumes += Number(item.volumes || 0);
-      grupos.set(chave, atual);
-    });
-
-    const linhas = [...grupos.values()].map((grupo) => {
-      const pctRealizado = grupo.valorNF > 0 ? (grupo.freteRealizado / grupo.valorNF) * 100 : 0;
-      const pctTabelaFinal = grupo.valorNF > 0 ? (grupo.freteTabela / grupo.valorNF) * 100 : 0;
-      const pctTabelaBase = grupo.percentualTabelaBasePeso > 0
-        ? grupo.percentualTabelaBaseSoma / grupo.percentualTabelaBasePeso
-        : pctTabelaFinal;
-      const aderenciaRota = grupo.ctes > 0 ? (grupo.ctesGanharia / grupo.ctes) * 100 : 0;
-      const reduzirPct = pctTabelaBase > 0 && pctTabelaBase > pctRealizado
-        ? ((pctTabelaBase - pctRealizado) / pctTabelaBase) * 100
-        : 0;
-      return { ...grupo, pctRealizado, pctTabelaBase, pctTabelaFinal, aderenciaRota, reduzirPct, diferenca: grupo.freteTabela - grupo.freteRealizado };
-    }).sort((a, b) => (b.reduzirPct - a.reduzirPct) || (b.diferenca - a.diferenca) || (b.valorNF - a.valorNF));
-
-    const totais = linhas.reduce((acc, item) => {
-      acc.ctes += item.ctes;
-      acc.ctesGanharia += item.ctesGanharia;
-      acc.valorNF += item.valorNF;
-      acc.freteRealizado += item.freteRealizado;
-      acc.freteTabela += item.freteTabela;
-      acc.percentualTabelaBaseSoma += item.percentualTabelaBaseSoma;
-      acc.percentualTabelaBasePeso += item.percentualTabelaBasePeso;
-      return acc;
-    }, { ctes: 0, ctesGanharia: 0, valorNF: 0, freteRealizado: 0, freteTabela: 0, percentualTabelaBaseSoma: 0, percentualTabelaBasePeso: 0 });
-    const pctRealizadoTotal = totais.valorNF > 0 ? (totais.freteRealizado / totais.valorNF) * 100 : 0;
-    const pctTabelaTotal = totais.percentualTabelaBasePeso > 0
-      ? totais.percentualTabelaBaseSoma / totais.percentualTabelaBasePeso
-      : (totais.valorNF > 0 ? (totais.freteTabela / totais.valorNF) * 100 : 0);
-    const aderenciaTotal = totais.ctes > 0 ? (totais.ctesGanharia / totais.ctes) * 100 : 0;
-    const reduzirTotal = pctTabelaTotal > pctRealizadoTotal && pctTabelaTotal > 0
-      ? ((pctTabelaTotal - pctRealizadoTotal) / pctTabelaTotal) * 100
-      : 0;
-
-    const transportadora = r.filtros?.transportadoraTabelaUsada || r.filtros?.transportadora || 'Transportadora';
-    const periodo = periodoLaudoRealizado(r) || `${r.filtros?.inicio || ''} a ${r.filtros?.fim || ''}`;
     const nomeBase = nomeArquivoSeguro(`ajuste-rota-faixa-${transportadora}`);
     const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <title>Laudo de ajuste por rota/faixa</title>
+  <title>Laudo de ajuste por rota</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; color: #071a44; background: #f4f7fb; }
     header { background: #071a44; color: #fff; padding: 28px 34px; }
@@ -7289,35 +7676,201 @@ export default function SimuladorPage({ transportadoras = [] }) {
     .reduce { color: #c1121f; font-weight: 800; }
     .ok { color: #087f3f; font-weight: 800; }
     .note { background: #fff; border-left: 4px solid #1d4ed8; padding: 12px 14px; margin: 18px 0; }
+    .alerta { color: #c1121f; font-weight: 800; }
+    .muted-cell { color: #94a3b8; }
+    .rpa-cell, th.rpa-col { background: #eef2ff; color: #3730a3; font-weight: 800; }
+    .linha-expansivel { cursor: pointer; }
+    .linha-expansivel:hover { background: #f7fbff; }
+    .linha-detalhe { display: none; background: #fbfdff; }
+    .linha-detalhe.aberta { display: table-row; }
+    .mini-table { margin-top: 8px; font-size: 11px; }
+    .mini-table th, .mini-table td { padding: 6px; font-size: 11px; }
     @media print { body { background: #fff; } header, main { padding: 18px; } .cards { grid-template-columns: repeat(3, 1fr); } }
   </style>
 </head>
 <body>
   <header>
-    <h1>Laudo de ajuste por rota/faixa</h1>
+    <h1>Laudo de ajuste por rota</h1>
     <div>${esc(transportadora)} - ${esc(periodo)} - Canal ${esc(r.filtros?.canal || 'Todos')}</div>
-    <div class="muted">Comparativo entre o frete realizado e a tabela simulada, agrupado por rota/cotacao e faixa de peso.</div>
+    <div class="muted">Comparativo entre o frete cobrado no CT-e e a Tabela RPA simulada, agrupado por rota. Cobre 100% dos CT-es do periodo (nao e uma amostra).</div>
   </header>
   <main>
     <section class="cards">
       <div class="card"><span>CT-es analisados</span><strong>${formatNumberBR(totais.ctes, 0)}</strong></div>
-      <div class="card"><span>Rotas/faixas</span><strong>${formatNumberBR(linhas.length, 0)}</strong></div>
+      <div class="card"><span>Sem calculo</span><strong>${formatNumberBR(totais.ctesSemCalculo, 0)}</strong></div>
+      <div class="card"><span>Rotas</span><strong>${formatNumberBR(linhas.length, 0)}</strong></div>
       <div class="card"><span>Ganharia</span><strong>${formatNumberBR(totais.ctesGanharia, 0)}</strong></div>
-      <div class="card"><span>Aderencia media</span><strong>${formatPercent(aderenciaTotal)}</strong></div>
+      <div class="card"><span>Perderia</span><strong>${formatNumberBR(totais.ctesPerderia, 0)}</strong></div>
+      <div class="card"><span>Aderencia da tabela</span><strong>${formatPercent(aderenciaTotal)}</strong></div>
+      <div class="card"><span>Faturamento atual (CT-es)</span><strong>${formatMoney(totais.freteRealizado)}</strong></div>
+      <div class="card rpa-cell"><span>Faturamento pela RPA</span><strong>${formatMoney(totais.freteTabela)}</strong></div>
+      <div class="card"><span>Faturamento RPA nas ganhas</span><strong>${formatMoney(totais.freteTabelaGanharia)}</strong></div>
       <div class="card"><span>% realizado medio</span><strong>${formatPercent(pctRealizadoTotal)}</strong></div>
-      <div class="card"><span>% tabela base</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
+      <div class="card"><span>% Tabela RPA</span><strong>${formatPercent(pctTabelaTotal)}</strong></div>
       <div class="card"><span>Reducao media sugerida</span><strong>${formatPercent(reduzirTotal)}</strong></div>
+      <div class="card"><span>Perdendo p/ outras transportadoras</span><strong>${formatMoney(totais.freteRealizadoPerderia)}</strong></div>
+      <div class="card"><span>Volumes/dia (total analisado)</span><strong>${formatNumberBR(volumesPorDia, 1)}</strong></div>
+      <div class="card rpa-cell"><span>Volumes/dia (rotas ganhas)</span><strong>${formatNumberBR(volumesGanhariaPorDia, 1)}</strong></div>
+      <div class="card"><span>Pedidos</span><strong>${formatNumberBR(pedidosTotal, 0)}</strong></div>
     </section>
-    <div class="note">A reducao sugerida compara o percentual base da faixa (% NF cadastrado na tabela) com o percentual realizado. O frete tabela final continua exibido com taxas, minimos e generalidades para conferencia.</div>
-    <h2>Resumo por rota/faixa</h2>
+    <div class="note">
+      <strong>Como ler os cards:</strong> CT-es analisados/sem calculo/ganharia/perderia somam o periodo INTEIRO (nao uma amostra).
+      Aderencia da tabela = dos CT-es que tinham calculo, % em que a Tabela RPA ganharia do frete realizado (mesma logica da Aderencia de cada rota). "Sem calculo" mostra a parte que ficou fora por falta de tabela/NF.
+      Faturamento atual (CT-es) = soma do frete cobrado nos CT-es analisados. Faturamento pela RPA = soma da tabela simulada em todos os CT-es com calculo no periodo.
+      Faturamento RPA nas ganhas = apenas o recorte em que a RPA ficaria competitiva contra o frete atual.
+      % realizado medio e % Tabela RPA = frete cobrado / Tabela RPA sobre o valor NF total, na mesma base.
+      Reducao media sugerida = quanto a Tabela RPA precisaria cair, em media, nas rotas onde ela ficou mais cara que o realizado.
+      Perdendo = frete realizado nas rotas em que ela perderia para outra transportadora.
+      "Volumes/dia (total analisado)" e o volume de TODO o periodo comparado, dividido pelos dias; "Volumes/dia (rotas ganhas)" e so o volume dos CT-es onde a Tabela RPA ganharia — a projecao real de quanto ela carregaria por dia. Pedidos = total do periodo dividido pelos dias corridos.
+    </div>
+    <h2>Resumo por rota (ordenado por quantidade de CT-es)</h2>
+    <div class="note">Clique numa rota para ver os CT-es dela. A abertura mostra ate ${formatNumberBR(MAX_ITENS_AMOSTRA_POR_ROTA, 0)} CT-es por rota/cotacao para conferir o calculo; os totais da linha da rota (CT-es, Ganharia, Perderia etc.) sempre somam 100% do periodo, mesmo quando a lista expandida for uma amostra.</div>
     <table>
-      <thead><tr><th>Rota/cotacao</th><th>Faixa</th><th class="num">CT-es</th><th class="num">Ganharia</th><th class="num">Aderencia rota</th><th class="num">Valor NF</th><th class="num">Frete realizado</th><th class="num">Frete tabela final</th><th class="num">% realizado</th><th class="num">% tabela base</th><th class="num">Reduzir</th><th>Leitura</th></tr></thead>
-      <tbody>${linhas.map((item) => `<tr><td><strong>${esc(item.rota)}</strong></td><td>${esc(item.faixa)}</td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatNumberBR(item.ctesGanharia, 0)}</td><td class="num">${formatPercent(item.aderenciaRota)}</td><td class="num">${formatMoney(item.valorNF)}</td><td class="num">${formatMoney(item.freteRealizado)}</td><td class="num">${formatMoney(item.freteTabela)}</td><td class="num">${formatPercent(item.pctRealizado)}</td><td class="num">${formatPercent(item.pctTabelaBase)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td><td>${item.reduzirPct > 0 ? `Tabela acima do realizado nesta faixa. Reduzir ${formatPercent(item.reduzirPct)}.` : 'Tabela igual ou abaixo do realizado neste recorte.'}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>Rota</th><th class="num">CT-es</th><th class="num">Sem calc.</th><th class="num">Ganharia</th><th class="num">Perderia</th><th class="num">Aderencia rota</th><th class="num">Valor NF</th><th class="num">Frete cobrado</th><th class="num rpa-col">Tabela RPA</th><th class="num">% cobrado</th><th class="num rpa-col">% Tabela RPA</th><th class="num">Reduzir</th></tr></thead>
+      <tbody>${linhas.map((item, idx) => {
+        const detalheId = `rota-${idx}`;
+        const linhasCte = item.itensAmostra.map((cte) => `<tr><td><strong>${esc(cte.cte)}</strong></td><td>${esc(cte.canal || '-')}</td><td class="num">${formatNumberBR(cte.peso, 2)}</td><td class="num">${formatMoney(cte.valorNF)}</td><td class="num">${formatMoney(cte.freteBaseComparativa)}</td><td class="num rpa-cell">${cte.tabelaRpa > 0 ? formatMoney(cte.tabelaRpa) : '-'}</td><td class="num">${formatPercent(cte.percentualCobrado)}</td><td class="num rpa-cell">${formatPercent(cte.percentualCalc)}</td><td class="num">${formatPercent(cte.percentualBase)}</td><td class="num">${formatMoney(cte.gris)}</td><td class="num">${formatMoney(cte.tas)}</td><td class="num">${formatMoney(cte.ctrc)}</td><td class="num">${formatMoney(cte.pedagio)}</td><td class="num">${formatMoney(cte.icms)}</td><td>${esc(cte.statusSelecionada || '-')}</td></tr>`).join('');
+        const avisoAmostra = item.itensAmostraIncompleta
+          ? `<div class="note">Mostrando ${formatNumberBR(item.itensAmostra.length, 0)} de ${formatNumberBR(item.ctes, 0)} CT-e(s) desta rota (amostra de auditoria, limite de ${formatNumberBR(MAX_ITENS_AMOSTRA_POR_ROTA, 0)} por rota — nao e a lista completa).</div>`
+          : '';
+        const corpoDetalhe = item.avisoIncompleto
+          ? '<div class="note">Esta parte veio de uma analise salva sem o agrupamento detalhado por rota/cotacao. Os valores entram nos cards e totais, mas nao ha CT-es detalhados para abrir. Para detalhar rota a rota, recalcule ou unifique parcelas salvas ja com o novo formato.</div>'
+          : item.itensAmostra.length
+          ? `${avisoAmostra}<table class="mini-table"><thead><tr><th>CT-e</th><th>Canal</th><th class="num">Peso</th><th class="num">Valor NF</th><th class="num">Frete cobrado</th><th class="num rpa-col">Tabela RPA</th><th class="num">% cobrado</th><th class="num rpa-col">% Tabela RPA</th><th class="num">% base</th><th class="num">GRIS</th><th class="num">TAS</th><th class="num">CTRC</th><th class="num">Pedagio</th><th class="num">ICMS</th><th>Status</th></tr></thead><tbody>${linhasCte}</tbody></table>`
+          : '<div class="note">Nenhum CT-e desta rota está na amostra de auditoria disponível.</div>';
+        return `<tr class="linha-expansivel" onclick="document.getElementById('${detalheId}').classList.toggle('aberta')"><td><strong>${esc(item.rota)}</strong></td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatNumberBR(item.ctesSemCalculo, 0)}</td><td class="num">${formatNumberBR(item.ctesGanharia, 0)}</td><td class="num">${formatNumberBR(item.ctesPerderia, 0)}</td><td class="num">${formatPercent(item.aderenciaRota)}</td><td class="num">${formatMoney(item.valorNF)}</td><td class="num">${formatMoney(item.freteRealizado)}</td><td class="num rpa-cell">${formatMoney(item.freteTabela)}</td><td class="num">${formatPercent(item.pctRealizado)}</td><td class="num rpa-cell">${formatPercent(item.pctTabelaFinal)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td></tr><tr id="${detalheId}" class="linha-detalhe"><td colspan="12">${corpoDetalhe}</td></tr>`;
+      }).join('')}</tbody>
     </table>
   </main>
 </body>
 </html>`;
     baixarHtml(`${nomeBase}.html`, html);
+  };
+
+  // Mesmo laudo de ajuste rota, em Excel: aba de resumo (cards), aba com o
+  // resumo por rota e aba com a amostra de ajustes do motor de calculo.
+  const exportarExcelAjusteRotaFaixaTransportador = () => {
+    if (!resultadoRealizado?.rotasCotacao?.length) return;
+    const {
+      linhas, totais, transportadora, periodo,
+      pctRealizadoTotal, pctTabelaTotal, aderenciaTotal, reduzirTotal,
+      meses, volumesPorDia, volumesGanhariaPorDia, pedidosTotal,
+    } = montarDadosAjusteRotaFaixa(resultadoRealizado);
+
+    const linhasResumo = [
+      ['Laudo de ajuste por rota'],
+      ['Transportadora', transportadora],
+      ['Periodo', periodo],
+      [],
+      ['CT-es analisados', totais.ctes],
+      ['Sem calculo', totais.ctesSemCalculo],
+      ['Rotas', linhas.length],
+      ['Ganharia', totais.ctesGanharia],
+      ['Perderia', totais.ctesPerderia],
+      ['Faturamento atual (CT-es)', Number(totais.freteRealizado.toFixed(2))],
+      ['Faturamento pela RPA', Number(totais.freteTabela.toFixed(2))],
+      ['Faturamento RPA nas ganhas', Number(totais.freteTabelaGanharia.toFixed(2))],
+      ['Aderencia da tabela (%)', Number(aderenciaTotal.toFixed(2))],
+      ['% realizado medio', Number(pctRealizadoTotal.toFixed(2))],
+      ['% Tabela RPA', Number(pctTabelaTotal.toFixed(2))],
+      ['Reducao media sugerida (%)', Number(reduzirTotal.toFixed(2))],
+      ['Perdendo para outras transportadoras', Number(totais.freteRealizadoPerderia.toFixed(2))],
+      ['Volumes/dia (total analisado)', Number(volumesPorDia.toFixed(2))],
+      ['Volumes/dia (rotas ganhas)', Number(volumesGanhariaPorDia.toFixed(2))],
+      ['Pedidos', pedidosTotal],
+    ];
+    const wsResumo = XLSX.utils.aoa_to_sheet(linhasResumo);
+    wsResumo['!cols'] = [{ wch: 36 }, { wch: 22 }];
+
+    const headerRota = ['Rota', 'CT-es', 'Sem calculo', 'Ganharia', 'Perderia', 'Aderencia rota (%)', 'Valor NF', 'Frete cobrado', 'Tabela RPA', '% cobrado', '% Tabela RPA', 'Reduzir (%)'];
+    const linhasRota = linhas.map((item) => [
+      item.rota, item.ctes, item.ctesSemCalculo, item.ctesGanharia, item.ctesPerderia,
+      Number(item.aderenciaRota.toFixed(2)), Number(item.valorNF.toFixed(2)), Number(item.freteRealizado.toFixed(2)), Number(item.freteTabela.toFixed(2)),
+      Number(item.pctRealizado.toFixed(2)), Number(item.pctTabelaFinal.toFixed(2)), Number(item.reduzirPct.toFixed(2)),
+    ]);
+    const wsRota = XLSX.utils.aoa_to_sheet([headerRota, ...linhasRota]);
+    wsRota['!cols'] = headerRota.map(() => ({ wch: 18 }));
+
+    // CT-es de cada rota, com o detalhe do calculo (peso, %base, taxas, ICMS,
+    // Tabela RPA) — sem nenhuma informacao de correcao/discrepancia interna,
+    // ja que este arquivo pode ir pro transportador.
+    const ctesExcelCompletos = Array.isArray(resultadoRealizado.ctesAjusteRotaExcel) && resultadoRealizado.ctesAjusteRotaExcel.length
+      ? resultadoRealizado.ctesAjusteRotaExcel
+      : linhas.flatMap((item) => item.itensAmostra.map((cte) => ({
+        rota: item.rota,
+        cte: cte.cte,
+        chaveCte: cte.chaveCte || '',
+        origem: '',
+        ufOrigem: '',
+        destino: '',
+        ufDestino: '',
+        canal: cte.canal || '',
+        peso: cte.peso,
+        volumes: 0,
+        valorNF: cte.valorNF,
+        freteCobrado: cte.freteBaseComparativa,
+        tabelaRpa: cte.tabelaRpa,
+        percentualCobrado: cte.percentualCobrado,
+        percentualCalc: cte.percentualCalc,
+        percentualBase: cte.percentualBase,
+        tipoCalculo: '',
+        faixaPeso: '',
+        prazo: 0,
+        pesoConsiderado: cte.peso,
+        percentualAplicado: cte.percentualBase,
+        valorPercentual: 0,
+        valorKgAplicado: 0,
+        valorKgGarantia: 0,
+        valorExcedente: 0,
+        minimoRota: 0,
+        freteMinimoCotacao: 0,
+        freteMinimoGeneralidade: 0,
+        minimoAplicavel: 0,
+        componenteVencedor: '',
+        valorBase: 0,
+        subtotal: 0,
+        taxaEmergencialPct: 0,
+        valorEmergencial: 0,
+        aliquotaIcms: 0,
+        adValorem: 0,
+        adValPct: 0,
+        grisPct: 0,
+        gris: cte.gris,
+        tas: cte.tas,
+        ctrc: cte.ctrc,
+        pedagio: cte.pedagio,
+        tda: 0,
+        tde: 0,
+        tdr: 0,
+        trt: 0,
+        suframa: 0,
+        outras: 0,
+        taxaExtra: 0,
+        icms: cte.icms,
+        statusSelecionada: cte.statusSelecionada,
+      })));
+    const headerCtes = ['Rota', 'CT-e', 'Chave CT-e', 'Origem', 'UF origem', 'Destino', 'UF destino', 'Canal', 'Tipo calculo', 'Faixa', 'Prazo', 'Peso NF', 'Peso considerado', 'Volumes', 'Valor NF', 'Frete cobrado', 'Tabela RPA', 'Diferenca RPA x cobrado', '% cobrado', '% Tabela RPA', '% base', '% aplicado', 'Valor percentual', 'R$/kg aplicado', 'Valor kg garantia', 'Valor excedente', 'Minimo rota', 'Minimo cotacao', 'Minimo geral', 'Minimo aplicavel', 'Componente vencedor', 'Valor base', 'Subtotal', 'Taxa emergencial %', 'Valor emergencial', 'Aliquota ICMS %', 'ICMS', 'Ad Valorem', 'Ad Valorem %', 'GRIS', 'GRIS %', 'Pedagio', 'TAS', 'CTRC', 'TDA', 'TDE', 'TDR', 'TRT', 'Suframa', 'Outras', 'Taxa extra', 'Status'];
+    const linhasCtes = ctesExcelCompletos.map((cte) => [
+      cte.rota || '', cte.cte || '', cte.chaveCte || '', cte.origem || '', cte.ufOrigem || '', cte.destino || '', cte.ufDestino || '', cte.canal || '', cte.tipoCalculo || '', cte.faixaPeso || '', Number(cte.prazo || 0),
+      Number((cte.peso || 0).toFixed(3)), Number((cte.pesoConsiderado || cte.peso || 0).toFixed(3)), Number((cte.volumes || 0).toFixed(2)), Number((cte.valorNF || 0).toFixed(2)),
+      Number((cte.freteCobrado || 0).toFixed(2)), Number((cte.tabelaRpa || 0).toFixed(2)), Number(((cte.tabelaRpa || 0) - (cte.freteCobrado || 0)).toFixed(2)),
+      Number((cte.percentualCobrado || 0).toFixed(2)), Number((cte.percentualCalc || 0).toFixed(2)), Number((cte.percentualBase || 0).toFixed(2)), Number((cte.percentualAplicado || 0).toFixed(2)),
+      Number((cte.valorPercentual || 0).toFixed(2)), Number((cte.valorKgAplicado || 0).toFixed(2)), Number((cte.valorKgGarantia || 0).toFixed(2)), Number((cte.valorExcedente || 0).toFixed(2)),
+      Number((cte.minimoRota || 0).toFixed(2)), Number((cte.freteMinimoCotacao || 0).toFixed(2)), Number((cte.freteMinimoGeneralidade || 0).toFixed(2)), Number((cte.minimoAplicavel || 0).toFixed(2)),
+      cte.componenteVencedor || '', Number((cte.valorBase || 0).toFixed(2)), Number((cte.subtotal || 0).toFixed(2)), Number((cte.taxaEmergencialPct || 0).toFixed(2)), Number((cte.valorEmergencial || 0).toFixed(2)), Number((cte.aliquotaIcms || 0).toFixed(2)), Number((cte.icms || 0).toFixed(2)),
+      Number((cte.adValorem || 0).toFixed(2)), Number((cte.adValPct || 0).toFixed(2)), Number((cte.gris || 0).toFixed(2)), Number((cte.grisPct || 0).toFixed(2)), Number((cte.pedagio || 0).toFixed(2)), Number((cte.tas || 0).toFixed(2)), Number((cte.ctrc || 0).toFixed(2)),
+      Number((cte.tda || 0).toFixed(2)), Number((cte.tde || 0).toFixed(2)), Number((cte.tdr || 0).toFixed(2)), Number((cte.trt || 0).toFixed(2)), Number((cte.suframa || 0).toFixed(2)), Number((cte.outras || 0).toFixed(2)), Number((cte.taxaExtra || 0).toFixed(2)),
+      cte.statusSelecionada || '',
+    ]);
+    const wsCtes = XLSX.utils.aoa_to_sheet([headerCtes, ...linhasCtes]);
+    wsCtes['!cols'] = headerCtes.map(() => ({ wch: 16 }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
+    XLSX.utils.book_append_sheet(wb, wsRota, 'Rota');
+    XLSX.utils.book_append_sheet(wb, wsCtes, 'CT-es completos');
+    const nomeBase = nomeArquivoSeguro(`ajuste-rota-${transportadora}`);
+    XLSX.writeFile(wb, `${nomeBase}.xlsx`);
   };
 
   const copiarTextoLaudo = async (texto, label) => {
@@ -8391,10 +8944,17 @@ export default function SimuladorPage({ transportadoras = [] }) {
             </button>
             <button className="sim-tab" type="button"
               onClick={exportarLaudoAjusteRotaFaixaTransportador}
-              disabled={!resultadoRealizado?.ctesDetalhes?.length}
-              title="Laudo para negociar reducao por rota/faixa com a transportadora"
+              disabled={!resultadoRealizado?.rotasCotacao?.length}
+              title="Laudo para negociar reducao por rota/cotacao com a transportadora — cobre 100% dos CT-es do periodo"
               style={{ background: '#eef2ff', color: '#3730a3', border: '1px solid #c7d2fe' }}>
-              Ajuste rota/faixa
+              Ajuste por rota
+            </button>
+            <button className="sim-tab" type="button"
+              onClick={exportarExcelAjusteRotaFaixaTransportador}
+              disabled={!resultadoRealizado?.rotasCotacao?.length}
+              title="Mesmo laudo de ajuste por rota, em Excel (resumo, rota e amostra de ajustes do motor)"
+              style={{ background: '#eef2ff', color: '#3730a3', border: '1px solid #c7d2fe' }}>
+              📥 Ajuste por rota (Excel)
             </button>
             <button className="sim-tab" type="button"
               onClick={exportarRelatorioDiretoria}
@@ -8433,7 +8993,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
           <div className="sim-form-grid sim-grid-5">
             <label>
               Transportadora / tabela
-              <select value={transportadoraRealizado} onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); setNomesRealizadoParaVincular([]); setBuscaVinculoRealizado(''); setFeedbackVinculoReajusteRealizado(''); }}>
+              <select
+                value={transportadoraRealizado}
+                onChange={(event) => { setTransportadoraRealizado(event.target.value); setOrigemRealizado(''); setOrigensRealizadoMarcadas([]); setNomesRealizadoParaVincular([]); setBuscaVinculoRealizado(''); setFeedbackVinculoReajusteRealizado(''); }}
+                title={transportadoraRealizado}
+                style={{ maxWidth: '100%', textOverflow: 'ellipsis' }}
+              >
                 <option value="">Selecione</option>
                 {transportadorasPorCanalRealizado.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
               </select>
@@ -9517,7 +10082,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                       <div className="summary-card"><span>Saving anual</span><strong>{formatMoney(savingAnual)}</strong><small>projeção 12 meses</small></div>
                       <div className="summary-card"><span>% redução média</span><strong>{formatPercent(resultadoRealizado.reducaoMediaNecessaria || 0)}</strong><small>necessária nas perdidas</small></div>
                       <div className="summary-card"><span>Volumes capturados/dia</span><strong>{Number(volumesDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong><small>{Number(volumesProjetados || 0).toLocaleString('pt-BR')} no periodo; {Number(volumesMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} / mes</small></div>
-                      <div className="summary-card"><span>{usandoCteComoPedido ? 'CT-es/dia' : 'Pedidos/dia'}</span><strong>{Number(pedidosDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong><small>{Number(pedidosMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} {usandoCteComoPedido ? 'CT-es' : 'pedidos'} / m�s projetados</small></div>
+                      <div className="summary-card"><span>{usandoCteComoPedido ? 'CT-es/dia' : 'Pedidos/dia'}</span><strong>{Number(pedidosDia || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong><small>{Number(pedidosMes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} {usandoCteComoPedido ? 'CT-es' : 'pedidos'} / m�s projetados</small></div>
                       <VeiculoOcupacaoCard
                         titulo="Veículo operacional"
                         cubagemDia={cubagemDia}
@@ -10294,10 +10859,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                           {' = '}<strong>{formatMoney(valorFaixaComExcedente)}</strong>
                                                         </div>
                                                       )}
+                                                      {frete.tipoCalculo === 'FAIXA_DE_PESO' && (
+                                                        <div style={{ padding: '6px 8px', background: '#fef3c7', borderRadius: 6 }}>
+                                                          Valor base = MAIOR entre base da faixa (<strong>{formatMoney(valorFaixaComExcedente)}</strong>) e mínimo aplicável (<strong>{formatMoney(frete.minimoAplicavel)}</strong>) = <strong>{formatMoney(frete.valorBase)}</strong>
+                                                        </div>
+                                                      )}
                                                     </>
                                                   );
                                                 })()}
                                                 <div>Mínimo rota: <strong>{formatMoney(item.vencedorDetalhes?.frete?.minimoRota)}</strong></div>
+                                                <div>Mínimo cotação: <strong>{formatMoney(item.vencedorDetalhes?.frete?.freteMinimoCotacao)}</strong></div>
+                                                <div>Mínimo geral (generalidade): <strong>{formatMoney(item.vencedorDetalhes?.frete?.freteMinimoGeneralidade)}</strong></div>
+                                                <div>Mínimo aplicável (maior dos 3): <strong>{formatMoney(item.vencedorDetalhes?.frete?.minimoAplicavel)}</strong></div>
                                                 <div>Valor base: <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorBase)}</strong></div>
                                                 <div>Ad Valorem: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.adValorem)}</strong> ({formatPercent(item.vencedorDetalhes?.taxas?.adValPct)})</div>
                                                 <div>GRIS: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.gris)}</strong> ({formatPercent(item.vencedorDetalhes?.taxas?.grisPct)})</div>
@@ -10371,10 +10944,18 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                           {' = '}<strong>{formatMoney(valorFaixaComExcedente)}</strong>
                                                         </div>
                                                       )}
+                                                      {frete.tipoCalculo === 'FAIXA_DE_PESO' && (
+                                                        <div style={{ padding: '6px 8px', background: '#fef3c7', borderRadius: 6 }}>
+                                                          Valor base = MAIOR entre base da faixa (<strong>{formatMoney(valorFaixaComExcedente)}</strong>) e mínimo aplicável (<strong>{formatMoney(frete.minimoAplicavel)}</strong>) = <strong>{formatMoney(frete.valorBase)}</strong>
+                                                        </div>
+                                                      )}
                                                     </>
                                                   );
                                                 })()}
                                                 <div>Mínimo rota: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.minimoRota)}</strong></div>
+                                                <div>Mínimo cotação: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.freteMinimoCotacao)}</strong></div>
+                                                <div>Mínimo geral (generalidade): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.freteMinimoGeneralidade)}</strong></div>
+                                                <div>Mínimo aplicável (maior dos 3): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.minimoAplicavel)}</strong></div>
                                                 <div>Valor base: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorBase)}</strong></div>
                                                 <div>Ad Valorem: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.adValorem)}</strong> ({formatPercent(item.tabelaAtualDetalhes?.taxas?.adValPct)})</div>
                                                 <div>GRIS: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.gris)}</strong> ({formatPercent(item.tabelaAtualDetalhes?.taxas?.grisPct)})</div>
@@ -10430,9 +11011,16 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                       <div>R$/kg excedente: <strong>{valorExcedenteUnitario > 0 ? formatMoney(valorExcedenteUnitario) : '—'}</strong></div>
                                                       <div>Valor excedente: <strong>{formatMoney(valorExcedente)}</strong></div>
                                                       <div>Base faixa + excedente: <strong>{formatMoney(valorFaixaSemExcedente)}</strong> + <strong>{formatMoney(valorExcedente)}</strong> = <strong>{formatMoney(valorFaixaComExcedente)}</strong></div>
+                                                      <div style={{ padding: '6px 8px', background: '#fef3c7', borderRadius: 6 }}>
+                                                        Valor base = MAIOR entre base da faixa (<strong>{formatMoney(valorFaixaComExcedente)}</strong>) e mínimo aplicável (<strong>{formatMoney(frete.minimoAplicavel)}</strong>) = <strong>{formatMoney(frete.valorBase)}</strong>
+                                                      </div>
                                                     </>
                                                   );
                                                 })()}
+                                                <div>Mínimo rota: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.minimoRota)}</strong></div>
+                                                <div>Mínimo cotação: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.freteMinimoCotacao)}</strong></div>
+                                                <div>Mínimo geral (generalidade): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.freteMinimoGeneralidade)}</strong></div>
+                                                <div>Mínimo aplicável (maior dos 3): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.minimoAplicavel)}</strong></div>
                                                 <div>Valor base: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorBase)}</strong></div>
                                                 <div>Ad Valorem: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.adValorem)}</strong></div>
                                                 <div>GRIS: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.gris)}</strong></div>

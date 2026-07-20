@@ -177,8 +177,10 @@ export function labelTabelaNegociacaoSimulador(tabela = {}) {
   const origem = origemTabelaNegociacaoLabel(tabela);
   const rodada = getRodadaTabelaNegociacao(tabela);
   const tipo = upper(tabela.tipo_negociacao || tabela.tipoNegociacao);
-  const tag = tipo === 'REAJUSTE_TABELA_EXISTENTE' ? 'REAJUSTE' : tipo === 'TABELA_LOTACAO' ? 'LOTACAO' : 'NEGOCIACAO';
-  return `${nome}${origem ? ` — ${origem}` : ''} (${tag} R${rodada})`;
+  // Só marca o tipo quando não é o caso comum (negociação padrão) — o rótulo
+  // ficava comprido demais repetindo "NEGOCIACAO" em toda tabela em rodada.
+  const tag = tipo === 'REAJUSTE_TABELA_EXISTENTE' ? 'REAJUSTE ' : tipo === 'TABELA_LOTACAO' ? 'LOTACAO ' : '';
+  return `${nome}${origem ? ` — ${origem}` : ''} (${tag}R${rodada})`;
 }
 
 function montarGeneralidades(generalidades = {}) {

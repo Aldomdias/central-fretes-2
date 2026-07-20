@@ -65,6 +65,71 @@ function fmtPctDetalhe(v) {
   return Number.isFinite(n) ? `${n.toFixed(2).replace('.', ',')}%` : '—';
 }
 
+function parseDetalhesCalculoAuditoria(valor) {
+  if (!valor) return {};
+  if (typeof valor === 'object') return valor;
+  try { return JSON.parse(valor); } catch { return {}; }
+}
+
+function numeroFlexAuditoria(valor) {
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+  const texto = String(valor ?? '').trim();
+  if (!texto) return 0;
+  const limpo = texto.replace(/R\$|kg|%/gi, '').replace(/\s/g, '');
+  const normalizado = limpo.includes(',')
+    ? limpo.replace(/\./g, '').replace(',', '.')
+    : limpo;
+  const n = Number(normalizado);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function numeroValorNfAuditoria(item = {}) {
+  const detalhes = parseDetalhesCalculoAuditoria(item.detalhes_calculo);
+  const candidatos = [
+    item.valor_nf,
+    item.valorNF,
+    item.nf_venda,
+    item.valor_nota,
+    detalhes.valor_nf,
+    detalhes.valorNF,
+    detalhes.valorNf,
+    detalhes.valor_nota,
+    detalhes.valorNfInformado,
+    detalhes.valorNFInformado,
+    detalhes.resumo?.valor_nf,
+    detalhes.resumo?.valorNF,
+    detalhes.resumo?.valorNf,
+    detalhes.frete?.valorNFInformado,
+    detalhes.frete?.valorNf,
+    detalhes.frete?.valor_nf,
+  ];
+  for (const candidato of candidatos) {
+    const n = numeroFlexAuditoria(candidato);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+function temChaveNfAuditoria(item = {}) {
+  const detalhes = parseDetalhesCalculoAuditoria(item.detalhes_calculo);
+  const candidatos = [
+    item.chave_nf_manual,
+    item.chave_nfe_manual,
+    item.chave_nfe,
+    item.chaveNfe,
+    item.chave_nf,
+    item.chaveNf,
+    detalhes.chave_nfe,
+    detalhes.chaveNfe,
+    detalhes.chave_nf,
+    detalhes.chaveNf,
+  ];
+  return candidatos.some((valor) => String(valor || '').replace(/\D/g, '').length >= 30);
+}
+
+function auditoriaSemValorNf(item = {}) {
+  return numeroValorNfAuditoria(item) <= 0 && !temChaveNfAuditoria(item);
+}
 const CAMPOS_TAXAS_CALCULO = ['adValorem', 'gris', 'pedagio', 'tas', 'ctrc', 'tda', 'tde', 'tdr', 'trt', 'suframa', 'outras', 'taxaExtra'];
 
 function somaTaxasCalculo(taxas = {}) {
@@ -2568,7 +2633,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                   const expandida = cteExpandido === idx;
                   const corDif = (v, base) => (base <= 0 ? '#94a3b8' : !ehDivergenteComMargem(v, base, margensDivergencia) ? '#16a34a' : '#dc2626');
                   const dentroDaMargem = amd > 0 && !ehDivergenteComMargem(difAmd, amd, margensDivergencia);
-                  const semValorNf = Number(r.valor_nf || 0) <= 0;
+                  const semValorNf = auditoriaSemValorNf(r);
                   const alternativasPeso = (Array.isArray(det?.comparativo_pesos) ? det.comparativo_pesos : [])
                     .map((alt) => ({ ...alt, pesoAlternativo: pesoAlternativaAuditoria(alt) }))
                     .filter((alt) => alt.pesoAlternativo > 0 && Math.abs(alt.pesoAlternativo - Number(r.peso || 0)) > 0.1)

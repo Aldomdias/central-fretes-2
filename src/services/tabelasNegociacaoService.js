@@ -449,7 +449,7 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}, onP
   };
 
   if (ibgesDestino.length) {
-    const lotes = dividirEmLotes(ibgesDestino, 5);
+    const lotes = dividirEmLotes(ibgesDestino, 50);
     let processados = 0;
     for (const loteIbges of lotes) {
       await buscarPorFiltro((query) => query.in('ibge_destino', loteIbges));
@@ -457,7 +457,7 @@ async function listarItensTabelaNegociacaoPorRecorte(tabelaId, recorte = {}, onP
       if (onProgresso) onProgresso(Math.min(processados, ibgesDestino.length), ibgesDestino.length);
     }
   } else {
-    const lotes = dividirEmLotes(ufsDestino, 1);
+    const lotes = dividirEmLotes(ufsDestino, 5);
     let processados = 0;
     for (const loteUfs of lotes) {
       await buscarPorFiltro((query) => query.in('uf_destino', loteUfs));
