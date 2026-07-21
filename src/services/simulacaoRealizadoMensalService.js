@@ -1,6 +1,9 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 
 const TABELA = 'simulacao_realizado_mensal';
+const MAX_CTES_DETALHES_SALVOS = 800;
+const MAX_CTES_AJUSTE_ROTA_SALVOS = 1200;
+const MAX_ITENS_AMOSTRA_ROTA_SALVOS = 50;
 
 function ensureSupabase() {
   const client = getSupabaseClient();
@@ -33,14 +36,60 @@ function compactarDetalheCte(item = {}) {
   };
 }
 
+function compactarCteAjusteRota(item = {}) {
+  return {
+    cte: item.cte,
+    destino: item.destino,
+    canal: item.canal,
+    rota: item.rota,
+    faixaPeso: item.faixaPeso || item.faixa,
+    peso: item.peso,
+    valorNF: item.valorNF,
+    volumes: item.volumes,
+    freteRealizado: item.freteRealizado,
+    freteSelecionada: item.freteSelecionada,
+    tabelaRpa: item.tabelaRpa,
+    freteTabela: item.freteTabela,
+    percentualBase: item.percentualBase,
+    percentualCobrado: item.percentualCobrado,
+    percentualCalc: item.percentualCalc,
+    taxaAplicadaTexto: item.taxaAplicadaTexto,
+    gris: item.gris,
+    tas: item.tas,
+    ctrc: item.ctrc,
+    pedagio: item.pedagio,
+    icms: item.icms,
+    statusSelecionada: item.statusSelecionada,
+  };
+}
+
+function compactarRotaCotacao(rota = {}) {
+  return {
+    ...rota,
+    itensAmostra: Array.isArray(rota.itensAmostra)
+      ? rota.itensAmostra.slice(0, MAX_ITENS_AMOSTRA_ROTA_SALVOS).map(compactarCteAjusteRota)
+      : [],
+  };
+}
+
 export function prepararResultadoRealizadoParaSalvar(resultado = {}) {
   const ctesDetalhes = Array.isArray(resultado.ctesDetalhes)
-    ? resultado.ctesDetalhes.slice(0, 800).map(compactarDetalheCte)
+    ? resultado.ctesDetalhes.slice(0, MAX_CTES_DETALHES_SALVOS).map(compactarDetalheCte)
     : [];
+  const ctesAjusteRotaExcel = Array.isArray(resultado.ctesAjusteRotaExcel)
+    ? resultado.ctesAjusteRotaExcel.slice(0, MAX_CTES_AJUSTE_ROTA_SALVOS).map(compactarCteAjusteRota)
+    : [];
+  const rotasCotacao = Array.isArray(resultado.rotasCotacao)
+    ? resultado.rotasCotacao.map(compactarRotaCotacao)
+    : resultado.rotasCotacao;
 
   return {
     ...resultado,
     ctesDetalhes,
+    ctesAjusteRotaExcel,
+    ctesAjusteRotaExcelPersistidos: ctesAjusteRotaExcel.length,
+    ctesAjusteRotaExcelTotal: resultado.ctesAjusteRotaExcelTotal || (Array.isArray(resultado.ctesAjusteRotaExcel) ? resultado.ctesAjusteRotaExcel.length : ctesAjusteRotaExcel.length),
+    rotasCotacao,
     ctesDetalhesPersistidos: ctesDetalhes.length,
     ctesDetalhesTotal: resultado.ctesDetalhesTotal || resultado.ctesAnalisados || ctesDetalhes.length,
   };

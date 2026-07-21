@@ -170,7 +170,7 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
       id: item.id,
       nomeRota: item.nome_rota || '',
       ibgeOrigem: item.ibge_origem || '',
-      ibgeDestino: item.ibge_destino || '',
+      ibgeDestino: onlyDigitsDb(item.ibge_destino).slice(0, 7) || item.ibge_destino || '',
       canal: item.canal || origem.canal || 'ATACADO',
       prazoEntregaDias: item.prazo_entrega_dias ?? 0,
       valorMinimoFrete: item.valor_minimo_frete ?? 0,
@@ -198,7 +198,7 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
     })),
     taxasEspeciais: taxasEspeciais.map((item) => ({
       id: item.id,
-      ibgeDestino: item.ibge_destino || '',
+      ibgeDestino: onlyDigitsDb(item.ibge_destino).slice(0, 7) || item.ibge_destino || '',
       tda: item.tda ?? 0,
       tdr: item.tdr ?? 0,
       trt: item.trt ?? 0,
@@ -235,6 +235,10 @@ function mapBaseToTables(transportadoras) {
       id: transportadoraId,
       nome: transportadora.nome || '',
       status: transportadora.status || 'Ativa',
+      tde: toNumberOrNull(transportadora.tde) ?? 0,
+      tde_cnpjs: Array.isArray(transportadora.tdeCnpjs)
+        ? transportadora.tdeCnpjs.map((item) => onlyDigitsDb(item)).filter(Boolean)
+        : [],
     });
 
     (transportadora.origens || []).forEach((origem) => {
@@ -280,7 +284,7 @@ function mapBaseToTables(transportadoras) {
           origem_id: origemId,
           nome_rota: nomeRota || '',
           ibge_origem: ibgeOrigem || '',
-          ibge_destino: ibgeDestino || '',
+          ibge_destino: onlyDigitsDb(ibgeDestino).slice(0, 7) || ibgeDestino || '',
           canal: canal || origem.canal || 'ATACADO',
           prazo_entrega_dias: toNumberOrNull(prazoEntregaDias),
           valor_minimo_frete: toNumberOrNull(valorMinimoFrete),
@@ -318,7 +322,7 @@ function mapBaseToTables(transportadoras) {
         taxasRows.push({
           id: safeUuid(id, usedTaxas),
           origem_id: origemId,
-          ibge_destino: ibgeDestino || '',
+          ibge_destino: onlyDigitsDb(ibgeDestino).slice(0, 7) || ibgeDestino || '',
           tda: toNumberOrNull(tda),
           tdr: toNumberOrNull(tdr),
           trt: toNumberOrNull(trt),
@@ -607,6 +611,8 @@ export async function carregarBaseCompletaDb(onProgress = null) {
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    tde: transportadora.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   }));
   return _cacheBaseCompleta;
@@ -998,42 +1004,23 @@ async function fetchCotacoesByOrigemIdsAndRotas(supabase, origemIds = [], rotaNo
 
 async function fetchTaxasByOrigemIdsAndDestinos(supabase, origemIds = [], destinosIbge = []) {
   const ids = Array.from(new Set((origemIds || []).filter(Boolean)));
-  const destinos = Array.from(new Set((destinosIbge || []).map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean)));
   if (!ids.length) return [];
-  if (!destinos.length || destinos.length > 500) return fetchRowsByOrigemIds(supabase, 'taxas_especiais', ids);
 
-  const rows = [];
-  const origemChunkSize = 50;
-  const destinoChunkSize = 120;
+  // Busca por origem_id apenas: a tabela taxas_especiais e uma lista de
+  // excecoes (pequena por origem), entao nao vale o risco de filtrar
+  // ibge_destino via .in() no banco. O IBGE cadastrado na taxa vem de um
+  // campo de texto livre na tela de Transportadoras e pode ter formatacao
+  // diferente do IBGE da rota (espacos, digito verificador etc.); um match
+  // exato no Postgres perderia a linha silenciosamente. O filtro por destino
+  // (normalizado) e aplicado aqui em JS, junto com a normalizacao que
+  // getTaxaDestino tambem aplica.
+  const rows = await fetchRowsByOrigemIds(supabase, 'taxas_especiais', ids);
 
-  try {
-    for (let oi = 0; oi < ids.length; oi += origemChunkSize) {
-      const origemChunk = ids.slice(oi, oi + origemChunkSize);
-      for (let di = 0; di < destinos.length; di += destinoChunkSize) {
-        const destinoChunk = destinos.slice(di, di + destinoChunkSize);
-        let from = 0;
-        while (true) {
-          const { data, error } = await supabase
-            .from('taxas_especiais')
-            .select('*')
-            .in('origem_id', origemChunk)
-            .in('ibge_destino', destinoChunk)
-            .order('origem_id', { ascending: true })
-            .range(from, from + PAGE_SIZE - 1);
+  const destinos = Array.from(new Set((destinosIbge || []).map((item) => onlyDigitsDb(item).slice(0, 7)).filter(Boolean)));
+  if (!destinos.length) return rows;
 
-          if (error) throw error;
-          const page = data || [];
-          rows.push(...page);
-          if (page.length < PAGE_SIZE) break;
-          from += PAGE_SIZE;
-        }
-      }
-    }
-  } catch {
-    return fetchRowsByOrigemIds(supabase, 'taxas_especiais', ids);
-  }
-
-  return rows;
+  const destinosSet = new Set(destinos);
+  return rows.filter((row) => destinosSet.has(onlyDigitsDb(row.ibge_destino).slice(0, 7)));
 }
 
 
@@ -1047,7 +1034,7 @@ async function fetchTransportadorasByIds(supabase, ids = []) {
     const chunk = uniqueIds.slice(index, index + chunkSize);
     const { data, error } = await supabase
       .from('transportadoras')
-      .select('id, nome, status')
+      .select('id, nome, status, tde, tde_cnpjs')
       .in('id', chunk);
 
     if (error) throw error;
@@ -1323,6 +1310,8 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    tde: transportadora.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     detalheCarregado: true,
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
   })).filter((item) => item.origens.length);
@@ -1450,7 +1439,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
   if (transportadoraId) {
     const response = await supabase
       .from('transportadoras')
-      .select('id, nome, status')
+      .select('id, nome, status, tde, tde_cnpjs')
       .eq('id', transportadoraId)
       .maybeSingle();
 
@@ -1461,7 +1450,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
   if (!transportadora && transportadoraNome) {
     const response = await supabase
       .from('transportadoras')
-      .select('id, nome, status')
+      .select('id, nome, status, tde, tde_cnpjs')
       .ilike('nome', transportadoraNome)
       .maybeSingle();
 
@@ -1471,7 +1460,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     if (!transportadora && !transportadoraError) {
       const fallback = await supabase
         .from('transportadoras')
-        .select('id, nome, status')
+        .select('id, nome, status, tde, tde_cnpjs')
         .ilike('nome', `%${transportadoraNome}%`)
         .limit(2);
 
@@ -2422,6 +2411,7 @@ function normalizeRealizadoDbRow(row = {}) {
     competencia: row.competencia || '',
     transportadora: row.transportadora || '',
     cnpjTransportadora: row.cnpj_transportadora || row.cnpjTransportadora || '',
+    documentoDestinatario: row.documento_destinatario || row.documentoDestinatario || '',
     emissao: row.emissao || row.data_emissao || row.dataEmissao || row.data_ref || row.dataRef || '',
     chaveCte: row.chave_cte || row.chaveCte || '',
     numeroCte: row.numero_cte || row.numeroCte || '',
@@ -2565,7 +2555,7 @@ const REALIZADO_SELECT_COLUMNS = [
 ].join(',');
 
 const REALIZADO_LOCAL_SELECT_COLUMNS = [
-  'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','data_emissao','chave_cte','numero_cte',
+  'id','arquivo_origem','competencia','transportadora','cnpj_transportadora','documento_destinatario','data_emissao','chave_cte','numero_cte',
   'valor_cte','valor_calculado','diferenca','situacao','status','status_conciliacao','status_erp','uf_origem','uf_destino',
   'ibge_origem','ibge_destino','chave_rota_ibge','peso','peso_declarado','peso_cubado','cubagem','qtd_volumes','canal','canal_original','valor_nf',
   'cidade_origem','cidade_destino','created_at','updated_at'

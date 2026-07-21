@@ -676,6 +676,7 @@ function cteParaLinhaSimulador(cte = {}, transportadoraSimulada = '', canalOverr
     valorNF: toNumber(pick(cte, ['valor_nf', 'valorNF', 'nf_venda', 'valor_nota'])),
     valorCte: toNumber(pick(cte, ['valor_cte', 'valorCte', 'valor_frete', 'frete'])),
     canal: canalOverride || pick(cte, ['canal', 'canal_original']) || '',
+    documentoDestinatario: pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14),
   };
 }
 
@@ -934,15 +935,18 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
   const tipoCalculo = getTipoCalculo(origem, cotacao);
   const taxaDestino = getTaxaDestino(origem, rota.ibgeDestino);
   const icmsInfo = inferirAliquotaIcmsAuditoria(origem, rota, cteCalculo);
+  const documentoDestinatario = pickDigits(cteCalculo, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14);
   const generalidades = {
     ...(origem.generalidades || {}),
     aliquotaIcms: icmsInfo.aliquota,
+    tde: transportadora?.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora?.tdeCnpjs) ? transportadora.tdeCnpjs : [],
   };
 
   try {
     const calculo = tipoCalculo === 'FAIXA_DE_PESO'
-      ? calcularFreteFaixaPeso({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf })
-      : calcularFretePercentual({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf });
+      ? calcularFreteFaixaPeso({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf, documentoDestinatario })
+      : calcularFretePercentual({ rota, cotacao, generalidades, taxaDestino, pesoKg: peso, valorNf, documentoDestinatario });
 
     const base = montarResultadoBase(cte, 'CALCULADO', '', {
       transportadora_tabela: transportadora.nome,
@@ -1265,6 +1269,7 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
     numeroCte: pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || '',
     peso: toNumber(pick(cte, ['peso'])),
     pesoDeclarado: toNumber(pick(cte, ['peso_declarado', 'pesoDeclarado', 'peso'])),
+    documentoDestinatario: pickDigits(cte, ['documento_destinatario', 'documentoDestinatario', 'cnpj_destinatario'], 14),
   });
 
   const total = ctes.length;
@@ -1303,6 +1308,7 @@ async function enriquecerCtesComTrackingAoVivo(ctes = [], onProgress) {
         peso_cubado: enriquecida.pesoCubado || cte.peso_cubado,
         cubagem: enriquecida.cubagemTotal || cte.cubagem,
         cubagemTotal: enriquecida.cubagemTotal || cte.cubagemTotal,
+        documento_destinatario: enriquecida.documentoDestinatario || cte.documento_destinatario || '',
       });
     });
 

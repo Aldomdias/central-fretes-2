@@ -46,7 +46,6 @@ function formatPercentValue(value) {
 function buildTaxDescription(taxa = {}) {
   const partes = [];
   if (toNumber(taxa.tda)) partes.push(`TDA ${formatTaxValue(taxa.tda)}`);
-  if (toNumber(taxa.tdr)) partes.push(`TDR ${formatTaxValue(taxa.tdr)}`);
   if (toNumber(taxa.trt)) partes.push(`TRT ${formatTaxValue(taxa.trt)}`);
   if (toNumber(taxa.suframa)) partes.push(`SUFR ${formatTaxValue(taxa.suframa)}`);
   if (toNumber(taxa.outras)) partes.push(`OUT ${formatTaxValue(taxa.outras)}`);
@@ -72,9 +71,62 @@ function findTaxaForRota(origem, rota) {
 }
 
 function hasSpecialTax(taxa = {}) {
-  return ['tda', 'tdr', 'trt', 'suframa', 'outras', 'gris', 'grisMinimo', 'adVal', 'adValMinimo'].some(
+  return ['tda', 'trt', 'suframa', 'outras', 'gris', 'grisMinimo', 'adVal', 'adValMinimo'].some(
     (key) => toNumber(taxa?.[key])
   );
+}
+
+function colunasCoringaTaxas(rows = []) {
+  const nomes = new Map();
+  (rows || []).forEach((item) => {
+    (item?.taxasExtras || []).forEach((taxa) => {
+      const nome = String(taxa?.nome || '').trim();
+      if (nome) nomes.set(normalizeHeader(nome), nome);
+    });
+  });
+  return [...nomes.values()].flatMap((nome) => ([
+    `${nome} % NF`,
+    `${nome} Min (R$)`,
+    `${nome} R$ fixo`,
+    `${nome} R$ por fracao`,
+    `${nome} Base kg`,
+  ]));
+}
+
+function valoresCoringaTaxas(item, colunas = []) {
+  const valores = Object.fromEntries(colunas.map((coluna) => [coluna, '']));
+  (item?.taxasExtras || []).forEach((taxa) => {
+    const nome = String(taxa?.nome || '').trim();
+    if (!nome) return;
+    valores[`${nome} % NF`] = taxa.pct ?? '';
+    valores[`${nome} Min (R$)`] = taxa.min ?? '';
+    valores[`${nome} R$ fixo`] = taxa.valor ?? '';
+    valores[`${nome} R$ por fracao`] = taxa.valorPorPeso ?? taxa.valor_por_peso ?? '';
+    valores[`${nome} Base kg`] = taxa.pesoBase ?? taxa.peso_base ?? '';
+  });
+  return valores;
+}
+
+function extrairCoringasTaxas(row) {
+  const coringas = new Map();
+  const obter = (nome) => {
+    if (!coringas.has(nome)) coringas.set(nome, { nome, pct: 0, min: 0, valor: 0, valorPorPeso: 0, pesoBase: 0 });
+    return coringas.get(nome);
+  };
+  Object.entries(row || {}).forEach(([coluna, valor]) => {
+    const key = normalizeHeader(coluna);
+    let match = key.match(/^(.*) r por fracao$/);
+    if (match && match[1]) { obter(match[1]).valorPorPeso = toNumber(valor); return; }
+    match = key.match(/^(.*) base kg$/);
+    if (match && match[1]) { obter(match[1]).pesoBase = toNumber(valor); return; }
+    match = key.match(/^(.*) r fixo$/);
+    if (match && match[1]) { obter(match[1]).valor = toNumber(valor); return; }
+    match = key.match(/^(.*) min r$/);
+    if (match && match[1]) { obter(match[1]).min = toNumber(valor); return; }
+    match = key.match(/^(.*) nf$/);
+    if (match && match[1] && !['gris', 'ad valorem'].includes(match[1])) obter(match[1]).pct = toNumber(valor);
+  });
+  return [...coringas.values()].filter((taxa) => taxa.pct || taxa.min || taxa.valor || taxa.valorPorPeso);
 }
 
 export function exportarInconsistenciasExcel({
@@ -481,7 +533,7 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
         container.origem.taxasEspeciais.push({
           ibgeDestino,
           tda: toNumber(firstFilled(row, ['tda r$', 'tda'])),
-          tdr: toNumber(firstFilled(row, ['tdr r$', 'tdr'])),
+          tdr: 0,
           trt: toNumber(firstFilled(row, ['trt r$', 'trt'])),
           suframa: toNumber(firstFilled(row, ['suframa r$', 'suframa'])),
           outras: toNumber(firstFilled(row, ['outras r$', 'outras'])),
@@ -489,6 +541,7 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
           grisMinimo: firstFilled(row, ['gris minimo r$', 'gris minimo']) === '' ? null : toNumber(firstFilled(row, ['gris minimo r$', 'gris minimo'])),
           adVal: firstFilled(row, ['ad valorem %', 'ad val %', 'ad valorem']) === '' ? null : toNumber(firstFilled(row, ['ad valorem %', 'ad val %', 'ad valorem'])),
           adValMinimo: firstFilled(row, ['ad valorem minimo r$', 'ad val minimo r$', 'ad valorem minimo']) === '' ? null : toNumber(firstFilled(row, ['ad valorem minimo r$', 'ad val minimo r$', 'ad valorem minimo'])),
+          taxasExtras: extrairCoringasTaxas(row),
         });
         inseridos += 1;
       }
@@ -561,13 +614,13 @@ function sheetRowsForTipo(tipo, rows = []) {
   }
 
   if (tipo === 'taxas') {
+    const colunasCoringa = colunasCoringaTaxas(rows);
     return rows.map((item) => ({
       Transportadora: item.transportadora || '',
       Origem: item.origem || '',
       Canal: item.canal || '',
       'IBGE Destino': item.ibgeDestino || '',
       'TDA (R$)': item.tda ?? '',
-      'TDR (R$)': item.tdr ?? '',
       'TRT (R$)': item.trt ?? '',
       'SUFRAMA (R$)': item.suframa ?? '',
       'Outras (R$)': item.outras ?? '',
@@ -575,6 +628,7 @@ function sheetRowsForTipo(tipo, rows = []) {
       'GRIS Mínimo (R$)': item.grisMinimo ?? '',
       'Ad Valorem (%)': item.adVal ?? '',
       'Ad Valorem Mínimo (R$)': item.adValMinimo ?? '',
+      ...valoresCoringaTaxas(item, colunasCoringa),
     }));
   }
 
@@ -617,7 +671,7 @@ function prepModelRows(tipo) {
   if (tipo === 'taxas') {
     return sheetRowsForTipo(tipo, [{
       transportadora: 'ALFA', origem: 'CAMPINAS', canal: 'ATACADO', ibgeDestino: '3106200',
-      tda: 10, tdr: 0, trt: 5, suframa: 0, outras: 0, gris: 0.35, grisMinimo: 2.5, adVal: 0.2, adValMinimo: 3,
+      tda: 10, trt: 5, suframa: 0, outras: 0, gris: 0.35, grisMinimo: 2.5, adVal: 0.2, adValMinimo: 3,
     }]);
   }
   return sheetRowsForTipo(tipo, [{

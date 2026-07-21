@@ -339,6 +339,7 @@ function normalizarCteSupabaseParaLocal(row = {}, municipioPorCidade = new Map()
     chaveRotaIbge,
     ibgeOk: Boolean(chaveRotaIbge),
     tomadorServico: row.tomadorServico || row.tomador_servico || row.tomador || '',
+    documentoDestinatario: row.documentoDestinatario || row.documento_destinatario || '',
     origemFonte: row.origemFonte || 'supabase-realizado-ctes',
   };
 }

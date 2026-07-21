@@ -222,8 +222,14 @@ function inferirAliquotaIcms(origem, rota, cidadePorIbge, transportadoraNome = '
   return { aliquota: 12, origem: 'legislacao' };
 }
 
+function normalizeIbge(value) {
+  return String(value || '').replace(/\D/g, '').slice(0, 7);
+}
+
 function getTaxaDestino(origem, ibgeDestino) {
-  return (origem.taxasEspeciais || []).find((item) => String(item.ibgeDestino) === String(ibgeDestino)) || {};
+  const alvo = normalizeIbge(ibgeDestino);
+  if (!alvo) return {};
+  return (origem.taxasEspeciais || []).find((item) => normalizeIbge(item.ibgeDestino) === alvo) || {};
 }
 
 function resolverTipoCalculo(origem = {}, cotacao = {}) {
@@ -424,10 +430,12 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       ctrc: calculo.taxas.ctrc,
       tda: calculo.taxas.tda,
       tde: calculo.taxas.tde || 0,
-      tdr: calculo.taxas.tdr,
+      tdr: 0,
       trt: calculo.taxas.trt,
       suframa: calculo.taxas.suframa,
       outras: calculo.taxas.outras,
+      taxaExtra: calculo.taxas.taxaExtra || 0,
+      taxasExtrasDetalhes: calculo.taxas.taxasExtrasDetalhes || [],
       totalTaxas:
         calculo.taxas.adValorem +
         calculo.taxas.gris +
@@ -436,15 +444,15 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
         calculo.taxas.ctrc +
         calculo.taxas.tda +
         (calculo.taxas.tde || 0) +
-        calculo.taxas.tdr +
         calculo.taxas.trt +
         calculo.taxas.suframa +
-        calculo.taxas.outras,
+        calculo.taxas.outras +
+        (calculo.taxas.taxaExtra || 0),
     },
   };
 }
 
-function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false }) {
+function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0, cidadePorIbge, gradeCanal, ignorarCubagem = false, documentoDestinatario = '' }) {
   const gradeLinha = getLinhaGradeMaisProxima(gradeCanal, peso);
   const fatoresCubagem = [
     origem?.generalidades?.cubagem,
@@ -466,8 +474,10 @@ function calcularItem({ transportadora, origem, rota, peso, valorNF, cubagem = 0
   const generalidadesCalculadas = {
     ...(origem.generalidades || {}),
     aliquotaIcms: icmsInfo.aliquota,
+    tde: transportadora?.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora?.tdeCnpjs) ? transportadora.tdeCnpjs : [],
   };
-  const engineInput = { rota, cotacao, generalidades: generalidadesCalculadas, taxaDestino, pesoKg: pesosAplicados.pesoConsiderado, valorNf: valorNFUtilizado };
+  const engineInput = { rota, cotacao, generalidades: generalidadesCalculadas, taxaDestino, pesoKg: pesosAplicados.pesoConsiderado, valorNf: valorNFUtilizado, documentoDestinatario };
   const calculo = tipoCalculo === 'FAIXA_DE_PESO'
     ? calcularFreteFaixaPeso(engineInput)
     : calcularFretePercentual(engineInput);
@@ -1397,6 +1407,7 @@ function simularLinhaRealizado({ row, detalhes, foraMalha, transportadoras, alvo
           cidadePorIbge,
           gradeCanal: [],
           ignorarCubagem: filtros.ignorarCubagem,
+          documentoDestinatario: row.documentoDestinatario || '',
         });
 
         if (item) {

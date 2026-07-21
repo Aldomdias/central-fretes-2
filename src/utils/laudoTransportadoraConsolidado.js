@@ -759,11 +759,10 @@ export function extrairFreteGanhoPropostaOrigem(t = {}, opcoes = {}) {
   const meses = Math.max(n(opcoes.meses || extrairMesesPeriodoSimulacao(t)), 1);
 
   return normalizarValorMensal({
-    valorMensal: t.faturamento_projetado || ind.faturamento_mes
-      || resumo.faturamentoSelecionadaGanhadoraMes || resumoUltima.faturamentoSelecionadaGanhadoraMes
-      || resumo.faturamentoSelecionadaMes || resumoUltima.faturamentoSelecionadaMes,
+    valorMensal: resumo.faturamentoSelecionadaGanhadoraMes || resumoUltima.faturamentoSelecionadaGanhadoraMes
+      || ind.faturamento_ganho_mes || ind.faturamento_capturado_mes,
     valorPeriodo: resumo.freteSelecionadaGanhadora || resumoUltima.freteSelecionadaGanhadora
-      || resumo.freteSelecionada || resumoUltima.freteSelecionada,
+      || ind.faturamento_ganho || ind.faturamento_capturado,
     meses,
   });
 }
@@ -775,23 +774,17 @@ export function extrairFreteTotalComTabelaOrigem(t = {}, metricas = {}) {
   const resumoUltima = ultima.resumo || {};
   const meses = Math.max(n(metricas.mesesPeriodo || extrairMesesPeriodoSimulacao(t)), 1);
 
-  const ganho = n(metricas.freteGanhoProposta ?? extrairFreteGanhoPropostaOrigem(t, { meses }));
-  const concorrentes = n(metricas.freteConcorrentes ?? extrairFreteConcorrentesOrigem(t, { meses, rotasCriticas: metricas.rotasCriticas }));
-  const somaPartes = ganho + concorrentes;
-
   const referencia = normalizarValorMensal({
     valorMensal: resumo.faturamentoSelecionadaMes || resumoUltima.faturamentoSelecionadaMes,
     valorPeriodo: resumo.freteSelecionada || resumoUltima.freteSelecionada,
     meses,
   });
 
-  if (somaPartes > 0) {
-    if (!referencia || Math.abs(somaPartes - referencia) / Math.max(referencia, 1) <= 0.05) {
-      return somaPartes;
-    }
-    return somaPartes;
-  }
-  return referencia;
+  if (referencia > 0) return referencia;
+
+  const ganho = n(metricas.freteGanhoProposta ?? extrairFreteGanhoPropostaOrigem(t, { meses }));
+  const concorrentes = n(metricas.freteConcorrentes ?? extrairFreteConcorrentesOrigem(t, { meses, rotasCriticas: metricas.rotasCriticas }));
+  return ganho + concorrentes;
 }
 
 /** Dias do período simulado (resumo salvo ou datas da negociação). */
@@ -891,11 +884,14 @@ function extrairMetricasOperacionaisOrigem(t = {}, opcoes = {}) {
   const faturamentoProposta = freteGanhoProposta;
 
   const faturamentoAtual = normalizarValorMensal({
+    valorMensal: resumo.freteRealizadoComTabelaSelecionadaMes || resumoUltima.freteRealizadoComTabelaSelecionadaMes,
+    valorPeriodo: resumo.freteRealizadoComTabelaSelecionada || resumoUltima.freteRealizadoComTabelaSelecionada,
+    meses,
+  }) || normalizarValorMensal({
     valorMensal: resumo.freteRealizadoMes || resumoUltima.freteRealizadoMes || ind.frete_realizado_mes,
     valorPeriodo: resumo.freteRealizado || resumoUltima.freteRealizado || ind.frete_realizado
       || t.valor_atual_realizado || ind.valor_atual_realizado
-      || resumo.valor_atual_realizado || resumoUltima.valor_atual_realizado
-      || resumo.freteRealizadoComTabelaSelecionada || resumoUltima.freteRealizadoComTabelaSelecionada,
+      || resumo.valor_atual_realizado || resumoUltima.valor_atual_realizado,
     meses,
   });
 
@@ -949,7 +945,7 @@ function montarLinhaMetricasOperacionaisTexto(o, opcoes = {}) {
       ? (n(o.freteConcorrentes) / o.freteTotalComTabela) * 100
       : null);
     linhas.push(
-      `  Simulação c/ tabela (${n(o.ctesComTabela).toLocaleString('pt-BR')} CT-es): total ${dinheiro(o.freteTotalComTabela)}/mês · ganho ${dinheiro(o.freteGanhoProposta ?? o.faturamentoProposta)}${pctGanho != null ? ` (${percentual(pctGanho)} do total simulado)` : ''} · c/ concorrentes ${dinheiro(o.freteConcorrentes)}${pctConc != null ? ` (${percentual(pctConc)} do total simulado)` : ''}`,
+      `  Simulacao c/ tabela (${n(o.ctesComTabela).toLocaleString('pt-BR')} CT-es): atendido ${dinheiro(o.freteTotalComTabela)}/mes - tabela nas ganhas ${dinheiro(o.freteGanhoProposta ?? o.faturamentoProposta)} - perderia ${dinheiro(o.freteConcorrentes)}${pctConc != null ? ` (${percentual(pctConc)} do total com cobertura)` : ''}`,
     );
   }
   linhas.push(`  Pedidos ganhos: ${n(o.pedidosDia).toLocaleString('pt-BR')}/dia · ${n(o.pedidosMes).toLocaleString('pt-BR')}/mês · Volumes ganhos: ${n(o.volumesMes).toLocaleString('pt-BR')}/mês`);
@@ -962,7 +958,7 @@ export function montarNotaBasesLaudoConsolidado(totais = {}) {
   const totalSim = dinheiro(totais.freteTotalComTabela);
   const ganho = dinheiro(totais.freteGanhoProposta ?? totais.faturamentoProposta);
   const conc = dinheiro(totais.freteConcorrentes);
-  return `Simulação c/ tabela (${totalSim}/mês, ${ctesComTabela} CT-es com cobertura): frete ganho (${ganho}) + frete c/ concorrentes (${conc}) nos CT-es em que a transportadora compete/simula.`;
+  return `Simulacao c/ tabela (${totalSim}/mes, ${ctesComTabela} CT-es com cobertura): tabela nas ganhas (${ganho}) + frete onde a tabela perderia (${conc}).`;
 }
 
 function montarLinhasResumoAderenciaBasica(op = {}) {
@@ -972,19 +968,16 @@ function montarLinhasResumoAderenciaBasica(op = {}) {
 }
 
 function montarLinhasResumoSimulacaoTabela(op = {}, legendaPeriodo = '') {
-  const leg = legendaPeriodo ? ` ${legendaPeriodo.replace(/^\/mês · /, '· ')}` : '';
-  const pctGanho = op.aderenciaPorFrete ?? (op.freteTotalComTabela
-    ? (n(op.freteGanhoProposta ?? op.faturamentoProposta) / op.freteTotalComTabela) * 100
-    : null);
+  const leg = legendaPeriodo ? ` ${legendaPeriodo.replace(/^\/mes .* /, '')}` : '';
   const pctConc = op.pctPerdidoSimulacao ?? (op.freteTotalComTabela
     ? (n(op.freteConcorrentes) / op.freteTotalComTabela) * 100
     : null);
   return [
-    `SIMULAÇÃO C/ TABELA (${n(op.ctesComTabela).toLocaleString('pt-BR')} CT-es com cobertura)`,
-    `- Total simulado: ${dinheiro(op.freteTotalComTabela)}/mês${leg}`,
-    `- Frete ganho c/ proposta: ${dinheiro(op.freteGanhoProposta ?? op.faturamentoProposta)}/mês${pctGanho != null ? ` (${percentual(pctGanho)} do total simulado)` : ''}`,
-    `- Frete c/ concorrentes: ${dinheiro(op.freteConcorrentes)}/mês${pctConc != null ? ` (${percentual(pctConc)} do total simulado)` : ''}`,
-    `- Aderência (por CT-e): ${percentual(op.aderenciaPorCte ?? 0)} · Aderência (por frete simulado): ${percentual(op.aderenciaPorFrete ?? 0)}`,
+    `SIMULACAO C/ TABELA (${n(op.ctesComTabela).toLocaleString('pt-BR')} CT-es com cobertura)`,
+    `- Frete atendido pela tabela: ${dinheiro(op.freteTotalComTabela)}/mes${leg}`,
+    `- Frete da tabela nas ganhas: ${dinheiro(op.freteGanhoProposta ?? op.faturamentoProposta)}/mes`,
+    `- Frete onde a tabela perderia: ${dinheiro(op.freteConcorrentes)}/mes${pctConc != null ? ` (${percentual(pctConc)} do total com cobertura)` : ''}`,
+    `- Aderencia (por CT-e): ${percentual(op.aderenciaPorCte ?? 0)}`,
     `- CT-es ganharia / com tabela: ${n(op.ctesGanharia).toLocaleString('pt-BR')} / ${n(op.ctesComTabela).toLocaleString('pt-BR')}`,
   ];
 }
@@ -1142,7 +1135,7 @@ function montarRelatorioDiretoria({
     ...origens.map((o) => [
       '',
       `▸ ${o.origem} (${o.canal || '—'}) — ${o.status}`,
-      `  Rodada ${o.rodada} · Aderência CT-e ${percentual(o.aderenciaPorCte ?? o.aderencia)} · Frete ${percentual(o.aderenciaPorFrete ?? 0)} · Saving ${dinheiro(o.savingMes)}/mês`,
+      `  Rodada ${o.rodada} - Aderencia CT-e ${percentual(o.aderenciaPorCte ?? o.aderencia)} - Saving ${dinheiro(o.savingMes)}/mês`,
       `  CT-es ganharia / com tabela: ${n(o.ctesGanharia).toLocaleString('pt-BR')} / ${n(o.ctesComTabela).toLocaleString('pt-BR')} · Rotas na tabela: ${o.rotas}`,
       montarLinhaMetricasOperacionaisTexto(o, { exibirFaturamentoGanho }),
       o.recomendacao ? `  Direcionamento: ${o.recomendacao}` : '',
@@ -1185,7 +1178,7 @@ function montarRelatorioTransportadora({
     ...origensOrdenadas.map((o) => [
       '',
       `▸ ${o.origem} (${o.canal || '—'}) — ${o.status}`,
-      `  Rodada ${o.rodada} · Aderência CT-e ${percentual(o.aderenciaPorCte ?? o.aderencia)} · Frete ${percentual(o.aderenciaPorFrete ?? 0)}`,
+      `  Rodada ${o.rodada} - Aderencia CT-e ${percentual(o.aderenciaPorCte ?? o.aderencia)}`,
       `  CT-es ganharia / com tabela: ${n(o.ctesGanharia).toLocaleString('pt-BR')} / ${n(o.ctesComTabela).toLocaleString('pt-BR')} · Rotas na tabela: ${o.rotas}`,
       montarLinhaMetricasOperacionaisTexto(o, { exibirFaturamentoGanho }),
       o.recomendacao ? `  Direcionamento: ${o.recomendacao}` : '',

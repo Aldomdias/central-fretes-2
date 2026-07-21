@@ -411,6 +411,7 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
       numeroCte: String(row.numeroCte || '').trim(),
       transportadora: normalizeTextRealizado(row.transportadora),
       cnpjTransportadora: String(row.cnpjTransportadora || '').replace(/\D/g, ''),
+      documentoDestinatario: String(row.documentoDestinatario || row.raw?.documentoDestinatario || '').replace(/\D/g, ''),
       tomadorServico: normalizeTextRealizado(row.tomadorServico || row.raw?.tomadorServico || ''),
       cidadeOrigem: origem.cidade,
       ufOrigem: origem.uf,
@@ -706,6 +707,8 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
     ...(origem.generalidades || {}),
     incideIcms: origemTemIcmsAtivo(origem),
     aliquotaIcms: icmsInfo.aliquota,
+    tde: transportadora?.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora?.tdeCnpjs) ? transportadora.tdeCnpjs : [],
   };
   const engineInput = {
     rota,
@@ -714,6 +717,7 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
     taxaDestino,
     pesoKg: peso,
     valorNf: valorNF,
+    documentoDestinatario: cte.documentoDestinatario || '',
   };
   const calculo = tipoCalculo === 'FAIXA_DE_PESO'
     ? calcularFreteFaixaPeso(engineInput)

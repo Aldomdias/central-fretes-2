@@ -110,7 +110,7 @@ export default function LaudoTransportadoraConsolidadoTemplate({
 
     : origens;
 
-  const colunasPorOrigem = (externo ? 11 : 12) + (mostrarFaturamentoGanho ? 3 : 0);
+  const colunasPorOrigem = (externo ? 10 : 11) + (mostrarFaturamentoGanho ? 3 : 0);
 
 
 
@@ -196,37 +196,27 @@ export default function LaudoTransportadoraConsolidadoTemplate({
 
               <div className="summary-card">
 
-                <span>Total simulado c/ tabela</span>
+                <span>Frete atendido pela tabela</span>
 
                 <strong>{dinheiro(totais.freteTotalComTabela)}</strong>
 
-                <small>{periodoSub} · ganho + frete c/ concorrentes</small>
+                <small>{periodoSub} - somente CT-es com cobertura</small>
 
               </div>
 
               <div className="summary-card">
 
-                <span>Frete ganho c/ proposta</span>
+                <span>Frete da tabela nas ganhas</span>
 
                 <strong>{dinheiro(totais.freteGanhoProposta ?? totais.faturamentoProposta)}</strong>
 
-                <small>
-
-                  {periodoSub}
-
-                  {totais.aderenciaPorFrete != null
-
-                    ? ` · ${percentual(totais.aderenciaPorFrete)} do total simulado`
-
-                    : ''}
-
-                </small>
+                <small>{periodoSub}</small>
 
               </div>
 
               <div className="summary-card">
 
-                <span>Frete c/ concorrentes</span>
+                <span>Frete onde a tabela perderia</span>
 
                 <strong>{dinheiro(totais.freteConcorrentes)}</strong>
 
@@ -253,17 +243,6 @@ export default function LaudoTransportadoraConsolidadoTemplate({
                 <small>{numero(totais.ctesGanharia)} ganharia / {numero(totais.ctesComTabela)} com tabela</small>
 
               </div>
-
-              <div className="summary-card">
-
-                <span>Aderência (por frete simulado)</span>
-
-                <strong>{percentual(totais.aderenciaPorFrete ?? 0)}</strong>
-
-                <small>frete ganho ÷ total simulado c/ tabela</small>
-
-              </div>
-
             </div>
 
           </>
@@ -362,8 +341,6 @@ export default function LaudoTransportadoraConsolidadoTemplate({
 
                 <th>Aderência CT-e</th>
 
-                <th>Aderência frete</th>
-
                 {!externo ? <th>Saving/mês</th> : null}
 
                 <th className="right">Ganharia / participou</th>
@@ -407,8 +384,6 @@ export default function LaudoTransportadoraConsolidadoTemplate({
                   <td>{o.rodada}ª</td>
 
                   <td>{percentual(o.aderenciaPorCte ?? o.aderencia)}</td>
-
-                  <td>{percentual(o.aderenciaPorFrete ?? 0)}</td>
 
                   {!externo ? <td>{dinheiro(o.savingMes)}</td> : null}
 
@@ -604,5 +579,3 @@ export default function LaudoTransportadoraConsolidadoTemplate({
   );
 
 }
-
-

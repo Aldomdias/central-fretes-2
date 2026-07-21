@@ -418,10 +418,10 @@ const SUBTIPOS_CANTU = [
   { value: 'B2C_FAIXA_PESO', label: 'B2C — Faixa de Peso' },
   { value: 'B2C_PERCENTUAL', label: 'B2C — Percentual' },
 ];
-const TAXA_EXTRA_VAZIA = { nome: '', valor: '', pct: '', min: '' };
+const TAXA_EXTRA_VAZIA = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '' };
 const TAXA_VAZIA = {
   ibge_destino: '', uf_destino: '', cidade_destino: '',
-  tda: '', tdr: '', trt: '', suframa: '', outras_taxas: '',
+  tda: '', trt: '', suframa: '', outras_taxas: '',
   gris: '', gris_minimo: '', advalorem: '', advalorem_minimo: '', observacao: '',
   taxas_extras: [],
 };
@@ -750,7 +750,7 @@ function normalizarLinhaTaxaDestinoNegociacao(row) {
     uf_destino: normalizarTexto(pegarCampoTaxaDestino(row, ['UF Destino', 'UF', 'Estado Destino', 'Estado'])).toUpperCase(),
     cidade_destino: normalizarTexto(pegarCampoTaxaDestino(row, ['Cidade Destino', 'Cidade', 'Município Destino', 'Municipio Destino', 'Destino'])),
     tda: numeroPlanilha(pegarCampoTaxaDestino(row, ['TDA (R$)', 'TDA', 'Taxa TDA'])),
-    tdr: numeroPlanilha(pegarCampoTaxaDestino(row, ['TDR (R$)', 'TDR', 'Taxa TDR'])),
+    tdr: 0,
     // A tabela do Supabase usa o campo trt. Quando o modelo vier com TDE, salvamos no mesmo campo para entrar no cálculo de taxa por destino.
     trt: trt !== '' ? trt : tde,
     suframa: numeroPlanilha(pegarCampoTaxaDestino(row, ['SUFRAMA (R$)', 'SUFRAMA'])),
@@ -769,18 +769,21 @@ function normalizarLinhaTaxaDestinoValida(taxa) {
 }
 
 function extrairCoringasDaLinha(row) {
-  // Detecta colunas dinâmicas: "EMEX R$", "EMEX % NF", "EMEX Mín"
-  // Agrupa por nome de coringa
+  // Detecta colunas dinamicas: "EMEX R$", "EMEX % NF", "EMEX Min", "EMEX R$/fracao", "EMEX kg/fracao".
   var coringas = {};
   Object.keys(row).forEach(function(col) {
     var mR = col.match(/^(.+)\s+R\$$/);
+    var mRPeso = col.match(/^(.+)\s+R\$\/(?:fracao|peso|kg|100kg)$/i) || col.match(/^(.+)\s+R\$\s+por\s+(?:fracao|peso)$/i);
+    var mBasePeso = col.match(/^(.+)\s+(?:kg\/fracao|Base\s*kg|kg\s*base)$/i);
     var mP = col.match(/^(.+)\s+%\s*NF$/i);
-    var mM = col.match(/^(.+)\s+Mín$/i);
+    var mM = col.match(/^(.+)\s+(?:Min|Minimo)$/i);
     if (mR) { var n = mR[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].valor = numeroPlanilha(row[col]); }
-    if (mP) { var n = mP[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].pct = numeroPlanilha(row[col]); }
-    if (mM) { var n = mM[1].trim(); if (!coringas[n]) coringas[n] = { nome: n }; coringas[n].min = numeroPlanilha(row[col]); }
+    if (mRPeso) { var np = mRPeso[1].trim(); if (!coringas[np]) coringas[np] = { nome: np }; coringas[np].valorPorPeso = numeroPlanilha(row[col]); if (/100kg/i.test(col) && !coringas[np].pesoBase) coringas[np].pesoBase = 100; }
+    if (mBasePeso) { var nb = mBasePeso[1].trim(); if (!coringas[nb]) coringas[nb] = { nome: nb }; coringas[nb].pesoBase = numeroPlanilha(row[col]); }
+    if (mP) { var n2 = mP[1].trim(); if (!coringas[n2]) coringas[n2] = { nome: n2 }; coringas[n2].pct = numeroPlanilha(row[col]); }
+    if (mM) { var n3 = mM[1].trim(); if (!coringas[n3]) coringas[n3] = { nome: n3 }; coringas[n3].min = numeroPlanilha(row[col]); }
   });
-  return Object.values(coringas).filter(function(te) { return (te.pct || 0) > 0 || (te.valor || 0) > 0; });
+  return Object.values(coringas).filter(function(te) { return (te.pct || 0) > 0 || (te.valor || 0) > 0 || (te.valorPorPeso || 0) > 0; });
 }
 
 function agruparLinhasTaxaDestino(linhas) {
@@ -803,7 +806,6 @@ function montarTaxaDestinoDoModelo(row) {
 }
 
 function exportarTaxasDestinoNegociacao(taxas, nomeTabela) {
-  // Descobre todos os nomes de coringas presentes (ordem de aparecimento)
   var nomesCoringas = [];
   (taxas || []).forEach(function(t) {
     (t.taxas_extras || []).forEach(function(te) {
@@ -824,29 +826,29 @@ function exportarTaxasDestinoNegociacao(taxas, nomeTabela) {
       'UF Destino': t.uf_destino || '',
       'Cidade Destino': t.cidade_destino || '',
       'TDA (R$)': t.tda || '',
-      'TDR (R$)': t.tdr || '',
       'TRT (R$)': t.trt || '',
       'SUFRAMA (R$)': t.suframa || '',
       'Outras (R$)': t.outras_taxas || '',
       'GRIS %': t.gris || '',
-      'GRIS mín (R$)': t.gris_minimo || '',
+      'GRIS min (R$)': t.gris_minimo || '',
       'Ad Valorem %': t.advalorem || '',
-      'Ad Val mín (R$)': t.advalorem_minimo || '',
-      'Observação': t.observacao || '',
+      'Ad Val min (R$)': t.advalorem_minimo || '',
+      'Observacao': t.observacao || '',
     };
 
-    // Uma coluna por coringa: "EMEX R$", "EMEX % NF", "EMEX Mín"
     nomesCoringas.forEach(function(n) {
       var te = extrasMap[n];
       linha[n + ' R$'] = te ? (te.valor || '') : '';
+      linha[n + ' R$/fracao'] = te ? (te.valorPorPeso || te.valor_por_peso || '') : '';
+      linha[n + ' kg/fracao'] = te ? (te.pesoBase || te.peso_base || '') : '';
       linha[n + ' % NF'] = te ? (te.pct || '') : '';
-      linha[n + ' Mín'] = te ? (te.min || '') : '';
+      linha[n + ' Min'] = te ? (te.min || '') : '';
     });
 
     return linha;
   });
 
-  if (!linhas.length) linhas = [{ 'IBGE Destino': '', 'UF Destino': '', 'Cidade Destino': '', 'TDA (R$)': '', 'TDR (R$)': '', 'TRT (R$)': '', 'SUFRAMA (R$)': '', 'Outras (R$)': '', 'GRIS %': '', 'GRIS mín (R$)': '', 'Ad Valorem %': '', 'Ad Val mín (R$)': '', 'Observação': 'Nenhuma taxa cadastrada' }];
+  if (!linhas.length) linhas = [{ 'IBGE Destino': '', 'UF Destino': '', 'Cidade Destino': '', 'TDA (R$)': '', 'TRT (R$)': '', 'SUFRAMA (R$)': '', 'Outras (R$)': '', 'GRIS %': '', 'GRIS min (R$)': '', 'Ad Valorem %': '', 'Ad Val min (R$)': '', 'Observacao': 'Nenhuma taxa cadastrada' }];
 
   var ws = XLSX.utils.json_to_sheet(linhas);
   var wb = XLSX.utils.book_new();
@@ -860,62 +862,65 @@ function baixarModeloTaxasDestinoNegociacao() {
     {
       'IBGE Destino': '3550308',
       'UF Destino': 'SP',
-      'Cidade Destino': 'SÃO PAULO',
+      'Cidade Destino': 'SAO PAULO',
       'TDA (R$)': 0,
-      'TDR (R$)': 0,
       'TRT (R$)': 0,
       'TDE (R$)': 0,
       'SUFRAMA (R$)': 0,
       'Outras (R$)': 0,
       'GRIS %': 0.2,
-      'GRIS mín (R$)': 0,
+      'GRIS min (R$)': 0,
       'Ad Valorem %': 0.15,
-      'Ad Val mín (R$)': 0,
+      'Ad Val min (R$)': 0,
       'Taxa Coringa': 'TRT por destino',
       'Taxa Extra %': 0.5,
-      'Taxa Extra Mín': 15,
+      'Taxa Extra Min': 15,
       'Taxa Extra R$': '',
-      'Observação': 'Primeira coringa desta linha',
+      'Taxa Extra R$/fracao': '',
+      'Taxa Extra kg/fracao': '',
+      'Observacao': 'Primeira coringa desta linha',
     },
     {
       'IBGE Destino': '3550308',
       'UF Destino': 'SP',
-      'Cidade Destino': 'SÃO PAULO',
+      'Cidade Destino': 'SAO PAULO',
       'TDA (R$)': '',
-      'TDR (R$)': '',
       'TRT (R$)': '',
       'TDE (R$)': '',
       'SUFRAMA (R$)': '',
       'Outras (R$)': '',
       'GRIS %': '',
-      'GRIS mín (R$)': '',
+      'GRIS min (R$)': '',
       'Ad Valorem %': '',
-      'Ad Val mín (R$)': '',
-      'Taxa Coringa': 'Taxa de Coleta',
+      'Ad Val min (R$)': '',
+      'Taxa Coringa': 'Taxa por peso',
       'Taxa Extra %': '',
-      'Taxa Extra Mín': '',
-      'Taxa Extra R$': 30,
-      'Observação': 'Segunda coringa do mesmo IBGE — linhas extras só precisam do IBGE e dos campos coringa',
+      'Taxa Extra Min': '',
+      'Taxa Extra R$': '',
+      'Taxa Extra R$/fracao': 8.5,
+      'Taxa Extra kg/fracao': 100,
+      'Observacao': 'Valor por fracao de peso no mesmo IBGE',
     },
     {
       'IBGE Destino': '3106200',
       'UF Destino': 'MG',
       'Cidade Destino': 'BELO HORIZONTE',
       'TDA (R$)': 25,
-      'TDR (R$)': 0,
       'TRT (R$)': 0,
       'TDE (R$)': 0,
       'SUFRAMA (R$)': 0,
       'Outras (R$)': 0,
       'GRIS %': '',
-      'GRIS mín (R$)': '',
+      'GRIS min (R$)': '',
       'Ad Valorem %': '',
-      'Ad Val mín (R$)': '',
+      'Ad Val min (R$)': '',
       'Taxa Coringa': '',
       'Taxa Extra %': '',
-      'Taxa Extra Mín': '',
+      'Taxa Extra Min': '',
       'Taxa Extra R$': '',
-      'Observação': 'Sem coringa — campos vazios ignorados',
+      'Taxa Extra R$/fracao': '',
+      'Taxa Extra kg/fracao': '',
+      'Observacao': 'Sem coringa - campos vazios ignorados',
     },
   ];
   var ws = XLSX.utils.json_to_sheet(linhas);
@@ -2309,11 +2314,11 @@ export default function TabelasNegociacaoPage() {
     setNovaTaxa({
       ibge_destino: taxa.ibge_destino || '', uf_destino: taxa.uf_destino || '',
       cidade_destino: taxa.cidade_destino || '', tda: taxa.tda || '',
-      tdr: taxa.tdr || '', trt: taxa.trt || '', suframa: taxa.suframa || '',
+      trt: taxa.trt || '', suframa: taxa.suframa || '',
       outras_taxas: taxa.outras_taxas || '', gris: taxa.gris || '',
       gris_minimo: taxa.gris_minimo || '', advalorem: taxa.advalorem || '',
       advalorem_minimo: taxa.advalorem_minimo || '', observacao: taxa.observacao || '',
-      taxas_extras: Array.isArray(taxa.taxas_extras) ? taxa.taxas_extras.map(function(te) { return { nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '' }; }) : [],
+      taxas_extras: Array.isArray(taxa.taxas_extras) ? taxa.taxas_extras.map(function(te) { return { nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '' }; }) : [],
     });
     setAbaNegoc('taxas');
   }
@@ -3530,7 +3535,6 @@ export default function TabelasNegociacaoPage() {
                   </label>
                   <label>Cidade<input value={novaTaxa.cidade_destino} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { cidade_destino: e.target.value }); }); }} /></label>
                   <label>TDA (R$)<input type="number" step="0.01" value={novaTaxa.tda} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { tda: e.target.value }); }); }} /></label>
-                  <label>TDR (R$)<input type="number" step="0.01" value={novaTaxa.tdr} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { tdr: e.target.value }); }); }} /></label>
                 </div>
                 <div className="sim-form-grid sim-grid-5" style={{ marginTop: 12 }}>
                   <label>TRT (R$)<input type="number" step="0.01" value={novaTaxa.trt} onChange={function(e) { setNovaTaxa(function(p) { return Object.assign({}, p, { trt: e.target.value }); }); }} /></label>
@@ -3557,11 +3561,13 @@ export default function TabelasNegociacaoPage() {
                     function upd(field, val) { setNovaTaxa(function(p) { var arr = (p.taxas_extras || []).slice(); arr[idx] = Object.assign({}, arr[idx], { [field]: val }); return Object.assign({}, p, { taxas_extras: arr }); }); }
                     function rem() { setNovaTaxa(function(p) { var arr = (p.taxas_extras || []).filter(function(_, i) { return i !== idx; }); return Object.assign({}, p, { taxas_extras: arr }); }); }
                     return (
-                      <div key={idx} className="sim-form-grid" style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
+                      <div key={idx} className="sim-form-grid" style={{ gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
                         <label style={{ margin: 0 }}>Nome<input value={te.nome} onChange={function(e) { upd('nome', e.target.value); }} placeholder="Ex: TRT por destino" /></label>
                         <label style={{ margin: 0 }}>% NF <small style={{ color: '#94a3b8' }}>(prior.)</small><input type="number" step="0.0001" value={te.pct} onChange={function(e) { upd('pct', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>Mín (R$)<input type="number" step="0.01" value={te.min} onChange={function(e) { upd('min', e.target.value); }} /></label>
                         <label style={{ margin: 0 }}>R$ fixo <small style={{ color: '#94a3b8' }}>(se %=0)</small><input type="number" step="0.01" value={te.valor} onChange={function(e) { upd('valor', e.target.value); }} /></label>
+                        <label style={{ margin: 0 }}>R$ por fracao<input type="number" step="0.01" value={te.valorPorPeso} onChange={function(e) { upd('valorPorPeso', e.target.value); }} placeholder="Ex: 8,50" /></label>
+                        <label style={{ margin: 0 }}>kg/fracao<input type="number" step="0.001" value={te.pesoBase} onChange={function(e) { upd('pesoBase', e.target.value); }} placeholder="100" /></label>
                         <button type="button" style={{ background: 'none', border: '1px solid #ef4444', color: '#ef4444', borderRadius: 4, padding: '0 8px', cursor: 'pointer', height: 30, alignSelf: 'end' }} onClick={rem}>✕</button>
                       </div>
                     );
@@ -3578,7 +3584,7 @@ export default function TabelasNegociacaoPage() {
               <div className="sim-analise-tabela-wrap">
                 <table className="sim-analise-tabela">
                   <thead>
-                    <tr><th>IBGE</th><th>Cidade</th><th>UF</th><th>TDA</th><th>TDR</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS %</th><th>ADV %</th><th>Ações</th></tr>
+                    <tr><th>IBGE</th><th>Cidade</th><th>UF</th><th>TDA</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS %</th><th>ADV %</th><th>Ações</th></tr>
                   </thead>
                   <tbody>
                     {taxasDestino.map(function(taxa) {
@@ -3588,7 +3594,6 @@ export default function TabelasNegociacaoPage() {
                           <td>{taxa.cidade_destino || '-'}</td>
                           <td><strong>{taxa.uf_destino}</strong></td>
                           <td>{Number(taxa.tda) > 0 ? formatMoney(taxa.tda) : '-'}</td>
-                          <td>{Number(taxa.tdr) > 0 ? formatMoney(taxa.tdr) : '-'}</td>
                           <td>{Number(taxa.trt) > 0 ? formatMoney(taxa.trt) : '-'}</td>
                           <td>{Number(taxa.suframa) > 0 ? formatMoney(taxa.suframa) : '-'}</td>
                           <td>{Number(taxa.outras_taxas) > 0 ? formatMoney(taxa.outras_taxas) : '-'}</td>

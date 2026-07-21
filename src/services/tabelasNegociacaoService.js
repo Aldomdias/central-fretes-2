@@ -72,8 +72,17 @@ function upper(value) { return texto(value).toUpperCase(); }
 function normalizarTaxasExtras(raw) {
   const arr = Array.isArray(raw) ? raw : [];
   return arr
-    .map(function(te) { return { nome: String(te.nome ?? '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0 }; })
-    .filter(function(te) { return te.pct > 0 || te.valor > 0; });
+    .map(function(te) {
+      return {
+        nome: String(te.nome ?? '').trim(),
+        valor: Number(te.valor) || 0,
+        pct: Number(te.pct) || 0,
+        min: Number(te.min) || 0,
+        valorPorPeso: Number(te.valorPorPeso ?? te.valor_por_peso) || 0,
+        pesoBase: Number(te.pesoBase ?? te.peso_base ?? te.baseKg ?? te.base_kg) || 0,
+      };
+    })
+    .filter(function(te) { return te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0; });
 }
 function numero(value) {
   if (value === null || value === undefined || value === '') return 0;

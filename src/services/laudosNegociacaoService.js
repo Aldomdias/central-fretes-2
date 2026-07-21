@@ -8,7 +8,7 @@ function supabaseOrThrow() {
 
 export function prepararLaudosNegociacao(resultado = {}, contexto = {}) {
   const laudos = montarLaudosNegociacao(resultado, contexto);
-  return {
+  const preparados = {
     executivo: {
       geradoEm: laudos.executivo.geradoEm,
       assunto: laudos.executivo.assunto,
@@ -24,6 +24,12 @@ export function prepararLaudosNegociacao(resultado = {}, contexto = {}) {
       dados: laudos.transportador,
     },
   };
+
+  if (contexto.analiseRotaFaixa) {
+    preparados.analise_rota_faixa = contexto.analiseRotaFaixa;
+  }
+
+  return preparados;
 }
 
 export async function salvarLaudosNegociacao(tabelaNegociacaoId, resultado = {}, contexto = {}) {

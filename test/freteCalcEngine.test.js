@@ -376,6 +376,29 @@ test('taxas por destino prevalecem para GRIS e Ad Valorem e somam taxas fixas', 
   assert.equal(taxas.outras, 3);
 });
 
+test('TDE so aplica quando o CNPJ do destinatario esta na lista da transportadora', () => {
+  const generalidades = { tde: 250, tdeCnpjs: ['12.345.678/0001-99'] };
+
+  const semCnpj = resolverTaxas({ generalidades, taxaDestino: {}, valorNf: 1000, pesoKg: 50, documentoDestinatario: '' });
+  assert.equal(semCnpj.tde, 0);
+
+  const cnpjForaDaLista = resolverTaxas({ generalidades, taxaDestino: {}, valorNf: 1000, pesoKg: 50, documentoDestinatario: '99999999000199' });
+  assert.equal(cnpjForaDaLista.tde, 0);
+
+  const cnpjNaLista = resolverTaxas({ generalidades, taxaDestino: {}, valorNf: 1000, pesoKg: 50, documentoDestinatario: '12345678000199' });
+  assert.equal(cnpjNaLista.tde, 250);
+
+  const resultado = calcularFretePercentual({
+    cotacao: { percentual: 10 },
+    generalidades,
+    pesoKg: 50,
+    valorNf: 1000,
+    documentoDestinatario: '12345678000199',
+  });
+  assert.equal(resultado.taxas.tde, 250);
+  assert.equal(resultado.subtotal, 350);
+});
+
 test('cubagem do Tracking = unitaria x volumes (cubagem por volume)', () => {
   const resultado = resolverCubagemTracking({
     cubagemUnitaria: 0.265,

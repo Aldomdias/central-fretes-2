@@ -573,7 +573,10 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaDetalhe('Suframa', dinheiroMaybe(taxas.suframa))}
           {linhaDetalhe('Outras', dinheiroMaybe(taxas.outras))}
           {linhaDetalhe('Taxa extra', dinheiroMaybe(taxas.taxaExtra))}
-          {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(taxa.nome || `Extra ${i + 1}`, dinheiroMaybe(taxa.valor)))}
+          {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(
+            `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${dinheiroMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
+            dinheiroMaybe(taxa.valor)
+          ))}
           {linhaDetalhe('Total taxas', dinheiroMaybe(totalTaxas), true)}
         </div>
       </div>

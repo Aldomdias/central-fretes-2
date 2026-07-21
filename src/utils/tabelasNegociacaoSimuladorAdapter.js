@@ -10,8 +10,10 @@ function normalizarTaxasExtras(raw) {
       valor: Number(te.valor) || 0,
       pct: Number(te.pct) || 0,
       min: Number(te.min) || 0,
+      valorPorPeso: Number(te.valorPorPeso ?? te.valor_por_peso) || 0,
+      pesoBase: Number(te.pesoBase ?? te.peso_base ?? te.baseKg ?? te.base_kg) || 0,
     }))
-    .filter((te) => te.pct > 0 || te.valor > 0);
+    .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0);
 }
 
 function upper(value) {
@@ -207,7 +209,7 @@ function montarTaxaDestino(taxa = {}) {
     ufDestino: upper(taxa.uf_destino || taxa.ufDestino) || ufPorIbge(taxa.ibge_destino || taxa.ibgeDestino || taxa.cidade_destino || taxa.cidadeDestino),
     cidadeDestino: texto(taxa.cidade_destino || taxa.cidadeDestino),
     tda: numero(taxa.tda),
-    tdr: numero(taxa.tdr),
+    tdr: 0,
     trt: numero(taxa.trt || taxa.tde),
     suframa: numero(taxa.suframa),
     outras: numero(taxa.outras_taxas || taxa.outras),

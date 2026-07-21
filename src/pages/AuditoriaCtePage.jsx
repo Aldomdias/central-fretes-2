@@ -2818,7 +2818,10 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                     {linhaDetalhe('Suframa', fmtMaybe(taxas.suframa))}
                                     {linhaDetalhe('Outras', fmtMaybe(taxas.outras))}
                                     {linhaDetalhe('Taxa extra', fmtMaybe(taxas.taxaExtra))}
-                                    {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(taxa.nome || `Extra ${i + 1}`, fmtMaybe(taxa.valor)))}
+                                    {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(
+                                      `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${fmtMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
+                                      fmtMaybe(taxa.valor)
+                                    ))}
                                     {linhaDetalhe('Total taxas', fmtMaybe(totalTaxas), true)}
                                   </div>
                                 </div>

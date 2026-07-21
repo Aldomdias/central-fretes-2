@@ -1131,6 +1131,58 @@ function montarDadosAjusteRotaFaixa(resultado = {}) {
     savingPeriodo, savingMensal, savingAnual,
   };
 }
+
+function prepararAnaliseRotaFaixaParaNegociacao(resultado = {}) {
+  if (!resultado?.rotasCotacao?.length) return null;
+
+  const dados = montarDadosAjusteRotaFaixa(resultado);
+  const limitarAmostra = (itens = []) => itens.slice(0, MAX_ITENS_AMOSTRA_POR_ROTA).map((item) => ({
+    cte: item.cte,
+    canal: item.canal,
+    destino: item.destino,
+    peso: item.peso,
+    valorNF: item.valorNF,
+    freteBaseComparativa: item.freteBaseComparativa,
+    tabelaRpa: item.tabelaRpa,
+    percentualBase: item.percentualBase,
+    percentualCobrado: item.percentualCobrado,
+    percentualCalc: item.percentualCalc,
+    taxaAplicadaTexto: item.taxaAplicadaTexto,
+    gris: item.gris,
+    tas: item.tas,
+    ctrc: item.ctrc,
+    pedagio: item.pedagio,
+    icms: item.icms,
+  }));
+
+  return {
+    tipo: 'analise_rota_faixa_transportador',
+    geradoEm: new Date().toISOString(),
+    transportadora: dados.transportadora,
+    periodo: dados.periodo,
+    nomeTabela: dados.nomeTabelaLaudo,
+    rotuloTabela: dados.rotuloTabelaLaudo,
+    totais: {
+      ...dados.totais,
+      ctesComCalculoTotal: dados.ctesComCalculoTotal,
+      pctRealizadoTotal: dados.pctRealizadoTotal,
+      pctTabelaTotal: dados.pctTabelaTotal,
+      aderenciaTotal: dados.aderenciaTotal,
+      reduzirTotal: dados.reduzirTotal,
+      volumesAtendidosPorDia: dados.volumesAtendidosPorDia,
+      volumesGanhariaPorDia: dados.volumesGanhariaPorDia,
+      pedidosAtendidosTotal: dados.pedidosAtendidosTotal,
+      savingPeriodo: dados.savingPeriodo,
+      savingMensal: dados.savingMensal,
+      savingAnual: dados.savingAnual,
+    },
+    linhas: dados.linhasAtendidas.map((linha) => ({
+      ...linha,
+      itensAmostra: limitarAmostra(linha.itensAmostra || []),
+    })),
+  };
+}
+
 function gerarLaudosEmailRealizado(resultado = {}) {
   if (!resultado?.ctesAnalisados) return null;
   const transportadora = resultado.filtros?.transportadora || 'transportadora selecionada';
@@ -1405,10 +1457,17 @@ function ResultadoCard({ item }) {
               <div>CTRC: <strong>{formatMoney(item.detalhes?.taxas?.ctrc)}</strong></div>
               <div>TDA/STDA: <strong>{formatMoney(item.detalhes?.taxas?.tda)}</strong></div>
               <div>TDE: <strong>{formatMoney(item.detalhes?.taxas?.tde)}</strong></div>
-              <div>TDR: <strong>{formatMoney(item.detalhes?.taxas?.tdr)}</strong></div>
               <div>TRT: <strong>{formatMoney(item.detalhes?.taxas?.trt)}</strong></div>
               <div>Suframa: <strong>{formatMoney(item.detalhes?.taxas?.suframa)}</strong></div>
               <div>Outras: <strong>{formatMoney(item.detalhes?.taxas?.outras)}</strong></div>
+              {(Array.isArray(item.detalhes?.taxas?.taxasExtrasDetalhes) ? item.detalhes.taxas.taxasExtrasDetalhes : []).map((taxa, indice) => (
+                <div key={`taxa-vinculada-${indice}`}>
+                  {taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>
+                  {Number(taxa.valorPorPeso) > 0 && <span> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}
+                  {Number(taxa.pct) > 0 && <span> ({formatPercent(taxa.pct)} sobre NF)</span>}
+                  {Number(taxa.valorFixo) > 0 && <span> (fixo)</span>}
+                </div>
+              ))}
               <div>Total de taxas: <strong>{formatMoney(item.detalhes?.taxas?.totalTaxas)}</strong></div>
               <div>Frete substituta: <strong>{item.freteSubstituta ? formatMoney(item.freteSubstituta) : '-'}</strong></div>
               <div>Frete final: <strong>{formatMoney(item.detalhes?.frete?.total)}</strong></div>
@@ -3721,7 +3780,10 @@ function consolidarResultadosRealizadoSalvos(analises = []) {
     .sort((a, b) => numeroConsolidacaoRealizado(b.freteCedidoSelecionada) - numeroConsolidacaoRealizado(a.freteCedidoSelecionada));
   base.rotasCotacao = consolidarRotasCotacaoRealizado(resultados);
   base.ctesDetalhes = resultados.flatMap((item) => item.ctesDetalhes || []).slice(0, MAX_CTES_DETALHES_REALIZADO);
-  base.ctesAjusteRotaExcel = resultados.flatMap((item) => item.ctesAjusteRotaExcel || []);
+  const ctesAjusteRotaExcelUnificados = resultados.flatMap((item) => item.ctesAjusteRotaExcel || []);
+  base.ctesAjusteRotaExcel = ctesAjusteRotaExcelUnificados.slice(0, MAX_CTES_DETALHES_REALIZADO);
+  base.ctesAjusteRotaExcelTotal = ctesAjusteRotaExcelUnificados.length;
+  base.ctesAjusteRotaExcelLimitados = ctesAjusteRotaExcelUnificados.length > base.ctesAjusteRotaExcel.length;
   base.ctesDetalhesTotal = base.ctesAnalisados;
   base.ctesDetalhesLimitados = base.ctesAnalisados > base.ctesDetalhes.length;
   base.ctesDetalhesLimite = MAX_CTES_DETALHES_REALIZADO;
@@ -5881,6 +5943,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
         origem: resultadoRealizado.filtros?.origem,
         tipoNegociacao: resultadoRealizado.tipoNegociacao || resultadoRealizado.filtros?.tipoNegociacao || tipoNegociacaoSimulador(negociacaoSelecionadaRealizado),
         transportadoraBase: resultadoRealizado.transportadoraBaseRealizado || transportadoraBaseReajusteRealizado,
+        analiseRotaFaixa: prepararAnaliseRotaFaixaParaNegociacao(resultadoRealizado),
       });
 
       alert('Laudos executivo e transportador salvos na negociação.');
@@ -11051,6 +11114,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 {Number(item.vencedorDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.suframa)}</strong></div>}
                                                 {Number(item.vencedorDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.outras)}</strong></div>}
                                                 {Number(item.vencedorDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.vencedorDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {(Array.isArray(item.vencedorDetalhes?.taxas?.taxasExtrasDetalhes) ? item.vencedorDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.vencedorDetalhes-coringa-${indice}`}>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}</div>)}
                                                 {Number(item.vencedorDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.vencedorDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.vencedorDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.vencedorDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.vencedorDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.vencedorDetalhes?.frete?.icms)}</strong> <span style={{ color: '#64748b' }}>({item.vencedorDetalhes?.frete?.origemAliquotaIcms})</span></div>
@@ -11136,6 +11200,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 {Number(item.tabelaAtualDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.suframa)}</strong></div>}
                                                 {Number(item.tabelaAtualDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.outras)}</strong></div>}
                                                 {Number(item.tabelaAtualDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.tabelaAtualDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {(Array.isArray(item.tabelaAtualDetalhes?.taxas?.taxasExtrasDetalhes) ? item.tabelaAtualDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.tabelaAtualDetalhes-coringa-${indice}`}>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}</div>)}
                                                 {Number(item.tabelaAtualDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.tabelaAtualDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.tabelaAtualDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.tabelaAtualDetalhes?.frete?.icms)}</strong> <span style={{ color: '#64748b' }}>({item.tabelaAtualDetalhes?.frete?.origemAliquotaIcms})</span></div>
@@ -11201,6 +11266,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
                                                 {Number(item.selecionadaDetalhes?.taxas?.suframa) > 0 && <div>Suframa: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.suframa)}</strong></div>}
                                                 {Number(item.selecionadaDetalhes?.taxas?.outras) > 0 && <div>Outras: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.outras)}</strong></div>}
                                                 {Number(item.selecionadaDetalhes?.taxas?.taxaExtra) > 0 && <div>Taxa extra: <strong>{formatMoney(item.selecionadaDetalhes?.taxas?.taxaExtra)}</strong></div>}
+                                                {(Array.isArray(item.selecionadaDetalhes?.taxas?.taxasExtrasDetalhes) ? item.selecionadaDetalhes?.taxas?.taxasExtrasDetalhes : []).filter((taxa) => Number(taxa?.valor) > 0).map((taxa, indice) => <div key={`item.selecionadaDetalhes-coringa-${indice}`}>{taxa.nome || `Taxa coringa ${indice + 1}`}: <strong>{formatMoney(taxa.valor)}</strong>{Number(taxa.valorPorPeso) > 0 && <span style={{ color: '#64748b' }}> ({formatMoney(taxa.valorPorPeso)} / {Number(taxa.pesoBase) || 100} kg)</span>}</div>)}
                                                 {Number(item.selecionadaDetalhes?.frete?.valorEmergencial) > 0 && <div>Taxa emergencial ({formatPercent(item.selecionadaDetalhes?.frete?.taxaEmergencialPct)}): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.valorEmergencial)}</strong></div>}
                                                 <div>Subtotal: <strong>{formatMoney(item.selecionadaDetalhes?.frete?.subtotal)}</strong></div>
                                                 <div>ICMS ({formatPercent(item.selecionadaDetalhes?.frete?.aliquotaIcms)}): <strong>{formatMoney(item.selecionadaDetalhes?.frete?.icms)}</strong></div>

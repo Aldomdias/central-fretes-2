@@ -14,6 +14,17 @@ export function normalizarChaveLongaTracking(value = '') {
   return apenasDigitosTracking(value);
 }
 
+// O CNPJ do destinatário não é uma coluna própria em tracking_rows: fica
+// dentro do jsonb "raw", preservado desde a importação original do Tracking
+// (coluna "CNPJ" da planilha). Usado para casar a TDE por CNPJ cadastrada
+// na transportadora.
+export function extrairDocumentoDestinatarioTracking(tracking) {
+  const raw = tracking?.raw;
+  if (!raw || typeof raw !== 'object') return '';
+  const chave = Object.keys(raw).find((item) => item.trim().toLowerCase() === 'cnpj');
+  return chave ? apenasDigitosTracking(raw[chave]) : '';
+}
+
 function chaveCteTracking(row = {}) {
   const usarOriginal = Object.prototype.hasOwnProperty.call(row, 'chaveCteOriginal');
   return normalizarChaveLongaTracking(usarOriginal ? row.chaveCteOriginal : row.chaveCte);
@@ -202,6 +213,7 @@ export function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
         cubagemTotal: 0,
         metrosCubicos: 0,
         pesoCubado: 0,
+        documentoDestinatario: row.documentoDestinatario || '',
       };
     }
 
@@ -281,6 +293,7 @@ export function enriquecerRealizadoComTracking(rows = [], mapasTracking) {
       ufOrigem: row.ufOrigem || String(tracking.uf_origem || '').toUpperCase(),
       cidadeDestino: row.cidadeDestino || tracking.cidade_destino || '',
       ufDestino: row.ufDestino || String(tracking.uf_destino || '').toUpperCase(),
+      documentoDestinatario: row.documentoDestinatario || extrairDocumentoDestinatarioTracking(tracking) || '',
     };
   });
 

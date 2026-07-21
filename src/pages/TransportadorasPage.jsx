@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
@@ -142,8 +143,112 @@ function TransportadoraModal({ open, initialValue, onSave, onClose }) {
   );
 }
 
-const TAXA_ESP_VAZIA = { ibgeDestino: '', tda: '', tdr: '', trt: '', suframa: '', outras: '', gris: '', grisMinimo: '', adVal: '', adValMinimo: '', taxasExtras: [] };
-const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '' };
+function parseCnpjListaFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const workbook = XLSX.read(event.target?.result, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const linhas = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+        const cnpjs = new Set();
+        linhas.forEach((linha) => {
+          const chaveCnpj = Object.keys(linha).find((chave) => chave.trim().toLowerCase().replace(/[^a-z]/g, '').includes('cnpj'))
+            || Object.keys(linha)[0];
+          const digitos = String(linha[chaveCnpj] ?? '').replace(/\D/g, '');
+          if (digitos) cnpjs.add(digitos);
+        });
+        resolve([...cnpjs]);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function baixarModeloCnpjs() {
+  const sheet = XLSX.utils.aoa_to_sheet([['CNPJ'], ['12345678000199']]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'CNPJs');
+  XLSX.writeFile(workbook, 'modelo-tde-cnpjs.xlsx');
+}
+
+function TdeSection({ transportadora, store }) {
+  const inputRef = useRef(null);
+  const [valor, setValor] = useState(transportadora.tde || 0);
+  const [feedback, setFeedback] = useState('');
+  const cnpjs = transportadora.tdeCnpjs || [];
+
+  useEffect(() => { setValor(transportadora.tde || 0); }, [transportadora.id, transportadora.tde]);
+
+  function salvarValor() {
+    store.atualizarTde(transportadora.id, { tde: Number(valor) || 0 });
+    setFeedback('Valor da TDE atualizado. Clique em "Salvar alterações" para enviar ao Supabase.');
+  }
+
+  async function importarCnpjs(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const novos = await parseCnpjListaFile(file);
+      if (!novos.length) {
+        setFeedback('Nenhum CNPJ encontrado no arquivo.');
+      } else {
+        const combinados = [...new Set([...cnpjs, ...novos])];
+        store.atualizarTde(transportadora.id, { tdeCnpjs: combinados });
+        setFeedback(`${novos.length} CNPJ(s) lido(s) do arquivo. Lista atual: ${combinados.length} CNPJ(s). Clique em "Salvar alterações" para enviar ao Supabase.`);
+      }
+    } catch (error) {
+      setFeedback(error.message || 'Erro ao importar CNPJs.');
+    }
+    event.target.value = '';
+  }
+
+  function limparCnpjs() {
+    if (!window.confirm('Excluir todos os CNPJs cadastrados para a TDE desta transportadora?')) return;
+    store.atualizarTde(transportadora.id, { tdeCnpjs: [] });
+    setFeedback('Lista de CNPJs limpa. Clique em "Salvar alterações" para enviar ao Supabase.');
+  }
+
+  return (
+    <div className="form-card" style={{ marginTop: 12, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
+      <strong style={{ fontSize: '0.9rem' }}>TDE por CNPJ do destinatário</strong>
+      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 10px' }}>
+        Vale para toda a transportadora (todas as origens). Aplicada no Simulador Realizado e na Auditoria CT-e quando o
+        documento (CNPJ) do destinatário do CT-e está na lista abaixo.
+      </p>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
+        <div className="field" style={{ margin: 0 }}>
+          <label>TDE (R$)</label>
+          <input type="number" step="0.01" style={{ width: 160 }} value={valor} onChange={(e) => setValor(e.target.value)} onBlur={salvarValor} />
+        </div>
+        <button className="btn-secondary" onClick={() => inputRef.current?.click()}>Importar lista de CNPJs</button>
+        <button className="btn-secondary" onClick={baixarModeloCnpjs}>Baixar modelo</button>
+        <button className="btn-danger" onClick={limparCnpjs} disabled={!cnpjs.length}>Excluir CNPJs</button>
+        <input hidden ref={inputRef} type="file" accept=".xlsx,.xls,.csv" onChange={importarCnpjs} />
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{cnpjs.length} CNPJ(s) cadastrado(s)</span>
+      </div>
+      {feedback && <div className="mini-feedback info top-space" style={{ marginTop: 8 }}>{feedback}</div>}
+    </div>
+  );
+}
+
+const TAXA_ESP_VAZIA = { ibgeDestino: '', tda: '', trt: '', suframa: '', outras: '', gris: '', grisMinimo: '', adVal: '', adValMinimo: '', taxasExtras: [] };
+const CORINGA_VAZIO = { nome: '', valor: '', pct: '', min: '', valorPorPeso: '', pesoBase: '' };
+
+function formatCoringasTaxa(taxasExtras = []) {
+  if (!Array.isArray(taxasExtras) || !taxasExtras.length) return '-';
+  return taxasExtras.map((te) => {
+    const partes = [te.nome || 'coringa'];
+    if (Number(te.pct) > 0) partes.push(`${Number(te.pct).toLocaleString('pt-BR')}% NF`);
+    if (Number(te.min) > 0) partes.push(`min. ${Number(te.min).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`);
+    if (Number(te.valor) > 0) partes.push(`fixo ${Number(te.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`);
+    if (Number(te.valorPorPeso || te.valor_por_peso) > 0) partes.push(`${Number(te.valorPorPeso || te.valor_por_peso).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}/${Number(te.pesoBase || te.peso_base) || '?'} kg`);
+    return partes.join(' · ');
+  }).join(' | ');
+}
 
 function TaxasEspeciaisTab({ origem, transportadora, store }) {
   const [form, setForm] = React.useState(TAXA_ESP_VAZIA);
@@ -166,8 +271,8 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
   function salvar() {
     if (!form.ibgeDestino) return;
     const taxasExtras = (form.taxasExtras || [])
-      .map((te) => ({ nome: String(te.nome || '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0 }))
-      .filter((te) => te.pct > 0 || te.valor > 0);
+      .map((te) => ({ nome: String(te.nome || '').trim(), valor: Number(te.valor) || 0, pct: Number(te.pct) || 0, min: Number(te.min) || 0, valorPorPeso: Number(te.valorPorPeso) || 0, pesoBase: Number(te.pesoBase) || 0 }))
+      .filter((te) => te.pct > 0 || te.valor > 0 || te.valorPorPeso > 0);
     const row = { ...form, taxasExtras, id: editando?.id ?? ('te-' + Date.now()) };
     store.salvarLinha(transportadora.id, origem.id, 'taxasEspeciais', row);
     setForm(TAXA_ESP_VAZIA); setEditando(null);
@@ -175,7 +280,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
 
   function editar(row) {
     setEditando(row);
-    setForm({ ...row, taxasExtras: (row.taxasExtras || []).map((te) => ({ nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '' })) });
+    setForm({ ...row, taxasExtras: (row.taxasExtras || []).map((te) => ({ nome: te.nome || '', valor: te.valor || '', pct: te.pct || '', min: te.min || '', valorPorPeso: te.valorPorPeso || te.valor_por_peso || '', pesoBase: te.pesoBase || te.peso_base || '' })) });
   }
 
   async function importarArquivo(event) {
@@ -211,19 +316,19 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
       </div>
       <div className="table-card" style={{ marginTop: 12 }}>
         <table>
-          <thead><tr><th>IBGE</th><th>TDA</th><th>TDR</th><th>TRT</th><th>GRIS%</th><th>AdVal%</th><th>Coringas</th><th></th></tr></thead>
+          <thead><tr><th>IBGE</th><th>TDA</th><th>TRT</th><th>SUFRAMA</th><th>Outras</th><th>GRIS%</th><th>GRIS min.</th><th>AdVal%</th><th>AdVal min.</th><th>Coringas</th><th></th></tr></thead>
           <tbody>
             {rows.length ? rows.map((row) => (
               <tr key={row.id}>
-                <td>{row.ibgeDestino || '—'}</td><td>{row.tda || '—'}</td><td>{row.tdr || '—'}</td><td>{row.trt || '—'}</td>
-                <td>{row.gris || '—'}</td><td>{row.adVal || '—'}</td>
-                <td>{Array.isArray(row.taxasExtras) && row.taxasExtras.length ? row.taxasExtras.map((te) => te.nome || 'coringa').join(', ') : '—'}</td>
+                <td>{row.ibgeDestino || '—'}</td><td>{row.tda || '—'}</td><td>{row.trt || '—'}</td>
+                <td>{row.suframa || '—'}</td><td>{row.outras || '—'}</td><td>{row.gris || '—'}</td><td>{row.grisMinimo || '—'}</td><td>{row.adVal || '—'}</td><td>{row.adValMinimo || '—'}</td>
+                <td>{formatCoringasTaxa(row.taxasExtras)}</td>
                 <td className="row-actions">
                   <ActionIcon onClick={() => editar(row)}>✎</ActionIcon>
                   <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, 'taxasEspeciais', row.id)}>🗑</ActionIcon>
                 </td>
               </tr>
-            )) : <tr><td colSpan={8} className="empty-cell">Nenhuma taxa cadastrada.</td></tr>}
+            )) : <tr><td colSpan={11} className="empty-cell">Nenhuma taxa cadastrada.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -231,9 +336,8 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
       <div className="form-card" style={{ marginTop: 16, padding: 16, background: '#f8fafc', borderRadius: 8 }}>
         <strong style={{ fontSize: '0.9rem' }}>{editando ? 'Editando taxa' : 'Nova taxa por destino'}</strong>
         <div className="form-grid three" style={{ marginTop: 10 }}>
-          <div className="field"><label>IBGE Destino</label><input value={form.ibgeDestino} onChange={(e) => upd('ibgeDestino', e.target.value)} placeholder="Ex: 2906907" /></div>
+          <div className="field"><label>IBGE Destino *</label><input value={form.ibgeDestino} onChange={(e) => upd('ibgeDestino', e.target.value)} placeholder="Ex: 2906907" /></div>
           <div className="field"><label>TDA (R$)</label><input {...inp} value={form.tda} onChange={(e) => upd('tda', e.target.value)} /></div>
-          <div className="field"><label>TDR (R$)</label><input {...inp} value={form.tdr} onChange={(e) => upd('tdr', e.target.value)} /></div>
           <div className="field"><label>TRT (R$)</label><input {...inp} value={form.trt} onChange={(e) => upd('trt', e.target.value)} /></div>
           <div className="field"><label>SUFRAMA (R$)</label><input {...inp} value={form.suframa} onChange={(e) => upd('suframa', e.target.value)} /></div>
           <div className="field"><label>Outras (R$)</label><input {...inp} value={form.outras} onChange={(e) => upd('outras', e.target.value)} /></div>
@@ -250,11 +354,13 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
             <button type="button" className="btn-secondary" style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '2px 10px' }} onClick={addCoringa}>+ Adicionar coringa</button>
           </div>
           {(form.taxasExtras || []).map((te, idx) => (
-            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 6, alignItems: 'end' }}>
               <div className="field" style={{ margin: 0 }}><label>Nome</label><input value={te.nome} onChange={(e) => updCoringa(idx, 'nome', e.target.value)} placeholder="Ex: EMEX" /></div>
               <div className="field" style={{ margin: 0 }}><label>% NF</label><input type="number" step="0.0001" value={te.pct} onChange={(e) => updCoringa(idx, 'pct', e.target.value)} /></div>
               <div className="field" style={{ margin: 0 }}><label>Mín (R$)</label><input type="number" step="0.01" value={te.min} onChange={(e) => updCoringa(idx, 'min', e.target.value)} /></div>
               <div className="field" style={{ margin: 0 }}><label>R$ fixo</label><input type="number" step="0.01" value={te.valor} onChange={(e) => updCoringa(idx, 'valor', e.target.value)} /></div>
+              <div className="field" style={{ margin: 0 }}><label>R$ por peso</label><input type="number" step="0.01" value={te.valorPorPeso} onChange={(e) => updCoringa(idx, 'valorPorPeso', e.target.value)} placeholder="Ex: 8,50" /></div>
+              <div className="field" style={{ margin: 0 }}><label>Base kg</label><input type="number" step="0.001" value={te.pesoBase} onChange={(e) => updCoringa(idx, 'pesoBase', e.target.value)} placeholder="100" /></div>
               <button type="button" style={{ background: 'none', border: '1px solid #ef4444', color: '#ef4444', borderRadius: 4, padding: '0 8px', cursor: 'pointer', height: 30, alignSelf: 'end' }} onClick={() => remCoringa(idx)}>✕</button>
             </div>
           ))}
@@ -262,6 +368,7 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
 
         <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
           <button className="btn-primary" onClick={salvar} disabled={!form.ibgeDestino}>{editando ? 'Atualizar taxa' : 'Adicionar taxa'}</button>
+          {!form.ibgeDestino && <small style={{ alignSelf: 'center', color: '#b45309' }}>Informe o IBGE do destino para incluir esta taxa.</small>}
           {editando && <button className="btn-secondary" onClick={() => { setEditando(null); setForm(TAXA_ESP_VAZIA); }}>Cancelar</button>}
         </div>
       </div>
@@ -852,6 +959,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
           </button>
         </div>
       ) : null}
+      <TdeSection transportadora={transportadora} store={store} />
       <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar cidade de origem..." />
       <div className="section-row"><div className="inline-meta"><span className="tag-yellow">ATACADO</span><span>{origensBase.length} origem(ns)</span></div></div>
       <div className="list-stack">
@@ -981,10 +1089,10 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
     { name: 'rota', label: 'Rota' }, { name: 'pesoMin', label: 'Peso Mín (kg)' }, { name: 'pesoMax', label: 'Peso Máx (kg)' }, { name: 'valorFixo', label: 'Taxa Aplicada / Faixa' }, { name: 'excesso', label: 'Excesso por kg' }, { name: 'percentual', label: '% Frete' }, { name: 'freteMinimo', label: 'Frete Mínimo' },
   ];
   const taxasColumns = [
-    { key: 'ibgeDestino', label: 'IBGE Destino' }, { key: 'tda', label: 'TDA (R$)' }, { key: 'tdr', label: 'TDR (R$)' }, { key: 'trt', label: 'TRT (R$)' }, { key: 'suframa', label: 'SUFRAMA (R$)' }, { key: 'outras', label: 'Outras (R$)' }, { key: 'gris', label: 'GRIS (%)' }, { key: 'grisMinimo', label: 'GRIS Mín.' }, { key: 'adVal', label: 'Ad Val (%)' }, { key: 'adValMinimo', label: 'Ad Val Mín.' }, { key: 'taxasExtras', label: 'Coringas', render: function(v) { return Array.isArray(v) && v.length ? v.map(function(te) { return te.nome || 'coringa'; }).join(', ') : '-'; } },
+    { key: 'ibgeDestino', label: 'IBGE Destino' }, { key: 'tda', label: 'TDA (R$)' }, { key: 'trt', label: 'TRT (R$)' }, { key: 'suframa', label: 'SUFRAMA (R$)' }, { key: 'outras', label: 'Outras (R$)' }, { key: 'gris', label: 'GRIS (%)' }, { key: 'grisMinimo', label: 'GRIS Mín.' }, { key: 'adVal', label: 'Ad Val (%)' }, { key: 'adValMinimo', label: 'Ad Val Mín.' }, { key: 'taxasExtras', label: 'Coringas', render: function(v) { return Array.isArray(v) && v.length ? v.map(function(te) { return te.nome || 'coringa'; }).join(', ') : '-'; } },
   ];
   const taxasFields = [
-    { name: 'ibgeDestino', label: 'IBGE Destino' }, { name: 'tda', label: 'TDA (R$)' }, { name: 'tdr', label: 'TDR (R$)' }, { name: 'trt', label: 'TRT (R$)' }, { name: 'suframa', label: 'SUFRAMA (R$)' }, { name: 'outras', label: 'Outras (R$)' }, { name: 'gris', label: 'GRIS (%)' }, { name: 'grisMinimo', label: 'GRIS Mínimo (R$)' }, { name: 'adVal', label: 'Ad Valorem (%)' }, { name: 'adValMinimo', label: 'Ad Valorem Mínimo (R$)' },
+    { name: 'ibgeDestino', label: 'IBGE Destino' }, { name: 'tda', label: 'TDA (R$)' }, { name: 'trt', label: 'TRT (R$)' }, { name: 'suframa', label: 'SUFRAMA (R$)' }, { name: 'outras', label: 'Outras (R$)' }, { name: 'gris', label: 'GRIS (%)' }, { name: 'grisMinimo', label: 'GRIS Mínimo (R$)' }, { name: 'adVal', label: 'Ad Valorem (%)' }, { name: 'adValMinimo', label: 'Ad Valorem Mínimo (R$)' },
   ];
 
   return (

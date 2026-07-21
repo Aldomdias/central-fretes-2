@@ -16,6 +16,7 @@ import {
   transportadoraTemTabelaUtilLocal,
 } from '../services/tabelaTransportadoraLocalDb';
 import { carregarMunicipiosIbgeComFallback } from '../services/ibgeService';
+import { buscarTrackingParaRealizado, obterTrackingDaLinha, extrairDocumentoDestinatarioTracking } from '../services/realizadoTrackingEnrichment';
 import {
   buscarRealizadoLocalParaSimulacao,
   buscarRealizadoLocalPorMalha,
@@ -1685,9 +1686,25 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
           : `Preparando simulação local: ${rows.length.toLocaleString('pt-BR')} CT-e(s) usados${totalCompativel > rows.length ? ` de ${totalCompativel.toLocaleString('pt-BR')} encontrados. Limite atual: ${limit.toLocaleString('pt-BR')}.` : '.'}`
       );
 
+      // Completa o CNPJ do destinatário via Tracking (chave CTE) quando o
+      // CT-e importado não trouxe essa coluna. Usado só para a TDE por CNPJ;
+      // não mexe em peso/cubagem para não alterar a simulação já validada.
+      let rowsParaSimular = rows;
+      try {
+        const mapasTracking = await buscarTrackingParaRealizado(rows);
+        rowsParaSimular = rows.map((row) => {
+          if (row.documentoDestinatario) return row;
+          const tracking = obterTrackingDaLinha(row, mapasTracking);
+          const documento = extrairDocumentoDestinatarioTracking(tracking);
+          return documento ? { ...row, documentoDestinatario: documento } : row;
+        });
+      } catch {
+        rowsParaSimular = rows;
+      }
+
       const baseTabelas = modoSimulacao === 'rapido'
         ? tabelaSelecionada
-        : await carregarTabelasConcorrentesParaRealizado(rows, tabelaSelecionada);
+        : await carregarTabelasConcorrentesParaRealizado(rowsParaSimular, tabelaSelecionada);
 
       setProgress({
         etapa: 'Indexando tabelas',
@@ -1703,7 +1720,7 @@ export default function RealizadoLocalPage({ transportadoras = [] }) {
       await nextFrame();
 
       const analise = await simularRealizadoLocalWorker({
-        realizados: rows,
+        realizados: rowsParaSimular,
         transportadoras: baseTabelas,
         municipios,
         nomeTransportadora: aliasesTransportadora,

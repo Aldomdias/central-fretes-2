@@ -68,6 +68,10 @@ function normalizeTransportadora(transportadora = {}) {
     ...transportadora,
     id: transportadora.id ?? safeRandomId(),
     status: transportadora.status || 'Ativa',
+    tde: Number(transportadora.tde) || 0,
+    tdeCnpjs: Array.isArray(transportadora.tdeCnpjs)
+      ? transportadora.tdeCnpjs.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean)
+      : [],
     origens: Array.isArray(transportadora.origens)
       ? transportadora.origens.map(normalizeOrigem)
       : [],
@@ -621,6 +625,26 @@ export function useFreteStore() {
                   }
             ),
           'generalidades',
+          'generalidades'
+        );
+      },
+      // TDE por CNPJ do destinatário: valor + lista de CNPJs valem para a
+      // transportadora inteira (todas as origens), não por origem.
+      atualizarTde(transportadoraId, { tde, tdeCnpjs } = {}) {
+        aplicarAlteracao(
+          (prev) =>
+            prev.map((t) =>
+              t.id !== transportadoraId
+                ? t
+                : {
+                    ...t,
+                    tde: tde !== undefined ? Number(tde) || 0 : t.tde,
+                    tdeCnpjs: tdeCnpjs !== undefined
+                      ? tdeCnpjs.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean)
+                      : t.tdeCnpjs,
+                  }
+            ),
+          'tde',
           'generalidades'
         );
       },

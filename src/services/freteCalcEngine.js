@@ -51,6 +51,14 @@ function calcularPedagioFracao100Kg(pesoKg, valorPorFracao) {
   return Math.ceil(peso / 100) * pedagioUnitario;
 }
 
+function calcularValorPorPeso(pesoKg, valorPorFracao, pesoBase) {
+  const peso = toNumber(pesoKg);
+  const valor = toNumber(valorPorFracao);
+  const base = toNumber(pesoBase);
+  if (peso <= 0 || valor <= 0 || base <= 0) return 0;
+  return Math.ceil(peso / base) * valor;
+}
+
 function toBooleanFlag(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value === 1;
@@ -84,7 +92,21 @@ function calcularIcmsPorDentro(subtotal, aliquotaPercentual) {
   return (base / (1 - aliquota)) - base;
 }
 
-export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 0, pesoKg = 0 }) {
+function normalizeDocumento(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function calcularTde(generalidades = {}, documentoDestinatario = '') {
+  const documento = normalizeDocumento(documentoDestinatario);
+  if (!documento) return 0;
+  const valorTde = toNumber(generalidades.tde);
+  if (valorTde <= 0) return 0;
+  const cnpjs = Array.isArray(generalidades.tdeCnpjs) ? generalidades.tdeCnpjs : [];
+  const lista = new Set(cnpjs.map(normalizeDocumento).filter(Boolean));
+  return lista.has(documento) ? valorTde : 0;
+}
+
+export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 0, pesoKg = 0, documentoDestinatario = '' }) {
   const adValPercentual = taxaDestino.adVal ?? generalidades.adValorem ?? 0;
   const adValMinimo = taxaDestino.adValMinimo ?? generalidades.adValoremMinimo ?? 0;
   const grisPercentual = taxaDestino.gris ?? generalidades.gris ?? 0;
@@ -100,14 +122,26 @@ export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 
     const pct = toNumber(te.pct);
     const valor = toNumber(te.valor);
     const min = toNumber(te.min);
+    const valorPorPeso = toNumber(te.valorPorPeso ?? te.valor_por_peso);
+    const pesoBase = toNumber(te.pesoBase ?? te.peso_base ?? te.baseKg ?? te.base_kg);
     let v = 0;
+    let valorPercentual = 0;
+    let valorFixo = 0;
+    let valorPeso = 0;
     if (pct > 0) {
-      v = Math.max(toNumber(valorNf) * toPercent(pct), min);
-    } else if (valor > 0) {
-      v = valor;
+      valorPercentual = Math.max(toNumber(valorNf) * toPercent(pct), min);
+      v += valorPercentual;
+    }
+    if (valor > 0) {
+      valorFixo = valor;
+      v += valorFixo;
+    }
+    if (valorPorPeso > 0 && pesoBase > 0) {
+      valorPeso = calcularValorPorPeso(pesoKg, valorPorPeso, pesoBase);
+      v += valorPeso;
     }
     taxaExtra += v;
-    return { nome: te.nome || '', valor: v };
+    return { nome: te.nome || '', valor: v, pct, min, valorFixo, valorPorPeso, pesoBase, valorPeso, valorPercentual };
   });
 
   return {
@@ -117,7 +151,8 @@ export function resolverTaxas({ generalidades = {}, taxaDestino = {}, valorNf = 
     tas: toNumber(generalidades.tas),
     ctrc: toNumber(generalidades.ctrc),
     tda: toNumber(taxaDestino.tda),
-    tdr: toNumber(taxaDestino.tdr),
+    tde: calcularTde(generalidades, documentoDestinatario),
+    tdr: 0,
     trt: toNumber(taxaDestino.trt),
     suframa: toNumber(taxaDestino.suframa),
     outras: toNumber(taxaDestino.outras),
@@ -238,7 +273,7 @@ function resolverRegraExcedente({ cotacao = {}, pesoMin = 0, pesoLimite = 0, fai
   };
 }
 
-export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades = {}, taxaDestino = {}, pesoKg = 0, valorNf = 0 }) {
+export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades = {}, taxaDestino = {}, pesoKg = 0, valorNf = 0, documentoDestinatario = '' }) {
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
   const { minimoRota, minimoCotacao, minimoGeneralidade, minimoAplicavel } = resolverMinimoFrete({ rota, cotacao, generalidades });
@@ -251,8 +286,8 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
     freteMinimo: minimoAplicavel,
   });
   const valorBase = componenteBase.valor;
-  const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
-  const subtotalSemEmergencial = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
+  const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso, documentoDestinatario });
+  const subtotalSemEmergencial = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tde + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
   const taxaEmergencialPct = toPercent(generalidades.taxaEmergencial ?? 0);
   const valorEmergencial = subtotalSemEmergencial * taxaEmergencialPct;
   const subtotal = subtotalSemEmergencial + valorEmergencial;
@@ -282,7 +317,7 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
   };
 }
 
-export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades = {}, taxaDestino = {}, pesoKg = 0, valorNf = 0 }) {
+export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades = {}, taxaDestino = {}, pesoKg = 0, valorNf = 0, documentoDestinatario = '' }) {
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
 
@@ -318,8 +353,8 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
     ? valorFaixaComExcedente + minimoAplicavel
     : Math.max(valorFaixa, valorPercentual, valorExcedente, minimoAplicavel);
 
-  const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso });
-  const subtotalSemEmergencial = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tdr + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
+  const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso, documentoDestinatario });
+  const subtotalSemEmergencial = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tde + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
   const taxaEmergencialPct = toPercent(generalidades.taxaEmergencial ?? 0);
   const valorEmergencial = subtotalSemEmergencial * taxaEmergencialPct;
   const subtotal = subtotalSemEmergencial + valorEmergencial;
