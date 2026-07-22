@@ -5,6 +5,7 @@ import {
   carregarResumoBaseDb,
   carregarSnapshotFretesDb,
   carregarTransportadoraCompletaDb,
+  atualizarValidacaoOrigemDb,
   excluirLinhaSecaoDb,
   excluirOrigemDb,
   excluirTransportadoraDb,
@@ -34,6 +35,12 @@ const DEFAULT_GENERALIDADES = {
 
 function mergeGeneralidades(value) {
   return { ...DEFAULT_GENERALIDADES, ...(value || {}) };
+}
+
+// Qualquer alteração no conteúdo de uma origem já validada exige nova validação.
+function invalidarValidacaoSeNecessario(origem) {
+  if (!origem?.validado) return origem;
+  return { ...origem, validado: false, validado_em: null, validado_por: null };
 }
 
 function safeRandomId() {
@@ -177,6 +184,12 @@ function mergeImport(prev, payload, tipo) {
         id: row.id ?? safeRandomId(),
       }));
       origem.taxasEspeciais = [...(origem.taxasEspeciais || []), ...enriched];
+    }
+
+    if (origem.validado && ['generalidades', 'rotas', 'cotacoes', 'taxas'].includes(tipo)) {
+      origem.validado = false;
+      origem.validado_em = null;
+      origem.validado_por = null;
     }
   });
 
@@ -577,10 +590,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
 
         try {
-          await salvarSecaoDb([normalized], 'generalidades', undefined, { atualizarSnapshot: false });
-          await salvarSecaoDb([normalized], 'rotas', undefined, { atualizarSnapshot: false });
-          await salvarSecaoDb([normalized], 'cotacoes', undefined, { atualizarSnapshot: false });
-          await salvarSecaoDb([normalized], 'taxas', undefined, { atualizarSnapshot: false });
+          await salvarSecaoDb([normalized], ['generalidades', 'rotas', 'cotacoes', 'taxas'], undefined, { atualizarSnapshot: false });
 
           const resumoAtualizado = await carregarResumoBaseDb().catch(() => null);
           setSyncStatus((prev) => ({
@@ -620,7 +630,7 @@ export function useFreteStore() {
                 : {
                     ...t,
                     origens: t.origens.map((o) =>
-                      o.id !== origemId ? o : { ...o, generalidades: mergeGeneralidades(generalidades) }
+                      o.id !== origemId ? o : invalidarValidacaoSeNecessario({ ...o, generalidades: mergeGeneralidades(generalidades) })
                     ),
                   }
             ),
@@ -653,7 +663,7 @@ export function useFreteStore() {
           (prev) =>
             prev.map((t) => {
               if (t.id !== transportadoraId) return t;
-              const normalized = normalizeOrigem(origem);
+              const normalized = invalidarValidacaoSeNecessario(normalizeOrigem(origem));
               const exists = t.origens.some((o) => o.id === normalized.id);
               const origens = exists
                 ? t.origens.map((o) => (o.id === normalized.id ? normalized : o))
@@ -664,6 +674,38 @@ export function useFreteStore() {
           'origem'
         );
       },
+      // Marca/desmarca a origem como validada (tabela conferida via simulação/auditoria).
+      // Salva direto no Supabase (não fica pendente de "Salvar alterações").
+      async marcarOrigemValidada(transportadoraId, origemId, validado, usuarioNome) {
+        const validadoEm = validado ? new Date().toISOString() : null;
+        const validadoPor = validado ? (usuarioNome || null) : null;
+
+        setTransportadoras((prev) =>
+          (prev || []).map((t) =>
+            t.id !== transportadoraId
+              ? t
+              : {
+                  ...t,
+                  origens: t.origens.map((o) =>
+                    o.id !== origemId
+                      ? o
+                      : { ...o, validado: Boolean(validado), validado_em: validadoEm, validado_por: validadoPor }
+                  ),
+                }
+          )
+        );
+
+        if (!bancoConfigurado()) return { ok: true, modo: 'local' };
+
+        try {
+          await atualizarValidacaoOrigemDb(origemId, { validado, validadoEm, validadoPor });
+          setSyncStatus((prev) => ({ ...prev, erro: '', ultimaSincronizacao: new Date().toISOString() }));
+          return { ok: true };
+        } catch (error) {
+          setSyncStatus((prev) => ({ ...prev, erro: error.message || 'Erro ao salvar validação no Supabase.' }));
+          return { ok: false, erro: error };
+        }
+      },
       // Atualiza só o canal da origem (merge), preservando rotas/cotações/taxas.
       // Usado para trocar o canal direto no card, sem abrir o formulário.
       atualizarCanalOrigem(transportadoraId, origemId, canal) {
@@ -673,7 +715,7 @@ export function useFreteStore() {
             prev.map((t) => (
               t.id !== transportadoraId
                 ? t
-                : { ...t, origens: t.origens.map((o) => (o.id !== origemId ? o : { ...o, canal: canalNormalizado })) }
+                : { ...t, origens: t.origens.map((o) => (o.id !== origemId ? o : invalidarValidacaoSeNecessario({ ...o, canal: canalNormalizado }))) }
             )),
           'origem',
           'origem'
@@ -734,12 +776,12 @@ export function useFreteStore() {
                       const lista = o[secao] ?? [];
                       const normalized = { ...linha, id: linha.id ?? safeRandomId() };
                       const exists = lista.some((item) => item.id === normalized.id);
-                      return {
+                      return invalidarValidacaoSeNecessario({
                         ...o,
                         [secao]: exists
                           ? lista.map((item) => (item.id === normalized.id ? normalized : item))
                           : [...lista, normalized],
-                      };
+                      });
                     }),
                   }
             ),
@@ -763,7 +805,7 @@ export function useFreteStore() {
                     origens: t.origens.map((o) => {
                       if (o.id !== origemId) return o;
                       const lista = o[secao] ?? [];
-                      return {
+                      return invalidarValidacaoSeNecessario({
                         ...o,
                         [secao]: lista.map((item) => {
                           const novo = { ...item };
@@ -775,7 +817,7 @@ export function useFreteStore() {
                           });
                           return novo;
                         }),
-                      };
+                      });
                     }),
                   }
             ),
@@ -793,10 +835,10 @@ export function useFreteStore() {
                   origens: t.origens.map((o) =>
                     o.id !== origemId
                       ? o
-                      : {
+                      : invalidarValidacaoSeNecessario({
                           ...o,
                           [secao]: (o[secao] ?? []).filter((item) => item.id !== linhaId),
-                        }
+                        })
                   ),
                 }
           )
@@ -820,7 +862,7 @@ export function useFreteStore() {
               : {
                   ...t,
                   origens: t.origens.map((o) =>
-                    o.id !== origemId ? o : { ...o, [secao]: [] }
+                    o.id !== origemId ? o : invalidarValidacaoSeNecessario({ ...o, [secao]: [] })
                   ),
                 }
           )

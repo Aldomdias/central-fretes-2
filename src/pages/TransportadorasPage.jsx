@@ -2,6 +2,84 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
+import { carregarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import { normalizarChave } from '../services/vinculosTransportadorasPuro';
+import { listarCarteirasAuditoria, salvarCarteiraAuditoria } from '../services/auditoriaFretesService';
+
+// Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
+// e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
+function useVinculosEAuditores() {
+  const [vinculosRaw, setVinculosRaw] = useState(null);
+  const [carteirasRaw, setCarteirasRaw] = useState(null);
+
+  useEffect(() => {
+    let ativo = true;
+    carregarVinculosTransportadoras()
+      .then((lista) => { if (ativo) setVinculosRaw(lista || []); })
+      .catch(() => { if (ativo) setVinculosRaw([]); });
+    listarCarteirasAuditoria()
+      .then((lista) => { if (ativo) setCarteirasRaw(lista || []); })
+      .catch(() => { if (ativo) setCarteirasRaw([]); });
+    return () => { ativo = false; };
+  }, []);
+
+  const vinculosSet = useMemo(() => (
+    vinculosRaw ? new Set(vinculosRaw.map((v) => normalizarChave(v.nomeTabela)).filter(Boolean)) : null
+  ), [vinculosRaw]);
+
+  const auditoresMap = useMemo(() => {
+    if (!carteirasRaw) return null;
+    const mapa = new Map();
+    carteirasRaw.forEach((c) => {
+      const chave = normalizarChave(c.transportadora);
+      if (chave && c.auditor_nome) mapa.set(chave, c.auditor_nome);
+    });
+    return mapa;
+  }, [carteirasRaw]);
+
+  const auditorNomes = useMemo(() => (
+    [...new Set((carteirasRaw || []).map((c) => c.auditor_nome).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  ), [carteirasRaw]);
+
+  function vinculosDaTransportadora(nome) {
+    const chave = normalizarChave(nome);
+    return (vinculosRaw || []).filter((v) => normalizarChave(v.nomeTabela) === chave);
+  }
+
+  function carteiraDaTransportadora(nome) {
+    const chave = normalizarChave(nome);
+    return (carteirasRaw || []).find((c) => normalizarChave(c.transportadora) === chave) || null;
+  }
+
+  async function salvarAuditor(nomeTransportadora, auditorNome) {
+    const existente = carteiraDaTransportadora(nomeTransportadora);
+    const carteira = {
+      id: existente?.id,
+      transportadora: nomeTransportadora,
+      auditor_nome: auditorNome,
+      auditor_email: existente?.auditor_email || '',
+    };
+    await salvarCarteiraAuditoria({ carteiras: carteirasRaw || [] }, carteira);
+    setCarteirasRaw((prev) => {
+      const lista = prev || [];
+      const idx = lista.findIndex((c) => normalizarChave(c.transportadora) === normalizarChave(nomeTransportadora));
+      if (idx === -1) return [...lista, carteira];
+      const copia = [...lista];
+      copia[idx] = { ...copia[idx], ...carteira };
+      return copia;
+    });
+  }
+
+  return {
+    carregando: vinculosRaw === null || carteirasRaw === null,
+    vinculosSet,
+    auditoresMap,
+    auditorNomes,
+    vinculosDaTransportadora,
+    carteiraDaTransportadora,
+    salvarAuditor,
+  };
+}
 
 function nextId(list) {
   return (Math.max(0, ...list.map((item) => Number(item.id) || 0)) + 1);
@@ -435,6 +513,105 @@ function CoberturaBadge({ cobertura, severidade }) {
   return <span className={className}>{cobertura}</span>;
 }
 
+function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinculosSet, auditoresMap }) {
+  const [busca, setBusca] = useState('');
+  const [somentePendentes, setSomentePendentes] = useState(false);
+  const [somenteSemVinculo, setSomenteSemVinculo] = useState(false);
+  const [somenteSemAuditor, setSomenteSemAuditor] = useState(false);
+
+  const linhas = useMemo(() => {
+    return items
+      .map((item) => {
+        const origens = item.origens || [];
+        const total = origens.length;
+        const validadas = origens.filter((o) => o.validado).length;
+        const pendentes = total - validadas;
+        const ultimaValidacao = origens
+          .filter((o) => o.validado && o.validado_em)
+          .sort((a, b) => new Date(b.validado_em) - new Date(a.validado_em))[0] || null;
+        const chave = normalizarChave(item.nome);
+        const comVinculo = vinculosSet ? vinculosSet.has(chave) : null;
+        const auditor = auditoresMap ? (auditoresMap.get(chave) || null) : null;
+        return { id: item.id, nome: item.nome, total, validadas, pendentes, ultimaValidacao, comVinculo, auditor };
+      })
+      .filter((linha) => !busca || normalizeText(linha.nome).includes(normalizeText(busca)))
+      .filter((linha) => !somentePendentes || linha.pendentes > 0)
+      .filter((linha) => !somenteSemVinculo || linha.comVinculo === false)
+      .filter((linha) => !somenteSemAuditor || !linha.auditor)
+      .sort((a, b) => b.pendentes - a.pendentes || a.nome.localeCompare(b.nome, 'pt-BR'));
+  }, [items, busca, somentePendentes, somenteSemVinculo, somenteSemAuditor, vinculosSet, auditoresMap]);
+
+  const totalOrigens = linhas.reduce((acc, l) => acc + l.total, 0);
+  const totalValidadas = linhas.reduce((acc, l) => acc + l.validadas, 0);
+
+  if (!open) return null;
+  return (
+    <Modal open={open} title="Painel de validação de tabelas" onClose={onClose}>
+      <p style={{ marginTop: -8, color: '#64748b' }}>
+        {totalValidadas} de {totalOrigens} origem(ns) validada(s) no total ({linhas.filter((l) => l.pendentes === 0 && l.total > 0).length} transportadora(s) 100% validada(s)).
+      </p>
+      <div className="form-grid two top-space">
+        <div className="field">
+          <label>Buscar transportadora</label>
+          <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Digite o nome..." />
+        </div>
+        <div className="field" style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+            <input type="checkbox" checked={somentePendentes} onChange={(e) => setSomentePendentes(e.target.checked)} />
+            Só com pendências
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+            <input type="checkbox" checked={somenteSemVinculo} onChange={(e) => setSomenteSemVinculo(e.target.checked)} />
+            Só sem vínculo
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
+            <input type="checkbox" checked={somenteSemAuditor} onChange={(e) => setSomenteSemAuditor(e.target.checked)} />
+            Só sem auditor
+          </label>
+        </div>
+      </div>
+      <div className="table-card top-space" style={{ maxHeight: 420, overflowY: 'auto' }}>
+        <table>
+          <thead><tr><th>Transportadora</th><th>Validadas</th><th>Pendentes</th><th>Última validação</th><th>Vínculo</th><th>Auditor</th><th>Progresso</th><th></th></tr></thead>
+          <tbody>
+            {linhas.length ? linhas.map((linha) => (
+              <tr key={linha.id}>
+                <td>{linha.nome}</td>
+                <td>{linha.validadas} / {linha.total}</td>
+                <td>{linha.pendentes ? <span style={{ color: '#b45309', fontWeight: 700 }}>{linha.pendentes}</span> : <span style={{ color: '#166534' }}>0</span>}</td>
+                <td style={{ fontSize: 12, color: '#64748b' }}>
+                  {linha.ultimaValidacao
+                    ? <>{linha.ultimaValidacao.validado_por || 'Não identificado'}<br />{new Date(linha.ultimaValidacao.validado_em).toLocaleDateString('pt-BR')}</>
+                    : '—'}
+                </td>
+                <td>
+                  {linha.comVinculo === null ? '—' : linha.comVinculo
+                    ? <span style={{ color: '#166534', fontWeight: 700 }}>🔗 Sim</span>
+                    : <span style={{ color: '#b91c1c', fontWeight: 700 }}>⚠ Não</span>}
+                </td>
+                <td style={{ fontSize: 12 }}>{linha.auditor || <span style={{ color: '#94a3b8' }}>Sem auditor</span>}</td>
+                <td style={{ minWidth: 120 }}>
+                  <div style={{ background: '#f1f5f9', borderRadius: 999, height: 8, overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${linha.total ? Math.round((linha.validadas / linha.total) * 100) : 0}%`,
+                      background: linha.pendentes ? '#f59e0b' : '#16a34a',
+                      height: '100%',
+                    }} />
+                  </div>
+                </td>
+                <td>
+                  <button className="btn-link inline-btn" onClick={() => { onOpenTransportadora(linha.id); onClose(); }}>Abrir</button>
+                </td>
+              </tr>
+            )) : <tr><td colSpan={8} className="empty-cell">Nenhuma transportadora encontrada.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Fechar</button></div>
+    </Modal>
+  );
+}
+
 function mapInconsistenciasRotas(transportadora, origem, analise) {
   return (analise.rotasSemCotacao || []).map((rotaNome) => ({
     Transportadora: transportadora.nome,
@@ -723,6 +900,9 @@ function TransportadorasList({ items, onOpen, store }) {
   const [cidadeFiltro, setCidadeFiltro] = useState('');
   const [canalFiltro, setCanalFiltro] = useState('');
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
+  const [validacaoFiltro, setValidacaoFiltro] = useState('');
+  const [painelValidacaoOpen, setPainelValidacaoOpen] = useState(false);
+  const { vinculosSet, auditoresMap } = useVinculosEAuditores();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pagina, setPagina] = useState(1);
@@ -745,9 +925,18 @@ function TransportadorasList({ items, onOpen, store }) {
       const cidadeMatch = !cidadeNormalizada || (item.origens || []).some((origem) => normalizeText(origem.cidade) === cidadeNormalizada);
       const canalMatch = !canalNormalizado || (item.origens || []).some((origem) => canaisOrigem(origem).some((canal) => normalizeText(canal) === canalNormalizado));
       const coberturaMatch = !coberturaNormalizada || normalizeFiltroStatus(resumo.cobertura) === coberturaNormalizada;
-      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch;
+      const validacaoMatch = !validacaoFiltro || (item.origens || []).some((origem) => (
+        validacaoFiltro === 'validadas' ? Boolean(origem.validado) : !origem.validado
+      ));
+      return nomeMatch && cidadeMatch && canalMatch && coberturaMatch && validacaoMatch;
     });
-  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
+  }, [items, busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro]);
+
+  const totalOrigens = useMemo(() => items.reduce((acc, item) => acc + (item.origens || []).length, 0), [items]);
+  const totalOrigensValidadas = useMemo(
+    () => items.reduce((acc, item) => acc + (item.origens || []).filter((origem) => origem.validado).length, 0),
+    [items]
+  );
 
   const totalPaginas = Math.max(1, Math.ceil(filtrados.length / PAGE_SIZE));
   const paginaAtual = Math.min(pagina, totalPaginas);
@@ -756,7 +945,7 @@ function TransportadorasList({ items, onOpen, store }) {
 
   useEffect(() => {
     setPagina(1);
-  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro]);
+  }, [busca, cidadeFiltro, canalFiltro, coberturaFiltro, validacaoFiltro]);
 
   const atualizarBaseOficial = async () => {
     if (!store?.atualizarResumo || atualizandoResumo) return false;
@@ -789,6 +978,7 @@ function TransportadorasList({ items, onOpen, store }) {
     setCidadeFiltro('');
     setCanalFiltro('');
     setCoberturaFiltro('');
+    setValidacaoFiltro('');
   };
 
   const confirmarRemocaoTransportadora = (item) => {
@@ -810,6 +1000,7 @@ function TransportadorasList({ items, onOpen, store }) {
           <button className="btn-secondary" onClick={() => {
             visiveis.forEach((item) => store?.carregarTransportadoraCompleta?.(item.id));
           }}>Atualizar visíveis</button>
+          <button className="btn-secondary" onClick={() => setPainelValidacaoOpen(true)}>📊 Painel de validação</button>
           <button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button>
         </div>
       </div>
@@ -823,7 +1014,8 @@ function TransportadorasList({ items, onOpen, store }) {
           <div className="inline-meta">
             <span><strong>{filtrados.length}</strong> transportadora(s)</span>
             <span>Mostrando {visiveis.length ? inicioPagina + 1 : 0}-{Math.min(inicioPagina + PAGE_SIZE, filtrados.length)} de {filtrados.length}</span>
-            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
+            <span><strong>{totalOrigensValidadas}</strong> de <strong>{totalOrigens}</strong> origem(ns) validada(s)</span>
+            {(busca || cidadeFiltro || canalFiltro || coberturaFiltro || validacaoFiltro) ? <button className="btn-link inline-btn" onClick={limparFiltros}>Limpar filtros</button> : null}
           </div>
         </div>
         <div className="form-grid four filters-grid">
@@ -855,6 +1047,14 @@ function TransportadorasList({ items, onOpen, store }) {
               <option value="Sem validação">Sem validação</option>
             </select>
           </div>
+          <div className="field">
+            <label>Validação de tabela</label>
+            <select value={validacaoFiltro} onChange={(e) => setValidacaoFiltro(e.target.value)}>
+              <option value="">Todas</option>
+              <option value="validadas">Validadas</option>
+              <option value="pendentes">Pendentes</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -871,6 +1071,35 @@ function TransportadorasList({ items, onOpen, store }) {
             <div key={item.id} className={cardClass} onClick={() => onOpen(item.id)}>
               <div className="list-card-left"><div className="list-icon">🏢</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>{item.nome}{(() => { const cs = [...new Set((item.origens||[]).flatMap(canaisOrigem))]; const temAtacado = cs.includes('ATACADO'); const temB2c = cs.includes('B2C'); return (<>{temAtacado&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dcfce7',color:'#166534'}}>ATACADO</span>}{temB2c&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8'}}>B2C</span>}</>); })()}</div><div className="list-subtitle">{item.origens.length} origem(ns) cadastrada(s)</div>{cidadesDaTransportadora.length ? <div className="list-meta-text">Cidades: {cidadesDaTransportadora.join(', ')}</div> : null}{resumo.totalRotas !== undefined ? <div className="list-meta-text">{resumo.totalRotas} rota(s) · {resumo.totalCotacoes || 0} frete(s)</div> : null}{resumo.severidade !== 'ok' ? <div className="list-warning-text">{resumo.faltandoFrete ? `${resumo.faltandoFrete} rota(s) sem frete` : ''}{resumo.faltandoFrete && resumo.faltandoRota ? ' · ' : ''}{resumo.faltandoRota ? `${resumo.faltandoRota} frete(s) sem rota` : ''}{!resumo.faltandoFrete && !resumo.faltandoRota ? `${resumo.pendencias} origem(ns) com pendência` : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
+                {(() => {
+                  const totalOrig = (item.origens || []).length;
+                  const validadasOrig = (item.origens || []).filter((o) => o.validado).length;
+                  return (
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 999,
+                      background: totalOrig && validadasOrig === totalOrig ? '#dcfce7' : '#f1f5f9',
+                      color: totalOrig && validadasOrig === totalOrig ? '#166534' : '#64748b',
+                    }}>
+                      {validadasOrig}/{totalOrig} validado(s)
+                    </span>
+                  );
+                })()}
+                {vinculosSet ? (
+                  vinculosSet.has(normalizarChave(item.nome)) ? (
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 999, background: '#dcfce7', color: '#166534' }}>🔗 Com vínculo</span>
+                  ) : (
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 999, background: '#fee2e2', color: '#b91c1c' }}>⚠ Sem vínculo</span>
+                  )
+                ) : null}
+                {auditoresMap ? (
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 999,
+                    background: auditoresMap.get(normalizarChave(item.nome)) ? '#dbeafe' : '#f1f5f9',
+                    color: auditoresMap.get(normalizarChave(item.nome)) ? '#1d4ed8' : '#64748b',
+                  }}>
+                    👤 {auditoresMap.get(normalizarChave(item.nome)) || 'Sem auditor'}
+                  </span>
+                ) : null}
                 <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
                 <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
@@ -894,17 +1123,20 @@ function TransportadorasList({ items, onOpen, store }) {
         </div>
       ) : null}
       <TransportadoraModal open={modalOpen} initialValue={editing} onSave={saveTransportadora} onClose={() => { setModalOpen(false); setEditing(null); }} />
+      <PainelValidacaoModal open={painelValidacaoOpen} items={items} onClose={() => setPainelValidacaoOpen(false)} onOpenTransportadora={onOpen} vinculosSet={vinculosSet} auditoresMap={auditoresMap} />
     </div>
   );
 }
 
-function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
+function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [busca, setBusca] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [feedbackSalvar, setFeedbackSalvar] = useState('');
+  const [origemConfirmando, setOrigemConfirmando] = useState(null);
+  const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor } = useVinculosEAuditores();
   const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
   const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
   const saveOrigem = (form) => {
@@ -975,6 +1207,31 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
               <div className="list-card-left"><div className="list-icon">📍</div><div><div className="list-title" style={{display:'flex',alignItems:'center',gap:8}}>{origem.cidade}<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:999,background: canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#ede9fe':canaisOrigem(origem).includes('B2C')?'#dbeafe':'#dcfce7',color:canaisOrigem(origem).includes('B2C') && canaisOrigem(origem).includes('ATACADO')?'#6d28d9':canaisOrigem(origem).includes('B2C')?'#1d4ed8':'#166534'}}>{canalOrigemLabel(origem)}</span></div><div className="list-subtitle">{(origem.rotas || []).length} rota(s) · {(origem.cotacoes || []).length} frete(s)</div>{analise.severidade !== 'ok' ? <div className="list-warning-text">{analise.rotasSemCotacao.length ? `${analise.rotasSemCotacao.length} rota(s) sem frete` : ''}{analise.rotasSemCotacao.length && analise.cotacoesSemRota.length ? ' · ' : ''}{analise.cotacoesSemRota.length ? `${analise.cotacoesSemRota.length} frete(s) sem rota` : ''}{!analise.rotasSemCotacao.length && !analise.cotacoesSemRota.length ? analise.cobertura : ''}</div> : null}</div></div>
               <div className="list-actions" onClick={(e) => e.stopPropagation()}>
                 <CoberturaBadge cobertura={transportadora.detalheCarregado ? analise.cobertura : 'Resumo'} severidade={transportadora.detalheCarregado ? analise.severidade : 'ok'} />
+                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+                  <button
+                    type="button"
+                    className="btn-link inline-btn"
+                    onClick={() => (origem.validado
+                      ? store.marcarOrigemValidada(transportadora.id, origem.id, false, sessao?.nome)
+                      : setOrigemConfirmando(origem))}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      padding: '3px 8px',
+                      borderRadius: 999,
+                      background: origem.validado ? '#dcfce7' : '#f1f5f9',
+                      color: origem.validado ? '#166534' : '#64748b',
+                      border: 'none',
+                    }}
+                  >
+                    {origem.validado ? '✓ Validado' : 'Pendente'}
+                  </button>
+                  {origem.validado && origem.validado_em ? (
+                    <span style={{ fontSize: 10, color: '#94a3b8' }}>
+                      {origem.validado_por ? `${origem.validado_por} · ` : ''}{new Date(origem.validado_em).toLocaleDateString('pt-BR')}
+                    </span>
+                  ) : null}
+                </span>
                 <select
                   value={canalOrigemValor(canaisOrigem(origem))}
                   onChange={(e) => store.atualizarCanalOrigem(transportadora.id, origem.id, e.target.value)}
@@ -997,9 +1254,91 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store }) {
         })}
       </div>
       <div className="footer-note">{origensBase.length} origem(ns) no total</div>
+      <ConfirmarValidacaoModal
+        open={!!origemConfirmando}
+        transportadora={transportadora}
+        origem={origemConfirmando}
+        vinculos={origemConfirmando ? vinculosDaTransportadora(transportadora.nome) : []}
+        auditorAtual={origemConfirmando ? carteiraDaTransportadora(transportadora.nome)?.auditor_nome : null}
+        auditorNomes={auditorNomes}
+        onSalvarAuditor={(nome) => salvarAuditor(transportadora.nome, nome)}
+        onConfirmar={() => {
+          store.marcarOrigemValidada(transportadora.id, origemConfirmando.id, true, sessao?.nome);
+          setOrigemConfirmando(null);
+        }}
+        onClose={() => setOrigemConfirmando(null)}
+      />
       <OrigemModal open={modalOpen} initialValue={editing} onSave={saveOrigem} onClose={() => { setModalOpen(false); setEditing(null); }} />
       <InconsistenciasModal open={!!inconsistenciasOpen} title={typeof inconsistenciasOpen === 'number' ? 'Inconsistências da origem' : 'Inconsistências da transportadora'} transportadora={transportadora} origem={typeof inconsistenciasOpen === 'number' ? origensBase.find((item) => item.id === inconsistenciasOpen) : null} onClose={() => setInconsistenciasOpen(false)} />
     </div>
+  );
+}
+
+function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, auditorAtual, auditorNomes, onSalvarAuditor, onConfirmar, onClose }) {
+  const [salvandoAuditor, setSalvandoAuditor] = useState(false);
+  const [novoAuditor, setNovoAuditor] = useState('');
+
+  if (!open) return null;
+
+  const escolherAuditor = async (nome) => {
+    if (!nome) return;
+    setSalvandoAuditor(true);
+    await onSalvarAuditor(nome);
+    setSalvandoAuditor(false);
+  };
+
+  return (
+    <Modal open={open} title={`Confirmar validação — ${origem?.cidade || ''}`} onClose={onClose}>
+      <div className="hint-box">
+        <strong>Vínculos com CT-e para {transportadora?.nome}</strong>
+        {vinculos.length ? (
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+            {vinculos.map((v) => <li key={v.id || v.nomeCte}>{v.nomeCte}</li>)}
+          </ul>
+        ) : (
+          <p style={{ color: '#b45309', margin: '8px 0 0' }}>⚠ Nenhum vínculo encontrado para esta transportadora.</p>
+        )}
+        <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>Você também pode conferir/editar vínculos na tela Ferramentas.</p>
+      </div>
+
+      <div className="hint-box top-space">
+        <strong>Auditor responsável</strong>
+        {auditorAtual ? (
+          <p style={{ margin: '8px 0 0' }}>👤 {auditorAtual}</p>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            <p style={{ color: '#b45309', margin: '0 0 8px' }}>⚠ Nenhum auditor atribuído a esta transportadora.</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <select disabled={salvandoAuditor} onChange={(e) => escolherAuditor(e.target.value)} defaultValue="">
+                <option value="" disabled>Selecionar auditor existente...</option>
+                {auditorNomes.map((nome) => <option key={nome} value={nome}>{nome}</option>)}
+              </select>
+              <input
+                placeholder="Ou digite um novo nome..."
+                value={novoAuditor}
+                onChange={(e) => setNovoAuditor(e.target.value)}
+                disabled={salvandoAuditor}
+                style={{ flex: 1, minWidth: 160 }}
+              />
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={salvandoAuditor || !novoAuditor.trim()}
+                onClick={() => escolherAuditor(novoAuditor.trim())}
+              >
+                Atribuir
+              </button>
+            </div>
+          </div>
+        )}
+        <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>Você também pode gerenciar carteiras na tela de Gestão de Carteiras de Auditoria.</p>
+      </div>
+
+      <div className="actions-right gap-row top-space">
+        <button className="btn-secondary" onClick={onClose}>Cancelar</button>
+        <button className="btn-primary" onClick={onConfirmar}>Confirmar validação</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1110,7 +1449,7 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
   );
 }
 
-export default function TransportadorasPage({ transportadoras, transportadoraSelecionadaId, origemSelecionadaId, onOpenTransportadora, onOpenOrigem, onVoltar, store }) {
+export default function TransportadorasPage({ transportadoras, transportadoraSelecionadaId, origemSelecionadaId, onOpenTransportadora, onOpenOrigem, onVoltar, store, sessao }) {
   const transportadora = useMemo(() => transportadoras.find((item) => String(item.id) === String(transportadoraSelecionadaId)), [transportadoras, transportadoraSelecionadaId]);
   const origem = useMemo(() => (transportadora?.origens || []).find((item) => String(item.id) === String(origemSelecionadaId)), [transportadora, origemSelecionadaId]);
 
@@ -1129,7 +1468,7 @@ export default function TransportadorasPage({ transportadoras, transportadoraSel
       {!transportadora
         ? <TransportadorasList items={transportadoras} onOpen={onOpenTransportadora} store={store} />
         : !origem
-          ? <OrigensList transportadora={transportadora} onBack={onVoltar} onOpenOrigin={onOpenOrigem} store={store} />
+          ? <OrigensList transportadora={transportadora} onBack={onVoltar} onOpenOrigin={onOpenOrigem} store={store} sessao={sessao} />
           : <OrigemDetail transportadora={transportadora} origem={origem} onBack={onVoltar} store={store} />}
     </>
   );

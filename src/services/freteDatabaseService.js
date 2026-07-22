@@ -149,6 +149,9 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
     cidade: origem.cidade || '',
     canal: origem.canal || 'ATACADO',
     status: origem.status || 'Ativa',
+    validado: Boolean(origem.validado),
+    validado_em: origem.validado_em || null,
+    validado_por: origem.validado_por || null,
     generalidades: {
       incideIcms: Boolean(generalidade?.incide_icms),
       aliquotaIcms: generalidade?.aliquota_icms ?? 0,
@@ -251,6 +254,9 @@ function mapBaseToTables(transportadoras) {
         cidade: origem.cidade || '',
         canal: origem.canal || 'ATACADO',
         status: origem.status || 'Ativa',
+        validado: Boolean(origem.validado),
+        validado_em: origem.validado_em || null,
+        validado_por: origem.validado_por || null,
       });
 
       generalidadesRows.push({
@@ -702,7 +708,7 @@ export async function carregarResumoBaseDb() {
     cotacoesCountResponse,
   ] = await Promise.all([
     supabase.from('transportadoras').select('id, nome, status').order('nome', { ascending: true }),
-    supabase.from('origens').select('id, transportadora_id, cidade, canal, status').order('cidade', { ascending: true }),
+    supabase.from('origens').select('id, transportadora_id, cidade, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
     supabase.from('rotas').select('id', { count: 'exact', head: true }),
     supabase.from('cotacoes').select('id', { count: 'exact', head: true }),
   ]);
@@ -721,6 +727,9 @@ export async function carregarResumoBaseDb() {
       cidade: origem.cidade || '',
       canal: origem.canal || 'ATACADO',
       status: origem.status || 'Ativa',
+      validado: Boolean(origem.validado),
+      validado_em: origem.validado_em || null,
+      validado_por: origem.validado_por || null,
       generalidades: {},
       rotas: [],
       cotacoes: [],
@@ -792,7 +801,12 @@ export async function carregarResumoBaseDb() {
   };
 }
 
+// `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para
+// resolver os IDs existentes uma única vez e evitar N idas e vindas ao Supabase
+// quando várias seções da mesma origem precisam ser salvas juntas.
 export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHAVE, options = {}) {
+  const secoes = Array.isArray(secao) ? secao : [secao];
+
   if (!isSupabaseConfigured()) {
     const payload = buildSnapshotPayload(transportadoras, chave);
     localStorage.setItem(FALLBACK_KEY, JSON.stringify(payload));
@@ -843,16 +857,16 @@ export async function salvarSecaoDb(transportadoras, secao, chave = SNAPSHOT_CHA
   await upsertRows(supabase, 'transportadoras', transportadorasRows, 'id');
   await upsertRows(supabase, 'origens', origensRows, 'id');
 
-  if (secao === 'generalidades') {
+  if (secoes.includes('generalidades')) {
     await upsertRows(supabase, 'generalidades', generalidadesRows, 'origem_id');
   }
-  if (secao === 'rotas') {
+  if (secoes.includes('rotas')) {
     await upsertRows(supabase, 'rotas', rotasRows, 'id');
   }
-  if (secao === 'cotacoes') {
+  if (secoes.includes('cotacoes')) {
     await upsertRows(supabase, 'cotacoes', cotacoesRows, 'id');
   }
-  if (secao === 'taxas') {
+  if (secoes.includes('taxas')) {
     await upsertRows(supabase, 'taxas_especiais', taxasRows, 'id');
   }
 
@@ -2290,6 +2304,20 @@ export async function limparSecaoOrigemDb(origemId, secao) {
   const supabase = ensureClient();
 
   const { error } = await supabase.from(table).delete().eq('origem_id', origemId);
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+export async function atualizarValidacaoOrigemDb(origemId, { validado, validadoEm, validadoPor }) {
+  if (!isSupabaseConfigured()) return { ok: true, modo: 'local' };
+  if (!origemId) return { ok: true, ignorado: true };
+
+  const supabase = ensureClient();
+  const { error } = await supabase
+    .from('origens')
+    .update({ validado: Boolean(validado), validado_em: validadoEm || null, validado_por: validadoPor || null })
+    .eq('id', origemId);
   if (error) throw error;
 
   return { ok: true };

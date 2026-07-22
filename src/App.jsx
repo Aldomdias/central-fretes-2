@@ -168,7 +168,7 @@ export default function App() {
     ferramentas: <FerramentasPage transportadoras={transportadorasMemo} />,
     usuarios: <UserManagementPage usuarioAtual={sessao} />,
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
-    transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} />,
+    transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} sessao={sessao} />,
   };
 
   const content = paginas[paginaAtual] || (

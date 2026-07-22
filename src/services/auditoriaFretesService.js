@@ -482,6 +482,22 @@ export async function registrarHistoricoCarteiraAuditoria({ transportadora, audi
   return payload;
 }
 
+// Lista leve de carteiras (transportadora -> auditor), sem o resto do estado
+// da plataforma de auditoria. Usada em telas fora do módulo de auditoria que
+// só precisam saber quem é o auditor responsável por cada transportadora.
+export async function listarCarteirasAuditoria() {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from('auditoria_carteiras')
+    .select('id, transportadora, auditor_nome, auditor_email');
+  if (error) {
+    console.warn('Não foi possível carregar carteiras de auditoria.', error.message || error);
+    return [];
+  }
+  return data || [];
+}
+
 export async function listarHistoricoCarteiraAuditoria(transportadora) {
   if (!isSupabaseConfigured()) return [];
   const client = getSupabaseClient();
