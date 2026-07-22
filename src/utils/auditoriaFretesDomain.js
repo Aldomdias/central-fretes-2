@@ -33,7 +33,7 @@ export const SOLICITACAO_FINANCEIRA_TIPOS = [
   'OUTROS',
 ];
 
-const ENCERRADOS = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA', 'CANCELADA', 'SUBSTITUIDA']);
+export const ENCERRADOS = new Set(['PAGA', 'PAGA_COM_DIVERGENCIA', 'CANCELADA', 'SUBSTITUIDA']);
 
 export function isoDate(date = new Date()) {
   return new Date(date).toISOString().slice(0, 10);

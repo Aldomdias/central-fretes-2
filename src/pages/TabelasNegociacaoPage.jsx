@@ -49,7 +49,7 @@ import {
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import LaudoTransportadoraConsolidadoTemplate from '../components/laudos/LaudoTransportadoraConsolidadoTemplate';
 import LaudoEmailAcoes from '../components/laudos/LaudoEmailAcoes';
-import { laudoConsolidadoPorAudience, LAUDO_AUDIENCE } from '../utils/laudoTransportadoraConsolidado';
+import { laudoConsolidadoPorAudience, LAUDO_AUDIENCE, montarExcelAjusteRotaFaixaConsolidado } from '../utils/laudoTransportadoraConsolidado';
 import { montarLaudosNegociacao } from '../utils/laudosNegociacaoHtml';
 import { montarLaudosRodadasNegociacao } from '../utils/laudosRodadasNegociacaoHtml';
 import {
@@ -60,6 +60,7 @@ import {
   baixarLaudoTransportadoraConsolidadoHtml,
   baixarLaudoTransportadoraConsolidadoTexto,
   baixarLaudoTransportadoraConsolidadoEmail,
+  baixarLaudoTransportadoraConsolidadoEml,
   gerarLaudoRodadasPdf,
   gerarLaudoTransportadoraConsolidadoPdf,
 } from '../utils/laudoRodadasExport';
@@ -1436,6 +1437,32 @@ export default function TabelasNegociacaoPage() {
     if (ok || tipoExport === 'pdf') {
       setSucesso('Exportação do laudo consolidado iniciada.');
     }
+  }
+
+  function exportarExcelLaudoTransportadoraConsolidado() {
+    var laudo = obterLaudoConsolidadoAtual();
+    if (!laudo) return;
+    var tabelasOrigens = laudoTransportadora?.tabelasOrigens || [];
+    if (!tabelasOrigens.length) {
+      setErro('Não foi possível localizar as origens do laudo consolidado para exportar o Excel.');
+      return;
+    }
+    var wb = montarExcelAjusteRotaFaixaConsolidado(tabelasOrigens, laudo.transportadora);
+    var nomeBase = String(laudo.transportadora || 'transportadora').toLowerCase().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
+    XLSX.writeFile(wb, `laudo-devolutiva-ajuste-rota-${nomeBase}.xlsx`);
+    setSucesso('Excel do laudo devolutiva (ajuste por rota) exportado.');
+  }
+
+  function exportarEmlLaudoTransportadoraConsolidado() {
+    var laudo = obterLaudoConsolidadoAtual();
+    if (!laudo) return;
+    var tabelasOrigens = laudoTransportadora?.tabelasOrigens || [];
+    var ok = baixarLaudoTransportadoraConsolidadoEml(laudo, tabelasOrigens);
+    if (!ok) {
+      setErro('Não foi possível gerar o e-mail (.eml) do laudo consolidado.');
+      return;
+    }
+    setSucesso('E-mail (.eml) do laudo devolutiva gerado — abra o arquivo para revisar como rascunho no seu cliente de e-mail.');
   }
 
   async function carregar() {
@@ -4123,6 +4150,8 @@ export default function TabelasNegociacaoPage() {
               <button className="sim-tab" type="button" onClick={function() { exportarLaudoTransportadoraConsolidado('html'); }}>Exportar HTML</button>
               <button className="sim-tab" type="button" onClick={function() { exportarLaudoTransportadoraConsolidado('texto'); }}>Baixar laudo (.txt)</button>
               <button className="sim-tab" type="button" onClick={function() { exportarLaudoTransportadoraConsolidado('email'); }}>Baixar e-mail (.txt)</button>
+              <button className="sim-tab" type="button" onClick={exportarExcelLaudoTransportadoraConsolidado}>Exportar Excel (ajuste por rota)</button>
+              <button className="sim-tab" type="button" onClick={exportarEmlLaudoTransportadoraConsolidado}>Baixar e-mail (.eml)</button>
               <LaudoEmailAcoes laudo={obterLaudoConsolidadoAtual()} onFeedback={feedbackLaudo} compact />
               <button className="sim-tab" type="button" onClick={function() { setLaudoTransportadora(null); }}>Fechar</button>
             </div>

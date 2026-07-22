@@ -234,7 +234,11 @@ export async function carregarLaudoTransportadoraConsolidado(transportadoraNome,
     }
   });
 
-  return montarLaudoTransportadoraConsolidado(comResumo, nome);
+  const laudo = montarLaudoTransportadoraConsolidado(comResumo, nome);
+  // Guarda as tabelas com resumo completo (inclui laudos.analise_rota_faixa
+  // por origem, quando salvo) pra permitir exportar o Excel consolidado por
+  // rota/faixa sem precisar rebuscar tudo de novo.
+  return { ...laudo, tabelasOrigens: comResumo };
 }
 
 export function snapshotsNegociacaoDisponiveis() {

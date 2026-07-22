@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import {
   montarLaudosRodadasNegociacao,
   formatadoresLaudoRodadas,
@@ -685,7 +686,7 @@ export function filtrarTabelasLaudoConsolidado(tabelas = []) {
   return (tabelas || []).filter(origemRelevanteParaLaudoConsolidado);
 }
 
-function origemLabelTabela(tabela = {}) {
+export function origemLabelTabela(tabela = {}) {
   const cidade = texto(tabela.origem);
   const uf = upper(tabela.uf_origem);
   if (cidade && uf) return `${cidade}/${uf}`;
@@ -1383,4 +1384,200 @@ export function montarLaudoTransportadoraConsolidado(tabelas = [], transportador
     rotasCriticas: rotasPrioritarias,
     versoes,
   };
+}
+
+function escaparHtml(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Corpo de e-mail seguro para clientes de e-mail (Outlook/Gmail): tabelas
+ * com estilo inline, sem CSS variables/grid/flex/box-shadow (o laudo em
+ * tela usa essas features e "quebra" quando reaproveitado como HTML de
+ * e-mail). Nao inclui o aviso "Versão para envio à transportadora..." nem
+ * qualquer outro texto de uso interno — esses avisos sao so para quem esta
+ * revisando dentro do app, nunca devem ir num e-mail externo.
+ */
+export function montarHtmlEmailSeguroLaudoConsolidado(laudo = {}) {
+  const totais = laudo.totais || {};
+  const origens = Array.isArray(laudo.origens) ? laudo.origens : [];
+  const mostrarFaturamento = laudo.exibirFaturamentoGanho !== false;
+
+  const th = 'padding:8px 10px;background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;text-align:left;border-bottom:1px solid #e2e8f0;';
+  const td = 'padding:8px 10px;color:#0f172a;font-size:13px;border-bottom:1px solid #edf1f7;';
+  const tdRight = `${td}text-align:right;white-space:nowrap;`;
+  const thRight = `${th}text-align:right;`;
+
+  const linhasOrigem = origens.map((o) => `
+        <tr>
+          <td style="${td}">${escaparHtml(o.origem)}</td>
+          <td style="${tdRight}">${escaparHtml(o.ctesGanharia?.toLocaleString?.('pt-BR') ?? o.ctesGanharia ?? 0)} / ${escaparHtml(o.ctesComTabela?.toLocaleString?.('pt-BR') ?? o.ctesComTabela ?? 0)}</td>
+          <td style="${tdRight}">${escaparHtml(percentual(o.aderenciaPorCte ?? o.aderencia ?? 0))}</td>
+          ${mostrarFaturamento ? `<td style="${tdRight}">${escaparHtml(dinheiro(o.faturamentoProposta ?? o.freteGanhoProposta ?? 0))}</td>` : ''}
+        </tr>`).join('');
+
+  return `
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f0f2f7;padding:24px 0;font-family:Arial,Helvetica,sans-serif;">
+  <tr>
+    <td align="center">
+      <table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px;max-width:100%;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;">
+        <tr>
+          <td style="background:#0f2a4a;padding:28px 32px;">
+            <div style="color:rgba(255,255,255,0.6);font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;">Devolutiva consolidada</div>
+            <div style="color:#ffffff;font-size:22px;font-weight:700;margin-top:6px;">${escaparHtml(laudo.titulo || laudo.transportadora)}</div>
+            <div style="color:rgba(255,255,255,0.72);font-size:13px;margin-top:6px;">Gerado em ${escaparHtml(dataBR(laudo.geradoEm))} · ${origens.length} origem(ns)</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 8px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td width="50%" style="padding:0 8px 16px 0;">
+                  <div style="border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;padding:14px;">
+                    <div style="color:#64748b;font-size:10px;font-weight:700;text-transform:uppercase;">Aderência (por CT-e)</div>
+                    <div style="color:#0f172a;font-size:20px;font-weight:700;margin-top:6px;">${escaparHtml(percentual(totais.aderenciaMedia ?? totais.aderenciaPorCte ?? 0))}</div>
+                  </div>
+                </td>
+                <td width="50%" style="padding:0 0 16px 8px;">
+                  <div style="border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;padding:14px;">
+                    <div style="color:#64748b;font-size:10px;font-weight:700;text-transform:uppercase;">CT-es ganharia / com tabela</div>
+                    <div style="color:#0f172a;font-size:20px;font-weight:700;margin-top:6px;">${escaparHtml(n(totais.ctesGanharia).toLocaleString('pt-BR'))} / ${escaparHtml(n(totais.ctesComTabela).toLocaleString('pt-BR'))}</div>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 32px 28px;">
+            <div style="color:#334155;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;border-bottom:2px solid #f1f5f9;padding-bottom:8px;margin-bottom:4px;">Por origem</div>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <th style="${th}">Origem</th>
+                <th style="${thRight}">CT-es ganharia / com tabela</th>
+                <th style="${thRight}">Aderência</th>
+                ${mostrarFaturamento ? `<th style="${thRight}">Faturamento proposta</th>` : ''}
+              </tr>
+              ${linhasOrigem}
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:11px;">
+            Laudo gerado automaticamente — Central de Fretes.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>`;
+}
+
+/**
+ * Excel do laudo devolutiva consolidado, reaproveitando o MESMO motor de
+ * calculo por rota+faixa do "Ajuste por rota" do Simulador
+ * (montarDadosAjusteRotaFaixa / prepararAnaliseRotaFaixaParaNegociacao), so
+ * que consolida todas as origens/rotas da transportadora numa unica planilha.
+ * Fonte: `resumo_simulacao.laudos.analise_rota_faixa` de cada negociacao,
+ * persistido ao salvar laudos na negociacao (ver laudosNegociacaoService.js).
+ * Origens sem essa analise salva (simulacoes antigas ou nunca salvas com
+ * "Salvar laudos na negociação") entram apenas na aba "Origens sem detalhe",
+ * pra deixar claro o que nao pode ser detalhado por rota ainda.
+ */
+export function montarExcelAjusteRotaFaixaConsolidado(tabelas = [], transportadoraNome = '') {
+  const nome = texto(transportadoraNome) || texto(tabelas[0]?.transportadora) || 'Transportadora';
+  const lista = (tabelas || []).filter((t) => upper(t.transportadora) === upper(nome) || !transportadoraNome);
+  const tabelasRelevantes = filtrarTabelasLaudoConsolidado(lista.map((t) => enriquecerTabelaGestao(t)));
+
+  const comAnalise = [];
+  const semAnalise = [];
+  tabelasRelevantes.forEach((t) => {
+    const analise = t.resumo_simulacao?.laudos?.analise_rota_faixa;
+    if (analise && Array.isArray(analise.linhas) && analise.linhas.length) {
+      comAnalise.push({ tabela: t, analise });
+    } else {
+      semAnalise.push(t);
+    }
+  });
+
+  const totaisConsolidados = comAnalise.reduce((acc, { analise }) => {
+    const tt = analise.totais || {};
+    acc.ctes += n(tt.ctes);
+    acc.ctesSemCalculo += n(tt.ctesSemCalculo);
+    acc.ctesGanharia += n(tt.ctesGanharia);
+    acc.ctesPerderia += n(tt.ctesPerderia);
+    acc.valorNF += n(tt.valorNF);
+    acc.freteRealizado += n(tt.freteRealizado);
+    acc.freteTabela += n(tt.freteTabela);
+    acc.freteTabelaGanharia += n(tt.freteTabelaGanharia);
+    acc.freteRealizadoPerderia += n(tt.freteRealizadoPerderia);
+    acc.savingPeriodo += n(tt.savingPeriodo);
+    acc.savingMensal += n(tt.savingMensal);
+    acc.savingAnual += n(tt.savingAnual);
+    return acc;
+  }, {
+    ctes: 0, ctesSemCalculo: 0, ctesGanharia: 0, ctesPerderia: 0, valorNF: 0,
+    freteRealizado: 0, freteTabela: 0, freteTabelaGanharia: 0, freteRealizadoPerderia: 0,
+    savingPeriodo: 0, savingMensal: 0, savingAnual: 0,
+  });
+  const aderenciaConsolidada = totaisConsolidados.ctes - totaisConsolidados.ctesSemCalculo > 0
+    ? (totaisConsolidados.ctesGanharia / (totaisConsolidados.ctes - totaisConsolidados.ctesSemCalculo)) * 100
+    : 0;
+  const pctRealizadoConsolidado = totaisConsolidados.valorNF > 0
+    ? (totaisConsolidados.freteRealizado / totaisConsolidados.valorNF) * 100 : 0;
+  const pctTabelaConsolidado = totaisConsolidados.valorNF > 0
+    ? (totaisConsolidados.freteTabela / totaisConsolidados.valorNF) * 100 : 0;
+
+  const linhasResumo = [
+    ['Laudo devolutiva consolidado — ajuste por rota'],
+    ['Transportadora', nome],
+    ['Origens com detalhe por rota', comAnalise.length],
+    ['Origens sem detalhe salvo (nao entram nos totais abaixo)', semAnalise.length],
+    [],
+    ['CT-es analisados', totaisConsolidados.ctes],
+    ['Fora da tabela', totaisConsolidados.ctesSemCalculo],
+    ['Ganharia', totaisConsolidados.ctesGanharia],
+    ['Perderia', totaisConsolidados.ctesPerderia],
+    ['Aderencia da tabela (%)', Number(aderenciaConsolidada.toFixed(2))],
+    ['Faturamento atual', Number(totaisConsolidados.freteRealizado.toFixed(2))],
+    ['Faturamento tabela simulada', Number(totaisConsolidados.freteTabela.toFixed(2))],
+    ['Faturamento tabela nas ganhas', Number(totaisConsolidados.freteTabelaGanharia.toFixed(2))],
+    ['Saving no periodo', Number(totaisConsolidados.savingPeriodo.toFixed(2))],
+    ['Saving mensal', Number(totaisConsolidados.savingMensal.toFixed(2))],
+    ['Saving anual', Number(totaisConsolidados.savingAnual.toFixed(2))],
+    ['% realizado medio', Number(pctRealizadoConsolidado.toFixed(2))],
+    ['% tabela simulada', Number(pctTabelaConsolidado.toFixed(2))],
+    ['Perdendo para outras transportadoras', Number(totaisConsolidados.freteRealizadoPerderia.toFixed(2))],
+  ];
+  const wsResumo = XLSX.utils.aoa_to_sheet(linhasResumo);
+  wsResumo['!cols'] = [{ wch: 42 }, { wch: 22 }];
+
+  const headerRota = ['Origem', 'Rota', 'Faixa', 'CT-es', 'Sem calculo', 'Ganharia', 'Perderia', 'Aderencia rota (%)', 'Valor NF', 'Frete cobrado', 'Tabela simulada', '% cobrado', '% tabela', 'Reduzir (%)'];
+  const linhasRota = comAnalise.flatMap(({ tabela, analise }) => {
+    const origemLabel = origemLabelTabela(tabela);
+    return (analise.linhas || []).map((item) => [
+      origemLabel, item.rota || '', item.faixa || '', n(item.ctes), n(item.ctesSemCalculo), n(item.ctesGanharia), n(item.ctesPerderia),
+      Number(n(item.aderenciaRota).toFixed(2)), Number(n(item.valorNF).toFixed(2)), Number(n(item.freteRealizado).toFixed(2)), Number(n(item.freteTabela).toFixed(2)),
+      Number(n(item.pctRealizado).toFixed(2)), Number(n(item.pctTabelaFinal).toFixed(2)), Number(n(item.reduzirPct).toFixed(2)),
+    ]);
+  });
+  const wsRota = XLSX.utils.aoa_to_sheet([headerRota, ...linhasRota]);
+  wsRota['!cols'] = headerRota.map(() => ({ wch: 18 }));
+
+  const headerSemAnalise = ['Origem', 'Negociacao', 'Motivo'];
+  const linhasSemAnalise = semAnalise.map((t) => [
+    origemLabelTabela(t), texto(t.descricao) || texto(t.id),
+    'Sem "Salvar laudos na negociação" com o motor por rota/faixa — recalcule e salve pra detalhar.',
+  ]);
+  const wsSemAnalise = XLSX.utils.aoa_to_sheet([headerSemAnalise, ...linhasSemAnalise]);
+  wsSemAnalise['!cols'] = [{ wch: 24 }, { wch: 30 }, { wch: 70 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
+  XLSX.utils.book_append_sheet(wb, wsRota, 'Rota (todas origens)');
+  XLSX.utils.book_append_sheet(wb, wsSemAnalise, 'Origens sem detalhe');
+  return wb;
 }

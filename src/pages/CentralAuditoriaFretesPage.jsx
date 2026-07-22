@@ -20,6 +20,7 @@ import {
 } from '../services/lotacaoSupabaseService';
 import {
   BOLETO_STATUS,
+  ENCERRADOS,
   FATURA_STATUS,
   SOLICITACAO_FINANCEIRA_TIPOS,
   calcularDashboard,
@@ -38,6 +39,7 @@ import {
   buscarReferenciaCtes,
   buscarResumoOrigensFaturas,
   carregarPlataformaAuditoria,
+  carregarPlataformaAuditoriaFinanceiro,
   criarProtocoloFinanceiro,
   criarSolicitacaoFinanceira,
   buscarFaturasExistentesPorNumero,
@@ -49,6 +51,8 @@ import {
   salvarCarteiraAuditoria,
   salvarPagamentosFinanceiros,
   vincularNovaFatura,
+  registrarHistoricoCarteiraAuditoria,
+  listarHistoricoCarteiraAuditoria,
 } from '../services/auditoriaFretesService';
 import {
   buscarCtesPorIdentificadores,
@@ -58,6 +62,9 @@ import {
   buscarResultadoAuditoriaPorChave,
 } from '../services/auditoriaCteProcessamentoService';
 import { salvarRecorteCarregadoAuditoria } from '../services/auditoriaService';
+import { listarUsuariosSupabase } from '../services/usuariosSupabaseService';
+import { getSupabaseClient } from '../lib/supabaseClient';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
 
 const TABS = [
@@ -592,6 +599,45 @@ function dataBr(valor) {
 
 function nomeStatus(status = '') {
   return String(status).replaceAll('_', ' ');
+}
+
+// Compartilhado entre a Gestao (distribuicao de carteiras) e a importacao de
+// faturas — mesma normalizacao pros dois lados baterem o nome da mesma forma.
+function normalizarNomeTransportadora(v) {
+  return String(v || '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+}
+
+const OPCOES_FILTRO_VENCIMENTO = [
+  { value: '', label: 'Todos os vencimentos' },
+  { value: 'vence_10', label: 'Vencendo nos próximos 10 dias' },
+  { value: 'vence_20', label: 'Vencendo nos próximos 20 dias' },
+  { value: 'vence_30', label: 'Vencendo nos próximos 30 dias' },
+  { value: 'vencendo', label: 'Vencendo (qualquer prazo futuro)' },
+  { value: 'venceu_10', label: 'Venceu nos últimos 10 dias' },
+  { value: 'venceu_20', label: 'Venceu nos últimos 20 dias' },
+  { value: 'venceu_30', label: 'Venceu nos últimos 30 dias' },
+  { value: 'vencida', label: 'Vencida (qualquer prazo)' },
+];
+
+function faturaNaJanelaVencimento(fatura, preset) {
+  if (!preset || !fatura?.data_vencimento) return false;
+  const dias = diasAte(fatura.data_vencimento);
+  if (dias == null) return false;
+  switch (preset) {
+    case 'vence_10': return dias >= 0 && dias <= 10;
+    case 'vence_20': return dias >= 0 && dias <= 20;
+    case 'vence_30': return dias >= 0 && dias <= 30;
+    case 'vencendo': return dias >= 0;
+    case 'venceu_10': return dias < 0 && dias >= -10;
+    case 'venceu_20': return dias < 0 && dias >= -20;
+    case 'venceu_30': return dias < 0 && dias >= -30;
+    case 'vencida': return dias < 0;
+    default: return false;
+  }
 }
 
 // Fatura 100% auditada: todos os CT-es vinculados já passaram pelo cálculo
@@ -2579,6 +2625,22 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         rowsFaturas.map((row) => parseFaturaVerum(row).numero_fatura),
       );
 
+      // Fatura nova ja nasce com o auditor atual da carteira da transportadora
+      // (se ela tiver um definido) — assim "so as novas vao pro novo auditor"
+      // acontece sozinho quando a gestora troca a carteira. So se aplica em
+      // fatura NOVA (sem existenteId): reimportacao nunca mexe no auditor de
+      // uma fatura que ja existia, pra nao atropelar quem ja estava tratando.
+      const vinculosImportacao = await carregarVinculosTransportadoras().catch(() => []);
+      const mapaVinculosImportacao = criarMapaVinculosTransportadoras(vinculosImportacao);
+      const mapaAuditorPorTransportadora = new Map();
+      (state.carteiras || []).forEach((carteira) => {
+        if (!carteira.auditor_nome) return;
+        mapaAuditorPorTransportadora.set(normalizarNomeTransportadora(carteira.transportadora), {
+          auditor_nome: carteira.auditor_nome,
+          auditor_email: carteira.auditor_email || '',
+        });
+      });
+
       let faturasSalvas = 0;
       let detalhesSalvos = 0;
       let processadas = 0;
@@ -2600,9 +2662,14 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         const execucao = (async () => {
           if (anterior) await anterior.catch(() => {});
           const existenteId = existentesPorChave.get(chaveExistente);
+          const nomeResolvido = aplicarVinculoTransportadora(fatura.transportadora, mapaVinculosImportacao);
+          const auditorDaCarteira = !existenteId
+            ? mapaAuditorPorTransportadora.get(normalizarNomeTransportadora(nomeResolvido))
+            : null;
           const resultado = await salvarFaturaSupabase({
             ...(existenteId ? { id: existenteId } : {}),
             ...fatura,
+            ...(auditorDaCarteira || {}),
             importado_por: sessao?.nome || sessao?.email || '',
             importado_em: new Date().toISOString(),
           });
@@ -2642,7 +2709,16 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       await Promise.all(Array.from({ length: CONCORRENCIA_IMPORTACAO }, worker));
 
       const atualizado = await carregarPlataformaAuditoria();
-      onState(atualizado);
+      // carregarPlataformaAuditoria() nao busca protocolos/solicitacaoHistorico/
+      // pagamentos (so a aba Financeiro usa, sob demanda) — preserva o que ja
+      // tinha sido carregado antes pra nao "sumir" se o usuario ja tinha aberto
+      // essa aba nesta sessao.
+      onState({
+        ...atualizado,
+        protocolos: state.protocolos?.length ? state.protocolos : atualizado.protocolos,
+        solicitacaoHistorico: state.solicitacaoHistorico?.length ? state.solicitacaoHistorico : atualizado.solicitacaoHistorico,
+        pagamentos: state.pagamentos?.length ? state.pagamentos : atualizado.pagamentos,
+      });
 
       // O calculo de status AMD NAO roda mais aqui: em arquivos grandes deixava
       // a importacao muito longa. Fica pra ser feito depois, fatura por fatura
@@ -3087,69 +3163,570 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
 }
 
 function Gestao({ state, onState }) {
-  const [editando, setEditando] = useState(null);
-  const [auditor, setAuditor] = useState('');
-  const [email, setEmail] = useState('');
-  const carteiras = state.carteiras.map((carteira) => {
-    const faturas = state.faturas.filter((item) => item.transportadora === carteira.transportadora);
-    return {
-      ...carteira,
-      quantidade: faturas.length,
-      valor: faturas.reduce((total, item) => total + Number(item.valor_fatura || 0), 0),
-      vencidas: faturas.filter((item) => faixaVencimento(item) === 'VENCIDA').length,
-      vencendo: faturas.filter((item) => ['CRITICO', 'LARANJA', 'AMARELO', 'VENCENDO_7_DIAS'].includes(faixaVencimento(item))).length,
-      aguardando: faturas.filter((item) => ['AGUARDANDO_TRANSPORTADORA', 'AGUARDANDO_NOVA_FATURA'].includes(item.status)).length,
-    };
-  });
+  const [visao, setVisao] = useState('transportadora');
+  const [filtroBusca, setFiltroBusca] = useState('');
+  const [filtroAuditor, setFiltroAuditor] = useState('');
+  const [filtroVencimento, setFiltroVencimento] = useState('');
+  const [editandoTransportadora, setEditandoTransportadora] = useState(null);
+  const [auditorId, setAuditorId] = useState('');
+  const [auditores, setAuditores] = useState([]);
+  const [carregandoAuditores, setCarregandoAuditores] = useState(false);
+  const [erroAuditores, setErroAuditores] = useState('');
+  const [adicionandoParaAuditor, setAdicionandoParaAuditor] = useState(null);
+  const [transportadoraParaAdicionar, setTransportadoraParaAdicionar] = useState('');
+  const [selecionadas, setSelecionadas] = useState(() => new Set());
+  const [auditorIdMassa, setAuditorIdMassa] = useState('');
+  const [aplicandoMassa, setAplicandoMassa] = useState(false);
+  const [erroAtribuicao, setErroAtribuicao] = useState('');
+  const [salvandoAtribuicao, setSalvandoAtribuicao] = useState(false);
 
-  const atribuir = async () => {
-    if (!editando || !auditor.trim()) return;
-    let next = await salvarCarteiraAuditoria(state, { ...editando, auditor_nome: auditor.trim(), auditor_email: email.trim() });
-    const relacionadas = next.faturas.filter((item) => item.transportadora === editando.transportadora);
+  const alternarSelecao = (transportadora) => {
+    setSelecionadas((prev) => {
+      const next = new Set(prev);
+      if (next.has(transportadora)) next.delete(transportadora); else next.add(transportadora);
+      return next;
+    });
+  };
+  const [transportadorasCadastro, setTransportadorasCadastro] = useState([]);
+  const [carregandoTransportadoras, setCarregandoTransportadoras] = useState(false);
+  const [erroTransportadoras, setErroTransportadoras] = useState('');
+  const [historicoAberto, setHistoricoAberto] = useState(null);
+  const [historicoItens, setHistoricoItens] = useState([]);
+  const [carregandoHistorico, setCarregandoHistorico] = useState(false);
+  const [erroHistorico, setErroHistorico] = useState('');
+
+  const abrirHistorico = async (transportadora) => {
+    setHistoricoAberto(transportadora);
+    setCarregandoHistorico(true);
+    setErroHistorico('');
+    try {
+      setHistoricoItens(await listarHistoricoCarteiraAuditoria(transportadora));
+    } catch (error) {
+      setErroHistorico(error.message || 'Erro ao carregar histórico.');
+    } finally {
+      setCarregandoHistorico(false);
+    }
+  };
+
+  useEffect(() => {
+    let cancelado = false;
+    setCarregandoAuditores(true);
+    listarUsuariosSupabase()
+      .then((usuarios) => {
+        if (cancelado) return;
+        setAuditores((usuarios || []).filter((u) => u.perfil === 'AUDITORIA_FRETES' && u.ativo));
+      })
+      .catch((error) => { if (!cancelado) setErroAuditores(error.message || 'Erro ao carregar auditores.'); })
+      .finally(() => { if (!cancelado) setCarregandoAuditores(false); });
+    return () => { cancelado = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelado = false;
+    const supabase = getSupabaseClient();
+    if (!supabase) return undefined;
+    setCarregandoTransportadoras(true);
+    supabase.from('transportadoras').select('id, nome, status').order('nome', { ascending: true })
+      .then(({ data, error }) => {
+        if (cancelado) return;
+        if (error) { setErroTransportadoras(error.message || 'Erro ao carregar transportadoras.'); return; }
+        setTransportadorasCadastro(data || []);
+      })
+      .finally(() => { if (!cancelado) setCarregandoTransportadoras(false); });
+    return () => { cancelado = true; };
+  }, []);
+
+  const [mapaVinculos, setMapaVinculos] = useState(null);
+  useEffect(() => {
+    let cancelado = false;
+    carregarVinculosTransportadoras()
+      .then((vinculos) => { if (!cancelado) setMapaVinculos(criarMapaVinculosTransportadoras(vinculos)); })
+      .catch(() => { if (!cancelado) setMapaVinculos(new Map()); });
+    return () => { cancelado = true; };
+  }, []);
+
+  // Carteira = 1 linha por transportadora do cadastro (modulo Transportadoras),
+  // nao so as que ja tem carteira criada em auditoria_carteiras. Transportadoras
+  // sem fatura/carteira ainda aparecem com faturas/CT-es zerados — normal, so
+  // ganham numero quando a base de faturas vincular algo a elas.
+  // O nome da fatura vem de importacao/texto livre e pode ser bem diferente do
+  // nome oficial (razao social vs nome curto) — por isso primeiro resolvemos
+  // pelo mesmo vinculo de nomes ja mantido em Ferramentas (transportadora_vinculos),
+  // e só depois normalizamos (maiuscula/acento) pra comparar.
+  const resolverNomeTransportadora = (v) => (mapaVinculos ? aplicarVinculoTransportadora(v, mapaVinculos) : v);
+
+  // Agrupar faturas/carteiras 1x (O(faturas)+O(carteiras)) em vez de fazer um
+  // .filter/.find na lista inteira de faturas para CADA transportadora
+  // (O(transportadoras x faturas) — travava a tela e o filtro com bases grandes).
+  const mapaFaturasPorTransportadora = useMemo(() => {
+    const mapa = new Map();
+    state.faturas.forEach((item) => {
+      const chave = normalizarNomeTransportadora(resolverNomeTransportadora(item.transportadora));
+      if (!mapa.has(chave)) mapa.set(chave, []);
+      mapa.get(chave).push(item);
+    });
+    return mapa;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.faturas, mapaVinculos]);
+
+  const mapaCarteirasExistentes = useMemo(() => {
+    const mapa = new Map();
+    state.carteiras.forEach((c) => mapa.set(normalizarNomeTransportadora(c.transportadora), c));
+    return mapa;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.carteiras]);
+
+  const carteiras = useMemo(() => {
+    const base = transportadorasCadastro.length ? transportadorasCadastro : state.carteiras.map((c) => ({ nome: c.transportadora }));
+    return base.map((t) => {
+      const nomeNorm = normalizarNomeTransportadora(t.nome);
+      const existente = mapaCarteirasExistentes.get(nomeNorm);
+      const faturas = mapaFaturasPorTransportadora.get(nomeNorm) || [];
+      let ctes = 0; let valor = 0; let vencidas = 0; let vencendo = 0; let aguardando = 0; let pagas = 0; let canceladas = 0;
+      faturas.forEach((item) => {
+        ctes += Number(item.ctes_totais || 0);
+        valor += Number(item.valor_fatura || 0);
+        const faixa = faixaVencimento(item);
+        if (faixa === 'VENCIDA') vencidas += 1;
+        else if (['CRITICO', 'LARANJA', 'AMARELO', 'VENCENDO_7_DIAS'].includes(faixa)) vencendo += 1;
+        if (['AGUARDANDO_TRANSPORTADORA', 'AGUARDANDO_NOVA_FATURA'].includes(item.status)) aguardando += 1;
+        if (['PAGA', 'PAGA_COM_DIVERGENCIA'].includes(item.status)) pagas += 1;
+        if (item.status === 'CANCELADA') canceladas += 1;
+      });
+      return {
+        id: existente?.id || null,
+        transportadora: t.nome,
+        auditor_nome: existente?.auditor_nome || '',
+        auditor_email: existente?.auditor_email || '',
+        atribuido_em: existente?.atribuido_em || null,
+        atribuido_por: existente?.atribuido_por || '',
+        quantidade: faturas.length,
+        ctes, valor, vencidas, vencendo, aguardando, pagas, canceladas,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transportadorasCadastro, state.carteiras, mapaFaturasPorTransportadora, mapaCarteirasExistentes]);
+
+  const carteirasFiltradas = useMemo(() => {
+    const buscaNorm = normalizarNomeTransportadora(filtroBusca);
+    return carteiras.filter((item) => {
+      if (buscaNorm && !normalizarNomeTransportadora(item.transportadora).includes(buscaNorm)) return false;
+      if (filtroAuditor === 'SEM_AUDITOR' && item.auditor_nome) return false;
+      if (filtroAuditor && filtroAuditor !== 'SEM_AUDITOR' && item.auditor_nome !== filtroAuditor) return false;
+      if (filtroVencimento) {
+        const faturas = mapaFaturasPorTransportadora.get(normalizarNomeTransportadora(item.transportadora)) || [];
+        if (!faturas.some((fatura) => faturaNaJanelaVencimento(fatura, filtroVencimento))) return false;
+      }
+      return true;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carteiras, filtroBusca, filtroAuditor, filtroVencimento, mapaFaturasPorTransportadora]);
+
+  const porAuditor = useMemo(() => {
+    const mapa = new Map();
+    carteiras.forEach((item) => {
+      if (!item.auditor_nome) return;
+      const acumulado = mapa.get(item.auditor_nome) || { faturas: 0, ctes: 0, transportadoras: 0 };
+      acumulado.faturas += item.quantidade;
+      acumulado.ctes += item.ctes;
+      acumulado.transportadoras += 1;
+      mapa.set(item.auditor_nome, acumulado);
+    });
+    return mapa;
+  }, [carteiras]);
+
+  // Recebe o estado base explicitamente (em vez de fechar sobre `state`) pra
+  // poder ser encadeada em sequencia numa atribuicao em massa — cada chamada
+  // usa o resultado da anterior, senao a 2a atribuicao pisaria na 1a porque
+  // as duas partiriam do mesmo `state.carteiras` desatualizado.
+  //
+  // Regra de continuidade (pedido do usuario, 2026-07-22):
+  // - Fatura ja encerrada (paga/paga c/ divergencia/cancelada/substituida)
+  //   NUNCA muda de auditor — fica pra sempre com quem tratou.
+  // - Fatura aberta (vencida ou a vencer) sem auditor definido: sempre vai
+  //   pro novo auditor da carteira, normal.
+  // - Fatura aberta que ja tem outro auditor: so muda se `transferirAbertas`
+  //   for true. Se false, mantem o auditor atual "ate ele resolver" e nao
+  //   empurra pendencia pra pessoa nova.
+  const aplicarAtribuicaoComEstado = async (estadoBase, carteira, usuario, { transferirAbertas = true } = {}) => {
+    const gestorNome = carregarSessao()?.nome || 'Gestao';
+    const agora = new Date().toISOString();
+    let next = await salvarCarteiraAuditoria(estadoBase, {
+      ...carteira,
+      auditor_id: usuario.id,
+      auditor_nome: usuario.nome,
+      auditor_email: usuario.email,
+      atribuido_por: gestorNome,
+      atribuido_em: agora,
+    });
+    const carteiraNorm = normalizarNomeTransportadora(carteira.transportadora);
+    const relacionadas = next.faturas.filter((item) => normalizarNomeTransportadora(resolverNomeTransportadora(item.transportadora)) === carteiraNorm);
     for (const fatura of relacionadas) {
-      next = await atualizarFaturaAuditoria(next, { ...fatura, auditor_nome: auditor.trim(), auditor_email: email.trim() }, {
-        acao: 'AUDITOR_ATRIBUIDO', descricao: `Carteira atribuida a ${auditor.trim()}.`, usuario_nome: carregarSessao()?.nome || 'Gestao',
+      if (ENCERRADOS.has(fatura.status)) continue;
+      const jaTemOutroAuditor = Boolean(fatura.auditor_nome) && fatura.auditor_nome !== usuario.nome;
+      if (jaTemOutroAuditor && !transferirAbertas) continue;
+      next = await atualizarFaturaAuditoria(next, { ...fatura, auditor_nome: usuario.nome, auditor_email: usuario.email }, {
+        acao: 'AUDITOR_ATRIBUIDO', descricao: `Carteira atribuida a ${usuario.nome}.`, usuario_nome: gestorNome,
       });
     }
-    onState(next);
-    setEditando(null);
-    setAuditor('');
-    setEmail('');
+    await registrarHistoricoCarteiraAuditoria({
+      transportadora: carteira.transportadora, auditorNome: usuario.nome, auditorEmail: usuario.email, atribuidoPor: gestorNome,
+    });
+    return next;
+  };
+
+  // Faturas ABERTAS (nao encerradas) de uma carteira que ja tem outro auditor
+  // dono — sao as que disparam a pergunta de transferencia. Encerradas nunca
+  // contam aqui (ja ficam com quem tratou de qualquer forma).
+  const contarPendenciasDeOutroAuditor = (carteira, novoAuditorNome) => {
+    const carteiraNorm = normalizarNomeTransportadora(carteira.transportadora);
+    return state.faturas.filter((item) => (
+      normalizarNomeTransportadora(resolverNomeTransportadora(item.transportadora)) === carteiraNorm
+      && !ENCERRADOS.has(item.status)
+      && item.auditor_nome
+      && item.auditor_nome !== novoAuditorNome
+    )).length;
+  };
+
+  const [confirmacaoTransferencia, setConfirmacaoTransferencia] = useState(null);
+
+  const executarAtribuicaoUnica = async (carteira, usuario, transferirAbertas) => {
+    setErroAtribuicao('');
+    setSalvandoAtribuicao(true);
+    try {
+      onState(await aplicarAtribuicaoComEstado(state, carteira, usuario, { transferirAbertas }));
+      setEditandoTransportadora(null);
+      setAuditorId('');
+      setAdicionandoParaAuditor(null);
+      setTransportadoraParaAdicionar('');
+      setConfirmacaoTransferencia(null);
+    } catch (error) {
+      setErroAtribuicao(error.message || 'Erro ao atribuir auditor.');
+    } finally {
+      setSalvandoAtribuicao(false);
+    }
+  };
+
+  const executarAtribuicaoMassa = async (listaCarteiras, usuario, transferirAbertas) => {
+    setAplicandoMassa(true);
+    setSalvandoAtribuicao(true);
+    setErroAtribuicao('');
+    try {
+      let estadoAtual = state;
+      for (const carteira of listaCarteiras) {
+        estadoAtual = await aplicarAtribuicaoComEstado(estadoAtual, carteira, usuario, { transferirAbertas });
+      }
+      onState(estadoAtual);
+      setSelecionadas(new Set());
+      setAuditorIdMassa('');
+      setConfirmacaoTransferencia(null);
+    } catch (error) {
+      setErroAtribuicao(error.message || 'Erro ao atribuir auditor em massa.');
+    } finally {
+      setAplicandoMassa(false);
+      setSalvandoAtribuicao(false);
+    }
+  };
+
+  const atribuir = async () => {
+    if (!editandoTransportadora || !auditorId) return;
+    const usuario = auditores.find((u) => String(u.id) === String(auditorId));
+    const carteira = carteiras.find((item) => item.transportadora === editandoTransportadora);
+    if (!usuario || !carteira) return;
+    const pendencias = contarPendenciasDeOutroAuditor(carteira, usuario.nome);
+    if (pendencias > 0) {
+      setConfirmacaoTransferencia({ tipo: 'unica', carteira, usuario, pendencias });
+      return;
+    }
+    await executarAtribuicaoUnica(carteira, usuario, true);
+  };
+
+  const adicionarTransportadoraAoAuditor = async (usuario) => {
+    const carteira = carteiras.find((item) => item.transportadora === transportadoraParaAdicionar);
+    if (!carteira) return;
+    const pendencias = contarPendenciasDeOutroAuditor(carteira, usuario.nome);
+    if (pendencias > 0) {
+      setConfirmacaoTransferencia({ tipo: 'unica', carteira, usuario, pendencias });
+      return;
+    }
+    await executarAtribuicaoUnica(carteira, usuario, true);
+  };
+
+  const atribuirEmMassa = async () => {
+    const usuario = auditores.find((u) => String(u.id) === String(auditorIdMassa));
+    if (!usuario || !selecionadas.size) return;
+    const listaCarteiras = [...selecionadas].map((nome) => carteiras.find((item) => item.transportadora === nome)).filter(Boolean);
+    const pendencias = listaCarteiras.reduce((total, c) => total + contarPendenciasDeOutroAuditor(c, usuario.nome), 0);
+    if (pendencias > 0) {
+      setConfirmacaoTransferencia({ tipo: 'massa', listaCarteiras, usuario, pendencias });
+      return;
+    }
+    await executarAtribuicaoMassa(listaCarteiras, usuario, true);
   };
 
   return (
     <>
+      <AmdProcessingOverlay ativo={salvandoAtribuicao} progresso={{}} mensagemRodape="Gravando a atribuição de auditor." />
       <div className="summary-strip">
         <Card label="Auditores ativos" value={new Set(carteiras.filter((item) => item.auditor_nome).map((item) => item.auditor_nome)).size} />
         <Card label="Transportadoras" value={carteiras.length} />
         <Card label="Sem responsavel" value={carteiras.filter((item) => !item.auditor_nome).length} color="#9b1111" />
         <Card label="Faturas vencidas" value={carteiras.reduce((total, item) => total + item.vencidas, 0)} color="#9b1111" />
       </div>
-      <div className="table-card">
-        <div className="panel-title audit-table-title">Distribuicao de carteiras</div>
-        <div className="sim-analise-tabela-wrap">
-          <table className="sim-analise-tabela">
-            <thead><tr><th>Auditor</th><th>Transportadora</th><th>Faturas</th><th>Valor em aberto</th><th>Vencidas</th><th>Vencendo</th><th>Aguardando retorno</th><th></th></tr></thead>
-            <tbody>
-              {carteiras.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.auditor_nome || <strong className="error-text">SEM AUDITOR DEFINIDO</strong>}</td>
-                  <td><strong>{item.transportadora}</strong></td><td>{item.quantidade}</td><td>{dinheiro(item.valor)}</td>
-                  <td>{item.vencidas}</td><td>{item.vencendo}</td><td>{item.aguardando}</td>
-                  <td><button className="btn-secondary audit-small-button" onClick={() => { setEditando(item); setAuditor(item.auditor_nome || ''); setEmail(item.auditor_email || ''); }}>Atribuir auditor</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {porAuditor.size > 0 && (
+        <div className="table-card">
+          <div className="panel-title audit-table-title">Carga por auditor</div>
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead><tr><th>Auditor</th><th>Transportadoras</th><th>Faturas</th><th>CT-es</th></tr></thead>
+              <tbody>
+                {[...porAuditor.entries()].map(([nome, acumulado]) => (
+                  <tr key={nome}>
+                    <td><strong>{nome}</strong></td>
+                    <td>{acumulado.transportadoras}</td>
+                    <td>{acumulado.faturas}</td>
+                    <td>{acumulado.ctes}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
+      )}
+      <div className="sim-actions" style={{ marginBottom: 12 }}>
+        <button className={visao === 'transportadora' ? 'btn-primary' : 'btn-secondary'} onClick={() => setVisao('transportadora')}>Por transportadora</button>
+        <button className={visao === 'auditor' ? 'btn-primary' : 'btn-secondary'} onClick={() => setVisao('auditor')}>Por auditor</button>
       </div>
-      {editando && (
-        <div className="panel-card">
-          <div className="panel-title">Atribuir {editando.transportadora}</div>
-          <div className="form-grid three">
-            <label className="field">Auditor<input value={auditor} onChange={(e) => setAuditor(e.target.value)} placeholder="Nome" /></label>
-            <label className="field">E-mail<input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@empresa.com" /></label>
-            <div className="audit-form-actions"><button className="btn-secondary" onClick={() => setEditando(null)}>Cancelar</button><button className="btn-primary" onClick={atribuir}>Salvar distribuicao</button></div>
+      <div className="sim-actions" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+        <input
+          type="text"
+          placeholder="Buscar transportadora..."
+          value={filtroBusca}
+          onChange={(e) => setFiltroBusca(e.target.value)}
+          style={{ minWidth: 200 }}
+        />
+        <select value={filtroAuditor} onChange={(e) => setFiltroAuditor(e.target.value)}>
+          <option value="">Todos os auditores</option>
+          <option value="SEM_AUDITOR">Sem auditor definido</option>
+          {auditores.map((u) => <option key={u.id} value={u.nome}>{u.nome}</option>)}
+        </select>
+        <select value={filtroVencimento} onChange={(e) => setFiltroVencimento(e.target.value)}>
+          {OPCOES_FILTRO_VENCIMENTO.map((opcao) => <option key={opcao.value} value={opcao.value}>{opcao.label}</option>)}
+        </select>
+        {(filtroBusca || filtroAuditor || filtroVencimento) && (
+          <button className="btn-secondary audit-small-button" onClick={() => { setFiltroBusca(''); setFiltroAuditor(''); setFiltroVencimento(''); }}>Limpar filtros</button>
+        )}
+        <small style={{ color: 'var(--muted, #5f7197)' }}>{carteirasFiltradas.length} de {carteiras.length} transportadora(s)</small>
+      </div>
+      {visao === 'transportadora' ? (
+        <div className="table-card">
+          <div className="panel-title audit-table-title">Distribuicao de carteiras</div>
+          {carregandoTransportadoras && <div style={{ padding: '4px 4px 8px' }}>Carregando transportadoras...</div>}
+          {erroTransportadoras && <div className="error-text" style={{ padding: '4px 4px 8px' }}>{erroTransportadoras}</div>}
+          {erroAtribuicao && <div className="error-text" style={{ padding: '4px 4px 8px' }}>{erroAtribuicao}</div>}
+          {selecionadas.size > 0 && (
+            <div className="sim-actions" style={{ margin: '4px 4px 12px', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <strong>{selecionadas.size} selecionada(s)</strong>
+              <select value={auditorIdMassa} onChange={(e) => setAuditorIdMassa(e.target.value)} disabled={aplicandoMassa}>
+                <option value="">Selecione um auditor</option>
+                {auditores.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
+              </select>
+              <button className="btn-primary audit-small-button" onClick={atribuirEmMassa} disabled={!auditorIdMassa || aplicandoMassa}>
+                {aplicandoMassa ? 'Atribuindo...' : 'Atribuir às selecionadas'}
+              </button>
+              <button className="btn-secondary audit-small-button" onClick={() => setSelecionadas(new Set())} disabled={aplicandoMassa}>Limpar seleção</button>
+            </div>
+          )}
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      checked={carteirasFiltradas.length > 0 && carteirasFiltradas.every((item) => selecionadas.has(item.transportadora))}
+                      onChange={(e) => setSelecionadas(e.target.checked ? new Set(carteirasFiltradas.map((item) => item.transportadora)) : new Set())}
+                    />
+                  </th>
+                  <th>Auditor</th><th>Desde</th><th>Transportadora</th><th>Faturas</th><th>CT-es</th><th>Valor em aberto</th><th>Vencidas</th><th>Vencendo</th><th>Aguardando retorno</th><th>Pagas</th><th>Canceladas</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {carteirasFiltradas.map((item) => (
+                  <Fragment key={item.transportadora}>
+                    <tr>
+                      <td><input type="checkbox" checked={selecionadas.has(item.transportadora)} onChange={() => alternarSelecao(item.transportadora)} /></td>
+                      <td>{item.auditor_nome || <strong className="error-text">SEM AUDITOR DEFINIDO</strong>}</td>
+                      <td>{dataBr(item.atribuido_em)}</td>
+                      <td><strong>{item.transportadora}</strong></td><td>{item.quantidade}</td><td>{item.ctes}</td><td>{dinheiro(item.valor)}</td>
+                      <td>{item.vencidas}</td><td>{item.vencendo}</td><td>{item.aguardando}</td><td>{item.pagas}</td><td>{item.canceladas}</td>
+                      <td>
+                        <button
+                          className="btn-secondary audit-small-button"
+                          onClick={() => {
+                            if (editandoTransportadora === item.transportadora) { setEditandoTransportadora(null); return; }
+                            setEditandoTransportadora(item.transportadora);
+                            const atual = auditores.find((u) => u.nome === item.auditor_nome);
+                            setAuditorId(atual ? atual.id : '');
+                          }}
+                        >
+                          {item.auditor_nome ? 'Alterar auditor' : 'Atribuir auditor'}
+                        </button>
+                        <button
+                          className="btn-secondary audit-small-button"
+                          onClick={() => {
+                            if (historicoAberto === item.transportadora) { setHistoricoAberto(null); return; }
+                            abrirHistorico(item.transportadora);
+                          }}
+                        >
+                          Histórico
+                        </button>
+                      </td>
+                    </tr>
+                    {editandoTransportadora === item.transportadora && (
+                      <tr>
+                        <td colSpan={13} style={{ background: 'var(--panel-soft, #f8faff)' }}>
+                          <div className="sim-actions" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center', padding: '8px 4px' }}>
+                            <strong>Atribuir {item.transportadora}:</strong>
+                            <select value={auditorId} onChange={(e) => setAuditorId(e.target.value)} disabled={carregandoAuditores}>
+                              <option value="">{carregandoAuditores ? 'Carregando...' : 'Selecione um auditor'}</option>
+                              {auditores.map((u) => (
+                                <option key={u.id} value={u.id}>{u.nome}{porAuditor.get(u.nome) ? ` — ${porAuditor.get(u.nome).faturas} fatura(s), ${porAuditor.get(u.nome).ctes} CT-e(s)` : ''}</option>
+                              ))}
+                            </select>
+                            <button className="btn-primary audit-small-button" onClick={atribuir} disabled={!auditorId}>Salvar</button>
+                            <button className="btn-secondary audit-small-button" onClick={() => setEditandoTransportadora(null)}>Cancelar</button>
+                            {erroAuditores && <small className="error-text">{erroAuditores}</small>}
+                            {!carregandoAuditores && !auditores.length && !erroAuditores && (
+                              <small className="error-text">Nenhum usuário com perfil "Auditoria de Fretes" cadastrado.</small>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {historicoAberto === item.transportadora && (
+                      <tr>
+                        <td colSpan={13} style={{ background: 'var(--panel-soft, #f8faff)' }}>
+                          <div style={{ padding: '8px 4px' }}>
+                            <strong>Histórico de auditores — {item.transportadora}</strong>
+                            {carregandoHistorico && <div>Carregando...</div>}
+                            {erroHistorico && <div className="error-text">{erroHistorico}</div>}
+                            {!carregandoHistorico && !erroHistorico && (
+                              historicoItens.length ? (
+                                <table className="sim-analise-tabela" style={{ marginTop: 8 }}>
+                                  <thead><tr><th>Auditor</th><th>Atribuído em</th><th>Atribuído por</th></tr></thead>
+                                  <tbody>
+                                    {historicoItens.map((h) => (
+                                      <tr key={h.id}>
+                                        <td>{h.auditor_nome || '-'}</td>
+                                        <td>{dataBr(h.atribuido_em)}</td>
+                                        <td>{h.atribuido_por || '-'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : <div style={{ padding: '8px 0' }}>Nenhuma troca de auditor registrada ainda para essa transportadora.</div>
+                            )}
+                            <div className="audit-form-actions" style={{ marginTop: 10 }}>
+                              <button className="btn-secondary audit-small-button" onClick={() => setHistoricoAberto(null)}>Fechar</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="table-card">
+          <div className="panel-title audit-table-title">Carteira por auditor</div>
+          {!auditores.length && (
+            <div style={{ padding: '12px 4px' }}>
+              {carregandoAuditores ? 'Carregando auditores...' : (erroAuditores || 'Nenhum usuário com perfil "Auditoria de Fretes" cadastrado.')}
+            </div>
+          )}
+          {(filtroAuditor && filtroAuditor !== 'SEM_AUDITOR' ? auditores.filter((u) => u.nome === filtroAuditor) : auditores).map((u) => {
+            const transportadorasDoAuditor = carteirasFiltradas.filter((item) => item.auditor_nome === u.nome);
+            const disponiveis = carteiras.filter((item) => item.auditor_nome !== u.nome);
+            return (
+              <div key={u.id} style={{ borderTop: '1px solid var(--border, #e2e8f0)', padding: '14px 4px' }}>
+                <div className="sim-actions" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong>{u.nome}</strong>
+                  <button className="btn-secondary audit-small-button" onClick={() => { setAdicionandoParaAuditor(u.id); setTransportadoraParaAdicionar(''); }}>+ Adicionar transportadora</button>
+                </div>
+                {transportadorasDoAuditor.length ? (
+                  <table className="sim-analise-tabela" style={{ marginTop: 8 }}>
+                    <thead><tr><th>Transportadora</th><th>Faturas</th><th>CT-es</th><th>Valor em aberto</th><th>Vencidas</th><th>Pagas</th><th>Canceladas</th></tr></thead>
+                    <tbody>
+                      {transportadorasDoAuditor.map((item) => (
+                        <tr key={item.transportadora}>
+                          <td>{item.transportadora}</td><td>{item.quantidade}</td><td>{item.ctes}</td><td>{dinheiro(item.valor)}</td><td>{item.vencidas}</td><td>{item.pagas}</td><td>{item.canceladas}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div style={{ padding: '8px 0', color: 'var(--muted, #5f7197)' }}>Nenhuma transportadora atribuída ainda.</div>
+                )}
+                {adicionandoParaAuditor === u.id && (
+                  <div className="form-grid three" style={{ marginTop: 10 }}>
+                    <label className="field">
+                      Transportadora
+                      <select value={transportadoraParaAdicionar} onChange={(e) => setTransportadoraParaAdicionar(e.target.value)}>
+                        <option value="">Selecione uma transportadora</option>
+                        {disponiveis.map((item) => (
+                          <option key={item.transportadora} value={item.transportadora}>{item.transportadora}{item.auditor_nome ? ` (atual: ${item.auditor_nome})` : ''}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="audit-form-actions">
+                      <button className="btn-secondary" onClick={() => setAdicionandoParaAuditor(null)}>Cancelar</button>
+                      <button className="btn-primary" onClick={() => adicionarTransportadoraAoAuditor(u)} disabled={!transportadoraParaAdicionar}>Adicionar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {confirmacaoTransferencia && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 100001, display: 'grid', placeItems: 'center', padding: 20 }}
+          onClick={() => !salvandoAtribuicao && setConfirmacaoTransferencia(null)}
+        >
+          <div className="sim-card" style={{ width: 'min(520px, 100%)' }} onClick={(event) => event.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Faturas pendentes com outro auditor</h3>
+            <p style={{ color: '#475569' }}>
+              {confirmacaoTransferencia.tipo === 'unica'
+                ? `A transportadora ${confirmacaoTransferencia.carteira.transportadora} tem ${confirmacaoTransferencia.pendencias} fatura(s) aberta(s) (vencida ou a vencer) ainda com outro auditor. Faturas já pagas/canceladas nunca mudam de auditor.`
+                : `As transportadoras selecionadas têm, no total, ${confirmacaoTransferencia.pendencias} fatura(s) aberta(s) (vencida ou a vencer) ainda com outro auditor. Faturas já pagas/canceladas nunca mudam de auditor.`}
+            </p>
+            <p style={{ color: '#475569' }}>O que fazer com essas faturas pendentes?</p>
+            <div className="audit-form-actions" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+              <button
+                className="btn-primary"
+                disabled={salvandoAtribuicao}
+                onClick={() => (confirmacaoTransferencia.tipo === 'unica'
+                  ? executarAtribuicaoUnica(confirmacaoTransferencia.carteira, confirmacaoTransferencia.usuario, true)
+                  : executarAtribuicaoMassa(confirmacaoTransferencia.listaCarteiras, confirmacaoTransferencia.usuario, true))}
+              >
+                Transferir para {confirmacaoTransferencia.usuario.nome}
+              </button>
+              <button
+                className="btn-secondary"
+                disabled={salvandoAtribuicao}
+                onClick={() => (confirmacaoTransferencia.tipo === 'unica'
+                  ? executarAtribuicaoUnica(confirmacaoTransferencia.carteira, confirmacaoTransferencia.usuario, false)
+                  : executarAtribuicaoMassa(confirmacaoTransferencia.listaCarteiras, confirmacaoTransferencia.usuario, false))}
+              >
+                Manter com quem já está tratando (só as novas vão para {confirmacaoTransferencia.usuario.nome})
+              </button>
+              <button className="btn-secondary" disabled={salvandoAtribuicao} onClick={() => setConfirmacaoTransferencia(null)}>Cancelar</button>
+            </div>
           </div>
         </div>
       )}
@@ -3434,6 +4011,17 @@ export default function CentralAuditoriaFretesPage({ initialTab = 'dashboard', e
   }, []);
 
   useEffect(() => setTab(initialTab), [initialTab]);
+
+  // protocolos/solicitacaoHistorico/pagamentos so a aba Financeiro usa — busca
+  // sob demanda na primeira vez que ela abre, em vez de atrasar a tela inicial.
+  const [financeiroExtrasCarregados, setFinanceiroExtrasCarregados] = useState(false);
+  useEffect(() => {
+    if (tab !== 'financeiro' || financeiroExtrasCarregados || !state || state.modo !== 'SUPABASE') return;
+    setFinanceiroExtrasCarregados(true);
+    carregarPlataformaAuditoriaFinanceiro()
+      .then((extras) => setState((prev) => (prev ? { ...prev, ...extras } : prev)))
+      .catch((error) => setErro(error.message));
+  }, [tab, financeiroExtrasCarregados, state]);
 
   const restaurar = () => setState({ ...restaurarDemonstracaoAuditoria(), modo: 'DEMONSTRACAO_LOCAL' });
 

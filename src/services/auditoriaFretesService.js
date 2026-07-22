@@ -177,18 +177,19 @@ export async function carregarPlataformaAuditoria() {
   // Faturas não pode ficar preso no limite de 1000 do selecionarTabela: com
   // mais que isso no banco, faturas mais antigas somem da tela (mas continuam
   // no banco e no dedup, que já consulta direto).
+  // protocolos/solicitacaoHistorico/pagamentos ficam de fora do carregamento
+  // inicial (só a aba Financeiro usa) — ver carregarPlataformaAuditoriaFinanceiro,
+  // chamada sob demanda quando o usuario abre essa aba, pra nao atrasar o
+  // primeiro carregamento da pagina com dados que a maioria das visitas nao usa.
   const client = getSupabaseClient();
-  const [faturas, carteiras, tratativas, historico, doccobs, protocolos, solicitacoes, solicitacaoHistorico, boletos, pagamentos] = await Promise.all([
+  const [faturas, carteiras, tratativas, historico, doccobs, solicitacoes, boletos] = await Promise.all([
     paginarTudo(client, 'faturas', '*'),
     selecionarTabela('auditoria_carteiras', 'transportadora'),
     selecionarTabela('tratativas'),
     selecionarTabela('auditoria_fatura_historico'),
     selecionarTabela('auditoria_doccobs'),
-    selecionarTabela('financeiro_protocolos'),
     selecionarTabela('financeiro_solicitacoes'),
-    selecionarTabela('financeiro_solicitacao_historico'),
     selecionarTabela('financeiro_boletos', 'vencimento'),
-    selecionarTabela('financeiro_pagamentos', 'data_pagamento'),
   ]);
 
   // Detalhes (CT-es) são carregados sob demanda ao abrir cada fatura.
@@ -199,13 +200,23 @@ export async function carregarPlataformaAuditoria() {
     tratativas,
     historico,
     doccobs,
-    protocolos,
+    protocolos: [],
     solicitacoes,
-    solicitacaoHistorico,
+    solicitacaoHistorico: [],
     boletos,
-    pagamentos,
+    pagamentos: [],
     modo: 'SUPABASE',
   };
+}
+
+export async function carregarPlataformaAuditoriaFinanceiro() {
+  if (!isSupabaseConfigured()) return {};
+  const [protocolos, solicitacaoHistorico, pagamentos] = await Promise.all([
+    selecionarTabela('financeiro_protocolos'),
+    selecionarTabela('financeiro_solicitacao_historico'),
+    selecionarTabela('financeiro_pagamentos', 'data_pagamento'),
+  ]);
+  return { protocolos, solicitacaoHistorico, pagamentos };
 }
 
 // Busca faturas existentes por numero_fatura direto no banco, sem depender do
@@ -421,13 +432,55 @@ export async function vincularNovaFatura(state, original, nova, usuarioNome = 'U
 }
 
 export async function salvarCarteiraAuditoria(state, carteira) {
-  const payload = { id: carteira.id || uid('cart'), ...carteira, updated_at: new Date().toISOString() };
+  // ...carteira precisa vir ANTES do id: se carteira.id for null (transportadora
+  // sem carteira ainda), colocar id: antes seria sobrescrito de volta pra null
+  // pelo spread — e o insert falha com "null value in column id" (not-null).
+  const payload = { ...carteira, id: carteira.id || uid('cart'), updated_at: new Date().toISOString() };
   const existe = state.carteiras.some((item) => item.id === payload.id);
   const next = { ...state, carteiras: existe
     ? state.carteiras.map((item) => item.id === payload.id ? payload : item)
     : [...state.carteiras, payload] };
   await safeUpsert('auditoria_carteiras', payload);
   return writeLocal(next);
+}
+
+/**
+ * Registra 1 evento de troca de auditor por transportadora, independente de
+ * ela ter fatura vinculada (o historico de fatura so grava se houver fatura
+ * relacionada na hora da atribuicao). E' esse registro que responde "quem
+ * era responsavel pela transportadora X na data Y".
+ */
+export async function registrarHistoricoCarteiraAuditoria({ transportadora, auditorNome, auditorEmail, atribuidoPor }) {
+  const payload = {
+    id: uid('cart-hist'),
+    transportadora,
+    auditor_nome: auditorNome || '',
+    auditor_email: auditorEmail || '',
+    atribuido_por: atribuidoPor || '',
+    atribuido_em: new Date().toISOString(),
+  };
+  try {
+    await safeUpsert('auditoria_carteiras_historico', payload);
+  } catch (error) {
+    // Nao deixa a atribuicao do auditor falhar so porque o historico nao
+    // gravou (ex.: migration da tabela auditoria_carteiras_historico ainda
+    // nao rodou no banco). A atribuicao em si (auditoria_carteiras/faturas)
+    // ja foi salva antes desta chamada.
+    console.warn('Não foi possível registrar histórico de carteira.', error.message || error);
+  }
+  return payload;
+}
+
+export async function listarHistoricoCarteiraAuditoria(transportadora) {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from('auditoria_carteiras_historico')
+    .select('id, transportadora, auditor_nome, auditor_email, atribuido_por, atribuido_em')
+    .eq('transportadora', transportadora)
+    .order('atribuido_em', { ascending: false });
+  if (error) throw new Error(error.message || 'Erro ao carregar histórico da carteira.');
+  return data || [];
 }
 
 export async function registrarDoccob(state, doccob) {

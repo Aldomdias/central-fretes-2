@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import { formatadoresLaudoRodadas } from './laudosRodadasNegociacaoHtml.js';
-import { laudoConsolidadoPorAudience } from './laudoTransportadoraConsolidado.js';
+import { laudoConsolidadoPorAudience, montarExcelAjusteRotaFaixaConsolidado, montarHtmlEmailSeguroLaudoConsolidado, origemLabelTabela } from './laudoTransportadoraConsolidado.js';
 
 const { dataBR } = formatadoresLaudoRodadas;
 
@@ -299,5 +299,72 @@ export function gerarLaudoTransportadoraConsolidadoPdf(laudoNode, laudo = {}) {
   setTimeout(() => {
     janela.print();
   }, 350);
+  return true;
+}
+
+function base64Utf8(str) {
+  return btoa(unescape(encodeURIComponent(str)));
+}
+
+function quebrarLinhasBase64(base64) {
+  return base64.replace(/(.{76})/g, '$1\r\n');
+}
+
+function parteMimeTexto(contentType, conteudo) {
+  return `Content-Type: ${contentType}\r\nContent-Transfer-Encoding: 8bit\r\n\r\n${conteudo}`;
+}
+
+function parteMimeAnexo(contentType, nomeArquivo, base64) {
+  return `Content-Type: ${contentType}; name="${nomeArquivo}"\r\nContent-Disposition: attachment; filename="${nomeArquivo}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${quebrarLinhasBase64(base64)}`;
+}
+
+/**
+ * Monta um .eml (RFC 822/MIME) com o laudo devolutiva consolidado como corpo
+ * HTML (preserva o layout ao abrir como rascunho no Outlook/cliente de
+ * e-mail) e, em anexo: um HTML "ajuste por rota" por origem (mesmo padrao ja
+ * usado no Simulador) + o Excel consolidado de todas as origens. Os HTMLs
+ * por origem vem de `resumo_simulacao.laudos.analise_rota_faixa.laudoHtml`,
+ * persistido ao salvar a negociacao — origens sem esse snapshot nao entram
+ * como anexo (mesma regra da aba "Origens sem detalhe" do Excel).
+ */
+export function baixarLaudoTransportadoraConsolidadoEml(laudo = {}, tabelasOrigens = []) {
+  if (!laudo) return false;
+
+  const transportadora = laudo.transportadora || 'Transportadora';
+  const titulo = laudo.titulo || `Devolutiva consolidada — ${transportadora}`;
+  const assunto = laudo.assunto || titulo;
+  const corpoHtml = montarHtmlEmailSeguroLaudoConsolidado(laudo);
+
+  const origensComHtml = (tabelasOrigens || [])
+    .filter((t) => String(t.transportadora || '').toUpperCase() === String(transportadora).toUpperCase())
+    .map((t) => ({ tabela: t, laudoHtml: t.resumo_simulacao?.laudos?.analise_rota_faixa?.laudoHtml }))
+    .filter((item) => item.laudoHtml);
+
+  const boundary = `----laudo-devolutiva-${Date.now()}`;
+  const partes = [parteMimeTexto('text/html; charset="utf-8"', corpoHtml)];
+
+  origensComHtml.forEach(({ tabela, laudoHtml }) => {
+    const nomeArquivo = `ajuste-rota-${nomeArquivoSeguroLaudo(origemLabelTabela(tabela))}.html`;
+    partes.push(parteMimeAnexo('text/html', nomeArquivo, base64Utf8(laudoHtml)));
+  });
+
+  if (tabelasOrigens?.length) {
+    const wb = montarExcelAjusteRotaFaixaConsolidado(tabelasOrigens, transportadora);
+    const base64Xlsx = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+    const nomeXlsx = `laudo-devolutiva-ajuste-rota-${nomeArquivoSeguroLaudo(transportadora)}.xlsx`;
+    partes.push(parteMimeAnexo('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', nomeXlsx, base64Xlsx));
+  }
+
+  const eml = [
+    'MIME-Version: 1.0',
+    `Subject: ${assunto}`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    ...partes.flatMap((parte) => [`--${boundary}`, parte, '']),
+    `--${boundary}--`,
+    '',
+  ].join('\r\n');
+
+  baixarArquivo(eml, `email-laudo-devolutiva-${nomeArquivoSeguroLaudo(transportadora)}.eml`, 'message/rfc822');
   return true;
 }
