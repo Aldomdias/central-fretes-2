@@ -499,6 +499,7 @@ function ResumoMensalAuditoria({ resumoMensal = [] }) {
 }
 
 export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras } = {}) {
+  const [ocultarTaxasZeradas, setOcultarTaxasZeradas] = useState(false);
   const [abaAuditoria, setAbaAuditoria] = useState('mensal');
   const [competencia, setCompetencia] = useState('');
   // Período de teste opcional: limita a carga do "Carregar resultado salvo" a
@@ -2736,8 +2737,13 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                             {det ? (() => {
                               const frete = det.componentes_base || {};
                               const taxas = det.taxas || {};
-                              const totalTaxas = somaTaxasCalculo(taxas);
+                              const valorEmergencial = Number(frete.valorEmergencial || 0);
+                              const totalTaxas = somaTaxasCalculo(taxas) + valorEmergencial;
                               const taxaExtraDetalhes = Array.isArray(taxas.taxasExtrasDetalhes) ? taxas.taxasExtrasDetalhes : [];
+                              const linhaTaxa = (label, valorNumero, extra) => {
+                                if (ocultarTaxasZeradas && !(Number(valorNumero) > 0)) return null;
+                                return linhaDetalhe(label, fmtMaybe(valorNumero), extra);
+                              };
                               const comparativoPesos = Array.isArray(det.comparativo_pesos) ? det.comparativo_pesos : [];
                               return (
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
@@ -2805,23 +2811,37 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                     {linhaDetalhe('Diferenca vs pago', fmtMaybe(r.diferenca), true)}
                                   </div>
                                   <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
-                                    <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Taxas</div>
-                                    {linhaDetalhe('Ad Valorem', fmtMaybe(taxas.adValorem))}
-                                    {linhaDetalhe('GRIS', fmtMaybe(taxas.gris))}
-                                    {linhaDetalhe('Pedagio', fmtMaybe(taxas.pedagio))}
-                                    {linhaDetalhe('TAS', fmtMaybe(taxas.tas))}
-                                    {linhaDetalhe('CTRC', fmtMaybe(taxas.ctrc))}
-                                    {linhaDetalhe('TDA', fmtMaybe(taxas.tda))}
-                                    {linhaDetalhe('TDE', fmtMaybe(taxas.tde))}
-                                    {linhaDetalhe('TDR', fmtMaybe(taxas.tdr))}
-                                    {linhaDetalhe('TRT', fmtMaybe(taxas.trt))}
-                                    {linhaDetalhe('Suframa', fmtMaybe(taxas.suframa))}
-                                    {linhaDetalhe('Outras', fmtMaybe(taxas.outras))}
-                                    {linhaDetalhe('Taxa extra', fmtMaybe(taxas.taxaExtra))}
-                                    {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(
-                                      `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${fmtMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
-                                      fmtMaybe(taxa.valor)
-                                    ))}
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                      <div style={{ fontWeight: 800, color: '#0f172a' }}>Taxas</div>
+                                      <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#64748b', fontWeight: 400, cursor: 'pointer' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={ocultarTaxasZeradas}
+                                          onChange={(e) => { e.stopPropagation(); setOcultarTaxasZeradas(e.target.checked); }}
+                                          onClick={(e) => e.stopPropagation()}
+                                        />
+                                        Ocultar zeradas
+                                      </label>
+                                    </div>
+                                    {linhaTaxa('Ad Valorem', taxas.adValorem)}
+                                    {linhaTaxa('GRIS', taxas.gris)}
+                                    {linhaTaxa('Pedagio', taxas.pedagio)}
+                                    {linhaTaxa('TAS', taxas.tas)}
+                                    {linhaTaxa('CTRC', taxas.ctrc)}
+                                    {linhaTaxa('Taxa emergencial', valorEmergencial)}
+                                    {linhaTaxa('TDA', taxas.tda)}
+                                    {linhaTaxa('TDE', taxas.tde)}
+                                    {linhaTaxa('TDR', taxas.tdr)}
+                                    {linhaTaxa('TRT', taxas.trt)}
+                                    {linhaTaxa('Suframa', taxas.suframa)}
+                                    {linhaTaxa('Outras', taxas.outras)}
+                                    {linhaTaxa('Taxa extra', taxas.taxaExtra)}
+                                    {taxaExtraDetalhes
+                                      .filter((taxa) => !ocultarTaxasZeradas || Number(taxa.valor) > 0)
+                                      .map((taxa, i) => linhaDetalhe(
+                                        `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${fmtMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
+                                        fmtMaybe(taxa.valor)
+                                      ))}
                                     {linhaDetalhe('Total taxas', fmtMaybe(totalTaxas), true)}
                                   </div>
                                 </div>

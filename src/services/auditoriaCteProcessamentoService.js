@@ -176,13 +176,22 @@ export async function buscarResultadoAuditoriaPorChave(chaveCte) {
   const chave = onlyDigits(chaveCte);
   if (!chave) return null;
   const supabase = ensureSupabase();
+  // Nao usar .maybeSingle(): podem existir registros duplicados pra mesma
+  // chave (recalculos antigos que inseriram em vez de atualizar), e
+  // maybeSingle() falha com erro quando ha mais de uma linha. Busca todas e
+  // fica com a mais recente por updated_at.
   const { data, error } = await supabase
     .from(TABELA_RESULTADOS)
     .select('*')
-    .eq('chave_cte', chave)
-    .maybeSingle();
+    .eq('chave_cte', chave);
   if (error) throw new Error(`Erro ao buscar resultado da auditoria: ${error.message}`);
-  return data || null;
+  if (!data || !data.length) return null;
+  return data.reduce((maisRecente, atual) => {
+    if (!maisRecente) return atual;
+    const tAtual = new Date(atual.updated_at || 0).getTime();
+    const tRecente = new Date(maisRecente.updated_at || 0).getTime();
+    return tAtual >= tRecente ? atual : maisRecente;
+  }, null);
 }
 
 export async function buscarResultadosAuditoriaPorIdentificadores(identificadores = [], onProgress) {
@@ -967,7 +976,16 @@ export function processarCte(cte, transportadoras = [], mapaVinculos = null, tra
         uf_origem_icms: icmsInfo.ufOrigem,
         uf_destino_icms: icmsInfo.ufDestino,
         taxas: calculo.taxas,
-        componentes_base: calculo.componentesBase,
+        // subtotalSemEmergencial/taxaEmergencialPct/valorEmergencial vem em
+        // campos separados no retorno do freteCalcEngine (nao dentro de
+        // componentesBase) — sem isso o motor "Auditoria" nunca salvava a
+        // taxa emergencial, so o motor simulador salvava.
+        componentes_base: {
+          ...calculo.componentesBase,
+          subtotalSemEmergencial: calculo.subtotalSemEmergencial,
+          taxaEmergencialPct: calculo.taxaEmergencialPct,
+          valorEmergencial: calculo.valorEmergencial,
+        },
         componente_base: calculo.componenteBase,
         calculo_devolucao_invertida: calculoInvertido,
         observacao_devolucao: calculoInvertido ? 'CT-e de devolucao calculado pela rota de ida equivalente.' : '',

@@ -702,25 +702,29 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
   const existentesPorChave = new Map();
   const existentesPorNumero = new Map();
 
+  // Nao filtrar a busca de existentes por uma unica "competencia" global: um
+  // recorte (ex.: os CT-es de uma fatura) pode misturar CT-es de competencias
+  // diferentes. Cada linha.competencia ja vem calculada com a competencia real
+  // do proprio CT-e (montarLinhaResultadoDireto). Buscar so por chave/numero e
+  // casar pelo par chave+competencia evita comparar com a competencia errada
+  // e criar um registro duplicado a cada recalculo em vez de atualizar o existente.
   for (let i = 0; i < chaves.length; i += 300) {
     const lote = chaves.slice(i, i + 300);
     const { data, error } = await supabase
       .from('auditoria_cte_resultados')
-      .select('id, chave_cte')
-      .eq('competencia', competencia)
+      .select('id, chave_cte, competencia')
       .in('chave_cte', lote);
     if (error) throw new Error(`Erro ao localizar registros existentes: ${error.message}`);
-    (data || []).forEach((r) => existentesPorChave.set(r.chave_cte, r.id));
+    (data || []).forEach((r) => existentesPorChave.set(`${r.chave_cte}|${String(r.competencia || '').slice(0, 7)}`, r.id));
   }
   for (let i = 0; i < numerosSemChave.length; i += 300) {
     const lote = numerosSemChave.slice(i, i + 300);
     const { data, error } = await supabase
       .from('auditoria_cte_resultados')
-      .select('id, numero_cte')
-      .eq('competencia', competencia)
+      .select('id, numero_cte, competencia')
       .in('numero_cte', lote);
     if (error) throw new Error(`Erro ao localizar registros existentes: ${error.message}`);
-    (data || []).forEach((r) => existentesPorNumero.set(r.numero_cte, r.id));
+    (data || []).forEach((r) => existentesPorNumero.set(`${r.numero_cte}|${String(r.competencia || '').slice(0, 7)}`, r.id));
   }
 
   const paraInserir = [];
@@ -728,8 +732,8 @@ export async function salvarRecorteCarregadoAuditoria({ competencia = '', regist
   let processados = 0;
 
   await executarComConcorrenciaAuditoria(linhasResultado, 10, async (linha) => {
-    const idExistente = (linha.chave_cte && existentesPorChave.get(linha.chave_cte))
-      || (!linha.chave_cte && linha.numero_cte ? existentesPorNumero.get(linha.numero_cte) : null);
+    const idExistente = (linha.chave_cte && existentesPorChave.get(`${linha.chave_cte}|${linha.competencia}`))
+      || (!linha.chave_cte && linha.numero_cte ? existentesPorNumero.get(`${linha.numero_cte}|${linha.competencia}`) : null);
     if (idExistente) {
       const error = await atualizarResultadoAuditoriaCompat(supabase, linha, idExistente);
       if (error) throw new Error(`Erro ao atualizar CT-e ${linha.numero_cte || linha.chave_cte}: ${error.message}`);

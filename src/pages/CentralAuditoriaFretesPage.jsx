@@ -240,7 +240,10 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
     || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
   if (!base) return item;
   const valor = Number(item.valor_frete || base.valor_cte || 0);
-  const amd = Number(base.valor_calculado || item.calculado_frete || 0);
+  // Nao usar item.calculado_frete como fallback: quando a base (resultado
+  // fresco da auditoria) diz que nao ha calculo (valor 0), manter o AMD
+  // antigo do item junto com o motivo de falha atual e enganoso.
+  const amd = Number(base.valor_calculado || 0);
   const verum = Number(base.valor_calculado_verum ?? item.calculado_frete_verum ?? 0);
   const diferenca = amd > 0 ? Number((valor - amd).toFixed(2)) : Number(item.diferenca || 0);
   const diferencaVerum = verum > 0 ? Number((valor - verum).toFixed(2)) : Number(item.diferenca_verum || 0);
@@ -256,13 +259,19 @@ function mesclarDetalheComReferenciaAuditoria(item = {}, referenciaCtes = new Ma
     peso: Number(item.peso || base.peso || 0),
     valor_frete: valor,
     valor_nf: numeroValorNfAuditoria(item, base) || item.valor_nf || base.valor_nf || base.valorNF || 0,
-    detalhes_calculo: item.detalhes_calculo || base.detalhes_calculo || null,
+    // base e o resultado fresco da auditoria (auditoria_cte_resultados) —
+    // prioriza sempre ele; item.detalhes_calculo costuma ser antigo/vazio
+    // (veio da importacao da fatura, sem o calculo detalhado).
+    detalhes_calculo: base.detalhes_calculo || item.detalhes_calculo || null,
     calculado_frete_verum: verum || Number(item.calculado_frete_verum || 0),
     diferenca_verum: diferencaVerum,
     calculado_frete: amd,
     diferenca,
     status: amd > 0 ? (Math.abs(diferenca) <= 0.01 ? 'OK' : 'DIVERGENTE') : (item.status || 'SEM_CALCULO'),
-    motivo_divergencia: base.motivo_sem_calculo || item.motivo_divergencia || '',
+    // Idem: se a base calculou com sucesso (motivo vazio), nao reaproveitar
+    // o motivo antigo do item ("Transportadora nao encontrada" de uma
+    // checagem anterior) so porque o texto da base esta vazio.
+    motivo_divergencia: amd > 0 ? (base.motivo_sem_calculo || '') : (base.motivo_sem_calculo || item.motivo_divergencia || ''),
   };
 }
 function parseDetalhesCalculoAuditoria(valor) {
@@ -460,6 +469,7 @@ function linhaDetalhe(label, value, destaque = false) {
 // Painel de detalhe do calculo (mesmo layout da Auditoria CT-e), reaproveitado
 // aqui pra permitir ver o detalhamento de um CT-e direto na tela de Faturas.
 function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras }) {
+  const [ocultarZeradas, setOcultarZeradas] = useState(false);
   if (!resultado) return <span>Sem detalhe de calculo para este CT-e.</span>;
   const det = (() => {
     const d = resultado.detalhes_calculo;
@@ -471,8 +481,13 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
 
   const frete = det.componentes_base || {};
   const taxas = det.taxas || {};
-  const totalTaxas = somaTaxasCalculo(taxas);
+  const valorEmergencial = Number(frete.valorEmergencial || 0);
+  const totalTaxas = somaTaxasCalculo(taxas) + valorEmergencial;
   const taxaExtraDetalhes = Array.isArray(taxas.taxasExtrasDetalhes) ? taxas.taxasExtrasDetalhes : [];
+  const linhaTaxa = (label, valorNumero, extra) => {
+    if (ocultarZeradas && !(Number(valorNumero) > 0)) return null;
+    return linhaDetalhe(label, dinheiroMaybe(valorNumero), extra);
+  };
   const comparativoPesos = Array.isArray(det.comparativo_pesos) ? det.comparativo_pesos : [];
 
   return (
@@ -567,23 +582,32 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaDetalhe('Diferenca vs pago', dinheiroMaybe(resultado.diferenca), true)}
         </div>
         <div style={{ border: '1px solid #dbe3ef', borderRadius: 8, background: '#fff', padding: 12 }}>
-          <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>Taxas</div>
-          {linhaDetalhe('Ad Valorem', dinheiroMaybe(taxas.adValorem))}
-          {linhaDetalhe('GRIS', dinheiroMaybe(taxas.gris))}
-          {linhaDetalhe('Pedagio', dinheiroMaybe(taxas.pedagio))}
-          {linhaDetalhe('TAS', dinheiroMaybe(taxas.tas))}
-          {linhaDetalhe('CTRC', dinheiroMaybe(taxas.ctrc))}
-          {linhaDetalhe('TDA', dinheiroMaybe(taxas.tda))}
-          {linhaDetalhe('TDE', dinheiroMaybe(taxas.tde))}
-          {linhaDetalhe('TDR', dinheiroMaybe(taxas.tdr))}
-          {linhaDetalhe('TRT', dinheiroMaybe(taxas.trt))}
-          {linhaDetalhe('Suframa', dinheiroMaybe(taxas.suframa))}
-          {linhaDetalhe('Outras', dinheiroMaybe(taxas.outras))}
-          {linhaDetalhe('Taxa extra', dinheiroMaybe(taxas.taxaExtra))}
-          {taxaExtraDetalhes.map((taxa, i) => linhaDetalhe(
-            `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${dinheiroMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
-            dinheiroMaybe(taxa.valor)
-          ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontWeight: 800, color: '#0f172a' }}>Taxas</div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#64748b', fontWeight: 400, cursor: 'pointer' }}>
+              <input type="checkbox" checked={ocultarZeradas} onChange={(e) => setOcultarZeradas(e.target.checked)} />
+              Ocultar zeradas
+            </label>
+          </div>
+          {linhaTaxa('Ad Valorem', taxas.adValorem)}
+          {linhaTaxa('GRIS', taxas.gris)}
+          {linhaTaxa('Pedagio', taxas.pedagio)}
+          {linhaTaxa('TAS', taxas.tas)}
+          {linhaTaxa('CTRC', taxas.ctrc)}
+          {linhaTaxa('Taxa emergencial', valorEmergencial)}
+          {linhaTaxa('TDA', taxas.tda)}
+          {linhaTaxa('TDE', taxas.tde)}
+          {linhaTaxa('TDR', taxas.tdr)}
+          {linhaTaxa('TRT', taxas.trt)}
+          {linhaTaxa('Suframa', taxas.suframa)}
+          {linhaTaxa('Outras', taxas.outras)}
+          {linhaTaxa('Taxa extra', taxas.taxaExtra)}
+          {taxaExtraDetalhes
+            .filter((taxa) => !ocultarZeradas || Number(taxa.valor) > 0)
+            .map((taxa, i) => linhaDetalhe(
+              `${taxa.nome || `Extra ${i + 1}`}${Number(taxa.valorPorPeso) > 0 ? ` (${dinheiroMaybe(taxa.valorPorPeso)} / ${Number(taxa.pesoBase) || 100} kg)` : ''}`,
+              dinheiroMaybe(taxa.valor)
+            ))}
           {linhaDetalhe('Total taxas', dinheiroMaybe(totalTaxas), true)}
         </div>
       </div>

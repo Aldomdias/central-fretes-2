@@ -280,10 +280,21 @@ export async function buscarReferenciaCtes(chaves = []) {
         .in('chave_cte', lote));
     }
     if (error) break;
+    // Podem existir registros duplicados pra mesma chave/competencia (recalculos
+    // antigos que inseriram em vez de atualizar) — sempre ficar com o mais
+    // recente por updated_at, senao a tela pode pegar um resultado desatualizado
+    // (sem detalhe de calculo ou com motivo de uma falha ja corrigida).
+    const maisRecente = (atual, novo) => {
+      if (!atual) return novo;
+      const tAtual = new Date(atual.updated_at || 0).getTime();
+      const tNovo = new Date(novo.updated_at || 0).getTime();
+      return tNovo >= tAtual ? novo : atual;
+    };
     for (const row of data || []) {
-      referencia.set(normalizarChaveCte(row.chave_cte), row);
+      const chave = normalizarChaveCte(row.chave_cte);
+      if (chave) referencia.set(chave, maisRecente(referencia.get(chave), row));
       const numero = normalizarChaveCte(row.numero_cte);
-      if (numero) referencia.set(numero, row);
+      if (numero) referencia.set(numero, maisRecente(referencia.get(numero), row));
     }
   }
   return referencia;
