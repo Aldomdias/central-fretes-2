@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
-import { carregarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, salvarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
 import { normalizarChave } from '../services/vinculosTransportadorasPuro';
 import { listarCarteirasAuditoria, salvarCarteiraAuditoria } from '../services/auditoriaFretesService';
 
@@ -51,6 +51,21 @@ function useVinculosEAuditores() {
     return (carteirasRaw || []).find((c) => normalizarChave(c.transportadora) === chave) || null;
   }
 
+  async function recarregarVinculos() {
+    const lista = await carregarVinculosTransportadoras();
+    setVinculosRaw(lista || []);
+    return lista || [];
+  }
+
+  async function adicionarVinculo(nomeCte, nomeTabela) {
+    const nomeCteLimpo = String(nomeCte || '').trim();
+    const nomeTabelaLimpo = String(nomeTabela || '').trim();
+    if (!nomeCteLimpo || !nomeTabelaLimpo) return;
+    const proximaLista = [...(vinculosRaw || []), { id: Date.now(), nomeCte: nomeCteLimpo, nomeTabela: nomeTabelaLimpo, origem: 'manual' }];
+    const resultado = await salvarVinculosTransportadoras(proximaLista);
+    setVinculosRaw(resultado.vinculos || proximaLista);
+  }
+
   async function salvarAuditor(nomeTransportadora, auditorNome) {
     const existente = carteiraDaTransportadora(nomeTransportadora);
     const carteira = {
@@ -78,6 +93,8 @@ function useVinculosEAuditores() {
     vinculosDaTransportadora,
     carteiraDaTransportadora,
     salvarAuditor,
+    recarregarVinculos,
+    adicionarVinculo,
   };
 }
 
@@ -1136,7 +1153,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [salvando, setSalvando] = useState(false);
   const [feedbackSalvar, setFeedbackSalvar] = useState('');
   const [origemConfirmando, setOrigemConfirmando] = useState(null);
-  const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor } = useVinculosEAuditores();
+  const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, recarregarVinculos, adicionarVinculo } = useVinculosEAuditores();
   const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
   const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
   const saveOrigem = (form) => {
@@ -1262,6 +1279,8 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         auditorAtual={origemConfirmando ? carteiraDaTransportadora(transportadora.nome)?.auditor_nome : null}
         auditorNomes={auditorNomes}
         onSalvarAuditor={(nome) => salvarAuditor(transportadora.nome, nome)}
+        onRecarregarVinculos={recarregarVinculos}
+        onAdicionarVinculo={(nomeCte) => adicionarVinculo(nomeCte, transportadora.nome)}
         onConfirmar={() => {
           store.marcarOrigemValidada(transportadora.id, origemConfirmando.id, true, sessao?.nome);
           setOrigemConfirmando(null);
@@ -1274,9 +1293,12 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   );
 }
 
-function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, auditorAtual, auditorNomes, onSalvarAuditor, onConfirmar, onClose }) {
+function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, auditorAtual, auditorNomes, onSalvarAuditor, onRecarregarVinculos, onAdicionarVinculo, onConfirmar, onClose }) {
   const [salvandoAuditor, setSalvandoAuditor] = useState(false);
   const [novoAuditor, setNovoAuditor] = useState('');
+  const [atualizandoVinculos, setAtualizandoVinculos] = useState(false);
+  const [novoNomeCte, setNovoNomeCte] = useState('');
+  const [salvandoVinculo, setSalvandoVinculo] = useState(false);
 
   if (!open) return null;
 
@@ -1287,16 +1309,60 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
     setSalvandoAuditor(false);
   };
 
+  const atualizarVinculos = async () => {
+    setAtualizandoVinculos(true);
+    try {
+      await onRecarregarVinculos?.();
+    } finally {
+      setAtualizandoVinculos(false);
+    }
+  };
+
+  const vincularCte = async () => {
+    if (!novoNomeCte.trim()) return;
+    setSalvandoVinculo(true);
+    try {
+      await onAdicionarVinculo?.(novoNomeCte.trim());
+      setNovoNomeCte('');
+    } finally {
+      setSalvandoVinculo(false);
+    }
+  };
+
   return (
     <Modal open={open} title={`Confirmar validação — ${origem?.cidade || ''}`} onClose={onClose}>
       <div className="hint-box">
-        <strong>Vínculos com CT-e para {transportadora?.nome}</strong>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <strong>Vínculos com CT-e para {transportadora?.nome}</strong>
+          <button type="button" className="btn-link inline-btn" disabled={atualizandoVinculos} onClick={atualizarVinculos}>
+            {atualizandoVinculos ? 'Atualizando…' : '🔄 Atualizar vínculos'}
+          </button>
+        </div>
         {vinculos.length ? (
           <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
             {vinculos.map((v) => <li key={v.id || v.nomeCte}>{v.nomeCte}</li>)}
           </ul>
         ) : (
-          <p style={{ color: '#b45309', margin: '8px 0 0' }}>⚠ Nenhum vínculo encontrado para esta transportadora.</p>
+          <>
+            <p style={{ color: '#b45309', margin: '8px 0 0' }}>⚠ Nenhum vínculo encontrado para esta transportadora.</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              <input
+                placeholder="Nome da transportadora como aparece no CT-e..."
+                value={novoNomeCte}
+                onChange={(e) => setNovoNomeCte(e.target.value)}
+                disabled={salvandoVinculo}
+                style={{ flex: 1, minWidth: 200 }}
+              />
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={salvandoVinculo || !novoNomeCte.trim()}
+                onClick={vincularCte}
+              >
+                {salvandoVinculo ? 'Vinculando…' : 'Vincular'}
+              </button>
+            </div>
+          </>
         )}
         <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>Você também pode conferir/editar vínculos na tela Ferramentas.</p>
       </div>

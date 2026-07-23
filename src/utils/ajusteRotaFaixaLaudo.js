@@ -55,6 +55,7 @@ export function detalheCalculoCteTransportador(item = {}) {
       pedagio: 0,
       icms: 0,
       tabelaRpa: 0,
+      valorBase: 0,
       taxaAplicadaTexto: '-',
     };
   }
@@ -97,6 +98,10 @@ export function detalheCalculoCteTransportador(item = {}) {
     if (deveRecompor) icms = icmsRecomposto;
   }
 
+  const valorBase = Number(frete.valorBase || 0) || (percentualBase > 0
+    ? Math.max(Number(frete.componentesBase?.valorPercentual || 0) || (valorNF * (percentualBase / 100)), valorKgAplicado)
+    : Math.max(valorKgAplicado, valorFixoAplicado));
+
   return {
     percentualBase,
     percentualCobrado: valorNF > 0 ? (freteCobrado / valorNF) * 100 : 0,
@@ -107,6 +112,7 @@ export function detalheCalculoCteTransportador(item = {}) {
     pedagio: Number(taxas.pedagio || 0),
     icms,
     tabelaRpa,
+    valorBase,
     taxaAplicadaTexto,
   };
 }
@@ -147,6 +153,7 @@ export function montarDadosAjusteRotaFaixa(resultado = {}) {
         : (Number(item.valorKgAplicado || 0) > 0
           ? `${formatMoney(Number(item.valorKgAplicado || 0))}/kg`
           : (Number(item.valorFixoAplicado || 0) > 0 ? `${formatMoney(Number(item.valorFixoAplicado || 0))} fixo/faixa` : '-'))),
+      valorBase: Number(item.valorBase || 0),
       gris: Number(item.gris || 0),
       tas: Number(item.tas || 0),
       ctrc: Number(item.ctrc || 0),
@@ -520,14 +527,14 @@ export function gerarHtmlAjusteRotaFaixa(resultado = {}, { incluirSavingGerencia
       <thead><tr><th>Rota</th><th>Faixa</th><th class="num">CT-es</th><th class="num">Sem calc.</th><th class="num">Ganharia</th><th class="num">Perderia</th><th class="num">Aderencia rota</th><th class="num">Valor NF</th><th class="num">Frete cobrado</th><th class="num rpa-col">${esc(rotuloTabelaLaudo)}</th><th class="num">% cobrado</th><th class="num rpa-col">% ${esc(rotuloTabelaLaudo)}</th><th class="num">Reduzir</th></tr></thead>
       <tbody>${linhasAtendidas.map((item, idx) => {
         const detalheId = `rota-${idx}`;
-        const linhasCte = item.itensAmostra.map((cte) => `<tr><td><strong>${esc(cte.cte)}</strong></td><td>${esc(cte.canal || '-')}</td><td class="num">${formatNumberBR(cte.peso, 2)}</td><td class="num">${formatMoney(cte.valorNF)}</td><td class="num">${formatMoney(cte.freteBaseComparativa)}</td><td class="num rpa-cell">${cte.tabelaRpa > 0 ? formatMoney(cte.tabelaRpa) : '-'}</td><td class="num">${formatPercent(cte.percentualCobrado)}</td><td class="num rpa-cell">${formatPercent(cte.percentualCalc)}</td><td class="num">${formatPercent(cte.percentualBase)}</td><td>${esc(cte.taxaAplicadaTexto || '-')}</td><td class="num">${formatMoney(cte.gris)}</td><td class="num">${formatMoney(cte.tas)}</td><td class="num">${formatMoney(cte.ctrc)}</td><td class="num">${formatMoney(cte.pedagio)}</td><td class="num">${formatMoney(cte.icms)}</td><td>${esc(cte.statusSelecionada || '-')}</td></tr>`).join('');
+        const linhasCte = item.itensAmostra.map((cte) => `<tr><td><strong>${esc(cte.cte)}</strong></td><td>${esc(cte.canal || '-')}</td><td class="num">${formatNumberBR(cte.peso, 2)}</td><td class="num">${formatMoney(cte.valorNF)}</td><td class="num">${formatMoney(cte.freteBaseComparativa)}</td><td class="num rpa-cell">${cte.tabelaRpa > 0 ? formatMoney(cte.tabelaRpa) : '-'}</td><td class="num">${formatPercent(cte.percentualCobrado)}</td><td class="num rpa-cell">${formatPercent(cte.percentualCalc)}</td><td class="num">${formatPercent(cte.percentualBase)}</td><td class="num">${formatMoney(cte.valorBase)}</td><td class="num">${formatMoney(cte.gris)}</td><td class="num">${formatMoney(cte.tas)}</td><td class="num">${formatMoney(cte.ctrc)}</td><td class="num">${formatMoney(cte.pedagio)}</td><td class="num">${formatMoney(cte.icms)}</td><td>${esc(cte.statusSelecionada || '-')}</td></tr>`).join('');
         const avisoAmostra = item.itensAmostraIncompleta
           ? `<div class="note">Mostrando ${formatNumberBR(item.itensAmostra.length, 0)} de ${formatNumberBR(item.ctes, 0)} CT-e(s) desta rota (amostra de auditoria, limite de ${formatNumberBR(MAX_ITENS_AMOSTRA_POR_ROTA, 0)} por rota — nao e a lista completa).</div>`
           : '';
         const corpoDetalhe = item.avisoIncompleto
           ? '<div class="note">Esta parte veio de uma analise salva sem o agrupamento detalhado por rota/cotacao. Os valores entram nos cards e totais, mas nao ha CT-es detalhados para abrir. Para detalhar rota a rota, recalcule ou unifique parcelas salvas ja com o novo formato.</div>'
           : item.itensAmostra.length
-          ? `${avisoAmostra}<table class="mini-table"><thead><tr><th>CT-e</th><th>Canal</th><th class="num">Peso</th><th class="num">Valor NF</th><th class="num">Frete cobrado</th><th class="num rpa-col">${esc(rotuloTabelaLaudo)}</th><th class="num">% cobrado</th><th class="num rpa-col">% ${esc(rotuloTabelaLaudo)}</th><th class="num">% base</th><th>Taxa aplicada</th><th class="num">GRIS</th><th class="num">TAS</th><th class="num">CTRC</th><th class="num">Pedagio</th><th class="num">ICMS</th><th>Status</th></tr></thead><tbody>${linhasCte}</tbody></table>`
+          ? `${avisoAmostra}<table class="mini-table"><thead><tr><th>CT-e</th><th>Canal</th><th class="num">Peso</th><th class="num">Valor NF</th><th class="num">Frete cobrado</th><th class="num rpa-col">${esc(rotuloTabelaLaudo)}</th><th class="num">% cobrado</th><th class="num rpa-col">% ${esc(rotuloTabelaLaudo)}</th><th class="num">% base</th><th class="num">Valor base</th><th class="num">GRIS</th><th class="num">TAS</th><th class="num">CTRC</th><th class="num">Pedagio</th><th class="num">ICMS</th><th>Status</th></tr></thead><tbody>${linhasCte}</tbody></table>`
           : '<div class="note">Nenhum CT-e desta rota está na amostra de auditoria disponível.</div>';
         return `<tr class="linha-expansivel" onclick="document.getElementById('${detalheId}').classList.toggle('aberta')"><td><strong>${esc(item.rota)}</strong></td><td>${esc(item.faixa || '-')}</td><td class="num">${formatNumberBR(item.ctes, 0)}</td><td class="num">${formatNumberBR(item.ctesSemCalculo, 0)}</td><td class="num">${formatNumberBR(item.ctesGanharia, 0)}</td><td class="num">${formatNumberBR(item.ctesPerderia, 0)}</td><td class="num">${formatPercent(item.aderenciaRota)}</td><td class="num">${formatMoney(item.valorNF)}</td><td class="num">${formatMoney(item.freteRealizado)}</td><td class="num rpa-cell">${formatMoney(item.freteTabela)}</td><td class="num">${formatPercent(item.pctRealizado)}</td><td class="num rpa-cell">${formatPercent(item.pctTabelaFinal)}</td><td class="num ${item.reduzirPct > 0 ? 'reduce' : 'ok'}">${item.reduzirPct > 0 ? formatPercent(item.reduzirPct) : 'OK'}</td></tr><tr id="${detalheId}" class="linha-detalhe"><td colspan="13">${corpoDetalhe}</td></tr>`;
       }).join('')}</tbody>

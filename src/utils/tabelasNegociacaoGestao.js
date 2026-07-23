@@ -461,12 +461,25 @@ export function agruparPorTransportadora(tabelas = [], sessao = null) {
         aprovada: ['APROVADA_GESTOR', 'PUBLICADA_OFICIAL'].includes(t.status_gestao),
         publicada: t.status_gestao === 'PUBLICADA_OFICIAL',
         negociacaoId: t.id,
+        _atualizadoEm: t.atualizado_em || t.criado_em || null,
       };
       grupo.origens.push(origem);
     } else {
       origem.rotas += t.qtd_rotas;
       origem.saving += t.saving_estimado;
       origem.impacto += t.impacto_reajuste;
+
+      const referenciaAtual = t.atualizado_em || t.criado_em || null;
+      const maisRecente = !origem._atualizadoEm
+        || (referenciaAtual && new Date(referenciaAtual) > new Date(origem._atualizadoEm));
+      if (maisRecente) {
+        origem.status = t.status_gestao_label;
+        origem.statusCor = t.status_gestao_cor;
+        origem.aprovada = ['APROVADA_GESTOR', 'PUBLICADA_OFICIAL'].includes(t.status_gestao);
+        origem.publicada = t.status_gestao === 'PUBLICADA_OFICIAL';
+        origem.negociacaoId = t.id;
+        origem._atualizadoEm = referenciaAtual;
+      }
     }
   });
 
