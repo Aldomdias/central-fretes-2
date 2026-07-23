@@ -492,12 +492,15 @@ function normalizarFrete(linha, indice, rotasPorChave) {
 
   // ── Excedente: separar limiar kg do valor R$/kg ───────────────────────────
   // isExcedente = true quando a faixa representa cobrança por kg acima de um limiar.
-  // excessoKg   = o peso inicial (limiar) onde começa a cobrar por excedente.
-  // valorExcedente = o R$/kg cobrado acima do limiar.
+  // excessoKg   = o peso inicial (limiar) onde começa a cobrar por excedente
+  //               (0 quando a faixa é aberta desde o início e incide sobre o peso todo).
+  // valorExcedente = o R$/kg lido da coluna "Excedente"/"Excesso de peso". Sempre sobe,
+  //               mesmo fora de faixa marcada como excedente — o motor de cálculo decide
+  //               se multiplica pelo peso total (Maior valor) ou pelo excesso acima do limiar (faixa).
   // pesoFinalNorm  = sempre 999999 para faixas excedentes (para o simulador).
   const isExcedente = ehFaixaExcedente(faixaPeso, pesoFinal, pesoInicial);
   const excessoKg       = isExcedente ? Number(pesoInicial || 0) : 0;
-  const valorExcedente  = isExcedente ? Number(excedente  || 0) : 0;
+  const valorExcedente  = Number(excedente || 0);
   const pesoFinalNorm   = isExcedente ? 999999 : pesoFinal;
 
   const frete = {
