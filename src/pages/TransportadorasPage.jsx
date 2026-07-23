@@ -57,11 +57,13 @@ function useVinculosEAuditores() {
     return lista || [];
   }
 
-  async function adicionarVinculo(nomeCte, nomeTabela) {
-    const nomeCteLimpo = String(nomeCte || '').trim();
+  async function adicionarVinculo(nomesCte, nomeTabela) {
     const nomeTabelaLimpo = String(nomeTabela || '').trim();
-    if (!nomeCteLimpo || !nomeTabelaLimpo) return;
-    const proximaLista = [...(vinculosRaw || []), { id: Date.now(), nomeCte: nomeCteLimpo, nomeTabela: nomeTabelaLimpo, origem: 'manual' }];
+    const lista = Array.isArray(nomesCte) ? nomesCte : [nomesCte];
+    const nomesLimpos = [...new Set(lista.map((n) => String(n || '').trim()).filter(Boolean))];
+    if (!nomesLimpos.length || !nomeTabelaLimpo) return;
+    const novos = nomesLimpos.map((nomeCte) => ({ id: `${Date.now()}-${nomeCte}`, nomeCte, nomeTabela: nomeTabelaLimpo, origem: 'manual' }));
+    const proximaLista = [...(vinculosRaw || []), ...novos];
     const resultado = await salvarVinculosTransportadoras(proximaLista);
     setVinculosRaw(resultado.vinculos || proximaLista);
   }
@@ -1309,6 +1311,7 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
   const [removendoId, setRemovendoId] = useState(null);
   const [sugestoesCte, setSugestoesCte] = useState([]);
   const [selecionados, setSelecionados] = useState([]);
+  const [erroVinculo, setErroVinculo] = useState('');
 
   if (!open) return null;
 
@@ -1340,16 +1343,19 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
   };
 
   const vincularCte = async () => {
-    const nomes = [...new Set([...selecionados, novoNomeCte.trim()].filter(Boolean))];
+    // Com sugestões marcadas, o campo de busca é só filtro — usa apenas o que foi selecionado.
+    // Sem seleção, o texto digitado vira o vínculo livre (nome que não apareceu na busca).
+    const nomes = selecionados.length ? [...new Set(selecionados)] : [novoNomeCte.trim()].filter(Boolean);
     if (!nomes.length) return;
     setSalvandoVinculo(true);
+    setErroVinculo('');
     try {
-      for (const nome of nomes) {
-        await onAdicionarVinculo?.(nome);
-      }
+      await onAdicionarVinculo?.(nomes);
       setNovoNomeCte('');
       setSugestoesCte([]);
       setSelecionados([]);
+    } catch (err) {
+      setErroVinculo(err?.message || 'Erro ao salvar vínculo.');
     } finally {
       setSalvandoVinculo(false);
     }
@@ -1357,8 +1363,11 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
 
   const removerVinculo = async (vinculo) => {
     setRemovendoId(vinculo.id || vinculo.nomeCte);
+    setErroVinculo('');
     try {
       await onRemoverVinculo?.(vinculo);
+    } catch (err) {
+      setErroVinculo(err?.message || 'Erro ao remover vínculo.');
     } finally {
       setRemovendoId(null);
     }
@@ -1394,6 +1403,7 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
         ) : (
           <p style={{ color: '#b45309', margin: '8px 0 0' }}>⚠ Nenhum vínculo encontrado para esta transportadora.</p>
         )}
+        {erroVinculo ? <p style={{ color: '#dc2626', margin: '8px 0 0', fontSize: 13 }}>❌ {erroVinculo}</p> : null}
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input
