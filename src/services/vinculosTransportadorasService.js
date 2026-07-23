@@ -117,6 +117,26 @@ export async function salvarVinculosTransportadoras(lista = []) {
   return { ok: true, modo: 'supabase', total: dedup.length, vinculos: dedup };
 }
 
+export async function buscarNomesCteSimilares(termo, limite = 15) {
+  const busca = String(termo || '').trim();
+  if (!busca || !isSupabaseConfigured()) return [];
+
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('realizado_local_ctes')
+    .select('transportadora')
+    .ilike('transportadora', `%${busca}%`)
+    .limit(500);
+
+  if (error) {
+    console.warn('Busca de transportadoras no CT-e indisponível.', error.message || error);
+    return [];
+  }
+
+  const nomes = [...new Set((data || []).map((r) => r.transportadora?.trim()).filter(Boolean))];
+  return nomes.sort((a, b) => a.localeCompare(b, 'pt-BR')).slice(0, limite);
+}
+
 export async function removerVinculoTransportadora(idOuNomeCte, listaAtual = []) {
   const alvo = String(idOuNomeCte || '').trim();
   const item = (listaAtual || []).find((v) => String(v.id) === alvo || normalizarChave(v.nomeCte) === normalizarChave(alvo));

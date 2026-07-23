@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
-import { carregarVinculosTransportadoras, salvarVinculosTransportadoras } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora, buscarNomesCteSimilares } from '../services/vinculosTransportadorasService';
 import { normalizarChave } from '../services/vinculosTransportadorasPuro';
 import { listarCarteirasAuditoria, salvarCarteiraAuditoria } from '../services/auditoriaFretesService';
 
@@ -66,6 +66,11 @@ function useVinculosEAuditores() {
     setVinculosRaw(resultado.vinculos || proximaLista);
   }
 
+  async function removerVinculo(vinculo) {
+    const novaLista = await removerVinculoTransportadora(vinculo.id || vinculo.nomeCte, vinculosRaw || []);
+    setVinculosRaw(novaLista);
+  }
+
   async function salvarAuditor(nomeTransportadora, auditorNome) {
     const existente = carteiraDaTransportadora(nomeTransportadora);
     const carteira = {
@@ -95,6 +100,7 @@ function useVinculosEAuditores() {
     salvarAuditor,
     recarregarVinculos,
     adicionarVinculo,
+    removerVinculo,
   };
 }
 
@@ -1153,7 +1159,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   const [salvando, setSalvando] = useState(false);
   const [feedbackSalvar, setFeedbackSalvar] = useState('');
   const [origemConfirmando, setOrigemConfirmando] = useState(null);
-  const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, recarregarVinculos, adicionarVinculo } = useVinculosEAuditores();
+  const { vinculosDaTransportadora, carteiraDaTransportadora, auditorNomes, salvarAuditor, recarregarVinculos, adicionarVinculo, removerVinculo } = useVinculosEAuditores();
   const origensBase = Array.isArray(transportadora?.origens) ? transportadora.origens : [];
   const origens = origensBase.filter((origem) => String(origem?.cidade || '').toLowerCase().includes(busca.toLowerCase()));
   const saveOrigem = (form) => {
@@ -1281,6 +1287,7 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
         onSalvarAuditor={(nome) => salvarAuditor(transportadora.nome, nome)}
         onRecarregarVinculos={recarregarVinculos}
         onAdicionarVinculo={(nomeCte) => adicionarVinculo(nomeCte, transportadora.nome)}
+        onRemoverVinculo={removerVinculo}
         onConfirmar={() => {
           store.marcarOrigemValidada(transportadora.id, origemConfirmando.id, true, sessao?.nome);
           setOrigemConfirmando(null);
@@ -1293,12 +1300,15 @@ function OrigensList({ transportadora, onBack, onOpenOrigin, store, sessao }) {
   );
 }
 
-function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, auditorAtual, auditorNomes, onSalvarAuditor, onRecarregarVinculos, onAdicionarVinculo, onConfirmar, onClose }) {
+function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, auditorAtual, auditorNomes, onSalvarAuditor, onRecarregarVinculos, onAdicionarVinculo, onRemoverVinculo, onConfirmar, onClose }) {
   const [salvandoAuditor, setSalvandoAuditor] = useState(false);
   const [novoAuditor, setNovoAuditor] = useState('');
   const [atualizandoVinculos, setAtualizandoVinculos] = useState(false);
   const [novoNomeCte, setNovoNomeCte] = useState('');
   const [salvandoVinculo, setSalvandoVinculo] = useState(false);
+  const [removendoId, setRemovendoId] = useState(null);
+  const [sugestoesCte, setSugestoesCte] = useState([]);
+  const [selecionados, setSelecionados] = useState([]);
 
   if (!open) return null;
 
@@ -1318,14 +1328,39 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
     }
   };
 
+  const buscarSugestoes = async (texto) => {
+    setNovoNomeCte(texto);
+    if (texto.trim().length < 2) { setSugestoesCte([]); return; }
+    const resultado = await buscarNomesCteSimilares(texto);
+    setSugestoesCte(resultado);
+  };
+
+  const alternarSelecionado = (nome) => {
+    setSelecionados((prev) => (prev.includes(nome) ? prev.filter((n) => n !== nome) : [...prev, nome]));
+  };
+
   const vincularCte = async () => {
-    if (!novoNomeCte.trim()) return;
+    const nomes = [...new Set([...selecionados, novoNomeCte.trim()].filter(Boolean))];
+    if (!nomes.length) return;
     setSalvandoVinculo(true);
     try {
-      await onAdicionarVinculo?.(novoNomeCte.trim());
+      for (const nome of nomes) {
+        await onAdicionarVinculo?.(nome);
+      }
       setNovoNomeCte('');
+      setSugestoesCte([]);
+      setSelecionados([]);
     } finally {
       setSalvandoVinculo(false);
+    }
+  };
+
+  const removerVinculo = async (vinculo) => {
+    setRemovendoId(vinculo.id || vinculo.nomeCte);
+    try {
+      await onRemoverVinculo?.(vinculo);
+    } finally {
+      setRemovendoId(null);
     }
   };
 
@@ -1339,32 +1374,60 @@ function ConfirmarValidacaoModal({ open, transportadora, origem, vinculos, audit
           </button>
         </div>
         {vinculos.length ? (
-          <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-            {vinculos.map((v) => <li key={v.id || v.nomeCte}>{v.nomeCte}</li>)}
+          <ul style={{ margin: '8px 0 0', paddingLeft: 0, listStyle: 'none' }}>
+            {vinculos.map((v) => (
+              <li key={v.id || v.nomeCte} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '4px 0' }}>
+                <span>{v.nomeCte}</span>
+                <button
+                  type="button"
+                  className="btn-link inline-btn"
+                  disabled={removendoId === (v.id || v.nomeCte)}
+                  onClick={() => removerVinculo(v)}
+                  title="Remover vínculo"
+                  style={{ color: '#b45309' }}
+                >
+                  {removendoId === (v.id || v.nomeCte) ? 'Removendo…' : '🗑 Remover'}
+                </button>
+              </li>
+            ))}
           </ul>
         ) : (
-          <>
-            <p style={{ color: '#b45309', margin: '8px 0 0' }}>⚠ Nenhum vínculo encontrado para esta transportadora.</p>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-              <input
-                placeholder="Nome da transportadora como aparece no CT-e..."
-                value={novoNomeCte}
-                onChange={(e) => setNovoNomeCte(e.target.value)}
-                disabled={salvandoVinculo}
-                style={{ flex: 1, minWidth: 200 }}
-              />
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={salvandoVinculo || !novoNomeCte.trim()}
-                onClick={vincularCte}
-              >
-                {salvandoVinculo ? 'Vinculando…' : 'Vincular'}
-              </button>
-            </div>
-          </>
+          <p style={{ color: '#b45309', margin: '8px 0 0' }}>⚠ Nenhum vínculo encontrado para esta transportadora.</p>
         )}
-        <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>Você também pode conferir/editar vínculos na tela Ferramentas.</p>
+        <div style={{ marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              placeholder="Buscar nome como aparece no CT-e..."
+              value={novoNomeCte}
+              onChange={(e) => buscarSugestoes(e.target.value)}
+              disabled={salvandoVinculo}
+              style={{ flex: 1, minWidth: 200 }}
+            />
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={salvandoVinculo || (!novoNomeCte.trim() && !selecionados.length)}
+              onClick={vincularCte}
+            >
+              {salvandoVinculo ? 'Vinculando…' : `Vincular${selecionados.length ? ` (${selecionados.length})` : ''}`}
+            </button>
+          </div>
+          {sugestoesCte.length ? (
+            <div style={{ marginTop: 6, maxHeight: 160, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+              {sugestoesCte.map((nome) => (
+                <label key={nome} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', fontSize: 13, cursor: 'pointer', borderBottom: '1px solid #f1f5f9' }}>
+                  <input
+                    type="checkbox"
+                    checked={selecionados.includes(nome)}
+                    onChange={() => alternarSelecionado(nome)}
+                  />
+                  {nome}
+                </label>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>Marque quantos vínculos precisar antes de clicar em Vincular. Você também pode conferir/editar na tela Ferramentas.</p>
       </div>
 
       <div className="hint-box top-space">
