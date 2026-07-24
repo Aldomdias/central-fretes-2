@@ -36,6 +36,32 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// Peso de faixa (pesoMin/pesoMax/excessoKg) segue convenção decimal fixa:
+// "50.001" sempre significa 50,001 kg (limite logo acima da faixa anterior),
+// nunca "cinquenta mil e um". Usar o toNumber() genérico aqui é perigoso: sua
+// heurística de milhar (pensada para R$/NF tipo "1.500") interpretaria
+// "50.001" como 50001 e o excedente parava de bater (limite viraria 50.001 kg
+// em vez de 50 kg, e um CT-e de poucas centenas de kg nunca ultrapassaria).
+function toNumeroPesoFaixa(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  let text = String(value).replace(/\s/g, '').trim();
+  if (!text) return 0;
+
+  const negative = /^-/.test(text);
+  text = text.replace(/^-/, '');
+
+  if (text.includes(',')) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  }
+
+  const clean = text.replace(/[^0-9.]/g, '');
+  if (!clean) return 0;
+  const parsed = Number(`${negative ? '-' : ''}${clean}`);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function toPercent(value) {
   return toNumber(value) / 100;
 }
@@ -195,7 +221,7 @@ function escolherComponenteBase(componentes = {}) {
 }
 
 function normalizarLimiteExcedentePorPesoMinimo(pesoMin = 0) {
-  const minimo = toNumber(pesoMin);
+  const minimo = toNumeroPesoFaixa(pesoMin);
   if (minimo <= 0) return 0;
 
   // Nas tabelas por faixa, a faixa final costuma vir como 300.001 até 999999999.
@@ -205,7 +231,7 @@ function normalizarLimiteExcedentePorPesoMinimo(pesoMin = 0) {
 }
 
 function resolverRegraExcedente({ cotacao = {}, pesoMin = 0, pesoLimite = 0, faixaAberta = false }) {
-  const limiteInformado = toNumber(
+  const limiteInformado = toNumeroPesoFaixa(
     cotacao.excessoPeso ??
     cotacao.excesso_kg ??
     cotacao.pesoLimiteExcedente ??
@@ -321,8 +347,8 @@ export function calcularFreteFaixaPeso({ rota = {}, cotacao = {}, generalidades 
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
 
-  const pesoLimite = toNumber(cotacao.pesoMax || cotacao.pesoLimite);
-  const pesoMin = toNumber(cotacao.pesoMin || cotacao.pesoInicial || cotacao.peso_inicial);
+  const pesoLimite = toNumeroPesoFaixa(cotacao.pesoMax || cotacao.pesoLimite);
+  const pesoMin = toNumeroPesoFaixa(cotacao.pesoMin || cotacao.pesoInicial || cotacao.peso_inicial);
   const faixaAberta = pesoLimite >= 999998 || pesoLimite === 0;
 
   const {

@@ -529,28 +529,74 @@ export async function removerCargasDuplicadasLotacaoSupabase() {
   return { ok: true, removidas: idsDuplicados.length };
 }
 
+function chaveCargaIdenticaDb(row = {}) {
+  const numero = (valor) => {
+    const parsed = Number(valor);
+    return Number.isFinite(parsed) ? parsed.toFixed(2) : '0.00';
+  };
+  return [
+    normalizarTexto(row.dist || ''),
+    numero(row.valor_comparacao),
+    numero(row.frete_cantu),
+    numero(row.frete_transp),
+    numero(row.pedagio),
+  ].join('|');
+}
+
 export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '') {
   if (!isSupabaseConfigured()) return { ok: false, modo: 'local', total: 0 };
   if (!cargas.length) return { ok: true, modo: 'supabase', total: 0 };
 
   const supabase = ensureClient();
-  const rows = cargas.map(c => cargaParaDb(c, arquivoOrigem));
+
+  // Reimportar o mesmo arquivo não deve criar linha nova se já existe uma
+  // idêntica (mesma DIST + mesmo valor/frete/pedágio) — evita depender só da
+  // limpeza pós-insert, que roda em segundo plano e pode falhar em silêncio.
+  const distsDoLote = [...new Set(cargas.map((c) => c.dist).filter(Boolean))];
+  const chavesExistentes = new Set();
+  const CHUNK_DIST = 200;
+  for (let i = 0; i < distsDoLote.length; i += CHUNK_DIST) {
+    const lote = distsDoLote.slice(i, i + CHUNK_DIST);
+    const { data, error } = await supabase
+      .from('lotacao_cargas')
+      .select('dist,valor_comparacao,frete_cantu,frete_transp,pedagio')
+      .in('dist', lote);
+    if (error) throw new Error(detalheErroSupabase(error));
+    (data || []).forEach((row) => chavesExistentes.add(chaveCargaIdenticaDb(row)));
+  }
+
+  const chavesNoLote = new Set();
+  const rowsUnicas = [];
+  for (const carga of cargas) {
+    const chave = chaveCargaIdentica(carga);
+    if (chavesExistentes.has(chave) || chavesNoLote.has(chave)) continue;
+    chavesNoLote.add(chave);
+    rowsUnicas.push(cargaParaDb(carga, arquivoOrigem));
+  }
+
   const CHUNK = 500;
   let total = 0;
-
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK);
+  for (let i = 0; i < rowsUnicas.length; i += CHUNK) {
+    const chunk = rowsUnicas.slice(i, i + CHUNK);
     const { error } = await supabase.from('lotacao_cargas').insert(chunk);
     if (error) throw new Error(detalheErroSupabase(error));
     total += chunk.length;
   }
 
-  const deduplicacao = await removerCargasDuplicadasLotacaoSupabase();
+  let duplicadasRemovidas = 0;
+  try {
+    const deduplicacao = await removerCargasDuplicadasLotacaoSupabase();
+    duplicadasRemovidas = deduplicacao.removidas || 0;
+  } catch (erroLimpeza) {
+    console.error('[Lotação] Falha ao limpar duplicatas remanescentes:', erroLimpeza.message || erroLimpeza);
+  }
+
   return {
     ok: true,
     modo: 'supabase',
     total,
-    duplicadasRemovidas: deduplicacao.removidas || 0,
+    ignoradasPorDuplicidade: cargas.length - rowsUnicas.length,
+    duplicadasRemovidas,
   };
 }
 

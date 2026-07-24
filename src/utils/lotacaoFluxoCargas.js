@@ -643,17 +643,50 @@ function passaFiltro(valor, filtro) {
   return normalizarTexto(valor).includes(filtroNorm);
 }
 
+function chaveCargaReimportada(carga = {}) {
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '0.00');
+  return [
+    normalizarTexto(carga.dist || ''),
+    num(carga.valorComparacao),
+    num(carga.freteCantu),
+    num(carga.freteTransp),
+    num(carga.pedagio),
+  ].join('|');
+}
+
+function dataImportacaoCarga(carga = {}) {
+  const valor = new Date(carga.importadoEm || carga.created_at || 0).getTime();
+  return Number.isNaN(valor) ? 0 : valor;
+}
+
+// Reimportações do mesmo arquivo criam várias linhas idênticas para a mesma
+// DIST. Sem deduplicar antes do corte de MAX_RESULTADOS, poucas DISTs muito
+// reimportadas consomem o limite e escondem DISTs legítimas mais antigas.
+function deduplicarCargasReimportadas(cargas = []) {
+  const unicos = new Map();
+  for (const carga of cargas || []) {
+    const chave = chaveCargaReimportada(carga);
+    const existente = unicos.get(chave);
+    if (!existente || dataImportacaoCarga(carga) > dataImportacaoCarga(existente)) {
+      unicos.set(chave, carga);
+    }
+  }
+  return [...unicos.values()];
+}
+
 export function buscarHistoricoLotacao(cargas = [], filtros = {}) {
   const origem = filtros.origem || '';
   const destino = filtros.destino || '';
   const tipo = filtros.tipo || '';
   const transportadora = filtros.transportadora || '';
 
-  return (cargas || [])
+  const filtradas = (cargas || [])
     .filter((item) => passaFiltro(item.origem, origem))
     .filter((item) => passaFiltro(item.destino, destino))
     .filter((item) => passaFiltro(item.tipoVeiculo, tipo))
-    .filter((item) => passaFiltro(item.transportadora, transportadora))
+    .filter((item) => passaFiltro(item.transportadora, transportadora));
+
+  return deduplicarCargasReimportadas(filtradas)
     .sort((a, b) => {
       const dataA = new Date(a.coletaRealizada || a.coletaPlanejada || a.liberado || a.importadoEm || 0).getTime();
       const dataB = new Date(b.coletaRealizada || b.coletaPlanejada || b.liberado || b.importadoEm || 0).getTime();

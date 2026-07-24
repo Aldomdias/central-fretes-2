@@ -295,6 +295,37 @@ function separarCtesTexto(valor = '') {
     .filter(Boolean);
 }
 
+// Reimportações do mesmo arquivo geram linhas repetidas para a mesma DIST.
+// Sem deduplicar, o valor da viagem é somado uma vez por reimportação (ex.:
+// 11 reimportações do mesmo arquivo = valor 11x maior que o real).
+function chaveRegistroLotacaoOperacao(carga = {}) {
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '0.00');
+  return [
+    normalizarTexto(carga.dist || ''),
+    num(carga.valorComparacao),
+    num(carga.freteCantu),
+    num(carga.freteTransp),
+    num(carga.pedagio),
+  ].join('|');
+}
+
+function dataImportacaoRegistroLotacao(carga = {}) {
+  const valor = new Date(carga.importadoEm || carga.created_at || 0).getTime();
+  return Number.isNaN(valor) ? 0 : valor;
+}
+
+function deduplicarRegistrosLotacaoOperacao(registros = []) {
+  const unicos = new Map();
+  for (const registro of registros || []) {
+    const chave = chaveRegistroLotacaoOperacao(registro);
+    const existente = unicos.get(chave);
+    if (!existente || dataImportacaoRegistroLotacao(registro) > dataImportacaoRegistroLotacao(existente)) {
+      unicos.set(chave, registro);
+    }
+  }
+  return [...unicos.values()];
+}
+
 function consolidarViagensLotacao(cargas = []) {
   const mapa = new Map();
 
@@ -339,8 +370,12 @@ function consolidarViagensLotacao(cargas = []) {
   });
 
   return [...mapa.values()].map((item) => {
+    const registrosDeduplicados = deduplicarRegistrosLotacaoOperacao(item.registros);
+    const valoresDeduplicados = registrosDeduplicados
+      .map((registro) => Number(registro.valorComparacao))
+      .filter((valor) => Number.isFinite(valor) && valor > 0);
     const valoresUnicos = [...new Set(item.valores.map((valor) => Number(valor.toFixed(2))))].sort((a, b) => b - a);
-    const valorBase = Number(item.valores.reduce((acc, valor) => acc + valor, 0).toFixed(2))
+    const valorBase = Number(valoresDeduplicados.reduce((acc, valor) => acc + valor, 0).toFixed(2))
       || Number(item.cargaPrincipal?.valorComparacao || 0);
     const valorAlternativo = valoresUnicos.find((valor) => valor !== valorBase) || null;
     const cargaPrincipal = {
@@ -355,7 +390,7 @@ function consolidarViagensLotacao(cargas = []) {
       cargaPrincipal,
       valorBase,
       valorAlternativo,
-      quantidadeRegistros: item.registros.length,
+      quantidadeRegistros: registrosDeduplicados.length,
       transportadora: [...item.transportadoras.values()].join(' / ') || item.cargaPrincipal?.transportadora || '',
       origem: [...item.origens.values()].join(' / ') || item.cargaPrincipal?.origem || '',
       destino: [...item.destinos.values()].join(' / ') || item.cargaPrincipal?.destino || '',

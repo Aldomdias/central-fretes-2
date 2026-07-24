@@ -374,23 +374,30 @@ function ehQuestionamentoAuditoriaLotacao(sol = {}) {
     .startsWith(PREFIXO_QUESTIONAMENTO_AUDITORIA_LOTACAO);
 }
 
+function semZerosEsquerda(valor = '') {
+  return String(valor || '').replace(/^0+(?=\d)/, '');
+}
+
 function cteContidoNaCargaAuditoria(carga = {}, cte = {}) {
   if (!carga || !cte) return false;
-  const idsCte = identificadoresCteAuditoria(cte, cte.chave_cte || '')
-    .map((item) => normalizarTexto(item))
-    .filter(Boolean);
-  if (!idsCte.length) return false;
 
-  const cteRawNorm = normalizarTexto(carga.cteRaw || '');
+  // Comparação EXATA (número sem zeros à esquerda, ou chave completa) — nunca
+  // por substring: números curtos de CT-e (ex.: "20", "24") aparecem por
+  // coincidência dentro de quase qualquer chave de 44 dígitos, gerando falsos
+  // positivos que lotam as sugestões e escondem a viagem correta.
+  const numeroCte = semZerosEsquerda(normalizarTexto(cte.numero_cte || ''));
+  const chaveCte = normalizarTexto(cte.chave_cte || '');
+  if (!numeroCte && !chaveCte) return false;
+
   const ctesLista = [
     ...(carga.ctes || []),
     ...separarCtes(carga.cteRaw || ''),
   ].map((item) => normalizarTexto(item)).filter(Boolean);
 
-  return idsCte.some((id) => {
-    if (!id) return false;
-    if (ctesLista.some((item) => item === id || item.includes(id) || id.includes(item))) return true;
-    return Boolean(cteRawNorm && cteRawNorm.includes(id));
+  return ctesLista.some((item) => {
+    if (chaveCte && item === chaveCte) return true;
+    if (!numeroCte) return false;
+    return semZerosEsquerda(item) === numeroCte;
   });
 }
 
@@ -1128,13 +1135,11 @@ function gerarSugestoesViagemAuditoria(cargas = [], cte = {}, vinculos = []) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
 
-  const vinculosPossiveis = casamento.length
-    ? []
-    : analisadas
-      .filter((item) => item.vinculo.score >= 18)
-      .map((item) => ({ viagem: item.viagem, score: item.vinculo.score, motivos: item.vinculo.motivos }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
+  const vinculosPossiveis = analisadas
+    .filter((item) => item.vinculo.score >= 18)
+    .map((item) => ({ viagem: item.viagem, score: item.vinculo.score, motivos: item.vinculo.motivos }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
 
   return { casamento, vinculosPossiveis };
 }
@@ -1690,9 +1695,9 @@ function SugestoesVinculoTransportadora({ sugestoes, onAnalisar }) {
 
   return (
     <div className="table-card lotacao-table-card">
-      <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>Sugestões para vínculo de transportadora</div>
+      <div className="panel-title" style={{ padding: '0.75rem 1rem 0.25rem' }}>Outras viagens na mesma rota (transportadora diferente)</div>
       <div className="hint-box compact" style={{ margin: '0 1rem 0.75rem' }}>
-        Nenhuma sugestão válida de casamento foi encontrada com a mesma transportadora. As viagens abaixo são apenas para análise de possível vínculo. Não liberam auditoria direta antes da confirmação do vínculo.
+        Mesma origem e destino do CT-e, mas com nome de transportadora diferente do informado. Compare as datas e valores abaixo — servem apenas para análise/vínculo manual, não liberam auditoria direta antes da confirmação do vínculo.
       </div>
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
@@ -4466,6 +4471,17 @@ export default function LotacaoAuditoriaPage() {
               onUsar={(viagem) => {
                 setViagemSelecionada(viagem);
                 setMensagem(`DIST/viagem ${viagem.dist || ''} selecionada para auditoria.`);
+              }}
+            />
+          )}
+
+          {cteSelecionado && sugestoesConsultadas && sugestoesVinculoTransportadora.length > 0 && (
+            <SugestoesVinculoTransportadora
+              sugestoes={sugestoesVinculoTransportadora}
+              onAnalisar={(viagem) => {
+                setViagemSelecionada(viagem);
+                setAbaAtiva('vinculos');
+                setMensagem('Revise e confirme o vínculo de transportadora antes de auditar esta viagem.');
               }}
             />
           )}

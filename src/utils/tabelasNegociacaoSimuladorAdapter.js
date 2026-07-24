@@ -142,6 +142,19 @@ function normalizarPesoFaixaNegociacao(pesoInicialRaw, pesoFinalRaw) {
   return { pesoInicial, pesoFinal };
 }
 
+// Mesmo bug de "50,001 vira 50001" pode atingir a coluna de limiar do
+// excedente (excesso_kg). Ela normalmente repete o peso_inicial da faixa
+// aberta, então usamos o pesoInicial (já corrigido acima) como referência:
+// se excessoKg destoa >=1000x dele, também sofreu o mesmo parsing errado.
+function normalizarExcessoKgNegociacao(excessoKgRaw, pesoInicial = 0) {
+  const excessoKg = numero(excessoKgRaw);
+  if (excessoKg >= 1000 && pesoInicial > 0 && pesoInicial < 1000) {
+    const reduzido = excessoKg / 1000;
+    if (Math.abs(reduzido - pesoInicial) < 1) return reduzido;
+  }
+  return excessoKg;
+}
+
 function parseDadosOriginais(value) {
   if (!value) return {};
   if (typeof value === 'object') return value;
@@ -320,7 +333,7 @@ function montarCotacao({ item, nomeRota, generalidades, indice }) {
   const taxaAplicada = numero(item.taxa_aplicada);
   const freteMinimo = numero(item.frete_minimo);
   const { pesoInicial, pesoFinal: pesoFinalInformado } = normalizarPesoFaixaNegociacao(item.peso_inicial, item.peso_final);
-  const excessoKg = numero(item.excesso_kg);
+  const excessoKg = normalizarExcessoKgNegociacao(item.excesso_kg, pesoInicial);
   const valorExcedente = numero(item.valor_excedente);
   const tipoCalculoTabela = normalizarTipoCalculo(generalidades.tipoCalculo);
   const tipoCalculoExplicito = tipoCalculoInformado(
