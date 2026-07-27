@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
-import { aplicarReauditoriaDetalhes, gerarProtocolo, isoDate, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
+import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
 import { chaveFatura } from '../utils/auditoriaFretesImport';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
@@ -480,6 +480,38 @@ export async function registrarHistoricoCarteiraAuditoria({ transportadora, audi
     console.warn('Não foi possível registrar histórico de carteira.', error.message || error);
   }
   return payload;
+}
+
+// Espelha o auditor da carteira nas faturas ABERTAS e ainda sem auditor
+// dessa transportadora. Usada fora do modulo de auditoria (ex.: tela de
+// Transportadoras em Ferramentas), que so grava em auditoria_carteiras e,
+// sem isso, deixava as faturas existentes com "SEM AUDITOR DEFINIDO" mesmo
+// depois de a transportadora ja ter responsavel definido.
+// `matchesTransportadora(nomeFatura)` decide o casamento de nome (o chamador
+// resolve vinculo/normalizacao do jeito que ja usa) — faturas com outro
+// auditor ja definido nunca sao tocadas aqui (evita pisar em atribuicao
+// alheia sem o fluxo de confirmacao que existe no Centro de Gestores).
+export async function propagarAuditorParaFaturas({ auditorNome, auditorEmail, atribuidoPor, matchesTransportadora }) {
+  if (!isSupabaseConfigured() || !auditorNome || typeof matchesTransportadora !== 'function') return { atualizadas: 0 };
+  const client = getSupabaseClient();
+  const { data, error } = await client.from('faturas').select('id, transportadora, status, auditor_nome');
+  if (error) {
+    console.warn('Não foi possível carregar faturas para propagar auditor.', error.message || error);
+    return { atualizadas: 0 };
+  }
+  const alvo = (data || []).filter((f) => !ENCERRADOS.has(f.status) && !f.auditor_nome && matchesTransportadora(f.transportadora));
+  if (!alvo.length) return { atualizadas: 0 };
+  const agora = new Date().toISOString();
+  await safeUpsert('faturas', alvo.map((f) => ({ id: f.id, auditor_nome: auditorNome, auditor_email: auditorEmail || '', updated_at: agora })));
+  try {
+    await inserirHistorico('auditoria_fatura_historico', alvo.map((f) => ({
+      id: uid('hist'), fatura_id: f.id, created_at: agora,
+      acao: 'AUDITOR_ATRIBUIDO', descricao: `Carteira atribuida a ${auditorNome}.`, usuario_nome: atribuidoPor || 'Gestao',
+    })));
+  } catch (histError) {
+    console.warn('Não foi possível registrar histórico de atribuição em massa.', histError.message || histError);
+  }
+  return { atualizadas: alvo.length };
 }
 
 // Lista leve de carteiras (transportadora -> auditor), sem o resto do estado

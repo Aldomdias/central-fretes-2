@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { analisarCoberturaOrigem, baixarModelo, buildImportPayload, exportarInconsistenciasExcel, exportarSecao, gerarArquivosVerum, parseFileToRows } from '../utils/importacao';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
-import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora, buscarNomesCteSimilares } from '../services/vinculosTransportadorasService';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora, salvarVinculosTransportadoras, removerVinculoTransportadora, buscarNomesCteSimilares } from '../services/vinculosTransportadorasService';
 import { normalizarChave } from '../services/vinculosTransportadorasPuro';
-import { listarCarteirasAuditoria, salvarCarteiraAuditoria } from '../services/auditoriaFretesService';
+import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaFaturas } from '../services/auditoriaFretesService';
+import { carregarSessao } from '../utils/authLocal';
 
 // Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
 // e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
@@ -89,6 +90,17 @@ function useVinculosEAuditores() {
       const copia = [...lista];
       copia[idx] = { ...copia[idx], ...carteira };
       return copia;
+    });
+    // Sem isso, faturas ja existentes dessa transportadora ficavam presas em
+    // "SEM AUDITOR DEFINIDO" mesmo depois de atribuir o auditor aqui — só a
+    // carteira (auditoria_carteiras) era gravada, as faturas nao.
+    const mapaVinculos = criarMapaVinculosTransportadoras(vinculosRaw || []);
+    const chaveAlvo = normalizarChave(nomeTransportadora);
+    await propagarAuditorParaFaturas({
+      auditorNome,
+      auditorEmail: carteira.auditor_email,
+      atribuidoPor: carregarSessao()?.nome || 'Gestao',
+      matchesTransportadora: (nomeFatura) => normalizarChave(aplicarVinculoTransportadora(nomeFatura, mapaVinculos)) === chaveAlvo,
     });
   }
 
