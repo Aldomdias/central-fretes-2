@@ -30,7 +30,9 @@ import {
   CANAIS_PARAMETRIZAVEIS,
   definirCanalTransportadora,
   listarPendenciasCanalTransportadora,
+  recalcularCanalTransportadora,
 } from '../services/canalTransportadoraService';
+import { normalizarTextoCanal } from '../utils/canalTransportadora';
 import {
   carregarFluxoCargasLotacao,
   resumirFluxoCargas,
@@ -705,10 +707,42 @@ export default function FerramentasPage({ transportadoras = [] }) {
   const [pendenciasCanal, setPendenciasCanal] = useState([]);
   const [carregandoPendenciasCanal, setCarregandoPendenciasCanal] = useState(false);
   const [salvandoCanalPendencia, setSalvandoCanalPendencia] = useState('');
+  const [filtroCanalOriginal, setFiltroCanalOriginal] = useState('');
+  const [filtroTransportadoraPendencia, setFiltroTransportadoraPendencia] = useState('');
+  const [selecionadosPendencia, setSelecionadosPendencia] = useState(() => new Set());
+  const [loteEmAndamento, setLoteEmAndamento] = useState(false);
+  const [loteProgresso, setLoteProgresso] = useState(null); // { feito, total }
+  const [importandoCanal, setImportandoCanal] = useState(false);
+  const [recalculandoCanal, setRecalculandoCanal] = useState(false);
   const [baseFluxoLotacao, setBaseFluxoLotacao] = useState(() => carregarFluxoCargasLotacao());
   const resumoLotacao = useMemo(() => resumirFluxoCargas(baseFluxoLotacao), [baseFluxoLotacao]);
 
-  const resumoPendenciasCanal = pendenciasCanal.reduce((acc, item) => {
+  // Vários pares transportadora/canal têm o mesmo nome normalizado com grafias
+  // diferentes (ex.: "FL BRASIL HOLDING," vs "FL BRASIL HOLDING") — usar só o
+  // nome normalizado como identidade colide linhas distintas. Junta com o
+  // nome bruto + canal original pra garantir uma chave única por linha.
+  function chavePendencia(item) {
+    return `${item.transportadoraNormalizada || ''}::${item.transportadora || ''}::${item.canalOriginal || ''}`;
+  }
+
+  const canaisOriginaisDisponiveis = useMemo(
+    () => [...new Set(pendenciasCanal.map((item) => item.canalOriginal || '(vazio)'))].sort(),
+    [pendenciasCanal]
+  );
+
+  const pendenciasCanalFiltradas = useMemo(() => {
+    let lista = pendenciasCanal;
+    if (filtroCanalOriginal) {
+      lista = lista.filter((item) => (item.canalOriginal || '(vazio)') === filtroCanalOriginal);
+    }
+    const busca = normalizarTextoCanal(filtroTransportadoraPendencia);
+    if (busca) {
+      lista = lista.filter((item) => normalizarTextoCanal(item.transportadora).includes(busca));
+    }
+    return lista;
+  }, [pendenciasCanal, filtroCanalOriginal, filtroTransportadoraPendencia]);
+
+  const resumoPendenciasCanal = pendenciasCanalFiltradas.reduce((acc, item) => {
     acc.transportadoras += 1;
     acc.ctes += Number(item.quantidadeCtes || 0);
     acc.tracking += Number(item.quantidadeTracking || 0);
@@ -747,6 +781,155 @@ export default function FerramentasPage({ transportadoras = [] }) {
       setErro(error.message || 'Erro ao definir canal da transportadora.');
     } finally {
       setSalvandoCanalPendencia('');
+    }
+  }
+
+  function alternarSelecaoPendencia(item) {
+    const chave = chavePendencia(item);
+    setSelecionadosPendencia((prev) => {
+      const proximo = new Set(prev);
+      if (proximo.has(chave)) proximo.delete(chave);
+      else proximo.add(chave);
+      return proximo;
+    });
+  }
+
+  function alternarSelecaoTodosVisiveis(itens, marcar) {
+    setSelecionadosPendencia((prev) => {
+      const proximo = new Set(prev);
+      itens.forEach((item) => {
+        const chave = chavePendencia(item);
+        if (marcar) proximo.add(chave);
+        else proximo.delete(chave);
+      });
+      return proximo;
+    });
+  }
+
+  async function definirCanalEmLote(itens, canal) {
+    if (!itens.length) return;
+    const ok = window.confirm(
+      `Definir canal ${canal} para ${itens.length} transportadora(s) selecionada(s)? Isso atualizara CT-es e Tracking atuais com canal A DEFINIR dessas transportadoras.`
+    );
+    if (!ok) return;
+    setLoteEmAndamento(true);
+    setLoteProgresso({ feito: 0, total: itens.length });
+    setErro('');
+    let ctesAtualizados = 0;
+    let trackingAtualizados = 0;
+    const falhas = [];
+    for (let i = 0; i < itens.length; i += 1) {
+      const item = itens[i];
+      try {
+        const resultado = await definirCanalTransportadora({
+          transportadora: item.transportadora,
+          canal,
+          usuario: sessao?.email || sessao?.nome || '',
+        });
+        ctesAtualizados += Number(resultado?.ctes_atualizados || 0);
+        trackingAtualizados += Number(resultado?.tracking_atualizados || 0);
+      } catch (error) {
+        falhas.push(`${item.transportadora}: ${error.message || 'erro desconhecido'}`);
+      }
+      setLoteProgresso({ feito: i + 1, total: itens.length });
+    }
+    setMensagem(
+      `Canal ${canal} salvo para ${itens.length - falhas.length}/${itens.length} transportadora(s). ` +
+        `CT-es atualizados: ${fmtNumero(ctesAtualizados)}. Tracking atualizado: ${fmtNumero(trackingAtualizados)}.` +
+        (falhas.length ? ` Falhas: ${falhas.join(' | ')}` : '')
+    );
+    setSelecionadosPendencia(new Set());
+    setLoteEmAndamento(false);
+    setLoteProgresso(null);
+    await carregarPendenciasCanal();
+  }
+
+  function exportarPendenciasCanal() {
+    const linhas = pendenciasCanalFiltradas.map((item) => ({
+      Transportadora: item.transportadora,
+      'Canal original': item.canalOriginal || '',
+      'Qtd CT-es': item.quantidadeCtes,
+      'Qtd Tracking': item.quantidadeTracking,
+      'Valor CT-e': item.valorTotalCte,
+      Canal: '',
+    }));
+    baixarXlsx(`pendencias-canal-${new Date().toISOString().slice(0, 10)}.xlsx`, { Pendencias: linhas });
+  }
+
+  function importarPendenciasCanal(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      setImportandoCanal(true);
+      setErro('');
+      try {
+        const workbook = XLSX.read(ev.target.result, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const linhas = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        const validas = linhas
+          .map((l) => ({
+            transportadora: String(l.Transportadora || l.transportadora || '').trim(),
+            canal: String(l.Canal || l.canal || '').trim().toUpperCase(),
+          }))
+          .filter((l) => l.transportadora && CANAIS_PARAMETRIZAVEIS.includes(l.canal));
+        if (!validas.length) {
+          setErro('Nenhuma linha valida na planilha — preencha a coluna Canal com ATACADO, B2C, INTERCOMPANY ou REVERSA.');
+          return;
+        }
+        setLoteEmAndamento(true);
+        setLoteProgresso({ feito: 0, total: validas.length });
+        let ctesAtualizados = 0;
+        let trackingAtualizados = 0;
+        const falhas = [];
+        for (let i = 0; i < validas.length; i += 1) {
+          const item = validas[i];
+          try {
+            const resultado = await definirCanalTransportadora({
+              transportadora: item.transportadora,
+              canal: item.canal,
+              usuario: sessao?.email || sessao?.nome || '',
+            });
+            ctesAtualizados += Number(resultado?.ctes_atualizados || 0);
+            trackingAtualizados += Number(resultado?.tracking_atualizados || 0);
+          } catch (error) {
+            falhas.push(`${item.transportadora}: ${error.message || 'erro desconhecido'}`);
+          }
+          setLoteProgresso({ feito: i + 1, total: validas.length });
+        }
+        setMensagem(
+          `Canal importado para ${validas.length - falhas.length}/${validas.length} transportadora(s). ` +
+            `CT-es atualizados: ${fmtNumero(ctesAtualizados)}. Tracking atualizado: ${fmtNumero(trackingAtualizados)}.` +
+            (falhas.length ? ` Falhas: ${falhas.join(' | ')}` : '')
+        );
+        await carregarPendenciasCanal();
+      } catch (error) {
+        setErro(error.message || 'Erro ao importar planilha de canal.');
+      } finally {
+        setLoteEmAndamento(false);
+        setLoteProgresso(null);
+        setImportandoCanal(false);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  async function recalcularCanalTodos() {
+    const ok = window.confirm(
+      'Isso vai reprocessar o canal de TODOS os CT-es e Tracking (nao so os "A DEFINIR"), reaplicando as parametrizacoes manuais salvas. Pode demorar. Continuar?'
+    );
+    if (!ok) return;
+    setRecalculandoCanal(true);
+    setErro('');
+    try {
+      const resultado = await recalcularCanalTransportadora();
+      setMensagem(`Canal recalculado. CT-es atualizados: ${fmtNumero(resultado?.ctes_atualizados || 0)}. Tracking atualizado: ${fmtNumero(resultado?.tracking_atualizados || 0)}.`);
+      await carregarPendenciasCanal();
+    } catch (error) {
+      setErro(error.message || 'Erro ao recalcular canal.');
+    } finally {
+      setRecalculandoCanal(false);
     }
   }
 
@@ -1188,18 +1371,96 @@ export default function FerramentasPage({ transportadoras = [] }) {
               <div className="summary-card"><span>Tracking pendente</span><strong>{fmtNumero(resumoPendenciasCanal.tracking)}</strong><small>tracking_rows</small></div>
               <div className="summary-card"><span>Valor CT-e afetado</span><strong>{fmtMoeda(resumoPendenciasCanal.valorCte)}</strong><small>canal a definir</small></div>
             </div>
-            <div className="actions-right">
+            <div className="actions-right" style={{flexWrap:'wrap',gap:8}}>
               <button className="btn-secondary" type="button" onClick={carregarPendenciasCanal} disabled={carregandoPendenciasCanal}>
                 {carregandoPendenciasCanal ? 'Carregando...' : 'Recarregar pendencias'}
+              </button>
+              <button className="btn-secondary" type="button" onClick={exportarPendenciasCanal} disabled={!pendenciasCanalFiltradas.length}>
+                Exportar planilha
+              </button>
+              <label className="btn-secondary" style={{cursor:'pointer',margin:0}}>
+                {importandoCanal ? 'Importando...' : 'Importar planilha'}
+                <input type="file" accept=".xlsx,.xls" onChange={importarPendenciasCanal} disabled={importandoCanal || loteEmAndamento} style={{display:'none'}} />
+              </label>
+              <button className="btn-secondary" type="button" onClick={recalcularCanalTodos} disabled={recalculandoCanal}>
+                {recalculandoCanal ? 'Recalculando...' : 'Recalcular canal de todos os registros'}
               </button>
             </div>
             <div className="hint-box compact">
               Esta lista vem da view <code>pendencias_canal_transportadora</code>. Ao definir o canal, a parametrizacao fica salva e os registros atuais em A DEFINIR sao atualizados.
+              Exporte a planilha, preencha a coluna <strong>Canal</strong> (ATACADO/B2C/INTERCOMPANY/REVERSA) e importe de volta pra aplicar em lote.
+              O botao "Recalcular canal de todos os registros" reprocessa TUDO (nao so A DEFINIR) — use quando uma transportadora ja classificada estiver com canal errado (ex.: veio B2C/ATACADO mas deveria ser INTERCOMPANY).
             </div>
+
+            <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
+              <label className="field">
+                Canal original
+                <select value={filtroCanalOriginal} onChange={(e) => setFiltroCanalOriginal(e.target.value)}>
+                  <option value="">Todos ({pendenciasCanal.length})</option>
+                  {canaisOriginaisDisponiveis.map((canal) => (
+                    <option key={canal} value={canal}>{canal}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                Transportadora
+                <input
+                  type="text"
+                  placeholder="Filtrar transportadora..."
+                  value={filtroTransportadoraPendencia}
+                  onChange={(e) => setFiltroTransportadoraPendencia(e.target.value)}
+                />
+              </label>
+              {(filtroCanalOriginal || filtroTransportadoraPendencia) && (
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  onClick={() => { setFiltroCanalOriginal(''); setFiltroTransportadoraPendencia(''); }}
+                >
+                  Limpar filtros
+                </button>
+              )}
+            </div>
+
+            {selecionadosPendencia.size > 0 && (
+              <div className="hint-box compact" style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+                <strong>{selecionadosPendencia.size} selecionada(s)</strong>
+                <span>Aplicar canal em lote:</span>
+                {CANAIS_PARAMETRIZAVEIS.map((canal) => (
+                  <button
+                    key={canal}
+                    className="btn-primary"
+                    type="button"
+                    style={{minHeight:28,padding:'0 10px',fontSize:11}}
+                    disabled={loteEmAndamento}
+                    onClick={() => definirCanalEmLote(
+                      pendenciasCanalFiltradas.filter((item) => selecionadosPendencia.has(chavePendencia(item))),
+                      canal
+                    )}
+                  >
+                    {canal}
+                  </button>
+                ))}
+                <button className="btn-secondary" type="button" onClick={() => setSelecionadosPendencia(new Set())} disabled={loteEmAndamento}>
+                  Limpar seleção
+                </button>
+                {loteEmAndamento && loteProgresso && (
+                  <span>Processando {loteProgresso.feito}/{loteProgresso.total}...</span>
+                )}
+              </div>
+            )}
+
             <div className="sim-analise-tabela-wrap">
               <table className="sim-analise-tabela">
                 <thead>
                   <tr>
+                    <th>
+                      <input
+                        type="checkbox"
+                        checked={pendenciasCanalFiltradas.length > 0 && pendenciasCanalFiltradas.every((item) => selecionadosPendencia.has(chavePendencia(item)))}
+                        onChange={(e) => alternarSelecaoTodosVisiveis(pendenciasCanalFiltradas, e.target.checked)}
+                      />
+                    </th>
                     <th>Transportadora</th>
                     <th>Motivo</th>
                     <th>Canal original</th>
@@ -1213,8 +1474,17 @@ export default function FerramentasPage({ transportadoras = [] }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {pendenciasCanal.map((item) => (
-                    <tr key={item.transportadoraNormalizada || item.transportadora}>
+                  {pendenciasCanalFiltradas.map((item) => {
+                    const chaveSelecao = chavePendencia(item);
+                    return (
+                    <tr key={chaveSelecao}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selecionadosPendencia.has(chaveSelecao)}
+                          onChange={() => alternarSelecaoPendencia(item)}
+                        />
+                      </td>
                       <td><strong>{item.transportadora}</strong><div style={{fontSize:11,color:'var(--muted)'}}>{item.basesAfetadas}</div></td>
                       <td>{item.motivo}</td>
                       <td>{item.canalOriginal || '-'}</td>
@@ -1244,9 +1514,9 @@ export default function FerramentasPage({ transportadoras = [] }) {
                         </div>
                       </td>
                     </tr>
-                  ))}
-                  {!pendenciasCanal.length && (
-                    <tr><td colSpan="10">{carregandoPendenciasCanal ? 'Carregando pendencias...' : 'Nenhuma pendencia de canal encontrada.'}</td></tr>
+                  );})}
+                  {!pendenciasCanalFiltradas.length && (
+                    <tr><td colSpan="11">{carregandoPendenciasCanal ? 'Carregando pendencias...' : 'Nenhuma pendencia de canal encontrada com esse filtro.'}</td></tr>
                   )}
                 </tbody>
               </table>

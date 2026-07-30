@@ -832,6 +832,25 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
   return { index, stats };
 }
 
+// Reagrupa o índice canal|origem-destino por canal|destino, juntando todas as origens (CDs)
+// que atendem aquele IBGE de destino. Usado para resimular "qual seria o melhor CD +
+// transportadora" quando só se conhece o destino do pedido (ex.: Auditoria E-commerce).
+export function construirIndicePorDestino(transportadoras = [], municipios = []) {
+  const { index, stats } = construirIndiceFretesPorRota(transportadoras, municipios);
+  const porDestino = new Map();
+  for (const [key, lista] of index.entries()) {
+    const separador = key.lastIndexOf('|');
+    const canal = key.slice(0, separador);
+    const rotaId = key.slice(separador + 1);
+    const ibgeDestino = rotaId.split('-')[1];
+    const destKey = `${canal}|${ibgeDestino}`;
+    const atual = porDestino.get(destKey) || [];
+    atual.push(...lista);
+    porDestino.set(destKey, atual);
+  }
+  return { index: porDestino, stats };
+}
+
 function transportadoraMatch(nomeTabela, nomeFiltro, options = {}) {
   const tabela = normalizeKey(nomeTabela);
   const filtros = Array.isArray(nomeFiltro) ? nomeFiltro : [nomeFiltro];

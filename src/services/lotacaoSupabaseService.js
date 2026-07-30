@@ -1352,6 +1352,25 @@ export async function carregarFaturasSupabase({ transportadora, status, dataVenc
   return data || [];
 }
 
+// Faturas AUDITADA/APROVADA/PAGA/CANCELADA não devem ser tocadas por uma
+// reimportação — só PENDENTE/DIVERGENCIA (ou inexistente) podem ser
+// atualizadas. Usado pelo import seguro em FaturasPage.
+export const STATUS_FATURA_PROTEGIDOS = ['AUDITADA', 'APROVADA', 'PAGA', 'CANCELADA'];
+
+export async function buscarFaturaExistenteSupabase({ numeroFatura, serieFatura, transportadora }) {
+  if (!isSupabaseConfigured() || !numeroFatura) return null;
+  const supabase = ensureClient();
+  let query = supabase
+    .from('faturas')
+    .select('*')
+    .eq('numero_fatura', numeroFatura)
+    .eq('serie_fatura', serieFatura || '');
+  if (transportadora) query = query.eq('transportadora', transportadora);
+  const { data, error } = await query.limit(1).maybeSingle();
+  if (error) throw new Error(detalheErroSupabase(error));
+  return data || null;
+}
+
 export async function carregarDetalhesFaturaSupabase(faturaId) {
   if (!isSupabaseConfigured()) return [];
   const supabase = ensureClient();
@@ -1362,6 +1381,112 @@ export async function carregarDetalhesFaturaSupabase(faturaId) {
     .order('numero_cte');
   if (error) throw new Error(detalheErroSupabase(error));
   return data || [];
+}
+
+// ============================================================
+// PRAZO DE PAGAMENTO — cruza fatura (Emissão/Vencimento) com a
+// emissão real do CT-e (data em que a carga foi entregue e o
+// transportador finalmente emitiu o documento).
+// ============================================================
+export async function carregarPrazosPagamentoSupabase({
+  dataInicio,
+  dataFim,
+  transportadora,
+  tomador,
+  limit = 120000,
+  onProgress,
+} = {}) {
+  if (!isSupabaseConfigured()) return { rows: [], truncado: false };
+  const supabase = ensureClient();
+
+  function montarQuery() {
+    let query = supabase
+      .from('fatura_detalhes')
+      .select(
+        'id, fatura_id, chave_cte, numero_cte, transportadora, cnpj_transportadora, valor_frete, cnpj_tomador, nome_tomador, status, excluido_da_versao, ' +
+          'faturas!inner(id, numero_fatura, data_emissao, data_vencimento, valor_fatura, transportadora, cnpj_tomador, nome_tomador, status)'
+      )
+      .eq('excluido_da_versao', false)
+      .not('faturas.data_emissao', 'is', null)
+      .not('faturas.data_vencimento', 'is', null);
+
+    if (dataInicio) query = query.gte('faturas.data_emissao', dataInicio);
+    if (dataFim) query = query.lte('faturas.data_emissao', dataFim);
+    if (transportadora) query = query.ilike('transportadora', `%${transportadora}%`);
+    if (tomador) query = query.ilike('nome_tomador', `%${tomador}%`);
+    return query;
+  }
+
+  const pageSize = 1000;
+  const concurrencia = 6;
+  const offsets = [];
+  for (let offset = 0; offset < limit; offset += pageSize) offsets.push(offset);
+
+  const detalhes = [];
+  let truncado = false;
+  for (let i = 0; i < offsets.length; i += concurrencia) {
+    const lote = offsets.slice(i, i + concurrencia);
+    const resultados = await Promise.all(
+      lote.map((offset) => montarQuery().range(offset, Math.min(offset + pageSize, limit) - 1))
+    );
+    let paginaCurta = false;
+    resultados.forEach(({ data, error }) => {
+      if (error) throw new Error(detalheErroSupabase(error));
+      detalhes.push(...(data || []));
+      if (!data || data.length < pageSize) paginaCurta = true;
+    });
+    if (paginaCurta) break;
+    if (i + concurrencia >= offsets.length && detalhes.length >= limit) truncado = true;
+    onProgress?.({ etapa: 'buscando_ctes', carregados: detalhes.length, total: null });
+  }
+
+  const chaves = [...new Set(detalhes.map((d) => d.chave_cte).filter(Boolean))];
+  const mapaCte = new Map();
+  const chunkSize = 200;
+  const chunks = [];
+  for (let i = 0; i < chaves.length; i += chunkSize) chunks.push(chaves.slice(i, i + chunkSize));
+
+  for (let i = 0; i < chunks.length; i += concurrencia) {
+    const lote = chunks.slice(i, i + concurrencia);
+    const resultados = await Promise.all(
+      lote.map((chunk) =>
+        supabase.from('realizado_local_ctes').select('chave_cte, data_emissao, canal, transportadora').in('chave_cte', chunk)
+      )
+    );
+    resultados.forEach(({ data: ctes, error: errCtes }) => {
+      if (errCtes) throw new Error(detalheErroSupabase(errCtes));
+      (ctes || []).forEach((c) => mapaCte.set(c.chave_cte, c));
+    });
+    onProgress?.({ etapa: 'cruzando_tracking', carregados: mapaCte.size, total: chaves.length });
+  }
+
+  const rows = detalhes
+    .map((d) => {
+      const fatura = d.faturas || {};
+      const cte = mapaCte.get(d.chave_cte);
+      return {
+        fatura_id: d.fatura_id,
+        numero_fatura: fatura.numero_fatura || '',
+        chave_cte: d.chave_cte || '',
+        numero_cte: d.numero_cte || '',
+        transportadora: d.transportadora || fatura.transportadora || '',
+        // Nome como está em realizado_local_ctes — é o que a função de
+        // definir canal usa pra casar e atualizar; pode divergir do nome da
+        // fatura (abreviação, pontuação etc.), por isso guardamos os dois.
+        transportadora_cte: cte?.transportadora || '',
+        cnpj_transportadora: d.cnpj_transportadora || '',
+        nome_tomador: d.nome_tomador || fatura.nome_tomador || '',
+        canal: cte?.canal || '',
+        valor_frete: Number(d.valor_frete || 0),
+        data_emissao_fatura: fatura.data_emissao || null,
+        data_vencimento: fatura.data_vencimento || null,
+        data_emissao_cte: cte?.data_emissao ? String(cte.data_emissao).slice(0, 10) : null,
+        status_fatura: fatura.status || '',
+      };
+    })
+    .filter((r) => r.data_vencimento && r.data_emissao_fatura);
+
+  return { rows, truncado };
 }
 
 export async function buscarDetalhesFaturasPorCtesSupabase({ chaves = [], numeros = [] } = {}) {

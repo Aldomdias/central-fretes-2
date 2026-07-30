@@ -17,6 +17,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'tabelas-negociacao', label: 'Tabelas em Negociação', grupo: 'Suprimentos' },
   { chave: 'cte', label: 'CT-e', grupo: 'Auditoria' },
   { chave: 'auditoria-cte', label: 'Laboratorio Auditoria CT-e', grupo: 'Auditoria' },
+  { chave: 'auditoria-ecommerce', label: 'Auditoria E-commerce', grupo: 'Auditoria' },
   { chave: 'tracking', label: 'Tracking', grupo: 'Operação' },
   { chave: 'torre-controle', label: 'Torre de Controle', grupo: 'Operação' },
   { chave: 'reajustes', label: 'Reajustes', grupo: 'Fretes' },
@@ -33,6 +34,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'faturas', label: 'Central Auditoria de Fretes', grupo: 'Auditoria' },
   { chave: 'gestao-auditoria-fretes', label: 'Gestao da Auditoria', grupo: 'Auditoria' },
   { chave: 'financeiro-auditoria', label: 'Central Financeira', grupo: 'Financeiro' },
+  { chave: 'prazo-pagamento', label: 'Prazo de Pagamento', grupo: 'Financeiro' },
   { chave: 'tratativas', label: 'Tratativas', grupo: 'Auditoria' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
   { chave: 'icms-uf', label: 'Matriz ICMS UF', grupo: 'Cadastros' },
@@ -99,12 +101,12 @@ export const PERFIS_USUARIO = {
   GESTOR_AUDITORIA_FRETES: {
     nome: 'Gestor de Auditoria de Fretes',
     descricao: 'Gestao de carteiras, produtividade, riscos, vencimentos e SLA.',
-    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte', 'icms-uf'],
+    paginas: ['dashboard', 'conceito-app', 'cte', 'auditoria-cte', 'painel-auditoria', 'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'gestao-base-cte', 'icms-uf', 'prazo-pagamento'],
   },
   FINANCEIRO: {
     nome: 'Financeiro',
     descricao: 'Protocolos, solicitacoes, boletos, pagamentos e comprovantes.',
-    paginas: ['dashboard', 'conceito-app', 'financeiro-auditoria', 'faturas', 'tratativas'],
+    paginas: ['dashboard', 'conceito-app', 'financeiro-auditoria', 'faturas', 'tratativas', 'prazo-pagamento'],
   },
   CONSULTA: {
     nome: 'Consulta',

@@ -79,3 +79,14 @@ export async function definirCanalTransportadora({ transportadora, canal, usuari
   return { ok: true, fallback: true };
 }
 
+// Reaplica o resolver de canal (parametrizacao manual > vinculo/tabela de
+// origem > A DEFINIR) em TODOS os registros, nao so nos "A DEFINIR" — usado
+// depois de corrigir uma transportadora que ficou classificada errada (ex.:
+// veio como B2C/ATACADO por vinculo mas deveria ser INTERCOMPANY).
+export async function recalcularCanalTransportadora() {
+  const supabase = ensureSupabase();
+  const { data, error } = await supabase.rpc('recalcular_canal_transportadora');
+  if (error) throw new Error(`Erro ao recalcular canal. Rode a migration de recalculo. Detalhe: ${error.message}`);
+  return data || { ok: true };
+}
+

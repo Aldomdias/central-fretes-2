@@ -194,6 +194,8 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
       ${detalheLinhaHtmlAuditoria('Valor base', formatarDinheiroHtmlAuditoria(det.valor_base ?? frete.valorBase))}
     </div>
     <div class="calc-box"><h4>ICMS e totalizacao</h4>
+      ${detalheLinhaHtmlAuditoria('Subtotal antes da emergencial', formatarDinheiroHtmlAuditoria(frete.subtotalSemEmergencial))}
+      ${Number(frete.taxaEmergencialPct) > 0 ? detalheLinhaHtmlAuditoria('Taxa emergencial', `${pctFmt(frete.taxaEmergencialPct)} = ${formatarDinheiroHtmlAuditoria(frete.valorEmergencial)}`) : ''}
       ${detalheLinhaHtmlAuditoria('Subtotal sem ICMS', formatarDinheiroHtmlAuditoria(det.subtotal_sem_icms ?? det.subtotal))}
       ${detalheLinhaHtmlAuditoria('Aliquota ICMS', pctFmt(det.aliquota_icms ?? frete.aliquotaIcms))}
       ${detalheLinhaHtmlAuditoria('Origem aliquota', det.origem_aliquota_icms || frete.origemAliquotaIcms || '-')}
@@ -202,7 +204,7 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
       ${detalheLinhaHtmlAuditoria('Total calculado', formatarDinheiroHtmlAuditoria(calculadoFinal))}
     </div>
     <div class="calc-box"><h4>Taxas</h4>
-      ${taxa('Ad Valorem', 'adValorem')}${taxa('GRIS', 'gris')}${taxa('Pedagio', 'pedagio')}${taxa('TAS', 'tas')}${taxa('CTRC', 'ctrc')}${taxa('TDA', 'tda')}${taxa('TDE', 'tde')}${taxa('TDR', 'tdr')}${taxa('TRT', 'trt')}${taxa('Suframa', 'suframa')}${taxa('Outras', 'outras')}
+      ${taxa('Ad Valorem', 'adValorem')}${taxa('GRIS', 'gris')}${taxa('Pedagio', 'pedagio')}${taxa('TAS', 'tas')}${taxa('CTRC', 'ctrc')}${detalheLinhaHtmlAuditoria('Taxa emergencial', formatarDinheiroHtmlAuditoria(frete.valorEmergencial))}${taxa('TDA', 'tda')}${taxa('TDE', 'tde')}${taxa('TDR', 'tdr')}${taxa('TRT', 'trt')}${taxa('Suframa', 'suframa')}${taxa('Outras', 'outras')}${taxa('Taxa extra', 'taxaExtra')}
     </div>
   </div>`;
 }
@@ -411,6 +413,15 @@ function dentroDaToleranciaAuditoria(diferenca, tolerancia = TOLERANCIA_PADRAO) 
   const acima = Math.max(0, Number(tolerancia.acima || 0));
   const abaixo = Math.max(0, Number(tolerancia.abaixo || 0));
   return valor <= acima && valor >= -abaixo;
+}
+
+// Cor de status de uma linha de CT-e: verde dentro da tolerancia, vermelho
+// quando cobrado acima do calculado, amarelo quando cobrado abaixo.
+function corStatusLinhaAuditoria(item = {}, tolerancia = TOLERANCIA_PADRAO) {
+  if (!(Number(item.calculado_frete || 0) > 0)) return null;
+  const diferenca = Number(item.diferenca || 0);
+  if (dentroDaToleranciaAuditoria(diferenca, tolerancia)) return { bg: '#f0fdf4', borda: '#16a34a' };
+  return diferenca > 0 ? { bg: '#fef2f2', borda: '#dc2626' } : { bg: '#fffbeb', borda: '#d97706' };
 }
 
 function baixarArquivoAuditoria(conteudo, nome, tipo) {
@@ -769,6 +780,9 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const detalheRef = useRef(null);
   const [tab, setTab] = useState('resumo');
   const [selecionados, setSelecionados] = useState([]);
+  const [buscaCtes, setBuscaCtes] = useState('');
+  const [filtroStatusCte, setFiltroStatusCte] = useState('todos');
+  const [filtroCanalCte, setFiltroCanalCte] = useState('todos');
   const [carregandoDetalhes, setCarregandoDetalhes] = useState(false);
   const [erroDetalhes, setErroDetalhes] = useState('');
   const [novaFaturaId, setNovaFaturaId] = useState('');
@@ -1123,7 +1137,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     .card strong{display:block;font-size:22px;margin-top:6px}
     table{width:100%;border-collapse:collapse;background:white;border:1px solid #d6e0ef;border-radius:12px;overflow:hidden}
     th,td{border-bottom:1px solid #e5ebf5;padding:9px 10px;text-align:left;font-size:12px}
-    th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{display:none;background:#fbfdff}.detail-row.open{display:table-row}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}
+    th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{display:none;background:#fbfdff}.detail-row.open{display:table-row}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}.note{padding:12px 14px;border-radius:8px;background:#eff6ff;color:#1e3a8a;margin:16px 0;font-size:13px;font-weight:600}
   </style>
 </head>
 <body>
@@ -1133,7 +1147,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   </div>
   <div class="wrap">
     <div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
-    <div class="note">Clique em um CT-e para abrir ou fechar o detalhe do calculo.</div>
+    <div class="note">Clique em cima de qualquer CT-e na tabela abaixo para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
     <table>
       <thead><tr><th>CT-e</th><th>Chave</th><th>Rota</th><th>Canal</th><th>Peso</th><th>Frete pago</th><th>Calculo AMD</th><th>Diferenca</th><th>Status</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="9">Nenhum CT-e encontrado nesta fatura.</td></tr>'}</tbody>
@@ -1172,14 +1186,64 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     referenciaCtes.has(normalizarChaveCte(item.chave_cte))
     || referenciaCtes.has(normalizarChaveCte(item.numero_cte))).length;
 
-  const tabelaCtes = (lista) => (
+  const canaisDisponiveisCtes = [...new Set(detalhes.map((item) =>
+    item.canal || referenciaCtes.get(normalizarChaveCte(item.chave_cte))?.canal
+    || referenciaCtes.get(normalizarChaveCte(item.numero_cte))?.canal).filter(Boolean))];
+
+  const statusFiltroCte = (item, base) => {
+    const semValorNf = detalheSemValorNf(item, base);
+    if (semValorNf) return 'sem_nf';
+    const cor = corStatusLinhaAuditoria(item, toleranciaFatura);
+    if (!cor) return 'sem_calculo';
+    if (cor.borda === '#16a34a') return 'ok';
+    return cor.borda === '#dc2626' ? 'acima' : 'abaixo';
+  };
+
+  const aplicarFiltrosCtes = (lista) => lista.filter((item) => {
+    const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
+      || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
+    if (filtroCanalCte !== 'todos' && (item.canal || base?.canal || '') !== filtroCanalCte) return false;
+    if (filtroStatusCte !== 'todos' && statusFiltroCte(item, base) !== filtroStatusCte) return false;
+    if (buscaCtes.trim()) {
+      const termo = buscaCtes.trim().toLowerCase();
+      const alvo = [item.numero_cte, item.chave_cte, base?.cidade_origem, base?.cidade_destino, base?.uf_origem, base?.uf_destino]
+        .map((v) => String(v || '').toLowerCase()).join(' ');
+      if (!alvo.includes(termo)) return false;
+    }
+    return true;
+  });
+
+  const tabelaCtes = (listaOriginal) => {
+    const lista = aplicarFiltrosCtes(listaOriginal);
+    return (
     <div className="sim-analise-tabela-wrap">
       {detalhes.length > 0 && (
         <p className="compact">
-          Mostrando {detalhes.length} CT-e(s) da fatura. {ctesNaBase} ja cruzaram com a base auditada
+          Mostrando {lista.length} de {listaOriginal.length} CT-e(s){listaOriginal.length !== detalhes.length ? '' : ` da fatura`}. {ctesNaBase} ja cruzaram com a base auditada
           {ctesNaBase < detalhes.length ? '; os demais continuam listados para auditoria.' : '.'}
         </p>
       )}
+      <div className="form-grid three" style={{ marginBottom: 10 }}>
+        <label className="field">Buscar (CT-e, chave, cidade, UF)
+          <input value={buscaCtes} onChange={(e) => setBuscaCtes(e.target.value)} placeholder="Digite para filtrar..." />
+        </label>
+        <label className="field">Status
+          <select value={filtroStatusCte} onChange={(e) => setFiltroStatusCte(e.target.value)}>
+            <option value="todos">Todos</option>
+            <option value="ok">Dentro da tolerancia</option>
+            <option value="acima">Cobrado acima</option>
+            <option value="abaixo">Cobrado abaixo</option>
+            <option value="sem_calculo">Sem calculo</option>
+            <option value="sem_nf">Sem valor NF</option>
+          </select>
+        </label>
+        <label className="field">Canal
+          <select value={filtroCanalCte} onChange={(e) => setFiltroCanalCte(e.target.value)}>
+            <option value="todos">Todos</option>
+            {canaisDisponiveisCtes.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
+          </select>
+        </label>
+      </div>
       <table className="sim-analise-tabela">
         <thead><tr><th></th><th>CT-e</th><th>Chave</th><th>Rota (base)</th><th>Canal</th><th>Peso</th><th>Valor</th><th>Verum</th><th>Dif. Verum</th><th>AMD</th><th>Dif. AMD</th><th>Motivo</th><th>Status</th></tr></thead>
         <tbody>
@@ -1188,9 +1252,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
               || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
             const expandido = cteExpandido === item.id;
             const semValorNf = detalheSemValorNf(item, base);
+            const corStatus = semValorNf ? null : corStatusLinhaAuditoria(item, toleranciaFatura);
+            const estiloLinha = semValorNf
+              ? { background: '#fff7ed', boxShadow: 'inset 4px 0 #f97316' }
+              : corStatus
+                ? { background: corStatus.bg, boxShadow: `inset 4px 0 ${corStatus.borda}`, outline: expandido ? '2px solid #3b82f6' : undefined, outlineOffset: expandido ? '-2px' : undefined }
+                : expandido ? { background: '#eff6ff' } : undefined;
             return (
               <Fragment key={item.id}>
-                <tr style={semValorNf ? { background: '#fff7ed', boxShadow: 'inset 4px 0 #f97316' } : expandido ? { background: '#eff6ff' } : undefined}>
+                <tr style={estiloLinha}>
                   <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selecionados.includes(item.id)} onChange={() => selecionar(item.id)} /></td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}>{item.numero_cte || '-'}</td>
                   <td style={{ cursor: 'pointer' }} onClick={() => alternarDetalheCte(item)}><small>{item.chave_cte || '-'}</small></td>
@@ -1261,7 +1331,8 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         </tbody>
       </table>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="panel-card audit-detail" ref={detalheRef}>
@@ -2148,6 +2219,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         ['Pedagio', valorTaxaPublica(taxas.pedagio)],
         ['TAS', valorTaxaPublica(taxas.tas)],
         ['CTRC', valorTaxaPublica(taxas.ctrc)],
+        ['Taxa emergencial', valorTaxaPublica(base.valorEmergencial)],
         ['TDA', valorTaxaPublica(taxas.tda)],
         ['TDE', valorTaxaPublica(taxas.tde)],
         ['TDR', valorTaxaPublica(taxas.tdr)],
@@ -2199,8 +2271,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
               detalheLinha('Valor base', dinheiroLaudo(valorBasePublico)),
             ])}
             ${detalheBox('ICMS e totalização', [
-              detalheLinha('Subtotal antes emergencial', dinheiroPublico(det.subtotal_antes_emergencial ?? det.subtotal)),
-              detalheLinha('Taxa emergencial', dinheiroPublico(det.taxa_emergencial)),
+              detalheLinha('Subtotal antes da emergencial', dinheiroPublico(base.subtotalSemEmergencial)),
+              Number(base.taxaEmergencialPct) > 0
+                ? detalheLinha('Taxa emergencial', linhaOkTransportador ? '-' : `${percentualPublico(base.taxaEmergencialPct)} = ${dinheiroLaudo(base.valorEmergencial)}`)
+                : '',
               detalheLinha('Subtotal sem ICMS', dinheiroPublico(det.subtotal_sem_icms ?? det.subtotal)),
               detalheLinha('Alíquota ICMS', percentualPublico(det.aliquota_icms)),
               detalheLinha('Origem alíquota', esc(linhaOkTransportador ? '-' : (det.origem_aliquota_icms || '-'))),
@@ -2589,11 +2663,11 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
           .hero{background:#071d49;color:white;padding:26px 34px}.wrap{padding:24px 34px}
           .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
           .card{border:1px solid #d6e0ef;border-radius:12px;background:white;padding:14px}.card span{display:block;color:#64748b;font-size:12px;font-weight:700}.card strong{display:block;font-size:22px;margin-top:6px}
-          table{width:100%;border-collapse:collapse;background:white;border:1px solid #d6e0ef;border-radius:12px;overflow:hidden}th,td{border-bottom:1px solid #e5ebf5;padding:9px 10px;text-align:left;font-size:12px}th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{display:none;background:#fbfdff}.detail-row.open{display:table-row}.detail-row>td{padding:14px}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}
+          table{width:100%;border-collapse:collapse;background:white;border:1px solid #d6e0ef;border-radius:12px;overflow:hidden}th,td{border-bottom:1px solid #e5ebf5;padding:9px 10px;text-align:left;font-size:12px}th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{display:none;background:#fbfdff}.detail-row.open{display:table-row}.detail-row>td{padding:14px}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}.note{padding:12px 14px;border-radius:8px;background:#eff6ff;color:#1e3a8a;margin:16px 0;font-size:13px;font-weight:600}
         </style></head><body>
         <div class="hero"><h1>Laudo consolidado de faturas</h1><p>${escapeHtmlAuditoria(transportadoras || 'Transportadora')} - ${faturasSelecionadas.length} fatura(s) - gerado em ${new Date().toLocaleString('pt-BR')}</p></div>
         <div class="wrap"><div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
-        <div class="note">Clique na fatura para ver os CT-es; clique no CT-e para ver o detalhe do calculo.</div>
+        <div class="note">Clique em cima de qualquer fatura para ver os CT-es; clique em cima de um CT-e para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
     <table><thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor cobrado</th><th>Calculo AMD</th><th>Diferenca</th><th>CT-es</th><th>Origem</th></tr></thead><tbody>${linhasFatura || '<tr><td colspan="7">Nenhuma fatura selecionada.</td></tr>'}</tbody></table></div>
         <script>function toggleDetail(id){var el=document.getElementById(id);if(el)el.classList.toggle('open');}</script>
         </body></html>`;

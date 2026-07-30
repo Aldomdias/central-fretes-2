@@ -36,6 +36,7 @@ const MENU_GRUPOS = [
     itens: [
       { chave: 'cte', label: 'CT-e' },
       { chave: 'auditoria-cte', label: 'Auditoria CT-e' },
+      { chave: 'auditoria-ecommerce', label: 'Auditoria E-commerce' },
       { chave: 'lotacao-auditoria', label: 'Auditoria lotacao' },
       { chave: 'painel-auditoria', label: 'Painel auditoria' },
       { chave: 'faturas', label: 'Auditoria fretes' },
@@ -44,6 +45,7 @@ const MENU_GRUPOS = [
       { chave: 'tratativas', label: 'Tratativas' },
       { chave: 'gestao-base-cte', label: 'Base CT-e' },
       { chave: 'avaliacao-prazos', label: 'Prazos' },
+      { chave: 'prazo-pagamento', label: 'Prazo de pagamento' },
     ],
   },
   {
@@ -75,6 +77,7 @@ const ICONS = {
   'tabelas-negociacao': 'M7 3h7l5 5v13H7a2 2 0 01-2-2V5a2 2 0 012-2zm7 0v5h5M8 12h8M8 16h8',
   cte: 'M7 3h7l5 5v13H7a2 2 0 01-2-2V5a2 2 0 012-2zm2 10h6m-6 4h6',
   tracking: 'M12 3l8 4-8 4-8-4 8-4zm8 8l-8 4-8-4m16 4l-8 4-8-4',
+  'auditoria-ecommerce': 'M3 3v18h18M7 15l4-4 3 3 5-6',
   'torre-controle': 'M5 20V9h4v11H5zm5 0V4h4v16h-4zm5 0v-7h4v7h-4z',
   reajustes: 'M4 17l6-6 4 4 6-8m0 0h-5m5 0v5',
   importacao: 'M12 3v12m0 0l-4-4m4 4l4-4M5 19h14',

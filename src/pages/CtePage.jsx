@@ -374,6 +374,30 @@ function getCompetencia(row) {
   return data ? String(data).slice(0, 7) : '';
 }
 
+function getSemana(row) {
+  const data = String(getDataEmissao(row) || '').slice(0, 10);
+  if (!data) return '';
+  const dt = new Date(`${data}T00:00:00`);
+  if (Number.isNaN(dt.getTime())) return '';
+  const diaSemana = (dt.getDay() + 6) % 7; // 0 = segunda
+  dt.setDate(dt.getDate() - diaSemana);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function fmtSemana(v) {
+  if (!v) return '-';
+  const [y, m, d] = String(v).split('-');
+  if (!y || !m || !d) return v;
+  const inicio = new Date(Number(y), Number(m) - 1, Number(d));
+  const fim = new Date(inicio);
+  fim.setDate(fim.getDate() + 6);
+  const fmtCurto = (dt) => `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`;
+  return `${fmtCurto(inicio)}-${fmtCurto(fim)}`;
+}
+
 function getTipoVeiculo(row) {
   return campo(row, 'tipo_veiculo', 'tipoVeiculo', 'tipo', 'veiculo') || 'Não informado';
 }
@@ -420,6 +444,11 @@ function labelStatusCalculo(valor) {
   return valor || 'Não informado';
 }
 
+function getPercentualFreteRow(row) {
+  const nf = getValorNf(row);
+  return nf > 0 ? (getValorCte(row) / nf) * 100 : 0;
+}
+
 function getRegiaoPorUf(uf) {
   const u = String(uf || '').toUpperCase();
   if (['AC', 'AP', 'AM', 'PA', 'RO', 'RR', 'TO'].includes(u)) return 'Norte';
@@ -431,7 +460,7 @@ function getRegiaoPorUf(uf) {
 }
 
 const FILTROS_INTERATIVOS_INICIAIS = {
-  transportadora: null,
+  transportadora: [],
   regiaoDestino: null,
   ufDestino: null,
   ufOrigem: null,
@@ -441,6 +470,7 @@ const FILTROS_INTERATIVOS_INICIAIS = {
   rota: null,
   tipoOperacao: null,
   statusCalculo: null,
+  faixaFrete: null,
 };
 
 const LABEL_FILTROS_INTERATIVOS = {
@@ -454,14 +484,24 @@ const LABEL_FILTROS_INTERATIVOS = {
   rota: 'Rota',
   tipoOperacao: 'Tipo operação',
   statusCalculo: 'Status cálculo',
+  faixaFrete: 'Faixa de frete',
 };
 
+function labelFaixaFrete(valor) {
+  if (valor === 'acima_10') return 'Frete > 10% da NF';
+  return valor || 'Não informado';
+}
+
 function filtrosInterativosAtivos(filtros = {}) {
-  return Object.entries(filtros).filter(([, valor]) => valor !== null && valor !== undefined && valor !== '');
+  return Object.entries(filtros).filter(([, valor]) => (
+    Array.isArray(valor) ? valor.length > 0 : (valor !== null && valor !== undefined && valor !== '')
+  ));
 }
 
 function labelValorFiltroInterativo(tipo, valor) {
   if (tipo === 'statusCalculo') return labelStatusCalculo(valor);
+  if (tipo === 'faixaFrete') return labelFaixaFrete(valor);
+  if (Array.isArray(valor)) return valor.join(' + ');
   return valor || 'Não informado';
 }
 
@@ -470,7 +510,7 @@ function aplicarFiltrosInterativos(rows = [], filtros = {}) {
   if (!ativos.length) return rows;
 
   return (rows || []).filter((row) => {
-    if (filtros.transportadora && (getTransportadora(row) || 'Não informado') !== filtros.transportadora) return false;
+    if (filtros.transportadora?.length && !filtros.transportadora.includes(getTransportadora(row) || 'Não informado')) return false;
     if (filtros.regiaoDestino && getRegiaoPorUf(getUfDestino(row)) !== filtros.regiaoDestino) return false;
     if (filtros.ufDestino && (getUfDestino(row) || 'Não informado') !== filtros.ufDestino) return false;
     if (filtros.ufOrigem && (getUfOrigem(row) || 'Não informado') !== filtros.ufOrigem) return false;
@@ -480,6 +520,7 @@ function aplicarFiltrosInterativos(rows = [], filtros = {}) {
     if (filtros.rota && getRotaKey(row) !== filtros.rota) return false;
     if (filtros.tipoOperacao && getTipoOperacao(row) !== filtros.tipoOperacao) return false;
     if (filtros.statusCalculo && getStatusCalculo(row) !== filtros.statusCalculo) return false;
+    if (filtros.faixaFrete === 'acima_10' && !(getPercentualFreteRow(row) > 10)) return false;
     return true;
   });
 }
@@ -808,10 +849,14 @@ function GraficoBarrasMensal({ titulo, linhas = [], campo, tipo = 'numero', cor 
   );
 }
 
-function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10, filtroTipo, filtroAtivo, onToggleFiltro }) {
-  const ordenadas = [...(linhas || [])].sort((a, b) => b.valorCte - a.valorCte).slice(0, maxLinhas);
-  const maximo = ordenadas[0]?.valorCte || 1;
+function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10, filtroTipo, filtroAtivo, onToggleFiltro, selecionaveis = false, selecionados, onToggleSelecionado }) {
+  const [verTodas, setVerTodas] = useState(false);
+  const todasOrdenadas = [...(linhas || [])].sort((a, b) => b.valorCte - a.valorCte);
+  const totalLinhas = todasOrdenadas.length;
+  const ordenadas = verTodas ? todasOrdenadas : todasOrdenadas.slice(0, maxLinhas);
+  const maximo = todasOrdenadas[0]?.valorCte || 1;
   const clicavel = Boolean(filtroTipo && onToggleFiltro);
+  const podeSelecionar = selecionaveis && typeof onToggleSelecionado === 'function';
 
   if (!ordenadas.length) {
     return (
@@ -824,11 +869,20 @@ function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10, filtroT
 
   return (
     <div className="panel-card" style={{ alignContent: 'start' }}>
-      <div className="panel-title">{titulo}</div>
+      <div className="section-row compact-top">
+        <div className="panel-title">{titulo}</div>
+        {totalLinhas > maxLinhas && (
+          <button type="button" className="btn-secondary" onClick={() => setVerTodas((prev) => !prev)}>
+            {verTodas ? `Ver top ${maxLinhas}` : `Ver todas (${totalLinhas})`}
+          </button>
+        )}
+      </div>
+      {podeSelecionar && <p className="compact" style={{ margin: '2px 0 8px', color: 'var(--muted)' }}>Marque mais de um item para comparar lado a lado.</p>}
       <div className="sim-analise-tabela-wrap">
         <table className="sim-analise-tabela">
           <thead>
             <tr>
+              {podeSelecionar && <th></th>}
               <th>Item</th>
               <th>CT-es</th>
               <th>Valor CT-e</th>
@@ -837,24 +891,38 @@ function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10, filtroT
             </tr>
           </thead>
           <tbody>
-            {ordenadas.map((item) => (
-              <tr
-                key={item.key}
-                onClick={clicavel ? () => onToggleFiltro(filtroTipo, item.filtroValor ?? item.key) : undefined}
-                title={clicavel ? `Clique para filtrar por ${item.label || item.key}` : undefined}
-                style={clicavel ? {
-                  cursor: 'pointer',
-                  background: filtroAtivo === (item.filtroValor ?? item.key) ? '#eff6ff' : undefined,
-                  boxShadow: filtroAtivo === (item.filtroValor ?? item.key) ? 'inset 3px 0 0 #185FA5' : undefined,
-                } : undefined}
-              >
-                <td><strong>{item.label || item.key}</strong></td>
-                <td>{fmtN(item.ctes)}</td>
-                <td>{fmt(item.valorCte)}</td>
-                <td>{item.valorNf > 0 ? fmtPct(item.percentualFrete) : '-'}</td>
-                <td><Barra valor={tipo === 'ctes' ? item.ctes : item.valorCte} maximo={tipo === 'ctes' ? ordenadas[0]?.ctes || 1 : maximo} tone="info" /></td>
-              </tr>
-            ))}
+            {ordenadas.map((item) => {
+              const valorItem = item.filtroValor ?? item.key;
+              const marcado = Boolean(selecionados?.includes(valorItem));
+              return (
+                <tr
+                  key={item.key}
+                  onClick={clicavel && !podeSelecionar ? () => onToggleFiltro(filtroTipo, valorItem) : undefined}
+                  title={clicavel && !podeSelecionar ? `Clique para filtrar por ${item.label || item.key}` : undefined}
+                  style={clicavel && !podeSelecionar ? {
+                    cursor: 'pointer',
+                    background: filtroAtivo === valorItem ? '#eff6ff' : undefined,
+                    boxShadow: filtroAtivo === valorItem ? 'inset 3px 0 0 #185FA5' : undefined,
+                  } : (podeSelecionar && marcado ? { background: '#eff6ff' } : undefined)}
+                >
+                  {podeSelecionar && (
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={marcado}
+                        onChange={() => onToggleSelecionado(valorItem)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </td>
+                  )}
+                  <td><strong>{item.label || item.key}</strong></td>
+                  <td>{fmtN(item.ctes)}</td>
+                  <td>{fmt(item.valorCte)}</td>
+                  <td>{item.valorNf > 0 ? fmtPct(item.percentualFrete) : '-'}</td>
+                  <td><Barra valor={tipo === 'ctes' ? item.ctes : item.valorCte} maximo={tipo === 'ctes' ? ordenadas[0]?.ctes || 1 : maximo} tone="info" /></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -862,14 +930,144 @@ function RankingTabela({ titulo, linhas, tipo = 'valor', maxLinhas = 10, filtroT
   );
 }
 
-function PainelGestaoTransportador({ analise, filtros, interactiveFilters, onToggleFiltro }) {
+function ComparativoTransportadoras({ nomes = [], rows = [], onLimpar, onRemover }) {
+  if (!nomes.length) return null;
+
+  const linhas = nomes.map((nome) => {
+    const rowsNome = rows.filter((row) => (getTransportadora(row) || 'Não informado') === nome);
+    return montarAnalise(rowsNome, {});
+  });
+
+  const porMesPorTransportadora = nomes.map((nome, idx) => ({
+    nome,
+    porMes: linhas[idx].porMes,
+  }));
+
+  const todosMeses = [...new Set(porMesPorTransportadora.flatMap((t) => t.porMes.map((m) => m.key)))].sort();
+
+  return (
+    <div className="panel-card" style={{ marginTop: 14 }}>
+      <div className="section-row compact-top">
+        <div className="panel-title">Comparativo entre transportadoras selecionadas</div>
+        <button type="button" className="btn-secondary" onClick={onLimpar}>Limpar seleção</button>
+      </div>
+
+      <div className="sim-analise-tabela-wrap">
+        <table className="sim-analise-tabela">
+          <thead>
+            <tr>
+              <th>Transportadora</th>
+              <th>CT-es</th>
+              <th>Valor CT-e</th>
+              <th>% Frete</th>
+              <th>Peso total</th>
+              <th>Ticket médio</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {nomes.map((nome, idx) => (
+              <tr key={nome}>
+                <td><strong>{nome}</strong></td>
+                <td>{fmtN(linhas[idx].totalCtes)}</td>
+                <td>{fmt(linhas[idx].totalCte)}</td>
+                <td>{linhas[idx].totalNf > 0 ? fmtPct(linhas[idx].percentualFrete) : '-'}</td>
+                <td>{fmtN(linhas[idx].totalPeso)} kg</td>
+                <td>{fmt(linhas[idx].ticketMedio)}</td>
+                <td><button type="button" className="btn-secondary" onClick={() => onRemover(nome)}>Remover</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {todosMeses.length > 1 && (
+        <div className="sim-analise-tabela-wrap" style={{ marginTop: 14 }}>
+          <table className="sim-analise-tabela">
+            <thead>
+              <tr>
+                <th>Mês</th>
+                {nomes.map((nome) => <th key={nome}>{nome}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {todosMeses.map((mesKey) => (
+                <tr key={mesKey}>
+                  <td><strong>{fmtMes(mesKey)}</strong></td>
+                  {porMesPorTransportadora.map((t) => {
+                    const item = t.porMes.find((m) => m.key === mesKey);
+                    return <td key={t.nome}>{item ? fmt(item.valorCte) : '-'}</td>;
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvolucaoPeriodo({ analise }) {
+  const [modo, setModo] = useState('mes');
+
+  const linhas = useMemo(() => {
+    const origem = modo === 'dia' ? analise?.porDia : modo === 'semana' ? analise?.porSemana : analise?.porMes;
+    return (origem || []).map((item) => ({
+      ...item,
+      competencia: modo === 'dia' ? fmtDate(item.key) : modo === 'semana' ? fmtSemana(item.key) : fmtMes(item.key),
+    }));
+  }, [analise, modo]);
+
+  return (
+    <div className="panel-card" style={{ marginBottom: 14 }}>
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Evolução no período filtrado</div>
+          <p className="compact">Baseado nos CT-es que passam pelos filtros interativos aplicados acima.</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" className={modo === 'mes' ? 'btn-primary' : 'btn-secondary'} onClick={() => setModo('mes')}>Mês a mês</button>
+          <button type="button" className={modo === 'semana' ? 'btn-primary' : 'btn-secondary'} onClick={() => setModo('semana')}>Semana a semana</button>
+          <button type="button" className={modo === 'dia' ? 'btn-primary' : 'btn-secondary'} onClick={() => setModo('dia')}>Dia a dia</button>
+        </div>
+      </div>
+
+      <div className="feature-grid import-grid" style={{ marginTop: 10 }}>
+        <GraficoBarrasMensal titulo="CT-es" linhas={linhas} campo="ctes" style={{ boxShadow: 'none', padding: 0 }} />
+        <GraficoBarrasMensal titulo="Valor CT-e" linhas={linhas} campo="valorCte" tipo="moeda" cor="#1D9E75" style={{ boxShadow: 'none', padding: 0 }} />
+        <GraficoBarrasMensal titulo="Frete sobre NF" linhas={linhas} campo="percentualFrete" tipo="pct" cor="#D85A30" style={{ boxShadow: 'none', padding: 0 }} />
+        <GraficoBarrasMensal titulo="Peso total" linhas={linhas} campo="peso" tipo="kg" cor="#6D5BD0" style={{ boxShadow: 'none', padding: 0 }} />
+      </div>
+    </div>
+  );
+}
+
+function PainelGestaoTransportador({ analise, filtros, interactiveFilters, onToggleFiltro, onLimparTransportadoras, rows, transportadorasRanking }) {
   const [modoRota, setModoRota] = useState('valor');
+  const transportadorasSelecionadas = interactiveFilters.transportadora || [];
 
   const topRotas = useMemo(() => {
     const rotas = [...(analise?.rotas || [])];
     const chave = modoRota === 'ctes' ? 'ctes' : modoRota === 'percentual' ? 'percentualFrete' : 'valorCte';
     return rotas.sort((a, b) => Number(b[chave] || 0) - Number(a[chave] || 0)).slice(0, 20);
   }, [analise, modoRota]);
+
+  const top10RotasVolume = useMemo(
+    () => [...(analise?.rotas || [])]
+      .sort((a, b) => Number(b.ctes || 0) - Number(a.ctes || 0) || Number(b.volumes || 0) - Number(a.volumes || 0))
+      .slice(0, 10),
+    [analise],
+  );
+
+  const top10Oportunidades = useMemo(
+    () => [...(analise?.rotas || [])]
+      .map((rota) => ({ ...rota, oportunidade: Math.max(Number(rota.diferenca || 0), 0) }))
+      .filter((rota) => rota.oportunidade > 0)
+      .sort((a, b) => Number(b.oportunidade || 0) - Number(a.oportunidade || 0))
+      .slice(0, 10),
+    [analise],
+  );
 
   const maxValor = topRotas[0]?.valorCte || 1;
   const maxCtes = topRotas[0]?.ctes || 1;
@@ -892,10 +1090,27 @@ function PainelGestaoTransportador({ analise, filtros, interactiveFilters, onTog
         <SummaryCard title="Ticket médio CT-e" value={fmt(analise.ticketMedio)} subtitle="valor médio por carga" />
       </div>
 
+      <EvolucaoPeriodo analise={analise} />
+
       <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
-        <RankingTabela titulo="Transportadoras no filtro" linhas={analise.transportadoras} filtroTipo="transportadora" filtroAtivo={interactiveFilters.transportadora} onToggleFiltro={onToggleFiltro} />
+        <RankingTabela
+          titulo="Transportadoras no filtro"
+          linhas={transportadorasRanking}
+          filtroTipo="transportadora"
+          onToggleFiltro={onToggleFiltro}
+          selecionaveis
+          selecionados={transportadorasSelecionadas}
+          onToggleSelecionado={(nome) => onToggleFiltro('transportadora', nome)}
+        />
         <RankingTabela titulo="Regiões de destino" linhas={analise.regioesDestino} filtroTipo="regiaoDestino" filtroAtivo={interactiveFilters.regiaoDestino} onToggleFiltro={onToggleFiltro} />
       </div>
+
+      <ComparativoTransportadoras
+        nomes={transportadorasSelecionadas}
+        rows={rows}
+        onLimpar={onLimparTransportadoras}
+        onRemover={(nome) => onToggleFiltro('transportadora', nome)}
+      />
 
       <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
         <RankingTabela titulo="Origens mais relevantes" linhas={analise.origens} filtroTipo="origem" filtroAtivo={interactiveFilters.origem} onToggleFiltro={onToggleFiltro} />
@@ -910,6 +1125,51 @@ function PainelGestaoTransportador({ analise, filtros, interactiveFilters, onTog
       <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
         <RankingTabela titulo="UFs origem" linhas={analise.ufsOrigem} tipo="ctes" filtroTipo="ufOrigem" filtroAtivo={interactiveFilters.ufOrigem} onToggleFiltro={onToggleFiltro} />
         <RankingTabela titulo="Tipos de operação" linhas={analise.tiposOperacao} tipo="ctes" filtroTipo="tipoOperacao" filtroAtivo={interactiveFilters.tipoOperacao} onToggleFiltro={onToggleFiltro} />
+      </div>
+
+      <div className="feature-grid import-grid" style={{ marginBottom: 14 }}>
+        <div className="panel-card">
+          <div className="section-row compact-top">
+            <div>
+              <div className="panel-title">Top 10 rotas por volume</div>
+              <p className="compact">Rotas com maior quantidade de CT-es no recorte atual.</p>
+            </div>
+          </div>
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead><tr><th>Rota</th><th>CT-es</th><th>Volumes</th><th>Frete pago</th></tr></thead>
+              <tbody>
+                {!top10RotasVolume.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Sem rotas no recorte.</td></tr>}
+                {top10RotasVolume.map((rota) => (
+                  <tr key={`volume-${rota.key}`} onClick={() => onToggleFiltro('rota', rota.key)} title="Clique para filtrar por esta rota" style={{ cursor: 'pointer', background: interactiveFilters.rota === rota.key ? '#eff6ff' : undefined }}>
+                    <td><strong>{rota.label}</strong></td><td>{fmtN(rota.ctes)}</td><td>{fmtN(rota.volumes)}</td><td>{fmt(rota.valorCte)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="panel-card">
+          <div className="section-row compact-top">
+            <div>
+              <div className="panel-title">Top 10 oportunidades</div>
+              <p className="compact">Maior cobrança acima do cálculo no recorte atual. Clique para abrir a rota.</p>
+            </div>
+          </div>
+          <div className="sim-analise-tabela-wrap">
+            <table className="sim-analise-tabela">
+              <thead><tr><th>Rota</th><th>CT-es</th><th>Cobrado</th><th>Oportunidade</th></tr></thead>
+              <tbody>
+                {!top10Oportunidades.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--muted)', padding: 16 }}>Nenhuma cobrança acima identificada no recorte.</td></tr>}
+                {top10Oportunidades.map((rota) => (
+                  <tr key={`oportunidade-${rota.key}`} onClick={() => onToggleFiltro('rota', rota.key)} title="Clique para filtrar por esta rota" style={{ cursor: 'pointer', background: interactiveFilters.rota === rota.key ? '#eff6ff' : undefined }}>
+                    <td><strong>{rota.label}</strong></td><td>{fmtN(rota.ctes)}</td><td>{fmt(rota.valorCte)}</td><td style={{ color: '#b42318', fontWeight: 800 }}>{fmt(rota.oportunidade)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <div className="panel-card">
@@ -995,6 +1255,9 @@ function montarAnalise(rows = [], filtros = {}) {
   const totalVolumes = rows.reduce((a, r) => a + getVolumes(r), 0);
   const totalCtes = rows.length;
   const comCalculo = rows.filter((r) => getValorCalculado(r) > 0).length;
+  const rowsFreteAlto = rows.filter((r) => getPercentualFreteRow(r) > 10);
+  const qtdFreteAlto = rowsFreteAlto.length;
+  const valorFreteAlto = rowsFreteAlto.reduce((a, r) => a + getValorCte(r), 0);
   const dias = diasEntre(filtros.inicio, filtros.fim, rows);
   const meses = mesesEntre(filtros.inicio, filtros.fim, rows);
 
@@ -1015,6 +1278,12 @@ function montarAnalise(rows = [], filtros = {}) {
   const ufsOrigem = agrupar(rows, (row) => getUfOrigem(row) || 'Não informado');
   const tiposOperacao = agrupar(rows, (row) => getTipoOperacao(row));
   const statusCalculo = agrupar(rows, (row) => labelStatusCalculo(getStatusCalculo(row)));
+  const porMes = agrupar(rows, (row) => getCompetencia(row) || 'Não informado')
+    .sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  const porSemana = agrupar(rows, (row) => getSemana(row) || 'Não informado')
+    .sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  const porDia = agrupar(rows, (row) => String(getDataEmissao(row) || '').slice(0, 10) || 'Não informado')
+    .sort((a, b) => String(a.key).localeCompare(String(b.key)));
 
   const rotasMapa = new Map();
   rows.forEach((row) => {
@@ -1059,6 +1328,8 @@ function montarAnalise(rows = [], filtros = {}) {
   return {
     totalCtes,
     comCalculo,
+    qtdFreteAlto,
+    valorFreteAlto,
     totalCte,
     totalCalculado,
     totalDiferenca,
@@ -1082,6 +1353,9 @@ function montarAnalise(rows = [], filtros = {}) {
     ufsOrigem,
     tiposOperacao,
     statusCalculo,
+    porMes,
+    porSemana,
+    porDia,
     rotas,
     rotasUnicas: rotas.length,
   };
@@ -2017,10 +2291,14 @@ export default function CtePage() {
   };
 
   function toggleInteractiveFilter(tipo, valor) {
-    setInteractiveFilters((prev) => ({
-      ...prev,
-      [tipo]: prev[tipo] === valor ? null : valor,
-    }));
+    setInteractiveFilters((prev) => {
+      if (tipo === 'transportadora') {
+        const atual = prev.transportadora || [];
+        const proximo = atual.includes(valor) ? atual.filter((n) => n !== valor) : [...atual, valor];
+        return { ...prev, transportadora: proximo };
+      }
+      return { ...prev, [tipo]: prev[tipo] === valor ? null : valor };
+    });
     setPagina(1);
   }
 
@@ -2030,7 +2308,7 @@ export default function CtePage() {
   }
 
   function removerFiltroInterativo(tipo) {
-    setInteractiveFilters((prev) => ({ ...prev, [tipo]: null }));
+    setInteractiveFilters((prev) => ({ ...prev, [tipo]: tipo === 'transportadora' ? [] : null }));
     setPagina(1);
   }
 
@@ -2490,6 +2768,16 @@ export default function CtePage() {
   const analise = useMemo(
     () => montarAnalise(rowsAnaliseInterativas, filtros),
     [rowsAnaliseInterativas, filtros]
+  );
+
+  const rowsSemFiltroTransportadora = useMemo(
+    () => aplicarFiltrosInterativos(baseAnalisePadrao, { ...interactiveFilters, transportadora: [] }),
+    [baseAnalisePadrao, interactiveFilters]
+  );
+
+  const transportadorasRanking = useMemo(
+    () => agrupar(rowsSemFiltroTransportadora, (row) => getTransportadora(row) || 'Não informado'),
+    [rowsSemFiltroTransportadora]
   );
 
   const rowsFiltradas = useMemo(() => {
@@ -3801,6 +4089,7 @@ export default function CtePage() {
             <SummaryCard title="Valor calculado" value={fmt(analise.totalCalculado)} subtitle="campo valor_calculado" />
             <SummaryCard title="Diferença" value={fmt(analise.totalDiferenca)} subtitle="CT-e - calculado" />
             <SummaryCard title="Frete sobre NF" value={fmtPct(analise.percentualFrete)} subtitle={`${fmt(analise.totalNf)} em NF`} />
+            <SummaryCard title="Frete > 10% da NF" value={fmtN(analise.qtdFreteAlto)} subtitle={`${fmt(analise.valorFreteAlto)} em CT-e`} onClick={() => toggleInteractiveFilter('faixaFrete', 'acima_10')} active={interactiveFilters.faixaFrete === 'acima_10'} />
             <SummaryCard title="Transportadoras" value={fmtN(analise.transportadoras.length)} subtitle="distintas" />
             <SummaryCard title="Rotas" value={fmtN(analise.rotasUnicas)} subtitle="origem + destino + tipo" />
           </div>
@@ -3812,7 +4101,7 @@ export default function CtePage() {
             </div>
           )}
 
-          <PainelGestaoTransportador analise={analise} filtros={filtros} interactiveFilters={interactiveFilters} onToggleFiltro={toggleInteractiveFilter} />
+          <PainelGestaoTransportador analise={analise} filtros={filtros} interactiveFilters={interactiveFilters} onToggleFiltro={toggleInteractiveFilter} onLimparTransportadoras={() => removerFiltroInterativo('transportadora')} rows={rowsSemFiltroTransportadora} transportadorasRanking={transportadorasRanking} />
 
           <div className="table-card">
             <div className="section-row compact-top" style={{ padding: '16px 18px 0' }}>
@@ -3904,7 +4193,7 @@ export default function CtePage() {
                         <td
                           onClick={() => transp && toggleInteractiveFilter('transportadora', transp || 'Não informado')}
                           title="Clique para filtrar por esta transportadora"
-                          style={{ cursor: transp ? 'pointer' : undefined, color: interactiveFilters.transportadora === transp ? '#185FA5' : undefined, fontWeight: interactiveFilters.transportadora === transp ? 800 : undefined }}
+                          style={{ cursor: transp ? 'pointer' : undefined, color: interactiveFilters.transportadora?.includes(transp) ? '#185FA5' : undefined, fontWeight: interactiveFilters.transportadora?.includes(transp) ? 800 : undefined }}
                         >
                           <strong>{transp || '-'}</strong>
                           {transpVinculada && (

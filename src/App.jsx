@@ -19,6 +19,7 @@ import TrackingPage from './pages/TrackingPage';
 import TorreControlePage from './pages/TorreControlePage';
 import ReajustesPage from './pages/ReajustesPage';
 import AvaliacaoPrazosPage from './pages/AvaliacaoPrazosPage';
+import PrazoPagamentoPage from './pages/PrazoPagamentoPage';
 import CtePage from './pages/CtePage';
 import TabelasNegociacaoPageWithEditor from './pages/TabelasNegociacaoPageWithEditor';
 import AuditoriaCtePage from './pages/AuditoriaCtePage';
@@ -33,6 +34,7 @@ import SimularSaidaTransportadoraPage from './pages/SimularSaidaTransportadoraPa
 import GestaoBaseCtePage from './pages/GestaoBaseCtePage';
 import VisualConceptPage from './pages/VisualConceptPage';
 import IcmsUfPage from './pages/IcmsUfPage';
+import AuditoriaEcommercePage from './pages/AuditoriaEcommercePage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
@@ -42,9 +44,9 @@ const PAGINAS_PERMITIDAS = [
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'importacao-ia-tabelas',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
-  'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas',
+  'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
-  'icms-uf',
+  'icms-uf', 'auditoria-ecommerce',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -146,9 +148,11 @@ export default function App() {
     'importar-template': <ImportarTemplatePage store={store} transportadoras={transportadorasMemo} />,
     'importacao-ia-tabelas': <ImportacaoIaTabelasPage />,
     tracking: <TrackingPage />,
+    'auditoria-ecommerce': <AuditoriaEcommercePage />,
     'torre-controle': <TorreControlePage />,
     reajustes: <ReajustesPage transportadoras={transportadorasMemo} />,
     'avaliacao-prazos': <AvaliacaoPrazosPage />,
+    'prazo-pagamento': <PrazoPagamentoPage />,
     lotacao: <LotacaoPage />,
     'lotacao-operacao': <LotacaoOperacaoPage onRespostaConcluida={() => mudarPagina('lotacao-auditoria')} />,
     'lotacao-auditoria': <LotacaoAuditoriaPage />,

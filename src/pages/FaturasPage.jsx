@@ -5,6 +5,8 @@ import {
   carregarDetalhesFaturaSupabase,
   salvarFaturaSupabase,
   salvarDetalhesFaturaSupabase,
+  buscarFaturaExistenteSupabase,
+  STATUS_FATURA_PROTEGIDOS,
 } from '../services/lotacaoSupabaseService';
 import { carregarSessao } from '../utils/authLocal';
 
@@ -61,6 +63,24 @@ function parseFaturaHeader(row) {
   };
 }
 
+// Alguns exports trazem "Numero Fatura"/"Serie Fatura" em colunas separadas,
+// outros só uma coluna combinada "Numero Fatura - Serie" (ex.: "302266-").
+// Extrai {numero, serie} da linha nos dois formatos.
+function numeroSerieDaLinha(d) {
+  const combinado = d['Numero Fatura - Serie'];
+  if (combinado != null && combinado !== '') {
+    const texto = String(combinado);
+    const idx = texto.lastIndexOf('-');
+    return idx >= 0
+      ? { numero: texto.slice(0, idx), serie: texto.slice(idx + 1) }
+      : { numero: texto, serie: '' };
+  }
+  return {
+    numero: String(d['Numero Fatura'] || d['Número Fatura'] || ''),
+    serie: String(d['Serie Fatura'] || d['Série Fatura'] || ''),
+  };
+}
+
 // Converte linha do xlsx no detalhe (CT-e)
 function parseFaturaDetalhe(row, faturaId, numeroFatura, serieFatura) {
   return {
@@ -76,7 +96,10 @@ function parseFaturaDetalhe(row, faturaId, numeroFatura, serieFatura) {
     cnpj_emissor: String(row['CNPJ Emissor'] || '').replace(/\D/g, ''),
     cnpj_tomador: String(row['CNPJ Tomador da Fatura'] || row['CNPJ Tomador'] || '').replace(/\D/g, ''),
     nome_tomador: String(row['Nome Tomador da Fatura'] || row['Nome Tomador'] || ''),
-    valor_frete: Number(row['Valor Frete'] || 0),
+    // Em alguns exports do sistema de origem, "Valor Frete" vem vazio e o
+    // valor real cobrado está em "Custo Frete" (mesmo conceito, coluna
+    // diferente) — usamos como fallback.
+    valor_frete: Number(row['Valor Frete'] || row['Custo Frete'] || 0),
     custo_frete: Number(row['Custo Frete'] || 0),
     preco_frete: Number(row['Preço Frete'] || row['Preco Frete'] || 0),
     calculado_frete: Number(row['Calculado Frete'] || 0),
@@ -278,12 +301,30 @@ export default function FaturasPage() {
       setMensagem(`Processando ${rowsFaturas.length} faturas e ${rowsDetalhes.length} CT-es...`);
 
       let faturasSalvas = 0;
-      let detalhesSalvos = 0;
+      let faturasProtegidasPuladas = 0;
+      let detalhesInseridos = 0;
+      let detalhesAtualizados = 0;
+      let detalhesMantidos = 0;
 
       for (const row of rowsFaturas) {
         const header = parseFaturaHeader(row);
         if (!header.numero_fatura && !header.transportadora) continue;
 
+        // Casa pela identidade real (nº fatura + série + transportadora), não
+        // por um id aleatório — senão reimportar duplica a fatura inteira.
+        const existente = await buscarFaturaExistenteSupabase({
+          numeroFatura: header.numero_fatura,
+          serieFatura: header.serie_fatura,
+          transportadora: header.transportadora,
+        });
+
+        // Fatura já auditada/aprovada/paga/cancelada: não mexe em nada dela.
+        if (existente && STATUS_FATURA_PROTEGIDOS.includes(existente.status)) {
+          faturasProtegidasPuladas++;
+          continue;
+        }
+
+        if (existente) header.id = existente.id;
         header.importado_por = sessao?.nome || sessao?.email || '';
         header.importado_em = new Date().toISOString();
 
@@ -293,21 +334,54 @@ export default function FaturasPage() {
         const faturaId = resultado.id;
 
         // Filtrar detalhes desta fatura
-        const detalhesLinhas = rowsDetalhes.filter((d) =>
-          String(d['Numero Fatura'] || d['Número Fatura'] || '') === String(header.numero_fatura) &&
-          String(d['Serie Fatura'] || d['Série Fatura'] || '') === String(header.serie_fatura)
-        );
+        const detalhesLinhas = rowsDetalhes.filter((d) => {
+          const { numero, serie } = numeroSerieDaLinha(d);
+          return numero === String(header.numero_fatura) && serie === String(header.serie_fatura);
+        });
 
         if (detalhesLinhas.length > 0 && faturaId) {
-          const detalhes = detalhesLinhas.map((d) =>
-            parseFaturaDetalhe(d, faturaId, header.numero_fatura, header.serie_fatura)
-          );
-          await salvarDetalhesFaturaSupabase(detalhes);
-          detalhesSalvos += detalhes.length;
+          const detalhesExistentes = existente ? await carregarDetalhesFaturaSupabase(faturaId) : [];
+          const mapaExistentes = new Map(detalhesExistentes.map((d) => [d.chave_cte, d]));
+
+          const paraSalvar = [];
+          detalhesLinhas.forEach((d) => {
+            const novo = parseFaturaDetalhe(d, faturaId, header.numero_fatura, header.serie_fatura);
+            const antigo = novo.chave_cte ? mapaExistentes.get(novo.chave_cte) : null;
+
+            if (!antigo) {
+              paraSalvar.push(novo);
+              detalhesInseridos++;
+              return;
+            }
+            // Já tem valor lançado — nunca sobrescreve (evita perder ajuste
+            // manual/auditoria já feita em cima desse CT-e).
+            if (Number(antigo.valor_frete || 0) !== 0) {
+              detalhesMantidos++;
+              return;
+            }
+            // Sem valor: preenche com o valor novo, recalculando a diferença
+            // em cima do calculado_frete (AMD) já existente — o AMD em si não
+            // muda, só a comparação valor x calculado.
+            const calculado = Number(antigo.calculado_frete || 0);
+            paraSalvar.push({
+              ...novo,
+              id: antigo.id,
+              calculado_frete: antigo.calculado_frete,
+              calculado_frete_verum: antigo.calculado_frete_verum,
+              diferenca: calculado > 0 ? Number((novo.valor_frete - calculado).toFixed(2)) : novo.diferenca,
+            });
+            detalhesAtualizados++;
+          });
+
+          if (paraSalvar.length) await salvarDetalhesFaturaSupabase(paraSalvar);
         }
       }
 
-      setMensagem(`✓ Importação concluída: ${faturasSalvas} faturas e ${detalhesSalvos} CT-es gravados.`);
+      setMensagem(
+        `✓ Importação concluída: ${faturasSalvas} fatura(s) gravada(s)` +
+          (faturasProtegidasPuladas ? `, ${faturasProtegidasPuladas} pulada(s) por já estarem auditadas/pagas` : '') +
+          `. CT-es: ${detalhesInseridos} novo(s), ${detalhesAtualizados} atualizado(s) (sem valor antes), ${detalhesMantidos} mantido(s) (já tinham valor).`
+      );
       await carregar();
     } catch (err) {
       setMensagem(`Erro na importação: ${err.message}`);
