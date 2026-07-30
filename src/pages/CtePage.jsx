@@ -3680,7 +3680,7 @@ export default function CtePage() {
             </button>
           </div>
 
-          <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 12 }}>
+          <div className="form-grid form-grid-4" style={{ gap: 10, marginBottom: 12 }}>
             <div className="field">
               <label>Tipo de análise</label>
               <select value={analiseVariacao.tipo} onChange={(e) => setAnaliseVariacao((prev) => ({ ...prev, tipo: e.target.value }))}>
@@ -3892,7 +3892,7 @@ export default function CtePage() {
 
       <div className="panel-card">
         <div className="panel-title">Filtros</div>
-        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+        <div className="form-grid form-grid-4" style={{ gap: 10 }}>
           <div className="field">
             <label>Chave CT-e / Nº CT-e</label>
             <input

@@ -2203,6 +2203,7 @@ textarea,
 .fretes-grid,
 .inconsistencias-grid,
 .feature-grid.import-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.form-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
 .card-topo,
 .cabecalho-pagina,
@@ -2602,6 +2603,7 @@ textarea,
   .sim-grid-5,
   .sim-grid-6,
   .form-grid,
+  .form-grid-4,
   .grade-dupla,
   .rotas-grid,
   .fretes-grid,
