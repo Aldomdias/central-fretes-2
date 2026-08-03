@@ -325,6 +325,52 @@ export async function carregarMalhaB2cParaResimulacao({ onProgress } = {}) {
   return { transportadoras: transportadoras || [], municipios: municipios || [] };
 }
 
+// Aplica os filtros de analise (periodo, status de cruzamento, divergencia de
+// peso, canal, uf, campanha) numa query do Supabase. Usado tanto pra listar a
+// grade quanto pra contar/paginar o que sera resimulado, pra manter os dois
+// coerentes com o que o usuario esta vendo na tela.
+function aplicarFiltrosEcommerce(query, filtros = {}) {
+  let q = query;
+  if (filtros.dataInicio) q = q.gte('data_criacao', filtros.dataInicio);
+  if (filtros.dataFim) q = q.lte('data_criacao', `${filtros.dataFim}T23:59:59`);
+  if (filtros.cruzamentoStatus) q = q.eq('cruzamento_status', filtros.cruzamentoStatus);
+  if (filtros.divergenciaPeso) q = q.neq('diferenca_peso', 0);
+  if (filtros.canal) q = q.eq('canal', filtros.canal);
+  if (filtros.uf) q = q.eq('uf', filtros.uf);
+  if (filtros.possuiCampanha !== null && filtros.possuiCampanha !== undefined) {
+    q = q.eq('possui_campanha_frete', filtros.possuiCampanha);
+  }
+  return q;
+}
+
+export async function listarOpcoesFiltroEcommerce() {
+  if (!isSupabaseConfigured()) return { canais: [], ufs: [] };
+  const supabase = getSupabaseClient();
+  const [{ data: canaisData }, { data: ufsData }] = await Promise.all([
+    supabase.from('ecommerce_order_snapshot').select('canal').not('canal', 'is', null).limit(5000),
+    supabase.from('ecommerce_order_snapshot').select('uf').not('uf', 'is', null).limit(5000),
+  ]);
+  const canais = [...new Set((canaisData || []).map((r) => r.canal).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const ufs = [...new Set((ufsData || []).map((r) => r.uf).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  return { canais, ufs };
+}
+
+// Conta quantos pedidos elegiveis (cruzamento ok, ainda pendentes de resimular)
+// batem com os filtros de analise atuais, pra mostrar o resumo antes de rodar.
+export async function contarElegiveisResimulacaoEcommerce(filtros = {}) {
+  if (!isSupabaseConfigured()) return 0;
+  const supabase = getSupabaseClient();
+  let query = supabase
+    .from('ecommerce_order_snapshot')
+    .select('id', { count: 'exact', head: true })
+    .eq('cruzamento_status', 'ok')
+    .eq('sim_status', 'pendente');
+  query = aplicarFiltrosEcommerce(query, filtros);
+  const { count, error } = await query;
+  if (error) throw error;
+  return count || 0;
+}
+
 export async function diagnosticarResimulacaoEcommerce() {
   if (!isSupabaseConfigured()) return { configurado: false, elegiveis: 0, pendentes: 0, ok: 0 };
   const supabase = getSupabaseClient();
@@ -344,14 +390,15 @@ export async function diagnosticarResimulacaoEcommerce() {
   return { configurado: true, elegiveis: elegiveis || 0, pendentes: pendentes || 0, ok: ok || 0 };
 }
 
-async function buscarPaginaPendentesResimulacao(limit = 800) {
+async function buscarPaginaPendentesResimulacao(limit = 800, filtros = {}) {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
+  let query = supabase
     .from('ecommerce_order_snapshot')
     .select('id, pedido, canal, uf, cidade, peso_cotado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
     .eq('cruzamento_status', 'ok')
-    .eq('sim_status', 'pendente')
-    .limit(limit);
+    .eq('sim_status', 'pendente');
+  query = aplicarFiltrosEcommerce(query, filtros).limit(limit);
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
@@ -371,7 +418,7 @@ export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
 // pagina pedidos pendentes do Supabase e vai salvando resultado lote a lote. Pensado
 // para volumes grandes (dezenas de milhares de pedidos) sem travar a aba nem estourar
 // timeout de request.
-export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800, totalAlvo = null, onProgress } = {}) {
+export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800, totalAlvo = null, filtros = {}, onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
@@ -401,7 +448,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
     let totalOk = 0;
 
     for (;;) {
-      const pagina = await buscarPaginaPendentesResimulacao(tamanhoLote);
+      const pagina = await buscarPaginaPendentesResimulacao(tamanhoLote, filtros);
       if (!pagina.length) break;
 
       onProgress?.({ etapa: 'resimulando', carregados: totalProcessado, total: totalAlvo, totalProcessado });
@@ -426,14 +473,14 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
   }
 }
 
-export async function listarEcommerceOrderSnapshot({ limit = 500 } = {}) {
+export async function listarEcommerceOrderSnapshot({ limit = 500, filtros = {} } = {}) {
   if (!isSupabaseConfigured()) return { rows: [] };
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from('ecommerce_order_snapshot')
-    .select('*')
+  let query = supabase.from('ecommerce_order_snapshot').select('*');
+  query = aplicarFiltrosEcommerce(query, filtros)
     .order('data_criacao', { ascending: false })
     .limit(limit);
+  const { data, error } = await query;
   if (error) throw error;
   return { rows: data || [] };
 }

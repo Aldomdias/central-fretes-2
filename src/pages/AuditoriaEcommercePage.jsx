@@ -7,6 +7,8 @@ import {
   listarEcommerceOrderSnapshot,
   diagnosticarResimulacaoEcommerce,
   resimularEcommerceEmLotes,
+  listarOpcoesFiltroEcommerce,
+  contarElegiveisResimulacaoEcommerce,
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
@@ -172,6 +174,29 @@ export default function AuditoriaEcommercePage() {
   const [diagnosticoSim, setDiagnosticoSim] = useState({ elegiveis: 0, pendentes: 0, ok: 0 });
   const [linhas, setLinhas] = useState([]);
   const [filtros, setFiltros] = useState({});
+  const [filtrosServidor, setFiltrosServidor] = useState({
+    dataInicio: '', dataFim: '', cruzamentoStatus: '', divergenciaPeso: false, canal: '', uf: '', possuiCampanha: '',
+  });
+  const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [] });
+  const [resumoResimulacao, setResumoResimulacao] = useState(null);
+  const [contandoResumo, setContandoResumo] = useState(false);
+
+  function filtrosParaQuery(f) {
+    return {
+      dataInicio: f.dataInicio || null,
+      dataFim: f.dataFim || null,
+      cruzamentoStatus: f.cruzamentoStatus || null,
+      divergenciaPeso: Boolean(f.divergenciaPeso),
+      canal: f.canal || null,
+      uf: f.uf || null,
+      possuiCampanha: f.possuiCampanha === '' ? null : f.possuiCampanha === 'true',
+    };
+  }
+
+  function onChangeFiltroServidor(campo, valor) {
+    setFiltrosServidor((atual) => ({ ...atual, [campo]: valor }));
+    setResumoResimulacao(null);
+  }
 
   async function atualizarDiagnostico() {
     try {
@@ -188,7 +213,7 @@ export default function AuditoriaEcommercePage() {
 
   async function atualizarGrid() {
     try {
-      const { rows } = await listarEcommerceOrderSnapshot({ limit: 500 });
+      const { rows } = await listarEcommerceOrderSnapshot({ limit: 500, filtros: filtrosParaQuery(filtrosServidor) });
       setLinhas(rows);
     } catch (error) {
       setErro(error.message || 'Erro ao listar pedidos.');
@@ -197,8 +222,13 @@ export default function AuditoriaEcommercePage() {
 
   useEffect(() => {
     atualizarDiagnostico();
-    atualizarGrid();
+    listarOpcoesFiltroEcommerce().then(setOpcoesFiltro).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    atualizarGrid();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtrosServidor]);
 
   async function importar() {
     if (!arquivo) {
@@ -251,16 +281,35 @@ export default function AuditoriaEcommercePage() {
     }
   }
 
-  async function resimular() {
+  async function prepararResimulacao() {
+    setErro('');
+    setMensagem('');
+    setContandoResumo(true);
+    try {
+      const filtrosAtuais = filtrosParaQuery(filtrosServidor);
+      const count = await contarElegiveisResimulacaoEcommerce(filtrosAtuais);
+      setResumoResimulacao({ count, filtros: { ...filtrosServidor } });
+    } catch (error) {
+      setErro(error.message || 'Erro ao contar pedidos para resimular.');
+    } finally {
+      setContandoResumo(false);
+    }
+  }
+
+  async function confirmarResimulacao() {
+    if (!resumoResimulacao) return;
     setCarregando(true);
     setErro('');
     setMensagem('');
-    const totalAlvo = Math.max(diagnosticoSim.pendentes || 0, 1);
+    const totalAlvo = Math.max(resumoResimulacao.count || 0, 1);
+    const filtrosAtuais = filtrosParaQuery(resumoResimulacao.filtros);
+    setResumoResimulacao(null);
     setProgressoAmd({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
     try {
       const resultado = await resimularEcommerceEmLotes({
         criterioB2c: { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 },
         totalAlvo,
+        filtros: filtrosAtuais,
         onProgress: (evt) => setProgressoAmd(evt),
       });
       setMensagem(`Resimulacao concluida. Processados: ${formatarNumero(resultado.totalProcessado)} - OK: ${formatarNumero(resultado.totalOk)}`);
@@ -319,7 +368,9 @@ export default function AuditoriaEcommercePage() {
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={() => { atualizarDiagnostico(); atualizarGrid(); }} disabled={carregando}>Atualizar</button>
             <button className="btn-primary" type="button" onClick={cruzar} disabled={carregando}>Cruzar Tracking + CT-e</button>
-            <button className="btn-primary" type="button" onClick={resimular} disabled={carregando}>Resimular cenario ideal</button>
+            <button className="btn-primary" type="button" onClick={prepararResimulacao} disabled={carregando || contandoResumo}>
+              {contandoResumo ? 'Contando pedidos...' : 'Resimular cenario ideal'}
+            </button>
           </div>
         </div>
 
@@ -336,6 +387,74 @@ export default function AuditoriaEcommercePage() {
           </button>
         </div>
       </section>
+
+      <section className="panel-card">
+        <div className="panel-title">Filtros de analise</div>
+        <p className="compact">Esses filtros valem para a base inteira (nao so a amostra abaixo) e para a resimulacao.</p>
+        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+          <label className="field">
+            Data criacao (de)
+            <input type="date" value={filtrosServidor.dataInicio} onChange={(e) => onChangeFiltroServidor('dataInicio', e.target.value)} />
+          </label>
+          <label className="field">
+            Data criacao (ate)
+            <input type="date" value={filtrosServidor.dataFim} onChange={(e) => onChangeFiltroServidor('dataFim', e.target.value)} />
+          </label>
+          <label className="field">
+            Status cruzamento
+            <select value={filtrosServidor.cruzamentoStatus} onChange={(e) => onChangeFiltroServidor('cruzamentoStatus', e.target.value)}>
+              <option value="">Todos</option>
+              <option value="ok">ok (casou)</option>
+              <option value="sem_tracking">sem_tracking</option>
+              <option value="sem_cte">sem_cte</option>
+              <option value="pendente">pendente</option>
+            </select>
+          </label>
+          <label className="field">
+            Canal
+            <select value={filtrosServidor.canal} onChange={(e) => onChangeFiltroServidor('canal', e.target.value)}>
+              <option value="">Todos</option>
+              {opcoesFiltro.canais.map((canal) => <option key={canal} value={canal}>{canal}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            UF
+            <select value={filtrosServidor.uf} onChange={(e) => onChangeFiltroServidor('uf', e.target.value)}>
+              <option value="">Todas</option>
+              {opcoesFiltro.ufs.map((uf) => <option key={uf} value={uf}>{uf}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            Campanha de frete
+            <select value={filtrosServidor.possuiCampanha} onChange={(e) => onChangeFiltroServidor('possuiCampanha', e.target.value)}>
+              <option value="">Todos</option>
+              <option value="true">Com campanha</option>
+              <option value="false">Sem campanha</option>
+            </select>
+          </label>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={filtrosServidor.divergenciaPeso} onChange={(e) => onChangeFiltroServidor('divergenciaPeso', e.target.checked)} />
+            Só com divergencia de peso (cotado x faturado)
+          </label>
+        </div>
+      </section>
+
+      {resumoResimulacao ? (
+        <section className="panel-card" style={{ borderColor: '#818cf8' }}>
+          <div className="panel-title">Confirmar resimulacao</div>
+          <p>
+            <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) e pendente(s) batem com os filtros ativos acima
+            {resumoResimulacao.filtros.dataInicio || resumoResimulacao.filtros.dataFim ? (
+              <> no periodo de <strong>{resumoResimulacao.filtros.dataInicio || '...'}</strong> ate <strong>{resumoResimulacao.filtros.dataFim || '...'}</strong></>
+            ) : null}
+            . Confirma a resimulacao desse recorte?
+          </p>
+          <div className="actions-right gap-row">
+            <button className="btn-secondary" type="button" onClick={() => setResumoResimulacao(null)}>Cancelar</button>
+            <button className="btn-primary" type="button" onClick={confirmarResimulacao} disabled={!resumoResimulacao.count}>Confirmar resimulacao</button>
+          </div>
+        </section>
+      ) : null}
 
       <div className="summary-strip lotacao-summary-mini">
         <div className="summary-card"><span>Pedidos na base</span><strong>{formatarNumero(diagnostico.total)}</strong></div>
