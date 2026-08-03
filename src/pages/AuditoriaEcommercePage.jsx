@@ -352,6 +352,7 @@ export default function AuditoriaEcommercePage() {
       await atualizarDiagnostico();
       await atualizarGrid();
     } catch (error) {
+      console.error('[AuditoriaEcommerce] erro ao resimular:', error);
       setErro(error.message || 'Erro ao resimular pedidos.');
     } finally {
       setCarregando(false);

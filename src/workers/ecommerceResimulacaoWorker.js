@@ -10,7 +10,8 @@ self.onmessage = (event) => {
       indiceCache = construirIndiceResimulacaoEcommerce(msg.transportadoras || [], msg.municipios || []);
       self.postMessage({ type: 'malha-pronta' });
     } catch (error) {
-      self.postMessage({ type: 'error', message: error?.message || 'Erro ao montar malha de resimulacao.' });
+      console.error('[ecommerceResimulacaoWorker] erro ao montar malha:', error);
+      self.postMessage({ type: 'error', message: `Erro ao montar malha: ${error?.message || String(error)}`, stack: error?.stack || null });
     }
     return;
   }
@@ -30,7 +31,8 @@ self.onmessage = (event) => {
       });
       self.postMessage({ type: 'done', resultados, loteId: msg.loteId });
     } catch (error) {
-      self.postMessage({ type: 'error', message: error?.message || 'Erro ao resimular pedidos.' });
+      console.error('[ecommerceResimulacaoWorker] erro ao resimular lote:', error);
+      self.postMessage({ type: 'error', message: `Erro ao resimular pedidos: ${error?.message || String(error)}`, stack: error?.stack || null });
     }
   }
 };

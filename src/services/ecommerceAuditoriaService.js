@@ -431,7 +431,8 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
       const msg = event.data || {};
       if (msg.type === 'error') {
         worker.removeEventListener('message', handler);
-        reject(new Error(msg.message));
+        console.error('[resimulacao ecommerce] erro no worker:', msg.message, msg.stack);
+        reject(new Error(msg.message || 'Erro desconhecido no worker de resimulacao.'));
       } else if (msg.type === tipoEsperado) {
         worker.removeEventListener('message', handler);
         resolve(msg);
@@ -501,7 +502,8 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
       const msg = event.data || {};
       if (msg.type === 'error') {
         worker.removeEventListener('message', handler);
-        reject(new Error(msg.message));
+        console.error('[resimulacao ecommerce] erro no worker:', msg.message, msg.stack);
+        reject(new Error(msg.message || 'Erro desconhecido no worker de resimulacao.'));
       } else if (msg.type === tipoEsperado) {
         worker.removeEventListener('message', handler);
         resolve(msg);
