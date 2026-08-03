@@ -19,6 +19,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   limpando_resultado_anterior: 'Limpando resultado anterior',
   carregando_resultado_salvo: 'Carregando resultado salvo',
   concluido: 'Concluído',
+  salvando_pedidos_ecommerce: 'Salvando pedidos do marketplace',
 };
 
 export function rotuloEtapaAuditoria(progresso) {

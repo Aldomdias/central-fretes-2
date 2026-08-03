@@ -8,6 +8,7 @@ import {
   diagnosticarResimulacaoEcommerce,
   resimularEcommerceEmLotes,
 } from '../services/ecommerceAuditoriaService';
+import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
 function formatarNumero(value, casas = 0) {
   if (value === null || value === undefined || value === '') return '-';
@@ -52,7 +53,7 @@ const COLUNAS_TABELA = [
   { chave: 'peso_cotado', label: 'Peso Cotado', tipo: 'numero2' },
   { chave: 'peso_faturado', label: 'Peso Faturado', tipo: 'numero2' },
   { chave: 'diferenca_peso', label: 'Dif. Peso', tipo: 'numero2' },
-  { chave: 'tem_cte', label: 'Tem CT-e? (arquivo)', tipo: 'bool' },
+  { chave: 'tem_cte', label: 'Tem CT-e? (relatorio mkt)', tipo: 'bool' },
   { chave: 'possui_campanha_frete', label: 'Campanha?', tipo: 'bool' },
   { chave: 'divergencia_origem', label: 'Div. Origem?', tipo: 'bool' },
   { chave: 'divergencia_transportadora', label: 'Div. Transp.?', tipo: 'bool' },
@@ -152,19 +153,6 @@ function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
   );
 }
 
-function BarraProgresso({ mensagem, pct }) {
-  const pctVal = Math.max(0, Math.min(100, Math.round(pct || 0)));
-  return (
-    <div style={{ marginTop: 10 }}>
-      <div style={{ fontSize: '0.8rem', color: '#555', marginBottom: 5 }}>{mensagem}</div>
-      <div style={{ background: '#eee', borderRadius: 99, height: 8, overflow: 'hidden' }}>
-        <div style={{ background: 'linear-gradient(90deg,#9153F0,#6366f1)', height: '100%', borderRadius: 99, width: `${pctVal}%`, transition: 'width .4s' }} />
-      </div>
-      {pctVal > 0 ? <div style={{ fontSize: '0.7rem', color: '#888', textAlign: 'right', marginTop: 2 }}>{pctVal}%</div> : null}
-    </div>
-  );
-}
-
 function celula(row, coluna) {
   const valor = row[coluna.chave];
   if (coluna.tipo === 'moeda') return formatarMoeda(valor);
@@ -179,8 +167,7 @@ export default function AuditoriaEcommercePage() {
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
   const [erro, setErro] = useState('');
-  const [progresso, setProgresso] = useState(null);
-  const [progressoPct, setProgressoPct] = useState(0);
+  const [progressoAmd, setProgressoAmd] = useState({});
   const [diagnostico, setDiagnostico] = useState({ total: 0, cruzados: 0 });
   const [diagnosticoSim, setDiagnosticoSim] = useState({ elegiveis: 0, pendentes: 0, ok: 0 });
   const [linhas, setLinhas] = useState([]);
@@ -220,22 +207,16 @@ export default function AuditoriaEcommercePage() {
     }
     setCarregando(true);
     setErro('');
-    setProgresso(null);
-    setProgressoPct(0);
-    setMensagem('Lendo arquivo...');
+    setMensagem('');
+    setProgressoAmd({ etapa: 'salvando_pedidos_ecommerce', carregados: 0, total: null });
     try {
       const texto = await arquivo.text();
       const registros = parseOrderSnapshotCsv(texto);
       if (!registros.length) throw new Error('Nenhuma linha valida encontrada no arquivo.');
-      setMensagem(`Enviando ${registros.length} pedido(s) ao Supabase...`);
+      setProgressoAmd({ etapa: 'salvando_pedidos_ecommerce', carregados: 0, total: registros.length });
       const resultado = await importarEcommerceOrderSnapshot(registros, {
-        onProgress: (evt) => {
-          setProgresso(evt);
-          setProgressoPct((evt.lote / Math.max(evt.totalLotes, 1)) * 100);
-          setMensagem(`Lote ${evt.lote}/${evt.totalLotes}: ${formatarNumero(evt.enviados)} de ${formatarNumero(evt.total)} pedido(s).`);
-        },
+        onProgress: (evt) => setProgressoAmd(evt),
       });
-      setProgressoPct(100);
       setMensagem(`Importacao concluida: ${formatarNumero(resultado.enviados)} pedido(s) salvos.`);
       setArquivo(null);
       await atualizarDiagnostico();
@@ -244,24 +225,21 @@ export default function AuditoriaEcommercePage() {
       setErro(error.message || 'Erro ao importar arquivo.');
     } finally {
       setCarregando(false);
-      setProgresso(null);
+      setProgressoAmd({});
     }
   }
 
   async function cruzar() {
     setCarregando(true);
     setErro('');
-    setProgressoPct(0);
-    setMensagem('Cruzando pedidos com Tracking e base de CT-e...');
+    setMensagem('');
     const totalAlvo = Math.max((diagnostico.total || 0) - (diagnostico.cruzados || 0), 1);
+    setProgressoAmd({ etapa: 'cruzando_tracking', carregados: 0, total: totalAlvo });
     try {
       const resultado = await cruzarEcommerceComTrackingECte({
-        onProgress: (evt) => {
-          setProgressoPct((evt.totalProcessado / totalAlvo) * 100);
-          setMensagem(`Processados: ${formatarNumero(evt.totalProcessado)} de ${formatarNumero(totalAlvo)} - OK: ${formatarNumero(evt.totalOk)} - Sem tracking: ${formatarNumero(evt.totalSemTracking)} - Sem CT-e: ${formatarNumero(evt.totalSemCte)}`);
-        },
+        totalAlvo,
+        onProgress: (evt) => setProgressoAmd(evt),
       });
-      setProgressoPct(100);
       setMensagem(`Cruzamento concluido. OK: ${formatarNumero(resultado.totalOk)} - Sem tracking: ${formatarNumero(resultado.totalSemTracking)} - Sem CT-e: ${formatarNumero(resultado.totalSemCte)}`);
       await atualizarDiagnostico();
       await atualizarGrid();
@@ -269,24 +247,22 @@ export default function AuditoriaEcommercePage() {
       setErro(error.message || 'Erro ao cruzar base.');
     } finally {
       setCarregando(false);
+      setProgressoAmd({});
     }
   }
 
   async function resimular() {
     setCarregando(true);
     setErro('');
-    setProgressoPct(0);
-    setMensagem('Carregando malha de transportadoras B2C...');
+    setMensagem('');
     const totalAlvo = Math.max(diagnosticoSim.pendentes || 0, 1);
+    setProgressoAmd({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
     try {
       const resultado = await resimularEcommerceEmLotes({
         criterioB2c: { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 },
-        onProgress: (evt) => {
-          if (evt.totalProcessado !== undefined) setProgressoPct((evt.totalProcessado / totalAlvo) * 100);
-          setMensagem(evt.mensagem || '');
-        },
+        totalAlvo,
+        onProgress: (evt) => setProgressoAmd(evt),
       });
-      setProgressoPct(100);
       setMensagem(`Resimulacao concluida. Processados: ${formatarNumero(resultado.totalProcessado)} - OK: ${formatarNumero(resultado.totalOk)}`);
       await atualizarDiagnostico();
       await atualizarGrid();
@@ -294,6 +270,7 @@ export default function AuditoriaEcommercePage() {
       setErro(error.message || 'Erro ao resimular pedidos.');
     } finally {
       setCarregando(false);
+      setProgressoAmd({});
     }
   }
 
@@ -331,11 +308,7 @@ export default function AuditoriaEcommercePage() {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem && !carregando ? <div className="sim-alert info">{mensagem}</div> : null}
-      {carregando ? (
-        <div className="panel-card" style={{ marginBottom: 16 }}>
-          <BarraProgresso mensagem={mensagem} pct={progressoPct} />
-        </div>
-      ) : null}
+      <AmdProcessingOverlay ativo={carregando} progresso={progressoAmd} mensagemRodape="Pode levar mais tempo em bases grandes." />
 
       <section className="panel-card">
         <div className="section-row compact-top">
@@ -356,14 +329,6 @@ export default function AuditoriaEcommercePage() {
             <input type="file" accept=".csv" onChange={(event) => setArquivo(event.target.files?.[0] || null)} />
           </label>
         </div>
-
-        {progresso ? (
-          <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 12 }}>
-            <div className="summary-card"><span>Lote</span><strong>{progresso.lote}/{progresso.totalLotes}</strong></div>
-            <div className="summary-card"><span>Enviados</span><strong>{formatarNumero(progresso.enviados)}</strong></div>
-            <div className="summary-card"><span>Total</span><strong>{formatarNumero(progresso.total)}</strong></div>
-          </div>
-        ) : null}
 
         <div className="actions-right" style={{ marginTop: 12 }}>
           <button className="btn-primary" type="button" onClick={importar} disabled={carregando || !arquivo}>

@@ -177,7 +177,7 @@ export async function importarEcommerceOrderSnapshot(registros = [], { onProgres
       .upsert(lote, { onConflict: 'pedido' });
     if (error) throw error;
     enviados += lote.length;
-    if (onProgress) onProgress({ lote: i + 1, totalLotes: lotes.length, enviados, total: registros.length });
+    if (onProgress) onProgress({ etapa: 'salvando_pedidos_ecommerce', carregados: enviados, total: registros.length, lote: i + 1, totalLotes: lotes.length, enviados });
   }
   return { total: registros.length, enviados };
 }
@@ -200,7 +200,7 @@ export async function diagnosticarEcommerceOrderSnapshot() {
 // tracking_rows.pedido e o pedido ERP interno (nao bate com o pedido do marketplace); o numero
 // real do marketplace fica em raw->>'Pedido Marketplace', pre-extraido na tabela de mapeamento
 // tracking_pedido_marketplace_map (ver migration 20260728_001) pra nao precisar mexer na tabela grande.
-export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, onProgress } = {}) {
+export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, totalAlvo = null, onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   const supabase = getSupabaseClient();
 
@@ -309,7 +309,7 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, onPr
     }
 
     totalProcessado += pendentes.length;
-    if (onProgress) onProgress({ totalProcessado, totalOk, totalSemTracking, totalSemCte });
+    if (onProgress) onProgress({ etapa: 'cruzando_tracking', carregados: totalProcessado, total: totalAlvo, totalProcessado, totalOk, totalSemTracking, totalSemCte });
 
     if (pendentes.length < limitePorLote) break;
   }
@@ -319,9 +319,7 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, onPr
 
 export async function carregarMalhaB2cParaResimulacao({ onProgress } = {}) {
   const [transportadoras, municipios] = await Promise.all([
-    carregarBaseCompletaDb((evt) => {
-      onProgress?.({ etapa: 'malha', mensagem: `Carregando malha de transportadoras: ${evt.carregados || 0} linha(s)...` });
-    }),
+    carregarBaseCompletaDb((evt) => onProgress?.(evt)),
     carregarMunicipiosIbgeDb(),
   ]);
   return { transportadoras: transportadoras || [], municipios: municipios || [] };
@@ -373,10 +371,10 @@ export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
 // pagina pedidos pendentes do Supabase e vai salvando resultado lote a lote. Pensado
 // para volumes grandes (dezenas de milhares de pedidos) sem travar a aba nem estourar
 // timeout de request.
-export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800, onProgress } = {}) {
+export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800, totalAlvo = null, onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
-  onProgress?.({ etapa: 'malha', mensagem: 'Carregando malha de transportadoras B2C...' });
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
   const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress });
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
@@ -406,7 +404,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
       const pagina = await buscarPaginaPendentesResimulacao(tamanhoLote);
       if (!pagina.length) break;
 
-      onProgress?.({ etapa: 'resimulando', mensagem: `Resimulando lote de ${pagina.length} pedido(s)...`, totalProcessado });
+      onProgress?.({ etapa: 'resimulando', carregados: totalProcessado, total: totalAlvo, totalProcessado });
 
       worker.postMessage({ type: 'resimular-lote-ecommerce', pedidos: pagina, criterioB2c });
       const { resultados } = await aguardarMensagem('done');
@@ -417,7 +415,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
 
       totalProcessado += pagina.length;
       totalOk += resultados.filter((r) => r.sim_status === 'ok').length;
-      onProgress?.({ etapa: 'salvando', mensagem: `Processados: ${totalProcessado} - OK: ${totalOk}`, totalProcessado, totalOk });
+      onProgress?.({ etapa: 'salvando_resultados', carregados: totalProcessado, total: totalAlvo, totalProcessado, totalOk });
 
       if (pagina.length < tamanhoLote) break;
     }
