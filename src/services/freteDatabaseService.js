@@ -127,9 +127,12 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true, o
   // explícita, ordena por id (PK) para paginação determinística e completa.
   const ordenarPor = orderBy || 'id';
 
+  // Usa a mesma coluna do ORDER BY pra contar (nao "id" fixo): "generalidades"
+  // nao tem coluna id, so origem_id - um select('id') fixo aqui quebra com
+  // 42703 (coluna inexistente) e derruba a carga inteira da malha.
   const { count, error: erroCount } = await supabase
     .from(table)
-    .select('id', { count: 'exact', head: true });
+    .select(ordenarPor, { count: 'exact', head: true });
   if (erroCount) throw erroCount;
 
   const total = count || 0;
