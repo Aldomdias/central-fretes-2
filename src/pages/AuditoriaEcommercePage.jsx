@@ -66,6 +66,7 @@ const COLUNAS_TABELA = [
   { chave: 'cte_uf_origem', label: 'UF Origem (CT-e)', tipo: 'texto' },
   { chave: 'cte_uf_destino', label: 'UF Destino (CT-e)', tipo: 'texto' },
   { chave: 'sim_status', label: 'Resimulacao', tipo: 'texto' },
+  { chave: 'sim_peso_base', label: 'Peso usado', tipo: 'texto' },
   { chave: 'sim_transportadora_ideal', label: 'Transportadora ideal', tipo: 'texto' },
   { chave: 'sim_origem_ideal', label: 'CD ideal', tipo: 'texto' },
   { chave: 'sim_valor_ideal', label: 'Valor ideal', tipo: 'moeda' },
@@ -196,6 +197,7 @@ export default function AuditoriaEcommercePage() {
     dataInicio: '', dataFim: '', cruzamentoStatus: '', divergenciaPeso: false, canal: '', uf: '', possuiCampanha: '',
   });
   const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [] });
+  const [pesoBase, setPesoBase] = useState('cotado');
   const [resumoResimulacao, setResumoResimulacao] = useState(null);
   const [contandoResumo, setContandoResumo] = useState(false);
 
@@ -307,7 +309,7 @@ export default function AuditoriaEcommercePage() {
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const count = await contarElegiveisResimulacaoEcommerce(filtrosAtuais);
-      setResumoResimulacao({ origem: 'servidor', count, filtros: { ...filtrosServidor } });
+      setResumoResimulacao({ origem: 'servidor', count, filtros: { ...filtrosServidor }, pesoBase });
     } catch (error) {
       setErro(error.message || 'Erro ao contar pedidos para resimular.');
     } finally {
@@ -319,7 +321,7 @@ export default function AuditoriaEcommercePage() {
     setErro('');
     setMensagem('');
     const idsElegiveis = linhasFiltradas.filter((row) => row.cruzamento_status === 'ok').map((row) => row.id);
-    setResumoResimulacao({ origem: 'coluna', count: idsElegiveis.length, ids: idsElegiveis });
+    setResumoResimulacao({ origem: 'coluna', count: idsElegiveis.length, ids: idsElegiveis, pesoBase });
   }
 
   async function confirmarResimulacao() {
@@ -336,10 +338,12 @@ export default function AuditoriaEcommercePage() {
         ? await resimularEcommercePorIds({
           ids: resumo.ids,
           criterioB2c,
+          pesoBase: resumo.pesoBase,
           onProgress: (evt) => setProgressoAmd(evt),
         })
         : await resimularEcommerceEmLotes({
           criterioB2c,
+          pesoBase: resumo.pesoBase,
           totalAlvo: Math.max(resumo.count || 0, 1),
           filtros: filtrosParaQuery(resumo.filtros),
           onProgress: (evt) => setProgressoAmd(evt),
@@ -468,12 +472,20 @@ export default function AuditoriaEcommercePage() {
             <input type="checkbox" checked={filtrosServidor.divergenciaPeso} onChange={(e) => onChangeFiltroServidor('divergenciaPeso', e.target.checked)} />
             Só com divergencia de peso (cotado x faturado)
           </label>
+          <label className="field">
+            Peso usado na resimulacao
+            <select value={pesoBase} onChange={(e) => setPesoBase(e.target.value)}>
+              <option value="cotado">Peso cotado (venda)</option>
+              <option value="faturado">Peso faturado (transportadora)</option>
+            </select>
+          </label>
         </div>
       </section>
 
       {resumoResimulacao ? (
         <section className="panel-card" style={{ borderColor: '#818cf8' }}>
           <div className="panel-title">Confirmar resimulacao</div>
+          <p className="compact">Peso usado no calculo: <strong>{resumoResimulacao.pesoBase === 'faturado' ? 'peso faturado' : 'peso cotado'}</strong></p>
           {resumoResimulacao.origem === 'coluna' ? (
             <p>
               <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) (cruzamento ok) estao visiveis

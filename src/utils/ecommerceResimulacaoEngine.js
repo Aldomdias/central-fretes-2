@@ -25,6 +25,7 @@ export function resimularLotePedidosEcommerce({
   mapasIbge,
   index,
   criterioB2c = { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 },
+  pesoBase = 'cotado', // 'cotado' | 'faturado' - qual peso do pedido usar no calculo
 } = {}) {
   const resultados = [];
 
@@ -34,19 +35,23 @@ export function resimularLotePedidosEcommerce({
     const ibgeDestino = destino?.ibge || '';
 
     if (!ibgeDestino) {
-      resultados.push({ id: pedido.id, sim_status: 'sem_ibge_destino' });
+      resultados.push({ id: pedido.id, sim_status: 'sem_ibge_destino', sim_peso_base: pesoBase });
       continue;
     }
 
     const candidatos = index.get(`${canal}|${ibgeDestino}`) || [];
     if (!candidatos.length) {
-      resultados.push({ id: pedido.id, sim_status: 'sem_malha' });
+      resultados.push({ id: pedido.id, sim_status: 'sem_malha', sim_peso_base: pesoBase });
       continue;
     }
 
+    const pesoFaturado = Number(pedido.peso_faturado || 0);
+    const pesoCotado = Number(pedido.peso_cotado || 0);
+    const pesoEscolhido = pesoBase === 'faturado' && pesoFaturado > 0 ? pesoFaturado : pesoCotado;
+
     const cte = {
-      peso: Number(pedido.peso_cotado || 0),
-      pesoDeclarado: Number(pedido.peso_cotado || 0),
+      peso: pesoEscolhido,
+      pesoDeclarado: pesoEscolhido,
       pesoCubado: 0,
       valorNF: Number(pedido.valor_pedido || pedido.valor_faturado || 0),
       canal,
@@ -60,7 +65,7 @@ export function resimularLotePedidosEcommerce({
       .filter(Boolean);
 
     if (!calculados.length) {
-      resultados.push({ id: pedido.id, sim_status: 'sem_cotacao_peso' });
+      resultados.push({ id: pedido.id, sim_status: 'sem_cotacao_peso', sim_peso_base: pesoBase });
       continue;
     }
 
@@ -71,6 +76,7 @@ export function resimularLotePedidosEcommerce({
     resultados.push({
       id: pedido.id,
       sim_status: 'ok',
+      sim_peso_base: pesoBase,
       sim_transportadora_ideal: vencedor.transportadora,
       sim_origem_ideal: vencedor.origem,
       sim_valor_ideal: vencedor.total,

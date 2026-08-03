@@ -26,6 +26,7 @@ self.onmessage = (event) => {
         mapasIbge: indiceCache.mapasIbge,
         index: indiceCache.index,
         criterioB2c: msg.criterioB2c,
+        pesoBase: msg.pesoBase,
       });
       self.postMessage({ type: 'done', resultados, loteId: msg.loteId });
     } catch (error) {

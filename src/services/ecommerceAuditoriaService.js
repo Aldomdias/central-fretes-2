@@ -394,7 +394,7 @@ async function buscarPaginaPendentesResimulacao(limit = 800, filtros = {}) {
   const supabase = getSupabaseClient();
   let query = supabase
     .from('ecommerce_order_snapshot')
-    .select('id, pedido, canal, uf, cidade, peso_cotado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
+    .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
     .eq('cruzamento_status', 'ok')
     .eq('sim_status', 'pendente');
   query = aplicarFiltrosEcommerce(query, filtros).limit(limit);
@@ -418,7 +418,7 @@ export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
 // pagina pedidos pendentes do Supabase e vai salvando resultado lote a lote. Pensado
 // para volumes grandes (dezenas de milhares de pedidos) sem travar a aba nem estourar
 // timeout de request.
-export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800, totalAlvo = null, filtros = {}, onProgress } = {}) {
+export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotado', tamanhoLote = 800, totalAlvo = null, filtros = {}, onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
@@ -453,7 +453,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
 
       onProgress?.({ etapa: 'resimulando', carregados: totalProcessado, total: totalAlvo, totalProcessado });
 
-      worker.postMessage({ type: 'resimular-lote-ecommerce', pedidos: pagina, criterioB2c });
+      worker.postMessage({ type: 'resimular-lote-ecommerce', pedidos: pagina, criterioB2c, pesoBase });
       const { resultados } = await aguardarMensagem('done');
 
       const mapaPedidos = new Map(pagina.map((p) => [p.id, p.pedido]));
@@ -476,7 +476,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
 // Resimula exatamente os pedidos passados por id (ex: o que esta visivel na
 // grade depois dos filtros por coluna), em vez de paginar tudo que bate com
 // os filtros de analise no banco. Util pra testar um recorte pontual.
-export async function resimularEcommercePorIds({ ids = [], criterioB2c, onProgress } = {}) {
+export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase = 'cotado', onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   if (!ids.length) return { totalProcessado: 0, totalOk: 0 };
 
@@ -488,7 +488,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, onProgre
   for (const grupo of chunks(ids, 200)) {
     const { data, error } = await supabase
       .from('ecommerce_order_snapshot')
-      .select('id, pedido, canal, uf, cidade, peso_cotado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
+      .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
       .eq('cruzamento_status', 'ok')
       .in('id', grupo);
     if (error) throw error;
@@ -518,7 +518,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, onProgre
     let totalOk = 0;
     for (const lote of chunks(pedidos, 800)) {
       onProgress?.({ etapa: 'resimulando', carregados: totalProcessado, total: pedidos.length, totalProcessado });
-      worker.postMessage({ type: 'resimular-lote-ecommerce', pedidos: lote, criterioB2c });
+      worker.postMessage({ type: 'resimular-lote-ecommerce', pedidos: lote, criterioB2c, pesoBase });
       const { resultados } = await aguardarMensagem('done');
 
       const mapaPedidos = new Map(lote.map((p) => [p.id, p.pedido]));
