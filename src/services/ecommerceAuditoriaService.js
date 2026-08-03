@@ -317,9 +317,11 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, onPr
   return { totalProcessado, totalOk, totalSemTracking, totalSemCte };
 }
 
-export async function carregarMalhaB2cParaResimulacao() {
+export async function carregarMalhaB2cParaResimulacao({ onProgress } = {}) {
   const [transportadoras, municipios] = await Promise.all([
-    carregarBaseCompletaDb(),
+    carregarBaseCompletaDb((evt) => {
+      onProgress?.({ etapa: 'malha', mensagem: `Carregando malha de transportadoras: ${evt.carregados || 0} linha(s)...` });
+    }),
     carregarMunicipiosIbgeDb(),
   ]);
   return { transportadoras: transportadoras || [], municipios: municipios || [] };
@@ -375,7 +377,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
   onProgress?.({ etapa: 'malha', mensagem: 'Carregando malha de transportadoras B2C...' });
-  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao();
+  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress });
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
 
