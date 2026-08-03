@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   parseOrderSnapshotCsv,
   importarEcommerceOrderSnapshot,
@@ -76,7 +76,19 @@ const COLUNAS_TABELA = [
 function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState('');
+  const [posicao, setPosicao] = useState({ top: 0, left: 0 });
+  const btnRef = useRef(null);
   const ativo = selecionados instanceof Set;
+
+  function alternarAberto() {
+    if (!aberto && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      // position:fixed calculado a partir do botao, pra escapar do overflow:auto
+      // da tabela (com absolute o painel ficava cortado pelo scroll da grade).
+      setPosicao({ top: rect.bottom + 4, left: Math.min(rect.left, window.innerWidth - 236) });
+    }
+    setAberto((v) => !v);
+  }
 
   const valoresFiltradosBusca = useMemo(() => {
     const termo = busca.trim().toLowerCase();
@@ -105,8 +117,9 @@ function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
   return (
     <div style={{ position: 'relative' }}>
       <button
+        ref={btnRef}
         type="button"
-        onClick={() => setAberto((v) => !v)}
+        onClick={alternarAberto}
         style={{
           width: '100%', textAlign: 'left', fontSize: '0.75rem', padding: '4px 6px',
           background: ativo ? '#eef2ff' : '#fff', border: `1px solid ${ativo ? '#818cf8' : '#cbd5e1'}`,
@@ -122,7 +135,7 @@ function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 5 }} onClick={() => setAberto(false)} />
           <div style={{
-            position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 6,
+            position: 'fixed', top: posicao.top, left: posicao.left, zIndex: 6,
             background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
             width: 220, maxHeight: 300, display: 'flex', flexDirection: 'column',
           }}>
