@@ -200,9 +200,10 @@ export default function AuditoriaEcommercePage() {
 
   async function atualizarDiagnostico() {
     try {
+      const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const [diag, diagSim] = await Promise.all([
-        diagnosticarEcommerceOrderSnapshot(),
-        diagnosticarResimulacaoEcommerce(),
+        diagnosticarEcommerceOrderSnapshot(filtrosAtuais),
+        diagnosticarResimulacaoEcommerce(filtrosAtuais),
       ]);
       setDiagnostico(diag);
       setDiagnosticoSim(diagSim);
@@ -221,11 +222,11 @@ export default function AuditoriaEcommercePage() {
   }
 
   useEffect(() => {
-    atualizarDiagnostico();
     listarOpcoesFiltroEcommerce().then(setOpcoesFiltro).catch(() => {});
   }, []);
 
   useEffect(() => {
+    atualizarDiagnostico();
     atualizarGrid();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtrosServidor]);

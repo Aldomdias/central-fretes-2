@@ -182,17 +182,18 @@ export async function importarEcommerceOrderSnapshot(registros = [], { onProgres
   return { total: registros.length, enviados };
 }
 
-export async function diagnosticarEcommerceOrderSnapshot() {
+export async function diagnosticarEcommerceOrderSnapshot(filtros = {}) {
   if (!isSupabaseConfigured()) return { configurado: false, total: 0 };
   const supabase = getSupabaseClient();
-  const { count, error } = await supabase
-    .from('ecommerce_order_snapshot')
-    .select('id', { count: 'exact', head: true });
+  const { count, error } = await aplicarFiltrosEcommerce(
+    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }),
+    filtros
+  );
   if (error) throw error;
-  const { count: cruzados } = await supabase
-    .from('ecommerce_order_snapshot')
-    .select('id', { count: 'exact', head: true })
-    .neq('cruzamento_status', 'pendente');
+  const { count: cruzados } = await aplicarFiltrosEcommerce(
+    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).neq('cruzamento_status', 'pendente'),
+    filtros
+  );
   return { configurado: true, total: count || 0, cruzados: cruzados || 0 };
 }
 
@@ -371,22 +372,21 @@ export async function contarElegiveisResimulacaoEcommerce(filtros = {}) {
   return count || 0;
 }
 
-export async function diagnosticarResimulacaoEcommerce() {
+export async function diagnosticarResimulacaoEcommerce(filtros = {}) {
   if (!isSupabaseConfigured()) return { configurado: false, elegiveis: 0, pendentes: 0, ok: 0 };
   const supabase = getSupabaseClient();
-  const { count: elegiveis } = await supabase
-    .from('ecommerce_order_snapshot')
-    .select('id', { count: 'exact', head: true })
-    .eq('cruzamento_status', 'ok');
-  const { count: pendentes } = await supabase
-    .from('ecommerce_order_snapshot')
-    .select('id', { count: 'exact', head: true })
-    .eq('cruzamento_status', 'ok')
-    .eq('sim_status', 'pendente');
-  const { count: ok } = await supabase
-    .from('ecommerce_order_snapshot')
-    .select('id', { count: 'exact', head: true })
-    .eq('sim_status', 'ok');
+  const { count: elegiveis } = await aplicarFiltrosEcommerce(
+    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).eq('cruzamento_status', 'ok'),
+    filtros
+  );
+  const { count: pendentes } = await aplicarFiltrosEcommerce(
+    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).eq('cruzamento_status', 'ok').eq('sim_status', 'pendente'),
+    filtros
+  );
+  const { count: ok } = await aplicarFiltrosEcommerce(
+    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).eq('sim_status', 'ok'),
+    filtros
+  );
   return { configurado: true, elegiveis: elegiveis || 0, pendentes: pendentes || 0, ok: ok || 0 };
 }
 
