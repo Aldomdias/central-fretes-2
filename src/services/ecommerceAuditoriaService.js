@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient.js';
-import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from './freteDatabaseService.js';
+import { carregarBaseCompletaDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarMunicipiosIbgeDb } from './freteDatabaseService.js';
 
 // Layout do relatorio "OrderSnapshotAnalytics": CSV ";", BOM UTF-8, primeira linha "sep=;",
 // numeros em formato pt-BR (virgula decimal, sem separador de milhar).
@@ -318,9 +318,14 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
   return { totalProcessado, totalOk, totalSemTracking, totalSemCte };
 }
 
-export async function carregarMalhaB2cParaResimulacao({ onProgress } = {}) {
+export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos = [] } = {}) {
+  // Com CDs restritos, busca so a malha desses CDs direto no banco (bem mais
+  // rapido, ja que evita puxar rotas/cotacoes/taxas de origens que nunca vao
+  // ser usadas). Sem restricao, carrega a base completa (com cache) como antes.
   const [transportadoras, municipios] = await Promise.all([
-    carregarBaseCompletaDb((evt) => onProgress?.(evt)),
+    cdsPermitidos.length
+      ? carregarBaseFiltradaPorCidadesOrigemDb(cdsPermitidos, (evt) => onProgress?.(evt))
+      : carregarBaseCompletaDb((evt) => onProgress?.(evt)),
     carregarMunicipiosIbgeDb(),
   ]);
   return { transportadoras: transportadoras || [], municipios: municipios || [] };
@@ -422,7 +427,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
-  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress });
+  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos });
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
 
@@ -482,7 +487,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
   if (!ids.length) return { totalProcessado: 0, totalOk: 0 };
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
-  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress });
+  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos });
 
   const supabase = getSupabaseClient();
   const pedidos = [];

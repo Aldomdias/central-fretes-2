@@ -646,6 +646,122 @@ export async function carregarBaseCompletaDb(onProgress = null) {
   return _cacheBaseCompleta;
 }
 
+async function fetchAllRowsFiltradoPorOrigens(supabase, table, origemIds, orderBy = null) {
+  const ordenarPor = orderBy || 'id';
+  const allRows = [];
+  for (const grupo of chunksDb(origemIds, 100)) {
+    let from = 0;
+    for (;;) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .in('origem_id', grupo)
+        .order(ordenarPor, { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      const rows = data || [];
+      allRows.push(...rows);
+      if (rows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
+  return allRows;
+}
+
+function chunksDb(lista = [], tamanho = 100) {
+  const saida = [];
+  for (let i = 0; i < lista.length; i += tamanho) saida.push(lista.slice(i, i + tamanho));
+  return saida;
+}
+
+// Carrega so a malha das origens cujo nome de cidade bate com algum dos nomes
+// em filtroCidades (ex: restricao a CDs especificos na resimulacao do
+// e-commerce). Nao usa o cache de carregarBaseCompletaDb (e um recorte, nao a
+// base inteira) - pensado pra ser rapido justamente por evitar buscar
+// milhoes de linhas de rotas/cotacoes/taxas de origens que nao interessam.
+export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [], onProgress = null) {
+  if (!isSupabaseConfigured() || !filtroCidades.length) return [];
+  const supabase = ensureClient();
+
+  const condicaoOr = filtroCidades.map((nome) => `cidade.ilike.%${String(nome).trim()}%`).join(',');
+  const { data: origens, error: erroOrigens } = await supabase
+    .from('origens')
+    .select('*')
+    .or(condicaoOr);
+  if (erroOrigens) throw erroOrigens;
+  if (!origens || !origens.length) return [];
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: origens.length, total: null });
+
+  const origemIds = origens.map((o) => o.id);
+  const transportadoraIds = [...new Set(origens.map((o) => o.transportadora_id))];
+
+  const [transportadoras, generalidades, rotas, cotacoes, taxas] = await Promise.all([
+    (async () => {
+      const { data, error } = await supabase.from('transportadoras').select('*').in('id', transportadoraIds);
+      if (error) throw error;
+      return data || [];
+    })(),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'rotas', origemIds),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'cotacoes', origemIds),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: origens.length + rotas.length + cotacoes.length + taxas.length, total: null });
+
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
+  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = new Map();
+  const cotacoesByOrigem = new Map();
+  const taxasByOrigem = new Map();
+
+  rotasNormalizadas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = rotasByOrigem.get(key) || [];
+    list.push(item);
+    rotasByOrigem.set(key, list);
+  });
+  cotacoes.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = cotacoesByOrigem.get(key) || [];
+    list.push(item);
+    cotacoesByOrigem.set(key, list);
+  });
+  taxas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = taxasByOrigem.get(key) || [];
+    list.push(item);
+    taxasByOrigem.set(key, list);
+  });
+
+  const origensByTransportadora = new Map();
+  origens.forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(
+      normalizeOrigemFromDb(
+        origem,
+        generalidadeByOrigem.get(String(origem.id)),
+        rotasByOrigem.get(String(origem.id)) || [],
+        cotacoesByOrigem.get(String(origem.id)) || [],
+        taxasByOrigem.get(String(origem.id)) || []
+      )
+    );
+    origensByTransportadora.set(key, list);
+  });
+
+  return transportadoras.map((transportadora) => ({
+    id: transportadora.id,
+    nome: transportadora.nome || '',
+    status: transportadora.status || 'Ativa',
+    tde: transportadora.tde ?? 0,
+    tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+    origens: origensByTransportadora.get(String(transportadora.id)) || [],
+  }));
+}
+
 export async function carregarBaseTransportadorasDb(nomes = []) {
   const nomesLimpos = Array.from(new Set(
     (nomes || []).map((nome) => String(nome || '').trim()).filter(Boolean)
