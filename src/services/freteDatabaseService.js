@@ -112,10 +112,14 @@ function buildSnapshotPayload(transportadoras, chave = SNAPSHOT_CHAVE) {
   };
 }
 
-async function fetchAllRows(supabase, table, orderBy = null, ascending = true, onPage = null) {
-  const allRows = [];
-  let from = 0;
+// Concorrencia de paginas buscadas ao mesmo tempo por tabela. O Supabase/PostgREST
+// limita cada resposta a PAGE_SIZE linhas (db-max-rows), entao tabelas grandes como
+// "rotas" (~1,2M linhas) precisam de mais de 1000 paginas - buscar uma de cada vez
+// (sequencial) fazia isso levar minutos so em latencia de rede. Buscando varias
+// paginas em paralelo, o tempo total cai proporcionalmente a concorrencia.
+const PAGINAS_EM_PARALELO = 8;
 
+async function fetchAllRows(supabase, table, orderBy = null, ascending = true, onPage = null) {
   // ORDER BY estável é obrigatório: sem ele, o Postgres não garante a ordem
   // das linhas entre as páginas do .range(), fazendo páginas repetirem e
   // PULAREM linhas. Em tabelas grandes (rotas ~500k) isso fazia o motor perder
@@ -123,24 +127,39 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true, o
   // explícita, ordena por id (PK) para paginação determinística e completa.
   const ordenarPor = orderBy || 'id';
 
-  while (true) {
-    const query = supabase
+  const { count, error: erroCount } = await supabase
+    .from(table)
+    .select('id', { count: 'exact', head: true });
+  if (erroCount) throw erroCount;
+
+  const total = count || 0;
+  if (!total) return [];
+
+  const totalPaginas = Math.ceil(total / PAGE_SIZE);
+  const paginas = new Array(totalPaginas);
+  let carregados = 0;
+
+  async function buscarPagina(indice) {
+    const from = indice * PAGE_SIZE;
+    const { data, error } = await supabase
       .from(table)
       .select('*')
       .order(ordenarPor, { ascending })
       .range(from, from + PAGE_SIZE - 1);
-
-    const { data, error } = await query;
     if (error) throw error;
-
-    const rows = data || [];
-    allRows.push(...rows);
-    onPage?.(allRows.length, table);
-    if (rows.length < PAGE_SIZE) break;
-    from += PAGE_SIZE;
+    paginas[indice] = data || [];
+    carregados += paginas[indice].length;
+    onPage?.(carregados, table);
   }
 
-  return allRows;
+  for (let inicio = 0; inicio < totalPaginas; inicio += PAGINAS_EM_PARALELO) {
+    const lote = [];
+    for (let i = inicio; i < Math.min(inicio + PAGINAS_EM_PARALELO, totalPaginas); i += 1) lote.push(buscarPagina(i));
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.all(lote);
+  }
+
+  return paginas.flat();
 }
 
 function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspeciais) {
