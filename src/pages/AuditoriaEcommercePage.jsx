@@ -76,7 +76,7 @@ const COLUNAS_TABELA = [
 function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState('');
-  const ativo = selecionados && selecionados.size > 0 && selecionados.size < valoresUnicos.length;
+  const ativo = selecionados instanceof Set;
 
   const valoresFiltradosBusca = useMemo(() => {
     const termo = busca.trim().toLowerCase();
@@ -85,7 +85,11 @@ function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
   }, [valoresUnicos, busca]);
 
   function alternar(valor) {
-    const novo = new Set(selecionados && selecionados.size ? selecionados : valoresUnicos);
+    // Parte da selecao explicita atual (mesmo vazia, ex: depois de "Limpar"), nao
+    // reseta pra "todos" so porque esta vazia - senao marcar 1 item depois de
+    // limpar volta a selecionar tudo em vez de so aquele item.
+    const base = selecionados instanceof Set ? selecionados : new Set(valoresUnicos);
+    const novo = new Set(base);
     if (novo.has(valor)) novo.delete(valor); else novo.add(valor);
     onChange(coluna.chave, novo.size === valoresUnicos.length ? null : novo);
   }
@@ -110,7 +114,7 @@ function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
         }}
       >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {ativo ? `${selecionados.size} selecionado(s)` : 'Todos'}
+          {ativo ? `${selecionados.size} selecionado(s)` : `Todos (${valoresUnicos.length})`}
         </span>
         <span>▾</span>
       </button>
@@ -138,7 +142,7 @@ function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
             </div>
             <div style={{ overflowY: 'auto', padding: 6 }}>
               {valoresFiltradosBusca.map((valor) => {
-                const marcado = !selecionados || selecionados.size === 0 || selecionados.has(valor);
+                const marcado = selecionados instanceof Set ? selecionados.has(valor) : true;
                 return (
                   <label key={valor} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', padding: '2px 4px', cursor: 'pointer' }}>
                     <input type="checkbox" checked={marcado} onChange={() => alternar(valor)} />
