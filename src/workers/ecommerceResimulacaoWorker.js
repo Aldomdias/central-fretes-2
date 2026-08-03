@@ -28,6 +28,7 @@ self.onmessage = (event) => {
         index: indiceCache.index,
         criterioB2c: msg.criterioB2c,
         pesoBase: msg.pesoBase,
+        cdsPermitidos: msg.cdsPermitidos,
       });
       self.postMessage({ type: 'done', resultados, loteId: msg.loteId });
     } catch (error) {

@@ -13,6 +13,8 @@ import {
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
+const CDS_RESTRICAO = ['Itupeva', 'Jaboatão', 'Serra', 'Duque de Caxias', 'Itajaí'];
+
 function formatarNumero(value, casas = 0) {
   if (value === null || value === undefined || value === '') return '-';
   return Number(value || 0).toLocaleString('pt-BR', {
@@ -198,6 +200,7 @@ export default function AuditoriaEcommercePage() {
   });
   const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [] });
   const [pesoBase, setPesoBase] = useState('cotado');
+  const [restringirCds, setRestringirCds] = useState(false);
   const [resumoResimulacao, setResumoResimulacao] = useState(null);
   const [contandoResumo, setContandoResumo] = useState(false);
 
@@ -309,7 +312,7 @@ export default function AuditoriaEcommercePage() {
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const count = await contarElegiveisResimulacaoEcommerce(filtrosAtuais);
-      setResumoResimulacao({ origem: 'servidor', count, filtros: { ...filtrosServidor }, pesoBase });
+      setResumoResimulacao({ origem: 'servidor', count, filtros: { ...filtrosServidor }, pesoBase, cdsPermitidos: restringirCds ? CDS_RESTRICAO : [] });
     } catch (error) {
       setErro(error.message || 'Erro ao contar pedidos para resimular.');
     } finally {
@@ -321,7 +324,7 @@ export default function AuditoriaEcommercePage() {
     setErro('');
     setMensagem('');
     const idsElegiveis = linhasFiltradas.filter((row) => row.cruzamento_status === 'ok').map((row) => row.id);
-    setResumoResimulacao({ origem: 'coluna', count: idsElegiveis.length, ids: idsElegiveis, pesoBase });
+    setResumoResimulacao({ origem: 'coluna', count: idsElegiveis.length, ids: idsElegiveis, pesoBase, cdsPermitidos: restringirCds ? CDS_RESTRICAO : [] });
   }
 
   async function confirmarResimulacao() {
@@ -339,11 +342,13 @@ export default function AuditoriaEcommercePage() {
           ids: resumo.ids,
           criterioB2c,
           pesoBase: resumo.pesoBase,
+          cdsPermitidos: resumo.cdsPermitidos,
           onProgress: (evt) => setProgressoAmd(evt),
         })
         : await resimularEcommerceEmLotes({
           criterioB2c,
           pesoBase: resumo.pesoBase,
+          cdsPermitidos: resumo.cdsPermitidos,
           totalAlvo: Math.max(resumo.count || 0, 1),
           filtros: filtrosParaQuery(resumo.filtros),
           onProgress: (evt) => setProgressoAmd(evt),
@@ -480,6 +485,10 @@ export default function AuditoriaEcommercePage() {
               <option value="faturado">Peso faturado (transportadora)</option>
             </select>
           </label>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={restringirCds} onChange={(e) => setRestringirCds(e.target.checked)} />
+            Restringir aos CDs: {CDS_RESTRICAO.join(', ')} (senao, busca em todas as origens)
+          </label>
         </div>
       </section>
 
@@ -487,6 +496,9 @@ export default function AuditoriaEcommercePage() {
         <section className="panel-card" style={{ borderColor: '#818cf8' }}>
           <div className="panel-title">Confirmar resimulacao</div>
           <p className="compact">Peso usado no calculo: <strong>{resumoResimulacao.pesoBase === 'faturado' ? 'peso faturado' : 'peso cotado'}</strong></p>
+          <p className="compact">
+            Origens consideradas: <strong>{resumoResimulacao.cdsPermitidos?.length ? resumoResimulacao.cdsPermitidos.join(', ') : 'todas'}</strong>
+          </p>
           {resumoResimulacao.origem === 'coluna' ? (
             <p>
               <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) (cruzamento ok) estao visiveis

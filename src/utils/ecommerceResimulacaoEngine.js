@@ -16,6 +16,14 @@ export function construirIndiceResimulacaoEcommerce(transportadoras = [], munici
   return { mapasIbge, index };
 }
 
+function normalizarCidadeCd(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
 // Resimula, para cada pedido, qual seria o CD (origem) + transportadora ideal considerando
 // toda a malha B2C cadastrada hoje, usando peso cotado e o mesmo criterio 80/20 preco x prazo
 // que o marketplace usa na oferta em tempo real. Ignora desconto de campanha e adicional
@@ -26,8 +34,12 @@ export function resimularLotePedidosEcommerce({
   index,
   criterioB2c = { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 },
   pesoBase = 'cotado', // 'cotado' | 'faturado' - qual peso do pedido usar no calculo
+  cdsPermitidos = [], // vazio = todas as origens; senao, restringe a esses CDs (cidade da origem)
 } = {}) {
   const resultados = [];
+  const cdsPermitidosSet = cdsPermitidos.length
+    ? new Set(cdsPermitidos.map(normalizarCidadeCd))
+    : null;
 
   for (const pedido of pedidos) {
     const canal = categoriaCanalRealizado(pedido.canal || 'B2C');
@@ -39,7 +51,10 @@ export function resimularLotePedidosEcommerce({
       continue;
     }
 
-    const candidatos = index.get(`${canal}|${ibgeDestino}`) || [];
+    const candidatosBrutos = index.get(`${canal}|${ibgeDestino}`) || [];
+    const candidatos = cdsPermitidosSet
+      ? candidatosBrutos.filter((c) => cdsPermitidosSet.has(normalizarCidadeCd(c.origem?.cidade)))
+      : candidatosBrutos;
     if (!candidatos.length) {
       resultados.push({ id: pedido.id, sim_status: 'sem_malha', sim_peso_base: pesoBase });
       continue;
