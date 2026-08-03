@@ -509,7 +509,8 @@ export default function AuditoriaEcommercePage() {
             <div className="panel-title">Pedidos cruzados</div>
             <p className="compact">Amostra de ate 500 pedidos mais recentes. Use os filtros por coluna abaixo do cabecalho.</p>
           </div>
-          <div className="actions-right">
+          <div className="actions-right gap-row">
+            <button className="btn-secondary" type="button" onClick={() => setFiltros({})} disabled={!Object.keys(filtros).length}>Limpar filtros</button>
             <button className="btn-primary" type="button" onClick={prepararResimulacaoColuna} disabled={carregando}>
               Resimular apenas o filtrado abaixo ({formatarNumero(linhasFiltradas.filter((row) => row.cruzamento_status === 'ok').length)})
             </button>
