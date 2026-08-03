@@ -473,6 +473,69 @@ export async function resimularEcommerceEmLotes({ criterioB2c, tamanhoLote = 800
   }
 }
 
+// Resimula exatamente os pedidos passados por id (ex: o que esta visivel na
+// grade depois dos filtros por coluna), em vez de paginar tudo que bate com
+// os filtros de analise no banco. Util pra testar um recorte pontual.
+export async function resimularEcommercePorIds({ ids = [], criterioB2c, onProgress } = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
+  if (!ids.length) return { totalProcessado: 0, totalOk: 0 };
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
+  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress });
+
+  const supabase = getSupabaseClient();
+  const pedidos = [];
+  for (const grupo of chunks(ids, 200)) {
+    const { data, error } = await supabase
+      .from('ecommerce_order_snapshot')
+      .select('id, pedido, canal, uf, cidade, peso_cotado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
+      .eq('cruzamento_status', 'ok')
+      .in('id', grupo);
+    if (error) throw error;
+    pedidos.push(...(data || []));
+  }
+
+  const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
+  const aguardarMensagem = (tipoEsperado) => new Promise((resolve, reject) => {
+    const handler = (event) => {
+      const msg = event.data || {};
+      if (msg.type === 'error') {
+        worker.removeEventListener('message', handler);
+        reject(new Error(msg.message));
+      } else if (msg.type === tipoEsperado) {
+        worker.removeEventListener('message', handler);
+        resolve(msg);
+      }
+    };
+    worker.addEventListener('message', handler);
+  });
+
+  try {
+    worker.postMessage({ type: 'init-malha-ecommerce', transportadoras, municipios });
+    await aguardarMensagem('malha-pronta');
+
+    let totalProcessado = 0;
+    let totalOk = 0;
+    for (const lote of chunks(pedidos, 800)) {
+      onProgress?.({ etapa: 'resimulando', carregados: totalProcessado, total: pedidos.length, totalProcessado });
+      worker.postMessage({ type: 'resimular-lote-ecommerce', pedidos: lote, criterioB2c });
+      const { resultados } = await aguardarMensagem('done');
+
+      const mapaPedidos = new Map(lote.map((p) => [p.id, p.pedido]));
+      const resultadosComPedido = resultados.map((r) => ({ ...r, pedido: mapaPedidos.get(r.id) }));
+      await salvarResultadosResimulacaoEcommerce(resultadosComPedido);
+
+      totalProcessado += lote.length;
+      totalOk += resultados.filter((r) => r.sim_status === 'ok').length;
+      onProgress?.({ etapa: 'salvando_resultados', carregados: totalProcessado, total: pedidos.length, totalProcessado, totalOk });
+    }
+
+    return { totalProcessado, totalOk };
+  } finally {
+    worker.terminate();
+  }
+}
+
 export async function listarEcommerceOrderSnapshot({ limit = 500, filtros = {} } = {}) {
   if (!isSupabaseConfigured()) return { rows: [] };
   const supabase = getSupabaseClient();

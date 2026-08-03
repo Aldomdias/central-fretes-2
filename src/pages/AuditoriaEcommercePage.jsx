@@ -7,6 +7,7 @@ import {
   listarEcommerceOrderSnapshot,
   diagnosticarResimulacaoEcommerce,
   resimularEcommerceEmLotes,
+  resimularEcommercePorIds,
   listarOpcoesFiltroEcommerce,
   contarElegiveisResimulacaoEcommerce,
 } from '../services/ecommerceAuditoriaService';
@@ -306,7 +307,7 @@ export default function AuditoriaEcommercePage() {
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const count = await contarElegiveisResimulacaoEcommerce(filtrosAtuais);
-      setResumoResimulacao({ count, filtros: { ...filtrosServidor } });
+      setResumoResimulacao({ origem: 'servidor', count, filtros: { ...filtrosServidor } });
     } catch (error) {
       setErro(error.message || 'Erro ao contar pedidos para resimular.');
     } finally {
@@ -314,22 +315,35 @@ export default function AuditoriaEcommercePage() {
     }
   }
 
+  function prepararResimulacaoColuna() {
+    setErro('');
+    setMensagem('');
+    const idsElegiveis = linhasFiltradas.filter((row) => row.cruzamento_status === 'ok').map((row) => row.id);
+    setResumoResimulacao({ origem: 'coluna', count: idsElegiveis.length, ids: idsElegiveis });
+  }
+
   async function confirmarResimulacao() {
     if (!resumoResimulacao) return;
     setCarregando(true);
     setErro('');
     setMensagem('');
-    const totalAlvo = Math.max(resumoResimulacao.count || 0, 1);
-    const filtrosAtuais = filtrosParaQuery(resumoResimulacao.filtros);
+    const resumo = resumoResimulacao;
     setResumoResimulacao(null);
     setProgressoAmd({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
     try {
-      const resultado = await resimularEcommerceEmLotes({
-        criterioB2c: { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 },
-        totalAlvo,
-        filtros: filtrosAtuais,
-        onProgress: (evt) => setProgressoAmd(evt),
-      });
+      const criterioB2c = { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 };
+      const resultado = resumo.origem === 'coluna'
+        ? await resimularEcommercePorIds({
+          ids: resumo.ids,
+          criterioB2c,
+          onProgress: (evt) => setProgressoAmd(evt),
+        })
+        : await resimularEcommerceEmLotes({
+          criterioB2c,
+          totalAlvo: Math.max(resumo.count || 0, 1),
+          filtros: filtrosParaQuery(resumo.filtros),
+          onProgress: (evt) => setProgressoAmd(evt),
+        });
       setMensagem(`Resimulacao concluida. Processados: ${formatarNumero(resultado.totalProcessado)} - OK: ${formatarNumero(resultado.totalOk)}`);
       await atualizarDiagnostico();
       await atualizarGrid();
@@ -460,13 +474,21 @@ export default function AuditoriaEcommercePage() {
       {resumoResimulacao ? (
         <section className="panel-card" style={{ borderColor: '#818cf8' }}>
           <div className="panel-title">Confirmar resimulacao</div>
-          <p>
-            <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) e pendente(s) batem com os filtros ativos acima
-            {resumoResimulacao.filtros.dataInicio || resumoResimulacao.filtros.dataFim ? (
-              <> no periodo de <strong>{resumoResimulacao.filtros.dataInicio || '...'}</strong> ate <strong>{resumoResimulacao.filtros.dataFim || '...'}</strong></>
-            ) : null}
-            . Confirma a resimulacao desse recorte?
-          </p>
+          {resumoResimulacao.origem === 'coluna' ? (
+            <p>
+              <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) (cruzamento ok) estao visiveis
+              na tabela agora, considerando os filtros por coluna aplicados no cabecalho abaixo. Confirma a resimulacao
+              so desse recorte visivel?
+            </p>
+          ) : (
+            <p>
+              <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) e pendente(s) batem com os filtros ativos acima
+              {resumoResimulacao.filtros.dataInicio || resumoResimulacao.filtros.dataFim ? (
+                <> no periodo de <strong>{resumoResimulacao.filtros.dataInicio || '...'}</strong> ate <strong>{resumoResimulacao.filtros.dataFim || '...'}</strong></>
+              ) : null}
+              . Confirma a resimulacao desse recorte?
+            </p>
+          )}
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={() => setResumoResimulacao(null)}>Cancelar</button>
             <button className="btn-primary" type="button" onClick={confirmarResimulacao} disabled={!resumoResimulacao.count}>Confirmar resimulacao</button>
@@ -486,6 +508,11 @@ export default function AuditoriaEcommercePage() {
           <div>
             <div className="panel-title">Pedidos cruzados</div>
             <p className="compact">Amostra de ate 500 pedidos mais recentes. Use os filtros por coluna abaixo do cabecalho.</p>
+          </div>
+          <div className="actions-right">
+            <button className="btn-primary" type="button" onClick={prepararResimulacaoColuna} disabled={carregando}>
+              Resimular apenas o filtrado abaixo ({formatarNumero(linhasFiltradas.filter((row) => row.cruzamento_status === 'ok').length)})
+            </button>
           </div>
         </div>
         <div className="sim-analise-tabela-wrap" style={{ maxHeight: '70vh', overflow: 'auto' }}>
