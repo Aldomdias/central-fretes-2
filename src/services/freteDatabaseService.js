@@ -797,15 +797,17 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
   const rotasBrutas = await fetchAllRowsFiltradoPorColuna(supabase, 'rotas', 'ibge_destino', destinosIbge);
   if (!rotasBrutas.length) return [];
 
-  const origemIdsRotas = [...new Set(rotasBrutas.map((r) => r.origem_id))];
-  const { data: origensRaw, error: erroOrigens } = await supabase.from('origens').select('*').in('id', origemIdsRotas);
-  if (erroOrigens) throw erroOrigens;
-  let origens = origensRaw || [];
+  // Busca a tabela de origens inteira (pequena, ~1.200 linhas) e filtra em
+  // memoria, em vez de um .in('id', <lista de ids das rotas>) - destinos
+  // grandes (capitais) podem ter milhares de rotas espalhadas por quase todas
+  // as origens, e um IN gigante nessa consulta estourava o timeout do banco.
+  const origemIdsRotas = new Set(rotasBrutas.map((r) => r.origem_id));
+  const { data: todasOrigens, error: erroTodasOrigens } = await supabase.from('origens').select('*');
+  if (erroTodasOrigens) throw erroTodasOrigens;
+  const nomesCdNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+  const origens = (todasOrigens || []).filter((o) => origemIdsRotas.has(o.id)
+    && (!nomesCdNorm.length || nomesCdNorm.some((nome) => normalizarCidadeFiltroDb(o.cidade).includes(nome))));
 
-  if (filtroCidades.length) {
-    const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
-    origens = origens.filter((o) => nomesNorm.some((nome) => normalizarCidadeFiltroDb(o.cidade).includes(nome)));
-  }
   if (!origens.length) return [];
 
   const origemIds = origens.map((o) => o.id);
