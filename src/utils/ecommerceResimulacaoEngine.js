@@ -93,6 +93,7 @@ export function resimularLotePedidosEcommerce({
     const candidatosResumo = ordenados.slice(0, 8).map((item) => ({
       transportadora: item.transportadora,
       origem: item.origem,
+      origemValidada: Boolean(item.origemValidada),
       valor: item.total,
       prazo: item.prazo,
       faixaPeso: item.faixaPeso,
@@ -106,6 +107,7 @@ export function resimularLotePedidosEcommerce({
       sim_peso_base: pesoBase,
       sim_transportadora_ideal: vencedor.transportadora,
       sim_origem_ideal: vencedor.origem,
+      sim_origem_validada: Boolean(vencedor.origemValidada),
       sim_valor_ideal: vencedor.total,
       sim_prazo_ideal: vencedor.prazo,
       sim_diferenca_vs_cte: custoReal > 0 ? Number((custoReal - vencedor.total).toFixed(2)) : null,

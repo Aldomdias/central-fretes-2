@@ -727,6 +727,8 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
     transportadora: transportadora.nome,
     transportadoraId: transportadora.id,
     origem: origem.cidade,
+    origemId: origem.id,
+    origemValidada: Boolean(origem.validado),
     canal: categoriaCanalRealizado(origem.canal),
     ibgeOrigem: String(rota.ibgeOrigem || ''),
     ibgeDestino: String(rota.ibgeDestino || ''),

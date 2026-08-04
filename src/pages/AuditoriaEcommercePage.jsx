@@ -72,6 +72,7 @@ const COLUNAS_TABELA = [
   { chave: 'sim_peso_base', label: 'Peso usado', tipo: 'texto' },
   { chave: 'sim_transportadora_ideal', label: 'Transportadora ideal', tipo: 'texto' },
   { chave: 'sim_origem_ideal', label: 'CD ideal', tipo: 'texto' },
+  { chave: 'sim_origem_validada', label: 'Tabela validada?', tipo: 'bool' },
   { chave: 'sim_valor_ideal', label: 'Valor ideal', tipo: 'moeda' },
   { chave: 'sim_prazo_ideal', label: 'Prazo ideal (dias)', tipo: 'numero2' },
   { chave: 'sim_diferenca_vs_cte', label: 'Dif. Ideal x CT-e real', tipo: 'moeda' },
@@ -675,6 +676,7 @@ export default function AuditoriaEcommercePage() {
                   <th></th>
                   <th>Transportadora</th>
                   <th>CD</th>
+                  <th>Tabela</th>
                   <th>Faixa peso</th>
                   <th>Prazo</th>
                   <th>Valor</th>
@@ -690,6 +692,13 @@ export default function AuditoriaEcommercePage() {
                     <td>{idx === 0 ? '🏆' : ''}</td>
                     <td>{cand.transportadora}</td>
                     <td>{cand.origem}</td>
+                    <td>
+                      {cand.origemValidada ? (
+                        <span style={{ background: '#dcfce7', color: '#166534', borderRadius: 4, padding: '2px 6px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>✓ Validada</span>
+                      ) : (
+                        <span style={{ background: '#f1f5f9', color: '#64748b', borderRadius: 4, padding: '2px 6px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Pendente</span>
+                      )}
+                    </td>
                     <td>{cand.faixaPeso || '-'}</td>
                     <td>{formatarNumero(cand.prazo, 2)} dia(s)</td>
                     <td>{formatarMoeda(cand.valor)}</td>
