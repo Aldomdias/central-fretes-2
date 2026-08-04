@@ -427,6 +427,40 @@ export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
   }
 }
 
+// Coleta as combinacoes distintas de cidade/uf entre os pedidos elegiveis que
+// batem com os filtros, pra poder carregar so a malha desses destinos em vez
+// da malha inteira - o volume de destinos costuma ser bem menor que o de
+// pedidos (varios pedidos pra mesma cidade), entao isso reduz bastante o que
+// precisa vir do banco, mesmo pra recortes maiores (ex: uma semana inteira).
+async function obterDestinosIbgeParaFiltro(filtros = {}) {
+  const supabase = getSupabaseClient();
+  const cidadesUf = new Set();
+  let from = 0;
+  for (;;) {
+    let query = supabase
+      .from('ecommerce_order_snapshot')
+      .select('cidade, uf')
+      .eq('cruzamento_status', 'ok')
+      .eq('sim_status', 'pendente');
+    query = aplicarFiltrosEcommerce(query, filtros).range(from, from + 999);
+    const { data, error } = await query;
+    if (error) throw error;
+    (data || []).forEach((r) => cidadesUf.add(`${String(r.cidade || '').trim()}|${String(r.uf || '').trim().toUpperCase()}`));
+    if (!data || data.length < 1000) break;
+    from += 1000;
+  }
+
+  if (!cidadesUf.size) return [];
+  const municipios = await carregarMunicipiosIbgeDb();
+  const mapasIbge = montarMapasIbge(municipios);
+  return [...new Set(
+    [...cidadesUf].map((par) => {
+      const [cidade, uf] = par.split('|');
+      return resolverIbgeLocal(cidade, uf, mapasIbge);
+    }).filter(Boolean)
+  )];
+}
+
 // Orquestra a resimulacao em lotes: mantem um worker vivo (malha B2C carregada 1x),
 // pagina pedidos pendentes do Supabase e vai salvando resultado lote a lote. Pensado
 // para volumes grandes (dezenas de milhares de pedidos) sem travar a aba nem estourar
@@ -435,7 +469,8 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
-  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos });
+  const destinosIbge = await obterDestinosIbgeParaFiltro(filtros);
+  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos, destinosIbge });
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
 
