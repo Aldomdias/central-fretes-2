@@ -43,8 +43,7 @@ export function resimularLotePedidosEcommerce({
 
   for (const pedido of pedidos) {
     const canal = categoriaCanalRealizado(pedido.canal || 'B2C');
-    const destino = resolverIbgeLocal(pedido.cidade, pedido.uf, '', mapasIbge);
-    const ibgeDestino = destino?.ibge || '';
+    const ibgeDestino = resolverIbgeLocal(pedido.cidade, pedido.uf, mapasIbge) || '';
 
     if (!ibgeDestino) {
       resultados.push({ id: pedido.id, sim_status: 'sem_ibge_destino', sim_peso_base: pesoBase });
@@ -88,6 +87,19 @@ export function resimularLotePedidosEcommerce({
     const vencedor = ordenados[0];
     const custoReal = Number(pedido.custo_frete_transportadora || pedido.cte_valor || 0);
 
+    // Guarda as N melhores opcoes simuladas (nao so a vencedora), com o detalhe
+    // do calculo de cada uma, pra poder mostrar na tela e o usuario conferir
+    // manualmente por que aquela transportadora/CD venceu.
+    const candidatosResumo = ordenados.slice(0, 8).map((item) => ({
+      transportadora: item.transportadora,
+      origem: item.origem,
+      valor: item.total,
+      prazo: item.prazo,
+      faixaPeso: item.faixaPeso,
+      tipoCalculo: item.tipoCalculo,
+      detalhes: item.detalhes?.frete || null,
+    }));
+
     resultados.push({
       id: pedido.id,
       sim_status: 'ok',
@@ -101,6 +113,7 @@ export function resimularLotePedidosEcommerce({
       sim_mesma_transportadora: pedido.cte_transportadora
         ? String(pedido.cte_transportadora).trim().toUpperCase() === String(vencedor.transportadora).trim().toUpperCase()
         : null,
+      sim_candidatos: candidatosResumo,
     });
   }
 

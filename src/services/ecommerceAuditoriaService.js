@@ -1,5 +1,6 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient.js';
-import { carregarBaseCompletaDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarMunicipiosIbgeDb } from './freteDatabaseService.js';
+import { carregarBaseCompletaDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarBaseFiltradaPorDestinosDb, carregarMunicipiosIbgeDb } from './freteDatabaseService.js';
+import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine.js';
 
 // Layout do relatorio "OrderSnapshotAnalytics": CSV ";", BOM UTF-8, primeira linha "sep=;",
 // numeros em formato pt-BR (virgula decimal, sem separador de milhar).
@@ -318,14 +319,20 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
   return { totalProcessado, totalOk, totalSemTracking, totalSemCte };
 }
 
-export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos = [] } = {}) {
-  // Com CDs restritos, busca so a malha desses CDs direto no banco (bem mais
-  // rapido, ja que evita puxar rotas/cotacoes/taxas de origens que nunca vao
-  // ser usadas). Sem restricao, carrega a base completa (com cache) como antes.
+export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos = [], destinosIbge = [] } = {}) {
+  // Prioridade de escopo (do mais estreito pro mais amplo):
+  // 1) destinosIbge: sabemos exatamente quais destinos os pedidos selecionados
+  //    tem, entao buscamos so rotas que atendem esses destinos - o recorte mais
+  //    rapido possivel, ideal pra testar poucos pedidos.
+  // 2) cdsPermitidos: sem destino conhecido de antemao (ex: resimulacao em
+  //    massa via filtros server-side), restringe so as origens desses CDs.
+  // 3) sem nenhum dos dois: carrega a base completa (com cache) como antes.
   const [transportadoras, municipios] = await Promise.all([
-    cdsPermitidos.length
-      ? carregarBaseFiltradaPorCidadesOrigemDb(cdsPermitidos, (evt) => onProgress?.(evt))
-      : carregarBaseCompletaDb((evt) => onProgress?.(evt)),
+    destinosIbge.length
+      ? carregarBaseFiltradaPorDestinosDb(destinosIbge, cdsPermitidos, (evt) => onProgress?.(evt))
+      : cdsPermitidos.length
+        ? carregarBaseFiltradaPorCidadesOrigemDb(cdsPermitidos, (evt) => onProgress?.(evt))
+        : carregarBaseCompletaDb((evt) => onProgress?.(evt)),
     carregarMunicipiosIbgeDb(),
   ]);
   return { transportadoras: transportadoras || [], municipios: municipios || [] };
@@ -486,9 +493,10 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   if (!ids.length) return { totalProcessado: 0, totalOk: 0 };
 
-  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
-  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos });
-
+  // Busca os pedidos ANTES da malha pra saber exatamente quais destinos
+  // precisamos - com um recorte pequeno (esse botao resimula so o que esta
+  // visivel/filtrado), isso reduz drasticamente o que precisa ser carregado
+  // do banco em vez de sempre buscar a malha inteira.
   const supabase = getSupabaseClient();
   const pedidos = [];
   for (const grupo of chunks(ids, 200)) {
@@ -500,6 +508,16 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
     if (error) throw error;
     pedidos.push(...(data || []));
   }
+  if (!pedidos.length) return { totalProcessado: 0, totalOk: 0 };
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
+  const municipiosParaDestino = await carregarMunicipiosIbgeDb();
+  const mapasIbgeDestino = montarMapasIbge(municipiosParaDestino);
+  const destinosIbge = [...new Set(
+    pedidos.map((p) => resolverIbgeLocal(p.cidade, p.uf, mapasIbgeDestino)).filter(Boolean)
+  )];
+
+  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos, destinosIbge });
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
   const aguardarMensagem = (tipoEsperado) => new Promise((resolve, reject) => {

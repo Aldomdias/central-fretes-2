@@ -75,6 +75,7 @@ const COLUNAS_TABELA = [
   { chave: 'sim_prazo_ideal', label: 'Prazo ideal (dias)', tipo: 'numero2' },
   { chave: 'sim_diferenca_vs_cte', label: 'Dif. Ideal x CT-e real', tipo: 'moeda' },
   { chave: 'sim_mesma_transportadora', label: 'Mesma transp.?', tipo: 'bool' },
+  { chave: 'sim_candidatos', label: 'Opcoes simuladas', tipo: 'acao' },
 ];
 
 function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
@@ -178,6 +179,7 @@ function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
 
 function celula(row, coluna) {
   const valor = row[coluna.chave];
+  if (coluna.tipo === 'acao') return '';
   if (coluna.tipo === 'moeda') return formatarMoeda(valor);
   if (coluna.tipo === 'numero2') return formatarNumero(valor, 2);
   if (coluna.tipo === 'data') return formatarData(valor);
@@ -201,6 +203,7 @@ export default function AuditoriaEcommercePage() {
   const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [] });
   const [pesoBase, setPesoBase] = useState('cotado');
   const [restringirCds, setRestringirCds] = useState(false);
+  const [painelCandidatos, setPainelCandidatos] = useState(null);
   const [resumoResimulacao, setResumoResimulacao] = useState(null);
   const [contandoResumo, setContandoResumo] = useState(false);
 
@@ -336,7 +339,9 @@ export default function AuditoriaEcommercePage() {
     setResumoResimulacao(null);
     setProgressoAmd({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
     try {
-      const criterioB2c = { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 };
+      // "Ideal" aqui e sempre o mais barato entre os candidatos (nao pondera prazo) -
+      // e uma auditoria de custo, nao uma oferta de checkout pro cliente.
+      const criterioB2c = { usarPonderadoB2c: false };
       const resultado = resumo.origem === 'coluna'
         ? await resimularEcommercePorIds({
           ids: resumo.ids,
@@ -550,12 +555,14 @@ export default function AuditoriaEcommercePage() {
               <tr>
                 {COLUNAS_TABELA.map((coluna) => (
                   <th key={`filtro-${coluna.chave}`} style={{ position: 'sticky', top: 32, background: 'var(--panel-soft)', zIndex: 2 }}>
-                    <FiltroColuna
-                      coluna={coluna}
-                      valoresUnicos={valoresUnicosPorColuna[coluna.chave] || []}
-                      selecionados={filtros[coluna.chave]}
-                      onChange={onChangeFiltro}
-                    />
+                    {coluna.tipo === 'acao' ? null : (
+                      <FiltroColuna
+                        coluna={coluna}
+                        valoresUnicos={valoresUnicosPorColuna[coluna.chave] || []}
+                        selecionados={filtros[coluna.chave]}
+                        onChange={onChangeFiltro}
+                      />
+                    )}
                   </th>
                 ))}
               </tr>
@@ -563,7 +570,22 @@ export default function AuditoriaEcommercePage() {
             <tbody>
               {linhasFiltradas.map((row) => (
                 <tr key={row.id}>
-                  {COLUNAS_TABELA.map((coluna) => <td key={coluna.chave} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{celula(row, coluna)}</td>)}
+                  {COLUNAS_TABELA.map((coluna) => (
+                    <td key={coluna.chave} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {coluna.tipo === 'acao' ? (
+                        Array.isArray(row.sim_candidatos) && row.sim_candidatos.length ? (
+                          <button
+                            className="btn-secondary"
+                            type="button"
+                            style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                            onClick={() => setPainelCandidatos({ pedido: row.pedido, candidatos: row.sim_candidatos, selecionado: 0 })}
+                          >
+                            Ver opções ({row.sim_candidatos.length})
+                          </button>
+                        ) : '-'
+                      ) : celula(row, coluna)}
+                    </td>
+                  ))}
                 </tr>
               ))}
               {!linhasFiltradas.length && <tr><td colSpan={COLUNAS_TABELA.length}>Nenhum pedido encontrado.</td></tr>}
@@ -571,6 +593,62 @@ export default function AuditoriaEcommercePage() {
           </table>
         </div>
       </section>
+
+      {painelCandidatos ? (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 20, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setPainelCandidatos(null)}>
+          <div
+            style={{ background: '#fff', borderRadius: 10, width: 'min(900px, 92vw)', maxHeight: '85vh', overflow: 'auto', padding: 20, boxShadow: '0 12px 40px rgba(0,0,0,0.25)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <strong>Opções simuladas — Pedido {painelCandidatos.pedido}</strong>
+              <button className="btn-secondary" type="button" onClick={() => setPainelCandidatos(null)}>Fechar</button>
+            </div>
+            <table className="sim-analise-tabela" style={{ width: '100%', marginBottom: 16 }}>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Transportadora</th>
+                  <th>CD</th>
+                  <th>Faixa peso</th>
+                  <th>Prazo</th>
+                  <th>Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {painelCandidatos.candidatos.map((cand, idx) => (
+                  <tr
+                    key={idx}
+                    style={{ cursor: 'pointer', background: painelCandidatos.selecionado === idx ? '#eef2ff' : 'transparent' }}
+                    onClick={() => setPainelCandidatos((atual) => ({ ...atual, selecionado: idx }))}
+                  >
+                    <td>{idx === 0 ? '🏆' : ''}</td>
+                    <td>{cand.transportadora}</td>
+                    <td>{cand.origem}</td>
+                    <td>{cand.faixaPeso || '-'}</td>
+                    <td>{formatarNumero(cand.prazo, 2)} dia(s)</td>
+                    <td>{formatarMoeda(cand.valor)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {painelCandidatos.candidatos[painelCandidatos.selecionado]?.detalhes ? (
+              <div>
+                <div className="panel-title" style={{ marginBottom: 8 }}>Detalhe do cálculo</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '4px 16px', fontSize: '0.82rem' }}>
+                  {Object.entries(painelCandidatos.candidatos[painelCandidatos.selecionado].detalhes).map(([chave, valor]) => (
+                    <div key={chave} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #eee', padding: '2px 0' }}>
+                      <span style={{ color: '#666' }}>{chave}</span>
+                      <strong>{typeof valor === 'number' ? formatarNumero(valor, 2) : String(valor ?? '-')}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
