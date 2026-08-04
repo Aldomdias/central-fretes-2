@@ -8,6 +8,7 @@ self.onmessage = (event) => {
   if (msg.type === 'init-malha-ecommerce') {
     try {
       indiceCache = construirIndiceResimulacaoEcommerce(msg.transportadoras || [], msg.municipios || []);
+      indiceCache.mapaVinculos = new Map(msg.vinculosTransportadoras || []);
       self.postMessage({ type: 'malha-pronta' });
     } catch (error) {
       console.error('[ecommerceResimulacaoWorker] erro ao montar malha:', error);
@@ -29,6 +30,7 @@ self.onmessage = (event) => {
         criterioB2c: msg.criterioB2c,
         pesoBase: msg.pesoBase,
         cdsPermitidos: msg.cdsPermitidos,
+        mapaVinculos: indiceCache.mapaVinculos,
       });
       self.postMessage({ type: 'done', resultados, loteId: msg.loteId });
     } catch (error) {

@@ -1,6 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient.js';
 import { carregarBaseCompletaDb, carregarBaseFiltradaPorCidadesOrigemDb, carregarBaseFiltradaPorDestinosDb, carregarMunicipiosIbgeDb } from './freteDatabaseService.js';
 import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine.js';
+import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from './vinculosTransportadorasService.js';
 
 // Layout do relatorio "OrderSnapshotAnalytics": CSV ";", BOM UTF-8, primeira linha "sep=;",
 // numeros em formato pt-BR (virgula decimal, sem separador de milhar).
@@ -349,15 +350,21 @@ export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitido
   // 2) cdsPermitidos: sem destino conhecido de antemao (ex: resimulacao em
   //    massa via filtros server-side), restringe so as origens desses CDs.
   // 3) sem nenhum dos dois: carrega a base completa (com cache) como antes.
-  const [transportadoras, municipios] = await Promise.all([
+  const [transportadoras, municipios, vinculos] = await Promise.all([
     destinosIbge.length
       ? carregarBaseFiltradaPorDestinosDb(destinosIbge, cdsPermitidos, (evt) => onProgress?.(evt))
       : cdsPermitidos.length
         ? carregarBaseFiltradaPorCidadesOrigemDb(cdsPermitidos, (evt) => onProgress?.(evt))
         : carregarBaseCompletaDb((evt) => onProgress?.(evt)),
     carregarMunicipiosIbgeDb(),
+    carregarVinculosTransportadoras(),
   ]);
-  return { transportadoras: transportadoras || [], municipios: municipios || [] };
+  const mapaVinculos = criarMapaVinculosTransportadoras(vinculos || []);
+  return {
+    transportadoras: transportadoras || [],
+    municipios: municipios || [],
+    vinculosTransportadoras: [...mapaVinculos.entries()],
+  };
 }
 
 // Aplica os filtros de analise (periodo, status de cruzamento, divergencia de
@@ -547,7 +554,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
   const destinosIbge = await obterDestinosIbgeParaFiltro(filtros, refazerTudo);
-  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos, destinosIbge });
+  const { transportadoras, municipios, vinculosTransportadoras } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos, destinosIbge });
 
   // Refazendo tudo, a paginacao por sim_status='pendente' nao se auto-esvazia
   // (status ja e/continua 'ok'), entao junta os ids do recorte de uma vez e
@@ -572,7 +579,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
   });
 
   try {
-    worker.postMessage({ type: 'init-malha-ecommerce', transportadoras, municipios });
+    worker.postMessage({ type: 'init-malha-ecommerce', transportadoras, municipios, vinculosTransportadoras });
     await aguardarMensagem('malha-pronta');
 
     let totalProcessado = 0;
@@ -644,7 +651,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
     pedidos.map((p) => resolverIbgeLocal(p.cidade, p.uf, mapasIbgeDestino)).filter(Boolean)
   )];
 
-  const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos, destinosIbge });
+  const { transportadoras, municipios, vinculosTransportadoras } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos, destinosIbge });
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
   const aguardarMensagem = (tipoEsperado) => new Promise((resolve, reject) => {
@@ -663,7 +670,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
   });
 
   try {
-    worker.postMessage({ type: 'init-malha-ecommerce', transportadoras, municipios });
+    worker.postMessage({ type: 'init-malha-ecommerce', transportadoras, municipios, vinculosTransportadoras });
     await aguardarMensagem('malha-pronta');
 
     let totalProcessado = 0;

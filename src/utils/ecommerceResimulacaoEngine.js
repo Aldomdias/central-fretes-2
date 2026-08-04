@@ -7,6 +7,7 @@ import {
   ordenarCalculadosPorCriterio,
   getUfByIbge,
 } from './realizadoLocalEngine';
+import { aplicarVinculoTransportadora } from '../services/vinculosTransportadorasPuro.js';
 
 // Monta uma vez o indice canal|destino -> candidatos (CD + transportadora) da malha B2C.
 // O indice e reaproveitado para todos os lotes de pedidos, ja que o tamanho dele depende
@@ -36,6 +37,9 @@ export function resimularLotePedidosEcommerce({
   criterioB2c = { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 },
   pesoBase = 'cotado', // 'cotado' | 'faturado' - qual peso do pedido usar no calculo
   cdsPermitidos = [], // vazio = todas as origens; senao, restringe a esses CDs (cidade da origem)
+  mapaVinculos = null, // Map nome_cte -> nome_tabela (transportadora_vinculos), pra achar
+  // a transportadora real quando o nome no CT-e difere do nome cadastrado (ex: "TEX
+  // COURIER S.A" no CT-e = "TOTAL EXPRESS" na tabela).
 } = {}) {
   const resultados = [];
   const cdsPermitidosSet = cdsPermitidos.length
@@ -99,7 +103,13 @@ export function resimularLotePedidosEcommerce({
     // tabelas bem diferentes). Quando o CT-e real informa a UF de origem,
     // exige tambem que a UF do candidato bata; so cai pro match so-por-nome
     // se nenhum candidato daquela transportadora tiver a UF certa.
-    const nomeReal = pedido.cte_transportadora ? String(pedido.cte_transportadora).trim().toUpperCase() : '';
+    // O nome no CT-e pode ser a razao social (ex: "TEX COURIER S.A"), diferente
+    // do nome cadastrado na tabela de fretes (ex: "TOTAL EXPRESS") - resolve
+    // pelo vinculo cadastrado em Ferramentas antes de comparar nomes.
+    const nomeCteResolvido = mapaVinculos
+      ? aplicarVinculoTransportadora(pedido.cte_transportadora, mapaVinculos)
+      : pedido.cte_transportadora;
+    const nomeReal = nomeCteResolvido ? String(nomeCteResolvido).trim().toUpperCase() : '';
     const ufReal = pedido.cte_uf_origem ? String(pedido.cte_uf_origem).trim().toUpperCase() : '';
     const mesmoNome = (item) => {
       if (!nomeReal) return false;
