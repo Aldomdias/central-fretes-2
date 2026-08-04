@@ -10,6 +10,7 @@ import {
   resimularEcommercePorIds,
   listarOpcoesFiltroEcommerce,
   contarElegiveisResimulacaoEcommerce,
+  contarJaResimuladosParaFiltro,
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
@@ -202,8 +203,8 @@ export default function AuditoriaEcommercePage() {
   });
   const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [] });
   const [pesoBase, setPesoBase] = useState('cotado');
-  const [considerarPrazo, setConsiderarPrazo] = useState(false);
-  const [restringirCds, setRestringirCds] = useState(false);
+  const [considerarPrazo, setConsiderarPrazo] = useState(true);
+  const [restringirCds, setRestringirCds] = useState(true);
   const [painelCandidatos, setPainelCandidatos] = useState(null);
   const [resumoResimulacao, setResumoResimulacao] = useState(null);
   const [contandoResumo, setContandoResumo] = useState(false);
@@ -316,8 +317,20 @@ export default function AuditoriaEcommercePage() {
     setContandoResumo(true);
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
-      const count = await contarElegiveisResimulacaoEcommerce(filtrosAtuais);
-      setResumoResimulacao({ origem: 'servidor', count, filtros: { ...filtrosServidor }, pesoBase, cdsPermitidos: restringirCds ? CDS_RESTRICAO : [] });
+      const [pendentes, jaFeitos] = await Promise.all([
+        contarElegiveisResimulacaoEcommerce(filtrosAtuais),
+        contarJaResimuladosParaFiltro(filtrosAtuais),
+      ]);
+      setResumoResimulacao({
+        origem: 'servidor',
+        count: pendentes,
+        pendentes,
+        jaFeitos,
+        refazerTudo: false,
+        filtros: { ...filtrosServidor },
+        pesoBase,
+        cdsPermitidos: restringirCds ? CDS_RESTRICAO : [],
+      });
     } catch (error) {
       setErro(error.message || 'Erro ao contar pedidos para resimular.');
     } finally {
@@ -358,7 +371,8 @@ export default function AuditoriaEcommercePage() {
           criterioB2c,
           pesoBase: resumo.pesoBase,
           cdsPermitidos: resumo.cdsPermitidos,
-          totalAlvo: Math.max(resumo.count || 0, 1),
+          refazerTudo: resumo.refazerTudo,
+          totalAlvo: Math.max((resumo.refazerTudo ? resumo.pendentes + resumo.jaFeitos : resumo.pendentes) || 0, 1),
           filtros: filtrosParaQuery(resumo.filtros),
           onProgress: (evt) => setProgressoAmd(evt),
         });
@@ -530,17 +544,49 @@ export default function AuditoriaEcommercePage() {
               so desse recorte visivel?
             </p>
           ) : (
-            <p>
-              <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) e pendente(s) batem com os filtros ativos acima
-              {resumoResimulacao.filtros.dataInicio || resumoResimulacao.filtros.dataFim ? (
-                <> no periodo de <strong>{resumoResimulacao.filtros.dataInicio || '...'}</strong> ate <strong>{resumoResimulacao.filtros.dataFim || '...'}</strong></>
+            <>
+              <p>
+                Nesse recorte (filtros ativos acima
+                {resumoResimulacao.filtros.dataInicio || resumoResimulacao.filtros.dataFim ? (
+                  <> no periodo de <strong>{resumoResimulacao.filtros.dataInicio || '...'}</strong> ate <strong>{resumoResimulacao.filtros.dataFim || '...'}</strong></>
+                ) : null}
+                ): <strong>{formatarNumero(resumoResimulacao.jaFeitos)}</strong> ja foram resimulados antes,{' '}
+                <strong>{formatarNumero(resumoResimulacao.pendentes)}</strong> ainda estao pendentes.
+              </p>
+              {resumoResimulacao.jaFeitos > 0 ? (
+                <div className="form-grid" style={{ gap: 6, marginBottom: 8 }}>
+                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="radio"
+                      name="refazerTudo"
+                      checked={!resumoResimulacao.refazerTudo}
+                      onChange={() => setResumoResimulacao((atual) => ({ ...atual, refazerTudo: false }))}
+                    />
+                    Continuar so com os {formatarNumero(resumoResimulacao.pendentes)} pendentes
+                  </label>
+                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="radio"
+                      name="refazerTudo"
+                      checked={resumoResimulacao.refazerTudo}
+                      onChange={() => setResumoResimulacao((atual) => ({ ...atual, refazerTudo: true }))}
+                    />
+                    Refazer tudo, incluindo os {formatarNumero(resumoResimulacao.jaFeitos)} ja resimulados
+                  </label>
+                </div>
               ) : null}
-              . Confirma a resimulacao desse recorte?
-            </p>
+            </>
           )}
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={() => setResumoResimulacao(null)}>Cancelar</button>
-            <button className="btn-primary" type="button" onClick={confirmarResimulacao} disabled={!resumoResimulacao.count}>Confirmar resimulacao</button>
+            <button
+              className="btn-primary"
+              type="button"
+              onClick={confirmarResimulacao}
+              disabled={resumoResimulacao.origem === 'coluna' ? !resumoResimulacao.count : !(resumoResimulacao.refazerTudo ? resumoResimulacao.pendentes + resumoResimulacao.jaFeitos : resumoResimulacao.pendentes)}
+            >
+              Confirmar resimulacao
+            </button>
           </div>
         </section>
       ) : null}

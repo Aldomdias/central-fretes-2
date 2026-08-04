@@ -371,14 +371,32 @@ export async function listarOpcoesFiltroEcommerce() {
 
 // Conta quantos pedidos elegiveis (cruzamento ok, ainda pendentes de resimular)
 // batem com os filtros de analise atuais, pra mostrar o resumo antes de rodar.
-export async function contarElegiveisResimulacaoEcommerce(filtros = {}) {
+// Com refazerTudo, conta todos os elegiveis do filtro, mesmo os ja resimulados.
+export async function contarElegiveisResimulacaoEcommerce(filtros = {}, { refazerTudo = false } = {}) {
+  if (!isSupabaseConfigured()) return 0;
+  const supabase = getSupabaseClient();
+  let query = supabase
+    .from('ecommerce_order_snapshot')
+    .select('id', { count: 'exact', head: true })
+    .eq('cruzamento_status', 'ok');
+  if (!refazerTudo) query = query.eq('sim_status', 'pendente');
+  query = aplicarFiltrosEcommerce(query, filtros);
+  const { count, error } = await query;
+  if (error) throw error;
+  return count || 0;
+}
+
+// Conta quantos pedidos do recorte ja foram resimulados antes (sim_status='ok'),
+// pra mostrar no resumo "X ja feitos, Y pendentes" e o usuario decidir se quer
+// continuar so com os que faltam ou refazer tudo de novo.
+export async function contarJaResimuladosParaFiltro(filtros = {}) {
   if (!isSupabaseConfigured()) return 0;
   const supabase = getSupabaseClient();
   let query = supabase
     .from('ecommerce_order_snapshot')
     .select('id', { count: 'exact', head: true })
     .eq('cruzamento_status', 'ok')
-    .eq('sim_status', 'pendente');
+    .eq('sim_status', 'ok');
   query = aplicarFiltrosEcommerce(query, filtros);
   const { count, error } = await query;
   if (error) throw error;
@@ -403,13 +421,13 @@ export async function diagnosticarResimulacaoEcommerce(filtros = {}) {
   return { configurado: true, elegiveis: elegiveis || 0, pendentes: pendentes || 0, ok: ok || 0 };
 }
 
-async function buscarPaginaPendentesResimulacao(limit = 800, filtros = {}) {
+async function buscarPaginaPendentesResimulacao(limit = 800, filtros = {}, refazerTudo = false) {
   const supabase = getSupabaseClient();
   let query = supabase
     .from('ecommerce_order_snapshot')
     .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
-    .eq('cruzamento_status', 'ok')
-    .eq('sim_status', 'pendente');
+    .eq('cruzamento_status', 'ok');
+  if (!refazerTudo) query = query.eq('sim_status', 'pendente');
   query = aplicarFiltrosEcommerce(query, filtros).limit(limit);
   const { data, error } = await query;
   if (error) throw error;
@@ -432,7 +450,7 @@ export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
 // da malha inteira - o volume de destinos costuma ser bem menor que o de
 // pedidos (varios pedidos pra mesma cidade), entao isso reduz bastante o que
 // precisa vir do banco, mesmo pra recortes maiores (ex: uma semana inteira).
-async function obterDestinosIbgeParaFiltro(filtros = {}) {
+async function obterDestinosIbgeParaFiltro(filtros = {}, refazerTudo = false) {
   const supabase = getSupabaseClient();
   const cidadesUf = new Set();
   let from = 0;
@@ -440,8 +458,8 @@ async function obterDestinosIbgeParaFiltro(filtros = {}) {
     let query = supabase
       .from('ecommerce_order_snapshot')
       .select('cidade, uf')
-      .eq('cruzamento_status', 'ok')
-      .eq('sim_status', 'pendente');
+      .eq('cruzamento_status', 'ok');
+    if (!refazerTudo) query = query.eq('sim_status', 'pendente');
     query = aplicarFiltrosEcommerce(query, filtros).range(from, from + 999);
     const { data, error } = await query;
     if (error) throw error;
@@ -461,16 +479,58 @@ async function obterDestinosIbgeParaFiltro(filtros = {}) {
   )];
 }
 
+// Junta todos os ids do recorte (sem paginar por sim_status, que nao "esvazia"
+// sozinho quando refazerTudo esta ligado - sim_status continua 'ok' antes e
+// depois de reprocessar). Usado so no modo refazerTudo.
+async function coletarIdsParaFiltro(filtros = {}) {
+  const supabase = getSupabaseClient();
+  const ids = [];
+  let from = 0;
+  for (;;) {
+    let query = supabase
+      .from('ecommerce_order_snapshot')
+      .select('id')
+      .eq('cruzamento_status', 'ok');
+    query = aplicarFiltrosEcommerce(query, filtros).range(from, from + 999);
+    const { data, error } = await query;
+    if (error) throw error;
+    ids.push(...(data || []).map((r) => r.id));
+    if (!data || data.length < 1000) break;
+    from += 1000;
+  }
+  return ids;
+}
+
+async function buscarPedidosPorIds(ids = []) {
+  if (!ids.length) return [];
+  const supabase = getSupabaseClient();
+  const pedidos = [];
+  for (const grupo of chunks(ids, 200)) {
+    const { data, error } = await supabase
+      .from('ecommerce_order_snapshot')
+      .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
+      .in('id', grupo);
+    if (error) throw error;
+    pedidos.push(...(data || []));
+  }
+  return pedidos;
+}
+
 // Orquestra a resimulacao em lotes: mantem um worker vivo (malha B2C carregada 1x),
 // pagina pedidos pendentes do Supabase e vai salvando resultado lote a lote. Pensado
 // para volumes grandes (dezenas de milhares de pedidos) sem travar a aba nem estourar
 // timeout de request.
-export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotado', cdsPermitidos = [], tamanhoLote = 800, totalAlvo = null, filtros = {}, onProgress } = {}) {
+export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotado', cdsPermitidos = [], tamanhoLote = 800, totalAlvo = null, filtros = {}, refazerTudo = false, onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
-  const destinosIbge = await obterDestinosIbgeParaFiltro(filtros);
+  const destinosIbge = await obterDestinosIbgeParaFiltro(filtros, refazerTudo);
   const { transportadoras, municipios } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos, destinosIbge });
+
+  // Refazendo tudo, a paginacao por sim_status='pendente' nao se auto-esvazia
+  // (status ja e/continua 'ok'), entao junta os ids do recorte de uma vez e
+  // pagina sobre essa lista fixa em vez de re-consultar por status.
+  const idsFixos = refazerTudo ? await coletarIdsParaFiltro(filtros) : null;
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
 
@@ -496,9 +556,18 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
     let totalProcessado = 0;
     let totalOk = 0;
 
+    const idsEmLotes = idsFixos ? chunks(idsFixos, tamanhoLote) : null;
+    let indiceLoteFixo = 0;
+
     for (;;) {
-      const pagina = await buscarPaginaPendentesResimulacao(tamanhoLote, filtros);
-      if (!pagina.length) break;
+      const pagina = idsEmLotes
+        ? await buscarPedidosPorIds(idsEmLotes[indiceLoteFixo++] || [])
+        : await buscarPaginaPendentesResimulacao(tamanhoLote, filtros, false);
+      const fimDosLotesFixos = idsEmLotes && indiceLoteFixo >= idsEmLotes.length;
+      if (!pagina.length) {
+        if (fimDosLotesFixos || !idsEmLotes) break;
+        continue;
+      }
 
       onProgress?.({ etapa: 'resimulando', carregados: totalProcessado, total: totalAlvo, totalProcessado });
 
@@ -513,7 +582,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
       totalOk += resultados.filter((r) => r.sim_status === 'ok').length;
       onProgress?.({ etapa: 'salvando_resultados', carregados: totalProcessado, total: totalAlvo, totalProcessado, totalOk });
 
-      if (pagina.length < tamanhoLote) break;
+      if (idsEmLotes ? fimDosLotesFixos : pagina.length < tamanhoLote) break;
     }
 
     return { totalProcessado, totalOk };
