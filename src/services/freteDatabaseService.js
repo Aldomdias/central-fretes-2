@@ -646,6 +646,17 @@ export async function carregarBaseCompletaDb(onProgress = null) {
   return _cacheBaseCompleta;
 }
 
+// Normaliza nome de cidade pra comparar sem depender de acento/caixa - o
+// cadastro tem grafias inconsistentes da mesma cidade (ex: "Jaboatão" e
+// "Jaboatao" convivem, com a maioria das linhas sem acento).
+function normalizarCidadeFiltroDb(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
 async function fetchAllRowsFiltradoPorColuna(supabase, table, coluna, valores, orderBy = null) {
   const ordenarPor = orderBy || 'id';
   const allRows = [];
@@ -687,13 +698,19 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
   if (!isSupabaseConfigured() || !filtroCidades.length) return [];
   const supabase = ensureClient();
 
-  const condicaoOr = filtroCidades.map((nome) => `cidade.ilike.%${String(nome).trim()}%`).join(',');
-  const { data: origens, error: erroOrigens } = await supabase
-    .from('origens')
-    .select('*')
-    .or(condicaoOr);
+  // Filtra em memoria (sem/com acento, maiusculo) em vez de ILIKE no banco:
+  // "Jaboatão" (com acento) via ILIKE so achava 3 de 16 origens reais, porque
+  // a maioria esta cadastrada sem acento ("Jaboatao") - um ILIKE simples
+  // deixava a malha incompleta silenciosamente. A tabela origens e pequena
+  // (~1.200 linhas), entao filtrar tudo em memoria e barato e correto.
+  const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+  const { data: todasOrigens, error: erroOrigens } = await supabase.from('origens').select('*');
   if (erroOrigens) throw erroOrigens;
-  if (!origens || !origens.length) return [];
+  const origens = (todasOrigens || []).filter((o) => {
+    const cidadeNorm = normalizarCidadeFiltroDb(o.cidade);
+    return nomesNorm.some((nome) => cidadeNorm.includes(nome));
+  });
+  if (!origens.length) return [];
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: origens.length, total: null });
 
@@ -786,8 +803,8 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
   let origens = origensRaw || [];
 
   if (filtroCidades.length) {
-    const nomesNorm = filtroCidades.map((nome) => String(nome).trim().toUpperCase());
-    origens = origens.filter((o) => nomesNorm.some((nome) => String(o.cidade || '').toUpperCase().includes(nome)));
+    const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+    origens = origens.filter((o) => nomesNorm.some((nome) => normalizarCidadeFiltroDb(o.cidade).includes(nome)));
   }
   if (!origens.length) return [];
 
