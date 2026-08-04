@@ -699,3 +699,73 @@ export async function listarEcommerceOrderSnapshot({ limit = 500, filtros = {} }
   if (error) throw error;
   return { rows: data || [] };
 }
+
+function normalizarTextoConsultaDb(valor) {
+  return String(valor || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+// Consulta a tabela cadastrada de uma origem especifica (rota + faixas de
+// peso + generalidades), pra o usuario conferir na fonte se o valor que a
+// resimulacao calculou bate com o que esta cadastrado, sem precisar sair da
+// tela nem eu ficar rodando query manual toda vez que aparecer duvida.
+export async function consultarTabelaOrigemDb({ transportadora, origemCidade, ibgeDestino } = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = getSupabaseClient();
+
+  const { data: transportadoras, error: erroTransp } = await supabase
+    .from('transportadoras')
+    .select('id, nome')
+    .ilike('nome', `%${String(transportadora || '').trim()}%`);
+  if (erroTransp) throw erroTransp;
+  const transportadoraEncontrada = (transportadoras || [])[0];
+  if (!transportadoraEncontrada) return null;
+
+  const { data: origensDaTransportadora, error: erroOrigens } = await supabase
+    .from('origens')
+    .select('id, cidade, canal, status, validado, validado_em, validado_por')
+    .eq('transportadora_id', transportadoraEncontrada.id);
+  if (erroOrigens) throw erroOrigens;
+  const cidadeNorm = normalizarTextoConsultaDb(origemCidade);
+  const origem = (origensDaTransportadora || []).find((o) => {
+    const oNorm = normalizarTextoConsultaDb(o.cidade);
+    return oNorm === cidadeNorm || oNorm.includes(cidadeNorm) || cidadeNorm.includes(oNorm);
+  });
+  if (!origem) return { transportadora: transportadoraEncontrada.nome, origemEncontrada: false };
+
+  let rotasQuery = supabase.from('rotas').select('*').eq('origem_id', origem.id);
+  if (ibgeDestino) rotasQuery = rotasQuery.eq('ibge_destino', ibgeDestino);
+  const { data: rotas, error: erroRotas } = await rotasQuery.limit(20);
+  if (erroRotas) throw erroRotas;
+
+  const nomesRota = [...new Set((rotas || []).map((r) => r.nome_rota).filter(Boolean))];
+  let cotacoes = [];
+  if (nomesRota.length) {
+    const { data: cotacoesData, error: erroCotacoes } = await supabase
+      .from('cotacoes')
+      .select('rota, peso_min, peso_max, valor_fixo, rs_kg, excesso, percentual, updated_at')
+      .eq('origem_id', origem.id)
+      .in('rota', nomesRota)
+      .order('peso_min', { ascending: true });
+    if (erroCotacoes) throw erroCotacoes;
+    cotacoes = cotacoesData || [];
+  }
+
+  const { data: generalidades } = await supabase
+    .from('generalidades')
+    .select('*')
+    .eq('origem_id', origem.id)
+    .maybeSingle();
+
+  return {
+    transportadora: transportadoraEncontrada.nome,
+    origemEncontrada: true,
+    origem,
+    rotas: rotas || [],
+    cotacoes,
+    generalidades: generalidades || null,
+  };
+}

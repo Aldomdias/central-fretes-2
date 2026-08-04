@@ -11,6 +11,7 @@ import {
   listarOpcoesFiltroEcommerce,
   contarElegiveisResimulacaoEcommerce,
   contarJaResimuladosParaFiltro,
+  consultarTabelaOrigemDb,
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
@@ -207,6 +208,17 @@ export default function AuditoriaEcommercePage() {
   const [considerarPrazo, setConsiderarPrazo] = useState(true);
   const [restringirCds, setRestringirCds] = useState(true);
   const [painelCandidatos, setPainelCandidatos] = useState(null);
+  const [tabelaConsultada, setTabelaConsultada] = useState(null);
+
+  async function abrirTabelaCadastrada(cand) {
+    setTabelaConsultada({ carregando: true, transportadora: cand.transportadora, origemCidade: cand.origem });
+    try {
+      const resultado = await consultarTabelaOrigemDb({ transportadora: cand.transportadora, origemCidade: cand.origem });
+      setTabelaConsultada({ carregando: false, transportadora: cand.transportadora, origemCidade: cand.origem, resultado });
+    } catch (error) {
+      setTabelaConsultada({ carregando: false, transportadora: cand.transportadora, origemCidade: cand.origem, erro: error.message || 'Erro ao consultar tabela.' });
+    }
+  }
   const [resumoResimulacao, setResumoResimulacao] = useState(null);
   const [contandoResumo, setContandoResumo] = useState(false);
 
@@ -685,6 +697,7 @@ export default function AuditoriaEcommercePage() {
                   <th>Faixa peso</th>
                   <th>Prazo</th>
                   <th>Valor</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -717,6 +730,16 @@ export default function AuditoriaEcommercePage() {
                     <td>{cand.faixaPeso || '-'}</td>
                     <td>{formatarNumero(cand.prazo, 2)} dia(s)</td>
                     <td>{formatarMoeda(cand.valor)}</td>
+                    <td>
+                      <button
+                        className="btn-secondary"
+                        type="button"
+                        style={{ padding: '2px 8px', fontSize: '0.72rem' }}
+                        onClick={(e) => { e.stopPropagation(); abrirTabelaCadastrada(cand); }}
+                      >
+                        🔎 Tabela
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -733,6 +756,62 @@ export default function AuditoriaEcommercePage() {
                     </div>
                   ))}
                 </div>
+              </div>
+            ) : null}
+
+            {tabelaConsultada ? (
+              <div style={{ marginTop: 16, borderTop: '1px solid #e2e8f0', paddingTop: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div className="panel-title">Tabela cadastrada — {tabelaConsultada.transportadora} / {tabelaConsultada.origemCidade}</div>
+                  <button className="btn-secondary" type="button" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={() => setTabelaConsultada(null)}>Fechar tabela</button>
+                </div>
+                {tabelaConsultada.carregando ? (
+                  <p className="compact">Consultando cadastro...</p>
+                ) : tabelaConsultada.erro ? (
+                  <div className="sim-alert error">{tabelaConsultada.erro}</div>
+                ) : !tabelaConsultada.resultado?.origemEncontrada ? (
+                  <p className="compact">Não achei essa origem cadastrada pra essa transportadora — pode ter sido renomeada ou removida.</p>
+                ) : (
+                  <>
+                    <p className="compact">
+                      Origem: <strong>{tabelaConsultada.resultado.origem.cidade}</strong> · Canal: {tabelaConsultada.resultado.origem.canal} · Status: {tabelaConsultada.resultado.origem.status} ·{' '}
+                      {tabelaConsultada.resultado.origem.validado ? (
+                        <span style={{ background: '#dcfce7', color: '#166534', borderRadius: 4, padding: '2px 6px', fontSize: '0.75rem' }}>
+                          ✓ Validado {tabelaConsultada.resultado.origem.validado_por ? `por ${tabelaConsultada.resultado.origem.validado_por}` : ''}
+                          {tabelaConsultada.resultado.origem.validado_em ? ` em ${new Date(tabelaConsultada.resultado.origem.validado_em).toLocaleString('pt-BR')}` : ''}
+                        </span>
+                      ) : (
+                        <span style={{ background: '#f1f5f9', color: '#64748b', borderRadius: 4, padding: '2px 6px', fontSize: '0.75rem' }}>Pendente de validação</span>
+                      )}
+                    </p>
+                    <p className="compact">Rota(s) cadastrada(s): {tabelaConsultada.resultado.rotas.map((r) => r.nome_rota).join(', ') || '-'}</p>
+                    <div style={{ maxHeight: 260, overflow: 'auto' }}>
+                      <table className="sim-analise-tabela" style={{ width: '100%' }}>
+                        <thead>
+                          <tr>
+                            <th>Rota</th>
+                            <th>Peso min</th>
+                            <th>Peso max</th>
+                            <th>Valor fixo</th>
+                            <th>Atualizado em</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tabelaConsultada.resultado.cotacoes.map((c, idx) => (
+                            <tr key={idx}>
+                              <td>{c.rota}</td>
+                              <td>{formatarNumero(c.peso_min, 3)}</td>
+                              <td>{formatarNumero(c.peso_max, 3)}</td>
+                              <td>{formatarMoeda(c.valor_fixo)}</td>
+                              <td>{c.updated_at ? new Date(c.updated_at).toLocaleString('pt-BR') : '-'}</td>
+                            </tr>
+                          ))}
+                          {!tabelaConsultada.resultado.cotacoes.length && <tr><td colSpan={5}>Nenhuma cotação encontrada pra essa rota.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
               </div>
             ) : null}
           </div>
