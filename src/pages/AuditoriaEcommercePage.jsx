@@ -269,7 +269,8 @@ export default function AuditoriaEcommercePage() {
     setCarregando(true);
     setErro('');
     setMensagem('');
-    setProgressoAmd({ etapa: 'salvando_pedidos_ecommerce', carregados: 0, total: null });
+    setProgressoAmd({ etapa: 'verificando_existentes', carregados: 0, total: null });
+    const totalAntes = diagnostico.total || 0;
     try {
       const texto = await arquivo.text();
       const registros = parseOrderSnapshotCsv(texto);
@@ -278,7 +279,11 @@ export default function AuditoriaEcommercePage() {
       const resultado = await importarEcommerceOrderSnapshot(registros, {
         onProgress: (evt) => setProgressoAmd(evt),
       });
-      setMensagem(`Importacao concluida: ${formatarNumero(resultado.enviados)} pedido(s) salvos.`);
+      setMensagem(
+        `Importacao concluida: ${formatarNumero(resultado.enviados)} pedido(s) processados — `
+        + `${formatarNumero(resultado.novos)} novo(s), ${formatarNumero(resultado.atualizados)} atualizado(s). `
+        + `Base: ${formatarNumero(totalAntes)} -> ${formatarNumero(totalAntes + resultado.novos)} pedido(s).`
+      );
       setArquivo(null);
       await atualizarDiagnostico();
       await atualizarGrid();

@@ -166,9 +166,31 @@ function chunks(lista = [], tamanho = 300) {
   return saida;
 }
 
+// Descobre quais numeros de Pedido do arquivo ja existem na base, pra poder
+// informar no resumo pos-importacao quantos sao novos x atualizacao.
+async function buscarPedidosExistentes(supabase, numerosPedido = []) {
+  const existentes = new Set();
+  for (const grupo of chunks(numerosPedido, 300)) {
+    const { data, error } = await supabase
+      .from('ecommerce_order_snapshot')
+      .select('pedido')
+      .in('pedido', grupo);
+    if (error) throw error;
+    (data || []).forEach((row) => existentes.add(row.pedido));
+  }
+  return existentes;
+}
+
 export async function importarEcommerceOrderSnapshot(registros = [], { onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   const supabase = getSupabaseClient();
+
+  onProgress?.({ etapa: 'verificando_existentes', carregados: 0, total: registros.length });
+  const numerosPedido = registros.map((r) => r.pedido).filter(Boolean);
+  const existentes = await buscarPedidosExistentes(supabase, numerosPedido);
+  const novos = numerosPedido.filter((p) => !existentes.has(p)).length;
+  const atualizados = numerosPedido.length - novos;
+
   const lotes = chunks(registros, 300);
   let enviados = 0;
   for (let i = 0; i < lotes.length; i += 1) {
@@ -180,7 +202,7 @@ export async function importarEcommerceOrderSnapshot(registros = [], { onProgres
     enviados += lote.length;
     if (onProgress) onProgress({ etapa: 'salvando_pedidos_ecommerce', carregados: enviados, total: registros.length, lote: i + 1, totalLotes: lotes.length, enviados });
   }
-  return { total: registros.length, enviados };
+  return { total: registros.length, enviados, novos, atualizados };
 }
 
 export async function diagnosticarEcommerceOrderSnapshot(filtros = {}) {
