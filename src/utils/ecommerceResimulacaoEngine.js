@@ -89,8 +89,24 @@ export function resimularLotePedidosEcommerce({
 
     // Guarda as N melhores opcoes simuladas (nao so a vencedora), com o detalhe
     // do calculo de cada uma, pra poder mostrar na tela e o usuario conferir
-    // manualmente por que aquela transportadora/CD venceu.
-    const candidatosResumo = ordenados.slice(0, 8).map((item) => ({
+    // manualmente por que aquela transportadora/CD venceu. A transportadora que
+    // realmente carregou o CT-e sempre entra na lista, mesmo fora do top 8 -
+    // senao some da tela e parece que a auditoria esta ignorando o que aconteceu
+    // de verdade, o que quebra a credibilidade do numero mostrado.
+    const nomeReal = pedido.cte_transportadora ? String(pedido.cte_transportadora).trim().toUpperCase() : '';
+    const ehTransportadoraReal = (item) => {
+      if (!nomeReal) return false;
+      const nomeItem = String(item.transportadora || '').trim().toUpperCase();
+      return nomeItem === nomeReal || nomeReal.includes(nomeItem) || nomeItem.includes(nomeReal);
+    };
+
+    const top8 = ordenados.slice(0, 8);
+    const posicaoReal = ordenados.findIndex(ehTransportadoraReal);
+    const candidatoReal = posicaoReal >= 0 ? ordenados[posicaoReal] : null;
+    const realJaNoTop8 = candidatoReal ? top8.includes(candidatoReal) : true;
+    const listaCandidatos = realJaNoTop8 || !candidatoReal ? top8 : [...top8, candidatoReal];
+
+    const candidatosResumo = listaCandidatos.map((item) => ({
       transportadora: item.transportadora,
       origem: item.origem,
       origemValidada: Boolean(item.origemValidada),
@@ -99,6 +115,9 @@ export function resimularLotePedidosEcommerce({
       faixaPeso: item.faixaPeso,
       tipoCalculo: item.tipoCalculo,
       detalhes: item.detalhes?.frete || null,
+      ehTransportadoraReal: ehTransportadoraReal(item),
+      posicaoRanking: item === candidatoReal ? posicaoReal + 1 : null,
+      totalCandidatos: item === candidatoReal ? ordenados.length : null,
     }));
 
     resultados.push({

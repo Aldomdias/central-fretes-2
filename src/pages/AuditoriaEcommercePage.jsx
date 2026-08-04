@@ -686,11 +686,21 @@ export default function AuditoriaEcommercePage() {
                 {painelCandidatos.candidatos.map((cand, idx) => (
                   <tr
                     key={idx}
-                    style={{ cursor: 'pointer', background: painelCandidatos.selecionado === idx ? '#eef2ff' : 'transparent' }}
+                    style={{
+                      cursor: 'pointer',
+                      background: painelCandidatos.selecionado === idx ? '#eef2ff' : cand.ehTransportadoraReal ? '#fff7ed' : 'transparent',
+                    }}
                     onClick={() => setPainelCandidatos((atual) => ({ ...atual, selecionado: idx }))}
                   >
                     <td>{idx === 0 ? '🏆' : ''}</td>
-                    <td>{cand.transportadora}</td>
+                    <td>
+                      {cand.transportadora}
+                      {cand.ehTransportadoraReal ? (
+                        <span style={{ marginLeft: 6, background: '#ffedd5', color: '#9a3412', borderRadius: 4, padding: '2px 6px', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
+                          🚚 Usada no CT-e real{cand.posicaoRanking ? ` (${cand.posicaoRanking}ª de ${cand.totalCandidatos})` : ''}
+                        </span>
+                      ) : null}
+                    </td>
                     <td>{cand.origem}</td>
                     <td>
                       {cand.origemValidada ? (
