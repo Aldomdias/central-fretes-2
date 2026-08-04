@@ -211,12 +211,16 @@ export default function AuditoriaEcommercePage() {
   const [tabelaConsultada, setTabelaConsultada] = useState(null);
 
   async function abrirTabelaCadastrada(cand) {
-    setTabelaConsultada({ carregando: true, transportadora: cand.transportadora, origemCidade: cand.origem });
+    setTabelaConsultada({ carregando: true, transportadora: cand.transportadora, origemCidade: cand.origem, cand });
     try {
-      const resultado = await consultarTabelaOrigemDb({ transportadora: cand.transportadora, origemCidade: cand.origem });
-      setTabelaConsultada({ carregando: false, transportadora: cand.transportadora, origemCidade: cand.origem, resultado });
+      const resultado = await consultarTabelaOrigemDb({
+        transportadora: cand.transportadora,
+        origemCidade: cand.origem,
+        ibgeDestino: cand.ibgeDestino,
+      });
+      setTabelaConsultada({ carregando: false, transportadora: cand.transportadora, origemCidade: cand.origem, cand, resultado });
     } catch (error) {
-      setTabelaConsultada({ carregando: false, transportadora: cand.transportadora, origemCidade: cand.origem, erro: error.message || 'Erro ao consultar tabela.' });
+      setTabelaConsultada({ carregando: false, transportadora: cand.transportadora, origemCidade: cand.origem, cand, erro: error.message || 'Erro ao consultar tabela.' });
     }
   }
   const [resumoResimulacao, setResumoResimulacao] = useState(null);
@@ -680,7 +684,7 @@ export default function AuditoriaEcommercePage() {
       {painelCandidatos ? (
         <div style={{ position: 'fixed', inset: 0, zIndex: 20, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setPainelCandidatos(null)}>
           <div
-            style={{ background: '#fff', borderRadius: 10, width: 'min(900px, 92vw)', maxHeight: '85vh', overflow: 'auto', padding: 20, boxShadow: '0 12px 40px rgba(0,0,0,0.25)' }}
+            style={{ background: '#fff', borderRadius: 10, width: '96vw', maxWidth: '1400px', maxHeight: '92vh', overflow: 'auto', padding: 20, boxShadow: '0 12px 40px rgba(0,0,0,0.25)' }}
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -797,15 +801,21 @@ export default function AuditoriaEcommercePage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {tabelaConsultada.resultado.cotacoes.map((c, idx) => (
-                            <tr key={idx}>
-                              <td>{c.rota}</td>
+                          {tabelaConsultada.resultado.cotacoes.map((c, idx) => {
+                            const cand = tabelaConsultada.cand;
+                            const ehFaixaUsada = cand && cand.rotaNome === c.rota
+                              && Number(cand.pesoMinFaixa) === Number(c.peso_min)
+                              && Number(cand.pesoMaxFaixa) === Number(c.peso_max);
+                            return (
+                            <tr key={idx} style={ehFaixaUsada ? { background: '#eef2ff', fontWeight: 600 } : undefined}>
+                              <td>{ehFaixaUsada ? '➡️ ' : ''}{c.rota}</td>
                               <td>{formatarNumero(c.peso_min, 3)}</td>
                               <td>{formatarNumero(c.peso_max, 3)}</td>
                               <td>{formatarMoeda(c.valor_fixo)}</td>
                               <td>{c.updated_at ? new Date(c.updated_at).toLocaleString('pt-BR') : '-'}</td>
                             </tr>
-                          ))}
+                            );
+                          })}
                           {!tabelaConsultada.resultado.cotacoes.length && <tr><td colSpan={5}>Nenhuma cotação encontrada pra essa rota.</td></tr>}
                         </tbody>
                       </table>
