@@ -198,10 +198,11 @@ export default function AuditoriaEcommercePage() {
   const [linhas, setLinhas] = useState([]);
   const [filtros, setFiltros] = useState({});
   const [filtrosServidor, setFiltrosServidor] = useState({
-    dataInicio: '', dataFim: '', cruzamentoStatus: '', divergenciaPeso: false, canal: '', uf: '', possuiCampanha: '',
+    dataInicio: '', dataFim: '', cruzamentoStatus: '', simStatus: '', divergenciaPeso: false, canal: '', uf: '', possuiCampanha: '',
   });
   const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [] });
   const [pesoBase, setPesoBase] = useState('cotado');
+  const [considerarPrazo, setConsiderarPrazo] = useState(false);
   const [restringirCds, setRestringirCds] = useState(false);
   const [painelCandidatos, setPainelCandidatos] = useState(null);
   const [resumoResimulacao, setResumoResimulacao] = useState(null);
@@ -212,6 +213,7 @@ export default function AuditoriaEcommercePage() {
       dataInicio: f.dataInicio || null,
       dataFim: f.dataFim || null,
       cruzamentoStatus: f.cruzamentoStatus || null,
+      simStatus: f.simStatus || null,
       divergenciaPeso: Boolean(f.divergenciaPeso),
       canal: f.canal || null,
       uf: f.uf || null,
@@ -339,9 +341,11 @@ export default function AuditoriaEcommercePage() {
     setResumoResimulacao(null);
     setProgressoAmd({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
     try {
-      // "Ideal" aqui e sempre o mais barato entre os candidatos (nao pondera prazo) -
-      // e uma auditoria de custo, nao uma oferta de checkout pro cliente.
-      const criterioB2c = { usarPonderadoB2c: false };
+      // Por padrao "ideal" e o mais barato; com o toggle "Considerar prazo" liga
+      // a mesma ponderacao 80/20 preco x prazo que o marketplace usa na oferta.
+      const criterioB2c = considerarPrazo
+        ? { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 }
+        : { usarPonderadoB2c: false };
       const resultado = resumo.origem === 'coluna'
         ? await resimularEcommercePorIds({
           ids: resumo.ids,
@@ -458,6 +462,17 @@ export default function AuditoriaEcommercePage() {
             </select>
           </label>
           <label className="field">
+            Status resimulacao
+            <select value={filtrosServidor.simStatus} onChange={(e) => onChangeFiltroServidor('simStatus', e.target.value)}>
+              <option value="">Todos</option>
+              <option value="ok">ok (resimulado)</option>
+              <option value="pendente">pendente</option>
+              <option value="sem_ibge_destino">sem_ibge_destino</option>
+              <option value="sem_malha">sem_malha</option>
+              <option value="sem_cotacao_peso">sem_cotacao_peso</option>
+            </select>
+          </label>
+          <label className="field">
             Canal
             <select value={filtrosServidor.canal} onChange={(e) => onChangeFiltroServidor('canal', e.target.value)}>
               <option value="">Todos</option>
@@ -493,6 +508,10 @@ export default function AuditoriaEcommercePage() {
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <input type="checkbox" checked={restringirCds} onChange={(e) => setRestringirCds(e.target.checked)} />
             Restringir aos CDs: {CDS_RESTRICAO.join(', ')} (senao, busca em todas as origens)
+          </label>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={considerarPrazo} onChange={(e) => setConsiderarPrazo(e.target.checked)} />
+            Considerar prazo no "ideal" (80% preco + 20% prazo, senao so o mais barato)
           </label>
         </div>
       </section>

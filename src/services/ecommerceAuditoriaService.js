@@ -347,6 +347,7 @@ function aplicarFiltrosEcommerce(query, filtros = {}) {
   if (filtros.dataInicio) q = q.gte('data_criacao', filtros.dataInicio);
   if (filtros.dataFim) q = q.lte('data_criacao', `${filtros.dataFim}T23:59:59`);
   if (filtros.cruzamentoStatus) q = q.eq('cruzamento_status', filtros.cruzamentoStatus);
+  if (filtros.simStatus) q = q.eq('sim_status', filtros.simStatus);
   if (filtros.divergenciaPeso) q = q.neq('diferenca_peso', 0);
   if (filtros.canal) q = q.eq('canal', filtros.canal);
   if (filtros.uf) q = q.eq('uf', filtros.uf);
