@@ -456,7 +456,7 @@ export function prepararRegistrosRealizadoLocal(registros = [], municipios = [],
   return { rows, pendencias };
 }
 
-function getUfByIbge(ibge) {
+export function getUfByIbge(ibge) {
   return UF_POR_CODIGO[onlyDigits(ibge).slice(0, 2)] || '';
 }
 

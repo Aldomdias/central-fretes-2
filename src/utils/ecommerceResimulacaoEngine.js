@@ -5,6 +5,7 @@ import {
   construirIndicePorDestino,
   calcularItemTabela,
   ordenarCalculadosPorCriterio,
+  getUfByIbge,
 } from './realizadoLocalEngine';
 
 // Monta uma vez o indice canal|destino -> candidatos (CD + transportadora) da malha B2C.
@@ -93,15 +94,23 @@ export function resimularLotePedidosEcommerce({
     // realmente carregou o CT-e sempre entra na lista, mesmo fora do top 8 -
     // senao some da tela e parece que a auditoria esta ignorando o que aconteceu
     // de verdade, o que quebra a credibilidade do numero mostrado.
+    // Uma transportadora pode ter varias origens/CDs cadastrados - so bater o
+    // nome nao basta (ex: TAM tem origem em Serra/ES e em Itajai/SC, com
+    // tabelas bem diferentes). Quando o CT-e real informa a UF de origem,
+    // exige tambem que a UF do candidato bata; so cai pro match so-por-nome
+    // se nenhum candidato daquela transportadora tiver a UF certa.
     const nomeReal = pedido.cte_transportadora ? String(pedido.cte_transportadora).trim().toUpperCase() : '';
-    const ehTransportadoraReal = (item) => {
+    const ufReal = pedido.cte_uf_origem ? String(pedido.cte_uf_origem).trim().toUpperCase() : '';
+    const mesmoNome = (item) => {
       if (!nomeReal) return false;
       const nomeItem = String(item.transportadora || '').trim().toUpperCase();
       return nomeItem === nomeReal || nomeReal.includes(nomeItem) || nomeItem.includes(nomeReal);
     };
+    const mesmoNomeEUf = (item) => mesmoNome(item) && ufReal && getUfByIbge(item.ibgeOrigem) === ufReal;
 
     const top8 = ordenados.slice(0, 8);
-    const posicaoReal = ordenados.findIndex(ehTransportadoraReal);
+    let posicaoReal = ufReal ? ordenados.findIndex(mesmoNomeEUf) : -1;
+    if (posicaoReal < 0) posicaoReal = ordenados.findIndex(mesmoNome);
     const candidatoReal = posicaoReal >= 0 ? ordenados[posicaoReal] : null;
     const realJaNoTop8 = candidatoReal ? top8.includes(candidatoReal) : true;
     const listaCandidatos = realJaNoTop8 || !candidatoReal ? top8 : [...top8, candidatoReal];
@@ -115,7 +124,7 @@ export function resimularLotePedidosEcommerce({
       faixaPeso: item.faixaPeso,
       tipoCalculo: item.tipoCalculo,
       detalhes: item.detalhes?.frete || null,
-      ehTransportadoraReal: ehTransportadoraReal(item),
+      ehTransportadoraReal: item === candidatoReal,
       posicaoRanking: item === candidatoReal ? posicaoReal + 1 : null,
       totalCandidatos: item === candidatoReal ? ordenados.length : null,
     }));

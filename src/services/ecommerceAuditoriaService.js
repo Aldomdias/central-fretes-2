@@ -425,7 +425,7 @@ async function buscarPaginaPendentesResimulacao(limit = 800, filtros = {}, refaz
   const supabase = getSupabaseClient();
   let query = supabase
     .from('ecommerce_order_snapshot')
-    .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
+    .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem')
     .eq('cruzamento_status', 'ok');
   if (!refazerTudo) query = query.eq('sim_status', 'pendente');
   query = aplicarFiltrosEcommerce(query, filtros).limit(limit);
@@ -508,7 +508,7 @@ async function buscarPedidosPorIds(ids = []) {
   for (const grupo of chunks(ids, 200)) {
     const { data, error } = await supabase
       .from('ecommerce_order_snapshot')
-      .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
+      .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem')
       .in('id', grupo);
     if (error) throw error;
     pedidos.push(...(data || []));
@@ -607,7 +607,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
   for (const grupo of chunks(ids, 200)) {
     const { data, error } = await supabase
       .from('ecommerce_order_snapshot')
-      .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora')
+      .select('id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem')
       .eq('cruzamento_status', 'ok')
       .in('id', grupo);
     if (error) throw error;
