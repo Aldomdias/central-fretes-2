@@ -632,7 +632,7 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
       const todasCargas = resultado.resultados.flatMap((r) => r.cargas || []);
       const nomeArquivo = lista.map((f) => f.name).join(', ');
       try {
-        await salvarCargasLotacaoSupabase(todasCargas, nomeArquivo);
+        await salvarCargasLotacaoSupabase(todasCargas, nomeArquivo, { modo });
         invalidarStatusBaseLotacao();
       } catch (erroSupabase) {
         console.warn('[Lotação] Erro Supabase:', erroSupabase.message, erroSupabase);
@@ -698,8 +698,8 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
         <label className="field">
           Modo da carga
           <select value={modo} onChange={(event) => setModo(event.target.value)}>
-            <option value="atualizar">Atualizar histórico mantendo cargas antigas</option>
-            <option value="substituir">Substituir histórico local por esta carga</option>
+            <option value="atualizar">Atualizar histórico (mesma DIST atualiza a carga existente)</option>
+            <option value="substituir">Substituir todo o histórico salvo por esta carga</option>
           </select>
         </label>
         <div className="hint-box compact full-span">

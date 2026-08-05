@@ -483,12 +483,14 @@ function dbParaCarga(row = {}) {
 }
 
 function chaveCargaIdentica(carga = {}) {
+  const dist = normalizarTexto(carga.dist || '');
+  if (dist) return dist;
   const numero = (valor) => {
     const parsed = Number(valor);
     return Number.isFinite(parsed) ? parsed.toFixed(2) : '0.00';
   };
   return [
-    normalizarTexto(carga.dist || ''),
+    '',
     numero(carga.valorComparacao),
     numero(carga.freteCantu),
     numero(carga.freteTransp),
@@ -529,58 +531,76 @@ export async function removerCargasDuplicadasLotacaoSupabase() {
   return { ok: true, removidas: idsDuplicados.length };
 }
 
-function chaveCargaIdenticaDb(row = {}) {
-  const numero = (valor) => {
-    const parsed = Number(valor);
-    return Number.isFinite(parsed) ? parsed.toFixed(2) : '0.00';
-  };
-  return [
-    normalizarTexto(row.dist || ''),
-    numero(row.valor_comparacao),
-    numero(row.frete_cantu),
-    numero(row.frete_transp),
-    numero(row.pedagio),
-  ].join('|');
+async function executarComConcorrencia(itens, worker, concorrencia = 20) {
+  const fila = [...itens];
+  async function proximo() {
+    while (fila.length) {
+      const item = fila.shift();
+      await worker(item);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concorrencia, itens.length) }, proximo));
 }
 
-export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '') {
+export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '', { modo = 'atualizar' } = {}) {
   if (!isSupabaseConfigured()) return { ok: false, modo: 'local', total: 0 };
   if (!cargas.length) return { ok: true, modo: 'supabase', total: 0 };
 
   const supabase = ensureClient();
 
-  // Reimportar o mesmo arquivo não deve criar linha nova se já existe uma
-  // idêntica (mesma DIST + mesmo valor/frete/pedágio) — evita depender só da
-  // limpeza pós-insert, que roda em segundo plano e pode falhar em silêncio.
-  const distsDoLote = [...new Set(cargas.map((c) => c.dist).filter(Boolean))];
-  const chavesExistentes = new Set();
-  const CHUNK_DIST = 200;
-  for (let i = 0; i < distsDoLote.length; i += CHUNK_DIST) {
-    const lote = distsDoLote.slice(i, i + CHUNK_DIST);
-    const { data, error } = await supabase
-      .from('lotacao_cargas')
-      .select('dist,valor_comparacao,frete_cantu,frete_transp,pedagio')
-      .in('dist', lote);
-    if (error) throw new Error(detalheErroSupabase(error));
-    (data || []).forEach((row) => chavesExistentes.add(chaveCargaIdenticaDb(row)));
+  if (modo === 'substituir') {
+    const { error: erroLimpeza } = await supabase.from('lotacao_cargas').delete().not('id', 'is', null);
+    if (erroLimpeza) throw new Error(detalheErroSupabase(erroLimpeza));
   }
 
-  const chavesNoLote = new Set();
-  const rowsUnicas = [];
-  for (const carga of cargas) {
-    const chave = chaveCargaIdentica(carga);
-    if (chavesExistentes.has(chave) || chavesNoLote.has(chave)) continue;
-    chavesNoLote.add(chave);
-    rowsUnicas.push(cargaParaDb(carga, arquivoOrigem));
+  // Reimportar o mesmo DIST deve atualizar a linha existente (não criar
+  // duplicata nem ser descartado só porque valor/frete/pedágio bateram —
+  // status, datas de coleta e outros campos podem ter mudado).
+  const distsDoLote = [...new Set(cargas.map((c) => c.dist).filter(Boolean))];
+  const idsPorDist = new Map();
+  if (modo !== 'substituir') {
+    const CHUNK_DIST = 200;
+    for (let i = 0; i < distsDoLote.length; i += CHUNK_DIST) {
+      const lote = distsDoLote.slice(i, i + CHUNK_DIST);
+      const { data, error } = await supabase
+        .from('lotacao_cargas')
+        .select('id,dist')
+        .in('dist', lote);
+      if (error) throw new Error(detalheErroSupabase(error));
+      (data || []).forEach((row) => {
+        const chave = normalizarTexto(row.dist || '');
+        if (chave && !idsPorDist.has(chave)) idsPorDist.set(chave, row.id);
+      });
+    }
   }
+
+  const rowsNovas = [];
+  const atualizacoes = [];
+  for (const carga of cargas) {
+    const row = cargaParaDb(carga, arquivoOrigem);
+    const chaveDist = normalizarTexto(carga.dist || '');
+    const idExistente = chaveDist ? idsPorDist.get(chaveDist) : null;
+    if (idExistente) {
+      atualizacoes.push({ id: idExistente, row });
+    } else {
+      rowsNovas.push(row);
+    }
+  }
+
+  let atualizadas = 0;
+  await executarComConcorrencia(atualizacoes, async ({ id, row }) => {
+    const { error } = await supabase.from('lotacao_cargas').update(row).eq('id', id);
+    if (error) throw new Error(detalheErroSupabase(error));
+    atualizadas += 1;
+  }, 20);
 
   const CHUNK = 500;
-  let total = 0;
-  for (let i = 0; i < rowsUnicas.length; i += CHUNK) {
-    const chunk = rowsUnicas.slice(i, i + CHUNK);
+  let inseridas = 0;
+  for (let i = 0; i < rowsNovas.length; i += CHUNK) {
+    const chunk = rowsNovas.slice(i, i + CHUNK);
     const { error } = await supabase.from('lotacao_cargas').insert(chunk);
     if (error) throw new Error(detalheErroSupabase(error));
-    total += chunk.length;
+    inseridas += chunk.length;
   }
 
   let duplicadasRemovidas = 0;
@@ -594,8 +614,9 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
   return {
     ok: true,
     modo: 'supabase',
-    total,
-    ignoradasPorDuplicidade: cargas.length - rowsUnicas.length,
+    total: inseridas + atualizadas,
+    inseridas,
+    atualizadas,
     duplicadasRemovidas,
   };
 }
