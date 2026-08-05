@@ -631,11 +631,17 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
 
       const todasCargas = resultado.resultados.flatMap((r) => r.cargas || []);
       const nomeArquivo = lista.map((f) => f.name).join(', ');
+      let resultadoSupabase = null;
+      let erroSupabaseTexto = '';
       try {
-        await salvarCargasLotacaoSupabase(todasCargas, nomeArquivo, { modo });
+        resultadoSupabase = await salvarCargasLotacaoSupabase(todasCargas, nomeArquivo, { modo });
         invalidarStatusBaseLotacao();
+        if (resultadoSupabase?.falhas?.length) {
+          erroSupabaseTexto = ` ATENÇÃO: ${resultadoSupabase.falhas.length} carga(s) NÃO foram salvas no Supabase (ex.: ${resultadoSupabase.falhas[0].dist} — ${resultadoSupabase.falhas[0].erro}). Ao recarregar a página, essas cargas vão sumir/voltar ao valor antigo.`;
+        }
       } catch (erroSupabase) {
-        console.warn('[Lotação] Erro Supabase:', erroSupabase.message, erroSupabase);
+        console.error('[Lotação] Erro Supabase:', erroSupabase.message, erroSupabase);
+        erroSupabaseTexto = ` ATENÇÃO: falha ao salvar no Supabase (${erroSupabase.message}). O que você vê agora é só local e vai voltar ao estado antigo ao recarregar a página.`;
       }
 
       onImportado(novaBase);
@@ -645,7 +651,10 @@ export function ImportarFluxoCard({ onImportado, resumo }) {
       const armazenamentoTexto = salvamento.armazenamento === 'indexedDB'
         ? ' Base grande salva no armazenamento local ampliado do navegador.'
         : '';
-      setMensagem({ tipo: 'ok', texto: `${total} carga(s) importada(s) e salva(s).${erroTexto}${armazenamentoTexto}` });
+      setMensagem({
+        tipo: erroSupabaseTexto ? 'erro' : 'ok',
+        texto: `${total} carga(s) importada(s) e salva(s).${erroTexto}${armazenamentoTexto}${erroSupabaseTexto}`,
+      });
     } catch (error) {
       setMensagem({ tipo: 'erro', texto: error.message || String(error) });
     } finally {

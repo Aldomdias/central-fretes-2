@@ -380,20 +380,32 @@ export async function diagnosticarLotacaoSupabase() {
 // CARGAS DE LOTAÃ‡ÃƒO â€” salvar e carregar do Supabase
 // ============================================================
 
+// Datas digitadas errado na planilha (ex.: ano "25026" em vez de "2026") viram
+// um Date "válido" em JS mas com ISO fora do que o Postgres aceita, o que
+// derruba o INSERT do lote inteiro (500 linhas) — por isso o ano é sempre
+// checado contra uma faixa plausível antes de aceitar a data.
+function anoPlausivel(d) {
+  const ano = d.getUTCFullYear();
+  return ano >= 1990 && ano <= 2100;
+}
+
 function parseDateSafe(valor) {
   if (!valor) return null;
-  if (valor instanceof Date) return isNaN(valor.getTime()) ? null : valor.toISOString();
+  if (valor instanceof Date) {
+    if (isNaN(valor.getTime()) || !anoPlausivel(valor)) return null;
+    return valor.toISOString();
+  }
   const s = String(valor).trim();
   if (!s) return null;
   // Tenta parse direto
   const d = new Date(s);
-  if (!isNaN(d.getTime())) return d.toISOString();
+  if (!isNaN(d.getTime()) && anoPlausivel(d)) return d.toISOString();
   // Tenta formato BR: dd/mm/yyyy ou dd/mm/yy
   const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
   if (m) {
     const ano = m[3] ? (m[3].length === 2 ? '20' + m[3] : m[3]) : new Date().getFullYear();
     const d2 = new Date(`${ano}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`);
-    if (!isNaN(d2.getTime())) return d2.toISOString();
+    if (!isNaN(d2.getTime()) && anoPlausivel(d2)) return d2.toISOString();
   }
   return null;
 }
@@ -587,10 +599,16 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
     }
   }
 
+  // Uma linha ruim não pode derrubar o lote inteiro: cada atualização/inserção
+  // falha isoladamente e segue reportada, em vez de abortar tudo em silêncio.
   let atualizadas = 0;
+  const falhas = [];
   await executarComConcorrencia(atualizacoes, async ({ id, row }) => {
     const { error } = await supabase.from('lotacao_cargas').update(row).eq('id', id);
-    if (error) throw new Error(detalheErroSupabase(error));
+    if (error) {
+      falhas.push({ dist: row.dist, erro: detalheErroSupabase(error) });
+      return;
+    }
     atualizadas += 1;
   }, 20);
 
@@ -599,7 +617,10 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
   for (let i = 0; i < rowsNovas.length; i += CHUNK) {
     const chunk = rowsNovas.slice(i, i + CHUNK);
     const { error } = await supabase.from('lotacao_cargas').insert(chunk);
-    if (error) throw new Error(detalheErroSupabase(error));
+    if (error) {
+      falhas.push({ dist: `lote ${i / CHUNK + 1}`, erro: detalheErroSupabase(error) });
+      continue;
+    }
     inseridas += chunk.length;
   }
 
@@ -611,13 +632,18 @@ export async function salvarCargasLotacaoSupabase(cargas = [], arquivoOrigem = '
     console.error('[Lotação] Falha ao limpar duplicatas remanescentes:', erroLimpeza.message || erroLimpeza);
   }
 
+  if (falhas.length) {
+    console.error('[Lotação] Falhas ao salvar cargas no Supabase:', falhas);
+  }
+
   return {
-    ok: true,
+    ok: falhas.length === 0,
     modo: 'supabase',
     total: inseridas + atualizadas,
     inseridas,
     atualizadas,
     duplicadasRemovidas,
+    falhas,
   };
 }
 
