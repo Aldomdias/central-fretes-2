@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react';
+﻿import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import BaseLotacaoStatus, { invalidarStatusBaseLotacao } from '../components/BaseLotacaoStatus';
 import {
   carregarFluxoCargasLotacao,
@@ -61,6 +61,7 @@ import { carregarSessao } from '../utils/authLocal';
 const ABAS_OPERACAO = [
   { id: 'visao', label: 'Visão geral' },
   { id: 'consulta', label: 'Viagens / Tabelas' },
+  { id: 'cobertura', label: 'Cobertura de tabela' },
   { id: 'aprovacoes', label: 'Aprovações' },
   { id: 'custos', label: 'Custos extras' },
   { id: 'importacao', label: 'Importação' },
@@ -424,6 +425,147 @@ function calcularIndicadoresAprovacoes(solicitacoes = []) {
     if (item.tipo === 'CUSTO_ADICIONAL') acc.custosExtras += 1;
     return acc;
   }, { total: 0, pendentes: 0, aprovadas: 0, recusadas: 0, outros: 0, custosExtras: 0, valorPendente: 0, valorAprovado: 0 });
+}
+
+function nomesTransportadorasComTabela(tabelas = []) {
+  const set = new Set();
+  (tabelas || []).forEach((tabela) => {
+    if (String(tabela?.tipo || '').toUpperCase() !== 'TRANSPORTADORA') return;
+    if (!tabela?.nome) return;
+    if (!Array.isArray(tabela.linhas) || tabela.linhas.length === 0) return;
+    set.add(normalizarTexto(tabela.nome));
+  });
+  return set;
+}
+
+function mesReferenciaCarga(carga = {}) {
+  const data = carga.coletaRealizada || carga.coletaPlanejada || carga.liberado || carga.importadoEm || '';
+  const iso = String(data || '').slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(iso) ? iso : 'Sem data';
+}
+
+function calcularCoberturaTabelaPorMes(cargas = [], nomesComTabela = new Set()) {
+  const porMes = new Map();
+
+  (cargas || []).forEach((carga) => {
+    const mes = mesReferenciaCarga(carga);
+    if (!porMes.has(mes)) {
+      porMes.set(mes, { mes, total: 0, comTabela: 0, semTabela: 0, transportadoras: new Map() });
+    }
+    const grupo = porMes.get(mes);
+    const nomeTransportadora = carga.transportadora || 'Sem transportadora';
+    const temTabela = Boolean(carga.transportadora) && nomesComTabela.has(normalizarTexto(carga.transportadora));
+
+    grupo.total += 1;
+    if (temTabela) grupo.comTabela += 1; else grupo.semTabela += 1;
+
+    const chaveTransp = normalizarTexto(nomeTransportadora) || 'sem-transportadora';
+    if (!grupo.transportadoras.has(chaveTransp)) {
+      grupo.transportadoras.set(chaveTransp, { nome: nomeTransportadora, temTabela, cargas: 0 });
+    }
+    grupo.transportadoras.get(chaveTransp).cargas += 1;
+  });
+
+  return [...porMes.values()]
+    .map((grupo) => ({
+      ...grupo,
+      percentualCobertura: grupo.total > 0 ? (grupo.comTabela / grupo.total) * 100 : 0,
+      transportadoras: [...grupo.transportadoras.values()].sort((a, b) => b.cargas - a.cargas),
+    }))
+    .sort((a, b) => String(b.mes).localeCompare(String(a.mes)));
+}
+
+function CoberturaTabelaOperacao({ cargas = [], tabelas = [] }) {
+  const [mesExpandido, setMesExpandido] = useState('');
+  const nomesComTabela = useMemo(() => nomesTransportadorasComTabela(tabelas), [tabelas]);
+  const meses = useMemo(() => calcularCoberturaTabelaPorMes(cargas, nomesComTabela), [cargas, nomesComTabela]);
+
+  const totalGeral = meses.reduce((acc, m) => acc + m.total, 0);
+  const totalComTabela = meses.reduce((acc, m) => acc + m.comTabela, 0);
+  const percentualGeral = totalGeral > 0 ? (totalComTabela / totalGeral) * 100 : 0;
+
+  return (
+    <div className="table-card lotacao-table-card">
+      <div className="section-row compact-top">
+        <div>
+          <div className="panel-title">Cobertura de tabela por mês (realizado)</div>
+          <p className="compact">
+            Para cada carga realizada, verifica se a transportadora possui tabela de lotação cadastrada.
+          </p>
+        </div>
+        <span className="status-pill dark">
+          {totalComTabela}/{totalGeral} cargas com tabela ({percentualGeral.toFixed(1)}%)
+        </span>
+      </div>
+
+      {!meses.length && <p className="compact">Sem cargas realizadas carregadas.</p>}
+
+      {meses.length > 0 && (
+        <table className="tabela-basica">
+          <thead>
+            <tr>
+              <th>Mês</th>
+              <th>Total de cargas</th>
+              <th>Com tabela</th>
+              <th>Sem tabela</th>
+              <th>% cobertura</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {meses.map((grupo) => (
+              <Fragment key={grupo.mes}>
+                <tr>
+                  <td>{grupo.mes}</td>
+                  <td>{grupo.total}</td>
+                  <td>{grupo.comTabela}</td>
+                  <td>{grupo.semTabela}</td>
+                  <td>{grupo.percentualCobertura.toFixed(1)}%</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn-secondary btn-small"
+                      onClick={() => setMesExpandido((atual) => (atual === grupo.mes ? '' : grupo.mes))}
+                    >
+                      {mesExpandido === grupo.mes ? 'Ocultar' : 'Ver transportadoras'}
+                    </button>
+                  </td>
+                </tr>
+                {mesExpandido === grupo.mes && (
+                  <tr>
+                    <td colSpan={6}>
+                      <table className="tabela-basica compact">
+                        <thead>
+                          <tr>
+                            <th>Transportadora</th>
+                            <th>Tem tabela</th>
+                            <th>Cargas</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {grupo.transportadoras.map((item) => (
+                            <tr key={item.nome}>
+                              <td>{item.nome}</td>
+                              <td>
+                                <span className={`status-pill ${item.temTabela ? 'ok' : 'alerta'}`}>
+                                  {item.temTabela ? 'Sim' : 'Não'}
+                                </span>
+                              </td>
+                              <td>{item.cargas}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
 }
 
 function resumoViagemOperacao(viagem, lancamentos = [], solicitacoes = []) {
@@ -2068,6 +2210,10 @@ export default function LotacaoOperacaoPage({ onRespostaConcluida }) {
             </>
           )}
         </>
+      )}
+
+      {abaAtiva === 'cobertura' && (
+        <CoberturaTabelaOperacao cargas={baseFluxo.cargas} tabelas={tabelas} />
       )}
 
       {abaAtiva === 'aprovacoes' && (
