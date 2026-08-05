@@ -2710,6 +2710,47 @@ export async function atualizarNegociadorResponsavel(id, dados = {}) {
   });
 }
 
+export async function atualizarDataReferenciaSaving(id, dataReferencia) {
+  const supabase = supabaseOrThrow();
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update({ data_referencia_saving: dataOuNull(dataReferencia) })
+    .eq('id', id)
+    .select('id, data_referencia_saving')
+    .single();
+  if (error) throw new Error(error.message || 'Erro ao salvar data de referência do saving.');
+  return data;
+}
+
+export async function atualizarVinculoTransportadoraSaving(id, nomes = []) {
+  const supabase = supabaseOrThrow();
+  const lista = Array.isArray(nomes) ? nomes.map((n) => String(n || '').trim()).filter(Boolean) : [];
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update({ vinculo_transportadoras_saving: lista.length ? lista : null })
+    .eq('id', id)
+    .select('id, vinculo_transportadoras_saving')
+    .single();
+  if (error) throw new Error(error.message || 'Erro ao salvar vínculo de transportadora.');
+  return data;
+}
+
+export async function salvarSavingPosAprovacaoCache(id, detalhe = {}) {
+  const supabase = supabaseOrThrow();
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update({
+      saving_pos_aprovacao_valor: Number(detalhe?.totais?.saving || 0),
+      saving_pos_aprovacao_calculado_em: new Date().toISOString(),
+      saving_pos_aprovacao_detalhe: detalhe || null,
+    })
+    .eq('id', id)
+    .select('id, saving_pos_aprovacao_valor, saving_pos_aprovacao_calculado_em, saving_pos_aprovacao_detalhe')
+    .single();
+  if (error) throw new Error(error.message || 'Erro ao salvar o cache do saving pós-aprovação.');
+  return data;
+}
+
 export async function marcarAprovadaNegociador(id, dados = {}) {
   return aplicarTransicaoGestao(id, {
     tipo: 'APROVACAO_NEGOCIADOR',

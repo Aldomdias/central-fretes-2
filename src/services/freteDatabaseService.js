@@ -2882,17 +2882,21 @@ function uniqueNonEmpty(values = []) {
 function canalVariantesConsultaDb(canalFiltro = '') {
   const categoria = categoriaCanalDb(canalFiltro);
   if (!categoria) return [];
+  // AMBOS/TODOS = tabela/CT-e que atende B2C e Atacado ao mesmo tempo — tem que
+  // entrar na consulta dos dois canais, senão fica silenciosamente de fora quando
+  // alguém filtra por um canal específico (bug real: zerava histórico de
+  // transportadoras com CT-e nesse canal combinado).
   if (categoria === 'B2C') {
     return uniqueNonEmpty([
       'B2C', 'b2c', 'VIA VAREJO', 'Via Varejo', 'MERCADO LIVRE', 'Mercado Livre', 'MERCADOR LIVRE', 'Mercador Livre',
       'B2W', 'MAGAZINE LUIZA', 'Magazine Luiza', 'MAGALU', 'CARREFOUR', 'Carrefour', 'GPA', 'COLOMBO', 'Colombo',
       'AMAZON', 'Amazon', 'INTER', 'Inter', 'ANYMARKET', 'AnyMarket', 'ANY MARKET', 'BRADESCO SHOP', 'Bradesco Shop',
       'ITAU SHOP', 'ITAÚ SHOP', 'Itaú Shop', 'SHOPEE', 'Shopee', 'LIVELO', 'Livelo', 'MARKETPLACE', 'Marketplace',
-      'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE',
+      'MARKET PLACE', 'ECOMMERCE', 'E-COMMERCE', 'AMBOS', 'Ambos', 'TODOS', 'Todos',
     ]);
   }
   if (categoria === 'ATACADO') {
-    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b']);
+    return uniqueNonEmpty(['ATACADO', 'Atacado', 'B2B', 'b2b', 'AMBOS', 'Ambos', 'TODOS', 'Todos']);
   }
   return uniqueNonEmpty([canalFiltro, normalizarCanalDb(canalFiltro), categoria]);
 }
@@ -3132,6 +3136,33 @@ async function buscarSelectRealizadoDiarioPaginado(supabase, filtros, limit) {
   return todos;
 }
 
+function montarQueryRealizadoLocalParaSimulacao(supabase, filtros = {}) {
+  const origem = limparOrigemParaConsultaDb(filtros.origem || '');
+  const destino = limparOrigemParaConsultaDb(filtros.destino || '');
+  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
+  const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
+
+  let query = supabase
+    .from('realizado_local_ctes')
+    .select(REALIZADO_LOCAL_SELECT_COLUMNS);
+
+  const transportadorasExatas = Array.isArray(filtros.transportadorasExatas)
+    ? filtros.transportadorasExatas.map((nome) => String(nome || '').trim()).filter(Boolean)
+    : [];
+
+  if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
+  if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
+  if (filtros.ufOrigem) query = query.eq('uf_origem', String(filtros.ufOrigem).trim().toUpperCase());
+  if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
+  if (transportadorasExatas.length) query = query.in('transportadora', transportadorasExatas);
+  else if (transportadoraRealizada) query = query.ilike('transportadora', `%${transportadoraRealizada}%`);
+  if (origem) query = query.ilike('cidade_origem', `${origem}%`);
+  if (destino) query = query.ilike('cidade_destino', `${destino}%`);
+  if (canalVariantes.length) query = query.in('canal', canalVariantes);
+  if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
+  return query.order('data_emissao', { ascending: false, nullsFirst: false });
+}
+
 export async function listarRealizadoLocalCtesParaSimulacao(filtros = {}) {
   const limit = Math.max(1, Math.min(Number(filtros.limit || 50000) || 50000, 100000));
 
@@ -3140,35 +3171,29 @@ export async function listarRealizadoLocalCtesParaSimulacao(filtros = {}) {
   }
 
   const supabase = ensureClient();
-  const origem = limparOrigemParaConsultaDb(filtros.origem || '');
-  const destino = limparOrigemParaConsultaDb(filtros.destino || '');
-  const transportadoraRealizada = String(filtros.transportadoraRealizada || '').trim();
-  const canalVariantes = canalVariantesConsultaDb(filtros.canal || '');
 
-  let query = supabase
-    .from('realizado_local_ctes')
-    .select(REALIZADO_LOCAL_SELECT_COLUMNS)
-    .limit(limit);
+  // O PostgREST limita cada request a ~1000 linhas por padrão, ignorando um
+  // .limit() maior do client. Sem paginar via .range(), resultados acima de
+  // 1000 linhas eram truncados silenciosamente (base ficava incompleta).
+  const todos = [];
+  let from = 0;
+  while (todos.length < limit) {
+    const to = Math.min(from + REAJUSTES_DIARIO_PAGINA, limit) - 1;
+    const { data, error } = await executarComTimeout(
+      montarQueryRealizadoLocalParaSimulacao(supabase, filtros).range(from, to),
+      30000,
+      'A consulta da base realizado_local_ctes para simulação demorou demais. Use filtros de período/canal/origem.'
+    );
+    if (error) throw error;
 
-  if (filtros.inicio) query = query.gte('data_emissao', `${filtros.inicio}T00:00:00`);
-  if (filtros.fim) query = query.lte('data_emissao', `${filtros.fim}T23:59:59`);
-  if (filtros.ufOrigem) query = query.eq('uf_origem', String(filtros.ufOrigem).trim().toUpperCase());
-  if (filtros.ufDestino) query = query.eq('uf_destino', String(filtros.ufDestino).trim().toUpperCase());
-  if (transportadoraRealizada) query = query.ilike('transportadora', `%${transportadoraRealizada}%`);
-  if (origem) query = query.ilike('cidade_origem', `${origem}%`);
-  if (destino) query = query.ilike('cidade_destino', `${destino}%`);
-  if (canalVariantes.length) query = query.in('canal', canalVariantes);
-  if (filtros.incluirSemCanal === false) query = query.not('canal', 'is', null).neq('canal', '');
-  query = query.order('data_emissao', { ascending: false, nullsFirst: false });
+    const pagina = data || [];
+    todos.push(...pagina);
 
-  const { data, error } = await executarComTimeout(
-    query,
-    30000,
-    'A consulta da base realizado_local_ctes para simulação demorou demais. Use filtros de período/canal/origem.'
-  );
-  if (error) throw error;
+    if (pagina.length < (to - from + 1)) break;
+    from = to + 1;
+  }
 
-  return aplicarFiltroSemCanal(filtrarRealizadoLocal((data || []).map(normalizeRealizadoDbRow), filtros), filtros);
+  return aplicarFiltroSemCanal(filtrarRealizadoLocal(todos.map(normalizeRealizadoDbRow), filtros), filtros);
 }
 
 export async function listarRealizadoDiarioReajustes(filtros = {}) {
