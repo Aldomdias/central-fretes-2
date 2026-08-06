@@ -967,6 +967,17 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const atualizarDetalheManual = async (item, patch, mensagem = '') => {
     const atualizados = detalhesOriginais.map((det) => (det.id === item.id ? { ...det, ...patch } : det));
     onState((atual) => ({ ...atual, detalhes: { ...atual.detalhes, [fatura.id]: atualizados } }));
+    // O painel de detalhe do calculo fica em cache por chave (resultadosDetalhe);
+    // sem isso, depois de corrigir endereco/canal o painel continuaria mostrando
+    // o resultado antigo ate a pagina ser recarregada.
+    if (item.chave_cte) {
+      setResultadosDetalhe((atual) => {
+        if (!atual.has(item.chave_cte)) return atual;
+        const copia = new Map(atual);
+        copia.delete(item.chave_cte);
+        return copia;
+      });
+    }
     try {
       await salvarDetalhesFaturaSupabase([{ ...item, ...patch }]);
       if (mensagem) setInfoRecalculo(mensagem);
