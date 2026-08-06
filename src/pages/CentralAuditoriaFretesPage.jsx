@@ -66,6 +66,7 @@ import { listarUsuariosSupabase } from '../services/usuariosSupabaseService';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import { buscarTrackingPorChaveNfeManual } from '../services/trackingSupabaseService';
+import { consultarMunicipiosIbge } from '../services/ibgeService';
 
 const TABS = [
   ['dashboard', 'Dashboard'],
@@ -345,6 +346,28 @@ function temChaveNfAuditoria(item = {}, base = null) {
     detalhes.chaveNf,
   ];
   return candidatos.some((valor) => String(valor || '').replace(/\D/g, '').length >= 30);
+}
+
+function chaveNfAuditoria(item = {}, base = null) {
+  const detalhes = parseDetalhesCalculoAuditoria(item.detalhes_calculo || base?.detalhes_calculo);
+  const candidatos = [
+    item.chave_nf_manual,
+    item.chave_nfe_manual,
+    item.chave_nfe,
+    item.chaveNfe,
+    item.chave_nf,
+    item.chaveNf,
+    base?.chave_nfe,
+    base?.chaveNfe,
+    base?.chave_nf,
+    base?.chaveNf,
+    detalhes.chave_nfe,
+    detalhes.chaveNfe,
+    detalhes.chave_nf,
+    detalhes.chaveNf,
+  ];
+  const encontrada = candidatos.find((valor) => String(valor || '').replace(/\D/g, '').length >= 30);
+  return String(encontrada || '').replace(/\D/g, '');
 }
 
 function detalheSemValorNf(item = {}, base = null) {
@@ -796,6 +819,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [cteExpandido, setCteExpandido] = useState(null);
   const [resultadosDetalhe, setResultadosDetalhe] = useState(new Map());
   const [carregandoDetalheCte, setCarregandoDetalheCte] = useState(null);
+  const [correcaoEndereco, setCorrecaoEndereco] = useState({});
+  const [salvandoCorrecaoEndereco, setSalvandoCorrecaoEndereco] = useState(null);
+  const [correcaoCanal, setCorrecaoCanal] = useState({});
+  const [salvandoCorrecaoCanal, setSalvandoCorrecaoCanal] = useState(null);
+  const [chaveNfVisivel, setChaveNfVisivel] = useState({});
   const [opcoesLaudoTransportador, setOpcoesLaudoTransportador] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
   const toleranciaFatura = carregarToleranciaAuditoria();
   const detalhesOriginais = state.detalhes[fatura.id] || [];
@@ -986,6 +1014,111 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     }
   };
 
+  const atualizarRascunhoCorrecaoEndereco = (itemId, patch) => {
+    setCorrecaoEndereco((atual) => ({
+      ...atual,
+      [itemId]: { tipo: 'destino', valor: '', justificativa: '', ...atual[itemId], ...patch },
+    }));
+  };
+
+  const salvarCorrecaoEndereco = async (item) => {
+    const rascunho = correcaoEndereco[item.id] || { tipo: 'destino', valor: '', justificativa: '' };
+    const valor = String(rascunho.valor || '').trim();
+    const justificativa = String(rascunho.justificativa || '').trim();
+    if (!valor) {
+      setErroDetalhes('Informe o CEP ou o codigo IBGE correto (do rodape do CT-e).');
+      return;
+    }
+    if (!justificativa) {
+      setErroDetalhes('Informe a justificativa da correcao de endereco.');
+      return;
+    }
+    setSalvandoCorrecaoEndereco(item.id);
+    setErroDetalhes('');
+    try {
+      const digitos = valor.replace(/\D/g, '');
+      let resultados = await consultarMunicipiosIbge({ termo: valor, limite: 1 });
+      let municipio = resultados[0];
+      if (!municipio && digitos.length === 8) {
+        // Faixa CEP->IBGE local nao tem esse CEP cadastrado; tenta o ViaCEP
+        // publico pra achar cidade/UF e so entao resolver o IBGE.
+        try {
+          const resp = await fetch(`https://viacep.com.br/ws/${digitos}/json/`);
+          const viaCep = resp.ok ? await resp.json() : null;
+          if (viaCep && !viaCep.erro && viaCep.localidade) {
+            const porCidade = await consultarMunicipiosIbge({ termo: viaCep.localidade, uf: viaCep.uf, limite: 1 });
+            municipio = porCidade[0];
+          }
+        } catch {
+          // Sem internet/ViaCEP fora do ar: segue sem resultado.
+        }
+      }
+      if (!municipio) {
+        setErroDetalhes('Nao encontrei cidade para esse CEP/IBGE. Confira o valor informado ou tente o codigo IBGE diretamente.');
+        return;
+      }
+      const ehOrigem = rascunho.tipo === 'origem';
+      const patch = ehOrigem ? {
+        cidade_origem: municipio.cidade,
+        uf_origem: municipio.uf,
+        ibge_origem: municipio.ibge,
+      } : {
+        cidade_destino: municipio.cidade,
+        uf_destino: municipio.uf,
+        ibge_destino: municipio.ibge,
+      };
+      patch.endereco_corrigido_manual = true;
+      patch.justificativa_correcao_endereco = justificativa;
+      patch.motivo_divergencia = `Endereco de ${ehOrigem ? 'origem' : 'destino'} corrigido manualmente para ${municipio.cidade}/${municipio.uf} (endereco do rodape do CT-e). Justificativa: ${justificativa}`;
+      await atualizarDetalheManual(item, patch, `Endereco corrigido para ${municipio.cidade}/${municipio.uf}. Recalcule para aplicar.`);
+      atualizarRascunhoCorrecaoEndereco(item.id, { valor: '', justificativa: '' });
+    } catch (error) {
+      setErroDetalhes(error.message || String(error));
+    } finally {
+      setSalvandoCorrecaoEndereco(null);
+    }
+  };
+
+  const atualizarRascunhoCorrecaoCanal = (itemId, patch) => {
+    setCorrecaoCanal((atual) => ({
+      ...atual,
+      [itemId]: { canal: '', justificativa: '', ...atual[itemId], ...patch },
+    }));
+  };
+
+  const salvarCorrecaoCanal = async (item) => {
+    const rascunho = correcaoCanal[item.id] || { canal: '', justificativa: '' };
+    const canal = String(rascunho.canal || '').trim().toUpperCase();
+    const justificativa = String(rascunho.justificativa || '').trim();
+    if (!canal) {
+      setErroDetalhes('Informe o canal correto do CT-e.');
+      return;
+    }
+    if (!justificativa) {
+      setErroDetalhes('Informe a justificativa da correcao de canal.');
+      return;
+    }
+    setSalvandoCorrecaoCanal(item.id);
+    setErroDetalhes('');
+    try {
+      const quemFez = sessao?.nome || sessao?.email || 'Usuario local';
+      const patch = {
+        canal,
+        canal_corrigido_manual: true,
+        justificativa_correcao_canal: justificativa,
+        canal_corrigido_por: quemFez,
+        canal_corrigido_em: new Date().toISOString(),
+        motivo_divergencia: `Canal corrigido manualmente de ${item.canal || '?'} para ${canal} por ${quemFez}. Justificativa: ${justificativa}`,
+      };
+      await atualizarDetalheManual(item, patch, `Canal corrigido para ${canal}. Recalcule para aplicar.`);
+      atualizarRascunhoCorrecaoCanal(item.id, { canal: '', justificativa: '' });
+    } catch (error) {
+      setErroDetalhes(error.message || String(error));
+    } finally {
+      setSalvandoCorrecaoCanal(null);
+    }
+  };
+
   const reauditar = async () => {
     setReauditando(true);
     setErroDetalhes('');
@@ -1028,6 +1161,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         if (Number(item.valor_nf || 0) > 0) valorNfOverridePorChave[chave] = Number(item.valor_nf || 0);
         if (item.tracking_manual_nf) {
           trackingOverridePorChave[chave] = {
+            ...trackingOverridePorChave[chave],
             chaveNfe: item.chave_nf_manual || item.chave_nfe_manual || '',
             valorNF: Number(item.valor_nf || 0),
             peso: Number(item.peso || 0),
@@ -1041,6 +1175,23 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             ufDestino: item.uf_destino || '',
             ibgeOrigem: item.ibge_origem || '',
             ibgeDestino: item.ibge_destino || '',
+          };
+        }
+        if (item.endereco_corrigido_manual) {
+          trackingOverridePorChave[chave] = {
+            ...trackingOverridePorChave[chave],
+            cidadeOrigem: item.cidade_origem || '',
+            ufOrigem: item.uf_origem || '',
+            ibgeOrigem: item.ibge_origem || '',
+            cidadeDestino: item.cidade_destino || '',
+            ufDestino: item.uf_destino || '',
+            ibgeDestino: item.ibge_destino || '',
+          };
+        }
+        if (item.canal_corrigido_manual) {
+          trackingOverridePorChave[chave] = {
+            ...trackingOverridePorChave[chave],
+            canal: item.canal || '',
           };
         }
         if (item.reentrega_manual) reentregaPorChave[chave] = true;
@@ -1281,7 +1432,21 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                   <tr>
                     <td colSpan="13" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                       <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
-                        <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                          <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
+                          <button
+                            className="btn-secondary audit-small-button"
+                            type="button"
+                            onClick={() => setChaveNfVisivel((atual) => ({ ...atual, [item.id]: !atual[item.id] }))}
+                          >
+                            {chaveNfVisivel[item.id] ? 'Ocultar chave da NF' : 'Exibir chave da NF'}
+                          </button>
+                        </div>
+                        {chaveNfVisivel[item.id] ? (
+                          <p className="compact">
+                            Chave da NF: <strong>{chaveNfAuditoria(item, base) || 'Nao identificada para este CT-e.'}</strong>
+                          </p>
+                        ) : null}
                         <div className="form-grid three" style={{ marginTop: 8 }}>
                           {semValorNf ? (
                             <label className="field">Chave NF para buscar no Tracking
@@ -1318,6 +1483,85 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
                         </div>
                         {item.tracking_manual_nf ? (
                           <p className="compact">NF vinculada manualmente pelo Tracking. Valor NF: <strong>{dinheiro(item.valor_nf)}</strong>; peso: <strong>{numeroFmt(item.peso, 3)} kg</strong>.</p>
+                        ) : null}
+                      </div>
+                      <div className="hint-box compact" style={{ marginBottom: 10, borderColor: '#93c5fd', background: '#eff6ff' }}>
+                        <strong>Corrigir endereco pelo rodape do CT-e</strong>
+                        <p className="compact">Se o endereco correto (CEP/IBGE) estiver no rodape do CT-e e divergir da base, informe aqui. Ao salvar e recalcular, o calculo AMD passa a usar esse endereco.</p>
+                        <div className="form-grid three" style={{ marginTop: 8 }}>
+                          <label className="field">Endereco a corrigir
+                            <select
+                              value={correcaoEndereco[item.id]?.tipo || 'destino'}
+                              onChange={(event) => atualizarRascunhoCorrecaoEndereco(item.id, { tipo: event.target.value })}
+                            >
+                              <option value="destino">Destino</option>
+                              <option value="origem">Origem</option>
+                            </select>
+                          </label>
+                          <label className="field">CEP ou IBGE correto (rodape)
+                            <input
+                              value={correcaoEndereco[item.id]?.valor || ''}
+                              placeholder="Ex: 88300000 ou 4208203"
+                              onChange={(event) => atualizarRascunhoCorrecaoEndereco(item.id, { valor: event.target.value })}
+                            />
+                          </label>
+                          <label className="field">Justificativa (obrigatoria)
+                            <input
+                              value={correcaoEndereco[item.id]?.justificativa || ''}
+                              placeholder="Ex: rodape do CT-e informa CEP divergente da NF"
+                              onChange={(event) => atualizarRascunhoCorrecaoEndereco(item.id, { justificativa: event.target.value })}
+                            />
+                          </label>
+                        </div>
+                        <div className="audit-form-actions" style={{ marginTop: 8 }}>
+                          <button
+                            className="btn-secondary audit-small-button"
+                            type="button"
+                            disabled={salvandoCorrecaoEndereco === item.id}
+                            onClick={() => salvarCorrecaoEndereco(item)}
+                          >
+                            {salvandoCorrecaoEndereco === item.id ? 'Salvando...' : 'Salvar correcao de endereco'}
+                          </button>
+                        </div>
+                        {item.endereco_corrigido_manual ? (
+                          <p className="compact">Endereco corrigido manualmente. Origem: <strong>{item.cidade_origem || '-'}/{item.uf_origem || '-'}</strong>; destino: <strong>{item.cidade_destino || '-'}/{item.uf_destino || '-'}</strong>. Justificativa: {item.justificativa_correcao_endereco || '-'}</p>
+                        ) : null}
+                      </div>
+                      <div className="hint-box compact" style={{ marginBottom: 10, borderColor: '#c4b5fd', background: '#f5f3ff' }}>
+                        <strong>Corrigir canal do CT-e</strong>
+                        <p className="compact">Canal atual: <strong>{item.canal || base?.canal || '-'}</strong>. Se o canal cadastrado estiver errado (ex: saiu como B2C mas era Atacado), informe o correto abaixo. Ao salvar e recalcular, o AMD passa a usar esse canal.</p>
+                        <div className="form-grid three" style={{ marginTop: 8 }}>
+                          <label className="field">Canal correto
+                            <select
+                              value={correcaoCanal[item.id]?.canal || ''}
+                              onChange={(event) => atualizarRascunhoCorrecaoCanal(item.id, { canal: event.target.value })}
+                            >
+                              <option value="">Selecione...</option>
+                              {[...new Set([...canaisDisponiveisCtes, 'ATACADO', 'B2C', 'AMBOS'])].map((canal) => (
+                                <option key={canal} value={canal}>{canal}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="field">Justificativa (obrigatoria)
+                            <input
+                              value={correcaoCanal[item.id]?.justificativa || ''}
+                              placeholder="Ex: NF confirma pedido Atacado, tabela estava marcada B2C"
+                              onChange={(event) => atualizarRascunhoCorrecaoCanal(item.id, { justificativa: event.target.value })}
+                            />
+                          </label>
+                          <div className="audit-form-actions">
+                            <button
+                              className="btn-secondary audit-small-button"
+                              type="button"
+                              disabled={salvandoCorrecaoCanal === item.id}
+                              onClick={() => salvarCorrecaoCanal(item)}
+                            >
+                              {salvandoCorrecaoCanal === item.id ? 'Salvando...' : 'Salvar correcao de canal'}
+                            </button>
+                          </div>
+                        </div>
+                        {item.canal_corrigido_manual ? (
+                          <p className="compact">Canal corrigido manualmente para <strong>{item.canal}</strong> por <strong>{item.canal_corrigido_por || '-'}</strong>{item.canal_corrigido_em ? ` em ${dataBr(item.canal_corrigido_em)}` : ''}. Justificativa: {item.justificativa_correcao_canal || '-'}</p>
                         ) : null}
                       </div>
                       {carregandoDetalheCte === (item.chave_cte || item.id)
