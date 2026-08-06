@@ -2728,6 +2728,13 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                 <span><strong>Tipo:</strong> {r.tipo_calculo || det.tipo_calculo || '—'}</span>
                                 <span><strong>Origem tabela:</strong> {det.origem_cidade || '—'}</span>
                                 <span><strong>Rota:</strong> {det.rota_nome || '—'}</span>
+                                <span>
+                                  {det.origem_validada ? (
+                                    <span style={{ background: '#dcfce7', color: '#166534', borderRadius: 999, padding: '2px 8px', fontSize: 12, fontWeight: 700 }}>✓ Tabela validada</span>
+                                  ) : (
+                                    <span style={{ background: '#f1f5f9', color: '#64748b', borderRadius: 999, padding: '2px 8px', fontSize: 12, fontWeight: 700 }}>Tabela pendente</span>
+                                  )}
+                                </span>
                                 <span><strong>Valor base:</strong> {fmt(det.valor_base)}</span>
                                 <span><strong>Subtotal:</strong> {fmt(det.subtotal)}</span>
                                 <span><strong>ICMS:</strong> {fmt(det.icms)}</span>
@@ -2753,6 +2760,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                     {linhaDetalhe('Tipo', r.tipo_calculo || det.tipo_calculo || frete.tipoCalculo || '-')}
                                     {linhaDetalhe('Tabela usada', r.transportadora_tabela || det.transportadora_tabela || '-')}
                                     {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
+                                    {linhaDetalhe('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Não')}
                                     {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
                                     {linhaDetalhe('Peso considerado', `${fmtN(det.peso_considerado ?? frete.pesoConsiderado ?? r.peso, 3)} kg`)}
                                     {linhaDetalhe('Valor NF', fmtMaybe(r.valor_nf), true)}

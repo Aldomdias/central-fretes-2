@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { loginCentral } from '../utils/authLocal';
+import { loginCentral, loginComBiometria } from '../utils/authLocal';
+import { biometriaDisponivelNesteDispositivo } from '../services/biometriaService';
 
 export default function LoginPage({ onLogin }) {
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
   const [carregando, setCarregando] = useState(false);
+  const podeUsarBiometria = biometriaDisponivelNesteDispositivo();
 
   const entrar = async () => {
     if (carregando) return;
@@ -16,6 +18,19 @@ export default function LoginPage({ onLogin }) {
       setEmail('');
       setSenha('');
       onLogin(sessao);
+    } catch (error) {
+      setErro(error.message || String(error));
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  const entrarComBiometria = async () => {
+    if (carregando) return;
+    setErro('');
+    setCarregando(true);
+    try {
+      onLogin(await loginComBiometria());
     } catch (error) {
       setErro(error.message || String(error));
     } finally {
@@ -69,6 +84,11 @@ export default function LoginPage({ onLogin }) {
         <button type="button" className="btn-primary full" onClick={entrar} disabled={carregando}>
           {carregando ? 'Entrando...' : 'Entrar'}
         </button>
+        {podeUsarBiometria && (
+          <button type="button" className="btn-secondary full" onClick={entrarComBiometria} disabled={carregando}>
+            Entrar com digital / Windows Hello
+          </button>
+        )}
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import LotacaoAuditoriaPage from './pages/LotacaoAuditoriaPage';
 import ConsultaIbgePage from './pages/ConsultaIbgePage';
 import LoginPage from './pages/LoginPage';
 import UserManagementPage from './pages/UserManagementPage';
+import PainelUsuariosAtivosPage from './pages/PainelUsuariosAtivosPage';
 import MinhaSenhaPage from './pages/MinhaSenhaPage';
 import FerramentasPage from './pages/FerramentasPage';
 import TrackingPage from './pages/TrackingPage';
@@ -36,8 +37,10 @@ import VisualConceptPage from './pages/VisualConceptPage';
 import IcmsUfPage from './pages/IcmsUfPage';
 import AuditoriaEcommercePage from './pages/AuditoriaEcommercePage';
 import { useFreteStore } from './data/store';
-import { carregarSessao, sairLocal, usuarioTemAcesso } from './utils/authLocal';
+import { carregarSessao, MODULOS_SISTEMA, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
+import { entrarPresenca, sairPresenca } from './services/presencaService';
+import { sairSupabaseAuth } from './services/biometriaService';
 
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
@@ -46,7 +49,7 @@ const PAGINAS_PERMITIDAS = [
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
-  'icms-uf', 'auditoria-ecommerce',
+  'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -54,8 +57,8 @@ function primeiraPaginaPermitida(usuario) {
 }
 
 export default function App() {
-  const store = useFreteStore();
   const [sessao, setSessao] = useState(() => carregarSessao());
+  const store = useFreteStore(sessao);
   const [paginaAtual, setPaginaAtual] = useState('dashboard');
   const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
   const [menuMobileAberto, setMenuMobileAberto] = useState(false);
@@ -72,6 +75,20 @@ export default function App() {
   useEffect(() => {
     if (sessao && !usuarioTemAcesso(sessao, paginaAtual)) setPaginaAtual(primeiraPaginaPermitida(sessao));
   }, [sessao, paginaAtual]);
+
+  useEffect(() => {
+    if (!sessao) return undefined;
+    const paginaLabel = MODULOS_SISTEMA.find((modulo) => modulo.chave === paginaAtual)?.label || paginaAtual;
+    entrarPresenca(sessao, paginaAtual, paginaLabel);
+  }, [sessao, paginaAtual]);
+
+  useEffect(() => {
+    if (sessao) return undefined;
+    sairPresenca();
+    return undefined;
+  }, [sessao]);
+
+  useEffect(() => () => sairPresenca(), []);
 
   useEffect(() => {
     if (!sessao?.expiraEm) return undefined;
@@ -132,7 +149,9 @@ export default function App() {
   };
 
   const sair = () => {
+    sairPresenca();
     sairLocal();
+    void sairSupabaseAuth();
     setSessao(null);
   };
 
@@ -171,6 +190,7 @@ export default function App() {
     'icms-uf': <IcmsUfPage />,
     ferramentas: <FerramentasPage transportadoras={transportadorasMemo} />,
     usuarios: <UserManagementPage usuarioAtual={sessao} />,
+    'usuarios-ativos': <PainelUsuariosAtivosPage />,
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
     transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} sessao={sessao} />,
   };

@@ -13,6 +13,7 @@ import {
   salvarBaseCompletaDb,
   salvarSecaoDb,
 } from '../services/freteDatabaseService';
+import { registrarAlteracaoTransportadora } from '../services/auditoriaTransportadorasService';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
 
@@ -220,7 +221,7 @@ function montarMensagemContagem(contagem = {}) {
   return `${contagem.origens || 0} origem(ns), ${contagem.rotas || 0} rota(s), ${contagem.cotacoes || 0} frete(s), ${contagem.taxasEspeciais || 0} taxa(s) e ${contagem.generalidades || 0} generalidade(s)`;
 }
 
-export function useFreteStore() {
+export function useFreteStore(sessao = null) {
   const [transportadoras, setTransportadoras] = useState([]);
   const [syncStatus, setSyncStatus] = useState({
     modo: bancoConfigurado() ? 'supabase' : 'local',
@@ -482,6 +483,7 @@ export function useFreteStore() {
             fonte: 'supabase-resumo',
             resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
+          registrarAlteracaoTransportadora(sessao, { tipo: 'importacao', secao: tipo, detalhe: `Importação de ${tipo}` });
           return { ok: true };
         } catch (error) {
           setSyncStatus((prev) => ({
@@ -515,6 +517,7 @@ export function useFreteStore() {
             fonte: 'supabase-resumo',
             resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
+          registrarAlteracaoTransportadora(sessao, { tipo: 'importacao_lote', secao: tipo, detalhe: `Importação em lote de ${tipo} (${listaPayloads.length} arquivo(s))` });
           return { ok: true };
         } catch (error) {
           setSyncStatus((prev) => ({
@@ -600,6 +603,14 @@ export function useFreteStore() {
             fonte: 'supabase-detalhe-salvo',
             resumoBase: resumoAtualizado?.resumo || prev.resumoBase,
           }));
+
+          registrarAlteracaoTransportadora(sessao, {
+            tipo: origemId ? 'salvar_origem' : 'salvar_transportadora',
+            transportadoraId,
+            transportadoraNome: atual?.nome,
+            origemId,
+            detalhe: `Salvou ${montarMensagemContagem(contagem)}`,
+          });
 
           return {
             ok: true,
@@ -700,6 +711,12 @@ export function useFreteStore() {
         try {
           await atualizarValidacaoOrigemDb(origemId, { validado, validadoEm, validadoPor });
           setSyncStatus((prev) => ({ ...prev, erro: '', ultimaSincronizacao: new Date().toISOString() }));
+          registrarAlteracaoTransportadora(sessao, {
+            tipo: validado ? 'validacao_origem' : 'invalidacao_origem',
+            transportadoraId,
+            origemId,
+            detalhe: validado ? 'Marcou origem como validada' : 'Removeu validação da origem',
+          });
           return { ok: true };
         } catch (error) {
           setSyncStatus((prev) => ({ ...prev, erro: error.message || 'Erro ao salvar validação no Supabase.' }));
@@ -738,6 +755,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         excluirOrigemDb(origemId)
           .then(finalizarExclusao)
+          .then(() => registrarAlteracaoTransportadora(sessao, { tipo: 'exclusao_origem', transportadoraId, origemId, detalhe: 'Excluiu origem' }))
           .catch((error) => erroExclusao(error, 'Erro ao excluir origem no Supabase.'));
       },
       salvarTransportadora(transportadora) {
@@ -754,6 +772,7 @@ export function useFreteStore() {
         );
       },
       removerTransportadora(id) {
+        const transportadoraNome = (transportadoras || []).find((item) => item.id === id)?.nome;
         setTransportadoras((prev) => (prev || []).filter((item) => item.id !== id));
 
         if (!bancoConfigurado()) return;
@@ -761,6 +780,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         excluirTransportadoraDb(id)
           .then(finalizarExclusao)
+          .then(() => registrarAlteracaoTransportadora(sessao, { tipo: 'exclusao_transportadora', transportadoraId: id, transportadoraNome, detalhe: 'Excluiu transportadora' }))
           .catch((error) => erroExclusao(error, 'Erro ao excluir transportadora no Supabase.'));
       },
       salvarLinha(transportadoraId, origemId, secao, linha) {
@@ -849,6 +869,7 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         excluirLinhaSecaoDb(secao, linhaId)
           .then(finalizarExclusao)
+          .then(() => registrarAlteracaoTransportadora(sessao, { tipo: 'exclusao_linha', transportadoraId, origemId, secao, detalhe: `Excluiu item de ${secao}` }))
           .catch((error) => erroExclusao(error, `Erro ao excluir ${secao} no Supabase.`));
       },
       importarPayload(payload, tipo) {
@@ -873,10 +894,11 @@ export function useFreteStore() {
         setSyncStatus((prev) => ({ ...prev, sincronizando: true, erro: '' }));
         limparSecaoOrigemDb(origemId, secao)
           .then(finalizarExclusao)
+          .then(() => registrarAlteracaoTransportadora(sessao, { tipo: 'limpeza_secao', transportadoraId, origemId, secao, detalhe: `Limpou toda a seção de ${secao}` }))
           .catch((error) => erroExclusao(error, `Erro ao limpar ${secao} no Supabase.`));
       },
     }),
-    [transportadoras, syncStatus]
+    [transportadoras, syncStatus, sessao]
   );
 
   return api;

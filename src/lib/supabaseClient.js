@@ -35,8 +35,10 @@ export function getSupabaseClient() {
   if (!clientInstance) {
     clientInstance = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
-        persistSession: false,
-        autoRefreshToken: false,
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+        experimental: { passkey: true },
       },
     });
   }

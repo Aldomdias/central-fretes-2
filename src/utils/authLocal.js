@@ -4,6 +4,7 @@ import {
   salvarUsuariosSupabase,
   usuarioSupabaseDisponivel,
 } from '../services/usuariosSupabaseService';
+import { getSupabaseClient } from '../lib/supabaseClient';
 
 const USERS_KEY = 'central_fretes_usuarios_v1';
 const SESSION_KEY = 'central_fretes_sessao_v1';
@@ -46,6 +47,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'simular-saida-transportadora', label: 'Simular Saída de Transportadora', grupo: 'Transportadoras' },
   { chave: 'gestao-base-cte', label: 'Gestão da Base CT-e', grupo: 'Auditoria' },
   { chave: 'usuarios', label: 'Gestão de Usuários', grupo: 'Administração', somenteAdmin: true },
+  { chave: 'usuarios-ativos', label: 'Usuários Ativos', grupo: 'Administração', somenteAdmin: true },
 ];
 
 const CHAVES_MODULOS = MODULOS_SISTEMA.map((modulo) => modulo.chave);
@@ -333,7 +335,7 @@ export async function salvarUsuariosAsync(usuarios = []) {
 export function usuarioTemAcesso(usuario, pagina) {
   if (!usuario) return false;
   if (pagina === 'minha-senha') return true;
-  if (pagina === 'usuarios') return usuarioPodeAdministrarUsuarios(usuario);
+  if (pagina === 'usuarios' || pagina === 'usuarios-ativos') return usuarioPodeAdministrarUsuarios(usuario);
 
   const permissoes = permissoesUsuario(usuario);
   if (permissoes.includes('*')) return true;
@@ -365,6 +367,19 @@ export async function loginCentral(email, senha) {
 
   const sessao = montarSessao(usuario);
 
+  // Se a conta já foi migrada, mantém também uma sessão no Supabase Auth.
+  // A falha aqui não interrompe o login legado durante a transição.
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email: emailNorm,
+      password: String(senha || ''),
+    });
+    if (authError && !['invalid_credentials', 'email_not_confirmed'].includes(authError.code)) {
+      console.warn('Não foi possível iniciar a sessão biométrica:', authError.message);
+    }
+  }
+
   if (resultado.sincronizado) {
     try {
       await registrarUltimoLoginSupabase(usuario.id);
@@ -377,6 +392,39 @@ export async function loginCentral(email, senha) {
     ...sessao,
     origemUsuarios: resultado.origem,
     usuariosSincronizados: resultado.sincronizado,
+  };
+}
+
+export async function loginComBiometria() {
+  const supabase = getSupabaseClient();
+  if (!supabase?.auth || typeof supabase.auth.signInWithPasskey !== 'function') {
+    throw new Error('Login por digital não está disponível neste dispositivo.');
+  }
+
+  const { data, error } = await supabase.auth.signInWithPasskey();
+  if (error) throw error;
+
+  const email = normalizarEmail(data?.user?.email || data?.session?.user?.email);
+  if (!email) throw new Error('A passkey não retornou um usuário válido.');
+
+  const resultado = await carregarUsuariosAsync({ migrarLocal: false });
+  const usuario = (resultado.usuarios || []).find((item) => normalizarEmail(item.email) === email);
+  if (!usuario || usuario.ativo === false) {
+    await supabase.auth.signOut({ scope: 'local' });
+    throw new Error('Usuário não encontrado ou inativo na Central de Fretes.');
+  }
+
+  try {
+    if (resultado.sincronizado) await registrarUltimoLoginSupabase(usuario.id);
+  } catch {
+    // A autenticação foi concluída; falha de auditoria não bloqueia a entrada.
+  }
+
+  return {
+    ...montarSessao(usuario),
+    origemUsuarios: resultado.origem,
+    usuariosSincronizados: resultado.sincronizado,
+    autenticacao: 'passkey',
   };
 }
 
@@ -501,6 +549,14 @@ export async function alterarSenhaUsuarioLogado({ usuarioId, senhaAtual, novaSen
 
   const lista = atualizarUsuario(usuarios, usuarioId, { senha: novaSenhaLimpa });
   const persistencia = await salvarUsuariosAsync(lista);
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    const { data: authData } = await supabase.auth.getSession();
+    if (authData?.session?.user?.email && normalizarEmail(authData.session.user.email) === normalizarEmail(usuario.email)) {
+      const { error: authError } = await supabase.auth.updateUser({ password: novaSenhaLimpa });
+      if (authError) throw new Error(`A senha foi salva no cadastro legado, mas não no Supabase Auth: ${authError.message}`);
+    }
+  }
   const usuarioAtualizado = lista.find((item) => item.id === usuarioId) || usuario;
   const sessao = montarSessao(usuarioAtualizado);
 

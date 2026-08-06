@@ -176,6 +176,7 @@ function detalhesCalculoHtmlFatura(item = {}, opts = {}) {
       ${detalheLinhaHtmlAuditoria('Tabela usada', item.transportadora_tabela || det.transportadora_tabela || item.transportadora || '-')}
       ${detalheLinhaHtmlAuditoria('Canal', item.canal || det.canal || '-')}
       ${detalheLinhaHtmlAuditoria('Origem tabela', det.origem_cidade || det.origem_tabela || item.cidade_origem || '-')}
+      ${detalheLinhaHtmlAuditoria('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Nao')}
       ${detalheLinhaHtmlAuditoria('Rota/cotacao', rota || '-')}
       ${detalheLinhaHtmlAuditoria('Peso usado', `${numeroFmt(det.peso_considerado ?? frete.pesoConsiderado ?? item.peso, 3)} kg`)}
       ${detalheLinhaHtmlAuditoria('Valor NF', formatarDinheiroHtmlAuditoria(det.valor_nf ?? item.valor_nf))}
@@ -539,6 +540,7 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaDetalhe('Tabela usada', resultado.transportadora_tabela || det.transportadora_tabela || '-')}
           {linhaDetalhe('Canal', resultado.canal || det.canal || '-')}
           {linhaDetalhe('Origem tabela', det.origem_cidade || '-')}
+          {linhaDetalhe('Tabela validada?', det.origem_validada ? `Sim${det.origem_validado_por ? ` (${det.origem_validado_por})` : ''}` : 'Não')}
           {det.calculo_devolucao_invertida ? linhaDetalhe('Regra devolucao', det.observacao_devolucao || 'Calculado pela rota de ida equivalente.', true) : null}
           {linhaDetalhe('Rota/cotacao', det.rota_nome || '-')}
           {linhaDetalhe('Peso considerado', `${numeroFmt(det.peso_considerado ?? frete.pesoConsiderado ?? resultado.peso, 3)} kg`)}

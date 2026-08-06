@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { alterarSenhaUsuarioLogado } from '../utils/authLocal';
+import BiometriaConta from '../components/BiometriaConta';
 
 const formInicial = {
   senhaAtual: '',
@@ -121,6 +122,7 @@ export default function MinhaSenhaPage({ usuarioAtual, onSenhaAlterada }) {
         {mensagem && <div className="hint-box compact">{mensagem}</div>}
         {erro && <div className="hint-box compact error-text">{erro}</div>}
       </div>
+      <BiometriaConta />
     </div>
   );
 }

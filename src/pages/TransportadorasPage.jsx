@@ -6,6 +6,7 @@ import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, apli
 import { normalizarChave } from '../services/vinculosTransportadorasPuro';
 import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaFaturas } from '../services/auditoriaFretesService';
 import { carregarSessao } from '../utils/authLocal';
+import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaTransportadorasService';
 
 // Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
 // e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
@@ -939,6 +940,7 @@ function TransportadorasList({ items, onOpen, store }) {
   const [coberturaFiltro, setCoberturaFiltro] = useState('');
   const [validacaoFiltro, setValidacaoFiltro] = useState('');
   const [painelValidacaoOpen, setPainelValidacaoOpen] = useState(false);
+  const [historicoOpen, setHistoricoOpen] = useState(false);
   const { vinculosSet, auditoresMap } = useVinculosEAuditores();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -1038,6 +1040,7 @@ function TransportadorasList({ items, onOpen, store }) {
             visiveis.forEach((item) => store?.carregarTransportadoraCompleta?.(item.id));
           }}>Atualizar visíveis</button>
           <button className="btn-secondary" onClick={() => setPainelValidacaoOpen(true)}>📊 Painel de validação</button>
+          <button className="btn-secondary" onClick={() => setHistoricoOpen(true)}>🕘 Histórico de alterações</button>
           <button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button>
         </div>
       </div>
@@ -1137,7 +1140,6 @@ function TransportadorasList({ items, onOpen, store }) {
                     👤 {auditoresMap.get(normalizarChave(item.nome)) || 'Sem auditor'}
                   </span>
                 ) : null}
-                <CoberturaBadge cobertura={resumo.cobertura} severidade={resumo.severidade} />
                 <span className="status-pill dark">{item.status}</span>
                 <ActionIcon onClick={() => { setEditing(item); setModalOpen(true); }}>✎</ActionIcon>
                 <ActionIcon danger onClick={() => confirmarRemocaoTransportadora(item)}>🗑</ActionIcon>
@@ -1161,6 +1163,74 @@ function TransportadorasList({ items, onOpen, store }) {
       ) : null}
       <TransportadoraModal open={modalOpen} initialValue={editing} onSave={saveTransportadora} onClose={() => { setModalOpen(false); setEditing(null); }} />
       <PainelValidacaoModal open={painelValidacaoOpen} items={items} onClose={() => setPainelValidacaoOpen(false)} onOpenTransportadora={onOpen} vinculosSet={vinculosSet} auditoresMap={auditoresMap} />
+      <HistoricoAlteracoesModal open={historicoOpen} onClose={() => setHistoricoOpen(false)} />
+    </div>
+  );
+}
+
+function HistoricoAlteracoesModal({ open, onClose }) {
+  const [registros, setRegistros] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let ativo = true;
+    setCarregando(true);
+    listarHistoricoAlteracoesTransportadoras({ limite: 200 }).then((linhas) => {
+      if (ativo) {
+        setRegistros(linhas);
+        setCarregando(false);
+      }
+    });
+    return () => {
+      ativo = false;
+    };
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Histórico de alterações</h2>
+          <button className="btn-close" onClick={onClose}>×</button>
+        </div>
+        <p style={{ color: 'var(--text-muted, #64748b)' }}>
+          Quem mexeu no cadastro de transportadoras: importações, salvamentos, validações e exclusões.
+        </p>
+        <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+          <table className="tabela-simples" style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left' }}>Usuário</th>
+                <th style={{ textAlign: 'left' }}>Ação</th>
+                <th style={{ textAlign: 'left' }}>Transportadora</th>
+                <th style={{ textAlign: 'left' }}>Quando</th>
+              </tr>
+            </thead>
+            <tbody>
+              {carregando && (
+                <tr><td colSpan={4} style={{ padding: '16px 0', color: 'var(--text-muted, #64748b)' }}>Carregando...</td></tr>
+              )}
+              {!carregando && registros.length === 0 && (
+                <tr><td colSpan={4} style={{ padding: '16px 0', color: 'var(--text-muted, #64748b)' }}>Nenhuma alteração registrada ainda.</td></tr>
+              )}
+              {registros.map((registro) => (
+                <tr key={registro.id}>
+                  <td>
+                    <strong>{registro.usuario_nome}</strong>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted, #64748b)' }}>{registro.usuario_email}</div>
+                  </td>
+                  <td>{registro.detalhe || registro.tipo}</td>
+                  <td>{registro.transportadora_nome || '-'}</td>
+                  <td>{new Date(registro.criado_em).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

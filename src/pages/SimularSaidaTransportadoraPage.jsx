@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import BaseCtesStatus from '../components/BaseCtesStatus';
-import { carregarBaseCompletaDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
+import { buscarBaseSimulacaoPorRotasDb, carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
 import { normalizarTransportadoras, processarCte } from '../services/auditoriaCteProcessamentoService';
-import { montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
+import { categoriaCanalRealizado, montarMapasIbge, resolverIbgeLocal } from '../utils/realizadoLocalEngine';
 import { filtrarCpComercialCte } from '../services/cteBasePolicy';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras, aplicarVinculoTransportadora } from '../services/vinculosTransportadorasService';
 
@@ -76,6 +76,25 @@ function ibgeDoCte(cte, tipo, municipioPorCidade, mapasIbge) {
   const viaPlanilha = municipioPorCidade.get(normalizeBuscaIbge(`${cidade}/${uf}`)) || municipioPorCidade.get(normalizeBuscaIbge(cidade));
   if (viaPlanilha) return viaPlanilha;
   return resolverIbgeLocal(cidade, uf, mapasIbge) || '';
+}
+
+// Monta as chaves de rota (canal|ibgeOrigem-ibgeDestino) só dos CT-es passados,
+// pra buscar no banco apenas as tabelas de frete relevantes a essas rotas —
+// evita puxar a base inteira (rotas tem ~1,3M linhas) quando só interessa o
+// que a transportadora avaliada realmente roda.
+function montarRouteKeysCtes(ctes = [], municipioPorCidade, mapasIbge, canalFiltro = '') {
+  const keys = new Set();
+  for (const cte of ctes || []) {
+    const ibgeOrigem = ibgeDoCte(cte, 'origem', municipioPorCidade, mapasIbge);
+    const ibgeDestino = ibgeDoCte(cte, 'destino', municipioPorCidade, mapasIbge);
+    if (!ibgeOrigem || !ibgeDestino) continue;
+    const pairKey = `${ibgeOrigem}-${ibgeDestino}`;
+    const canalCte = categoriaCanalRealizado(canalRealDe(cte));
+    if (canalCte) keys.add(`${canalCte}|${pairKey}`);
+    if (canalFiltro) keys.add(`${categoriaCanalRealizado(canalFiltro) || canalFiltro}|${pairKey}`);
+    if (!canalCte && !canalFiltro) keys.add(pairKey);
+  }
+  return Array.from(keys);
 }
 
 function indexarBase(base) {
@@ -407,7 +426,7 @@ export default function SimularSaidaTransportadoraPage() {
   const [statusCarga, setStatusCarga] = useState('idle');
   const [progresso, setProgresso] = useState('');
   const [erro, setErro] = useState('');
-  const [base, setBase] = useState(null); // { ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge }
+  const [base, setBase] = useState(null); // { ctes, municipioPorCidade, mapasIbge, mapaVinculos }
 
   const [transportadora, setTransportadora] = useState('');
   const [reajustePct, setReajustePct] = useState('20');
@@ -452,12 +471,6 @@ export default function SimularSaidaTransportadoraPage() {
   async function carregar() {
     setStatusCarga('carregando'); setErro(''); setBase(null); setSimulacao(null); setExclusoes(new Set()); setTransportadora('');
     try {
-      setProgresso('Carregando tabelas de frete...');
-      const baseFrete = normalizarTransportadoras(await carregarBaseCompletaDb());
-      if (!baseFrete.length) throw new Error('Nenhuma tabela de frete cadastrada.');
-      const idx = indexarBase(baseFrete);
-      const mapBaseByNome = new Map(baseFrete.map((t) => [t.nome, t]));
-
       setProgresso('Carregando planilha de IBGE...');
       const municipios = await carregarMunicipiosIbgeDb().catch(() => []);
       const mapasIbge = montarMapasIbge(municipios);
@@ -478,11 +491,15 @@ export default function SimularSaidaTransportadoraPage() {
       });
       if (!ctes.length) throw new Error('Nenhum CT-e encontrado para este recorte.');
 
-      setBase({ ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge, mapaVinculos });
+      // A tabela de frete só é buscada depois, quando a transportadora a
+      // avaliar for escolhida — aí sim buscamos só as rotas dela (ver
+      // simularSaida), em vez de carregar a base inteira (rotas tem ~1,3M
+      // linhas e isso deixava a tela lenta/travando com timeout).
+      setBase({ ctes, municipioPorCidade, mapasIbge, mapaVinculos });
       setStatusCarga('concluido'); setProgresso('');
     } catch (e) {
       console.error('[SimularSaidaTransportadora]', e);
-      setErro(`${e.message || e}`);
+      setErro(e?.message || 'Falha ao carregar os CT-es (possível instabilidade no Supabase). Tente novamente.');
       setStatusCarga('erro'); setProgresso('');
     }
   }
@@ -503,10 +520,21 @@ export default function SimularSaidaTransportadoraPage() {
     if (!base || !transportadora) return;
     setStatusSim('carregando'); setErro(''); setSimulacao(null); setExclusoes(new Set()); setRotasAbertas(new Set());
     try {
-      const { ctes, baseFrete, idx, mapBaseByNome, municipioPorCidade, mapasIbge, mapaVinculos } = base;
+      const { ctes, municipioPorCidade, mapasIbge, mapaVinculos } = base;
       // compara pelo nome unificado: pega todos os CT-es das variações vinculadas à transportadora escolhida
       const ctesDaTransp = ctes.filter((c) => norm(aplicarVinculoTransportadora(c.transportadora || c.nome_transportadora, mapaVinculos)) === norm(transportadora));
       if (!ctesDaTransp.length) throw new Error('Nenhum CT-e desta transportadora no recorte carregado.');
+
+      // Busca só as tabelas de frete das rotas que ESTA transportadora roda —
+      // não a base inteira — pra achar quem mais cobre essas mesmas rotas.
+      const routeKeys = montarRouteKeysCtes(ctesDaTransp, municipioPorCidade, mapasIbge, canal || '');
+      if (!routeKeys.length) throw new Error('CT-es encontrados, mas sem IBGE de origem/destino resolvido para buscar as tabelas.');
+
+      setProgresso(`Carregando tabelas de frete para ${fmtN(routeKeys.length)} rota(s) de ${transportadora}...`);
+      const baseFrete = normalizarTransportadoras(await buscarBaseSimulacaoPorRotasDb({ routeKeys, canal: canal || '' }));
+      if (!baseFrete.length) throw new Error('Nenhuma tabela de frete encontrada para as rotas desta transportadora.');
+      const idx = indexarBase(baseFrete);
+      const mapBaseByNome = new Map(baseFrete.map((t) => [t.nome, t]));
 
       const origemCache = new Map();
       const ctesSimulados = [];

@@ -1012,6 +1012,7 @@ function montarDetalhe({ cte, escolhido, lider, substituta, ranking, rankingCalc
     freteSubstituta: rankingCalculado ? (substituta?.total || 0) : 0,
     percentualRealizado: valorNF > 0 ? (valorRealizado / valorNF) * 100 : 0,
     percentualSimulado: valorNF > 0 ? (valorSimulado / valorNF) * 100 : 0,
+    origemValidada: Boolean(escolhido.origemValidada),
     detalhes: escolhido.detalhes,
   };
 }

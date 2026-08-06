@@ -119,6 +119,25 @@ function buildSnapshotPayload(transportadoras, chave = SNAPSHOT_CHAVE) {
 // paginas em paralelo, o tempo total cai proporcionalmente a concorrencia.
 const PAGINAS_EM_PARALELO = 8;
 
+// Sob carga (muitas tabelas grandes buscadas em paralelo), o Supabase às vezes
+// responde com timeout transitório (504 / "statement timeout"). Sem retry,
+// isso derrubava a carga inteira da base com uma mensagem em branco — daí a
+// tela de simulação parecer travada/sem fazer nada. Repete algumas vezes com
+// backoff antes de desistir de verdade.
+async function comRetry(fn, tentativas = 4) {
+  let ultimaResposta;
+  for (let i = 0; i < tentativas; i += 1) {
+    const resposta = await fn();
+    if (!resposta.error) return resposta;
+    ultimaResposta = resposta;
+    const { error } = resposta;
+    const transitorio = error.code === '57014' || /timeout|504/i.test(error.message || '');
+    if (!transitorio || i === tentativas - 1) return resposta;
+    await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+  }
+  return ultimaResposta;
+}
+
 async function fetchAllRows(supabase, table, orderBy = null, ascending = true, onPage = null) {
   // ORDER BY estável é obrigatório: sem ele, o Postgres não garante a ordem
   // das linhas entre as páginas do .range(), fazendo páginas repetirem e
@@ -130,9 +149,9 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true, o
   // Usa a mesma coluna do ORDER BY pra contar (nao "id" fixo): "generalidades"
   // nao tem coluna id, so origem_id - um select('id') fixo aqui quebra com
   // 42703 (coluna inexistente) e derruba a carga inteira da malha.
-  const { count, error: erroCount } = await supabase
-    .from(table)
-    .select(ordenarPor, { count: 'exact', head: true });
+  const { count, error: erroCount } = await comRetry(() =>
+    supabase.from(table).select(ordenarPor, { count: 'exact', head: true })
+  );
   if (erroCount) throw erroCount;
 
   const total = count || 0;
@@ -144,11 +163,13 @@ async function fetchAllRows(supabase, table, orderBy = null, ascending = true, o
 
   async function buscarPagina(indice) {
     const from = indice * PAGE_SIZE;
-    const { data, error } = await supabase
-      .from(table)
-      .select('*')
-      .order(ordenarPor, { ascending })
-      .range(from, from + PAGE_SIZE - 1);
+    const { data, error } = await comRetry(() =>
+      supabase
+        .from(table)
+        .select('*')
+        .order(ordenarPor, { ascending })
+        .range(from, from + PAGE_SIZE - 1)
+    );
     if (error) throw error;
     paginas[indice] = data || [];
     carregados += paginas[indice].length;
@@ -566,7 +587,11 @@ export async function carregarBaseCompletaDb(onProgress = null) {
     return Array.isArray(parsed) ? parsed : parsed?.payload?.transportadoras || [];
   }
 
-  if (_cacheBaseCompleta) return _cacheBaseCompleta;
+  // Array vazio é "truthy" em JS — sem o length aqui, uma carga que falhe
+  // parcialmente e resulte em [] ficava presa em cache pro resto da sessão,
+  // fazendo a tela de simulação (e qualquer outra) achar que a base está
+  // vazia mesmo com transportadoras cadastradas no banco.
+  if (_cacheBaseCompleta?.length) return _cacheBaseCompleta;
 
   const supabase = ensureClient();
 
