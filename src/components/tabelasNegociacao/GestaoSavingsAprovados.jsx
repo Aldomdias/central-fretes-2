@@ -3,7 +3,7 @@ import { gestaoStyles } from './GestaoStyles';
 import { formatarData } from '../../utils/tabelasNegociacaoGestao';
 import { buscarPrimeiroCteSaving, calcularSavingPosAprovacaoAgregado, listarFaixasPesoNegociacao, listarRealizadoLocalCtesParaSimulacao, listarTransportadorasRealizadoReajustes } from '../../services/freteDatabaseService';
 import { carregarCargasLotacaoSupabase } from '../../services/lotacaoSupabaseService';
-import { atualizarDataReferenciaSaving, atualizarVinculoTransportadoraSaving, salvarSavingPosAprovacaoCache } from '../../services/tabelasNegociacaoService';
+import { atualizarDataReferenciaSaving, atualizarOrigemRealizadoSaving, atualizarVinculoTransportadoraSaving, salvarSavingPosAprovacaoCache } from '../../services/tabelasNegociacaoService';
 import { normalizarTextoReajuste } from '../../utils/reajustesLocal';
 import { calcularJanelasSaving, calcularSavingLotacaoPorFluxo, calcularSavingPorRotaFaixa, MESES_BASE_SAVING_PADRAO } from '../../utils/savingsPosAprovacaoNegociacao';
 import { GRADE_FRETE_PADRAO, normalizarCanalGrade } from '../../utils/gradeFreteConfig';
@@ -311,6 +311,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
   const [abertos, setAbertos] = useState({});
   const [datasReferencia, setDatasReferencia] = useState({});
   const [salvandoData, setSalvandoData] = useState({});
+  const [origensRealizado, setOrigensRealizado] = useState({});
+  const [salvandoOrigem, setSalvandoOrigem] = useState({});
   const [vinculos, setVinculos] = useState({});
   const [vinculosAbertos, setVinculosAbertos] = useState({});
   const [salvandoVinculo, setSalvandoVinculo] = useState({});
@@ -333,6 +335,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         transportadora: t.transportadora,
         nome: t.descricao || t.nome_negociacao || t.transportadora,
         origem: t.origem || '',
+        origemRealizadoSalva: t.origem_realizado_saving || '',
         canal: t.canal || '',
         isLotacao: String(t.tipo_negociacao || t.tipo_tabela || t.canal || '')
           .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().includes('LOTACAO'),
@@ -455,6 +458,29 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     return lista.slice(0, 40);
   }
 
+  function origemRealizadoAtual(item) {
+    return String(origensRealizado[item.id] ?? item.origemRealizadoSalva ?? item.origem ?? '').trim();
+  }
+
+  async function salvarOrigemRealizado(item) {
+    const origem = origemRealizadoAtual(item);
+    setSalvandoOrigem((prev) => ({ ...prev, [item.id]: true }));
+    setErros((prev) => ({ ...prev, [item.id]: '' }));
+    try {
+      const atualizada = await atualizarOrigemRealizadoSaving(item.id, origem === item.origem ? '' : origem);
+      if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, atualizada);
+      setResultados((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    } catch (err) {
+      setErros((prev) => ({ ...prev, [item.id]: err?.message || 'Erro ao salvar o vínculo de origem.' }));
+    } finally {
+      setSalvandoOrigem((prev) => ({ ...prev, [item.id]: false }));
+    }
+  }
+
   function atualizarProgressoItem(id, percentual, etapa) {
     setProgressoItem((prev) => {
       const atual = prev[id]?.percentual || 0;
@@ -474,6 +500,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     setProgressoItem((prev) => ({ ...prev, [item.id]: { percentual: 5, etapa: 'Preparando cálculo' } }));
     setErros((prev) => ({ ...prev, [item.id]: '' }));
     try {
+      const origemRealizado = origemRealizadoAtual(item);
       const vinculoLista = vinculoAtual(item);
       if (item.isLotacao) {
         const nomes = vinculoLista.length ? vinculoLista : [item.transportadora];
@@ -481,14 +508,14 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         const [cargasBase, cargasPorNome] = await Promise.all([
           carregarCargasLotacaoSupabase({ inicio: janelas.inicioBase, fim: janelas.fimBase, limit: 50000 }),
           Promise.all(nomes.map((transportadora) => carregarCargasLotacaoSupabase({
-            transportadora, origem: item.origem || undefined,
+            transportadora, origem: origemRealizado || undefined,
             inicio: janelas.inicioAtual, fim: janelas.fimAtual, limit: 50000,
           }))),
         ]);
         atualizarProgressoItem(item.id, 75, 'Viagens carregadas');
         const cargasAtual = cargasPorNome.flat();
         if (!cargasAtual.length) {
-          throw new Error(`Sem realizado após a referência para ${item.transportadora}${item.origem ? ` na origem ${item.origem}` : ''}. O saving ainda não pode ser medido.`);
+          throw new Error(`Sem realizado após a referência para ${item.transportadora}${origemRealizado ? ` na origem ${origemRealizado}` : ''}. O saving ainda não pode ser medido.`);
         }
         atualizarProgressoItem(item.id, 88, 'Comparando fluxos');
         const resultado = calcularSavingLotacaoPorFluxo(cargasBase, cargasAtual);
@@ -534,7 +561,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
           : 'Usando grade padrão');
         const filtrosCalculo = {
           transportadoras: vinculoLista.length ? vinculoLista : [item.transportadora],
-          origem: item.origem,
+          origem: origemRealizado,
           canal: item.canal,
           dataCorte: dataReferencia,
           fimAtual: janelas.fimAtual,
@@ -549,14 +576,14 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         if (!resultadoAgregado.ctesAtual) {
           const amostraAtual = await listarRealizadoLocalCtesParaSimulacao({
             transportadorasExatas: vinculoLista.length ? vinculoLista : [item.transportadora],
-            origem: item.origem || undefined,
+            origem: origemRealizado || undefined,
             canal: item.canal || undefined,
             inicio: janelas.inicioAtual,
             fim: janelas.fimAtual,
             limit: 1,
           });
           if (!amostraAtual.length) {
-            throw new Error(`Sem realizado após a referência${item.origem ? ` na origem ${item.origem}` : ''}. O saving ainda não pode ser medido.`);
+            throw new Error(`Sem realizado após a referência${origemRealizado ? ` na origem ${origemRealizado}` : ''}. O saving ainda não pode ser medido.`);
           }
         }
         const resultadoCompleto = {
@@ -605,7 +632,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
       atualizarProgressoItem(item.id, 25, 'Buscando realizado da transportadora');
       const promessaAtual = listarRealizadoLocalCtesParaSimulacao({
           ...filtroTransportadora,
-          origem: item.origem || undefined,
+          origem: origemRealizado || undefined,
           inicio: janelas.inicioAtual,
           fim: janelas.fimAtual,
         }).then((dados) => {
@@ -621,7 +648,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
           return nome === alvo || nome.includes(alvo) || alvo.includes(nome);
         });
         throw new Error(temNomeCompativel
-          ? `Transportadora vinculada, mas sem realizado após a referência${item.origem ? ` na origem ${item.origem}` : ''}. O saving ainda não pode ser medido.`
+          ? `Transportadora vinculada, mas sem realizado após a referência${origemRealizado ? ` na origem ${origemRealizado}` : ''}. O saving ainda não pode ser medido.`
           : 'Sem vínculo com uma transportadora do realizado. Abra “Buscar vínculos” e selecione o nome correto antes de calcular.');
       }
       atualizarProgressoItem(item.id, 88, 'Comparando rotas e faixas');
@@ -837,7 +864,27 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                   <tr key={item.id}>
                     <td><strong>{item.transportadora}</strong></td>
                     <td>{item.nome}</td>
-                    <td>{item.origem || '—'}</td>
+                    <td style={{ minWidth: 155 }}>
+                      <strong>{item.origem || '—'}</strong>
+                      <div style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          value={origensRealizado[item.id] ?? item.origemRealizadoSalva ?? item.origem}
+                          onChange={(e) => setOrigensRealizado((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                          placeholder="Origem no realizado"
+                          title="Nome correspondente da origem na base de CT-es"
+                          style={{ width: 115, minWidth: 0, padding: '3px 5px', fontSize: 10 }}
+                        />
+                        {origemRealizadoAtual(item) !== (item.origemRealizadoSalva || item.origem) ? (
+                          <button type="button" className="sim-tab" style={{ padding: '2px 6px', fontSize: 9 }} disabled={Boolean(salvandoOrigem[item.id])} onClick={() => salvarOrigemRealizado(item)}>
+                            {salvandoOrigem[item.id] ? '...' : 'Salvar'}
+                          </button>
+                        ) : null}
+                      </div>
+                      {item.origemRealizadoSalva && item.origemRealizadoSalva !== item.origem ? (
+                        <div style={{ fontSize: 9, color: '#1d4ed8', marginTop: 2 }}>Realizado: {item.origemRealizadoSalva}</div>
+                      ) : null}
+                    </td>
                     <td>{item.canal}</td>
                     <td style={{ minWidth: 190 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>

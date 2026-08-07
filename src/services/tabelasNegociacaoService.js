@@ -2800,6 +2800,23 @@ export async function atualizarVinculoTransportadoraSaving(id, nomes = []) {
   return data;
 }
 
+export async function atualizarOrigemRealizadoSaving(id, origemRealizado) {
+  const supabase = supabaseOrThrow();
+  const { data, error } = await supabase
+    .from('tabelas_negociacao')
+    .update({
+      origem_realizado_saving: texto(origemRealizado) || null,
+      saving_pos_aprovacao_valor: null,
+      saving_pos_aprovacao_calculado_em: null,
+      saving_pos_aprovacao_detalhe: null,
+    })
+    .eq('id', id)
+    .select('id, origem_realizado_saving')
+    .single();
+  if (error) throw new Error(error.message || 'Erro ao salvar o vínculo de origem do realizado.');
+  return data;
+}
+
 export async function salvarSavingPosAprovacaoCache(id, detalhe = {}) {
   const supabase = supabaseOrThrow();
   const { data, error } = await supabase

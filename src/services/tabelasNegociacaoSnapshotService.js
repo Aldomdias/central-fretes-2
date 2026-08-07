@@ -35,7 +35,7 @@ const COLUNAS_LISTAGEM_NEGOCIACAO = [
   'saving_projetado', 'aderencia_projetada', 'faturamento_projetado',
   'impacto_projetado', 'percentual_frete_projetado', 'volumetria_dia',
   'ctes_analisados', 'ctes_atendidos', 'rotas_sem_cobertura',
-  'data_referencia_saving', 'vinculo_transportadoras_saving',
+  'data_referencia_saving', 'vinculo_transportadoras_saving', 'origem_realizado_saving',
   'saving_pos_aprovacao_valor', 'saving_pos_aprovacao_calculado_em',
   'saving_pos_aprovacao_detalhe',
   'substituir_tabela_anterior', 'tabela_base_id', 'transportadora_base_nome',
