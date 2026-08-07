@@ -74,10 +74,11 @@ export default function DashboardPage({
   const hasData = transportadoras.length > 0 || Boolean(syncStatus?.resumoBase);
   const status = getStatus(syncStatus, hasData);
   const carregandoInicial = syncStatus?.carregando && !hasData;
-  const transportadorasValidadas = conferencia?.semValidacao ? 0 : Number(conferencia?.validadas || 0);
-  const coberturaValidada = conferencia && !conferencia.semValidacao
-    ? percentual(transportadorasValidadas, conferencia.transportadoras || totais.transportadoras)
-    : 0;
+  const origensValidadas = transportadoras.reduce(
+    (acc, transportadora) => acc + (transportadora.origens || []).filter((origem) => origem.validado).length,
+    0
+  );
+  const coberturaValidada = percentual(origensValidadas, totais.origens);
   const rotasPorOrigem = totais.origens ? totais.rotas / totais.origens : 0;
   const cotacoesPorRota = totais.rotas ? totais.cotacoes / totais.rotas : 0;
   const modoOnline = syncStatus?.modo !== 'local';
@@ -123,7 +124,7 @@ export default function DashboardPage({
         <div className="dashboard-kpi">
           <span>Cobertura validada</span>
           <strong>{conferencia?.semValidacao ? 'Sem validacao' : formatarPercentual(coberturaValidada)}</strong>
-          <small>{conferencia ? `${formatarNumero(transportadorasValidadas)} de ${formatarNumero(conferencia.transportadoras || totais.transportadoras)} transportadoras` : 'Clique em Conferir base'}</small>
+          <small>{`${formatarNumero(origensValidadas)} de ${formatarNumero(totais.origens)} origens validadas`}</small>
         </div>
       </section>
 

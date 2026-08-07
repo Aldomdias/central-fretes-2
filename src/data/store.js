@@ -233,6 +233,7 @@ export function useFreteStore(sessao = null) {
     resumoBase: null,
     conferenciaBase: null,
     carregandoDetalheId: null,
+    carregandoDetalheIds: [],
   });
   const loadedRef = useRef(false);
 
@@ -527,13 +528,31 @@ export function useFreteStore(sessao = null) {
       async carregarTransportadoraCompleta(transportadoraId) {
         if (!transportadoraId || !bancoConfigurado()) return false;
 
-        setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: transportadoraId, erro: '' }));
+        setSyncStatus((prev) => {
+          const ids = new Set(prev.carregandoDetalheIds || []);
+          ids.add(String(transportadoraId));
+          return {
+            ...prev,
+            carregandoDetalheId: transportadoraId,
+            carregandoDetalheIds: Array.from(ids),
+            erro: '',
+          };
+        });
+
+        const finalizarCarregamento = (prev) => {
+          const ids = (prev.carregandoDetalheIds || []).filter((id) => String(id) !== String(transportadoraId));
+          return {
+            ...prev,
+            carregandoDetalheId: ids.at(-1) || null,
+            carregandoDetalheIds: ids,
+          };
+        };
 
         try {
           const atual = (transportadoras || []).find((item) => String(item.id) === String(transportadoraId));
           const completa = await carregarTransportadoraCompletaDb(transportadoraId, atual?.nome || '');
           if (!completa) {
-            setSyncStatus((prev) => ({ ...prev, carregandoDetalheId: null }));
+            setSyncStatus(finalizarCarregamento);
             return false;
           }
 
@@ -547,16 +566,14 @@ export function useFreteStore(sessao = null) {
           );
 
           setSyncStatus((prev) => ({
-            ...prev,
-            carregandoDetalheId: null,
+            ...finalizarCarregamento(prev),
             fonte: 'supabase-detalhe',
           }));
 
           return true;
         } catch (error) {
           setSyncStatus((prev) => ({
-            ...prev,
-            carregandoDetalheId: null,
+            ...finalizarCarregamento(prev),
             erro: error.message || 'Erro ao carregar detalhes da transportadora.',
           }));
           return false;
