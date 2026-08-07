@@ -47,6 +47,7 @@ export default function GestaoShell({
   carregandoLaudoTransportadora = false,
   onEnviarAprovacao,
   onAlternarSimulacao,
+  onDescontinuar,
   onExcluir,
   onAprovarGestor,
   onRecusarGestor,
@@ -116,6 +117,7 @@ export default function GestaoShell({
             onAbrir={onAbrirNegociacao}
             onEnviarAprovacao={onEnviarAprovacao}
             onAlternarSimulacao={onAlternarSimulacao}
+            onDescontinuar={onDescontinuar}
             onExcluir={onExcluir}
             selecionadaId={selecionadaId}
           />

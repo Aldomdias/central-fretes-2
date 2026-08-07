@@ -2550,6 +2550,24 @@ export async function enviarParaAprovacaoGestor(id, dados = {}) {
   });
 }
 
+export async function descontinuarNegociacao(id, dados = {}) {
+  const tabela = await obterTabelaNegociacao(id);
+  const statusAtual = normalizarStatusGestao(tabela);
+  const motivo = texto(dados.motivo || dados.observacao || dados.justificativa);
+  if (!motivo) throw new Error('Informe o motivo da descontinuação.');
+  if (statusAtual === 'CANCELADA') throw new Error('Esta negociação já está descontinuada.');
+  if (statusAtual === 'SUBSTITUIDA') throw new Error('Uma negociação substituída não pode ser descontinuada novamente.');
+
+  return aplicarTransicaoGestao(id, {
+    tipo: 'DESCONTINUACAO_NEGOCIACAO',
+    status_gestao: 'CANCELADA',
+    status_aprovacao: 'CANCELADA',
+    observacao: motivo,
+    justificativa_aprovacao: motivo,
+    usuario: dados.usuario,
+  });
+}
+
 export async function aprovarGestorNegociacao(id, dados = {}) {
   const supabase = supabaseOrThrow();
   const agora = dataISO();

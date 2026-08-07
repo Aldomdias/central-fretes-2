@@ -39,6 +39,7 @@ import {
   salvarGeneralidades,
   simularLotacaoNegociacao,
   enviarParaAprovacaoGestor,
+  descontinuarNegociacao,
   aprovarGestorNegociacao,
   recusarGestorNegociacao,
   devolverParaAjusteNegociacao,
@@ -2582,6 +2583,27 @@ export default function TabelasNegociacaoPage() {
     finally { setSalvandoGestao(false); }
   }
 
+  async function handleDescontinuarNegociacao(tabela) {
+    if (!tabela?.id) return;
+    var motivo = window.prompt('Informe o motivo para descontinuar esta negociação:');
+    if (motivo === null) return;
+    motivo = String(motivo || '').trim();
+    if (!motivo) { setErro('Informe o motivo da descontinuação.'); return; }
+    var avisoPublicada = tabela.status_gestao === 'PUBLICADA_OFICIAL'
+      ? '\n\nA tabela já publicada continuará na base oficial; esta ação encerra apenas o acompanhamento da negociação.'
+      : '';
+    var ok = window.confirm('Descontinuar a negociação de ' + tabela.transportadora + '?\n\nOs itens, laudos e histórico serão preservados, mas ela sairá dos cálculos de saving.' + avisoPublicada);
+    if (!ok) return;
+    setSalvandoGestao(true); setErro(''); setSucesso('');
+    try {
+      var at = await descontinuarNegociacao(tabela.id, { usuario: sessao, motivo: motivo });
+      setTabelas(function(p) { return p.map(function(i) { return i.id === at.id ? at : i; }); });
+      if (selecionada && selecionada.id === at.id) setSelecionada(at);
+      setSucesso('Negociação descontinuada. Histórico e dados foram preservados.');
+    } catch (e) { setErro(e.message || 'Erro ao descontinuar negociação.'); }
+    finally { setSalvandoGestao(false); }
+  }
+
   async function handleAprovarGestor(tabela, obs) {
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
@@ -2761,6 +2783,7 @@ export default function TabelasNegociacaoPage() {
         carregandoLaudoTransportadora={carregandoLaudoTransportadora}
         onEnviarAprovacao={handleEnviarAprovacaoGestao}
         onAlternarSimulacao={gerenciarSimulacaoLista}
+        onDescontinuar={handleDescontinuarNegociacao}
         onExcluir={excluirTabela}
         onAprovarGestor={handleAprovarGestor}
         onRecusarGestor={handleRecusarGestor}

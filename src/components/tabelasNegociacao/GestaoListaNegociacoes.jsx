@@ -15,6 +15,7 @@ export default function GestaoListaNegociacoes({
   onAbrir,
   onEnviarAprovacao,
   onAlternarSimulacao,
+  onDescontinuar,
   onExcluir,
   selecionadaId = null,
 }) {
@@ -82,6 +83,18 @@ export default function GestaoListaNegociacoes({
                     {['EM_NEGOCIACAO', 'EM_ANALISE', 'DEVOLVIDA_AJUSTE', 'APROVADA_NEGOCIADOR'].includes(t.status_gestao) ? (
                       <button className="sim-tab" type="button" onClick={() => onEnviarAprovacao(t)}>Enviar p/ aprovação</button>
                     ) : null}
+                    {typeof onDescontinuar === 'function'
+                      && !['CANCELADA', 'SUBSTITUIDA'].includes(t.status_gestao)
+                      && (podeExcluir || t.minha_negociacao) ? (
+                        <button
+                          className="sim-tab"
+                          type="button"
+                          onClick={() => onDescontinuar(t)}
+                          style={{ color: '#b45309', borderColor: '#fed7aa' }}
+                        >
+                          Descontinuar
+                        </button>
+                      ) : null}
                     {podeExcluir && typeof onExcluir === 'function' ? (
                       <button
                         type="button"
