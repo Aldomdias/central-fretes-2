@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { carregarSessao } from '../../utils/authLocal';
-import { enriquecerTabelaGestao } from '../../utils/tabelasNegociacaoGestao';
+import { enriquecerTabelaGestao, usuarioEhGestor } from '../../utils/tabelasNegociacaoGestao';
 import GestaoDashboard from './GestaoDashboard';
 import GestaoFiltros from './GestaoFiltros';
 import GestaoListaNegociacoes from './GestaoListaNegociacoes';
@@ -161,7 +161,11 @@ export default function GestaoShell({
       ) : null}
 
       {aba === 'savings-aprovados' ? (
-        <GestaoSavingsAprovados tabelas={tabelas} />
+        <GestaoSavingsAprovados
+          tabelas={tabelas}
+          podeDevolver={usuarioEhGestor(sessao)}
+          onDevolver={onDevolverGestor}
+        />
       ) : null}
 
       {aba === 'historico' ? (

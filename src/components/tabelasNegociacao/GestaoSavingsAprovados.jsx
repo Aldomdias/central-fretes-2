@@ -304,7 +304,7 @@ function baixarEmailSavings(tabelas, negociacoes, resultados) {
   URL.revokeObjectURL(link.href);
 }
 
-export default function GestaoSavingsAprovados({ tabelas = [] }) {
+export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = false, onDevolver }) {
   const [resultados, setResultados] = useState({});
   const [carregando, setCarregando] = useState({});
   const [erros, setErros] = useState({});
@@ -703,6 +703,19 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
       : { label: 'Sem vínculo', cor: '#c1121f' };
   }
 
+  function devolverParaNegociacao(item) {
+    if (!podeDevolver || typeof onDevolver !== 'function') return;
+    const motivo = window.prompt(`Informe o motivo para devolver a negociação de ${item.transportadora}:`);
+    if (motivo === null) return;
+    const observacao = String(motivo || '').trim();
+    if (!observacao) {
+      window.alert('Informe o motivo da devolução.');
+      return;
+    }
+    if (!window.confirm('Devolver esta negociação para ajustes? Ela sairá dos savings até ser aprovada novamente.')) return;
+    onDevolver(item, observacao);
+  }
+
   return (
     <section className="sim-card">
       <h2 style={{ marginTop: 0 }}>Savings pós-aprovação</h2>
@@ -918,16 +931,29 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
                       {r ? formatMoney(r.totais.saving) : '—'}
                     </td>
                     <td>
-                      <button
-                        type="button"
-                        className="sim-tab"
-                        style={{ padding: '3px 8px', fontSize: 11 }}
-                        onClick={() => (r ? verDetalhe(item) : calcularSaving(item))}
-                        disabled={Boolean(carregando[item.id])}
-                        title={!r && erros[item.id] ? erros[item.id] : ''}
-                      >
-                        {carregando[item.id] ? 'Calculando…' : r ? 'Ver detalhe' : erros[item.id] ? 'Tentar de novo' : 'Calcular'}
-                      </button>
+                      <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className="sim-tab"
+                          style={{ padding: '3px 8px', fontSize: 11 }}
+                          onClick={() => (r ? verDetalhe(item) : calcularSaving(item))}
+                          disabled={Boolean(carregando[item.id])}
+                          title={!r && erros[item.id] ? erros[item.id] : ''}
+                        >
+                          {carregando[item.id] ? 'Calculando…' : r ? 'Ver detalhe' : erros[item.id] ? 'Tentar de novo' : 'Calcular'}
+                        </button>
+                        {podeDevolver && item.statusGestao === 'APROVADA_GESTOR' ? (
+                          <button
+                            type="button"
+                            className="sim-tab"
+                            style={{ padding: '3px 8px', fontSize: 11, color: '#b45309', borderColor: '#fed7aa' }}
+                            onClick={() => devolverParaNegociacao(item)}
+                            disabled={Boolean(carregando[item.id])}
+                          >
+                            Devolver
+                          </button>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 );
