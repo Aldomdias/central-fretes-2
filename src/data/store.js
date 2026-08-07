@@ -263,7 +263,6 @@ export function useFreteStore(sessao = null) {
         if (cancelled) return;
         try {
           const resumo = await carregarResumoBaseDb();
-          const conferencia = await carregarConferenciaBaseDb().catch(() => null);
           if (cancelled) return;
           setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
           loadedRef.current = true;
@@ -272,7 +271,6 @@ export function useFreteStore(sessao = null) {
             carregando: false,
             fonte: 'supabase-resumo',
             resumoBase: resumo.resumo,
-            conferenciaBase: conferencia,
             erro: '',
           }));
           return;
@@ -367,7 +365,6 @@ export function useFreteStore(sessao = null) {
 
         try {
           const resumo = await carregarResumoBaseDb();
-          const conferencia = await carregarConferenciaBaseDb().catch(() => null);
 
           setTransportadoras((resumo.transportadoras || []).map(normalizeTransportadora));
 
@@ -376,7 +373,6 @@ export function useFreteStore(sessao = null) {
             carregando: false,
             fonte: 'supabase-resumo',
             resumoBase: resumo.resumo,
-            conferenciaBase: conferencia || prev.conferenciaBase,
             ultimaSincronizacao: new Date().toISOString(),
           }));
 

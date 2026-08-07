@@ -948,6 +948,7 @@ function TransportadorasList({ items, onOpen, store }) {
   const [autoAtualizando, setAutoAtualizando] = useState(false);
   const [atualizandoResumo, setAtualizandoResumo] = useState(false);
   const refreshInicialRef = useRef(false);
+  const autoRefreshRunRef = useRef(0);
   const PAGE_SIZE = 20;
   const cidades = useMemo(() => uniqueCities(items), [items]);
   const canais = useMemo(() => uniqueCanals(items), [items]);
@@ -981,6 +982,7 @@ function TransportadorasList({ items, onOpen, store }) {
   const paginaAtual = Math.min(pagina, totalPaginas);
   const inicioPagina = (paginaAtual - 1) * PAGE_SIZE;
   const visiveis = filtrados.slice(inicioPagina, inicioPagina + PAGE_SIZE);
+  const idsVisiveis = visiveis.map((item) => String(item.id)).join('|');
 
   useEffect(() => {
     setPagina(1);
@@ -1002,9 +1004,35 @@ function TransportadorasList({ items, onOpen, store }) {
   }, [store]);
 
   useEffect(() => {
-    // Não carrega automaticamente para evitar sobrescrever campos enquanto o usuário edita.
-    setAutoAtualizando(false);
-  }, [visiveis]);
+    if (!idsVisiveis || !store?.carregarTransportadoraCompleta || store?.syncStatus?.rascunhoLocal) return undefined;
+
+    const pendentes = visiveis.filter((item) => !item.detalheCarregado);
+    if (!pendentes.length) return undefined;
+
+    const runId = autoRefreshRunRef.current + 1;
+    autoRefreshRunRef.current = runId;
+    let cancelado = false;
+
+    async function atualizarVisiveis() {
+      setAutoAtualizando(true);
+
+      // Completa a tela em lotes pequenos para nao disparar 20 consultas
+      // pesadas simultaneamente contra o Supabase.
+      for (let inicio = 0; inicio < pendentes.length; inicio += 3) {
+        if (cancelado || autoRefreshRunRef.current !== runId) break;
+        const lote = pendentes.slice(inicio, inicio + 3);
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.allSettled(lote.map((item) => store.carregarTransportadoraCompleta(item.id)));
+      }
+
+      if (!cancelado && autoRefreshRunRef.current === runId) setAutoAtualizando(false);
+    }
+
+    atualizarVisiveis();
+    return () => {
+      cancelado = true;
+    };
+  }, [idsVisiveis, store?.syncStatus?.rascunhoLocal]);
 
   const saveTransportadora = (form) => {
     store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
@@ -1038,7 +1066,7 @@ function TransportadorasList({ items, onOpen, store }) {
           </button>
           <button className="btn-secondary" onClick={() => {
             visiveis.forEach((item) => store?.carregarTransportadoraCompleta?.(item.id));
-          }}>Atualizar visíveis</button>
+          }}>Recarregar visíveis</button>
           <button className="btn-secondary" onClick={() => setPainelValidacaoOpen(true)}>📊 Painel de validação</button>
           <button className="btn-secondary" onClick={() => setHistoricoOpen(true)}>🕘 Histórico de alterações</button>
           <button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button>

@@ -991,8 +991,12 @@ export async function carregarResumoBaseDb() {
   ] = await Promise.all([
     supabase.from('transportadoras').select('id, nome, status').order('nome', { ascending: true }),
     supabase.from('origens').select('id, transportadora_id, cidade, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
-    supabase.from('rotas').select('id', { count: 'exact', head: true }),
-    supabase.from('cotacoes').select('id', { count: 'exact', head: true }),
+    // O dashboard precisa apenas de um indicador imediato. `exact` obrigava o
+    // Postgres a contar tabelas que podem ter mais de um milhao de linhas antes
+    // de liberar a aplicacao. `planned` usa as estatisticas do banco e evita
+    // colocar essa varredura pesada no caminho critico do login.
+    supabase.from('rotas').select('id', { count: 'planned', head: true }),
+    supabase.from('cotacoes').select('id', { count: 'planned', head: true }),
   ]);
 
   if (transportadorasResponse.error) throw transportadorasResponse.error;
@@ -1020,45 +1024,13 @@ export async function carregarResumoBaseDb() {
     origensByTransportadora.set(key, lista);
   });
 
-  let coberturaPorTransportadora = new Map();
-
-  try {
-    const { data: coberturaRows, error: coberturaError } = await supabase
-      .from('vw_cobertura_transportadoras')
-      .select('*');
-
-    if (!coberturaError) {
-      coberturaPorTransportadora = new Map(
-        (coberturaRows || []).map((row) => [
-          String(row.transportadora_id),
-          {
-            cobertura: row.status_cobertura || 'Resumo',
-            severidade:
-              row.status_cobertura === 'Inconsistente'
-                ? 'error'
-                : row.status_cobertura === 'Parcial'
-                  ? 'warn'
-                  : 'ok',
-            inconsistentes: Number(row.origens_inconsistentes || 0),
-            pendencias: Number(row.origens_pendentes || 0),
-            faltandoFrete: Number(row.rotas_sem_frete || 0),
-            faltandoRota: Number(row.fretes_sem_rota || 0),
-            totalRotas: Number(row.total_rotas || 0),
-            totalCotacoes: Number(row.total_cotacoes || 0),
-            resumo: false,
-          },
-        ])
-      );
-    }
-  } catch {
-    coberturaPorTransportadora = new Map();
-  }
-
   const transportadoras = (transportadorasResponse.data || []).map((transportadora) => ({
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
-    resumoCobertura: coberturaPorTransportadora.get(String(transportadora.id)) || {
+    // A view de cobertura agrega rotas e cotacoes e pode ser cara. Ela fica na
+    // conferencia explicita; a lista inicial usa um marcador leve.
+    resumoCobertura: {
       cobertura: 'Sem validação',
       severidade: 'warn',
       inconsistentes: 0,
