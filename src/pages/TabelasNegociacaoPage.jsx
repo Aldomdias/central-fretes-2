@@ -2604,6 +2604,14 @@ export default function TabelasNegociacaoPage() {
     finally { setSalvandoGestao(false); }
   }
 
+  function handleSavingSalvo(id, cacheSalvo) {
+    setTabelas(function(lista) {
+      return lista.map(function(tabela) {
+        return tabela.id === id ? Object.assign({}, tabela, cacheSalvo) : tabela;
+      });
+    });
+  }
+
   async function handleAprovarGestor(tabela, obs) {
     setSalvandoGestao(true); setErro(''); setSucesso('');
     try {
@@ -2784,6 +2792,7 @@ export default function TabelasNegociacaoPage() {
         onEnviarAprovacao={handleEnviarAprovacaoGestao}
         onAlternarSimulacao={gerenciarSimulacaoLista}
         onDescontinuar={handleDescontinuarNegociacao}
+        onSavingSalvo={handleSavingSalvo}
         onExcluir={excluirTabela}
         onAprovarGestor={handleAprovarGestor}
         onRecusarGestor={handleRecusarGestor}

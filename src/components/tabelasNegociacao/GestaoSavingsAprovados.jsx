@@ -304,7 +304,7 @@ function baixarEmailSavings(tabelas, negociacoes, resultados) {
   URL.revokeObjectURL(link.href);
 }
 
-export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = false, onDevolver }) {
+export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = false, onDevolver, onSavingSalvo }) {
   const [resultados, setResultados] = useState({});
   const [carregando, setCarregando] = useState({});
   const [erros, setErros] = useState({});
@@ -504,7 +504,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
         atualizarProgressoItem(item.id, 100, 'Concluído');
         if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
-        salvarSavingPosAprovacaoCache(item.id, resultadoCompleto).catch(() => {});
+        const cacheSalvo = await salvarSavingPosAprovacaoCache(item.id, resultadoCompleto);
+        if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, cacheSalvo);
         return;
       }
       // Se houver vínculo manual, usa lista exata (rápido, indexado). Senão cai no
@@ -566,7 +567,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
         setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
         atualizarProgressoItem(item.id, 100, `Concluído em ${(resultadoAgregado.tempoMs / 1000).toFixed(1)}s`);
         if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
-        salvarSavingPosAprovacaoCache(item.id, resultadoCompleto).catch(() => {});
+        const cacheSalvo = await salvarSavingPosAprovacaoCache(item.id, resultadoCompleto);
+        if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, cacheSalvo);
         return;
       } catch (rpcError) {
         if (progressoTimer) window.clearInterval(progressoTimer);
@@ -630,7 +632,8 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
       if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
       // Salva o resultado no banco pra sobreviver a um F5 — se der erro (ex: migration
       // ainda não aplicada), o cálculo em tela continua valendo, só não persiste.
-      salvarSavingPosAprovacaoCache(item.id, resultadoCompleto).catch(() => {});
+      const cacheSalvo = await salvarSavingPosAprovacaoCache(item.id, resultadoCompleto);
+      if (typeof onSavingSalvo === 'function') onSavingSalvo(item.id, cacheSalvo);
     } catch (err) {
       setErros((prev) => ({ ...prev, [item.id]: err?.message || 'Erro ao calcular saving.' }));
     } finally {

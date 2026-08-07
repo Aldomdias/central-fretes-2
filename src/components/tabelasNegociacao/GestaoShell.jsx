@@ -57,6 +57,7 @@ export default function GestaoShell({
   onEnviarAprovacao,
   onAlternarSimulacao,
   onDescontinuar,
+  onSavingSalvo,
   onExcluir,
   onAprovarGestor,
   onRecusarGestor,
@@ -174,6 +175,7 @@ export default function GestaoShell({
           tabelas={tabelas}
           podeDevolver={usuarioPodeDevolverSaving(sessao)}
           onDevolver={onDevolverGestor}
+          onSavingSalvo={onSavingSalvo}
         />
       ) : null}
 
