@@ -87,6 +87,9 @@ export default function GestaoAprovacoes({
             <div>
               <strong>{t.transportadora}</strong> · {t.origem_label}
               <div style={{ fontSize: 12, color: '#64748b' }}>Aprovada em {formatarData(t.aprovado_em)} por {t.aprovador_display}</div>
+              <div style={{ fontSize: 12, color: '#475569', marginTop: 3 }}>
+                Destino: {t.tipo_negociacao_norm === 'TABELA_LOTACAO' ? 'Transportadoras · Lotação' : `Transportadoras · ${t.canal || 'Tabela oficial'}`}
+              </div>
             </div>
             {ehGestor && podePublicarOficial(t) ? (
               <button className="primary" type="button" disabled={salvando} onClick={() => onPublicar(t)}>Publicar na base oficial</button>

@@ -166,3 +166,62 @@ export function calcularSavingPorRotaFaixa(linhasBase = [], linhasAtual = [], op
 
   return { linhas, totais };
 }
+
+function chaveFluxoLotacao(row = {}) {
+  const limpar = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();
+  return [limpar(row.origem), limpar(row.destino), limpar(row.tipoVeiculo || row.tipo_veiculo || 'GERAL')].join('|');
+}
+
+function valorRealizadoLotacao(row = {}) {
+  return numero(row.valorComparacao ?? row.valor_comparacao ?? row.freteTransp ?? row.frete_transp ?? row.freteCantu ?? row.frete_cantu);
+}
+
+// Em lotação cada registro é uma viagem/DIST. A referência é o custo médio
+// histórico de todas as transportadoras no mesmo fluxo e tipo de veículo.
+export function calcularSavingLotacaoPorFluxo(cargasBase = [], cargasAtual = []) {
+  const agrupar = (rows) => {
+    const mapa = new Map();
+    (rows || []).forEach((row) => {
+      const valor = valorRealizadoLotacao(row);
+      if (!(valor > 0)) return;
+      const chave = chaveFluxoLotacao(row);
+      const atual = mapa.get(chave) || {
+        rota: `${row.origem || '?'} → ${row.destino || '?'}`,
+        faixa: row.tipoVeiculo || row.tipo_veiculo || 'Geral', viagens: 0, valor: 0,
+      };
+      atual.viagens += 1;
+      atual.valor += valor;
+      mapa.set(chave, atual);
+    });
+    return mapa;
+  };
+  const base = agrupar(cargasBase);
+  const atual = agrupar(cargasAtual);
+  const linhas = [];
+  atual.forEach((fluxoAtual, chave) => {
+    const fluxoBase = base.get(chave);
+    if (!fluxoBase?.viagens || !fluxoAtual.viagens) return;
+    const mediaBase = fluxoBase.valor / fluxoBase.viagens;
+    const mediaAtual = fluxoAtual.valor / fluxoAtual.viagens;
+    linhas.push({
+      rota: fluxoAtual.rota, faixa: fluxoAtual.faixa,
+      ctesBase: fluxoBase.viagens, ctesAtual: fluxoAtual.viagens,
+      valorNFAtual: fluxoAtual.valor, valorCteBase: fluxoBase.valor, valorCteAtual: fluxoAtual.valor,
+      pctBase: mediaBase, pctAtual: mediaAtual, diffPct: mediaBase - mediaAtual,
+      saving: (mediaBase - mediaAtual) * fluxoAtual.viagens, unidade: 'VIAGEM',
+    });
+  });
+  linhas.sort((a, b) => b.saving - a.saving);
+  const totais = linhas.reduce((acc, linha) => {
+    acc.saving += linha.saving;
+    acc.valorNFAtual += linha.valorNFAtual;
+    acc.valorCteBase += linha.valorCteBase;
+    acc.valorCteAtual += linha.valorCteAtual;
+    acc.viagensAtual += linha.ctesAtual;
+    acc.viagensBase += linha.ctesBase;
+    return acc;
+  }, { saving: 0, valorNFAtual: 0, valorCteBase: 0, valorCteAtual: 0, viagensAtual: 0, viagensBase: 0 });
+  totais.pctBaseMedio = totais.viagensBase ? totais.valorCteBase / totais.viagensBase : 0;
+  totais.pctAtualMedio = totais.viagensAtual ? totais.valorCteAtual / totais.viagensAtual : 0;
+  return { linhas, totais, tipoCalculo: 'LOTACAO_FLUXO' };
+}

@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { gestaoStyles } from './GestaoStyles';
 import { formatarData } from '../../utils/tabelasNegociacaoGestao';
-import { listarRealizadoLocalCtesParaSimulacao, listarTransportadorasRealizadoReajustes } from '../../services/freteDatabaseService';
+import { buscarPrimeiroCteSaving, calcularSavingPosAprovacaoAgregado, listarFaixasPesoNegociacao, listarRealizadoLocalCtesParaSimulacao, listarTransportadorasRealizadoReajustes } from '../../services/freteDatabaseService';
+import { carregarCargasLotacaoSupabase } from '../../services/lotacaoSupabaseService';
 import { atualizarDataReferenciaSaving, atualizarVinculoTransportadoraSaving, salvarSavingPosAprovacaoCache } from '../../services/tabelasNegociacaoService';
 import { normalizarTextoReajuste } from '../../utils/reajustesLocal';
-import { calcularJanelasSaving, calcularSavingPorRotaFaixa, MESES_BASE_SAVING_PADRAO } from '../../utils/savingsPosAprovacaoNegociacao';
+import { calcularJanelasSaving, calcularSavingLotacaoPorFluxo, calcularSavingPorRotaFaixa, MESES_BASE_SAVING_PADRAO } from '../../utils/savingsPosAprovacaoNegociacao';
+import { GRADE_FRETE_PADRAO, normalizarCanalGrade } from '../../utils/gradeFreteConfig';
 
 // Filtro de transportadora é feito no cliente como reforço (não é o filtro principal):
 // ilike com wildcard nas duas pontas não usa índice em realizado_local_ctes, então a
@@ -27,6 +29,7 @@ function formatPercent(value) {
 }
 
 const STATUS_ELEGIVEIS = ['APROVADA_GESTOR', 'PUBLICADA_OFICIAL'];
+const VERSAO_METRICA_SAVING = 7;
 
 function nomeArquivoSeguro(v) {
   return String(v || 'relatorio')
@@ -163,12 +166,138 @@ function gerarHtmlLaudoSavings(negociacoes = [], resultados = {}) {
 </html>`;
 }
 
-function baixarLaudoSavings(negociacoes, resultados) {
-  const html = gerarHtmlLaudoSavings(negociacoes, resultados);
+function escapeHtmlSaving(valor) {
+  return String(valor ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
+
+function nomeMesSaving(valor) {
+  if (!valor) return 'Não informado';
+  const data = new Date(`${String(valor).slice(0, 7)}-01T12:00:00`);
+  const nome = data.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  return nome.charAt(0).toUpperCase() + nome.slice(1);
+}
+
+function gerarHtmlLaudoSavingsExecutivo(tabelas = [], negociacoes = [], resultados = {}) {
+  const calculadas = negociacoes.filter((item) => resultados[item.id]);
+  const aguardando = negociacoes.filter((item) => !resultados[item.id]);
+  const emAndamento = (tabelas || []).filter((t) => !['APROVADA_GESTOR', 'PUBLICADA_OFICIAL', 'RECUSADA', 'CANCELADA', 'SUBSTITUIDA'].includes(t.status_gestao));
+  const savingRealizado = calculadas.reduce((acc, item) => acc + Number(resultados[item.id]?.totais?.saving || 0), 0);
+  const savingProjetado = negociacoes.reduce((acc, item) => acc + Number(item.savingProjetado || 0), 0);
+  const savingProjetadoIniciado = calculadas.reduce((acc, item) => acc + Number(item.savingProjetado || 0), 0);
+  const competenciaAtual = `${new Date().toISOString().slice(0, 7)}-01`;
+  const primeiroCteGeral = calculadas.map((item) => resultados[item.id]?.primeiroCte).filter(Boolean).sort()[0] || '';
+  const porMes = new Map();
+  calculadas.forEach((item) => {
+    (resultados[item.id]?.mensal || []).forEach((mes) => {
+      const atual = porMes.get(mes.competencia) || { competencia: mes.competencia, saving: 0, ctes: 0, iniciadas: 0 };
+      atual.saving += Number(mes.saving || 0);
+      atual.ctes += Number(mes.ctesAtual || 0);
+      porMes.set(mes.competencia, atual);
+    });
+    const primeiro = resultados[item.id]?.primeiroCte;
+    if (primeiro) {
+      const competencia = `${primeiro.slice(0, 7)}-01`;
+      const atual = porMes.get(competencia) || { competencia, saving: 0, ctes: 0, iniciadas: 0 };
+      atual.iniciadas += 1;
+      porMes.set(competencia, atual);
+    }
+  });
+  const meses = [...porMes.values()].sort((a, b) => a.competencia.localeCompare(b.competencia));
+  meses.forEach((mes) => {
+    mes.projetado = calculadas.reduce((acc, item) => {
+      const primeiro = resultados[item.id]?.primeiroCte;
+      return primeiro && primeiro.slice(0, 7) <= mes.competencia.slice(0, 7)
+        ? acc + Number(item.savingProjetado || 0)
+        : acc;
+    }, 0);
+    mes.atingimento = mes.projetado ? mes.saving / mes.projetado : 0;
+  });
+  const realizadoMesAtual = meses.find((mes) => mes.competencia === competenciaAtual)?.saving || 0;
+  const maiorSavingMes = Math.max(1, ...meses.map((mes) => Math.abs(mes.saving)));
+  const porTransportadora = new Map();
+  negociacoes.forEach((item) => {
+    const resultado = resultados[item.id];
+    const chave = item.transportadora;
+    const atual = porTransportadora.get(chave) || { transportadora: chave, aprovadas: 0, iniciadas: 0, projetado: 0, realizado: 0, realizadoMes: 0, primeiroCte: '', ctes: 0 };
+    atual.aprovadas += 1;
+    atual.projetado += Number(item.savingProjetado || 0);
+    if (resultado) {
+      atual.iniciadas += 1;
+      atual.realizado += Number(resultado.totais?.saving || 0);
+      atual.realizadoMes += Number((resultado.mensal || []).find((mes) => mes.competencia === competenciaAtual)?.saving || 0);
+      atual.ctes += Number(resultado.ctesAtual || 0);
+      if (resultado.primeiroCte && (!atual.primeiroCte || resultado.primeiroCte < atual.primeiroCte)) atual.primeiroCte = resultado.primeiroCte;
+    }
+    porTransportadora.set(chave, atual);
+  });
+  const ranking = [...porTransportadora.values()].sort((a, b) => b.realizado - a.realizado);
+  const cards = [
+    ['Em negociação', emAndamento.length, '#2563eb'],
+    ['Aprovadas', negociacoes.length, '#0f766e'],
+    ['Iniciadas no realizado', calculadas.length, '#15803d'],
+    ['Aguardando início / integração', aguardando.length, '#b45309'],
+    ['Projetado mensal · aprovadas', formatMoney(savingProjetado), '#475569'],
+    ['Projetado mensal · já iniciadas', formatMoney(savingProjetadoIniciado), '#2563eb'],
+    ['Realizado no mês · até hoje', formatMoney(realizadoMesAtual), realizadoMesAtual >= 0 ? '#087f3f' : '#c1121f'],
+    ['Realizado acumulado · desde o início', formatMoney(savingRealizado), savingRealizado >= 0 ? '#087f3f' : '#c1121f'],
+  ];
+  const funil = [
+    ['Em negociação', emAndamento.length, '#60a5fa'], ['Aprovadas', negociacoes.length, '#2dd4bf'],
+    ['Iniciadas', calculadas.length, '#22c55e'], ['Aguardando início', aguardando.length, '#f59e0b'],
+  ];
+  const maxFunil = Math.max(1, ...funil.map((item) => item[1]));
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Laudo executivo mensal de negociações</title></head>
+  <body style="margin:0;background:#eef2f7;color:#0f172a;font-family:Arial,sans-serif">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef2f7"><tr><td align="center" style="padding:24px">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:1100px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #dbe4f0">
+    <tr><td style="padding:28px;background:#06265c;color:#fff"><div style="font-size:12px;letter-spacing:1.4px;text-transform:uppercase;color:#93c5fd">Central de Fretes · Gestão de Negociações</div><h1 style="margin:8px 0 6px;font-size:28px">Laudo executivo mensal</h1><div style="color:#dbeafe;font-size:13px">Acompanhamento do negociado versus realizado · Gerado em ${new Date().toLocaleString('pt-BR')}</div></td></tr>
+    <tr><td style="padding:24px">
+      <table role="presentation" width="100%" cellspacing="8" cellpadding="0"><tr>${cards.slice(0, 4).map(([label, valor, cor]) => `<td width="25%" style="border:1px solid #dbe4f0;border-radius:10px;padding:14px"><div style="font-size:11px;color:#64748b">${label}</div><div style="font-size:24px;font-weight:800;color:${cor};margin-top:6px">${valor}</div></td>`).join('')}</tr></table>
+      <table role="presentation" width="100%" cellspacing="8" cellpadding="0"><tr>${cards.slice(4).map(([label, valor, cor]) => `<td width="25%" style="border:1px solid #dbe4f0;border-radius:10px;padding:16px"><div style="font-size:11px;color:#64748b">${label}</div><div style="font-size:21px;font-weight:800;color:${cor};margin-top:6px">${valor}</div></td>`).join('')}</tr></table>
+      <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Andamento das negociações</div>
+      ${funil.map(([label, valor, cor]) => `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:7px 0"><tr><td width="190" style="font-size:12px">${label}</td><td><div style="height:18px;background:#e8eef6;border-radius:9px;overflow:hidden"><div style="height:18px;width:${Math.max(3, (valor / maxFunil) * 100)}%;background:${cor};border-radius:9px"></div></div></td><td width="45" align="right" style="font-weight:800">${valor}</td></tr></table>`).join('')}
+      <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Evolução mês a mês</div>
+      <table width="100%" cellspacing="0" cellpadding="8" style="border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9;color:#06265c"><th align="left">Mês</th><th align="right">Iniciadas no mês</th><th align="right">CT-es</th><th align="right">Projetado mensal ativo</th><th align="right">Saving realizado</th><th align="right">Atingimento</th><th align="left">Evolução</th></tr></thead><tbody>
+      ${meses.map((mes) => `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${nomeMesSaving(mes.competencia)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${mes.iniciadas}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${mes.ctes.toLocaleString('pt-BR')}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(mes.projetado)}</td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${mes.saving >= 0 ? '#087f3f' : '#c1121f'}"><strong>${formatMoney(mes.saving)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0"><strong>${formatPercent(mes.atingimento)}</strong></td><td style="border-bottom:1px solid #e2e8f0"><div style="width:${Math.max(2, Math.abs(mes.saving) / maiorSavingMes * 100)}%;height:10px;border-radius:5px;background:${mes.saving >= 0 ? '#22c55e' : '#ef4444'}"></div></td></tr>`).join('') || '<tr><td colspan="7" style="padding:16px;color:#64748b">Ainda não há realizado mensal calculado.</td></tr>'}
+      </tbody></table>
+      <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Projetado versus realizado por transportadora</div>
+      <table width="100%" cellspacing="0" cellpadding="8" style="border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9;color:#06265c"><th align="left">Transportadora</th><th align="right">Aprovadas</th><th align="right">Iniciadas</th><th align="left">Primeiro CT-e</th><th align="right">Projetado mensal</th><th align="right">Realizado no mês</th><th align="right">Realizado acumulado</th></tr></thead><tbody>
+      ${ranking.map((t) => `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${escapeHtmlSaving(t.transportadora)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${t.aprovadas}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${t.iniciadas}</td><td style="border-bottom:1px solid #e2e8f0">${t.primeiroCte ? formatarData(t.primeiroCte) : 'Aguardando início'}</td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(t.projetado)}</td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${t.realizadoMes >= 0 ? '#087f3f' : '#c1121f'}"><strong>${formatMoney(t.realizadoMes)}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0">${formatMoney(t.realizado)}</td></tr>`).join('')}
+      </tbody></table>
+      <div style="margin:22px 0 8px;font-size:18px;font-weight:800;color:#06265c">Acompanhamento individual</div>
+      <table width="100%" cellspacing="0" cellpadding="7" style="border-collapse:collapse;font-size:11px"><thead><tr style="background:#f1f5f9;color:#06265c"><th align="left">Transportadora / origem</th><th align="left">Canal</th><th align="left">Início considerado</th><th align="left">Critério da data</th><th align="left">Situação</th><th align="right">Saving</th></tr></thead><tbody>
+      ${negociacoes.map((item) => { const r = resultados[item.id]; const inicio = r?.primeiroCte || item.dataReferenciaSalva || item.aprovadoEm; const criterio = r?.primeiroCte ? 'Primeiro CT-e' : item.dataReferenciaSalva ? 'Data de referência' : 'Data de aprovação (fallback)'; return `<tr><td style="border-bottom:1px solid #e2e8f0"><strong>${escapeHtmlSaving(item.transportadora)}</strong><br><span style="color:#64748b">${escapeHtmlSaving(item.origem || 'Todas')}</span></td><td style="border-bottom:1px solid #e2e8f0">${escapeHtmlSaving(item.canal)}</td><td style="border-bottom:1px solid #e2e8f0"><strong>${formatarData(inicio)}</strong></td><td style="border-bottom:1px solid #e2e8f0;color:#64748b">${criterio}</td><td style="border-bottom:1px solid #e2e8f0;color:${r ? '#087f3f' : '#b45309'}"><strong>${r ? 'Iniciada no realizado' : 'Aguardando início / integração'}</strong></td><td align="right" style="border-bottom:1px solid #e2e8f0;color:${Number(r?.totais?.saving || 0) >= 0 ? '#087f3f' : '#c1121f'}">${r ? `<strong>${formatMoney(r.totais.saving)}</strong>` : '—'}</td></tr>`; }).join('')}
+      </tbody></table>
+      <div style="margin-top:20px;padding:13px;background:#eff6ff;border-left:4px solid #2563eb;font-size:11px;color:#334155"><strong>Critério:</strong> uma negociação é considerada iniciada quando há CT-e após a data de referência. O saving compara o realizado com o histórico anterior na mesma rota e na faixa de peso da tabela negociada. Primeiro CT-e geral identificado: ${primeiroCteGeral ? formatarData(primeiroCteGeral) : 'ainda não identificado'}.</div>
+    </td></tr>
+  </table></td></tr></table></body></html>`;
+}
+
+function baixarLaudoSavings(tabelas, negociacoes, resultados) {
+  const html = gerarHtmlLaudoSavingsExecutivo(tabelas, negociacoes, resultados);
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
   link.download = `${nomeArquivoSeguro('laudo-savings-pos-aprovacao')}-${new Date().toISOString().slice(0, 10)}.html`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
+
+function base64Utf8Saving(valor) {
+  return btoa(unescape(encodeURIComponent(valor)));
+}
+
+function baixarEmailSavings(tabelas, negociacoes, resultados) {
+  const html = gerarHtmlLaudoSavingsExecutivo(tabelas, negociacoes, resultados);
+  const assunto = `Laudo mensal de negociações e savings - ${new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}`;
+  const base64 = base64Utf8Saving(html).replace(/(.{76})/g, '$1\r\n');
+  const eml = ['MIME-Version: 1.0', `Subject: ${assunto}`, 'Content-Type: text/html; charset="utf-8"', 'Content-Transfer-Encoding: base64', '', base64, ''].join('\r\n');
+  const blob = new Blob([eml], { type: 'message/rfc822' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `${nomeArquivoSeguro('email-laudo-mensal-negociacoes')}-${new Date().toISOString().slice(0, 10)}.eml`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -190,6 +319,7 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
   const [buscaVinculo, setBuscaVinculo] = useState({});
   const [calculandoTodas, setCalculandoTodas] = useState(false);
   const [progressoTodas, setProgressoTodas] = useState(null);
+  const [progressoItem, setProgressoItem] = useState({});
   // Cache da consulta "base" (mercado inteiro) por canal+período — várias negociações
   // do mesmo canal com a mesma janela reaproveitam a mesma busca em vez de repetir
   // uma consulta pesada (empresa inteira) pra cada transportadora em "Calcular todas".
@@ -204,11 +334,14 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
         nome: t.descricao || t.nome_negociacao || t.transportadora,
         origem: t.origem || '',
         canal: t.canal || '',
+        isLotacao: String(t.tipo_negociacao || t.tipo_tabela || t.canal || '')
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().includes('LOTACAO'),
         aprovadoEm: t.aprovado_em,
         dataReferenciaSalva: t.data_referencia_saving || t.aprovado_em,
         vinculoSalvo: Array.isArray(t.vinculo_transportadoras_saving) ? t.vinculo_transportadoras_saving : [],
         publicadoEm: t.publicado_em || '',
         statusGestao: t.status_gestao,
+        savingProjetado: Number(t.saving_estimado || t.saving_projetado || 0),
         savingCache: t.saving_pos_aprovacao_detalhe || null,
         savingCacheCalculadoEm: t.saving_pos_aprovacao_calculado_em || '',
       }))
@@ -222,7 +355,14 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
       let mudou = false;
       const next = { ...prev };
       negociacoesAprovadas.forEach((item) => {
-        if (!next[item.id] && item.savingCache) {
+        if (next[item.id] && next[item.id].versaoMetrica !== VERSAO_METRICA_SAVING) {
+          delete next[item.id];
+          mudou = true;
+        }
+        const cacheCompativel = item.savingCache
+          && item.savingCache.versaoMetrica === VERSAO_METRICA_SAVING
+          && (!item.isLotacao || item.savingCache.tipoCalculo === 'LOTACAO_FLUXO');
+        if (!next[item.id] && cacheCompativel) {
           next[item.id] = { ...item.savingCache, deCache: true };
           mudou = true;
         }
@@ -230,6 +370,14 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
       return mudou ? next : prev;
     });
   }, [negociacoesAprovadas]);
+
+  useEffect(() => {
+    setCarregandoNomes(true);
+    listarTransportadorasRealizadoReajustes()
+      .then(setNomesRealizado)
+      .catch(() => {})
+      .finally(() => setCarregandoNomes(false));
+  }, []);
 
   function dataReferenciaAtual(item) {
     return String(datasReferencia[item.id] || item.dataReferenciaSalva || item.aprovadoEm).slice(0, 10);
@@ -288,6 +436,7 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
     setErros((prev) => ({ ...prev, [item.id]: '' }));
     try {
       await atualizarVinculoTransportadoraSaving(item.id, lista);
+      setVinculosAbertos((prev) => ({ ...prev, [item.id]: false }));
       setResultados((prev) => {
         const next = { ...prev };
         delete next[item.id];
@@ -306,7 +455,15 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
     return lista.slice(0, 40);
   }
 
+  function atualizarProgressoItem(id, percentual, etapa) {
+    setProgressoItem((prev) => {
+      const atual = prev[id]?.percentual || 0;
+      return { ...prev, [id]: { percentual: Math.max(atual, percentual), etapa } };
+    });
+  }
+
   async function calcularSaving(item, { abrirDepois = true } = {}) {
+    let progressoTimer = null;
     const dataReferencia = dataReferenciaAtual(item);
     const janelas = calcularJanelasSaving(dataReferencia, MESES_BASE_SAVING_PADRAO);
     if (!janelas) {
@@ -314,15 +471,110 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
       return;
     }
     setCarregando((prev) => ({ ...prev, [item.id]: true }));
+    setProgressoItem((prev) => ({ ...prev, [item.id]: { percentual: 5, etapa: 'Preparando cálculo' } }));
     setErros((prev) => ({ ...prev, [item.id]: '' }));
     try {
       const vinculoLista = vinculoAtual(item);
+      if (item.isLotacao) {
+        const nomes = vinculoLista.length ? vinculoLista : [item.transportadora];
+        atualizarProgressoItem(item.id, 20, 'Buscando histórico e viagens');
+        const [cargasBase, cargasPorNome] = await Promise.all([
+          carregarCargasLotacaoSupabase({ inicio: janelas.inicioBase, fim: janelas.fimBase, limit: 50000 }),
+          Promise.all(nomes.map((transportadora) => carregarCargasLotacaoSupabase({
+            transportadora, origem: item.origem || undefined,
+            inicio: janelas.inicioAtual, fim: janelas.fimAtual, limit: 50000,
+          }))),
+        ]);
+        atualizarProgressoItem(item.id, 75, 'Viagens carregadas');
+        const cargasAtual = cargasPorNome.flat();
+        if (!cargasAtual.length) {
+          throw new Error(`Sem realizado após a referência para ${item.transportadora}${item.origem ? ` na origem ${item.origem}` : ''}. O saving ainda não pode ser medido.`);
+        }
+        atualizarProgressoItem(item.id, 88, 'Comparando fluxos');
+        const resultado = calcularSavingLotacaoPorFluxo(cargasBase, cargasAtual);
+        const primeiroCte = cargasAtual
+          .map((carga) => carga.data_emissao || carga.emissao || carga.dataEmissao || '')
+          .filter(Boolean)
+          .map((data) => String(data).slice(0, 10))
+          .sort()[0] || '';
+        const resultadoCompleto = {
+          ...resultado, janelas, ctesBase: cargasBase.length, ctesAtual: cargasAtual.length,
+          versaoMetrica: VERSAO_METRICA_SAVING, deCache: false, calculadoEm: new Date().toISOString(), primeiroCte,
+        };
+        setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
+        atualizarProgressoItem(item.id, 100, 'Concluído');
+        if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
+        salvarSavingPosAprovacaoCache(item.id, resultadoCompleto).catch(() => {});
+        return;
+      }
       // Se houver vínculo manual, usa lista exata (rápido, indexado). Senão cai no
       // ilike pelo nome da negociação — pode não achar tudo se o nome cadastrado
       // divergir do nome usado no realizado; por isso o botão "Buscar vínculos".
       const filtroTransportadora = vinculoLista.length
         ? { transportadorasExatas: vinculoLista }
         : { transportadoraRealizada: item.transportadora };
+
+      try {
+        atualizarProgressoItem(item.id, 20, 'Identificando rotas atuais');
+        let pulso = 20;
+        progressoTimer = window.setInterval(() => {
+          pulso = Math.min(pulso + 4, 72);
+          atualizarProgressoItem(item.id, pulso, 'Banco agregando rotas e histórico');
+        }, 1500);
+        const canalGrade = normalizarCanalGrade(item.canal);
+        atualizarProgressoItem(item.id, 16, 'Lendo faixas da negociação');
+        const faixasNegociadas = await listarFaixasPesoNegociacao(item.id);
+        const limitesPeso = faixasNegociadas.length
+          ? faixasNegociadas.map((faixa) => faixa.fim)
+          : (GRADE_FRETE_PADRAO[canalGrade] || []).map((faixa) => faixa.peso);
+        const origemFaixas = faixasNegociadas.length ? 'TABELA_NEGOCIADA' : 'GRADE_PADRAO';
+        atualizarProgressoItem(item.id, 20, faixasNegociadas.length
+          ? `Usando ${faixasNegociadas.length} faixas negociadas`
+          : 'Usando grade padrão');
+        const filtrosCalculo = {
+          transportadoras: vinculoLista.length ? vinculoLista : [item.transportadora],
+          origem: item.origem,
+          canal: item.canal,
+          dataCorte: dataReferencia,
+          fimAtual: janelas.fimAtual,
+          mesesBase: MESES_BASE_SAVING_PADRAO,
+          limitesPeso,
+        };
+        const resultadoAgregado = await calcularSavingPosAprovacaoAgregado(filtrosCalculo);
+        const primeiroCte = await buscarPrimeiroCteSaving(filtrosCalculo);
+        window.clearInterval(progressoTimer);
+        progressoTimer = null;
+        atualizarProgressoItem(item.id, 88, 'Consolidando resultado');
+        if (!resultadoAgregado.ctesAtual) {
+          const amostraAtual = await listarRealizadoLocalCtesParaSimulacao({
+            transportadorasExatas: vinculoLista.length ? vinculoLista : [item.transportadora],
+            origem: item.origem || undefined,
+            canal: item.canal || undefined,
+            inicio: janelas.inicioAtual,
+            fim: janelas.fimAtual,
+            limit: 1,
+          });
+          if (!amostraAtual.length) {
+            throw new Error(`Sem realizado após a referência${item.origem ? ` na origem ${item.origem}` : ''}. O saving ainda não pode ser medido.`);
+          }
+        }
+        const resultadoCompleto = {
+          ...resultadoAgregado, janelas, versaoMetrica: VERSAO_METRICA_SAVING,
+          deCache: false, calculadoEm: new Date().toISOString(), origemFaixas,
+          quantidadeFaixas: faixasNegociadas.length || limitesPeso.length, primeiroCte,
+        };
+        setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
+        atualizarProgressoItem(item.id, 100, `Concluído em ${(resultadoAgregado.tempoMs / 1000).toFixed(1)}s`);
+        if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
+        salvarSavingPosAprovacaoCache(item.id, resultadoCompleto).catch(() => {});
+        return;
+      } catch (rpcError) {
+        if (progressoTimer) window.clearInterval(progressoTimer);
+        progressoTimer = null;
+        const codigo = String(rpcError?.code || '');
+        if (!['PGRST202', '42883'].includes(codigo)) throw rpcError;
+        atualizarProgressoItem(item.id, 15, 'RPC indisponível; usando busca compatível');
+      }
 
       // A base NÃO é filtrada por transportadora: é o percentual praticado por
       // TODAS as transportadoras na mesma rota+faixa, nos meses anteriores à data
@@ -332,6 +584,7 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
       // Filtra canal no servidor (rápido, indexado) — AMBOS já entra na lista de
       // variantes de qualquer canal, então não perde CT-e nenhum.
       const chaveCacheBase = `${item.canal}|${janelas.inicioBase}|${janelas.fimBase}`;
+      atualizarProgressoItem(item.id, 15, 'Buscando histórico de mercado');
       let promiseBase = cacheBaseRef.current.get(chaveCacheBase);
       if (!promiseBase) {
         promiseBase = listarRealizadoLocalCtesParaSimulacao({
@@ -343,18 +596,37 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
         promiseBase.catch(() => cacheBaseRef.current.delete(chaveCacheBase));
       }
 
-      const [linhasBaseBruto, linhasAtualBruto] = await Promise.all([
-        promiseBase,
-        listarRealizadoLocalCtesParaSimulacao({
+      const promessaBaseAcompanhada = promiseBase.then((dados) => {
+        atualizarProgressoItem(item.id, 45, 'Histórico carregado');
+        return dados;
+      });
+      atualizarProgressoItem(item.id, 25, 'Buscando realizado da transportadora');
+      const promessaAtual = listarRealizadoLocalCtesParaSimulacao({
           ...filtroTransportadora,
+          origem: item.origem || undefined,
           inicio: janelas.inicioAtual,
           fim: janelas.fimAtual,
-        }),
-      ]);
+        }).then((dados) => {
+          atualizarProgressoItem(item.id, 70, 'Realizado carregado');
+          return dados;
+        });
+      const [linhasBaseBruto, linhasAtualBruto] = await Promise.all([promessaBaseAcompanhada, promessaAtual]);
       const linhasAtual = vinculoLista.length ? linhasAtualBruto : filtrarLinhasPorTransportadora(linhasAtualBruto, item.transportadora);
+      if (!linhasAtual.length) {
+        const alvo = normalizarTextoReajuste(item.transportadora);
+        const temNomeCompativel = nomesRealizado.some((n) => {
+          const nome = normalizarTextoReajuste(n.nome);
+          return nome === alvo || nome.includes(alvo) || alvo.includes(nome);
+        });
+        throw new Error(temNomeCompativel
+          ? `Transportadora vinculada, mas sem realizado após a referência${item.origem ? ` na origem ${item.origem}` : ''}. O saving ainda não pode ser medido.`
+          : 'Sem vínculo com uma transportadora do realizado. Abra “Buscar vínculos” e selecione o nome correto antes de calcular.');
+      }
+      atualizarProgressoItem(item.id, 88, 'Comparando rotas e faixas');
       const resultado = calcularSavingPorRotaFaixa(linhasBaseBruto, linhasAtual, { canalPadrao: item.canal });
-      const resultadoCompleto = { ...resultado, janelas, ctesBase: linhasBaseBruto.length, ctesAtual: linhasAtual.length, deCache: false, calculadoEm: new Date().toISOString() };
+      const resultadoCompleto = { ...resultado, janelas, ctesBase: linhasBaseBruto.length, ctesAtual: linhasAtual.length, versaoMetrica: VERSAO_METRICA_SAVING, deCache: false, calculadoEm: new Date().toISOString() };
       setResultados((prev) => ({ ...prev, [item.id]: resultadoCompleto }));
+      atualizarProgressoItem(item.id, 100, 'Concluído');
       if (abrirDepois) setAbertos((prev) => ({ ...prev, [item.id]: true }));
       // Salva o resultado no banco pra sobreviver a um F5 — se der erro (ex: migration
       // ainda não aplicada), o cálculo em tela continua valendo, só não persiste.
@@ -362,15 +634,26 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
     } catch (err) {
       setErros((prev) => ({ ...prev, [item.id]: err?.message || 'Erro ao calcular saving.' }));
     } finally {
+      if (progressoTimer) window.clearInterval(progressoTimer);
       setCarregando((prev) => ({ ...prev, [item.id]: false }));
     }
   }
 
-  async function calcularTodas() {
+  async function calcularTodas({ recalcular = false } = {}) {
     setCalculandoTodas(true);
-    for (let i = 0; i < negociacoesAprovadas.length; i += 1) {
-      const item = negociacoesAprovadas[i];
-      setProgressoTodas({ atual: i + 1, total: negociacoesAprovadas.length, transportadora: item.transportadora });
+    const fila = recalcular ? negociacoesAprovadas : negociacoesAprovadas.filter((item) => !resultados[item.id]);
+    for (let i = 0; i < fila.length; i += 1) {
+      const item = fila[i];
+      setProgressoTodas({
+        atual: i + 1,
+        total: fila.length,
+        transportadora: item.transportadora,
+        modo: recalcular ? 'Recalculando todas' : 'Calculando pendentes',
+      });
+      if (!item.isLotacao && statusVinculo(item).label === 'Sem vínculo') {
+        setErros((prev) => ({ ...prev, [item.id]: 'Sem vínculo com uma transportadora do realizado. Selecione o nome correto em “Buscar vínculos”.' }));
+        continue;
+      }
       // eslint-disable-next-line no-await-in-loop
       await calcularSaving(item, { abrirDepois: false });
     }
@@ -387,6 +670,16 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
   const negociacoesCalculadas = negociacoesAprovadas.filter((item) => resultados[item.id]);
   const negociacoesPendentes = negociacoesAprovadas.filter((item) => !resultados[item.id]);
   const savingTotal = negociacoesCalculadas.reduce((acc, item) => acc + (resultados[item.id]?.totais.saving || 0), 0);
+  const savingMensal = [...negociacoesCalculadas.reduce((mapa, item) => {
+    (resultados[item.id]?.mensal || []).forEach((mes) => {
+      const atual = mapa.get(mes.competencia) || { competencia: mes.competencia, saving: 0, ctesAtual: 0, transportadoras: new Set() };
+      atual.saving += Number(mes.saving || 0);
+      atual.ctesAtual += Number(mes.ctesAtual || 0);
+      atual.transportadoras.add(item.transportadora);
+      mapa.set(mes.competencia, atual);
+    });
+    return mapa;
+  }, new Map()).values()].sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)));
   const transportadorasAcompanhadas = new Set(negociacoesCalculadas.map((item) => item.transportadora)).size;
   const kpis = [
     { label: 'Aprovadas', value: negociacoesAprovadas.length },
@@ -396,13 +689,27 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
     { label: 'Saving projetado', value: formatMoney(savingTotal) },
   ];
 
+  function statusVinculo(item) {
+    if (vinculoAtual(item).length) return { label: 'Manual', cor: '#1d4ed8' };
+    if (item.isLotacao) return { label: 'Automático', cor: '#475569' };
+    if (carregandoNomes) return { label: 'Verificando…', cor: '#64748b' };
+    const alvo = normalizarTextoReajuste(item.transportadora);
+    const compativel = nomesRealizado.some((n) => {
+      const nome = normalizarTextoReajuste(n.nome);
+      return nome === alvo || nome.includes(alvo) || alvo.includes(nome);
+    });
+    return compativel
+      ? { label: 'Automático', cor: '#087f3f' }
+      : { label: 'Sem vínculo', cor: '#c1121f' };
+  }
+
   return (
     <section className="sim-card">
       <h2 style={{ marginTop: 0 }}>Savings pós-aprovação</h2>
       <p style={{ color: '#64748b' }}>
-        Transportadoras já aprovadas pelo gestor. Para cada rota + faixa de peso que a transportadora carrega hoje,
-        compara com o percentual médio de frete praticado por TODAS as transportadoras nessa mesma rota/faixa nos
-        {' '}{MESES_BASE_SAVING_PADRAO} meses antes da data de referência, e projeta o saving sobre o valor de NF atual.
+        Acompanha o resultado das negociações aprovadas no realizado. Atacado e B2C comparam frete/NF por rota e faixa;
+        lotação compara as viagens carregadas pela transportadora com o custo médio histórico do mesmo fluxo e veículo,
+        nos {MESES_BASE_SAVING_PADRAO} meses anteriores à data de referência.
       </p>
 
       {!negociacoesAprovadas.length ? (
@@ -419,29 +726,71 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
-            <button type="button" className="sim-tab" onClick={calcularTodas} disabled={calculandoTodas}>
-              {calculandoTodas ? 'Calculando todas…' : negociacoesPendentes.length ? 'Calcular todas (pendentes)' : 'Recalcular todas'}
+            <button
+              type="button"
+              className="sim-tab"
+              onClick={() => calcularTodas({ recalcular: false })}
+              disabled={calculandoTodas || !negociacoesPendentes.length}
+            >
+              Calcular pendentes ({negociacoesPendentes.length})
             </button>
             <button
               type="button"
               className="sim-tab"
-              onClick={() => baixarLaudoSavings(negociacoesAprovadas, resultados)}
+              onClick={() => calcularTodas({ recalcular: true })}
+              disabled={calculandoTodas || !negociacoesAprovadas.length}
+              title="Consulta novamente a base atualizada e substitui todos os savings salvos"
+            >
+              Recalcular todas ({negociacoesAprovadas.length})
+            </button>
+            <button
+              type="button"
+              className="sim-tab"
+              onClick={() => baixarLaudoSavings(tabelas, negociacoesAprovadas, resultados)}
               disabled={!negociacoesCalculadas.length}
               title={!negociacoesCalculadas.length ? 'Calcule ao menos uma negociação para gerar o laudo' : ''}
             >
-              Gerar laudo
+              Baixar laudo executivo
             </button>
+            <button
+              type="button"
+              className="sim-tab"
+              onClick={() => baixarEmailSavings(tabelas, negociacoesAprovadas, resultados)}
+              disabled={!negociacoesCalculadas.length}
+              title="Baixa um arquivo .eml com o resumo formatado no corpo do e-mail"
+            >
+              Baixar e-mail mensal
+            </button>
+            {progressoTodas ? (
+              <div style={{ display: 'grid', gap: 4, minWidth: 310, padding: '7px 10px', border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 11, color: '#1e3a8a' }}>
+                  <span><strong>{progressoTodas.modo}: {progressoTodas.atual} de {progressoTodas.total}</strong> · {progressoTodas.transportadora}</span>
+                  <span>{Math.round((progressoTodas.atual / progressoTodas.total) * 100)}%</span>
+                </div>
+                <progress
+                  value={progressoTodas.atual}
+                  max={progressoTodas.total}
+                  style={{ width: '100%', height: 9, accentColor: '#2563eb' }}
+                  aria-label={`Processando ${progressoTodas.atual} de ${progressoTodas.total}`}
+                />
+              </div>
+            ) : null}
           </div>
-
-          {progressoTodas ? (
-            <div style={{ marginTop: 10, maxWidth: 420 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#334155', marginBottom: 4 }}>
-                <span>Calculando {progressoTodas.atual}/{progressoTodas.total} · <strong>{progressoTodas.transportadora}</strong></span>
-                <span>{Math.round((progressoTodas.atual / progressoTodas.total) * 100)}%</span>
-              </div>
-              <div style={{ height: 6, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${(progressoTodas.atual / progressoTodas.total) * 100}%`, background: '#3b82f6', transition: 'width 0.3s' }} />
-              </div>
+          {savingMensal.length ? (
+            <div style={{ marginTop: 14, ...gestaoStyles.tabelaWrap }}>
+              <table className="sim-table" style={{ minWidth: 620 }}>
+                <thead><tr><th>MÃªs do realizado</th><th>CT-es comparÃ¡veis</th><th>Transportadoras</th><th>Saving do mÃªs</th></tr></thead>
+                <tbody>
+                  {savingMensal.map((mes) => (
+                    <tr key={mes.competencia}>
+                      <td><strong>{new Date(`${mes.competencia}T12:00:00`).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</strong></td>
+                      <td>{mes.ctesAtual.toLocaleString('pt-BR')}</td>
+                      <td>{mes.transportadoras.size}</td>
+                      <td style={{ fontWeight: 800, color: mes.saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(mes.saving)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : null}
         </>
@@ -449,13 +798,14 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
 
       {negociacoesAprovadas.length ? (
         <div style={{ marginTop: 14, ...gestaoStyles.tabelaWrap }}>
-          <table className="sim-table">
+          <table className="sim-table" style={{ minWidth: 1080 }}>
             <thead>
               <tr>
                 <th>Transportadora</th>
                 <th>Negociação</th>
                 <th>Origem</th>
                 <th>Canal</th>
+                <th>Vínculo</th>
                 <th>Aprovado em</th>
                 <th>Status</th>
                 <th>Rotas comparáveis</th>
@@ -466,18 +816,94 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
             <tbody>
               {negociacoesAprovadas.map((item) => {
                 const r = resultados[item.id];
+                const vinculoStatus = statusVinculo(item);
                 return (
                   <tr key={item.id}>
                     <td><strong>{item.transportadora}</strong></td>
                     <td>{item.nome}</td>
                     <td>{item.origem || '—'}</td>
                     <td>{item.canal}</td>
+                    <td style={{ minWidth: 190 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                        <span style={gestaoStyles.badgeStatus(vinculoStatus.cor)}>{vinculoStatus.label}</span>
+                        <button
+                          type="button"
+                          className="sim-tab"
+                          style={{ padding: '2px 7px', fontSize: 10 }}
+                          onClick={() => {
+                            setBuscaVinculo((prev) => ({
+                              ...prev,
+                              [item.id]: prev[item.id] ?? vinculoAtual(item)[0] ?? item.transportadora,
+                            }));
+                            setVinculosAbertos((prev) => ({ ...prev, [item.id]: !prev[item.id] }));
+                          }}
+                        >
+                          {vinculosAbertos[item.id] ? 'Cancelar' : vinculoAtual(item).length ? 'Editar' : 'Vincular'}
+                        </button>
+                      </div>
+                      {vinculosAbertos[item.id] ? (
+                        <div style={{ marginTop: 6, padding: 7, border: '1px solid #cbd5e1', borderRadius: 7, background: '#fff', minWidth: 260 }}>
+                          <input
+                            type="text"
+                            value={buscaVinculo[item.id] || ''}
+                            onChange={(e) => setBuscaVinculo((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                            placeholder="Pesquisar nome no realizado"
+                            style={{ width: '100%', minWidth: 0, padding: '5px 7px', fontSize: 11 }}
+                          />
+                          <div style={{ display: 'grid', gap: 4, maxHeight: 150, overflowY: 'auto', marginTop: 6 }}>
+                            {resultadosBusca(item).map((n) => (
+                              <label key={n.nome} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={vinculoAtual(item).includes(n.nome)}
+                                  onChange={() => alternarVinculo(item, n.nome)}
+                                />
+                                <span>{n.nome}</span>
+                                <span
+                                  style={{ color: '#94a3b8', marginLeft: 'auto' }}
+                                  title="Quantidade total encontrada para esse nome na base. O saving exige também uma rota/faixa histórica comparável."
+                                >
+                                  {n.ctes} CT-es na base
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                          {vinculoAtual(item).length ? (
+                            <div style={{ marginTop: 6, fontSize: 10, color: '#1d4ed8' }}>
+                              {vinculoAtual(item).length} vínculo(s): {vinculoAtual(item).join(', ')}
+                            </div>
+                          ) : null}
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 7 }}>
+                            <button
+                              type="button"
+                              className="sim-tab"
+                              style={{ padding: '3px 8px', fontSize: 10 }}
+                              disabled={!vinculoAtual(item).length || Boolean(salvandoVinculo[item.id])}
+                              onClick={() => salvarVinculo(item)}
+                            >
+                              {salvandoVinculo[item.id] ? 'Salvando…' : 'Salvar vínculos'}
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </td>
                     <td>{formatarData(item.aprovadoEm)}</td>
                     <td style={{ maxWidth: 260 }}>
-                      {r ? (
+                      {carregando[item.id] ? (
+                        <div style={{ display: 'grid', gap: 3, minWidth: 180 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, color: '#1d4ed8' }}>
+                            <strong>{progressoItem[item.id]?.etapa || 'Calculando…'}</strong>
+                            <span>{progressoItem[item.id]?.percentual || 5}%</span>
+                          </div>
+                          <progress
+                            value={progressoItem[item.id]?.percentual || 5}
+                            max="100"
+                            style={{ width: '100%', height: 8, accentColor: '#2563eb' }}
+                            aria-label={`Progresso de ${item.transportadora}`}
+                          />
+                        </div>
+                      ) : r ? (
                         <span style={gestaoStyles.badgeStatus('#087f3f')}>Calculado</span>
-                      ) : carregando[item.id] ? (
-                        <span style={gestaoStyles.badgeStatus('#1d4ed8')}>Calculando…</span>
                       ) : erros[item.id] ? (
                         <div>
                           <span style={gestaoStyles.badgeStatus('#c1121f')}>Erro</span>
@@ -509,7 +935,7 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={7}><strong>Total geral</strong></td>
+                <td colSpan={8}><strong>Total geral</strong></td>
                 <td style={{ fontWeight: 800 }}>{formatMoney(savingTotal)}</td>
                 <td></td>
               </tr>
@@ -587,7 +1013,7 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
                                   checked={vinculoLista.includes(n.nome)}
                                   onChange={() => alternarVinculo(item, n.nome)}
                                 />
-                                {n.nome} <span style={{ color: '#94a3b8' }}>({n.ctes} CT-es)</span>
+                                {n.nome} <span style={{ color: '#94a3b8' }}>({n.ctes} CT-es na base)</span>
                               </label>
                             )) : (
                               <div style={{ fontSize: 12, color: '#94a3b8' }}>Nenhum resultado para essa busca.</div>
@@ -657,8 +1083,32 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
                     Base (mercado, todas as transportadoras): {formatarData(resultado.janelas.inicioBase)} a {formatarData(resultado.janelas.fimBase)} ({resultado.ctesBase} CT-es) ·
-                    {' '}Atual (só essa transportadora): {formatarData(resultado.janelas.inicioAtual)} a {formatarData(resultado.janelas.fimAtual)} ({resultado.ctesAtual} CT-es)
+                    {' '}Atual comparável (só essa transportadora): {formatarData(resultado.janelas.inicioAtual)} a {formatarData(resultado.janelas.fimAtual)} ({resultado.ctesAtual} CT-es)
                   </div>
+                  <div className="sim-alert info" style={{ marginBottom: 10, padding: '7px 10px', fontSize: 11 }}>
+                    O total do vínculo confirma que existem CT-es com esse nome na base. No saving entram somente os CT-es cuja rota e faixa de peso também possuem histórico anterior ao corte. Resultado negativo representa aumento de custo.
+                  </div>
+                  <div style={{ fontSize: 11, color: resultado.origemFaixas === 'TABELA_NEGOCIADA' ? '#087f3f' : '#b45309', marginBottom: 10, fontWeight: 700 }}>
+                    Faixas utilizadas: {resultado.origemFaixas === 'TABELA_NEGOCIADA'
+                      ? `tabela negociada (${resultado.quantidadeFaixas} faixas)`
+                      : `grade padrão (${resultado.quantidadeFaixas || 0} faixas — fallback)`}
+                  </div>
+                  {resultado.mensal?.length ? (
+                    <div style={{ ...gestaoStyles.tabelaWrap, marginBottom: 12 }}>
+                      <table className="sim-table" style={{ minWidth: 620 }}>
+                        <thead><tr><th>MÃªs</th><th>CT-es</th><th>Rotas/faixas</th><th>Frete/NF atual</th><th>Saving</th></tr></thead>
+                        <tbody>{resultado.mensal.map((mes) => (
+                          <tr key={mes.competencia}>
+                            <td><strong>{new Date(`${mes.competencia}T12:00:00`).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</strong></td>
+                            <td>{mes.ctesAtual.toLocaleString('pt-BR')}</td>
+                            <td>{mes.rotas}</td>
+                            <td>{formatPercent(mes.pctAtualMedio)}</td>
+                            <td style={{ fontWeight: 800, color: mes.saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(mes.saving)}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  ) : null}
                   {!resultado.linhas.length ? (
                     <div className="sim-alert info">
                       {resultado.ctesAtual === 0
@@ -667,15 +1117,15 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
                     </div>
                   ) : (
                     <div style={gestaoStyles.tabelaWrap}>
-                      <table className="sim-table">
+                      <table className="sim-table" style={{ minWidth: 920 }}>
                         <thead>
                           <tr>
                             <th>Rota</th>
                             <th>Faixa</th>
-                            <th>% antes</th>
-                            <th>% atual</th>
+                            <th>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? 'Média antes' : '% antes'}</th>
+                            <th>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? 'Média atual' : '% atual'}</th>
                             <th>Diferença</th>
-                            <th>Valor NF atual</th>
+                            <th>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? 'Frete atual' : 'Valor NF atual'}</th>
                             <th>Saving</th>
                           </tr>
                         </thead>
@@ -684,10 +1134,10 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
                             <tr key={`${linha.rota}||${linha.faixa}`}>
                               <td>{linha.rota}</td>
                               <td>{linha.faixa}</td>
-                              <td>{formatPercent(linha.pctBase)}</td>
-                              <td>{formatPercent(linha.pctAtual)}</td>
+                              <td>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.pctBase) : formatPercent(linha.pctBase)}</td>
+                              <td>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.pctAtual) : formatPercent(linha.pctAtual)}</td>
                               <td style={{ color: linha.diffPct >= 0 ? '#087f3f' : '#c1121f', fontWeight: 700 }}>
-                                {formatPercent(linha.diffPct)}
+                                {resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(linha.diffPct) : formatPercent(linha.diffPct)}
                               </td>
                               <td>{formatMoney(linha.valorNFAtual)}</td>
                               <td style={{ fontWeight: 700 }}>{formatMoney(linha.saving)}</td>
@@ -697,9 +1147,9 @@ export default function GestaoSavingsAprovados({ tabelas = [] }) {
                         <tfoot>
                           <tr>
                             <td colSpan={2}><strong>Total</strong></td>
-                            <td>{formatPercent(resultado.totais.pctBaseMedio)}</td>
-                            <td>{formatPercent(resultado.totais.pctAtualMedio)}</td>
-                            <td>{formatPercent(resultado.totais.pctBaseMedio - resultado.totais.pctAtualMedio)}</td>
+                            <td>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(resultado.totais.pctBaseMedio) : formatPercent(resultado.totais.pctBaseMedio)}</td>
+                            <td>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(resultado.totais.pctAtualMedio) : formatPercent(resultado.totais.pctAtualMedio)}</td>
+                            <td>{resultado.tipoCalculo === 'LOTACAO_FLUXO' ? formatMoney(resultado.totais.pctBaseMedio - resultado.totais.pctAtualMedio) : formatPercent(resultado.totais.pctBaseMedio - resultado.totais.pctAtualMedio)}</td>
                             <td>{formatMoney(resultado.totais.valorNFAtual)}</td>
                             <td style={{ fontWeight: 800 }}>{formatMoney(resultado.totais.saving)}</td>
                           </tr>

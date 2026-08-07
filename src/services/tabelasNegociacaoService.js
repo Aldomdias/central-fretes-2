@@ -15,7 +15,7 @@ import {
 } from './tabelasNegociacaoSnapshotService';
 import { salvarSecaoDb } from './freteDatabaseService';
 import { converterTabelaNegociacaoParaSimulador } from '../utils/tabelasNegociacaoSimuladorAdapter';
-import { carregarCargasLotacaoSupabase } from './lotacaoSupabaseService';
+import { carregarCargasLotacaoSupabase, salvarTabelaLotacaoSupabase } from './lotacaoSupabaseService';
 import { normalizarTexto as normalizarTextoLotacao } from '../utils/lotacaoTables';
 import {
   normalizarStatusGestao,
@@ -1191,6 +1191,43 @@ async function promoverTabelaNegociacaoParaOficialInterno(id, dados = {}) {
 
   if (!itens.length) {
     throw new Error('Não há itens salvos para promover a negociação para a base oficial.');
+  }
+
+  const ehLotacao = upper(tabela.tipo_negociacao) === 'TABELA_LOTACAO'
+    || upper(tabela.tipo_tabela) === 'LOTACAO'
+    || upper(tabela.canal) === 'LOTACAO';
+
+  if (ehLotacao) {
+    const nome = texto(dados.transportadora_oficial_nome || dados.transportadoraOficialNome) || tabela.transportadora;
+    const linhas = montarTabelaLotacaoNegociacao(tabela, itens).map((linha, index) => ({
+      ...linha,
+      id: `oficial-lot-${id}-${index + 1}`,
+      transportadora: nome,
+      target: linha.valor,
+      valorFonte: 'NEGOCIACAO_APROVADA',
+      raw: { negociacao_id: id, item_id: linha.id },
+    }));
+    if (!linhas.length) throw new Error('Não há rotas com valor de lotação para publicar. Revise os itens da negociação.');
+    const tabelaLotacao = {
+      id: `negociacao-oficial-${id}`,
+      tipo: 'TRANSPORTADORA',
+      nome,
+      modelo: 'NEGOCIACAO APROVADA / LOTACAO',
+      fileName: '',
+      linhas,
+      totalLinhas: linhas.length,
+      rotasUnicas: new Set(linhas.map((linha) => linha.chave)).size,
+      origens: new Set(linhas.map((linha) => `${linha.origem}|${linha.ufOrigem}`)).size,
+      destinos: new Set(linhas.map((linha) => `${linha.destino}|${linha.ufDestino}`)).size,
+      fontesValor: { NEGOCIACAO_APROVADA: linhas.length },
+      resumoFontesValor: 'Negociação aprovada',
+      createdAt: new Date().toISOString(),
+    };
+    await salvarTabelaLotacaoSupabase(tabelaLotacao);
+    return {
+      modulo: 'LOTACAO', transportadora: nome, origens: tabelaLotacao.origens,
+      rotas: linhas.length, cotacoes: 0, taxas: 0, tabela_lotacao_id: tabelaLotacao.id,
+    };
   }
 
   const tabelaCompleta = {
@@ -2714,7 +2751,12 @@ export async function atualizarDataReferenciaSaving(id, dataReferencia) {
   const supabase = supabaseOrThrow();
   const { data, error } = await supabase
     .from('tabelas_negociacao')
-    .update({ data_referencia_saving: dataOuNull(dataReferencia) })
+    .update({
+      data_referencia_saving: dataOuNull(dataReferencia),
+      saving_pos_aprovacao_valor: null,
+      saving_pos_aprovacao_calculado_em: null,
+      saving_pos_aprovacao_detalhe: null,
+    })
     .eq('id', id)
     .select('id, data_referencia_saving')
     .single();
@@ -2727,7 +2769,12 @@ export async function atualizarVinculoTransportadoraSaving(id, nomes = []) {
   const lista = Array.isArray(nomes) ? nomes.map((n) => String(n || '').trim()).filter(Boolean) : [];
   const { data, error } = await supabase
     .from('tabelas_negociacao')
-    .update({ vinculo_transportadoras_saving: lista.length ? lista : null })
+    .update({
+      vinculo_transportadoras_saving: lista.length ? lista : null,
+      saving_pos_aprovacao_valor: null,
+      saving_pos_aprovacao_calculado_em: null,
+      saving_pos_aprovacao_detalhe: null,
+    })
     .eq('id', id)
     .select('id, vinculo_transportadoras_saving')
     .single();

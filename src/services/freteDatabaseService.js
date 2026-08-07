@@ -3193,6 +3193,117 @@ export async function listarRealizadoLocalCtesParaSimulacao(filtros = {}) {
   return aplicarFiltroSemCanal(filtrarRealizadoLocal(todos.map(normalizeRealizadoDbRow), filtros), filtros);
 }
 
+export async function calcularSavingPosAprovacaoAgregado(filtros = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const supabase = ensureClient();
+  const transportadoras = Array.isArray(filtros.transportadoras)
+    ? filtros.transportadoras.map((nome) => String(nome || '').trim()).filter(Boolean)
+    : [];
+  const limitesPeso = Array.isArray(filtros.limitesPeso)
+    ? filtros.limitesPeso.map(Number).filter((valor) => Number.isFinite(valor) && valor > 0).sort((a, b) => a - b)
+    : [];
+  if (!transportadoras.length) throw new Error('Informe ao menos uma transportadora vinculada.');
+  const inicio = Date.now();
+  const parametrosRpc = {
+    p_transportadoras: transportadoras,
+    p_origem: filtros.origem || '',
+    p_canais: canalVariantesConsultaDb(filtros.canal || ''),
+    p_data_corte: filtros.dataCorte,
+    p_fim_atual: filtros.fimAtual,
+    p_meses_base: Number(filtros.mesesBase || 3),
+    p_limites_peso: limitesPeso.length ? limitesPeso : [999999999],
+  };
+  let { data, error } = await supabase.rpc('saving_pos_aprovacao_fluxos_mensal_json', parametrosRpc);
+  if (error && ['PGRST202', '42883'].includes(String(error.code || ''))) {
+    const fallback = await supabase.rpc('saving_pos_aprovacao_fluxos_mensal', parametrosRpc);
+    data = fallback.data;
+    error = fallback.error;
+  }
+  if (error) throw error;
+  const dadosCompletos = Array.isArray(data) ? data : [];
+  const linhas = dadosCompletos.map((row) => ({
+    competencia: row.competencia ? String(row.competencia).slice(0, 10) : '',
+    rota: row.rota || 'Sem rota',
+    faixa: row.faixa || 'Sem faixa',
+    ctesBase: Number(row.ctes_base || 0),
+    ctesAtual: Number(row.ctes_atual || 0),
+    valorNFBase: Number(row.valor_nf_base || 0),
+    valorNFAtual: Number(row.valor_nf_atual || 0),
+    valorCteBase: Number(row.valor_cte_base || 0),
+    valorCteAtual: Number(row.valor_cte_atual || 0),
+    pctBase: Number(row.pct_base || 0),
+    pctAtual: Number(row.pct_atual || 0),
+    diffPct: Number(row.diff_pct || 0),
+    saving: Number(row.saving || 0),
+  }));
+  const totais = linhas.reduce((acc, linha) => {
+    acc.saving += linha.saving;
+    acc.valorNFAtual += linha.valorNFAtual;
+    acc.valorCteAtual += linha.valorCteAtual;
+    acc.valorNFBase += linha.valorNFBase;
+    acc.valorCteBase += linha.valorCteBase;
+    acc.ctesBase += linha.ctesBase;
+    acc.ctesAtual += linha.ctesAtual;
+    return acc;
+  }, { saving: 0, valorNFAtual: 0, valorCteAtual: 0, valorNFBase: 0, valorCteBase: 0, ctesBase: 0, ctesAtual: 0 });
+  totais.pctBaseMedio = totais.valorNFAtual > 0
+    ? linhas.reduce((acc, linha) => acc + linha.pctBase * linha.valorNFAtual, 0) / totais.valorNFAtual
+    : 0;
+  totais.pctAtualMedio = totais.valorNFAtual > 0 ? totais.valorCteAtual / totais.valorNFAtual : 0;
+  const mensal = [...linhas.reduce((mapa, linha) => {
+    const chave = linha.competencia || 'Sem competÃªncia';
+    const atual = mapa.get(chave) || { competencia: chave, saving: 0, valorNFAtual: 0, valorCteAtual: 0, ctesAtual: 0, rotas: 0 };
+    atual.saving += linha.saving;
+    atual.valorNFAtual += linha.valorNFAtual;
+    atual.valorCteAtual += linha.valorCteAtual;
+    atual.ctesAtual += linha.ctesAtual;
+    atual.rotas += 1;
+    mapa.set(chave, atual);
+    return mapa;
+  }, new Map()).values()].sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)));
+  mensal.forEach((mes) => { mes.pctAtualMedio = mes.valorNFAtual > 0 ? mes.valorCteAtual / mes.valorNFAtual : 0; });
+  return { linhas, mensal, totais, ctesBase: totais.ctesBase, ctesAtual: totais.ctesAtual, tempoMs: Date.now() - inicio, fonte: 'RPC_AGREGADA_MENSAL' };
+}
+
+export async function listarFaixasPesoNegociacao(tabelaNegociacaoId) {
+  if (!tabelaNegociacaoId || !isSupabaseConfigured()) return [];
+  const supabase = ensureClient();
+  const { data, error } = await supabase.rpc('faixas_peso_negociacao', {
+    p_tabela_negociacao_id: tabelaNegociacaoId,
+  });
+  if (error) {
+    const codigo = String(error.code || '');
+    if (['PGRST202', '42883'].includes(codigo)) return [];
+    throw error;
+  }
+  return (data || [])
+    .map((faixa) => ({
+      inicio: Number(faixa.peso_inicial),
+      fim: Number(faixa.peso_final),
+      rotas: Number(faixa.rotas || 0),
+    }))
+    .filter((faixa) => Number.isFinite(faixa.inicio) && Number.isFinite(faixa.fim) && faixa.fim > faixa.inicio)
+    .sort((a, b) => a.fim - b.fim);
+}
+
+export async function buscarPrimeiroCteSaving(filtros = {}) {
+  if (!isSupabaseConfigured()) return '';
+  const supabase = ensureClient();
+  const transportadoras = Array.isArray(filtros.transportadoras)
+    ? filtros.transportadoras.map((nome) => String(nome || '').trim()).filter(Boolean)
+    : [];
+  if (!transportadoras.length) return '';
+  const { data, error } = await supabase.rpc('primeiro_cte_saving', {
+    p_transportadoras: transportadoras,
+    p_origem: filtros.origem || '',
+    p_canais: canalVariantesConsultaDb(filtros.canal || ''),
+    p_data_corte: filtros.dataCorte,
+    p_fim_atual: filtros.fimAtual,
+  });
+  if (error) throw error;
+  return data ? String(data).slice(0, 10) : '';
+}
+
 export async function listarRealizadoDiarioReajustes(filtros = {}) {
   const limit = Math.max(1, Math.min(Number(filtros.limit || 100000) || 100000, 100000));
 
