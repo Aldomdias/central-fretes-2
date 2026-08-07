@@ -30,6 +30,15 @@ const FILTROS_INICIAIS = {
   filtroRapido: '',
 };
 
+function usuarioPodeDevolverSaving(sessao) {
+  if (!usuarioEhGestor(sessao)) return false;
+  const id = String(sessao?.id || '').trim().toLowerCase();
+  const email = String(sessao?.email || '').trim().toLowerCase();
+  return id === 'user-gestao-aldo'
+    || email === 'aldo.dias@cantu.inc'
+    || email === 'aldomdias@gmail.com';
+}
+
 const ABAS = [
   ['visao-geral', 'Visão geral'],
   ['negociacoes', 'Negociações'],
@@ -163,7 +172,7 @@ export default function GestaoShell({
       {aba === 'savings-aprovados' ? (
         <GestaoSavingsAprovados
           tabelas={tabelas}
-          podeDevolver={usuarioEhGestor(sessao)}
+          podeDevolver={usuarioPodeDevolverSaving(sessao)}
           onDevolver={onDevolverGestor}
         />
       ) : null}
