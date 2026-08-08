@@ -459,7 +459,9 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
   }
 
   function origemRealizadoAtual(item) {
-    return String(origensRealizado[item.id] ?? item.origemRealizadoSalva ?? item.origem ?? '').trim();
+    const override = origensRealizado[item.id];
+    if (override !== undefined) return String(override).trim();
+    return String((item.origemRealizadoSalva || item.origem) ?? '').trim();
   }
 
   async function salvarOrigemRealizado(item) {
@@ -869,7 +871,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                       <div style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center' }}>
                         <input
                           type="text"
-                          value={origensRealizado[item.id] ?? item.origemRealizadoSalva ?? item.origem}
+                          value={origensRealizado[item.id] ?? (item.origemRealizadoSalva || item.origem)}
                           onChange={(e) => setOrigensRealizado((prev) => ({ ...prev, [item.id]: e.target.value }))}
                           placeholder="Origem no realizado"
                           title="Nome correspondente da origem na base de CT-es"
