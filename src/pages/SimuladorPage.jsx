@@ -42,6 +42,7 @@ import {
   buscarTabelasNegociacaoParaSimulacao,
   listarCapasNegociacaoParaSimulacao,
   carregarDetalhesNegociacaoParaSimulacao,
+  criarTabelaNegociacao,
   salvarResultadoSimulacaoNegociacao,
 } from '../services/tabelasNegociacaoService';
 import {
@@ -5548,6 +5549,69 @@ export default function SimuladorPage({ transportadoras = [] }) {
     }
   };
 
+  const abrirRevisaoCompetitividadeNegociacao = async () => {
+    if (!resultadoRealizado?.ctesAnalisados || resultadoRealizado.negociacaoId) return;
+    const contexto = baseRealizadoCarregada?.contexto || {};
+    const tabelaOficial = contexto.baseSelecionada?.[0] || {};
+    const transportadora = contexto.nomeTabelaSelecionada || contexto.transportadora || transportadoraRealizado;
+    const origem = contexto.origem || resultadoRealizado.filtros?.origem || '';
+    const aderencia = Number(resultadoRealizado.aderenciaSelecionada || 0);
+    const savingMensal = Number(resultadoRealizado.savingSelecionadaVsRealMes || 0);
+
+    if (!window.confirm(`Abrir uma revisão de competitividade de ${transportadora}${origem ? ` / ${origem}` : ''} em Negociações? A tabela oficial ficará como base atual e este diagnóstico será salvo como marco inicial.`)) return;
+
+    setSalvandoResultadoNegociacao(true);
+    setErroSimulacao('');
+    iniciarProcessamentoUi('Abrindo revisão de competitividade', 'Criando negociação e vinculando o diagnóstico inicial...', 35);
+    try {
+      const nova = await criarTabelaNegociacao({
+        transportadora,
+        canal: contexto.canal || resultadoRealizado.filtros?.canal || canalRealizado,
+        tipo_negociacao: 'REAJUSTE_TABELA_EXISTENTE',
+        transportadora_base_id: tabelaOficial.id || '',
+        transportadora_base_nome: transportadora,
+        tabela_base_id: tabelaOficial.id || '',
+        modalidade: 'REVISAO_COMPETITIVIDADE',
+        comparar_com_proprio_realizado: true,
+        periodo_realizado_inicio: contexto.inicio || inicioRealizado,
+        periodo_realizado_fim: contexto.fim || fimRealizado,
+        origem,
+        uf_origem: contexto.ufOrigem || resultadoRealizado.filtros?.ufOrigem || '',
+        descricao: 'Revisão de competitividade e recuperação de volume iniciada pelo Simulador do Realizado.',
+        observacao: `Diagnóstico inicial: ${resultadoRealizado.ctesAnalisados.toLocaleString('pt-BR')} CT-es; aderência ${aderencia.toFixed(2)}%; saving mensal potencial ${formatMoney(savingMensal)}.`,
+        saving_projetado: savingMensal,
+        aderencia_projetada: aderencia,
+        origem_importacao: 'SIMULADOR_REALIZADO',
+        incluir_simulacao: false,
+      });
+
+      atualizarProcessamentoUi('Salvando diagnóstico como marco inicial da negociação...', 75);
+      const atualizada = await salvarResultadoSimulacaoNegociacao(nova.id, {
+        ...resultadoRealizado,
+        negociacaoId: nova.id,
+        negociacaoNome: nova.transportadora,
+        negociacaoLabel: `${nova.transportadora}${nova.origem ? ` — ${nova.origem}` : ''} — Revisão de competitividade`,
+        tipoNegociacao: 'REAJUSTE_TABELA_EXISTENTE',
+        modoNegociacao: 'REAJUSTE',
+        diagnosticoInicial: true,
+      });
+      setNegociacoesSimulador((anteriores) => [atualizada, ...(anteriores || []).filter((item) => item.id !== atualizada.id)]);
+      setResultadoRealizado((anterior) => ({
+        ...anterior,
+        negociacaoId: atualizada.id,
+        negociacaoNome: atualizada.transportadora,
+        negociacaoLabel: `${atualizada.transportadora}${atualizada.origem ? ` — ${atualizada.origem}` : ''} — Revisão de competitividade`,
+      }));
+      finalizarProcessamentoUi('Revisão aberta em Negociações', 'Diagnóstico inicial salvo. A próxima proposta poderá ser registrada como nova rodada.', 100);
+      alert('Revisão de competitividade criada em Negociações. A tabela oficial ficou como base atual e o resultado foi salvo como diagnóstico inicial.');
+    } catch (error) {
+      setErroSimulacao(error.message || 'Erro ao abrir revisão de competitividade em Negociações.');
+      finalizarProcessamentoUi('Erro ao abrir revisão', 'Não foi possível criar a negociação.', 100);
+    } finally {
+      setSalvandoResultadoNegociacao(false);
+    }
+  };
+
   const salvarLaudosVisuaisNegociacao = async () => {
     if (!negociacaoSelecionadaRealizado?.id || !resultadoRealizado) return;
 
@@ -8678,6 +8742,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
               style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
               {salvandoResultadoNegociacao ? 'Salvando...' : '💾 Salvar resultado na negociação'}
             </button>
+            {!resultadoRealizado?.negociacaoId ? (
+              <button className="sim-tab" type="button"
+                onClick={abrirRevisaoCompetitividadeNegociacao}
+                disabled={!resultadoRealizado?.ctesAnalisados || salvandoResultadoNegociacao}
+                title="Cria uma revisão de competitividade em Negociações usando a tabela oficial e este diagnóstico como base inicial"
+                style={{ background: '#ede9fe', color: '#6d28d9', border: '1px solid #c4b5fd' }}>
+                {salvandoResultadoNegociacao ? 'Criando revisão...' : 'Abrir revisão em Negociações'}
+              </button>
+            ) : null}
           </div>
           {resultadoRealizado?.negociacaoId && (
             <div className="sim-alert info" style={{ marginTop: 10 }}>
