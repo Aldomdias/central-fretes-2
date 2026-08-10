@@ -4734,7 +4734,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [parcelasSimulacaoInfo, setParcelasSimulacaoInfo] = useState(null);
   const parcelasSimulacaoRef = useRef(null);
   const simulacaoRealizadoEmCursoRef = useRef(false);
-  const autoSimularRealizadoRef = useRef(false);
   const timerProcessamentoRef = useRef(null);
   const hideProcessamentoRef = useRef(null);
   const [processamentoUi, setProcessamentoUi] = useState({
@@ -6157,7 +6156,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // Não roda simulação; apenas busca/normaliza/enriquece os CT-es e guarda o
   // contexto necessário para a etapa 2 simular somente o que estiver na tela.
   const onBuscarCtesRealizado = async () => {
-    autoSimularRealizadoRef.current = false;
     simulacaoRealizadoEmCursoRef.current = false;
     setResultadoRealizado(null);
     if (!transportadoraRealizado) {
@@ -6491,7 +6489,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       const totalComTracking = linhasEnriquecidasFiltradas.filter((row) => row.trackingMatch).length;
 
-      autoSimularRealizadoRef.current = true;
       setBaseRealizadoCarregada({
         geradoEm: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         linhas: linhasEnriquecidasFiltradas,
@@ -6540,7 +6537,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       finalizarProcessamentoUi(
         'CT-es carregados',
-        `${linhasEnriquecidasFiltradas.length.toLocaleString('pt-BR')} CT-es prontos. Iniciando a simulação automaticamente...`,
+        `${linhasEnriquecidasFiltradas.length.toLocaleString('pt-BR')} CT-es prontos. Clique em "2) Simular" para calcular com a mesma métrica das negociações.`,
         100,
       );
     } catch (error) {
@@ -7000,15 +6997,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
       setCarregandoSimulacao(false);
     }
   };
-
-  useEffect(() => {
-    if (!autoSimularRealizadoRef.current || !baseRealizadoCarregada?.linhas?.length) return undefined;
-    autoSimularRealizadoRef.current = false;
-    const timer = setTimeout(() => {
-      onSimularRealizadoBase();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [baseRealizadoCarregada]);
 
   // Consolida as parcelas processadas (modo "dividir simulação") no dossiê final.
   const onUnificarAnaliseParcelas = async () => {
