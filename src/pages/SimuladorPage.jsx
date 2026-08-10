@@ -4732,6 +4732,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [dividirSimulacaoRealizado, setDividirSimulacaoRealizado] = useState(false);
   const [parcelasSimulacaoInfo, setParcelasSimulacaoInfo] = useState(null);
   const parcelasSimulacaoRef = useRef(null);
+  const simulacaoRealizadoEmCursoRef = useRef(false);
   const timerProcessamentoRef = useRef(null);
   const hideProcessamentoRef = useRef(null);
   const [processamentoUi, setProcessamentoUi] = useState({
@@ -6485,6 +6486,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // ETAPA 2 — Simular: roda a simulação SOMENTE sobre os CT-es visíveis na tela
   // (base carregada + modo Tracking + filtros BI), sem rebuscar o banco.
   const onSimularRealizadoBase = async () => {
+    if (simulacaoRealizadoEmCursoRef.current) return;
     const carregada = baseRealizadoCarregada;
     if (!carregada?.contexto) {
       setErroSimulacao('Clique em "Buscar CT-es" antes de simular.');
@@ -6504,8 +6506,12 @@ export default function SimuladorPage({ transportadoras = [] }) {
     setLinhasExpandidas(new Set());
     parcelasSimulacaoRef.current = null;
     setParcelasSimulacaoInfo(null);
+    simulacaoRealizadoEmCursoRef.current = true;
     setCarregandoSimulacao(true);
     iniciarProcessamentoUi('Simulação do realizado', `Simulando ${rowsBase.length.toLocaleString('pt-BR')} CT-es filtrados...`, 20);
+
+    // Permite que o botão e o painel de progresso apareçam antes do cálculo pesado.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
     try {
       const ehReajusteSelecionado = ctx.ehReajusteSelecionado;
@@ -6922,6 +6928,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
       setErroSimulacao(error.message || 'Erro ao simular realizado.');
       finalizarProcessamentoUi('Erro na simulação do realizado', 'Não foi possível gerar o dossiê.', 100);
     } finally {
+      simulacaoRealizadoEmCursoRef.current = false;
       setCarregandoSimulacao(false);
     }
   };
@@ -9222,11 +9229,11 @@ export default function SimuladorPage({ transportadoras = [] }) {
               className="primary"
               type="button"
               onClick={onSimularRealizadoBase}
-              disabled={carregandoSimulacao || !baseRealizadoCarregada?.linhas?.length || !rowsRealizadoVisiveis.length}
+              disabled={carregandoSimulacao || processamentoUi.ativo || !baseRealizadoCarregada?.linhas?.length || !rowsRealizadoVisiveis.length}
               style={{ background: '#15803d' }}
               title={!baseRealizadoCarregada?.linhas?.length ? 'Busque os CT-es antes de simular' : 'Simula apenas os CT-es visíveis na tela (após filtros)'}
             >
-              {carregandoSimulacao ? 'Simulando...' : `2) Simular${baseRealizadoCarregada?.linhas?.length ? ` (${rowsRealizadoVisiveis.length.toLocaleString('pt-BR')} CT-es)` : ''}`}
+              {carregandoSimulacao || processamentoUi.ativo ? 'Simulando...' : `2) Simular${baseRealizadoCarregada?.linhas?.length ? ` (${rowsRealizadoVisiveis.length.toLocaleString('pt-BR')} CT-es)` : ''}`}
             </button>
             <label
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.82rem', color: '#334155', padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 8, background: dividirSimulacaoRealizado ? '#eff6ff' : '#f8fafc', cursor: 'pointer' }}
