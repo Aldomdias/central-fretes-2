@@ -4733,6 +4733,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   const [parcelasSimulacaoInfo, setParcelasSimulacaoInfo] = useState(null);
   const parcelasSimulacaoRef = useRef(null);
   const simulacaoRealizadoEmCursoRef = useRef(false);
+  const autoSimularRealizadoRef = useRef(false);
   const timerProcessamentoRef = useRef(null);
   const hideProcessamentoRef = useRef(null);
   const [processamentoUi, setProcessamentoUi] = useState({
@@ -6092,6 +6093,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // Não roda simulação; apenas busca/normaliza/enriquece os CT-es e guarda o
   // contexto necessário para a etapa 2 simular somente o que estiver na tela.
   const onBuscarCtesRealizado = async () => {
+    autoSimularRealizadoRef.current = false;
     if (!transportadoraRealizado) {
       setErroSimulacao('Selecione a transportadora/tabela que será simulada no realizado.');
       return;
@@ -6423,6 +6425,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       const totalComTracking = linhasEnriquecidasFiltradas.filter((row) => row.trackingMatch).length;
 
+      autoSimularRealizadoRef.current = true;
       setBaseRealizadoCarregada({
         geradoEm: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
         linhas: linhasEnriquecidasFiltradas,
@@ -6471,7 +6474,7 @@ export default function SimuladorPage({ transportadoras = [] }) {
 
       finalizarProcessamentoUi(
         'CT-es carregados',
-        `${linhasEnriquecidasFiltradas.length.toLocaleString('pt-BR')} CT-es prontos. Refine os filtros e clique em "Simular".`,
+        `${linhasEnriquecidasFiltradas.length.toLocaleString('pt-BR')} CT-es prontos. Iniciando a simulação automaticamente...`,
         100,
       );
     } catch (error) {
@@ -6932,6 +6935,15 @@ export default function SimuladorPage({ transportadoras = [] }) {
       setCarregandoSimulacao(false);
     }
   };
+
+  useEffect(() => {
+    if (!autoSimularRealizadoRef.current || !baseRealizadoCarregada?.linhas?.length) return undefined;
+    autoSimularRealizadoRef.current = false;
+    const timer = setTimeout(() => {
+      onSimularRealizadoBase();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [baseRealizadoCarregada]);
 
   // Consolida as parcelas processadas (modo "dividir simulação") no dossiê final.
   const onUnificarAnaliseParcelas = async () => {
@@ -9233,7 +9245,9 @@ export default function SimuladorPage({ transportadoras = [] }) {
               style={{ background: '#15803d' }}
               title={!baseRealizadoCarregada?.linhas?.length ? 'Busque os CT-es antes de simular' : 'Simula apenas os CT-es visíveis na tela (após filtros)'}
             >
-              {carregandoSimulacao || processamentoUi.ativo ? 'Simulando...' : `2) Simular${baseRealizadoCarregada?.linhas?.length ? ` (${rowsRealizadoVisiveis.length.toLocaleString('pt-BR')} CT-es)` : ''}`}
+              {carregandoSimulacao || processamentoUi.ativo
+                ? 'Simulando...'
+                : `${resultadoRealizado ? 'Simular novamente' : '2) Simular'}${baseRealizadoCarregada?.linhas?.length ? ` (${rowsRealizadoVisiveis.length.toLocaleString('pt-BR')} CT-es)` : ''}`}
             </button>
             <label
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.82rem', color: '#334155', padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 8, background: dividirSimulacaoRealizado ? '#eff6ff' : '#f8fafc', cursor: 'pointer' }}
