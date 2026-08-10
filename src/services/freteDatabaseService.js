@@ -2386,13 +2386,9 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
       return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino, transportadoraIds });
     }
 
-    const destinosAlvo = destinos.length
-      ? destinos
-      : await buscarDestinosTransportadoraOrigem({ supabase, nomeTransportadora, origem, canal, ufDestino });
-
-    if (!destinosAlvo.length) return [];
-
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo, ufDestino, transportadoraIds });
+    // A transportadora e a origem já restringem a consulta. Buscar primeiro todos os
+    // destinos faria a mesma malha ser lida duas vezes, o que trava tabelas grandes.
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos, ufDestino, transportadoraIds });
   }
 
   // Caso principal: simulação simples ou lista com destino informado.

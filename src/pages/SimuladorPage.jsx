@@ -6353,29 +6353,6 @@ export default function SimuladorPage({ transportadoras = [] }) {
         ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
       }
 
-      if (!ehNegociacaoSelecionada && linhasEnriquecidasFiltradas.length) {
-        const routeKeysOficial = criarRouteKeysRealizado(linhasEnriquecidasFiltradas, canalRealizado);
-        if (routeKeysOficial.length) {
-          atualizarProcessamentoUi(
-            `Carregando tabela oficial para ${routeKeysOficial.length.toLocaleString('pt-BR')} rota(s) do realizado...`,
-            88,
-          );
-          const baseRecortada = await buscarBaseSimulacaoPorRotasDb({
-            routeKeys: routeKeysOficial,
-            canal: canalRealizado,
-          });
-          const tabelaOficialRecortada = filtrarBasePorTransportadoraSimulador(
-            baseRecortada,
-            nomeTabelaSelecionada,
-          );
-          if (tabelaOficialRecortada.length) {
-            baseSelecionada = tabelaOficialRecortada;
-            origensTabelaSelecionada = extrairOrigensBaseSimulador(baseSelecionada, canalRealizado);
-            ufsDestinoTabelaSelecionada = extrairUfsDestinoBaseSimulador(baseSelecionada, canalRealizado, origemRealizado);
-          }
-        }
-      }
-
       const diagnosticoBuscaRealizado = {
         transportadora: transportadoraRealizado,
         tabelaUsada: nomeTabelaSelecionada,
