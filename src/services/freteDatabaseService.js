@@ -1554,6 +1554,25 @@ function groupByOrigemId(rows = []) {
   return map;
 }
 
+async function buscarIdsTransportadoraPorNome({ supabase, nomeTransportadora }) {
+  let { data, error } = await supabase
+    .from('transportadoras')
+    .select('id')
+    .ilike('nome', nomeTransportadora);
+
+  if (error) throw error;
+  if (nomeTransportadora && !(data || []).length) {
+    const fallback = await supabase
+      .from('transportadoras')
+      .select('id')
+      .ilike('nome', `%${nomeTransportadora}%`);
+    if (fallback.error) throw fallback.error;
+    data = fallback.data || [];
+  }
+
+  return (data || []).map((item) => item.id).filter(Boolean);
+}
+
 function transportadorasFromDbRows({ transportadoras = [], origens = [], generalidades = [], rotas = [], cotacoes = [], taxas = [] }) {
   const generalidadeByOrigem = new Map((generalidades || []).map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = groupByOrigemId(rotas);
@@ -1585,13 +1604,14 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
   })).filter((item) => item.origens.length);
 }
 
-async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '' }) {
+async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = [], ufDestino = '', transportadoraIds = [] }) {
   const destinosNormalizados = Array.from(new Set((destinos || []).map((item) => String(item || '').trim()).filter(Boolean)));
 
   const origensBase = await buscarOrigensFiltradasDb({
     supabase,
     origem,
     canal,
+    transportadoraIds,
   });
 
   const origemIdsBase = (origensBase || []).map((item) => item.id);
@@ -1604,7 +1624,7 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
   if (!origemIdsComRota.length) return [];
 
   const origens = (origensBase || []).filter((item) => origemIdsComRota.includes(item.id));
-  const transportadoraIds = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
+  const transportadoraIdsComRota = Array.from(new Set(origens.map((item) => item.transportadora_id).filter(Boolean)));
 
   const rotaNomes = Array.from(new Set((rotas || []).map((item) => item.nome_rota || item.nomeRota || item.rota || '').filter(Boolean)));
   const destinosIbgeDasRotas = Array.from(new Set((rotas || []).map((item) => item.ibge_destino || item.ibgeDestino || '').filter(Boolean)));
@@ -1615,7 +1635,7 @@ async function buscarBasePorOrigemDestino({ supabase, origem, canal, destinos = 
     cotacoes,
     taxas,
   ] = await Promise.all([
-    fetchTransportadorasByIds(supabase, transportadoraIds),
+    fetchTransportadorasByIds(supabase, transportadoraIdsComRota),
     fetchRowsByOrigemIds(supabase, 'generalidades', origemIdsComRota),
     fetchCotacoesByOrigemIdsAndRotas(supabase, origemIdsComRota, rotaNomes),
     fetchTaxasByOrigemIdsAndDestinos(supabase, origemIdsComRota, destinosIbgeDasRotas),
@@ -2357,11 +2377,13 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
   // Quando a tela pede malha por UF, carregamos a origem/UF inteira. Isso é mais robusto
   // para tabelas onde o IBGE da rota veio vazio/incorreto, mas o nome da cidade está certo.
   if (nomeTransportadora && origem) {
+    const transportadoraIds = await buscarIdsTransportadoraPorNome({ supabase, nomeTransportadora });
+    if (!transportadoraIds.length) return [];
     // Para simulação em cima do realizado, quando há UF destino carregamos a malha
     // da origem/UF inteira. É mais robusto do que filtrar por IBGE antes, porque
     // algumas tabelas têm IBGE ausente/divergente, mas a rota está correta pelo nome.
     if (ufDestino) {
-      return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino });
+      return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: [], ufDestino, transportadoraIds });
     }
 
     const destinosAlvo = destinos.length
@@ -2370,7 +2392,7 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
 
     if (!destinosAlvo.length) return [];
 
-    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo, ufDestino });
+    return buscarBasePorOrigemDestino({ supabase, origem, canal, destinos: destinosAlvo, ufDestino, transportadoraIds });
   }
 
   // Caso principal: simulação simples ou lista com destino informado.
