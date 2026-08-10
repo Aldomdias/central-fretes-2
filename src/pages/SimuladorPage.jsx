@@ -6158,6 +6158,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
   // contexto necessário para a etapa 2 simular somente o que estiver na tela.
   const onBuscarCtesRealizado = async () => {
     autoSimularRealizadoRef.current = false;
+    simulacaoRealizadoEmCursoRef.current = false;
+    setResultadoRealizado(null);
     if (!transportadoraRealizado) {
       setErroSimulacao('Selecione a transportadora/tabela que será simulada no realizado.');
       return;
@@ -6578,9 +6580,8 @@ export default function SimuladorPage({ transportadoras = [] }) {
     iniciarProcessamentoUi('Simulação do realizado', `Simulando ${rowsBase.length.toLocaleString('pt-BR')} CT-es filtrados...`, 20);
 
     // Permite que o botão e o painel de progresso apareçam antes do cálculo pesado.
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-
     try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const ehReajusteSelecionado = ctx.ehReajusteSelecionado;
       const transportadoraBaseReajuste = ctx.transportadoraBaseReajuste;
       const nomeTabelaSelecionada = ctx.nomeTabelaSelecionada;
