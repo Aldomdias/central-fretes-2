@@ -21,13 +21,24 @@ export function normalizarCidadeIbge(texto) {
     .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\bd\s+oeste\b/g, 'do oeste')
     .trim();
 }
 
 // Forma compacta: só letras/dígitos, sem espaços. Neutraliza apóstrofo e espaços.
 export function compactarCidadeIbge(texto) {
-  return normalizarCidadeIbge(texto).replace(/\s+/g, '');
+  return normalizarCidadeIbge(texto)
+    .split(/\s+/)
+    .filter((parte) => !['d', 'de', 'da', 'do', 'das', 'dos'].includes(parte))
+    .join('');
 }
+
+const ALIASES_MUNICIPIOS_IBGE = new Map([
+  ['acu|RN', ['Assú']],
+  ['boa saude|RN', ['Januário Cicco']],
+  ['antonio pereira|MG', ['Ouro Preto']],
+  ['sao valerio da natividade|TO', ['São Valério']],
+]);
 
 export function ibgeDistritoFederal(uf) {
   return String(uf || '').trim().toUpperCase() === 'DF' ? IBGE_DISTRITO_FEDERAL : '';
@@ -55,6 +66,9 @@ export function variantesCidadeIbge(cidade, uf) {
       if (sufixo === ufAlvo || UFS_VALIDAS.has(sufixo)) add(m[1].trim());
     }
   }
+
+  const chaveAlias = `${normalizarCidadeIbge(semParens)}|${ufAlvo}`;
+  (ALIASES_MUNICIPIOS_IBGE.get(chaveAlias) || []).forEach(add);
 
   return out;
 }
