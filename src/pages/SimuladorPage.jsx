@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { gerarHtmlLaudoProjecaoAderencia, gerarWorkbookTabelaSugerida, planejarAjustesParaAderencia } from '../utils/tabelaSugeridaAderencia';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import {
   montarDadosAjusteRotaFaixa,
@@ -7467,6 +7468,68 @@ export default function SimuladorPage({ transportadoras = [] }) {
     XLSX.writeFile(wb, `${nomeBase}.xlsx`);
   };
 
+  const gerarTabelaSugeridaAderencia = async () => {
+    if (!resultadoRealizado?.rotasCotacao?.length || !negociacaoSelecionadaRealizado?.id) return;
+    const entrada = window.prompt('Qual a aderencia minima desejada? Informe um valor entre 0 e 100.', '70');
+    if (entrada === null) return;
+    const meta = Number(String(entrada).replace(',', '.').replace('%', '').trim());
+    if (!Number.isFinite(meta) || meta <= 0 || meta > 100) {
+      window.alert('Informe uma aderencia minima valida, maior que 0 e ate 100%.');
+      return;
+    }
+    const entradaMargem = window.prompt('Qual margem competitiva deseja abaixo do frete ganhador? Exemplo: informe 2 para ficar 2% abaixo.', '2');
+    if (entradaMargem === null) return;
+    const margemCompetitiva = Number(String(entradaMargem).replace(',', '.').replace('%', '').trim());
+    if (!Number.isFinite(margemCompetitiva) || margemCompetitiva < 0 || margemCompetitiva > 50) {
+      window.alert('Informe uma margem valida entre 0 e 50%.');
+      return;
+    }
+    const previa = planejarAjustesParaAderencia(resultadoRealizado, meta, margemCompetitiva);
+    const dinheiroPrevia = (valor) => Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const percentualPrevia = (valor) => `${Number(valor || 0).toFixed(2).replace('.', ',')}%`;
+    const continuar = window.confirm([
+      'PREVIA INTERNA DA PROJECAO',
+      '',
+      `Aderencia atual: ${percentualPrevia(previa.aderenciaAtual)}`,
+      `Meta informada: ${percentualPrevia(previa.meta)}`,
+      `Aderencia projetada: ${percentualPrevia(previa.aderenciaProjetada)}`,
+      `CT-es ganhos atuais: ${Number(previa.ganhosAtuais || 0).toLocaleString('pt-BR')}`,
+      `CT-es ganhos projetados: ${Number(previa.ganhosProjetados || 0).toLocaleString('pt-BR')}`,
+      '',
+      `Saving projetado no periodo: ${dinheiroPrevia(previa.savingProjetadoPeriodo)}`,
+      `Saving projetado por mes: ${dinheiroPrevia(previa.savingProjetadoMensal)}`,
+      `Saving projetado em 12 meses: ${dinheiroPrevia(previa.savingProjetadoAnual)}`,
+      `Faturamento projetado nas ganhas: ${dinheiroPrevia(previa.faturamentoProjetadoNasGanhas)}`,
+      '',
+      'OK = continuar e gerar os arquivos',
+      'Cancelar = voltar e alterar os parametros',
+      '',
+      'A margem e o saving desta previa sao internos e nao aparecerao nos arquivos.',
+    ].join('\n'));
+    if (!continuar) return;
+    try {
+      const negociacaoDetalhada = await carregarDetalhesNegociacaoParaSimulacao(negociacaoSelecionadaRealizado);
+      const { workbook, plano } = gerarWorkbookTabelaSugerida({ resultado: resultadoRealizado, negociacao: negociacaoDetalhada, meta, margemCompetitiva });
+      const nome = nomeArquivoSeguro(negociacaoDetalhada.transportadora || resultadoRealizado.negociacaoNome || 'transportadora');
+      const html = gerarHtmlLaudoProjecaoAderencia(resultadoRealizado, meta, margemCompetitiva);
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `laudo-projecao-aderencia-${nome}-${String(meta).replace('.', '_')}pct.html`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      XLSX.writeFile(workbook, `tabela-sugerida-${nome}-${String(meta).replace('.', '_')}pct.xlsx`);
+      if (!plano.atingivel) {
+        window.alert(`A tabela foi gerada, mas a meta de ${meta.toFixed(2)}% nao e projetada como atingivel apenas com as rotas/faixas calculadas. A projecao maxima deste arquivo e ${plano.aderenciaProjetada.toFixed(2)}%.`);
+      }
+    } catch (error) {
+      window.alert(error?.message || 'Nao foi possivel gerar a tabela sugerida.');
+    }
+  };
+
   const copiarTextoLaudo = async (texto, label) => {
     if (!texto) return;
     try {
@@ -8563,6 +8626,13 @@ export default function SimuladorPage({ transportadoras = [] }) {
               title="Excel interno com saving mensal e anual para gerencia/diretoria"
               style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }}>
               Ajuste por rota Excel gerencia
+            </button>
+            <button className="sim-tab" type="button"
+              onClick={gerarTabelaSugeridaAderencia}
+              disabled={!resultadoRealizado?.rotasCotacao?.length || !negociacaoSelecionadaRealizado?.id}
+              title="Gera o laudo de projecao no mesmo padrao do ajuste por rota e a tabela sugerida complementar"
+              style={{ background: '#fff7ed', color: '#c2410c', border: '1px solid #fdba74' }}>
+              Gerar laudo projetado + tabela
             </button>
             <button className="sim-tab" type="button"
               onClick={exportarRelatorioDiretoria}
