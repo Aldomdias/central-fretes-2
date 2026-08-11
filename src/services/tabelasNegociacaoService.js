@@ -23,6 +23,7 @@ import {
   podePublicarOficial,
 } from '../utils/tabelasNegociacaoGestao';
 import { atualizarSolicitacaoCentralNegociacao, concluirSolicitacaoCentral } from './centralSolicitacoesService';
+import { cnpjPreenchidoValido, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 
 export const STATUS_TABELA_NEGOCIACAO = [
   'EM NEGOCIAÇÃO',
@@ -726,6 +727,19 @@ export async function obterTabelaNegociacao(id, opcoes = {}) {
   return obterNegociacaoCapa(id);
 }
 
+export async function buscarCnpjTransportadoraCadastro(nome) {
+  const supabase = supabaseOrThrow();
+  const nomeLimpo = texto(nome);
+  if (!nomeLimpo) return null;
+  const { data, error } = await supabase
+    .from('transportadoras')
+    .select('id, nome, cnpj, cnpj_raiz')
+    .ilike('nome', nomeLimpo)
+    .limit(2);
+  if (error) throw new Error(error.message || 'Erro ao buscar o CNPJ da transportadora.');
+  return (data || []).length === 1 ? data[0] : null;
+}
+
 export { carregarResumoCompletoNegociacao, carregarLaudoTransportadoraConsolidado };
 
 export async function criarTabelaNegociacao(payload = {}) {
@@ -735,6 +749,8 @@ export async function criarTabelaNegociacao(payload = {}) {
 
   const novo = {
     transportadora: texto(payload.transportadora),
+    cnpj_transportadora: normalizarCnpj(payload.cnpj_transportadora || payload.cnpjTransportadora) || null,
+    cnpj_raiz_transportadora: obterRaizCnpj(payload.cnpj_transportadora || payload.cnpjTransportadora) || null,
     canal: normalizarCanalPorNegociacao(payload),
     tipo_tabela: tipoTabela,
     tipo_negociacao: tipoNegociacao,
@@ -800,6 +816,8 @@ export async function atualizarTabelaNegociacao(id, payload = {}) {
 
   const atualizacao = {
     transportadora:            payload.transportadora !== undefined ? texto(payload.transportadora) : undefined,
+    cnpj_transportadora:       payload.cnpj_transportadora !== undefined || payload.cnpjTransportadora !== undefined ? normalizarCnpj(payload.cnpj_transportadora || payload.cnpjTransportadora) || null : undefined,
+    cnpj_raiz_transportadora:  payload.cnpj_transportadora !== undefined || payload.cnpjTransportadora !== undefined ? obterRaizCnpj(payload.cnpj_transportadora || payload.cnpjTransportadora) || null : undefined,
     canal:                     payload.canal !== undefined || tipoNegociacao === 'TABELA_LOTACAO' ? normalizarCanalPorNegociacao(payload) : undefined,
     tipo_tabela:               tipoTabela,
     tipo_negociacao:           tipoNegociacao,
@@ -2517,6 +2535,8 @@ async function aplicarTransicaoGestao(id, transicao = {}) {
     data_aprovacao: transicao.data_aprovacao,
     data_inicio_vigencia: transicao.data_inicio_vigencia,
     substituir_tabela_anterior: transicao.substituir_tabela_anterior,
+    cnpj_transportadora: transicao.cnpj_transportadora !== undefined ? normalizarCnpj(transicao.cnpj_transportadora) : undefined,
+    cnpj_raiz_transportadora: transicao.cnpj_raiz_transportadora !== undefined ? String(transicao.cnpj_raiz_transportadora).replace(/\D/g, '').slice(0, 8) : undefined,
   };
 
   Object.keys(payload).forEach((key) => {
@@ -2536,6 +2556,8 @@ async function aplicarTransicaoGestao(id, transicao = {}) {
 
 export async function enviarParaAprovacaoGestor(id, dados = {}) {
   const tabela = await obterTabelaNegociacao(id);
+  const cnpj = normalizarCnpj(dados.cnpj_transportadora || tabela.cnpj_transportadora);
+  if (!cnpjPreenchidoValido(cnpj)) throw new Error('Informe o CNPJ completo da transportadora antes de enviar para aprovação.');
   const statusAtual = normalizarStatusGestao(tabela);
   if (['PUBLICADA_OFICIAL', 'CANCELADA', 'AGUARDANDO_APROVACAO_GESTOR'].includes(statusAtual)) {
     throw new Error('Esta negociação não pode ser enviada para aprovação no status atual.');
@@ -2546,6 +2568,8 @@ export async function enviarParaAprovacaoGestor(id, dados = {}) {
     status_gestao: 'AGUARDANDO_APROVACAO_GESTOR',
     status_aprovacao: 'AGUARDANDO_GESTOR',
     enviado_aprovacao_em: dataISO(),
+    cnpj_transportadora: cnpj,
+    cnpj_raiz_transportadora: obterRaizCnpj(cnpj),
     ...dados,
   });
 }
@@ -2572,6 +2596,8 @@ export async function aprovarGestorNegociacao(id, dados = {}) {
   const supabase = supabaseOrThrow();
   const agora = dataISO();
   const tabelaAtual = await obterTabelaNegociacao(id);
+  const cnpj = normalizarCnpj(dados.cnpj_transportadora || tabelaAtual.cnpj_transportadora);
+  if (!cnpjPreenchidoValido(cnpj)) throw new Error('Informe o CNPJ completo da transportadora para aprovar a tabela.');
   const resumoAnterior = getResumoSimulacaoSeguro(tabelaAtual);
   const historicoAnterior = getHistoricoRodadas(tabelaAtual);
   const impactoAtual = calcularImpactoResultado(tabelaAtual?.resultado_simulacao_json || resumoAnterior || {}, tabelaAtual || {});
@@ -2594,6 +2620,8 @@ export async function aprovarGestorNegociacao(id, dados = {}) {
   });
 
   const payload = {
+    cnpj_transportadora: cnpj,
+    cnpj_raiz_transportadora: obterRaizCnpj(cnpj),
     status_gestao: 'APROVADA_GESTOR',
     status: 'APROVADA',
     status_aprovacao: 'APROVADA',
@@ -2663,6 +2691,8 @@ export async function solicitarComplementoNegociacao(id, dados = {}) {
 
 export async function publicarNegociacaoNaBaseOficial(id, dados = {}) {
   const tabela = await obterTabelaNegociacao(id);
+  const cnpj = normalizarCnpj(dados.cnpj_transportadora || tabela.cnpj_transportadora);
+  if (!cnpjPreenchidoValido(cnpj)) throw new Error('Informe o CNPJ completo da transportadora para publicar a tabela.');
   if (!podePublicarOficial(tabela)) {
     throw new Error('Somente negociações aprovadas pelo gestor podem ser publicadas na base oficial.');
   }
@@ -2677,6 +2707,8 @@ export async function publicarNegociacaoNaBaseOficial(id, dados = {}) {
     publicado_em: agora,
     data_inicio_vigencia: dados.data_inicio_vigencia || tabela.data_inicio_vigencia || null,
     substituir_tabela_anterior: Boolean(dados.substituir_tabela_anterior),
+    cnpj_transportadora: cnpj,
+    cnpj_raiz_transportadora: obterRaizCnpj(cnpj),
     observacao: texto(dados.observacao) || 'Publicada na base oficial',
     ...dados,
   });

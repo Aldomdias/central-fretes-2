@@ -1,3 +1,5 @@
+import { buscarEmpresaPorCnpj } from '../utils/filiaisCnpj.js';
+
 export const TOMADORES_CTE_PADRAO = ['CPX', 'ITR', 'GP PNEUS', 'GRIP', 'CANTU'];
 export const CTE_BASE_CONFIG_STORAGE_KEY = 'central_fretes_cte_base_config_v1';
 export const CTE_BASE_CONFIG_EVENT = 'central-fretes:cte-base-config';
@@ -192,6 +194,9 @@ function tomadorCorrespondeLista(tomadorNorm, permitido) {
 }
 
 function isTomadorListaPadrao(row = {}) {
+  const empresaPeloCnpj = buscarEmpresaPorCnpj(getCnpjTomadorCte(row));
+  if (empresaPeloCnpj && empresaPeloCnpj.codigo !== 'CP') return true;
+
   const tomador = normalizarTextoCte(getTomadorCte(row));
   if (!tomador || tomador === '-') return false;
   return TOMADORES_CTE_PADRAO.some((permitido) => tomadorCorrespondeLista(tomador, permitido));
@@ -214,12 +219,14 @@ export function avaliarCteParaBase(row = {}, opcoes = {}) {
   const remetente = getRemetenteCte(row);
   const destinatario = getDestinatarioCte(row);
   const cnpjTomador = getCnpjTomadorCte(row);
+  const empresaTomadora = buscarEmpresaPorCnpj(cnpjTomador);
 
   const base = {
     tomador: tomadorTexto,
     remetente,
     destinatario,
     cnpjTomador,
+    empresaTomadora,
   };
 
   const rejeitar = (codigo) => ({

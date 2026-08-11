@@ -7,6 +7,8 @@ import { normalizarChave } from '../services/vinculosTransportadorasPuro';
 import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaFaturas } from '../services/auditoriaFretesService';
 import { carregarSessao } from '../utils/authLocal';
 import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaTransportadorasService';
+import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
+import { atualizarCnpjsTransportadorasDb } from '../services/freteDatabaseService';
 
 // Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
 // e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
@@ -131,10 +133,34 @@ function normalizeText(value) {
     .toLowerCase();
 }
 
+function cityDisplayScore(value) {
+  const text = String(value || '').trim();
+  const hasAccent = text.normalize('NFD') !== text;
+  const hasLowercase = /[a-zà-ÿ]/.test(text);
+  return (hasAccent ? 2 : 0) + (hasLowercase ? 1 : 0);
+}
+
+function uniqueCityNames(cities = []) {
+  const byNormalizedName = new Map();
+
+  cities.forEach((city) => {
+    const displayName = String(city || '').trim();
+    const normalizedName = normalizeText(displayName);
+    if (!normalizedName) return;
+
+    const current = byNormalizedName.get(normalizedName);
+    if (!current || cityDisplayScore(displayName) > cityDisplayScore(current)) {
+      byNormalizedName.set(normalizedName, displayName);
+    }
+  });
+
+  return [...byNormalizedName.values()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
 function uniqueCities(items) {
-  return Array.from(new Set(
-    items.flatMap((item) => (item.origens || []).map((origem) => origem.cidade).filter(Boolean))
-  )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  return uniqueCityNames(
+    items.flatMap((item) => (item.origens || []).map((origem) => origem.cidade))
+  );
 }
 
 const CANAIS_DISPONIVEIS = ['ATACADO', 'B2C'];
@@ -245,16 +271,27 @@ function Modal({ open, title, children, onClose }) {
 }
 
 function TransportadoraModal({ open, initialValue, onSave, onClose }) {
-  const [form, setForm] = useState(initialValue || { nome: '', status: 'Ativa', origens: [] });
-  React.useEffect(() => setForm(initialValue || { nome: '', status: 'Ativa', origens: [] }), [initialValue, open]);
+  const novoFormulario = (value) => ({
+    ...(value || { nome: '', status: 'Ativa', origens: [] }),
+    cnpjTexto: formatarCnpj(value?.cnpj),
+  });
+  const [form, setForm] = useState(novoFormulario(initialValue));
+  React.useEffect(() => setForm(novoFormulario(initialValue)), [initialValue, open]);
+
+  const salvar = () => {
+    const cnpj = normalizarCnpj(form.cnpjTexto);
+    onSave({ ...form, cnpj, cnpjRaiz: obterRaizCnpj(cnpj) });
+  };
 
   return (
     <Modal open={open} title={initialValue?.id ? 'Editar Transportadora' : 'Nova Transportadora'} onClose={onClose}>
       <div className="form-grid">
         <div className="field"><label>Nome</label><input value={form.nome} onChange={(e) => setForm((f) => ({ ...f, nome: e.target.value }))} /></div>
+        <div className="field"><label>CNPJ</label><input value={form.cnpjTexto} onChange={(e) => setForm((f) => ({ ...f, cnpjTexto: e.target.value }))} placeholder="00.000.000/0000-00" /></div>
+        <div className="field"><label>Raiz do CNPJ (vínculos)</label><input value={obterRaizCnpj(form.cnpjTexto)} readOnly placeholder="00000000" /></div>
         <div className="field"><label>Status</label><select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}><option>Ativa</option><option>Inativa</option></select></div>
       </div>
-      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave(form)}>Salvar</button></div>
+      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={salvar}>Salvar</button></div>
     </Modal>
   );
 }
@@ -494,8 +531,8 @@ function TaxasEspeciaisTab({ origem, transportadora, store }) {
 
 function OrigemModal({ open, initialValue, onSave, onClose }) {
   const baseGeneralidades = { incideIcms: false, aliquotaIcms: 0, adValorem: 0, adValoremMinimo: 0, pedagio: 0, gris: 0, grisMinimo: 0, tas: 0, ctrc: 0, cubagem: 300, tipoCalculo: 'PERCENTUAL', observacoes: '' };
-  const [form, setForm] = useState(initialValue || { cidade: '', canal: 'ATACADO', status: 'Ativa', rotas: [], cotacoes: [], taxasEspeciais: [], generalidades: baseGeneralidades });
-  React.useEffect(() => setForm(initialValue || { cidade: '', canal: 'ATACADO', status: 'Ativa', rotas: [], cotacoes: [], taxasEspeciais: [], generalidades: baseGeneralidades }), [initialValue, open]);
+  const [form, setForm] = useState(initialValue || { cidade: '', codigoCentro: '', cnpj: '', cnpjRaiz: '', canal: 'ATACADO', status: 'Ativa', rotas: [], cotacoes: [], taxasEspeciais: [], generalidades: baseGeneralidades });
+  React.useEffect(() => setForm(initialValue || { cidade: '', codigoCentro: '', cnpj: '', cnpjRaiz: '', canal: 'ATACADO', status: 'Ativa', rotas: [], cotacoes: [], taxasEspeciais: [], generalidades: baseGeneralidades }), [initialValue, open]);
   const selecionados = canaisOrigem(form);
   const toggleCanal = (canal) => {
     const next = selecionados.includes(canal)
@@ -508,10 +545,14 @@ function OrigemModal({ open, initialValue, onSave, onClose }) {
     <Modal open={open} title={initialValue?.id ? 'Editar Origem' : 'Nova Origem'} onClose={onClose}>
       <div className="form-grid three">
         <div className="field"><label>Cidade</label><input value={form.cidade} onChange={(e) => setForm((f) => ({ ...f, cidade: e.target.value }))} /></div>
+        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro || ''} inputMode="numeric" placeholder="Ex.: 4201" onChange={(e) => setForm((f) => ({ ...f, codigoCentro: String(e.target.value || '').replace(/\D/g, '') }))} /></div>
+        <div className="field"><label>CNPJ da origem *</label><input value={formatarCnpj(form.cnpj)} maxLength={18} placeholder="00.000.000/0000-00" onChange={(e) => { const cnpj = normalizarCnpj(e.target.value); setForm((f) => ({ ...f, cnpj, cnpjRaiz: obterRaizCnpj(cnpj) })); }} /></div>
+        <div className="field"><label>Raiz do CNPJ</label><input value={obterRaizCnpj(form.cnpj)} readOnly placeholder="Preenchida automaticamente" /></div>
         <div className="field"><label>Canais</label><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{CANAIS_DISPONIVEIS.map((canal) => <label key={canal} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}><input type="checkbox" checked={selecionados.includes(canal)} onChange={() => toggleCanal(canal)} />{canal}</label>)}</div></div>
         <div className="field"><label>Status</label><select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}><option>Ativa</option><option>Inativa</option></select></div>
       </div>
-      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave({ ...form, canal: canalOrigemValor(selecionados) })} disabled={!selecionados.length}>Salvar</button></div>
+      {!cnpjPreenchidoValido(form.cnpj) ? <div className="mini-feedback info top-space">Informe o CNPJ completo da filial de origem.</div> : null}
+      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave({ ...form, codigoCentro: String(form.codigoCentro || '').replace(/\D/g, ''), cnpj: normalizarCnpj(form.cnpj), cnpjRaiz: obterRaizCnpj(form.cnpj), canal: canalOrigemValor(selecionados) })} disabled={!selecionados.length || !String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)}>Salvar</button></div>
     </Modal>
   );
 }
@@ -551,11 +592,61 @@ function CoberturaBadge({ cobertura, severidade }) {
   return <span className={className}>{cobertura}</span>;
 }
 
-function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinculosSet, auditoresMap }) {
+function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinculosSet, auditoresMap, store }) {
   const [busca, setBusca] = useState('');
   const [somentePendentes, setSomentePendentes] = useState(false);
   const [somenteSemVinculo, setSomenteSemVinculo] = useState(false);
   const [somenteSemAuditor, setSomenteSemAuditor] = useState(false);
+  const [filtroCnpj, setFiltroCnpj] = useState('');
+  const [importandoCnpj, setImportandoCnpj] = useState(false);
+  const [feedbackCnpj, setFeedbackCnpj] = useState('');
+
+  const exportarCadastroCnpj = () => {
+    const planilha = XLSX.utils.json_to_sheet(items.map((item) => ({
+      ID: item.id,
+      Transportadora: item.nome || '',
+      CNPJ: normalizarCnpj(item.cnpj),
+      'Raiz CNPJ': obterRaizCnpj(item.cnpj),
+      Situação: normalizarCnpj(item.cnpj).length === 14 ? 'COM CNPJ' : 'SEM CNPJ',
+    })));
+    planilha['!cols'] = [{ wch: 38 }, { wch: 42 }, { wch: 20 }, { wch: 14 }, { wch: 14 }];
+    const arquivo = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(arquivo, planilha, 'Transportadoras');
+    XLSX.writeFile(arquivo, 'cadastro-cnpj-transportadoras.xlsx');
+  };
+
+  const importarCadastroCnpj = async (file) => {
+    if (!file) return;
+    setImportandoCnpj(true);
+    setFeedbackCnpj('');
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
+      const porId = new Map(items.map((item) => [String(item.id), item]));
+      const porNome = new Map(items.map((item) => [normalizarChave(item.nome), item]));
+      const validas = [];
+      let rejeitadas = 0;
+      rows.forEach((row) => {
+        const id = String(row.ID || row.Id || row.id || '').trim();
+        const existente = porId.get(id) || porNome.get(normalizarChave(row.Transportadora || row.transportadora));
+        const cnpj = normalizarCnpj(row.CNPJ || row.cnpj);
+        if (!existente || cnpj.length !== 14) { if (cnpj || id) rejeitadas += 1; return; }
+        validas.push({ id: existente.id, cnpj });
+      });
+      const resultado = await atualizarCnpjsTransportadorasDb(validas);
+      await store?.atualizarResumo?.();
+      setFeedbackCnpj(`${resultado.atualizadas} transportadora(s) atualizada(s)${rejeitadas ? `; ${rejeitadas} linha(s) rejeitada(s)` : ''}.`);
+    } catch (error) {
+      setFeedbackCnpj(`Erro na importação: ${error.message || error}`);
+    } finally {
+      setImportandoCnpj(false);
+    }
+  };
+
+  const totaisCnpj = useMemo(() => {
+    const comCnpj = items.filter((item) => normalizarCnpj(item.cnpj).length === 14).length;
+    return { comCnpj, semCnpj: items.length - comCnpj };
+  }, [items]);
 
   const linhas = useMemo(() => {
     return items
@@ -570,14 +661,16 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
         const chave = normalizarChave(item.nome);
         const comVinculo = vinculosSet ? vinculosSet.has(chave) : null;
         const auditor = auditoresMap ? (auditoresMap.get(chave) || null) : null;
-        return { id: item.id, nome: item.nome, total, validadas, pendentes, ultimaValidacao, comVinculo, auditor };
+        const cnpj = normalizarCnpj(item.cnpj);
+        return { id: item.id, nome: item.nome, cnpj, cnpjRaiz: obterRaizCnpj(cnpj), total, validadas, pendentes, ultimaValidacao, comVinculo, auditor };
       })
       .filter((linha) => !busca || normalizeText(linha.nome).includes(normalizeText(busca)))
       .filter((linha) => !somentePendentes || linha.pendentes > 0)
       .filter((linha) => !somenteSemVinculo || linha.comVinculo === false)
       .filter((linha) => !somenteSemAuditor || !linha.auditor)
+      .filter((linha) => !filtroCnpj || (filtroCnpj === 'com' ? linha.cnpj.length === 14 : linha.cnpj.length !== 14))
       .sort((a, b) => b.pendentes - a.pendentes || a.nome.localeCompare(b.nome, 'pt-BR'));
-  }, [items, busca, somentePendentes, somenteSemVinculo, somenteSemAuditor, vinculosSet, auditoresMap]);
+  }, [items, busca, somentePendentes, somenteSemVinculo, somenteSemAuditor, filtroCnpj, vinculosSet, auditoresMap]);
 
   const totalOrigens = linhas.reduce((acc, l) => acc + l.total, 0);
   const totalValidadas = linhas.reduce((acc, l) => acc + l.validadas, 0);
@@ -588,10 +681,33 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
       <p style={{ marginTop: -8, color: '#64748b' }}>
         {totalValidadas} de {totalOrigens} origem(ns) validada(s) no total ({linhas.filter((l) => l.pendentes === 0 && l.total > 0).length} transportadora(s) 100% validada(s)).
       </p>
+      <div className="inline-meta top-space"><span><strong>{totaisCnpj.comCnpj}</strong> com CNPJ</span><span><strong>{totaisCnpj.semCnpj}</strong> sem CNPJ</span></div>
+      <div className="inline-meta top-space">
+        <span>Mostrando <strong>{linhas.length}</strong> de <strong>{items.length}</strong> transportadora(s)</span>
+        {(busca || somentePendentes || somenteSemVinculo || somenteSemAuditor || filtroCnpj) ? (
+          <button className="btn-link inline-btn" onClick={() => { setBusca(''); setSomentePendentes(false); setSomenteSemVinculo(false); setSomenteSemAuditor(false); setFiltroCnpj(''); }}>Limpar filtros</button>
+        ) : null}
+      </div>
+      <div className="toolbar-wrap top-space">
+        <button className="btn-secondary" onClick={exportarCadastroCnpj}>Exportar cadastro</button>
+        <label className="btn-secondary" style={{ cursor: importandoCnpj ? 'wait' : 'pointer' }}>
+          {importandoCnpj ? 'Importando...' : 'Importar cadastro'}
+          <input type="file" accept=".xlsx,.xls,.csv" hidden disabled={importandoCnpj} onChange={(e) => { importarCadastroCnpj(e.target.files?.[0]); e.target.value = ''; }} />
+        </label>
+        {feedbackCnpj ? <span style={{ fontSize: 12, color: feedbackCnpj.startsWith('Erro') ? '#b91c1c' : '#166534', fontWeight: 600 }}>{feedbackCnpj}</span> : null}
+      </div>
       <div className="form-grid two top-space">
         <div className="field">
           <label>Buscar transportadora</label>
           <input className="search-input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Digite o nome..." />
+        </div>
+        <div className="field">
+          <label>Situação do CNPJ</label>
+          <select value={filtroCnpj} onChange={(e) => setFiltroCnpj(e.target.value)}>
+            <option value="">Todas</option>
+            <option value="com">Com CNPJ</option>
+            <option value="sem">Sem CNPJ</option>
+          </select>
         </div>
         <div className="field" style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 400 }}>
@@ -610,11 +726,12 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
       </div>
       <div className="table-card top-space" style={{ maxHeight: 420, overflowY: 'auto' }}>
         <table>
-          <thead><tr><th>Transportadora</th><th>Validadas</th><th>Pendentes</th><th>Última validação</th><th>Vínculo</th><th>Auditor</th><th>Progresso</th><th></th></tr></thead>
+          <thead><tr><th>Transportadora</th><th>CNPJ / raiz</th><th>Validadas</th><th>Pendentes</th><th>Última validação</th><th>Vínculo</th><th>Auditor</th><th>Progresso</th><th></th></tr></thead>
           <tbody>
             {linhas.length ? linhas.map((linha) => (
               <tr key={linha.id}>
                 <td>{linha.nome}</td>
+                <td style={{ fontSize: 12 }}>{linha.cnpj ? <>{formatarCnpj(linha.cnpj)}<br /><span style={{ color: '#64748b' }}>Raiz {linha.cnpjRaiz}</span></> : <span style={{ color: '#b91c1c', fontWeight: 700 }}>Sem CNPJ</span>}</td>
                 <td>{linha.validadas} / {linha.total}</td>
                 <td>{linha.pendentes ? <span style={{ color: '#b45309', fontWeight: 700 }}>{linha.pendentes}</span> : <span style={{ color: '#166534' }}>0</span>}</td>
                 <td style={{ fontSize: 12, color: '#64748b' }}>
@@ -641,7 +758,7 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
                   <button className="btn-link inline-btn" onClick={() => { onOpenTransportadora(linha.id); onClose(); }}>Abrir</button>
                 </td>
               </tr>
-            )) : <tr><td colSpan={8} className="empty-cell">Nenhuma transportadora encontrada.</td></tr>}
+            )) : <tr><td colSpan={9} className="empty-cell">Nenhuma transportadora encontrada.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1035,7 +1152,8 @@ function TransportadorasList({ items, onOpen, store }) {
   }, [idsVisiveis, store?.syncStatus?.rascunhoLocal]);
 
   const saveTransportadora = (form) => {
-    store.salvarTransportadora({ ...editing, ...form, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
+    const { cnpjTexto, ...dados } = form;
+    store.salvarTransportadora({ ...editing, ...dados, id: editing?.id ?? nextId(items), origens: editing?.origens ?? [] });
     setModalOpen(false);
     setEditing(null);
   };
@@ -1093,10 +1211,18 @@ function TransportadorasList({ items, onOpen, store }) {
           </div>
           <div className="field">
             <label>Cidade de origem</label>
-            <select value={cidadeFiltro} onChange={(e) => setCidadeFiltro(e.target.value)}>
-              <option value="">Todas as cidades</option>
-              {cidades.map((cidade) => <option key={cidade} value={cidade}>{cidade}</option>)}
-            </select>
+            <input
+              className="search-input search-input-full"
+              type="search"
+              list="transportadoras-cidades-origem"
+              value={cidadeFiltro}
+              onChange={(e) => setCidadeFiltro(e.target.value)}
+              placeholder="Digite e selecione uma cidade..."
+              autoComplete="off"
+            />
+            <datalist id="transportadoras-cidades-origem">
+              {cidades.map((cidade) => <option key={normalizeText(cidade)} value={cidade} />)}
+            </datalist>
           </div>
           <div className="field">
             <label>Canal</label>
@@ -1131,7 +1257,7 @@ function TransportadorasList({ items, onOpen, store }) {
           const resumo = buildResumoTransportadora(item);
           const carregandoItem = (store?.syncStatus?.carregandoDetalheIds || [])
             .some((id) => String(id) === String(item.id));
-          const cidadesDaTransportadora = Array.from(new Set((item.origens || []).map((origem) => origem.cidade).filter(Boolean)));
+          const cidadesDaTransportadora = uniqueCityNames((item.origens || []).map((origem) => origem.cidade));
           const cardClass = resumo.severidade === 'error'
             ? 'list-card alert-error'
             : resumo.severidade === 'warn'
@@ -1192,7 +1318,7 @@ function TransportadorasList({ items, onOpen, store }) {
         </div>
       ) : null}
       <TransportadoraModal open={modalOpen} initialValue={editing} onSave={saveTransportadora} onClose={() => { setModalOpen(false); setEditing(null); }} />
-      <PainelValidacaoModal open={painelValidacaoOpen} items={items} onClose={() => setPainelValidacaoOpen(false)} onOpenTransportadora={onOpen} vinculosSet={vinculosSet} auditoresMap={auditoresMap} />
+      <PainelValidacaoModal open={painelValidacaoOpen} items={items} onClose={() => setPainelValidacaoOpen(false)} onOpenTransportadora={onOpen} vinculosSet={vinculosSet} auditoresMap={auditoresMap} store={store} />
       <HistoricoAlteracoesModal open={historicoOpen} onClose={() => setHistoricoOpen(false)} />
     </div>
   );
@@ -1663,8 +1789,42 @@ function TabButton({ active, children, onClick }) {
   return <button className={active ? 'tab-btn active' : 'tab-btn'} onClick={onClick}>{children}</button>;
 }
 
+function CadastroOrigemTab({ transportadoraId, origem, store }) {
+  const [form, setForm] = useState({ cidade: origem.cidade || '', codigoCentro: origem.codigoCentro || origem.codigo_centro || '', cnpj: normalizarCnpj(origem.cnpj), status: origem.status || 'Ativa' });
+  const [feedback, setFeedback] = useState('');
+
+  React.useEffect(() => {
+    setForm({ cidade: origem.cidade || '', codigoCentro: origem.codigoCentro || origem.codigo_centro || '', cnpj: normalizarCnpj(origem.cnpj), status: origem.status || 'Ativa' });
+    setFeedback('');
+  }, [origem]);
+
+  const salvar = () => {
+    if (!String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)) return;
+    store.salvarOrigem(transportadoraId, { ...origem, cidade: String(form.cidade).trim(), codigoCentro: String(form.codigoCentro).replace(/\D/g, ''), cnpj: normalizarCnpj(form.cnpj), cnpjRaiz: obterRaizCnpj(form.cnpj), status: form.status });
+    setFeedback('Cadastro atualizado. Volte para a transportadora e clique em “Salvar alterações” para gravar no Supabase.');
+  };
+
+  return (
+    <div className="panel-card">
+      <div className="tab-panel-header"><p>Identificação da filial de origem usada nos vínculos por CNPJ.</p></div>
+      <div className="form-grid three">
+        <div className="field"><label>Cidade *</label><input value={form.cidade} onChange={(e) => { setForm((prev) => ({ ...prev, cidade: e.target.value })); setFeedback(''); }} /></div>
+        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro} inputMode="numeric" placeholder="Ex.: 4201" onChange={(e) => { setForm((prev) => ({ ...prev, codigoCentro: String(e.target.value || '').replace(/\D/g, '') })); setFeedback(''); }} /></div>
+        <div className="field"><label>CNPJ da origem *</label><input value={formatarCnpj(form.cnpj)} maxLength={18} placeholder="00.000.000/0000-00" onChange={(e) => { setForm((prev) => ({ ...prev, cnpj: normalizarCnpj(e.target.value) })); setFeedback(''); }} /></div>
+        <div className="field"><label>Raiz do CNPJ</label><input value={obterRaizCnpj(form.cnpj)} readOnly placeholder="Preenchida automaticamente" /></div>
+        <div className="field"><label>Status</label><select value={form.status} onChange={(e) => { setForm((prev) => ({ ...prev, status: e.target.value })); setFeedback(''); }}><option>Ativa</option><option>Inativa</option></select></div>
+      </div>
+      {!cnpjPreenchidoValido(form.cnpj) ? <div className="mini-feedback info top-space">Informe o CNPJ completo da origem.</div> : null}
+      <div className="actions-right top-space" style={{ alignItems: 'center', gap: 12 }}>
+        {feedback ? <span style={{ color: '#166534', fontWeight: 600, fontSize: 13 }}>{feedback}</span> : null}
+        <button className="btn-primary" onClick={salvar} disabled={!String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)}>Salvar Cadastro</button>
+      </div>
+    </div>
+  );
+}
+
 function OrigemDetail({ transportadora, origem, onBack, store }) {
-  const [aba, setAba] = useState('generalidades');
+  const [aba, setAba] = useState('cadastro');
   const [inconsistenciasOpen, setInconsistenciasOpen] = useState(false);
   const rotasColumns = [
     { key: 'nomeRota', label: 'Nome da Rota' }, { key: 'ibgeOrigem', label: 'IBGE Origem' }, { key: 'ibgeDestino', label: 'IBGE Destino' }, { key: 'canal', label: 'Canal' }, { key: 'prazoEntregaDias', label: 'Prazo' }, { key: 'valorMinimoFrete', label: 'Mínimo' },
@@ -1689,7 +1849,8 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
     <div className="page-shell">
       <button className="back-link" onClick={onBack}>← {transportadora.nome}</button>
       <div className="page-top between align-start"><div><h1 className="detail-title">{origem.cidade} —</h1><div className="detail-subtitle">{transportadora.nome} · <strong>{canalOrigemLabel(origem)}</strong> · {origem.rotas.length} rota(s)</div></div><div className="toolbar-wrap"><button className="btn-secondary" onClick={() => setInconsistenciasOpen(true)}>Ver inconsistências</button><button className="btn-secondary" onClick={() => gerarArquivosVerum(transportadora, origem)}>Gerar arquivo Verum</button><span className="status-pill dark">{origem.status}</span></div></div>
-      <div className="tabs-row"><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
+      <div className="tabs-row"><TabButton active={aba === 'cadastro'} onClick={() => setAba('cadastro')}>Cadastro</TabButton><TabButton active={aba === 'canal'} onClick={() => setAba('canal')}>Canal</TabButton><TabButton active={aba === 'generalidades'} onClick={() => setAba('generalidades')}>Generalidades</TabButton><TabButton active={aba === 'rotas'} onClick={() => setAba('rotas')}>Rotas</TabButton><TabButton active={aba === 'cotacoes'} onClick={() => setAba('cotacoes')}>Cotações</TabButton><TabButton active={aba === 'taxas'} onClick={() => setAba('taxas')}>Taxas Especiais</TabButton></div>
+      {aba === 'cadastro' && <CadastroOrigemTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'canal' && <CanalTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'generalidades' && <GeneralidadesTab transportadoraId={transportadora.id} origem={origem} store={store} />}
       {aba === 'rotas' && <CrudTab title="Rota" secao="rotas" tipoImportacao="rotas" origem={origem} transportadora={transportadora} store={store} columns={rotasColumns} fields={rotasFields} hint={<>Use <strong>Baixar Modelo</strong> para subir rotas no padrão do seu arquivo real. Também há <strong>Exportar</strong> e <strong>Excluir Tudo</strong>.</>} />}

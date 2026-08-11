@@ -14,6 +14,7 @@ import {
   salvarSecaoDb,
 } from '../services/freteDatabaseService';
 import { registrarAlteracaoTransportadora } from '../services/auditoriaTransportadorasService';
+import { normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 
 const STORAGE_KEY = 'simulador-fretes-local-v6';
 
@@ -76,6 +77,8 @@ function normalizeTransportadora(transportadora = {}) {
     ...transportadora,
     id: transportadora.id ?? safeRandomId(),
     status: transportadora.status || 'Ativa',
+    cnpj: normalizarCnpj(transportadora.cnpj),
+    cnpjRaiz: String(transportadora.cnpjRaiz || transportadora.cnpj_raiz || obterRaizCnpj(transportadora.cnpj)).replace(/\D/g, '').slice(0, 8),
     tde: Number(transportadora.tde) || 0,
     tdeCnpjs: Array.isArray(transportadora.tdeCnpjs)
       ? transportadora.tdeCnpjs.map((item) => String(item || '').replace(/\D/g, '')).filter(Boolean)

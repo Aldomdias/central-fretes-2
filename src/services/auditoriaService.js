@@ -268,7 +268,7 @@ function montarResumoFonte({ fonte, filtro, data = [], error = null, parcial = f
   };
 }
 
-async function consultarFontePaginada({ supabase, fonte, competencia, datas, filtro = 'competencia', onProgress }) {
+async function consultarFontePaginada({ supabase, fonte, competencia, datas, filtro = 'competencia', transportadoras, onProgress }) {
   const registros = [];
   let from = 0;
 
@@ -279,6 +279,10 @@ async function consultarFontePaginada({ supabase, fonte, competencia, datas, fil
       query = query.eq('competencia', competencia);
     } else {
       query = query.gte(fonte.campoData, datas.inicio).lte(fonte.campoData, datas.fim);
+    }
+
+    if (transportadoras?.length) {
+      query = query.in('transportadora', transportadoras);
     }
 
     query = query.range(from, from + PAGE_SIZE - 1);
@@ -330,7 +334,7 @@ function normalizarCanalAuditoria(valor) {
   return v;
 }
 
-export async function carregarDadosAuditoria({ competencia = '', dataInicio = '', dataFim = '', canais, onProgress } = {}) {
+export async function carregarDadosAuditoria({ competencia = '', dataInicio = '', dataFim = '', canais, transportadoras, onProgress } = {}) {
   if (!isSupabaseConfigured()) {
     throw new Error('Supabase não configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
   }
@@ -359,6 +363,7 @@ export async function carregarDadosAuditoria({ competencia = '', dataInicio = ''
         competencia,
         datas,
         filtro: 'competencia',
+        transportadoras,
         onProgress,
       });
 
@@ -398,6 +403,7 @@ export async function carregarDadosAuditoria({ competencia = '', dataInicio = ''
       competencia,
       datas,
       filtro: 'data',
+      transportadoras,
       onProgress,
     });
 

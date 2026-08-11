@@ -13,6 +13,7 @@ import {
 } from '../utils/calculoFrete';
 import { resolverAliquotaIcmsUfContexto } from '../utils/icmsUfMatrix';
 import { buscarTrackingParaRealizado, enriquecerRealizadoComTracking } from './realizadoTrackingEnrichment';
+import { obterRaizCnpj } from '../utils/cnpj.js';
 
 const PAGE_SIZE = 1000;
 const INSERT_CHUNK = 500;
@@ -407,6 +408,7 @@ export function normalizarTransportadoras(transportadoras = []) {
   return (transportadoras || []).map((transportadora) => ({
     ...transportadora,
     __nomeNorm: normalizeTransportadoraCompare(transportadora.nome),
+    __cnpjRaiz: obterRaizCnpj(transportadora.cnpjRaiz || transportadora.cnpj),
     origens: (transportadora.origens || []).map((origem) => ({
       ...origem,
       __cidadeNorm: normalizeCompare(origem.cidade),
@@ -483,7 +485,13 @@ async function carregarBaseFreteParaRegistros(registros = [], onProgress, transp
   return _cacheBaseFrete;
 }
 
-function localizarTransportadoras(transportadoras = [], nomeCte = '') {
+function localizarTransportadoras(transportadoras = [], nomeCte = '', cnpjCte = '') {
+  const raizCte = obterRaizCnpj(cnpjCte);
+  if (raizCte) {
+    const porCnpj = transportadoras.filter((item) => item.__cnpjRaiz === raizCte);
+    if (porCnpj.length) return porCnpj;
+  }
+
   const nomeNorm = normalizeTransportadoraCompare(nomeCte);
   if (!nomeNorm) return [];
 
@@ -566,7 +574,8 @@ function pesoCte(cte = {}, opcoes = {}) {
 
 function localizarTabelaAuditoria(transportadoras = [], cte = {}, mapaVinculos = null, transportadoraAlvo = '') {
   const transportadoraNome = transportadoraAlvo || nomeTransportadoraCte(cte, mapaVinculos);
-  const candidatasTransportadora = localizarTransportadoras(transportadoras, transportadoraNome);
+  const cnpjTransportadora = pick(cte, ['cnpj_transportadora', 'cnpjTransportadora', 'cnpj_transportador']);
+  const candidatasTransportadora = localizarTransportadoras(transportadoras, transportadoraNome, cnpjTransportadora);
   if (!candidatasTransportadora.length) return { status: 'SEM_TABELA' };
 
   const tentativas = [];
@@ -1185,6 +1194,102 @@ export async function resimularRegistros({ registros, transportadorasAlvo, onPro
   }
 
   return out;
+}
+
+export async function carregarOpcoesPreFiltroAuditoria() {
+  const supabase = ensureSupabase();
+  const consultarComRetry = async (consulta) => {
+    let resposta;
+    for (let tentativa = 0; tentativa < 3; tentativa += 1) {
+      resposta = await consulta();
+      if (!resposta.error || !/PGRST002|schema cache|503/i.test(`${resposta.error.code || ''} ${resposta.error.message || ''}`)) return resposta;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (tentativa + 1)));
+    }
+    return resposta;
+  };
+  const [{ data, error }, { data: vinculos, error: erroVinculos }] = await Promise.all([
+    consultarComRetry(() => supabase.from('auditoria_carteiras').select('transportadora,auditor_nome,auditor_email').order('transportadora', { ascending: true })),
+    consultarComRetry(() => supabase.from('transportadora_vinculos').select('nome_cte,nome_tabela')),
+  ]);
+  if (error) throw new Error(`Erro ao carregar transportadoras e auditores: ${error.message}`);
+  const carteiras = data || [];
+  return {
+    carteiras,
+    vinculos: erroVinculos ? [] : (vinculos || []),
+    transportadoras: [...new Set(carteiras.map((item) => String(item.transportadora || '').trim()).filter(Boolean))],
+    auditores: [...new Set(carteiras.map((item) => String(item.auditor_nome || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR')),
+  };
+}
+
+export async function enriquecerCtesComFaturas(registros = []) {
+  if (!registros.length) return registros;
+  const supabase = ensureSupabase();
+  const somenteDigitos = (valor) => String(valor || '').replace(/\D/g, '');
+  const chaves = [...new Set(registros.map((r) => somenteDigitos(r.chave_cte)).filter(Boolean))];
+  const numeros = [...new Set(registros.filter((r) => !somenteDigitos(r.chave_cte)).map((r) => somenteDigitos(r.numero_cte)).filter(Boolean))];
+  const detalhes = [];
+  for (let inicio = 0; inicio < chaves.length; inicio += 100) {
+    const { data, error } = await supabase.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte').in('chave_cte', chaves.slice(inicio, inicio + 100));
+    if (!error) detalhes.push(...(data || []));
+  }
+  for (let inicio = 0; inicio < numeros.length; inicio += 100) {
+    const { data, error } = await supabase.from('fatura_detalhes').select('fatura_id,chave_cte,numero_cte').in('numero_cte', numeros.slice(inicio, inicio + 100));
+    if (!error) detalhes.push(...(data || []));
+  }
+  const ids = [...new Set(detalhes.map((item) => item.fatura_id).filter(Boolean))];
+  const faturas = [];
+  for (let inicio = 0; inicio < ids.length; inicio += 100) {
+    const { data, error } = await supabase.from('faturas').select('id,numero_fatura,status').in('id', ids.slice(inicio, inicio + 100));
+    if (!error) faturas.push(...(data || []));
+  }
+  const porId = new Map(faturas.map((fatura) => [fatura.id, fatura]));
+  const normalizarNome = (valor) => String(valor || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+  const [{ data: transportadoras }, { data: origens }, { data: vinculos }] = await Promise.all([
+    supabase.from('transportadoras').select('id,nome'),
+    supabase.from('origens').select('transportadora_id,validado'),
+    supabase.from('transportadora_vinculos').select('nome_cte,nome_tabela'),
+  ]);
+  const vinculoPorNome = new Map((vinculos || []).map((item) => [normalizarNome(item.nome_cte), item.nome_tabela]));
+  const validacaoPorId = new Map();
+  (origens || []).forEach((origem) => {
+    const atual = validacaoPorId.get(origem.transportadora_id) || { total: 0, validadas: 0 };
+    atual.total += 1;
+    if (origem.validado) atual.validadas += 1;
+    validacaoPorId.set(origem.transportadora_id, atual);
+  });
+  const validacaoPorNome = new Map((transportadoras || []).map((transportadora) => {
+    const resumo = validacaoPorId.get(transportadora.id) || { total: 0, validadas: 0 };
+    return [normalizarNome(transportadora.nome), { ...resumo, validada: resumo.total > 0 && resumo.validadas === resumo.total }];
+  }));
+  const porIdentificador = new Map();
+  detalhes.forEach((item) => {
+    const fatura = porId.get(item.fatura_id);
+    if (!fatura) return;
+    [somenteDigitos(item.chave_cte), somenteDigitos(item.numero_cte)].filter(Boolean).forEach((id) => {
+      if (!porIdentificador.has(id)) porIdentificador.set(id, new Map());
+      porIdentificador.get(id).set(fatura.id, fatura);
+    });
+  });
+  return registros.map((row) => {
+    const vinculadas = new Map();
+    const chave = somenteDigitos(row.chave_cte);
+    const idsLinha = chave ? [chave] : [somenteDigitos(row.numero_cte)].filter(Boolean);
+    idsLinha.forEach((id) => {
+      porIdentificador.get(id)?.forEach((fatura, faturaId) => vinculadas.set(faturaId, fatura));
+    });
+    const lista = [...vinculadas.values()];
+    const nomeBruto = String(row.transportadora || '');
+    const nomeTabela = vinculoPorNome.get(normalizarNome(nomeBruto)) || nomeBruto;
+    const validacaoAtual = validacaoPorNome.get(normalizarNome(nomeTabela));
+    return {
+      ...row,
+      tem_fatura: lista.length > 0,
+      faturas_vinculadas: lista,
+      numeros_fatura: lista.map((fatura) => fatura.numero_fatura).filter(Boolean),
+      transportadora_validada_atual: validacaoAtual?.validada,
+      validacao_origens_atual: validacaoAtual || null,
+    };
+  });
 }
 
 export async function carregarResultadosAuditoriaMes({ competencia, dataInicio, dataFim, limite, canais, transportadoras, colunas = '*', onProgress } = {}) {

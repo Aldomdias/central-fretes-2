@@ -46,7 +46,9 @@ import {
   solicitarComplementoNegociacao,
   publicarNegociacaoNaBaseOficial,
   garantirNegociadorAoAbrir,
+  buscarCnpjTransportadoraCadastro,
 } from '../services/tabelasNegociacaoService';
+import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
 import { LaudoNegociacaoTemplate, LaudoRodadasNegociacaoTemplate } from '../components/laudos';
 import LaudoTransportadoraConsolidadoTemplate from '../components/laudos/LaudoTransportadoraConsolidadoTemplate';
 import LaudoEmailAcoes from '../components/laudos/LaudoEmailAcoes';
@@ -998,7 +1000,7 @@ export default function TabelasNegociacaoPage() {
   const [modalAprovacao, setModalAprovacao] = useState(null);
   const [aprovacao, setAprovacao] = useState({
     data_inicio_vigencia: hojeISO(), substituir_tabela_anterior: false, promover_para_oficial: false,
-    usuario_aprovacao: '', observacao_aprovacao: '', justificativa_aprovacao: '',
+    usuario_aprovacao: '', observacao_aprovacao: '', justificativa_aprovacao: '', cnpj_transportadora: '',
   });
   const [modalNovaOrigem, setModalNovaOrigem] = useState(null);
   const [novaOrigem, setNovaOrigem] = useState(Object.assign({}, NOVA_ORIGEM_VAZIA));
@@ -2522,8 +2524,9 @@ export default function TabelasNegociacaoPage() {
     return handleAbrirNovaRodadaTabela(selecionada);
   }
 
-  function abrirModalAprovacao(tabela) {
+  async function abrirModalAprovacao(tabela) {
     setModalAprovacao(tabela);
+    const cnpjSalvo = normalizarCnpj(tabela?.cnpj_transportadora);
     setAprovacao({
       data_inicio_vigencia: hojeISO(),
       substituir_tabela_anterior: isReajusteNegociacao(tabela),
@@ -2533,24 +2536,40 @@ export default function TabelasNegociacaoPage() {
       justificativa_aprovacao: '',
       tabela_base_id: tabela?.tabela_base_id || '',
       transportadora_base_nome: tabela?.transportadora_base_nome || tabela?.transportadora || '',
+      cnpj_transportadora: formatarCnpj(cnpjSalvo),
       modo: podePublicarOficial(tabela) && usuarioEhGestor(sessao) ? 'publicar' : 'enviar',
     });
+    if (!cnpjSalvo) {
+      try {
+        const cadastro = await buscarCnpjTransportadoraCadastro(tabela?.transportadora);
+        if (cadastro?.cnpj) {
+          setAprovacao(function(p) { return Object.assign({}, p, { cnpj_transportadora: formatarCnpj(cadastro.cnpj) }); });
+        }
+      } catch {
+        // O preenchimento automático é auxiliar; o campo permanece editável.
+      }
+    }
   }
 
   async function confirmarAprovacao() {
     if (!modalAprovacao) return;
     if (!aprovacao.justificativa_aprovacao.trim()) return setErro('Informe uma justificativa.');
+    if (!cnpjPreenchidoValido(aprovacao.cnpj_transportadora)) return setErro('Informe o CNPJ completo da transportadora.');
+    const dadosAprovacao = Object.assign({}, aprovacao, {
+      cnpj_transportadora: normalizarCnpj(aprovacao.cnpj_transportadora),
+      cnpj_raiz_transportadora: obterRaizCnpj(aprovacao.cnpj_transportadora),
+    });
     setSalvando(true); setErro(''); setSucesso('');
     try {
       var at;
       if (aprovacao.modo === 'publicar' && podePublicarOficial(modalAprovacao)) {
-        at = await publicarNegociacaoNaBaseOficial(modalAprovacao.id, Object.assign({}, aprovacao, {
+        at = await publicarNegociacaoNaBaseOficial(modalAprovacao.id, Object.assign({}, dadosAprovacao, {
           usuario: sessao,
           observacao: aprovacao.observacao_aprovacao || aprovacao.justificativa_aprovacao,
         }));
         setSucesso('Negociação publicada na base oficial.');
       } else if (aprovacao.modo === 'aprovar_gestor' && usuarioEhGestor(sessao)) {
-        at = await aprovarGestorNegociacao(modalAprovacao.id, Object.assign({}, aprovacao, {
+        at = await aprovarGestorNegociacao(modalAprovacao.id, Object.assign({}, dadosAprovacao, {
           usuario: sessao,
           aprovador_id: sessao?.id,
           aprovador_nome: sessao?.nome,
@@ -2560,6 +2579,7 @@ export default function TabelasNegociacaoPage() {
         at = await enviarParaAprovacaoGestor(modalAprovacao.id, {
           usuario: sessao,
           observacao: aprovacao.justificativa_aprovacao,
+          cnpj_transportadora: dadosAprovacao.cnpj_transportadora,
         });
         setSucesso('Negociação enviada para aprovação do gestor.');
       }
@@ -4219,6 +4239,19 @@ export default function TabelasNegociacaoPage() {
                 ? ' Esta negociação já foi aprovada pelo gestor e pode ser promovida para a base oficial.'
                 : ' A negociação não irá direto para a base oficial — o gestor precisa aprovar antes da publicação.'}
             </p>
+            <div className="sim-form-grid sim-grid-2" style={{ marginBottom: 12 }}>
+              <label>CNPJ da transportadora <strong style={{ color: '#b91c1c' }}>*</strong>
+                <input
+                  value={aprovacao.cnpj_transportadora}
+                  onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { cnpj_transportadora: e.target.value }); }); }}
+                  placeholder="00.000.000/0000-00"
+                  required
+                />
+              </label>
+              <label>Raiz usada nos vínculos
+                <input value={obterRaizCnpj(aprovacao.cnpj_transportadora)} readOnly placeholder="00000000" />
+              </label>
+            </div>
             <div className="sim-form-grid sim-grid-2">
               <label>Data início de vigência
                 <input type="date" value={aprovacao.data_inicio_vigencia} onChange={function(e) { setAprovacao(function(p) { return Object.assign({}, p, { data_inicio_vigencia: e.target.value }); }); }} />

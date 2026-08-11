@@ -78,6 +78,30 @@ function onlyDigitsDb(value) {
   return String(value || '').replace(/\D/g, '');
 }
 
+function isTransportadoraCnpjColumnMissing(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || (message.includes('transportadoras.cnpj') && message.includes('does not exist'))
+    || (message.includes("'cnpj'") && message.includes('schema cache'));
+}
+
+async function carregarTransportadorasResumoCompat(supabase) {
+  const atual = await supabase
+    .from('transportadoras')
+    .select('id, nome, status, cnpj, cnpj_raiz')
+    .order('nome', { ascending: true });
+
+  if (!isTransportadoraCnpjColumnMissing(atual.error)) return atual;
+
+  // Permite testar o front antes de aplicar a migration no Supabase. Os campos
+  // ficam vazios até as colunas serem criadas, mas a tela antiga segue abrindo.
+  return supabase
+    .from('transportadoras')
+    .select('id, nome, status')
+    .order('nome', { ascending: true });
+}
+
 function pickFirstDb(...values) {
   for (const value of values) {
     if (value !== undefined && value !== null && String(value).trim() !== '') return value;
@@ -190,6 +214,9 @@ function normalizeOrigemFromDb(origem, generalidade, rotas, cotacoes, taxasEspec
   return {
     id: origem.id,
     cidade: origem.cidade || '',
+    codigoCentro: origem.codigo_centro || '',
+    cnpj: onlyDigitsDb(origem.cnpj).slice(0, 14),
+    cnpjRaiz: onlyDigitsDb(origem.cnpj_raiz || origem.cnpj).slice(0, 8),
     canal: origem.canal || 'ATACADO',
     status: origem.status || 'Ativa',
     validado: Boolean(origem.validado),
@@ -281,6 +308,8 @@ function mapBaseToTables(transportadoras) {
       id: transportadoraId,
       nome: transportadora.nome || '',
       status: transportadora.status || 'Ativa',
+      cnpj: onlyDigitsDb(transportadora.cnpj).slice(0, 14) || null,
+      cnpj_raiz: onlyDigitsDb(transportadora.cnpjRaiz || transportadora.cnpj).slice(0, 8) || null,
       tde: toNumberOrNull(transportadora.tde) ?? 0,
       tde_cnpjs: Array.isArray(transportadora.tdeCnpjs)
         ? transportadora.tdeCnpjs.map((item) => onlyDigitsDb(item)).filter(Boolean)
@@ -295,6 +324,9 @@ function mapBaseToTables(transportadoras) {
         id: origemId,
         transportadora_id: transportadoraId,
         cidade: origem.cidade || '',
+        codigo_centro: onlyDigitsDb(origem.codigoCentro || origem.codigo_centro) || null,
+        cnpj: onlyDigitsDb(origem.cnpj).slice(0, 14) || null,
+        cnpj_raiz: onlyDigitsDb(origem.cnpjRaiz || origem.cnpj).slice(0, 8) || null,
         canal: origem.canal || 'ATACADO',
         status: origem.status || 'Ativa',
         validado: Boolean(origem.validado),
@@ -664,6 +696,8 @@ export async function carregarBaseCompletaDb(onProgress = null) {
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
@@ -802,6 +836,8 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
@@ -900,6 +936,8 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     origens: origensByTransportadora.get(String(transportadora.id)) || [],
@@ -989,7 +1027,7 @@ export async function carregarResumoBaseDb() {
     rotasCountResponse,
     cotacoesCountResponse,
   ] = await Promise.all([
-    supabase.from('transportadoras').select('id, nome, status').order('nome', { ascending: true }),
+    carregarTransportadorasResumoCompat(supabase),
     supabase.from('origens').select('id, transportadora_id, cidade, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
     // O dashboard precisa apenas de um indicador imediato. `exact` obrigava o
     // Postgres a contar tabelas que podem ter mais de um milhao de linhas antes
@@ -1028,6 +1066,8 @@ export async function carregarResumoBaseDb() {
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
     // A view de cobertura agrega rotas e cotacoes e pode ser cara. Ela fica na
     // conferencia explicita; a lista inicial usa um marcador leve.
     resumoCobertura: {
@@ -1053,6 +1093,18 @@ export async function carregarResumoBaseDb() {
       cotacoes: cotacoesCountResponse.count || 0,
     },
   };
+}
+
+export async function atualizarCnpjsTransportadorasDb(registros = []) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const rows = (registros || []).map((item) => {
+    const cnpj = onlyDigitsDb(item.cnpj).slice(0, 14);
+    return { id: item.id, cnpj, cnpj_raiz: cnpj.slice(0, 8) };
+  }).filter((item) => item.id && item.cnpj.length === 14);
+  if (!rows.length) return { atualizadas: 0 };
+  await upsertRows(ensureClient(), 'transportadoras', rows, 'id');
+  invalidarCacheBaseCompletaDb();
+  return { atualizadas: rows.length };
 }
 
 // `secao` aceita uma string ('rotas') ou um array (['rotas', 'cotacoes']) para
@@ -1302,7 +1354,7 @@ async function fetchTransportadorasByIds(supabase, ids = []) {
     const chunk = uniqueIds.slice(index, index + chunkSize);
     const { data, error } = await supabase
       .from('transportadoras')
-      .select('id, nome, status, tde, tde_cnpjs')
+      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
       .in('id', chunk);
 
     if (error) throw error;
@@ -1597,6 +1649,8 @@ function transportadorasFromDbRows({ transportadoras = [], origens = [], general
     id: transportadora.id,
     nome: transportadora.nome || '',
     status: transportadora.status || 'Ativa',
+    cnpj: transportadora.cnpj || '',
+    cnpjRaiz: transportadora.cnpj_raiz || '',
     tde: transportadora.tde ?? 0,
     tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
     detalheCarregado: true,
@@ -1727,7 +1781,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
   if (transportadoraId) {
     const response = await supabase
       .from('transportadoras')
-      .select('id, nome, status, tde, tde_cnpjs')
+      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
       .eq('id', transportadoraId)
       .maybeSingle();
 
@@ -1738,7 +1792,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
   if (!transportadora && transportadoraNome) {
     const response = await supabase
       .from('transportadoras')
-      .select('id, nome, status, tde, tde_cnpjs')
+      .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
       .ilike('nome', transportadoraNome)
       .maybeSingle();
 
@@ -1748,7 +1802,7 @@ export async function carregarTransportadoraCompletaDb(transportadoraId, transpo
     if (!transportadora && !transportadoraError) {
       const fallback = await supabase
         .from('transportadoras')
-        .select('id, nome, status, tde, tde_cnpjs')
+        .select('id, nome, status, cnpj, cnpj_raiz, tde, tde_cnpjs')
         .ilike('nome', `%${transportadoraNome}%`)
         .limit(2);
 

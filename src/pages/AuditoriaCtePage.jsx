@@ -23,10 +23,13 @@ import {
   carregarResultadosAuditoriaMes,
   carregarPreListaAuditoriaMes,
   carregarResumoAuditoriaMensal,
+  carregarOpcoesPreFiltroAuditoria,
+  enriquecerCtesComFaturas,
   processarESalvarAuditoriaMes,
   resimularRegistros,
   invalidarCacheBaseFreteAuditoriaCte,
 } from '../services/auditoriaCteProcessamentoService';
+import { baixarHtmlLaudoAuditoriaCtes, cteDivergenteAuditoria, identificadorCteAuditoria } from '../utils/laudoAuditoriaCtes';
 
 const CRITERIOS_FILTRO = [
   { key: 'ok_qualquer', label: 'Dentro da tolerancia (AMD ou Verum)' },
@@ -69,6 +72,12 @@ function parseDetalhesCalculoAuditoria(valor) {
   if (!valor) return {};
   if (typeof valor === 'object') return valor;
   try { return JSON.parse(valor); } catch { return {}; }
+}
+
+function transportadoraValidadaAuditoria(row = {}) {
+  if (typeof row.transportadora_validada_atual === 'boolean') return row.transportadora_validada_atual;
+  const detalhes = parseDetalhesCalculoAuditoria(row.detalhes_calculo);
+  return Boolean(row.origem_validada ?? detalhes.origem_validada ?? detalhes.tabela_validada);
 }
 
 function numeroFlexAuditoria(valor) {
@@ -359,7 +368,8 @@ function BarraMeta({ atual, meta, cor }) {
 
 // Lista de seleção múltipla com busca. Usada nos filtros de foco para marcar
 // várias transportadoras / cidades de origem ao mesmo tempo.
-function MultiCheckList({ titulo, opcoes, selecionados, onToggle, onLimpar, busca, onBusca, placeholder, maxAltura = 170 }) {
+function MultiCheckList({ titulo, opcoes, selecionados, onToggle, onLimpar, busca, onBusca, placeholder, maxAltura = 170, recolhivel = false }) {
+  const [aberto, setAberto] = useState(!recolhivel);
   const selSet = new Set(selecionados);
   const buscaNorm = (busca || '').trim().toLowerCase();
   const filtradas = buscaNorm
@@ -368,17 +378,26 @@ function MultiCheckList({ titulo, opcoes, selecionados, onToggle, onLimpar, busc
 
   return (
     <div style={{ flex: '1 1 240px', minWidth: 220 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
-        <span style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>
+      <div
+        role={recolhivel ? 'button' : undefined}
+        tabIndex={recolhivel ? 0 : undefined}
+        onClick={recolhivel ? () => setAberto((valor) => !valor) : undefined}
+        onKeyDown={recolhivel ? (event) => { if (event.key === 'Enter' || event.key === ' ') setAberto((valor) => !valor); } : undefined}
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: aberto ? 6 : 0, padding: recolhivel ? '9px 11px' : 0, border: recolhivel ? '1px solid #cbd5e1' : 'none', borderRadius: recolhivel ? 7 : 0, background: recolhivel ? '#fff' : 'transparent', cursor: recolhivel ? 'pointer' : 'default' }}
+      >
+        <span style={{ fontSize: 12, color: selecionados.length ? '#1d4ed8' : '#475569', fontWeight: 700 }}>
           {titulo}{selecionados.length ? ` (${selecionados.length})` : ''}
         </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         {selecionados.length ? (
-          <button type="button" onClick={onLimpar} style={{ border: 'none', background: 'none', color: '#2563eb', fontSize: 11, cursor: 'pointer', padding: 0 }}>
+          <button type="button" onClick={(event) => { event.stopPropagation(); onLimpar(); }} style={{ border: 'none', background: 'none', color: '#2563eb', fontSize: 11, cursor: 'pointer', padding: 0 }}>
             limpar
           </button>
         ) : null}
+        {recolhivel ? <span aria-hidden="true" style={{ color: '#64748b', fontSize: 12 }}>{aberto ? '▲' : '▼'}</span> : null}
+        </span>
       </div>
-      {onBusca ? (
+      {aberto && onBusca ? (
         <input
           type="text"
           placeholder={placeholder}
@@ -387,7 +406,7 @@ function MultiCheckList({ titulo, opcoes, selecionados, onToggle, onLimpar, busc
           style={{ width: '100%', padding: '5px 8px', border: '1px solid #cbd5e1', borderRadius: 6, marginBottom: 6, fontSize: 12 }}
         />
       ) : null}
-      <div style={{ maxHeight: maxAltura, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, background: '#fff' }}>
+      {aberto ? <div style={{ maxHeight: maxAltura, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, background: '#fff' }}>
         {filtradas.slice(0, 300).map((o) => {
           const marcada = selSet.has(o.value);
           return (
@@ -400,7 +419,7 @@ function MultiCheckList({ titulo, opcoes, selecionados, onToggle, onLimpar, busc
         })}
         {!filtradas.length ? <div style={{ fontSize: 12, color: '#94a3b8', padding: 4 }}>Nada encontrado.</div> : null}
         {filtradas.length > 300 ? <div style={{ fontSize: 11, color: '#94a3b8', padding: 4 }}>Mostrando 300 de {filtradas.length}. Refine a busca.</div> : null}
-      </div>
+      </div> : null}
     </div>
   );
 }
@@ -554,6 +573,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [resumoMensal, setResumoMensal] = useState([]);
   const [erro, setErro] = useState('');
   const [sucesso, setSucesso] = useState('');
+  const [ctesSelecionadosLaudo, setCtesSelecionadosLaudo] = useState([]);
+  const [mostrarCobrancaAMenorLaudo, setMostrarCobrancaAMenorLaudo] = useState(false);
 
   const [usarTabelas, setUsarTabelas] = useState(() => {
     try {
@@ -584,6 +605,13 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
   // Filtro pré-carga de canal: aplicado na query para trazer só os CTes do canal selecionado.
   const [canaisPreCarga, setCanaisPreCarga] = useState([]);
+  const [transportadorasPreCargaSelecionadas, setTransportadorasPreCargaSelecionadas] = useState([]);
+  const [auditoresPreCargaSelecionados, setAuditoresPreCargaSelecionados] = useState([]);
+  const [buscaTransportadoraPreCarga, setBuscaTransportadoraPreCarga] = useState('');
+  const [buscaAuditorPreCarga, setBuscaAuditorPreCarga] = useState('');
+  const [opcoesPreCarga, setOpcoesPreCarga] = useState({ carteiras: [], vinculos: [], transportadoras: [], auditores: [] });
+  const [erroOpcoesPreCarga, setErroOpcoesPreCarga] = useState('');
+  const [tentativaOpcoesPreCarga, setTentativaOpcoesPreCarga] = useState(0);
 
   // Filtros de foco: para identificar onde agir (ajuste de tabela) e, depois,
   // recalcular só o subconjunto. Combina transportadora + origem + critério de erro.
@@ -595,6 +623,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [filtroCidades, setFiltroCidades] = useState(filtrosSalvos.cidades);
   const [filtroCanais, setFiltroCanais] = useState(filtrosSalvos.canais);
   const [filtroCriterios, setFiltroCriterios] = useState(filtrosSalvos.criterios); // vazio = todos
+  const [filtroSituacaoFatura, setFiltroSituacaoFatura] = useState([]);
   const [buscaTratamento, setBuscaTratamento] = useState('');
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
@@ -623,6 +652,40 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     return () => { ativo = false; };
   }, []);
 
+  useEffect(() => {
+    let ativo = true;
+    setErroOpcoesPreCarga('');
+    carregarOpcoesPreFiltroAuditoria()
+      .then((opcoes) => { if (ativo) setOpcoesPreCarga(opcoes); })
+      .catch((error) => { if (ativo) setErroOpcoesPreCarga(error.message || 'Não foi possível carregar transportadoras e auditores.'); });
+    return () => { ativo = false; };
+  }, [tentativaOpcoesPreCarga]);
+
+  const transportadorasPreCarga = useMemo(() => {
+    const porAuditor = [...new Set(opcoesPreCarga.carteiras
+      .filter((item) => auditoresPreCargaSelecionados.includes(item.auditor_nome))
+      .map((item) => item.transportadora)
+      .filter(Boolean))];
+    let canonicas;
+    if (transportadorasPreCargaSelecionadas.length && auditoresPreCargaSelecionados.length) {
+      const permitidas = new Set(porAuditor);
+      canonicas = transportadorasPreCargaSelecionadas.filter((nome) => permitidas.has(nome));
+    } else {
+      canonicas = transportadorasPreCargaSelecionadas.length ? transportadorasPreCargaSelecionadas : porAuditor;
+    }
+    const selecionadas = new Set(canonicas);
+    const aliases = opcoesPreCarga.vinculos
+      .filter((item) => selecionadas.has(item.nome_tabela))
+      .map((item) => item.nome_cte)
+      .filter(Boolean);
+    return [...new Set([...canonicas, ...aliases])];
+  }, [auditoresPreCargaSelecionados, transportadorasPreCargaSelecionadas, opcoesPreCarga]);
+  const filtroPreCargaSemCorrespondencia = Boolean(
+    transportadorasPreCargaSelecionadas.length
+    && auditoresPreCargaSelecionados.length
+    && !transportadorasPreCarga.length,
+  );
+
   // Persiste os filtros de foco no navegador a cada mudança (igual às exclusões).
   useEffect(() => {
     try {
@@ -650,6 +713,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setFiltroCidades([]);
     setFiltroCanais([]);
     setFiltroCriterios([]);
+    setFiltroSituacaoFatura([]);
   }
 
   function selecionarTransportadoraTratamento(nome) {
@@ -669,11 +733,11 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
   const filtrosAtivos = Boolean(
     filtroTransps.length || filtroTomadores.length || filtroUfs.length
-    || filtroCidades.length || filtroCanais.length || filtroCriterios.length,
+    || filtroCidades.length || filtroCanais.length || filtroCriterios.length || filtroSituacaoFatura.length,
   );
 
   // Pode carregar/recalcular com competência OU período (datas) preenchido.
-  const podeCarregar = Boolean(competencia || dataInicioTeste || dataFimTeste);
+  const podeCarregar = Boolean(competencia || dataInicioTeste || dataFimTeste) && !filtroPreCargaSemCorrespondencia;
   const temPeriodoTeste = Boolean(dataInicioTeste || dataFimTeste);
 
   const excluidasSet = useMemo(() => new Set(excluidas), [excluidas]);
@@ -788,6 +852,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     const cidSet = new Set(filtroCidades);
     const canalSet = new Set(filtroCanais);
     const critSet = new Set(filtroCriterios);
+    const faturaSet = new Set(filtroSituacaoFatura);
     // Tomadores selecionados em forma normalizada para casar por "contém".
     const tomadoresNorm = filtroTomadores.map(normTomador).filter(Boolean);
     return registrosAnalise.filter((r) => {
@@ -802,6 +867,10 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       if (canalSet.size) {
         const canal = String(r.canal || r.canal_original || '').trim().toUpperCase() || 'NÃO INFORMADO';
         if (!canalSet.has(canal)) return false;
+      }
+      if (faturaSet.size) {
+        const situacao = r.tem_fatura ? 'com_fatura' : 'sem_fatura';
+        if (!faturaSet.has(situacao)) return false;
       }
       if (critSet.size) {
         const vc = Number(r.valor_cte || 0);
@@ -830,7 +899,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       }
       return true;
     });
-  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, margensDivergencia]);
+  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, filtroSituacaoFatura, margensDivergencia]);
 
   const registrosDetalheOrdenados = useMemo(() => {
     const valorDifAmd = (r) => Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0) || 0) - (Number(r.valor_calculado || 0) || 0))));
@@ -1230,6 +1299,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         dataInicio: dataInicioTeste || undefined,
         dataFim: dataFimTeste || undefined,
         canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        transportadoras: transportadorasPreCarga.length ? transportadorasPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       }).catch(() => []);
 
@@ -1242,13 +1312,15 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         dataInicio: dataInicioTeste || undefined,
         dataFim: dataFimTeste || undefined,
         canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        transportadoras: transportadorasPreCarga.length ? transportadorasPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       });
       const dadosBrutos = resposta?.registros || [];
 
       const salvos = salvosRapidos || [];
 
-      const dados = salvos && salvos.length ? mesclarComResultadosSalvos(dadosBrutos, salvos) : dadosBrutos;
+      const dadosMesclados = salvos && salvos.length ? mesclarComResultadosSalvos(dadosBrutos, salvos) : dadosBrutos;
+      const dados = await enriquecerCtesComFaturas(dadosMesclados);
       const qtdMesclados = salvos?.length || 0;
 
       setRegistros(dados);
@@ -1299,9 +1371,10 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         dataInicio: dataInicioTeste || undefined,
         dataFim: dataFimTeste || undefined,
         canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        transportadoras: transportadorasPreCarga.length ? transportadorasPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       });
-      setRegistros(dados || []);
+      setRegistros(await enriquecerCtesComFaturas(dados || []));
       setModoPreLista(true);
       setFonteAuditoria({
         id: 'prelista_auditoria_cte_resultados',
@@ -1343,7 +1416,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         transportadoras: [transportadoraEmTratamento],
         onProgress: setProgressoProcessamento,
       });
-      setRegistros(dados || []);
+      setRegistros(await enriquecerCtesComFaturas(dados || []));
       setModoPreLista(false);
       setFonteAuditoria({
         id: 'auditoria_cte_resultados_transportadora',
@@ -1379,10 +1452,11 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         dataInicio: dataInicioTeste || undefined,
         dataFim: dataFimTeste || undefined,
         canais: canaisPreCarga.length ? canaisPreCarga : undefined,
+        transportadoras: transportadorasPreCarga.length ? transportadorasPreCarga : undefined,
         onProgress: setProgressoProcessamento,
       });
 
-      setRegistros(dados || []);
+      setRegistros(await enriquecerCtesComFaturas(dados || []));
       setFonteAuditoria({
         id: 'auditoria_cte_resultados',
         tabela: 'auditoria_cte_resultados',
@@ -1550,6 +1624,10 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setCompetencia('');
     setDataInicioTeste('');
     setDataFimTeste('');
+    setTransportadorasPreCargaSelecionadas([]);
+    setAuditoresPreCargaSelecionados([]);
+    setBuscaTransportadoraPreCarga('');
+    setBuscaAuditorPreCarga('');
     setRegistros([]);
     setModoPreLista(false);
     setFonteAuditoria(null);
@@ -1586,6 +1664,29 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
   function exportarCtesDetalhe() {
     exportarCtesDetalhadoExcel(registrosFiltro, competencia);
+  }
+
+  function alternarCteLaudo(row, indice) {
+    const id = identificadorCteAuditoria(row, indice);
+    setCtesSelecionadosLaudo((atuais) => atuais.includes(id) ? atuais.filter((item) => item !== id) : [...atuais, id]);
+  }
+
+  function selecionarDivergentesLaudo() {
+    const ids = registrosDetalheOrdenados
+      .filter((row) => cteDivergenteAuditoria(row, (dif, base) => ehDivergenteComMargem(dif, base, margensDivergencia)))
+      .map((row, indice) => identificadorCteAuditoria(row, indice));
+    setCtesSelecionadosLaudo(ids);
+    setSucesso(`${ids.length.toLocaleString('pt-BR')} CT-e(s) divergente(s) selecionado(s) para o laudo do transportador.`);
+  }
+
+  function gerarLaudoCtesSelecionados() {
+    const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
+    try {
+      baixarHtmlLaudoAuditoriaCtes(selecionados, { competencia, mostrarCobrancaAMenor: mostrarCobrancaAMenorLaudo });
+      setSucesso(`Laudo do transportador gerado com ${selecionados.length.toLocaleString('pt-BR')} CT-e(s).`);
+    } catch (error) {
+      setErro(error.message || 'Não foi possível gerar o laudo dos CT-es.');
+    }
   }
 
   return (
@@ -1674,6 +1775,46 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
               title="Carrega até esta data de emissão (dispensa a competência)"
             />
           </label>
+          <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <MultiCheckList
+              titulo="Transportadoras (opcional)"
+              opcoes={opcoesPreCarga.transportadoras.map((nome) => ({ value: nome, label: nome }))}
+              selecionados={transportadorasPreCargaSelecionadas}
+              onToggle={toggleEmLista(setTransportadorasPreCargaSelecionadas)}
+              onLimpar={() => setTransportadorasPreCargaSelecionadas([])}
+              busca={buscaTransportadoraPreCarga}
+              onBusca={setBuscaTransportadoraPreCarga}
+              placeholder="Digite para buscar transportadora..."
+              maxAltura={150}
+              recolhivel
+            />
+            <MultiCheckList
+              titulo="Auditores (opcional)"
+              opcoes={opcoesPreCarga.auditores.map((nome) => ({ value: nome, label: nome }))}
+              selecionados={auditoresPreCargaSelecionados}
+              onToggle={toggleEmLista(setAuditoresPreCargaSelecionados)}
+              onLimpar={() => setAuditoresPreCargaSelecionados([])}
+              busca={buscaAuditorPreCarga}
+              onBusca={setBuscaAuditorPreCarga}
+              placeholder="Digite para buscar auditor..."
+              maxAltura={150}
+              recolhivel
+            />
+          </div>
+          <div style={{ gridColumn: '1 / -1', color: '#64748b', fontSize: 12 }}>
+            Período/competência é obrigatório. Com apenas um filtro, todas as opções marcadas são consideradas. Usando os dois, serão buscadas somente as transportadoras selecionadas que pertencem aos auditores marcados.
+          </div>
+          {filtroPreCargaSemCorrespondencia ? (
+            <div className="sim-alert error" style={{ gridColumn: '1 / -1', margin: 0 }}>
+              Nenhuma das transportadoras selecionadas pertence aos auditores marcados. Ajuste um dos filtros para carregar.
+            </div>
+          ) : null}
+          {erroOpcoesPreCarga ? (
+            <div className="sim-alert error" style={{ gridColumn: '1 / -1', margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <span>{erroOpcoesPreCarga}</span>
+              <button type="button" className="sim-tab" onClick={() => setTentativaOpcoesPreCarga((valor) => valor + 1)}>Tentar novamente</button>
+            </div>
+          ) : null}
           <div style={{ gridColumn: '1 / -1' }}>
             <div style={{ fontSize: 12, color: '#475569', fontWeight: 600, marginBottom: 6 }}>
               Canal (pré-filtro — vazio = todos)
@@ -2025,6 +2166,17 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                 onToggle={toggleEmLista(setFiltroCanais)}
                 onLimpar={() => setFiltroCanais([])}
                 maxAltura={170}
+              />
+              <MultiCheckList
+                titulo="Situação de faturamento"
+                opcoes={[
+                  { value: 'sem_fatura', label: 'Sem fatura', sub: `${fmtN(registrosAnalise.filter((r) => !r.tem_fatura).length)}` },
+                  { value: 'com_fatura', label: 'Com fatura', sub: `${fmtN(registrosAnalise.filter((r) => r.tem_fatura).length)}` },
+                ]}
+                selecionados={filtroSituacaoFatura}
+                onToggle={toggleEmLista(setFiltroSituacaoFatura)}
+                onLimpar={() => setFiltroSituacaoFatura([])}
+                maxAltura={100}
               />
               <div style={{ flex: '1 1 240px', minWidth: 220 }}>
                 <div style={{ fontSize: 12, color: '#475569', fontWeight: 700, marginBottom: 6 }}>Critério de cálculo/status</div>
@@ -2579,6 +2731,14 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
               <button className="sim-tab" type="button" onClick={exportarCtesDetalhe}>
                 Exportar Excel ({fmtN(registrosFiltro.length)})
               </button>
+              <button className="sim-tab" type="button" onClick={selecionarDivergentesLaudo}>Selecionar incorretos</button>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#475569' }}>
+                <input type="checkbox" checked={mostrarCobrancaAMenorLaudo} onChange={(event) => setMostrarCobrancaAMenorLaudo(event.target.checked)} />
+                Mostrar cobrança a menor no laudo
+              </label>
+              <button className="primary" type="button" disabled={!ctesSelecionadosLaudo.length} onClick={gerarLaudoCtesSelecionados}>
+                Laudo transportador ({fmtN(ctesSelecionadosLaudo.length)})
+              </button>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -2604,8 +2764,11 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
             <table className="sim-analise-tabela">
               <thead>
                 <tr>
+                  <th title="Selecionar para o laudo">Laudo</th>
                   <th>Nº CT-e</th>
+                  <th>Fatura</th>
                   <th>Transportadora</th>
+                  <th>Validação</th>
                   <th>Origem → Destino</th>
                   <th>Peso</th>
                   <th>Frete Pago</th>
@@ -2650,8 +2813,19 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                           borderLeft: semValorNf ? '3px solid #f97316' : dentroDaMargem ? '3px solid #16a34a' : '3px solid transparent',
                         }}
                       >
+                        <td onClick={(event) => event.stopPropagation()}>
+                          <input type="checkbox" checked={ctesSelecionadosLaudo.includes(identificadorCteAuditoria(r, idx))} onChange={() => alternarCteLaudo(r, idx)} aria-label={`Selecionar CT-e ${r.numero_cte || ''} para o laudo`} />
+                        </td>
                         <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {r.tem_fatura ? <strong style={{ color: '#166534' }}>{(r.numeros_fatura || []).join(', ') || 'Com fatura'}</strong> : <span style={{ color: '#b45309' }}>Sem fatura</span>}
+                        </td>
                         <td><strong>{r.transportadora || '—'}</strong></td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {transportadoraValidadaAuditoria(r)
+                            ? <span style={{ background: '#dcfce7', color: '#166534', borderRadius: 999, padding: '3px 7px', fontSize: 10, fontWeight: 800 }}>✓ Tabela validada</span>
+                            : <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 999, padding: '3px 7px', fontSize: 10, fontWeight: 800 }}>Validação pendente</span>}
+                        </td>
                         <td style={{ fontSize: 12 }}>{(r.cidade_origem || '—')}/{r.uf_origem || '—'} → {(r.cidade_destino || '—')}/{r.uf_destino || '—'}</td>
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -2689,7 +2863,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                       </tr>
                       {expandida ? (
                         <tr>
-                          <td colSpan="10" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                          <td colSpan="13" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                             {r.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {r.motivo_sem_calculo}</div> : null}
                             {semValorNf ? (
                               <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 8, padding: 10, marginBottom: 10, color: '#9a3412' }}>
@@ -2861,7 +3035,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                     </React.Fragment>
                   );
                 })}
-                {!registrosFiltro.length ? <tr><td colSpan="10" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
+                {!registrosFiltro.length ? <tr><td colSpan="13" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
               </tbody>
             </table>
           </div>
