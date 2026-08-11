@@ -1679,6 +1679,15 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setSucesso(`${ids.length.toLocaleString('pt-BR')} CT-e(s) divergente(s) selecionado(s) para o laudo do transportador.`);
   }
 
+  function selecionarTodosLaudo() {
+    const ids = registrosDetalheOrdenados.map((row, indice) => identificadorCteAuditoria(row, indice));
+    const todosSelecionados = ids.length > 0 && ids.every((id) => ctesSelecionadosLaudo.includes(id));
+    setCtesSelecionadosLaudo(todosSelecionados ? [] : ids);
+    setSucesso(todosSelecionados
+      ? 'Seleção do laudo limpa.'
+      : `${ids.length.toLocaleString('pt-BR')} CT-e(s) do recorte selecionado(s) para o laudo do transportador.`);
+  }
+
   function gerarLaudoCtesSelecionados() {
     const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
     try {
@@ -2732,6 +2741,12 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                 Exportar Excel ({fmtN(registrosFiltro.length)})
               </button>
               <button className="sim-tab" type="button" onClick={selecionarDivergentesLaudo}>Selecionar incorretos</button>
+              <button className="sim-tab" type="button" onClick={selecionarTodosLaudo} disabled={!registrosDetalheOrdenados.length}>
+                {registrosDetalheOrdenados.length > 0
+                  && registrosDetalheOrdenados.every((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)))
+                  ? 'Desmarcar todos'
+                  : `Selecionar todos (${fmtN(registrosDetalheOrdenados.length)})`}
+              </button>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#475569' }}>
                 <input type="checkbox" checked={mostrarCobrancaAMenorLaudo} onChange={(event) => setMostrarCobrancaAMenorLaudo(event.target.checked)} />
                 Mostrar cobrança a menor no laudo

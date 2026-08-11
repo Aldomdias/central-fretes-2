@@ -9,6 +9,10 @@ import {
   registrarEventoHistoricoSupabase,
 } from '../services/lotacaoSupabaseService';
 import { carregarSessao } from '../utils/authLocal';
+import {
+  carregarResultadosAuditoriaMes,
+  enriquecerCtesComFaturas,
+} from '../services/auditoriaCteProcessamentoService';
 
 function fmt(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
@@ -67,6 +71,20 @@ function statusSla(pendencia = {}, slaHoras = 24) {
 
 function normalizarChave(valor = '') {
   return String(valor || '').trim().toUpperCase();
+}
+
+function competenciaAtual() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function intervaloCompetencia(competencia) {
+  const [ano, mes] = String(competencia || '').split('-').map(Number);
+  if (!ano || !mes) return { inicio: '', fim: '' };
+  const ultimoDia = new Date(ano, mes, 0).getDate();
+  return {
+    inicio: `${ano}-${String(mes).padStart(2, '0')}-01`,
+    fim: `${ano}-${String(mes).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`,
+  };
 }
 
 function ModalConclusaoAuditoria({ pendencia, onConfirmar, onCancelar }) {
@@ -138,6 +156,11 @@ export default function PainelAuditoriaPage() {
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
   const [pendenciaConclusao, setPendenciaConclusao] = useState(null);
+  const [competenciaControle, setCompetenciaControle] = useState(competenciaAtual());
+  const [ctesControle, setCtesControle] = useState([]);
+  const [faturasControle, setFaturasControle] = useState([]);
+  const [carregandoControle, setCarregandoControle] = useState(false);
+  const [erroControle, setErroControle] = useState('');
 
   const [filtros, setFiltros] = useState({
     transportadora: '',
@@ -171,6 +194,31 @@ export default function PainelAuditoriaPage() {
   };
 
   useEffect(() => { carregar(); }, []);
+
+  useEffect(() => {
+    let ativo = true;
+    async function carregarControle() {
+      setCarregandoControle(true);
+      setErroControle('');
+      try {
+        const periodo = intervaloCompetencia(competenciaControle);
+        const [ctesSalvos, fats] = await Promise.all([
+          carregarResultadosAuditoriaMes({ competencia: competenciaControle }),
+          carregarFaturasSupabase({ dataEmissaoInicio: periodo.inicio, dataEmissaoFim: periodo.fim, limite: 5000 }),
+        ]);
+        const ctes = await enriquecerCtesComFaturas(ctesSalvos || []);
+        if (!ativo) return;
+        setCtesControle(ctes);
+        setFaturasControle(fats || []);
+      } catch (err) {
+        if (ativo) setErroControle(err.message || 'Nao foi possivel carregar o controle operacional.');
+      } finally {
+        if (ativo) setCarregandoControle(false);
+      }
+    }
+    carregarControle();
+    return () => { ativo = false; };
+  }, [competenciaControle]);
 
   // ── Cálculos de cards ────────────────────────────────────────────────────
   const excedentes = useMemo(() => pendencias.filter((p) => p.status === 'EXCEDEU_AGUARDANDO_OPERACAO'), [pendencias]);
@@ -208,6 +256,42 @@ export default function PainelAuditoriaPage() {
     });
     return mapa;
   }, [faturas]);
+
+  const resumoControle = useMemo(() => {
+    const porAuditor = new Map();
+    const obter = (nome) => {
+      const auditor = String(nome || '').trim() || 'SEM AUDITOR DEFINIDO';
+      if (!porAuditor.has(auditor)) porAuditor.set(auditor, {
+        auditor, ctes: 0, auditados: 0, semFatura: 0, comFatura: 0,
+        divergentes: 0, faturas: 0, prontas: 0, pagas: 0, pendentes: 0,
+      });
+      return porAuditor.get(auditor);
+    };
+    ctesControle.forEach((cte) => {
+      const item = obter(cte.auditor_nome_carteira);
+      item.ctes += 1;
+      if (cte.tem_fatura) item.comFatura += 1;
+      else item.semFatura += 1;
+      if (Number(cte.valor_calculado || 0) > 0) item.auditados += 1;
+      if (Math.abs(Number(cte.diferenca || 0)) > 0.01) item.divergentes += 1;
+    });
+    faturasControle.forEach((fatura) => {
+      const item = obter(fatura.auditor_nome);
+      item.faturas += 1;
+      if (fatura.status === 'PRONTA_PARA_PAGAMENTO') item.prontas += 1;
+      if (['PAGA', 'PAGA_COM_DIVERGENCIA'].includes(fatura.status)) item.pagas += 1;
+      if (['PENDENTE', 'DIVERGENCIA', 'EM_AUDITORIA'].includes(fatura.status)) item.pendentes += 1;
+    });
+    return {
+      linhas: [...porAuditor.values()].sort((a, b) => b.semFatura - a.semFatura || a.auditor.localeCompare(b.auditor, 'pt-BR')),
+      totalCtes: ctesControle.length,
+      auditados: ctesControle.filter((cte) => Number(cte.valor_calculado || 0) > 0).length,
+      semFatura: ctesControle.filter((cte) => !cte.tem_fatura).length,
+      comFatura: ctesControle.filter((cte) => cte.tem_fatura).length,
+      prontas: faturasControle.filter((fatura) => fatura.status === 'PRONTA_PARA_PAGAMENTO').length,
+      pagas: faturasControle.filter((fatura) => ['PAGA', 'PAGA_COM_DIVERGENCIA'].includes(fatura.status)).length,
+    };
+  }, [ctesControle, faturasControle]);
 
   // ── Filtragem da lista de pendências ─────────────────────────────────────
   const pendenciasFiltradas = useMemo(() => {
@@ -271,6 +355,51 @@ export default function PainelAuditoriaPage() {
       </div>
 
       {mensagem && <div className="hint-box compact">{mensagem}</div>}
+
+      <div className="panel-card" style={{ marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: '1rem', flexWrap: 'wrap' }}>
+          <div>
+            <div className="panel-title">Controle operacional por auditor</div>
+            <p style={{ margin: '0.25rem 0 0', color: '#64748b' }}>
+              CT-es auditados, documentos sem fatura e andamento das faturas ate o pagamento.
+            </p>
+          </div>
+          <label className="field" style={{ minWidth: 220 }}>
+            Competencia
+            <input type="month" value={competenciaControle} onChange={(e) => setCompetenciaControle(e.target.value)} />
+          </label>
+        </div>
+        {erroControle && <div className="hint-box compact" style={{ marginTop: '0.75rem' }}>{erroControle}</div>}
+        <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginTop: '1rem' }}>
+          <Card label="CT-es do mes" valor={resumoControle.totalCtes} cor="#1d4ed8" />
+          <Card label="CT-es auditados" valor={resumoControle.auditados} cor="#04C7A4" />
+          <Card label="CT-es sem fatura" valor={resumoControle.semFatura} cor="#e67e22" destaque={resumoControle.semFatura > 0} />
+          <Card label="CT-es com fatura" valor={resumoControle.comFatura} cor="#9153F0" />
+          <Card label="Faturas prontas para pagamento" valor={resumoControle.prontas} cor="#2563eb" />
+          <Card label="Faturas pagas" valor={resumoControle.pagas} cor="#15803d" />
+        </div>
+        <div className="sim-analise-tabela-wrap" style={{ marginTop: '1rem' }}>
+          <table className="sim-analise-tabela">
+            <thead><tr>
+              <th>Auditor</th><th>CT-es</th><th>Auditados</th><th>Sem fatura</th><th>Com fatura</th>
+              <th>Divergentes</th><th>Faturas</th><th>Prontas p/ pagamento</th><th>Pagas</th><th>Pendentes</th>
+            </tr></thead>
+            <tbody>
+              {resumoControle.linhas.map((item) => (
+                <tr key={item.auditor}>
+                  <td><strong>{item.auditor}</strong></td><td>{item.ctes}</td><td>{item.auditados}</td>
+                  <td style={{ color: item.semFatura ? '#b45309' : undefined }}><strong>{item.semFatura}</strong></td>
+                  <td>{item.comFatura}</td><td>{item.divergentes}</td><td>{item.faturas}</td>
+                  <td>{item.prontas}</td><td>{item.pagas}</td><td>{item.pendentes}</td>
+                </tr>
+              ))}
+              {!resumoControle.linhas.length && (
+                <tr><td colSpan="10">{carregandoControle ? 'Carregando controle operacional...' : 'Nenhum dado encontrado para a competencia.'}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {/* ── Cards de visão geral ── */}
       <div className="summary-strip" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>

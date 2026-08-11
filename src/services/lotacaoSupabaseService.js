@@ -1386,7 +1386,7 @@ export async function atualizarSolicitacaoInfoSupabase(id, status, dadosExtra = 
 // FASE 4: FATURAS
 // ============================================================
 
-export async function carregarFaturasSupabase({ transportadora, status, dataVencimentoInicio, dataVencimentoFim } = {}) {
+export async function carregarFaturasSupabase({ transportadora, status, dataVencimentoInicio, dataVencimentoFim, dataEmissaoInicio, dataEmissaoFim, limite = 500 } = {}) {
   if (!isSupabaseConfigured()) return null;
   const supabase = ensureClient();
   let query = supabase.from('faturas').select('*').order('created_at', { ascending: false });
@@ -1394,7 +1394,9 @@ export async function carregarFaturasSupabase({ transportadora, status, dataVenc
   if (status) query = query.eq('status', status);
   if (dataVencimentoInicio) query = query.gte('data_vencimento', dataVencimentoInicio);
   if (dataVencimentoFim) query = query.lte('data_vencimento', dataVencimentoFim);
-  const { data, error } = await query.limit(500);
+  if (dataEmissaoInicio) query = query.gte('data_emissao', dataEmissaoInicio);
+  if (dataEmissaoFim) query = query.lte('data_emissao', dataEmissaoFim);
+  const { data, error } = await query.limit(limite);
   if (error) throw new Error(detalheErroSupabase(error));
   return data || [];
 }

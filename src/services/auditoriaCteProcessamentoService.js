@@ -1244,10 +1244,11 @@ export async function enriquecerCtesComFaturas(registros = []) {
   }
   const porId = new Map(faturas.map((fatura) => [fatura.id, fatura]));
   const normalizarNome = (valor) => String(valor || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
-  const [{ data: transportadoras }, { data: origens }, { data: vinculos }] = await Promise.all([
+  const [{ data: transportadoras }, { data: origens }, { data: vinculos }, { data: carteiras }] = await Promise.all([
     supabase.from('transportadoras').select('id,nome'),
     supabase.from('origens').select('transportadora_id,validado'),
     supabase.from('transportadora_vinculos').select('nome_cte,nome_tabela'),
+    supabase.from('auditoria_carteiras').select('transportadora,auditor_nome,auditor_email'),
   ]);
   const vinculoPorNome = new Map((vinculos || []).map((item) => [normalizarNome(item.nome_cte), item.nome_tabela]));
   const validacaoPorId = new Map();
@@ -1261,6 +1262,7 @@ export async function enriquecerCtesComFaturas(registros = []) {
     const resumo = validacaoPorId.get(transportadora.id) || { total: 0, validadas: 0 };
     return [normalizarNome(transportadora.nome), { ...resumo, validada: resumo.total > 0 && resumo.validadas === resumo.total }];
   }));
+  const carteiraPorNome = new Map((carteiras || []).map((carteira) => [normalizarNome(carteira.transportadora), carteira]));
   const porIdentificador = new Map();
   detalhes.forEach((item) => {
     const fatura = porId.get(item.fatura_id);
@@ -1281,6 +1283,7 @@ export async function enriquecerCtesComFaturas(registros = []) {
     const nomeBruto = String(row.transportadora || '');
     const nomeTabela = vinculoPorNome.get(normalizarNome(nomeBruto)) || nomeBruto;
     const validacaoAtual = validacaoPorNome.get(normalizarNome(nomeTabela));
+    const carteiraAtual = carteiraPorNome.get(normalizarNome(nomeTabela)) || carteiraPorNome.get(normalizarNome(nomeBruto));
     return {
       ...row,
       tem_fatura: lista.length > 0,
@@ -1288,6 +1291,8 @@ export async function enriquecerCtesComFaturas(registros = []) {
       numeros_fatura: lista.map((fatura) => fatura.numero_fatura).filter(Boolean),
       transportadora_validada_atual: validacaoAtual?.validada,
       validacao_origens_atual: validacaoAtual || null,
+      auditor_nome_carteira: carteiraAtual?.auditor_nome || '',
+      auditor_email_carteira: carteiraAtual?.auditor_email || '',
     };
   });
 }
