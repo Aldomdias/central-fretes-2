@@ -8,7 +8,7 @@ import { listarCarteirasAuditoria, salvarCarteiraAuditoria, propagarAuditorParaF
 import { carregarSessao } from '../utils/authLocal';
 import { listarHistoricoAlteracoesTransportadoras } from '../services/auditoriaTransportadorasService';
 import { cnpjPreenchidoValido, formatarCnpj, normalizarCnpj, obterRaizCnpj } from '../utils/cnpj';
-import { atualizarCnpjsTransportadorasDb } from '../services/freteDatabaseService';
+import { atualizarCnpjsOrigensDb } from '../services/freteDatabaseService';
 
 // Carrega vínculos (transportadora_vinculos) e carteiras de auditoria uma vez
 // e expõe lookups prontos, pra mostrar/editar isso sem sair da tela de Transportadoras.
@@ -602,17 +602,25 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
   const [feedbackCnpj, setFeedbackCnpj] = useState('');
 
   const exportarCadastroCnpj = () => {
-    const planilha = XLSX.utils.json_to_sheet(items.map((item) => ({
-      ID: item.id,
-      Transportadora: item.nome || '',
-      CNPJ: normalizarCnpj(item.cnpj),
-      'Raiz CNPJ': obterRaizCnpj(item.cnpj),
-      Situação: normalizarCnpj(item.cnpj).length === 14 ? 'COM CNPJ' : 'SEM CNPJ',
-    })));
-    planilha['!cols'] = [{ wch: 38 }, { wch: 42 }, { wch: 20 }, { wch: 14 }, { wch: 14 }];
+    const linhasOrigem = items.flatMap((item) => (item.origens || []).map((origem) => {
+      const cnpj = normalizarCnpj(origem.cnpj);
+      return {
+        'ID Transportadora': item.id,
+        Transportadora: item.nome || '',
+        'ID Origem': origem.id,
+        Origem: origem.cidade || '',
+        'Código Centro': origem.codigoCentro || origem.codigo_centro || '',
+        Canal: origem.canal || '',
+        'CNPJ Origem': cnpj,
+        'Raiz CNPJ': obterRaizCnpj(cnpj),
+        Situação: cnpj.length === 14 ? 'COM CNPJ' : 'SEM CNPJ',
+      };
+    }));
+    const planilha = XLSX.utils.json_to_sheet(linhasOrigem);
+    planilha['!cols'] = [{ wch: 38 }, { wch: 38 }, { wch: 38 }, { wch: 28 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 14 }, { wch: 14 }];
     const arquivo = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(arquivo, planilha, 'Transportadoras');
-    XLSX.writeFile(arquivo, 'cadastro-cnpj-transportadoras.xlsx');
+    XLSX.utils.book_append_sheet(arquivo, planilha, 'Origens');
+    XLSX.writeFile(arquivo, 'cadastro-cnpj-origens.xlsx');
   };
 
   const importarCadastroCnpj = async (file) => {
@@ -622,20 +630,20 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
     try {
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
-      const porId = new Map(items.map((item) => [String(item.id), item]));
-      const porNome = new Map(items.map((item) => [normalizarChave(item.nome), item]));
+      const origens = items.flatMap((item) => (item.origens || []).map((origem) => ({ ...origem, transportadoraId: item.id, transportadora: item.nome })));
+      const porId = new Map(origens.map((origem) => [String(origem.id), origem]));
       const validas = [];
       let rejeitadas = 0;
       rows.forEach((row) => {
-        const id = String(row.ID || row.Id || row.id || '').trim();
-        const existente = porId.get(id) || porNome.get(normalizarChave(row.Transportadora || row.transportadora));
-        const cnpj = normalizarCnpj(row.CNPJ || row.cnpj);
+        const id = String(row['ID Origem'] || row.id_origem || row.ID || row.Id || row.id || '').trim();
+        const existente = porId.get(id);
+        const cnpj = normalizarCnpj(row['CNPJ Origem'] || row.CNPJ || row.cnpj);
         if (!existente || cnpj.length !== 14) { if (cnpj || id) rejeitadas += 1; return; }
         validas.push({ id: existente.id, cnpj });
       });
-      const resultado = await atualizarCnpjsTransportadorasDb(validas);
+      const resultado = await atualizarCnpjsOrigensDb(validas);
       await store?.atualizarResumo?.();
-      setFeedbackCnpj(`${resultado.atualizadas} transportadora(s) atualizada(s)${rejeitadas ? `; ${rejeitadas} linha(s) rejeitada(s)` : ''}.`);
+      setFeedbackCnpj(`${resultado.atualizadas} origem(ns) atualizada(s)${rejeitadas ? `; ${rejeitadas} linha(s) rejeitada(s)` : ''}.`);
     } catch (error) {
       setFeedbackCnpj(`Erro na importação: ${error.message || error}`);
     } finally {
@@ -644,8 +652,9 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
   };
 
   const totaisCnpj = useMemo(() => {
-    const comCnpj = items.filter((item) => normalizarCnpj(item.cnpj).length === 14).length;
-    return { comCnpj, semCnpj: items.length - comCnpj };
+    const origens = items.flatMap((item) => item.origens || []);
+    const comCnpj = origens.filter((origem) => normalizarCnpj(origem.cnpj).length === 14).length;
+    return { comCnpj, semCnpj: origens.length - comCnpj };
   }, [items]);
 
   const linhas = useMemo(() => {
@@ -661,14 +670,14 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
         const chave = normalizarChave(item.nome);
         const comVinculo = vinculosSet ? vinculosSet.has(chave) : null;
         const auditor = auditoresMap ? (auditoresMap.get(chave) || null) : null;
-        const cnpj = normalizarCnpj(item.cnpj);
-        return { id: item.id, nome: item.nome, cnpj, cnpjRaiz: obterRaizCnpj(cnpj), total, validadas, pendentes, ultimaValidacao, comVinculo, auditor };
+        const origensComCnpj = origens.filter((origem) => normalizarCnpj(origem.cnpj).length === 14).length;
+        return { id: item.id, nome: item.nome, origensComCnpj, origensSemCnpj: total - origensComCnpj, total, validadas, pendentes, ultimaValidacao, comVinculo, auditor };
       })
       .filter((linha) => !busca || normalizeText(linha.nome).includes(normalizeText(busca)))
       .filter((linha) => !somentePendentes || linha.pendentes > 0)
       .filter((linha) => !somenteSemVinculo || linha.comVinculo === false)
       .filter((linha) => !somenteSemAuditor || !linha.auditor)
-      .filter((linha) => !filtroCnpj || (filtroCnpj === 'com' ? linha.cnpj.length === 14 : linha.cnpj.length !== 14))
+      .filter((linha) => !filtroCnpj || (filtroCnpj === 'com' ? linha.origensComCnpj > 0 : linha.origensSemCnpj > 0))
       .sort((a, b) => b.pendentes - a.pendentes || a.nome.localeCompare(b.nome, 'pt-BR'));
   }, [items, busca, somentePendentes, somenteSemVinculo, somenteSemAuditor, filtroCnpj, vinculosSet, auditoresMap]);
 
@@ -681,7 +690,7 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
       <p style={{ marginTop: -8, color: '#64748b' }}>
         {totalValidadas} de {totalOrigens} origem(ns) validada(s) no total ({linhas.filter((l) => l.pendentes === 0 && l.total > 0).length} transportadora(s) 100% validada(s)).
       </p>
-      <div className="inline-meta top-space"><span><strong>{totaisCnpj.comCnpj}</strong> com CNPJ</span><span><strong>{totaisCnpj.semCnpj}</strong> sem CNPJ</span></div>
+      <div className="inline-meta top-space"><span><strong>{totaisCnpj.comCnpj}</strong> origem(ns) com CNPJ</span><span><strong>{totaisCnpj.semCnpj}</strong> origem(ns) sem CNPJ</span></div>
       <div className="inline-meta top-space">
         <span>Mostrando <strong>{linhas.length}</strong> de <strong>{items.length}</strong> transportadora(s)</span>
         {(busca || somentePendentes || somenteSemVinculo || somenteSemAuditor || filtroCnpj) ? (
@@ -726,12 +735,12 @@ function PainelValidacaoModal({ open, items, onClose, onOpenTransportadora, vinc
       </div>
       <div className="table-card top-space" style={{ maxHeight: 420, overflowY: 'auto' }}>
         <table>
-          <thead><tr><th>Transportadora</th><th>CNPJ / raiz</th><th>Validadas</th><th>Pendentes</th><th>Última validação</th><th>Vínculo</th><th>Auditor</th><th>Progresso</th><th></th></tr></thead>
+          <thead><tr><th>Transportadora</th><th>CNPJ das origens</th><th>Validadas</th><th>Pendentes</th><th>Última validação</th><th>Vínculo</th><th>Auditor</th><th>Progresso</th><th></th></tr></thead>
           <tbody>
             {linhas.length ? linhas.map((linha) => (
               <tr key={linha.id}>
                 <td>{linha.nome}</td>
-                <td style={{ fontSize: 12 }}>{linha.cnpj ? <>{formatarCnpj(linha.cnpj)}<br /><span style={{ color: '#64748b' }}>Raiz {linha.cnpjRaiz}</span></> : <span style={{ color: '#b91c1c', fontWeight: 700 }}>Sem CNPJ</span>}</td>
+                <td style={{ fontSize: 12 }}><strong>{linha.origensComCnpj} / {linha.total}</strong><br />{linha.origensSemCnpj ? <span style={{ color: '#b91c1c', fontWeight: 700 }}>{linha.origensSemCnpj} sem CNPJ</span> : <span style={{ color: '#166534' }}>Completo</span>}</td>
                 <td>{linha.validadas} / {linha.total}</td>
                 <td>{linha.pendentes ? <span style={{ color: '#b45309', fontWeight: 700 }}>{linha.pendentes}</span> : <span style={{ color: '#166534' }}>0</span>}</td>
                 <td style={{ fontSize: 12, color: '#64748b' }}>

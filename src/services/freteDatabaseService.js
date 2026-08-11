@@ -1028,7 +1028,7 @@ export async function carregarResumoBaseDb() {
     cotacoesCountResponse,
   ] = await Promise.all([
     carregarTransportadorasResumoCompat(supabase),
-    supabase.from('origens').select('id, transportadora_id, cidade, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
+    supabase.from('origens').select('id, transportadora_id, cidade, codigo_centro, cnpj, cnpj_raiz, canal, status, validado, validado_em, validado_por').order('cidade', { ascending: true }),
     // O dashboard precisa apenas de um indicador imediato. `exact` obrigava o
     // Postgres a contar tabelas que podem ter mais de um milhao de linhas antes
     // de liberar a aplicacao. `planned` usa as estatisticas do banco e evita
@@ -1049,6 +1049,9 @@ export async function carregarResumoBaseDb() {
     lista.push({
       id: origem.id,
       cidade: origem.cidade || '',
+      codigoCentro: origem.codigo_centro || '',
+      cnpj: origem.cnpj || '',
+      cnpjRaiz: origem.cnpj_raiz || '',
       canal: origem.canal || 'ATACADO',
       status: origem.status || 'Ativa',
       validado: Boolean(origem.validado),
@@ -1103,6 +1106,18 @@ export async function atualizarCnpjsTransportadorasDb(registros = []) {
   }).filter((item) => item.id && item.cnpj.length === 14);
   if (!rows.length) return { atualizadas: 0 };
   await upsertRows(ensureClient(), 'transportadoras', rows, 'id');
+  invalidarCacheBaseCompletaDb();
+  return { atualizadas: rows.length };
+}
+
+export async function atualizarCnpjsOrigensDb(registros = []) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase não configurado.');
+  const rows = (registros || []).map((item) => {
+    const cnpj = onlyDigitsDb(item.cnpj).slice(0, 14);
+    return { id: item.id, cnpj, cnpj_raiz: cnpj.slice(0, 8) };
+  }).filter((item) => item.id && item.cnpj.length === 14);
+  if (!rows.length) return { atualizadas: 0 };
+  await upsertRows(ensureClient(), 'origens', rows, 'id');
   invalidarCacheBaseCompletaDb();
   return { atualizadas: rows.length };
 }
