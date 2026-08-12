@@ -8,6 +8,14 @@ test('recalcula a diferenca pelos valores exibidos sem usar arredondamento salvo
   assert.doesNotMatch(html, /R\$\s*1,00|R\$Â 1,00/);
 });
 
+test('total AMD nao inclui cobranca a menor quando a opcao esta desmarcada', () => {
+  const row = { numero_cte: '10', valor_cte: 80, valor_calculado: 100, diferenca: -20 };
+  const oculto = gerarHtmlLaudoAuditoriaCtes([row]);
+  const visivel = gerarHtmlLaudoAuditoriaCtes([row], { mostrarCobrancaAMenor: true });
+  assert.match(oculto, /Math\.min\(calculadoLinha/);
+  assert.doesNotMatch(visivel, /Math\.min\(calculadoLinha/);
+});
+
 test('identifica divergência somente quando existe cálculo', () => {
   assert.equal(cteDivergenteAuditoria({ valor_cte: 120, valor_calculado: 100 }, (dif) => dif > 5), true);
   assert.equal(cteDivergenteAuditoria({ valor_cte: 120, valor_calculado: 0 }, () => true), false);
