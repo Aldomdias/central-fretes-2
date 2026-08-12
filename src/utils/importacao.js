@@ -249,6 +249,7 @@ function sheetRowsForTipoVerum(tipo, rows = []) {
       'Taxa aplicada': item.valorFixo ?? '',
       'Frete percentual': item.percentual ?? '',
       'Frete mínimo': item.freteMinimo ?? '',
+      'Composição do frete': item.composicaoFrete === 'PESO_MAIS_PERCENTUAL' ? 'PESO + PERCENTUAL OU MÍNIMO' : 'PADRÃO',
       'Início da vigência': item.inicioVigencia || '',
       'Fim da vigência': item.fimVigencia || '',
     }));
@@ -520,6 +521,7 @@ export function buildImportPayload(parsed, tipo, overrides = {}) {
           valorFixo: toNumber(firstFilled(row, ['taxa aplicada', 'valor faixa', 'valor fixo'])),
           percentual: toNumber(firstFilled(row, ['frete percentual', 'percentual'])),
           freteMinimo: toNumber(firstFilled(row, ['frete minimo', 'minimo'])),
+          composicaoFrete: normalizeHeader(firstFilled(row, ['composicao do frete', 'composicao'])).includes('peso percentual') ? 'PESO_MAIS_PERCENTUAL' : '',
           canal: common.canal,
           inicioVigencia: String(firstFilled(row, ['inicio da vigencia'])).trim(),
           fimVigencia: String(firstFilled(row, ['fim da vigencia', 'termino da vigencia'])).trim(),
@@ -608,6 +610,7 @@ function sheetRowsForTipo(tipo, rows = []) {
       'Taxa aplicada': item.valorFixo ?? '',
       'Frete percentual': item.percentual ?? '',
       'Frete mínimo': item.freteMinimo ?? '',
+      'Composição do frete': item.composicaoFrete === 'PESO_MAIS_PERCENTUAL' ? 'PESO + PERCENTUAL OU MÍNIMO' : 'PADRÃO',
       'Início da vigência': item.inicioVigencia || '',
       'Fim da vigência': item.fimVigencia || '',
     }));
@@ -666,6 +669,7 @@ function prepModelRows(tipo) {
       regraCalculo: 'Maior valor', tipoCalculo: 'PERCENTUAL', rota: 'CAPITAL - SP',
       pesoMin: 0, pesoMax: 999999999, excesso: 0.62, valorFixo: 0,
       percentual: 1.95, freteMinimo: 38, inicioVigencia: '2025-01-01', fimVigencia: '2025-12-31',
+      composicaoFrete: 'PESO_MAIS_PERCENTUAL',
     }]);
   }
   if (tipo === 'taxas') {

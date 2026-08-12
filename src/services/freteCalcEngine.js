@@ -303,14 +303,16 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
   const peso = toNumber(pesoKg);
   const nf = toNumber(valorNf);
   const { minimoRota, minimoCotacao, minimoGeneralidade, minimoAplicavel } = resolverMinimoFrete({ rota, cotacao, generalidades });
-  const valorKg = toNumber(cotacao.rsKg) * peso;
+  const valorKg = toNumber(cotacao.rsKg || cotacao.excesso || cotacao.excessoPeso) * peso;
   const valorPercentual = nf * toPercent(cotacao.percentual || cotacao.fretePercentual);
-
-  const componenteBase = escolherComponenteBase({
-    kgGarantia: valorKg,
-    fretePercentual: valorPercentual,
-    freteMinimo: minimoAplicavel,
-  });
+  const composicaoFrete = String(
+    cotacao.composicaoFrete || cotacao.composicao_frete ||
+    generalidades.composicaoFrete || generalidades.composicao_frete || ''
+  ).trim().toUpperCase();
+  const somaPesoPercentual = composicaoFrete === 'PESO_MAIS_PERCENTUAL';
+  const componenteBase = somaPesoPercentual
+    ? escolherComponenteBase({ pesoMaisPercentual: valorKg + valorPercentual, freteMinimo: minimoAplicavel })
+    : escolherComponenteBase({ kgGarantia: valorKg, fretePercentual: valorPercentual, freteMinimo: minimoAplicavel });
   const valorBase = componenteBase.valor;
   const taxas = resolverTaxas({ generalidades, taxaDestino, valorNf: nf, pesoKg: peso, documentoDestinatario });
   const subtotalSemEmergencial = valorBase + taxas.adValorem + taxas.gris + taxas.pedagio + taxas.tas + taxas.ctrc + taxas.tda + taxas.tde + taxas.trt + taxas.suframa + taxas.outras + taxas.taxaExtra;
@@ -328,11 +330,13 @@ export function calcularFretePercentual({ rota = {}, cotacao = {}, generalidades
     valorEmergencial,
     icms,
     total: subtotal + icms,
-    regraCalculo: 'MAIOR_VALOR',
+    regraCalculo: somaPesoPercentual ? 'PESO_MAIS_PERCENTUAL_OU_MINIMO' : 'MAIOR_VALOR',
     componenteBase: componenteBase.nome,
     componentesBase: {
       valorKg,
       valorPercentual,
+      valorPesoMaisPercentual: valorKg + valorPercentual,
+      composicaoFrete: somaPesoPercentual ? 'PESO_MAIS_PERCENTUAL' : 'MAIOR_VALOR',
       valorFixo: 0,
       minimoRota,
       minimoCotacao,

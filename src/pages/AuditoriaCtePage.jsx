@@ -2962,11 +2962,12 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                     {linhaDetalhe('Valor percentual', fmtMaybe(frete.valorPercentualCalculado ?? frete.valorPercentual))}
                                     {linhaDetalhe('R$/kg aplicado', fmtMaybe(frete.rsKgAplicado))}
                                     {linhaDetalhe('Valor kg garantia', fmtMaybe(frete.valorKgGarantia ?? frete.valorKg))}
+                                    {frete.composicaoFrete === 'PESO_MAIS_PERCENTUAL' ? linhaDetalhe('Peso + percentual', fmtMaybe(frete.valorPesoMaisPercentual), true) : null}
                                     {linhaDetalhe('Frete minimo rota', fmtMaybe(frete.minimoRota))}
                                     {linhaDetalhe('Frete minimo cotacao', fmtMaybe(frete.freteMinimoCotacao ?? frete.minimoCotacao))}
                                     {linhaDetalhe('Frete minimo geral', fmtMaybe(frete.freteMinimoGeneralidade ?? frete.minimoGeneralidade))}
                                     {linhaDetalhe('Minimo aplicavel', fmtMaybe(frete.minimoAplicavel))}
-                                    {linhaDetalhe('Componente vencedor', frete.componenteBase || det.componente_base || '-', true)}
+                                    {linhaDetalhe('Componente vencedor', frete.componenteBase === 'pesoMaisPercentual' ? 'Peso + percentual' : (frete.componenteBase || det.componente_base || '-'), true)}
                                     {linhaDetalhe('Valor base', fmtMaybe(det.valor_base ?? frete.valorBase), true)}
                                   </div>
                                   {comparativoPesos.length ? (

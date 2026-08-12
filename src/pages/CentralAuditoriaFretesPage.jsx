@@ -584,11 +584,12 @@ function PainelDetalheCalculo({ resultado, onMudarPagina, onAbrirTransportadoras
           {linhaDetalhe('Valor percentual', dinheiroMaybe(frete.valorPercentualCalculado ?? frete.valorPercentual))}
           {linhaDetalhe('R$/kg aplicado', dinheiroMaybe(frete.rsKgAplicado))}
           {linhaDetalhe('Valor kg garantia', dinheiroMaybe(frete.valorKgGarantia ?? frete.valorKg))}
+          {frete.composicaoFrete === 'PESO_MAIS_PERCENTUAL' ? linhaDetalhe('Peso + percentual', dinheiroMaybe(frete.valorPesoMaisPercentual), true) : null}
           {linhaDetalhe('Frete minimo rota', dinheiroMaybe(frete.minimoRota))}
           {linhaDetalhe('Frete minimo cotacao', dinheiroMaybe(frete.freteMinimoCotacao ?? frete.minimoCotacao))}
           {linhaDetalhe('Frete minimo geral', dinheiroMaybe(frete.freteMinimoGeneralidade ?? frete.minimoGeneralidade))}
           {linhaDetalhe('Minimo aplicavel', dinheiroMaybe(frete.minimoAplicavel))}
-          {linhaDetalhe('Componente vencedor', frete.componenteBase || det.componente_base || '-', true)}
+          {linhaDetalhe('Componente vencedor', frete.componenteBase === 'pesoMaisPercentual' ? 'Peso + percentual' : (frete.componenteBase || det.componente_base || '-'), true)}
           {linhaDetalhe('Valor base', dinheiroMaybe(det.valor_base ?? frete.valorBase), true)}
         </div>
         {comparativoPesos.length ? (

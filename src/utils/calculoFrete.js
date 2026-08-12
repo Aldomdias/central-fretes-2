@@ -405,6 +405,8 @@ function buildDetalhes({ origem, rota, cotacao, taxaDestino, peso, valorNF, calc
       minimoAplicavel: toNumber(calculo.componentesBase?.minimoAplicavel),
       valorKgGarantia: toNumber(calculo.componentesBase?.valorKg),
       valorPercentualCalculado: toNumber(calculo.componentesBase?.valorPercentual),
+      valorPesoMaisPercentual: toNumber(calculo.componentesBase?.valorPesoMaisPercentual),
+      composicaoFrete: calculo.componentesBase?.composicaoFrete || 'MAIOR_VALOR',
       componenteBase: calculo.componenteBase || '',
       valorBase: calculo.valorBase,
       subtotalSemEmergencial: toNumber(calculo.subtotalSemEmergencial),

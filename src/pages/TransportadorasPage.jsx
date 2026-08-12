@@ -568,7 +568,11 @@ function LinhaModal({ open, title, fields, initialValue, onSave, onClose }) {
             <label>{field.label}</label>
             {field.type === 'select' ? (
               <select value={form[field.name] ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, [field.name]: e.target.value }))}>
-                {(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}
+                {(field.options || []).map((option) => {
+                  const value = typeof option === 'object' ? option.value : option;
+                  const label = typeof option === 'object' ? option.label : option;
+                  return <option key={value} value={value}>{label}</option>;
+                })}
               </select>
             ) : (
               <input value={form[field.name] ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, [field.name]: e.target.value }))} />
@@ -930,6 +934,19 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
   const rows = origem[secao] || [];
   const inputRef = useRef(null);
   const [filtroTexto, setFiltroTexto] = useState('');
+  const composicaoAtualDasLinhas = rows.length && rows.every((item) => (item.composicaoFrete || '') === (rows[0].composicaoFrete || ''))
+    ? (rows[0].composicaoFrete || '')
+    : '';
+  const [composicaoGeral, setComposicaoGeral] = useState(composicaoAtualDasLinhas);
+
+  React.useEffect(() => {
+    setComposicaoGeral(composicaoAtualDasLinhas);
+  }, [origem.id, composicaoAtualDasLinhas]);
+
+  const salvarComposicaoGeral = () => {
+    store.atualizarCampoSecaoOrigem(transportadora.id, origem.id, secao, 'composicaoFrete', composicaoGeral);
+    setFeedback({ type: 'ok', text: `Composição aplicada às ${rows.length} cotações desta tabela.` });
+  };
 
   const rowsFiltradas = useMemo(() => {
     const termo = normalizeText(filtroTexto);
@@ -1006,6 +1023,19 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
         </div>
       </div>
       {hint ? <div className="hint-box">{hint}</div> : null}
+      {secao === 'cotacoes' ? (
+        <div className="hint-box" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5, fontWeight: 700, minWidth: 420 }}>
+            Composição geral desta tabela
+            <select value={composicaoGeral} onChange={(e) => setComposicaoGeral(e.target.value)}>
+              <option value="">Padrão — maior entre peso, percentual e mínimo</option>
+              <option value="PESO_MAIS_PERCENTUAL">Excesso/peso + percentual, respeitando o frete mínimo</option>
+            </select>
+          </label>
+          <button className="btn-primary" onClick={salvarComposicaoGeral} disabled={!rows.length}>Aplicar em todas ({rows.length})</button>
+          <span style={{ width: '100%', fontSize: 12, color: '#64748b' }}>A regra geral vale somente para cotações do tipo percentual desta origem; faixas de peso continuam com o cálculo atual. Uma exceção definida dentro de uma linha tem prioridade.</span>
+        </div>
+      ) : null}
       {feedback ? <div className={`mini-feedback ${feedback.type}`}>{feedback.text}</div> : null}
       <input
         type="text"
@@ -1044,7 +1074,7 @@ function CrudTab({ title, secao, tipoImportacao, origem, transportadora, store, 
           <tbody>
             {rowsFiltradas.length ? rowsFiltradas.map((row) => (
               <tr key={row.id}>
-                {columns.map((c) => <td key={c.key}>{row[c.key] ?? '—'}</td>)}
+                {columns.map((c) => <td key={c.key}>{c.render ? c.render(row[c.key], row) : (row[c.key] ?? '—')}</td>)}
                 <td className="row-actions">
                   <ActionIcon onClick={() => { setEditing(row); setModalOpen(true); }}>✎</ActionIcon>
                   <ActionIcon danger onClick={() => store.removerLinha(transportadora.id, origem.id, secao, row.id)}>🗑</ActionIcon>
@@ -1842,10 +1872,14 @@ function OrigemDetail({ transportadora, origem, onBack, store }) {
     { name: 'nomeRota', label: 'Nome da Rota' }, { name: 'ibgeOrigem', label: 'IBGE Origem' }, { name: 'ibgeDestino', label: 'IBGE Destino' }, { name: 'canal', label: 'Canal', type: 'select', options: ['ATACADO', 'B2C'] }, { name: 'prazoEntregaDias', label: 'Prazo (dias)' }, { name: 'valorMinimoFrete', label: 'Mínimo (R$)' },
   ];
   const cotacoesColumns = [
-    { key: 'rota', label: 'Rota' }, { key: 'pesoMin', label: 'Peso Mín (kg)' }, { key: 'pesoMax', label: 'Peso Máx (kg)' }, { key: 'valorFixo', label: 'Taxa Aplicada' }, { key: 'excesso', label: 'Excesso' }, { key: 'percentual', label: '% Frete' }, { key: 'freteMinimo', label: 'Frete Mín.' },
+    { key: 'rota', label: 'Rota' }, { key: 'pesoMin', label: 'Peso Mín (kg)' }, { key: 'pesoMax', label: 'Peso Máx (kg)' }, { key: 'valorFixo', label: 'Taxa Aplicada' }, { key: 'excesso', label: 'Excesso' }, { key: 'percentual', label: '% Frete' }, { key: 'freteMinimo', label: 'Frete Mín.' }, { key: 'composicaoFrete', label: 'Composição efetiva', render: (value) => {
+      const regra = value || '';
+      return regra === 'PESO_MAIS_PERCENTUAL' ? 'Peso + % ou mínimo' : 'Padrão (maior valor)';
+    } },
   ];
   const cotacoesFields = [
     { name: 'rota', label: 'Rota' }, { name: 'pesoMin', label: 'Peso Mín (kg)' }, { name: 'pesoMax', label: 'Peso Máx (kg)' }, { name: 'valorFixo', label: 'Taxa Aplicada / Faixa' }, { name: 'excesso', label: 'Excesso por kg' }, { name: 'percentual', label: '% Frete' }, { name: 'freteMinimo', label: 'Frete Mínimo' },
+    { name: 'composicaoFrete', label: 'Exceção individual de composição', type: 'select', full: true, options: [{ value: '', label: 'Usar regra geral da tabela' }, { value: 'MAIOR_VALOR', label: 'Padrão — maior entre peso, percentual e mínimo' }, { value: 'PESO_MAIS_PERCENTUAL', label: 'Excesso/peso + percentual, respeitando o frete mínimo' }] },
   ];
   const taxasColumns = [
     { key: 'ibgeDestino', label: 'IBGE Destino' }, { key: 'tda', label: 'TDA (R$)' }, { key: 'trt', label: 'TRT (R$)' }, { key: 'suframa', label: 'SUFRAMA (R$)' }, { key: 'outras', label: 'Outras (R$)' }, { key: 'gris', label: 'GRIS (%)' }, { key: 'grisMinimo', label: 'GRIS Mín.' }, { key: 'adVal', label: 'Ad Val (%)' }, { key: 'adValMinimo', label: 'Ad Val Mín.' }, { key: 'taxasExtras', label: 'Coringas', render: function(v) { return Array.isArray(v) && v.length ? v.map(function(te) { return te.nome || 'coringa'; }).join(', ') : '-'; } },

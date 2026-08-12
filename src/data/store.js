@@ -825,6 +825,19 @@ export function useFreteStore(sessao = null) {
           secao
         );
       },
+      atualizarCampoSecaoOrigem(transportadoraId, origemId, secao, campo, valor) {
+        aplicarAlteracao(
+          (prev) => prev.map((t) => t.id !== transportadoraId ? t : ({
+            ...t,
+            origens: t.origens.map((o) => o.id !== origemId ? o : invalidarValidacaoSeNecessario({
+              ...o,
+              [secao]: (o[secao] || []).map((item) => ({ ...item, [campo]: valor })),
+            })),
+          })),
+          secao,
+          secao
+        );
+      },
       // Reajusta várias linhas de uma só vez (um único aplicarAlteracao) — evita
       // o problema de chamar salvarLinha em loop, onde cada chamada lê o estado
       // anterior a qualquer uma das outras e só a última sobrevive.

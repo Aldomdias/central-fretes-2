@@ -28,6 +28,32 @@ test('percentual usa o maior entre kg garantia, frete percentual e minimo', () =
   assert.equal(resultado.componenteBase, 'fretePercentual');
 });
 
+test('composição especial soma peso e percentual e respeita o frete mínimo', () => {
+  const resultado = calcularFretePercentual({
+    cotacao: { excesso: 0.62, percentual: 0.5, freteMinimo: 111.05, composicaoFrete: 'PESO_MAIS_PERCENTUAL' },
+    pesoKg: 604.8,
+    valorNf: 17231.96,
+  });
+
+  assert.equal(resultado.componentesBase.valorKg, 374.976);
+  assert.equal(resultado.componentesBase.valorPercentual, 86.1598);
+  assert.equal(resultado.valorBase, 461.1358);
+  assert.equal(resultado.componenteBase, 'pesoMaisPercentual');
+  assert.equal(resultado.regraCalculo, 'PESO_MAIS_PERCENTUAL_OU_MINIMO');
+});
+
+test('composição especial pode ser definida de forma geral para toda a origem', () => {
+  const resultado = calcularFretePercentual({
+    cotacao: { excesso: 1, percentual: 1, freteMinimo: 50 },
+    generalidades: { composicaoFrete: 'PESO_MAIS_PERCENTUAL' },
+    pesoKg: 100,
+    valorNf: 1000,
+  });
+
+  assert.equal(resultado.valorBase, 110);
+  assert.equal(resultado.componenteBase, 'pesoMaisPercentual');
+});
+
 test('faixa soma valor da faixa, percentual e excedente', () => {
   const resultado = calcularFreteFaixaPeso({
     cotacao: {
