@@ -36,6 +36,8 @@ import GestaoBaseCtePage from './pages/GestaoBaseCtePage';
 import VisualConceptPage from './pages/VisualConceptPage';
 import IcmsUfPage from './pages/IcmsUfPage';
 import AuditoriaEcommercePage from './pages/AuditoriaEcommercePage';
+import ImportarDescontosObtidosPage from './pages/ImportarDescontosObtidosPage';
+import PainelDescontosObtidosPage from './pages/PainelDescontosObtidosPage';
 import { useFreteStore } from './data/store';
 import { carregarSessao, MODULOS_SISTEMA, sairLocal, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
@@ -50,6 +52,7 @@ const PAGINAS_PERMITIDAS = [
   'faturas', 'gestao-auditoria-fretes', 'financeiro-auditoria', 'tratativas', 'prazo-pagamento',
   'perda-realizado', 'oportunidade-origem', 'oportunidade-transportadora', 'simular-saida-transportadora', 'gestao-base-cte', 'consulta-ibge', 'ferramentas', 'transportadoras', 'usuarios', 'minha-senha',
   'icms-uf', 'auditoria-ecommerce', 'usuarios-ativos',
+  'importar-descontos-obtidos', 'painel-descontos-obtidos',
 ];
 
 function primeiraPaginaPermitida(usuario) {
@@ -192,6 +195,8 @@ export default function App() {
     usuarios: <UserManagementPage usuarioAtual={sessao} />,
     'usuarios-ativos': <PainelUsuariosAtivosPage />,
     'minha-senha': <MinhaSenhaPage usuarioAtual={sessao} onSenhaAlterada={setSessao} />,
+    'importar-descontos-obtidos': <ImportarDescontosObtidosPage />,
+    'painel-descontos-obtidos': <PainelDescontosObtidosPage />,
     transportadoras: <TransportadorasPage transportadoras={transportadorasMemo} transportadoraSelecionadaId={transportadoraSelecionadaId} origemSelecionadaId={origemSelecionadaId} onOpenTransportadora={abrirTransportadora} onOpenOrigem={setOrigemSelecionadaId} onVoltar={voltarTransportadoras} store={store} sessao={sessao} />,
   };
 

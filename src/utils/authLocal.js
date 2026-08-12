@@ -37,6 +37,8 @@ export const MODULOS_SISTEMA = [
   { chave: 'financeiro-auditoria', label: 'Central Financeira', grupo: 'Financeiro' },
   { chave: 'prazo-pagamento', label: 'Prazo de Pagamento', grupo: 'Financeiro' },
   { chave: 'tratativas', label: 'Tratativas', grupo: 'Auditoria' },
+  { chave: 'importar-descontos-obtidos', label: 'Importar Descontos Obtidos', grupo: 'Financeiro' },
+  { chave: 'painel-descontos-obtidos', label: 'Painel Descontos Obtidos', grupo: 'Financeiro' },
   { chave: 'consulta-ibge', label: 'Consulta IBGE', grupo: 'Cadastros' },
   { chave: 'icms-uf', label: 'Matriz ICMS UF', grupo: 'Cadastros' },
   { chave: 'ferramentas', label: 'Ferramentas', grupo: 'Geral' },
