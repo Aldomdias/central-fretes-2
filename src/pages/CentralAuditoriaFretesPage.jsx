@@ -74,6 +74,11 @@ const TABS = [
   ['gestao', 'Centro de Gestores'],
   ['financeiro', 'Central Financeira'],
 ];
+const ULTIMA_CARGA_FATURAS_KEY = 'amd_ultima_carga_faturas_v1';
+
+function carregarUltimaCargaFaturas() {
+  try { return JSON.parse(localStorage.getItem(ULTIMA_CARGA_FATURAS_KEY) || 'null'); } catch { return null; }
+}
 
 function dinheiro(valor) {
   return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -1739,6 +1744,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [aberta, setAberta] = useState(null);
   const [importando, setImportando] = useState(false);
   const [mensagemImportacao, setMensagemImportacao] = useState('');
+  const [ultimaCargaFaturas, setUltimaCargaFaturas] = useState(carregarUltimaCargaFaturas);
   const [selecionadasIds, setSelecionadasIds] = useState([]);
   const [statusLote, setStatusLote] = useState('');
   const [auditorLote, setAuditorLote] = useState('');
@@ -2997,6 +3003,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       });
 
       let faturasSalvas = 0;
+      let faturasNovas = 0;
+      let faturasAtualizadas = 0;
       let detalhesSalvos = 0;
       let processadas = 0;
       const detalhesPorFaturaImportada = new Map();
@@ -3030,6 +3038,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
           });
           if (!resultado?.ok || !resultado.id) return;
           faturasSalvas += 1;
+          if (existenteId) faturasAtualizadas += 1;
+          else faturasNovas += 1;
           existentesPorChave.set(chaveExistente, resultado.id);
           const detalhes = detalhesDaFatura(grupos, fatura.numero_fatura, fatura.serie_fatura)
             .map((item) => parseDetalheFaturaVerum(item, resultado.id, fatura));
@@ -3081,12 +3091,30 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       const alertaVinculo = analise.detalhesNaoVinculados > 0
         ? ` ATENCAO: ${analise.detalhesNaoVinculados} CT-e(s) da aba Detalhes nao casaram com nenhuma fatura (confira Numero/Serie Fatura nas duas abas).`
         : '';
+      const resumoCarga = {
+        status: 'CONCLUIDA',
+        arquivo: file.name,
+        concluidaEm: new Date().toISOString(),
+        usuario: sessao?.nome || sessao?.email || '',
+        recebidas: rowsFaturas.length,
+        novas: faturasNovas,
+        atualizadas: faturasAtualizadas,
+        ignoradas: analise.faturasIgnoradas,
+        ctesVinculados: detalhesSalvos,
+        ctesNaoVinculados: analise.detalhesNaoVinculados,
+        faltamRecalcular: faturasSalvas,
+      };
+      setUltimaCargaFaturas(resumoCarga);
+      localStorage.setItem(ULTIMA_CARGA_FATURAS_KEY, JSON.stringify(resumoCarga));
       setMensagemImportacao(
-        `Importacao concluida: ${faturasSalvas} fatura(s), ${detalhesSalvos} CT-e(s) vinculado(s), `
+        `Importacao concluida: ${faturasNovas} nova(s), ${faturasAtualizadas} atualizada(s), ${detalhesSalvos} CT-e(s) vinculado(s), `
         + `${analise.faturasIgnoradas} fatura(s) ignorada(s). `
         + `Use "Recalcular CT-es" em cada fatura para calcular o status AMD.${alertaVinculo}`,
       );
     } catch (error) {
+      const resumoErro = { status: 'ERRO', arquivo: file.name, concluidaEm: new Date().toISOString(), erro: error.message };
+      setUltimaCargaFaturas(resumoErro);
+      localStorage.setItem(ULTIMA_CARGA_FATURAS_KEY, JSON.stringify(resumoErro));
       setMensagemImportacao(`Erro na importacao: ${error.message}`);
     } finally {
       setImportando(false);
@@ -3438,6 +3466,25 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         )}
         <AmdProcessingOverlay ativo={importando} progresso={progressoImportacao} mensagemRodape="Pode levar mais tempo em arquivos com muitas faturas/CT-es e várias transportadoras." />
         <AmdProcessingOverlay ativo={recalculandoLote} progresso={progressoLote} mensagemRodape="Pode levar mais tempo com muitas faturas/CT-es selecionados." />
+        {ultimaCargaFaturas && (
+          <div className="hint-box compact" style={{ marginTop: 10, borderLeft: `4px solid ${ultimaCargaFaturas.status === 'CONCLUIDA' ? '#059669' : '#dc2626'}` }}>
+            <strong>Última carga de faturas: {ultimaCargaFaturas.status === 'CONCLUIDA' ? 'concluída' : 'com erro'}</strong>
+            {' · '}{ultimaCargaFaturas.arquivo || 'arquivo não identificado'}
+            {' · '}{ultimaCargaFaturas.concluidaEm ? new Date(ultimaCargaFaturas.concluidaEm).toLocaleString('pt-BR') : '—'}
+            {ultimaCargaFaturas.usuario ? ` · ${ultimaCargaFaturas.usuario}` : ''}
+            {ultimaCargaFaturas.status === 'CONCLUIDA' ? (
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 8 }}>
+                <span>Recebidas: <strong>{Number(ultimaCargaFaturas.recebidas || 0).toLocaleString('pt-BR')}</strong></span>
+                <span>Novas: <strong>{Number(ultimaCargaFaturas.novas || 0).toLocaleString('pt-BR')}</strong></span>
+                <span>Atualizadas, sem duplicar: <strong>{Number(ultimaCargaFaturas.atualizadas || 0).toLocaleString('pt-BR')}</strong></span>
+                <span>Ignoradas: <strong>{Number(ultimaCargaFaturas.ignoradas || 0).toLocaleString('pt-BR')}</strong></span>
+                <span>CT-es vinculados: <strong>{Number(ultimaCargaFaturas.ctesVinculados || 0).toLocaleString('pt-BR')}</strong></span>
+                <span style={{ color: ultimaCargaFaturas.ctesNaoVinculados ? '#b45309' : undefined }}>CT-es sem vínculo: <strong>{Number(ultimaCargaFaturas.ctesNaoVinculados || 0).toLocaleString('pt-BR')}</strong></span>
+                <span style={{ color: ultimaCargaFaturas.faltamRecalcular ? '#b45309' : undefined }}>Falta recalcular AMD: <strong>{Number(ultimaCargaFaturas.faltamRecalcular || 0).toLocaleString('pt-BR')} fatura(s)</strong></span>
+              </div>
+            ) : <div style={{ marginTop: 8 }}>{ultimaCargaFaturas.erro}</div>}
+          </div>
+        )}
         {mensagemImportacao && <div className="hint-box compact">{mensagemImportacao}</div>}
         <p className="compact">Layout esperado: abas Faturas e Detalhes, com Transportadora, Numero Fatura, Data Vencimento, Valor Fatura e Chave CTe.</p>
       </div>
