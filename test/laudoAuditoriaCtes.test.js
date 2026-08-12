@@ -16,6 +16,16 @@ test('total AMD nao inclui cobranca a menor quando a opcao esta desmarcada', () 
   assert.doesNotMatch(visivel, /Math\.min\(calculadoLinha/);
 });
 
+test('neutraliza o saldo oculto na linha e no detalhe exportado', () => {
+  const row = { numero_cte: '11', valor_cte: 246.34, valor_calculado: 430.09, diferenca: -183.75 };
+  const oculto = gerarHtmlLaudoAuditoriaCtes([row]);
+  const visivel = gerarHtmlLaudoAuditoriaCtes([row], { mostrarCobrancaAMenor: true });
+  assert.doesNotMatch(oculto, /430,09/);
+  assert.match(oculto, /246,34/);
+  assert.match(oculto, /R\$\s*0,00|R\$Â 0,00/);
+  assert.match(visivel, /430,09/);
+});
+
 test('identifica divergência somente quando existe cálculo', () => {
   assert.equal(cteDivergenteAuditoria({ valor_cte: 120, valor_calculado: 100 }, (dif) => dif > 5), true);
   assert.equal(cteDivergenteAuditoria({ valor_cte: 120, valor_calculado: 0 }, () => true), false);
