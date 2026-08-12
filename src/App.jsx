@@ -26,7 +26,7 @@ import TabelasNegociacaoPageWithEditor from './pages/TabelasNegociacaoPageWithEd
 import AuditoriaCtePage from './pages/AuditoriaCtePage';
 import CentralAuditoriaFretesPage from './pages/CentralAuditoriaFretesPage';
 import TratativasPage from './pages/TratativasPage';
-import PainelAuditoriaPage from './pages/PainelAuditoriaPage';
+import PainelAuditoriaPage from './pages/PainelControleAuditoriaPage';
 import PainelOperacaoPage from './pages/PainelOperacaoPage';
 import PerdaRealizadoPage from './pages/PerdaRealizadoPage';
 import OportunidadeOrigemPage from './pages/OportunidadeOrigemPage';
