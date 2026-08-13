@@ -2178,6 +2178,8 @@ export default function CtePage() {
   const [modoImportacao, setModoImportacao] = useState('complementar');
   const [importando, setImportando] = useState(false);
   const [pendencias, setPendencias] = useState([]);
+  const [modoMultiMesUpload, setModoMultiMesUpload] = useState(false);
+  const [resultadoMultiMesUpload, setResultadoMultiMesUpload] = useState(null);
 
   const [ocultarEbazar, setOcultarEbazar] = useState(true);
   const [incluirCpsLog, setIncluirCpsLog] = useState(
@@ -2232,7 +2234,7 @@ export default function CtePage() {
     verTodos: '',
   });
 
-  const podeImportar = Boolean(competenciaUpload && arquivoUpload && !importando);
+  const podeImportar = Boolean((modoMultiMesUpload || competenciaUpload) && arquivoUpload && !importando);
 
   const pendenciaProcessamento = useMemo(
     () => competenciaPrecisaProcessamento(statusCompetencia),
@@ -2423,7 +2425,7 @@ export default function CtePage() {
   }
 
   async function importarArquivoCte({ forcarSubstituir = false } = {}) {
-    if (!competenciaUpload || !arquivoUpload) {
+    if (!arquivoUpload || (!modoMultiMesUpload && !competenciaUpload)) {
       setErro('Selecione a competência e o arquivo CT-e para subir.');
       return;
     }
@@ -2432,6 +2434,7 @@ export default function CtePage() {
     setErro('');
     setFeedback('Lendo arquivo e validando colunas...');
     setResultadoUpload(null);
+    setResultadoMultiMesUpload(null);
     setValidacaoUpload(null);
     setMetaUpload(null);
     setPendencias([]);
@@ -2439,6 +2442,106 @@ export default function CtePage() {
 
     try {
       const modo = forcarSubstituir ? 'substituir' : modoImportacao;
+      const { registros, ignorados, meta } = await parseRealizadoCtesFile(arquivoUpload, opcoesPoliticaCte);
+      setMetaUpload(meta);
+      setIgnoradosUpload(ignorados);
+      salvarIgnoradosUploadSessao(ignorados);
+
+      if (modoMultiMesUpload) {
+        // Cada registro ja vem com sua propria competencia (calculada pela
+        // data de emissao no parser) - agrupa por mes e sobe um lote por
+        // vez, sem exigir arquivo de um unico mes (util pra importar tudo
+        // de um transportador de uma vez, com CT-es de meses diferentes).
+        const grupos = new Map();
+        let semCompetencia = 0;
+        registros.forEach((row) => {
+          const mes = String(row?.competencia || '').slice(0, 7);
+          if (!/^\d{4}-\d{2}$/.test(mes)) {
+            semCompetencia += 1;
+            return;
+          }
+          if (!grupos.has(mes)) grupos.set(mes, []);
+          grupos.get(mes).push(row);
+        });
+
+        const meses = [...grupos.keys()].sort();
+        if (!meses.length) throw new Error('Nenhum CT-e do arquivo tem data de emissão válida para detectar a competência.');
+
+        if (modo === 'substituir') {
+          const confirmou = window.confirm(
+            `Modo substituir: isso vai apagar e regravar ${meses.length} competência(s) (${meses.join(', ')}) com o conteúdo do arquivo. Deseja continuar?`
+          );
+          if (!confirmou) {
+            setFeedback('Reimportação cancelada. Nenhum dado foi alterado.');
+            return;
+          }
+        }
+
+        const resultadosPorMes = [];
+        for (let index = 0; index < meses.length; index += 1) {
+          const mes = meses[index];
+          const registrosDoMes = grupos.get(mes);
+          setProgressoUpload({ etapa: 'processamento', mensagem: `Importando ${mes} (${index + 1}/${meses.length}): ${fmtN(registrosDoMes.length)} CT-e(s)...`, percentual: Math.round((index / meses.length) * 100) });
+
+          const prefixoMes = `${mes} (${index + 1}/${meses.length})`;
+          const basePercentual = Math.round((index / meses.length) * 100);
+          const faixaPercentual = Math.round(100 / meses.length);
+          const respostaMes = await importarRealizadoMensalEnxuto({
+            competencia: mes,
+            arquivoOrigem: arquivoUpload.name,
+            registros: registrosDoMes,
+            modo,
+            onProgress: (event) => {
+              if (event.etapa === 'validacao') {
+                setProgressoUpload({ etapa: 'validacao', mensagem: `${prefixoMes}: validando ${fmtN(registrosDoMes.length)} CT-e(s)...`, percentual: basePercentual });
+              }
+
+              if (event.etapa === 'status') {
+                setProgressoUpload({ etapa: 'status', mensagem: `${prefixoMes}: ${event.mensagem}`, percentual: basePercentual });
+              }
+
+              if (event.etapa === 'reset') {
+                setProgressoUpload({ etapa: 'reset', mensagem: `${prefixoMes}: ${event.mensagem}`, percentual: basePercentual });
+              }
+
+              if (event.etapa === 'temporaria') {
+                const total = Number(event.total || registrosDoMes.length || 1);
+                const enviados = Number(event.enviados || 0);
+                setProgressoUpload({
+                  etapa: 'temporaria',
+                  mensagem: `${prefixoMes}: ${fmtN(enviados)} de ${fmtN(total)} CT-e(s) enviados para a temporária...`,
+                  percentual: basePercentual + Math.round((enviados / total) * faixaPercentual * 0.5),
+                });
+              }
+
+              if (event.etapa === 'processamento') {
+                setProgressoUpload({ etapa: 'processamento', mensagem: `${prefixoMes}: gerando base oficial (pode demorar - RPC do banco)...`, percentual: basePercentual + Math.round(faixaPercentual * 0.6) });
+              }
+
+              if (event.etapa === 'processamento_lote' || event.etapa === 'processamento_enxuta_lote') {
+                setProgressoUpload({ etapa: event.etapa, mensagem: `${prefixoMes}: ${event.mensagem}`, percentual: basePercentual + Math.round(faixaPercentual * 0.8) });
+              }
+
+              if (event.etapa === 'concluido') {
+                setProgressoUpload({ etapa: 'concluido', mensagem: `${prefixoMes}: concluído.`, percentual: basePercentual + faixaPercentual });
+              }
+            },
+          });
+          resultadosPorMes.push({ mes, quantidade: registrosDoMes.length, statusFinal: respostaMes.statusFinal });
+        }
+
+        setResultadoMultiMesUpload({ resultadosPorMes, semCompetencia });
+        setStatusCompetencia(resultadosPorMes[resultadosPorMes.length - 1]?.statusFinal || null);
+        invalidarStatusBaseCtes();
+        setProgressoUpload({ etapa: 'concluido', mensagem: `${meses.length} competência(s) importada(s).`, percentual: 100 });
+        setFeedback(
+          `${modo === 'substituir' ? 'Reimportação' : 'Importação'} multi-mês concluída: ${meses.length} competência(s) processada(s)`
+          + (semCompetencia ? `, ${fmtN(semCompetencia)} CT-e(s) ignorado(s) por falta de data de emissão.` : '.')
+        );
+        setErro('');
+        return;
+      }
+
       let statusAtual = null;
       try {
         statusAtual = await verificarCompetenciaRealizadoMensal(competenciaUpload);
@@ -2460,10 +2563,6 @@ export default function CtePage() {
         }
       }
 
-      const { registros, ignorados, meta } = await parseRealizadoCtesFile(arquivoUpload, opcoesPoliticaCte);
-      setMetaUpload(meta);
-      setIgnoradosUpload(ignorados);
-      salvarIgnoradosUploadSessao(ignorados);
       setProgressoUpload({ etapa: 'validacao', mensagem: `${fmtN(registros.length)} CT-e(s) lidos. Validando campos...`, percentual: 15 });
 
       const resposta = await importarRealizadoMensalEnxuto({
@@ -2978,14 +3077,18 @@ export default function CtePage() {
         badge={statusCompetencia ? `${fmtN(statusCompetencia.detalhado)} CT-es na competência` : 'Upload CTS'}
         defaultOpen
       >
+        <label className="audit-inline-check" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, fontWeight: 700, margin: '0 0 10px' }}>
+          <input type="checkbox" checked={modoMultiMesUpload} onChange={(e) => setModoMultiMesUpload(e.target.checked)} disabled={importando} />
+          Este arquivo tem CT-es de vários meses (ex.: lote de um transportador) — cada CT-e é gravado na sua própria competência automaticamente.
+        </label>
         <div className="form-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
           <div className="field">
-            <label>Competência</label>
+            <label>Competência{modoMultiMesUpload ? ' (ignorada no modo multi-mês)' : ''}</label>
             <input
               type="month"
               value={competenciaUpload}
               onChange={(event) => setCompetenciaUpload(event.target.value)}
-              disabled={importando}
+              disabled={importando || modoMultiMesUpload}
             />
           </div>
 
@@ -3072,6 +3175,34 @@ export default function CtePage() {
               <small>Apaga todos os CT-e(s) da competência e grava o arquivo inteiro. Use para corrigir o mês completo.</small>
             </span>
           </label>
+
+          <label
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+              padding: 12,
+              borderRadius: 12,
+              background: modoImportacao === 'atualizar' ? '#eff6ff' : '#f8fafc',
+              border: `1px solid ${modoImportacao === 'atualizar' ? '#93c5fd' : '#e2e8f0'}`,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="radio"
+              name="modo-importacao-cte"
+              value="atualizar"
+              checked={modoImportacao === 'atualizar'}
+              onChange={() => setModoImportacao('atualizar')}
+              disabled={importando}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <strong>Atualizar CT-e(s) existentes (sem apagar nada)</strong>
+              <br />
+              <small>Regrava só os CT-e(s) que estão no arquivo (mesma chave), atualizando os campos com o conteúdo novo. Não apaga o resto da competência. Use pra reimportar uma lista parcial (ex.: um transportador só) com dado novo, tipo número da NF.</small>
+            </span>
+          </label>
         </div>
 
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', margin: '0 0 12px', alignItems: 'center' }}>
@@ -3117,7 +3248,7 @@ export default function CtePage() {
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <button className="btn-primary" type="button" onClick={() => importarArquivoCte({ forcarSubstituir: false })} disabled={!podeImportar || modoImportacao === 'substituir'}>
-            {importando ? 'Importando...' : 'Complementar / importar novos'}
+            {importando ? 'Importando...' : (modoImportacao === 'atualizar' ? 'Atualizar existentes' : 'Complementar / importar novos')}
           </button>
           <button className="btn-primary" type="button" onClick={() => importarArquivoCte({ forcarSubstituir: true })} disabled={!podeImportar}>
             {importando ? 'Reimportando...' : 'Reimportar e substituir'}
@@ -3138,6 +3269,29 @@ export default function CtePage() {
         ) : competenciaPrecisaEnxuta(statusCompetencia) ? (
           <div className="hint-box" style={{ marginTop: 10 }}>
             Base oficial com {fmtN(statusCompetencia?.detalhado)} CT-e(s). Enxuta opcional ainda incompleta — a consulta na tela CT-e já funciona pela base oficial.
+          </div>
+        ) : null}
+
+        {resultadoMultiMesUpload ? (
+          <div className="sim-table-wrap" style={{ marginTop: 12 }}>
+            <table className="sim-table">
+              <thead><tr><th>Competência</th><th>CT-e(s) no arquivo</th><th>Base</th><th>Pendências IBGE</th></tr></thead>
+              <tbody>
+                {resultadoMultiMesUpload.resultadosPorMes.map((item) => (
+                  <tr key={item.mes}>
+                    <td>{item.mes}</td>
+                    <td>{fmtN(item.quantidade)}</td>
+                    <td>{fmtN(item.statusFinal?.detalhado)}</td>
+                    <td>{fmtN(item.statusFinal?.pendencias)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {resultadoMultiMesUpload.semCompetencia ? (
+              <div className="sim-alert warn" style={{ marginTop: 8 }}>
+                {fmtN(resultadoMultiMesUpload.semCompetencia)} CT-e(s) do arquivo não tinham data de emissão válida e foram ignorados.
+              </div>
+            ) : null}
           </div>
         ) : null}
 

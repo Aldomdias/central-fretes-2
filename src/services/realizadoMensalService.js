@@ -695,6 +695,9 @@ const COLUNAS_REALIZADO_LOCAL_CTES = [
   'valor_nf',
   'cidade_origem',
   'cidade_destino',
+  'nota_fiscal',
+  'chave_nfe',
+  'documento_remetente',
 ];
 
 function montarLinhaLocalFromTmp(row = {}) {
@@ -734,6 +737,16 @@ function montarLinhaLocalFromTmp(row = {}) {
     valor_nf: row.valor_nf,
     cidade_origem: row.cidade_origem,
     cidade_destino: row.cidade_destino,
+    // Numero/chave da NF: a planilha importada preenche isso dentro do
+    // `raw` (ver montarLinhaTemporariaRealizado) mas nunca virava coluna na
+    // base final - sem isso o DOCCOB EDI (registro 354) fica sem numero da
+    // NF e sem como extrair o CNPJ do emissor pela chave.
+    nota_fiscal: row.nota_fiscal || row.raw?.notaFiscal || row.raw?.nota_fiscal,
+    chave_nfe: row.chave_nfe || row.raw?.chaveNfe || row.raw?.chave_nfe,
+    // CNPJ de quem emitiu a NF (Remetente) - o dado certo pro CGC emissor
+    // do DOCCOB. Vem do proprio arquivo (coluna "Documento remetente" ou
+    // cruzado da aba "Notas Fiscais"), sem precisar digitar manualmente.
+    documento_remetente: row.documento_remetente || row.raw?.documentoRemetente || row.raw?.documento_remetente,
   };
 
   const payload = {};
@@ -945,7 +958,7 @@ async function buscarChavesLocaisExistentes(supabase, competencia, chaves = []) 
   return existentes;
 }
 
-async function processarTemporariaParaLocalCliente({ competencia, onProgress }) {
+async function processarTemporariaParaLocalCliente({ competencia, onProgress, sobrescreverExistentes = false }) {
   const supabase = ensureSupabase();
   let totalInserido = 0;
   let totalPulados = 0;
@@ -977,17 +990,22 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
     primeiroIdAnterior = primeiroId;
 
     totalLido += lote.length;
-    const existentes = await buscarChavesLocaisExistentes(
-      supabase,
-      competencia,
-      lote.map((row) => row.chave_cte),
-    );
+    // Modo "atualizar existentes": nao pula chave ja presente - o upsert
+    // (onConflict chave_cte) em gravarLocalComRetry regrava so essa linha,
+    // sem apagar nada mais da competencia (ao contrario do "substituir").
+    const existentes = sobrescreverExistentes
+      ? new Set()
+      : await buscarChavesLocaisExistentes(
+        supabase,
+        competencia,
+        lote.map((row) => row.chave_cte),
+      );
 
     // Dedup por chave dentro do próprio lote: evita o erro "ON CONFLICT cannot
     // affect row a second time" e reduz o tamanho da gravação.
     const vistos = new Set();
     const novos = lote.filter((row) => {
-      if (!row.chave_cte || existentes.has(row.chave_cte) || vistos.has(row.chave_cte)) return false;
+      if (!row.chave_cte || (!sobrescreverExistentes && existentes.has(row.chave_cte)) || vistos.has(row.chave_cte)) return false;
       vistos.add(row.chave_cte);
       return true;
     });
@@ -1040,7 +1058,7 @@ async function processarTemporariaParaLocalCliente({ competencia, onProgress }) 
   };
 }
 
-async function processarLocalEmLotes({ competencia, onProgress }) {
+async function processarLocalEmLotes({ competencia, onProgress, sobrescreverExistentes = false }) {
   onProgress?.({
     etapa: 'processamento_lote',
     mensagem: 'Gravando temporária na base oficial (processamento direto, sem RPC)...',
@@ -1048,7 +1066,7 @@ async function processarLocalEmLotes({ competencia, onProgress }) {
     restante: await contarTemporariaCompetencia(ensureSupabase(), competencia),
     modo: 'cliente',
   });
-  return processarTemporariaParaLocalCliente({ competencia, onProgress });
+  return processarTemporariaParaLocalCliente({ competencia, onProgress, sobrescreverExistentes });
 }
 
 async function processarEnxutaEmLotes({ competencia, onProgress }) {
@@ -1094,6 +1112,7 @@ export async function processarEnxutaCompetenciaManual({ competencia, onProgress
 export async function processarRealizadoMensalEnxuto({
   competencia,
   substituir = false,
+  sobrescreverExistentes = false,
   gerarEnxuta = ENXUTA_AUTOMATICA_NO_IMPORT,
   onProgress,
   statusInicial = null,
@@ -1113,7 +1132,7 @@ export async function processarRealizadoMensalEnxuto({
       etapa: 'processamento',
       mensagem: `Processando temporária em lotes leves (${temporaria.toLocaleString('pt-BR')} CT-e(s), ${PROCESSAMENTO_LIMITE_LOTE.toLocaleString('pt-BR')} por chamada)...`,
     });
-    oficial = await processarLocalEmLotes({ competencia, onProgress });
+    oficial = await processarLocalEmLotes({ competencia, onProgress, sobrescreverExistentes });
   } else {
     onProgress?.({ etapa: 'processamento', mensagem: 'Temporária vazia. Pulando etapa da base oficial.' });
   }
@@ -1202,6 +1221,9 @@ export async function importarRealizadoMensalEnxuto({ competencia, arquivoOrigem
   const supabase = ensureSupabase();
   const modoImportacao = modo ?? (substituir ? 'substituir' : 'complementar');
   const substituirCompetencia = modoImportacao === 'substituir';
+  // "atualizar": regrava (upsert) so os CT-es do arquivo, sem apagar o resto
+  // da competencia - diferente do "substituir", que apaga o mes inteiro.
+  const sobrescreverExistentes = modoImportacao === 'atualizar';
   const validacao = validarRegistrosRealizadoMensal(registros);
   onProgress?.({ etapa: 'validacao', mensagem: 'Colunas validadas.', validacao });
 
@@ -1285,6 +1307,7 @@ export async function importarRealizadoMensalEnxuto({ competencia, arquivoOrigem
   const processamento = await processarRealizadoMensalEnxuto({
     competencia,
     substituir: substituirCompetencia,
+    sobrescreverExistentes,
     gerarEnxuta: false,
     onProgress,
   });

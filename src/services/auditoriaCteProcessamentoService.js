@@ -144,6 +144,24 @@ function pickDigits(row = {}, keys = [], maxLength = 7) {
   return '';
 }
 
+// Chave de acesso da NF-e (44 digitos): cUF(2) AAMM(4) CNPJ(14) mod(2) serie(3)
+// nNF(9) tpEmis(1) cNF(8) cDV(1) - o CNPJ do emissor fica nas posicoes 7-20.
+function cnpjDaChaveNfe(chaveNfe) {
+  const digitos = onlyDigits(chaveNfe);
+  if (digitos.length !== 44) return '';
+  return digitos.slice(6, 20);
+}
+
+// Mesma estrutura de chave (44 digitos), mas aplicada na chave do proprio
+// CT-e: a serie fica nas posicoes 23-25. Sem isso o DOCCOB manda o
+// "Numero-serie" do CT-e so com o numero, sem a serie - o Verum usa os dois
+// pra localizar o CT-e.
+function serieDaChaveCte(chaveCte) {
+  const digitos = onlyDigits(chaveCte);
+  if (digitos.length !== 44) return '';
+  return digitos.slice(22, 25);
+}
+
 async function carregarMapaVinculosAuditoria() {
   if (_cacheMapaVinculosTransportadoras) return _cacheMapaVinculosTransportadoras;
   try {
@@ -618,6 +636,7 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
     data_emissao: pick(cte, ['data_emissao', 'emissao', 'dataEmissao']) || null,
     chave_cte: pick(cte, ['chave_cte', 'chaveCte', 'chave']) || null,
     numero_cte: pick(cte, ['numero_cte', 'numeroCte', 'cte', 'nro_cte']) || null,
+    serie_cte: serieDaChaveCte(pick(cte, ['chave_cte', 'chaveCte', 'chave'])) || null,
     transportadora: pick(cte, ['transportadora', 'nome_transportadora', 'transportadora_realizada', 'transportador']) || null,
     cnpj_transportadora: pick(cte, ['cnpj_transportadora', 'cnpjTransportadora']) || null,
     tomador_servico: pick(cte, ['tomador_servico', 'tomadorServico', 'tomador']) || null,
@@ -634,6 +653,17 @@ function montarResultadoBase(cte, status, motivo, extras = {}) {
     cubagem: toNumber(pick(cte, ['cubagem', 'cubagem_total', 'cubagemTotal'])),
     qtd_volumes: toNumber(pick(cte, ['qtd_volumes', 'qtdVolumes', 'volumes'])),
     valor_nf: valorNf,
+    numero_nf: pick(cte, ['nota_fiscal', 'notaFiscal', 'numero_nf', 'numeroNf']) || null,
+    chave_nfe: pick(cte, ['chave_nfe', 'chaveNfe']) || null,
+    cnpj_tomador: pickDigits(cte, ['cnpj_tomador', 'cnpjTomador'], 14) || null,
+    // CNPJ do emissor da NF (Remetente): prioriza o campo "Documento
+    // remetente"/aba "Notas Fiscais" da propria importacao (o dado real),
+    // depois tenta extrair da chave de acesso da NF (posicoes 7-20) e por
+    // ultimo usa o CNPJ tomador como reserva.
+    cnpj_emissor_nf: pickDigits(cte, ['documento_remetente', 'documentoRemetente'], 14)
+      || cnpjDaChaveNfe(pick(cte, ['chave_nfe', 'chaveNfe']))
+      || pickDigits(cte, ['cnpj_tomador', 'cnpjTomador'], 14)
+      || null,
     valor_cte: valorCte,
     valor_calculado: 0,
     valor_calculado_verum: valorCalculadoVerum,

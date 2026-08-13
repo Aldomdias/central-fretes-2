@@ -153,9 +153,20 @@ const HEADER_MAP = {
   'cpf cnpj destinatario': 'documentoDestinatario',
   'cpf cnpj do destinatario': 'documentoDestinatario',
   'documento do destinatario cte': 'documentoDestinatario',
+  // CNPJ de quem emitiu a nota fiscal da mercadoria (Remetente) - e o dado
+  // certo pro campo "CGC emissor" do DOCCOB (registro 354), nao o CNPJ da
+  // transportadora nem do destinatario.
+  'documento remetente': 'documentoRemetente',
+  'documento do remetente': 'documentoRemetente',
+  'cnpj remetente': 'documentoRemetente',
+  'cnpj do remetente': 'documentoRemetente',
+  'cpf cnpj remetente': 'documentoRemetente',
+  'cpf cnpj do remetente': 'documentoRemetente',
   'cnpj tomador': 'cnpjTomador',
   'cnpj do tomador': 'cnpjTomador',
   'cnpj tomador servico': 'cnpjTomador',
+  'documento tomador de servico': 'cnpjTomador',
+  'documento do tomador de servico': 'cnpjTomador',
   'prazo de entrega para o cliente': 'prazoEntregaCliente',
   'entrega de cte': 'entregaCte',
   'entrega de ct e': 'entregaCte',
@@ -367,6 +378,7 @@ function normalizeRegistro(row = {}, arquivoOrigem = '') {
     remetente: normalizeTextRealizado(item.remetente),
     destinatario: normalizeTextRealizado(item.destinatario),
     documentoDestinatario: String(item.documentoDestinatario || '').replace(/\D/g, ''),
+    documentoRemetente: String(item.documentoRemetente || '').replace(/\D/g, ''),
     cnpjTomador: String(item.cnpjTomador || '').replace(/\D/g, ''),
     emissao,
     chaveCte,
@@ -449,6 +461,35 @@ function corrigirRefDaAba(sheet) {
   return { sheet, refOriginal, refCorrigida: refOriginal, corrigida: false };
 }
 
+function lerNotasFiscaisPorChaveCte(workbook, nomesAbas = []) {
+  const mapa = new Map();
+  const nomeAba = nomesAbas.find((name) => {
+    const normalizado = normalizeHeaderRealizado(name);
+    return normalizado === 'notas fiscais' || normalizado === 'notas fiscal' || normalizado === 'nota fiscal';
+  });
+  if (!nomeAba) return mapa;
+
+  const sheet = workbook.Sheets[nomeAba];
+  if (!sheet) return mapa;
+
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false, blankrows: false });
+  rows.forEach((row) => {
+    const item = normalizeRowObject(row);
+    const chaveCte = String(item.chaveCte || '').replace(/\D/g, '');
+    if (!chaveCte) return;
+    // A aba "Notas Fiscais" costuma trazer o CNPJ do emissor da NF como
+    // "Documento Tomador de servico" (mapeado em cnpjTomador), nao com um
+    // campo "remetente" proprio.
+    const documentoRemetente = String(item.documentoRemetente || item.cnpjTomador || '').replace(/\D/g, '');
+    mapa.set(chaveCte, {
+      notaFiscal: String(item.notaFiscal || '').trim(),
+      chaveNfe: String(item.chaveNfe || '').replace(/\D/g, '') || String(item.chaveNfe || '').trim(),
+      documentoRemetente,
+    });
+  });
+  return mapa;
+}
+
 function contarLinhasPelaRef(ref = '') {
   if (!ref) return 0;
   try {
@@ -499,8 +540,24 @@ export async function parseRealizadoCtesFile(file, opcoesImportacao) {
   const refInfo = corrigirRefDaAba(sheet);
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false, blankrows: false });
 
+  // Alguns exports trazem a nota fiscal numa aba separada ("Notas Fiscais"),
+  // casada pela chave do CT-e - a aba Registros nao tem essas colunas nesse
+  // caso. Cruza aqui pra nao depender do usuario digitar numero/serie/chave
+  // da NF manualmente no DOCCOB.
+  const notasFiscaisPorChaveCte = lerNotasFiscaisPorChaveCte(workbook, nomesAbas);
+
   const normalizados = rows
     .map((row) => normalizeRegistro(row, file.name || ''))
+    .map((row) => {
+      const nf = notasFiscaisPorChaveCte.get(String(row.chaveCte || '').replace(/\D/g, ''));
+      if (!nf) return row;
+      return {
+        ...row,
+        notaFiscal: row.notaFiscal || nf.notaFiscal || '',
+        chaveNfe: row.chaveNfe || nf.chaveNfe || '',
+        documentoRemetente: row.documentoRemetente || nf.documentoRemetente || '',
+      };
+    })
     .filter((row) => row.chaveCte || row.numeroCte)
     .filter((row) => row.valorCte > 0 || row.valorNF > 0);
 

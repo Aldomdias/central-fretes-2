@@ -11,6 +11,7 @@ import {
   diagnosticarTrackingSupabase,
   importarTrackingSupabase,
   listarTrackingSupabase,
+  pesquisarTrackingSupabase,
   resumirTrackingSupabase,
 } from '../services/trackingSupabaseService';
 import { carregarMunicipiosIbgeDb } from '../services/freteDatabaseService';
@@ -87,6 +88,13 @@ export default function TrackingPage() {
   const [resumo, setResumo] = useState(null);
   const [amostra, setAmostra] = useState([]);
   const [fonteAmostra, setFonteAmostra] = useState('supabase');
+  const [buscaChaveNfe, setBuscaChaveNfe] = useState('');
+  const [buscaChaveCte, setBuscaChaveCte] = useState('');
+  const [buscaCteNumero, setBuscaCteNumero] = useState('');
+  const [buscaNotaFiscal, setBuscaNotaFiscal] = useState('');
+  const [pesquisando, setPesquisando] = useState(false);
+  const [resultadoPesquisa, setResultadoPesquisa] = useState(null);
+  const [erroPesquisa, setErroPesquisa] = useState('');
   const resumoExibido = diagnostico.total ? resumo : resumoSupabase;
   const labelLinhas = diagnostico.total ? 'Linhas locais' : 'Linhas Supabase';
 
@@ -250,6 +258,37 @@ export default function TrackingPage() {
     }
   }
 
+  async function pesquisarTracking() {
+    setPesquisando(true);
+    setErroPesquisa('');
+    setResultadoPesquisa(null);
+    try {
+      const resultado = await pesquisarTrackingSupabase({
+        chaveNfe: buscaChaveNfe,
+        chaveCte: buscaChaveCte,
+        cteNumero: buscaCteNumero,
+        notaFiscal: buscaNotaFiscal,
+      });
+      if (resultado.erro) {
+        setErroPesquisa(resultado.erro);
+      }
+      setResultadoPesquisa(resultado.rows || []);
+    } catch (error) {
+      setErroPesquisa(error.message || 'Erro ao pesquisar Tracking.');
+    } finally {
+      setPesquisando(false);
+    }
+  }
+
+  function limparPesquisa() {
+    setBuscaChaveNfe('');
+    setBuscaChaveCte('');
+    setBuscaCteNumero('');
+    setBuscaNotaFiscal('');
+    setResultadoPesquisa(null);
+    setErroPesquisa('');
+  }
+
   async function limparBase() {
     if (!window.confirm('Deseja limpar a base local de Tracking deste navegador?')) return;
     setCarregando(true);
@@ -364,6 +403,75 @@ export default function TrackingPage() {
         <div className="summary-card"><span>Cubagem total</span><strong>{formatarNumero(resumoExibido?.cubagem, 4)} m³</strong><small>{resumoExibido?.periodoInicio || '-'} até {resumoExibido?.periodoFim || '-'}</small></div>
         <div className="summary-card"><span>IBGE resolvido</span><strong>{formatarNumero(resumoExibido?.comIbge || 0)}</strong><small>Sem IBGE: {formatarNumero(resumoExibido?.semIbge || 0)}</small></div>
       </div>
+
+      <section className="panel-card">
+        <div className="section-row compact-top">
+          <div>
+            <div className="panel-title">Pesquisar Tracking</div>
+            <p>Confira se um CT-e ou NF já tem tracking vinculado, antes de gerar o DOCCOB ou de sair procurando na base. Preencha um ou mais campos.</p>
+          </div>
+        </div>
+        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+          <label className="field">
+            Chave NF (44 dígitos)
+            <input value={buscaChaveNfe} onChange={(e) => setBuscaChaveNfe(e.target.value)} placeholder="Chave de acesso da NF-e" />
+          </label>
+          <label className="field">
+            Chave CT-e (44 dígitos)
+            <input value={buscaChaveCte} onChange={(e) => setBuscaChaveCte(e.target.value)} placeholder="Chave de acesso do CT-e" />
+          </label>
+          <label className="field">
+            CT-e (número/série)
+            <input value={buscaCteNumero} onChange={(e) => setBuscaCteNumero(e.target.value)} placeholder="Ex.: 126068" />
+          </label>
+          <label className="field">
+            Número da NF
+            <input value={buscaNotaFiscal} onChange={(e) => setBuscaNotaFiscal(e.target.value)} placeholder="Ex.: 999" />
+          </label>
+        </div>
+        <div className="actions-right" style={{ marginTop: 10, gap: 8 }}>
+          <button className="btn-primary" type="button" onClick={pesquisarTracking} disabled={pesquisando}>
+            {pesquisando ? 'Pesquisando...' : 'Pesquisar'}
+          </button>
+          <button className="btn-secondary" type="button" onClick={limparPesquisa} disabled={pesquisando}>Limpar</button>
+        </div>
+        {erroPesquisa ? <div className="sim-alert error" style={{ marginTop: 10 }}>{erroPesquisa}</div> : null}
+        {resultadoPesquisa ? (
+          <div className="sim-analise-tabela-wrap" style={{ marginTop: 12 }}>
+            <table className="sim-analise-tabela">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>NF</th>
+                  <th>Chave NF</th>
+                  <th>CT-e</th>
+                  <th>Chave CT-e</th>
+                  <th>Transportadora</th>
+                  <th>Origem</th>
+                  <th>Destino</th>
+                  <th>Valor NF</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resultadoPesquisa.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.data || '-'}</td>
+                    <td>{row.notaFiscal || '-'}</td>
+                    <td style={{ fontSize: '0.75rem' }} title={row.chaveNfe || ''}>{row.chaveNfe || '-'}</td>
+                    <td>{row.cteNumero || '-'}</td>
+                    <td style={{ fontSize: '0.75rem' }} title={row.chaveCte || ''}>{row.chaveCte || '-'}</td>
+                    <td>{row.transportadora || '-'}</td>
+                    <td>{row.cidadeOrigem}/{row.ufOrigem}</td>
+                    <td>{row.cidadeDestino}/{row.ufDestino}</td>
+                    <td>{formatarMoeda(row.valorNF)}</td>
+                  </tr>
+                ))}
+                {!resultadoPesquisa.length && <tr><td colSpan="9">Nenhum resultado encontrado para esses filtros.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
 
       <section className="table-card">
         <div className="section-row compact-top">

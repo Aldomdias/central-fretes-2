@@ -515,3 +515,31 @@ export async function buscarTrackingPorChaveNfeManual(chaveNfe) {
     totalUnidades: toNumber(acc.totalUnidades) + toNumber(row.totalUnidades),
   }), base);
 }
+
+// Busca livre pra conferencia manual (ex.: descobrir se um CT-e tem NF
+// rastreada antes de gerar o DOCCOB). Aceita qualquer combinacao dos campos;
+// so entram no filtro os que vierem preenchidos.
+export async function pesquisarTrackingSupabase({ chaveNfe, chaveCte, cteNumero, notaFiscal } = {}, { limit = 50 } = {}) {
+  if (!isSupabaseConfigured()) return { rows: [], erro: 'Supabase nao configurado.' };
+  const supabase = getSupabaseClient();
+  const selectCols = `
+    id,data,nota_fiscal,chave_nfe,chave_cte,cte_numero,pedido,pedido_erp,canal,canal_original,
+    transportadora,cidade_origem,uf_origem,ibge_origem,cidade_destino,uf_destino,ibge_destino,
+    chave_rota_ibge,peso,peso_declarado,peso_cubado,cubagem_unitaria,cubagem_total,cubagem_final,valor_nf,
+    qtd_volumes,quantidade_itens,total_unidades,previsao_cliente,previsao_transportadora,data_transporte,data_entrega,
+    arquivo_origem,aba_origem,linha_excel,ibge_ok,updated_at
+  `;
+  let query = supabase.from(TABELA_TRACKING).select(selectCols);
+  const chaveNfeDigitos = onlyDigits(chaveNfe);
+  const chaveCteDigitos = onlyDigits(chaveCte);
+  if (chaveNfeDigitos) query = query.eq('chave_nfe', chaveNfeDigitos);
+  if (chaveCteDigitos) query = query.eq('chave_cte', chaveCteDigitos);
+  if (String(cteNumero || '').trim()) query = query.ilike('cte_numero', `%${String(cteNumero).trim()}%`);
+  if (String(notaFiscal || '').trim()) query = query.ilike('nota_fiscal', `%${String(notaFiscal).trim()}%`);
+  if (!chaveNfeDigitos && !chaveCteDigitos && !String(cteNumero || '').trim() && !String(notaFiscal || '').trim()) {
+    return { rows: [], erro: 'Informe ao menos um campo de busca.' };
+  }
+  const { data, error } = await query.order('updated_at', { ascending: false }).limit(limit);
+  if (error) throw new Error(`Erro ao pesquisar Tracking: ${error.message}`);
+  return { rows: (data || []).map(fromDbRow) };
+}

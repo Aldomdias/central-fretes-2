@@ -2,6 +2,8 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import BaseCtesStatus from '../components/BaseCtesStatus';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
+import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFinanceiro';
+import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import { carregarSessao } from '../utils/authLocal';
 import {
   agruparDetalhesVerum,
@@ -25,8 +27,11 @@ import {
   SOLICITACAO_FINANCEIRA_TIPOS,
   calcularDashboard,
   conciliarPagamentos,
+  conciliarPagamentosSap,
+  pareceRelatorioPagamentosSap,
   diasAte,
   faixaVencimento,
+  isoDate,
   montarArquivoDoccobEdi,
   montarLinhasDoccob,
   montarNomeDoccob,
@@ -50,6 +55,9 @@ import {
   salvarBoletoFinanceiro,
   salvarCarteiraAuditoria,
   salvarPagamentosFinanceiros,
+  salvarPagamentosFinanceirosEmLote,
+  atualizarStatusFaturasPagasEmLote,
+  marcarFaturasLancadasFinanceiroEmLote,
   vincularNovaFatura,
   registrarHistoricoCarteiraAuditoria,
   listarHistoricoCarteiraAuditoria,
@@ -121,6 +129,21 @@ const OPCOES_LAUDO_TRANSPORTADOR_PADRAO = {
   mostrarCobrancaMenor: false,
   mostrarTolerancia: false,
   mostrarSemCalculo: true,
+};
+
+const DOCCOB_FORM_PADRAO = {
+  filial: '',
+  numeroDocumento: '',
+  serieDocumento: '',
+  dataEmissao: isoDate(),
+  dataVencimento: '',
+  cnpjTransportadora: '',
+  razaoSocialTransportadora: '',
+  agenteCobranca: '',
+  // "BCO" (cobranca via banco) - confirmado num arquivo real que integrou
+  // certo nessa mesma integracao AMD/Verum; "CTE" nao e um codigo valido.
+  tipoCobranca: 'BCO',
+  cnpjEmissorNf: '',
 };
 
 // Decide, para o laudo do transportador, se um CT-e deve ser mascarado como
@@ -715,6 +738,14 @@ function faturaTotalmenteAuditada(fatura) {
   return totais > 0 && auditados >= totais;
 }
 
+function situacaoPagamentoFatura(fatura) {
+  if (fatura.status === 'PAGA') return 'PAGO';
+  if (fatura.status === 'PAGA_COM_DIVERGENCIA') return 'PAGO_DIVERGENTE';
+  if (fatura.partida) return 'PARTIDA_LANCADA';
+  if (fatura.lancamento_financeiro) return 'LANCADA_FINANCEIRO';
+  return 'NAO_PAGO';
+}
+
 function corAlerta(fatura) {
   const faixa = faixaVencimento(fatura);
   if (faixa === 'VENCIDA') return '#9b1111';
@@ -831,6 +862,7 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   const [salvandoCorrecaoCanal, setSalvandoCorrecaoCanal] = useState(null);
   const [chaveNfVisivel, setChaveNfVisivel] = useState({});
   const [opcoesLaudoTransportador, setOpcoesLaudoTransportador] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
+  const [protocoloAberto, setProtocoloAberto] = useState(false);
   const toleranciaFatura = carregarToleranciaAuditoria();
   const detalhesOriginais = state.detalhes[fatura.id] || [];
   const detalhes = useMemo(
@@ -858,6 +890,14 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     // O detalhe substitui a lista como uma tela propria; garante que abre no topo.
     detalheRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' });
   }, [fatura.id]);
+
+  useEffect(() => {
+    const aoTeclar = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', aoTeclar);
+    return () => document.removeEventListener('keydown', aoTeclar);
+  }, [onClose]);
 
   useEffect(() => {
     let ativo = true;
@@ -1653,6 +1693,11 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
             </label>
             <label className="field">Vencimento<input value={dataBr(fatura.data_vencimento)} readOnly /></label>
             <label className="field">Boleto<input value={nomeStatus(fatura.boleto_status || 'PENDENTE')} readOnly /></label>
+            <label className="field">Data de compensacao<input value={fatura.data_pagamento ? dataBr(fatura.data_pagamento) : '-'} readOnly /></label>
+            <label className="field">Partida<input value={fatura.partida || '-'} readOnly /></label>
+            <label className="field">Valor pago<input value={fatura.valor_pago ? dinheiro(fatura.valor_pago) : '-'} readOnly /></label>
+            <label className="field">Data do lancamento financeiro<input value={fatura.lancamento_financeiro_em ? dataBr(fatura.lancamento_financeiro_em) : '-'} readOnly /></label>
+            <label className="field">Lancamento financeiro<input value={fatura.lancamento_financeiro || '-'} readOnly /></label>
           </div>
           {faturaSubstituta && (
             <div className="hint-box compact">
@@ -1724,10 +1769,31 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
         <button className="btn-secondary" disabled={!selecionados.length} onClick={() => exportarDoccob('XLSX')}>Gerar DOCCOB XLSX</button>
         <button className="btn-secondary" onClick={() => mudarStatus('AGUARDANDO_NOVA_FATURA')}>Solicitar nova fatura</button>
         <button className="btn-primary" onClick={liberarParaPagamento}>Liberar para pagamento</button>
+        <button
+          className="btn-primary"
+          disabled={ENCERRADOS.has(fatura.status)}
+          title={ENCERRADOS.has(fatura.status) ? 'Fatura encerrada' : 'Preparar e enviar a fatura para o Protocolo Financeiro'}
+          onClick={() => setProtocoloAberto(true)}
+        >
+          Enviar para Protocolo
+        </button>
       </div>
+      {protocoloAberto && (
+        <ModalEnviarProtocoloFinanceiro
+          state={state}
+          fatura={fatura}
+          detalhes={detalhes}
+          tolerancia={toleranciaFatura}
+          sessao={sessao}
+          onClose={() => setProtocoloAberto(false)}
+          onState={onState}
+        />
+      )}
     </div>
   );
 }
+
+const PERFIS_VEEM_TODAS_FATURAS = new Set(['GESTAO', 'GESTOR_AUDITORIA_FRETES', 'FINANCEIRO']);
 
 function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTransportadoras }) {
   const mostrarAuditoriaAvulsa = modo === 'auditoria-cte';
@@ -1737,7 +1803,13 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [filtro, setFiltro] = useState('');
   const [filtroFaturasLote, setFiltroFaturasLote] = useState('');
   const [status, setStatus] = useState('');
+  const [filtroPagamento, setFiltroPagamento] = useState('');
   const [canalFiltro, setCanalFiltro] = useState('');
+  // Auditor entra ja filtrado nas proprias faturas; gestor/financeiro entram vendo tudo.
+  const [visaoFatura, setVisaoFatura] = useState(() => (PERFIS_VEEM_TODAS_FATURAS.has(sessao?.perfil) ? 'todas' : 'minhas'));
+  const [filtroRapido, setFiltroRapido] = useState('');
+  const [paginaFaturas, setPaginaFaturas] = useState(1);
+  const TAM_PAGINA_FATURAS = 100;
   const [somenteAuditadas, setSomenteAuditadas] = useState(false);
   const [detectandoCanais, setDetectandoCanais] = useState(false);
   const [progressoCanais, setProgressoCanais] = useState(null);
@@ -1751,6 +1823,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [auditorLote, setAuditorLote] = useState('');
   const [emailAuditorLote, setEmailAuditorLote] = useState('');
   const [origemFiltroFatura, setOrigemFiltroFatura] = useState('');
+  const [auditorFiltro, setAuditorFiltro] = useState('');
+  const [filtrosAvancadosAbertos, setFiltrosAvancadosAbertos] = useState(false);
   const [resumoOrigensFaturas, setResumoOrigensFaturas] = useState(new Map());
   const [recalculandoLote, setRecalculandoLote] = useState(false);
   const [progressoLote, setProgressoLote] = useState(null);
@@ -1773,11 +1847,12 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [filtroAuditoriaAvulsa, setFiltroAuditoriaAvulsa] = useState('todos');
   const [mostrarDiferencaNegativaLaudoTransportador, setMostrarDiferencaNegativaLaudoTransportador] = useState(false);
   const [opcoesLaudoTransportadorLote, setOpcoesLaudoTransportadorLote] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
-  const canaisDisponiveis = [...new Set(state.faturas.map((item) => item.canal).filter(Boolean))].sort();
-  // Competencia = mes/ano da emissao (nao existe campo proprio na fatura).
-  const competenciasDisponiveis = [...new Set(
-    state.faturas.map((item) => (item.data_emissao || '').slice(0, 7)).filter(Boolean)
-  )].sort().reverse();
+  const [ctesSelecionadosDoccob, setCtesSelecionadosDoccob] = useState([]);
+  const [doccobFormAberto, setDoccobFormAberto] = useState(false);
+  const [doccobForm, setDoccobForm] = useState(DOCCOB_FORM_PADRAO);
+  const [doccobNumerosNf, setDoccobNumerosNf] = useState({});
+  const [doccobCnpjEmissorPorItem, setDoccobCnpjEmissorPorItem] = useState({});
+  const [doccobImportandoContingencia, setDoccobImportandoContingencia] = useState('');
   const resumoDatas = useMemo(() => {
     const maisRecente = (campo) => state.faturas.reduce((max, item) => {
       const valor = item[campo];
@@ -1804,28 +1879,116 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   };
   const numerosFaturasLote = useMemo(() => extrairIdentificadoresCte(filtroFaturasLote), [filtroFaturasLote]);
   const numerosFaturasLoteSet = useMemo(() => new Set(numerosFaturasLote.map((item) => normalizarChaveCte(item))), [numerosFaturasLote]);
-  const lista = state.faturas
-    .filter((fatura) => {
+  const dentroVisaoFatura = (fatura) => {
+    if (visaoFatura === 'todas') return true;
+    const emailAuditor = String(fatura.auditor_email || '').trim().toLowerCase();
+    const nomeAuditor = String(fatura.auditor_nome || '').trim().toLowerCase();
+    if (visaoFatura === 'sem_auditor') return !emailAuditor && !nomeAuditor;
+    const meuEmail = String(sessao?.email || '').trim().toLowerCase();
+    const meuNome = String(sessao?.nome || '').trim().toLowerCase();
+    return (!!meuEmail && emailAuditor === meuEmail) || (!!meuNome && nomeAuditor === meuNome);
+  };
+  const dentroFiltroRapido = (fatura) => {
+    if (!filtroRapido) return true;
+    if (filtroRapido === 'vencidas') return faixaVencimento(fatura) === 'VENCIDA';
+    if (filtroRapido === 'a_vencer') {
+      const dias = diasAte(fatura.data_vencimento);
+      return dias != null && dias >= 0 && dias <= 7 && !ENCERRADOS.has(fatura.status);
+    }
+    if (filtroRapido === 'novas') return fatura.status === 'RECEBIDA';
+    if (filtroRapido === 'enviadas') return fatura.status === 'ENVIADA_AO_FINANCEIRO';
+    if (filtroRapido === 'lancadas') return ['PARTIDA_LANCADA', 'LANCADA_FINANCEIRO'].includes(situacaoPagamentoFatura(fatura));
+    if (filtroRapido === 'pagas') return ['PAGO', 'PAGO_DIVERGENTE'].includes(situacaoPagamentoFatura(fatura));
+    if (filtroRapido === 'pagas_divergentes') return situacaoPagamentoFatura(fatura) === 'PAGO_DIVERGENTE';
+    return true;
+  };
+  // Base pros cards do topo: so a visao (minhas/todas/sem auditor), sem os
+  // demais filtros - assim os numeros ficam estaveis enquanto o auditor
+  // pesquisa/filtra a tabela abaixo.
+  const faturasEscopo = useMemo(() => state.faturas.filter(dentroVisaoFatura), [state.faturas, visaoFatura, sessao?.email, sessao?.nome]);
+  const resumoCards = useMemo(() => ({
+    vencidas: faturasEscopo.filter((fatura) => faixaVencimento(fatura) === 'VENCIDA').length,
+    aVencer: faturasEscopo.filter((fatura) => {
+      const dias = diasAte(fatura.data_vencimento);
+      return dias != null && dias >= 0 && dias <= 7 && !ENCERRADOS.has(fatura.status);
+    }).length,
+    novas: faturasEscopo.filter((fatura) => fatura.status === 'RECEBIDA').length,
+    enviadas: faturasEscopo.filter((fatura) => fatura.status === 'ENVIADA_AO_FINANCEIRO').length,
+    lancadas: faturasEscopo.filter((fatura) => ['PARTIDA_LANCADA', 'LANCADA_FINANCEIRO'].includes(situacaoPagamentoFatura(fatura))).length,
+    pagas: faturasEscopo.filter((fatura) => ['PAGO', 'PAGO_DIVERGENTE'].includes(situacaoPagamentoFatura(fatura))).length,
+    pagasDivergentes: faturasEscopo.filter((fatura) => situacaoPagamentoFatura(fatura) === 'PAGO_DIVERGENTE').length,
+  }), [faturasEscopo]);
+  // Predicados nomeados (um por filtro) em vez de um && gigante: assim da pra
+  // montar as opcoes de cada select considerando os OUTROS filtros ja
+  // aplicados (estilo planilha) - ex.: se ja filtrou por Status, o select de
+  // Auditor so mostra auditores que aparecem nas faturas daquele status.
+  const predicadosFatura = {
+    busca: (fatura) => {
+      if (!filtro) return true;
       const texto = `${fatura.numero_fatura} ${fatura.transportadora} ${fatura.auditor_nome}`.toLowerCase();
-      const emissao = fatura.data_emissao || '';
-      const vencimento = fatura.data_vencimento || '';
-      const numeroFatura = normalizarChaveCte(fatura.numero_fatura);
+      return texto.includes(filtro.toLowerCase());
+    },
+    lote: (fatura) => !numerosFaturasLoteSet.size || numerosFaturasLoteSet.has(normalizarChaveCte(fatura.numero_fatura)),
+    origem: (fatura) => {
+      if (!origemFiltroFatura) return true;
       const origemResumo = resumoOrigensFaturas.get(fatura.id);
       const textoOrigens = (origemResumo?.origens || []).map((item) => item.origem).join(' ').toLowerCase();
-      return (!filtro || texto.includes(filtro.toLowerCase()))
-        && (!numerosFaturasLoteSet.size || numerosFaturasLoteSet.has(numeroFatura))
-        && (!origemFiltroFatura || textoOrigens.includes(origemFiltroFatura.toLowerCase()))
-        && (!status || fatura.status === status)
-        && (!canalFiltro || fatura.canal === canalFiltro)
-        && (!somenteAuditadas || faturaTotalmenteAuditada(fatura))
-        && (!competenciaFiltro || emissao.slice(0, 7) === competenciaFiltro)
-        && (!periodoInicio || (emissao && emissao.slice(0, 10) >= periodoInicio))
-        && (!periodoFim || (emissao && emissao.slice(0, 10) <= periodoFim))
-        && (!vencimentoInicio || (vencimento && vencimento.slice(0, 10) >= vencimentoInicio))
-        && (!vencimentoFim || (vencimento && vencimento.slice(0, 10) <= vencimentoFim));
-    })
-    // Faturas 100% auditadas ficam em evidência, no topo da lista.
-    .sort((a, b) => Number(faturaTotalmenteAuditada(b)) - Number(faturaTotalmenteAuditada(a)));
+      return textoOrigens.includes(origemFiltroFatura.toLowerCase());
+    },
+    status: (fatura) => !status || fatura.status === status,
+    canal: (fatura) => !canalFiltro || fatura.canal === canalFiltro,
+    auditor: (fatura) => !auditorFiltro || fatura.auditor_nome === auditorFiltro,
+    somenteAuditadas: (fatura) => !somenteAuditadas || faturaTotalmenteAuditada(fatura),
+    competencia: (fatura) => !competenciaFiltro || (fatura.data_emissao || '').slice(0, 7) === competenciaFiltro,
+    periodoInicio: (fatura) => !periodoInicio || ((fatura.data_emissao || '').slice(0, 10) >= periodoInicio),
+    periodoFim: (fatura) => !periodoFim || ((fatura.data_emissao || '').slice(0, 10) <= periodoFim),
+    vencimentoInicio: (fatura) => !vencimentoInicio || ((fatura.data_vencimento || '').slice(0, 10) >= vencimentoInicio),
+    vencimentoFim: (fatura) => !vencimentoFim || ((fatura.data_vencimento || '').slice(0, 10) <= vencimentoFim),
+    pagamento: (fatura) => !filtroPagamento || situacaoPagamentoFatura(fatura) === filtroPagamento,
+    visao: dentroVisaoFatura,
+    rapido: dentroFiltroRapido,
+  };
+  const passaFiltros = (fatura, ignorar) => Object.entries(predicadosFatura)
+    .every(([chave, predicado]) => chave === ignorar || predicado(fatura));
+
+  const lista = state.faturas
+    .filter((fatura) => passaFiltros(fatura))
+    // Vencimento do menor pro maior - fatura sem vencimento vai pro final.
+    .sort((a, b) => {
+      if (!a.data_vencimento && !b.data_vencimento) return 0;
+      if (!a.data_vencimento) return 1;
+      if (!b.data_vencimento) return -1;
+      return a.data_vencimento.localeCompare(b.data_vencimento);
+    });
+
+  const canaisDisponiveis = [...new Set(
+    state.faturas.filter((fatura) => passaFiltros(fatura, 'canal')).map((item) => item.canal).filter(Boolean)
+  )].sort();
+  const auditoresDisponiveis = [...new Set(
+    state.faturas.filter((fatura) => passaFiltros(fatura, 'auditor')).map((item) => item.auditor_nome).filter(Boolean)
+  )].sort();
+  // Competencia = mes/ano da emissao (nao existe campo proprio na fatura).
+  const competenciasDisponiveis = [...new Set(
+    state.faturas.filter((fatura) => passaFiltros(fatura, 'competencia')).map((item) => (item.data_emissao || '').slice(0, 7)).filter(Boolean)
+  )].sort().reverse();
+
+  // Renderizar milhares de linhas de tabela de uma vez e' o que deixa a tela
+  // lenta pra abrir/fechar uma fatura (o React precisa desmontar/remontar
+  // tudo isso a cada troca) - pagina no cliente pra manter o DOM leve.
+  const totalPaginasFaturas = Math.max(1, Math.ceil(lista.length / TAM_PAGINA_FATURAS));
+  const paginaFaturasAtual = Math.min(paginaFaturas, totalPaginasFaturas);
+  const listaPaginada = lista.slice(
+    (paginaFaturasAtual - 1) * TAM_PAGINA_FATURAS,
+    paginaFaturasAtual * TAM_PAGINA_FATURAS,
+  );
+  const chaveFiltrosFaturas = [
+    filtro, status, canalFiltro, auditorFiltro, filtroPagamento, origemFiltroFatura, somenteAuditadas,
+    competenciaFiltro, periodoInicio, periodoFim, vencimentoInicio, vencimentoFim,
+    filtroFaturasLote, visaoFatura, filtroRapido,
+  ].join('|');
+  useEffect(() => {
+    setPaginaFaturas(1);
+  }, [chaveFiltrosFaturas]);
 
   const resultadoCtesAvulsosFiltrado = useMemo(() => resultadoCtesAvulsos.filter((row) => {
     const calculado = Number(row.valor_calculado || 0) > 0;
@@ -1843,12 +2006,12 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   }), [resultadoCtesAvulsos, filtroAuditoriaAvulsa, toleranciaAuditoria]);
 
   useEffect(() => {
-    if (!mostrarFaturas || !lista.length) {
+    if (!mostrarFaturas || !listaPaginada.length) {
       setResumoOrigensFaturas(new Map());
       return;
     }
     let ativo = true;
-    const ids = lista.slice(0, 300).map((item) => item.id);
+    const ids = listaPaginada.map((item) => item.id);
     buscarResumoOrigensFaturas(ids)
       .then((mapa) => {
         if (ativo) setResumoOrigensFaturas(mapa);
@@ -1859,7 +2022,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     return () => {
       ativo = false;
     };
-  }, [mostrarFaturas, lista.map((item) => item.id).join('|')]);
+  }, [mostrarFaturas, listaPaginada.map((item) => item.id).join('|')]);
 
   const resumoAuditoriaAvulsa = useMemo(() => {
     const resumo = resultadoCtesAvulsos.reduce((acc, row) => {
@@ -2399,6 +2562,127 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas), 'CT-es auditados');
     XLSX.writeFile(wb, `auditoria-cte-avulsa-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const alternarCteDoccob = (row, indice) => {
+    const id = row.chave_cte || row.numero_cte || indice;
+    setCtesSelecionadosDoccob((atuais) => atuais.includes(id) ? atuais.filter((item) => item !== id) : [...atuais, id]);
+  };
+
+  const selecionarTodosDoccob = () => {
+    const ids = resultadoCtesAvulsosFiltrado.map((row, indice) => row.chave_cte || row.numero_cte || indice);
+    const todosSelecionados = ids.length > 0 && ids.every((id) => ctesSelecionadosDoccob.includes(id));
+    setCtesSelecionadosDoccob(todosSelecionados ? [] : ids);
+  };
+
+  const abrirFormularioDoccob = () => {
+    if (!ctesSelecionadosDoccob.length) return;
+    const selecionados = resultadoCtesAvulsosFiltrado.filter((row, indice) => ctesSelecionadosDoccob.includes(row.chave_cte || row.numero_cte || indice));
+    const primeiro = selecionados[0];
+    setDoccobForm((atual) => ({
+      ...atual,
+      cnpjTransportadora: atual.cnpjTransportadora || primeiro?.cnpj_transportadora || '',
+      razaoSocialTransportadora: atual.razaoSocialTransportadora || primeiro?.transportadora || '',
+    }));
+    setDoccobNumerosNf((atual) => {
+      const proximo = { ...atual };
+      selecionados.forEach((row) => {
+        const key = row.chave_cte || row.numero_cte;
+        if (proximo[key] === undefined) proximo[key] = row.numero_nf || '';
+      });
+      return proximo;
+    });
+    setDoccobFormAberto(true);
+  };
+
+  // Contingencia: quando o CT-e nao tem numero/CNPJ da NF na base nem no
+  // tracking (ex.: transportadora de atacado sem tracking vinculado), deixa
+  // importar uma planilha avulsa so com Chave/CT-e + Numero NF + CNPJ
+  // remetente pra completar o DOCCOB na hora, sem reimportar a base inteira.
+  const importarContingenciaDoccobNf = async (arquivo) => {
+    if (!arquivo) return;
+    setDoccobImportandoContingencia('Lendo planilha...');
+    try {
+      const buffer = await arquivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array', raw: false });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const linhas = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+      const norm = (texto) => String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const pegar = (linha, chaves) => {
+        for (const [k, v] of Object.entries(linha)) {
+          if (chaves.includes(norm(k))) return v;
+        }
+        return '';
+      };
+
+      let casados = 0;
+      const proximosNf = {};
+      const proximosCnpj = {};
+      linhas.forEach((linha) => {
+        const chaveCte = String(pegar(linha, ['chave cte', 'chave do cte', 'chave ct e']) || '').replace(/\D/g, '');
+        const numeroCte = String(pegar(linha, ['numero cte', 'cte', 'ct e', 'n cte']) || '').trim();
+        const chave = chaveCte || numeroCte;
+        if (!chave) return;
+        const numeroNf = String(pegar(linha, ['numero nf', 'nf', 'numero da nf', 'n nf']) || '').trim();
+        const cnpjEmissor = String(pegar(linha, ['cnpj remetente', 'documento remetente', 'cnpj emissor', 'documento emissor', 'cnpj do remetente']) || '').replace(/\D/g, '');
+        if (numeroNf) proximosNf[chave] = numeroNf;
+        if (cnpjEmissor) proximosCnpj[chave] = cnpjEmissor;
+        if (numeroNf || cnpjEmissor) casados += 1;
+      });
+
+      setDoccobNumerosNf((atual) => ({ ...atual, ...proximosNf }));
+      setDoccobCnpjEmissorPorItem((atual) => ({ ...atual, ...proximosCnpj }));
+      setDoccobImportandoContingencia(`${casados} linha(s) da planilha aplicada(s) aos CT-es selecionados.`);
+    } catch (error) {
+      setDoccobImportandoContingencia(`Erro ao ler planilha: ${error.message || error}`);
+    }
+  };
+
+  const gerarDoccobAuditoriaAvulsa = () => {
+    const selecionados = resultadoCtesAvulsosFiltrado.filter((row, indice) => ctesSelecionadosDoccob.includes(row.chave_cte || row.numero_cte || indice));
+    if (!selecionados.length) return;
+    const fatura = {
+      filial: doccobForm.filial,
+      numero_fatura: doccobForm.numeroDocumento,
+      serie_fatura: doccobForm.serieDocumento,
+      data_emissao: doccobForm.dataEmissao,
+      data_vencimento: doccobForm.dataVencimento,
+      cnpj_transportadora: doccobForm.cnpjTransportadora,
+      transportadora: doccobForm.razaoSocialTransportadora,
+      valor_icms: 0,
+    };
+    const detalhes = selecionados.map((row) => ({
+      id: row.chave_cte || row.numero_cte,
+      chave_cte: row.chave_cte,
+      numero_cte: row.numero_cte,
+      serie_cte: row.serie_cte || '',
+      filial: doccobForm.filial,
+      valor_frete: Number(row.valor_cte || 0),
+      numero_nf: doccobNumerosNf[row.chave_cte || row.numero_cte] || row.numero_nf || '',
+      valor_nf: Number(row.valor_nf || 0),
+      peso_nf: Number(row.peso || 0),
+      data_emissao: row.data_emissao,
+      cnpj_transportadora: doccobForm.cnpjTransportadora,
+      cnpj_tomador: row.cnpj_tomador || '',
+      tomador_servico: row.tomador_servico || '',
+      // CGC emissor da NF: prioriza o que veio da base (documento remetente/
+      // chave da NF/tomador), depois a planilha de contingencia importada
+      // aqui na tela, e por ultimo o campo unico digitado no formulario.
+      cnpj_emissor_nf: row.cnpj_emissor_nf || doccobCnpjEmissorPorItem[row.chave_cte || row.numero_cte] || doccobForm.cnpjEmissorNf,
+    }));
+    const conteudo = montarArquivoDoccobEdi(fatura, detalhes, [], {
+      tipoCobranca: doccobForm.tipoCobranca,
+      agenteCobranca: doccobForm.agenteCobranca,
+      cnpjEmissorNf: doccobForm.cnpjEmissorNf,
+    });
+    const nome = montarNomeDoccob(fatura);
+    const blob = new Blob([conteudo], { type: 'text/plain;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${nome}.txt`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    setDoccobFormAberto(false);
   };
 
   const baixarLaudoAuditoriaAvulsa = (tipoLaudo = 'interno') => {
@@ -3168,6 +3452,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
               Mostrar dif. para baixo
             </label>
             <button className="btn-secondary audit-small-button" type="button" onClick={() => baixarLaudoAuditoriaAvulsa('transportador')} disabled={!resultadoCtesAvulsos.length}>Laudo transportador</button>
+            <button className="btn-secondary audit-small-button" type="button" onClick={abrirFormularioDoccob} disabled={!ctesSelecionadosDoccob.length} title="Gera o arquivo DOCCOB EDI (layout PROCEDA 3.0A) com os CT-es marcados abaixo">
+              Gerar DOCCOB ({ctesSelecionadosDoccob.length})
+            </button>
           </div>
         </div>
 
@@ -3265,17 +3552,103 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
               <button className="btn-secondary audit-small-button" type="button" onClick={aplicarPesosOkAuditoriaAvulsa}>
                 Aplicar pesos que entram na tolerancia
               </button>
+              <button className="btn-secondary audit-small-button" type="button" onClick={selecionarTodosDoccob} disabled={!resultadoCtesAvulsosFiltrado.length}>
+                {resultadoCtesAvulsosFiltrado.length && resultadoCtesAvulsosFiltrado.every((row, indice) => ctesSelecionadosDoccob.includes(row.chave_cte || row.numero_cte || indice)) ? 'Limpar selecao DOCCOB' : 'Selecionar todos p/ DOCCOB'}
+              </button>
               <span style={{ color: '#64748b', fontSize: 12, fontWeight: 700 }}>
                 Exibindo {resultadoCtesAvulsosFiltrado.length} de {resultadoCtesAvulsos.length}
               </span>
             </div>
+            {doccobFormAberto && (
+              <div className="sim-card" style={{ margin: '10px 0', padding: 14, border: '1px solid #cbd5e1', borderRadius: 8 }}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                  Gerar DOCCOB EDI (layout PROCEDA 3.0A) com {ctesSelecionadosDoccob.length} CT-e(s) selecionado(s)
+                </div>
+                <div className="sim-form-grid sim-grid-4">
+                  <label>Filial<input value={doccobForm.filial} onChange={(e) => setDoccobForm((atual) => ({ ...atual, filial: e.target.value }))} placeholder="Unidade emissora" /></label>
+                  <label>Numero documento cobranca<input value={doccobForm.numeroDocumento} onChange={(e) => setDoccobForm((atual) => ({ ...atual, numeroDocumento: e.target.value }))} /></label>
+                  <label>Serie<input value={doccobForm.serieDocumento} onChange={(e) => setDoccobForm((atual) => ({ ...atual, serieDocumento: e.target.value }))} /></label>
+                  <label>Tipo cobranca<input value={doccobForm.tipoCobranca} onChange={(e) => setDoccobForm((atual) => ({ ...atual, tipoCobranca: e.target.value }))} /></label>
+                  <label>Data emissao<input type="date" value={doccobForm.dataEmissao} onChange={(e) => setDoccobForm((atual) => ({ ...atual, dataEmissao: e.target.value }))} /></label>
+                  <label>Data vencimento<input type="date" value={doccobForm.dataVencimento} onChange={(e) => setDoccobForm((atual) => ({ ...atual, dataVencimento: e.target.value }))} /></label>
+                  <label>CNPJ transportadora<input value={doccobForm.cnpjTransportadora} onChange={(e) => setDoccobForm((atual) => ({ ...atual, cnpjTransportadora: e.target.value }))} /></label>
+                  <label>Razao social transportadora<input value={doccobForm.razaoSocialTransportadora} onChange={(e) => setDoccobForm((atual) => ({ ...atual, razaoSocialTransportadora: e.target.value }))} /></label>
+                  <label>Banco/agente cobranca<input value={doccobForm.agenteCobranca} onChange={(e) => setDoccobForm((atual) => ({ ...atual, agenteCobranca: e.target.value }))} /></label>
+                  <label>
+                    CNPJ emissor da NF (reserva p/ CT-e sem cnpj tomador na base)
+                    <input value={doccobForm.cnpjEmissorNf} onChange={(e) => setDoccobForm((atual) => ({ ...atual, cnpjEmissorNf: e.target.value }))} placeholder="Nao usar o CNPJ da transportadora" />
+                  </label>
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+                  {(() => {
+                    const selecionados = resultadoCtesAvulsosFiltrado.filter((row, indice) => ctesSelecionadosDoccob.includes(row.chave_cte || row.numero_cte || indice));
+                    const comCnpj = selecionados.filter((row) => row.cnpj_emissor_nf).length;
+                    return `CNPJ emissor da NF: ${comCnpj} de ${selecionados.length} CT-e(s) selecionados ja tem esse CNPJ (extraido da chave da NF ou do CNPJ tomador). Os demais usarao o campo de reserva acima (se preenchido) ou ficarao sem esse dado.`;
+                  })()}
+                </div>
+                <div style={{ marginTop: 12, padding: 10, border: '1px dashed #cbd5e1', borderRadius: 6, background: '#f8fafc' }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                    Contingencia: importar planilha com Numero NF / CNPJ remetente
+                  </div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
+                    Pra CT-es sem tracking vinculado (ex.: atacado). Colunas aceitas: "Chave CTE" ou "CT-e", "Numero NF", "CNPJ remetente" (ou "Documento remetente"). Preenche so os campos abaixo que ainda estiverem vazios.
+                  </div>
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={(e) => importarContingenciaDoccobNf(e.target.files?.[0])}
+                  />
+                  {doccobImportandoContingencia ? (
+                    <div style={{ fontSize: 12, color: '#0f766e', marginTop: 6 }}>{doccobImportandoContingencia}</div>
+                  ) : null}
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
+                    Numero da nota fiscal por CT-e (campo obrigatorio no DOCCOB - nossa base nao guarda esse numero, preencha manualmente)
+                  </div>
+                  <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+                    <table className="sim-analise-tabela" style={{ margin: 0 }}>
+                      <thead><tr><th>CT-e</th><th>Valor pago</th><th>Numero da NF</th></tr></thead>
+                      <tbody>
+                        {resultadoCtesAvulsosFiltrado
+                          .filter((row, indice) => ctesSelecionadosDoccob.includes(row.chave_cte || row.numero_cte || indice))
+                          .map((row) => {
+                            const key = row.chave_cte || row.numero_cte;
+                            return (
+                              <tr key={key}>
+                                <td>{row.numero_cte || '-'}</td>
+                                <td>{dinheiro(Number(row.valor_cte || 0))}</td>
+                                <td>
+                                  <input
+                                    style={{ width: 140 }}
+                                    value={doccobNumerosNf[key] ?? ''}
+                                    onChange={(e) => setDoccobNumerosNf((atual) => ({ ...atual, [key]: e.target.value }))}
+                                    placeholder="Numero da NF"
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button className="btn-primary audit-small-button" type="button" onClick={gerarDoccobAuditoriaAvulsa} disabled={!doccobForm.numeroDocumento || !doccobForm.cnpjTransportadora}>
+                    Baixar arquivo DOCCOB (.txt)
+                  </button>
+                  <button className="btn-secondary audit-small-button" type="button" onClick={() => setDoccobFormAberto(false)}>Cancelar</button>
+                </div>
+              </div>
+            )}
             <div className="audit-quick-table-wrap">
               <table className="sim-analise-tabela audit-quick-table">
-                <thead><tr><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>C�lculo Verum</th><th>Dif. Verum</th><th>C�lculo AMD</th><th>Dif. AMD</th><th>Status</th></tr></thead>
+                <thead><tr><th>DOCCOB</th><th>CT-e</th><th>Chave</th><th>Transportadora</th><th>Canal</th><th>Rota</th><th>Peso NF</th><th>Pago</th><th>C�lculo Verum</th><th>Dif. Verum</th><th>C�lculo AMD</th><th>Dif. AMD</th><th>Status</th></tr></thead>
                 <tbody>
                   {resultadoCtesAvulsosFiltrado.map((row, index) => {
                     const key = row.chave_cte || row.numero_cte || index;
                     const aberto = cteAvulsoExpandido === key;
+                    const marcadoDoccob = ctesSelecionadosDoccob.includes(key);
                     const linhaOk = Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria);
                     const semValorNf = detalheSemValorNf(row);
                     const pago = Number(row.valor_cte || 0);
@@ -3299,6 +3672,9 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
                     return (
                       <Fragment key={key}>
                         <tr className={`${aberto ? 'selected' : ''} ${linhaOk ? 'audit-row-ok' : ''}`.trim()} style={semValorNf ? { background: '#fff7ed', boxShadow: 'inset 4px 0 #f97316' } : undefined} role="button" tabIndex={0} onClick={() => setCteAvulsoExpandido(aberto ? null : key)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setCteAvulsoExpandido(aberto ? null : key); }}>
+                          <td onClick={(e) => e.stopPropagation()}>
+                            <input type="checkbox" checked={marcadoDoccob} onChange={() => alternarCteDoccob(row, index)} />
+                          </td>
                           <td><strong>{row.numero_cte || '-'}</strong></td>
                           <td><span className="audit-key-cell">{row.chave_cte || '-'}</span></td>
                           <td>{row.transportadora || row.transportadora_realizada || '-'}</td>
@@ -3337,7 +3713,7 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
                           <td><span className={statusClass}>{semValorNf ? 'Sem valor NF' : linhaOk ? 'Dentro da tolerancia' : (row.detalhes_calculo?.calculo_devolucao_invertida ? 'Devolucao invertida' : (row.status_auditoria || row.motivo_sem_calculo || '-'))}</span></td>
                         </tr>
                         {aberto && (
-                          <tr className="audit-quick-detail-row"><td colSpan="12">
+                          <tr className="audit-quick-detail-row"><td colSpan="13">
                             <div className="hint-box compact" style={{ marginBottom: 10, borderColor: semValorNf ? '#fdba74' : '#dbe3ef', background: semValorNf ? '#fff7ed' : '#f8fafc' }}>
                               <strong>{semValorNf ? 'CT-e sem valor NF identificado.' : 'Ajustes manuais do CT-e'}</strong>
                               <div className="form-grid three" style={{ marginTop: 8 }}>
@@ -3401,8 +3777,8 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
             <div className="panel-title">Carteira operacional de faturas</div>
             <span>{lista.length} fatura(s)</span>
             <span style={{ marginLeft: 12, color: '#64748b', fontSize: 12 }}>
-              �ltima atualiza��o: {dataHora(resumoDatas.ultimaAtualizacao)} � �ltima fatura importada: {dataHora(resumoDatas.ultimaImportacao)}
-              {' � '}Emiss�o mais recente: {dataBr(resumoDatas.ultimaEmissao?.toISOString())} � Vencimento mais recente: {dataBr(resumoDatas.ultimoVencimento?.toISOString())}
+              Última atualização: {dataHora(resumoDatas.ultimaAtualizacao)} · Última fatura importada: {dataHora(resumoDatas.ultimaImportacao)}
+              {' · '}Emissão mais recente: {dataBr(resumoDatas.ultimaEmissao?.toISOString())} · Vencimento mais recente: {dataBr(resumoDatas.ultimoVencimento?.toISOString())}
             </span>
           </div>
           <div className="actions-right">
@@ -3415,48 +3791,114 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
             <input ref={arquivoRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={importarFaturas} />
           </div>
         </div>
+        <p className="compact" style={{ marginTop: -4 }}>
+          {visaoFatura === 'minhas' ? 'Mostrando suas faturas.' : visaoFatura === 'sem_auditor' ? 'Mostrando faturas sem auditor definido.' : 'Mostrando todas as faturas.'}
+          {' '}Clique em um card para filtrar rápido; clique de novo para tirar o filtro.
+        </p>
+        <div className="summary-strip audit-quick-cards">
+          {[
+            ['vencidas', 'Vencidas', resumoCards.vencidas, resumoCards.vencidas ? '#9b1111' : '#047857'],
+            ['a_vencer', 'A vencer (7 dias)', resumoCards.aVencer, resumoCards.aVencer ? '#d97706' : '#047857'],
+            ['novas', 'Novas (recebidas)', resumoCards.novas, '#0369a1'],
+            ['enviadas', 'Enviadas ao financeiro', resumoCards.enviadas, '#7c3aed'],
+            ['lancadas', 'Já lançadas (aguardando pagto.)', resumoCards.lancadas, '#b45309'],
+            ['pagas', 'Pagas', resumoCards.pagas, '#047857'],
+            ['pagas_divergentes', 'Pagas com divergência', resumoCards.pagasDivergentes, resumoCards.pagasDivergentes ? '#d97706' : '#047857'],
+          ].map(([chave, label, valor, cor]) => (
+            <div
+              key={chave}
+              onClick={() => setFiltroRapido((atual) => (atual === chave ? '' : chave))}
+              style={{ cursor: 'pointer' }}
+              title={filtroRapido === chave ? 'Clique para remover o filtro' : 'Clique para filtrar a lista abaixo'}
+            >
+              <Card
+                label={label}
+                value={valor}
+                color={cor}
+                detail={filtroRapido === chave ? 'Filtro ativo' : undefined}
+              />
+            </div>
+          ))}
+        </div>
         <div className="form-grid three">
           <label className="field">Busca<input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Fatura, transportadora ou auditor" /></label>
           <label className="field">Status<select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Todos</option>{FATURA_STATUS.map((item) => <option key={item}>{item}</option>)}</select></label>
-          <label className="field">Canal<select value={canalFiltro} onChange={(e) => setCanalFiltro(e.target.value)}><option value="">Todos</option>{canaisDisponiveis.map((item) => <option key={item}>{item}</option>)}</select></label>
+          <label className="field">Auditor
+            <select value={auditorFiltro} onChange={(e) => setAuditorFiltro(e.target.value)}>
+              <option value="">Todos</option>
+              {auditoresDisponiveis.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
         </div>
         <div className="form-grid three">
-          <label className="field">Origem dos CT-es<input value={origemFiltroFatura} onChange={(e) => setOrigemFiltroFatura(e.target.value)} placeholder="Ex.: Itaja�, Contagem, Jaboat�o" /></label>
+          <label className="field">Pagamento
+            <select value={filtroPagamento} onChange={(e) => setFiltroPagamento(e.target.value)}>
+              <option value="">Todos</option>
+              <option value="PAGO">Pago</option>
+              <option value="PAGO_DIVERGENTE">Pago com divergencia</option>
+              <option value="PARTIDA_LANCADA">Partida lancada (aguardando)</option>
+              <option value="LANCADA_FINANCEIRO">Lancada no financeiro (aguardando)</option>
+              <option value="NAO_PAGO">Nao pago</option>
+            </select>
+          </label>
+          <label className="field">Visao
+            <select value={visaoFatura} onChange={(e) => setVisaoFatura(e.target.value)}>
+              <option value="minhas">Minhas faturas</option>
+              <option value="todas">Todas as faturas</option>
+              <option value="sem_auditor">Sem auditor definido</option>
+            </select>
+          </label>
           <label className="field">
-            Compet�ncia (emiss�o)
+            Competência (emissão)
             <select value={competenciaFiltro} onChange={(e) => setCompetenciaFiltro(e.target.value)}>
               <option value="">Todas</option>
               {competenciasDisponiveis.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
           </label>
-          <label className="field">Emiss�o de<input type="date" value={periodoInicio} onChange={(e) => setPeriodoInicio(e.target.value)} /></label>
         </div>
-        <div className="form-grid three">
-          <label className="field">Emiss�o at�<input type="date" value={periodoFim} onChange={(e) => setPeriodoFim(e.target.value)} /></label>
-          <label className="field">Vencimento de<input type="date" value={vencimentoInicio} onChange={(e) => setVencimentoInicio(e.target.value)} /></label>
-          <label className="field">Vencimento at�<input type="date" value={vencimentoFim} onChange={(e) => setVencimentoFim(e.target.value)} /></label>
-        </div>
-        <div className="form-grid three">
-          <label className="field">Faturas em lote
-            <textarea
-              value={filtroFaturasLote}
-              onChange={(e) => setFiltroFaturasLote(e.target.value)}
-              placeholder="Cole n�meros de fatura, um por linha ou separados por v�rgula"
-              rows={3}
-            />
-          </label>
-        </div>
-        <div className="form-grid three">
-          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <input type="checkbox" checked={somenteAuditadas} onChange={(e) => setSomenteAuditadas(e.target.checked)} />
-            S� faturas com todos os CT-es na base (100% auditadas)
-          </label>
-          <label className="field">Visao<select><option>Minhas faturas</option><option>Todas as faturas</option><option>Sem auditor definido</option></select></label>
-        </div>
-        {!canaisDisponiveis.length && <p className="compact">Nenhuma fatura tem canal detectado ainda — clique em "Detectar canais" pra habilitar o filtro de canal.</p>}
+        <button
+          type="button"
+          className="btn-secondary audit-small-button"
+          onClick={() => setFiltrosAvancadosAbertos((v) => !v)}
+          style={{ marginBottom: 8, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+        >
+          <span>{filtrosAvancadosAbertos ? '▲' : '▼'}</span>
+          {filtrosAvancadosAbertos ? 'Ocultar filtros avancados' : 'Mais filtros (canal, origem, período, lote)'}
+        </button>
+        {filtrosAvancadosAbertos && (
+          <>
+            <div className="form-grid three">
+              <label className="field">Canal<select value={canalFiltro} onChange={(e) => setCanalFiltro(e.target.value)}><option value="">Todos</option>{canaisDisponiveis.map((item) => <option key={item}>{item}</option>)}</select></label>
+              <label className="field">Origem dos CT-es<input value={origemFiltroFatura} onChange={(e) => setOrigemFiltroFatura(e.target.value)} placeholder="Ex.: Itajaí, Contagem, Jaboatão" /></label>
+              <label className="field">Emissão de<input type="date" value={periodoInicio} onChange={(e) => setPeriodoInicio(e.target.value)} /></label>
+            </div>
+            <div className="form-grid three">
+              <label className="field">Emissão até<input type="date" value={periodoFim} onChange={(e) => setPeriodoFim(e.target.value)} /></label>
+              <label className="field">Vencimento de<input type="date" value={vencimentoInicio} onChange={(e) => setVencimentoInicio(e.target.value)} /></label>
+              <label className="field">Vencimento até<input type="date" value={vencimentoFim} onChange={(e) => setVencimentoFim(e.target.value)} /></label>
+            </div>
+            <div className="form-grid three">
+              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <input type="checkbox" checked={somenteAuditadas} onChange={(e) => setSomenteAuditadas(e.target.checked)} />
+                Só faturas com todos os CT-es na base (100% auditadas)
+              </label>
+            </div>
+            <div className="form-grid three">
+              <label className="field">Faturas em lote
+                <textarea
+                  value={filtroFaturasLote}
+                  onChange={(e) => setFiltroFaturasLote(e.target.value)}
+                  placeholder="Cole números de fatura, um por linha ou separados por vírgula"
+                  rows={3}
+                />
+              </label>
+            </div>
+            {!canaisDisponiveis.length && <p className="compact">Nenhuma fatura tem canal detectado ainda — clique em "Detectar canais" pra habilitar o filtro de canal.</p>}
+          </>
+        )}
         {numerosFaturasLote.length > 0 && (
           <div className="hint-box compact">
-            Filtro por lote: {numerosFaturasLote.length} n�mero(s) informado(s), {lista.length} fatura(s) encontrada(s).
+            Filtro por lote: {numerosFaturasLote.length} número(s) informado(s), {lista.length} fatura(s) encontrada(s).
             <button className="btn-secondary audit-small-button" disabled={!lista.length} onClick={selecionarFaturasFiltradas} style={{ marginLeft: 8 }}>
               Selecionar filtradas
             </button>
@@ -3524,12 +3966,23 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         </div>
         </>
       )}
+      <div className="section-row compact-top">
+        <span className="compact">
+          {lista.length ? `Pagina ${paginaFaturasAtual} de ${totalPaginasFaturas} - mostrando ${listaPaginada.length} de ${lista.length} fatura(s)` : 'Nenhuma fatura encontrada com os filtros atuais.'}
+        </span>
+        {totalPaginasFaturas > 1 && (
+          <div className="actions-right">
+            <button className="btn-secondary audit-small-button" disabled={paginaFaturasAtual <= 1} onClick={() => setPaginaFaturas((p) => Math.max(1, p - 1))}>Anterior</button>
+            <button className="btn-secondary audit-small-button" disabled={paginaFaturasAtual >= totalPaginasFaturas} onClick={() => setPaginaFaturas((p) => Math.min(totalPaginasFaturas, p + 1))}>Proxima</button>
+          </div>
+        )}
+      </div>
       <div className="table-card">
         <div className="sim-analise-tabela-wrap">
           <table className="sim-analise-tabela">
-            <thead><tr><th><input type="checkbox" checked={todasFiltradasSelecionadas} disabled={!lista.length} onChange={alternarSelecaoFiltradas} title="Selecionar/desmarcar todas as faturas filtradas" /></th><th>Fatura</th><th>Transportadora</th><th>Origem</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th>Auditor</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th><input type="checkbox" checked={todasFiltradasSelecionadas} disabled={!lista.length} onChange={alternarSelecaoFiltradas} title="Selecionar/desmarcar todas as faturas filtradas (todas as paginas)" /></th><th>Fatura</th><th>Transportadora</th><th>Origem</th><th>Vencimento</th><th>Valor</th><th>CT-es</th><th>Divergencia</th><th>Auditor</th><th>Status</th><th>Pagamento</th><th></th></tr></thead>
             <tbody>
-              {lista.map((fatura) => {
+              {listaPaginada.map((fatura) => {
                 const auditadaCompleta = faturaTotalmenteAuditada(fatura);
                 return (
                   <tr key={fatura.id} onClick={() => setAberta(fatura)} style={{ cursor: 'pointer', ...(auditadaCompleta ? { background: '#f0fdf4', borderLeft: '3px solid #16a34a' } : {}) }}>
@@ -3551,6 +4004,15 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
                     <td className={Number(fatura.diferenca) ? 'negativo' : ''}>{dinheiro(fatura.diferenca)}</td>
                     <td>{fatura.auditor_nome || <strong className="error-text">SEM AUDITOR DEFINIDO</strong>}</td>
                     <td><Status value={fatura.status} /></td>
+                    <td
+                      title={fatura.data_pagamento
+                        ? `Pago em ${dataBr(fatura.data_pagamento)} - partida ${fatura.partida || '-'} - valor ${dinheiro(fatura.valor_pago)}`
+                        : fatura.lancamento_financeiro
+                          ? `Ja lancada no financeiro em ${dataBr(fatura.lancamento_financeiro_em)} (lancamento ${fatura.lancamento_financeiro}), aguardando pagamento final`
+                          : 'Ainda sem pagamento conciliado'}
+                    >
+                      <Status value={situacaoPagamentoFatura(fatura)} />
+                    </td>
                     <td><button className="btn-secondary audit-small-button" onClick={(event) => { event.stopPropagation(); setAberta(fatura); }}>Abrir</button></td>
                   </tr>
                 );
@@ -4140,6 +4602,7 @@ function Gestao({ state, onState }) {
 function Financeiro({ state, onState }) {
   const sessao = carregarSessao();
   const pagamentoRef = useRef(null);
+  const pagamentoPastaRef = useRef(null);
   const [subtab, setSubtab] = useState('protocolos');
   const [faturaId, setFaturaId] = useState('');
   const [canal, setCanal] = useState('VERUM_SAP');
@@ -4150,6 +4613,9 @@ function Financeiro({ state, onState }) {
   const [respostaFinanceiro, setRespostaFinanceiro] = useState('');
   const [referenciaAnexo, setReferenciaAnexo] = useState('');
   const [erroFinanceiro, setErroFinanceiro] = useState('');
+  const [processandoPagamentos, setProcessandoPagamentos] = useState(false);
+  const [progressoPagamentos, setProgressoPagamentos] = useState(null);
+  const [resumoPagamentosSap, setResumoPagamentosSap] = useState(null);
   const fatura = state.faturas.find((item) => item.id === faturaId);
 
   const enviar = async () => {
@@ -4225,45 +4691,126 @@ function Financeiro({ state, onState }) {
     return !buscaFinanceiro || texto.includes(buscaFinanceiro.toLowerCase());
   });
 
+  // Processa um unico arquivo (SAP ou layout simples) contra o estado atual e
+  // devolve o proximo estado + resumo parcial, sem mexer em state React -
+  // permite encadear varios arquivos de uma pasta em sequencia.
+  const processarArquivoPagamentos = async (file, stateAtual) => {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
+    const headers = rows.length ? Object.keys(rows[0]) : [];
+
+    if (pareceRelatorioPagamentosSap(headers)) {
+      // Relatorio SAP: cobre a empresa inteira (dezenas de milhares de
+      // linhas), so persistimos e mudamos status das faturas que casaram.
+      const conciliados = conciliarPagamentosSap(stateAtual.faturas, rows);
+      const matched = conciliados.filter((item) => item.fatura_id);
+      const compensados = matched.filter((item) => item.resultado === 'PAGO' || item.resultado === 'DIVERGENTE');
+      const partidas = matched.filter((item) => item.resultado === 'PARTIDA_LANCADA');
+      const lancadasFinanceiro = matched.filter((item) => item.resultado === 'LANCADA_FINANCEIRO');
+      const cnpjDivergente = conciliados.filter((item) => item.resultado === 'CNPJ_DIVERGENTE').length;
+      const ambiguos = conciliados.filter((item) => item.resultado === 'AMBIGUO').length;
+      const naoLocalizados = conciliados.length - matched.length - cnpjDivergente - ambiguos;
+
+      const salvos = await salvarPagamentosFinanceirosEmLote(matched, (progresso) => setProgressoPagamentos({ etapa: `salvando_pagamentos (${file.name})`, ...progresso }));
+      let next = await atualizarStatusFaturasPagasEmLote(
+        { ...stateAtual, pagamentos: [...salvos.slice(0, 500), ...stateAtual.pagamentos] },
+        compensados,
+        sessao?.nome || sessao?.email || 'Usuario local',
+        (progresso) => setProgressoPagamentos({ etapa: `atualizando_faturas (${file.name})`, ...progresso }),
+      );
+      // Partida lancada sem compensacao ainda (statusComp=2) tambem precisa
+      // aparecer marcada na fatura - senao fica invisivel fora da tabela de
+      // pagamentos, mesmo ja tendo um lancamento contabil aberto no financeiro.
+      next = await marcarFaturasLancadasFinanceiroEmLote(
+        next,
+        [...partidas, ...lancadasFinanceiro],
+        (progresso) => setProgressoPagamentos({ etapa: `marcando_lancadas_financeiro (${file.name})`, ...progresso }),
+      );
+      return {
+        next,
+        resumo: {
+          totalLinhas: conciliados.length, pagas: compensados.length, partidasLancadas: partidas.length,
+          lancadasFinanceiro: lancadasFinanceiro.length, naoLocalizados, ambiguos, cnpjDivergente,
+        },
+      };
+    }
+
+    const normalizados = rows.map((row) => ({
+      numero_fatura: String(row['Numero Fatura'] || row['Fatura'] || row['numero_fatura'] || ''),
+      transportadora: String(row['Transportadora'] || row['transportadora'] || ''),
+      valor_pago: Number(row['Valor Pago'] || row['Valor'] || row['valor_pago'] || 0),
+      data_pagamento: row['Data Pagamento'] || row['data_pagamento'] || new Date().toISOString().slice(0, 10),
+      documento_compensacao: String(row['Documento Compensacao'] || row['Documento'] || ''),
+      arquivo_origem: file.name,
+    }));
+    const conciliados = conciliarPagamentos(stateAtual.faturas, normalizados);
+    // transportadora orienta a conciliacao, mas nao é coluna de financeiro_pagamentos.
+    const registros = conciliados.map(({ transportadora, ...pagamento }) => pagamento);
+    let next = await salvarPagamentosFinanceiros(stateAtual, registros);
+    for (const pagamento of registros.filter((item) => item.fatura_id)) {
+      const fat = next.faturas.find((item) => item.id === pagamento.fatura_id);
+      next = await atualizarFaturaAuditoria(next, {
+        ...fat,
+        status: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
+        valor_pago: pagamento.valor_pago,
+        data_pagamento: pagamento.data_pagamento,
+      }, {
+        acao: 'PAGAMENTO_CONCILIADO', status_anterior: fat.status,
+        status_novo: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
+        descricao: `Pagamento importado: ${pagamento.resultado}.`, usuario_nome: sessao?.nome || 'Usuario local',
+      });
+    }
+    const compensados = registros.filter((item) => item.fatura_id && item.resultado === 'PAGO');
+    const divergentes = registros.filter((item) => item.fatura_id && item.resultado === 'DIVERGENTE');
+    const ambiguos = registros.filter((item) => item.resultado === 'AMBIGUO').length;
+    const naoLocalizados = registros.filter((item) => item.resultado === 'NAO_LOCALIZADO').length;
+    return {
+      next,
+      resumo: { totalLinhas: registros.length, pagas: compensados.length + divergentes.length, partidasLancadas: 0, lancadasFinanceiro: 0, naoLocalizados, ambiguos, cnpjDivergente: 0 },
+    };
+  };
+
+  const somarResumos = (a, b) => ({
+    totalLinhas: (a?.totalLinhas || 0) + b.totalLinhas,
+    pagas: (a?.pagas || 0) + b.pagas,
+    partidasLancadas: (a?.partidasLancadas || 0) + b.partidasLancadas,
+    lancadasFinanceiro: (a?.lancadasFinanceiro || 0) + (b.lancadasFinanceiro || 0),
+    naoLocalizados: (a?.naoLocalizados || 0) + b.naoLocalizados,
+    ambiguos: (a?.ambiguos || 0) + b.ambiguos,
+    cnpjDivergente: (a?.cnpjDivergente || 0) + b.cnpjDivergente,
+  });
+
   const importarPagamentos = async (event) => {
-    const file = event.target.files?.[0];
+    const arquivos = Array.from(event.target.files || []).filter((file) => /\.(xlsx|xls|csv)$/i.test(file.name));
     event.target.value = '';
-    if (!file) return;
+    if (!arquivos.length) return;
+    setErroFinanceiro('');
+    setResumoPagamentosSap(null);
+    setProcessandoPagamentos(true);
+    setProgressoPagamentos(null);
     try {
-      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
-      const normalizados = rows.map((row) => ({
-        numero_fatura: String(row['Numero Fatura'] || row['Fatura'] || row['numero_fatura'] || ''),
-        transportadora: String(row['Transportadora'] || row['transportadora'] || ''),
-        valor_pago: Number(row['Valor Pago'] || row['Valor'] || row['valor_pago'] || 0),
-        data_pagamento: row['Data Pagamento'] || row['data_pagamento'] || new Date().toISOString().slice(0, 10),
-        documento_compensacao: String(row['Documento Compensacao'] || row['Documento'] || ''),
-        arquivo_origem: file.name,
-      }));
-      const conciliados = conciliarPagamentos(state.faturas, normalizados);
-      // transportadora orienta a conciliacao, mas nao é coluna de financeiro_pagamentos.
-      const registros = conciliados.map(({ transportadora, ...pagamento }) => pagamento);
-      let next = await salvarPagamentosFinanceiros(state, registros);
-      for (const pagamento of registros.filter((item) => item.fatura_id)) {
-        const fat = next.faturas.find((item) => item.id === pagamento.fatura_id);
-        next = await atualizarFaturaAuditoria(next, {
-          ...fat,
-          status: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
-          valor_pago: pagamento.valor_pago,
-          data_pagamento: pagamento.data_pagamento,
-        }, {
-          acao: 'PAGAMENTO_CONCILIADO', status_anterior: fat.status,
-          status_novo: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
-          descricao: `Pagamento importado: ${pagamento.resultado}.`, usuario_nome: sessao?.nome || 'Usuario local',
-        });
+      let estadoAtual = state;
+      let resumoTotal = null;
+      const falhas = [];
+      for (let indice = 0; indice < arquivos.length; indice += 1) {
+        const file = arquivos[indice];
+        setProgressoPagamentos({ etapa: `arquivo ${indice + 1}/${arquivos.length}: ${file.name}` });
+        try {
+          const { next, resumo } = await processarArquivoPagamentos(file, estadoAtual);
+          estadoAtual = next;
+          resumoTotal = somarResumos(resumoTotal, resumo);
+          onState(estadoAtual);
+        } catch (error) {
+          falhas.push(`${file.name}: ${error.message || error}`);
+        }
       }
-      const ambiguos = registros.filter((item) => item.resultado === 'AMBIGUO').length;
-      setErroFinanceiro(ambiguos
-        ? `${ambiguos} pagamento(s) com numero de fatura repetido em mais de uma transportadora. Inclua a coluna Transportadora no relatorio para conciliar.`
-        : '');
-      onState(next);
+      setResumoPagamentosSap(resumoTotal ? { ...resumoTotal, arquivos: arquivos.length } : null);
+      setErroFinanceiro(falhas.length ? `Falha ao processar ${falhas.length} arquivo(s): ${falhas.join(' | ')}` : '');
     } catch (error) {
       setErroFinanceiro(error.message || String(error));
+    } finally {
+      setProcessandoPagamentos(false);
+      setProgressoPagamentos(null);
     }
   };
 
@@ -4271,10 +4818,11 @@ function Financeiro({ state, onState }) {
     <>
       <div className="tabs-row">
         {[
-          ['protocolos', 'Protocolos'], ['solicitacoes', 'Solicitacoes e SLA'], ['boletos', 'Boletos'], ['pagamentos', 'Pagamentos'],
+          ['protocolos', 'Protocolos'], ['solicitacoes', 'Solicitacoes e SLA'], ['boletos', 'Boletos'], ['pagamentos', 'Pagamentos'], ['dados-bancarios', 'Dados Bancarios'],
         ].map(([id, label]) => <button key={id} className={`toggle-btn ${subtab === id ? 'active' : ''}`} onClick={() => setSubtab(id)}>{label}</button>)}
       </div>
       {erroFinanceiro && <div className="hint-box compact error-text">{erroFinanceiro}</div>}
+      {subtab === 'dados-bancarios' && <DadosBancariosTransportadoras sessao={sessao} />}
 
       {subtab === 'protocolos' && (
         <>
@@ -4378,10 +4926,51 @@ function Financeiro({ state, onState }) {
       {subtab === 'pagamentos' && (
         <>
           <div className="panel-card">
-            <div className="section-row compact-top"><div><div className="panel-title">Importacao diaria de pagamentos</div><p>Layout: Numero Fatura, Valor Pago, Data Pagamento e Documento Compensacao.</p></div><button className="btn-primary" onClick={() => pagamentoRef.current?.click()}>Importar XLSX/CSV</button></div>
-            <input ref={pagamentoRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={importarPagamentos} />
+            <div className="section-row compact-top">
+              <div>
+                <div className="panel-title">Comprovantes de pagamento</div>
+                <p>Layout simples: Numero Fatura, Valor Pago, Data Pagamento, Documento Compensacao.</p>
+                <p>Ou exportacao SAP (contas a pagar): reconhece automaticamente as colunas Referência, Nome do fornecedor, Montante (ME), Status comp., Lançto.compensação e Lançamento contábil. So gravamos e atualizamos as faturas que casaram com o relatorio - o restante (outros fornecedores da empresa) e ignorado.</p>
+              </div>
+              <div className="audit-form-actions">
+                <button className="btn-primary" disabled={processandoPagamentos} onClick={() => pagamentoRef.current?.click()}>{processandoPagamentos ? 'Processando...' : 'Importar arquivo(s)'}</button>
+                <button className="btn-secondary" disabled={processandoPagamentos} onClick={() => pagamentoPastaRef.current?.click()}>{processandoPagamentos ? 'Processando...' : 'Importar pasta'}</button>
+              </div>
+            </div>
+            <input ref={pagamentoRef} type="file" accept=".xlsx,.xls,.csv" multiple hidden onChange={importarPagamentos} />
+            <input ref={pagamentoPastaRef} type="file" webkitdirectory="" directory="" multiple hidden onChange={importarPagamentos} />
+            {processandoPagamentos && (
+              <div className="hint-box compact">
+                Processando{progressoPagamentos?.etapa ? `: ${progressoPagamentos.etapa}` : '...'}
+                {progressoPagamentos?.total ? ` (${progressoPagamentos.carregados}/${progressoPagamentos.total})` : ''}
+              </div>
+            )}
+            {resumoPagamentosSap && (
+              <div className="hint-box compact">
+                {resumoPagamentosSap.arquivos > 1 ? `${resumoPagamentosSap.arquivos} arquivo(s) processado(s)` : 'Relatorio processado'}: {resumoPagamentosSap.totalLinhas} linha(s) · <strong>{resumoPagamentosSap.pagas}</strong> fatura(s) marcada(s) como paga(s) ·{' '}
+                <strong>{resumoPagamentosSap.lancadasFinanceiro || 0}</strong> ja lancada(s) no financeiro (aguardando pagamento final) ·{' '}
+                <strong>{resumoPagamentosSap.partidasLancadas}</strong> com partida lancada aguardando compensacao · {resumoPagamentosSap.naoLocalizados} sem fatura correspondente
+                {resumoPagamentosSap.cnpjDivergente ? ` · ${resumoPagamentosSap.cnpjDivergente} com numero de fatura batendo mas CNPJ da transportadora divergente (nao casado por seguranca)` : ''}
+                {resumoPagamentosSap.ambiguos ? ` · ${resumoPagamentosSap.ambiguos} ambiguo(s) (numero de fatura repetido para o mesmo CNPJ)` : ''}.
+              </div>
+            )}
           </div>
-          <SimpleTable headers={['Fatura', 'Valor pago', 'Data', 'Documento', 'Resultado', 'Diferenca']} rows={state.pagamentos.map((item) => [item.numero_fatura || '-', dinheiro(item.valor_pago), dataBr(item.data_pagamento), item.documento_compensacao || '-', <Status key="r" value={item.resultado} />, dinheiro(item.diferenca)])} empty="Nenhum relatorio financeiro importado." />
+          <SimpleTable
+            headers={['Fatura', 'Transportadora', 'Vencimento', 'Valor pago', 'Data', 'Partida (compensação)', 'Lançamento contábil', 'Resultado', 'Diferenca']}
+            rows={state.pagamentos.map((item) => {
+              const fat = state.faturas.find((fatura) => fatura.id === item.fatura_id);
+              return [
+                item.numero_fatura || '-',
+                item.transportadora || fat?.transportadora || '-',
+                fat?.data_vencimento ? dataBr(fat.data_vencimento) : '-',
+                dinheiro(item.valor_pago), dataBr(item.data_pagamento),
+                item.partida || item.documento_compensacao || '-',
+                item.lancamento_contabil || '-',
+                <Status key="r" value={item.resultado} />, dinheiro(item.diferenca),
+              ];
+            })}
+            empty="Nenhum relatorio financeiro importado."
+          />
         </>
       )}
     </>
