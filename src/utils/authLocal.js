@@ -17,6 +17,7 @@ export const MODULOS_SISTEMA = [
   { chave: 'simulador', label: 'Simulador', grupo: 'Fretes' },
   { chave: 'tabelas-negociacao', label: 'Tabelas em Negociação', grupo: 'Suprimentos' },
   { chave: 'cte', label: 'CT-e', grupo: 'Auditoria' },
+  { chave: 'cte-origem-destino', label: 'CT-e Origem x Destino', grupo: 'Auditoria' },
   { chave: 'auditoria-cte', label: 'Laboratorio Auditoria CT-e', grupo: 'Auditoria' },
   { chave: 'auditoria-ecommerce', label: 'Auditoria E-commerce', grupo: 'Auditoria' },
   { chave: 'tracking', label: 'Tracking', grupo: 'Operação' },

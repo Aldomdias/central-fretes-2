@@ -22,6 +22,7 @@ import ReajustesPage from './pages/ReajustesPage';
 import AvaliacaoPrazosPage from './pages/AvaliacaoPrazosPage';
 import PrazoPagamentoPage from './pages/PrazoPagamentoPage';
 import CtePage from './pages/CtePage';
+import CteOrigemDestinoPage from './pages/CteOrigemDestinoPage';
 import TabelasNegociacaoPageWithEditor from './pages/TabelasNegociacaoPageWithEditor';
 import AuditoriaCtePage from './pages/AuditoriaCtePage';
 import CentralAuditoriaFretesPage from './pages/CentralAuditoriaFretesPage';
@@ -45,7 +46,7 @@ import { entrarPresenca, sairPresenca } from './services/presencaService';
 import { sairSupabaseAuth } from './services/biometriaService';
 
 const PAGINAS_PERMITIDAS = [
-  'dashboard', 'conceito-app', 'simulador', 'tabelas-negociacao', 'cte', 'auditoria-cte', 'tracking',
+  'dashboard', 'conceito-app', 'simulador', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking',
   'torre-controle', 'reajustes', 'avaliacao-prazos', 'importacao', 'formatacao', 'importar-template',
   'importacao-ia-tabelas',
   'lotacao', 'lotacao-operacao', 'lotacao-auditoria', 'painel-auditoria', 'painel-operacao',
@@ -164,6 +165,7 @@ export default function App() {
     simulador: <SimuladorPage transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     'tabelas-negociacao': <TabelasNegociacaoPageWithEditor />,
     cte: <CtePage transportadoras={transportadorasMemo} />,
+    'cte-origem-destino': <CteOrigemDestinoPage />,
     'auditoria-cte': <AuditoriaCtePage onMudarPagina={mudarPagina} onAbrirTransportadoras={abrirTransportadoras} />,
     importacao: <ImportacaoPage store={store} transportadoras={transportadorasMemo} onAbrirTransportadoras={abrirTransportadoras} />,
     formatacao: <FormatacaoPage store={store} transportadoras={transportadorasMemo} />,

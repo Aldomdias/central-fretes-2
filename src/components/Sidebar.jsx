@@ -35,6 +35,7 @@ const MENU_GRUPOS = [
     titulo: 'Auditoria',
     itens: [
       { chave: 'cte', label: 'CT-e' },
+      { chave: 'cte-origem-destino', label: 'CT-e Origem x Destino' },
       { chave: 'auditoria-cte', label: 'Auditoria CT-e' },
       { chave: 'auditoria-ecommerce', label: 'Auditoria E-commerce' },
       { chave: 'lotacao-auditoria', label: 'Auditoria lotacao' },
