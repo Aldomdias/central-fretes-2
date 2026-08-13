@@ -224,6 +224,8 @@ export default function CteOrigemDestinoPage() {
   const [erro, setErro] = useState('');
   const [progresso, setProgresso] = useState(0);
   const [busca, setBusca] = useState('');
+  const [filtroOrigem, setFiltroOrigem] = useState('');
+  const [filtroDestino, setFiltroDestino] = useState('');
   const [ordenacao, setOrdenacao] = useState({ campo: 'valorCte', direcao: 'desc' });
   const [canaisSelecionados, setCanaisSelecionados] = useState(null);
 
@@ -269,6 +271,21 @@ export default function CteOrigemDestinoPage() {
 
   const analiseAtiva = useMemo(() => montarAnaliseOrigemDestino(rowsDoGrupoFiltradas), [rowsDoGrupoFiltradas]);
 
+  const origensDisponiveis = useMemo(() => {
+    const set = new Set(analiseAtiva.linhas.map((item) => `${item.origem} - ${item.ufOrigem}`));
+    return [...set].sort();
+  }, [analiseAtiva.linhas]);
+
+  const destinosDisponiveis = useMemo(() => {
+    const set = new Set(analiseAtiva.linhas.map((item) => `${item.destino} - ${item.ufDestino}`));
+    return [...set].sort();
+  }, [analiseAtiva.linhas]);
+
+  useEffect(() => {
+    setFiltroOrigem('');
+    setFiltroDestino('');
+  }, [grupo, competencia]);
+
   function toggleCanal(canal) {
     setCanaisSelecionados((atual) => {
       const base = atual || canaisDisponiveis;
@@ -283,6 +300,12 @@ export default function CteOrigemDestinoPage() {
     let linhas = analiseAtiva.linhas;
     if (termo) {
       linhas = linhas.filter((item) => `${item.origem} ${item.ufOrigem} ${item.destino} ${item.ufDestino}`.toUpperCase().includes(termo));
+    }
+    if (filtroOrigem) {
+      linhas = linhas.filter((item) => `${item.origem} - ${item.ufOrigem}` === filtroOrigem);
+    }
+    if (filtroDestino) {
+      linhas = linhas.filter((item) => `${item.destino} - ${item.ufDestino}` === filtroDestino);
     }
     const { campo: campoOrd, direcao } = ordenacao;
     const sinal = direcao === 'asc' ? 1 : -1;
@@ -399,13 +422,36 @@ export default function CteOrigemDestinoPage() {
         <SummaryCard title="% NF" value={fmtPct(analiseAtiva.percentualNf)} subtitle="frete sobre NF" />
       </div>
 
-      <input
-        type="text"
-        placeholder="Buscar por origem ou destino..."
-        value={busca}
-        onChange={(e) => setBusca(e.target.value)}
-        style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc', maxWidth: 320 }}
-      />
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <input
+          type="text"
+          placeholder="Buscar por origem ou destino..."
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc', minWidth: 260 }}
+        />
+        <select
+          value={filtroOrigem}
+          onChange={(e) => setFiltroOrigem(e.target.value)}
+          style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc', minWidth: 220 }}
+        >
+          <option value="">Todas as origens</option>
+          {origensDisponiveis.map((origem) => <option key={origem} value={origem}>{origem}</option>)}
+        </select>
+        <select
+          value={filtroDestino}
+          onChange={(e) => setFiltroDestino(e.target.value)}
+          style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc', minWidth: 220 }}
+        >
+          <option value="">Todos os destinos</option>
+          {destinosDisponiveis.map((destino) => <option key={destino} value={destino}>{destino}</option>)}
+        </select>
+        {(filtroOrigem || filtroDestino) ? (
+          <button type="button" onClick={() => { setFiltroOrigem(''); setFiltroDestino(''); }} style={{ fontSize: 12 }}>
+            Limpar filtros de origem/destino
+          </button>
+        ) : null}
+      </div>
 
       <div style={{ overflowX: 'auto', border: '1px solid #e2e2e2', borderRadius: 10 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
