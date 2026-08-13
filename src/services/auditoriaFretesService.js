@@ -1,6 +1,7 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { aplicarReauditoriaDetalhes, ENCERRADOS, gerarProtocolo, isoDate, normalizarChaveCte } from '../utils/auditoriaFretesDomain';
 import { chaveFatura } from '../utils/auditoriaFretesImport';
+import { obterRaizCnpj, raizCnpjValida } from '../utils/cnpj';
 
 const STORAGE_KEY = 'central_fretes_plataforma_auditoria_440_v1';
 
@@ -491,15 +492,28 @@ export async function registrarHistoricoCarteiraAuditoria({ transportadora, audi
 // resolve vinculo/normalizacao do jeito que ja usa) — faturas com outro
 // auditor ja definido nunca sao tocadas aqui (evita pisar em atribuicao
 // alheia sem o fluxo de confirmacao que existe no Centro de Gestores).
-export async function propagarAuditorParaFaturas({ auditorNome, auditorEmail, atribuidoPor, matchesTransportadora }) {
+// Casamento em duas etapas: primeiro tenta pela raiz do CNPJ da carteira
+// (mais confiavel, imune a variacao de nome/razao social), so cai pro nome
+// com vinculo manual (matchesTransportadora) quando a carteira nao tem CNPJ
+// cadastrado ou a fatura nao tem CNPJ pra comparar.
+export async function propagarAuditorParaFaturas({ auditorNome, auditorEmail, atribuidoPor, matchesTransportadora, cnpjTransportadora }) {
   if (!isSupabaseConfigured() || !auditorNome || typeof matchesTransportadora !== 'function') return { atualizadas: 0 };
   const client = getSupabaseClient();
-  const { data, error } = await client.from('faturas').select('id, transportadora, status, auditor_nome');
+  const { data, error } = await client.from('faturas').select('id, transportadora, cnpj_transportadora, status, auditor_nome');
   if (error) {
     console.warn('Não foi possível carregar faturas para propagar auditor.', error.message || error);
     return { atualizadas: 0 };
   }
-  const alvo = (data || []).filter((f) => !ENCERRADOS.has(f.status) && !f.auditor_nome && matchesTransportadora(f.transportadora));
+  const raizCarteira = obterRaizCnpj(cnpjTransportadora);
+  const cnpjCarteiraValido = raizCnpjValida(raizCarteira);
+  const alvo = (data || []).filter((f) => {
+    if (ENCERRADOS.has(f.status) || f.auditor_nome) return false;
+    if (cnpjCarteiraValido) {
+      const raizFatura = obterRaizCnpj(f.cnpj_transportadora);
+      if (raizCnpjValida(raizFatura)) return raizFatura === raizCarteira;
+    }
+    return matchesTransportadora(f.transportadora);
+  });
   if (!alvo.length) return { atualizadas: 0 };
   const agora = new Date().toISOString();
   await safeUpsert('faturas', alvo.map((f) => ({ id: f.id, auditor_nome: auditorNome, auditor_email: auditorEmail || '', updated_at: agora })));
@@ -669,6 +683,132 @@ export async function salvarPagamentosFinanceiros(state, pagamentos) {
   return writeLocal(next);
 }
 
+// Importacao de relatorios grandes (ex.: exportacao SAP com dezenas de
+// milhares de linhas de toda a empresa): grava só os pagamentos que
+// casaram com uma fatura (os demais nao dizem respeito a fretes) e em
+// lotes, pra nao estourar o limite de uma unica chamada ao Supabase nem
+// travar a aba com uma tabela gigante.
+export async function salvarPagamentosFinanceirosEmLote(pagamentosConciliados, onProgress) {
+  const comId = pagamentosConciliados
+    .filter((item) => item.fatura_id)
+    .map((item) => ({ id: item.id || uid('pag'), imported_at: new Date().toISOString(), ...item }));
+  // transportadora/compensado/cnpj sao so pra conciliar e exibir na tela -
+  // nao existem em financeiro_pagamentos.
+  const paraSalvar = comId.map(({ transportadora, compensado, cnpj, ...item }) => item);
+  if (!isSupabaseConfigured() || !paraSalvar.length) return comId;
+  const client = getSupabaseClient();
+  const LOTE = 500;
+  for (let inicio = 0; inicio < paraSalvar.length; inicio += LOTE) {
+    const lote = paraSalvar.slice(inicio, inicio + LOTE);
+    const { error } = await client.from('financeiro_pagamentos').upsert(lote, { onConflict: 'id' });
+    if (error) throw new Error(`Erro ao salvar pagamentos: ${error.message}`);
+    onProgress?.({ carregados: Math.min(inicio + LOTE, paraSalvar.length), total: paraSalvar.length });
+  }
+  return comId;
+}
+
+// Atualiza em lote o status das faturas cujo pagamento SAP ja compensou
+// (PAGO/DIVERGENTE). Faturas so com partida lancada (ainda nao compensada)
+// nao mudam de status aqui.
+export async function atualizarStatusFaturasPagasEmLote(state, pagamentosCompensados, usuarioNome, onProgress) {
+  if (!isSupabaseConfigured() || !pagamentosCompensados.length) return state;
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  // Uma mesma fatura pode ter mais de uma linha compensada no relatorio (ex.:
+  // pagamento parcelado): o upsert nao aceita dois updates pro mesmo id no
+  // mesmo lote, entao consolida por fatura antes de enviar (soma o valor
+  // pago e fica com a data mais recente).
+  const porFatura = new Map();
+  for (const pagamento of pagamentosCompensados) {
+    const atual = porFatura.get(pagamento.fatura_id);
+    const status = pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA';
+    if (!atual) {
+      porFatura.set(pagamento.fatura_id, {
+        id: pagamento.fatura_id,
+        status,
+        valor_pago: Number(pagamento.valor_pago || 0),
+        data_pagamento: pagamento.data_pagamento,
+        partida: pagamento.partida || null,
+        updated_at: agora,
+      });
+    } else {
+      atual.valor_pago = Number((atual.valor_pago + Number(pagamento.valor_pago || 0)).toFixed(2));
+      if (status === 'PAGA_COM_DIVERGENCIA') atual.status = 'PAGA_COM_DIVERGENCIA';
+      if (pagamento.data_pagamento && (!atual.data_pagamento || pagamento.data_pagamento > atual.data_pagamento)) {
+        atual.data_pagamento = pagamento.data_pagamento;
+        atual.partida = pagamento.partida || atual.partida;
+      }
+    }
+  }
+  const atualizacoesFatura = [...porFatura.values()];
+  const historico = pagamentosCompensados.map((pagamento) => ({
+    id: uid('hist'),
+    fatura_id: pagamento.fatura_id,
+    acao: 'PAGAMENTO_CONCILIADO',
+    status_novo: pagamento.resultado === 'PAGO' ? 'PAGA' : 'PAGA_COM_DIVERGENCIA',
+    descricao: `Pagamento conciliado via relatorio SAP: ${pagamento.resultado} (doc. ${pagamento.documento_compensacao || '-'}).`,
+    usuario_nome: usuarioNome,
+    created_at: agora,
+  }));
+
+  for (let inicio = 0; inicio < atualizacoesFatura.length; inicio += 200) {
+    const lote = atualizacoesFatura.slice(inicio, inicio + 200);
+    const { error } = await client.from('faturas').upsert(lote, { onConflict: 'id' });
+    if (error) throw new Error(`Erro ao atualizar status das faturas: ${error.message}`);
+    onProgress?.({ carregados: Math.min(inicio + 200, atualizacoesFatura.length), total: atualizacoesFatura.length });
+  }
+  for (let inicio = 0; inicio < historico.length; inicio += 500) {
+    await client.from('auditoria_fatura_historico').insert(historico.slice(inicio, inicio + 500));
+  }
+
+  const statusPorFatura = new Map(atualizacoesFatura.map((item) => [item.id, item]));
+  return {
+    ...state,
+    faturas: state.faturas.map((fatura) => statusPorFatura.has(fatura.id) ? { ...fatura, ...statusPorFatura.get(fatura.id) } : fatura),
+    historico: [...historico, ...(state.historico || [])],
+  };
+}
+
+// Marca na fatura que ela ja foi lancada/reclassificada no financeiro
+// (resultado LANCADA_FINANCEIRO - documento "190..." intermediario, ainda
+// nao e' pagamento). Nao altera o status da fatura, so' da visibilidade.
+export async function marcarFaturasLancadasFinanceiroEmLote(state, pagamentosLancados, onProgress) {
+  if (!isSupabaseConfigured() || !pagamentosLancados.length) return state;
+  const client = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const porFatura = new Map();
+  for (const pagamento of pagamentosLancados) {
+    const atual = porFatura.get(pagamento.fatura_id);
+    if (!atual) {
+      porFatura.set(pagamento.fatura_id, {
+        id: pagamento.fatura_id,
+        lancamento_financeiro: pagamento.lancamento_contabil || null,
+        lancamento_financeiro_em: pagamento.data_lancamento || null,
+        updated_at: agora,
+      });
+    } else if (pagamento.data_lancamento && (!atual.lancamento_financeiro_em || pagamento.data_lancamento > atual.lancamento_financeiro_em)) {
+      // Fica com o lancamento mais recente quando ha varios hops de reclassificacao.
+      atual.lancamento_financeiro = pagamento.lancamento_contabil || atual.lancamento_financeiro;
+      atual.lancamento_financeiro_em = pagamento.data_lancamento;
+    }
+  }
+  const atualizacoesFatura = [...porFatura.values()].filter((item) => item.lancamento_financeiro);
+  if (!atualizacoesFatura.length) return state;
+
+  for (let inicio = 0; inicio < atualizacoesFatura.length; inicio += 200) {
+    const lote = atualizacoesFatura.slice(inicio, inicio + 200);
+    const { error } = await client.from('faturas').upsert(lote, { onConflict: 'id' });
+    if (error) throw new Error(`Erro ao marcar faturas lancadas no financeiro: ${error.message}`);
+    onProgress?.({ carregados: Math.min(inicio + 200, atualizacoesFatura.length), total: atualizacoesFatura.length });
+  }
+
+  const porFaturaFinal = new Map(atualizacoesFatura.map((item) => [item.id, item]));
+  return {
+    ...state,
+    faturas: state.faturas.map((fatura) => porFaturaFinal.has(fatura.id) ? { ...fatura, ...porFaturaFinal.get(fatura.id) } : fatura),
+  };
+}
+
 async function paginarTudo(client, table, select, onProgress) {
   const linhas = [];
   const PAGE = 1000;
@@ -736,6 +876,246 @@ export async function detectarCanaisFaturas(state, onProgress) {
     faturas: state.faturas.map((fatura) => canalPorFatura.has(fatura.id) ? { ...fatura, canal: canalPorFatura.get(fatura.id) } : fatura),
   };
   return { state: writeLocal(next), atualizadas: atualizacoes.length };
+}
+
+// --- Protocolo Financeiro (demanda 4.40A) ---------------------------------
+
+function normalizarTexto(valor) {
+  return String(valor || '').trim().toUpperCase();
+}
+
+// Busca o cadastro de dados bancarios da transportadora (por CNPJ, com
+// fallback pelo nome). Retorna a conta principal e a lista completa, para o
+// auditor poder trocar de conta quando houver mais de uma cadastrada.
+export async function buscarDadosBancariosTransportadora(transportadora, cnpj) {
+  if (!isSupabaseConfigured()) return { principal: null, contas: [] };
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from('transportadora_dados_bancarios')
+    .select('*')
+    .eq('ativo', true)
+    .order('principal', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (error) return { principal: null, contas: [] };
+  const cnpjAlvo = normalizarTexto(cnpj).replace(/\D/g, '');
+  const nomeAlvo = normalizarTexto(transportadora);
+  const contas = (data || []).filter((item) => {
+    const itemCnpj = normalizarTexto(item.cnpj).replace(/\D/g, '');
+    if (cnpjAlvo && itemCnpj) return itemCnpj === cnpjAlvo;
+    return normalizarTexto(item.transportadora) === nomeAlvo;
+  });
+  return { principal: contas.find((item) => item.principal) || contas[0] || null, contas };
+}
+
+export async function salvarDadosBancariosTransportadora(payload) {
+  if (!isSupabaseConfigured()) throw new Error('Cadastro de dados bancarios disponivel apenas com o Supabase configurado.');
+  const registro = { id: payload.id || uid('banc'), updated_at: new Date().toISOString(), ...payload };
+  await safeUpsert('transportadora_dados_bancarios', registro);
+  return registro;
+}
+
+export async function listarDadosBancariosTransportadoras() {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from('transportadora_dados_bancarios')
+    .select('*')
+    .order('transportadora')
+    .order('principal', { ascending: false });
+  if (error) throw new Error(`Erro ao carregar dados bancarios: ${error.message}`);
+  return data || [];
+}
+
+export async function inativarDadosBancariosTransportadora(id) {
+  if (!isSupabaseConfigured()) throw new Error('Disponivel apenas com o Supabase configurado.');
+  await safeUpsert('transportadora_dados_bancarios', { id, ativo: false, updated_at: new Date().toISOString() });
+}
+
+// Importacao em massa da planilha de dados bancarios (cadastro inicial ou
+// atualizacao). Faz upsert por CNPJ quando disponivel; senao, casa pelo nome
+// normalizado da transportadora. Cada transportadora fica com no maximo um
+// registro "principal" - se ja existir cadastro ativo, a importacao atualiza
+// os dados em vez de duplicar.
+export async function importarDadosBancariosTransportadoras(registros = [], usuario = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Importacao disponivel apenas com o Supabase configurado.');
+  if (!registros.length) return { importados: 0, atualizados: 0 };
+  const existentes = await listarDadosBancariosTransportadoras();
+  const porCnpj = new Map();
+  const porNome = new Map();
+  for (const item of existentes) {
+    const cnpjNorm = normalizarTexto(item.cnpj).replace(/\D/g, '');
+    if (cnpjNorm) porCnpj.set(cnpjNorm, item);
+    porNome.set(normalizarTexto(item.transportadora), item);
+  }
+
+  let importados = 0;
+  let atualizados = 0;
+  const payloads = [];
+  for (const registro of registros) {
+    const cnpjNorm = normalizarTexto(registro.cnpj).replace(/\D/g, '');
+    const existente = (cnpjNorm && porCnpj.get(cnpjNorm)) || porNome.get(normalizarTexto(registro.transportadora));
+    const agora = new Date().toISOString();
+    if (existente) {
+      atualizados += 1;
+      payloads.push({ ...existente, ...registro, id: existente.id, atualizado_por: usuario.nome || 'Importacao', updated_at: agora });
+    } else {
+      importados += 1;
+      payloads.push({ id: uid('banc'), ...registro, criado_por: usuario.nome || 'Importacao', atualizado_por: usuario.nome || 'Importacao', created_at: agora, updated_at: agora });
+    }
+  }
+  await safeUpsert('transportadora_dados_bancarios', payloads);
+  return { importados, atualizados };
+}
+
+export async function listarCentrosCusto() {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from('financeiro_centros_custo')
+    .select('*')
+    .eq('ativo', true)
+    .order('codigo');
+  if (error) return [];
+  return data || [];
+}
+
+// Fatura ja protocolada e ativa (evita duplicidade acidental - secao 17).
+export async function buscarProtocoloAtivoPorFatura(faturaId) {
+  if (!isSupabaseConfigured() || !faturaId) return null;
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from('financeiro_protocolos')
+    .select('*')
+    .contains('fatura_ids', JSON.stringify([faturaId]))
+    .eq('ativo', true)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error || !data?.length) return null;
+  return data[0];
+}
+
+export async function listarHistoricoProtocoloFinanceiro(protocoloId) {
+  if (!isSupabaseConfigured() || !protocoloId) return [];
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from('financeiro_protocolo_historico')
+    .select('*')
+    .eq('protocolo_id', protocoloId)
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data || [];
+}
+
+// Cria o protocolo financeiro a partir da tela de conferencia da Auditoria de
+// Fretes: grava o protocolo (financeiro_protocolos, ja usado pela demanda
+// 4.40), os anexos de lancamento manual e o historico de criacao, atualiza a
+// fatura para ENVIADA_AO_FINANCEIRO e registra o evento no historico da
+// fatura. dados ja deve ter passado por validarProtocoloFinanceiro().
+export async function enviarFaturaParaProtocolo(state, fatura, dados, usuario = {}) {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Envio para Protocolo Financeiro disponivel apenas com o Supabase configurado.');
+  }
+  const ativo = await buscarProtocoloAtivoPorFatura(fatura.id);
+  if (ativo && !dados.substituirProtocoloId) {
+    const erro = new Error('Esta fatura ja possui protocolo financeiro.');
+    erro.protocoloExistente = ativo;
+    throw erro;
+  }
+
+  const montar = (protocolo) => ({
+    id: uid('fin'),
+    protocolo,
+    canal: 'PROTOCOLO_FINANCEIRO',
+    fatura_ids: [fatura.id],
+    numero_fatura: fatura.numero_fatura,
+    transportadora: fatura.transportadora,
+    cnpj_transportadora: fatura.cnpj_transportadora,
+    vencimento: fatura.data_vencimento,
+    valor: Number(dados.valor_real_a_pagar || 0),
+    valor_fatura_original: Number(dados.valor_fatura_original || 0),
+    desconto_automatico: Number(dados.desconto_automatico || 0),
+    desconto_manual: Number(dados.desconto_manual || 0),
+    desconto_manual_justificativa: dados.desconto_manual_justificativa || null,
+    desconto_total: Number(dados.desconto_total || 0),
+    valor_real_a_pagar: Number(dados.valor_real_a_pagar || 0),
+    partida: dados.partida || null,
+    valor_cobranca_processada: dados.valor_cobranca_processada != null ? Number(dados.valor_cobranca_processada) : null,
+    valor_lancamento_manual: dados.valor_lancamento_manual != null ? Number(dados.valor_lancamento_manual) : null,
+    centro_custo_codigo: dados.centro_custo_codigo || null,
+    centro_custo_descricao: dados.centro_custo_descricao || null,
+    tipo_envio: dados.tipo_envio,
+    status_fatura_protocolo: dados.status_fatura_protocolo,
+    dados_bancarios: dados.dados_bancarios || null,
+    dados_bancarios_id: dados.dados_bancarios?.id || null,
+    dados_bancarios_divergentes: !!dados.dados_bancarios_divergentes,
+    composicao_descontos: dados.composicao_descontos || [],
+    observacoes: dados.observacoes || null,
+    responsavel_id: dados.responsavel_id || null,
+    responsavel_user_id: dados.responsavel_id || null,
+    responsavel_nome: dados.responsavel_nome || '',
+    lote: dados.lote || null,
+    ativo: true,
+    protocolo_anterior_id: dados.substituirProtocoloId || null,
+    criado_por_id: usuario.id || '',
+    criado_por_nome: usuario.nome || '',
+    status: 'ENVIADO',
+    enviado_em: new Date().toISOString(),
+  });
+
+  const payload = await salvarComProtocoloUnico('financeiro_protocolos', montar, 'FIN', state.protocolos || []);
+
+  if (ativo && dados.substituirProtocoloId) {
+    await safeUpsert('financeiro_protocolos', { id: ativo.id, ativo: false, updated_at: new Date().toISOString() });
+  }
+
+  if (dados.anexos?.length) {
+    const anexos = dados.anexos.map((anexo) => ({
+      id: uid('fin-anexo'),
+      protocolo_id: payload.id,
+      tipo: 'LANCAMENTO_MANUAL',
+      nome_arquivo: anexo.nome,
+      url: anexo.url || null,
+      tamanho: anexo.tamanho || null,
+      enviado_por_id: usuario.id || '',
+      enviado_por_nome: usuario.nome || '',
+      enviado_em: new Date().toISOString(),
+    }));
+    await safeUpsert('financeiro_protocolo_anexos', anexos);
+  }
+
+  const eventoProtocolo = {
+    id: uid('fin-prot-hist'),
+    protocolo_id: payload.id,
+    acao: 'PROTOCOLO_ENVIADO',
+    descricao: `Protocolo ${payload.protocolo} enviado para o Financeiro. Valor real a pagar ${Number(payload.valor_real_a_pagar || 0).toFixed(2)}.`,
+    dados: {
+      status_fatura_protocolo: payload.status_fatura_protocolo,
+      desconto_total: payload.desconto_total,
+      centro_custo_codigo: payload.centro_custo_codigo,
+      partida: payload.partida,
+    },
+    usuario_id: usuario.id || '',
+    usuario_nome: usuario.nome || '',
+    created_at: new Date().toISOString(),
+  };
+  await inserirHistorico('financeiro_protocolo_historico', eventoProtocolo);
+
+  const faturaAtualizada = {
+    ...fatura,
+    status: 'ENVIADA_AO_FINANCEIRO',
+    canal_envio_financeiro: 'PROTOCOLO_FINANCEIRO',
+    protocolo_financeiro_id: payload.id,
+  };
+  const proximoEstado = await atualizarFaturaAuditoria({ ...state, protocolos: [payload, ...(state.protocolos || [])] }, faturaAtualizada, {
+    acao: 'ENVIADA_AO_FINANCEIRO',
+    status_anterior: fatura.status,
+    status_novo: 'ENVIADA_AO_FINANCEIRO',
+    descricao: `Enviada para Protocolo Financeiro (${payload.protocolo}).`,
+    usuario_nome: usuario.nome || 'Usuario local',
+    usuario_email: usuario.email || '',
+  });
+
+  return { state: proximoEstado, protocolo: payload };
 }
 
 export function restaurarDemonstracaoAuditoria() {
