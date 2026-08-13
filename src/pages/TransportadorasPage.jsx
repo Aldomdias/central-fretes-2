@@ -84,6 +84,7 @@ function useVinculosEAuditores() {
       transportadora: nomeTransportadora,
       auditor_nome: auditorNome,
       auditor_email: existente?.auditor_email || '',
+      cnpj_transportadora: existente?.cnpj_transportadora || null,
     };
     await salvarCarteiraAuditoria({ carteiras: carteirasRaw || [] }, carteira);
     setCarteirasRaw((prev) => {
@@ -96,15 +97,44 @@ function useVinculosEAuditores() {
     });
     // Sem isso, faturas ja existentes dessa transportadora ficavam presas em
     // "SEM AUDITOR DEFINIDO" mesmo depois de atribuir o auditor aqui — só a
-    // carteira (auditoria_carteiras) era gravada, as faturas nao.
+    // carteira (auditoria_carteiras) era gravada, as faturas nao. Casa
+    // primeiro por CNPJ (mais confiavel), so cai pro nome+vinculo se a
+    // carteira nao tiver CNPJ cadastrado.
     const mapaVinculos = criarMapaVinculosTransportadoras(vinculosRaw || []);
     const chaveAlvo = normalizarChave(nomeTransportadora);
     await propagarAuditorParaFaturas({
       auditorNome,
       auditorEmail: carteira.auditor_email,
       atribuidoPor: carregarSessao()?.nome || 'Gestao',
+      cnpjTransportadora: carteira.cnpj_transportadora,
       matchesTransportadora: (nomeFatura) => normalizarChave(aplicarVinculoTransportadora(nomeFatura, mapaVinculos)) === chaveAlvo,
     });
+  }
+
+  // Corrige o atraso: carteiras atribuidas antes de uma fatura existir (ou
+  // atribuidas fora desta tela) nunca propagam o auditor pra fatura, que
+  // fica presa em "SEM AUDITOR DEFINIDO" mesmo com a carteira certa. Roda a
+  // mesma propagacao de salvarAuditor pra todas as carteiras ativas de uma vez.
+  async function repropagarTodosAuditores(onProgress) {
+    const mapaVinculos = criarMapaVinculosTransportadoras(vinculosRaw || []);
+    const carteirasComAuditor = (carteirasRaw || []).filter((c) => c.ativo !== false && c.auditor_nome);
+    const usuario = carregarSessao()?.nome || 'Gestao';
+    let total = 0;
+    for (let i = 0; i < carteirasComAuditor.length; i += 1) {
+      const carteira = carteirasComAuditor[i];
+      const chaveAlvo = normalizarChave(carteira.transportadora);
+      onProgress?.({ carregados: i + 1, total: carteirasComAuditor.length, transportadora: carteira.transportadora });
+      // eslint-disable-next-line no-await-in-loop
+      const resultado = await propagarAuditorParaFaturas({
+        auditorNome: carteira.auditor_nome,
+        auditorEmail: carteira.auditor_email || '',
+        atribuidoPor: usuario,
+        cnpjTransportadora: carteira.cnpj_transportadora,
+        matchesTransportadora: (nomeFatura) => normalizarChave(aplicarVinculoTransportadora(nomeFatura, mapaVinculos)) === chaveAlvo,
+      });
+      total += resultado.atualizadas || 0;
+    }
+    return { carteiras: carteirasComAuditor.length, faturasAtualizadas: total };
   }
 
   return {
@@ -118,6 +148,7 @@ function useVinculosEAuditores() {
     recarregarVinculos,
     adicionarVinculo,
     removerVinculo,
+    repropagarTodosAuditores,
   };
 }
 
@@ -545,14 +576,14 @@ function OrigemModal({ open, initialValue, onSave, onClose }) {
     <Modal open={open} title={initialValue?.id ? 'Editar Origem' : 'Nova Origem'} onClose={onClose}>
       <div className="form-grid three">
         <div className="field"><label>Cidade</label><input value={form.cidade} onChange={(e) => setForm((f) => ({ ...f, cidade: e.target.value }))} /></div>
-        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro || ''} inputMode="numeric" placeholder="Ex.: 4201" onChange={(e) => setForm((f) => ({ ...f, codigoCentro: String(e.target.value || '').replace(/\D/g, '') }))} /></div>
+        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro || ''} placeholder="Ex.: 4201" onChange={(e) => setForm((f) => ({ ...f, codigoCentro: String(e.target.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '') }))} /></div>
         <div className="field"><label>CNPJ da origem *</label><input value={formatarCnpj(form.cnpj)} maxLength={18} placeholder="00.000.000/0000-00" onChange={(e) => { const cnpj = normalizarCnpj(e.target.value); setForm((f) => ({ ...f, cnpj, cnpjRaiz: obterRaizCnpj(cnpj) })); }} /></div>
         <div className="field"><label>Raiz do CNPJ</label><input value={obterRaizCnpj(form.cnpj)} readOnly placeholder="Preenchida automaticamente" /></div>
         <div className="field"><label>Canais</label><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{CANAIS_DISPONIVEIS.map((canal) => <label key={canal} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}><input type="checkbox" checked={selecionados.includes(canal)} onChange={() => toggleCanal(canal)} />{canal}</label>)}</div></div>
         <div className="field"><label>Status</label><select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}><option>Ativa</option><option>Inativa</option></select></div>
       </div>
       {!cnpjPreenchidoValido(form.cnpj) ? <div className="mini-feedback info top-space">Informe o CNPJ completo da filial de origem.</div> : null}
-      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave({ ...form, codigoCentro: String(form.codigoCentro || '').replace(/\D/g, ''), cnpj: normalizarCnpj(form.cnpj), cnpjRaiz: obterRaizCnpj(form.cnpj), canal: canalOrigemValor(selecionados) })} disabled={!selecionados.length || !String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)}>Salvar</button></div>
+      <div className="actions-right gap-row top-space"><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={() => onSave({ ...form, codigoCentro: String(form.codigoCentro || '').toUpperCase().replace(/[^A-Z0-9]/g, ''), cnpj: normalizarCnpj(form.cnpj), cnpjRaiz: obterRaizCnpj(form.cnpj), canal: canalOrigemValor(selecionados) })} disabled={!selecionados.length || !String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)}>Salvar</button></div>
     </Modal>
   );
 }
@@ -1097,7 +1128,25 @@ function TransportadorasList({ items, onOpen, store }) {
   const [validacaoFiltro, setValidacaoFiltro] = useState('');
   const [painelValidacaoOpen, setPainelValidacaoOpen] = useState(false);
   const [historicoOpen, setHistoricoOpen] = useState(false);
-  const { vinculosSet, auditoresMap } = useVinculosEAuditores();
+  const { vinculosSet, auditoresMap, repropagarTodosAuditores } = useVinculosEAuditores();
+  const [repropagando, setRepropagando] = useState(false);
+  const [progressoRepropagacao, setProgressoRepropagacao] = useState(null);
+  const [feedbackRepropagacao, setFeedbackRepropagacao] = useState('');
+
+  const repropagarAuditores = async () => {
+    setRepropagando(true);
+    setFeedbackRepropagacao('');
+    setProgressoRepropagacao(null);
+    try {
+      const resultado = await repropagarTodosAuditores((progresso) => setProgressoRepropagacao(progresso));
+      setFeedbackRepropagacao(`${resultado.faturasAtualizadas} fatura(s) receberam auditor a partir de ${resultado.carteiras} carteira(s) ativa(s).`);
+    } catch (error) {
+      setFeedbackRepropagacao(`Erro: ${error.message || error}`);
+    } finally {
+      setRepropagando(false);
+      setProgressoRepropagacao(null);
+    }
+  };
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pagina, setPagina] = useState(1);
@@ -1226,9 +1275,20 @@ function TransportadorasList({ items, onOpen, store }) {
           }}>Recarregar visíveis</button>
           <button className="btn-secondary" onClick={() => setPainelValidacaoOpen(true)}>📊 Painel de validação</button>
           <button className="btn-secondary" onClick={() => setHistoricoOpen(true)}>🕘 Histórico de alterações</button>
+          <button
+            className="btn-secondary"
+            disabled={repropagando}
+            onClick={repropagarAuditores}
+            title="Faturas em aberto sem auditor definido ficam assim quando a carteira foi atribuida depois da fatura existir (ou fora desta tela). Reaplica o auditor de cada carteira ativa nas faturas que ainda estao sem auditor."
+          >
+            {repropagando
+              ? `Repropagando... ${progressoRepropagacao ? `${progressoRepropagacao.carregados}/${progressoRepropagacao.total}` : ''}`
+              : '🔁 Repropagar auditores pendentes'}
+          </button>
           <button className="btn-secondary" onClick={() => { setEditing(null); setModalOpen(true); }}>＋ Nova Transportadora</button>
         </div>
       </div>
+      {feedbackRepropagacao && <div className="hint-box top-space compact">{feedbackRepropagacao}</div>}
 
       <div className="table-card filters-card">
         <div className="filters-header">
@@ -1839,7 +1899,7 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
 
   const salvar = () => {
     if (!String(form.cidade || '').trim() || !String(form.codigoCentro || '').trim() || !cnpjPreenchidoValido(form.cnpj)) return;
-    store.salvarOrigem(transportadoraId, { ...origem, cidade: String(form.cidade).trim(), codigoCentro: String(form.codigoCentro).replace(/\D/g, ''), cnpj: normalizarCnpj(form.cnpj), cnpjRaiz: obterRaizCnpj(form.cnpj), status: form.status });
+    store.salvarOrigem(transportadoraId, { ...origem, cidade: String(form.cidade).trim(), codigoCentro: String(form.codigoCentro).toUpperCase().replace(/[^A-Z0-9]/g, ''), cnpj: normalizarCnpj(form.cnpj), cnpjRaiz: obterRaizCnpj(form.cnpj), status: form.status });
     setFeedback('Cadastro atualizado. Volte para a transportadora e clique em “Salvar alterações” para gravar no Supabase.');
   };
 
@@ -1848,7 +1908,7 @@ function CadastroOrigemTab({ transportadoraId, origem, store }) {
       <div className="tab-panel-header"><p>Identificação da filial de origem usada nos vínculos por CNPJ.</p></div>
       <div className="form-grid three">
         <div className="field"><label>Cidade *</label><input value={form.cidade} onChange={(e) => { setForm((prev) => ({ ...prev, cidade: e.target.value })); setFeedback(''); }} /></div>
-        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro} inputMode="numeric" placeholder="Ex.: 4201" onChange={(e) => { setForm((prev) => ({ ...prev, codigoCentro: String(e.target.value || '').replace(/\D/g, '') })); setFeedback(''); }} /></div>
+        <div className="field"><label>Centro / CD *</label><input value={form.codigoCentro} placeholder="Ex.: 4201" onChange={(e) => { setForm((prev) => ({ ...prev, codigoCentro: String(e.target.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '') })); setFeedback(''); }} /></div>
         <div className="field"><label>CNPJ da origem *</label><input value={formatarCnpj(form.cnpj)} maxLength={18} placeholder="00.000.000/0000-00" onChange={(e) => { setForm((prev) => ({ ...prev, cnpj: normalizarCnpj(e.target.value) })); setFeedback(''); }} /></div>
         <div className="field"><label>Raiz do CNPJ</label><input value={obterRaizCnpj(form.cnpj)} readOnly placeholder="Preenchida automaticamente" /></div>
         <div className="field"><label>Status</label><select value={form.status} onChange={(e) => { setForm((prev) => ({ ...prev, status: e.target.value })); setFeedback(''); }}><option>Ativa</option><option>Inativa</option></select></div>
