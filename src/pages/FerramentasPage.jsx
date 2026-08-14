@@ -4,6 +4,7 @@ import { ImportarFluxoCard } from './LotacaoOperacaoPage';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
 import { carregarSessao } from '../utils/authLocal';
+import { obterStatusManutencao, ativarManutencao, desativarManutencao } from '../services/manutencaoService';
 
 function normalizarNomeTransp(nome = '') {
   return String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -716,6 +717,36 @@ export default function FerramentasPage({ transportadoras = [] }) {
   const [recalculandoCanal, setRecalculandoCanal] = useState(false);
   const [baseFluxoLotacao, setBaseFluxoLotacao] = useState(() => carregarFluxoCargasLotacao());
   const resumoLotacao = useMemo(() => resumirFluxoCargas(baseFluxoLotacao), [baseFluxoLotacao]);
+  const [manutencaoStatus, setManutencaoStatus] = useState(null);
+  const [manutencaoMensagem, setManutencaoMensagem] = useState('Estamos em manutenção rápida. Volte em alguns minutos.');
+  const [salvandoManutencao, setSalvandoManutencao] = useState(false);
+
+  useEffect(() => {
+    if (sessao?.perfil !== 'GESTAO') return;
+    obterStatusManutencao().then((status) => {
+      setManutencaoStatus(status);
+      if (status?.mensagem) setManutencaoMensagem(status.mensagem);
+    });
+  }, [sessao?.perfil]);
+
+  async function alternarManutencao(ativar) {
+    setSalvandoManutencao(true);
+    setErro('');
+    try {
+      if (ativar) {
+        await ativarManutencao(sessao, manutencaoMensagem);
+      } else {
+        await desativarManutencao();
+      }
+      const status = await obterStatusManutencao();
+      setManutencaoStatus(status);
+      setMensagem(ativar ? 'Modo manutenção ativado.' : 'Modo manutenção desativado.');
+    } catch (error) {
+      setErro(error.message || 'Erro ao alterar modo manutenção.');
+    } finally {
+      setSalvandoManutencao(false);
+    }
+  }
 
   // Vários pares transportadora/canal têm o mesmo nome normalizado com grafias
   // diferentes (ex.: "FL BRASIL HOLDING," vs "FL BRASIL HOLDING") — usar só o
@@ -1309,6 +1340,42 @@ export default function FerramentasPage({ transportadoras = [] }) {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem ? <div className="sim-alert info">{mensagem}</div> : null}
+
+      {sessao?.perfil === 'GESTAO' && (
+        <div className="panel-card" style={{padding:0,overflow:'hidden'}}>
+          <button type="button" onClick={() => toggleAba('manutencao')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='manutencao'?'1px solid var(--border-soft)':'none'}}>
+            <div>
+              <div className="panel-title" style={{margin:0}}>
+                🛠️ Modo manutenção {manutencaoStatus?.ativo ? <span style={{color:'#f59e0b'}}>● ATIVO</span> : null}
+              </div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Bloqueia o sistema pra todo mundo, menos você, enquanto você mexe no Supabase</div>
+            </div>
+            <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='manutencao'?'△':'▽'}</span>
+          </button>
+          {abaAberta === 'manutencao' && (
+            <div style={{padding:'12px 20px 20px',display:'flex',flexDirection:'column',gap:10}}>
+              <textarea
+                value={manutencaoMensagem}
+                onChange={(e) => setManutencaoMensagem(e.target.value)}
+                rows={2}
+                style={{width:'100%',padding:8,borderRadius:6,border:'1px solid var(--border-soft)',background:'transparent',color:'inherit'}}
+                placeholder="Mensagem exibida pros usuários"
+              />
+              <div style={{display:'flex',gap:8}}>
+                {manutencaoStatus?.ativo ? (
+                  <button type="button" disabled={salvandoManutencao} onClick={() => alternarManutencao(false)} className="btn" style={{background:'#16a34a',color:'#fff'}}>
+                    {salvandoManutencao ? 'Desativando...' : 'Desativar manutenção'}
+                  </button>
+                ) : (
+                  <button type="button" disabled={salvandoManutencao} onClick={() => alternarManutencao(true)} className="btn" style={{background:'#dc2626',color:'#fff'}}>
+                    {salvandoManutencao ? 'Ativando...' : 'Ativar manutenção'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {sessao?.perfil === 'GESTAO' && (
         <div className="panel-card" style={{padding:0,overflow:'hidden'}}>

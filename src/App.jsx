@@ -40,10 +40,12 @@ import AuditoriaEcommercePage from './pages/AuditoriaEcommercePage';
 import ImportarDescontosObtidosPage from './pages/ImportarDescontosObtidosPage';
 import PainelDescontosObtidosPage from './pages/PainelDescontosObtidosPage';
 import { useFreteStore } from './data/store';
-import { carregarSessao, MODULOS_SISTEMA, sairLocal, usuarioTemAcesso } from './utils/authLocal';
+import { carregarSessao, MODULOS_SISTEMA, sairLocal, usuarioPodeAdministrarUsuarios, usuarioTemAcesso } from './utils/authLocal';
 import { lerEstadoUrlNegociacao, sincronizarPaginaAppNaUrl } from './utils/negociacaoUrlState';
 import { entrarPresenca, sairPresenca } from './services/presencaService';
 import { sairSupabaseAuth } from './services/biometriaService';
+import { assinarManutencao } from './services/manutencaoService';
+import ManutencaoOverlay from './components/ManutencaoOverlay';
 
 const PAGINAS_PERMITIDAS = [
   'dashboard', 'conceito-app', 'simulador', 'tabelas-negociacao', 'cte', 'cte-origem-destino', 'auditoria-cte', 'tracking',
@@ -62,6 +64,7 @@ function primeiraPaginaPermitida(usuario) {
 
 export default function App() {
   const [sessao, setSessao] = useState(() => carregarSessao());
+  const [manutencao, setManutencao] = useState(null);
   const store = useFreteStore(sessao);
   const [paginaAtual, setPaginaAtual] = useState('dashboard');
   const [sidebarRecolhida, setSidebarRecolhida] = useState(true);
@@ -95,6 +98,10 @@ export default function App() {
   useEffect(() => () => sairPresenca(), []);
 
   useEffect(() => {
+    return assinarManutencao(setManutencao);
+  }, []);
+
+  useEffect(() => {
     if (!sessao?.expiraEm) return undefined;
     const tempoRestante = new Date(sessao.expiraEm).getTime() - Date.now();
     if (!Number.isFinite(tempoRestante) || tempoRestante <= 0) {
@@ -110,6 +117,10 @@ export default function App() {
   }, [sessao?.expiraEm]);
 
   if (!sessao) return <LoginPage onLogin={setSessao} />;
+
+  if (manutencao?.ativo && !usuarioPodeAdministrarUsuarios(sessao)) {
+    return <ManutencaoOverlay mensagem={manutencao.mensagem} />;
+  }
 
   const mudarPagina = (pagina) => {
     if (!usuarioTemAcesso(sessao, pagina)) return;
