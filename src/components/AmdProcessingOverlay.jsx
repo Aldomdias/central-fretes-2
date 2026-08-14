@@ -20,6 +20,9 @@ export const ETAPA_LABEL_AUDITORIA = {
   carregando_resultado_salvo: 'Carregando resultado salvo',
   concluido: 'Concluído',
   salvando_pedidos_ecommerce: 'Salvando pedidos do marketplace',
+  mapeando_destinos_pedidos: 'Mapeando destinos dos pedidos',
+  coletando_pedidos_do_recorte: 'Coletando pedidos do recorte',
+  processando_origem: 'Processando origem',
 };
 
 export function rotuloEtapaAuditoria(progresso) {
@@ -42,11 +45,13 @@ export default function AmdProcessingOverlay({ ativo, progresso, mensagemRodape 
     ? Math.min(100, Math.round((carregados / total) * 100))
     : Math.min(90, 8 + Math.round(Math.log10(carregados + 1) * 15));
   const etapa = rotuloEtapaAuditoria(progresso);
-  const mensagem = determinada
-    ? `${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')}`
-    : carregados > 0
-      ? `${carregados.toLocaleString('pt-BR')} registro(s) carregado(s)...`
-      : 'Aguardando resposta do banco...';
+  const mensagem = progresso?.etapa === 'processando_origem'
+    ? `Origem ${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')}${progresso?.origemAtual ? ` — ${progresso.origemAtual}` : ''}${progresso?.pedidosNaOrigem ? ` (${progresso.pedidosNaOrigem.toLocaleString('pt-BR')} pedido(s) nessa origem)` : ''}`
+    : determinada
+      ? `${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')}`
+      : carregados > 0
+        ? `${carregados.toLocaleString('pt-BR')} registro(s) carregado(s)...`
+        : 'Aguardando resposta do banco...';
 
   return (
     <div className="brand-processing-overlay" role="status" aria-live="polite">

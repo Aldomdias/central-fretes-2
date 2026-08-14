@@ -7,11 +7,17 @@ import {
   listarEcommerceOrderSnapshot,
   diagnosticarResimulacaoEcommerce,
   resimularEcommerceEmLotes,
-  resimularEcommercePorIds,
+  carregarMalhaParaResimulacaoEcommerce,
+  assinaturaMalhaResimulacaoEcommerce,
+  processarResimulacaoPorOrigemEcommerce,
+  processarUmaOrigemEcommerce,
+  mapearOrigensParaResimulacaoEcommerce,
+  finalizarResimulacaoPorOrigemEcommerce,
   listarOpcoesFiltroEcommerce,
   contarElegiveisResimulacaoEcommerce,
   contarJaResimuladosParaFiltro,
   consultarTabelaOrigemDb,
+  carregarMapaCdCentros,
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
 
@@ -78,8 +84,15 @@ const COLUNAS_TABELA = [
   { chave: 'sim_prazo_ideal', label: 'Prazo ideal (dias)', tipo: 'numero2' },
   { chave: 'sim_diferenca_vs_cte', label: 'Dif. Ideal x CT-e real', tipo: 'moeda' },
   { chave: 'sim_mesma_transportadora', label: 'Mesma transp.?', tipo: 'bool' },
+  { chave: 'cds_com_saldo_venda', label: 'CDs c/ Saldo', tipo: 'texto' },
   { chave: 'sim_candidatos', label: 'Opcoes simuladas', tipo: 'acao' },
 ];
+
+function renderCdsComSaldo(valor, mapaCdCentros) {
+  const codigos = String(valor || '').split(',').map((c) => c.trim()).filter(Boolean);
+  if (!codigos.length) return '-';
+  return codigos.map((codigo) => `${codigo} (${mapaCdCentros.get(codigo) || '?'})`).join(', ');
+}
 
 function FiltroColuna({ coluna, valoresUnicos, selecionados, onChange }) {
   const [aberto, setAberto] = useState(false);
@@ -201,12 +214,24 @@ export default function AuditoriaEcommercePage() {
   const [linhas, setLinhas] = useState([]);
   const [filtros, setFiltros] = useState({});
   const [filtrosServidor, setFiltrosServidor] = useState({
-    dataInicio: '', dataFim: '', cruzamentoStatus: '', simStatus: '', divergenciaPeso: false, canal: '', uf: '', possuiCampanha: '',
+    dataInicio: '', dataFim: '', cruzamentoStatus: '', simStatus: '', divergenciaPeso: false, canal: '', uf: '', possuiCampanha: '', cdCidade: '',
   });
   const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [] });
+  const [cdCentros, setCdCentros] = useState({ mapa: new Map(), cidades: [] });
   const [pesoBase, setPesoBase] = useState('cotado');
   const [considerarPrazo, setConsiderarPrazo] = useState(true);
-  const [restringirCds, setRestringirCds] = useState(true);
+  const [restringirCds, setRestringirCds] = useState(false);
+  const [usarSaldoDia, setUsarSaldoDia] = useState(true);
+  const [incluirSemCruzamento, setIncluirSemCruzamento] = useState(false);
+  const [autoRetry, setAutoRetry] = useState(false);
+  const [avisoRetry, setAvisoRetry] = useState('');
+  const [malhaPronta, setMalhaPronta] = useState(null);
+  const [carregandoMalha, setCarregandoMalha] = useState(false);
+  const [origensMapeadas, setOrigensMapeadas] = useState(null);
+  const [mapeandoOrigens, setMapeandoOrigens] = useState(false);
+  const [origemProcessandoAgora, setOrigemProcessandoAgora] = useState(null);
+  const [seguirAutomaticamente, setSeguirAutomaticamente] = useState(true);
+  const [forcarFechamentoParcial, setForcarFechamentoParcial] = useState(false);
   const [painelCandidatos, setPainelCandidatos] = useState(null);
   const [tabelaConsultada, setTabelaConsultada] = useState(null);
 
@@ -227,6 +252,9 @@ export default function AuditoriaEcommercePage() {
   const [contandoResumo, setContandoResumo] = useState(false);
 
   function filtrosParaQuery(f) {
+    const codigosDaCidade = f.cdCidade
+      ? [...cdCentros.mapa.entries()].filter(([, cidade]) => cidade === f.cdCidade).map(([codigo]) => codigo)
+      : null;
     return {
       dataInicio: f.dataInicio || null,
       dataFim: f.dataFim || null,
@@ -236,6 +264,7 @@ export default function AuditoriaEcommercePage() {
       canal: f.canal || null,
       uf: f.uf || null,
       possuiCampanha: f.possuiCampanha === '' ? null : f.possuiCampanha === 'true',
+      cdCodigos: codigosDaCidade,
     };
   }
 
@@ -249,7 +278,7 @@ export default function AuditoriaEcommercePage() {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const [diag, diagSim] = await Promise.all([
         diagnosticarEcommerceOrderSnapshot(filtrosAtuais),
-        diagnosticarResimulacaoEcommerce(filtrosAtuais),
+        diagnosticarResimulacaoEcommerce(filtrosAtuais, { incluirSemCruzamento }),
       ]);
       setDiagnostico(diag);
       setDiagnosticoSim(diagSim);
@@ -269,13 +298,14 @@ export default function AuditoriaEcommercePage() {
 
   useEffect(() => {
     listarOpcoesFiltroEcommerce().then(setOpcoesFiltro).catch(() => {});
+    carregarMapaCdCentros().then(setCdCentros).catch(() => {});
   }, []);
 
   useEffect(() => {
     atualizarDiagnostico();
     atualizarGrid();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtrosServidor]);
+  }, [filtrosServidor, incluirSemCruzamento]);
 
   async function importar() {
     if (!arquivo) {
@@ -315,7 +345,11 @@ export default function AuditoriaEcommercePage() {
     setCarregando(true);
     setErro('');
     setMensagem('');
-    const totalAlvo = Math.max((diagnostico.total || 0) - (diagnostico.cruzados || 0), 1);
+    // Busca o diagnostico na hora (nao usa o `diagnostico` do estado, que pode estar
+    // desatualizado - ex: pedidos resetados pra 'pendente' via SQL direto no banco,
+    // sem passar pela tela) - senao o alvo da barra de progresso fica errado.
+    const diagAtual = await diagnosticarEcommerceOrderSnapshot(filtrosParaQuery(filtrosServidor));
+    const totalAlvo = Math.max((diagAtual.total || 0) - (diagAtual.cruzados || 0), 1);
     setProgressoAmd({ etapa: 'cruzando_tracking', carregados: 0, total: totalAlvo });
     try {
       const resultado = await cruzarEcommerceComTrackingECte({
@@ -333,6 +367,196 @@ export default function AuditoriaEcommercePage() {
     }
   }
 
+  function assinaturaMalhaAtual(filtrosAtuais, refazerTudo = false) {
+    return assinaturaMalhaResimulacaoEcommerce({
+      filtros: filtrosAtuais,
+      refazerTudo,
+      incluirSemCruzamento,
+      usarSaldoDia,
+      cdsPermitidos: restringirCds ? CDS_RESTRICAO : [],
+    });
+  }
+
+  // Passo 1 (separado da simulacao): so baixa rotas/cotacoes/CDs pro recorte atual e guarda
+  // em memoria. Pensado pra nao precisar recarregar essa parte (a mais lenta e a que mais
+  // falha por timeout em recortes grandes) toda vez que algo der errado no meio do caminho.
+  async function carregarMalha() {
+    setErro('');
+    setMensagem('');
+    setAvisoRetry('');
+    setCarregandoMalha(true);
+    setProgressoAmd({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
+    try {
+      const filtrosAtuais = filtrosParaQuery(filtrosServidor);
+      const malha = await carregarMalhaParaResimulacaoEcommerce({
+        filtros: filtrosAtuais,
+        refazerTudo: false,
+        incluirSemCruzamento,
+        usarSaldoDia,
+        cdsPermitidos: restringirCds ? CDS_RESTRICAO : [],
+        onProgress: (evt) => setProgressoAmd(evt),
+      });
+      setMalhaPronta(malha);
+      setMensagem('Malha carregada e guardada. Agora pode clicar em "Resimular cenario ideal" quantas vezes precisar, sem baixar de novo.');
+    } catch (error) {
+      setErro(error.message || 'Erro ao carregar malha.');
+    } finally {
+      setCarregandoMalha(false);
+      setProgressoAmd({});
+    }
+  }
+
+  // Chama fn() de novo automaticamente se der erro (mesma logica do retry da resimulacao
+  // em lotes), esperando um pouco mais a cada tentativa. Generico pra reusar no fluxo por
+  // origem, que e retomavel por natureza (origens ja concluidas sao puladas de novo).
+  async function comRetryGenerico(fn, tentativasMax = 200) {
+    let tentativa = 0;
+    for (;;) {
+      try {
+        return await fn();
+      } catch (error) {
+        tentativa += 1;
+        console.error(`[AuditoriaEcommerce] erro (tentativa ${tentativa}):`, error);
+        if (tentativa >= tentativasMax) throw error;
+        const esperaMs = Math.min(5000 * tentativa, 60000);
+        setAvisoRetry(`⚠ Erro (tentativa ${tentativa}): ${error.message || 'erro desconhecido'}. Retomando automaticamente em ${Math.round(esperaMs / 1000)}s...`);
+        await new Promise((resolve) => setTimeout(resolve, esperaMs));
+        setAvisoRetry('');
+      }
+    }
+  }
+
+  // Fase 1 do fluxo por origem: processa um CD por vez (malha pequena, rapida), acumula
+  // os candidatos calculados em staging. Retomavel - origens ja concluidas sao puladas se
+  // chamar de novo (mesmos filtros/opcoes).
+  async function processarPorOrigem() {
+    setErro('');
+    setMensagem('');
+    setAvisoRetry('');
+    setCarregando(true);
+    setProgressoAmd({ etapa: 'mapeando_destinos_pedidos', carregados: 0, total: null });
+    try {
+      const filtrosAtuais = filtrosParaQuery(filtrosServidor);
+      const executar = () => processarResimulacaoPorOrigemEcommerce({
+        filtros: filtrosAtuais,
+        refazerTudo: false,
+        incluirSemCruzamento,
+        pesoBase,
+        onProgress: (evt) => setProgressoAmd(evt),
+      });
+      const resultado = await (autoRetry ? comRetryGenerico(executar) : executar());
+      setMensagem(`Origens processadas: ${formatarNumero(resultado.origensProcessadas)} de ${formatarNumero(resultado.totalOrigens)}. Agora clique em "Fechar resimulacao".`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao processar origens.');
+    } finally {
+      setCarregando(false);
+      setProgressoAmd({});
+      setAvisoRetry('');
+    }
+  }
+
+  // Levanta a lista de origens (CDs com saldo) do recorte atual, com quantidade de
+  // pedidos de cada uma, e mostra na tela antes de comecar - pra dar visibilidade real
+  // do que vai ser processado, em vez de uma caixa preta.
+  async function mapearOrigens() {
+    setErro('');
+    setMensagem('');
+    setMapeandoOrigens(true);
+    setProgressoAmd({ etapa: 'mapeando_destinos_pedidos', carregados: 0, total: null });
+    try {
+      const filtrosAtuais = filtrosParaQuery(filtrosServidor);
+      const { origens } = await mapearOrigensParaResimulacaoEcommerce({
+        filtros: filtrosAtuais,
+        refazerTudo: false,
+        incluirSemCruzamento,
+        pesoBase,
+        onProgress: (evt) => setProgressoAmd(evt),
+      });
+      setOrigensMapeadas(origens);
+      if (!origens.length) setMensagem('Nenhuma origem com pedido elegivel nesse recorte.');
+    } catch (error) {
+      setErro(error.message || 'Erro ao mapear origens.');
+    } finally {
+      setMapeandoOrigens(false);
+      setProgressoAmd({});
+    }
+  }
+
+  // Roda UMA origem da lista mapeada. Se "seguir automaticamente" estiver ligado, ao
+  // terminar (e marcar o check) segue sozinho pra proxima origem pendente da lista.
+  async function rodarOrigem(cidade, listaBase = origensMapeadas) {
+    setErro('');
+    setAvisoRetry('');
+    setOrigemProcessandoAgora(cidade);
+    setCarregando(true);
+    setProgressoAmd({ etapa: 'processando_origem', origemAtual: cidade, carregados: 0, total: null });
+    try {
+      const filtrosAtuais = filtrosParaQuery(filtrosServidor);
+      const executar = () => processarUmaOrigemEcommerce({
+        origemCidade: cidade,
+        filtros: filtrosAtuais,
+        refazerTudo: false,
+        incluirSemCruzamento,
+        pesoBase,
+        onProgress: (evt) => setProgressoAmd({ ...evt, origemAtual: cidade }),
+      });
+      const resultado = await (autoRetry ? comRetryGenerico(executar) : executar());
+      // Passa a lista atualizada explicitamente pra recursao (em vez de reler o estado
+      // do React) - senao a chamada seguinte enxergaria a lista antiga (closure obsoleta),
+      // achando que a origem que acabou de rodar ainda esta pendente.
+      const listaAtualizada = (listaBase || []).map((o) => (o.cidade === cidade ? { ...o, concluida: true, totalPedidosProcessados: resultado.totalPedidos } : o));
+      setOrigensMapeadas(listaAtualizada);
+      setMensagem(`Origem "${cidade}" concluida (${formatarNumero(resultado.totalPedidos)} pedido(s)).`);
+
+      if (seguirAutomaticamente) {
+        const proxima = listaAtualizada.find((o) => !o.concluida);
+        if (proxima) {
+          setCarregando(false);
+          await rodarOrigem(proxima.cidade, listaAtualizada);
+          return;
+        }
+      }
+    } catch (error) {
+      setErro(`Erro na origem "${cidade}": ${error.message || 'erro desconhecido'}`);
+    } finally {
+      setOrigemProcessandoAgora(null);
+      setCarregando(false);
+      setProgressoAmd({});
+      setAvisoRetry('');
+    }
+  }
+
+  // Fase 2: junta os candidatos acumulados por pedido e escolhe o vencedor, gravando o
+  // resultado final. So faz sentido depois que "Processar por origem" ja rodou.
+  async function fecharResimulacao() {
+    setErro('');
+    setMensagem('');
+    setCarregando(true);
+    setProgressoAmd({ etapa: 'salvando_resultados', carregados: 0, total: null });
+    try {
+      const filtrosAtuais = filtrosParaQuery(filtrosServidor);
+      const criterioB2c = considerarPrazo
+        ? { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 }
+        : { usarPonderadoB2c: false };
+      const resultado = await finalizarResimulacaoPorOrigemEcommerce({
+        filtros: filtrosAtuais,
+        refazerTudo: false,
+        incluirSemCruzamento,
+        criterioB2c,
+        pesoBase,
+        onProgress: (evt) => setProgressoAmd(evt),
+      });
+      setMensagem(`Resimulacao fechada. Processados: ${formatarNumero(resultado.totalProcessado)} - OK: ${formatarNumero(resultado.totalOk)}`);
+      await atualizarDiagnostico();
+      await atualizarGrid();
+    } catch (error) {
+      setErro(error.message || 'Erro ao fechar resimulacao.');
+    } finally {
+      setCarregando(false);
+      setProgressoAmd({});
+    }
+  }
+
   async function prepararResimulacao() {
     setErro('');
     setMensagem('');
@@ -340,8 +564,8 @@ export default function AuditoriaEcommercePage() {
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const [pendentes, jaFeitos] = await Promise.all([
-        contarElegiveisResimulacaoEcommerce(filtrosAtuais),
-        contarJaResimuladosParaFiltro(filtrosAtuais),
+        contarElegiveisResimulacaoEcommerce(filtrosAtuais, { incluirSemCruzamento }),
+        contarJaResimuladosParaFiltro(filtrosAtuais, { incluirSemCruzamento }),
       ]);
       setResumoResimulacao({
         origem: 'servidor',
@@ -352,6 +576,10 @@ export default function AuditoriaEcommercePage() {
         filtros: { ...filtrosServidor },
         pesoBase,
         cdsPermitidos: restringirCds ? CDS_RESTRICAO : [],
+        usarSaldoDia,
+        incluirSemCruzamento,
+        autoRetry,
+        assinaturaMalha: assinaturaMalhaAtual(filtrosAtuais, false),
       });
     } catch (error) {
       setErro(error.message || 'Erro ao contar pedidos para resimular.');
@@ -360,11 +588,26 @@ export default function AuditoriaEcommercePage() {
     }
   }
 
-  function prepararResimulacaoColuna() {
-    setErro('');
-    setMensagem('');
-    const idsElegiveis = linhasFiltradas.filter((row) => row.cruzamento_status === 'ok').map((row) => row.id);
-    setResumoResimulacao({ origem: 'coluna', count: idsElegiveis.length, ids: idsElegiveis, pesoBase, cdsPermitidos: restringirCds ? CDS_RESTRICAO : [] });
+  // Cada pedido processado ja fica salvo com sim_status='ok' no banco, entao chamar
+  // resimularEcommerceEmLotes de novo depois de um erro naturalmente continua so do que
+  // falta (nunca reprocessa o que ja foi feito). Aqui so automatiza esse "chamar de novo",
+  // pra poder deixar rodando sem supervisao (ex: durante a noite) sem precisar clicar de novo
+  // toda vez que cair um timeout/erro de rede.
+  async function resimularEmLotesComRetry(args, tentativasMax = 200) {
+    let tentativa = 0;
+    for (;;) {
+      try {
+        return await resimularEcommerceEmLotes(args);
+      } catch (error) {
+        tentativa += 1;
+        console.error(`[AuditoriaEcommerce] erro na resimulacao (tentativa ${tentativa}):`, error);
+        if (tentativa >= tentativasMax) throw error;
+        const esperaMs = Math.min(5000 * tentativa, 60000);
+        setAvisoRetry(`⚠ Erro (tentativa ${tentativa}): ${error.message || 'erro desconhecido'}. Retomando automaticamente em ${Math.round(esperaMs / 1000)}s...`);
+        await new Promise((resolve) => setTimeout(resolve, esperaMs));
+        setAvisoRetry('');
+      }
+    }
   }
 
   async function confirmarResimulacao() {
@@ -372,6 +615,7 @@ export default function AuditoriaEcommercePage() {
     setCarregando(true);
     setErro('');
     setMensagem('');
+    setAvisoRetry('');
     const resumo = resumoResimulacao;
     setResumoResimulacao(null);
     setProgressoAmd({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
@@ -381,19 +625,19 @@ export default function AuditoriaEcommercePage() {
       const criterioB2c = considerarPrazo
         ? { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 }
         : { usarPonderadoB2c: false };
-      const resultado = resumo.origem === 'coluna'
-        ? await resimularEcommercePorIds({
-          ids: resumo.ids,
+      // So reaproveita a malha ja baixada (botao "1. Carregar malha") se ela corresponde
+      // exatamente ao recorte/opcoes que vai rodar agora - senao deixa a funcao carregar
+      // do zero sozinha (fallback seguro, so mais lento).
+      const assinaturaNecessaria = assinaturaMalhaAtual(filtrosParaQuery(resumo.filtros), resumo.refazerTudo);
+      const malhaParaUsar = malhaPronta && malhaPronta.assinatura === assinaturaNecessaria ? malhaPronta : null;
+      const resultado = await (resumo.autoRetry ? resimularEmLotesComRetry : resimularEcommerceEmLotes)({
           criterioB2c,
+          incluirSemCruzamento: resumo.incluirSemCruzamento,
           pesoBase: resumo.pesoBase,
           cdsPermitidos: resumo.cdsPermitidos,
-          onProgress: (evt) => setProgressoAmd(evt),
-        })
-        : await resimularEcommerceEmLotes({
-          criterioB2c,
-          pesoBase: resumo.pesoBase,
-          cdsPermitidos: resumo.cdsPermitidos,
+          usarSaldoDia: resumo.usarSaldoDia,
           refazerTudo: resumo.refazerTudo,
+          malhaPronta: malhaParaUsar,
           totalAlvo: Math.max((resumo.refazerTudo ? resumo.pendentes + resumo.jaFeitos : resumo.pendentes) || 0, 1),
           filtros: filtrosParaQuery(resumo.filtros),
           onProgress: (evt) => setProgressoAmd(evt),
@@ -407,8 +651,14 @@ export default function AuditoriaEcommercePage() {
     } finally {
       setCarregando(false);
       setProgressoAmd({});
+      setAvisoRetry('');
     }
   }
+
+  const origensPendentesCount = useMemo(
+    () => (origensMapeadas ? origensMapeadas.filter((o) => !o.concluida).length : 0),
+    [origensMapeadas]
+  );
 
   const valoresUnicosPorColuna = useMemo(() => {
     const mapa = {};
@@ -444,7 +694,7 @@ export default function AuditoriaEcommercePage() {
 
       {erro ? <div className="sim-alert error">{erro}</div> : null}
       {mensagem && !carregando ? <div className="sim-alert info">{mensagem}</div> : null}
-      <AmdProcessingOverlay ativo={carregando} progresso={progressoAmd} mensagemRodape="Pode levar mais tempo em bases grandes." />
+      <AmdProcessingOverlay ativo={carregando || carregandoMalha} progresso={progressoAmd} mensagemRodape={avisoRetry || 'Pode levar mais tempo em bases grandes.'} />
 
       <section className="panel-card">
         <div className="section-row compact-top">
@@ -453,10 +703,84 @@ export default function AuditoriaEcommercePage() {
             <p>Suba o CSV exportado do marketplace (OrderSnapshotAnalytics). O envio faz upsert por numero de Pedido.</p>
           </div>
           <div className="actions-right gap-row">
-            <button className="btn-secondary" type="button" onClick={() => { atualizarDiagnostico(); atualizarGrid(); }} disabled={carregando}>Atualizar</button>
-            <button className="btn-primary" type="button" onClick={cruzar} disabled={carregando}>Cruzar Tracking + CT-e</button>
-            <button className="btn-primary" type="button" onClick={prepararResimulacao} disabled={carregando || contandoResumo}>
-              {contandoResumo ? 'Contando pedidos...' : 'Resimular cenario ideal'}
+            <button className="btn-secondary" type="button" onClick={() => { atualizarDiagnostico(); atualizarGrid(); }} disabled={carregando || carregandoMalha}>Atualizar</button>
+            <button className="btn-primary" type="button" onClick={cruzar} disabled={carregando || carregandoMalha}>Cruzar Tracking + CT-e</button>
+          </div>
+        </div>
+        <div className="section-row compact-top" style={{ marginTop: 10 }}>
+          <div>
+            <div className="panel-title">Resimular por origem (recomendado)</div>
+            <p className="compact">Mapeia os CDs com saldo do recorte e processa um por vez (carga pequena, resistente a timeout). Retomavel: origem ja concluida fica marcada e nao roda de novo.</p>
+          </div>
+          <div className="actions-right gap-row">
+            <button className="btn-secondary" type="button" onClick={mapearOrigens} disabled={carregando || carregandoMalha || mapeandoOrigens}>
+              {mapeandoOrigens ? 'Mapeando...' : origensMapeadas ? '1. Mapear origens (atualizar)' : '1. Mapear origens'}
+            </button>
+            <button
+              className="btn-primary"
+              type="button"
+              onClick={fecharResimulacao}
+              disabled={carregando || carregandoMalha || (origensPendentesCount > 0 && !forcarFechamentoParcial)}
+              title={origensPendentesCount > 0 && !forcarFechamentoParcial ? `Faltam ${origensPendentesCount} origem(ns) processar` : ''}
+            >
+              2. Fechar resimulacao
+            </button>
+          </div>
+        </div>
+
+        {origensMapeadas && origensPendentesCount > 0 ? (
+          <p className="compact" style={{ color: '#b45309', marginTop: 4 }}>
+            ⚠ Faltam {formatarNumero(origensPendentesCount)} origem(ns) processar. Fechar agora pode marcar pedidos como "sem_malha" so porque a origem certa deles ainda nao rodou.{' '}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 6 }}>
+              <input type="checkbox" checked={forcarFechamentoParcial} onChange={(e) => setForcarFechamentoParcial(e.target.checked)} />
+              Fechar mesmo assim (parcial)
+            </label>
+          </p>
+        ) : null}
+
+        {origensMapeadas && origensMapeadas.length ? (
+          <div style={{ marginTop: 8, border: '1px solid #e2e8f0', borderRadius: 8, padding: 10 }}>
+            <div className="section-row compact-top" style={{ marginBottom: 6 }}>
+              <p className="compact" style={{ margin: 0 }}>
+                <strong>{formatarNumero(origensMapeadas.filter((o) => o.concluida).length)}</strong> de <strong>{formatarNumero(origensMapeadas.length)}</strong> origens concluidas.
+              </p>
+              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
+                <input type="checkbox" checked={seguirAutomaticamente} onChange={(e) => setSeguirAutomaticamente(e.target.checked)} />
+                Seguir automaticamente pra proxima ao terminar
+              </label>
+            </div>
+            <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+              {origensMapeadas.map((o) => (
+                <div key={o.cidade} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 6px', borderBottom: '1px solid #f1f5f9', fontSize: '0.85rem' }}>
+                  <span>
+                    {o.concluida ? '✅' : origemProcessandoAgora === o.cidade ? '⏳' : '⬜'} {o.cidade}
+                    <span style={{ color: '#94a3b8', marginLeft: 6 }}>({formatarNumero(o.quantidadePedidos)} pedido(s))</span>
+                  </span>
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    style={{ padding: '2px 10px', fontSize: '0.78rem' }}
+                    onClick={() => rodarOrigem(o.cidade)}
+                    disabled={carregando || carregandoMalha || o.concluida}
+                  >
+                    {origemProcessandoAgora === o.cidade ? 'Rodando...' : o.concluida ? 'Concluida' : '▶ Rodar'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <div className="section-row compact-top" style={{ marginTop: 10 }}>
+          <div>
+            <div className="panel-title">Resimular tudo de uma vez (recortes pequenos)</div>
+            <p className="compact">Carrega a malha inteira do recorte numa tacada so. Mais rapido pra recortes pequenos (poucas dezenas/centenas de pedidos); pra recortes grandes, prefira "Resimular por origem" acima.</p>
+          </div>
+          <div className="actions-right gap-row">
+            <button className="btn-secondary" type="button" onClick={carregarMalha} disabled={carregando || carregandoMalha}>
+              {carregandoMalha ? 'Carregando malha...' : malhaPronta ? '1. Malha carregada ✓ (recarregar)' : '1. Carregar malha'}
+            </button>
+            <button className="btn-primary" type="button" onClick={prepararResimulacao} disabled={carregando || carregandoMalha || contandoResumo}>
+              {contandoResumo ? 'Contando pedidos...' : '2. Resimular cenario ideal'}
             </button>
           </div>
         </div>
@@ -506,6 +830,7 @@ export default function AuditoriaEcommercePage() {
               <option value="sem_ibge_destino">sem_ibge_destino</option>
               <option value="sem_malha">sem_malha</option>
               <option value="sem_cotacao_peso">sem_cotacao_peso</option>
+              <option value="sem_cd_saldo_reconhecido">sem_cd_saldo_reconhecido</option>
             </select>
           </label>
           <label className="field">
@@ -520,6 +845,13 @@ export default function AuditoriaEcommercePage() {
             <select value={filtrosServidor.uf} onChange={(e) => onChangeFiltroServidor('uf', e.target.value)}>
               <option value="">Todas</option>
               {opcoesFiltro.ufs.map((uf) => <option key={uf} value={uf}>{uf}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            Cidade do CD (saldo na venda)
+            <select value={filtrosServidor.cdCidade} onChange={(e) => onChangeFiltroServidor('cdCidade', e.target.value)}>
+              <option value="">Todas</option>
+              {cdCentros.cidades.map((cidade) => <option key={cidade} value={cidade}>{cidade}</option>)}
             </select>
           </label>
           <label className="field">
@@ -542,12 +874,32 @@ export default function AuditoriaEcommercePage() {
             </select>
           </label>
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <input type="checkbox" checked={restringirCds} onChange={(e) => setRestringirCds(e.target.checked)} />
-            Restringir aos CDs: {CDS_RESTRICAO.join(', ')} (senao, busca em todas as origens)
+            <input
+              type="checkbox"
+              checked={usarSaldoDia}
+              onChange={(e) => { setUsarSaldoDia(e.target.checked); if (e.target.checked) setRestringirCds(false); }}
+            />
+            Filtro 1 — Restringir por saldo do pedido: usa a lista de CDs de "CDs com Saldo na Venda" de cada pedido (qualquer CD cadastrado, nao so os fixos abaixo)
+          </label>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={restringirCds}
+              onChange={(e) => { setRestringirCds(e.target.checked); if (e.target.checked) setUsarSaldoDia(false); }}
+            />
+            Filtro 2 — Restringir aos CDs fixos: {CDS_RESTRICAO.join(', ')} (senao, busca em todas as origens)
           </label>
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <input type="checkbox" checked={considerarPrazo} onChange={(e) => setConsiderarPrazo(e.target.checked)} />
             Considerar prazo no "ideal" (80% preco + 20% prazo, senao so o mais barato)
+          </label>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={incluirSemCruzamento} onChange={(e) => setIncluirSemCruzamento(e.target.checked)} />
+            Incluir pedidos sem cruzamento (sem_tracking/sem_cte) na resimulacao — perde a comparacao com o CT-e real
+          </label>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={autoRetry} onChange={(e) => setAutoRetry(e.target.checked)} />
+            Retomar sozinho se der erro/timeout (deixar rodando a noite, sem clicar de novo) — mantenha o computador ligado e a aba aberta
           </label>
         </div>
       </section>
@@ -559,53 +911,43 @@ export default function AuditoriaEcommercePage() {
           <p className="compact">
             Origens consideradas: <strong>{resumoResimulacao.cdsPermitidos?.length ? resumoResimulacao.cdsPermitidos.join(', ') : 'todas'}</strong>
           </p>
-          {resumoResimulacao.origem === 'coluna' ? (
-            <p>
-              <strong>{formatarNumero(resumoResimulacao.count)}</strong> pedido(s) elegivel(is) (cruzamento ok) estao visiveis
-              na tabela agora, considerando os filtros por coluna aplicados no cabecalho abaixo. Confirma a resimulacao
-              so desse recorte visivel?
-            </p>
-          ) : (
-            <>
-              <p>
-                Nesse recorte (filtros ativos acima
-                {resumoResimulacao.filtros.dataInicio || resumoResimulacao.filtros.dataFim ? (
-                  <> no periodo de <strong>{resumoResimulacao.filtros.dataInicio || '...'}</strong> ate <strong>{resumoResimulacao.filtros.dataFim || '...'}</strong></>
-                ) : null}
-                ): <strong>{formatarNumero(resumoResimulacao.jaFeitos)}</strong> ja foram resimulados antes,{' '}
-                <strong>{formatarNumero(resumoResimulacao.pendentes)}</strong> ainda estao pendentes.
-              </p>
-              {resumoResimulacao.jaFeitos > 0 ? (
-                <div className="form-grid" style={{ gap: 6, marginBottom: 8 }}>
-                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <input
-                      type="radio"
-                      name="refazerTudo"
-                      checked={!resumoResimulacao.refazerTudo}
-                      onChange={() => setResumoResimulacao((atual) => ({ ...atual, refazerTudo: false }))}
-                    />
-                    Continuar so com os {formatarNumero(resumoResimulacao.pendentes)} pendentes
-                  </label>
-                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <input
-                      type="radio"
-                      name="refazerTudo"
-                      checked={resumoResimulacao.refazerTudo}
-                      onChange={() => setResumoResimulacao((atual) => ({ ...atual, refazerTudo: true }))}
-                    />
-                    Refazer tudo, incluindo os {formatarNumero(resumoResimulacao.jaFeitos)} ja resimulados
-                  </label>
-                </div>
-              ) : null}
-            </>
-          )}
+          <p>
+            Nesse recorte (filtros ativos acima
+            {resumoResimulacao.filtros.dataInicio || resumoResimulacao.filtros.dataFim ? (
+              <> no periodo de <strong>{resumoResimulacao.filtros.dataInicio || '...'}</strong> ate <strong>{resumoResimulacao.filtros.dataFim || '...'}</strong></>
+            ) : null}
+            ): <strong>{formatarNumero(resumoResimulacao.jaFeitos)}</strong> ja foram resimulados antes,{' '}
+            <strong>{formatarNumero(resumoResimulacao.pendentes)}</strong> ainda estao pendentes.
+          </p>
+          {resumoResimulacao.jaFeitos > 0 ? (
+            <div className="form-grid" style={{ gap: 6, marginBottom: 8 }}>
+              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="radio"
+                  name="refazerTudo"
+                  checked={!resumoResimulacao.refazerTudo}
+                  onChange={() => setResumoResimulacao((atual) => ({ ...atual, refazerTudo: false }))}
+                />
+                Continuar so com os {formatarNumero(resumoResimulacao.pendentes)} pendentes
+              </label>
+              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="radio"
+                  name="refazerTudo"
+                  checked={resumoResimulacao.refazerTudo}
+                  onChange={() => setResumoResimulacao((atual) => ({ ...atual, refazerTudo: true }))}
+                />
+                Refazer tudo, incluindo os {formatarNumero(resumoResimulacao.jaFeitos)} ja resimulados
+              </label>
+            </div>
+          ) : null}
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={() => setResumoResimulacao(null)}>Cancelar</button>
             <button
               className="btn-primary"
               type="button"
               onClick={confirmarResimulacao}
-              disabled={resumoResimulacao.origem === 'coluna' ? !resumoResimulacao.count : !(resumoResimulacao.refazerTudo ? resumoResimulacao.pendentes + resumoResimulacao.jaFeitos : resumoResimulacao.pendentes)}
+              disabled={!(resumoResimulacao.refazerTudo ? resumoResimulacao.pendentes + resumoResimulacao.jaFeitos : resumoResimulacao.pendentes)}
             >
               Confirmar resimulacao
             </button>
@@ -628,9 +970,6 @@ export default function AuditoriaEcommercePage() {
           </div>
           <div className="actions-right gap-row">
             <button className="btn-secondary" type="button" onClick={() => setFiltros({})} disabled={!Object.keys(filtros).length}>Limpar filtros</button>
-            <button className="btn-primary" type="button" onClick={prepararResimulacaoColuna} disabled={carregando}>
-              Resimular apenas o filtrado abaixo ({formatarNumero(linhasFiltradas.filter((row) => row.cruzamento_status === 'ok').length)})
-            </button>
           </div>
         </div>
         <div className="sim-analise-tabela-wrap" style={{ maxHeight: '70vh', overflow: 'auto' }}>
@@ -670,7 +1009,7 @@ export default function AuditoriaEcommercePage() {
                             Ver opções ({row.sim_candidatos.length})
                           </button>
                         ) : '-'
-                      ) : celula(row, coluna)}
+                      ) : coluna.chave === 'cds_com_saldo_venda' ? renderCdsComSaldo(row.cds_com_saldo_venda, cdCentros.mapa) : celula(row, coluna)}
                     </td>
                   ))}
                 </tr>

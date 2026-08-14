@@ -9,7 +9,7 @@ import { getSupabaseClient } from '../lib/supabaseClient';
 const USERS_KEY = 'central_fretes_usuarios_v1';
 const SESSION_KEY = 'central_fretes_sessao_v1';
 const ADMIN_EMAIL = 'aldo.dias@cantu.inc';
-const SESSION_TTL_MS = 5 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const MODULOS_SISTEMA = [
   { chave: 'dashboard', label: 'Dashboard', grupo: 'Geral' },

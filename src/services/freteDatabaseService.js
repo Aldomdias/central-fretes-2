@@ -716,30 +716,73 @@ function normalizarCidadeFiltroDb(valor) {
     .toUpperCase();
 }
 
-async function fetchAllRowsFiltradoPorColuna(supabase, table, coluna, valores, orderBy = null) {
+async function fetchAllRowsFiltradoPorColuna(supabase, table, coluna, valores, orderBy = null, onProgress = null) {
   const ordenarPor = orderBy || 'id';
   const allRows = [];
   for (const grupo of chunksDb(valores, 100)) {
-    let from = 0;
+    // Paginacao por cursor (id > ultimoId), nao por OFFSET: com filtro de baixa
+    // seletividade (ex: ~100 codigos de ibge_destino que batem em dezenas de
+    // milhares de linhas de 'rotas'), OFFSET faz o Postgres reescanear do zero
+    // a cada pagina - pagina em offset 25000 fica reescaneando as 25000 linhas
+    // anteriores de novo, e cada pagina subsequente fica mais lenta (chegou a
+    // 115s numa unica pagina). Cursor por id evita esse re-trabalho: cada
+    // pagina continua exatamente de onde a anterior parou.
+    let ultimoId = null;
     for (;;) {
-      const { data, error } = await supabase
+      let query = supabase
         .from(table)
         .select('*')
         .in(coluna, grupo)
         .order(ordenarPor, { ascending: true })
-        .range(from, from + PAGE_SIZE - 1);
+        .limit(PAGE_SIZE);
+      if (ultimoId !== null) query = query.gt(ordenarPor, ultimoId);
+      const { data, error } = await query;
       if (error) throw error;
       const rows = data || [];
       allRows.push(...rows);
+      onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
       if (rows.length < PAGE_SIZE) break;
-      from += PAGE_SIZE;
+      ultimoId = rows[rows.length - 1]?.[ordenarPor];
+      if (ultimoId === undefined || ultimoId === null) break;
     }
   }
   return allRows;
 }
 
-async function fetchAllRowsFiltradoPorOrigens(supabase, table, origemIds, orderBy = null) {
-  return fetchAllRowsFiltradoPorColuna(supabase, table, 'origem_id', origemIds, orderBy);
+async function fetchAllRowsFiltradoPorOrigens(supabase, table, origemIds, orderBy = null, onProgress = null) {
+  return fetchAllRowsFiltradoPorColuna(supabase, table, 'origem_id', origemIds, orderBy, onProgress);
+}
+
+// Cotacoes sao por origem_id + rota (nome_rota) - uma origem pode ter varias rotas
+// cadastradas (uma pra cada regiao/grupo de destinos), cada uma com dezenas de faixas
+// de peso. Filtrar so por origem_id (como fetchAllRowsFiltradoPorOrigens faz) traz TODAS
+// as rotas daquela origem, nao so a(s) que realmente atende(m) os destinos pedidos -
+// pra poucos destinos isso infla o carregamento em ordens de magnitude sem necessidade.
+async function fetchCotacoesFiltradasPorRota(supabase, origemIds, rotaNomes, onProgress = null) {
+  if (!origemIds.length || !rotaNomes.length) return [];
+  const allRows = [];
+  for (const grupoOrigem of chunksDb(origemIds, 100)) {
+    let ultimoId = null;
+    for (;;) {
+      let query = supabase
+        .from('cotacoes')
+        .select('*')
+        .in('origem_id', grupoOrigem)
+        .in('rota', rotaNomes)
+        .order('id', { ascending: true })
+        .limit(PAGE_SIZE);
+      if (ultimoId !== null) query = query.gt('id', ultimoId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const rows = data || [];
+      allRows.push(...rows);
+      onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+      if (rows.length < PAGE_SIZE) break;
+      ultimoId = rows[rows.length - 1]?.id;
+      if (ultimoId == null) break;
+    }
+  }
+  return allRows;
 }
 
 function chunksDb(lista = [], tamanho = 100) {
@@ -753,6 +796,130 @@ function chunksDb(lista = [], tamanho = 100) {
 // e-commerce). Nao usa o cache de carregarBaseCompletaDb (e um recorte, nao a
 // base inteira) - pensado pra ser rapido justamente por evitar buscar
 // milhoes de linhas de rotas/cotacoes/taxas de origens que nao interessam.
+async function fetchRotasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress = null) {
+  if (!origemIds.length || !destinosIbge.length) return [];
+  const allRows = [];
+  for (const grupoDestino of chunksDb(destinosIbge, 100)) {
+    let ultimoId = null;
+    for (;;) {
+      let query = supabase
+        .from('rotas')
+        .select('*')
+        .in('origem_id', origemIds)
+        .in('ibge_destino', grupoDestino)
+        .order('id', { ascending: true })
+        .limit(PAGE_SIZE);
+      if (ultimoId !== null) query = query.gt('id', ultimoId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const rows = data || [];
+      allRows.push(...rows);
+      onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+      if (rows.length < PAGE_SIZE) break;
+      ultimoId = rows[rows.length - 1]?.id;
+      if (ultimoId == null) break;
+    }
+  }
+  return allRows;
+}
+
+// Carrega a malha de UMA origem (CD/cidade) mas SO das rotas que atendem os destinos
+// informados - nao a rede inteira daquele CD. Um CD grande pode atender centenas de
+// destinos no Brasil todo; se a leva de pedidos que estamos processando so tem uns
+// poucos destinos, buscar so os pares (origem, destino) que interessam evita carregar
+// dado que nunca vai ser usado (mesmo principio da ferramenta "Simular Saida de
+// Transportadora", que busca por par ibge_origem/ibge_destino exato).
+export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [], destinosIbge = [], onProgress = null) {
+  if (!isSupabaseConfigured() || !filtroCidades.length || !destinosIbge.length) return [];
+  const supabase = ensureClient();
+
+  const nomesNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
+  const { data: todasOrigens, error: erroOrigens } = await supabase.from('origens').select('*');
+  if (erroOrigens) throw erroOrigens;
+  const origens = (todasOrigens || []).filter((o) => {
+    const cidadeNorm = normalizarCidadeFiltroDb(o.cidade);
+    return nomesNorm.some((nome) => cidadeNorm.includes(nome));
+  });
+  if (!origens.length) return [];
+
+  const origemIds = origens.map((o) => o.id);
+  const transportadoraIds = [...new Set(origens.map((o) => o.transportadora_id))];
+
+  const rotas = await fetchRotasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress);
+  if (!rotas.length) return [];
+
+  const rotaNomes = [...new Set(rotas.map((r) => r.nome_rota).filter(Boolean))];
+
+  const [transportadoras, generalidades, cotacoes, taxas] = await Promise.all([
+    (async () => {
+      const { data, error } = await supabase.from('transportadoras').select('*').in('id', transportadoraIds);
+      if (error) throw error;
+      return data || [];
+    })(),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
+    fetchCotacoesFiltradasPorRota(supabase, origemIds, rotaNomes, onProgress),
+    fetchAllRowsFiltradoPorOrigens(supabase, 'taxas_especiais', origemIds),
+  ]);
+
+  onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: rotas.length + cotacoes.length + taxas.length, total: null });
+
+  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+
+  const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
+  const rotasByOrigem = new Map();
+  const cotacoesByOrigem = new Map();
+  const taxasByOrigem = new Map();
+
+  rotasNormalizadas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = rotasByOrigem.get(key) || [];
+    list.push(item);
+    rotasByOrigem.set(key, list);
+  });
+  cotacoes.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = cotacoesByOrigem.get(key) || [];
+    list.push(item);
+    cotacoesByOrigem.set(key, list);
+  });
+  taxas.forEach((item) => {
+    const key = String(item.origem_id);
+    const list = taxasByOrigem.get(key) || [];
+    list.push(item);
+    taxasByOrigem.set(key, list);
+  });
+
+  const origensComRota = origens.filter((o) => rotasByOrigem.has(String(o.id)));
+  const origensByTransportadora = new Map();
+  origensComRota.forEach((origem) => {
+    const key = String(origem.transportadora_id);
+    const list = origensByTransportadora.get(key) || [];
+    list.push(
+      normalizeOrigemFromDb(
+        origem,
+        generalidadeByOrigem.get(String(origem.id)),
+        rotasByOrigem.get(String(origem.id)) || [],
+        cotacoesByOrigem.get(String(origem.id)) || [],
+        taxasByOrigem.get(String(origem.id)) || []
+      )
+    );
+    origensByTransportadora.set(key, list);
+  });
+
+  return transportadoras
+    .map((transportadora) => ({
+      id: transportadora.id,
+      nome: transportadora.nome || '',
+      status: transportadora.status || 'Ativa',
+      cnpj: transportadora.cnpj || '',
+      cnpjRaiz: transportadora.cnpj_raiz || '',
+      tde: transportadora.tde ?? 0,
+      tdeCnpjs: Array.isArray(transportadora.tde_cnpjs) ? transportadora.tde_cnpjs : [],
+      origens: origensByTransportadora.get(String(transportadora.id)) || [],
+    }))
+    .filter((t) => t.origens.length);
+}
+
 export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [], onProgress = null) {
   if (!isSupabaseConfigured() || !filtroCidades.length) return [];
   const supabase = ensureClient();
@@ -855,7 +1022,7 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
   if (!isSupabaseConfigured() || !destinosIbge.length) return [];
   const supabase = ensureClient();
 
-  const rotasBrutas = await fetchAllRowsFiltradoPorColuna(supabase, 'rotas', 'ibge_destino', destinosIbge);
+  const rotasBrutas = await fetchAllRowsFiltradoPorColuna(supabase, 'rotas', 'ibge_destino', destinosIbge, null, onProgress);
   if (!rotasBrutas.length) return [];
 
   // Busca a tabela de origens inteira (pequena, ~1.200 linhas) e filtra em
@@ -873,6 +1040,7 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
 
   const origemIds = origens.map((o) => o.id);
   const rotas = rotasBrutas.filter((r) => origemIds.includes(r.origem_id));
+  const rotaNomes = [...new Set(rotas.map((r) => r.nome_rota).filter(Boolean))];
   const transportadoraIds = [...new Set(origens.map((o) => o.transportadora_id))];
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: rotas.length, total: null });
@@ -884,7 +1052,7 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
       return data || [];
     })(),
     fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
-    fetchAllRowsFiltradoPorOrigens(supabase, 'cotacoes', origemIds),
+    fetchCotacoesFiltradasPorRota(supabase, origemIds, rotaNomes, onProgress),
     fetchAllRowsFiltradoPorOrigens(supabase, 'taxas_especiais', origemIds),
   ]);
 
