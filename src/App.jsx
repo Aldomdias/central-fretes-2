@@ -119,7 +119,10 @@ export default function App() {
   if (!sessao) return <LoginPage onLogin={setSessao} />;
 
   if (manutencao?.ativo && !usuarioPodeAdministrarUsuarios(sessao)) {
-    return <ManutencaoOverlay mensagem={manutencao.mensagem} />;
+    const liberado = Array.isArray(manutencao.perfis_liberados) && manutencao.perfis_liberados.length > 0
+      ? manutencao.perfis_liberados.includes(sessao.perfil)
+      : false;
+    if (!liberado) return <ManutencaoOverlay mensagem={manutencao.mensagem} />;
   }
 
   const mudarPagina = (pagina) => {

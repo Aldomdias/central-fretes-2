@@ -24,7 +24,7 @@ export async function obterStatusManutencao() {
   return data || { ativo: false };
 }
 
-export async function ativarManutencao(sessao, mensagem) {
+export async function ativarManutencao(sessao, mensagem, perfisLiberados = null) {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error('Supabase não configurado.');
 
@@ -35,6 +35,7 @@ export async function ativarManutencao(sessao, mensagem) {
       mensagem: mensagem || 'Estamos em manutenção rápida. Volte em alguns minutos.',
       ativado_por: sessao?.nome || sessao?.email || 'Admin',
       ativado_em: new Date().toISOString(),
+      perfis_liberados: perfisLiberados && perfisLiberados.length ? perfisLiberados : null,
     })
     .eq('id', 1);
 

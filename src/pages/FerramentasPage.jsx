@@ -3,7 +3,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabaseClient';
 import { ImportarFluxoCard } from './LotacaoOperacaoPage';
 import { carregarVinculosTransportadoras, salvarVinculosTransportadoras, removerVinculoTransportadora } from '../services/vinculosTransportadorasService';
 import SlaAuditoriaConfig from '../components/SlaAuditoriaConfig';
-import { carregarSessao } from '../utils/authLocal';
+import { carregarSessao, PERFIS_USUARIO } from '../utils/authLocal';
 import { obterStatusManutencao, ativarManutencao, desativarManutencao } from '../services/manutencaoService';
 
 function normalizarNomeTransp(nome = '') {
@@ -719,6 +719,8 @@ export default function FerramentasPage({ transportadoras = [] }) {
   const resumoLotacao = useMemo(() => resumirFluxoCargas(baseFluxoLotacao), [baseFluxoLotacao]);
   const [manutencaoStatus, setManutencaoStatus] = useState(null);
   const [manutencaoMensagem, setManutencaoMensagem] = useState('Estamos em manutenção rápida. Volte em alguns minutos.');
+  const [manutencaoModo, setManutencaoModo] = useState('total'); // 'total' | 'parcial'
+  const [manutencaoPerfisSelecionados, setManutencaoPerfisSelecionados] = useState(() => new Set());
   const [salvandoManutencao, setSalvandoManutencao] = useState(false);
 
   useEffect(() => {
@@ -726,15 +728,28 @@ export default function FerramentasPage({ transportadoras = [] }) {
     obterStatusManutencao().then((status) => {
       setManutencaoStatus(status);
       if (status?.mensagem) setManutencaoMensagem(status.mensagem);
+      if (Array.isArray(status?.perfis_liberados) && status.perfis_liberados.length) {
+        setManutencaoModo('parcial');
+        setManutencaoPerfisSelecionados(new Set(status.perfis_liberados));
+      }
     });
   }, [sessao?.perfil]);
+
+  function alternarPerfilManutencao(chave) {
+    setManutencaoPerfisSelecionados((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(chave)) novo.delete(chave); else novo.add(chave);
+      return novo;
+    });
+  }
 
   async function alternarManutencao(ativar) {
     setSalvandoManutencao(true);
     setErro('');
     try {
       if (ativar) {
-        await ativarManutencao(sessao, manutencaoMensagem);
+        const perfisLiberados = manutencaoModo === 'parcial' ? [...manutencaoPerfisSelecionados] : null;
+        await ativarManutencao(sessao, manutencaoMensagem, perfisLiberados);
       } else {
         await desativarManutencao();
       }
@@ -1346,9 +1361,13 @@ export default function FerramentasPage({ transportadoras = [] }) {
           <button type="button" onClick={() => toggleAba('manutencao')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'none',background:'none',textAlign:'left',cursor:'pointer',borderBottom:abaAberta==='manutencao'?'1px solid var(--border-soft)':'none'}}>
             <div>
               <div className="panel-title" style={{margin:0}}>
-                🛠️ Modo manutenção {manutencaoStatus?.ativo ? <span style={{color:'#f59e0b'}}>● ATIVO</span> : null}
+                🛠️ Modo manutenção {manutencaoStatus?.ativo ? (
+                  <span style={{color:'#f59e0b'}}>
+                    ● ATIVO{Array.isArray(manutencaoStatus.perfis_liberados) && manutencaoStatus.perfis_liberados.length ? ' (parcial)' : ' (total)'}
+                  </span>
+                ) : null}
               </div>
-              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Bloqueia o sistema pra todo mundo, menos você, enquanto você mexe no Supabase</div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>Bloqueia o sistema (todo mundo ou só alguns perfis) enquanto você mexe no Supabase</div>
             </div>
             <span style={{fontSize:18,color:'var(--muted)'}}>{abaAberta==='manutencao'?'△':'▽'}</span>
           </button>
@@ -1361,6 +1380,33 @@ export default function FerramentasPage({ transportadoras = [] }) {
                 style={{width:'100%',padding:8,borderRadius:6,border:'1px solid var(--border-soft)',background:'transparent',color:'inherit'}}
                 placeholder="Mensagem exibida pros usuários"
               />
+
+              <div style={{display:'flex',gap:16,fontSize:13}}>
+                <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
+                  <input type="radio" name="manutencao-modo" checked={manutencaoModo==='total'} onChange={() => setManutencaoModo('total')} />
+                  Bloquear todo mundo (só eu passo)
+                </label>
+                <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
+                  <input type="radio" name="manutencao-modo" checked={manutencaoModo==='parcial'} onChange={() => setManutencaoModo('parcial')} />
+                  Liberar alguns perfis (contingência)
+                </label>
+              </div>
+
+              {manutencaoModo === 'parcial' && (
+                <div style={{display:'flex',flexWrap:'wrap',gap:'8px 16px',padding:'8px 12px',border:'1px solid var(--border-soft)',borderRadius:8}}>
+                  {Object.entries(PERFIS_USUARIO).map(([chave, perfil]) => (
+                    <label key={chave} style={{display:'flex',alignItems:'center',gap:6,fontSize:13,cursor:'pointer'}}>
+                      <input
+                        type="checkbox"
+                        checked={manutencaoPerfisSelecionados.has(chave)}
+                        onChange={() => alternarPerfilManutencao(chave)}
+                      />
+                      {perfil.nome}
+                    </label>
+                  ))}
+                </div>
+              )}
+
               <div style={{display:'flex',gap:8}}>
                 {manutencaoStatus?.ativo ? (
                   <button type="button" disabled={salvandoManutencao} onClick={() => alternarManutencao(false)} className="btn" style={{background:'#16a34a',color:'#fff'}}>
