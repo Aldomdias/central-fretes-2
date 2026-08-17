@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO,
   TIPO_SOLICITACAO_EXCECAO_SEM_CTE,
+  isMovimentoEncerradoAuditoria,
   isStatusAguardandoOperacao,
   isSolicitacaoExcecaoSemCte,
   montarComentarioDevolucaoOperacao,
@@ -13,6 +14,12 @@ test('status de complemento reaparece como pendente na Operacao', () => {
     isStatusAguardandoOperacao(STATUS_AGUARDANDO_COMPLEMENTO_OPERACAO),
     true,
   );
+});
+
+test('excedente recusado sai das pendencias da Auditoria', () => {
+  assert.equal(isMovimentoEncerradoAuditoria({ status: 'RECUSADO' }), true);
+  assert.equal(isMovimentoEncerradoAuditoria({ status: 'RECUSADO_OPERACAO' }), true);
+  assert.equal(isMovimentoEncerradoAuditoria({ status: 'EXCEDEU_AGUARDANDO_OPERACAO' }), false);
 });
 
 test('historico da devolucao preserva resposta e justificativa anteriores', () => {

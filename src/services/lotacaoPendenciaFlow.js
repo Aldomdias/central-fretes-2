@@ -16,6 +16,30 @@ export function isStatusAguardandoOperacao(status = '') {
   ].includes(String(status || '').trim().toUpperCase());
 }
 
+export function isMovimentoEncerradoAuditoria(item = {}) {
+  const status = String(item.status || '').trim().toUpperCase();
+  if ([
+    'RECUSADO',
+    'RECUSADO_OPERACAO',
+    'REPROVADO',
+    'NEGADO',
+    'TRATADO',
+    'CONCLUIDO',
+    'CONCLUÍDO',
+    'FINALIZADO',
+    'AUDITADO_OK',
+    'BAIXADO',
+    'ENCERRADO',
+    'LIBERADO_PAGAMENTO',
+  ].includes(status)) return true;
+
+  const questionamento = item.tipo === 'QUESTIONAMENTO_OPERACAO'
+    || item.categoria === 'QUESTIONAMENTO_OPERACAO'
+    || item.tipoGestao === 'QUESTIONAMENTO';
+  const distVinculada = Boolean(item.dist || item.distKey || item.dist_key);
+  return questionamento && status === 'RESPONDIDO_OPERACAO' && distVinculada;
+}
+
 export function montarComentarioDevolucaoOperacao(item = {}, complemento = '') {
   const respostaAnterior = String(
     item.resposta_operacao
