@@ -535,7 +535,15 @@ export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
   if (!resultados.length) return;
   const supabase = getSupabaseClient();
   const agora = new Date().toISOString();
-  const linhas = resultados.map((r) => ({ ...r, sim_resimulado_em: agora }));
+  const linhas = resultados.map((r) => {
+    const cenario = r.sim_peso_base;
+    return {
+      ...r,
+      ...(cenario === 'cotado' ? { sim_resultado_cotado: r } : {}),
+      ...(cenario === 'faturado' ? { sim_resultado_faturado: r } : {}),
+      sim_resimulado_em: agora,
+    };
+  });
   for (const grupo of chunks(linhas, 200)) {
     const { error } = await supabase.from('ecommerce_order_snapshot').upsert(grupo, { onConflict: 'id' });
     if (error) throw error;

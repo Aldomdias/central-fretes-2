@@ -291,8 +291,9 @@ export default function AuditoriaEcommercePage() {
   });
   const [opcoesFiltro, setOpcoesFiltro] = useState({ canais: [], ufs: [], transportadorasCte: [] });
   const [cdCentros, setCdCentros] = useState({ mapa: new Map(), cidades: [] });
-  // Uma unica rodada calcula e preserva as duas visoes para comparacao posterior.
-  const [pesoBase, setPesoBase] = useState('ambos');
+  // Processa um peso por rodada para reduzir o volume; cada resultado fica preservado
+  // separadamente e pode ser complementado depois pelo segundo peso.
+  const [pesoBase, setPesoBase] = useState('cotado');
   const [considerarPrazo, setConsiderarPrazo] = useState(true);
   const [restringirCds, setRestringirCds] = useState(false);
   const [usarSaldoDia, setUsarSaldoDia] = useState(true);
@@ -1017,7 +1018,7 @@ export default function AuditoriaEcommercePage() {
             }}>
               <option value="cotado">Peso cotado (venda)</option>
               <option value="faturado">Peso faturado (transportadora)</option>
-              <option value="ambos">Cotado + faturado (duas visoes, recomendado)</option>
+              <option value="ambos">Cotado + faturado na mesma rodada (mais pesado)</option>
             </select>
           </label>
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
