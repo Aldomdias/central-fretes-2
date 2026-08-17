@@ -8,22 +8,38 @@ import {
   getUfByIbge,
 } from './realizadoLocalEngine';
 import { aplicarVinculoTransportadora } from '../services/vinculosTransportadorasPuro.js';
+import { isTransportadoraEbazarEcommerce } from './ecommerceAuditoriaPuro.js';
 
 // Monta uma vez o indice canal|destino -> candidatos (CD + transportadora) da malha B2C.
 // O indice e reaproveitado para todos os lotes de pedidos, ja que o tamanho dele depende
 // da malha cadastrada (transportadoras/origens/rotas), nao do volume de pedidos.
 export function construirIndiceResimulacaoEcommerce(transportadoras = [], municipios = []) {
   const mapasIbge = montarMapasIbge(municipios);
-  const { index } = construirIndicePorDestino(transportadoras, municipios);
+  const statusAtivo = (status) => {
+    const normalizado = String(status || 'ATIVA').trim().toUpperCase();
+    return normalizado === 'ATIVA' || normalizado === 'ATIVO';
+  };
+  // A auditoria deve representar apenas opcoes realmente contrataveis hoje.
+  // Bloqueia a transportadora inteira quando inativa e, de forma independente,
+  // remove CDs/origens inativos de uma transportadora ainda ativa.
+  const malhaAtiva = (transportadoras || [])
+    .filter((transportadora) => statusAtivo(transportadora?.status))
+    .map((transportadora) => ({
+      ...transportadora,
+      origens: (transportadora.origens || []).filter((origem) => statusAtivo(origem?.status)),
+    }))
+    .filter((transportadora) => transportadora.origens.length);
+  const { index } = construirIndicePorDestino(malhaAtiva, municipios);
   return { mapasIbge, index };
 }
 
 function normalizarCidadeCd(valor) {
   return String(valor || '')
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .trim()
-    .toUpperCase();
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
 }
 
 // Resimula, para cada pedido, qual seria o CD (origem) + transportadora ideal considerando
@@ -113,6 +129,10 @@ function montarCteDoPedido(pedido, canal, ibgeDestino, pesoBase) {
     // de cada transportadora/CD candidato e usando o maior entre peso e peso cubado.
     cubagem: Number(pedido.cubagem_cotada || 0),
     origemCubagem: 'tracking',
+    // Excecao comercial exclusiva da Auditoria E-commerce. O motor compartilhado
+    // so aplica FL/CD peso x 1,20 quando esta marca explicita estiver presente;
+    // simuladores e demais ferramentas continuam com a cubagem normal.
+    aplicarRegraFlCdEcommerce: true,
     valorNF: Number(pedido.valor_pedido || pedido.valor_faturado || 0),
     canal,
     ufOrigem: '',
@@ -128,11 +148,53 @@ function montarCteDoPedido(pedido, canal, ibgeDestino, pesoBase) {
 // onde os candidatos vem acumulados de varias cargas de malha (uma por origem) em vez
 // de um unico index gigante carregado de uma vez so.
 function finalizarResultadoPedido(pedido, calculados, canal, { criterioB2c, pesoBase, mapaVinculos }) {
-  if (!calculados.length) {
+  const nomeCteResolvido = mapaVinculos
+    ? aplicarVinculoTransportadora(pedido.cte_transportadora, mapaVinculos)
+    : pedido.cte_transportadora;
+  const cidadesSaldo = Array.isArray(pedido.cdsSaldoCidades)
+    ? new Set(pedido.cdsSaldoCidades.map(normalizarCidadeCd))
+    : null;
+  const origemRealTemSaldo = cidadesSaldo?.has(normalizarCidadeCd(pedido.cte_cidade_origem));
+  const valorOpcaoOriginal = Number(pedido.frete_tabela || 0);
+  const candidatoEquivalenteOriginal = calculados.find((item) => {
+    const mesmaOrigem = normalizarCidadeCd(item.origem) === normalizarCidadeCd(pedido.cte_cidade_origem);
+    const nomeItem = String(item.transportadora || '').trim().toUpperCase();
+    const nomeOriginal = String(nomeCteResolvido || '').trim().toUpperCase();
+    const mesmaTransportadora = nomeItem === nomeOriginal || nomeItem.includes(nomeOriginal) || nomeOriginal.includes(nomeItem);
+    return mesmaOrigem && mesmaTransportadora;
+  });
+  const opcaoOriginal = origemRealTemSaldo && valorOpcaoOriginal > 0 && nomeCteResolvido && !isTransportadoraEbazarEcommerce(nomeCteResolvido)
+    ? {
+        transportadora: nomeCteResolvido,
+        origem: pedido.cte_cidade_origem,
+        origemValidada: true,
+        total: valorOpcaoOriginal,
+        prazo: Number(pedido.prazo_dias_corridos || 0),
+        faixaPeso: 'OPCAO ORIGINAL',
+        pesoMinFaixa: null,
+        pesoMaxFaixa: null,
+        ibgeDestino: calculados[0]?.ibgeDestino || '',
+        rotaNome: 'OPCAO ORIGINAL CARREGADA',
+        tipoCalculo: 'OPCAO_ORIGINAL',
+        // O valor permanece o que a roteadora carregou, mas reaproveitamos os dados
+        // de peso da mesma transportadora/origem recalculada para tornar a escolha
+        // auditavel. Se a tabela atual nao produzir esse candidato, nao inventamos
+        // fator ou peso: os campos ficam indisponiveis.
+        detalhes: {
+          frete: candidatoEquivalenteOriginal?.detalhes?.frete
+            ? { ...candidatoEquivalenteOriginal.detalhes.frete, origemValor: 'frete_tabela_order_snapshot' }
+            : { origemValor: 'frete_tabela_order_snapshot' },
+        },
+        ehOpcaoOriginal: true,
+      }
+    : null;
+  const calculadosComOriginal = opcaoOriginal ? [...calculados, opcaoOriginal] : calculados;
+
+  if (!calculadosComOriginal.length) {
     return { id: pedido.id, sim_status: 'sem_cotacao_peso', sim_peso_base: pesoBase };
   }
 
-  const ordenados = ordenarCalculadosPorCriterio(calculados, canal, criterioB2c);
+  const ordenados = ordenarCalculadosPorCriterio(calculadosComOriginal, canal, criterioB2c);
   const vencedor = ordenados[0];
   const custoReal = Number(pedido.custo_frete_transportadora || pedido.cte_valor || 0);
 
@@ -150,9 +212,6 @@ function finalizarResultadoPedido(pedido, calculados, canal, { criterioB2c, peso
   // O nome no CT-e pode ser a razao social (ex: "TEX COURIER S.A"), diferente
   // do nome cadastrado na tabela de fretes (ex: "TOTAL EXPRESS") - resolve
   // pelo vinculo cadastrado em Ferramentas antes de comparar nomes.
-  const nomeCteResolvido = mapaVinculos
-    ? aplicarVinculoTransportadora(pedido.cte_transportadora, mapaVinculos)
-    : pedido.cte_transportadora;
   const nomeReal = nomeCteResolvido ? String(nomeCteResolvido).trim().toUpperCase() : '';
   const ufReal = pedido.cte_uf_origem ? String(pedido.cte_uf_origem).trim().toUpperCase() : '';
   const mesmoNome = (item) => {
@@ -181,6 +240,7 @@ function finalizarResultadoPedido(pedido, calculados, canal, { criterioB2c, peso
     ibgeDestino: item.ibgeDestino,
     rotaNome: item.rotaNome,
     tipoCalculo: item.tipoCalculo,
+    ehOpcaoOriginal: Boolean(item.ehOpcaoOriginal),
     detalhes: item.detalhes?.frete || null,
     ehTransportadoraReal: item === candidatoReal,
     posicaoRanking: item === candidatoReal ? posicaoReal + 1 : null,
@@ -198,8 +258,8 @@ function finalizarResultadoPedido(pedido, calculados, canal, { criterioB2c, peso
     sim_prazo_ideal: vencedor.prazo,
     sim_diferenca_vs_cte: custoReal > 0 ? Number((custoReal - vencedor.total).toFixed(2)) : null,
     sim_diferenca_vs_tabela: pedido.frete_tabela ? Number((Number(pedido.frete_tabela) - vencedor.total).toFixed(2)) : null,
-    sim_mesma_transportadora: pedido.cte_transportadora
-      ? String(pedido.cte_transportadora).trim().toUpperCase() === String(vencedor.transportadora).trim().toUpperCase()
+    sim_mesma_transportadora: nomeCteResolvido
+      ? String(nomeCteResolvido).trim().toUpperCase() === String(vencedor.transportadora).trim().toUpperCase()
       : null,
     sim_candidatos: candidatosResumo,
   };
