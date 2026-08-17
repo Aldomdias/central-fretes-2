@@ -1020,6 +1020,11 @@ export default function AuditoriaEcommercePage() {
               <option value="faturado">Peso faturado (transportadora)</option>
               <option value="ambos">Cotado + faturado na mesma rodada (mais pesado)</option>
             </select>
+            <small>
+              {pesoBase === 'ambos'
+                ? 'Calcula e atualiza os dois cenarios.'
+                : `Atualiza somente o cenario ${pesoBase}, sem apagar o outro cenario ja calculado.`}
+            </small>
           </label>
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <input
