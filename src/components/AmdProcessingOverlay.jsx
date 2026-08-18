@@ -23,6 +23,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   mapeando_destinos_pedidos: 'Mapeando destinos dos pedidos',
   coletando_pedidos_do_recorte: 'Coletando pedidos do recorte',
   processando_origem: 'Processando origem',
+  salvando_jornada: 'Gravando decisão na jornada dos CT-es',
   salvando_candidatos_origem: 'Calculando e salvando candidatos da origem',
 };
 

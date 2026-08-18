@@ -30,19 +30,28 @@ import {
   invalidarCacheBaseFreteAuditoriaCte,
   buscarResultadosAuditoriaPorIdentificadores,
 } from '../services/auditoriaCteProcessamentoService';
-import { baixarHtmlLaudoAuditoriaCtes, cteDivergenteAuditoria, identificadorCteAuditoria } from '../utils/laudoAuditoriaCtes';
+import {
+  prepararArquivoLaudoAuditoriaCtes,
+  baixarArquivoPreparado,
+  cteDivergenteAuditoria,
+  identificadorCteAuditoria,
+} from '../utils/laudoAuditoriaCtes';
 import {
   registrarLaudoGerado,
   buscarJornadaPorIdentificadores,
   atualizarStatusJornada,
+  registrarDecisaoJornadaEmLote,
   anularJornada,
   vincularCancelamentoReemissao,
+  gerarTokenAleatorio,
+  urlPortalTransportadora,
   STATUS_OPERACIONAL,
   RESULTADOS_RETORNO_TRANSPORTADORA,
   JORNADA_COR,
 } from '../services/auditoriaCteJornadaService';
 import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import PainelPendenciasJornadaCte from '../components/PainelPendenciasJornadaCte';
+import RespostasPortalPendentes from '../components/RespostasPortalPendentes';
 
 const CRITERIOS_FILTRO = [
   { key: 'ok_qualquer', label: 'Dentro da tolerancia (AMD ou Verum)' },
@@ -193,9 +202,18 @@ const EXCLUIDAS_AUDITORIA_KEY = 'auditoria_cte_transportadoras_excluidas';
 const FILTROS_FOCO_KEY = 'auditoria_cte_filtros_foco_v1';
 
 // Carrega os filtros de foco salvos no navegador (volta vazio se não houver).
+// Tomadores do grupo: já vêm marcados na primeira abertura porque é sobre eles
+// que a auditoria trabalha no dia a dia. O auditor desmarca se quiser abrir.
+const TOMADORES_ATALHO = ['CPX', 'ITR', 'GP PNEUS', 'SPEEDMAX', 'PNEUSTORE'];
+
 function carregarFiltrosFocoSalvos() {
+  const padrao = { transps: [], tomadores: [...TOMADORES_ATALHO], ufs: [], cidades: [], canais: [], criterios: [] };
   try {
-    const salvo = JSON.parse(localStorage.getItem(FILTROS_FOCO_KEY) || '{}');
+    const bruto = localStorage.getItem(FILTROS_FOCO_KEY);
+    // Só usa o padrão na primeira vez. Depois vale o que o auditor deixou
+    // salvo — inclusive uma lista vazia, se ele desmarcou todos de propósito.
+    if (!bruto) return padrao;
+    const salvo = JSON.parse(bruto || '{}');
     const arr = (v) => (Array.isArray(v) ? v : []);
     return {
       transps: arr(salvo.transps),
@@ -206,7 +224,7 @@ function carregarFiltrosFocoSalvos() {
       criterios: arr(salvo.criterios),
     };
   } catch {
-    return { transps: [], tomadores: [], ufs: [], cidades: [], canais: [], criterios: [] };
+    return padrao;
   }
 }
 const LIMITE_MATCH_VERUM = 1; // diferença (R$) tolerada para considerar recálculo == Verum
@@ -560,7 +578,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [percentualContingenciaPesoAuditoria, setPercentualContingenciaPesoAuditoria] = useState(0);
   // Padrão: usa só o que já está gravado na base (comportamento de sempre).
   // Desmarcando, cruza o Tracking ao vivo antes de calcular — igual ao Simulador.
-  const [apenasDadosCompletosAuditoria, setApenasDadosCompletosAuditoria] = useState(true);
+  // Começa desmarcado: o dia a dia da auditoria precisa enxergar TODOS os CT-es
+  // do recorte, não só os que já têm dados completos.
+  const [apenasDadosCompletosAuditoria, setApenasDadosCompletosAuditoria] = useState(false);
   // Margem de erro tolerada antes de marcar um CT-e como divergente, em R$
   // absoluto (não percentual — percentual escala com o valor do CT-e e esconde
   // divergência grande em fretes caros). 0 em ambos = usa o limite fixo padrão
@@ -655,6 +675,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [reemissaoSalvando, setReemissaoSalvando] = useState(false);
   const [modalLaudoAberto, setModalLaudoAberto] = useState(false);
   const [modalRetornoLoteAberto, setModalRetornoLoteAberto] = useState(false);
+  const [laudosGerados, setLaudosGerados] = useState([]);
+  // Incrementado sempre que a jornada muda, para o painel de pendências recarregar.
+  const [jornadaVersao, setJornadaVersao] = useState(0);
   const [buscaTratamento, setBuscaTratamento] = useState('');
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
@@ -856,7 +879,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   }, [registrosAnalise]);
 
   // Atalhos de tomadores frequentes (casamento por "contém", aproximado).
-  const TOMADORES_ATALHO = ['CPX', 'ITR', 'GP PNEUS', 'SPEEDMAX', 'PNEUSTORE'];
+  // A lista fica no topo do arquivo porque também é o padrão inicial do filtro.
 
   // Transportadoras disponíveis (com contagem) para o filtro de foco.
   const transportadorasOpcoes = useMemo(
@@ -1730,6 +1753,109 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setSucesso(`${ids.length.toLocaleString('pt-BR')} CT-e(s) divergente(s) selecionado(s) para o laudo do transportador.`);
   }
 
+  /** Tira do filtro do card os CT-es que acabaram de mudar de status — senão
+   * eles continuam listados num grupo (ex.: "aguardando retorno") ao qual não
+   * pertencem mais. */
+  function removerDoFiltroJornada(chaves = []) {
+    if (!chaves.length) return;
+    setFiltroJornada((atual) => {
+      if (!atual?.chaves?.size) return atual;
+      const restantes = new Set(atual.chaves);
+      chaves.forEach((chave) => restantes.delete(String(chave)));
+      return { ...atual, chaves: restantes };
+    });
+  }
+
+  // Mesmo critério do destaque verde na tabela: tem cálculo AMD e a diferença
+  // está dentro da margem configurada.
+  function cteDentroDaMargem(row) {
+    const amd = Number(row.valor_calculado || 0);
+    if (amd <= 0) return false;
+    const difAmd = row.diferenca !== undefined && row.diferenca !== null
+      ? Number(row.diferenca)
+      : (Number(row.valor_cte || 0) - amd);
+    return !ehDivergenteComMargem(difAmd, amd, margensDivergencia);
+  }
+
+  function selecionarDentroDaMargemLaudo() {
+    const ids = registrosDetalheOrdenados
+      .map((row, indice) => (cteDentroDaMargem(row) ? identificadorCteAuditoria(row, indice) : null))
+      .filter(Boolean);
+    setCtesSelecionadosLaudo(ids);
+    setSucesso(`${ids.length.toLocaleString('pt-BR')} CT-e(s) dentro da tolerância selecionado(s).`);
+  }
+
+  /** Marca os selecionados como AUDITADO_OK / SEM_IMPACTO — o "conferi e está certo".
+   * CT-e divergente NÃO pode ser dado como OK por auditor comum: isso apagaria
+   * uma cobrança indevida sem tratativa. Só gestor libera, com justificativa. */
+  async function marcarSelecionadosComoOk() {
+    const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
+    const chaves = [...new Set(selecionados.map((r) => r.chave_cte).filter(Boolean))];
+    if (!chaves.length) return;
+
+    const divergentes = selecionados.filter((r) => !cteDentroDaMargem(r));
+    const valorDivergente = divergentes.reduce((acc, r) => acc + Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0)) - (Number(r.valor_calculado || 0))))), 0);
+    let justificativa = '';
+
+    if (divergentes.length) {
+      if (!ehGestorAuditoria) {
+        setErro(
+          `${fmtN(divergentes.length)} CT-e(s) selecionado(s) estão FORA da tolerância (${fmt(valorDivergente)} de divergência). `
+          + 'Dar OK neles encerraria a cobrança sem tratativa, então só um gestor pode fazer isso. '
+          + 'Use "Selecionar corretos" para marcar apenas os que estão dentro da tolerância.',
+        );
+        return;
+      }
+      justificativa = window.prompt(
+        `ATENÇÃO — ${divergentes.length} de ${selecionados.length} CT-e(s) estão FORA da tolerância, `
+        + `somando ${fmt(valorDivergente)} de divergência.\n\n`
+        + 'Você está encerrando essa cobrança sem tratativa. Descreva o motivo (obrigatório):',
+        '',
+      );
+      if (!justificativa || !justificativa.trim()) {
+        setErro('Ação cancelada: é obrigatório justificar o OK em CT-e divergente.');
+        return;
+      }
+    }
+
+    setJornadaSalvando(true);
+    setErro('');
+    setProgressoProcessamento({ etapa: 'salvando_jornada', carregados: 0, total: chaves.length });
+    try {
+      const usuario = carregarSessao();
+      const chavesDivergentes = new Set(divergentes.map((r) => r.chave_cte));
+      const observacaoPorChave = new Map(selecionados
+        .filter((r) => r.chave_cte)
+        .map((r) => [String(r.chave_cte), chavesDivergentes.has(r.chave_cte)
+          ? `OK em CT-e divergente liberado pelo gestor ${usuario?.nome || usuario?.email || ''}: ${justificativa.trim()}`
+          : 'Conferido pelo auditor: dentro da tolerância.']));
+
+      await registrarDecisaoJornadaEmLote({
+        ctes: selecionados,
+        competencia,
+        statusOperacional: 'AUDITADO_OK',
+        statusFinanceiro: 'SEM_IMPACTO',
+        observacaoPorChave,
+        usuario,
+        onProgress: setProgressoProcessamento,
+      });
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setJornadaVersao((v) => v + 1);
+      removerDoFiltroJornada(chaves);
+      setCtesSelecionadosLaudo([]);
+      setSucesso(`${chaves.length.toLocaleString('pt-BR')} CT-e(s) marcado(s) como auditado OK.`
+        + (divergentes.length ? ` ${divergentes.length} deles estavam divergentes e foram liberados pelo gestor (registrado no histórico).` : ''));
+    } catch (error) {
+      setErro(error.message || 'Não foi possível marcar os CT-es como OK.');
+    } finally {
+      setJornadaSalvando(false);
+      setProgressoProcessamento(null);
+    }
+  }
+
   function selecionarTodosLaudo() {
     const ids = registrosDetalheOrdenados.map((row, indice) => identificadorCteAuditoria(row, indice));
     const todosSelecionados = ids.length > 0 && ids.every((id) => ctesSelecionadosLaudo.includes(id));
@@ -1744,6 +1870,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     if (!config) return;
     setJornadaSalvando(true);
     setErro('');
+    // Grava a decisao: nao ha recalculo aqui, o valor auditado ja esta pronto.
+    setProgressoProcessamento({ etapa: 'salvando_jornada', carregados: 0, total: 1 });
     try {
       const usuario = carregarSessao();
       let valorAcordado;
@@ -1772,6 +1900,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
       );
       setJornadaPorChave(mapaAtualizado);
+      setJornadaVersao((v) => v + 1);
+      removerDoFiltroJornada([chaveCte]);
       setJornadaEditando(null);
       setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
       setSucesso(`Jornada atualizada: ${config.label}.`);
@@ -1779,12 +1909,15 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       setErro(error.message || 'Não foi possível registrar o retorno da transportadora.');
     } finally {
       setJornadaSalvando(false);
+      setProgressoProcessamento(null);
     }
   }
 
   async function handleAnularJornada(chaveCte) {
     setJornadaSalvando(true);
     setErro('');
+    // Grava a decisao: nao ha recalculo aqui, o valor auditado ja esta pronto.
+    setProgressoProcessamento({ etapa: 'salvando_jornada', carregados: 0, total: 1 });
     try {
       const usuario = carregarSessao();
       await anularJornada({ chaveCte, motivo: anularMotivo, usuario });
@@ -1792,6 +1925,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
       );
       setJornadaPorChave(mapaAtualizado);
+      setJornadaVersao((v) => v + 1);
       setJornadaEditando(null);
       setAnularMotivo('');
       setSucesso('Auditoria anulada — CT-e voltou para "Não auditado".');
@@ -1799,6 +1933,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       setErro(error.message || 'Não foi possível anular esta auditoria.');
     } finally {
       setJornadaSalvando(false);
+      setProgressoProcessamento(null);
     }
   }
 
@@ -1822,6 +1957,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
       );
       setJornadaPorChave(mapaAtualizado);
+      setJornadaVersao((v) => v + 1);
+      removerDoFiltroJornada([chaveCteOriginal]);
       setJornadaEditando(null);
       setReemissaoForm({ chaveSubstituto: '', motivo: '' });
       setSucesso(`CT-e ${chaveCteOriginal} marcado como cancelado — vinculado ao substituto ${chaveSubstituto}.`);
@@ -1840,25 +1977,35 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     if (!chaves.length) return;
     setJornadaSalvando(true);
     setErro('');
+    // Grava a decisao: nao ha recalculo aqui, o valor auditado ja esta pronto.
+    setProgressoProcessamento({ etapa: 'salvando_jornada', carregados: 0, total: 1 });
     try {
       const usuario = carregarSessao();
-      const divergenciaPorChave = new Map(selecionados.map((r) => [r.chave_cte, Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0)) - (Number(r.valor_calculado || 0)))))]));
-      for (const chaveCte of chaves) {
-        await atualizarStatusJornada({
-          chaveCte,
-          statusOperacional: config.statusOperacional,
-          statusFinanceiro: config.statusFinanceiro || undefined,
-          // No lote, o desconto acordado de cada CT-e = a própria divergência
-          // identificada dele (concordou com o valor apontado pela auditoria).
-          valorAcordado: config.pedeValor ? (divergenciaPorChave.get(chaveCte) || 0) : undefined,
-          observacao: jornadaForm.observacao || `Retorno em lote: ${config.label}`,
-          usuario,
-        });
-      }
+      // No lote, o desconto acordado de cada CT-e = a própria divergência
+      // identificada dele (concordou com o valor apontado pela auditoria).
+      const valorAcordadoPorChave = config.pedeValor
+        ? new Map(selecionados.filter((r) => r.chave_cte).map((r) => [
+          String(r.chave_cte),
+          Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0)) - (Number(r.valor_calculado || 0))))),
+        ]))
+        : undefined;
+
+      await registrarDecisaoJornadaEmLote({
+        ctes: selecionados,
+        competencia,
+        statusOperacional: config.statusOperacional,
+        statusFinanceiro: config.statusFinanceiro || undefined,
+        valorAcordadoPorChave,
+        observacao: jornadaForm.observacao || `Retorno em lote: ${config.label}`,
+        usuario,
+        onProgress: setProgressoProcessamento,
+      });
       const mapaAtualizado = await buscarJornadaPorIdentificadores(
         registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
       );
       setJornadaPorChave(mapaAtualizado);
+      setJornadaVersao((v) => v + 1);
+      removerDoFiltroJornada(chaves);
       setModalRetornoLoteAberto(false);
       setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
       setSucesso(`Jornada atualizada em lote: ${config.label} (${chaves.length.toLocaleString('pt-BR')} CT-e(s)).`);
@@ -1866,6 +2013,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       setErro(error.message || 'Não foi possível registrar o retorno em lote.');
     } finally {
       setJornadaSalvando(false);
+      setProgressoProcessamento(null);
     }
   }
 
@@ -1875,45 +2023,112 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   }
 
   async function confirmarGeracaoLaudo(enviarAgora) {
-    setModalLaudoAberto(false);
-    const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
     try {
-      baixarHtmlLaudoAuditoriaCtes(selecionados, { competencia, mostrarCobrancaAMenor: mostrarCobrancaAMenorLaudo });
-      setSucesso(`Laudo do transportador gerado com ${selecionados.length.toLocaleString('pt-BR')} CT-e(s).`);
+      await gerarLaudoEregistrar(enviarAgora);
     } catch (error) {
-      setErro(error.message || 'Não foi possível gerar o laudo dos CT-es.');
+      // Rede de segurança: sem isso, qualquer erro inesperado aqui deixava o
+      // botão "sem fazer nada" e o auditor não tinha como saber o motivo.
+      console.error('Falha ao gerar o laudo:', error);
+      setErro(`Falha ao gerar o laudo: ${error?.message || error}`);
+    }
+  }
+
+  async function gerarLaudoEregistrar(enviarAgora) {
+    setModalLaudoAberto(false);
+    setErro('');
+    const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
+    if (!selecionados.length) {
+      setErro('Nenhum CT-e selecionado para o laudo.');
       return;
     }
 
-    // Registro da jornada é aditivo: falha aqui não deve impedir o laudo já baixado.
-    try {
-      const usuario = carregarSessao();
-      const porTransportadora = new Map();
-      selecionados.forEach((row) => {
-        const chave = row.transportadora || 'SEM_TRANSPORTADORA';
-        if (!porTransportadora.has(chave)) porTransportadora.set(chave, []);
-        porTransportadora.get(chave).push(row);
-      });
+    // Um laudo POR TRANSPORTADORA: cada uma só pode enxergar os CT-es dela.
+    // Juntar tudo num arquivo só vazaria dados entre concorrentes.
+    const porTransportadora = new Map();
+    selecionados.forEach((row) => {
+      const chave = row.transportadora || 'SEM_TRANSPORTADORA';
+      if (!porTransportadora.has(chave)) porTransportadora.set(chave, []);
+      porTransportadora.get(chave).push(row);
+    });
 
-      for (const [transportadora, ctes] of porTransportadora) {
-        await registrarLaudoGerado({
-          transportadora: transportadora === 'SEM_TRANSPORTADORA' ? null : transportadora,
-          cnpjTransportadora: ctes[0]?.cnpj_transportadora || null,
+    // ETAPA 1 — gerar e baixar o laudo. Tudo síncrono, sem esperar o banco: o
+    // download precisa acontecer dentro do gesto do clique, senão o navegador
+    // cancela. O token do portal é sorteado aqui e persistido na etapa 2.
+    const gerados = [];
+    const falhas = [];
+
+    for (const [transportadora, ctes] of porTransportadora) {
+      const nome = transportadora === 'SEM_TRANSPORTADORA' ? null : transportadora;
+      const token = gerarTokenAleatorio();
+      try {
+        const arquivo = prepararArquivoLaudoAuditoriaCtes(ctes, {
           competencia,
-          ctes,
+          mostrarCobrancaAMenor: mostrarCobrancaAMenorLaudo,
+          portais: [{ transportadora: nome || '', url: urlPortalTransportadora(token) }],
+        });
+        gerados.push({ ...arquivo, transportadora: nome || 'Sem transportadora', qtd: ctes.length, ctes, nomeTransportadora: nome, token });
+      } catch (error) {
+        falhas.push(`${nome || 'sem transportadora'}: ${error.message || error}`);
+      }
+    }
+
+    // O painel de botões fica SEMPRE visível: o download automático pode ser
+    // bloqueado pelo navegador (vários arquivos, ou clique fora de gesto direto)
+    // e nesse caso o auditor precisa de um botão pra buscar o arquivo na mão.
+    setLaudosGerados(gerados);
+    // O painel fica no topo da página e o botão do laudo fica lá embaixo na
+    // tabela — sem rolar até ele, o auditor não vê que o arquivo ficou pronto.
+    requestAnimationFrame(() => {
+      document.getElementById('painel-laudos-gerados')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    if (gerados.length === 1) {
+      try {
+        baixarArquivoPreparado(gerados[0]);
+      } catch (error) {
+        console.warn('Download automático bloqueado; use o botão do painel.', error);
+      }
+    }
+
+    if (falhas.length) {
+      setErro(falhas.join(' | '));
+      return;
+    }
+    setSucesso(gerados.length === 1
+      ? `Laudo de ${gerados[0].transportadora} gerado (${gerados[0].qtd} CT-e). Registrando na jornada...`
+      : `${gerados.length} laudos gerados — um por transportadora. Clique em cada um abaixo para baixar.`);
+
+    // ETAPA 2 — registrar a jornada e ativar o link do portal. Já com o laudo
+    // na mão do auditor: uma falha aqui não impede o trabalho dele.
+    const usuario = carregarSessao();
+    const errosJornada = [];
+    let portaisAtivos = 0;
+    for (const item of gerados) {
+      try {
+        const processo = await registrarLaudoGerado({
+          transportadora: item.nomeTransportadora,
+          cnpjTransportadora: item.ctes[0]?.cnpj_transportadora || null,
+          competencia,
+          ctes: item.ctes,
           observacao: null,
           enviarAgora,
           usuario,
+          tokenPortal: item.token,
         });
+        if (processo?.portal?.url) portaisAtivos += 1;
+      } catch (jornadaError) {
+        console.error(`Jornada não registrada para ${item.transportadora}:`, jornadaError);
+        errosJornada.push(`${item.transportadora}: ${jornadaError.message || jornadaError}`);
       }
-
-      if (enviarAgora) {
-        setSucesso(`Laudo gerado e envio registrado para ${selecionados.length.toLocaleString('pt-BR')} CT-e(s).`);
-      }
-    } catch (jornadaError) {
-      console.error('Não foi possível registrar a jornada do laudo:', jornadaError);
-      setErro(`Laudo baixado, mas a jornada não foi registrada: ${jornadaError.message || jornadaError}`);
     }
+
+    if (errosJornada.length) {
+      setErro(`Laudo(s) gerado(s), mas a jornada falhou: ${errosJornada.join(' | ')}`);
+      return;
+    }
+    const semPortal = gerados.length - portaisAtivos;
+    setSucesso(`${gerados.length === 1 ? 'Laudo gerado' : `${gerados.length} laudos gerados`}`
+      + (enviarAgora ? ' e envio registrado na jornada.' : '.')
+      + (semPortal ? ` Atenção: ${semPortal} link(s) de resposta não ficaram ativos (a migration do portal já rodou?).` : ' Link de resposta ativo.'));
   }
 
   return (
@@ -2034,9 +2249,56 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         <BaseCtesStatus />
       </div>
 
+      {laudosGerados.length ? (
+        <div id="painel-laudos-gerados" className="panel-card" style={{ marginBottom: 16, borderColor: '#0f6b3e', borderWidth: 2 }}>
+          <div className="panel-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <span>
+              📄 {laudosGerados.length === 1 ? 'Laudo pronto' : `${laudosGerados.length} laudos prontos — um por transportadora`}
+            </span>
+            <button className="sim-tab" type="button" onClick={() => { laudosGerados.forEach((l) => URL.revokeObjectURL(l.url)); setLaudosGerados([]); }}>
+              Fechar
+            </button>
+          </div>
+          <p style={{ marginTop: -4, color: 'var(--muted)', fontSize: 13 }}>
+            Cada arquivo tem só os CT-es da transportadora dele. Se o download não começou sozinho (o navegador costuma bloquear), clique abaixo.
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {laudosGerados.map((laudo) => (
+              <button
+                key={laudo.nome}
+                type="button"
+                className="primary"
+                onClick={() => baixarArquivoPreparado(laudo)}
+                style={{ textAlign: 'left' }}
+              >
+                ⬇ {laudo.transportadora} <span style={{ fontWeight: 400, opacity: 0.85 }}>({laudo.qtd} CT-e)</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <RespostasPortalPendentes
+        competencia={competencia}
+        onAplicado={async () => {
+          if (!registrosDetalheVisiveis.length) return;
+          const mapa = await buscarJornadaPorIdentificadores(
+            registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+          );
+          setJornadaPorChave(mapa);
+          setJornadaVersao((v) => v + 1);
+        }}
+      />
+
       <PainelPendenciasJornadaCte
         competencia={competencia}
-        onSelecionarGrupo={async (label, lista) => {
+        recarregarChave={jornadaVersao}
+        registrosCarregados={registrosAnalise}
+        jornadaPorChave={jornadaPorChave}
+        carteiras={opcoesPreCarga.carteiras}
+        vinculos={opcoesPreCarga.vinculos}
+        dentroDaMargem={cteDentroDaMargem}
+        onSelecionarGrupo={async (label, lista, opcoes = {}) => {
           if (!label) {
             setFiltroJornada(null);
             return;
@@ -2057,6 +2319,16 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
           setFiltroSituacaoFatura([]);
           setLimiteDetalhe((v) => Math.max(v, chaves.size));
           if (modoPreLista) setModoPreLista(false);
+
+          // Cards calculados sobre a competência já carregada: os CT-es estão
+          // na tela, basta filtrar. Rebuscar no banco apagaria justamente os
+          // que ainda não foram salvos (ex.: os sem cálculo AMD).
+          if (opcoes.jaCarregados) {
+            requestAnimationFrame(() => {
+              document.getElementById('detalhe-ctes-secao')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+            return;
+          }
 
           setCarregando(true);
           setErro('');
@@ -2610,7 +2882,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
           </div>
         ) : null}
 
-        <AmdProcessingOverlay ativo={carregando || processando || resimulando} progresso={progressoProcessamento} />
+        <AmdProcessingOverlay ativo={carregando || processando || resimulando || jornadaSalvando} progresso={progressoProcessamento} />
         <BarraProgresso progresso={progressoProcessamento} />
 
         {fonteAuditoria ? (
@@ -3132,6 +3404,28 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                 Exportar Excel ({fmtN(registrosFiltro.length)})
               </button>
               <button className="sim-tab" type="button" onClick={selecionarDivergentesLaudo}>Selecionar incorretos</button>
+              <button
+                className="sim-tab"
+                type="button"
+                onClick={selecionarDentroDaMargemLaudo}
+                title="Marca os CT-es destacados em verde (com cálculo AMD e diferença dentro da tolerância)"
+              >
+                Selecionar corretos
+              </button>
+              <button
+                type="button"
+                disabled={!ctesSelecionadosLaudo.length || jornadaSalvando}
+                onClick={marcarSelecionadosComoOk}
+                title="Marca os CT-es selecionados como auditados OK na jornada (sem impacto financeiro)"
+                style={{
+                  background: '#dcfce7', color: '#166534', border: '1px solid #86efac',
+                  borderRadius: 8, padding: '6px 12px', fontWeight: 700,
+                  cursor: ctesSelecionadosLaudo.length && !jornadaSalvando ? 'pointer' : 'not-allowed',
+                  opacity: ctesSelecionadosLaudo.length && !jornadaSalvando ? 1 : 0.55,
+                }}
+              >
+                {jornadaSalvando ? 'Salvando...' : `✅ Marcar como OK (${fmtN(ctesSelecionadosLaudo.length)})`}
+              </button>
               <button className="sim-tab" type="button" onClick={selecionarTodosLaudo} disabled={!registrosDetalheOrdenados.length}>
                 {registrosDetalheOrdenados.length > 0
                   && registrosDetalheOrdenados.every((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)))

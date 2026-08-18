@@ -179,7 +179,7 @@ function detalheCte(row, diferenca, ocultarCobrancaAMenor = false) {
 
 export function gerarHtmlLaudoAuditoriaCtes(
   rows = [],
-  { competencia = "", observacao = "", mostrarCobrancaAMenor = false } = {},
+  { competencia = "", observacao = "", mostrarCobrancaAMenor = false, portais = [] } = {},
 ) {
   if (!rows.length)
     throw new Error("Selecione ao menos um CT-e incorreto para gerar o laudo.");
@@ -241,7 +241,22 @@ export function gerarHtmlLaudoAuditoriaCtes(
     "calculado+=moedaNumero(row.cells[7]&&row.cells[7].textContent);",
     `var calculadoLinha=moedaNumero(row.cells[7]&&row.cells[7].textContent);calculado+=${mostrarCobrancaAMenor ? "calculadoLinha" : "Math.min(calculadoLinha,moedaNumero(row.cells[6]&&row.cells[6].textContent))"};`,
   );
+  // Fase 14: botão que leva a transportadora ao portal de resposta. O link é
+  // servido pela função serverless (/api/portal/<token>), não pelo app — o
+  // laudo é um arquivo estático e não deve tentar gravar resposta sozinho.
+  const listaPortais = (portais || []).filter((p) => p && p.url);
+  const blocoPortal = listaPortais.length
+    ? `<div class="portal-box"><div><strong>Responder esta auditoria online</strong>
+<p>Confira CT-e a CT-e e registre sua tratativa direto no sistema — não é preciso login.</p></div>
+<div class="portal-links">${listaPortais.map((p) => (
+        `<a class="portal-button" href="${esc(p.url)}" target="_blank" rel="noopener">Conferir e responder${listaPortais.length > 1 && p.transportadora ? ` — ${esc(p.transportadora)}` : ''}</a>`
+      )).join('')}</div></div>`
+    : '';
+  const cssPortal = `.portal-box{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 32px 16px;padding:16px 18px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:10px}.portal-box p{margin:4px 0 0;color:#065f46;font-size:13px}.portal-links{display:flex;gap:8px;flex-wrap:wrap}.portal-button{display:inline-block;border-radius:8px;background:#0f6b3e;color:#fff;font-weight:700;padding:12px 18px;text-decoration:none;white-space:nowrap}.portal-button:hover{background:#0c5732}@media print{.portal-box{display:none}}`;
+
   return html
+    .replace("</style>", `${cssPortal}</style>`)
+    .replace('<section class="lista">', `${blocoPortal}<section class="lista">`)
     .replace('<th>CT-e</th><th>Transportadora</th>', '<th>CT-e</th><th>Emissão</th><th>Transportadora</th>')
     .replace('<small>CT-es incorretos</small><strong>', '<small>CT-es exibidos</small><strong id="resumo-quantidade">')
     .replace('<small>Total cobrado</small><strong>', '<small>Total cobrado</small><strong id="resumo-cobrado">')
@@ -252,16 +267,42 @@ export function gerarHtmlLaudoAuditoriaCtes(
     .replace("</script>", `${scriptsFiltrosComEmissao}${scriptExcelDetalhado}${scriptDetalhesEmColunas}${scriptResumoPublico}</script>`);
 }
 
-export function baixarHtmlLaudoAuditoriaCtes(rows, opcoes = {}) {
+/** Nome de arquivo por transportadora — gerando um laudo por transportadora,
+ * sem o sufixo os downloads teriam o mesmo nome e um sobrescreveria o outro. */
+export function nomeArquivoLaudoAuditoriaCtes(rows = [], competencia = "") {
+  const transportadoras = [...new Set(rows.map((r) => r.transportadora).filter(Boolean))];
+  const sufixo = transportadoras.length === 1
+    ? `-${transportadoras[0].normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 40)}`
+    : "";
+  return `laudo-ctes-incorretos${sufixo}-${competencia || new Date().toISOString().slice(0, 10)}.html`;
+}
+
+/** Gera o laudo e devolve {url, nome} sem disparar download. Usado quando há
+ * mais de uma transportadora: o navegador bloqueia downloads múltiplos
+ * automáticos, então cada arquivo vira um botão pro usuário clicar. */
+export function prepararArquivoLaudoAuditoriaCtes(rows, opcoes = {}) {
   const blob = new Blob([gerarHtmlLaudoAuditoriaCtes(rows, opcoes)], {
     type: "text/html;charset=utf-8",
   });
-  const url = URL.createObjectURL(blob);
+  return {
+    url: URL.createObjectURL(blob),
+    nome: nomeArquivoLaudoAuditoriaCtes(rows, opcoes.competencia),
+  };
+}
+
+export function baixarArquivoPreparado({ url, nome }) {
   const link = document.createElement("a");
   link.href = url;
-  link.download = `laudo-ctes-incorretos-${opcoes.competencia || new Date().toISOString().slice(0, 10)}.html`;
+  link.download = nome;
   document.body.appendChild(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+}
+
+export function baixarHtmlLaudoAuditoriaCtes(rows, opcoes = {}) {
+  const arquivo = prepararArquivoLaudoAuditoriaCtes(rows, opcoes);
+  baixarArquivoPreparado(arquivo);
+  // Revogar na hora cancela o download quando o clique não vem direto de um
+  // gesto do usuário (ex.: geramos o laudo depois de um await no Supabase).
+  setTimeout(() => URL.revokeObjectURL(arquivo.url), 1000);
 }

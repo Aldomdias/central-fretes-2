@@ -153,6 +153,9 @@ export async function registrarLaudoGerado({
   observacao,
   enviarAgora,
   usuario,
+  // Token já embutido no laudo que acabou de ser baixado. Vem de fora porque o
+  // download precisa sair junto com o clique, sem esperar o banco.
+  tokenPortal,
 }) {
   const client = ensureClient();
 
@@ -281,7 +284,131 @@ export async function registrarLaudoGerado({
     }
   }
 
-  return processo;
+  // Fase 14: todo laudo ganha um link de conferência. Mesmo quando é só
+  // "gerar/visualizar", o link já existe para o caso de o auditor decidir
+  // enviar depois — o que muda com `enviarAgora` é só o status dos CT-es.
+  //
+  // O portal é aditivo: se a migration dele ainda não rodou (ou o insert
+  // falha por qualquer motivo), o laudo e a jornada continuam funcionando
+  // normalmente — só sai sem o botão de resposta.
+  let portal = null;
+  try {
+    portal = await gerarTokenPortal({
+      client,
+      processoId: processo.id,
+      transportadora,
+      cnpjTransportadora,
+      usuario,
+      token: tokenPortal,
+    });
+  } catch (error) {
+    console.warn('[Jornada CT-e] link do portal não gerado (a migration do portal já rodou?):', error?.message || error);
+  }
+
+  return { ...processo, portal };
+}
+
+/** Token opaco de 32 bytes — Web Crypto, disponível no browser e no Node moderno.
+ * Exportado porque o laudo precisa do token ANTES de gravar no banco: o download
+ * tem que sair junto com o clique do usuário, sem esperar ida ao Supabase. */
+export function gerarTokenAleatorio() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function urlPortalTransportadora(token) {
+  if (!token) return '';
+  const base = typeof window !== 'undefined' ? window.location.origin : '';
+  return `${base}/api/portal/${token}`;
+}
+
+async function gerarTokenPortal({ client, processoId, transportadora, cnpjTransportadora, usuario, diasValidade = 90, token: tokenPreGerado }) {
+  const token = tokenPreGerado || gerarTokenAleatorio();
+  const expiraEm = new Date(Date.now() + diasValidade * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await client
+    .from('auditoria_cte_portal_tokens')
+    .insert({
+      token,
+      processo_id: processoId,
+      transportadora: transportadora || null,
+      cnpj_transportadora: cnpjTransportadora || null,
+      criado_por: usuario?.nome || usuario?.email || null,
+      expira_em: expiraEm,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return { ...data, url: urlPortalTransportadora(token) };
+}
+
+/**
+ * Fase 15 — respostas que a transportadora mandou pelo portal e ainda
+ * não foram validadas pelo auditor. A resposta NUNCA aplica sozinha.
+ */
+export async function listarRespostasPortalPendentes({ competencia } = {}) {
+  const client = ensureClient();
+  const { data, error } = await client
+    .from('auditoria_cte_portal_respostas')
+    .select('*, processo:auditoria_cte_processos(codigo, competencia, transportadora)')
+    .eq('status_validacao', 'PENDENTE')
+    .order('respondido_em', { ascending: false });
+  if (error) throw error;
+  const linhas = data || [];
+  if (!competencia) return linhas;
+  return linhas.filter((l) => !l.processo?.competencia || l.processo.competencia === competencia);
+}
+
+/**
+ * Aplica (ou rejeita) a resposta do portal. Aplicar = mesmo efeito de
+ * registrar o retorno manualmente, só que partindo do que a transportadora
+ * respondeu — com o auditor confirmando.
+ */
+export async function validarRespostaPortal({ resposta, aplicar, observacao, usuario }) {
+  const client = ensureClient();
+
+  if (aplicar) {
+    const config = RESULTADOS_RETORNO_TRANSPORTADORA[resposta.resultado];
+    if (!config) throw new Error(`Resultado desconhecido na resposta: ${resposta.resultado}`);
+
+    const { data: jornada } = await client
+      .from('auditoria_cte_jornada')
+      .select('valor_divergencia_identificada')
+      .eq('chave_cte', resposta.chave_cte)
+      .maybeSingle();
+
+    await atualizarStatusJornada({
+      chaveCte: resposta.chave_cte,
+      statusOperacional: config.statusOperacional,
+      statusFinanceiro: config.statusFinanceiro || undefined,
+      valorAcordado: config.pedeValor
+        ? Number(resposta.valor_proposto ?? jornada?.valor_divergencia_identificada ?? 0)
+        : undefined,
+      observacao: `Via portal (${resposta.respondido_por || 'transportadora'}): ${config.label}`
+        + (resposta.justificativa ? ` — ${resposta.justificativa}` : ''),
+      usuario,
+    });
+  }
+
+  const { error } = await client
+    .from('auditoria_cte_portal_respostas')
+    .update({
+      status_validacao: aplicar ? 'APLICADO' : 'REJEITADO',
+      validado_em: nowIso(),
+      validado_por: usuario?.nome || usuario?.email || null,
+      observacao_validacao: observacao || null,
+    })
+    .eq('id', resposta.id);
+  if (error) throw error;
+
+  await registrarEvento(client, {
+    chaveCte: resposta.chave_cte,
+    processoId: resposta.processo_id,
+    acao: aplicar ? 'RESPOSTA_PORTAL_APLICADA' : 'RESPOSTA_PORTAL_REJEITADA',
+    comentario: `Resposta do portal ${aplicar ? 'aplicada' : 'rejeitada'} pelo auditor.`
+      + (observacao ? ` Obs: ${observacao}` : ''),
+    usuario,
+  });
 }
 
 /**
@@ -358,6 +485,13 @@ export async function carregarPainelPendencias({ competencia } = {}) {
   const valorAcordado = linhas.reduce((acc, l) => acc + Number(l.valor_acordado || 0), 0);
   const valorRecuperado = linhas.reduce((acc, l) => acc + Number(l.valor_recuperado || 0), 0);
 
+  // Chaves que já têm uma decisão registrada — o painel usa isso pra saber o
+  // que ainda falta auditar entre os CT-es carregados na tela, sem precisar
+  // buscar a jornada de milhares de chaves uma a uma.
+  const chavesTratadas = new Set(
+    linhas.filter((l) => l.status_operacional && l.status_operacional !== 'NAO_AUDITADO').map((l) => String(l.chave_cte)),
+  );
+
   return {
     naoAuditados,
     auditadosOk,
@@ -368,6 +502,7 @@ export async function carregarPainelPendencias({ competencia } = {}) {
     auditadosSemFatura,
     descontosAguardandoConciliacao,
     cancelamentosAguardandoReemissao,
+    chavesTratadas,
     valorDivergenteIdentificado,
     valorAcordado,
     valorRecuperado,
@@ -542,6 +677,97 @@ export async function anularJornada({ chaveCte, motivo, usuario }) {
       + `acordado: ${atual.valor_acordado || 0}, recuperado: ${atual.valor_recuperado || 0}). Motivo: ${motivo}`,
     usuario,
   });
+}
+
+/**
+ * Aplica a mesma decisão a muitos CT-es de uma vez.
+ *
+ * Faz upsert (não update): boa parte dos CT-es de um mês nunca passou por
+ * laudo, logo não tem linha de jornada ainda — um update simples não gravaria
+ * nada e a tela "salvaria" sem efeito. Vai em lotes pra não fazer uma ida ao
+ * banco por CT-e.
+ */
+export async function registrarDecisaoJornadaEmLote({
+  ctes = [],
+  competencia,
+  statusOperacional,
+  statusFinanceiro,
+  valorAcordadoPorChave,
+  observacaoPorChave,
+  observacao,
+  usuario,
+  onProgress,
+  tamanhoLote = 200,
+}) {
+  const linhas = ctes.filter((c) => c.chave_cte);
+  if (!linhas.length) return { atualizados: 0 };
+  const client = ensureClient();
+
+  const chaves = linhas.map((c) => String(c.chave_cte));
+  const existentes = new Map();
+  for (let i = 0; i < chaves.length; i += tamanhoLote) {
+    const { data } = await client
+      .from('auditoria_cte_jornada')
+      .select('chave_cte, status_operacional, valor_acordado, valor_recuperado, aguardando_desde')
+      .in('chave_cte', chaves.slice(i, i + tamanhoLote));
+    (data || []).forEach((l) => existentes.set(String(l.chave_cte), l));
+  }
+
+  const agora = nowIso();
+  const payload = linhas.map((c) => {
+    const chave = String(c.chave_cte);
+    const anterior = existentes.get(chave);
+    const divergencia = Math.abs(Number(c.diferenca ?? ((Number(c.valor_cte || 0)) - (Number(c.valor_calculado || 0)))));
+    return {
+      chave_cte: chave,
+      numero_cte: c.numero_cte || null,
+      competencia: c.competencia || competencia || null,
+      transportadora: c.transportadora || null,
+      cnpj_transportadora: c.cnpj_transportadora || null,
+      status_operacional: statusOperacional,
+      status_financeiro: statusFinanceiro || (anterior?.status_financeiro ?? 'SEM_IMPACTO'),
+      valor_cobrado: Number(c.valor_cte || 0),
+      valor_correto: Number(c.valor_calculado || 0),
+      valor_divergencia_identificada: divergencia,
+      valor_acordado: valorAcordadoPorChave?.get?.(chave) ?? Number(anterior?.valor_acordado || 0),
+      valor_recuperado: Number(anterior?.valor_recuperado || 0),
+      auditor_responsavel_id: usuario?.id || null,
+      auditor_responsavel_nome: usuario?.nome || null,
+      // Sair de "aguardando retorno" zera o cronômetro de SLA (Fase 10).
+      aguardando_desde: statusOperacional === 'AGUARDANDO_RETORNO_TRANSPORTADORA'
+        ? (anterior?.aguardando_desde || agora)
+        : null,
+      observacao: observacaoPorChave?.get?.(chave) ?? observacao ?? null,
+      updated_at: agora,
+    };
+  });
+
+  let gravados = 0;
+  for (let i = 0; i < payload.length; i += tamanhoLote) {
+    const lote = payload.slice(i, i + tamanhoLote);
+    const { error } = await client.from('auditoria_cte_jornada').upsert(lote, { onConflict: 'chave_cte' });
+    if (error) throw error;
+
+    const eventos = lote.map((linha) => ({
+      chave_cte: linha.chave_cte,
+      acao: 'STATUS_ATUALIZADO',
+      status_anterior: existentes.get(linha.chave_cte)?.status_operacional || null,
+      status_novo: statusOperacional,
+      comentario: linha.observacao,
+      user_id: usuario?.id || null,
+      user_name: usuario?.nome || null,
+      user_email: usuario?.email || null,
+      origem_tela: 'auditoria-cte',
+    }));
+    // Histórico é complementar: se falhar, a decisão já gravada continua valendo.
+    const { error: erroEventos } = await client.from('audit_historico_eventos').insert(eventos);
+    if (erroEventos) console.warn('[Jornada CT-e] eventos não gravados neste lote:', erroEventos.message);
+
+    gravados += lote.length;
+    onProgress?.({ etapa: 'salvando_jornada', carregados: gravados, total: payload.length });
+  }
+
+  return { atualizados: gravados };
 }
 
 export async function carregarTimelineCte(chaveCte) {
