@@ -671,16 +671,19 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     }
   }
 
-  async function calcularTodas({ recalcular = false } = {}) {
+  async function calcularTodas({ recalcular = false, negociacoesAlvo = null, modoLabel = null } = {}) {
     setCalculandoTodas(true);
-    const fila = recalcular ? negociacoesAprovadas : negociacoesAprovadas.filter((item) => !resultados[item.id]);
+    const base = negociacoesAlvo || negociacoesAprovadas;
+    const fila = negociacoesAlvo
+      ? negociacoesAlvo
+      : (recalcular ? base : base.filter((item) => !resultados[item.id]));
     for (let i = 0; i < fila.length; i += 1) {
       const item = fila[i];
       setProgressoTodas({
         atual: i + 1,
         total: fila.length,
         transportadora: item.transportadora,
-        modo: recalcular ? 'Recalculando todas' : 'Calculando pendentes',
+        modo: modoLabel || (recalcular ? 'Recalculando todas' : 'Calculando pendentes'),
       });
       if (!item.isLotacao && statusVinculo(item).label === 'Sem vínculo') {
         setErros((prev) => ({ ...prev, [item.id]: 'Sem vínculo com uma transportadora do realizado. Selecione o nome correto em “Buscar vínculos”.' }));
@@ -691,6 +694,19 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
     }
     setProgressoTodas(null);
     setCalculandoTodas(false);
+  }
+
+  // Atualiza só as negociações que já têm CT-e naquela competência, em vez de
+  // recalcular tudo — assim um mês fechado (ex.: julho) não fica sendo puxado de
+  // novo toda hora; só a competência escolhida (ex.: agosto) é reconsultada.
+  function atualizarCompetencia(competencia) {
+    const alvo = negociacoesCalculadas.filter((item) =>
+      (resultados[item.id]?.mensal || []).some((mes) => mes.competencia === competencia));
+    if (!alvo.length) return;
+    calcularTodas({
+      negociacoesAlvo: alvo,
+      modoLabel: `Atualizando ${nomeMesSaving(competencia)}`,
+    });
   }
 
   function verDetalhe(item) {
@@ -824,7 +840,7 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
           {savingMensal.length ? (
             <div style={{ marginTop: 14, ...gestaoStyles.tabelaWrap }}>
               <table className="sim-table" style={{ minWidth: 620 }}>
-                <thead><tr><th>MÃªs do realizado</th><th>CT-es comparÃ¡veis</th><th>Transportadoras</th><th>Saving do mÃªs</th></tr></thead>
+                <thead><tr><th>MÃªs do realizado</th><th>CT-es comparÃ¡veis</th><th>Transportadoras</th><th>Saving do mÃªs</th><th></th></tr></thead>
                 <tbody>
                   {savingMensal.map((mes) => (
                     <tr key={mes.competencia}>
@@ -832,6 +848,18 @@ export default function GestaoSavingsAprovados({ tabelas = [], podeDevolver = fa
                       <td>{mes.ctesAtual.toLocaleString('pt-BR')}</td>
                       <td>{mes.transportadoras.size}</td>
                       <td style={{ fontWeight: 800, color: mes.saving >= 0 ? '#087f3f' : '#c1121f' }}>{formatMoney(mes.saving)}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="sim-tab"
+                          style={{ padding: '2px 8px', fontSize: 10 }}
+                          disabled={calculandoTodas}
+                          title="Recalcula só as negociações com CT-e nesta competência, sem mexer nos meses já fechados"
+                          onClick={() => atualizarCompetencia(mes.competencia)}
+                        >
+                          Atualizar
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

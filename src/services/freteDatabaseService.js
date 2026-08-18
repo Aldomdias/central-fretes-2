@@ -796,22 +796,136 @@ function chunksDb(lista = [], tamanho = 100) {
 // e-commerce). Nao usa o cache de carregarBaseCompletaDb (e um recorte, nao a
 // base inteira) - pensado pra ser rapido justamente por evitar buscar
 // milhoes de linhas de rotas/cotacoes/taxas de origens que nao interessam.
+const CAMPOS_ROTA_CALCULO_ECOMMERCE = [
+  'id', 'origem_id', 'nome_rota', 'ibge_origem', 'ibge_destino', 'canal',
+  'prazo_entrega_dias', 'valor_minimo_frete', 'codigo_unidade',
+  'cep_inicial', 'cep_final', 'metodo_envio', 'inicio_vigencia', 'fim_vigencia',
+].join(',');
+
+function deduplicarRotasCalculoEcommerce(rotas = []) {
+  const unicas = new Map();
+  (rotas || []).forEach((rota) => {
+    // Depois que o destino ja foi resolvido para IBGE, diferencas de id, CEP,
+    // unidade e vigencia entre importacoes historicas nao mudam o calculo: a
+    // cotacao e localizada por origem + nome da rota e a taxa pelo IBGE.
+    const chave = [
+      String(rota.origem_id || ''),
+      normalizarCidadeFiltroDb(rota.nome_rota || ''),
+      String(rota.ibge_destino || '').replace(/\D/g, ''),
+      normalizarCidadeFiltroDb(rota.canal || ''),
+      Number(rota.prazo_entrega_dias || 0),
+      Number(rota.valor_minimo_frete || 0),
+    ].join('|');
+    if (!unicas.has(chave)) unicas.set(chave, rota);
+  });
+  return [...unicas.values()];
+}
+
 async function fetchRotasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress = null) {
   if (!origemIds.length || !destinosIbge.length) return [];
   const allRows = [];
-  for (const grupoDestino of chunksDb(destinosIbge, 100)) {
-    let ultimoId = null;
+
+  async function buscarOrigemEDestinos(origemId, grupoDestino) {
+    const executar = () => supabase
+      .from('rotas')
+      .select(CAMPOS_ROTA_CALCULO_ECOMMERCE)
+      .eq('origem_id', origemId)
+      .in('ibge_destino', grupoDestino)
+      .limit(PAGE_SIZE);
+    const { data, error } = await comRetry(executar, 3);
+    if (error) {
+      const transitorio = error.code === '57014' || /timeout|504|canceling statement/i.test(error.message || '');
+      if (transitorio && grupoDestino.length > 1) {
+        const meio = Math.ceil(grupoDestino.length / 2);
+        await buscarOrigemEDestinos(origemId, grupoDestino.slice(0, meio));
+        await buscarOrigemEDestinos(origemId, grupoDestino.slice(meio));
+        return;
+      }
+      throw error;
+    }
+    const rows = data || [];
+    // Uma unica origem atingiu o teto da API: divide por destino em vez de
+    // paginar com ORDER BY global, que e justamente o plano lento visto na Rede.
+    if (rows.length >= PAGE_SIZE && grupoDestino.length > 1) {
+      const meio = Math.ceil(grupoDestino.length / 2);
+      await buscarOrigemEDestinos(origemId, grupoDestino.slice(0, meio));
+      await buscarOrigemEDestinos(origemId, grupoDestino.slice(meio));
+      return;
+    }
+    if (rows.length >= PAGE_SIZE && grupoDestino.length === 1) {
+      let ultimoId = null;
+      for (;;) {
+        let query = supabase
+          .from('rotas')
+          .select(CAMPOS_ROTA_CALCULO_ECOMMERCE)
+          .eq('origem_id', origemId)
+          .eq('ibge_destino', grupoDestino[0])
+          .order('id', { ascending: true })
+          .limit(PAGE_SIZE);
+        if (ultimoId !== null) query = query.gt('id', ultimoId);
+        // eslint-disable-next-line no-await-in-loop
+        const { data: pagina, error: erroPagina } = await comRetry(() => query, 3);
+        if (erroPagina) throw erroPagina;
+        const linhas = pagina || [];
+        allRows.push(...linhas);
+        onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+        if (linhas.length < PAGE_SIZE) return;
+        ultimoId = linhas[linhas.length - 1]?.id;
+        if (ultimoId == null) return;
+      }
+    }
+    allRows.push(...rows);
+    onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
+  }
+
+  // Poucas requisicoes pequenas em paralelo sao muito mais previsiveis que uma
+  // consulta gigante combinando dezenas de origem_id e forçando ordenacao global.
+  // destinosIbge tambem precisa ir em grupos pequenos (nao so origemIds): passar
+  // centenas/milhares de codigos IBGE de uma vez no .in() estoura o tamanho da URL
+  // e volta "Bad Request" antes mesmo de tentar (visto numa origem com pedidos pro
+  // Brasil inteiro, tipo ITAJAI, com lote de pedidos grande o suficiente pra juntar
+  // muitos destinos distintos numa pagina so).
+  for (const grupoOrigens of chunksDb(origemIds, 6)) {
+    for (const grupoDestino of chunksDb(destinosIbge, 100)) {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all(grupoOrigens.map((origemId) => buscarOrigemEDestinos(origemId, grupoDestino)));
+    }
+  }
+  return allRows;
+}
+
+// Taxas especiais tambem sao vinculadas a um destino. Buscar somente por origem_id
+// fazia uma origem grande baixar milhares de taxas de destinos que nao pertenciam ao
+// lote atual. Alem do desperdicio, as paginas finais acabavam em statement_timeout.
+async function fetchTaxasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress = null) {
+  if (!origemIds.length || !destinosIbge.length) return [];
+  const allRows = [];
+
+  async function buscarGrupoDestino(grupoDestino, aposId = null) {
+    let ultimoId = aposId;
     for (;;) {
-      let query = supabase
-        .from('rotas')
-        .select('*')
-        .in('origem_id', origemIds)
-        .in('ibge_destino', grupoDestino)
-        .order('id', { ascending: true })
-        .limit(PAGE_SIZE);
-      if (ultimoId !== null) query = query.gt('id', ultimoId);
-      const { data, error } = await query;
-      if (error) throw error;
+      const executar = () => {
+        let query = supabase
+          .from('taxas_especiais')
+          .select('*')
+          .in('origem_id', origemIds)
+          .in('ibge_destino', grupoDestino)
+          .order('id', { ascending: true })
+          .limit(PAGE_SIZE);
+        if (ultimoId !== null) query = query.gt('id', ultimoId);
+        return query;
+      };
+      const { data, error } = await comRetry(executar, 3);
+      if (error) {
+        const transitorio = error.code === '57014' || /timeout|504|canceling statement/i.test(error.message || '');
+        if (transitorio && grupoDestino.length > 1) {
+          const meio = Math.ceil(grupoDestino.length / 2);
+          await buscarGrupoDestino(grupoDestino.slice(0, meio), ultimoId);
+          await buscarGrupoDestino(grupoDestino.slice(meio), ultimoId);
+          return;
+        }
+        throw error;
+      }
       const rows = data || [];
       allRows.push(...rows);
       onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: allRows.length, total: null });
@@ -819,6 +933,11 @@ async function fetchRotasPorOrigensEDestinos(supabase, origemIds, destinosIbge, 
       ultimoId = rows[rows.length - 1]?.id;
       if (ultimoId == null) break;
     }
+  }
+
+  for (const grupoDestino of chunksDb(destinosIbge, 100)) {
+    // eslint-disable-next-line no-await-in-loop
+    await buscarGrupoDestino(grupoDestino);
   }
   return allRows;
 }
@@ -858,12 +977,14 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
     })(),
     fetchAllRowsFiltradoPorOrigens(supabase, 'generalidades', origemIds, 'origem_id'),
     fetchCotacoesFiltradasPorRota(supabase, origemIds, rotaNomes, onProgress),
-    fetchAllRowsFiltradoPorOrigens(supabase, 'taxas_especiais', origemIds),
+    fetchTaxasPorOrigensEDestinos(supabase, origemIds, destinosIbge, onProgress),
   ]);
 
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: rotas.length + cotacoes.length + taxas.length, total: null });
 
-  const rotasNormalizadas = await enriquecerRotasComIbgeDestinoPorCepDb(rotas);
+  const rotasNormalizadas = deduplicarRotasCalculoEcommerce(
+    await enriquecerRotasComIbgeDestinoPorCepDb(rotas)
+  );
 
   const generalidadeByOrigem = new Map(generalidades.map((item) => [String(item.origem_id), item]));
   const rotasByOrigem = new Map();
@@ -2681,7 +2802,23 @@ export async function buscarBaseSimulacaoDb({ origem = '', canal = '', destinoCo
     }
 
     const byId = new Map();
-    bases.forEach((item) => byId.set(String(item.id), item));
+    bases.forEach((item) => {
+      const chave = String(item.id);
+      const existente = byId.get(chave);
+      if (!existente) {
+        byId.set(chave, item);
+        return;
+      }
+      // A mesma transportadora aparece uma vez por origem/canal pesquisado —
+      // mescla as origens em vez de sobrescrever, senão perdemos a malha de
+      // todas as origens exceto a última processada (ex.: transportadora
+      // oficial com Campinas e Itupeva ficava só com uma das duas).
+      const origensExistentesIds = new Set((existente.origens || []).map((o) => String(o.id)));
+      const origensNovas = (item.origens || []).filter((o) => !origensExistentesIds.has(String(o.id)));
+      if (origensNovas.length) {
+        byId.set(chave, { ...existente, origens: [...(existente.origens || []), ...origensNovas] });
+      }
+    });
     return [...byId.values()];
   }
 

@@ -1479,7 +1479,6 @@ export async function listarCapasNegociacaoParaSimulacao(filtros = {}) {
     let query = supabase
       .from('tabelas_negociacao')
       .select(cols)
-      .eq('incluir_simulacao', true)
       .order('criado_em', { ascending: false });
     if (filtros.tipoTabela) query = query.eq('tipo_tabela', filtros.tipoTabela);
     if (filtros.tipoNegociacao) query = query.eq('tipo_negociacao', filtros.tipoNegociacao);

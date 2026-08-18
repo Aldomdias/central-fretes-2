@@ -19,8 +19,32 @@ import {
   consultarTabelaOrigemDb,
   carregarMapaCdCentros,
   carregarIndicadoresEcommerce,
+  listarSessoesResimulacaoEcommerce,
+  assinaturaFaseamentoEcommerce,
+  excluirProgressoOrigensEcommerce,
 } from '../services/ecommerceAuditoriaService';
 import AmdProcessingOverlay from '../components/AmdProcessingOverlay';
+
+const CHAVE_HISTORICO_RESIMULACAO = 'amd-auditoria-ecommerce-resimulacoes-v1';
+const CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS = 'amd-auditoria-ecommerce-resimulacoes-excluidas-v1';
+
+function lerHistoricoResimulacao() {
+  try {
+    const valor = JSON.parse(localStorage.getItem(CHAVE_HISTORICO_RESIMULACAO) || '[]');
+    return Array.isArray(valor) ? valor : [];
+  } catch {
+    return [];
+  }
+}
+
+function lerSessoesExcluidas() {
+  try {
+    const valor = JSON.parse(localStorage.getItem(CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS) || '[]');
+    return Array.isArray(valor) ? valor : [];
+  } catch {
+    return [];
+  }
+}
 
 const CDS_RESTRICAO = ['Itupeva', 'Jaboatão', 'Serra', 'Duque de Caxias', 'Itajaí'];
 
@@ -295,6 +319,7 @@ export default function AuditoriaEcommercePage() {
   // separadamente e pode ser complementado depois pelo segundo peso.
   const [pesoBase, setPesoBase] = useState('cotado');
   const [considerarPrazo, setConsiderarPrazo] = useState(true);
+  const [transportadorasExcluidas, setTransportadorasExcluidas] = useState([]);
   const [restringirCds, setRestringirCds] = useState(false);
   const [usarSaldoDia, setUsarSaldoDia] = useState(true);
   const [incluirSemCruzamento, setIncluirSemCruzamento] = useState(false);
@@ -308,6 +333,8 @@ export default function AuditoriaEcommercePage() {
   const [seguirAutomaticamente, setSeguirAutomaticamente] = useState(true);
   const [forcarFechamentoParcial, setForcarFechamentoParcial] = useState(false);
   const [refazerTudoFaseado, setRefazerTudoFaseado] = useState(false);
+  const [tamanhoLoteOrigem, setTamanhoLoteOrigem] = useState(200);
+  const [historicoResimulacoes, setHistoricoResimulacoes] = useState(() => lerHistoricoResimulacao());
   const [painelCandidatos, setPainelCandidatos] = useState(null);
   const [tabelaConsultada, setTabelaConsultada] = useState(null);
   const [abaPrincipal, setAbaPrincipal] = useState('operacao');
@@ -315,22 +342,69 @@ export default function AuditoriaEcommercePage() {
   const [cenarioPainel, setCenarioPainel] = useState('cotado');
   const [carregandoIndicadores, setCarregandoIndicadores] = useState(false);
   const [linhasIndicadoresLidas, setLinhasIndicadoresLidas] = useState(0);
-  const [filtrosBi, setFiltrosBi] = useState({ somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '' });
+  const filtrosBiVazio = { somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '', canal: '', uf: '' };
+  const [filtrosBi, setFiltrosBi] = useState(filtrosBiVazio);
 
   async function atualizarIndicadores() {
     setErro('');
     setCarregandoIndicadores(true);
     setLinhasIndicadoresLidas(0);
     try {
+      // So restringe por data no servidor; canal, UF, campanha, transportadora e
+      // divergencia de peso ficam disponiveis para filtro dinamico no navegador
+      // (filtrosBi), sem precisar buscar de novo no banco a cada troca de filtro.
       const resultado = await carregarIndicadoresEcommerce({
-        filtros: filtrosParaQuery(filtrosServidor),
+        filtros: { dataInicio: filtrosServidor.dataInicio || null, dataFim: filtrosServidor.dataFim || null },
         cenarioPeso: cenarioPainel,
         onProgress: ({ carregados }) => setLinhasIndicadoresLidas(carregados),
       });
       setIndicadores(resultado);
-      setFiltrosBi({ somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '' });
+      setFiltrosBi(filtrosBiVazio);
     } catch (error) {
       setErro(error.message || 'Erro ao carregar indicadores.');
+    } finally {
+      setCarregandoIndicadores(false);
+    }
+  }
+
+  // Regra 80/20 (80% preco + 20% prazo) so muda o resultado se a resimulacao for
+  // refeita com o criterio novo - nao da pra "trocar e ver" sem reprocessar, porque
+  // a escolha da transportadora ideal ja fica gravada no banco. Refaz para os dois
+  // pesos (cotado/faturado) no recorte de data do filtro principal e recarrega o painel.
+  async function recalcularIndicadoresComCriterio(novoConsiderarPrazo) {
+    setErro('');
+    setMensagem('');
+    setCarregandoIndicadores(true);
+    setLinhasIndicadoresLidas(0);
+    try {
+      const criterioB2c = novoConsiderarPrazo
+        ? { usarPonderadoB2c: true, pesoPreco: 80, pesoPrazo: 20 }
+        : { usarPonderadoB2c: false };
+      const filtrosData = { dataInicio: filtrosServidor.dataInicio || null, dataFim: filtrosServidor.dataFim || null };
+      for (const peso of ['cotado', 'faturado']) {
+        await resimularEcommerceEmLotes({
+          criterioB2c,
+          pesoBase: peso,
+          cdsPermitidos: restringirCds ? CDS_RESTRICAO : [],
+          usarSaldoDia,
+          incluirSemCruzamento,
+          refazerTudo: true,
+          filtros: filtrosData,
+          transportadorasExcluidas,
+          onProgress: ({ carregados }) => setLinhasIndicadoresLidas(carregados),
+        });
+      }
+      setConsiderarPrazo(novoConsiderarPrazo);
+      const resultado = await carregarIndicadoresEcommerce({
+        filtros: filtrosData,
+        cenarioPeso: cenarioPainel,
+        onProgress: ({ carregados }) => setLinhasIndicadoresLidas(carregados),
+      });
+      setIndicadores(resultado);
+      setFiltrosBi(filtrosBiVazio);
+      setMensagem(`Indicadores recalculados com ${novoConsiderarPrazo ? 'preco 80% + prazo 20%' : 'somente preco'}.`);
+    } catch (error) {
+      setErro(error.message || 'Erro ao recalcular indicadores com o novo criterio.');
     } finally {
       setCarregandoIndicadores(false);
     }
@@ -386,12 +460,104 @@ export default function AuditoriaEcommercePage() {
     setFiltros({});
   }
 
+  function salvarSessaoResimulacao(origens = origensMapeadas) {
+    const configuracao = {
+      filtrosServidor, pesoBase, considerarPrazo, restringirCds, usarSaldoDia,
+      incluirSemCruzamento, autoRetry, seguirAutomaticamente, refazerTudoFaseado,
+      transportadorasExcluidas,
+      assinatura: assinaturaFaseamentoEcommerce({
+        filtros: filtrosParaQuery(filtrosServidor), refazerTudo: refazerTudoFaseado, incluirSemCruzamento, pesoBase,
+      }),
+      origens: origens || null,
+    };
+    // transportadorasExcluidas fica de fora da chave de proposito - e um filtro
+    // dinamico (tipo BI) que nao muda qual recorte foi processado no banco, so como
+    // ele e exibido depois. Ver assinaturaFaseamentoEcommerce.
+    const chave = JSON.stringify({
+      filtrosServidor, pesoBase, considerarPrazo, restringirCds, usarSaldoDia,
+      incluirSemCruzamento, refazerTudoFaseado,
+    });
+    const anteriores = lerHistoricoResimulacao().filter((item) => item.chave !== chave);
+    const excluidas = lerSessoesExcluidas().filter((assinatura) => assinatura !== chave);
+    localStorage.setItem(CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS, JSON.stringify(excluidas));
+    const proximo = [{ chave, atualizadoEm: new Date().toISOString(), ...configuracao }, ...anteriores].slice(0, 10);
+    localStorage.setItem(CHAVE_HISTORICO_RESIMULACAO, JSON.stringify(proximo));
+    setHistoricoResimulacoes(proximo);
+  }
+
+  function restaurarSessaoResimulacao(item) {
+    if (!item) return;
+    setFiltrosServidor({
+      dataInicio: '', dataFim: '', cruzamentoStatus: '', simStatus: '', divergenciaPeso: false,
+      canal: '', uf: '', possuiCampanha: '', cdCidade: '', cteTransportadora: '',
+      ...(item.filtrosServidor || {}),
+    });
+    setPesoBase(item.pesoBase || 'cotado');
+    setConsiderarPrazo(item.considerarPrazo !== false);
+    setRestringirCds(Boolean(item.restringirCds));
+    setUsarSaldoDia(item.usarSaldoDia !== false);
+    setIncluirSemCruzamento(Boolean(item.incluirSemCruzamento));
+    setAutoRetry(Boolean(item.autoRetry));
+    setSeguirAutomaticamente(item.seguirAutomaticamente !== false);
+    setRefazerTudoFaseado(Boolean(item.refazerTudoFaseado));
+    setTransportadorasExcluidas(item.transportadorasExcluidas || []);
+    setOrigensMapeadas(item.recuperadaDoBanco ? null : (item.origens || null));
+    setForcarFechamentoParcial(false);
+    setErro('');
+    setMensagem(item.recuperadaDoBanco
+      ? 'Sessao antiga restaurada. Clique em "Mapear origens (atualizar)" para reconstruir a lista completa e manter marcadas as ja concluidas.'
+      : 'Sessao restaurada. Filtros e origens recuperados; continue pelas origens pendentes.');
+  }
+
+  async function limparHistoricoResimulacoes() {
+    const excluidas = [...new Set([
+      ...lerSessoesExcluidas(),
+      ...historicoResimulacoes.map((item) => item.chave),
+    ])];
+    localStorage.setItem(CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS, JSON.stringify(excluidas));
+    localStorage.removeItem(CHAVE_HISTORICO_RESIMULACAO);
+    const listaAnterior = historicoResimulacoes;
+    setHistoricoResimulacoes([]);
+    limparFiltrosServidor();
+    setMensagem('Historico limpo. Apagando progresso no banco...');
+    try {
+      await Promise.all(listaAnterior.map((item) => {
+        const assinatura = item.assinatura || assinaturaFaseamentoEcommerce({
+          filtros: filtrosParaQuery(item.filtrosServidor || {}), refazerTudo: Boolean(item.refazerTudoFaseado),
+          incluirSemCruzamento: Boolean(item.incluirSemCruzamento), pesoBase: item.pesoBase || 'cotado',
+        });
+        return excluirProgressoOrigensEcommerce(assinatura);
+      }));
+      setMensagem('Historico e progresso no banco limpos. Configure uma nova resimulacao.');
+    } catch (error) {
+      setMensagem('Historico limpo, mas houve erro ao limpar progresso no banco: ' + (error.message || 'erro desconhecido'));
+    }
+  }
+
+  async function excluirSessaoResimulacao(item) {
+    const proximo = lerHistoricoResimulacao().filter((sessao) => sessao.chave !== item.chave);
+    const excluidas = [...new Set([...lerSessoesExcluidas(), item.chave])];
+    localStorage.setItem(CHAVE_HISTORICO_RESIMULACAO, JSON.stringify(proximo));
+    localStorage.setItem(CHAVE_HISTORICO_RESIMULACAO_EXCLUIDAS, JSON.stringify(excluidas));
+    setHistoricoResimulacoes(proximo);
+    try {
+      const assinatura = item.assinatura || assinaturaFaseamentoEcommerce({
+        filtros: filtrosParaQuery(item.filtrosServidor || {}), refazerTudo: Boolean(item.refazerTudoFaseado),
+        incluirSemCruzamento: Boolean(item.incluirSemCruzamento), pesoBase: item.pesoBase || 'cotado',
+      });
+      await excluirProgressoOrigensEcommerce(assinatura);
+      setMensagem('Sessao excluida (historico e progresso no banco). Os resultados ja resimulados nos pedidos foram preservados.');
+    } catch (error) {
+      setMensagem('Sessao removida do historico, mas houve erro ao limpar o progresso no banco: ' + (error.message || 'erro desconhecido'));
+    }
+  }
+
   async function atualizarDiagnostico() {
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const [diag, diagSim] = await Promise.all([
         diagnosticarEcommerceOrderSnapshot(filtrosAtuais),
-        diagnosticarResimulacaoEcommerce(filtrosAtuais, { incluirSemCruzamento }),
+        diagnosticarResimulacaoEcommerce(filtrosAtuais, { incluirSemCruzamento, pesoBase }),
       ]);
       setDiagnostico(diag);
       setDiagnosticoSim(diagSim);
@@ -413,6 +579,59 @@ export default function AuditoriaEcommercePage() {
     listarOpcoesFiltroEcommerce().then(setOpcoesFiltro).catch(() => {});
     carregarMapaCdCentros().then(setCdCentros).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!cdCentros.mapa.size) return;
+    listarSessoesResimulacaoEcommerce().then((sessoes) => {
+      const excluidas = new Set(lerSessoesExcluidas());
+      const recuperadas = (sessoes || []).map((sessao) => {
+        const cfg = sessao.configuracao || {};
+        const f = cfg.filtros || {};
+        const cidadesCd = [...new Set((f.cdCodigos || []).map((codigo) => cdCentros.mapa.get(codigo)).filter(Boolean))];
+        const filtrosServidorReconstruido = {
+          dataInicio: f.dataInicio || '', dataFim: f.dataFim || '',
+          cruzamentoStatus: f.cruzamentoStatus || '', simStatus: f.simStatus || '',
+          divergenciaPeso: Boolean(f.divergenciaPeso), canal: f.canal || '', uf: f.uf || '',
+          possuiCampanha: f.possuiCampanha === null || f.possuiCampanha === undefined ? '' : String(Boolean(f.possuiCampanha)),
+          cdCidade: cidadesCd.length === 1 ? cidadesCd[0] : '', cteTransportadora: f.cteTransportadora || '',
+        };
+        const pesoBaseReconstruido = cfg.pesoBase || 'cotado';
+        const restringirCdsReconstruido = false;
+        const usarSaldoDiaReconstruido = true;
+        const incluirSemCruzamentoReconstruido = Boolean(cfg.incluirSemCruzamento);
+        const refazerTudoFaseadoReconstruido = Boolean(cfg.refazerTudo);
+        // Mesmo formato de chave usado em salvarSessaoResimulacao - senao a sessao
+        // recuperada do banco (chave = assinatura crua) e a salva localmente pelo
+        // fluxo normal (chave = JSON dos campos da tela) nunca batem, e a mesma
+        // sessao aparece duplicada na lista (uma "com checkpoint", outra com o
+        // progresso real).
+        const chave = JSON.stringify({
+          filtrosServidor: filtrosServidorReconstruido, pesoBase: pesoBaseReconstruido,
+          considerarPrazo: true, restringirCds: restringirCdsReconstruido, usarSaldoDia: usarSaldoDiaReconstruido,
+          incluirSemCruzamento: incluirSemCruzamentoReconstruido, refazerTudoFaseado: refazerTudoFaseadoReconstruido,
+        });
+        return {
+          chave,
+          atualizadoEm: sessao.atualizadoEm,
+          filtrosServidor: filtrosServidorReconstruido,
+          pesoBase: pesoBaseReconstruido, considerarPrazo: true,
+          restringirCds: restringirCdsReconstruido, usarSaldoDia: usarSaldoDiaReconstruido,
+          incluirSemCruzamento: incluirSemCruzamentoReconstruido,
+          autoRetry: false, seguirAutomaticamente: true,
+          refazerTudoFaseado: refazerTudoFaseadoReconstruido,
+          origens: sessao.origens || [], recuperadaDoBanco: true,
+          assinatura: sessao.assinatura,
+        };
+      }).filter((item) => !excluidas.has(item.chave));
+      const locais = lerHistoricoResimulacao();
+      const chavesRemotas = new Set(recuperadas.map((item) => item.chave));
+      const combinado = [...recuperadas, ...locais.filter((item) => !chavesRemotas.has(item.chave))]
+        .sort((a, b) => String(b.atualizadoEm || '').localeCompare(String(a.atualizadoEm || '')))
+        .slice(0, 10);
+      localStorage.setItem(CHAVE_HISTORICO_RESIMULACAO, JSON.stringify(combinado));
+      setHistoricoResimulacoes(combinado);
+    }).catch(() => {});
+  }, [cdCentros]);
 
   useEffect(() => {
     atualizarDiagnostico();
@@ -480,13 +699,15 @@ export default function AuditoriaEcommercePage() {
     }
   }
 
-  function assinaturaMalhaAtual(filtrosAtuais, refazerTudo = false) {
+  function assinaturaMalhaAtual(filtrosAtuais, refazerTudo = false, pesoBaseAtual = pesoBase) {
     return assinaturaMalhaResimulacaoEcommerce({
       filtros: filtrosAtuais,
       refazerTudo,
       incluirSemCruzamento,
       usarSaldoDia,
       cdsPermitidos: restringirCds ? CDS_RESTRICAO : [],
+      pesoBase: pesoBaseAtual,
+      transportadorasExcluidas,
     });
   }
 
@@ -507,6 +728,7 @@ export default function AuditoriaEcommercePage() {
         incluirSemCruzamento,
         usarSaldoDia,
         cdsPermitidos: restringirCds ? CDS_RESTRICAO : [],
+        pesoBase,
         onProgress: (evt) => setProgressoAmd(evt),
       });
       setMalhaPronta(malha);
@@ -555,6 +777,7 @@ export default function AuditoriaEcommercePage() {
         refazerTudo: refazerTudoFaseado,
         incluirSemCruzamento,
         pesoBase,
+        transportadorasExcluidas,
         onProgress: (evt) => setProgressoAmd(evt),
       });
       const resultado = await (autoRetry ? comRetryGenerico(executar) : executar());
@@ -583,9 +806,11 @@ export default function AuditoriaEcommercePage() {
         refazerTudo: refazerTudoFaseado,
         incluirSemCruzamento,
         pesoBase,
+        transportadorasExcluidas,
         onProgress: (evt) => setProgressoAmd(evt),
       });
       setOrigensMapeadas(origens);
+      salvarSessaoResimulacao(origens);
       if (!origens.length) setMensagem('Nenhuma origem com pedido elegivel nesse recorte.');
     } catch (error) {
       setErro(error.message || 'Erro ao mapear origens.');
@@ -605,12 +830,16 @@ export default function AuditoriaEcommercePage() {
     setProgressoAmd({ etapa: 'processando_origem', origemAtual: cidade, carregados: 0, total: null });
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
+      const totalPedidosOrigem = (listaBase || []).find((o) => o.cidade === cidade)?.quantidadePedidos || null;
       const executar = () => processarUmaOrigemEcommerce({
         origemCidade: cidade,
         filtros: filtrosAtuais,
         refazerTudo: refazerTudoFaseado,
         incluirSemCruzamento,
         pesoBase,
+        totalPedidosOrigem,
+        tamanhoLotePedidos: tamanhoLoteOrigem,
+        transportadorasExcluidas,
         onProgress: (evt) => setProgressoAmd({ ...evt, origemAtual: cidade }),
       });
       const resultado = await (autoRetry ? comRetryGenerico(executar) : executar());
@@ -619,6 +848,7 @@ export default function AuditoriaEcommercePage() {
       // achando que a origem que acabou de rodar ainda esta pendente.
       const listaAtualizada = (listaBase || []).map((o) => (o.cidade === cidade ? { ...o, concluida: true, totalPedidosProcessados: resultado.totalPedidos } : o));
       setOrigensMapeadas(listaAtualizada);
+      salvarSessaoResimulacao(listaAtualizada);
       setMensagem(`Origem "${cidade}" concluida (${formatarNumero(resultado.totalPedidos)} pedido(s)).`);
 
       if (seguirAutomaticamente) {
@@ -659,8 +889,23 @@ export default function AuditoriaEcommercePage() {
         origensEsperadas: (origensMapeadas || []).map((origem) => origem.cidade),
         criterioB2c,
         pesoBase,
+        transportadorasExcluidas,
         onProgress: (evt) => setProgressoAmd(evt),
       });
+      // Fechado com sucesso: o resultado final ja esta gravado no pedido, entao o
+      // bookkeeping de "quais origens ja rodaram" (checkpoint/progresso) e o card
+      // no historico da tela nao servem mais pra nada - só ficariam como sujeira,
+      // reaparecendo em toda visita a tela.
+      const assinatura = assinaturaFaseamentoEcommerce({ filtros: filtrosAtuais, refazerTudo: refazerTudoFaseado, incluirSemCruzamento, pesoBase });
+      await excluirProgressoOrigensEcommerce(assinatura).catch(() => {});
+      const chaveAtual = JSON.stringify({
+        filtrosServidor, pesoBase, considerarPrazo, restringirCds, usarSaldoDia,
+        incluirSemCruzamento, refazerTudoFaseado,
+      });
+      const restante = lerHistoricoResimulacao().filter((item) => item.chave !== chaveAtual);
+      localStorage.setItem(CHAVE_HISTORICO_RESIMULACAO, JSON.stringify(restante));
+      setHistoricoResimulacoes(restante);
+      setOrigensMapeadas(null);
       setMensagem(`Resimulacao fechada. Processados: ${formatarNumero(resultado.totalProcessado)} - OK: ${formatarNumero(resultado.totalOk)}`);
       await atualizarDiagnostico();
       await atualizarGrid();
@@ -679,8 +924,8 @@ export default function AuditoriaEcommercePage() {
     try {
       const filtrosAtuais = filtrosParaQuery(filtrosServidor);
       const [pendentes, jaFeitos] = await Promise.all([
-        contarElegiveisResimulacaoEcommerce(filtrosAtuais, { incluirSemCruzamento }),
-        contarJaResimuladosParaFiltro(filtrosAtuais, { incluirSemCruzamento }),
+        contarElegiveisResimulacaoEcommerce(filtrosAtuais, { incluirSemCruzamento, pesoBase }),
+        contarJaResimuladosParaFiltro(filtrosAtuais, { incluirSemCruzamento, pesoBase }),
       ]);
       setResumoResimulacao({
         origem: 'servidor',
@@ -694,6 +939,7 @@ export default function AuditoriaEcommercePage() {
         usarSaldoDia,
         incluirSemCruzamento,
         autoRetry,
+        transportadorasExcluidas,
         assinaturaMalha: assinaturaMalhaAtual(filtrosAtuais, false),
       });
     } catch (error) {
@@ -743,7 +989,7 @@ export default function AuditoriaEcommercePage() {
       // So reaproveita a malha ja baixada (botao "1. Carregar malha") se ela corresponde
       // exatamente ao recorte/opcoes que vai rodar agora - senao deixa a funcao carregar
       // do zero sozinha (fallback seguro, so mais lento).
-      const assinaturaNecessaria = assinaturaMalhaAtual(filtrosParaQuery(resumo.filtros), resumo.refazerTudo);
+      const assinaturaNecessaria = assinaturaMalhaAtual(filtrosParaQuery(resumo.filtros), resumo.refazerTudo, resumo.pesoBase);
       const malhaParaUsar = malhaPronta && malhaPronta.assinatura === assinaturaNecessaria ? malhaPronta : null;
       const resultado = await (resumo.autoRetry ? resimularEmLotesComRetry : resimularEcommerceEmLotes)({
           criterioB2c,
@@ -755,6 +1001,7 @@ export default function AuditoriaEcommercePage() {
           malhaPronta: malhaParaUsar,
           totalAlvo: Math.max((resumo.refazerTudo ? resumo.pendentes + resumo.jaFeitos : resumo.pendentes) || 0, 1),
           filtros: filtrosParaQuery(resumo.filtros),
+          transportadorasExcluidas: resumo.transportadorasExcluidas || [],
           onProgress: (evt) => setProgressoAmd(evt),
         });
       setMensagem(`Resimulacao concluida. Processados: ${formatarNumero(resultado.totalProcessado)} - OK: ${formatarNumero(resultado.totalOk)}`);
@@ -809,10 +1056,32 @@ export default function AuditoriaEcommercePage() {
     if (filtrosBi.origemUsada && item.origemUsada !== filtrosBi.origemUsada) return false;
     if (filtrosBi.competencia && competenciaBi(item.dataCriacao) !== filtrosBi.competencia) return false;
     if (filtrosBi.semana && semanaBi(item.dataCriacao) !== filtrosBi.semana) return false;
+    if (filtrosBi.canal && item.canal !== filtrosBi.canal) return false;
+    if (filtrosBi.uf && item.uf !== filtrosBi.uf) return false;
     return true;
   }), [indicadores, filtrosBi]);
 
   const indicadoresBi = useMemo(() => consolidarItensBi(itensBiFiltrados), [itensBiFiltrados]);
+
+  // Cada item do painel ja carrega os dois lados (visao atual + "outro cenario"), gravados
+  // na mesma rodada de resimulacao - entao a comparacao cotado x faturado nao precisa de
+  // nenhuma consulta nova, so reorganiza o que ja esta em itensBiFiltrados.
+  const outroCenarioLabel = cenarioPainel === 'cotado' ? 'faturado' : 'cotado';
+  const comparativoBi = useMemo(() => {
+    const comOutraVisao = itensBiFiltrados.filter((item) => item.transportadoraIdealOutroCenario);
+    const mudaram = comOutraVisao.filter((item) => item.mudouTransportadoraPorPeso);
+    const valorAtual = comOutraVisao.reduce((soma, item) => soma + Number(item.valorIdeal || 0), 0);
+    const valorOutro = comOutraVisao.reduce((soma, item) => soma + Number(item.valorIdealOutroCenario || 0), 0);
+    return {
+      totalComparavel: comOutraVisao.length,
+      mudaram: mudaram.length,
+      valorAtual: Number(valorAtual.toFixed(2)),
+      valorOutro: Number(valorOutro.toFixed(2)),
+      diferenca: Number((valorOutro - valorAtual).toFixed(2)),
+      ganhamNoOutro: rankingBi(mudaram.map((item) => ({ ...item, perda: Math.abs(Number(item.valorIdealOutroCenario || 0) - Number(item.valorIdeal || 0)), transportadoraGanha: item.transportadoraIdealOutroCenario })), 'transportadoraGanha'),
+      perdemNoOutro: rankingBi(mudaram.map((item) => ({ ...item, perda: Math.abs(Number(item.valorIdealOutroCenario || 0) - Number(item.valorIdeal || 0)) })), 'transportadoraIdeal'),
+    };
+  }, [itensBiFiltrados]);
 
   return (
     <div className="page-shell">
@@ -831,6 +1100,7 @@ export default function AuditoriaEcommercePage() {
       <div className="tabs-row audit-main-tabs" style={{ marginBottom: 12 }}>
         <button className={abaPrincipal === 'operacao' ? 'tab-btn active' : 'tab-btn'} type="button" onClick={() => setAbaPrincipal('operacao')}>Operacao e pedidos</button>
         <button className={abaPrincipal === 'indicadores' ? 'tab-btn active' : 'tab-btn'} type="button" onClick={() => setAbaPrincipal('indicadores')}>Painel de indicadores</button>
+        <button className={abaPrincipal === 'comparativo' ? 'tab-btn active' : 'tab-btn'} type="button" onClick={() => setAbaPrincipal('comparativo')}>Comparativo cotado x faturado</button>
       </div>
 
       <div style={{ display: abaPrincipal === 'operacao' ? 'contents' : 'none' }}>
@@ -888,12 +1158,31 @@ export default function AuditoriaEcommercePage() {
                 Seguir automaticamente pra proxima ao terminar
               </label>
             </div>
+            <div className="section-row compact-top" style={{ marginBottom: 6 }}>
+              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, margin: 0 }}>
+                Pedidos por lote (dentro da origem)
+                <input
+                  type="number"
+                  min={20}
+                  max={5000}
+                  step={20}
+                  value={tamanhoLoteOrigem}
+                  onChange={(e) => setTamanhoLoteOrigem(Math.max(20, Math.min(5000, Number(e.target.value) || 200)))}
+                  style={{ width: 80 }}
+                />
+                <span className="compact" style={{ color: '#94a3b8' }}>
+                  maior = menos idas ao banco (mais rapido se nao der erro), mas baixa mais malha de uma vez e perde mais se cair no meio; padrao 200
+                </span>
+              </label>
+            </div>
             <div style={{ maxHeight: 260, overflowY: 'auto' }}>
               {origensMapeadas.map((o) => (
                 <div key={o.cidade} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 6px', borderBottom: '1px solid #f1f5f9', fontSize: '0.85rem' }}>
                   <span>
                     {o.concluida ? '✅' : origemProcessandoAgora === o.cidade ? '⏳' : '⬜'} {o.cidade}
-                    <span style={{ color: '#94a3b8', marginLeft: 6 }}>({formatarNumero(o.quantidadePedidos)} pedido(s))</span>
+                    <span style={{ color: '#94a3b8', marginLeft: 6 }}>
+                      ({!o.concluida && o.pedidosSalvos > 0 ? `${formatarNumero(o.pedidosSalvos)} de ` : ''}{formatarNumero(o.quantidadePedidos)} pedido(s))
+                    </span>
                   </span>
                   <button
                     className="btn-secondary"
@@ -944,6 +1233,37 @@ export default function AuditoriaEcommercePage() {
           <button className="btn-secondary" type="button" onClick={limparFiltrosServidor}>Limpar todos os filtros</button>
         </div>
         <p className="compact">Esses filtros valem para a base inteira (nao so a amostra abaixo) e para a resimulacao.</p>
+        <div style={{ marginBottom: 12, padding: 10, border: '1px solid #c7d2fe', borderRadius: 8, background: '#eef2ff' }}>
+            <div className="section-row compact-top" style={{ marginBottom: 6 }}>
+              <strong>Historico de resimulacoes</strong>
+              <button className="btn-secondary" type="button" onClick={limparHistoricoResimulacoes}>Limpar historico e iniciar nova</button>
+            </div>
+            {!historicoResimulacoes.length ? (
+              <p className="compact" style={{ margin: 0 }}>
+                Nenhuma resimulacao salva ainda. Ao clicar em "Mapear origens", esta configuracao aparecera aqui para ser retomada depois.
+              </p>
+            ) : null}
+            {historicoResimulacoes.slice(0, 5).map((item) => {
+              const concluidas = (item.origens || []).filter((origem) => origem.concluida).length;
+              const totalOrigens = (item.origens || []).length;
+              const inicio = item.filtrosServidor?.dataInicio || 'inicio livre';
+              const fim = item.filtrosServidor?.dataFim || 'fim livre';
+              return (
+                <div key={item.chave} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', padding: '5px 0', borderTop: '1px solid #dbeafe' }}>
+                  <span className="compact">
+                    <strong>{inicio} ate {fim}</strong> · peso {item.pesoBase || 'cotado'} · {item.recuperadaDoBanco
+                      ? `${totalOrigens} origem(ns) com checkpoint — remapear ao retomar`
+                      : totalOrigens ? `${concluidas} de ${totalOrigens} origens` : 'aguardando mapeamento'} · salvo em {new Date(item.atualizadoEm).toLocaleString('pt-BR')}
+                  </span>
+                  <span style={{ display: 'inline-flex', gap: 6 }}>
+                    <button className="btn-secondary" type="button" onClick={() => restaurarSessaoResimulacao(item)}>Retomar</button>
+                    <button className="btn-secondary" type="button" onClick={() => excluirSessaoResimulacao(item)}>Excluir</button>
+                  </span>
+                </div>
+              );
+            })}
+        </div>
+        <p className="compact" style={{ fontWeight: 600, marginTop: 4, marginBottom: 4 }}>Filtrar / exibir</p>
         <div className="form-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
           <label className="field">
             Data criacao (de)
@@ -1010,6 +1330,23 @@ export default function AuditoriaEcommercePage() {
             Só com divergencia de peso (cotado x faturado)
           </label>
           <label className="field">
+            Transportadora do CT-e real
+            <input
+              type="text"
+              list="transportadoras-cte-ecommerce"
+              value={filtrosServidor.cteTransportadora}
+              placeholder="Ex.: PATRUS"
+              onChange={(e) => onChangeFiltroServidor('cteTransportadora', e.target.value)}
+            />
+            <datalist id="transportadoras-cte-ecommerce">
+              {opcoesFiltro.transportadorasCte.map((nome) => <option key={nome} value={nome} />)}
+            </datalist>
+          </label>
+        </div>
+
+        <p className="compact" style={{ fontWeight: 600, marginTop: 16, marginBottom: 4 }}>Como resimular</p>
+        <div className="form-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+          <label className="field">
             Peso usado na resimulacao
             <select value={pesoBase} onChange={(e) => {
               setPesoBase(e.target.value);
@@ -1053,19 +1390,6 @@ export default function AuditoriaEcommercePage() {
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <input type="checkbox" checked={autoRetry} onChange={(e) => setAutoRetry(e.target.checked)} />
             Retomar sozinho se der erro/timeout (deixar rodando a noite, sem clicar de novo) — mantenha o computador ligado e a aba aberta
-          </label>
-          <label className="field">
-            Transportadora do CT-e real
-            <input
-              type="text"
-              list="transportadoras-cte-ecommerce"
-              value={filtrosServidor.cteTransportadora}
-              placeholder="Ex.: PATRUS"
-              onChange={(e) => onChangeFiltroServidor('cteTransportadora', e.target.value)}
-            />
-            <datalist id="transportadoras-cte-ecommerce">
-              {opcoesFiltro.transportadorasCte.map((nome) => <option key={nome} value={nome} />)}
-            </datalist>
           </label>
           <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <input
@@ -1220,6 +1544,19 @@ export default function AuditoriaEcommercePage() {
             </div>
           </div>
 
+          <div className="actions-right wrap" style={{ marginTop: 8 }}>
+            <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 'auto' }}>
+              <input
+                type="checkbox"
+                checked={considerarPrazo}
+                onChange={(e) => recalcularIndicadoresComCriterio(e.target.checked)}
+                disabled={carregandoIndicadores}
+              />
+              Regra 80/20 (80% preco + 20% prazo) na transportadora ideal
+            </label>
+            <small className="compact">Muda o criterio muda a escolha "ideal" - refaz a resimulacao do periodo filtrado e recarrega o painel. Pode demorar em bases grandes.</small>
+          </div>
+
           {!indicadores && !carregandoIndicadores ? <div className="sim-alert info">Clique em Atualizar indicadores depois do fechamento. A mesma rodada alimenta as visoes cotada e faturada.</div> : null}
 
           {indicadores ? (
@@ -1257,10 +1594,22 @@ export default function AuditoriaEcommercePage() {
                     <option value="">Todos</option><option value="true">Com valor</option><option value="false">Sem valor</option>
                   </select>
                 </label>
+                <label className="field">Canal
+                  <select value={filtrosBi.canal} onChange={(e) => setFiltrosBi((f) => ({ ...f, canal: e.target.value }))}>
+                    <option value="">Todos</option>
+                    {[...new Set(indicadores.itens.map((item) => item.canal).filter(Boolean))].sort().map((valor) => <option key={valor} value={valor}>{valor}</option>)}
+                  </select>
+                </label>
+                <label className="field">UF
+                  <select value={filtrosBi.uf} onChange={(e) => setFiltrosBi((f) => ({ ...f, uf: e.target.value }))}>
+                    <option value="">Todas</option>
+                    {[...new Set(indicadores.itens.map((item) => item.uf).filter(Boolean))].sort().map((valor) => <option key={valor} value={valor}>{valor}</option>)}
+                  </select>
+                </label>
                 <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <input type="checkbox" checked={filtrosBi.somenteDesvios} onChange={(e) => setFiltrosBi((f) => ({ ...f, somenteDesvios: e.target.checked }))} /> Somente outra transportadora mais barata
                 </label>
-                <button className="btn-secondary" type="button" onClick={() => setFiltrosBi({ somenteDesvios: false, campanha: null, diferencaPeso: null, pesoInconsistente: null, taxaMarketplace: null, transportadoraIdeal: '', transportadoraUsada: '', origemIdeal: '', origemUsada: '', competencia: '', semana: '' })}>Limpar exploracao</button>
+                <button className="btn-secondary" type="button" onClick={() => setFiltrosBi(filtrosBiVazio)}>Limpar exploracao</button>
               </div>
 
               <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 14 }}>
@@ -1311,6 +1660,53 @@ export default function AuditoriaEcommercePage() {
               </div>
             </>
           ) : null}
+        </section>
+      ) : null}
+
+      {abaPrincipal === 'comparativo' ? (
+        <section className="panel-card">
+          <div className="panel-header-row">
+            <div>
+              <div className="panel-title">Comparativo cotado x faturado</div>
+              <p className="compact">Usa a mesma rodada carregada no Painel de indicadores (visao atual: <strong>{cenarioPainel}</strong>). Se nao aparecer nada, clique em "Atualizar indicadores" na outra aba primeiro.</p>
+            </div>
+          </div>
+
+          {!indicadores ? <div className="sim-alert info">Nenhum dado carregado. Va em "Painel de indicadores" e clique em "Atualizar indicadores".</div> : (
+            <>
+              <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 14 }}>
+                <div className="summary-card"><span>Pedidos comparaveis</span><strong>{formatarNumero(comparativoBi.totalComparavel)}</strong><small>tem os dois cenarios calculados</small></div>
+                <div className="summary-card"><span>Mudam de transportadora ideal</span><strong>{formatarNumero(comparativoBi.mudaram)}</strong><small>{formatarNumero(comparativoBi.totalComparavel ? (comparativoBi.mudaram / comparativoBi.totalComparavel) * 100 : 0, 1)}% do comparavel</small></div>
+                <div className="summary-card"><span>Ideal no cenario {cenarioPainel}</span><strong>{formatarMoeda(comparativoBi.valorAtual)}</strong><small>soma do valor ideal</small></div>
+                <div className="summary-card"><span>Ideal no cenario {outroCenarioLabel}</span><strong>{formatarMoeda(comparativoBi.valorOutro)}</strong><small>soma do valor ideal</small></div>
+                <div className="summary-card"><span>Diferenca ({outroCenarioLabel} - {cenarioPainel})</span><strong>{formatarMoeda(comparativoBi.diferenca)}</strong><small>{comparativoBi.diferenca >= 0 ? `${outroCenarioLabel} sairia mais caro` : `${outroCenarioLabel} sairia mais barato`}</small></div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(390px, 1fr))', gap: 18, marginTop: 18 }}>
+                {[
+                  [`Ganham pedidos no cenario ${outroCenarioLabel}`, comparativoBi.ganhamNoOutro],
+                  [`Perdem pedidos do cenario ${cenarioPainel}`, comparativoBi.perdemNoOutro],
+                ].map(([titulo, lista]) => (
+                  <div key={titulo} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12 }}>
+                    <div className="panel-title">{titulo}</div>
+                    {lista.length ? lista.map((item) => {
+                      const maximo = lista[0]?.perda || 1;
+                      return <div key={item.nome} style={{ display: 'grid', gridTemplateColumns: 'minmax(130px, 1fr) 2fr 100px', width: '100%', alignItems: 'center', gap: 8, padding: '5px 0' }}>
+                        <span>{item.nome}</span><span style={{ height: 12, background: '#e2e8f0', borderRadius: 999, overflow: 'hidden' }}><span style={{ display: 'block', width: `${(item.perda / maximo) * 100}%`, height: '100%', background: '#2563eb' }} /></span><strong>{formatarMoeda(item.perda)}</strong>
+                      </div>;
+                    }) : <p className="compact">Sem pedidos nesse recorte.</p>}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 18, overflow: 'auto' }}>
+                <div className="panel-title">Pedidos com escolha diferente entre cotado e faturado</div>
+                <table className="sim-analise-tabela" style={{ width: '100%', minWidth: 1200 }}><thead><tr><th>Pedido</th><th>Data</th><th>Ideal {cenarioPainel}</th><th>Ideal {outroCenarioLabel}</th><th>Valor ideal {cenarioPainel}</th><th>Valor ideal {outroCenarioLabel}</th><th>Diferenca</th></tr></thead><tbody>
+                  {itensBiFiltrados.filter((item) => item.mudouTransportadoraPorPeso).sort((a, b) => Math.abs(b.valorIdealOutroCenario - b.valorIdeal) - Math.abs(a.valorIdealOutroCenario - a.valorIdeal)).slice(0, 200).map((item) => <tr key={item.id}><td>{item.pedido}</td><td>{formatarData(item.dataCriacao)}</td><td>{item.transportadoraIdeal}</td><td>{item.transportadoraIdealOutroCenario}</td><td>{formatarMoeda(item.valorIdeal)}</td><td>{formatarMoeda(item.valorIdealOutroCenario)}</td><td><strong>{formatarMoeda(item.valorIdealOutroCenario - item.valorIdeal)}</strong></td></tr>)}
+                </tbody></table>
+              </div>
+            </>
+          )}
         </section>
       ) : null}
 

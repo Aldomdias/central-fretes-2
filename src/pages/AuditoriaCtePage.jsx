@@ -28,8 +28,12 @@ import {
   processarESalvarAuditoriaMes,
   resimularRegistros,
   invalidarCacheBaseFreteAuditoriaCte,
+  buscarResultadosAuditoriaPorIdentificadores,
 } from '../services/auditoriaCteProcessamentoService';
 import { baixarHtmlLaudoAuditoriaCtes, cteDivergenteAuditoria, identificadorCteAuditoria } from '../utils/laudoAuditoriaCtes';
+import { registrarLaudoGerado, buscarJornadaPorIdentificadores, atualizarStatusJornada, STATUS_OPERACIONAL } from '../services/auditoriaCteJornadaService';
+import { carregarSessao } from '../utils/authLocal';
+import PainelPendenciasJornadaCte from '../components/PainelPendenciasJornadaCte';
 
 const CRITERIOS_FILTRO = [
   { key: 'ok_qualquer', label: 'Dentro da tolerancia (AMD ou Verum)' },
@@ -61,6 +65,29 @@ function fmtN(v, d = 0) {
 
 function fmtP(v, d = 1) {
   return `${Number(v || 0).toFixed(d).replace('.', ',')}%`;
+}
+
+const JORNADA_COR = {
+  NAO_AUDITADO: { bg: '#e2e8f0', fg: '#475569' },
+  AUDITADO_OK: { bg: '#dcfce7', fg: '#166534' },
+  DIVERGENTE: { bg: '#fef3c7', fg: '#92400e' },
+  AGUARDANDO_ENVIO_TRANSPORTADORA: { bg: '#dbeafe', fg: '#1e40af' },
+  AGUARDANDO_RETORNO_TRANSPORTADORA: { bg: '#dbeafe', fg: '#1e40af' },
+  EM_TRATATIVA: { bg: '#fae8ff', fg: '#86198f' },
+  ACORDO_FECHADO: { bg: '#d1fae5', fg: '#065f46' },
+  CANCELAMENTO_SOLICITADO: { bg: '#fee2e2', fg: '#991b1b' },
+  CANCELADO: { bg: '#fee2e2', fg: '#991b1b' },
+  REEMITIDO: { bg: '#e0e7ff', fg: '#3730a3' },
+  AGUARDANDO_FATURA: { bg: '#fef9c3', fg: '#854d0e' },
+  FATURADO: { bg: '#cffafe', fg: '#155e75' },
+  CONCILIADO_FATURA: { bg: '#d1fae5', fg: '#065f46' },
+  ENCERRADO: { bg: '#e2e8f0', fg: '#334155' },
+};
+
+function fmtDataEmissaoAuditoria(row = {}) {
+  const valor = String(row.data_emissao || row.emissao || row.dataEmissao || '').slice(0, 10);
+  const partes = valor.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return partes ? `${partes[3]}/${partes[2]}/${partes[1]}` : (valor || '—');
 }
 
 function fmtPctDetalhe(v) {
@@ -624,6 +651,11 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [filtroCanais, setFiltroCanais] = useState(filtrosSalvos.canais);
   const [filtroCriterios, setFiltroCriterios] = useState(filtrosSalvos.criterios); // vazio = todos
   const [filtroSituacaoFatura, setFiltroSituacaoFatura] = useState([]);
+  const [filtroJornada, setFiltroJornada] = useState(null); // { label, chaves: Set<string> } — vindo do painel de pendências
+  const [jornadaPorChave, setJornadaPorChave] = useState(new Map());
+  const [jornadaEditando, setJornadaEditando] = useState(null); // chave_cte em edição no mini-formulário de retorno
+  const [jornadaForm, setJornadaForm] = useState({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+  const [jornadaSalvando, setJornadaSalvando] = useState(false);
   const [buscaTratamento, setBuscaTratamento] = useState('');
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
@@ -856,6 +888,10 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     // Tomadores selecionados em forma normalizada para casar por "contém".
     const tomadoresNorm = filtroTomadores.map(normTomador).filter(Boolean);
     return registrosAnalise.filter((r) => {
+      if (filtroJornada?.chaves?.size) {
+        const chave = String(r.chave_cte || r.chaveCte || '');
+        if (!filtroJornada.chaves.has(chave)) return false;
+      }
       if (transpSet.size && !transpSet.has(nomeTransportadoraAuditoria(r))) return false;
       if (tomadoresNorm.length) {
         const tomadorReg = normTomador(nomeTomadorAuditoria(r));
@@ -899,7 +935,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       }
       return true;
     });
-  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, filtroSituacaoFatura, margensDivergencia]);
+  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, filtroSituacaoFatura, filtroJornada, margensDivergencia]);
 
   const registrosDetalheOrdenados = useMemo(() => {
     const valorDifAmd = (r) => Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0) || 0) - (Number(r.valor_calculado || 0) || 0))));
@@ -928,6 +964,22 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setLimiteDetalhe(200);
     setCteExpandido(null);
   }, [ordenacaoDetalhe, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
+
+  // Busca a jornada (em que fase cada CT-e está) dos CT-es visíveis na tabela de detalhe.
+  useEffect(() => {
+    let cancelado = false;
+    const identificadores = registrosDetalheVisiveis
+      .flatMap((r) => [r.chave_cte, r.numero_cte])
+      .filter(Boolean);
+    if (!identificadores.length) {
+      setJornadaPorChave(new Map());
+      return undefined;
+    }
+    buscarJornadaPorIdentificadores(identificadores)
+      .then((mapa) => { if (!cancelado) setJornadaPorChave(mapa); })
+      .catch((error) => { console.warn('Não foi possível carregar a jornada dos CT-es visíveis:', error.message || error); });
+    return () => { cancelado = true; };
+  }, [registrosDetalheVisiveis]);
 
   const transportadoraEmTratamento = filtroTransps.length === 1
     && !filtroTomadores.length
@@ -1688,13 +1740,83 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       : `${ids.length.toLocaleString('pt-BR')} CT-e(s) do recorte selecionado(s) para o laudo do transportador.`);
   }
 
-  function gerarLaudoCtesSelecionados() {
+  const RESULTADOS_RETORNO_TRANSPORTADORA = {
+    concordou_desconto: { label: 'Concordou — desconto na fatura', statusOperacional: 'ACORDO_FECHADO', statusFinanceiro: 'DESCONTO_ACEITO', pedeValor: true },
+    concordou_cancelamento: { label: 'Concordou — cancelar e reemitir', statusOperacional: 'CANCELAMENTO_SOLICITADO', statusFinanceiro: 'DIVERGENCIA_IDENTIFICADA', pedeValor: false },
+    nao_concordou: { label: 'Não concordou', statusOperacional: 'EM_TRATATIVA', statusFinanceiro: 'DIVERGENCIA_IDENTIFICADA', pedeValor: false },
+    em_analise: { label: 'Em análise (transportadora ainda avaliando)', statusOperacional: 'EM_TRATATIVA', statusFinanceiro: null, pedeValor: false },
+  };
+
+  async function salvarRetornoJornada(chaveCte) {
+    const config = RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado];
+    if (!config) return;
+    setJornadaSalvando(true);
+    setErro('');
+    try {
+      const usuario = carregarSessao();
+      await atualizarStatusJornada({
+        chaveCte,
+        statusOperacional: config.statusOperacional,
+        statusFinanceiro: config.statusFinanceiro || undefined,
+        valorAcordado: config.pedeValor ? Number(String(jornadaForm.valorAcordado).replace(',', '.')) || 0 : undefined,
+        observacao: jornadaForm.observacao || `Retorno registrado: ${config.label}`,
+        usuario,
+      });
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setJornadaEditando(null);
+      setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+      setSucesso(`Jornada atualizada: ${config.label}.`);
+    } catch (error) {
+      setErro(error.message || 'Não foi possível registrar o retorno da transportadora.');
+    } finally {
+      setJornadaSalvando(false);
+    }
+  }
+
+  async function gerarLaudoCtesSelecionados() {
     const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
     try {
       baixarHtmlLaudoAuditoriaCtes(selecionados, { competencia, mostrarCobrancaAMenor: mostrarCobrancaAMenorLaudo });
       setSucesso(`Laudo do transportador gerado com ${selecionados.length.toLocaleString('pt-BR')} CT-e(s).`);
     } catch (error) {
       setErro(error.message || 'Não foi possível gerar o laudo dos CT-es.');
+      return;
+    }
+
+    // Registro da jornada é aditivo: falha aqui não deve impedir o laudo já baixado.
+    try {
+      const enviarAgora = window.confirm(
+        'Este laudo será enviado para a transportadora agora?\n\nOK = Sim, registrar envio (CT-es passam para "aguardando retorno da transportadora")\nCancelar = Não, apenas gerar/visualizar'
+      );
+      const usuario = carregarSessao();
+      const porTransportadora = new Map();
+      selecionados.forEach((row) => {
+        const chave = row.transportadora || 'SEM_TRANSPORTADORA';
+        if (!porTransportadora.has(chave)) porTransportadora.set(chave, []);
+        porTransportadora.get(chave).push(row);
+      });
+
+      for (const [transportadora, ctes] of porTransportadora) {
+        await registrarLaudoGerado({
+          transportadora: transportadora === 'SEM_TRANSPORTADORA' ? null : transportadora,
+          cnpjTransportadora: ctes[0]?.cnpj_transportadora || null,
+          competencia,
+          ctes,
+          observacao: null,
+          enviarAgora,
+          usuario,
+        });
+      }
+
+      if (enviarAgora) {
+        setSucesso(`Laudo gerado e envio registrado para ${selecionados.length.toLocaleString('pt-BR')} CT-e(s).`);
+      }
+    } catch (jornadaError) {
+      console.error('Não foi possível registrar a jornada do laudo:', jornadaError);
+      setErro(`Laudo baixado, mas a jornada não foi registrada: ${jornadaError.message || jornadaError}`);
     }
   }
 
@@ -1709,6 +1831,51 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         </p>
         <BaseCtesStatus />
       </div>
+
+      <PainelPendenciasJornadaCte
+        competencia={competencia}
+        onSelecionarGrupo={async (label, lista) => {
+          if (!label) {
+            setFiltroJornada(null);
+            return;
+          }
+          // Só chave_cte (44 dígitos, única globalmente): número de CT-e sozinho
+          // pode se repetir entre transportadoras diferentes e traria CT-es errados.
+          const chaves = new Set((lista || []).map((item) => item.chave_cte).filter(Boolean).map(String));
+          setFiltroJornada({ label, chaves });
+          // O filtro do card precisa ser a única fonte da visão — zera qualquer
+          // outro filtro ativo (transportadora, tomador, uf, canal, etc.) senão
+          // eles brigam e a lista some (interseção vazia).
+          setFiltroTransps([]);
+          setFiltroTomadores([]);
+          setFiltroUfs([]);
+          setFiltroCidades([]);
+          setFiltroCanais([]);
+          setFiltroCriterios([]);
+          setFiltroSituacaoFatura([]);
+          setLimiteDetalhe((v) => Math.max(v, chaves.size));
+          if (modoPreLista) setModoPreLista(false);
+
+          setCarregando(true);
+          setErro('');
+          try {
+            const dadosBusca = await buscarResultadosAuditoriaPorIdentificadores([...chaves]);
+            setRegistros(await enriquecerCtesComFaturas(dadosBusca || []));
+            setFonteAuditoria({
+              id: 'auditoria_cte_resultados',
+              tabela: 'auditoria_cte_resultados',
+              label: 'Auditoria salva / auditoria_cte_resultados',
+            });
+            requestAnimationFrame(() => {
+              document.getElementById('detalhe-ctes-secao')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+          } catch (error) {
+            setErro(error.message || `Não foi possível buscar os CT-es de "${label}".`);
+          } finally {
+            setCarregando(false);
+          }
+        }}
+      />
 
       <div className="tabs-row audit-main-tabs" style={{ marginBottom: 12 }}>
         <button
@@ -2712,7 +2879,26 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       ) : null}
 
       {temDados && !modoPreLista ? (
-        <section className="sim-card">
+        <section className="sim-card" id="detalhe-ctes-secao">
+          {filtroJornada ? (
+            <div
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 4,
+                background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 10, padding: '8px 12px', marginBottom: 10,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#3730a3' }}>
+                  🧭 Filtro da jornada ativo: {filtroJornada.label} ({fmtN(filtroJornada.chaves.size)} CT-e(s) no grupo)
+                </span>
+                <button className="sim-tab" type="button" onClick={() => setFiltroJornada(null)}>Limpar filtro</button>
+              </div>
+              <span style={{ fontSize: 12, color: '#3730a3' }}>
+                {/* Sempre soma o recorte que está de fato na tela (com quaisquer outros filtros aplicados por cima) — não o grupo bruto do card. */}
+                Neste recorte ({fmtN(registrosFiltro.length)} CT-e(s) exibido(s)): divergência {fmt(registrosFiltro.reduce((acc, r) => acc + Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0)) - (Number(r.valor_calculado || 0))))), 0))}
+              </span>
+            </div>
+          ) : null}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>📄 Detalhe por CT-e</h2>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -2781,6 +2967,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                 <tr>
                   <th title="Selecionar para o laudo">Laudo</th>
                   <th>Nº CT-e</th>
+                  <th>Emissão</th>
                   <th>Fatura</th>
                   <th>Transportadora</th>
                   <th>Validação</th>
@@ -2792,10 +2979,12 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                   <th>Cálculo AMD</th>
                   <th>Dif. AMD</th>
                   <th>Status</th>
+                  <th title="Em que fase o CT-e está na Jornada (auditoria preventiva)">Jornada</th>
                 </tr>
               </thead>
               <tbody>
                 {registrosDetalheVisiveis.map((r, idx) => {
+                  const jornada = jornadaPorChave.get(String(r.chave_cte)) || jornadaPorChave.get(String(r.numero_cte));
                   const verum = Number(r.valor_calculado_verum || 0);
                   const amd = Number(r.valor_calculado || 0);
                   const pago = Number(r.valor_cte || 0);
@@ -2832,6 +3021,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                           <input type="checkbox" checked={ctesSelecionadosLaudo.includes(identificadorCteAuditoria(r, idx))} onChange={() => alternarCteLaudo(r, idx)} aria-label={`Selecionar CT-e ${r.numero_cte || ''} para o laudo`} />
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{fmtDataEmissaoAuditoria(r)}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           {r.tem_fatura ? <strong style={{ color: '#166534' }}>{(r.numeros_fatura || []).join(', ') || 'Com fatura'}</strong> : <span style={{ color: '#b45309' }}>Sem fatura</span>}
                         </td>
@@ -2875,10 +3065,86 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                             {semValorNf ? 'SEM VALOR NF' : (r.status_calculo || (amd > 0 ? 'CALCULADO' : 'SEM_STATUS'))}
                           </span>
                         </td>
+                        <td style={{ fontSize: 11 }}>
+                          {jornada ? (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              title={(jornada.aguardando_desde ? `Aguardando desde ${new Date(jornada.aguardando_desde).toLocaleDateString('pt-BR')}. ` : '') + 'Clique para registrar o retorno da transportadora.'}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setJornadaEditando((atual) => (atual === jornada.chave_cte ? null : jornada.chave_cte));
+                                setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+                              }}
+                              style={{
+                                padding: '2px 6px', borderRadius: 6, fontWeight: 700, whiteSpace: 'nowrap', cursor: 'pointer',
+                                border: jornadaEditando === jornada.chave_cte ? '2px solid var(--primary)' : '2px solid transparent',
+                                background: JORNADA_COR[jornada.status_operacional]?.bg || '#e2e8f0',
+                                color: JORNADA_COR[jornada.status_operacional]?.fg || '#334155',
+                              }}
+                            >
+                              {STATUS_OPERACIONAL[jornada.status_operacional] || jornada.status_operacional}
+                            </span>
+                          ) : (
+                            <span style={{ color: '#94a3b8' }} title="Este CT-e ainda não entrou em nenhum laudo/processo da jornada">— sem jornada</span>
+                          )}
+                        </td>
                       </tr>
+                      {jornada && jornadaEditando === jornada.chave_cte ? (
+                        <tr>
+                          <td colSpan="15" style={{ background: '#eef2ff', padding: 12 }}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
+                              <div>
+                                <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3730a3' }}>Retorno da transportadora</div>
+                                <select
+                                  value={jornadaForm.resultado}
+                                  onChange={(e) => setJornadaForm((f) => ({ ...f, resultado: e.target.value }))}
+                                  style={{ minWidth: 260 }}
+                                >
+                                  {Object.entries(RESULTADOS_RETORNO_TRANSPORTADORA).map(([key, cfg]) => (
+                                    <option key={key} value={key}>{cfg.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              {RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado]?.pedeValor ? (
+                                <div>
+                                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3730a3' }}>Valor acordado (R$)</div>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    placeholder="0,00"
+                                    value={jornadaForm.valorAcordado}
+                                    onChange={(e) => setJornadaForm((f) => ({ ...f, valorAcordado: e.target.value }))}
+                                    style={{ width: 120 }}
+                                  />
+                                </div>
+                              ) : null}
+                              <div style={{ flex: 1, minWidth: 200 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3730a3' }}>Observação (opcional)</div>
+                                <input
+                                  type="text"
+                                  placeholder="Ex: retorno por e-mail em 18/08"
+                                  value={jornadaForm.observacao}
+                                  onChange={(e) => setJornadaForm((f) => ({ ...f, observacao: e.target.value }))}
+                                  style={{ width: '100%' }}
+                                />
+                              </div>
+                              <button
+                                className="primary"
+                                type="button"
+                                disabled={jornadaSalvando}
+                                onClick={() => salvarRetornoJornada(jornada.chave_cte)}
+                              >
+                                {jornadaSalvando ? 'Salvando...' : 'Salvar retorno'}
+                              </button>
+                              <button className="sim-tab" type="button" onClick={() => setJornadaEditando(null)}>Cancelar</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
                       {expandida ? (
                         <tr>
-                          <td colSpan="13" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                          <td colSpan="15" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                             {r.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {r.motivo_sem_calculo}</div> : null}
                             {semValorNf ? (
                               <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 8, padding: 10, marginBottom: 10, color: '#9a3412' }}>
@@ -3051,7 +3317,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                     </React.Fragment>
                   );
                 })}
-                {!registrosFiltro.length ? <tr><td colSpan="13" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
+                {!registrosFiltro.length ? <tr><td colSpan="15" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
               </tbody>
             </table>
           </div>

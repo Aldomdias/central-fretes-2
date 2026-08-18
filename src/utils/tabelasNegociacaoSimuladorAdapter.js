@@ -575,7 +575,7 @@ export function converterTabelasNegociacaoParaSimulador(tabelas = [], filtros = 
   const canalFiltro = normalizarCanal(filtros.canal || '');
 
   return (tabelas || [])
-    .filter((tabela) => tabela && tabela.incluir_simulacao)
+    .filter((tabela) => tabela)
     .filter((tabela) => canalNegociacaoAtende(tabela.canal, canalFiltro))
     .map(converterTabelaNegociacaoParaSimulador)
     .filter((transportadora) => transportadora.origens.length);
@@ -589,7 +589,7 @@ export function nomesTabelasNegociacaoSimulador(tabelas = [], filtros = {}) {
   const canalFiltro = normalizarCanal(filtros.canal || '');
 
   return (tabelas || [])
-    .filter((tabela) => tabela && tabela.incluir_simulacao)
+    .filter((tabela) => tabela)
     .filter((tabela) => canalNegociacaoAtende(tabela.canal, canalFiltro))
     .map((tabela) => labelTabelaNegociacaoSimulador(tabela))
     .sort((a, b) => a.localeCompare(b, 'pt-BR'));
