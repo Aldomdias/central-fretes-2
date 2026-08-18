@@ -3,20 +3,15 @@ import { carregarBaseCompletaDb, carregarBaseFiltradaPorCidadesOrigemDb, carrega
 import { montarMapasIbge, resolverIbgeLocal, categoriaCanalRealizado } from '../utils/realizadoLocalEngine.js';
 import { carregarVinculosTransportadoras, criarMapaVinculosTransportadoras } from './vinculosTransportadorasService.js';
 import { construirIndiceResimulacaoEcommerce, calcularCandidatosOrigemEcommerce, calcularResultadoFinalEcommerce } from '../utils/ecommerceResimulacaoEngine.js';
+import { deduplicarCandidatosEcommerce, isTransportadoraEbazarEcommerce, normalizarNomeCidade } from '../utils/ecommerceAuditoriaPuro.js';
+
+export { deduplicarCandidatosEcommerce, isTransportadoraEbazarEcommerce, normalizarNomeCidade } from '../utils/ecommerceAuditoriaPuro.js';
 
 // Normaliza nome de cidade (maiusculo, sem acento) - o cadastro cd_centros tem a mesma
 // cidade grafada de jeitos diferentes em codigos diferentes (ex: "SERRA" e "Serra",
 // "ITAJAÍ" e "Itajaí"). Sem normalizar, cada grafia virava uma "origem" separada na
 // resimulacao por origem, processando a mesma cidade mais de uma vez e duplicando
 // candidatos pro mesmo pedido (mesma transportadora/CD/faixa de peso repetida).
-function normalizarNomeCidade(valor) {
-  return String(valor || '')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .trim()
-    .toUpperCase();
-}
-
 // Layout do relatorio "OrderSnapshotAnalytics": CSV ";", BOM UTF-8, primeira linha "sep=;",
 // numeros em formato pt-BR (virgula decimal, sem separador de milhar).
 const COLUNAS = [
@@ -358,7 +353,7 @@ export async function cruzarEcommerceComTrackingECte({ limitePorLote = 500, tota
   return { totalProcessado, totalOk, totalSemTracking, totalSemCte };
 }
 
-export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos = [], destinosIbge = [] } = {}) {
+export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos = [], destinosIbge = [], transportadorasExcluidas = [] } = {}) {
   // Prioridade de escopo (do mais estreito pro mais amplo):
   // 1) destinosIbge: sabemos exatamente quais destinos os pedidos selecionados
   //    tem, entao buscamos so rotas que atendem esses destinos - o recorte mais
@@ -376,8 +371,11 @@ export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitido
     carregarVinculosTransportadoras(),
   ]);
   const mapaVinculos = criarMapaVinculosTransportadoras(vinculos || []);
+  const excluidas = new Set((transportadorasExcluidas || []).map((nome) => String(nome || '').trim().toUpperCase()));
   return {
-    transportadoras: transportadoras || [],
+    transportadoras: (transportadoras || [])
+      .filter((item) => !isTransportadoraEbazarEcommerce(item?.nome))
+      .filter((item) => !excluidas.has(String(item?.nome || '').trim().toUpperCase())),
     municipios: municipios || [],
     vinculosTransportadoras: [...mapaVinculos.entries()],
   };
@@ -388,7 +386,7 @@ export async function carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitido
 // grade quanto pra contar/paginar o que sera resimulado, pra manter os dois
 // coerentes com o que o usuario esta vendo na tela.
 function aplicarFiltrosEcommerce(query, filtros = {}) {
-  let q = query;
+  let q = query.or('cte_transportadora.is.null,cte_transportadora.not.ilike.%EBAZAR%');
   if (filtros.dataInicio) q = q.gte('data_criacao', filtros.dataInicio);
   if (filtros.dataFim) q = q.lte('data_criacao', `${filtros.dataFim}T23:59:59`);
   if (filtros.cruzamentoStatus) q = q.eq('cruzamento_status', filtros.cruzamentoStatus);
@@ -396,6 +394,7 @@ function aplicarFiltrosEcommerce(query, filtros = {}) {
   if (filtros.divergenciaPeso) q = q.neq('diferenca_peso', 0);
   if (filtros.canal) q = q.eq('canal', filtros.canal);
   if (filtros.uf) q = q.eq('uf', filtros.uf);
+  if (filtros.cteTransportadora) q = q.ilike('cte_transportadora', `%${filtros.cteTransportadora}%`);
   if (filtros.possuiCampanha !== null && filtros.possuiCampanha !== undefined) {
     q = q.eq('possui_campanha_frete', filtros.possuiCampanha);
   }
@@ -405,6 +404,28 @@ function aplicarFiltrosEcommerce(query, filtros = {}) {
     q = q.or(filtros.cdCodigos.map((codigo) => `cds_com_saldo_venda.ilike.%${codigo}%`).join(','));
   }
   return q;
+}
+
+// sim_status e um campo unico compartilhado entre os dois cenarios de peso - roda
+// cotado, ele vira 'ok', e a rodada de faturado (que checa sim_status='pendente')
+// nao encontra mais nenhum pedido pra processar, mesmo sem ter calculado faturado
+// ainda. Os resultados de cada cenario, porem, ja ficam guardados em colunas
+// separadas (sim_resultado_cotado/sim_resultado_faturado) - entao "pendente pra
+// esse cenario" e simplesmente essa coluna especifica ainda estar vazia.
+function aplicarFiltroPendenteCenario(query, pesoBase = 'cotado') {
+  if (pesoBase === 'ambos') {
+    return query.or('sim_resultado_cotado.is.null,sim_resultado_faturado.is.null');
+  }
+  const coluna = pesoBase === 'faturado' ? 'sim_resultado_faturado' : 'sim_resultado_cotado';
+  return query.is(coluna, null);
+}
+
+function aplicarFiltroJaFeitoCenario(query, pesoBase = 'cotado') {
+  if (pesoBase === 'ambos') {
+    return query.not('sim_resultado_cotado', 'is', null).not('sim_resultado_faturado', 'is', null);
+  }
+  const coluna = pesoBase === 'faturado' ? 'sim_resultado_faturado' : 'sim_resultado_cotado';
+  return query.not(coluna, 'is', null);
 }
 
 // Cadastro de referencia codigo do Centro/CD -> cidade (tabela cd_centros), usado para
@@ -420,44 +441,46 @@ export async function carregarMapaCdCentros() {
 }
 
 export async function listarOpcoesFiltroEcommerce() {
-  if (!isSupabaseConfigured()) return { canais: [], ufs: [] };
+  if (!isSupabaseConfigured()) return { canais: [], ufs: [], transportadorasCte: [] };
   const supabase = getSupabaseClient();
-  const [{ data: canaisData }, { data: ufsData }] = await Promise.all([
+  const [{ data: canaisData }, { data: ufsData }, { data: transportadorasData }] = await Promise.all([
     supabase.from('ecommerce_order_snapshot').select('canal').not('canal', 'is', null).limit(5000),
     supabase.from('ecommerce_order_snapshot').select('uf').not('uf', 'is', null).limit(5000),
+    supabase.from('ecommerce_order_snapshot').select('cte_transportadora').not('cte_transportadora', 'is', null).limit(5000),
   ]);
   const canais = [...new Set((canaisData || []).map((r) => r.canal).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   const ufs = [...new Set((ufsData || []).map((r) => r.uf).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  return { canais, ufs };
+  const transportadorasCte = [...new Set((transportadorasData || []).map((r) => r.cte_transportadora).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  return { canais, ufs, transportadorasCte };
 }
 
 // Conta quantos pedidos elegiveis (cruzamento ok, ainda pendentes de resimular)
 // batem com os filtros de analise atuais, pra mostrar o resumo antes de rodar.
 // Com refazerTudo, conta todos os elegiveis do filtro, mesmo os ja resimulados.
-export async function contarElegiveisResimulacaoEcommerce(filtros = {}, { refazerTudo = false, incluirSemCruzamento = false } = {}) {
+export async function contarElegiveisResimulacaoEcommerce(filtros = {}, { refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado' } = {}) {
   if (!isSupabaseConfigured()) return 0;
   const supabase = getSupabaseClient();
   let query = supabase
     .from('ecommerce_order_snapshot')
     .select('id', { count: 'exact', head: true });
   if (!incluirSemCruzamento) query = query.eq('cruzamento_status', 'ok');
-  if (!refazerTudo) query = query.eq('sim_status', 'pendente');
+  if (!refazerTudo) query = aplicarFiltroPendenteCenario(query, pesoBase);
   query = aplicarFiltrosEcommerce(query, filtros);
   const { count, error } = await query;
   if (error) throw error;
   return count || 0;
 }
 
-// Conta quantos pedidos do recorte ja foram resimulados antes (sim_status='ok'),
+// Conta quantos pedidos do recorte ja foram resimulados antes NESSE cenario de peso,
 // pra mostrar no resumo "X ja feitos, Y pendentes" e o usuario decidir se quer
 // continuar so com os que faltam ou refazer tudo de novo.
-export async function contarJaResimuladosParaFiltro(filtros = {}, { incluirSemCruzamento = false } = {}) {
+export async function contarJaResimuladosParaFiltro(filtros = {}, { incluirSemCruzamento = false, pesoBase = 'cotado' } = {}) {
   if (!isSupabaseConfigured()) return 0;
   const supabase = getSupabaseClient();
   let query = supabase
     .from('ecommerce_order_snapshot')
-    .select('id', { count: 'exact', head: true })
-    .eq('sim_status', 'ok');
+    .select('id', { count: 'exact', head: true });
+  query = aplicarFiltroJaFeitoCenario(query, pesoBase);
   if (!incluirSemCruzamento) query = query.eq('cruzamento_status', 'ok');
   query = aplicarFiltrosEcommerce(query, filtros);
   const { count, error } = await query;
@@ -465,11 +488,11 @@ export async function contarJaResimuladosParaFiltro(filtros = {}, { incluirSemCr
   return count || 0;
 }
 
-export async function diagnosticarResimulacaoEcommerce(filtros = {}, { incluirSemCruzamento = false } = {}) {
+export async function diagnosticarResimulacaoEcommerce(filtros = {}, { incluirSemCruzamento = false, pesoBase = 'cotado' } = {}) {
   if (!isSupabaseConfigured()) return { configurado: false, elegiveis: 0, pendentes: 0, ok: 0 };
   const supabase = getSupabaseClient();
   let queryElegiveis = supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true });
-  let queryPendentes = supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).eq('sim_status', 'pendente');
+  let queryPendentes = aplicarFiltroPendenteCenario(supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }), pesoBase);
   if (!incluirSemCruzamento) {
     queryElegiveis = queryElegiveis.eq('cruzamento_status', 'ok');
     queryPendentes = queryPendentes.eq('cruzamento_status', 'ok');
@@ -477,13 +500,13 @@ export async function diagnosticarResimulacaoEcommerce(filtros = {}, { incluirSe
   const { count: elegiveis } = await aplicarFiltrosEcommerce(queryElegiveis, filtros);
   const { count: pendentes } = await aplicarFiltrosEcommerce(queryPendentes, filtros);
   const { count: ok } = await aplicarFiltrosEcommerce(
-    supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }).eq('sim_status', 'ok'),
+    aplicarFiltroJaFeitoCenario(supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true }), pesoBase),
     filtros
   );
   return { configurado: true, elegiveis: elegiveis || 0, pendentes: pendentes || 0, ok: ok || 0 };
 }
 
-const CAMPOS_PEDIDO_RESIMULACAO = 'id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem, cds_com_saldo_venda, cubagem_cotada';
+const CAMPOS_PEDIDO_RESIMULACAO = 'id, pedido, canal, uf, cidade, peso_cotado, peso_faturado, valor_pedido, valor_faturado, frete_tabela, custo_frete_transportadora, cte_valor, cte_transportadora, cte_uf_origem, cte_cidade_origem, prazo_dias_corridos, cds_com_saldo_venda, cubagem_cotada';
 
 // Resolve os codigos de CD do pedido (campo texto, separado por virgula) para as
 // cidades correspondentes via cd_centros, pra restringir a resimulacao so aos CDs
@@ -495,24 +518,57 @@ function resolverCidadesSaldoPedido(pedido, mapaCdCentros) {
   return { ...pedido, cdsSaldoCidades: cidades };
 }
 
-async function buscarPaginaPendentesResimulacao(limit = 800, filtros = {}, refazerTudo = false, incluirSemCruzamento = false) {
+async function buscarPaginaPendentesResimulacao(limit = 800, filtros = {}, refazerTudo = false, incluirSemCruzamento = false, aposId = null, pesoBase = 'cotado') {
   const supabase = getSupabaseClient();
   let query = supabase
     .from('ecommerce_order_snapshot')
     .select(CAMPOS_PEDIDO_RESIMULACAO);
   if (!incluirSemCruzamento) query = query.eq('cruzamento_status', 'ok');
-  if (!refazerTudo) query = query.eq('sim_status', 'pendente');
-  query = aplicarFiltrosEcommerce(query, filtros).limit(limit);
+  if (!refazerTudo) query = aplicarFiltroPendenteCenario(query, pesoBase);
+  if (refazerTudo && aposId) query = query.gt('id', aposId);
+  query = aplicarFiltrosEcommerce(query, filtros)
+    .order('id', { ascending: true })
+    .limit(limit);
   const { data, error } = await query;
   if (error) throw error;
   return data || [];
+}
+
+async function carregarCandidatosStagingPorPedidos(supabase, pedidoIds = []) {
+  const linhas = [];
+  const tamanhoPagina = 500;
+  for (const grupo of chunks(pedidoIds, 10)) {
+    let from = 0;
+    for (;;) {
+      // Deduplica no PostgreSQL antes de transferir. O staging pode ter milhoes
+      // de rotas repetidas; baixar tudo para deduplicar no browser causava timeout.
+      // A funcao e somente leitura e nao remove nenhum candidato armazenado.
+      const { data, error } = await supabase
+        .rpc('ecommerce_candidatos_dedup', { p_pedido_ids: grupo })
+        .range(from, from + tamanhoPagina - 1);
+      if (error) throw error;
+      const pagina = data || [];
+      linhas.push(...pagina);
+      if (pagina.length < tamanhoPagina) break;
+      from += tamanhoPagina;
+    }
+  }
+  return linhas;
 }
 
 export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
   if (!resultados.length) return;
   const supabase = getSupabaseClient();
   const agora = new Date().toISOString();
-  const linhas = resultados.map((r) => ({ ...r, sim_resimulado_em: agora }));
+  const linhas = resultados.map((r) => {
+    const cenario = r.sim_peso_base;
+    return {
+      ...r,
+      ...(cenario === 'cotado' ? { sim_resultado_cotado: r } : {}),
+      ...(cenario === 'faturado' ? { sim_resultado_faturado: r } : {}),
+      sim_resimulado_em: agora,
+    };
+  });
   for (const grupo of chunks(linhas, 200)) {
     const { error } = await supabase.from('ecommerce_order_snapshot').upsert(grupo, { onConflict: 'id' });
     if (error) throw error;
@@ -528,7 +584,7 @@ export async function salvarResultadosResimulacaoEcommerce(resultados = []) {
 // origem que aparecem em "CDs com Saldo na Venda" dos pedidos do recorte - permite
 // restringir a malha carregada so aos CDs que algum pedido realmente pode usar, em vez
 // de carregar todo CD que atende aqueles destinos (mesmo os sem saldo em nenhum pedido).
-async function obterDestinosIbgeParaFiltro(filtros = {}, refazerTudo = false, incluirSemCruzamento = false, onProgress = null, mapaCdCentros = null) {
+async function obterDestinosIbgeParaFiltro(filtros = {}, refazerTudo = false, incluirSemCruzamento = false, onProgress = null, mapaCdCentros = null, pesoBase = 'cotado') {
   const supabase = getSupabaseClient();
   const cidadesUf = new Set();
   const cidadesOrigemSaldo = new Set();
@@ -539,7 +595,7 @@ async function obterDestinosIbgeParaFiltro(filtros = {}, refazerTudo = false, in
       .from('ecommerce_order_snapshot')
       .select(mapaCdCentros ? 'cidade, uf, cds_com_saldo_venda' : 'cidade, uf');
     if (!incluirSemCruzamento) query = query.eq('cruzamento_status', 'ok');
-    if (!refazerTudo) query = query.eq('sim_status', 'pendente');
+    if (!refazerTudo) query = aplicarFiltroPendenteCenario(query, pesoBase);
     query = aplicarFiltrosEcommerce(query, filtros).range(from, from + 999);
     const { data, error } = await query;
     if (error) throw error;
@@ -613,29 +669,29 @@ async function buscarPedidosPorIds(ids = []) {
 // Assinatura dos parametros que definem qual malha foi carregada - usada pra
 // invalidar uma malha ja baixada quando os filtros/opcoes mudam (senao rodaria
 // a simulacao com uma malha que nao corresponde mais ao recorte pedido).
-export function assinaturaMalhaResimulacaoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, usarSaldoDia = true, cdsPermitidos = [] } = {}) {
-  return JSON.stringify({ filtros, refazerTudo, incluirSemCruzamento, usarSaldoDia, cdsPermitidos: [...cdsPermitidos].sort() });
+export function assinaturaMalhaResimulacaoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, usarSaldoDia = true, cdsPermitidos = [], pesoBase = 'cotado', transportadorasExcluidas = [] } = {}) {
+  return JSON.stringify({ filtros, refazerTudo, incluirSemCruzamento, usarSaldoDia, cdsPermitidos: [...cdsPermitidos].sort(), pesoBase, transportadorasExcluidas: [...transportadorasExcluidas].sort() });
 }
 
 // So a etapa de carregamento (a mais lenta e a que mais falha por timeout) - separada
 // da simulacao propriamente dita, pra poder baixar uma vez e rodar (ou re-rodar depois
 // de um erro) sem precisar recarregar rotas/cotacoes toda vez.
-export async function carregarMalhaParaResimulacaoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, usarSaldoDia = true, cdsPermitidos = [], onProgress } = {}) {
+export async function carregarMalhaParaResimulacaoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, usarSaldoDia = true, cdsPermitidos = [], pesoBase = 'cotado', transportadorasExcluidas = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   onProgress?.({ etapa: 'carregando_tabelas_completas_fallback', carregados: 0, total: null });
   const mapaCdCentros = usarSaldoDia ? (await carregarMapaCdCentros()).mapa : null;
-  const { destinosIbge, cidadesOrigemSaldo } = await obterDestinosIbgeParaFiltro(filtros, refazerTudo, incluirSemCruzamento, onProgress, mapaCdCentros);
+  const { destinosIbge, cidadesOrigemSaldo } = await obterDestinosIbgeParaFiltro(filtros, refazerTudo, incluirSemCruzamento, onProgress, mapaCdCentros, pesoBase);
   // Com saldo por pedido ligado, restringe a malha carregada so aos CDs que aparecem em
   // "CDs com Saldo na Venda" de algum pedido do recorte - em vez de carregar todo CD que
   // atende aqueles destinos (a maioria nunca vai ser usada, pois nenhum pedido tem saldo la).
   const cdsPermitidosMalha = cidadesOrigemSaldo.length ? cidadesOrigemSaldo : cdsPermitidos;
-  const { transportadoras, municipios, vinculosTransportadoras } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos: cdsPermitidosMalha, destinosIbge });
+  const { transportadoras, municipios, vinculosTransportadoras } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos: cdsPermitidosMalha, destinosIbge, transportadorasExcluidas });
   return {
     transportadoras,
     municipios,
     vinculosTransportadoras,
     mapaCdCentros,
-    assinatura: assinaturaMalhaResimulacaoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, usarSaldoDia, cdsPermitidos }),
+    assinatura: assinaturaMalhaResimulacaoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, usarSaldoDia, cdsPermitidos, pesoBase, transportadorasExcluidas }),
   };
 }
 
@@ -644,10 +700,10 @@ export async function carregarMalhaParaResimulacaoEcommerce({ filtros = {}, refa
 // para volumes grandes (dezenas de milhares de pedidos) sem travar a aba nem estourar
 // timeout de request. Aceita uma malhaPronta (de carregarMalhaParaResimulacaoEcommerce)
 // pra pular a etapa de carregamento quando ja foi baixada antes.
-export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotado', cdsPermitidos = [], usarSaldoDia = true, incluirSemCruzamento = false, tamanhoLote = 800, totalAlvo = null, filtros = {}, refazerTudo = false, malhaPronta = null, onProgress } = {}) {
+export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotado', cdsPermitidos = [], usarSaldoDia = true, incluirSemCruzamento = false, tamanhoLote = 800, totalAlvo = null, filtros = {}, refazerTudo = false, malhaPronta = null, transportadorasExcluidas = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
 
-  const malha = malhaPronta || await carregarMalhaParaResimulacaoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, usarSaldoDia, cdsPermitidos, onProgress });
+  const malha = malhaPronta || await carregarMalhaParaResimulacaoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, usarSaldoDia, cdsPermitidos, pesoBase, transportadorasExcluidas, onProgress });
   const { transportadoras, municipios, vinculosTransportadoras, mapaCdCentros } = malha;
 
   // Refazendo tudo, a paginacao por sim_status='pendente' nao se auto-esvazia
@@ -685,7 +741,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
     for (;;) {
       const pagina = idsEmLotes
         ? await buscarPedidosPorIds(idsEmLotes[indiceLoteFixo++] || [])
-        : await buscarPaginaPendentesResimulacao(tamanhoLote, filtros, false, incluirSemCruzamento);
+        : await buscarPaginaPendentesResimulacao(tamanhoLote, filtros, false, incluirSemCruzamento, null, pesoBase);
       const fimDosLotesFixos = idsEmLotes && indiceLoteFixo >= idsEmLotes.length;
       if (!pagina.length) {
         if (fimDosLotesFixos || !idsEmLotes) break;
@@ -718,7 +774,7 @@ export async function resimularEcommerceEmLotes({ criterioB2c, pesoBase = 'cotad
 // Resimula exatamente os pedidos passados por id (ex: o que esta visivel na
 // grade depois dos filtros por coluna), em vez de paginar tudo que bate com
 // os filtros de analise no banco. Util pra testar um recorte pontual.
-export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase = 'cotado', cdsPermitidos = [], usarSaldoDia = true, incluirSemCruzamento = false, onProgress } = {}) {
+export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase = 'cotado', cdsPermitidos = [], usarSaldoDia = true, incluirSemCruzamento = false, transportadorasExcluidas = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   if (!ids.length) return { totalProcessado: 0, totalOk: 0 };
 
@@ -754,7 +810,7 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
     ? [...new Set(pedidos.flatMap((p) => String(p.cds_com_saldo_venda || '').split(',').map((c) => c.trim()).filter(Boolean).map((codigo) => mapaCdCentros.get(codigo)).filter(Boolean)))]
     : [];
   const cdsPermitidosMalha = cidadesOrigemSaldo.length ? cidadesOrigemSaldo : cdsPermitidos;
-  const { transportadoras, municipios, vinculosTransportadoras } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos: cdsPermitidosMalha, destinosIbge });
+  const { transportadoras, municipios, vinculosTransportadoras } = await carregarMalhaB2cParaResimulacao({ onProgress, cdsPermitidos: cdsPermitidosMalha, destinosIbge, transportadorasExcluidas });
 
   const worker = new Worker(new URL('../workers/ecommerceResimulacaoWorker.js', import.meta.url), { type: 'module' });
   const aguardarMensagem = (tipoEsperado) => new Promise((resolve, reject) => {
@@ -809,22 +865,150 @@ export async function resimularEcommercePorIds({ ids = [], criterioB2c, pesoBase
 // escolhe o vencedor - so ai grava o resultado final em ecommerce_order_snapshot.
 // ============================================================================
 
+// transportadorasExcluidas NAO entra aqui de proposito (apesar de ainda ser aceito
+// no parametro, por compatibilidade com quem chama) - e um filtro dinamico tipo BI,
+// pra testar cenarios "e se essa transportadora nao existisse" DEPOIS de fechado,
+// sem precisar reprocessar a origem inteira. Se entrasse na assinatura, cada troca
+// de selecao criava um checkpoint/progresso novo do zero, perdendo o que ja tinha
+// sido processado (foi exatamente isso que aconteceu e travou o fechamento).
 export function assinaturaFaseamentoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado' } = {}) {
-  return JSON.stringify({ filtros, refazerTudo, incluirSemCruzamento, pesoBase });
+  return JSON.stringify({ versao: 6, filtros, refazerTudo, incluirSemCruzamento, pesoBase });
+}
+
+// Recupera sessoes antigas ainda retomaveis. Antes da tela ter historico proprio,
+// os filtros/opcoes ja ficavam serializados na assinatura dos checkpoints e do
+// progresso por origem; portanto conseguimos reconstruir execucoes em andamento.
+export async function listarSessoesResimulacaoEcommerce() {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = getSupabaseClient();
+  const [{ data: checkpoints, error: erroCheckpoints }, { data: progressos, error: erroProgressos }] = await Promise.all([
+    supabase
+      .from('ecommerce_sim_origem_checkpoint')
+      .select('assinatura,origem_cidade,total_pedidos,atualizado_em')
+      .order('atualizado_em', { ascending: false })
+      .limit(5000),
+    supabase
+      .from('ecommerce_sim_origem_progresso')
+      .select('assinatura,origem_cidade,concluido_em')
+      .order('concluido_em', { ascending: false })
+      .limit(5000),
+  ]);
+  if (erroCheckpoints) throw erroCheckpoints;
+  if (erroProgressos) throw erroProgressos;
+
+  const sessoes = new Map();
+  const obter = (assinatura) => {
+    if (!sessoes.has(assinatura)) {
+      let configuracao;
+      try { configuracao = JSON.parse(assinatura); } catch { configuracao = null; }
+      if (!configuracao) return null;
+      sessoes.set(assinatura, { assinatura, configuracao, atualizadoEm: null, origens: new Map() });
+    }
+    return sessoes.get(assinatura);
+  };
+  (progressos || []).forEach((row) => {
+    const sessao = obter(row.assinatura);
+    if (!sessao) return;
+    sessao.origens.set(row.origem_cidade, { cidade: row.origem_cidade, concluida: true });
+    if (!sessao.atualizadoEm || row.concluido_em > sessao.atualizadoEm) sessao.atualizadoEm = row.concluido_em;
+  });
+  (checkpoints || []).forEach((row) => {
+    const sessao = obter(row.assinatura);
+    if (!sessao) return;
+    sessao.origens.set(row.origem_cidade, {
+      cidade: row.origem_cidade,
+      concluida: false,
+      totalPedidosProcessados: Number(row.total_pedidos || 0),
+    });
+    if (!sessao.atualizadoEm || row.atualizado_em > sessao.atualizadoEm) sessao.atualizadoEm = row.atualizado_em;
+  });
+  return [...sessoes.values()]
+    .map((sessao) => ({ ...sessao, origens: [...sessao.origens.values()] }))
+    .sort((a, b) => String(b.atualizadoEm || '').localeCompare(String(a.atualizadoEm || '')));
+}
+
+// Apaga de vez o progresso/checkpoint de uma sessao de resimulacao (identificada pela
+// assinatura). NAO mexe em ecommerce_order_snapshot nem em ecommerce_sim_candidatos_origem -
+// so a marcacao de "quais origens ja rodaram" pra essa combinacao de filtros/peso, que e
+// so bookkeeping intermediario. Usado tanto pelo botao "Excluir" (sessoes velhas/erradas)
+// quanto automaticamente apos "Fechar resimulacao" (o bookkeeping deixa de servir pra
+// algo depois que o resultado final ja foi gravado).
+export async function excluirProgressoOrigensEcommerce(assinatura) {
+  if (!isSupabaseConfigured() || !assinatura) return;
+  const supabase = getSupabaseClient();
+  const [{ error: erroProgresso }, { error: erroCheckpoint }] = await Promise.all([
+    supabase.from('ecommerce_sim_origem_progresso').delete().eq('assinatura', assinatura),
+    supabase.from('ecommerce_sim_origem_checkpoint').delete().eq('assinatura', assinatura),
+  ]);
+  if (erroProgresso) throw erroProgresso;
+  if (erroCheckpoint) throw erroCheckpoint;
+}
+
+function cenariosPesoEcommerce(pesoBase = 'cotado') {
+  return pesoBase === 'ambos' ? ['cotado', 'faturado'] : [pesoBase];
+}
+
+// Dentro da mesma transportadora/CD, uma opcao que custa mais e tambem demora
+// mais nunca pode vencer o criterio preco/prazo. Remover essas linhas antes do
+// staging preserva o resultado e evita gravar milhares de rotas redundantes por
+// pedido (o principal gargalo das origens com muitas tabelas, como ITUPEVA).
+function reduzirCandidatosStagingEcommerce(candidatos = []) {
+  const unicos = deduplicarCandidatosEcommerce(candidatos);
+  const grupos = new Map();
+  unicos.forEach((candidato) => {
+    const chave = `${normalizarNomeCidade(candidato.transportadora)}|${normalizarNomeCidade(candidato.origem)}`;
+    if (!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave).push(candidato);
+  });
+  return [...grupos.values()].flatMap((grupo) => grupo.filter((candidato, indice) => {
+    const valor = Number(candidato.total ?? candidato.valor ?? Infinity);
+    const prazo = Number(candidato.prazo ?? Infinity);
+    return !grupo.some((outro, outroIndice) => {
+      if (outroIndice === indice) return false;
+      const outroValor = Number(outro.total ?? outro.valor ?? Infinity);
+      const outroPrazo = Number(outro.prazo ?? Infinity);
+      return outroValor <= valor && outroPrazo <= prazo && (outroValor < valor || outroPrazo < prazo);
+    });
+  }));
+}
+
+async function salvarResultadosDuploCenarioEcommerce(resultadosCotado = [], resultadosFaturado = []) {
+  const supabase = getSupabaseClient();
+  const agora = new Date().toISOString();
+  const cotadoPorId = new Map(resultadosCotado.map((resultado) => [resultado.id, resultado]));
+  const faturadoPorId = new Map(resultadosFaturado.map((resultado) => [resultado.id, resultado]));
+  const ids = [...new Set([...cotadoPorId.keys(), ...faturadoPorId.keys()])];
+  const linhas = ids.map((id) => {
+    const cotado = cotadoPorId.get(id) || null;
+    const faturado = faturadoPorId.get(id) || null;
+    const legado = cotado || faturado || { id };
+    return {
+      ...legado,
+      id,
+      sim_peso_base: 'ambos',
+      sim_resultado_cotado: cotado,
+      sim_resultado_faturado: faturado,
+      sim_resimulado_em: agora,
+    };
+  });
+  for (const grupo of chunks(linhas, 100)) {
+    const { error } = await supabase.from('ecommerce_order_snapshot').upsert(grupo, { onConflict: 'id' });
+    if (error) throw error;
+  }
 }
 
 // Mapeia as origens (CDs com saldo) do recorte, com a quantidade de pedidos de cada
 // uma e se ja foram processadas antes (mesma assinatura) - pra mostrar a lista na tela
 // antes de comecar, e o usuario poder rodar origem a origem com controle visual.
-export async function mapearOrigensParaResimulacaoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado', onProgress } = {}) {
+export async function mapearOrigensParaResimulacaoEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado', transportadorasExcluidas = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) return { origens: [] };
   const supabase = getSupabaseClient();
 
   const { mapa: mapaCdCentros } = await carregarMapaCdCentros();
-  const assinatura = assinaturaFaseamentoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, pesoBase });
+  const assinatura = assinaturaFaseamentoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, pesoBase, transportadorasExcluidas });
 
   onProgress?.({ etapa: 'mapeando_destinos_pedidos', carregados: 0, total: null });
-  const { cidadesOrigemSaldo } = await obterDestinosIbgeParaFiltro(filtros, refazerTudo, incluirSemCruzamento, onProgress, mapaCdCentros);
+  const { cidadesOrigemSaldo } = await obterDestinosIbgeParaFiltro(filtros, refazerTudo, incluirSemCruzamento, onProgress, mapaCdCentros, pesoBase);
   if (!cidadesOrigemSaldo.length) return { origens: [], assinatura };
 
   const { data: progressoData, error: erroProgresso } = await supabase
@@ -834,6 +1018,15 @@ export async function mapearOrigensParaResimulacaoEcommerce({ filtros = {}, refa
   if (erroProgresso) throw erroProgresso;
   const jaProcessadas = new Set((progressoData || []).map((r) => r.origem_cidade));
 
+  // Checkpoint intermediario (origem cancelada/caida no meio) - pra mostrar na lista
+  // quanto ja foi salvo daquela origem antes, em vez do usuario achar que voltou a zero.
+  const { data: checkpointData, error: erroCheckpointLista } = await supabase
+    .from('ecommerce_sim_origem_checkpoint')
+    .select('origem_cidade, total_pedidos')
+    .eq('assinatura', assinatura);
+  if (erroCheckpointLista) throw erroCheckpointLista;
+  const pedidosSalvosPorOrigem = new Map((checkpointData || []).map((r) => [r.origem_cidade, r.total_pedidos]));
+
   const origens = [];
   for (const origemCidade of cidadesOrigemSaldo) {
     const codigosDaOrigem = [...mapaCdCentros.entries()].filter(([, cidade]) => normalizarNomeCidade(cidade) === origemCidade).map(([codigo]) => codigo);
@@ -841,13 +1034,18 @@ export async function mapearOrigensParaResimulacaoEcommerce({ filtros = {}, refa
     if (codigosDaOrigem.length) {
       let query = supabase.from('ecommerce_order_snapshot').select('id', { count: 'exact', head: true });
       if (!incluirSemCruzamento) query = query.eq('cruzamento_status', 'ok');
-      if (!refazerTudo) query = query.eq('sim_status', 'pendente');
+      if (!refazerTudo) query = aplicarFiltroPendenteCenario(query, pesoBase);
       query = aplicarFiltrosEcommerce(query, { ...filtros, cdCodigos: codigosDaOrigem });
       const { count, error } = await query;
       if (error) throw error;
       quantidadePedidos = count || 0;
     }
-    origens.push({ cidade: origemCidade, quantidadePedidos, concluida: jaProcessadas.has(origemCidade) });
+    origens.push({
+      cidade: origemCidade,
+      quantidadePedidos,
+      concluida: jaProcessadas.has(origemCidade),
+      pedidosSalvos: pedidosSalvosPorOrigem.get(origemCidade) || 0,
+    });
   }
 
   return { origens: origens.sort((a, b) => b.quantidadePedidos - a.quantidadePedidos), assinatura };
@@ -858,25 +1056,46 @@ export async function mapearOrigensParaResimulacaoEcommerce({ filtros = {}, refa
 // acumula em staging. Retorna quantos pedidos foram cobertos. Usado tanto pelo modo
 // automatico (processarResimulacaoPorOrigemEcommerce, que chama isso em loop) quanto
 // pelo controle manual da tela (1 clique = 1 origem, com feedback visual por origem).
-export async function processarUmaOrigemEcommerce({ origemCidade, filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado', tamanhoLotePedidos = 500, onProgress } = {}) {
+export async function processarUmaOrigemEcommerce({ origemCidade, filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado', tamanhoLotePedidos = 200, totalPedidosOrigem = null, transportadorasExcluidas = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   const supabase = getSupabaseClient();
 
   const { mapa: mapaCdCentros } = await carregarMapaCdCentros();
   const municipios = await carregarMunicipiosIbgeDb();
   const mapasIbge = montarMapasIbge(municipios);
-  const assinatura = assinaturaFaseamentoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, pesoBase });
+  const assinatura = assinaturaFaseamentoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, pesoBase, transportadorasExcluidas });
 
-  const codigosDaOrigem = [...mapaCdCentros.entries()].filter(([, cidade]) => cidade === origemCidade).map(([codigo]) => codigo);
-  let totalPedidos = 0;
+  const origemNormalizada = normalizarNomeCidade(origemCidade);
+  const codigosDaOrigem = [...mapaCdCentros.entries()]
+    .filter(([, cidade]) => normalizarNomeCidade(cidade) === origemNormalizada)
+    .map(([codigo]) => codigo);
+  if (!codigosDaOrigem.length) {
+    throw new Error(`Origem "${origemCidade}" nao possui codigo correspondente em cd_centros.`);
+  }
+  const { data: checkpointData, error: erroCheckpoint } = await supabase
+    .from('ecommerce_sim_origem_checkpoint')
+    .select('ultimo_pedido_id, total_pedidos')
+    .eq('assinatura', assinatura)
+    .eq('origem_cidade', origemCidade)
+    .maybeSingle();
+  if (erroCheckpoint) throw erroCheckpoint;
+  let totalPedidos = Number(checkpointData?.total_pedidos || 0);
+  let ultimoPedidoId = checkpointData?.ultimo_pedido_id || null;
+  // Reaproveita a malha durante toda a origem. Antes, cada pagina de 200 pedidos
+  // recarregava inclusive destinos ja vistos, fazendo ITAJAI repetir a mesma etapa
+  // dezenas de vezes. O indice cresce apenas quando aparece um destino novo.
+  const destinosJaCarregados = new Set();
+  const indiceAcumulado = new Map();
 
   if (codigosDaOrigem.length) {
-    let from = 0;
     for (;;) {
       let query = supabase.from('ecommerce_order_snapshot').select(CAMPOS_PEDIDO_RESIMULACAO);
       if (!incluirSemCruzamento) query = query.eq('cruzamento_status', 'ok');
-      if (!refazerTudo) query = query.eq('sim_status', 'pendente');
-      query = aplicarFiltrosEcommerce(query, { ...filtros, cdCodigos: codigosDaOrigem }).range(from, from + tamanhoLotePedidos - 1);
+      if (!refazerTudo) query = aplicarFiltroPendenteCenario(query, pesoBase);
+      query = aplicarFiltrosEcommerce(query, { ...filtros, cdCodigos: codigosDaOrigem })
+        .order('id', { ascending: true })
+        .limit(tamanhoLotePedidos);
+      if (ultimoPedidoId) query = query.gt('id', ultimoPedidoId);
       const { data: pagina, error: erroPagina } = await query;
       if (erroPagina) throw erroPagina;
       if (!pagina || !pagina.length) break;
@@ -887,15 +1106,44 @@ export async function processarUmaOrigemEcommerce({ origemCidade, filtros = {}, 
       const destinosDaPagina = [...new Set(
         pagina.map((p) => resolverIbgeLocal(p.cidade, p.uf, mapasIbge)).filter(Boolean)
       )];
+      const destinosNovos = destinosDaPagina.filter((ibge) => !destinosJaCarregados.has(ibge));
       const idsPagina = pagina.map((p) => p.id);
       let itensCalculados = [];
-      if (destinosDaPagina.length) {
-        const transportadorasDaPagina = await carregarBaseFiltradaPorOrigemEDestinosDb([origemCidade], destinosDaPagina, onProgress);
+      if (destinosNovos.length) {
+        const excluidas = new Set((transportadorasExcluidas || []).map((nome) => String(nome || '').trim().toUpperCase()));
+        const transportadorasDaPagina = (await carregarBaseFiltradaPorOrigemEDestinosDb(
+          [origemCidade],
+          destinosNovos,
+          (evt) => onProgress?.({
+            ...evt,
+            origemAtual: origemCidade,
+            pedidosProcessadosOrigem: totalPedidos,
+            totalPedidosOrigem,
+          })
+        )).filter((item) => !excluidas.has(String(item?.nome || '').trim().toUpperCase()));
         if (transportadorasDaPagina.length) {
-          const { index } = construirIndiceResimulacaoEcommerce(transportadorasDaPagina, municipios);
-          itensCalculados = calcularCandidatosOrigemEcommerce({ pedidos: pagina, mapasIbge, index, pesoBase });
+          const { index: indiceNovo } = construirIndiceResimulacaoEcommerce(transportadorasDaPagina, municipios);
+          indiceNovo.forEach((candidatos, chave) => indiceAcumulado.set(chave, candidatos));
         }
+        destinosNovos.forEach((ibge) => destinosJaCarregados.add(ibge));
       }
+      if (destinosDaPagina.length) {
+        itensCalculados = cenariosPesoEcommerce(pesoBase).flatMap((cenario) =>
+          calcularCandidatosOrigemEcommerce({ pedidos: pagina, mapasIbge, index: indiceAcumulado, pesoBase: cenario })
+            .map((item) => ({
+              ...item,
+              candidatos: reduzirCandidatosStagingEcommerce(item.candidatos),
+              pesoBase: cenario,
+            }))
+        );
+      }
+
+      onProgress?.({
+        etapa: 'salvando_candidatos_origem',
+        origemAtual: origemCidade,
+        pedidosProcessadosOrigem: totalPedidos,
+        totalPedidosOrigem,
+      });
 
       // Apaga staging anterior desses pedidos pra essa origem antes de inserir de novo -
       // idempotente: se essa origem for reprocessada (retomada apos erro), nao duplica.
@@ -908,8 +1156,8 @@ export async function processarUmaOrigemEcommerce({ origemCidade, filtros = {}, 
         if (erroDelete) throw erroDelete;
       }
       const linhasStaging = [];
-      itensCalculados.forEach(({ pedidoId, canal, candidatos }) => {
-        candidatos.forEach((candidato) => linhasStaging.push({ pedido_id: pedidoId, origem_cidade: origemCidade, canal, candidato }));
+      itensCalculados.forEach(({ pedidoId, canal, candidatos, pesoBase: cenario }) => {
+        candidatos.forEach((candidato) => linhasStaging.push({ pedido_id: pedidoId, origem_cidade: origemCidade, canal, peso_base: cenario, candidato }));
       });
       for (const grupo of chunks(linhasStaging, 300)) {
         const { error: erroInsert } = await supabase.from('ecommerce_sim_candidatos_origem').insert(grupo);
@@ -917,10 +1165,26 @@ export async function processarUmaOrigemEcommerce({ origemCidade, filtros = {}, 
       }
 
       totalPedidos += pagina.length;
-      onProgress?.({ etapa: 'processando_origem', origemAtual: origemCidade, pedidosNaOrigem: totalPedidos });
+      ultimoPedidoId = pagina[pagina.length - 1].id;
+      const { error: erroSalvarCheckpoint } = await supabase
+        .from('ecommerce_sim_origem_checkpoint')
+        .upsert({
+          assinatura,
+          origem_cidade: origemCidade,
+          ultimo_pedido_id: ultimoPedidoId,
+          total_pedidos: totalPedidos,
+          atualizado_em: new Date().toISOString(),
+        }, { onConflict: 'assinatura,origem_cidade' });
+      if (erroSalvarCheckpoint) throw erroSalvarCheckpoint;
+      onProgress?.({
+        etapa: 'processando_origem',
+        origemAtual: origemCidade,
+        pedidosNaOrigem: totalPedidos,
+        pedidosProcessadosOrigem: totalPedidos,
+        totalPedidosOrigem,
+      });
 
       if (pagina.length < tamanhoLotePedidos) break;
-      from += tamanhoLotePedidos;
     }
   }
 
@@ -929,21 +1193,30 @@ export async function processarUmaOrigemEcommerce({ origemCidade, filtros = {}, 
     .upsert({ assinatura, origem_cidade: origemCidade }, { onConflict: 'assinatura,origem_cidade' });
   if (erroMarcar) throw erroMarcar;
 
+  // Origem concluida: o registro definitivo fica em origem_progresso e o checkpoint
+  // intermediario deixa de ser necessario.
+  const { error: erroLimparCheckpoint } = await supabase
+    .from('ecommerce_sim_origem_checkpoint')
+    .delete()
+    .eq('assinatura', assinatura)
+    .eq('origem_cidade', origemCidade);
+  if (erroLimparCheckpoint) throw erroLimparCheckpoint;
+
   return { origemCidade, totalPedidos };
 }
 
 // Fase 1 (modo automatico): processa TODAS as origens (CDs com saldo) do recorte, uma a
 // uma, em sequencia. Retomavel - origens ja concluidas (marcadas em
 // ecommerce_sim_origem_progresso) sao puladas se chamado de novo com a mesma assinatura.
-export async function processarResimulacaoPorOrigemEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado', tamanhoLotePedidos = 500, onProgress } = {}) {
+export async function processarResimulacaoPorOrigemEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, pesoBase = 'cotado', tamanhoLotePedidos = 200, transportadorasExcluidas = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   const supabase = getSupabaseClient();
 
   const { mapa: mapaCdCentros } = await carregarMapaCdCentros();
-  const assinatura = assinaturaFaseamentoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, pesoBase });
+  const assinatura = assinaturaFaseamentoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, pesoBase, transportadorasExcluidas });
 
   onProgress?.({ etapa: 'mapeando_destinos_pedidos', carregados: 0, total: null });
-  const { cidadesOrigemSaldo } = await obterDestinosIbgeParaFiltro(filtros, refazerTudo, incluirSemCruzamento, onProgress, mapaCdCentros);
+  const { cidadesOrigemSaldo } = await obterDestinosIbgeParaFiltro(filtros, refazerTudo, incluirSemCruzamento, onProgress, mapaCdCentros, pesoBase);
   if (!cidadesOrigemSaldo.length) return { totalOrigens: 0, origensProcessadas: 0 };
 
   const { data: progressoData, error: erroProgresso } = await supabase
@@ -958,7 +1231,7 @@ export async function processarResimulacaoPorOrigemEcommerce({ filtros = {}, ref
     if (jaProcessadas.has(origemCidade)) continue;
 
     onProgress?.({ etapa: 'processando_origem', origemAtual: origemCidade, carregados: origensFeitas, total: cidadesOrigemSaldo.length });
-    await processarUmaOrigemEcommerce({ origemCidade, filtros, refazerTudo, incluirSemCruzamento, pesoBase, tamanhoLotePedidos, onProgress: (evt) => onProgress?.({ ...evt, carregados: origensFeitas, total: cidadesOrigemSaldo.length }) });
+    await processarUmaOrigemEcommerce({ origemCidade, filtros, refazerTudo, incluirSemCruzamento, pesoBase, tamanhoLotePedidos, transportadorasExcluidas, onProgress: (evt) => onProgress?.({ ...evt, carregados: origensFeitas, total: cidadesOrigemSaldo.length }) });
 
     origensFeitas += 1;
     onProgress?.({ etapa: 'processando_origem', origemAtual: origemCidade, carregados: origensFeitas, total: cidadesOrigemSaldo.length });
@@ -970,7 +1243,7 @@ export async function processarResimulacaoPorOrigemEcommerce({ filtros = {}, ref
 // Fase 2: pra cada pedido pendente do recorte, junta todos os candidatos ja
 // acumulados (de todas as origens processadas na fase 1) e escolhe o vencedor -
 // so ai grava sim_status='ok' e os campos sim_* definitivos.
-export async function finalizarResimulacaoPorOrigemEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, criterioB2c, pesoBase = 'cotado', tamanhoLote = 500, onProgress } = {}) {
+export async function finalizarResimulacaoPorOrigemEcommerce({ filtros = {}, refazerTudo = false, incluirSemCruzamento = false, permitirFechamentoParcial = false, origensEsperadas = [], criterioB2c, pesoBase = 'cotado', tamanhoLote = 50, transportadorasExcluidas = [], onProgress } = {}) {
   if (!isSupabaseConfigured()) throw new Error('Supabase nao configurado.');
   const supabase = getSupabaseClient();
 
@@ -981,62 +1254,112 @@ export async function finalizarResimulacaoPorOrigemEcommerce({ filtros = {}, ref
   ]);
   const mapasIbge = montarMapasIbge(municipios);
   const mapaVinculos = criarMapaVinculosTransportadoras(vinculos || []);
+  const assinatura = assinaturaFaseamentoEcommerce({ filtros, refazerTudo, incluirSemCruzamento, pesoBase, transportadorasExcluidas });
+
+  if (!permitirFechamentoParcial) {
+    const { data: progresso, error: erroProgresso } = await supabase
+      .from('ecommerce_sim_origem_progresso')
+      .select('origem_cidade')
+      .eq('assinatura', assinatura);
+    if (erroProgresso) throw erroProgresso;
+    const concluidas = new Set((progresso || []).map((item) => normalizarNomeCidade(item.origem_cidade)));
+    // A tela ja fez o mapeamento completo e conhece exatamente as origens esperadas.
+    // Nao repete aqui a varredura de toda ecommerce_order_snapshot, que podia levar
+    // horas e estourar statement_timeout antes mesmo de ler o staging pronto.
+    const faltantes = (origensEsperadas || []).filter((cidade) => !concluidas.has(normalizarNomeCidade(cidade)));
+    if (faltantes.length) {
+      throw new Error(`Fechamento bloqueado: faltam ${faltantes.length} origem(ns) processar (${faltantes.slice(0, 5).join(', ')}${faltantes.length > 5 ? ', ...' : ''}).`);
+    }
+  }
 
   let totalProcessado = 0;
   let totalOk = 0;
+  let ultimoIdProcessado = null;
 
   for (;;) {
-    const pagina = await buscarPaginaPendentesResimulacao(tamanhoLote, filtros, refazerTudo, incluirSemCruzamento);
+    const pagina = await buscarPaginaPendentesResimulacao(
+      tamanhoLote,
+      filtros,
+      refazerTudo,
+      incluirSemCruzamento,
+      ultimoIdProcessado,
+      pesoBase
+    );
     if (!pagina.length) break;
 
     const ids = pagina.map((p) => p.id);
     const candidatosPorPedido = new Map();
-    for (const grupo of chunks(ids, 200)) {
-      const { data, error } = await supabase
-        .from('ecommerce_sim_candidatos_origem')
-        .select('pedido_id, canal, candidato')
-        .in('pedido_id', grupo);
-      if (error) throw error;
-      (data || []).forEach((row) => {
-        if (!candidatosPorPedido.has(row.pedido_id)) candidatosPorPedido.set(row.pedido_id, { canal: row.canal, calculados: [] });
-        candidatosPorPedido.get(row.pedido_id).calculados.push(row.candidato);
+    const linhasStaging = await carregarCandidatosStagingPorPedidos(supabase, ids);
+    linhasStaging.forEach((row) => {
+      if (!candidatosPorPedido.has(row.pedido_id)) candidatosPorPedido.set(row.pedido_id, new Map());
+      const cenario = row.peso_base || 'cotado';
+      const porCenario = candidatosPorPedido.get(row.pedido_id);
+      if (!porCenario.has(cenario)) porCenario.set(cenario, { canal: row.canal, calculados: [] });
+      porCenario.get(cenario).calculados.push(row.candidato);
+    });
+    candidatosPorPedido.forEach((porCenario) => {
+      porCenario.forEach((staged) => {
+        staged.calculados = deduplicarCandidatosEcommerce(staged.calculados);
       });
-    }
-
-    const itensParaFinalizar = [];
-    const resultadosDiretos = [];
-    pagina.forEach((pedido) => {
-      const ibgeDestino = resolverIbgeLocal(pedido.cidade, pedido.uf, mapasIbge) || '';
-      if (!ibgeDestino) {
-        resultadosDiretos.push({ id: pedido.id, sim_status: 'sem_ibge_destino', sim_peso_base: pesoBase });
-        return;
-      }
-      const staged = candidatosPorPedido.get(pedido.id);
-      if (!staged || !staged.calculados.length) {
-        const codigos = String(pedido.cds_com_saldo_venda || '').split(',').map((c) => c.trim()).filter(Boolean);
-        const algumReconhecido = codigos.some((codigo) => mapaCdCentros.has(codigo));
-        resultadosDiretos.push({
-          id: pedido.id,
-          sim_status: codigos.length && !algumReconhecido ? 'sem_cd_saldo_reconhecido' : 'sem_malha',
-          sim_peso_base: pesoBase,
-        });
-        return;
-      }
-      itensParaFinalizar.push({ pedido, canal: staged.canal || categoriaCanalRealizado(pedido.canal || 'B2C'), calculados: staged.calculados });
     });
 
-    const resultadosCalculados = calcularResultadoFinalEcommerce({ itens: itensParaFinalizar, criterioB2c, pesoBase, mapaVinculos });
     const mapaPedidos = new Map(pagina.map((p) => [p.id, p.pedido]));
-    const resultados = [...resultadosDiretos, ...resultadosCalculados].map((r) => ({ ...r, pedido: mapaPedidos.get(r.id) }));
+    const resultadosPorCenario = new Map();
+    for (const cenario of cenariosPesoEcommerce(pesoBase)) {
+      const itensParaFinalizar = [];
+      const resultadosDiretos = [];
+      pagina.forEach((pedido) => {
+        const ibgeDestino = resolverIbgeLocal(pedido.cidade, pedido.uf, mapasIbge) || '';
+        if (!ibgeDestino) {
+          resultadosDiretos.push({ id: pedido.id, sim_status: 'sem_ibge_destino', sim_peso_base: cenario });
+          return;
+        }
+        const staged = candidatosPorPedido.get(pedido.id)?.get(cenario);
+        if (!staged || !staged.calculados.length) {
+          const codigos = String(pedido.cds_com_saldo_venda || '').split(',').map((c) => c.trim()).filter(Boolean);
+          const algumReconhecido = codigos.some((codigo) => mapaCdCentros.has(codigo));
+          let statusSemCandidato = 'sem_malha';
+          if (!codigos.length) statusSemCandidato = 'sem_cd_saldo_informado';
+          else if (!algumReconhecido) statusSemCandidato = 'sem_cd_saldo_reconhecido';
+          resultadosDiretos.push({ id: pedido.id, sim_status: statusSemCandidato, sim_peso_base: cenario });
+          return;
+        }
+        const pedidoComSaldo = resolverCidadesSaldoPedido(pedido, mapaCdCentros);
+        itensParaFinalizar.push({ pedido: pedidoComSaldo, canal: staged.canal || categoriaCanalRealizado(pedido.canal || 'B2C'), calculados: staged.calculados });
+      });
+      const calculados = calcularResultadoFinalEcommerce({ itens: itensParaFinalizar, criterioB2c, pesoBase: cenario, mapaVinculos });
+      resultadosPorCenario.set(cenario, [...resultadosDiretos, ...calculados].map((r) => ({ ...r, pedido: mapaPedidos.get(r.id) })));
+    }
 
-    await salvarResultadosResimulacaoEcommerce(resultados);
+    if (pesoBase === 'ambos') {
+      await salvarResultadosDuploCenarioEcommerce(resultadosPorCenario.get('cotado'), resultadosPorCenario.get('faturado'));
+    } else {
+      await salvarResultadosResimulacaoEcommerce(resultadosPorCenario.get(pesoBase));
+    }
+
+    // Depois que os resultados completos (incluindo top de candidatos) foram
+    // preservados no pedido, o staging desse lote nao tem mais utilidade.
+    for (const grupo of chunks(ids, 200)) {
+      const { error: erroLimpeza } = await supabase
+        .from('ecommerce_sim_candidatos_origem')
+        .delete()
+        .in('pedido_id', grupo);
+      if (erroLimpeza) throw erroLimpeza;
+    }
+
+    const resultados = resultadosPorCenario.get(pesoBase === 'ambos' ? 'cotado' : pesoBase) || [];
 
     totalProcessado += pagina.length;
     totalOk += resultados.filter((r) => r.sim_status === 'ok').length;
     onProgress?.({ etapa: 'salvando_resultados', carregados: totalProcessado, total: null, totalProcessado, totalOk });
 
+    if (refazerTudo) ultimoIdProcessado = pagina[pagina.length - 1]?.id || ultimoIdProcessado;
     if (pagina.length < tamanhoLote) break;
   }
+
+  // Checkpoints/progresso servem apenas para retomada antes do fechamento.
+  await supabase.from('ecommerce_sim_origem_checkpoint').delete().eq('assinatura', assinatura);
+  await supabase.from('ecommerce_sim_origem_progresso').delete().eq('assinatura', assinatura);
 
   return { totalProcessado, totalOk };
 }
@@ -1051,6 +1374,122 @@ export async function listarEcommerceOrderSnapshot({ limit = 500, filtros = {} }
   const { data, error } = await query;
   if (error) throw error;
   return { rows: data || [] };
+}
+
+// Consolida a base inteira do recorte para o painel. Usa cursor em vez de OFFSET,
+// mantendo o custo previsivel mesmo quando a auditoria passa de 100 mil pedidos.
+export async function carregarIndicadoresEcommerce({ filtros = {}, cenarioPeso = 'cotado', onProgress } = {}) {
+  if (!isSupabaseConfigured()) return null;
+  const supabase = getSupabaseClient();
+  const resumo = {
+    total: 0, ressimulados: 0, mesmaTransportadora: 0, outraTransportadora: 0,
+    comparacaoIndefinida: 0, casosPagoAMais: 0, valorPagoAMais: 0,
+    maiorDesvio: 0, pagosAMaisComCampanha: 0, pagosAMaisPesoDiferente: 0,
+    alternativas: {}, itens: [],
+  };
+  let aposId = null;
+  const limite = 1000;
+  while (true) {
+    let query = supabase
+      .from('ecommerce_order_snapshot')
+      .select('id,pedido,data_criacao,sim_status,sim_peso_base,sim_mesma_transportadora,sim_transportadora_ideal,sim_origem_ideal,sim_diferenca_vs_cte,sim_valor_ideal,cotado_status:sim_resultado_cotado->>sim_status,cotado_mesma:sim_resultado_cotado->>sim_mesma_transportadora,cotado_transportadora:sim_resultado_cotado->>sim_transportadora_ideal,cotado_origem:sim_resultado_cotado->>sim_origem_ideal,cotado_diferenca:sim_resultado_cotado->>sim_diferenca_vs_cte,cotado_valor:sim_resultado_cotado->>sim_valor_ideal,faturado_status:sim_resultado_faturado->>sim_status,faturado_mesma:sim_resultado_faturado->>sim_mesma_transportadora,faturado_transportadora:sim_resultado_faturado->>sim_transportadora_ideal,faturado_origem:sim_resultado_faturado->>sim_origem_ideal,faturado_diferenca:sim_resultado_faturado->>sim_diferenca_vs_cte,faturado_valor:sim_resultado_faturado->>sim_valor_ideal,cte_transportadora,cte_cidade_origem,cte_valor,custo_frete_transportadora,possui_campanha_frete,frete_a_cobrar_marketplace,peso_cotado,peso_faturado,diferenca_peso,cubagem_cotada,cidade,uf,canal')
+      .order('id', { ascending: true })
+      .limit(limite);
+    // O painel financeiro analisa somente resultados concluidos. Ignora o filtro
+    // de status da tela para nunca varrer pendentes/sem_malha por engano.
+    query = aplicarFiltrosEcommerce(query, { ...filtros, simStatus: null });
+    if (aposId !== null) query = query.gt('id', aposId);
+    const { data, error } = await query;
+    if (error) throw error;
+    const pagina = data || [];
+    for (const row of pagina) {
+      const resultadoPorPrefixo = (prefixo) => row[`${prefixo}_status`] ? {
+        sim_status: row[`${prefixo}_status`],
+        sim_mesma_transportadora: row[`${prefixo}_mesma`] === 'true' ? true : row[`${prefixo}_mesma`] === 'false' ? false : null,
+        sim_transportadora_ideal: row[`${prefixo}_transportadora`],
+        sim_origem_ideal: row[`${prefixo}_origem`],
+        sim_diferenca_vs_cte: Number(row[`${prefixo}_diferenca`] || 0),
+        sim_valor_ideal: Number(row[`${prefixo}_valor`] || 0),
+      } : null;
+      const resultado = resultadoPorPrefixo(cenarioPeso);
+      const resultadoLegado = row.sim_status === 'ok' && row.sim_peso_base === cenarioPeso
+        ? {
+            sim_status: row.sim_status,
+            sim_mesma_transportadora: row.sim_mesma_transportadora,
+            sim_transportadora_ideal: row.sim_transportadora_ideal,
+            sim_origem_ideal: row.sim_origem_ideal,
+            sim_diferenca_vs_cte: row.sim_diferenca_vs_cte,
+            sim_valor_ideal: row.sim_valor_ideal,
+          }
+        : null;
+      const sim = resultado || resultadoLegado;
+      if (!sim || sim.sim_status !== 'ok') continue;
+      const outroResultado = resultadoPorPrefixo(cenarioPeso === 'faturado' ? 'cotado' : 'faturado');
+      resumo.total += 1;
+      resumo.ressimulados += 1;
+      const desvio = Number(sim.sim_diferenca_vs_cte || 0);
+      const pesoCotado = Number(row.peso_cotado || 0);
+      const pesoFaturado = Number(row.peso_faturado || 0);
+      const diferencaPeso = Number(row.diferenca_peso || 0);
+      const cubagem = Number(row.cubagem_cotada || 0);
+      const pesoCubadoReferencia = cubagem * 300;
+      const referenciaPeso = Math.max(pesoCotado, pesoCubadoReferencia, 0);
+      const pesoPossivelmenteInconsistente = pesoFaturado > 0 && referenciaPeso > 0
+        && pesoFaturado > referenciaPeso * 1.5 && pesoFaturado - referenciaPeso > 10;
+      resumo.itens.push({
+        id: row.id,
+        pedido: row.pedido,
+        dataCriacao: row.data_criacao || null,
+        transportadoraUsada: row.cte_transportadora || 'Nao identificada',
+        transportadoraIdeal: sim.sim_transportadora_ideal || 'Nao identificada',
+        origemUsada: row.cte_cidade_origem || 'Nao identificada',
+        origemIdeal: sim.sim_origem_ideal || 'Nao identificada',
+        destino: [row.cidade, row.uf].filter(Boolean).join('/'),
+        canal: row.canal || '',
+        uf: row.uf || '',
+        mesmaTransportadora: sim.sim_mesma_transportadora,
+        perda: sim.sim_mesma_transportadora === false && desvio > 0.009 ? desvio : 0,
+        campanha: Boolean(row.possui_campanha_frete),
+        taxaMarketplace: Number(row.frete_a_cobrar_marketplace || 0),
+        diferencaPeso: Math.abs(diferencaPeso) > 0.01 || (pesoCotado > 0 && pesoFaturado > 0 && Math.abs(pesoCotado - pesoFaturado) > 0.01),
+        pesoCotado,
+        pesoFaturado,
+        pesoCubadoReferencia,
+        pesoPossivelmenteInconsistente,
+        mudouTransportadoraPorPeso: Boolean(outroResultado?.sim_status === 'ok' && outroResultado.sim_transportadora_ideal !== sim.sim_transportadora_ideal),
+        transportadoraIdealOutroCenario: outroResultado?.sim_transportadora_ideal || '',
+        valorIdealOutroCenario: Number(outroResultado?.sim_valor_ideal || 0),
+        valorIdeal: Number(sim.sim_valor_ideal || 0),
+        valorPago: Number(row.custo_frete_transportadora || row.cte_valor || 0),
+      });
+      if (sim.sim_mesma_transportadora === true) resumo.mesmaTransportadora += 1;
+      else if (sim.sim_mesma_transportadora === false) resumo.outraTransportadora += 1;
+      else resumo.comparacaoIndefinida += 1;
+      // "Pago a mais" exige outra transportadora E uma alternativa mais barata.
+      // Uma diferenca positiva na mesma transportadora nao representa desvio de
+      // roteirizacao e fica fora deste indicador.
+      if (sim.sim_mesma_transportadora !== false || desvio <= 0.009) continue;
+      resumo.casosPagoAMais += 1;
+      resumo.valorPagoAMais += desvio;
+      resumo.maiorDesvio = Math.max(resumo.maiorDesvio, desvio);
+      if (row.possui_campanha_frete) resumo.pagosAMaisComCampanha += 1;
+      if (Math.abs(diferencaPeso) > 0.01 || (pesoCotado > 0 && pesoFaturado > 0 && Math.abs(pesoCotado - pesoFaturado) > 0.01)) {
+        resumo.pagosAMaisPesoDiferente += 1;
+      }
+      const alternativa = sim.sim_transportadora_ideal || 'Nao identificada';
+      resumo.alternativas[alternativa] = (resumo.alternativas[alternativa] || 0) + 1;
+    }
+    onProgress?.({ carregados: resumo.total });
+    if (pagina.length < limite) break;
+    aposId = pagina[pagina.length - 1].id;
+  }
+  resumo.valorPagoAMais = Number(resumo.valorPagoAMais.toFixed(2));
+  resumo.economiaMedia = resumo.casosPagoAMais ? Number((resumo.valorPagoAMais / resumo.casosPagoAMais).toFixed(2)) : 0;
+  resumo.alternativas = Object.entries(resumo.alternativas)
+    .map(([nome, quantidade]) => ({ nome, quantidade }))
+    .sort((a, b) => b.quantidade - a.quantidade)
+    .slice(0, 10);
+  return resumo;
 }
 
 function normalizarTextoConsultaDb(valor) {

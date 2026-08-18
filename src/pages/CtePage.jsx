@@ -363,6 +363,11 @@ function getSituacao(row) {
   return campo(row, 'situacao', 'status', 'status_cte');
 }
 
+function isCteCancelado(row) {
+  const situacao = normalizarTexto(getSituacao(row));
+  return situacao.includes('CANCELAD') || situacao.includes('ANULAD');
+}
+
 function getTomador(row) {
   return campo(row, 'tomador_servico', 'tomadorServico', 'tomador', 'nome_tomador', 'razao_social_tomador') || '-';
 }
@@ -1247,6 +1252,14 @@ function PainelGestaoTransportador({ analise, filtros, interactiveFilters, onTog
 }
 
 function montarAnalise(rows = [], filtros = {}) {
+  const rowsCancelados = rows.filter(isCteCancelado);
+  const totalCancelados = rowsCancelados.length;
+  const canceladosComGanho = rowsCancelados.filter((row) => getValorCalculado(row) > 0 && getDiferenca(row) > 0);
+  const ganhoAuditoriaCancelados = canceladosComGanho.reduce((total, row) => total + getDiferenca(row), 0);
+  // O cancelado continua visível na base para conferência, mas não representa
+  // frete devido. Sua diferença positiva fica preservada como ganho comprovado
+  // da auditoria por cancelamento/reemissão ou desconto em fatura.
+  rows = rows.filter((row) => !isCteCancelado(row));
   const totalCte = rows.reduce((a, r) => a + getValorCte(r), 0);
   const totalCalculado = rows.reduce((a, r) => a + getValorCalculado(r), 0);
   const totalDiferenca = rows.reduce((a, r) => a + getDiferenca(r), 0);
@@ -1326,6 +1339,10 @@ function montarAnalise(rows = [], filtros = {}) {
   }));
 
   return {
+    totalCancelados,
+    canceladosComGanho: canceladosComGanho.length,
+    ganhoAuditoriaCancelados,
+    ganhoAuditoriaTotal: Math.max(totalDiferenca, 0) + ganhoAuditoriaCancelados,
     totalCtes,
     comCalculo,
     qtdFreteAlto,
@@ -4236,12 +4253,15 @@ export default function CtePage() {
           </div>
 
           <div className="summary-strip" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
-            <SummaryCard title="CT-es analisados" value={fmtN(analise.totalCtes)} subtitle="base completa conforme filtros" />
+            <SummaryCard title="CT-es analisados" value={fmtN(analise.totalCtes)} subtitle="válidos para cobrança" />
+            <SummaryCard title="CT-es cancelados" value={fmtN(analise.totalCancelados)} subtitle="visíveis, mas fora da cobrança" />
+            <SummaryCard title="Ganho em cancelados" value={fmt(analise.ganhoAuditoriaCancelados)} subtitle={`${fmtN(analise.canceladosComGanho)} CT-e(s) comprovado(s)`} />
             <SummaryCard title="Com cálculo" value={fmtN(analise.comCalculo)} subtitle={`${fmtPct(analise.totalCtes > 0 ? (analise.comCalculo / analise.totalCtes) * 100 : 0)} da base`} onClick={() => toggleInteractiveFilter('statusCalculo', 'com_calculo')} active={interactiveFilters.statusCalculo === 'com_calculo'} />
             <SummaryCard title="Sem cálculo" value={fmtN(Math.max(analise.totalCtes - analise.comCalculo, 0))} subtitle="CT-es sem valor calculado" onClick={() => toggleInteractiveFilter('statusCalculo', 'sem_calculo')} active={interactiveFilters.statusCalculo === 'sem_calculo'} />
             <SummaryCard title="Valor total CT-e" value={fmt(analise.totalCte)} subtitle={carregandoAnalise ? 'calculando análise...' : 'base filtrada'} />
             <SummaryCard title="Valor calculado" value={fmt(analise.totalCalculado)} subtitle="campo valor_calculado" />
-            <SummaryCard title="Diferença" value={fmt(analise.totalDiferenca)} subtitle="CT-e - calculado" />
+            <SummaryCard title="Diferença em aberto" value={fmt(analise.totalDiferenca)} subtitle="CT-es ainda cobrados" />
+            <SummaryCard title="Ganho total da auditoria" value={fmt(analise.ganhoAuditoriaTotal)} subtitle="em aberto + cancelados" />
             <SummaryCard title="Frete sobre NF" value={fmtPct(analise.percentualFrete)} subtitle={`${fmt(analise.totalNf)} em NF`} />
             <SummaryCard title="Frete > 10% da NF" value={fmtN(analise.qtdFreteAlto)} subtitle={`${fmt(analise.valorFreteAlto)} em CT-e`} onClick={() => toggleInteractiveFilter('faixaFrete', 'acima_10')} active={interactiveFilters.faixaFrete === 'acima_10'} />
             <SummaryCard title="Transportadoras" value={fmtN(analise.transportadoras.length)} subtitle="distintas" />
@@ -4336,12 +4356,17 @@ export default function CtePage() {
                     const percentual = valNf > 0 ? (valCte / valNf) * 100 : 0;
                     const canal = getCanal(row);
                     const situacao = getSituacao(row);
+                    const cancelado = isCteCancelado(row);
                     const competencia = getCompetencia(row);
                     const peso = getPeso(row);
                     const volumes = getVolumes(row);
 
                     return (
-                      <tr key={row.id || row.chave_cte || `${nroCte}-${idx}`}>
+                      <tr
+                        key={row.id || row.chave_cte || `${nroCte}-${idx}`}
+                        style={cancelado ? { background: '#fff1f2', color: '#9f1239' } : undefined}
+                        title={cancelado ? 'CT-e cancelado — não considerar para cobrança' : undefined}
+                      >
                         <td>{fmtDate(dataEmissao)}</td>
                         <td>{competencia ? fmtMes(competencia) : '-'}</td>
                         <td
@@ -4370,10 +4395,14 @@ export default function CtePage() {
                         <td>{nroCte || '-'}</td>
                         <td title={chaveCte || ''} style={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{chaveCte || '-'}</td>
                         <td title={chaveNf || notaFiscal || ''} style={{ maxWidth: 150, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{notaFiscal || chaveNf || '-'}</td>
-                        <td>{fmt(valCte)}</td>
+                        <td>{cancelado ? <><s>{fmt(valCte)}</s><div style={{ fontSize: 10, fontWeight: 800 }}>NÃO COBRAR</div></> : fmt(valCte)}</td>
                         <td>{valCalc > 0 ? fmt(valCalc) : '-'}</td>
                         <td style={{ color: Math.abs(diferenca) > 0.05 ? '#D85A30' : 'inherit', fontWeight: Math.abs(diferenca) > 0.05 ? 700 : 400 }}>
-                          {valCalc > 0 ? fmt(diferenca) : '-'}
+                          {valCalc > 0 ? (
+                            cancelado && diferenca > 0
+                              ? <><strong>{fmt(diferenca)}</strong><div style={{ fontSize: 10, fontWeight: 800, color: '#15803d' }}>GANHO DA AUDITORIA</div></>
+                              : fmt(diferenca)
+                          ) : '-'}
                         </td>
                         <td>{fmt(valNf)}</td>
                         <td>{valNf > 0 ? fmtPct(percentual) : '-'}</td>
@@ -4388,8 +4417,8 @@ export default function CtePage() {
                           </span>
                         </td>
                         <td>
-                          <span className={`coverage-badge ${normalizarTexto(situacao).includes('AUTORIZ') ? 'ok' : 'warn'}`}>
-                            {situacao || '-'}
+                          <span className={`coverage-badge ${cancelado ? 'error' : normalizarTexto(situacao).includes('AUTORIZ') ? 'ok' : 'warn'}`} style={cancelado ? { background: '#be123c', color: '#fff' } : undefined}>
+                            {cancelado ? 'CANCELADO — NÃO COBRAR' : (situacao || '-')}
                           </span>
                         </td>
                       </tr>

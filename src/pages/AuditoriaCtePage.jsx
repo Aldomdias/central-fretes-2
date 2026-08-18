@@ -28,8 +28,20 @@ import {
   processarESalvarAuditoriaMes,
   resimularRegistros,
   invalidarCacheBaseFreteAuditoriaCte,
+  buscarResultadosAuditoriaPorIdentificadores,
 } from '../services/auditoriaCteProcessamentoService';
 import { baixarHtmlLaudoAuditoriaCtes, cteDivergenteAuditoria, identificadorCteAuditoria } from '../utils/laudoAuditoriaCtes';
+import {
+  registrarLaudoGerado,
+  buscarJornadaPorIdentificadores,
+  atualizarStatusJornada,
+  anularJornada,
+  STATUS_OPERACIONAL,
+  RESULTADOS_RETORNO_TRANSPORTADORA,
+  JORNADA_COR,
+} from '../services/auditoriaCteJornadaService';
+import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
+import PainelPendenciasJornadaCte from '../components/PainelPendenciasJornadaCte';
 
 const CRITERIOS_FILTRO = [
   { key: 'ok_qualquer', label: 'Dentro da tolerancia (AMD ou Verum)' },
@@ -61,6 +73,12 @@ function fmtN(v, d = 0) {
 
 function fmtP(v, d = 1) {
   return `${Number(v || 0).toFixed(d).replace('.', ',')}%`;
+}
+
+function fmtDataEmissaoAuditoria(row = {}) {
+  const valor = String(row.data_emissao || row.emissao || row.dataEmissao || '').slice(0, 10);
+  const partes = valor.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return partes ? `${partes[3]}/${partes[2]}/${partes[1]}` : (valor || '—');
 }
 
 function fmtPctDetalhe(v) {
@@ -518,6 +536,8 @@ function ResumoMensalAuditoria({ resumoMensal = [] }) {
 }
 
 export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras } = {}) {
+  const sessaoAtual = useMemo(() => carregarSessao(), []);
+  const ehGestorAuditoria = usuarioEhGestorAuditoria(sessaoAtual);
   const [ocultarTaxasZeradas, setOcultarTaxasZeradas] = useState(false);
   const [abaAuditoria, setAbaAuditoria] = useState('mensal');
   const [competencia, setCompetencia] = useState('');
@@ -624,6 +644,14 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [filtroCanais, setFiltroCanais] = useState(filtrosSalvos.canais);
   const [filtroCriterios, setFiltroCriterios] = useState(filtrosSalvos.criterios); // vazio = todos
   const [filtroSituacaoFatura, setFiltroSituacaoFatura] = useState([]);
+  const [filtroJornada, setFiltroJornada] = useState(null); // { label, chaves: Set<string> } — vindo do painel de pendências
+  const [jornadaPorChave, setJornadaPorChave] = useState(new Map());
+  const [jornadaEditando, setJornadaEditando] = useState(null); // chave_cte em edição no mini-formulário de retorno
+  const [jornadaForm, setJornadaForm] = useState({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+  const [jornadaSalvando, setJornadaSalvando] = useState(false);
+  const [anularMotivo, setAnularMotivo] = useState('');
+  const [modalLaudoAberto, setModalLaudoAberto] = useState(false);
+  const [modalRetornoLoteAberto, setModalRetornoLoteAberto] = useState(false);
   const [buscaTratamento, setBuscaTratamento] = useState('');
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
@@ -856,6 +884,10 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     // Tomadores selecionados em forma normalizada para casar por "contém".
     const tomadoresNorm = filtroTomadores.map(normTomador).filter(Boolean);
     return registrosAnalise.filter((r) => {
+      if (filtroJornada?.chaves?.size) {
+        const chave = String(r.chave_cte || r.chaveCte || '');
+        if (!filtroJornada.chaves.has(chave)) return false;
+      }
       if (transpSet.size && !transpSet.has(nomeTransportadoraAuditoria(r))) return false;
       if (tomadoresNorm.length) {
         const tomadorReg = normTomador(nomeTomadorAuditoria(r));
@@ -899,7 +931,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       }
       return true;
     });
-  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, filtroSituacaoFatura, margensDivergencia]);
+  }, [registrosAnalise, filtrosAtivos, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios, filtroSituacaoFatura, filtroJornada, margensDivergencia]);
 
   const registrosDetalheOrdenados = useMemo(() => {
     const valorDifAmd = (r) => Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0) || 0) - (Number(r.valor_calculado || 0) || 0))));
@@ -928,6 +960,22 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setLimiteDetalhe(200);
     setCteExpandido(null);
   }, [ordenacaoDetalhe, filtroTransps, filtroTomadores, filtroUfs, filtroCidades, filtroCanais, filtroCriterios]);
+
+  // Busca a jornada (em que fase cada CT-e está) dos CT-es visíveis na tabela de detalhe.
+  useEffect(() => {
+    let cancelado = false;
+    const identificadores = registrosDetalheVisiveis
+      .flatMap((r) => [r.chave_cte, r.numero_cte])
+      .filter(Boolean);
+    if (!identificadores.length) {
+      setJornadaPorChave(new Map());
+      return undefined;
+    }
+    buscarJornadaPorIdentificadores(identificadores)
+      .then((mapa) => { if (!cancelado) setJornadaPorChave(mapa); })
+      .catch((error) => { console.warn('Não foi possível carregar a jornada dos CT-es visíveis:', error.message || error); });
+    return () => { cancelado = true; };
+  }, [registrosDetalheVisiveis]);
 
   const transportadoraEmTratamento = filtroTransps.length === 1
     && !filtroTomadores.length
@@ -1688,18 +1736,261 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       : `${ids.length.toLocaleString('pt-BR')} CT-e(s) do recorte selecionado(s) para o laudo do transportador.`);
   }
 
-  function gerarLaudoCtesSelecionados() {
+  async function salvarRetornoJornada(chaveCte) {
+    const config = RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado];
+    if (!config) return;
+    setJornadaSalvando(true);
+    setErro('');
+    try {
+      const usuario = carregarSessao();
+      let valorAcordado;
+      if (config.pedeValor) {
+        const digitado = String(jornadaForm.valorAcordado).trim();
+        if (digitado) {
+          // Digitou algo -> usa o valor exato informado (pode ser diferente da divergência calculada).
+          valorAcordado = Number(digitado.replace(',', '.')) || 0;
+        } else {
+          // Deixou em branco -> assume que concordou com a divergência identificada pela auditoria.
+          const row = registrosDetalheVisiveis.find((r) => r.chave_cte === chaveCte);
+          valorAcordado = row
+            ? Math.abs(Number(row.diferenca ?? ((Number(row.valor_cte || 0)) - (Number(row.valor_calculado || 0)))))
+            : 0;
+        }
+      }
+      await atualizarStatusJornada({
+        chaveCte,
+        statusOperacional: config.statusOperacional,
+        statusFinanceiro: config.statusFinanceiro || undefined,
+        valorAcordado,
+        observacao: jornadaForm.observacao || `Retorno registrado: ${config.label}`,
+        usuario,
+      });
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setJornadaEditando(null);
+      setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+      setSucesso(`Jornada atualizada: ${config.label}.`);
+    } catch (error) {
+      setErro(error.message || 'Não foi possível registrar o retorno da transportadora.');
+    } finally {
+      setJornadaSalvando(false);
+    }
+  }
+
+  async function handleAnularJornada(chaveCte) {
+    setJornadaSalvando(true);
+    setErro('');
+    try {
+      const usuario = carregarSessao();
+      await anularJornada({ chaveCte, motivo: anularMotivo, usuario });
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setJornadaEditando(null);
+      setAnularMotivo('');
+      setSucesso('Auditoria anulada — CT-e voltou para "Não auditado".');
+    } catch (error) {
+      setErro(error.message || 'Não foi possível anular esta auditoria.');
+    } finally {
+      setJornadaSalvando(false);
+    }
+  }
+
+  async function salvarRetornoJornadaEmLote() {
+    const config = RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado];
+    if (!config) return;
+    const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
+    const chaves = [...new Set(selecionados.map((r) => r.chave_cte).filter(Boolean))];
+    if (!chaves.length) return;
+    setJornadaSalvando(true);
+    setErro('');
+    try {
+      const usuario = carregarSessao();
+      const divergenciaPorChave = new Map(selecionados.map((r) => [r.chave_cte, Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0)) - (Number(r.valor_calculado || 0)))))]));
+      for (const chaveCte of chaves) {
+        await atualizarStatusJornada({
+          chaveCte,
+          statusOperacional: config.statusOperacional,
+          statusFinanceiro: config.statusFinanceiro || undefined,
+          // No lote, o desconto acordado de cada CT-e = a própria divergência
+          // identificada dele (concordou com o valor apontado pela auditoria).
+          valorAcordado: config.pedeValor ? (divergenciaPorChave.get(chaveCte) || 0) : undefined,
+          observacao: jornadaForm.observacao || `Retorno em lote: ${config.label}`,
+          usuario,
+        });
+      }
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setModalRetornoLoteAberto(false);
+      setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+      setSucesso(`Jornada atualizada em lote: ${config.label} (${chaves.length.toLocaleString('pt-BR')} CT-e(s)).`);
+    } catch (error) {
+      setErro(error.message || 'Não foi possível registrar o retorno em lote.');
+    } finally {
+      setJornadaSalvando(false);
+    }
+  }
+
+  function abrirModalLaudo() {
+    if (!ctesSelecionadosLaudo.length) return;
+    setModalLaudoAberto(true);
+  }
+
+  async function confirmarGeracaoLaudo(enviarAgora) {
+    setModalLaudoAberto(false);
     const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
     try {
       baixarHtmlLaudoAuditoriaCtes(selecionados, { competencia, mostrarCobrancaAMenor: mostrarCobrancaAMenorLaudo });
       setSucesso(`Laudo do transportador gerado com ${selecionados.length.toLocaleString('pt-BR')} CT-e(s).`);
     } catch (error) {
       setErro(error.message || 'Não foi possível gerar o laudo dos CT-es.');
+      return;
+    }
+
+    // Registro da jornada é aditivo: falha aqui não deve impedir o laudo já baixado.
+    try {
+      const usuario = carregarSessao();
+      const porTransportadora = new Map();
+      selecionados.forEach((row) => {
+        const chave = row.transportadora || 'SEM_TRANSPORTADORA';
+        if (!porTransportadora.has(chave)) porTransportadora.set(chave, []);
+        porTransportadora.get(chave).push(row);
+      });
+
+      for (const [transportadora, ctes] of porTransportadora) {
+        await registrarLaudoGerado({
+          transportadora: transportadora === 'SEM_TRANSPORTADORA' ? null : transportadora,
+          cnpjTransportadora: ctes[0]?.cnpj_transportadora || null,
+          competencia,
+          ctes,
+          observacao: null,
+          enviarAgora,
+          usuario,
+        });
+      }
+
+      if (enviarAgora) {
+        setSucesso(`Laudo gerado e envio registrado para ${selecionados.length.toLocaleString('pt-BR')} CT-e(s).`);
+      }
+    } catch (jornadaError) {
+      console.error('Não foi possível registrar a jornada do laudo:', jornadaError);
+      setErro(`Laudo baixado, mas a jornada não foi registrada: ${jornadaError.message || jornadaError}`);
     }
   }
 
   return (
     <div className="simulador-shell">
+      {modalLaudoAberto ? (
+        <div
+          role="presentation"
+          onClick={() => setModalLaudoAberto(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: 24, maxWidth: 520, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 4 }}>📄 Gerar laudo do transportador</h2>
+            <p style={{ color: '#475569', fontSize: 14, marginTop: 0 }}>
+              {fmtN(ctesSelecionadosLaudo.length)} CT-e(s) selecionado(s). O arquivo HTML do laudo é baixado nos dois casos abaixo — a diferença é só o que acontece com a <strong>jornada</strong> desses CT-es.
+            </p>
+            <div style={{ display: 'grid', gap: 10, marginTop: 16 }}>
+              <button
+                className="primary"
+                type="button"
+                style={{ textAlign: 'left', padding: '12px 16px' }}
+                onClick={() => confirmarGeracaoLaudo(true)}
+              >
+                <div style={{ fontWeight: 800 }}>✅ Enviar para a transportadora agora</div>
+                <div style={{ fontWeight: 400, fontSize: 12, opacity: 0.9 }}>
+                  Registra o envio. Os CT-es passam para "Aguardando retorno da transportadora" no painel da jornada.
+                </div>
+              </button>
+              <button
+                className="sim-tab"
+                type="button"
+                style={{ textAlign: 'left', padding: '12px 16px' }}
+                onClick={() => confirmarGeracaoLaudo(false)}
+              >
+                <div style={{ fontWeight: 800 }}>👁️ Só gerar/visualizar</div>
+                <div style={{ fontWeight: 400, fontSize: 12, color: '#64748b' }}>
+                  Conferência interna. Não altera o status de envio — os CT-es continuam como estavam (ou entram como "Divergente"/"Auditado OK" se ainda não tinham jornada).
+                </div>
+              </button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="sim-tab" type="button" onClick={() => setModalLaudoAberto(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {modalRetornoLoteAberto ? (
+        <div
+          role="presentation"
+          onClick={() => setModalRetornoLoteAberto(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: 24, maxWidth: 480, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 4 }}>🧭 Registrar retorno em lote</h2>
+            <p style={{ color: '#475569', fontSize: 14, marginTop: 0 }}>
+              Aplica o mesmo resultado aos <strong>{fmtN(ctesSelecionadosLaudo.length)}</strong> CT-e(s) marcados na coluna Laudo da tabela.
+            </p>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Resultado do retorno</div>
+              <select
+                value={jornadaForm.resultado}
+                onChange={(e) => setJornadaForm((f) => ({ ...f, resultado: e.target.value }))}
+                style={{ width: '100%' }}
+              >
+                {Object.entries(RESULTADOS_RETORNO_TRANSPORTADORA).map(([key, cfg]) => (
+                  <option key={key} value={key}>{cfg.label}</option>
+                ))}
+              </select>
+            </div>
+            {RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado]?.pedeValor ? (
+              <div style={{ background: '#fef9c3', border: '1px solid #fde047', borderRadius: 8, padding: 8, fontSize: 12, color: '#854d0e', marginBottom: 12 }}>
+                O valor acordado de cada CT-e será a própria divergência identificada dele (não dá pra digitar um valor único pro lote, já que cada CT-e tem uma divergência diferente). Pra um valor específico e diferente da divergência, registre esse CT-e individualmente pelo badge da tabela.
+              </div>
+            ) : null}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Observação (opcional, aplicada a todos)</div>
+              <input
+                type="text"
+                placeholder="Ex: retorno por e-mail em 18/08, lote respondido pela transportadora X"
+                value={jornadaForm.observacao}
+                onChange={(e) => setJornadaForm((f) => ({ ...f, observacao: e.target.value }))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="sim-tab" type="button" onClick={() => setModalRetornoLoteAberto(false)}>Cancelar</button>
+              <button className="primary" type="button" disabled={jornadaSalvando} onClick={salvarRetornoJornadaEmLote}>
+                {jornadaSalvando ? 'Salvando...' : `Aplicar a ${fmtN(ctesSelecionadosLaudo.length)} CT-e(s)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="simulador-header compact-top">
         <div className="simulador-subtitulo">Central Fretes • Auditoria</div>
         <h1>Auditoria de CTes</h1>
@@ -1709,6 +2000,51 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
         </p>
         <BaseCtesStatus />
       </div>
+
+      <PainelPendenciasJornadaCte
+        competencia={competencia}
+        onSelecionarGrupo={async (label, lista) => {
+          if (!label) {
+            setFiltroJornada(null);
+            return;
+          }
+          // Só chave_cte (44 dígitos, única globalmente): número de CT-e sozinho
+          // pode se repetir entre transportadoras diferentes e traria CT-es errados.
+          const chaves = new Set((lista || []).map((item) => item.chave_cte).filter(Boolean).map(String));
+          setFiltroJornada({ label, chaves });
+          // O filtro do card precisa ser a única fonte da visão — zera qualquer
+          // outro filtro ativo (transportadora, tomador, uf, canal, etc.) senão
+          // eles brigam e a lista some (interseção vazia).
+          setFiltroTransps([]);
+          setFiltroTomadores([]);
+          setFiltroUfs([]);
+          setFiltroCidades([]);
+          setFiltroCanais([]);
+          setFiltroCriterios([]);
+          setFiltroSituacaoFatura([]);
+          setLimiteDetalhe((v) => Math.max(v, chaves.size));
+          if (modoPreLista) setModoPreLista(false);
+
+          setCarregando(true);
+          setErro('');
+          try {
+            const dadosBusca = await buscarResultadosAuditoriaPorIdentificadores([...chaves]);
+            setRegistros(await enriquecerCtesComFaturas(dadosBusca || []));
+            setFonteAuditoria({
+              id: 'auditoria_cte_resultados',
+              tabela: 'auditoria_cte_resultados',
+              label: 'Auditoria salva / auditoria_cte_resultados',
+            });
+            requestAnimationFrame(() => {
+              document.getElementById('detalhe-ctes-secao')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+          } catch (error) {
+            setErro(error.message || `Não foi possível buscar os CT-es de "${label}".`);
+          } finally {
+            setCarregando(false);
+          }
+        }}
+      />
 
       <div className="tabs-row audit-main-tabs" style={{ marginBottom: 12 }}>
         <button
@@ -2712,7 +3048,29 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       ) : null}
 
       {temDados && !modoPreLista ? (
-        <section className="sim-card">
+        <section className="sim-card" id="detalhe-ctes-secao">
+          {filtroJornada ? (
+            <div
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 4,
+                background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 10, padding: '8px 12px', marginBottom: 10,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#3730a3' }}>
+                  🧭 Filtro da jornada ativo: {filtroJornada.label} ({fmtN(filtroJornada.chaves.size)} CT-e(s) no grupo)
+                </span>
+                <button className="sim-tab" type="button" onClick={() => setFiltroJornada(null)}>Limpar filtro</button>
+              </div>
+              <span style={{ fontSize: 12, color: '#3730a3' }}>
+                {/* Sempre soma o recorte que está de fato na tela (com quaisquer outros filtros aplicados por cima) — não o grupo bruto do card. */}
+                Neste recorte ({fmtN(registrosFiltro.length)} CT-e(s) exibido(s)): divergência {fmt(registrosFiltro.reduce((acc, r) => acc + Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0)) - (Number(r.valor_calculado || 0))))), 0))}
+              </span>
+            </div>
+          ) : null}
+          <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '6px 10px', marginBottom: 10, fontSize: 12, color: '#166534' }}>
+            💡 Para registrar a resposta da transportadora (concordou, cancelou, desconto...), clique no badge da coluna <strong>Jornada</strong> (última coluna da tabela) na linha do CT-e.
+          </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>📄 Detalhe por CT-e</h2>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -2751,8 +3109,17 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                 <input type="checkbox" checked={mostrarCobrancaAMenorLaudo} onChange={(event) => setMostrarCobrancaAMenorLaudo(event.target.checked)} />
                 Mostrar cobrança a menor no laudo
               </label>
-              <button className="primary" type="button" disabled={!ctesSelecionadosLaudo.length} onClick={gerarLaudoCtesSelecionados}>
+              <button className="primary" type="button" disabled={!ctesSelecionadosLaudo.length} onClick={abrirModalLaudo}>
                 Laudo transportador ({fmtN(ctesSelecionadosLaudo.length)})
+              </button>
+              <button
+                className="sim-tab"
+                type="button"
+                disabled={!ctesSelecionadosLaudo.length}
+                title="Aplica o mesmo retorno da transportadora (jornada) a todos os CT-es marcados na coluna Laudo"
+                onClick={() => setModalRetornoLoteAberto(true)}
+              >
+                🧭 Registrar retorno em lote ({fmtN(ctesSelecionadosLaudo.length)})
               </button>
             </div>
           </div>
@@ -2781,6 +3148,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                 <tr>
                   <th title="Selecionar para o laudo">Laudo</th>
                   <th>Nº CT-e</th>
+                  <th>Emissão</th>
                   <th>Fatura</th>
                   <th>Transportadora</th>
                   <th>Validação</th>
@@ -2792,10 +3160,12 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                   <th>Cálculo AMD</th>
                   <th>Dif. AMD</th>
                   <th>Status</th>
+                  <th title="Em que fase o CT-e está na Jornada (auditoria preventiva)">Jornada</th>
                 </tr>
               </thead>
               <tbody>
                 {registrosDetalheVisiveis.map((r, idx) => {
+                  const jornada = jornadaPorChave.get(String(r.chave_cte)) || jornadaPorChave.get(String(r.numero_cte));
                   const verum = Number(r.valor_calculado_verum || 0);
                   const amd = Number(r.valor_calculado || 0);
                   const pago = Number(r.valor_cte || 0);
@@ -2832,6 +3202,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                           <input type="checkbox" checked={ctesSelecionadosLaudo.includes(identificadorCteAuditoria(r, idx))} onChange={() => alternarCteLaudo(r, idx)} aria-label={`Selecionar CT-e ${r.numero_cte || ''} para o laudo`} />
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>{r.numero_cte || '—'}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{fmtDataEmissaoAuditoria(r)}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           {r.tem_fatura ? <strong style={{ color: '#166534' }}>{(r.numeros_fatura || []).join(', ') || 'Com fatura'}</strong> : <span style={{ color: '#b45309' }}>Sem fatura</span>}
                         </td>
@@ -2875,10 +3246,109 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                             {semValorNf ? 'SEM VALOR NF' : (r.status_calculo || (amd > 0 ? 'CALCULADO' : 'SEM_STATUS'))}
                           </span>
                         </td>
+                        <td style={{ fontSize: 11 }}>
+                          {jornada ? (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              title={(jornada.aguardando_desde ? `Aguardando desde ${new Date(jornada.aguardando_desde).toLocaleDateString('pt-BR')}. ` : '') + 'Clique para registrar o retorno da transportadora.'}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setJornadaEditando((atual) => (atual === jornada.chave_cte ? null : jornada.chave_cte));
+                                setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+                              }}
+                              style={{
+                                padding: '2px 6px', borderRadius: 6, fontWeight: 700, whiteSpace: 'nowrap', cursor: 'pointer',
+                                border: jornadaEditando === jornada.chave_cte ? '2px solid var(--primary)' : '2px solid transparent',
+                                background: JORNADA_COR[jornada.status_operacional]?.bg || '#e2e8f0',
+                                color: JORNADA_COR[jornada.status_operacional]?.fg || '#334155',
+                              }}
+                            >
+                              {STATUS_OPERACIONAL[jornada.status_operacional] || jornada.status_operacional}
+                            </span>
+                          ) : (
+                            <span style={{ color: '#94a3b8' }} title="Este CT-e ainda não entrou em nenhum laudo/processo da jornada">— sem jornada</span>
+                          )}
+                        </td>
                       </tr>
+                      {jornada && jornadaEditando === jornada.chave_cte ? (
+                        <tr>
+                          <td colSpan="15" style={{ background: '#eef2ff', padding: 12 }}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
+                              <div>
+                                <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3730a3' }}>Retorno da transportadora</div>
+                                <select
+                                  value={jornadaForm.resultado}
+                                  onChange={(e) => setJornadaForm((f) => ({ ...f, resultado: e.target.value }))}
+                                  style={{ minWidth: 260 }}
+                                >
+                                  {Object.entries(RESULTADOS_RETORNO_TRANSPORTADORA).map(([key, cfg]) => (
+                                    <option key={key} value={key}>{cfg.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              {RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado]?.pedeValor ? (
+                                <div>
+                                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3730a3' }}>Valor acordado (R$)</div>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    placeholder="vazio = divergência"
+                                    title="Deixe em branco para usar automaticamente a divergência identificada deste CT-e. Preencha só se o valor acordado for diferente."
+                                    value={jornadaForm.valorAcordado}
+                                    onChange={(e) => setJornadaForm((f) => ({ ...f, valorAcordado: e.target.value }))}
+                                    style={{ width: 120 }}
+                                  />
+                                </div>
+                              ) : null}
+                              <div style={{ flex: 1, minWidth: 200 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3730a3' }}>Observação (opcional)</div>
+                                <input
+                                  type="text"
+                                  placeholder="Ex: retorno por e-mail em 18/08"
+                                  value={jornadaForm.observacao}
+                                  onChange={(e) => setJornadaForm((f) => ({ ...f, observacao: e.target.value }))}
+                                  style={{ width: '100%' }}
+                                />
+                              </div>
+                              <button
+                                className="primary"
+                                type="button"
+                                disabled={jornadaSalvando}
+                                onClick={() => salvarRetornoJornada(jornada.chave_cte)}
+                              >
+                                {jornadaSalvando ? 'Salvando...' : 'Salvar retorno'}
+                              </button>
+                              <button className="sim-tab" type="button" onClick={() => setJornadaEditando(null)}>Cancelar</button>
+                            </div>
+                            {ehGestorAuditoria ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #c7d2fe' }}>
+                                <div style={{ flex: 1, minWidth: 220 }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#991b1b' }}>🔒 Só gestor · Anular auditoria (volta pra "Não auditado")</div>
+                                  <input
+                                    type="text"
+                                    placeholder="Motivo da anulação (obrigatório)"
+                                    value={anularMotivo}
+                                    onChange={(e) => setAnularMotivo(e.target.value)}
+                                    style={{ width: '100%' }}
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={jornadaSalvando || !anularMotivo.trim()}
+                                  onClick={() => handleAnularJornada(jornada.chave_cte)}
+                                  style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: 8, padding: '8px 14px', fontWeight: 700, cursor: 'pointer' }}
+                                >
+                                  {jornadaSalvando ? 'Anulando...' : '🗑️ Anular'}
+                                </button>
+                              </div>
+                            ) : null}
+                          </td>
+                        </tr>
+                      ) : null}
                       {expandida ? (
                         <tr>
-                          <td colSpan="13" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
+                          <td colSpan="15" style={{ background: '#f8fafc', fontSize: 12, color: '#475569' }}>
                             {r.motivo_sem_calculo ? <div style={{ color: '#b45309', marginBottom: 6 }}><strong>Motivo:</strong> {r.motivo_sem_calculo}</div> : null}
                             {semValorNf ? (
                               <div style={{ background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 8, padding: 10, marginBottom: 10, color: '#9a3412' }}>
@@ -3051,7 +3521,7 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                     </React.Fragment>
                   );
                 })}
-                {!registrosFiltro.length ? <tr><td colSpan="13" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
+                {!registrosFiltro.length ? <tr><td colSpan="15" style={{ textAlign: 'center', color: '#94a3b8' }}>Nenhum CT-e no recorte atual.</td></tr> : null}
               </tbody>
             </table>
           </div>

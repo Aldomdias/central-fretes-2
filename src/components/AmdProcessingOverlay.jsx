@@ -23,6 +23,7 @@ export const ETAPA_LABEL_AUDITORIA = {
   mapeando_destinos_pedidos: 'Mapeando destinos dos pedidos',
   coletando_pedidos_do_recorte: 'Coletando pedidos do recorte',
   processando_origem: 'Processando origem',
+  salvando_candidatos_origem: 'Calculando e salvando candidatos da origem',
 };
 
 export function rotuloEtapaAuditoria(progresso) {
@@ -36,8 +37,13 @@ export function rotuloEtapaAuditoria(progresso) {
 export default function AmdProcessingOverlay({ ativo, progresso, mensagemRodape = 'Pode levar mais tempo em bases grandes.' }) {
   if (!ativo) return null;
 
-  const carregados = Number(progresso?.carregados || 0);
-  const total = Number(progresso?.total || 0);
+  const progressoOrigemDeterminado = Number(progresso?.totalPedidosOrigem || 0) > 0;
+  const carregados = progressoOrigemDeterminado
+    ? Number(progresso?.pedidosProcessadosOrigem || 0)
+    : Number(progresso?.carregados || 0);
+  const total = progressoOrigemDeterminado
+    ? Number(progresso?.totalPedidosOrigem || 0)
+    : Number(progresso?.total || 0);
   const determinada = total > 0;
   // Sem total conhecido, sobe o percentual devagar conforme os registros vão
   // chegando (em vez de ficar travado num número fixo, o que parecia travamento).
@@ -45,7 +51,9 @@ export default function AmdProcessingOverlay({ ativo, progresso, mensagemRodape 
     ? Math.min(100, Math.round((carregados / total) * 100))
     : Math.min(90, 8 + Math.round(Math.log10(carregados + 1) * 15));
   const etapa = rotuloEtapaAuditoria(progresso);
-  const mensagem = progresso?.etapa === 'processando_origem'
+  const mensagem = progressoOrigemDeterminado
+    ? `${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} pedido(s) processado(s)${progresso?.origemAtual ? ` â€” ${progresso.origemAtual}` : ''}`
+    : progresso?.etapa === 'processando_origem'
     ? `Origem ${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')}${progresso?.origemAtual ? ` — ${progresso.origemAtual}` : ''}${progresso?.pedidosNaOrigem ? ` (${progresso.pedidosNaOrigem.toLocaleString('pt-BR')} pedido(s) nessa origem)` : ''}`
     : determinada
       ? `${carregados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')}`

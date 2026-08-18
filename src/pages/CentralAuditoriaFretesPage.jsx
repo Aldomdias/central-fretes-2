@@ -6,6 +6,13 @@ import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFi
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import { carregarSessao } from '../utils/authLocal';
 import {
+  atualizarStatusJornada,
+  buscarJornadaPorIdentificadores,
+  RESULTADOS_RETORNO_TRANSPORTADORA,
+  STATUS_OPERACIONAL,
+  JORNADA_COR,
+} from '../services/auditoriaCteJornadaService';
+import {
   agruparDetalhesVerum,
   analisarLayoutVerum,
   chaveFatura,
@@ -1312,19 +1319,25 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
       ['Cobranca abaixo', dinheiro(resumo.cobrancaAbaixo)],
       ['Total a descontar', dinheiro(resumo.totalDescontar)],
     ];
-    const rows = linhas.map((item) => {
+    const rows = linhas
+      .map((item) => {
       const base = referenciaCtes.get(normalizarChaveCte(item.chave_cte))
         || referenciaCtes.get(normalizarChaveCte(item.numero_cte));
-      const rota = `${base?.cidade_origem || item.origem || ''}/${base?.uf_origem || ''} -> ${base?.cidade_destino || item.destino || ''}/${base?.uf_destino || ''}`;
+      const origem = base?.cidade_origem || item.origem;
+      const destino = base?.cidade_destino || item.destino;
+      const rota = origem || destino
+        ? `${origem || '-'}/${base?.uf_origem || ''} -> ${destino || '-'}/${base?.uf_destino || ''}`
+        : '-';
       const { statusPublico, diffPublico, calculadoPublico, masked } = prepararLinhaLaudoTransportador(item, opts, toleranciaLaudo);
       const detalheId = `cte-${escapeHtmlAuditoria(item.numero_cte || item.id || '')}-${Math.random().toString(36).slice(2)}`;
+      const pesoLinha = Number(item.peso || base?.peso || 0);
       return `
-        <tr class="main-row" onclick="document.getElementById('${detalheId}').classList.toggle('open')">
+        <tr class="main-row" onclick="toggleDetail('${detalheId}')">
           <td>${escapeHtmlAuditoria(item.numero_cte || '-')}</td>
           <td>${escapeHtmlAuditoria(item.chave_cte || '-')}</td>
           <td>${escapeHtmlAuditoria(rota)}</td>
           <td>${escapeHtmlAuditoria(item.canal || base?.canal || '-')}</td>
-          <td>${numeroFmt(item.peso || base?.peso || 0, 3)} kg</td>
+          <td>${pesoLinha > 0 ? `${numeroFmt(pesoLinha, 3)} kg` : '-'}</td>
           <td>${dinheiro(item.valor_frete)}</td>
           <td>${Number(item.calculado_frete || 0) ? dinheiro(calculadoPublico) : '-'}</td>
           <td>${dinheiro(diffPublico)}</td>
@@ -1348,6 +1361,15 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
     table{width:100%;border-collapse:collapse;background:white;border:1px solid #d6e0ef;border-radius:12px;overflow:hidden}
     th,td{border-bottom:1px solid #e5ebf5;padding:9px 10px;text-align:left;font-size:12px}
     th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{display:none;background:#fbfdff}.detail-row.open{display:table-row}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}.note{padding:12px 14px;border-radius:8px;background:#eff6ff;color:#1e3a8a;margin:16px 0;font-size:13px;font-weight:600}
+    .report-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0}
+    .export-button{border:0;border-radius:8px;background:#0f6b3e;color:#fff;font-weight:700;padding:11px 16px;cursor:pointer;white-space:nowrap}
+    .filters{display:grid;grid-template-columns:minmax(240px,2fr) minmax(170px,1fr) auto auto;align-items:end;gap:10px;padding:12px;margin:0 0 12px;background:#f8fafc;border:1px solid #d6e0ef;border-radius:9px}
+    .filters label{display:flex;flex-direction:column;gap:5px;color:#475569;font-size:11px;font-weight:700}
+    .filters input,.filters select{box-sizing:border-box;width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:9px;color:#0f172a}
+    .clear-button{border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:9px 12px;cursor:pointer}
+    .filters strong{padding:9px 0;white-space:nowrap}
+    @media(max-width:850px){.filters{grid-template-columns:1fr 1fr}.filters label:first-child{grid-column:1/-1}}
+    @media print{.filters,.export-button{display:none}}
   </style>
 </head>
 <body>
@@ -1358,11 +1380,70 @@ function FaturaDetalhe({ state, fatura, onClose, onState }) {
   <div class="wrap">
     <div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
     <div class="note">Clique em cima de qualquer CT-e na tabela abaixo para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
+    <div class="filters">
+      <label>Buscar<input id="filtro-busca" type="search" placeholder="CT-e, chave, rota ou canal" oninput="aplicarFiltros()"></label>
+      <label>Situacao<select id="filtro-status" onchange="aplicarFiltros()">
+        <option value="">Todas</option>
+        <option value="DIVERGENTE">Somente divergentes</option>
+        <option value="OK">OK</option>
+      </select></label>
+      <button type="button" class="clear-button" onclick="limparFiltros()">Limpar filtros</button>
+      <strong id="resultado-filtro"></strong>
+    </div>
+    <div class="report-actions">
+      <button class="export-button" type="button" onclick="exportarExcel()">Exportar Excel</button>
+    </div>
     <table>
       <thead><tr><th>CT-e</th><th>Chave</th><th>Rota</th><th>Canal</th><th>Peso</th><th>Frete pago</th><th>Calculo AMD</th><th>Diferenca</th><th>Status</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="9">Nenhum CT-e encontrado nesta fatura.</td></tr>'}</tbody>
+      <tbody id="tabela-fatura-body">${rows || '<tr><td colspan="9">Nenhum CT-e encontrado nesta fatura.</td></tr>'}</tbody>
     </table>
   </div>
+  <script>
+    function toggleDetail(id){var el=document.getElementById(id);if(!el)return;el.style.display='';el.classList.toggle('open')}
+    function normalizarFiltro(v){return String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toUpperCase()}
+    function aplicarFiltros(){
+      var busca=normalizarFiltro(document.getElementById('filtro-busca').value);
+      var status=document.getElementById('filtro-status').value;
+      var visiveis=0;
+      document.querySelectorAll('#tabela-fatura-body .main-row').forEach(function(row){
+        var cols=row.cells;
+        var texto=normalizarFiltro(row.textContent);
+        var statusLinha=String(cols[8]&&cols[8].textContent||'').trim().toUpperCase();
+        var atendeStatus=!status||(status==='DIVERGENTE'?statusLinha!=='OK':statusLinha===status);
+        var mostrar=(!busca||texto.includes(busca))&&atendeStatus;
+        row.style.display=mostrar?'':'none';
+        var detalhe=row.nextElementSibling;
+        if(!mostrar&&detalhe&&detalhe.classList.contains('detail-row')){detalhe.style.display='none';detalhe.classList.remove('open')}
+        if(mostrar)visiveis++;
+      });
+      document.getElementById('resultado-filtro').textContent=visiveis+' CT-e(s) exibido(s)';
+    }
+    function limparFiltros(){
+      document.getElementById('filtro-busca').value='';
+      document.getElementById('filtro-status').value='';
+      aplicarFiltros();
+    }
+    function exportarExcel(){
+      var corpo=document.getElementById('tabela-fatura-body');
+      var tabela=corpo.closest('table');
+      var copia=tabela.cloneNode(true);
+      Array.from(copia.querySelectorAll('.detail-row')).forEach(function(row){row.remove()});
+      Array.from(copia.querySelectorAll('tbody tr')).forEach(function(row){
+        if(row.style.display==='none')row.remove();
+      });
+      var conteudo='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+copia.outerHTML+'</body></html>';
+      var blob=new Blob(['\\ufeff',conteudo],{type:'application/vnd.ms-excel;charset=utf-8'});
+      var url=URL.createObjectURL(blob);
+      var link=document.createElement('a');
+      link.href=url;
+      link.download='laudo_fatura_${escapeHtmlAuditoria(fatura.numero_fatura)}.xls';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function(){URL.revokeObjectURL(url)},1000);
+    }
+    aplicarFiltros();
+  </script>
 </body>
 </html>`;
     const sufixo = versao === 'email' ? 'email_transportador' : versao;
@@ -1848,6 +1929,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [mostrarDiferencaNegativaLaudoTransportador, setMostrarDiferencaNegativaLaudoTransportador] = useState(false);
   const [opcoesLaudoTransportadorLote, setOpcoesLaudoTransportadorLote] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
   const [ctesSelecionadosDoccob, setCtesSelecionadosDoccob] = useState([]);
+  const [devolutivaJornadaAberta, setDevolutivaJornadaAberta] = useState(false);
+  const [devolutivaJornadaForm, setDevolutivaJornadaForm] = useState({ resultado: 'concordou_desconto', observacao: '' });
+  const [devolutivaJornadaSalvando, setDevolutivaJornadaSalvando] = useState(false);
+  const [jornadaPorChaveAvulsa, setJornadaPorChaveAvulsa] = useState(new Map());
   const [doccobFormAberto, setDoccobFormAberto] = useState(false);
   const [doccobForm, setDoccobForm] = useState(DOCCOB_FORM_PADRAO);
   const [doccobNumerosNf, setDoccobNumerosNf] = useState({});
@@ -2114,6 +2199,38 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     } finally {
       setAuditandoCtesAvulsos(false);
       setProgressoCtesAvulsos(null);
+    }
+  };
+
+  const registrarDevolutivaJornadaAvulsa = async () => {
+    const config = RESULTADOS_RETORNO_TRANSPORTADORA[devolutivaJornadaForm.resultado];
+    const registros = resultadoCtesAvulsosFiltrado.filter((row) => row?.chave_cte);
+    if (!config || !registros.length) return;
+    setDevolutivaJornadaSalvando(true);
+    try {
+      const usuario = carregarSessao();
+      for (const row of registros) {
+        const divergencia = Math.abs(Number(row.diferenca ?? ((Number(row.valor_cte || 0)) - (Number(row.valor_calculado || 0)))));
+        await atualizarStatusJornada({
+          chaveCte: row.chave_cte,
+          statusOperacional: config.statusOperacional,
+          statusFinanceiro: config.statusFinanceiro || undefined,
+          // Sempre usa a divergência do próprio CT-e — não dá pra digitar um
+          // valor único quando a lista tem CT-es com valores diferentes.
+          valorAcordado: config.pedeValor ? divergencia : undefined,
+          observacao: devolutivaJornadaForm.observacao || `Retorno em lote (auditoria por chave/lista): ${config.label}`,
+          usuario,
+        });
+      }
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(registros.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean));
+      setJornadaPorChaveAvulsa(mapaAtualizado);
+      setDevolutivaJornadaForm({ resultado: 'concordou_desconto', observacao: '' });
+      setDevolutivaJornadaAberta(false);
+      setMensagemImportacao(`Jornada atualizada: ${config.label} (${registros.length} CT-e(s)).`);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao registrar devolutiva: ${error.message}`);
+    } finally {
+      setDevolutivaJornadaSalvando(false);
     }
   };
 
@@ -3174,14 +3291,19 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
         const linhasCteHtml = linhasCteMascaradas.map((linha, idxCte) => {
           const item = linha.item;
           const detalheId = `cte-${idxFatura}-${idxCte}`;
-          const rota = `${item.cidade_origem || item.origem || ''}/${item.uf_origem || ''} -> ${item.cidade_destino || item.destino || ''}/${item.uf_destino || ''}`;
+          const origemCte = item.cidade_origem || item.origem;
+          const destinoCte = item.cidade_destino || item.destino;
+          const rota = origemCte || destinoCte
+            ? `${origemCte || '-'}/${item.uf_origem || ''} -> ${destinoCte || '-'}/${item.uf_destino || ''}`
+            : '-';
+          const pesoCte = Number(item.peso || 0);
           return `
           <tr class="main-row"${linha.semCalculo ? ' style="background:#fff7ed"' : ''} onclick="toggleDetail('${detalheId}')">
             <td>${escapeHtmlAuditoria(item.numero_cte || '-')}</td>
             <td>${escapeHtmlAuditoria(item.chave_cte || '-')}</td>
             <td>${escapeHtmlAuditoria(rota)}</td>
             <td>${escapeHtmlAuditoria(item.canal || '-')}</td>
-            <td>${numeroFmt(item.peso || 0, 3)} kg</td>
+            <td>${pesoCte > 0 ? `${numeroFmt(pesoCte, 3)} kg` : '-'}</td>
             <td>${dinheiro(item.valor_frete)}</td>
             <td>${Number(item.calculado_frete || 0) ? dinheiro(linha.calculadoPublico) : '-'}</td>
             <td>${dinheiro(linha.diffPublico)}</td>
@@ -3212,12 +3334,81 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
           .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
           .card{border:1px solid #d6e0ef;border-radius:12px;background:white;padding:14px}.card span{display:block;color:#64748b;font-size:12px;font-weight:700}.card strong{display:block;font-size:22px;margin-top:6px}
           table{width:100%;border-collapse:collapse;background:white;border:1px solid #d6e0ef;border-radius:12px;overflow:hidden}th,td{border-bottom:1px solid #e5ebf5;padding:9px 10px;text-align:left;font-size:12px}th{background:#eef4ff}.main-row{cursor:pointer}.main-row:hover{background:#f8fbff}.detail-row{display:none;background:#fbfdff}.detail-row.open{display:table-row}.detail-row>td{padding:14px}.calc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.calc-box{border:1px solid #dbe3ef;border-radius:10px;background:white;padding:12px}.calc-box h4{margin:0 0 8px}.calc-line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e5ebf5;padding:4px 0}.calc-line span{color:#64748b}.calc-line strong{text-align:right}.calc-empty{color:#64748b}.note{padding:12px 14px;border-radius:8px;background:#eff6ff;color:#1e3a8a;margin:16px 0;font-size:13px;font-weight:600}
+          .report-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0}
+          .export-button{border:0;border-radius:8px;background:#0f6b3e;color:#fff;font-weight:700;padding:11px 16px;cursor:pointer;white-space:nowrap}
+          .filters{display:grid;grid-template-columns:minmax(240px,2fr) minmax(170px,1fr) auto auto;align-items:end;gap:10px;padding:12px;margin:0 0 12px;background:#f8fafc;border:1px solid #d6e0ef;border-radius:9px}
+          .filters label{display:flex;flex-direction:column;gap:5px;color:#475569;font-size:11px;font-weight:700}
+          .filters input,.filters select{box-sizing:border-box;width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:9px;color:#0f172a}
+          .clear-button{border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:9px 12px;cursor:pointer}
+          .filters strong{padding:9px 0;white-space:nowrap}
+          @media(max-width:850px){.filters{grid-template-columns:1fr 1fr}.filters label:first-child{grid-column:1/-1}}
+          @media print{.filters,.export-button{display:none}}
         </style></head><body>
         <div class="hero"><h1>Laudo consolidado de faturas</h1><p>${escapeHtmlAuditoria(transportadoras || 'Transportadora')} - ${faturasSelecionadas.length} fatura(s) - gerado em ${new Date().toLocaleString('pt-BR')}</p></div>
         <div class="wrap"><div class="cards">${cards.map(([label, value]) => `<div class="card"><span>${escapeHtmlAuditoria(label)}</span><strong>${escapeHtmlAuditoria(value)}</strong></div>`).join('')}</div>
         <div class="note">Clique em cima de qualquer fatura para ver os CT-es; clique em cima de um CT-e para abrir os detalhes completos do calculo (taxas, ICMS, base do frete etc.).</div>
-    <table><thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor cobrado</th><th>Calculo AMD</th><th>Diferenca</th><th>CT-es</th><th>Origem</th></tr></thead><tbody>${linhasFatura || '<tr><td colspan="7">Nenhuma fatura selecionada.</td></tr>'}</tbody></table></div>
-        <script>function toggleDetail(id){var el=document.getElementById(id);if(el)el.classList.toggle('open');}</script>
+        <div class="filters">
+          <label>Buscar<input id="filtro-busca" type="search" placeholder="Fatura, transportadora ou origem" oninput="aplicarFiltros()"></label>
+          <label>Situacao<select id="filtro-status" onchange="aplicarFiltros()">
+            <option value="">Todas</option>
+            <option value="DIVERGENTE">Somente divergentes</option>
+            <option value="OK">Sem diferenca</option>
+          </select></label>
+          <button type="button" class="clear-button" onclick="limparFiltros()">Limpar filtros</button>
+          <strong id="resultado-filtro"></strong>
+        </div>
+        <div class="report-actions">
+          <button class="export-button" type="button" onclick="exportarExcel()">Exportar Excel</button>
+        </div>
+    <table><thead><tr><th>Fatura</th><th>Transportadora</th><th>Valor cobrado</th><th>Calculo AMD</th><th>Diferenca</th><th>CT-es</th><th>Origem</th></tr></thead><tbody id="tabela-faturas-body">${linhasFatura || '<tr><td colspan="7">Nenhuma fatura selecionada.</td></tr>'}</tbody></table></div>
+        <script>
+          function toggleDetail(id){var el=document.getElementById(id);if(!el)return;el.style.display='';el.classList.toggle('open')}
+          function normalizarFiltro(v){return String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toUpperCase()}
+          function aplicarFiltros(){
+            var busca=normalizarFiltro(document.getElementById('filtro-busca').value);
+            var status=document.getElementById('filtro-status').value;
+            var visiveis=0;
+            var linhas=document.querySelectorAll('#tabela-faturas-body > tr.main-row');
+            linhas.forEach(function(row){
+              var cols=row.cells;
+              var texto=normalizarFiltro(row.textContent);
+              var diferencaTexto=String(cols[4]&&cols[4].textContent||'').trim();
+              var temDiferenca=diferencaTexto&&diferencaTexto!=='R$ 0,00'&&diferencaTexto!=='-R$ 0,00';
+              var atendeStatus=!status||(status==='DIVERGENTE'?temDiferenca:!temDiferenca);
+              var mostrar=(!busca||texto.includes(busca))&&atendeStatus;
+              row.style.display=mostrar?'':'none';
+              var detalhe=row.nextElementSibling;
+              if(!mostrar&&detalhe&&detalhe.classList.contains('detail-row')){detalhe.style.display='none';detalhe.classList.remove('open')}
+              if(mostrar)visiveis++;
+            });
+            document.getElementById('resultado-filtro').textContent=visiveis+' fatura(s) exibida(s)';
+          }
+          function limparFiltros(){
+            document.getElementById('filtro-busca').value='';
+            document.getElementById('filtro-status').value='';
+            aplicarFiltros();
+          }
+          function exportarExcel(){
+            var corpo=document.getElementById('tabela-faturas-body');
+            var tabela=corpo.closest('table');
+            var copia=tabela.cloneNode(true);
+            Array.from(copia.querySelectorAll('.detail-row')).forEach(function(row){row.remove()});
+            Array.from(copia.querySelectorAll('tbody tr')).forEach(function(row){
+              if(row.style.display==='none')row.remove();
+            });
+            var conteudo='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+copia.outerHTML+'</body></html>';
+            var blob=new Blob(['\\ufeff',conteudo],{type:'application/vnd.ms-excel;charset=utf-8'});
+            var url=URL.createObjectURL(blob);
+            var link=document.createElement('a');
+            link.href=url;
+            link.download='laudo-consolidado-faturas-${new Date().toISOString().slice(0, 10)}.xls';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(function(){URL.revokeObjectURL(url)},1000);
+          }
+          aplicarFiltros();
+        </script>
         </body></html>`;
       baixarArquivoAuditoria(html, `laudo-consolidado-faturas-${new Date().toISOString().slice(0, 10)}.html`, 'text/html;charset=utf-8');
       setMensagemImportacao(`Laudo consolidado gerado com ${faturasSelecionadas.length} fatura(s).`);
@@ -3455,6 +3646,15 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
             <button className="btn-secondary audit-small-button" type="button" onClick={abrirFormularioDoccob} disabled={!ctesSelecionadosDoccob.length} title="Gera o arquivo DOCCOB EDI (layout PROCEDA 3.0A) com os CT-es marcados abaixo">
               Gerar DOCCOB ({ctesSelecionadosDoccob.length})
             </button>
+            <button
+              className="btn-secondary audit-small-button"
+              type="button"
+              disabled={!resultadoCtesAvulsosFiltrado.length}
+              title="Registra na jornada do CT-e a resposta que a transportadora deu para esta lista (concordou, cancelou, desconto...)"
+              onClick={() => setDevolutivaJornadaAberta((v) => !v)}
+            >
+              🧭 Registrar devolutiva ({resultadoCtesAvulsosFiltrado.length})
+            </button>
           </div>
         </div>
 
@@ -3484,6 +3684,74 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
             <span>identificador(es) reconhecido(s)</span>
           </div>
         </div>
+
+        {devolutivaJornadaAberta ? (
+          <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 10, padding: 12, marginTop: 10 }}>
+            <div style={{ fontWeight: 700, color: '#3730a3', marginBottom: 8 }}>
+              🧭 Registrar devolutiva da transportadora para os {resultadoCtesAvulsosFiltrado.length} CT-e(s) desta lista
+            </div>
+            {!resultadoCtesAvulsosFiltrado.length ? (
+              <div style={{ fontSize: 12, color: '#64748b' }}>Clique em "Consultar CT-es" ou "Auditar CT-es" primeiro para carregar os CT-es da lista colada acima.</div>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>Resultado do retorno</div>
+                  <select
+                    value={devolutivaJornadaForm.resultado}
+                    onChange={(e) => setDevolutivaJornadaForm((f) => ({ ...f, resultado: e.target.value }))}
+                    style={{ minWidth: 260 }}
+                  >
+                    {Object.entries(RESULTADOS_RETORNO_TRANSPORTADORA).map(([key, cfg]) => (
+                      <option key={key} value={key}>{cfg.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>Observação (opcional)</div>
+                  <input
+                    type="text"
+                    placeholder="Ex: lista recebida por e-mail em 18/08"
+                    value={devolutivaJornadaForm.observacao}
+                    onChange={(e) => setDevolutivaJornadaForm((f) => ({ ...f, observacao: e.target.value }))}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <button className="btn-primary audit-small-button" type="button" disabled={devolutivaJornadaSalvando} onClick={registrarDevolutivaJornadaAvulsa}>
+                  {devolutivaJornadaSalvando ? 'Salvando...' : `Aplicar a ${resultadoCtesAvulsosFiltrado.length} CT-e(s)`}
+                </button>
+                <button className="btn-secondary audit-small-button" type="button" onClick={() => setDevolutivaJornadaAberta(false)}>Fechar</button>
+              </div>
+            )}
+            {RESULTADOS_RETORNO_TRANSPORTADORA[devolutivaJornadaForm.resultado]?.pedeValor && resultadoCtesAvulsosFiltrado.length ? (
+              <div style={{ fontSize: 11, color: '#854d0e', marginTop: 8 }}>
+                💡 O valor acordado de cada CT-e será a própria divergência identificada dele (Pago − Cálculo AMD).
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {jornadaPorChaveAvulsa.size ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+            {resultadoCtesAvulsosFiltrado
+              .filter((row) => jornadaPorChaveAvulsa.has(row.chave_cte))
+              .map((row) => {
+                const jornada = jornadaPorChaveAvulsa.get(row.chave_cte);
+                return (
+                  <span
+                    key={row.chave_cte}
+                    title={`CT-e ${row.numero_cte || row.chave_cte}`}
+                    style={{
+                      padding: '2px 8px', borderRadius: 999, fontWeight: 700, fontSize: 11,
+                      background: JORNADA_COR[jornada.status_operacional]?.bg || '#e2e8f0',
+                      color: JORNADA_COR[jornada.status_operacional]?.fg || '#334155',
+                    }}
+                  >
+                    {row.numero_cte || row.chave_cte}: {STATUS_OPERACIONAL[jornada.status_operacional] || jornada.status_operacional}
+                  </span>
+                );
+              })}
+          </div>
+        ) : null}
 
         <AmdProcessingOverlay ativo={auditandoCtesAvulsos} progresso={progressoCtesAvulsos} mensagemRodape="Calculando CT-es avulsos com a tabela AMD atual." />
 
