@@ -8,6 +8,7 @@ import { carregarSessao } from '../utils/authLocal';
 import {
   atualizarStatusJornada,
   buscarJornadaPorIdentificadores,
+  registrarLaudoGerado,
   RESULTADOS_RETORNO_TRANSPORTADORA,
   STATUS_OPERACIONAL,
   JORNADA_COR,
@@ -492,7 +493,9 @@ function baixarArquivoAuditoria(conteudo, nome, tipo) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  // Revogar na hora cancela o download quando o clique não vem direto de um
+  // gesto do usuário (ex.: laudo gerado depois de um await no Supabase).
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function pesoAlternativoAuditoriaAvulsa(alt = {}) {
@@ -2803,15 +2806,56 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     setDoccobFormAberto(false);
   };
 
-  const baixarLaudoAuditoriaAvulsa = (tipoLaudo = 'interno') => {
+  const baixarLaudoAuditoriaAvulsa = async (tipoLaudo = 'interno') => {
     if (!resultadoCtesAvulsos.length) return;
     const laudoTransportador = tipoLaudo === 'transportador';
+
+    // Laudo interno sai num arquivo só (é conferência nossa). O laudo que vai
+    // pra transportadora sai UM POR TRANSPORTADORA — juntar tudo faria uma
+    // enxergar os CT-es da outra.
+    const grupos = new Map();
+    if (laudoTransportador) {
+      resultadoCtesAvulsos.forEach((row) => {
+        const nome = row.transportadora || row.transportadora_realizada || 'SEM_TRANSPORTADORA';
+        if (!grupos.has(nome)) grupos.set(nome, []);
+        grupos.get(nome).push(row);
+      });
+    } else {
+      grupos.set('__INTERNO__', resultadoCtesAvulsos);
+    }
+
+    for (const [nomeGrupo, ctesLaudo] of grupos) {
+    const transportadoraGrupo = nomeGrupo === 'SEM_TRANSPORTADORA' || nomeGrupo === '__INTERNO__' ? null : nomeGrupo;
+
+    // Fase 14: só o laudo que vai pra transportadora ganha link de resposta.
+    // O laudo interno é conferência nossa e não cria processo nem token.
+    let portaisLaudo = [];
+    if (laudoTransportador) {
+      try {
+        const processo = await registrarLaudoGerado({
+          transportadora: transportadoraGrupo,
+          cnpjTransportadora: ctesLaudo[0]?.cnpj_transportadora || null,
+          competencia: ctesLaudo.find((c) => c.competencia)?.competencia || null,
+          ctes: ctesLaudo,
+          observacao: 'Laudo gerado pela Auditoria por chave/lista.',
+          enviarAgora: false,
+          usuario: carregarSessao(),
+        });
+        if (processo?.portal?.url) {
+          portaisLaudo = [{ transportadora: transportadoraGrupo || '', url: processo.portal.url }];
+        }
+      } catch (error) {
+        console.error('Não foi possível gerar o link de resposta do laudo:', error);
+        setMensagemImportacao(`Laudo gerado sem link de resposta: ${error.message}`);
+        portaisLaudo = [];
+      }
+    }
     const esc = (valor) => String(valor ?? '').replace(/[&<>"']/g, (m) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     }[m]));
-    const total = resultadoCtesAvulsos.length;
-    const calculados = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) > 0).length;
-    const ok = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria)).length;
+    const total = ctesLaudo.length;
+    const calculados = ctesLaudo.filter((row) => Number(row.valor_calculado || 0) > 0).length;
+    const ok = ctesLaudo.filter((row) => Number(row.valor_calculado || 0) > 0 && dentroDaToleranciaAuditoria(row.diferenca, toleranciaAuditoria)).length;
     const divergentes = calculados - ok;
     const semCalculo = total - calculados;
     const diferencaCobravel = (row) => {
@@ -2820,13 +2864,13 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       if (laudoTransportador && !mostrarDiferencaNegativaLaudoTransportador && Number(row.diferenca || 0) < 0) return 0;
       return Number(row.diferenca || 0);
     };
-    const excesso = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.max(diferencaCobravel(row), 0), 0);
-    const insuf = resultadoCtesAvulsos.reduce((acc, row) => acc + Math.abs(Math.min(diferencaCobravel(row), 0)), 0);
+    const excesso = ctesLaudo.reduce((acc, row) => acc + Math.max(diferencaCobravel(row), 0), 0);
+    const insuf = ctesLaudo.reduce((acc, row) => acc + Math.abs(Math.min(diferencaCobravel(row), 0)), 0);
     const totalDescontar = Math.max(excesso - insuf, 0);
-    const totalPago = resultadoCtesAvulsos.reduce((acc, row) => acc + Number(row.valor_cte || 0), 0);
-    const totalAmd = resultadoCtesAvulsos.reduce((acc, row) => acc + Number(row.valor_calculado || 0), 0);
+    const totalPago = ctesLaudo.reduce((acc, row) => acc + Number(row.valor_cte || 0), 0);
+    const totalAmd = ctesLaudo.reduce((acc, row) => acc + Number(row.valor_calculado || 0), 0);
     const taxaOk = calculados > 0 ? (ok / calculados) * 100 : 0;
-    const porTransp = Array.from(resultadoCtesAvulsos.reduce((mapa, row) => {
+    const porTransp = Array.from(ctesLaudo.reduce((mapa, row) => {
       const nome = row.transportadora || row.transportadora_realizada || 'Nao informado';
       const atual = mapa.get(nome) || { nome, total: 0, calculados: 0, ok: 0, divergencia: 0 };
       atual.total += 1;
@@ -2836,12 +2880,12 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       mapa.set(nome, atual);
       return mapa;
     }, new Map()).values()).sort((a, b) => b.divergencia - a.divergencia);
-    const topDivergencias = [...resultadoCtesAvulsos]
+    const topDivergencias = [...ctesLaudo]
       .filter((row) => Number(row.valor_calculado || 0) > 0)
       .sort((a, b) => Math.abs(Number(b.diferenca || 0)) - Math.abs(Number(a.diferenca || 0)));
-    const devolucoes = resultadoCtesAvulsos.filter((row) => row.detalhes_calculo?.calculo_devolucao_invertida);
-    const ajustesPeso = resultadoCtesAvulsos.filter((row) => row.detalhes_calculo?.ajuste_peso_aplicado);
-    const semCalculoRows = resultadoCtesAvulsos.filter((row) => Number(row.valor_calculado || 0) <= 0);
+    const devolucoes = ctesLaudo.filter((row) => row.detalhes_calculo?.calculo_devolucao_invertida);
+    const ajustesPeso = ctesLaudo.filter((row) => row.detalhes_calculo?.ajuste_peso_aplicado);
+    const semCalculoRows = ctesLaudo.filter((row) => Number(row.valor_calculado || 0) <= 0);
     const dinheiroLaudo = (valor) => (Number.isFinite(Number(valor)) ? dinheiro(valor) : '-');
     const numeroLaudo = (valor, casas = 2) => (Number.isFinite(Number(valor)) ? numeroFmt(valor, casas) : '-');
     const pesoUsado = (row) => Number(row.detalhes_calculo?.peso_considerado ?? row.peso ?? 0);
@@ -3042,7 +3086,13 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     table.inner { margin-top: 6px; }
     .note { padding: 12px 14px; border-radius: 8px; background: #eff6ff; color: #1e3a8a; margin-top: 10px; }
     footer { padding: 18px 32px; color: #64748b; font-size: 12px; }
-    @media print { body { background: #fff; } .page { margin: 0; border: 0; border-radius: 0; } }
+    .portal-box { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+      margin: 18px 32px 0; padding: 16px 18px; background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 10px; }
+    .portal-box p { margin: 4px 0 0; color: #065f46; font-size: 13px; }
+    .portal-links { display: flex; gap: 8px; flex-wrap: wrap; }
+    .portal-button { display: inline-block; border-radius: 8px; background: #0f6b3e; color: #fff; font-weight: 700;
+      padding: 12px 18px; text-decoration: none; white-space: nowrap; }
+    @media print { body { background: #fff; } .page { margin: 0; border: 0; border-radius: 0; } .portal-box { display: none; } }
   </style>
 </head>
 <body>
@@ -3051,6 +3101,16 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
       <h1>${laudoTransportador ? 'Laudo de Divergencias CT-e' : 'Laudo Interno de Auditoria CT-e'}</h1>
       <p>Gerado em ${esc(new Date().toLocaleString('pt-BR'))}${laudoTransportador ? '' : ` · Tolerância aplicada: +R$ ${numeroFmt(toleranciaAuditoria.acima, 2)} / -R$ ${numeroFmt(toleranciaAuditoria.abaixo, 2)}`}</p>
     </header>
+${portaisLaudo.length ? `
+    <div class="portal-box">
+      <div>
+        <strong>Responder esta auditoria online</strong>
+        <p>Confira CT-e a CT-e e registre sua tratativa direto no sistema — não é preciso login.</p>
+      </div>
+      <div class="portal-links">${portaisLaudo.map((p) => (
+    `<a class="portal-button" href="${esc(p.url)}" target="_blank" rel="noopener">Conferir e responder${portaisLaudo.length > 1 && p.transportadora ? ` — ${esc(p.transportadora)}` : ''}</a>`
+  )).join('')}</div>
+    </div>` : ''}
 
     <section>
       <h2>Resumo executivo</h2>
@@ -3105,7 +3165,13 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   </script>
 </body>
 </html>`;
-    baixarArquivoAuditoria(html, `${laudoTransportador ? 'laudo-transportador-cte' : 'laudo-interno-auditoria-cte'}-${new Date().toISOString().slice(0, 10)}.html`, 'text/html;charset=utf-8');
+    // Sufixo com a transportadora: sem isso os downloads teriam o mesmo nome e
+    // um sobrescreveria o outro quando há mais de uma transportadora.
+    const sufixoArquivo = transportadoraGrupo
+      ? `-${transportadoraGrupo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase().slice(0, 40)}`
+      : '';
+    baixarArquivoAuditoria(html, `${laudoTransportador ? 'laudo-transportador-cte' : 'laudo-interno-auditoria-cte'}${sufixoArquivo}-${new Date().toISOString().slice(0, 10)}.html`, 'text/html;charset=utf-8');
+    }
   };
 
   const alternarSelecao = (id) => {
