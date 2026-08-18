@@ -956,6 +956,7 @@ export async function carregarBaseFiltradaPorOrigemEDestinosDb(filtroCidades = [
   const { data: todasOrigens, error: erroOrigens } = await supabase.from('origens').select('*');
   if (erroOrigens) throw erroOrigens;
   const origens = (todasOrigens || []).filter((o) => {
+    if (!statusOrigemAtivoDb(o.status)) return false;
     const cidadeNorm = normalizarCidadeFiltroDb(o.cidade);
     return nomesNorm.some((nome) => cidadeNorm.includes(nome));
   });
@@ -1054,6 +1055,7 @@ export async function carregarBaseFiltradaPorCidadesOrigemDb(filtroCidades = [],
   const { data: todasOrigens, error: erroOrigens } = await supabase.from('origens').select('*');
   if (erroOrigens) throw erroOrigens;
   const origens = (todasOrigens || []).filter((o) => {
+    if (!statusOrigemAtivoDb(o.status)) return false;
     const cidadeNorm = normalizarCidadeFiltroDb(o.cidade);
     return nomesNorm.some((nome) => cidadeNorm.includes(nome));
   });
@@ -1155,6 +1157,7 @@ export async function carregarBaseFiltradaPorDestinosDb(destinosIbge = [], filtr
   if (erroTodasOrigens) throw erroTodasOrigens;
   const nomesCdNorm = filtroCidades.map((nome) => normalizarCidadeFiltroDb(nome));
   const origens = (todasOrigens || []).filter((o) => origemIdsRotas.has(o.id)
+    && statusOrigemAtivoDb(o.status)
     && (!nomesCdNorm.length || nomesCdNorm.some((nome) => normalizarCidadeFiltroDb(o.cidade).includes(nome))));
 
   if (!origens.length) return [];
@@ -2031,6 +2034,7 @@ export async function buscarBaseSimulacaoPorRotasDb({ routeKeys = [], canal = ''
   const rotas = rotasBase.filter((rota) => {
     const origemRow = origemById.get(String(rota.origem_id));
     if (!origemRow) return false;
+    if (!statusOrigemAtivoDb(origemRow.status)) return false;
     if (canalFiltro && !canalCompativelDb(origemRow.canal, canalFiltro)) return false;
     const ibgeOrigem = String(rota.ibge_origem || '').replace(/\D/g, '');
     const ibgeDestino = String(rota.ibge_destino || '').replace(/\D/g, '');
@@ -2321,8 +2325,14 @@ async function buscarOrigensFiltradasDb({ supabase, origem = '', canal = '', tra
   }
 
   return todas
+    .filter((item) => statusOrigemAtivoDb(item.status))
     .filter((item) => canalCompativelDb(item.canal, canal))
     .filter((item) => origemCompativelDb(item.cidade, origem));
+}
+
+function statusOrigemAtivoDb(status) {
+  const normalizado = String(status || 'ATIVA').trim().toUpperCase();
+  return normalizado === 'ATIVA' || normalizado === 'ATIVO';
 }
 
 function normalizeMunicipioIbgeRow(row = {}) {

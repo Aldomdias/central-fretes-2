@@ -17,7 +17,8 @@ function canalCompativelSaving(canalRow = '', canalAlvo = '') {
   const categoriaRow = categoriaCanalSaving(canalRow);
   const categoriaAlvo = categoriaCanalSaving(canalAlvo);
   if (!categoriaRow) return false;
-  return categoriaRow === categoriaAlvo || categoriaRow === 'AMBOS';
+  // Simétrico: AMBOS atende qualquer canal e é atendido por qualquer canal.
+  return categoriaRow === categoriaAlvo || categoriaRow === 'AMBOS' || categoriaAlvo === 'AMBOS';
 }
 
 export const MESES_BASE_SAVING_PADRAO = 3;

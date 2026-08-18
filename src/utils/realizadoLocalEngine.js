@@ -845,6 +845,11 @@ export function calcularItemTabela({ transportadora, origem, rota, cte, gradeCan
   };
 }
 
+function statusOrigemAtivoRealizado(status) {
+  const normalizado = String(status || 'ATIVA').trim().toUpperCase();
+  return normalizado === 'ATIVA' || normalizado === 'ATIVO';
+}
+
 export function construirIndiceFretesPorRota(transportadoras = [], municipios = []) {
   const mapasIbge = montarMapasIbge(municipios);
   const index = new Map();
@@ -852,8 +857,10 @@ export function construirIndiceFretesPorRota(transportadoras = [], municipios = 
 
   (transportadoras || []).forEach((transportadora) => {
     if (!transportadora?.nome) return;
+    if (!statusOrigemAtivoRealizado(transportadora.status)) return;
     stats.transportadoras += 1;
     (transportadora.origens || []).forEach((origem) => {
+      if (!statusOrigemAtivoRealizado(origem.status)) return;
       stats.origens += 1;
       const canais = canaisIndiceRealizado(origem.canal || '');
       const origemCidade = splitCidadeUf(origem.cidade || '', '').cidade;

@@ -145,12 +145,25 @@ function categoriaCanalTela(value) {
   return canal;
 }
 
+function canalAtendeTodosTela(canal) {
+  const c = String(canal || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+  if (!c) return false;
+  if (c.includes('AMBOS') || c.includes('TODOS')) return true;
+  const temAtacado = c.includes('ATACADO') || c.includes('B2B');
+  const temB2c = c.includes('B2C') || c.includes('MARKETPLACE') || c.includes('ECOMMERCE')
+    || c.includes('MERCADO LIVRE') || c.includes('SHOPEE');
+  return temAtacado && temB2c;
+}
+
 function canalCompativelTela(canalLinha, canalFiltro) {
   const filtro = normalizarCanalTela(canalFiltro);
   if (!filtro) return true;
   const linha = normalizarCanalTela(canalLinha);
   if (!linha) return false;
   if (linha === filtro) return true;
+
+  // Simétrico: "AMBOS"/"TODOS" atende qualquer canal e é atendido por qualquer canal.
+  if (canalAtendeTodosTela(filtro) || canalAtendeTodosTela(linha)) return true;
 
   const categoriaLinha = categoriaCanalTela(linha);
   const categoriaFiltro = categoriaCanalTela(filtro);

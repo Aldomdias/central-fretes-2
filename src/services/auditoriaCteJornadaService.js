@@ -350,6 +350,9 @@ export async function carregarPainelPendencias({ competencia } = {}) {
     return dias !== null && dias >= DIAS_ALERTA_AUDITADO_SEM_FATURA;
   });
   const descontosAguardandoConciliacao = linhas.filter((l) => l.status_financeiro === 'DESCONTO_PENDENTE_APLICACAO' || l.status_financeiro === 'DESCONTO_ACEITO');
+  // Fase 4/11: transportadora já concordou em cancelar, mas o CT-e substituto
+  // ainda não foi vinculado (chave_cte_substituto vazio).
+  const cancelamentosAguardandoReemissao = linhas.filter((l) => l.status_operacional === 'CANCELAMENTO_SOLICITADO' && !l.chave_cte_substituto);
 
   const valorDivergenteIdentificado = linhas.reduce((acc, l) => acc + Number(l.valor_divergencia_identificada || 0), 0);
   const valorAcordado = linhas.reduce((acc, l) => acc + Number(l.valor_acordado || 0), 0);
@@ -364,6 +367,7 @@ export async function carregarPainelPendencias({ competencia } = {}) {
     acordosFechadosAguardandoFatura,
     auditadosSemFatura,
     descontosAguardandoConciliacao,
+    cancelamentosAguardandoReemissao,
     valorDivergenteIdentificado,
     valorAcordado,
     valorRecuperado,
@@ -409,6 +413,80 @@ export async function atualizarStatusJornada({
     statusAnterior: atual?.status_operacional,
     statusNovo: statusOperacional || atual?.status_operacional,
     comentario: observacao,
+    usuario,
+  });
+}
+
+/**
+ * Fase 4 — vincula o CT-e cancelado ao CT-e substituto (reemissão).
+ * O CT-e original nunca desaparece: fica CANCELADO, com a divergência
+ * identificada marcada como recuperada (origem = CANCELAMENTO_CTE) e o
+ * link pro substituto. O substituto ganha uma jornada própria (se ainda
+ * não tinha) já apontando de volta pro original, pra rastreabilidade nos
+ * dois sentidos.
+ */
+export async function vincularCancelamentoReemissao({ chaveCteOriginal, chaveCteSubstituto, motivo, usuario }) {
+  const client = ensureClient();
+
+  const { data: original, error: erroOriginal } = await client
+    .from('auditoria_cte_jornada')
+    .select('*')
+    .eq('chave_cte', chaveCteOriginal)
+    .maybeSingle();
+  if (erroOriginal) throw erroOriginal;
+  if (!original) throw new Error('Este CT-e não tem jornada registrada.');
+
+  const valorRecuperado = Number(original.valor_divergencia_identificada || 0);
+
+  const { error: erroUpdateOriginal } = await client
+    .from('auditoria_cte_jornada')
+    .update({
+      status_operacional: 'CANCELADO',
+      status_financeiro: 'RECUPERADO_CANCELAMENTO',
+      chave_cte_substituto: chaveCteSubstituto,
+      motivo_cancelamento_reemissao: motivo || null,
+      valor_recuperado: valorRecuperado,
+      origem_recuperacao: 'CANCELAMENTO_CTE',
+      aguardando_desde: null,
+      updated_at: nowIso(),
+    })
+    .eq('chave_cte', chaveCteOriginal);
+  if (erroUpdateOriginal) throw erroUpdateOriginal;
+
+  // Upsert do substituto — pode já ter jornada própria (se já foi auditado)
+  // ou não (recém emitido); os dois casos viram um único registro linkado.
+  const { error: erroUpsertSubstituto } = await client
+    .from('auditoria_cte_jornada')
+    .upsert({
+      chave_cte: chaveCteSubstituto,
+      chave_cte_original: chaveCteOriginal,
+      competencia: original.competencia,
+      transportadora: original.transportadora,
+      cnpj_transportadora: original.cnpj_transportadora,
+      status_operacional: 'REEMITIDO',
+      updated_at: nowIso(),
+    }, { onConflict: 'chave_cte', ignoreDuplicates: false })
+    .select();
+  if (erroUpsertSubstituto) throw erroUpsertSubstituto;
+  // upsert acima sobrescreveria status_operacional mesmo se o substituto já
+  // tivesse avançado além de REEMITIDO; como isso é o registro inicial do
+  // vínculo (feito uma vez, na hora que a reemissão é identificada), não tem
+  // como já existir estado mais avançado — mantém simples.
+
+  await registrarEvento(client, {
+    chaveCte: chaveCteOriginal,
+    jornadaId: original.id,
+    acao: 'CANCELADO_REEMITIDO',
+    statusAnterior: original.status_operacional,
+    statusNovo: 'CANCELADO',
+    comentario: `Cancelado e substituído pelo CT-e ${chaveCteSubstituto}. Recuperação: ${valorRecuperado}. Motivo: ${motivo || '-'}`,
+    usuario,
+  });
+  await registrarEvento(client, {
+    chaveCte: chaveCteSubstituto,
+    acao: 'REEMISSAO_VINCULADA',
+    statusNovo: 'REEMITIDO',
+    comentario: `Reemissão do CT-e cancelado ${chaveCteOriginal}. Motivo: ${motivo || '-'}`,
     usuario,
   });
 }

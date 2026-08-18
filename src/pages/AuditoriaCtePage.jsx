@@ -36,6 +36,7 @@ import {
   buscarJornadaPorIdentificadores,
   atualizarStatusJornada,
   anularJornada,
+  vincularCancelamentoReemissao,
   STATUS_OPERACIONAL,
   RESULTADOS_RETORNO_TRANSPORTADORA,
   JORNADA_COR,
@@ -650,6 +651,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [jornadaForm, setJornadaForm] = useState({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
   const [jornadaSalvando, setJornadaSalvando] = useState(false);
   const [anularMotivo, setAnularMotivo] = useState('');
+  const [reemissaoForm, setReemissaoForm] = useState({ chaveSubstituto: '', motivo: '' });
+  const [reemissaoSalvando, setReemissaoSalvando] = useState(false);
   const [modalLaudoAberto, setModalLaudoAberto] = useState(false);
   const [modalRetornoLoteAberto, setModalRetornoLoteAberto] = useState(false);
   const [buscaTratamento, setBuscaTratamento] = useState('');
@@ -1796,6 +1799,36 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       setErro(error.message || 'Não foi possível anular esta auditoria.');
     } finally {
       setJornadaSalvando(false);
+    }
+  }
+
+  async function handleVincularReemissao(chaveCteOriginal) {
+    const chaveSubstituto = reemissaoForm.chaveSubstituto.trim();
+    if (!chaveSubstituto) {
+      setErro('Informe a chave (ou número) do CT-e substituto.');
+      return;
+    }
+    setReemissaoSalvando(true);
+    setErro('');
+    try {
+      const usuario = carregarSessao();
+      await vincularCancelamentoReemissao({
+        chaveCteOriginal,
+        chaveCteSubstituto: chaveSubstituto,
+        motivo: reemissaoForm.motivo,
+        usuario,
+      });
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setJornadaEditando(null);
+      setReemissaoForm({ chaveSubstituto: '', motivo: '' });
+      setSucesso(`CT-e ${chaveCteOriginal} marcado como cancelado — vinculado ao substituto ${chaveSubstituto}.`);
+    } catch (error) {
+      setErro(error.message || 'Não foi possível vincular a reemissão.');
+    } finally {
+      setReemissaoSalvando(false);
     }
   }
 
@@ -3321,6 +3354,54 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                               </button>
                               <button className="sim-tab" type="button" onClick={() => setJornadaEditando(null)}>Cancelar</button>
                             </div>
+
+                            {jornada.status_operacional === 'CANCELAMENTO_SOLICITADO' ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #c7d2fe' }}>
+                                <div style={{ flex: 1, minWidth: 220 }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#075985' }}>🔄 Vincular CT-e substituto (reemissão)</div>
+                                  <input
+                                    type="text"
+                                    placeholder="Chave ou número do novo CT-e"
+                                    value={reemissaoForm.chaveSubstituto}
+                                    onChange={(e) => setReemissaoForm((f) => ({ ...f, chaveSubstituto: e.target.value }))}
+                                    style={{ width: '100%' }}
+                                  />
+                                </div>
+                                <div style={{ flex: 1, minWidth: 200 }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#075985' }}>Observação (opcional)</div>
+                                  <input
+                                    type="text"
+                                    placeholder="Ex: reemitido em 18/08"
+                                    value={reemissaoForm.motivo}
+                                    onChange={(e) => setReemissaoForm((f) => ({ ...f, motivo: e.target.value }))}
+                                    style={{ width: '100%' }}
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={reemissaoSalvando || !reemissaoForm.chaveSubstituto.trim()}
+                                  onClick={() => handleVincularReemissao(jornada.chave_cte)}
+                                  style={{ background: '#dbeafe', color: '#1e40af', border: '1px solid #93c5fd', borderRadius: 8, padding: '8px 14px', fontWeight: 700, cursor: 'pointer' }}
+                                >
+                                  {reemissaoSalvando ? 'Vinculando...' : 'Vincular e marcar como cancelado'}
+                                </button>
+                              </div>
+                            ) : null}
+
+                            {jornada.status_operacional === 'CANCELADO' && jornada.chave_cte_substituto ? (
+                              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #c7d2fe', fontSize: 12, color: '#065f46' }}>
+                                ✅ Cancelado e substituído pelo CT-e <strong>{jornada.chave_cte_substituto}</strong>
+                                {jornada.valor_recuperado ? <> — recuperado {Number(jornada.valor_recuperado).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</> : null}
+                                {jornada.motivo_cancelamento_reemissao ? <div style={{ color: '#475569' }}>{jornada.motivo_cancelamento_reemissao}</div> : null}
+                              </div>
+                            ) : null}
+
+                            {jornada.chave_cte_original ? (
+                              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #c7d2fe', fontSize: 12, color: '#3730a3' }}>
+                                🔗 Este CT-e é a reemissão do CT-e cancelado <strong>{jornada.chave_cte_original}</strong>
+                              </div>
+                            ) : null}
+
                             {ehGestorAuditoria ? (
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #c7d2fe' }}>
                                 <div style={{ flex: 1, minWidth: 220 }}>
