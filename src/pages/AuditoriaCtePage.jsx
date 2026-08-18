@@ -31,8 +31,16 @@ import {
   buscarResultadosAuditoriaPorIdentificadores,
 } from '../services/auditoriaCteProcessamentoService';
 import { baixarHtmlLaudoAuditoriaCtes, cteDivergenteAuditoria, identificadorCteAuditoria } from '../utils/laudoAuditoriaCtes';
-import { registrarLaudoGerado, buscarJornadaPorIdentificadores, atualizarStatusJornada, STATUS_OPERACIONAL } from '../services/auditoriaCteJornadaService';
-import { carregarSessao } from '../utils/authLocal';
+import {
+  registrarLaudoGerado,
+  buscarJornadaPorIdentificadores,
+  atualizarStatusJornada,
+  anularJornada,
+  STATUS_OPERACIONAL,
+  RESULTADOS_RETORNO_TRANSPORTADORA,
+  JORNADA_COR,
+} from '../services/auditoriaCteJornadaService';
+import { carregarSessao, usuarioEhGestorAuditoria } from '../utils/authLocal';
 import PainelPendenciasJornadaCte from '../components/PainelPendenciasJornadaCte';
 
 const CRITERIOS_FILTRO = [
@@ -66,23 +74,6 @@ function fmtN(v, d = 0) {
 function fmtP(v, d = 1) {
   return `${Number(v || 0).toFixed(d).replace('.', ',')}%`;
 }
-
-const JORNADA_COR = {
-  NAO_AUDITADO: { bg: '#e2e8f0', fg: '#475569' },
-  AUDITADO_OK: { bg: '#dcfce7', fg: '#166534' },
-  DIVERGENTE: { bg: '#fef3c7', fg: '#92400e' },
-  AGUARDANDO_ENVIO_TRANSPORTADORA: { bg: '#dbeafe', fg: '#1e40af' },
-  AGUARDANDO_RETORNO_TRANSPORTADORA: { bg: '#dbeafe', fg: '#1e40af' },
-  EM_TRATATIVA: { bg: '#fae8ff', fg: '#86198f' },
-  ACORDO_FECHADO: { bg: '#d1fae5', fg: '#065f46' },
-  CANCELAMENTO_SOLICITADO: { bg: '#fee2e2', fg: '#991b1b' },
-  CANCELADO: { bg: '#fee2e2', fg: '#991b1b' },
-  REEMITIDO: { bg: '#e0e7ff', fg: '#3730a3' },
-  AGUARDANDO_FATURA: { bg: '#fef9c3', fg: '#854d0e' },
-  FATURADO: { bg: '#cffafe', fg: '#155e75' },
-  CONCILIADO_FATURA: { bg: '#d1fae5', fg: '#065f46' },
-  ENCERRADO: { bg: '#e2e8f0', fg: '#334155' },
-};
 
 function fmtDataEmissaoAuditoria(row = {}) {
   const valor = String(row.data_emissao || row.emissao || row.dataEmissao || '').slice(0, 10);
@@ -545,6 +536,8 @@ function ResumoMensalAuditoria({ resumoMensal = [] }) {
 }
 
 export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras } = {}) {
+  const sessaoAtual = useMemo(() => carregarSessao(), []);
+  const ehGestorAuditoria = usuarioEhGestorAuditoria(sessaoAtual);
   const [ocultarTaxasZeradas, setOcultarTaxasZeradas] = useState(false);
   const [abaAuditoria, setAbaAuditoria] = useState('mensal');
   const [competencia, setCompetencia] = useState('');
@@ -656,6 +649,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
   const [jornadaEditando, setJornadaEditando] = useState(null); // chave_cte em edição no mini-formulário de retorno
   const [jornadaForm, setJornadaForm] = useState({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
   const [jornadaSalvando, setJornadaSalvando] = useState(false);
+  const [anularMotivo, setAnularMotivo] = useState('');
+  const [modalLaudoAberto, setModalLaudoAberto] = useState(false);
+  const [modalRetornoLoteAberto, setModalRetornoLoteAberto] = useState(false);
   const [buscaTratamento, setBuscaTratamento] = useState('');
   const [buscaTranspFiltro, setBuscaTranspFiltro] = useState('');
   const [buscaTomadorFiltro, setBuscaTomadorFiltro] = useState('');
@@ -1740,13 +1736,6 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
       : `${ids.length.toLocaleString('pt-BR')} CT-e(s) do recorte selecionado(s) para o laudo do transportador.`);
   }
 
-  const RESULTADOS_RETORNO_TRANSPORTADORA = {
-    concordou_desconto: { label: 'Concordou — desconto na fatura', statusOperacional: 'ACORDO_FECHADO', statusFinanceiro: 'DESCONTO_ACEITO', pedeValor: true },
-    concordou_cancelamento: { label: 'Concordou — cancelar e reemitir', statusOperacional: 'CANCELAMENTO_SOLICITADO', statusFinanceiro: 'DIVERGENCIA_IDENTIFICADA', pedeValor: false },
-    nao_concordou: { label: 'Não concordou', statusOperacional: 'EM_TRATATIVA', statusFinanceiro: 'DIVERGENCIA_IDENTIFICADA', pedeValor: false },
-    em_analise: { label: 'Em análise (transportadora ainda avaliando)', statusOperacional: 'EM_TRATATIVA', statusFinanceiro: null, pedeValor: false },
-  };
-
   async function salvarRetornoJornada(chaveCte) {
     const config = RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado];
     if (!config) return;
@@ -1754,11 +1743,25 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     setErro('');
     try {
       const usuario = carregarSessao();
+      let valorAcordado;
+      if (config.pedeValor) {
+        const digitado = String(jornadaForm.valorAcordado).trim();
+        if (digitado) {
+          // Digitou algo -> usa o valor exato informado (pode ser diferente da divergência calculada).
+          valorAcordado = Number(digitado.replace(',', '.')) || 0;
+        } else {
+          // Deixou em branco -> assume que concordou com a divergência identificada pela auditoria.
+          const row = registrosDetalheVisiveis.find((r) => r.chave_cte === chaveCte);
+          valorAcordado = row
+            ? Math.abs(Number(row.diferenca ?? ((Number(row.valor_cte || 0)) - (Number(row.valor_calculado || 0)))))
+            : 0;
+        }
+      }
       await atualizarStatusJornada({
         chaveCte,
         statusOperacional: config.statusOperacional,
         statusFinanceiro: config.statusFinanceiro || undefined,
-        valorAcordado: config.pedeValor ? Number(String(jornadaForm.valorAcordado).replace(',', '.')) || 0 : undefined,
+        valorAcordado,
         observacao: jornadaForm.observacao || `Retorno registrado: ${config.label}`,
         usuario,
       });
@@ -1776,7 +1779,70 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
     }
   }
 
-  async function gerarLaudoCtesSelecionados() {
+  async function handleAnularJornada(chaveCte) {
+    setJornadaSalvando(true);
+    setErro('');
+    try {
+      const usuario = carregarSessao();
+      await anularJornada({ chaveCte, motivo: anularMotivo, usuario });
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setJornadaEditando(null);
+      setAnularMotivo('');
+      setSucesso('Auditoria anulada — CT-e voltou para "Não auditado".');
+    } catch (error) {
+      setErro(error.message || 'Não foi possível anular esta auditoria.');
+    } finally {
+      setJornadaSalvando(false);
+    }
+  }
+
+  async function salvarRetornoJornadaEmLote() {
+    const config = RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado];
+    if (!config) return;
+    const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
+    const chaves = [...new Set(selecionados.map((r) => r.chave_cte).filter(Boolean))];
+    if (!chaves.length) return;
+    setJornadaSalvando(true);
+    setErro('');
+    try {
+      const usuario = carregarSessao();
+      const divergenciaPorChave = new Map(selecionados.map((r) => [r.chave_cte, Math.abs(Number(r.diferenca ?? ((Number(r.valor_cte || 0)) - (Number(r.valor_calculado || 0)))))]));
+      for (const chaveCte of chaves) {
+        await atualizarStatusJornada({
+          chaveCte,
+          statusOperacional: config.statusOperacional,
+          statusFinanceiro: config.statusFinanceiro || undefined,
+          // No lote, o desconto acordado de cada CT-e = a própria divergência
+          // identificada dele (concordou com o valor apontado pela auditoria).
+          valorAcordado: config.pedeValor ? (divergenciaPorChave.get(chaveCte) || 0) : undefined,
+          observacao: jornadaForm.observacao || `Retorno em lote: ${config.label}`,
+          usuario,
+        });
+      }
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(
+        registrosDetalheVisiveis.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean),
+      );
+      setJornadaPorChave(mapaAtualizado);
+      setModalRetornoLoteAberto(false);
+      setJornadaForm({ resultado: 'concordou_desconto', valorAcordado: '', observacao: '' });
+      setSucesso(`Jornada atualizada em lote: ${config.label} (${chaves.length.toLocaleString('pt-BR')} CT-e(s)).`);
+    } catch (error) {
+      setErro(error.message || 'Não foi possível registrar o retorno em lote.');
+    } finally {
+      setJornadaSalvando(false);
+    }
+  }
+
+  function abrirModalLaudo() {
+    if (!ctesSelecionadosLaudo.length) return;
+    setModalLaudoAberto(true);
+  }
+
+  async function confirmarGeracaoLaudo(enviarAgora) {
+    setModalLaudoAberto(false);
     const selecionados = registrosDetalheOrdenados.filter((row, indice) => ctesSelecionadosLaudo.includes(identificadorCteAuditoria(row, indice)));
     try {
       baixarHtmlLaudoAuditoriaCtes(selecionados, { competencia, mostrarCobrancaAMenor: mostrarCobrancaAMenorLaudo });
@@ -1788,9 +1854,6 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
     // Registro da jornada é aditivo: falha aqui não deve impedir o laudo já baixado.
     try {
-      const enviarAgora = window.confirm(
-        'Este laudo será enviado para a transportadora agora?\n\nOK = Sim, registrar envio (CT-es passam para "aguardando retorno da transportadora")\nCancelar = Não, apenas gerar/visualizar'
-      );
       const usuario = carregarSessao();
       const porTransportadora = new Map();
       selecionados.forEach((row) => {
@@ -1822,6 +1885,112 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
 
   return (
     <div className="simulador-shell">
+      {modalLaudoAberto ? (
+        <div
+          role="presentation"
+          onClick={() => setModalLaudoAberto(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: 24, maxWidth: 520, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 4 }}>📄 Gerar laudo do transportador</h2>
+            <p style={{ color: '#475569', fontSize: 14, marginTop: 0 }}>
+              {fmtN(ctesSelecionadosLaudo.length)} CT-e(s) selecionado(s). O arquivo HTML do laudo é baixado nos dois casos abaixo — a diferença é só o que acontece com a <strong>jornada</strong> desses CT-es.
+            </p>
+            <div style={{ display: 'grid', gap: 10, marginTop: 16 }}>
+              <button
+                className="primary"
+                type="button"
+                style={{ textAlign: 'left', padding: '12px 16px' }}
+                onClick={() => confirmarGeracaoLaudo(true)}
+              >
+                <div style={{ fontWeight: 800 }}>✅ Enviar para a transportadora agora</div>
+                <div style={{ fontWeight: 400, fontSize: 12, opacity: 0.9 }}>
+                  Registra o envio. Os CT-es passam para "Aguardando retorno da transportadora" no painel da jornada.
+                </div>
+              </button>
+              <button
+                className="sim-tab"
+                type="button"
+                style={{ textAlign: 'left', padding: '12px 16px' }}
+                onClick={() => confirmarGeracaoLaudo(false)}
+              >
+                <div style={{ fontWeight: 800 }}>👁️ Só gerar/visualizar</div>
+                <div style={{ fontWeight: 400, fontSize: 12, color: '#64748b' }}>
+                  Conferência interna. Não altera o status de envio — os CT-es continuam como estavam (ou entram como "Divergente"/"Auditado OK" se ainda não tinham jornada).
+                </div>
+              </button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="sim-tab" type="button" onClick={() => setModalLaudoAberto(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {modalRetornoLoteAberto ? (
+        <div
+          role="presentation"
+          onClick={() => setModalRetornoLoteAberto(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: 24, maxWidth: 480, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 4 }}>🧭 Registrar retorno em lote</h2>
+            <p style={{ color: '#475569', fontSize: 14, marginTop: 0 }}>
+              Aplica o mesmo resultado aos <strong>{fmtN(ctesSelecionadosLaudo.length)}</strong> CT-e(s) marcados na coluna Laudo da tabela.
+            </p>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Resultado do retorno</div>
+              <select
+                value={jornadaForm.resultado}
+                onChange={(e) => setJornadaForm((f) => ({ ...f, resultado: e.target.value }))}
+                style={{ width: '100%' }}
+              >
+                {Object.entries(RESULTADOS_RETORNO_TRANSPORTADORA).map(([key, cfg]) => (
+                  <option key={key} value={key}>{cfg.label}</option>
+                ))}
+              </select>
+            </div>
+            {RESULTADOS_RETORNO_TRANSPORTADORA[jornadaForm.resultado]?.pedeValor ? (
+              <div style={{ background: '#fef9c3', border: '1px solid #fde047', borderRadius: 8, padding: 8, fontSize: 12, color: '#854d0e', marginBottom: 12 }}>
+                O valor acordado de cada CT-e será a própria divergência identificada dele (não dá pra digitar um valor único pro lote, já que cada CT-e tem uma divergência diferente). Pra um valor específico e diferente da divergência, registre esse CT-e individualmente pelo badge da tabela.
+              </div>
+            ) : null}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Observação (opcional, aplicada a todos)</div>
+              <input
+                type="text"
+                placeholder="Ex: retorno por e-mail em 18/08, lote respondido pela transportadora X"
+                value={jornadaForm.observacao}
+                onChange={(e) => setJornadaForm((f) => ({ ...f, observacao: e.target.value }))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="sim-tab" type="button" onClick={() => setModalRetornoLoteAberto(false)}>Cancelar</button>
+              <button className="primary" type="button" disabled={jornadaSalvando} onClick={salvarRetornoJornadaEmLote}>
+                {jornadaSalvando ? 'Salvando...' : `Aplicar a ${fmtN(ctesSelecionadosLaudo.length)} CT-e(s)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="simulador-header compact-top">
         <div className="simulador-subtitulo">Central Fretes • Auditoria</div>
         <h1>Auditoria de CTes</h1>
@@ -2899,6 +3068,9 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
               </span>
             </div>
           ) : null}
+          <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '6px 10px', marginBottom: 10, fontSize: 12, color: '#166534' }}>
+            💡 Para registrar a resposta da transportadora (concordou, cancelou, desconto...), clique no badge da coluna <strong>Jornada</strong> (última coluna da tabela) na linha do CT-e.
+          </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>📄 Detalhe por CT-e</h2>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -2937,8 +3109,17 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                 <input type="checkbox" checked={mostrarCobrancaAMenorLaudo} onChange={(event) => setMostrarCobrancaAMenorLaudo(event.target.checked)} />
                 Mostrar cobrança a menor no laudo
               </label>
-              <button className="primary" type="button" disabled={!ctesSelecionadosLaudo.length} onClick={gerarLaudoCtesSelecionados}>
+              <button className="primary" type="button" disabled={!ctesSelecionadosLaudo.length} onClick={abrirModalLaudo}>
                 Laudo transportador ({fmtN(ctesSelecionadosLaudo.length)})
+              </button>
+              <button
+                className="sim-tab"
+                type="button"
+                disabled={!ctesSelecionadosLaudo.length}
+                title="Aplica o mesmo retorno da transportadora (jornada) a todos os CT-es marcados na coluna Laudo"
+                onClick={() => setModalRetornoLoteAberto(true)}
+              >
+                🧭 Registrar retorno em lote ({fmtN(ctesSelecionadosLaudo.length)})
               </button>
             </div>
           </div>
@@ -3112,7 +3293,8 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                                   <input
                                     type="text"
                                     inputMode="decimal"
-                                    placeholder="0,00"
+                                    placeholder="vazio = divergência"
+                                    title="Deixe em branco para usar automaticamente a divergência identificada deste CT-e. Preencha só se o valor acordado for diferente."
                                     value={jornadaForm.valorAcordado}
                                     onChange={(e) => setJornadaForm((f) => ({ ...f, valorAcordado: e.target.value }))}
                                     style={{ width: 120 }}
@@ -3139,6 +3321,28 @@ export default function AuditoriaCtePage({ onMudarPagina, onAbrirTransportadoras
                               </button>
                               <button className="sim-tab" type="button" onClick={() => setJornadaEditando(null)}>Cancelar</button>
                             </div>
+                            {ehGestorAuditoria ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginTop: 10, paddingTop: 10, borderTop: '1px dashed #c7d2fe' }}>
+                                <div style={{ flex: 1, minWidth: 220 }}>
+                                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#991b1b' }}>🔒 Só gestor · Anular auditoria (volta pra "Não auditado")</div>
+                                  <input
+                                    type="text"
+                                    placeholder="Motivo da anulação (obrigatório)"
+                                    value={anularMotivo}
+                                    onChange={(e) => setAnularMotivo(e.target.value)}
+                                    style={{ width: '100%' }}
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={jornadaSalvando || !anularMotivo.trim()}
+                                  onClick={() => handleAnularJornada(jornada.chave_cte)}
+                                  style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: 8, padding: '8px 14px', fontWeight: 700, cursor: 'pointer' }}
+                                >
+                                  {jornadaSalvando ? 'Anulando...' : '🗑️ Anular'}
+                                </button>
+                              </div>
+                            ) : null}
                           </td>
                         </tr>
                       ) : null}

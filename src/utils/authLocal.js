@@ -179,6 +179,14 @@ export function usuarioPodeAdministrarUsuarios(usuario) {
   return normalizarEmail(usuario?.email) === ADMIN_EMAIL && usuario?.perfil === 'GESTAO';
 }
 
+// Perfis com poder de gestão sobre a auditoria (podem anular uma auditoria
+// já registrada, diferente do auditor comum que só avança a jornada).
+const PERFIS_GESTOR_AUDITORIA = new Set(['GESTAO', 'GESTOR_AUDITORIA_FRETES']);
+
+export function usuarioEhGestorAuditoria(usuario) {
+  return PERFIS_GESTOR_AUDITORIA.has(usuario?.perfil);
+}
+
 function normalizarUsuario(usuario = {}) {
   const email = normalizarEmail(usuario.email);
   const candidato = { ...usuario, email };

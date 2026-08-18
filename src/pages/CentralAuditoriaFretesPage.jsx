@@ -6,6 +6,13 @@ import ModalEnviarProtocoloFinanceiro from '../components/ModalEnviarProtocoloFi
 import DadosBancariosTransportadoras from '../components/DadosBancariosTransportadoras';
 import { carregarSessao } from '../utils/authLocal';
 import {
+  atualizarStatusJornada,
+  buscarJornadaPorIdentificadores,
+  RESULTADOS_RETORNO_TRANSPORTADORA,
+  STATUS_OPERACIONAL,
+  JORNADA_COR,
+} from '../services/auditoriaCteJornadaService';
+import {
   agruparDetalhesVerum,
   analisarLayoutVerum,
   chaveFatura,
@@ -1922,6 +1929,10 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
   const [mostrarDiferencaNegativaLaudoTransportador, setMostrarDiferencaNegativaLaudoTransportador] = useState(false);
   const [opcoesLaudoTransportadorLote, setOpcoesLaudoTransportadorLote] = useState(OPCOES_LAUDO_TRANSPORTADOR_PADRAO);
   const [ctesSelecionadosDoccob, setCtesSelecionadosDoccob] = useState([]);
+  const [devolutivaJornadaAberta, setDevolutivaJornadaAberta] = useState(false);
+  const [devolutivaJornadaForm, setDevolutivaJornadaForm] = useState({ resultado: 'concordou_desconto', observacao: '' });
+  const [devolutivaJornadaSalvando, setDevolutivaJornadaSalvando] = useState(false);
+  const [jornadaPorChaveAvulsa, setJornadaPorChaveAvulsa] = useState(new Map());
   const [doccobFormAberto, setDoccobFormAberto] = useState(false);
   const [doccobForm, setDoccobForm] = useState(DOCCOB_FORM_PADRAO);
   const [doccobNumerosNf, setDoccobNumerosNf] = useState({});
@@ -2188,6 +2199,38 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
     } finally {
       setAuditandoCtesAvulsos(false);
       setProgressoCtesAvulsos(null);
+    }
+  };
+
+  const registrarDevolutivaJornadaAvulsa = async () => {
+    const config = RESULTADOS_RETORNO_TRANSPORTADORA[devolutivaJornadaForm.resultado];
+    const registros = resultadoCtesAvulsosFiltrado.filter((row) => row?.chave_cte);
+    if (!config || !registros.length) return;
+    setDevolutivaJornadaSalvando(true);
+    try {
+      const usuario = carregarSessao();
+      for (const row of registros) {
+        const divergencia = Math.abs(Number(row.diferenca ?? ((Number(row.valor_cte || 0)) - (Number(row.valor_calculado || 0)))));
+        await atualizarStatusJornada({
+          chaveCte: row.chave_cte,
+          statusOperacional: config.statusOperacional,
+          statusFinanceiro: config.statusFinanceiro || undefined,
+          // Sempre usa a divergência do próprio CT-e — não dá pra digitar um
+          // valor único quando a lista tem CT-es com valores diferentes.
+          valorAcordado: config.pedeValor ? divergencia : undefined,
+          observacao: devolutivaJornadaForm.observacao || `Retorno em lote (auditoria por chave/lista): ${config.label}`,
+          usuario,
+        });
+      }
+      const mapaAtualizado = await buscarJornadaPorIdentificadores(registros.flatMap((r) => [r.chave_cte, r.numero_cte]).filter(Boolean));
+      setJornadaPorChaveAvulsa(mapaAtualizado);
+      setDevolutivaJornadaForm({ resultado: 'concordou_desconto', observacao: '' });
+      setDevolutivaJornadaAberta(false);
+      setMensagemImportacao(`Jornada atualizada: ${config.label} (${registros.length} CT-e(s)).`);
+    } catch (error) {
+      setMensagemImportacao(`Erro ao registrar devolutiva: ${error.message}`);
+    } finally {
+      setDevolutivaJornadaSalvando(false);
     }
   };
 
@@ -3603,6 +3646,15 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
             <button className="btn-secondary audit-small-button" type="button" onClick={abrirFormularioDoccob} disabled={!ctesSelecionadosDoccob.length} title="Gera o arquivo DOCCOB EDI (layout PROCEDA 3.0A) com os CT-es marcados abaixo">
               Gerar DOCCOB ({ctesSelecionadosDoccob.length})
             </button>
+            <button
+              className="btn-secondary audit-small-button"
+              type="button"
+              disabled={!resultadoCtesAvulsosFiltrado.length}
+              title="Registra na jornada do CT-e a resposta que a transportadora deu para esta lista (concordou, cancelou, desconto...)"
+              onClick={() => setDevolutivaJornadaAberta((v) => !v)}
+            >
+              🧭 Registrar devolutiva ({resultadoCtesAvulsosFiltrado.length})
+            </button>
           </div>
         </div>
 
@@ -3632,6 +3684,74 @@ function Faturas({ state, onState, modo = 'faturas', onMudarPagina, onAbrirTrans
             <span>identificador(es) reconhecido(s)</span>
           </div>
         </div>
+
+        {devolutivaJornadaAberta ? (
+          <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 10, padding: 12, marginTop: 10 }}>
+            <div style={{ fontWeight: 700, color: '#3730a3', marginBottom: 8 }}>
+              🧭 Registrar devolutiva da transportadora para os {resultadoCtesAvulsosFiltrado.length} CT-e(s) desta lista
+            </div>
+            {!resultadoCtesAvulsosFiltrado.length ? (
+              <div style={{ fontSize: 12, color: '#64748b' }}>Clique em "Consultar CT-es" ou "Auditar CT-es" primeiro para carregar os CT-es da lista colada acima.</div>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>Resultado do retorno</div>
+                  <select
+                    value={devolutivaJornadaForm.resultado}
+                    onChange={(e) => setDevolutivaJornadaForm((f) => ({ ...f, resultado: e.target.value }))}
+                    style={{ minWidth: 260 }}
+                  >
+                    {Object.entries(RESULTADOS_RETORNO_TRANSPORTADORA).map(([key, cfg]) => (
+                      <option key={key} value={key}>{cfg.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>Observação (opcional)</div>
+                  <input
+                    type="text"
+                    placeholder="Ex: lista recebida por e-mail em 18/08"
+                    value={devolutivaJornadaForm.observacao}
+                    onChange={(e) => setDevolutivaJornadaForm((f) => ({ ...f, observacao: e.target.value }))}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <button className="btn-primary audit-small-button" type="button" disabled={devolutivaJornadaSalvando} onClick={registrarDevolutivaJornadaAvulsa}>
+                  {devolutivaJornadaSalvando ? 'Salvando...' : `Aplicar a ${resultadoCtesAvulsosFiltrado.length} CT-e(s)`}
+                </button>
+                <button className="btn-secondary audit-small-button" type="button" onClick={() => setDevolutivaJornadaAberta(false)}>Fechar</button>
+              </div>
+            )}
+            {RESULTADOS_RETORNO_TRANSPORTADORA[devolutivaJornadaForm.resultado]?.pedeValor && resultadoCtesAvulsosFiltrado.length ? (
+              <div style={{ fontSize: 11, color: '#854d0e', marginTop: 8 }}>
+                💡 O valor acordado de cada CT-e será a própria divergência identificada dele (Pago − Cálculo AMD).
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {jornadaPorChaveAvulsa.size ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+            {resultadoCtesAvulsosFiltrado
+              .filter((row) => jornadaPorChaveAvulsa.has(row.chave_cte))
+              .map((row) => {
+                const jornada = jornadaPorChaveAvulsa.get(row.chave_cte);
+                return (
+                  <span
+                    key={row.chave_cte}
+                    title={`CT-e ${row.numero_cte || row.chave_cte}`}
+                    style={{
+                      padding: '2px 8px', borderRadius: 999, fontWeight: 700, fontSize: 11,
+                      background: JORNADA_COR[jornada.status_operacional]?.bg || '#e2e8f0',
+                      color: JORNADA_COR[jornada.status_operacional]?.fg || '#334155',
+                    }}
+                  >
+                    {row.numero_cte || row.chave_cte}: {STATUS_OPERACIONAL[jornada.status_operacional] || jornada.status_operacional}
+                  </span>
+                );
+              })}
+          </div>
+        ) : null}
 
         <AmdProcessingOverlay ativo={auditandoCtesAvulsos} progresso={progressoCtesAvulsos} mensagemRodape="Calculando CT-es avulsos com a tabela AMD atual." />
 

@@ -1,4 +1,5 @@
 import { getSupabaseClient } from '../lib/supabaseClient';
+import { usuarioEhGestorAuditoria } from '../utils/authLocal';
 
 function ensureClient() {
   const client = getSupabaseClient();
@@ -37,6 +38,32 @@ export const STATUS_FINANCEIRO = {
   ENCERRADO_SEM_RECUPERACAO: 'Encerrado sem recuperação',
   PAGO: 'Pago',
   CONCILIADO: 'Conciliado',
+};
+
+// Opções do mini-formulário "registrar retorno da transportadora" — usado
+// tanto na tabela de detalhe quanto na Auditoria por chave/lista.
+export const RESULTADOS_RETORNO_TRANSPORTADORA = {
+  concordou_desconto: { label: 'Concordou — desconto na fatura', statusOperacional: 'ACORDO_FECHADO', statusFinanceiro: 'DESCONTO_ACEITO', pedeValor: true },
+  concordou_cancelamento: { label: 'Concordou — cancelar e reemitir', statusOperacional: 'CANCELAMENTO_SOLICITADO', statusFinanceiro: 'DIVERGENCIA_IDENTIFICADA', pedeValor: false },
+  nao_concordou: { label: 'Não concordou', statusOperacional: 'EM_TRATATIVA', statusFinanceiro: 'DIVERGENCIA_IDENTIFICADA', pedeValor: false },
+  em_analise: { label: 'Em análise (transportadora ainda avaliando)', statusOperacional: 'EM_TRATATIVA', statusFinanceiro: null, pedeValor: false },
+};
+
+export const JORNADA_COR = {
+  NAO_AUDITADO: { bg: '#e2e8f0', fg: '#475569' },
+  AUDITADO_OK: { bg: '#dcfce7', fg: '#166534' },
+  DIVERGENTE: { bg: '#fef3c7', fg: '#92400e' },
+  AGUARDANDO_ENVIO_TRANSPORTADORA: { bg: '#dbeafe', fg: '#1e40af' },
+  AGUARDANDO_RETORNO_TRANSPORTADORA: { bg: '#dbeafe', fg: '#1e40af' },
+  EM_TRATATIVA: { bg: '#fae8ff', fg: '#86198f' },
+  ACORDO_FECHADO: { bg: '#d1fae5', fg: '#065f46' },
+  CANCELAMENTO_SOLICITADO: { bg: '#fee2e2', fg: '#991b1b' },
+  CANCELADO: { bg: '#fee2e2', fg: '#991b1b' },
+  REEMITIDO: { bg: '#e0e7ff', fg: '#3730a3' },
+  AGUARDANDO_FATURA: { bg: '#fef9c3', fg: '#854d0e' },
+  FATURADO: { bg: '#cffafe', fg: '#155e75' },
+  CONCILIADO_FATURA: { bg: '#d1fae5', fg: '#065f46' },
+  ENCERRADO: { bg: '#e2e8f0', fg: '#334155' },
 };
 
 const DIAS_ALERTA_AGUARDANDO_RETORNO = 7;
@@ -382,6 +409,59 @@ export async function atualizarStatusJornada({
     statusAnterior: atual?.status_operacional,
     statusNovo: statusOperacional || atual?.status_operacional,
     comentario: observacao,
+    usuario,
+  });
+}
+
+/**
+ * Anula a auditoria de um CT-e — volta a jornada pro estado inicial
+ * (NAO_AUDITADO, sem acordo/recuperação), preservando o motivo e um evento
+ * ANULADO no histórico. Só gestores (perfil GESTAO ou GESTOR_AUDITORIA_FRETES)
+ * podem fazer isso — usado quando algo foi registrado errado e precisa voltar.
+ */
+export async function anularJornada({ chaveCte, motivo, usuario }) {
+  if (!usuarioEhGestorAuditoria(usuario)) {
+    throw new Error('Só gestores podem anular uma auditoria já registrada.');
+  }
+  if (!motivo || !motivo.trim()) {
+    throw new Error('Informe o motivo da anulação.');
+  }
+  const client = ensureClient();
+
+  const { data: atual } = await client
+    .from('auditoria_cte_jornada')
+    .select('status_operacional, status_financeiro, valor_acordado, valor_recuperado, id')
+    .eq('chave_cte', chaveCte)
+    .maybeSingle();
+  if (!atual) throw new Error('Este CT-e não tem jornada registrada — nada para anular.');
+
+  const { error } = await client
+    .from('auditoria_cte_jornada')
+    .update({
+      status_operacional: 'NAO_AUDITADO',
+      status_financeiro: 'SEM_IMPACTO',
+      valor_acordado: 0,
+      valor_recuperado: 0,
+      origem_recuperacao: null,
+      processo_id: null,
+      auditor_responsavel_id: null,
+      auditor_responsavel_nome: null,
+      aguardando_desde: null,
+      observacao: `Anulado por ${usuario?.nome || usuario?.email || 'gestor'}: ${motivo}`,
+      updated_at: nowIso(),
+    })
+    .eq('chave_cte', chaveCte);
+  if (error) throw error;
+
+  await registrarEvento(client, {
+    chaveCte,
+    jornadaId: atual.id,
+    acao: 'ANULADO',
+    statusAnterior: atual.status_operacional,
+    statusNovo: 'NAO_AUDITADO',
+    comentario: `Anulação (estava: ${STATUS_OPERACIONAL[atual.status_operacional] || atual.status_operacional}, `
+      + `financeiro: ${STATUS_FINANCEIRO[atual.status_financeiro] || atual.status_financeiro || '-'}, `
+      + `acordado: ${atual.valor_acordado || 0}, recuperado: ${atual.valor_recuperado || 0}). Motivo: ${motivo}`,
     usuario,
   });
 }
