@@ -3,13 +3,33 @@ import {
   normalizarChave,
   normalizarVinculo,
   criarMapaVinculosTransportadoras,
-  aplicarVinculoTransportadora,
+  aplicarVinculoTransportadora as aplicarVinculoTransportadoraPuro,
   normalizarNomeVinculo,
 } from './vinculosTransportadorasPuro.js';
 
-export { criarMapaVinculosTransportadoras, aplicarVinculoTransportadora, normalizarNomeVinculo };
+export { criarMapaVinculosTransportadoras, normalizarNomeVinculo };
 
 const LOCAL_KEY = 'vinculos-transportadoras';
+const nomesTransportadorasOficiais = new Set();
+
+function registrarTransportadorasOficiais(lista = []) {
+  nomesTransportadorasOficiais.clear();
+  (lista || []).forEach((item) => {
+    const nome = typeof item === 'string' ? item : item?.nome;
+    const chave = normalizarChave(nome);
+    if (chave) nomesTransportadorasOficiais.add(chave);
+  });
+}
+
+// Um nome que já existe no cadastro oficial é identidade de tabela e não deve ser
+// transformado por vínculos de CT-e. Os vínculos continuam valendo para razão social/
+// aliases vindos do realizado, mas nunca renomeiam uma transportadora oficial escolhida.
+export function aplicarVinculoTransportadora(nome, mapaVinculos) {
+  const atual = String(nome || '').trim();
+  if (!atual) return atual;
+  if (nomesTransportadorasOficiais.has(normalizarChave(atual))) return atual;
+  return aplicarVinculoTransportadoraPuro(atual, mapaVinculos);
+}
 
 function getLocalVinculos() {
   try {
@@ -38,6 +58,18 @@ export async function carregarVinculosTransportadoras() {
   if (!isSupabaseConfigured()) return locais;
 
   const supabase = getSupabaseClient();
+
+  // Carrega também os nomes oficiais. Isso permite distinguir identidade de tabela
+  // de alias do CT-e antes de aplicar qualquer vínculo no Simulador do Realizado.
+  try {
+    const { data: oficiais, error: oficiaisError } = await supabase
+      .from('transportadoras')
+      .select('nome');
+    if (!oficiaisError) registrarTransportadorasOficiais(oficiais || []);
+  } catch {
+    // Não bloqueia o fluxo de vínculos se a consulta de nomes oficiais falhar.
+  }
+
   const { data, error } = await supabase
     .from('transportadora_vinculos')
     .select('id, nome_cte, nome_tabela, nome_cte_normalizado, nome_tabela_normalizado, origem, created_at, updated_at')
@@ -149,7 +181,7 @@ export async function removerVinculoTransportadora(idOuNomeCte, listaAtual = [])
       .from('transportadora_vinculos')
       .delete()
       .eq('nome_cte_normalizado', normalizarChave(item.nomeCte));
-    if (error) throw new Error(`Não consegui remover vínculo no Supabase. Detalhe: ${error.message}`);
+    if (error) throw new Error(`Não consegui remover vínculo no Supabase. Detalhe: ${error.message || error}`);
   }
 
   return novaLista;
