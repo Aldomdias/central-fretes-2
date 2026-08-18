@@ -48,6 +48,32 @@ function lerSessoesExcluidas() {
 
 const CDS_RESTRICAO = ['Itupeva', 'Jaboatão', 'Serra', 'Duque de Caxias', 'Itajaí'];
 
+const CHAVE_SNAPSHOT_INDICADORES = 'amd-auditoria-ecommerce-indicadores-snapshot-v1';
+
+function lerSnapshotIndicadores(cenarioPeso, dataInicio, dataFim) {
+  try {
+    const todos = JSON.parse(localStorage.getItem(CHAVE_SNAPSHOT_INDICADORES) || '{}');
+    const chave = `${cenarioPeso}|${dataInicio || ''}|${dataFim || ''}`;
+    return todos[chave] || null;
+  } catch {
+    return null;
+  }
+}
+
+function salvarSnapshotIndicadores(cenarioPeso, dataInicio, dataFim, resumo) {
+  try {
+    const todos = JSON.parse(localStorage.getItem(CHAVE_SNAPSHOT_INDICADORES) || '{}');
+    const chave = `${cenarioPeso}|${dataInicio || ''}|${dataFim || ''}`;
+    todos[chave] = { resumo, atualizadoEm: new Date().toISOString() };
+    // So guarda os 6 recortes mais recentes - snapshot e conveniencia, nao precisa
+    // virar um deposito ilimitado de recortes velhos no localStorage.
+    const entradas = Object.entries(todos).sort((a, b) => String(b[1]?.atualizadoEm || '').localeCompare(String(a[1]?.atualizadoEm || '')));
+    localStorage.setItem(CHAVE_SNAPSHOT_INDICADORES, JSON.stringify(Object.fromEntries(entradas.slice(0, 6))));
+  } catch {
+    // localStorage indisponivel/cheio - snapshot e so conveniencia, segue sem ele.
+  }
+}
+
 function formatarNumero(value, casas = 0) {
   if (value === null || value === undefined || value === '') return '-';
   return Number(value || 0).toLocaleString('pt-BR', {
@@ -339,6 +365,7 @@ export default function AuditoriaEcommercePage() {
   const [tabelaConsultada, setTabelaConsultada] = useState(null);
   const [abaPrincipal, setAbaPrincipal] = useState('operacao');
   const [indicadores, setIndicadores] = useState(null);
+  const [indicadoresAtualizadoEm, setIndicadoresAtualizadoEm] = useState(null);
   const [cenarioPainel, setCenarioPainel] = useState('cotado');
   const [carregandoIndicadores, setCarregandoIndicadores] = useState(false);
   const [linhasIndicadoresLidas, setLinhasIndicadoresLidas] = useState(0);
@@ -360,6 +387,8 @@ export default function AuditoriaEcommercePage() {
       });
       setIndicadores(resultado);
       setFiltrosBi(filtrosBiVazio);
+      salvarSnapshotIndicadores(cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim, resultado);
+      setIndicadoresAtualizadoEm(new Date().toISOString());
     } catch (error) {
       setErro(error.message || 'Erro ao carregar indicadores.');
     } finally {
@@ -402,6 +431,8 @@ export default function AuditoriaEcommercePage() {
       });
       setIndicadores(resultado);
       setFiltrosBi(filtrosBiVazio);
+      salvarSnapshotIndicadores(cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim, resultado);
+      setIndicadoresAtualizadoEm(new Date().toISOString());
       setMensagem(`Indicadores recalculados com ${novoConsiderarPrazo ? 'preco 80% + prazo 20%' : 'somente preco'}.`);
     } catch (error) {
       setErro(error.message || 'Erro ao recalcular indicadores com o novo criterio.');
@@ -579,6 +610,23 @@ export default function AuditoriaEcommercePage() {
     listarOpcoesFiltroEcommerce().then(setOpcoesFiltro).catch(() => {});
     carregarMapaCdCentros().then(setCdCentros).catch(() => {});
   }, []);
+
+  // Mostra o ultimo snapshot salvo na hora (sem bater no banco) ao trocar de
+  // cenario ou de periodo - a consulta completa (sem filtro de data chega a
+  // escanear a base inteira, ~100s) so roda de verdade quando o usuario clica
+  // em "Atualizar indicadores".
+  useEffect(() => {
+    const snapshot = lerSnapshotIndicadores(cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim);
+    if (snapshot) {
+      setIndicadores(snapshot.resumo);
+      setIndicadoresAtualizadoEm(snapshot.atualizadoEm);
+      setFiltrosBi(filtrosBiVazio);
+    } else {
+      setIndicadores(null);
+      setIndicadoresAtualizadoEm(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cenarioPainel, filtrosServidor.dataInicio, filtrosServidor.dataFim]);
 
   useEffect(() => {
     if (!cdCentros.mapa.size) return;
@@ -1530,10 +1578,15 @@ export default function AuditoriaEcommercePage() {
             <div>
               <div className="panel-title">Indicadores da auditoria financeira</div>
               <p className="compact">Usa somente pedidos ja calculados (status OK) que atendem aos filtros principais.</p>
+              {indicadoresAtualizadoEm ? (
+                <p className="compact" style={{ color: '#94a3b8' }}>
+                  Dados de {new Date(indicadoresAtualizadoEm).toLocaleString('pt-BR')} (snapshot salvo neste navegador). Clique em "Atualizar indicadores" pra recalcular na hora.
+                </p>
+              ) : null}
             </div>
             <div className="actions-right wrap">
               <label className="field" style={{ minWidth: 230 }}>Visao do painel
-                <select value={cenarioPainel} onChange={(e) => { setCenarioPainel(e.target.value); setIndicadores(null); }}>
+                <select value={cenarioPainel} onChange={(e) => setCenarioPainel(e.target.value)}>
                   <option value="cotado">Peso cotado - decisao da venda</option>
                   <option value="faturado">Peso faturado - cenario financeiro</option>
                 </select>
@@ -1668,11 +1721,11 @@ export default function AuditoriaEcommercePage() {
           <div className="panel-header-row">
             <div>
               <div className="panel-title">Comparativo cotado x faturado</div>
-              <p className="compact">Usa a mesma rodada carregada no Painel de indicadores (visao atual: <strong>{cenarioPainel}</strong>). Se nao aparecer nada, clique em "Atualizar indicadores" na outra aba primeiro.</p>
+              <p className="compact">Usa o mesmo snapshot do Painel de indicadores (visao atual: <strong>{cenarioPainel}</strong>).{indicadoresAtualizadoEm ? <> Dados de {new Date(indicadoresAtualizadoEm).toLocaleString('pt-BR')}.</> : null} Se nao aparecer nada, va no "Painel de indicadores" e clique em "Atualizar indicadores" (uma vez pra cada cenario) primeiro.</p>
             </div>
           </div>
 
-          {!indicadores ? <div className="sim-alert info">Nenhum dado carregado. Va em "Painel de indicadores" e clique em "Atualizar indicadores".</div> : (
+          {!indicadores ? <div className="sim-alert info">Nenhum dado carregado ainda pra esse cenario/periodo. Va em "Painel de indicadores" e clique em "Atualizar indicadores".</div> : (
             <>
               <div className="summary-strip lotacao-summary-mini" style={{ marginTop: 14 }}>
                 <div className="summary-card"><span>Pedidos comparaveis</span><strong>{formatarNumero(comparativoBi.totalComparavel)}</strong><small>tem os dois cenarios calculados</small></div>
